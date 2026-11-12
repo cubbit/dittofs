@@ -65,6 +65,9 @@ type Engine struct {
 	opened   atomic.Uint64 // the bindings made so far, which Close undoes in reverse
 	cloning  sync.WaitGroup
 
+	clonesMu sync.Mutex             // held for a lookup or change of clones only
+	clones   map[cloneKey]*cloneRun // the running clones past their step 1, live and rebuilt, by destination
+
 	gcMu            sync.Mutex
 	gcs             map[Journal]*groupCommit                        // each journal's group commit
 	gcsClosed       bool                                            // the group commits were closed: none starts again
@@ -75,8 +78,7 @@ type Engine struct {
 	readOnlyLogged  atomic.Bool                                     // the journal's turn read-only was logged: see noteReadOnly
 	hooks           struct{ taken, drained atomic.Pointer[func()] } // a test's seams: after a batch's take and a drain's read of the ring
 	beforeTake      atomic.Pointer[func()]                          // a test's seam: run before each take of a group commit's loop
-	afterRegister   func()                                          // a test's hook: run once a clone's registrations are installed, the clone then stopping
-	fakeCloneDone   atomic.Bool                                     // a test's stand-in for the joins of a running clone: set, a clone runs past its registrations
+	afterRegister   func() error                                    // a test's hook: run once a clone's registrations are installed; an error stops the clone there
 
 	// cloneMarker, a test's stand-in for the clone's rebuild, is called by
 	// start step 3 for each clone marker the journal yields above a file's
@@ -155,6 +157,7 @@ func New(d Deps) (*Engine, error) {
 		fence:    f,
 		d:        d,
 		files:    newFiles(d.Clock),
+		clones:   map[cloneKey]*cloneRun{},
 		instance: instanceID(),
 		busy:     map[entity.ShareID]struct{}{},
 		raised:   map[entity.ShardID]struct{}{},

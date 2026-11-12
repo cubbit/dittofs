@@ -16,7 +16,8 @@ import (
 // done (step 4). Both of its registrations are installed before Start
 // publishes the share table, so no call reaches either extent before the
 // clone is done, and its work is posted to the destination journal's loop
-// once Start has published it. It counts as work of both shares until it
+// once Start has published it. It is one of the running clones, which a
+// retry of it joins, and counts as work of both shares until it
 // ends, so an Unbind of either waits for it, its wait for the source's shard
 // included, which only Close cancels. A rebuilt clone ends at its loop's end,
 // leaving the marker or the removal record for the next start, as a live
@@ -60,11 +61,10 @@ func (e *Engine) rebuildRun(o *opened, db *binding, dst entity.FileID, spec jour
 		fe.regs = append(fe.regs, x.r)
 		e.files.unlock(x.f, fe)
 	}
-	o.undoRebuilds = append(o.undoRebuilds, func() {
-		e.unregister(c.dst, c.rd)
-		e.unregister(c.src, c.rs)
-		c.leave()
-	})
+	e.addClone(c) // a retry of the clone joins it
+	// The clone is posted only once the table is published, which a failed
+	// start never does: nothing else ends it, holds a reservation or waits on it.
+	o.undoRebuilds = append(o.undoRebuilds, func() { e.endClone(c, errClosed) })
 
 	return c, nil
 }

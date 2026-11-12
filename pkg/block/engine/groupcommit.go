@@ -325,6 +325,18 @@ func (g *groupCommit) takeDue(ctx context.Context, s entity.ShareID) ([]entity.F
 // the flag is stale and commitAll reports true over a batch that halt then
 // cuts.
 func (g *groupCommit) commitAll(b *stopBound) bool {
+	cleared := make(map[entity.FileID]bool)
+	// decision: the closing engine overrides a file's retry backoff once per
+	// Close: a backoff earned before the Close began must not hold the last
+	// group commit off — take() still honours notBefore for a file marked
+	// due now, and a backoffMax backoff is the stop bound's equal, so
+	// honouring it never commits and reports the close as stuck. A backoff
+	// earned by a batch this Close asked for is kept: the store is failing
+	// under this Close too, and retrying it every synchronisation round for
+	// the whole bound turns a quiet wait into a hot loop on a failing store.
+	// It is once per Close call, not once per engine: a Close after a stuck
+	// one re-runs the steps and overrides the backoff again. Overturned if a
+	// cooler schedule is measured to land commits the immediate retry misses.
 	for {
 		if ro := g.j.Stats().ReadOnly; ro.ReadOnly {
 			g.e.d.Logger.Warn("close left a read-only journal's pending existence to the next start",
@@ -349,6 +361,10 @@ func (g *groupCommit) commitAll(b *stopBound) bool {
 
 			if d := g.due[f]; d != nil {
 				d.now, asked = true, true
+				if !cleared[f] {
+					cleared[f] = true
+					d.notBefore = time.Time{}
+				}
 			}
 
 			g.mu.Unlock()

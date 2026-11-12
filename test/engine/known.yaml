@@ -140,14 +140,14 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 8: a clone keeps the writes outside its extent, never waits, and a refused reservation leaves the destination (§9.1). Init and Open work; the fixture now attaches the share; the row stops at its first journal-backed write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built. Once the journal accepts a write: a refusal at a limit meets a journal whose Repack returns ErrNotImplemented and whose Stats has no UnreclaimedEndedBytes (journal epic 9a), so the engine keeps the interim retry-later answer.'
+  reason: 'Epic 8: a clone keeps the writes outside its extent, never waits, and a refused reservation leaves the destination (§9.1). Init and Open work; the fixture now attaches the share; the row stops at its first journal-backed write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt, ReadAt, Sync, Reserve and CloneTarget until the journal has them. Once the journal accepts a write: a refusal at a limit meets a journal whose Repack returns ErrNotImplemented and whose Stats has no UnreclaimedEndedBytes (journal epic 9a), so the engine keeps the interim retry-later answer.'
   issue: '#3591'
 - test: TestRFC8A_RemovalsOfACloningDestination
   message: 'vfs: retry shortly: commit'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 8: the source''s clone-kind open is gone once the clone is answered (§9.1); the removals held behind the clone are the rest of the row. Init and Open work; the fixture now attaches the share; the row stops at its first journal-backed write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt, ReadAt, Sync, Reserve and CloneTarget, then at Clone (ErrUnbuilt) until a clone answers once the joins of a running clone are built.'
+  reason: 'Epic 8: the source''s clone-kind open is gone once the clone is answered (§9.1); the removals held behind the clone are the rest of the row. Init and Open work; the fixture now attaches the share; the row stops at its first journal-backed write or draw, which the engine answers retry-shortly because the journal''s Stats is still a zero value (the engine''s start limit reads a zero NextVersion) until the journal reports its version counter. Then back to the row''s own need: at WriteAt, ReadAt, Sync, Reserve and CloneTarget until the journal has them.'
   issue: '#3591'
 - test: TestRFC8A_RecoveryThroughSince
   message: 'vfs: retry shortly: commit'

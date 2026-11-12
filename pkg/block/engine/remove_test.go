@@ -304,10 +304,11 @@ func TestACloneWaitsOutATruncateInFlight(t *testing.T) {
 	f, dst := u.create(t, "src"), u.create(t, "dst")
 	u.write(t, f, 0, fill(16, 'a'))
 	var phase1 atomic.Bool
-	u.e.SetAfterRegister(func() {
+	u.e.SetAfterRegister(func() error {
 		if !phase1.Load() {
 			t.Error("the clone registered before the truncate's phase 1")
 		}
+		return engine.ErrStopped
 	})
 	cloned := make(chan error, 1)
 	h.guardedSync(&h.sync, f, func() {
@@ -320,8 +321,8 @@ func TestACloneWaitsOutATruncateInFlight(t *testing.T) {
 	if err := u.e.Truncate(t.Context(), u.share.ID, f, 4); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-cloned; err != engine.ErrUnbuilt {
-		t.Errorf("clone: %v, want the unbuilt answer", err)
+	if err := <-cloned; err != engine.ErrStopped {
+		t.Errorf("clone: %v, want it stopped once registered", err)
 	}
 }
 
@@ -352,7 +353,7 @@ func TestAChangeIntoARegistrationIsDelayClone(t *testing.T) {
 			src, dst := u.create(t, "src"), u.create(t, "dst")
 			u.write(t, src, 0, fill(16, 's'))
 			in, out := make(chan struct{}), make(chan struct{})
-			u.e.SetAfterRegister(func() { close(in); <-out })
+			u.e.SetAfterRegister(func() error { close(in); <-out; return engine.ErrStopped })
 			cloned := u.startClone(context.Background(), src, dst, vfserr.Extent{DstOff: 1 << 20, Len: 8})
 			<-in
 			f := src
@@ -361,8 +362,8 @@ func TestAChangeIntoARegistrationIsDelayClone(t *testing.T) {
 			}
 			err := c.change(u, f, c.off)
 			close(out)
-			if err := <-cloned; !errors.Is(err, engine.ErrUnbuilt) {
-				t.Errorf("clone: %v, want the unbuilt answer", err)
+			if err := <-cloned; !errors.Is(err, engine.ErrStopped) {
+				t.Errorf("clone: %v, want it stopped once registered", err)
 			}
 			if c.refused && !isDelay(err, vfserr.DelayClone) {
 				t.Errorf("%s: %v, want ErrDelay(DelayClone)", c.name, err)
