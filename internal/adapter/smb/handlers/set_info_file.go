@@ -238,15 +238,14 @@ func (h *Handler) applyFileInfoFromStore(
 			setAttrs.Ctime = &preFile.Ctime
 		}
 
-		// Per MS-FSA 2.1.5.15.2 ("FileBasicInformation") a timestamp write is
-		// authorized by FILE_WRITE_ATTRIBUTES on the open, not by ownership of
-		// the file. Carry that grant so the metadata layer's ownership gate
-		// reflects the protocol's rule. It is scoped to this call rather than
-		// stamped on authCtx, which the rename path also hands to the
-		// parent-directory restore — a different object, on which this handle's
-		// grant says nothing. It relaxes nothing else either: a SET_INFO that
-		// also changes DOS attributes is still ownership checked.
-		basicAuthCtx := withTimestampHandleAuth(authCtx, openFile.GrantedAccess)
+		// Per MS-FSA 2.1.5.15.2 ("FileBasicInformation") this write, timestamps
+		// and DOS attributes alike, is authorized by FILE_WRITE_ATTRIBUTES on
+		// the open, not by ownership of the file. Carry that grant so the
+		// metadata layer's ownership gate reflects the protocol's rule. It is
+		// scoped to this call rather than stamped on authCtx, which the rename
+		// path also hands to the parent-directory restore — a different
+		// object, on which this handle's grant says nothing.
+		basicAuthCtx := withAttributesHandleAuth(authCtx, openFile.GrantedAccess)
 
 		if _, err := metaSvc.SetFileAttributes(basicAuthCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			openFile.Unlock() // release before returning.
@@ -1109,10 +1108,33 @@ func (h *Handler) applyFileInfoFromStore(
 		}
 		// The handle lock serializes this against a concurrent rename on the
 		// same handle; readers get the triple from the single atomic swap.
+		renamed := OpenName{Path: actualNewPath, FileName: toName, ParentHandle: toDir}
 		openFile.Lock()
-		openFile.SetName(OpenName{Path: actualNewPath, FileName: toName, ParentHandle: toDir})
+		openFile.SetName(renamed)
 		openFile.Unlock()
 		h.StoreOpenFile(openFile)
+		// Every other open made through the renamed name follows it: a deferred
+		// delete-on-close removes the file by the name of whichever handle
+		// closes last, which is rarely the one that renamed it. An open made
+		// through another hard link has the same handle and a name of its own,
+		// which the rename did not touch, so the old parent and name are matched
+		// too. The write lands on the pointer the table holds, with no re-Store,
+		// which would resurrect a handle its own CLOSE has removed.
+		if renamedHandle := openFile.GetMetadataHandle(); len(renamedHandle) > 0 {
+			h.files.Range(func(_, value any) bool {
+				other := value.(*OpenFile)
+				if other.FileID == openFile.FileID || !bytes.Equal(other.GetMetadataHandle(), renamedHandle) {
+					return true
+				}
+				if n := other.Name(); !bytes.Equal(n.ParentHandle, srcParentHandle) || !strings.EqualFold(n.FileName, oldFileName) {
+					return true
+				}
+				other.Lock()
+				other.SetName(renamed)
+				other.Unlock()
+				return true
+			})
+		}
 
 		// Per MS-FSA 2.1.5.15.12 ("FileRenameInformation") (smbtorture smb2.dirlease.rename):
 		// rename changes directory contents on BOTH source and destination
@@ -1791,14 +1813,13 @@ func (h *Handler) restorePreRenameChangeTime(ctx context.Context, handle metadat
 	}
 }
 
-// withTimestampHandleAuth returns a copy of authCtx carrying the open handle's
-// FILE_WRITE_ATTRIBUTES grant, which authorizes an explicit timestamp write in
-// the metadata layer in place of POSIX ownership. A copy, because the caller's
-// AuthContext outlives the timestamp write the grant is meant for.
-
-func withTimestampHandleAuth(authCtx *metadata.AuthContext, grantedAccess uint32) *metadata.AuthContext {
+// withAttributesHandleAuth returns a copy of authCtx carrying the open handle's
+// FILE_WRITE_ATTRIBUTES grant, which authorizes a timestamp or DOS attribute
+// write in the metadata layer in place of POSIX ownership. A copy, because the
+// caller's AuthContext outlives the write the grant is meant for.
+func withAttributesHandleAuth(authCtx *metadata.AuthContext, grantedAccess uint32) *metadata.AuthContext {
 	scoped := *authCtx
-	scoped.TimestampAuthorizedByHandle = hasAccessRight(grantedAccess, uint32(types.FileWriteAttributes))
+	scoped.AttributesAuthorizedByHandle = hasAccessRight(grantedAccess, uint32(types.FileWriteAttributes))
 	return &scoped
 }
 
@@ -1894,7 +1915,7 @@ func (h *Handler) restoreFrozenTimestampsOn(authCtx *metadata.AuthContext, openF
 	// one that froze them, and freezing required FILE_WRITE_ATTRIBUTES on it, so
 	// carry that grant through rather than letting the restore succeed or fail
 	// on who owns the file.
-	scopedAuth := withTimestampHandleAuth(authCtx, openFile.GrantedAccess)
+	scopedAuth := withAttributesHandleAuth(authCtx, openFile.GrantedAccess)
 	if err := metaSvc.RestoreFrozenTimestamps(
 		scopedAuth.Context, metaHandle, preOpCtime, restoreAttrs); err != nil {
 		logger.Debug("restoreFrozenTimestamps: failed", "path", openFile.Name().Path, "error", err)
@@ -1952,7 +1973,7 @@ func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext
 		// Carry the grant of the handle that froze these values, rather than the
 		// identity of whoever drove the child operation.
 		if _, err := metaSvc.SetFileAttributes(
-			withTimestampHandleAuth(authCtx, openFile.GrantedAccess),
+			withAttributesHandleAuth(authCtx, openFile.GrantedAccess),
 			openHandle, restoreAttrs); err != nil {
 			logger.Debug("restoreParentDirFrozenTimestamps: failed",
 				"path", openFile.Name().Path, "error", err)
