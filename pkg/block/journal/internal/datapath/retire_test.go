@@ -288,6 +288,136 @@ func TestALiftsOfferWaitsOnARemovalLeftUnsyncedByAnotherFile(t *testing.T) {
 	}
 }
 
+// TestALiftsOfferWaitsOnARemovalItsSegmentFailedToSync: the same crossing
+// as the held-sync row, with the removal's own sync FAILED rather than
+// parked: the failed seal of the removal's segment pulls the unsynced
+// removal out of the stream's ledger into the failed segment's pending
+// window, where the ledger's own name for it ends — the window's re-append
+// is the only road left. The lift's offer names the completed overwrite
+// alone there, so only the barrier that walks the pending windows holds the
+// segment back while the removal sits unsynced; the re-append's sync
+// resolves the window and exactly one retirement follows.
+func TestALiftsOfferWaitsOnARemovalItsSegmentFailedToSync(t *testing.T) {
+	ctx := context.Background()
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	g := sameStreamFile(c, f)
+	boom := errors.New("the failed sync of the removal's segment")
+
+	// Two files' content in one segment, made durable, then sealed early —
+	// the shared sealed segment the row's emptiness rides on.
+	const payload = 4 << 10
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
+	mustWrite(t, c, s, g, 0, make([]byte, payload))
+	syncFiles(t, c, f, g)
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Fatalf("the early seal: %v", err)
+	}
+	seg := recordOf(t, c, f, 0).Record.Segment
+	if recordOf(t, c, g, 0).Record.Segment != seg {
+		t.Fatal("the two files' content landed in different segments, want one shared sealed segment")
+	}
+	size := setSize(t, c, seg)
+
+	// The overwrite and its parked sync, exactly the held row's shape: the
+	// truncation's removal lands beyond the sync's captured prefix.
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
+	home := recordOf(t, c, f, 0).Record.Segment
+	if home == seg {
+		t.Fatal("the overwrite landed in the sealed segment, want the stream's active segment past it")
+	}
+	leadSync := seam.Hold(t, kit.OpSync, format.SegmentName(home))
+	syncDone := make(chan error, 1)
+	go func() { syncDone <- c.Durability().Sync(ctx, f) }()
+	select {
+	case <-leadSync.Reached():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the overwrite's sync was never issued: no fsync reached the seam's hold")
+	}
+
+	truncDone := make(chan error, 1)
+	go func() {
+		_, err := c.Truncate(ctx, s, g, 0)
+		truncDone <- err
+	}()
+	waitIn(t, 5*time.Second, "the truncation to cut g's content out of the index", func() bool {
+		ext, err := c.Extents(s, g)
+		return err == nil && len(ext) == 0
+	})
+	if !c.liveness.Held(seg) {
+		t.Fatal("the sealed segment answered not held while f's overwritten content kept it retained, want held")
+	}
+
+	// The fault: the one sync already counted for the removal's segment —
+	// the overwrite's parked call — passes, and every later one fails, so
+	// whichever the truncation's wait and the seal below issue, the segment
+	// ends with the removal covered by nothing. The hold below parks the
+	// first write to a segment file after it — the window's own re-append,
+	// which rolls the stream's next segment first.
+	if err := seam.Schedule(kit.FailingFrom(kit.OpSync, format.SegmentName(home), 2, 0, boom)); err != nil {
+		t.Fatalf("the seam refused the sync fault: %v", err)
+	}
+	writeHold := seam.HoldFirst(t, kit.OpWrite, "*.seg")
+
+	// The overwrite's sync completes and its lift offers the sealed
+	// segment, gated on the overwrite alone. The failing seal then ends the
+	// removal's segment, and its end event takes the unsynced removal out of
+	// the ledger into the pending window.
+	leadSync.Release()
+	select {
+	case err := <-syncDone:
+		if err != nil {
+			t.Fatalf("the overwrite's Sync after its parked fsync was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the overwrite's Sync never returned once its parked fsync was released")
+	}
+	if _, err := c.Streams().For(g).Seal(true); err == nil {
+		t.Fatal("the seal succeeded over a segment whose syncs the seam fails, want the failure to end it")
+	}
+	waitIn(t, 5*time.Second, "the failed segment's window to take the unsynced removal", func() bool {
+		return c.Durability().WindowOpen(home)
+	})
+	select {
+	case err := <-truncDone:
+		t.Fatalf("Truncate returned (%v) while its record sat unsynced in the pending window, want it to wait for durability", err)
+	default:
+	}
+
+	// Bounded window, not a truth: full scan passes run inside it, and no
+	// hand-over may pass while the removal sits unsynced in the failed
+	// segment's window — the offer's own location, the completed overwrite,
+	// answers durable already.
+	notWithin(t, 2*time.Second, "a retirement of the segment while the removal sat unsynced in the failed segment's window", func() bool {
+		return !inSet(c, seg) || c.Retirer().Counters().FreedBytes != 0
+	})
+
+	// The release lets the window re-append the removal, the new place sync
+	// and the window resolve: the truncation follows its record there and
+	// returns, and the held-back candidate retires once. The failed segment
+	// stays — the live content of the overwrite keeps it held.
+	writeHold.Release()
+	select {
+	case err := <-truncDone:
+		if err != nil {
+			t.Fatalf("the truncation after its record's re-append was released: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the truncation never returned once its record's window resolved")
+	}
+	gone(t, c, "the segment to retire once the removal's window resolved", seg)
+	if got, want := c.Retirer().Counters().FreedBytes, uint64(size); got != want {
+		t.Fatalf("FreedBytes after the retirement = %d, want %d (the segment's accounted size %d)", got, want, size)
+	}
+	if got := c.set.Counters().DoubleRetires; got != 0 {
+		t.Fatalf("DoubleRetires = %d, want 0", got)
+	}
+	if !inSet(c, home) {
+		t.Fatal("the failed segment left the set, want the live overwrite's content to keep it held")
+	}
+}
+
 // TestARecycledRetirementKeepsTheOldID: a recycle answers every hook with
 // the retired segment's old id — the fresh spare's id is the pool's own word,
 // and a durable-retirement signal that named it would leave the registry

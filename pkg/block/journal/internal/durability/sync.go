@@ -805,22 +805,24 @@ func (d *Durability) Durable(at segment.Location) bool {
 
 // Pending returns the locations of the records appended but not yet known
 // durable at the moment of the call: one per entry every stream's ledger
-// still holds that no sync has covered. A covered record is durable on disk
-// whether or not the worker has lifted what it superseded, so it is not
-// named. A record a failed window took out of the ledger is not named
-// either: its segment is ended and gated by its own window, and its
-// re-appended place is tracked and named like any other record's. A record
-// a failed window dropped is never named again — no retirement may wait on
-// a record that cannot sync.
+// still holds that no sync has covered, and one per record a still-pending
+// window holds — the failed segment's uncovered records, which left the
+// ledger when the window took them and answer nothing durable until their
+// re-appended place syncs or the journal fails them. A covered record is
+// durable on disk whether or not the worker has lifted what it superseded,
+// so it is not named. A record the window's failure dropped is excluded by
+// construction once the drop happens: settle removes it from the window in
+// the step that records it lost, so a lost location is never named here and
+// no retirement may wait on a record that can no longer sync.
 //
 // It is the pending-tail barrier a retirement hand-over asks: consulted
 // beside the locations a mover's offer recorded, it holds the hand-over back
-// while any stream's unsynced record could name content of a segment the
-// retirement would unlink.
+// while any stream's unsynced record — in a ledger or held by a pending
+// window — could name content of a segment the retirement would unlink.
 //
-// ponytail: it scans every stream's ledger, like Durable, once per candidate
-// per pass. Upgrade alongside Durable to a per-segment index when a profile
-// shows the scan.
+// ponytail: it scans every stream's ledger and pending windows, like Durable,
+// once per candidate per pass. Upgrade alongside Durable to a per-segment
+// index when a profile shows the scan.
 func (d *Durability) Pending() []segment.Location {
 	var out []segment.Location
 	for _, st := range d.snapshot() {
@@ -828,6 +830,14 @@ func (d *Durability) Pending() []segment.Location {
 		for i := range st.ledger {
 			if loc := st.ledger[i].w.Loc; !st.covered(loc) {
 				out = append(out, loc)
+			}
+		}
+		// A window's entries are uncovered by the take that collected them,
+		// and each leaves the window in the same step that settles or
+		// re-appends it, so the walk never holds a done or lost record.
+		for _, w := range st.windows {
+			for i := range w.entries {
+				out = append(out, w.entries[i].w.Loc)
 			}
 		}
 		st.mu.Unlock()

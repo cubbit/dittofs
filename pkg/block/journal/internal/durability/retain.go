@@ -62,11 +62,13 @@ func (d *Durability) lift(file core.FileID, v core.Version, e core.Extent, at se
 // taken the segment's held bytes to zero before this report's crossing,
 // leaving the segment's own offer with nothing to name but the crossing it
 // observed. The hand-over that consumes the report gates on the pending-tail
-// barrier, which holds the retirement until every stream's unsynced record
-// is durable, so this report needs no timing premise of its own. The barrier
-// is exact while every record that empties a segment is appended before the
-// cut that empties it, which every mover does. Overturned by a mover
-// appending a record after its own cut.
+// barrier, which holds the retirement until every stream's appended record
+// — resident in a ledger or held by a pending window — is durable, so this
+// report needs no timing premise of its own. The barrier is exact while
+// every record that empties a segment is appended before the cut that
+// empties it, which every mover does. Overturned by a mover publishing a cut
+// whose record reaches neither a ledger nor a pending window before the
+// hand-over claims the segment.
 func (d *Durability) reportEmptied(segs []core.SegmentID, at segment.Location) {
 	if len(segs) == 0 || at == (segment.Location{}) || d.emptied == nil {
 		return
