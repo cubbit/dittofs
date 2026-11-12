@@ -86,9 +86,10 @@ func (d *Durability) countUnproduced(seg core.SegmentID, delta int) {
 //
 // The ceiling is a drop the index refused: when dropCorrupt's FailWindow
 // fails and drops nothing, the index may still name the record, and nothing
-// counts it, so its segment reads unblocked. That holds while nothing selects
-// segments for reclamation; once something does, count such a record as
-// unproduced where dropCorrupt sees the refusal.
+// counts it, so its segment reads unblocked, and a selection would take it.
+// Index.FailWindow returns no error today, so the refusal cannot occur; count
+// such a record as unproduced where dropCorrupt sees the refusal, and release
+// it when its extents are dropped, before FailWindow can return one.
 func (d *Durability) blocksLocked(seg core.SegmentID, r *damagedRow) bool {
 	return !r.retired && d.unproduced[seg] > 0
 }
@@ -97,8 +98,7 @@ func (d *Durability) blocksLocked(seg core.SegmentID, r *damagedRow) bool {
 // it cannot produce. It turns false once none is held, which is the signal
 // that the segment is ready to be repacked; the row and the count stay.
 //
-// decision: nothing but tests calls this; its signature is held up only by the
-// later reclamation work that selects segments.
+// The reclamation selector asks it for every sealed segment it considers.
 func (d *Durability) ReclaimBlocked(seg core.SegmentID) bool {
 	d.dmu.Lock()
 	defer d.dmu.Unlock()
