@@ -151,7 +151,8 @@ type Core struct {
 	index         *index.Index
 	dirtyFiles    dirtyList
 	shares        shareLedger
-	clock         core.Clock // the injected clock, read for the write time a dirty write carries
+	clock         core.Clock     // the injected clock, read for the write time a dirty write carries
+	identity      core.JournalID // the journal identity the records' headers verify against
 	counters      *index.Counters
 	set           *segment.Set
 	pool          *segment.Pool
@@ -292,7 +293,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), identity: deps.Identity, tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)
@@ -355,14 +356,18 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 				}
 			}
 		},
-		// A lookup error counts as not sealed, the safe direction: a
-		// segment gone from the registry emits a mark recovery then finds
-		// stale, while filtering it would silently drop the mark covering
-		// the stream's records.
+		// A segment gone from the registry was sealed or ended and emptied
+		// before it retired: no mark can prove a record there, and a
+		// markless Sync is the answer — the caller keeps each stream's
+		// latest mark, so a proofless mark naming a dead segment would
+		// replace the stream's real proof.
 		Sealed: func(id core.SegmentID) bool {
 			st, err := state.Set.State(id)
-			return err == nil && st == segment.Sealed
+			return err != nil || st == segment.Sealed
 		},
+		// A Sync naming a file with nothing unsynced still gets its mark,
+		// from the file's newest record the index names.
+		Latest: c.latestRecord,
 	})
 	if err != nil {
 		return nil, err

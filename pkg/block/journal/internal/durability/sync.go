@@ -129,6 +129,16 @@ type Config struct {
 	// it must not wait on one. Nil means no segment is sealed, so every
 	// stream's candidate is marked.
 	Sealed func(core.SegmentID) bool
+
+	// Latest returns the whole place of the file's newest record the index
+	// names, and that record's sequence number, for a Sync that names a file
+	// holding nothing unsynced: its mark then comes from that record, which a
+	// sync (the timer's or an earlier call's) has already covered. The mark
+	// still needs the record's segment not to be sealed, which the caller's
+	// Sealed answers. It runs on the caller's goroutine with no lock of this
+	// layer held, like the marks' own sealed query. Nil means a Sync naming
+	// such a file returns no mark, the behaviour before the fallback existed.
+	Latest func(id core.FileID) (loc segment.Location, seq core.Seq, ok bool)
 }
 
 // SyncDurationBounds are the upper bounds of the sync duration histogram's
@@ -406,6 +416,10 @@ type Durability struct {
 	// no segment is sealed.
 	sealed func(core.SegmentID) bool
 
+	// latest is Config.Latest, asked when a Sync names a file with nothing
+	// unsynced. Nil means no such fallback.
+	latest func(id core.FileID) (segment.Location, core.Seq, bool)
+
 	// probe is the state of the read-only probe goroutine: probeIdle until
 	// Enter starts it, probeRunning while it runs and probeStopped once Stop
 	// has run. A single compare-and-swap decides between the first Enter and
@@ -456,6 +470,7 @@ func New(cfg Config) (*Durability, error) {
 		check:     cfg.Check,
 		makeSpare: cfg.MakeSpare,
 		sealed:    cfg.Sealed,
+		latest:    cfg.Latest,
 		probeDone: make(chan struct{}),
 
 		dir:            dir,
@@ -1040,7 +1055,9 @@ func (st *stream) inWindowLocked(loc segment.Location) bool {
 // reports the marks that prove it: per stream, one core.SyncMark covering the
 // newest named record the stream holds outside a sealed segment, ordered by
 // stream number. A file with nothing unsynced needs nothing, so a call naming
-// only such files returns at once with no sync and no mark. The error is a
+// only such files returns at once with no sync -- but its mark still comes,
+// from the file's newest record the index names (Config.Latest), which a
+// sync already covered. The error is a
 // *core.SyncError when a sync covering a record failed, core.ErrClosed once
 // the layer stopped, and ctx.Err() when ctx is done first; a cancelled caller
 // changes no state and the sync it may have led runs on for the other
@@ -1060,7 +1077,9 @@ func (st *stream) inWindowLocked(loc segment.Location) bool {
 // prove records the sync lost: the caller records it durably and recovery
 // trusts the recorded proof, so a mark handed back beside the failure it
 // describes, or a refusal's, would name as synced a record the failure failed.
-// A caller that wants its marks keeps them from a sync that succeeded only.
+// The rule is the call's, not the lost record's: neither stream of a failed
+// call returns marks, also one whose own records lost nothing. A caller that
+// wants its marks keeps them from a sync that succeeded only.
 //
 // A failed window is reported once per file: the first Sync naming a file
 // that lost a record in it returns the *core.SyncError and clears the file's
@@ -1092,6 +1111,43 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) ([]core.SyncM
 		w := work{st: st, ids: ids, targets: st.targetsOf(ids)}
 		w.cands = candsOf(w.targets)
 		ws = append(ws, w)
+	}
+	// A named file whose records a sync already covered -- the timer's, or an
+	// earlier call's -- is no target, so its mark would otherwise be lost and
+	// the call would answer nothing for a file it was asked to prove
+	// (RFC 1 §3.1's clause carries no unsynced qualifier). Its candidate comes
+	// from the file's newest record the index names, on the stream that owns
+	// the file; the record is covered by construction -- no target means
+	// every record of the file is completed -- so the wait itself never runs
+	// for it, and resolveCandsLocked reads its covering synced-through offset
+	// like a target's. Nil Latest keeps the behaviour the layer had before the
+	// fallback existed.
+	if d.latest != nil {
+		streams := d.streams.Load()
+		for _, id := range ids {
+			have := false
+			for i := range ws {
+				for _, c := range ws[i].cands {
+					if c.t.file == id {
+						have = true
+						break
+					}
+				}
+			}
+			if have {
+				continue
+			}
+			loc, seq, ok := d.latest(id)
+			if !ok || streams == nil {
+				continue
+			}
+			for i := range ws {
+				if ws[i].st.no == uint32(streams.IndexFor(id)) {
+					ws[i].cands = append(ws[i].cands, cand{t: target{file: id, loc: loc, seq: seq}})
+					break
+				}
+			}
+		}
 	}
 	if err := d.await(ctx, ws, true); err != nil {
 		return nil, err
@@ -1153,7 +1209,11 @@ func (st *stream) resolveCandsLocked(cs []cand) {
 // ordered by stream number. The sealed verdict filters the candidates before
 // the choice, per the RFC's applicability clause, so a stream whose newest
 // named record sits in a sealed segment while an older one sits outside is
-// marked for the older record, never skipped. It runs once the wait ended in
+// marked for the older record, never skipped. Production cannot order that
+// pair today -- every roll seals the segment it leaves, so a stream's
+// unsealed segment is its active one, holding its newest appends -- which
+// makes the filtering order belt for a reverse some later path (a recycle,
+// a reseed) could produce. It runs once the wait ended in
 // nil, so every candidate's record is durable where the mark names it.
 func (d *Durability) marksOf(ws []work) []core.SyncMark {
 	var out []core.SyncMark

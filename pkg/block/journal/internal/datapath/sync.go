@@ -4,6 +4,9 @@ import (
 	"context"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
 // Sync returns once every record of the named files appended before the call
@@ -34,4 +37,36 @@ func (c *Core) Sync(ctx context.Context, s *Share, ids ...core.FileID) ([]core.S
 		}
 	}
 	return c.dur.Sync(ctx, ids...)
+}
+
+// latestRecord returns the whole place of the file's newest record the index
+// names, and that record's sequence number: Config.Latest, which a Sync that
+// names a file holding nothing unsynced takes its mark from. The index names
+// the place but not the number or the length, so the record's header is read
+// through its stream, which the caller never holds and which no file's append
+// domain is held across. A header that does not read leaves the file
+// unmarked: a mark is built only from numbers the storage itself names.
+func (c *Core) latestRecord(id core.FileID) (segment.Location, core.Seq, bool) {
+	var best index.RecordAt
+	for _, e := range c.index.FileEntries(id) {
+		if e.Record == (index.RecordAt{}) {
+			continue // a marker names no record
+		}
+		if best == (index.RecordAt{}) || e.Record.Segment > best.Segment ||
+			(e.Record.Segment == best.Segment && e.Record.Offset > best.Offset) {
+			best = e.Record
+		}
+	}
+	if best == (index.RecordAt{}) {
+		return segment.Location{}, 0, false
+	}
+	head := make([]byte, format.RecordHeaderSize)
+	if _, err := c.streams.For(id).ReadAt(best.Segment, head, int64(best.Offset)); err != nil {
+		return segment.Location{}, 0, false
+	}
+	h, err := format.DecodeRecordHeader(head, c.identity, best.Segment, int64(best.Offset))
+	if err != nil {
+		return segment.Location{}, 0, false
+	}
+	return segment.Location{Segment: best.Segment, Off: int64(best.Offset), Len: h.Size()}, h.Seq, true
 }

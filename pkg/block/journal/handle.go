@@ -212,12 +212,16 @@ func (h *Handle) WriteAt(ctx context.Context, id FileID, off int64, p []byte, mt
 // SyncMark covering the newest named record the stream holds outside a
 // sealed segment -- the stream's number, the segment, its synced-through
 // offset, and that record's end and sequence number -- ordered by stream
-// number (RFC 1 §3.1). A stream holding no named record returns no mark, and
-// so does a Sync whose every named file has nothing unsynced; a failure
-// returns no marks with its error, since a mark would prove records the sync
-// lost. The caller owns the marks it is handed: it keeps each stream's
-// latest and hands the ones a committed metadata transaction recorded to
-// Open.
+// number (RFC 1 §3.1). A stream holding no named record returns no mark.
+// A named file with nothing unsynced is marked all the same, from its newest
+// record the index names: the clause carries no unsynced qualifier, and a
+// call naming such a file issues no sync. A record whose segment is sealed
+// -- or a segment gone from the journal's registry -- returns no mark, the
+// seal being the proof and no mark being better than one that would replace
+// the stream's recorded proof with nothing; a failure returns no marks with
+// its error, since a mark would prove records the sync lost. The caller
+// owns the marks it is handed: it keeps each stream's latest and hands the
+// ones a committed metadata transaction recorded to Open.
 //
 // A failed sync window returns a SyncError naming the files whose writes it
 // lost; a later successful sync never stands in for them. Sync holds no
