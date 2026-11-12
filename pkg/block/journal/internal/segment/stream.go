@@ -62,6 +62,12 @@ type Placed struct {
 	// len(body.Payload) means the record was split, and the caller continues
 	// with the rest in the next segment. Kinds with no payload place 0.
 	N int64
+	// Rolled reports that this call rolled the stream onto another segment
+	// before its record landed, so the record went into a segment the stream
+	// did not hold when the call began. A caller reads it to know a roll
+	// happened, not why: the stream cannot tell a roll its own record's width
+	// forced from one the segment's fill, a seal or another writer left it.
+	Rolled bool
 }
 
 // tslot is one in-flight record slot of the tracker: the range the record was
@@ -655,6 +661,11 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 	// the active segment's ref — the roll may be sealing that very segment.
 	s.inflight.Add(1)
 	defer s.inflight.Done()
+	// rolled records that this call rolled the stream onto another segment
+	// before its record landed there, across the loop turns a roll takes: the
+	// roll arms its gate and the next turn reserves, so the flag is hoisted
+	// out of the loop rather than read where the reservation is made.
+	rolled := false
 	for {
 		// appendParkHook is a test hook at the loop's top, past the head
 		// checks and with the lock dropped: the one place an append that
@@ -752,6 +763,11 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		// would carry the same answer.
 		roll := s.id == 0 || s.sealState == sealSealed || s.sealState == sealEnded
 		size, placed := h.Size(), int64(len(body.Payload))
+		if roll {
+			// The record cannot land where the stream left it, so the call
+			// rolls at least once whatever the record's own width.
+			rolled = true
+		}
 		if !roll {
 			// The seal's reserve bounds the room (R11): a record fits when
 			// what remains after it still holds the marker, a footer entry
@@ -793,6 +809,7 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 					// the empty-room guard above, before anything rolled,
 					// so the roll never loops on the record.
 					roll = true
+					rolled = true
 				}
 			}
 		}
@@ -995,7 +1012,7 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		if err := s.set.AddRecord(id, h.Tag, size); err != nil {
 			return Placed{}, err
 		}
-		return Placed{Loc: Location{Segment: id, Off: off, Len: size}, N: placed}, nil
+		return Placed{Loc: Location{Segment: id, Off: off, Len: size}, N: placed, Rolled: rolled}, nil
 	}
 }
 

@@ -27,10 +27,14 @@ const (
 
 // Ref names one unread range of one segment, and the kind of record it holds.
 // Its identity is (Segment, Off): marking and clearing find the same entry
-// regardless of the Kind or Len a later pass carries.
+// regardless of the Kind or Len a later pass carries. File names the file a
+// Content record belongs to; the zero value means the caller does not know it.
+// The set keeps a known File: a later mark carrying one fills in an entry that
+// lacks it, and a mark without one never drops it.
 type Ref struct {
 	core.SegmentRange
 	Kind Kind
+	File core.FileID
 }
 
 // Set holds the journal's records whose bytes no read attempt returned,
@@ -135,14 +139,25 @@ func (s *Set) Suspect(seg core.SegmentID) bool {
 // offset. The slice is a copy: mutating or appending to it leaves the set
 // unchanged.
 func (s *Set) Ranges(seg core.SegmentID) []core.SegmentRange {
+	refs := s.Refs(seg)
+	ranges := make([]core.SegmentRange, len(refs))
+	for i, ref := range refs {
+		ranges[i] = ref.SegmentRange
+	}
+	return ranges
+}
+
+// Refs is Ranges with the kind of record each range holds, sorted by file
+// offset. The slice is a copy.
+func (s *Set) Refs(seg core.SegmentID) []Ref {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ranges := make([]core.SegmentRange, 0, len(s.entries[seg]))
+	refs := make([]Ref, 0, len(s.entries[seg]))
 	for _, ref := range s.entries[seg] {
-		ranges = append(ranges, ref.SegmentRange)
+		refs = append(refs, ref)
 	}
-	sort.Slice(ranges, func(i, j int) bool { return ranges[i].Off < ranges[j].Off })
-	return ranges
+	sort.Slice(refs, func(i, j int) bool { return refs[i].Off < refs[j].Off })
+	return refs
 }
 
 // Retired drops every unread range of seg: the segment is gone from the
@@ -171,7 +186,11 @@ func (s *Set) SuspectSegments() int {
 func (s *Set) mark(ref Ref) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.entries[ref.Segment][ref.Off]; ok {
+	if held, ok := s.entries[ref.Segment][ref.Off]; ok {
+		if held.File == (core.FileID{}) && ref.File != (core.FileID{}) {
+			held.File = ref.File
+			s.entries[ref.Segment][ref.Off] = held
+		}
 		return
 	}
 	if s.entries[ref.Segment] == nil {

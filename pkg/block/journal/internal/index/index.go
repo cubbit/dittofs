@@ -22,34 +22,57 @@ func New(extentLimit int64) *Index {
 // sequence number is seq. It takes the file's lock exclusively. A refusal
 // holds nothing.
 func (ix *Index) WriteRetain(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq) (HeldDelta, error) {
+	hd, _, err := ix.WriteRetainClaim(tag, id, p, seq)
+	return hd, err
+}
+
+// WriteRetainClaim is WriteRetain reporting the index entries its admission
+// reserved for the piece: the figure a caller holding the bound back for a
+// reservation hands over once the piece is published. A refused publish —
+// before the admission, or a commit after it — reserves nothing the caller can
+// hand over and answers no entry.
+func (ix *Index) WriteRetainClaim(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq) (HeldDelta, int64, error) {
 	var err error
 	if ix.fs.view(id, func(f *file) { err = f.check(tag, id) }) && err != nil {
-		return HeldDelta{}, err
+		return HeldDelta{}, 0, err
 	}
 	p.Seq = seq
 	adm, err := ix.fs.admitWrite(id, p.Extent, true)
 	if err != nil {
-		return HeldDelta{}, err
+		return HeldDelta{}, 0, err
 	}
-	return ix.fs.commit(id, adm, func(f *file) error {
+	hd, err := ix.fs.commit(id, adm, func(f *file) error {
 		if err := f.recorded(p.Record.Segment, p.Extent, Numbers{Version: p.Version, Seq: seq}, tag, id); err != nil {
 			return err
 		}
 		f.writeRetain(p)
 		return nil
 	})
+	if err != nil {
+		// commit's own delta returns the admission to the count, so a refused
+		// publish answers no entry: nothing for a caller to hand over.
+		return hd, 0, err
+	}
+	return hd, adm, nil
 }
 
 // CheckWrite predicts a content write of e on id against the index's bound
-// without reserving: it returns the refusal the write's admission would —
-// a NoSpaceError naming the index, the shortfall in entries, counted by the
-// index's refusals counter — or nil when the bound would admit the write. It
-// reserves nothing and changes no entry, so a caller that checked and then
-// admits finds the index where the check left it. It creates no entry and
-// takes the named file's lock shared, exactly as the admission's own pre-check
-// does.
-func (ix *Index) CheckWrite(id core.FileID, e core.Extent) error {
-	return ix.fs.checkWrite(id, e, false)
+// without reserving: it returns the entries the write would add and, when the
+// bound would refuse it, the refusal the write's admission would — a
+// NoSpaceError naming the index, the shortfall in entries, counted by the
+// index's refusals counter. It reserves nothing and changes no entry, so a
+// caller that checked and then admits finds the index where the check left it.
+// It creates no entry and takes the named file's lock shared, exactly as the
+// admission's own pre-check does.
+//
+// decision: the count is of a write-retain's entries, the admission the
+// publish actually runs, not of a write's: a piece the write supersedes stays
+// held beside it, and a piece it splits leaves two, so a write that covers one
+// held piece adds up to two entries where a plain write's count names one. A
+// caller that leaves entries unspent for a reservation is refused a write whose
+// real adds would eat them, which the one-entry count would have admitted.
+func (ix *Index) CheckWrite(id core.FileID, e core.Extent) (int64, error) {
+	return ix.fs.checkWrite(id, e, true)
 }
 
 // FillGaps returns the sub-extents of e where a fill at v would hold

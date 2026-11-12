@@ -189,7 +189,7 @@ func TestCheckFillIndexBoundTagFree(t *testing.T) {
 	if _, err := ix.Lose(id, ext(20, 10), ver(5)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
-	if err := ix.CheckFillIndexBound(id, ext(0, 40)); err == nil {
+	if _, err := ix.CheckFillIndexBound(id, ext(0, 40)); err == nil {
 		t.Fatal("CheckFillIndexBound of the gap the marker could not mask was granted at the bound, want a refusal")
 	}
 	// The refused check reserved nothing: the count still stands at three.
@@ -197,7 +197,7 @@ func TestCheckFillIndexBoundTagFree(t *testing.T) {
 		t.Fatalf("after the check, count = %d, want 3", c)
 	}
 	// A fill inside a held piece adds no entry, so it fits the headroom.
-	if err := ix.CheckFillIndexBound(id, ext(5, 5)); err != nil {
+	if _, err := ix.CheckFillIndexBound(id, ext(5, 5)); err != nil {
 		t.Fatalf("CheckFillIndexBound inside a held piece = %v, want nil", err)
 	}
 
@@ -209,7 +209,7 @@ func TestCheckFillIndexBoundTagFree(t *testing.T) {
 		t.Fatalf("WriteRetain: %v", err)
 	}
 	fresh := fid(52)
-	if err := ix2.CheckFillIndexBound(fresh, ext(0, 100)); err == nil {
+	if _, err := ix2.CheckFillIndexBound(fresh, ext(0, 100)); err == nil {
 		t.Fatal("CheckFillIndexBound of a wholly absent file was granted at the bound, want a refusal")
 	}
 	if n := ix2.fs.len(); n != 1 {
@@ -283,7 +283,7 @@ func TestFillReservesAgainstTheBound(t *testing.T) {
 	b, c := fid(81), fid(82)
 	// Both pass the pre-check at limit-1, as two concurrent fills would.
 	for _, id := range []core.FileID{b, c} {
-		if err := ix.CheckFillIndexBound(id, ext(0, 10)); err != nil {
+		if _, err := ix.CheckFillIndexBound(id, ext(0, 10)); err != nil {
 			t.Fatalf("CheckFillIndexBound: %v", err)
 		}
 	}

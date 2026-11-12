@@ -55,11 +55,14 @@ func (f *file) writeAdds(e core.Extent, retain bool) int64 {
 	return n
 }
 
-// checkWrite predicts a write's admission without reserving: it reports the
-// same refusal the admission itself would return — a NoSpaceError naming the
-// index, the shortfall in entries, counted by the index's refusals counter —
-// or nil when the bound would admit the write. It touches no count: the
-// caller's later admission finds the index exactly where the check left it.
+// checkWrite predicts a write's admission without reserving: it returns the
+// entries the write would add and, when the bound would refuse it, the same
+// refusal the admission itself would return — a NoSpaceError naming the index,
+// the shortfall in entries, counted by the index's refusals counter. A caller
+// that must leave entries unspent for a reservation reads the count it
+// returns, so a write whose own entries would eat them is refused before it
+// takes one. It touches no count: the caller's later admission finds the index
+// exactly where the check left it.
 //
 // It costs what the admission's own pre-check costs — the file's read lock for
 // writeAdds and one load of the count and the limit — so it holds no entries
@@ -67,7 +70,7 @@ func (f *file) writeAdds(e core.Extent, retain bool) int64 {
 // content can change by a release or an offload report, exactly as it can
 // between an admission's reserve and its commit; the admission applies the
 // delta the content truly made, so the count never drifts.
-func (fs *files) checkWrite(id core.FileID, e core.Extent, retain bool) error {
+func (fs *files) checkWrite(id core.FileID, e core.Extent, retain bool) (int64, error) {
 	// A file with no entry holds nothing: a write of bytes adds one entry
 	// and a zero-length one none.
 	n := int64(1)
@@ -78,9 +81,9 @@ func (fs *files) checkWrite(id core.FileID, e core.Extent, retain bool) error {
 	c, limit := fs.count.Load(), fs.limit.Load()
 	if c+max(n, 0) > limit {
 		fs.refusals.Add(1)
-		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(n, 1) - limit, Unit: core.UnitEntries}
+		return n, &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(n, 1) - limit, Unit: core.UnitEntries}
 	}
-	return nil
+	return n, nil
 }
 
 // fillAdds is the number of entries a fill of p would add: the gaps of the
@@ -194,7 +197,7 @@ func (fs *files) checkFill(tag core.ShareTag, id core.FileID, asOf core.Version)
 // pieces published. That too fails closed. Overturned when an index a few
 // entries over its bound causes a visible refusal, which would pass the exact
 // gaps into the admission.
-func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) error {
+func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) (int64, error) {
 	// A file with no entry holds nothing: a fill of bytes occupies one
 	// wholly absent extent, a zero-length one none — as FillGaps answers it.
 	n := int64(0)
@@ -205,9 +208,16 @@ func (ix *Index) CheckFillIndexBound(id core.FileID, e core.Extent) error {
 	c, limit := ix.fs.count.Load(), ix.fs.limit.Load()
 	if c+max(n, 0) > limit {
 		ix.fs.refusals.Add(1)
-		return &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(n, 1) - limit, Unit: core.UnitEntries}
+		return n, &core.NoSpaceError{Limit: core.LimitIndex, Missing: c + max(n, 1) - limit, Unit: core.UnitEntries}
 	}
-	return nil
+	return n, nil
+}
+
+// EntriesLeft reports how many entries remain below the index's bound: the
+// limit less the count, never negative. An admitter that holds entries back
+// for a reservation reads it to leave them unspent.
+func (ix *Index) EntriesLeft() int64 {
+	return max(ix.fs.limit.Load()-ix.fs.count.Load(), 0)
 }
 
 // reserve adds want to the count when the limit allows it, or refuses with a

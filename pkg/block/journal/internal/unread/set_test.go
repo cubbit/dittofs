@@ -19,6 +19,10 @@ func TestTwoRecordsKeepSegmentSuspect(t *testing.T) {
 	if got := s.Ranges(7); !reflect.DeepEqual(got, want) {
 		t.Errorf("Ranges(7) after two marks = %v, want %v", got, want)
 	}
+	wantRefs := []Ref{{SegmentRange: want[0], Kind: Content}, {SegmentRange: want[1], Kind: HeaderOnly}}
+	if got := s.Refs(7); !reflect.DeepEqual(got, wantRefs) {
+		t.Errorf("Refs(7) after two marks = %v, want %v", got, wantRefs)
+	}
 
 	s.clear(Ref{SegmentRange: core.SegmentRange{Segment: 7, Off: 0, Len: 10}, Kind: Content})
 	if got := s.Suspect(7); !got {
@@ -147,5 +151,20 @@ func TestSuspectSegmentsAllocatesNothing(t *testing.T) {
 	allocs := testing.AllocsPerRun(100, func() { _ = s.SuspectSegments() })
 	if allocs != 0 {
 		t.Errorf("SuspectSegments() allocates %v times per call, want 0", allocs)
+	}
+}
+
+func TestMarkKeepsAKnownFile(t *testing.T) {
+	s := New(kit.NewStopwatchClock())
+	rng := core.SegmentRange{Segment: 7, Off: 32, Len: 8}
+	file := core.NewFileID([16]byte{1})
+	s.mark(Ref{SegmentRange: rng, Kind: Content})
+	s.mark(Ref{SegmentRange: rng, Kind: Content, File: file})
+	if got := s.Refs(7)[0].File; got != file {
+		t.Errorf("File after a later mark carrying one = %v, want %v", got, file)
+	}
+	s.mark(Ref{SegmentRange: rng, Kind: Content})
+	if got := s.Refs(7)[0].File; got != file {
+		t.Errorf("File after a mark carrying none = %v, want %v kept", got, file)
 	}
 }

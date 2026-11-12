@@ -103,6 +103,18 @@ func (c *Core) fillAndPublish(ctx context.Context, s *Share, id core.FileID, off
 	}
 	defer grant.Release()
 
+	// decision: a fill does not call Claimed for its published pieces, so the
+	// entries it holds as pending stay counted beside the index's own until its
+	// Release. Its count can exceed the pieces it really publishes: Take sizes
+	// the payload as one split and adds one per extra gap, then counts the roll
+	// cuts on top of that per-gap figure, so a gap crossing a segment adds a
+	// pending entry per cut the per-gap count did not name. The over-count
+	// briefly over-refuses a Reserve or a plain take against the bound, which
+	// fails closed and clears at the fill's return; wiring Claimed needs
+	// Index.Fill to report what its admission reserved, which it does not do
+	// today. Overturned by that report, when a fill's pending entries are
+	// handed over a piece at a time as a write's are.
+
 	var roll segment.Roll
 	if hold := grant.Hold(); hold != nil {
 		roll = segment.Roll{Hold: hold}

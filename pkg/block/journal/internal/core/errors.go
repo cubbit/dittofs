@@ -112,6 +112,15 @@ var (
 	// by one of the journal's limits.
 	ErrNoSpace = errors.New("journal: no space")
 
+	// ErrReservationExhausted is returned by a write drawn from a reservation
+	// that no longer holds enough: more record bytes than it has left, a
+	// version past the writes it reserved, or a piece past the entries it
+	// holds. Nothing is drawn, appended or published. It is not a
+	// NoSpaceError: no limit of the journal refused the write — the
+	// reservation a caller took for it is simply spent — and no reclaim
+	// frees anything for it. It is never retried on the same reservation.
+	ErrReservationExhausted = errors.New("journal: reservation exhausted")
+
 	// ErrNoClock is returned by Open when it is given no clock. Nothing is
 	// opened. It is never retried: the caller passes WithClock.
 	ErrNoClock = errors.New("journal: no clock")
