@@ -147,10 +147,17 @@ fixture's hook that composes the filesystem (D4) and its span record (D5); the t
 8. **Real dependencies for properties of those dependencies.** No fake stands in for a
    check about what the real thing does: the real journal on a real directory, with its crash
    seam, for durability, recovery and loss; the real `kvstore` for what a transaction
-   commits and conflicts on. The in-memory journal is for the engine's pure logic only, and no
-   engine conformance row runs over it. It is held to the real journal by the journal's own
-   conformance suite, on the in-memory journal's rows that the
-   [journal plan's epic 3](rfc-1-journal-plan.md) names.
+   commits and conflicts on. The in-memory journal is for the engine's pure logic only. It is
+   held to the real journal by the journal's own conformance suite, on the in-memory
+   journal's rows that the [journal plan's epic 3](rfc-1-journal-plan.md) names. Until S4,
+   the journal's calls built, an engine conformance row may also run over the in-memory
+   journal, beside its run over the real one, which stays the run that counts and stays in
+   `known.yaml` until it turns green. The run over the in-memory journal is green and never
+   enters `known.yaml`. This is a temporary exception to RFC 29 §4.11, since the journal's
+   suite does not yet hold the in-memory journal, and it ends at S4: from then no engine
+   conformance row runs over the in-memory journal. A control the in-memory journal adds for
+   such a run (a failed sync window, a segment model, a repack hold) gets a test against the
+   real journal in the change that lands the journal call it models.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). A source comment describes
    the code's behaviour and references nothing outside it: no issue or pull request
    numbers, no CI, runner or OS names, no epic, subtask, plan or decision ids. A
@@ -179,9 +186,9 @@ fixture's hook that composes the filesystem (D4) and its span record (D5); the t
 | 3 Observability | T9.5 | no new counter, condition or span name. T9.5 reads RFC 8 §14's `engine.sync` and `engine.existence_commit` and an RFC 8 §11.1 condition through the composition. The composition's `Deps.Logger` is the fixture's, narrowed with `With("component", "engine")` as rule 3 asks |
 | 4 Profiling | all | the fixture's `prof.Watch` covers every test of the package, the filesystem's goroutines included, so a waiter or loop left running after the composition stops fails the test |
 | 5 Public and internal | all | every assertion is read where the value is consumed: what a client of `vfs.Service` is answered, and what `kvstore` committed. No test reads the engine's internals. `suite.Run` and the rows run under `-race` |
-| 6 Known failures | T9.2, T9.3, T9.4, T9.6 | every test over the fixture is red at the journal's `Init`, so it enters `test/engine/known.yaml` naming this epic's issue, and leaves in the change that turns it green (D6). T9.1's tests and T9.2's half over the in-memory journal are green in `unit` from the start |
+| 6 Known failures | T9.2, T9.3, T9.4, T9.6 | every test over the fixture is red at the journal's `Init`, so it enters `test/engine/known.yaml` naming this epic's issue, and leaves in the change that turns it green (D6). Only the runs over the real journal enter it: T9.1's tests, T9.2's half over the in-memory journal, and T9.3's start order and T9.4's rows over the in-memory journal (rule 8) are green from the start and stay out of `known.yaml` |
 | 7 v2 ignores v1 | T9.2, T9.3 | the tests that import `internal/vfs` live in `internal/vfs/integration`, outside `pkg/block/engine`, so the import walk and its allowlist do not change. D3's move adds no import `enginetest` lacks |
-| 8 Real dependencies | T9.3 to T9.6 | crash survival (V19), failed windows and losses (V25) and repack (V20) over the real journal and its crash seam; transaction counts from `kv.Counting` over the in-memory `kv.KV` (RFC 29 §4.11's pass-through record, since V19 makes the transaction count the requirement); commits and conflicts from the real `kvstore`. The in-memory journal runs only under T9.1 and T9.2's first half, which check the engine against the `Content` contract, not an engine conformance row |
+| 8 Real dependencies | T9.3 to T9.6 | crash survival (V19), failed windows and losses (V25) and repack (V20) over the real journal and its crash seam; transaction counts from `kv.Counting` over the in-memory `kv.KV` (RFC 29 §4.11's pass-through record, since V19 makes the transaction count the requirement); commits and conflicts from the real `kvstore`. The in-memory journal runs under T9.1 and T9.2's first half, which check the engine against the `Content` contract; T9.3's start order and T9.4's rows also run over it, beside their runs over the real journal (rule 8) |
 | 9 Comments | T9.1, T9.3 | T9.1 drops `internal/vfs/filesystem.go`'s `ponytail:` naming the declared `WriteOpts` and `Overlay` and the missing existence commit, since both shortcuts are replaced; D4's marker at the fixture's hook. No new `ponytail:` |
 | 10 Tests can fail | all | each test below names the change it catches |
 | 11 Exports | T9.1 | the engine gains one method, D1's, a wrapper over `commitNow` that replaces the test export `CommitNow`, and only once RFC 8 §12.1 names it (§9, point 1). `enginetest` gains the unit composition (D3), the fixture's hook, keyed fault, `TakeUpdates` and span record (D4, D5, T9.3, T9.4), test components of an exported test package |
@@ -411,7 +418,7 @@ regression it names (after "catches").
   new service, to the new size (catches a compose hook not re-run at `Crash`, or a start that
   skips the engine's re-application of existence, serving the file short; the read runs once
   both pieces have started, so it cannot catch them started in the wrong order, which the
-  fixture's start enforces and no row pins yet); after the
+  fixture's start enforces and `TestTheFilesystemStartsAfterTheEngine` pins); after the
   filesystem's `Stop`, a direct engine `Read` of the same file still answers and the open-state
   table still serves, and only the fixture's stop closes them (catches a filesystem closing
   what it was handed, R6); a write through the service to the fixture's second share, which no
@@ -427,7 +434,8 @@ regression it names (after "catches").
   that file's
   stable overwrite through the service is never answered success while the fault holds,
   while another file's stable overwrite commits (catches a fault that wedges every file, or
-  a failed commit answered as stable, R5).
+  a failed commit answered as stable, R5). The start-order test also runs over the in-memory
+  journal, green and outside `known.yaml` (rule 8).
 
 ### T9.4 RFC 17's V19, V20, V22 and V25 over the engine
 
@@ -464,7 +472,8 @@ regression it names (after "catches").
   unstable write dropped as lost: the next verifier differs in the same process (catches a
   verifier keyed on the process alone); an SMB flush through each of two opens of the file
   fails once with `ErrLost`, then succeeds (catches a loss sequence kept per file, not per
-  open).
+  open). Each row also runs over the in-memory journal, green and outside `known.yaml`
+  (rule 8).
 
 ### T9.5 Spans and conditions through the composition
 
@@ -599,8 +608,9 @@ once.
    request.
 10. **Journal blocker: nothing over the real journal turns green in this epic.** The
     journal's `Init` answers `ErrNotImplemented` on `feat/storage-v2`, and every test over the
-    fixture fails there; only T9.1 and T9.2's half over the in-memory journal are green. Epic
-    10 removes the rest as the journal's calls land.
+    fixture fails there; only T9.1, T9.2's half over the in-memory journal, and T9.3's start
+    order and T9.4's rows over the in-memory journal (rule 8) are green. Epic 10 removes the
+    rest as the journal's calls land.
 11. **The estimate is above the first figure, 11.5 man-days, by 1.75.** D1's wrapper and its
     RFC change, D3's move, D4's compose hook and T9.3's keyed fault are work the first figure
     did not see, and the copy and clone rows became their own subtask, T9.6, since stage 2's
@@ -608,5 +618,6 @@ once.
 12. **The in-memory journal is not yet held to the journal's conformance suite.** On
     `feat/storage-v2`, `enginetest.FakeJournal` is used only from `pkg/block/engine`, and
     nothing under `pkg/block/journal` runs over it; the journal's epic 3 does that. Until
-    it does, T9.1 and T9.2's unit half rest on an unverified double; T9.2's half over the
-    fixture and the real journal is what checks the same cases.
+    it does, T9.1 and T9.2's unit half, and T9.3's and T9.4's runs over it, rest on an
+    unverified double; the runs over the fixture and the real journal are what check the
+    same cases.
