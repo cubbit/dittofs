@@ -57,6 +57,10 @@ type State struct {
 	// Rebuilt is what the rebuild phase built: the index, its counters,
 	// every own segment's scan and the resync count.
 	Rebuilt rebuilt
+
+	// Tails is the torn-or-corrupt classing of every own and unverified
+	// segment: each one's fate, the damaged set and the corrupt drops.
+	Tails tails
 }
 
 // phase is one step of the open's recovery: the span it runs under, and
@@ -118,7 +122,8 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 		return err
 	}
 	st.Rebuilt = out
-	return nil
+	st.Tails, err = classifyTails(st.Attached, out.Scans)
+	return err
 }
 
 // rebuildReaders is the reader bound the rebuild runs under.
