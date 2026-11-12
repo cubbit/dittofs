@@ -315,19 +315,26 @@ func (r *runner) step(s Step) error {
 // dataPathFill fills what its own step draws: the extent [s.Off, s.Off+s.Len)
 // of its step's file, the bytes payload(s) makes, as of the change version
 // the last read of the file reported — the read before it, for a stale fill
-// — at the highest version already issued, standing in for the version of
-// the ref the bytes were fetched from, as the caller of the data path makes
-// a fill from the bytes it fetched. No offload reports content back, so the
-// step's own extent and bytes are all a fill has to go on, and it never
-// idles: whatever the journal answers, the call was made.
+// — at a version the step's pick scales down from the highest one already
+// issued, standing in for the version of the ref the bytes were fetched
+// from, as the caller of the data path makes a fill from the bytes it
+// fetched. No offload reports content back, so the step's own extent and
+// bytes are all a fill has to go on, and it idles only when the version it
+// drew falls below a release or a settled removal over the extent, which
+// the model does not decide.
 //
 // decision: a data-path fill carries an already-issued version, standing in
 // for the ref's version a real caller fetches: a fill carries the version of
 // the ref it was fetched from, never a freshly-minted one, and the journal's
 // version counter rightly does not advance past a fill's record — the two
-// would collide, the counter issuing again a version already on disk. A
-// fill above every issued version is out of the run; overturn this if the
-// journal ever refuses or counts a fabricated fill version.
+// would collide, the counter issuing again a version already on disk. The
+// pick scales that version down, so a fill also runs below a later write or
+// removal, where equal-or-older-version precedence shows — including the
+// zero version before any write, which the journal accepts. A fill below a
+// release or settled removal over its bytes stays out: the model does not
+// decide it. A fill above every issued version is out of the run too;
+// overturn this if the journal ever refuses or counts a fabricated fill
+// version.
 func (r *runner) dataPathFill(s Step) error {
 	ctx, m := r.ctx, r.m
 	h, tag, id := r.share(s.Share), tagOf(s.Share), fileOf(s.File)
@@ -336,7 +343,15 @@ func (r *runner) dataPathFill(s Step) error {
 		asOf = r.asOf[s.File][1]
 	}
 	v := m.maxSeen
+	hi, lo := bits.Mul64(v.Counter, uint64(s.Pick))
+	v.Counter, _ = bits.Div64(hi, lo, 255)
 	p := payload(s)
+	if droppableAbove(m.files[id], extent{Off: s.Off, Len: int64(len(p))}, v) != nil {
+		// A caller never fills content older than what it released or
+		// settled the removal of, so the model does not decide it.
+		r.idle.fills++
+		return nil
+	}
 	err := h.Fill(ctx, id, s.Off, p, asOf, v)
 	return m.Fill(tag, id, s.Off, p, asOf, v, err)
 }

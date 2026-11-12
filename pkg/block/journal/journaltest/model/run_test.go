@@ -311,7 +311,7 @@ stalefill off=8 len=4
 fill off=24 len=4
 truncate off=4
 read len=8
-fill off=32 len=4
+fill off=32 len=4 pick=255
 `))
 	ok(t, err)
 	s := &spy{played: newPlayed(t)}
@@ -321,13 +321,15 @@ fill off=32 len=4
 		t.Fatalf("ran %d of %d steps, %d fills did nothing; want all ran and 0 idled", ran, len(steps), n.fills)
 	}
 	// The last fill's own bytes are held by the journal it filled: bytes no
-	// write ever wrote reach it only through the fill's drawn payload.
+	// write ever wrote reach it only through the fill's drawn payload. Its
+	// pick keeps the version it draws the newest issued, above the truncate's
+	// marker, so the bytes it carries win and are held.
 	st := s.j.current(fileOf(0))
 	p := payload(steps[10])
 	for i := range p {
 		c, held := st.held[steps[10].Off+int64(i)]
 		if !held || c.b != p[i] || c.rec.kind != kindFill {
-			t.Fatalf("byte %d held %v from a %s record, want byte %d from a fill record", steps[10].Off+int64(i), c.b, c.rec.kind, p[i])
+			t.Fatalf("byte %d of the last fill: held %v, want byte %d from a fill record", steps[10].Off+int64(i), held, p[i])
 		}
 	}
 	stale := 0
