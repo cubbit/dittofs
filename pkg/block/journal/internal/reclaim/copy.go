@@ -27,8 +27,10 @@ type Domains interface {
 // runs with the record's file append domain already held.
 type Corrupter func(ctx context.Context, bad BadSource) error
 
-// BadSource is one source record the pass read whole but could not verify,
-// so its copies are dropped instead. Extent is the record header's own.
+// BadSource is one source record whose bytes the pass read but could not
+// verify, so its copies are dropped instead. Extent is the record header's
+// own where the header decoded; where the header's bytes were read but did
+// not decode, it is the hull of the pieces the index holds at the record.
 type BadSource struct {
 	Tag     core.ShareTag
 	File    core.FileID
@@ -98,8 +100,10 @@ func (c *Copier) Copy(ctx context.Context, seg core.SegmentID) (Result, error) {
 }
 
 // source is one record the pass holds: where it sits, the file whose pieces
-// name it, and its verified header and body. bad marks a record that reads
-// whole but fails its checksum, whose pieces the pass drops instead.
+// name it, and its verified header and body. bad marks a record whose bytes
+// were read but did not verify — a body that fails its checksum, or a header
+// that does not decode at its place, which leaves every header field zero —
+// whose pieces the pass drops instead.
 type source struct {
 	rec  index.RecordAt
 	file core.FileID
@@ -148,8 +152,9 @@ func (c *Copier) read(ctx context.Context, set *segment.Set, seg core.SegmentID)
 	slices.SortFunc(recs, func(a, b index.RecordAt) int { return cmp.Compare(a.Offset, b.Offset) })
 
 	// Each source read whole, with no index call in flight and no domain
-	// held: a read that never returns bytes is marked unread by Try and
-	// abandons the unit below.
+	// held: a read that returns no bytes is marked unread by Try and
+	// abandons the unit below, while bytes that were read and did not verify
+	// take the corrupt path there, never the unread one.
 	out := make([]source, 0, len(recs))
 	for _, rec := range recs {
 		file := fileOf[rec]
@@ -173,7 +178,10 @@ func (c *Copier) read(ctx context.Context, set *segment.Set, seg core.SegmentID)
 			}
 			h, err := format.DecodeRecordHeader(head, identity, seg, int64(rec.Offset))
 			if err != nil {
-				return nil, err
+				// The header's bytes were read and do not decode: the read
+				// itself failed nowhere, so Try marks nothing; the truncated
+				// answer below names the source corrupt.
+				return head, nil
 			}
 			body := make([]byte, h.BodySize())
 			if _, err := ref.ReadAt(body, int64(rec.Offset)+format.RecordHeaderSize); err != nil {
@@ -184,13 +192,25 @@ func (c *Copier) read(ctx context.Context, set *segment.Set, seg core.SegmentID)
 		if err != nil {
 			return nil, fmt.Errorf("reclaim: the source of segment %d: %w", seg, err)
 		}
-		h, err := format.DecodeRecordHeader(b[:format.RecordHeaderSize], identity, seg, int64(rec.Offset))
-		if err != nil {
-			return nil, fmt.Errorf("reclaim: the source of segment %d: %w", seg, err)
-		}
-		src := source{rec: rec, file: file, h: h}
-		if body, err := format.VerifyRecordBody(b[format.RecordHeaderSize:], identity, h); err == nil {
-			src.body = body
+		// decision: an I/O error never reaches the corruption handler —
+		// only bytes that were read and did not verify do (RFC 28 §3.3). A
+		// read that returns no bytes is marked unread by Try and abandons
+		// the unit; a body whose checksum fails, and equally a header whose
+		// bytes were read and do not decode at their place — the unread
+		// column is only for a read that returns no bytes at all — makes
+		// the source corrupt instead, named by its header where the header
+		// decodes and by the index identity where it cannot, whose extent is
+		// the hull of the record's pieces and can cover less than the
+		// record held. Overturned only if the RFC comes to drop an extent on
+		// an I/O error, or to mark a read that returned bytes unread.
+		src := source{rec: rec, file: file}
+		if h, derr := format.DecodeRecordHeader(b[:format.RecordHeaderSize], identity, seg, int64(rec.Offset)); derr == nil {
+			src.h = h
+			if body, verr := format.VerifyRecordBody(b[format.RecordHeaderSize:], identity, h); verr == nil {
+				src.body = body
+			} else {
+				src.bad = true
+			}
 		} else {
 			src.bad = true
 		}
@@ -250,17 +270,35 @@ func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source
 	}
 	retained := c.ix.Retained(file)
 
-	// decision: a source that reads whole but fails its checksum is dropped
-	// through corrupt with the file's append domain held, never copied: the
-	// corruption is reported under the same domain the writer republishes
-	// in, so the record's index state changes hands in one step. Withdrawn
-	// by a corrupter that takes the domain itself.
+	// A corrupt source is dropped before anything copies, with the file's
+	// append domain held, never copied. Its identity is its header's own
+	// where the header decoded; a journal issues every record a sequence
+	// number from 1, so a zero one means the header's bytes were read but
+	// did not decode, and the pieces the index holds at the record name it
+	// instead — taken here, before corrupt drops them, and their extent can
+	// span less than the record held.
 	for i := range srcs {
 		if !srcs[i].bad {
 			continue
 		}
 		src := srcs[i]
 		bad := BadSource{Tag: tag, File: file, Record: src.rec, Seq: src.h.Seq, Version: src.h.Version, Extent: src.h.Extent}
+		if bad.Seq == 0 {
+			pieces := c.ix.HeldAt(file, src.rec)
+			for _, rt := range retained {
+				if rt.Record == src.rec {
+					pieces = append(pieces, rt.Piece)
+				}
+			}
+			if len(pieces) > 0 {
+				bad.Seq, bad.Version = pieces[0].Seq, pieces[0].Version
+				lo, hi := pieces[0].Extent.Off, pieces[0].Extent.Off+pieces[0].Extent.Len
+				for _, p := range pieces[1:] {
+					lo, hi = min(lo, p.Extent.Off), max(hi, p.Extent.Off+p.Extent.Len)
+				}
+				bad.Extent = core.Extent{Off: lo, Len: hi - lo}
+			}
+		}
 		if c.corrupt != nil {
 			if err := c.corrupt(ctx, bad); err != nil {
 				return fmt.Errorf("reclaim: dropping the corrupt source of file %v: %w", file, err)

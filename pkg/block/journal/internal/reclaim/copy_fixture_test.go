@@ -195,6 +195,46 @@ func (f *copyFixture) corrupt(ctx context.Context, bad reclaim.BadSource) error 
 	return err
 }
 
+// flipByte flips every bit of the byte at off of the segment the record at
+// names: damage on the device, written through the seam's own file.
+func (f *copyFixture) flipByte(t *testing.T, at index.RecordAt, off int64) {
+	t.Helper()
+	name := format.SegmentName(at.Segment)
+	file, err := f.seam.Open(name)
+	if err != nil {
+		t.Fatalf("Open %s: %v", name, err)
+	}
+	defer func() { _ = file.Close() }()
+	b := make([]byte, 1)
+	if _, err := file.ReadAt(b, off); err != nil {
+		t.Fatalf("reading %s at %d: %v", name, off, err)
+	}
+	b[0] ^= 0xff
+	if _, err := file.WriteAt(b, off); err != nil {
+		t.Fatalf("writing %s at %d: %v", name, off, err)
+	}
+}
+
+// segmentRaw reads a whole segment's bytes through the seam.
+func (f *copyFixture) segmentRaw(t *testing.T, seg core.SegmentID) []byte {
+	t.Helper()
+	name := format.SegmentName(seg)
+	file, err := f.seam.Open(name)
+	if err != nil {
+		t.Fatalf("Open %s: %v", name, err)
+	}
+	defer func() { _ = file.Close() }()
+	size, err := file.Size()
+	if err != nil {
+		t.Fatalf("Size of %s: %v", name, err)
+	}
+	raw := make([]byte, size)
+	if _, err := file.ReadAt(raw, 0); err != nil {
+		t.Fatalf("reading %s: %v", name, err)
+	}
+	return raw
+}
+
 // readBack reads whole the record at off the seam's bytes, verifies it and
 // returns it: the copy the seam holds, decoded independently of the pass.
 func (f *copyFixture) readBack(t *testing.T, at index.RecordAt) (format.RecordHeader, format.RecordBody) {

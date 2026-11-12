@@ -9,9 +9,214 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
+
+// copyKib is the 4 KiB region the corrupt-source tests plant content in.
+const copyKib = int64(4 << 10)
+
+// copyPayloadStart is the segment offset of the first payload byte of the
+// write record at at: after its header and its modification time.
+func copyPayloadStart(at index.RecordAt) int64 {
+	return int64(at.Offset) + format.RecordHeaderSize + 8
+}
+
+// corruptPlant is the layout the corrupt-source tests copy from: one sealed
+// source segment holding one file's A, a 12 KiB write whose middle 4 KiB a
+// newer write in a second segment supersedes and the index lifts — so A is
+// held at its two ends alone — and B, a clean 4 KiB write after a gap, one
+// record that shares A's segment.
+type corruptPlant struct {
+	file             core.FileID
+	seg              core.SegmentID
+	recA, recB, recS index.RecordAt
+	seqA             core.Seq
+	vA               core.Version
+	payA, payB       []byte
+}
+
+// plantCorruptSource plants and seals the corrupt-source layout and returns
+// it with A's identity: the record, the sequence number and the version its
+// planting issued, which the corrupt answers are named by.
+func (f *copyFixture) plantCorruptSource(t *testing.T) corruptPlant {
+	t.Helper()
+	p := corruptPlant{file: copyFile(1)}
+	p.payA = make([]byte, 3*copyKib)
+	for i := range p.payA {
+		p.payA[i] = byte(int64(i)>>8) ^ 0xa5
+	}
+	vA, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	p.vA = vA
+	p.recA, p.seqA = f.plantAt(t, copyTag, p.file, core.Extent{Len: 3 * copyKib}, p.payA, 12345, vA)
+	// B sits after a 4 KiB gap, so it copies as a record of its own whatever
+	// A's answer is.
+	p.payB = make([]byte, copyKib)
+	for i := range p.payB {
+		p.payB[i] = byte(int64(i)>>8) ^ 0x3c
+	}
+	p.recB, _ = f.plantAt(t, copyTag, p.file, core.Extent{Off: 4 * copyKib, Len: copyKib}, p.payB, 999, vA)
+	if p.recA.Segment != p.recB.Segment {
+		t.Fatalf("A and B landed in segments %d and %d, want one shared source segment", p.recA.Segment, p.recB.Segment)
+	}
+	p.seg = p.recA.Segment
+	f.sealSource(t, p.file)
+
+	// The superseder of A's middle, planted after the seal so its record
+	// lands outside the source segment.
+	f.waitSpares(t)
+	vS, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	payS := make([]byte, copyKib)
+	for i := range payS {
+		payS[i] = byte(int64(i)>>8) ^ 0x5a
+	}
+	middle := core.Extent{Off: copyKib, Len: copyKib}
+	p.recS, _ = f.plantAt(t, copyTag, p.file, middle, payS, 777, vS)
+	if p.recS.Segment == p.seg {
+		t.Fatalf("the superseder landed in the sealed source segment %d, want a segment of its own", p.seg)
+	}
+	if _, err := f.ix.LiftSuperseded(p.file, vS, middle); err != nil {
+		t.Fatalf("LiftSuperseded: %v", err)
+	}
+	// The precondition the pass relies on: A is held at its two ends, the
+	// middle names only the superseder, and no piece of A is retained.
+	var held []core.Extent
+	for _, piece := range f.ix.HeldAt(p.file, p.recA) {
+		held = append(held, piece.Extent)
+	}
+	wantEnds := []core.Extent{{Off: 0, Len: copyKib}, {Off: 2 * copyKib, Len: copyKib}}
+	if !slices.Equal(held, wantEnds) {
+		t.Fatalf("the middle lifted, held extents at A = %v, want the two ends %v", held, wantEnds)
+	}
+	for _, rt := range f.ix.Retained(p.file) {
+		if rt.Record == p.recA {
+			t.Fatalf("the middle lifted, want no retained piece of A, got extent %v", rt.Extent)
+		}
+	}
+	return p
+}
+
+// assertDroppedWhole checks the answer of one Copy over p's source segment
+// with A rotten: A alone is reported corrupt, carrying the identity its
+// planting issued, copied nowhere, its extents dropped from the index by the
+// corruption handler, while B copied as one byte-exact record published
+// nowhere, and the superseder of A's middle stays where its own write put it.
+func (f *copyFixture) assertDroppedWhole(t *testing.T, p corruptPlant, res reclaim.Result) {
+	t.Helper()
+	if len(res.Corrupt) != 1 {
+		t.Fatalf("Copy reported %d corrupt sources (%+v), want A alone", len(res.Corrupt), res.Corrupt)
+	}
+	bad := res.Corrupt[0]
+	if bad.File != p.file || bad.Record != p.recA {
+		t.Fatalf("the corrupt source is file %v record %v, want A of file %v at %v", bad.File, bad.Record, p.file, p.recA)
+	}
+	if bad.Seq != p.seqA || bad.Version != p.vA || bad.Extent != (core.Extent{Len: 3 * copyKib}) {
+		t.Fatalf("the corrupt source's identity = seq %d version %v extent %v, want A's seq %d version %v extent [0,%d)", bad.Seq, bad.Version, bad.Extent, p.seqA, p.vA, 3*copyKib)
+	}
+	if len(res.Copies) != 1 {
+		t.Fatalf("Copy appended %d copies (%+v), want B alone", len(res.Copies), res.Copies)
+	}
+	cp := res.Copies[0]
+	if cp.From != p.recB {
+		t.Fatalf("the one copy is of record %v, want B at %v", cp.From, p.recB)
+	}
+	if cp.Extent != (core.Extent{Off: 4 * copyKib, Len: copyKib}) {
+		t.Fatalf("B's copy covers extent %v, want [16384,20480)", cp.Extent)
+	}
+	h, body := f.readBack(t, cp.To)
+	if h.Version != p.vA || !bytes.Equal(body.Payload, p.payB) {
+		t.Fatalf("B's copy carries version %v and %d bytes, want version %v and B's bytes whole", h.Version, len(body.Payload), p.vA)
+	}
+	// A's two ends no longer read held: the corruption handler dropped them.
+	if _, ok := f.ix.Lookup(p.file, 0); ok {
+		t.Fatal("A's first end is still held at 0: the corruption handler dropped nothing")
+	}
+	if _, ok := f.ix.Lookup(p.file, 2*copyKib+100); ok {
+		t.Fatalf("A's second end is still held at %d: the corruption handler dropped nothing", 2*copyKib+100)
+	}
+	// The neighbours keep their own content where its own write put it: the
+	// pass publishes nothing.
+	if s, ok := f.ix.Lookup(p.file, copyKib+100); !ok || s.Record != p.recS {
+		t.Fatalf("the middle after Copy = %v %v, want the superseder held at %v", s, ok, p.recS)
+	}
+	if b, ok := f.ix.Lookup(p.file, 4*copyKib+100); !ok || b.Record != p.recB {
+		t.Fatalf("B after Copy = %v %v, want B still at its own record %v: the pass publishes nothing", b, ok, p.recB)
+	}
+	// A's held bytes sit in no copy target.
+	raw := f.segmentRaw(t, cp.To.Segment)
+	if at := bytes.Index(raw, p.payA[:copyKib]); at >= 0 {
+		t.Fatalf("A's first end sits in copy target segment %d at %d, want A copied nowhere", cp.To.Segment, at)
+	}
+	if at := bytes.Index(raw, p.payA[2*copyKib:]); at >= 0 {
+		t.Fatalf("A's second end sits in copy target segment %d at %d, want A copied nowhere", cp.To.Segment, at)
+	}
+}
+
+// TestCopyCorruptWholeSource copies a source segment holding one file's two
+// records, A and B, with a byte of A's payload rotten. The whole-payload
+// verify finds the byte wherever it sits — inside a held end, and in the
+// third case strictly inside the middle the superseder released, bytes no
+// copy of A would owe at all (RFC 28) — so A drops whole: reported as the one
+// corrupt source, copied nowhere, its extents dropped from the index, while
+// B, its clean neighbour in the same segment, copies normally.
+func TestCopyCorruptWholeSource(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		at   func(p corruptPlant) int64
+	}{
+		{name: "a byte of a held end", at: func(p corruptPlant) int64 {
+			return copyPayloadStart(p.recA) + 100
+		}},
+		{name: "a byte strictly inside the released middle", at: func(p corruptPlant) int64 {
+			return copyPayloadStart(p.recA) + copyKib + copyKib/2
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCopyFixture(t)
+			p := f.plantCorruptSource(t)
+			f.flipByte(t, p.recA, tc.at(p))
+			f.waitSpares(t)
+			cs := f.selector().Select(reclaim.Scope{Segments: []core.SegmentID{p.seg}}, 1)
+			if len(cs) != 1 || cs[0].ID != p.seg {
+				t.Fatalf("Select returned %v, want the one candidate %d", cs, p.seg)
+			}
+			res, err := f.copier().Copy(context.Background(), p.seg)
+			if err != nil {
+				t.Fatalf("Copy over a corrupt source: %v", err)
+			}
+			f.assertDroppedWhole(t, p, res)
+		})
+	}
+}
+
+// TestCopyCorruptUndecodableHeader copies the same layout with a byte of A's
+// header rotten instead. The header's bytes were read and do not decode,
+// which is a verify failure and not an unread read, so the unit does not
+// abandon: A drops whole like a source whose body checksum fails, named — its
+// header giving no identity — by the pieces the index holds at its record,
+// and B, its clean neighbour, copies normally.
+func TestCopyCorruptUndecodableHeader(t *testing.T) {
+	f := newCopyFixture(t)
+	p := f.plantCorruptSource(t)
+	f.flipByte(t, p.recA, int64(p.recA.Offset)+50)
+	f.waitSpares(t)
+	cs := f.selector().Select(reclaim.Scope{Segments: []core.SegmentID{p.seg}}, 1)
+	if len(cs) != 1 || cs[0].ID != p.seg {
+		t.Fatalf("Select returned %v, want the one candidate %d", cs, p.seg)
+	}
+	res, err := f.copier().Copy(context.Background(), p.seg)
+	if err != nil {
+		t.Fatalf("Copy over a source whose header does not decode: %v", err)
+	}
+	f.assertDroppedWhole(t, p, res)
+}
 
 // TestCopyWholeRecord copies a segment holding one held write record and
 // checks the copy the seam ends up holding: a fresh record, never in its own
