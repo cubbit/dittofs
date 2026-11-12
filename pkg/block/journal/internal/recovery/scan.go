@@ -243,7 +243,12 @@ func contentRecord(rd *reader, identity core.JournalID, h format.RecordHeader) (
 // record shows it is not damage; the refusal is withdrawn when the tail's
 // own classing is built, which must drop a torn record at the newest tail
 // as a torn tail and tell it apart from damage mid-segment, so that such a
-// tail no longer refuses every open.
+// tail no longer refuses every open. The refusal is a scanned segment's
+// shape: the walk knows no record boundaries but the ones it decodes
+// itself, so a record it cannot verify is indistinguishable from damage
+// anywhere in the segment and nothing may be dropped blind — a catalogued
+// segment, whose entries name each record's place, confines the refusal
+// to the records that do not verify instead.
 func cloneSpec(rd *reader, identity core.JournalID, h format.RecordHeader) (*core.CloneSpec, error) {
 	body := make([]byte, h.BodySize())
 	n, rerr := rd.ReadAt(format.SegmentName(h.Segment), body, h.Offset+format.RecordHeaderSize)

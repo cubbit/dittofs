@@ -174,12 +174,60 @@ func (r *rig) sealSeg(id core.SegmentID, ents []format.CatalogEntry) {
 	r.rewrite(name, appendSealed(r.fileBytes(name), id, ents))
 }
 
+// asideSummary holds the columns of an aside header two sources build
+// alike: a catalogued aside's header comes either decoded from the record
+// or, for a forget, from the entry alone — and an entry carries no
+// synced-through column and no body checksum — so those two columns stay
+// zero where the entry feeds and are compared by nobody here. Everything
+// the phases will read off an aside is what the summary keeps.
+type asideSummary struct {
+	Kind    format.Kind
+	File    core.FileID
+	Extent  core.Extent
+	Seq     core.Seq
+	Version core.Version
+	Tag     core.ShareTag
+	Offset  int64
+	Segment core.SegmentID
+}
+
+// summarizeAside projects one aside's header onto the columns both sources
+// build alike.
+func summarizeAside(h format.RecordHeader) asideSummary {
+	return asideSummary{
+		Kind:    h.Kind,
+		File:    h.File,
+		Extent:  h.Extent,
+		Seq:     h.Seq,
+		Version: h.Version,
+		Tag:     h.Tag,
+		Offset:  h.Offset,
+		Segment: h.Segment,
+	}
+}
+
+// asidesOf collects the rebuild's asides per segment, projected onto the
+// columns both sources build alike, so a both-ways run compares them for
+// every segment the rebuild walked.
+func asidesOf(st State) map[core.SegmentID][]asideSummary {
+	out := make(map[core.SegmentID][]asideSummary, len(st.Rebuilt.Scans))
+	for _, sc := range st.Rebuilt.Scans {
+		as := make([]asideSummary, len(sc.Aside))
+		for i, a := range sc.Aside {
+			as[i] = summarizeAside(a.Header)
+		}
+		out[sc.ID] = as
+	}
+	return out
+}
+
 // TestCatalogAndScanBuildTheSameIndex drives the rebuild's two sources over
-// two identical directories and holds they give one index: run A reads the
-// catalogue of every segment a verified successor names, run B scans every
-// segment under the test-only force-scan switch, and the per-file entries
-// must be equal — the catalogue is an accelerator, so whatever one source
-// reads the other must answer with.
+// two identical directories and holds they give one index and one aside list
+// per segment: run A reads the catalogue of every segment a verified
+// successor names, run B scans every segment under the test-only force-scan
+// switch, and the per-file entries and the per-segment asides must be equal
+// — the catalogue is an accelerator, so whatever one source reads the other
+// must answer with.
 func TestCatalogAndScanBuildTheSameIndex(t *testing.T) {
 	for _, row := range []struct {
 		name  string
@@ -189,7 +237,7 @@ func TestCatalogAndScanBuildTheSameIndex(t *testing.T) {
 		{"breadth", seededSteps(7)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			build := func(t *testing.T, forceScan bool) map[string][]index.Entry {
+			build := func(t *testing.T, forceScan bool) (map[string][]index.Entry, map[core.SegmentID][]asideSummary) {
 				t.Helper()
 				r := newRig(t)
 				r.writeFormat()
@@ -210,12 +258,20 @@ func TestCatalogAndScanBuildTheSameIndex(t *testing.T) {
 				if got := st.Rebuilt.ByCatalog; got != want {
 					t.Fatalf("Run rebuilt %d segments by catalog, want %d", got, want)
 				}
-				return entriesOf(st.Rebuilt.Index)
+				return entriesOf(st.Rebuilt.Index), asidesOf(st)
 			}
-			catalog := build(t, false)
-			scan := build(t, true)
+			catalog, catalogAsides := build(t, false)
+			scan, scanAsides := build(t, true)
 			if !sameEntries(catalog, scan) {
 				t.Errorf("Run: the catalog rebuild built a different index than the scan of the same directory")
+			}
+			if len(catalogAsides) != len(scanAsides) {
+				t.Fatalf("Run: the two rebuilds scanned %d and %d segments, want the same set", len(catalogAsides), len(scanAsides))
+			}
+			for id, want := range catalogAsides {
+				if got := scanAsides[id]; !slices.Equal(want, got) {
+					t.Errorf("Run: segment %d's asides from the scan are %+v, want the catalog rebuild's %+v", id, got, want)
+				}
 			}
 		})
 		t.Run(row.name+" all named", func(t *testing.T) {
@@ -334,6 +390,22 @@ func TestCatalogDemotesEveryNoFooterToAScan(t *testing.T) {
 			tr := raw.Trailer(1, uint64(footerOffset(b, ents)), es[:len(es)-1]...)
 			replaceTrailer(b, tr)
 			return b
+		}},
+		{"footer skips a middle entry", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
+			// A middle entry dropped, its record left standing in the segment
+			// and the last named record still ending at the marker, so both of
+			// the footer's checksums recompute honestly over the entries it
+			// does name: only the tiling of the entries against the records
+			// can catch it, and a footer that slips it would answer the index
+			// without the skipped record — an index the scan of the same
+			// bytes never builds.
+			mid := len(ents) / 2
+			keep := slices.Concat(ents[:mid], ents[mid+1:])
+			out := b[:footerOffset(b, ents)]
+			for _, e := range rawEntries(keep) {
+				out = append(out, e[:]...)
+			}
+			return append(out, raw.Trailer(1, uint64(footerOffset(b, ents)), rawEntries(keep)...)...)
 		}},
 		{"zero entries", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
 			// The trailer honestly names no entries, but the segment holds

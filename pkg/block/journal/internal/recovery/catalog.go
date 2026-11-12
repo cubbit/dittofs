@@ -106,7 +106,11 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 		// a decoded header's numbers would: whatever its kind does with
 		// them, a counter or a sequence number the journal never issues
 		// refuses the open here — never confined, never demoted, whatever
-		// the record it names would have shown.
+		// the record it names would have shown. This is the one place an
+		// entry outranks the record it names: for the kinds whose record
+		// is read back — a clone target, the asides — an entry carrying a
+		// number this journal never issues refuses the whole open before
+		// the record is ever read, as the scan's own rule does.
 		if nerr := checkNumbers(headerFromEntry(info.ID, e)); nerr != nil {
 			return sc, false, nerr
 		}
@@ -116,6 +120,18 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 		// refuses — drops that record and carries it for the tail's
 		// classing while the read goes on, and returns true. Anything
 		// else is the open's own refusal and returns false.
+		//
+		// decision: confinement, where the scan over the same bytes
+		// refuses the open, is deliberate. The entry names the record's
+		// own offset, so its boundaries are known independently of its
+		// bytes and a read that does not verify refuses that record
+		// alone, never the open. The identical-index rule the two
+		// sources are held to covers a segment whose records verify;
+		// a segment holding one that does not is the tail's to judge,
+		// not two indexes that must agree. What Dropped carries is the
+		// tail's classing's to consume, and no phase reads it yet: until
+		// that classing exists a dropped record goes unreported — the
+		// open succeeds, and the phases quietly do not see the record.
 		confine := func(h format.RecordHeader, err error) bool {
 			if !errors.Is(err, core.ErrCorrupt) {
 				return false
