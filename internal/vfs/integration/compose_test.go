@@ -33,11 +33,12 @@ type composition struct {
 var client = netip.MustParseAddr("10.0.0.5")
 
 // compose builds the composition and signs up alice and bob, granted read
-// and write on the share, beside the store's administrator.
-func compose(t *testing.T) *composition {
+// and write on the share, beside the store's administrator. opts change what
+// the engine fixture composes.
+func compose(t *testing.T, opts ...enginetest.Option) *composition {
 	t.Helper()
 	c := &composition{}
-	c.Fixture = enginetest.New(t, enginetest.WithCompose(func(f *enginetest.Fixture, e *engine.Engine) enginetest.Service {
+	c.Fixture = enginetest.New(t, append(opts, enginetest.WithCompose(func(f *enginetest.Fixture, e *engine.Engine) enginetest.Service {
 		// Read before the engine starts, which binds the share with it.
 		f.Share = enginetest.ShareOf(t, f.FS.Store, f.Share.ID, shareLimit)
 		fs, err := filesystem.New(filesystem.Deps{Meta: f.FS.Store, Open: f.Opens, Engine: e, Logger: f.Logger()})
@@ -46,7 +47,7 @@ func compose(t *testing.T) *composition {
 		}
 		c.fs = fs
 		return fs
-	}))
+	}))...)
 	// The administrator holds a uid, so it signs in as itself rather than as
 	// the share's anonymous principal.
 	c.user(t, c.FS.Admin.Principal, "admin", "100", entity.AccessAdmin)

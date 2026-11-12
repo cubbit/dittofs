@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/adapter/smb"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
 func valid() settings.SMB {
@@ -19,10 +19,10 @@ func valid() settings.SMB {
 	return s
 }
 
-// deps is the Deps New requires, VFS and Budgets, and nothing else. New only
-// checks VFS is set, so a typed nil of the real filesystem serves.
-func deps() adapter.Deps {
-	return adapter.Deps{VFS: (*vfs.Filesystem)(nil), Budgets: &resources.Budgets{}}
+// deps is the Deps New requires, VFS and Budgets, and nothing else. VFS is the
+// filesystem over memory.
+func deps(t *testing.T) adapter.Deps {
+	return adapter.Deps{VFS: memory.New(t), Budgets: &resources.Budgets{}}
 }
 
 // New refuses Deps missing VFS or Budgets, naming every field missing and
@@ -35,7 +35,7 @@ func TestNewRequiresVFSAndBudgets(t *testing.T) {
 	}{
 		{"empty", adapter.Deps{}, []string{"Deps.VFS", "Deps.Budgets"}, nil},
 		{"no VFS", adapter.Deps{Budgets: &resources.Budgets{}}, []string{"Deps.VFS"}, []string{"Deps.Budgets"}},
-		{"no Budgets", adapter.Deps{VFS: deps().VFS}, []string{"Deps.Budgets"}, []string{"Deps.VFS"}},
+		{"no Budgets", adapter.Deps{VFS: deps(t).VFS}, []string{"Deps.Budgets"}, []string{"Deps.VFS"}},
 	} {
 		_, err := smb.New(c.d, valid())
 		if err == nil || errors.Is(err, errors.ErrUnsupported) {
@@ -53,7 +53,7 @@ func TestNewRequiresVFSAndBudgets(t *testing.T) {
 			}
 		}
 	}
-	if _, err := smb.New(deps(), valid()); !errors.Is(err, errors.ErrUnsupported) {
+	if _, err := smb.New(deps(t), valid()); !errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("New with only VFS and Budgets: %v, want accepted as far as errors.ErrUnsupported", err)
 	}
 }
@@ -63,10 +63,10 @@ func TestNewRequiresVFSAndBudgets(t *testing.T) {
 func TestNewValidatesFirst(t *testing.T) {
 	bad := valid()
 	bad.Dialects.Min = "2.0.2"
-	if a, err := smb.New(deps(), bad); a != nil || err == nil || !strings.Contains(err.Error(), "Dialects.Min") || errors.Is(err, errors.ErrUnsupported) {
+	if a, err := smb.New(deps(t), bad); a != nil || err == nil || !strings.Contains(err.Error(), "Dialects.Min") || errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("New with a bad Dialects.Min: %v, %v; want the validator's error naming Dialects.Min", a, err)
 	}
-	if a, err := smb.New(deps(), valid()); a != nil || !errors.Is(err, errors.ErrUnsupported) {
+	if a, err := smb.New(deps(t), valid()); a != nil || !errors.Is(err, errors.ErrUnsupported) {
 		t.Errorf("New with valid settings: %v, %v; want errors.ErrUnsupported", a, err)
 	}
 }

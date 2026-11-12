@@ -2725,8 +2725,9 @@ driven by `Call` values of different `Protocol` with no adapter, and
 `faults.go`, as `pkg/metadata/storetest` does for stores. It is how the
 service is tested end to end before any adapter calls it. Its doubles are the three kinds
 [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) allows. A test that needs a
-`Service` uses an in-memory filesystem, `vfstest.Memory`: `vfs.New` over the in-memory store,
-open state and `Content`, each held to its conformance suite, and itself held to this one. Its
+`Service` uses an in-memory filesystem, `memory.New` (in `vfstest/memory`, apart from `vfstest`,
+since `internal/vfs`'s own tests import `vfstest`): `vfs.New` over the in-memory store, open
+state and `Content`, each held to its conformance suite, and itself held to this one. Its
 record of the mutating calls it served lives in a recording wrapper in `vfstest` around the
 `*vfs.Filesystem`, never in `*vfs.Filesystem` itself: the wrapper records each call and passes it
 through, and never answers in its place. It is the record RFC 29 §4.11 allows when the call
@@ -2734,7 +2735,7 @@ reaching a dependency is itself the requirement:
 [RFC 20 §7.2](rfc-20-adapters.md#7.2%20Handlers%20against%20a%20verified%20service)'s one-call
 rule reads it. `pkg/vfs/vfstest` also holds
 two hand-written helpers: `Faults`, a wrapper around
-any `Service` that fails or delays a call on cue, implementing every method explicitly and
+any `Service` that fails a call on cue or holds it until released, implementing every method explicitly and
 embedding nothing, so a method added to `Service` fails to compile until it wraps it; and
 `Callbacks`, which keeps what the service delivered, its output, for a test to assert on.
 `Null`, a `Service` answering every call at once, is for the allocation gate
@@ -2744,7 +2745,7 @@ answers.
 **`Content` conformance.** `internal/vfs/contenttest.Run(t, newContent)` holds every `Content`
 to the calls §3.5 and §5.3 make: verified bytes back, a version above the last drawn, nothing
 returned before its stage. It is written before the in-memory `Content` that passes it, which
-stands in for the engine in the unit tiers and in `vfstest.Memory`, and the engine passing the same
+stands in for the engine in the unit tiers and in `memory.New`, and the engine passing the same
 suite is what keeps the two together.
 
 **Fuzzing.** Every input a client chooses has a `testing.F` target, seeded

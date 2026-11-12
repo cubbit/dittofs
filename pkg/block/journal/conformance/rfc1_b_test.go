@@ -570,16 +570,24 @@ func reserve(t *testing.T, h *journal.Handle, n int64, writes int) *journal.Rese
 
 // TestRFC1B_ReserveAhead checks that a reservation holds what it took: its
 // writes succeed after another writer filled the share to its limit, while a
-// plain write and a further reservation are refused naming that limit, and
-// Close returns what it left unused; that reserved writes beside a stream
-// another writer keeps rolling are never refused; that a restart drops a
-// reservation; that 10^4 reserved writes succeed beside a writer that filled
-// the index, while a plain one is refused naming it; and that a reserved
-// write succeeds with the headroom below half.
+// plain write and a further reservation are refused naming that limit; that
+// reserved writes beside a stream another writer keeps rolling are never
+// refused, and any `spare` refusal falls on the other writer; that 10^4
+// reserved writes succeed beside a writer that filled the index, while a plain
+// one is refused naming it; and that a reserved write succeeds with the
+// headroom below half.
 //
-// The copy is 4 MiB in 1 MiB writes beside 32 MiB of other writes, not 1 GiB
-// beside 10 GiB: the fixture's journal holds 64 MiB, and the spare pool must
-// hold what the reservation takes.
+// The share-limit leg reserves 1 MiB for 4 writes of 128 KiB, a quarter of
+// the 4 MiB limit that leg attaches its share with, and a sixty-fourth of the
+// fixture's 64 MiB journal maximum. The rolling leg is scaled the way the
+// datapath's scenario check scales it — 16 copy writes of one segment's room
+// (the fixture's 1 MiB segments, less one record's headroom) beside 16 more
+// appends, rather than a 1 GiB copy in 1 MiB writes beside 10 GiB — so the
+// fixture rolls segments without writing that volume. It is a
+// scenario, not a pin: the pool refills in the fixture, so it would pass were
+// a reserved roll's replacement never made. The exact replacement is pinned
+// deterministically in internal/datapath's
+// TestReserveAhead_ReplacementBeatsACompetingUnreservedTake.
 func TestRFC1B_ReserveAhead(t *testing.T) {
 	const piece, chunk = 128 << 10, 256 << 10
 	open := func(t *testing.T) *journaltest.Fixture {
@@ -610,6 +618,8 @@ func TestRFC1B_ReserveAhead(t *testing.T) {
 		_, err = a.Reserve(1<<20, 1)
 		refusal(t, err, "a reservation past the share's limit", journal.LimitShare, journal.UnitBytes)
 
+		// ReservedBytes is the share-statistics gauge: Stats is a stub until it lands, and this
+		// leg stops here with the reservation still open on purpose.
 		if got := f.J.Stats().Shares[limitedA].ReservedBytes; got <= 0 {
 			t.Fatalf("the share's ReservedBytes = %d with half a reservation unused, want it counted", got)
 		}
@@ -627,23 +637,41 @@ func TestRFC1B_ReserveAhead(t *testing.T) {
 	t.Run("BesideARollingWriter", func(t *testing.T) {
 		f := open(t)
 		b, other := f.Share(1), f.Share(0)
-		const big = 1 << 20
-		rb := reserve(t, b, 4*(big+4096), 4)
+		// One segment's payload room: every copy write fills its segment, so the
+		// next one rolls, and the other writer's writes roll the same stream.
+		const each = journaltest.FixtureSegmentCap - (1 << 10)
+		const writes = 16
+		// The ask is the copies' roomless charge over their writes: each write
+		// crosses a cap on its own, and the reservation holds the spares the
+		// interleaved rolls take. Sized a little wider than one write's records
+		// so the reservation's remaining-need rule can replace the rolls the
+		// other writer forces.
+		rb := reserve(t, b, writes*(each+4096), writes)
+
 		others := make(chan error, 1)
 		go func() {
-			for i := range int64(32) {
-				if _, err := tryWrite(t, other, journaltest.File(50+int(i%2)), i/2*big, pattern(fmt.Sprint("other", i), big)); err != nil {
+			for i := range int64(writes) {
+				_, err := tryWrite(t, other, journaltest.File(50+int(i%2)), i/2*each, pattern(fmt.Sprint("other", i), int(each)))
+				var ns *journal.NoSpaceError
+				if errors.As(err, &ns) && ns.Limit == journal.LimitSpare {
+					// An unreserved write's refusal may fall on a spare the
+					// reservation holds; it is the only refusal a spare may
+					// answer here, and a `spare` refusal never falls on a
+					// reserved write, which every copy write below shows.
+					continue
+				}
+				if err != nil {
 					others <- called("WriteAt", err)
 					return
 				}
 			}
 			others <- nil
 		}()
-		for i := range 4 {
-			_, err := rb.WriteAt(t.Context(), journaltest.File(60+i%2), int64(i/2)*big, pattern(fmt.Sprint("copy", i), big), 0)
+		for i := range writes {
+			_, err := rb.WriteAt(t.Context(), journaltest.File(60+i%2), int64(i/2)*each, pattern(fmt.Sprint("copy", i), int(each)), 0)
 			stub(t, "Reservation.WriteAt", err)
 			if err != nil {
-				t.Fatalf("reserved write %d beside a rolling writer was refused: %v", i, err)
+				t.Fatalf("reserved write %d of %d beside a rolling writer was refused: %v", i+1, writes, err)
 			}
 		}
 		if err := <-others; err != nil {
@@ -651,7 +679,7 @@ func TestRFC1B_ReserveAhead(t *testing.T) {
 			if errors.As(err, &ce) {
 				stub(t, ce.call, ce.err)
 			}
-			t.Fatalf("an unreserved write below the journal's maximum: %v", err)
+			t.Fatalf("an unreserved write beside the copy was refused for a reason other than a spare: %v", err)
 		}
 		stub(t, "Reservation.Close", rb.Close())
 
@@ -660,6 +688,8 @@ func TestRFC1B_ReserveAhead(t *testing.T) {
 	t.Run("DroppedByARestart", func(t *testing.T) {
 		f := open(t)
 		reserve(t, f.Share(1), 1<<20, 1)
+		// ReservedBytes is the journal gauge: Stats is a stub until it lands, and the
+		// restart below stops at the same fixture refusal every reopen meets.
 		if got := f.J.Stats().ReservedBytes; got <= 0 {
 			t.Fatalf("ReservedBytes = %d with a reservation open, want it counted", got)
 		}

@@ -3225,7 +3225,7 @@ stays with the service's own architecture check
 
 ### 7.2 Handlers against a verified service
 
-Each handler is tested against the **in-memory service**, `vfstest.Memory`: the
+Each handler is tested against the **in-memory service**, `memory.New`: the
 real `*vfs.Filesystem` over memory stores, passing the service's conformance
 suite ([RFC 17 §8](rfc-17-vfs.md#8.%20Conformance)). Error answers and reply edges
 come through `vfstest`'s fault wrapper around it, which fails a named method
@@ -3248,7 +3248,7 @@ observable effect is checked by the codec round trips and golden vectors
 a size past 2^32, a time before 1970, every service error on every operation —
 are one line of the fault wrapper.
 
-The one-call rule of §4.3 is read from `vfstest.Memory`'s record of the
+The one-call rule of §4.3 is read from `memory.New`'s record of the
 mutating calls it served. The record lives in a recording wrapper in `vfstest`
 around the `*vfs.Filesystem`, never in `*vfs.Filesystem` itself; it records each
 call and passes it through, never answering in its place, the kind
@@ -3268,7 +3268,7 @@ explain. Semantics are tested once, in the service's suite
 
 ```go
 func TestWrite3(t *testing.T) {
-	mem := vfstest.Memory(t)                           // the in-memory service, held to RFC 17 §8's suite
+	mem := memory.New(t)                               // the in-memory service, held to RFC 17 §8's suite
 	svc := vfstest.Faults(mem)                         // passes through until told to fail
 	h := &v3.Handlers{svc: svc}                        // what nfs.New would build (§4.7)
 	fh := mkfile(t, mem, "f")
@@ -3277,7 +3277,7 @@ func TestWrite3(t *testing.T) {
 	assertContent(t, mem, fh, 8192, data4k)            // the offset reached the service whole
 	assertOneMutation(t, mem)                          // mem's own record: one mutating call
 
-	svc.Fail("Write", vfs.ErrShareViolation)           // the next Write fails
+	svc.Fail(vfs.OpWrite, vfs.ErrShareViolation)       // the next Write fails
 	rep = runGolden(t, h.OpTable(), "write3-4k.call")
 	assertStatus(t, rep, NFS3ERR_ACCES)                // the table's row, not a guess
 }

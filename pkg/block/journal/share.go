@@ -25,15 +25,14 @@ import "context"
 // raised to floor; after the handle's Close, a later Share makes a new handle.
 func (j *Journal) Share(tag ShareTag, limit int64, floor Version) (*Handle, error) {
 	// decision: a Journal with no core, the zero value, refuses Share with
-	// ErrNotImplemented instead of panicking. Share is the only guarded
-	// method: Draw, SetVersionLimit, Handle.Close and Handle.WriteAt on a zero
-	// Journal or Handle are not, because no caller holds a zero value past
-	// building it. The engine's tests build one to see a refused Share answer
-	// nil and only call Reserve on a zero handle, still a stub, and the
+	// ErrNotImplemented instead of panicking. Share is guarded like Reserve is:
+	// Draw, SetVersionLimit and Handle.WriteAt on a zero Journal or Handle are
+	// not, because no caller holds a zero value past building it. The engine's
+	// tests build one to see a refused Share or Reserve answer nil, and the
 	// journaltest fixture builds a zero Journal and Handle whose cleanup
-	// touches neither. Overturned by any caller that calls one of the
-	// unguarded methods on a zero value, or by Open making zero values
-	// unreachable, when the Share guard can go.
+	// touches neither. Overturned by any caller that calls an unguarded method
+	// on a zero value, or by Open making zero values unreachable, when the
+	// Share guard can go.
 	if j.core == nil {
 		return nil, ErrNotImplemented
 	}
