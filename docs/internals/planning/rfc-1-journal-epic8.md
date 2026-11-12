@@ -623,8 +623,8 @@ pkg/block/journal/
   - A reader never finds an entry whose record is not yet written, and publishing waits for no
     sync.
   - A zero-length write and a write at an offset near the largest file offset behave as the
-    RFC's edge cases ask: the first holds nothing and appends nothing, the second holds its
-    extent.
+    RFC's edge cases ask: the first holds nothing and appends nothing, draws no version and
+    returns the zero `Version{}`, the second holds its extent.
   - Writes to different files on two streams run in parallel.
   - A sync that completes while a write is held after `Append` returned and before its publish
     leaves no retained extent once the write returns; a sync that fails there leaves the write's

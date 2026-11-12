@@ -737,7 +737,8 @@ Otherwise a lower version can land after a higher one and an offload between the
 offers the higher without the lower, breaking [RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order).
 
 A zero-length `p` changes nothing, and no version is drawn for it: the write is
-accepted, appends nothing, and returns the zero version as `v`.
+accepted, appends nothing, and returns the zero `Version{}`, which the journal never
+assigns to a write ([§4.3](#4.3%20Versions)).
 
 `Sync` returns once every operation on the named files that returned before the
 call is durable **and proven synced**: below its stream's synced-through offset in
