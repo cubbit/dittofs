@@ -83,6 +83,11 @@ type coreOptions struct {
 	// afterAppend runs in WriteAt right after a record is appended and before
 	// it is published, with the file's append domain held.
 	afterAppend func()
+	// beforeAppend runs in appendAndPublish right after the write's grant is
+	// taken and before its first record is appended, with the file's append
+	// domain held. It is the window a take's room grant and the append that
+	// spends it are apart in.
+	beforeAppend func()
 	// beforeResolve runs in ReadAt after the as-of is read and the file's
 	// append domain released, before the span is resolved.
 	beforeResolve func()
@@ -105,6 +110,10 @@ type coreOptions struct {
 	// builds, keeping Deps at the figure it carries — zero meaning none, the
 	// same reading Deps.HeadroomRecords itself carries.
 	headroomRecords int
+	// contentSpares overrides the pool's content target, so a test can hold a
+	// reservation wider than the target's few spares; zero keeps the test
+	// helper's own target.
+	contentSpares int
 	// segmentCap replaces the test helper's segment size, so a test can write
 	// a record larger than the default segment holds.
 	segmentCap int64
@@ -129,21 +138,22 @@ type coreOptions struct {
 // mutex is the dirty-file list's leaf, held only for a map operation. Revisit
 // if a core-wide invariant ever needs a mutex that outlives one.
 type Core struct {
-	index      *index.Index
-	dirtyFiles dirtyList
-	clock      core.Clock // the injected clock, read for the write time a dirty write carries
-	counters   *index.Counters
-	set        *segment.Set
-	pool       *segment.Pool
-	cache      *segment.Descriptors
-	streams    *segment.Streams
-	dur        *durability.Durability
-	domains    durability.Domains
-	cap        *capacity.Capacity
-	headroom   *capacity.Headroom
-	segCap     int64               // the set's segment cap, what the streams roll at and the admission sizes by
-	retirer    *segment.Retirer    // the retirement executor
-	sealer     *segment.IdleSealer // the idle sealer; nil when Deps.IdleSealBytes is zero
+	index         *index.Index
+	dirtyFiles    dirtyList
+	clock         core.Clock // the injected clock, read for the write time a dirty write carries
+	counters      *index.Counters
+	set           *segment.Set
+	pool          *segment.Pool
+	cache         *segment.Descriptors
+	streams       *segment.Streams
+	dur           *durability.Durability
+	domains       durability.Domains
+	cap           *capacity.Capacity
+	headroom      *capacity.Headroom
+	segCap        int64               // the set's segment cap, what the streams roll at and the admission sizes by
+	contentTarget int                 // the content spare target the pool was built with, for the test helper's wait
+	retirer       *segment.Retirer    // the retirement executor
+	sealer        *segment.IdleSealer // the idle sealer; nil when Deps.IdleSealBytes is zero
 
 	held, dirty, retained atomic.Int64
 	writtenBytes          atomic.Uint64
@@ -159,6 +169,11 @@ type Core struct {
 	// New with no options. It is a field of the core and not of Deps so that no
 	// production wiring can set it.
 	afterAppend func()
+
+	// beforeAppend is a test seam that holds a write in the gap between its
+	// grant and its first append, the window a take's room grant is spent in.
+	// It is nil outside tests, for the same reason afterAppend is.
+	beforeAppend func()
 
 	// beforeResolve is a test seam that holds a read between reading its
 	// as-of and resolving its span. It is nil outside tests, for the same
@@ -242,7 +257,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)
@@ -305,12 +320,16 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// Withdraw once a zero HeadroomRecords can reach this from a caller
 	// that names a setting, rather than only a wiring that names none.
 	targets := deps.Targets
+	if o.contentSpares != 0 {
+		targets.Content = o.contentSpares
+	}
 	if headroomRecords > 0 {
 		// Each open stream also needs its seal marker, one footer entry and the
 		// trailer, which a segment cannot seal without.
 		sealReserve := int64(deps.Streams) * (format.SealMarkerSize + format.CatalogEntrySize + format.TrailerSize)
 		targets.Headroom = int((int64(headroomRecords)*capacity.RecordCharge + sealReserve + state.Set.Cap() - 1) / state.Set.Cap())
 	}
+	c.contentTarget = targets.Content
 	c.pool = segment.NewPool(maker, targets, d.Admit, deps.Log)
 	c.cache = segment.NewDescriptors(fs, format.SegmentName, budget)
 
@@ -344,6 +363,8 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		CheckIndex:     state.Index.CheckWrite,
 		CheckFillIndex: state.Index.CheckFillIndexBound,
 		VersionsLeft:   state.Counters.VersionsLeft,
+		DrawVersion:    state.Counters.Draw,
+		EntriesLeft:    state.Index.EntriesLeft,
 		Footprint:      func() (used int64) { return state.Set.Counters().UsedBytes },
 		ShareFigures:   state.Set.ShareBytesAndRetired,
 		Room:           func(stream int) int64 { return c.streams.Stream(stream).Room() },
@@ -406,10 +427,25 @@ func (c *Core) FillRefused() uint64 { return c.fillRefused.Load() }
 // are still landing.
 func (c *Core) ReservedBytes() int64 { return c.cap.ReservedBytes() }
 
+// HeldEntries returns the placement index entries open reservations hold and no
+// publish has claimed yet. It is a read of the admission's own counter, for the
+// tests that check a reservation's entries are handed over as the index claims
+// them.
+func (c *Core) HeldEntries() int64 { return c.cap.HeldEntries() }
+
 // ReservationRefused returns the reservation_refused counter: how many
 // reservations the journal's admission has refused, by every limit it names,
 // since the core was built.
 func (c *Core) ReservationRefused() uint64 { return c.cap.RefusedCount() }
+
+// PendingEntries returns the index entries admitted plain grants hold and have
+// not yet published, the counter a test checks returns to rest.
+func (c *Core) PendingEntries() int64 { return c.cap.PendingEntries() }
+
+// PoolCounters returns the spare pool's counts, read from the pool's own
+// maintained figures: the tests that check a reservation's spares are held
+// and returned read them here.
+func (c *Core) PoolCounters() segment.PoolCounters { return c.pool.Counters() }
 
 // Retired lowers the share's figure by the retirements its segments have
 // freed since the figure last took them into account, and is what a write

@@ -189,7 +189,7 @@ func (c *Core) remove(ctx context.Context, s *Share, id core.FileID, spec remova
 	if spec.bad != nil {
 		return core.Version{}, spec.bad
 	}
-	v, at, err := c.appendRemoval(s, id, spec)
+	v, at, err := c.appendRemoval(ctx, s, id, spec)
 	if err != nil {
 		return core.Version{}, err
 	}
@@ -212,7 +212,7 @@ func (c *Core) remove(ctx context.Context, s *Share, id core.FileID, spec remova
 
 // appendRemoval does remove's work under the file's append domain and returns
 // the version drawn and the location of the record it appended.
-func (c *Core) appendRemoval(s *Share, id core.FileID, spec removal) (core.Version, segment.Location, error) {
+func (c *Core) appendRemoval(ctx context.Context, s *Share, id core.FileID, spec removal) (core.Version, segment.Location, error) {
 	unlock := c.domains.Lock(id)
 	defer unlock()
 
@@ -241,7 +241,9 @@ func (c *Core) appendRemoval(s *Share, id core.FileID, spec removal) (core.Versi
 		c.headroom.Refund(draw)
 		return core.Version{}, segment.Location{}, err
 	}
-	v, err := c.counters.Draw()
+	// Drawn through the capacity so a version a reservation holds is not
+	// spent here; the file's append domain is already held.
+	v, err := c.cap.DrawVersion(ctx)
 	if err != nil {
 		c.headroom.Refund(draw)
 		return core.Version{}, segment.Location{}, err

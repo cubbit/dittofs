@@ -34,11 +34,22 @@ import (
 // pool's — with the shortfall, at once, with no I/O and holding nothing
 // behind. Its grant covers the pieces the split it sized drew: they take
 // their spares from the grant's hold, and the unused part returns when the
-// write does. One
-// piece more than the split can still be drawn — the room another appender
-// spent between the take and this write's rolls, a window neither its
-// charge nor its hold covers — and that one rolls unreserved; see the decision at the loop below for its ceiling and what
-// closes it.
+// write does. A reserved write whose segment the stream's other writers filled
+// rolls anyway; while its hold has fallen below what the reservation's remaining
+// bytes need, the roll takes a replacement spare back from the pool (RFC 1 §6).
+// The stream cannot tell such a roll from one the write's own bytes forced, so a
+// stray replacement may leave the hold one above that need until the
+// reservation's next draw; the over-hold is bounded by what Reserve took, is
+// returned at Release, and fails closed. An unreserved write has no reservation
+// to replenish, and one piece more than its split can still roll — the room
+// another appender spent between the take and its append, a window neither its
+// charge nor its hold covers — and that one rolls unreserved; see the decision
+// at the loop below for its ceiling and what closes it. A reserved write too can
+// meet the no-spare refusal part-way: after a replacement, held exceeds ready
+// while the maker refills, so its next roll may be refused `spare`, and a full
+// device's ENOSPC refuses it the same way. RFC 1 §6's promise that it "never
+// meets the no-spare refusal while the pool can be refilled" is stronger than a
+// no-wait pool keeps; the ceiling is stated at Hold.Take.
 //
 // The version is drawn, and the record appended and published, with the
 // file's append domain held, so the versions of one file are appended in the
@@ -76,14 +87,20 @@ func (c *Core) WriteAt(ctx context.Context, s *Share, id core.FileID, off int64,
 	if off < 0 || off > math.MaxInt64-int64(len(p)) {
 		return core.Version{}, core.ErrInvalidExtent
 	}
-	v, n, err := c.appendAndPublish(ctx, s, id, off, p, mtime)
+	v, n, err := c.appendAndPublish(ctx, s, id, off, p, mtime, nil)
 	c.writtenBytes.Add(uint64(n))
 	return v, err
 }
 
 // appendAndPublish does WriteAt's work under the file's append domain and
-// returns the version drawn and the payload bytes published.
-func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, off int64, p []byte, mtime int64) (core.Version, int64, error) {
+// returns the version the write carries and the payload bytes published. It is
+// the one append loop both paths share: an admitted write passes a nil drawn
+// grant and the capacity admission takes its grant above, while a write drawn
+// from a reservation passes the grant Draw returned — the admission's every
+// limit is already held by the reservation, so none runs here. The reserved
+// write's version is drawn here too, from the reservation, under the file's
+// append domain: the ordering the plain path keeps.
+func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, off int64, p []byte, mtime int64, res *capacity.Reservation) (core.Version, int64, error) {
 	unlock := c.domains.Lock(id)
 	defer unlock()
 
@@ -99,31 +116,58 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		return core.Version{}, 0, err
 	}
 	stream := c.streams.For(id)
-	// The reservation first: the write's payload, its record bytes drawn
-	// by the take from the room the stream names — against the share's
-	// limit, the journal's maximum, the index's bound, the version limit,
-	// the headroom's half rule and the spares its pieces need, in one
+	// The write's grant: for a reserved write, one drawn from its reservation,
+	// the draw taken here under the domain exactly as the plain path's Take is,
+	// so the version it carries is drawn in the file's append order; for a
+	// plain write, one the take draws from the room the stream names — against
+	// the share's limit, the journal's maximum, the index's bound, the version
+	// limit, the headroom's half rule and the spares its pieces need, in one
 	// decision.
-	grant, err := c.cap.Take(ctx, capacity.Request{
-		Tag:        s.Tag,
-		File:       id,
-		Stream:     c.streams.IndexFor(id),
-		Extent:     core.Extent{Off: off, Len: int64(len(p))},
-		Payload:    int64(len(p)),
-		ShareLimit: s.Limit(),
-	})
-	if err != nil {
-		return core.Version{}, 0, err
+	var grant *capacity.Grant
+	if res != nil {
+		g, err := res.Draw(int64(len(p)))
+		if err != nil {
+			return core.Version{}, 0, err
+		}
+		grant = g
+	} else {
+		g, err := c.cap.Take(ctx, capacity.Request{
+			Tag:        s.Tag,
+			File:       id,
+			Stream:     c.streams.IndexFor(id),
+			Extent:     core.Extent{Off: off, Len: int64(len(p))},
+			Payload:    int64(len(p)),
+			ShareLimit: s.Limit(),
+		})
+		if err != nil {
+			return core.Version{}, 0, err
+		}
+		grant = g
 	}
 	defer grant.Release()
-
-	v, err := c.counters.Draw()
-	if err != nil {
-		return core.Version{}, 0, err
-	}
+	// The version the write carries: the one the admission drew in its own
+	// section, where its check and draw were one step, or the one a
+	// reservation drew for its write here — never a draw outside the domain,
+	// which would let a plain writer of the same file append a newer version
+	// first.
+	v := grant.Version()
 	var roll segment.Roll
 	if hold := grant.Hold(); hold != nil {
 		roll = segment.Roll{Hold: hold}
+	}
+	// A reserved write's roll is replaced only while the reservation's hold has
+	// fallen behind what its still-undrawn bytes need. A hold at or above that
+	// figure has what those bytes' own rolls will take, so a replacement there
+	// would raise it past need. The stream cannot say whose roll forced the
+	// move, so a copy of small writes alone on one stream can still have one of
+	// its own straddles replaced, leaving the hold one above the need until the
+	// next draw lowers it: bounded by what Reserve took, returned at Release,
+	// and failing closed. Overturned by an exact own-vs-interleaved roll signal,
+	// or by spare_refusals showing unreserved writes starved behind an open
+	// reservation's over-hold. An admitted write's hold is not a reservation's
+	// and closes with its grant: only a drawn grant replaces.
+	if c.beforeAppend != nil {
+		c.beforeAppend()
 	}
 	var done int64
 	for done < int64(len(p)) {
@@ -147,27 +191,33 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			// version to record. The capacity admission keeps its own
 			// refusals — a write past the share's, the journal's, the
 			// index's or the version limit, and one whose spares the pool
-			// refused — off this path: they answer before the version is
-			// drawn. The rolls they no longer cover are the exception: the
-			// grant below fits a write to its stream's roomless state and
-			// holds only the spares the pieces its split sized need, so a
-			// roll whose room something else spent — the idle sealer
-			// sealing the active segment, a durability re-append or loss
-			// record that never passed the admission, another same-stream
-			// writer whose own spares-holding grant reserved the room this
-			// one claimed — draws a piece beyond the split, and the hold
-			// serves it only while a spare of its own is left: past that
+			// refused — off this path: they answer after the version is
+			// drawn, at the admission, before a byte is appended. An
+			// unreserved roll they no longer cover is the
+			// exception: the grant fits the write to its stream's roomless
+			// state and holds only the spares the pieces its split sized
+			// need, so a roll whose room something else spent — the idle
+			// sealer sealing the active segment, a durability re-append or
+			// loss record that never passed the admission, another
+			// same-stream writer whose own spares-holding grant reserved the
+			// room this one claimed — draws a piece beyond the split, and the
+			// hold serves it only while a spare of its own is left: past that
 			// the roll runs unreserved and meets the pool's refusal here,
-			// after the version was drawn and possibly after an earlier
-			// piece published. The direction fails closed — the write that
-			// drew the piece is refused rather than admitted past a limit —
-			// and the window is accepted until the reserved-roll
-			// replacement of RFC 1 §6's interleaved reservation (the
-			// reserve-ahead work) hands the roll the displaced spare. The
-			// remaining cases after that are failures of the medium itself,
-			// which no reservation can predict. Overturned by returning the
-			// version with the error, if the caller can then record the
-			// partial write.
+			// after the version was drawn and possibly after an earlier piece
+			// published. The direction fails closed — the write that drew the
+			// piece is refused rather than admitted past a limit — and the
+			// window stays open for the unreserved write alone: a reserved
+			// write's interleaved roll is replaced while its hold is short of
+			// what the reservation still needs (the Replace below), so only the
+			// unreserved piece's displaced room is left, and closing it needs
+			// the room a stream promises between a take and an append, which no
+			// interleaving caller can. The reserved path's own ceiling is a
+			// spare the pool cannot make: a full device's ENOSPC still refuses
+			// a reserved write here, as RFC 1 §6's ponytail records.
+			// The remaining cases after that are failures of the medium
+			// itself, which no reservation can predict. Overturned by
+			// returning the version with the error, if the caller can then
+			// record the partial write.
 			return core.Version{}, done, err
 		}
 		if pl.N <= 0 {
@@ -181,6 +231,19 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		// so ReservedBytes never covers a record the share already
 		// counts and never misses one still landing.
 		grant.Wrote(pl.Loc.Len)
+		// A reserved write's roll is the reservation's to replace while its
+		// hold has fallen behind what its remaining bytes need: the roll took
+		// a spare interleaving consumed, and the reservation takes one back
+		// ahead of every unreserved write (RFC 1 §6). The replacement raises
+		// the hold without refusing, so a pool that cannot serve it makes up
+		// the demand instead. At or above that need the hold already has its
+		// own rolls' spares, and a plain write's grant holds none of the
+		// reservation's: it never replaces.
+		if pl.Rolled && grant.Drawn() {
+			if h := grant.Hold(); h != nil && h.Left() < grant.NeedsSpares() {
+				h.Replace()
+			}
+		}
 		if c.afterAppend != nil {
 			c.afterAppend()
 		}
@@ -194,18 +257,16 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		// itself, without the domain: no path does that today, and a path
 		// that did would be the fault shape the rival mark exists for,
 		// reached only by a bug. The entry bound, likewise, is checked
-		// before the draw — the admission's CheckWrite above — so a
-		// refusal here needs the window between that check and this
-		// publish, which a concurrent write's own admission can pass in:
-		// the admission of each runs before its version is drawn, and
-		// neither reserves the bound its record heads for until its
-		// publish. The caller gets the error and the record stays on
-		// disk, never published by this run. The refusals arrived over
-		// the admission are checked there, before any version is drawn;
-		// what is left here is the window no pre-check closes, and a
-		// refusal in it is overturn evidence for a bound the admission
-		// reserves as its own.
-		hd, err := c.index.WriteRetain(s.Tag, id, index.Placed{
+		// inside the admission's section above — Take's CheckWrite, its
+		// held-entry test and its pending count — so a refusal here needs the
+		// window between that check and this publish, which a concurrent
+		// write's own admission can pass in: each admission names the entries
+		// its pieces will add and holds them as pending until they publish.
+		// The caller gets the error and the record stays on disk, never
+		// published by this run. What is left here is the window no pre-check
+		// closes, and a refusal in it is overturn evidence for a bound the
+		// admission reserves as its own.
+		hd, claimed, err := c.index.WriteRetainClaim(s.Tag, id, index.Placed{
 			Extent:  core.Extent{Off: off + done, Len: pl.N},
 			Record:  index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
 			Version: v,
@@ -215,6 +276,12 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 			return core.Version{}, done, err
 		}
 		c.Account(hd)
+		// The piece's index entry is the bound's now: the figure that held it
+		// — a reservation's held entries, or a plain grant's pending ones —
+		// hands over what the index admitted, so a write beside this one finds
+		// it spent only once the index holds it — the safe order, for the
+		// count and both held figures never all miss it.
+		grant.Claimed(claimed)
 		// decision: the index exports no write that skips retaining what it
 		// supersedes, so a piece whose record a sync already covered lifts
 		// here, straight after the publish, rather than leaving the content
