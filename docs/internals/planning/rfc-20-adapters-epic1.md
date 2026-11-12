@@ -478,7 +478,7 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 **Subtask T1.9 estimate: 2.5 man-days.**
 
 - **Track:** the team. **Depends on:** RFC 20 as it stands on `feat/storage-v2`, with #3892 and
-  #3903's follow-ups; runs beside T1.1–T1.3.
+  #3903's follow-ups. Runs beside T1.1, T1.2 and T1.3.
 - **Covers:** R54 (no export §4.7 does not name), R25, R36, R53, R76; it makes R22–R24 and
   R35–R37 checkable.
 - **Deliverables:** one pull request to `feat/storage-v2` amending RFC 20

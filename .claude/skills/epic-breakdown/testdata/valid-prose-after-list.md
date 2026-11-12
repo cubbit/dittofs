@@ -20,7 +20,8 @@ Nothing here.
 
 **Subtask T7.2 estimate: 1 man-days.**
 
-- **Track:** A. **Depends on:** T7.1. Ships before T7.3a; T7.3b follows.
+- **Track:** A. **Depends on:** T7.1.
+  Ships before T7.3a and T7.3b.
 
 ### T7.3a Work item
 
