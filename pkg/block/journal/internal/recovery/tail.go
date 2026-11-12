@@ -2,6 +2,8 @@ package recovery
 
 import (
 	"cmp"
+	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -67,8 +69,10 @@ type tails struct {
 
 // classifyTails decides, for each scanned segment, whether each bad fact is
 // a crash's tear or damage, and gives the segment its fate. It reads only
-// the attach answer and the scans, and returns a nil error.
-func classifyTails(att Attached, scans []segmentScan) (tails, error) {
+// the attach answer and the scans, plus the open's reader for the one
+// probe it makes, and fails the open when a range names no record it can
+// class: see refuseRange and refuseMissingEnd.
+func classifyTails(rd *reader, att Attached, scans []segmentScan) (tails, error) {
 	// A segment a verified header names as predecessor was sealed before
 	// its successor was made; a segment no header names could have been
 	// open at a crash. An id naming itself names nothing, and a name with
@@ -90,20 +94,38 @@ func classifyTails(att Attached, scans []segmentScan) (tails, error) {
 		damaged, tornSlot, tail := false, false, false
 		for _, r := range sc.Ranges {
 			switch {
+			case named[id] && !sc.Sealed && r.Off >= sc.RecordsEnd:
+				// A named predecessor's tail: the missing end below judges it.
 			case named[id] || sc.Sealed:
 				// A segment already sealed holds no torn slot: a crash
 				// cannot tear bytes below a seal, so a refused range in
 				// it is corruption.
-				damaged = true
+				return tails{}, refuseRange(id, r)
 			case r.Off >= sc.RecordsEnd:
 				tail = true // the torn tail, or a rotten seal marker nothing names
 			case r.Off < sc.SyncedThrough:
-				damaged = true // a sync proved these bytes whole
+				return tails{}, refuseRange(id, r) // a sync proved these bytes whole
 			default:
 				// A slot a crash tore before any proof reached it: it
 				// was never acknowledged, so it is never reported.
 				tornSlot = true
 			}
+		}
+
+		// A named predecessor was sealed before its successor was made, so
+		// its seal marker must verify. One that does not is a missing end
+		// the open refuses, unless the marker alone rotted. A file too short
+		// to hold a header slot has no records to miss: its header is judged
+		// below.
+		if named[id] && !sc.Sealed && !sc.SealedByCatalog && sc.Size >= format.SegmentHeaderSize {
+			exempt, err := markerAloneRotted(rd, sc)
+			if err != nil {
+				return tails{}, err
+			}
+			if !exempt {
+				return tails{}, refuseMissingEnd(sc)
+			}
+			damaged = true
 		}
 
 		// The header slot of an unverified-header segment is damaged
@@ -156,4 +178,49 @@ func classifyTails(att Attached, scans []segmentScan) (tails, error) {
 		return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.Drop.Entry.RecordOffset, b.Drop.Entry.RecordOffset))
 	})
 	return out, nil
+}
+
+// refuseRange is the open's refusal of a range inside a segment whose
+// catalog was not verified that names no record: bytes a crash cannot have
+// torn, since a seal, a successor or a sync proves them whole.
+//
+// decision: this is the whole open's refusal rather than a dropped record,
+// because no catalog names what the range held and the reconcile that would
+// recover it is not built, so serving past it could serve without knowing
+// what was lost. The ceiling is a journal that stays closed for a rotted
+// record header in a segment with no verifying catalog, for a truncated
+// named predecessor and for a rotted record below a mark's Through, until
+// the reconcile work lands, which withdraws this marker.
+func refuseRange(id core.SegmentID, r format.ScanRange) error {
+	return fmt.Errorf("%w: segment %d: a refused range at [%d,%d) that names no record",
+		core.ErrNotImplemented, id, r.Off, r.End)
+}
+
+// refuseMissingEnd is the same refusal for a named predecessor that ends
+// without its seal marker: the bytes from the last verifying record to the
+// file's end. It carries refuseRange's decision.
+func refuseMissingEnd(sc segmentScan) error {
+	return fmt.Errorf("%w: segment %d: a named predecessor's missing end at [%d,%d) that names no record",
+		core.ErrNotImplemented, sc.ID, sc.RecordsEnd, sc.Size)
+}
+
+// markerAloneRotted reports whether a named predecessor's missing seal marker
+// is the only thing wrong with its end: every record before it verifies and
+// its trailer verifies, naming a footer exactly past the marker's own slot.
+// A read the bound did not clear refuses the open on the range it collected,
+// never as a verdict on a trailer nobody read.
+func markerAloneRotted(rd *reader, sc segmentScan) (bool, error) {
+	footerOff, err := format.ReadTrailer(readerAt{rd: rd, name: format.SegmentName(sc.ID)}, sc.Size)
+	switch {
+	case err == nil:
+		return footerOff == sc.RecordsEnd+format.SealMarkerSize, nil
+	case errors.Is(err, format.ErrNoFooter):
+		return false, nil
+	case isContextErr(err):
+		return false, err
+	}
+	if ranges := rd.Unreadable(); len(ranges) > 0 {
+		return false, &core.UnreadableRangesError{Ranges: ranges}
+	}
+	return false, err
 }

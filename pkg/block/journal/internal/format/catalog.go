@@ -165,50 +165,9 @@ func AppendTrailer(dst []byte, footerOffset int64, footer []byte) []byte {
 // rather than fall back to a scan that reads it just as little. Overturned
 // only if the format rules a failed read is damage.
 func ReadFooter(r io.ReaderAt, size int64, identity core.JournalID, segment core.SegmentID) (Footer, error) {
-	if size < TrailerSize {
-		return Footer{}, noFooter("the file is %d bytes, shorter than the %d a trailer takes", size, TrailerSize)
-	}
-
-	// The trailer, the file's last 32 bytes.
-	trailer := make([]byte, TrailerSize)
-	if err := readFull(r, trailer, size-TrailerSize); err != nil {
-		return Footer{}, fmt.Errorf("format: read trailer at %d: %w", size-TrailerSize, err)
-	}
-	if got, want := binary.LittleEndian.Uint32(trailer[28:32]), crc32c(trailer[0:28]); got != want {
-		return Footer{}, noFooter("trailer checksum 0x%08x, want the CRC32C of [0,28): 0x%08x", got, want)
-	}
-	if string(trailer[0:4]) != "DJT1" {
-		return Footer{}, noFooter("magic %q, want %q", trailer[0:4], "DJT1")
-	}
-	if version := binary.LittleEndian.Uint16(trailer[4:6]); version != catalogLayoutVersion {
-		return Footer{}, noFooter("unrecognised catalog layout version %d, want %d", version, catalogLayoutVersion)
-	}
-	if flags := binary.LittleEndian.Uint16(trailer[6:8]); flags != 0 {
-		return Footer{}, noFooter("flags 0x%04x, read as an unrecognised version: none are defined", flags)
-	}
-
-	// decision: non-zero reserved bytes are refused as no footer, the
-	// stricter reading — the table writes them as zero and says no more.
-	// Accept them if the format's owner rules that a reader ignores them.
-	if !zero(trailer[24:28]) {
-		return Footer{}, noFooter("reserved bytes are not zero")
-	}
-
-	// The footerOffset checks, ordered so none reads a value it has not
-	// bounded: the column is 64 bits, a read offset is an int64, and the
-	// arithmetic below stays inside the one that has passed.
-	footerOffset := binary.LittleEndian.Uint64(trailer[8:16])
-	if footerOffset > math.MaxInt64 {
-		return Footer{}, noFooter("footerOffset %d is above MaxInt64", footerOffset)
-	}
-	if footerOffset < SegmentHeaderSize+SealMarkerSize {
-		return Footer{}, noFooter("footerOffset %d, below the seal marker a footer needs, %d", footerOffset, SegmentHeaderSize+SealMarkerSize)
-	}
-	if footerOffset%8 != 0 {
-		return Footer{}, noFooter("footerOffset %d is not a multiple of 8", footerOffset)
-	}
-	if int64(footerOffset) > size-TrailerSize {
-		return Footer{}, noFooter("footerOffset %d is past the trailer at %d", footerOffset, size-TrailerSize)
+	trailer, footerOffset, err := readTrailer(r, size)
+	if err != nil {
+		return Footer{}, err
 	}
 
 	entryCount := int64(binary.LittleEndian.Uint32(trailer[16:20]))
@@ -325,6 +284,73 @@ func entryRecordEnd(e CatalogEntry) (int64, error) {
 		return 0, noFooter("recordOffset %d plus the record's size %d leaves the record no room to end before MaxInt64", e.RecordOffset, whole)
 	}
 	return e.RecordOffset + whole, nil
+}
+
+// ReadTrailer reads and verifies only the trailer, the file's last 32 bytes,
+// by the rules ReadFooter holds it to — length, checksum, magic, layout
+// version, flags, reserved bytes and the bounds of footerOffset — and
+// returns the footer offset it names. It reads no seal marker and no entry,
+// so a trailer that verifies says only that a writer finished one. One that
+// does not verify answers an error wrapping ErrNoFooter; a read that fails
+// is returned as itself, never as "no footer", for the reason ReadFooter
+// gives.
+func ReadTrailer(r io.ReaderAt, size int64) (footerOffset int64, err error) {
+	_, off, err := readTrailer(r, size)
+	return int64(off), err
+}
+
+// readTrailer is the trailer's rules, shared by ReadFooter and ReadTrailer:
+// it returns the 32 trailer bytes and the footer offset they name, which
+// is bounded to a multiple of 8 within [SegmentHeaderSize+SealMarkerSize,
+// size-TrailerSize].
+func readTrailer(r io.ReaderAt, size int64) (trailer []byte, footerOffset uint64, err error) {
+	if size < TrailerSize {
+		return nil, 0, noFooter("the file is %d bytes, shorter than the %d a trailer takes", size, TrailerSize)
+	}
+
+	// The trailer, the file's last 32 bytes.
+	trailer = make([]byte, TrailerSize)
+	if err := readFull(r, trailer, size-TrailerSize); err != nil {
+		return nil, 0, fmt.Errorf("format: read trailer at %d: %w", size-TrailerSize, err)
+	}
+	if got, want := binary.LittleEndian.Uint32(trailer[28:32]), crc32c(trailer[0:28]); got != want {
+		return nil, 0, noFooter("trailer checksum 0x%08x, want the CRC32C of [0,28): 0x%08x", got, want)
+	}
+	if string(trailer[0:4]) != "DJT1" {
+		return nil, 0, noFooter("magic %q, want %q", trailer[0:4], "DJT1")
+	}
+	if version := binary.LittleEndian.Uint16(trailer[4:6]); version != catalogLayoutVersion {
+		return nil, 0, noFooter("unrecognised catalog layout version %d, want %d", version, catalogLayoutVersion)
+	}
+	if flags := binary.LittleEndian.Uint16(trailer[6:8]); flags != 0 {
+		return nil, 0, noFooter("flags 0x%04x, read as an unrecognised version: none are defined", flags)
+	}
+
+	// decision: non-zero reserved bytes are refused as no footer, the
+	// stricter reading — the table writes them as zero and says no more.
+	// Accept them if the format's owner rules that a reader ignores them.
+	if !zero(trailer[24:28]) {
+		return nil, 0, noFooter("reserved bytes are not zero")
+	}
+
+	// The footerOffset checks, ordered so none reads a value it has not
+	// bounded: the column is 64 bits, a read offset is an int64, and the
+	// arithmetic below stays inside the one that has passed.
+	footerOffset = binary.LittleEndian.Uint64(trailer[8:16])
+	if footerOffset > math.MaxInt64 {
+		return nil, 0, noFooter("footerOffset %d is above MaxInt64", footerOffset)
+	}
+	if footerOffset < SegmentHeaderSize+SealMarkerSize {
+		return nil, 0, noFooter("footerOffset %d, below the seal marker a footer needs, %d", footerOffset, SegmentHeaderSize+SealMarkerSize)
+	}
+	if footerOffset%8 != 0 {
+		return nil, 0, noFooter("footerOffset %d is not a multiple of 8", footerOffset)
+	}
+	if int64(footerOffset) > size-TrailerSize {
+		return nil, 0, noFooter("footerOffset %d is past the trailer at %d", footerOffset, size-TrailerSize)
+	}
+
+	return trailer, footerOffset, nil
 }
 
 // decodeCatalogEntry reads one 72-byte entry, refusing everything the
