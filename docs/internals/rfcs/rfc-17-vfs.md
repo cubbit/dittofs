@@ -668,7 +668,7 @@ holds.
 | `DirEntry`, `Page`, `EntryFields` | one listed entry — name, handle, its digest as cursor, and its `File` when asked; a page `{Entries []DirEntry; Next Cursor; EOF bool}`; which fields a listing fills |
 | `OpenRequest`, `OpenResult` | disposition, access, deny, the caching grant wanted, durability, delete on close, `Backup` (the open asks for backup or restore intent: it is marked privileged when the caller is privileged, [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved), and otherwise opens unprivileged), `MaximumAllowed` in its access (SMB's `MAXIMUM_ALLOWED`, which the service resolves to `G`, with the open's privilege on a backup intent, [RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)), create GUID and app instance, reclaim, the owner of opens and its sequence, a reconnect's match, a snapshot token, the parent and name it resolves through, `CreateArgs` for a create / the `OpenRef`, the `File`, `MaximalAccess`, the grant given, `Confirm` (the owner must confirm first, [RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)), `Created`, and the parent's `WCC` when it created |
 | `AttrChange` | `metadata.Attrs` plus `Guard *time.Time` (a ctime guard, [RFC 20 §2.4](rfc-20-adapters.md#2.4%20Protocol%20details%20that%20stay%20in%20the%20adapter)), `DeleteOnClose *bool` and `Suspend`, `Resume` time masks — the last two only through an open |
-| `Access` | an access mask in RFC 7's terms ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)) |
+| `Access` | an access mask in RFC 7's terms ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)), plus `MaximumAllowed` (`0x02000000`, SMB's `MAXIMUM_ALLOWED`), which only `OpenRequest.Access` carries and §5.3 resolves to `G` before any check |
 | `WCC` | `{Before *File; After File}`: one object's attributes either side of a mutation, from one hold of its accept lock; when `Before` is nil is [§5.7](#5.7%20GetAttr)'s |
 | `CreateResult`, `UnlinkResult`, `RenameResult` | `{Handle; File; Dir WCC}`; `{Dir WCC}`; `{From, To WCC; Moved *WCC}` — `Moved` when the moved file's own attributes changed |
 | `ShareRef`, `ShareInfo` | a share named as the client sent it — an NFS path or an SMB name; the zero value is the pseudo-root / a share's name, `Flavors []AuthFlavor`, comment, `Hidden`, the root's `MaximalAccess`, and the share policy's SMB flags (`ExportPolicy.SMB`: encrypt, continuously available, [RFC 16](rfc-16-metadata-store.md)) |
@@ -844,8 +844,9 @@ client record or lease — and a handler may make any number of them:
 state, and RFC 20 §4.3 allows a handler one. `vfs.Mutates(op Op) bool` answers
 it, so the adapters' one-call check reads it from one place.
 `Propose` is on the list because its record is volatile and nothing reads it
-but the confirm. SMB's first `SESSION_SETUP` on a node makes `Connect` its one
-mutating call, and no other `SESSION_SETUP` makes one. `Spell` is on it because an NFSv4 `GETATTR` asking `owner`
+but the confirm. SMB's `SESSION_SETUP` calls `SignIn`, the first on a node
+`Connect`, and one naming a `PreviousSessionId` `Disconnect`, each outside
+RFC 20 §4.3's one-call rule. `Spell` is on it because an NFSv4 `GETATTR` asking `owner`
 and `owner_group` makes two `Spell` calls and no mutation; `Find` is not,
 since it may mint a directory principal. `Read` is on it although the store may advance access time;
 that is a side effect of serving the read, never a second call.
@@ -2175,6 +2176,17 @@ func (s *Filesystem) renameAt(ctx context.Context, c Caller, from Target, fromNa
 	return r, err
 }
 ```
+
+**A named stream is neither renamed nor deleted on its own.** A `Rename` whose
+`from.Open` is a named stream's open, and a `SetAttr` setting or clearing
+`DeleteOnClose` through one, are refused `ErrAccess` when the open's grant
+holds no `DELETE`, as on any file, and otherwise `ErrInvalid` by open state,
+changing nothing
+([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)): a stream has
+no entry
+([RFC 7 §2.7](rfc-7-namespace-metadata.md#2.7%20Extended%20attributes%20and%20named%20streams)).
+The service decides it, never the adapter
+([RFC 22 §12.1](rfc-22-smb.md#12.1%20Streams)).
 
 **A delete-pending directory takes no new entries.** Before it applies a create
 — an `Open` that creates included —, a link or a rename, the service **MUST** check the open state of the destination

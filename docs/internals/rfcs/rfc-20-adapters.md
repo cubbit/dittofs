@@ -1390,7 +1390,12 @@ type Handler[Req, Rep any] func(ctx context.Context, r *core.Request, req *Req) 
   calls `FreeState` once for that reference
   ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)):
   that frees state the service already ended and changes no file, so it is not
-  a second call either, and §7.2's record leaves it out.
+  a second call either, and §7.2's record leaves it out. Calls in the
+  `Principals` area (`SignIn`, `Find`) are outside the one-call rule. So are
+  session setup's client-record calls (`Connect`, `AddSession`, the
+  `Disconnect` a `PreviousSessionId` runs as the session registry's cleanup,
+  and the `Disconnect` with `Last` a `Connect`'s decision sends, §3.2). §7.2's
+  record leaves them out.
 - It **MAY** make further read-only calls only to fill fields the reply
   carries, and only where the service's mutating call does not already return
   them. Every mutating call returns the `WCC` of each object it changed —
@@ -3200,7 +3205,10 @@ call and passes it through, never answering in its place, the kind
 [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) allows when the call
 reaching a dependency is itself the requirement. A handler test
 fails when a request leaves more than one, so the operation table needs no
-column for it. A handler that answers from adapter state where it should have
+column for it. It does not count the calls §4.3 places outside the rule: a
+`CancelLock` or `Unwatch` withdrawing a refused `Park`'s waiter, a `FreeState`
+after `ErrState` (`Revoked`), the `Principals` calls, and session setup's
+client-record calls. A handler that answers from adapter state where it should have
 called the service is caught by the same record: the missing call shows as a
 missing entry (§4.3). Read-only calls are not asserted, so a handler free to
 fetch attributes once rather than twice does not break its test. The service
@@ -3392,7 +3400,7 @@ end-to-end benchmark.
 | A2 | Nothing an adapter holds is written to the metadata store or replicated; everything a client can present back after its connection ends is held below the service. |
 | A3 | An adapter caches nothing the service returned beyond the request that read it. |
 | A4 | Every request passes the pipeline's stages in §4.1's order, through one implementation shared by every adapter. |
-| A5 | A handler makes at most one service call that changes state, and decides nothing on a file's attributes, mode or ACL. |
+| A5 | A handler makes at most one service call that changes state, beside the calls §4.3 places outside that rule, and decides nothing on a file's attributes, mode or ACL. |
 | A6 | A compound runs as a sequence of handlers, each admitted separately, with no lock held across them. |
 | A7 | Every service error has a row in every adapter's error table; an error with no row is answered server fault and logged at error. |
 | A8 | Decoders allocate nothing a length field claims before checking it against the bytes remaining and the protocol's cap. |
