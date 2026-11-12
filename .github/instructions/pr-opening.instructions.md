@@ -21,7 +21,10 @@ Follow [`.github/pull_request_template.md`](../pull_request_template.md), includ
 guidance in its comments, and the ground rules of
 [`pr-commenting.instructions.md`](pr-commenting.instructions.md). If the PR fixes an issue,
 the body carries `Closes #<N>`. That keyword fires only on `develop`, the default branch: on
-any other target, close the issue by hand after the PR merges. Never mention Claude Code or
+any other target, close the issue by hand after the PR merges. A PR that finishes a subtask
+of an epic closes that subtask's issue the same way, one `Closes #<N>` line per subtask, on
+any target: that line is what credits the PR to the subtask on the burn-up. A subtask
+finished only in part is named, not closed. Never mention Claude Code or
 AI tooling, and add no `Co-Authored-By` lines for AI.
 
 ## Stack or not
