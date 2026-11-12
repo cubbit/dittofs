@@ -66,11 +66,8 @@ type Engine struct {
 	opened   atomic.Uint64 // the bindings made so far, which Close undoes in reverse
 	cloning  sync.WaitGroup
 
-	clonesMu sync.Mutex             // held for a lookup or change of clones only
-	clones   map[cloneKey]*cloneRun // the running clones past their step 1, live and rebuilt, by destination
-
 	// doneMu is held for a change of done only, never with an entry's lock
-	// or clonesMu held, nor taken while it is held.
+	// held, nor taken while it is held.
 	doneMu  sync.Mutex
 	done    *list.List // the done clones remembered (doneClone), oldest first
 	doneCap int        // how many done holds at most: doneClones, a test's seam lowers it
@@ -164,7 +161,6 @@ func New(d Deps) (*Engine, error) {
 		fence:    f,
 		d:        d,
 		files:    newFiles(d.Clock),
-		clones:   map[cloneKey]*cloneRun{},
 		done:     list.New(),
 		doneCap:  doneClones,
 		instance: instanceID(),
