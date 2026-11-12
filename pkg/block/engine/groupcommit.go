@@ -849,24 +849,6 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 	case mw != nil:
 		g.marksFailed(mw, err)
 	}
-	// A record that does not decode, which the split narrowed to its file,
-	// is that file's failure, not the store's (RFC 8 §11.2): when every
-	// error the batch met is a file's own, its owner is not left failing,
-	// unless another batch failed at the store since it last committed.
-	//
-	// decision: any undecodable record a call reads is the file's, the
-	// journal's open generation a marks write reads included, since a store
-	// that cannot write fails with no decode error. Each file it fails is
-	// named by existence_commit_failing instead, and writes elsewhere
-	// commit. Count it toward the fence if a shared record is seen failing
-	// every file's existence commit with nothing else naming it.
-	own := err == nil || !storeFailed(err) || kvstore.Undecodable(err)
-	for _, ferr := range failed {
-		own = own && (!storeFailed(ferr) || kvstore.Undecodable(ferr))
-	}
-	if own {
-		e.fence.releaseOwn(ownerOf(ctx))
-	}
 	end(nil)
 	return failed, alone, nil
 }
@@ -1066,9 +1048,39 @@ func (e *Engine) commitMarksAlone(ctx context.Context, mw *kvstore.MarksWrite) e
 type retryingOwner struct{}
 
 // ownerState is one retrying owner's part of the self-fence: whether its
-// latest attempt failed at the store, and whether one failed at the store
-// with no record of its own to blame since the owner last committed.
-type ownerState struct{ failing, stored atomic.Bool }
+// latest attempt failed at the store, and the items whose latest attempt
+// failed at the store since the owner last committed (fence.end).
+type ownerState struct {
+	failing atomic.Bool
+	mu      sync.Mutex
+	stored  map[any]bool
+}
+
+// failAt marks items as failing at the store.
+func (o *ownerState) failAt(items []any) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.stored == nil {
+		o.stored = map[any]bool{}
+	}
+	for _, it := range items {
+		o.stored[it] = true
+	}
+}
+
+// settle clears items, every item when items is nil, and reports that none
+// is left failing at the store.
+func (o *ownerState) settle(items []any) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if items == nil {
+		clear(o.stored)
+	}
+	for _, it := range items {
+		delete(o.stored, it)
+	}
+	return len(o.stored) == 0
+}
 
 // withRetryingOwner is ctx marked as a new retrying owner's.
 func withRetryingOwner(ctx context.Context) context.Context {

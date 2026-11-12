@@ -82,7 +82,7 @@ func recordsOver[T any](r kv.Reader, prefix []byte, off, end, span int64, limit 
 
 func startOf(prefix, key []byte) (int64, error) {
 	n, _, err := keys.ReadUint64(key[len(prefix):])
-	return int64(n), err
+	return int64(n), fileRecord(err)
 }
 
 func refsOver(r kv.Reader, share entity.ShareID, file entity.FileID, e entity.Extent) ([]entity.ChunkRef, error) {

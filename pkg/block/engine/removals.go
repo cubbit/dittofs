@@ -458,21 +458,6 @@ func (e *Engine) phase2(r *removal) *loopItem {
 		}
 		res, a := phase2Result(advanced, err)
 		r.b.gc.removals.runs[res].Add(1)
-		// A record that does not decode fails this file's run alone: the item
-		// retries at its backoff toward removal_stalled, and the loop's owner
-		// is not left failing at the store (RFC 8 §11.2), unless another
-		// item's run failed at the store since the loop last committed
-		// (releaseOwn).
-		//
-		// decision: any undecodable record a run reads is the file's, a
-		// share's record Resume reads for every file included, since a store
-		// that cannot write fails with no decode error. Each file it fails is
-		// removal_stalled instead, and writes elsewhere commit. Count it
-		// toward the fence if a shared record is seen failing a share's
-		// removals with nothing else naming it.
-		if kvstore.Undecodable(err) {
-			e.fence.releaseOwn(ownerOf(ctx))
-		}
 		return a
 	}}
 }
