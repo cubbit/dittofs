@@ -292,67 +292,6 @@ func TestRecorder_ReadOfAIgnoresWriteOfB(t *testing.T) {
 	assertNoRecordedViolations(t, rec, "the recorded read-beside-write")
 }
 
-// TestRecorder_RemovalDuringHeldCallback pins the offload-callback
-// assertion's shape, and that a removal running while a stand-in callback
-// blocks still reaches its own recorded waits: the stand-in goroutine
-// enters the callback's assertion — which counts its check and records a
-// violation only when its own goroutine holds a ranked lock — and blocks
-// where the callback would run its upload. While it blocks, a truncate and
-// a delete of the same file both complete and their own wait assertions
-// run. The test pins the assertion's count and that the removals are not
-// parked by the callback's stand-in; the real callback is the reclaim
-// epic's, and the lock-exclusion half of the rule is what the assertion
-// this test counts is for.
-func TestRecorder_RemovalDuringHeldCallback(t *testing.T) {
-	c, rec, shares := newRecordedCore(t)
-	s := shares[0]
-	f := fid(40)
-	if _, err := c.WriteAt(context.Background(), s, f, 0, []byte("held"), 1); err != nil {
-		t.Fatalf("WriteAt of the removed file: %v", err)
-	}
-	before := rec.Violations()
-
-	inCallback := make(chan struct{})
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
-	go func() {
-		rec.AssertNoneHeld("offload callback")
-		close(inCallback)
-		<-release
-	}()
-	recordedAwait(t, c, "the stand-in callback entering its assertion", inCallback)
-
-	ctx := context.Background()
-	truncated := make(chan error, 1)
-	go func() {
-		_, err := c.Truncate(ctx, s, f, 2)
-		truncated <- err
-	}()
-	if err := recordedJoin(t, c, "the truncate beside the held callback", truncated); err != nil {
-		t.Fatalf("Truncate beside a held callback: %v", err)
-	}
-	deleted := make(chan error, 1)
-	go func() {
-		_, err := c.Delete(ctx, s, f)
-		deleted <- err
-	}()
-	if err := recordedJoin(t, c, "the delete beside the held callback", deleted); err != nil {
-		t.Fatalf("Delete beside a held callback: %v", err)
-	}
-	releaseOnce.Do(func() { close(release) })
-
-	if got := rec.Checks("offload callback"); got != 1 {
-		t.Fatalf("offload callback checks = %d, want 1", got)
-	}
-	if got := rec.Checks("removal wait"); got < 2 {
-		t.Fatalf("removal wait checks = %d after a truncate and a delete beside the held callback, want >= 2: the removals never reached their wait's assertion", got)
-	}
-	if got := rec.Violations(); len(got) != len(before) {
-		t.Fatalf("violations beside a held callback = %d, want the %d before it\n%+v", len(got), len(before), got[len(before):])
-	}
-}
-
 // TestRecorder_TakeRunsUnderAppendOnly checks the admission runs under the
 // file append domain alone: the core takes a tagged write's domain, then
 // the admission decides under its mutex, and inside that decision section

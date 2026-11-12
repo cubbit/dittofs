@@ -465,33 +465,3 @@ func checkDeltaSums(fs *files, last core.SegmentID, sum heldTotals, byTag map[co
 	}
 	return nil
 }
-
-// EntryAt returns id's entry, looking it up under the map lock exactly as a
-// view does. It must not be called while id's shard lock is held: the lookup
-// takes that lock.
-func EntryAt(fs *files, id core.FileID) *file {
-	s := fs.shard(id)
-	s.mu.Lock()
-	f := s.m[id]
-	s.mu.Unlock()
-	if f == nil {
-		panic("EntryAt: the file has no entry")
-	}
-	return f
-}
-
-// LockFile holds the entry's file index lock exclusively and returns its
-// release. With the entry already in hand the shard lock is never touched, so
-// the test can hold a shard lock when it takes the entry's — the out-of-order
-// shape the ranks exist to report.
-func LockFile(f *file) (unlock func()) {
-	f.mu.Lock()
-	return f.mu.Unlock
-}
-
-// LockShard holds the file map lock of id's shard and returns its release.
-func LockShard(fs *files, id core.FileID) (unlock func()) {
-	s := fs.shard(id)
-	s.mu.Lock()
-	return s.mu.Unlock
-}

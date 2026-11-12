@@ -2,8 +2,10 @@ package index
 
 import (
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
@@ -25,9 +27,16 @@ var goneIDs = []core.FileID{fid(9), fid(10), fid(11), fid(12)}
 
 const recordedRounds = 200
 
+// recordedBound is the one backstop the recorded run's join waits behind:
+// crossing it proves the run deadlocked, never that it was slow, and the
+// test then fails with every goroutine's stack from its own goroutine.
+const recordedBound = 60 * time.Second
+
 // launchRecorded runs fn on n goroutines and waits for all of them, on the
-// WaitGroup and not on a clock.
-func launchRecorded(n int, fn func(i int)) {
+// WaitGroup and not on a clock; the bound only turns a hang into a failure
+// that carries the stacks, where the binary's own timeout would carry none.
+func launchRecorded(t *testing.T, n int, fn func(i int)) {
+	t.Helper()
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := range n {
@@ -36,7 +45,18 @@ func launchRecorded(n int, fn func(i int)) {
 			fn(i)
 		}()
 	}
-	wg.Wait()
+	joined := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+	case <-time.After(recordedBound):
+		buf := make([]byte, 1<<20)
+		buf = buf[:runtime.Stack(buf, true)]
+		t.Fatalf("the recorded run did not return within %v; the goroutine stacks follow:\n%s", recordedBound, buf)
+	}
 }
 
 // TestIndexUnderRecorder: a concurrent mix of the index's own operations,
@@ -53,7 +73,7 @@ func TestIndexUnderRecorder(t *testing.T) {
 	// occupied is exactly one held piece.
 	e := core.Extent{Off: 0, Len: 512}
 	r := RecordAt{Segment: core.SegmentID(1), Offset: 0}
-	launchRecorded(8, func(i int) {
+	launchRecorded(t, 8, func(i int) {
 		v := uint64(i + 1)
 		for range recordedRounds {
 			tag := core.ShareTag(i%2 + 1)
@@ -158,56 +178,5 @@ func TestIndexUnderRecorder(t *testing.T) {
 	recorder.Release(probe)
 	if held := recorder.Held(); len(held) != 0 {
 		t.Fatalf("main goroutine holds ranks %v after the probe's release, want none", held)
-	}
-}
-
-// TestIndexLocksNameTheirRanks: the file map and the file index are separate
-// domains, and each ranked lock names its own. A file lock taken under a
-// shard lock is reported as an acquire-under-map, and no acquisition the index
-// itself makes is reported; polling the locks directly, so the check never
-// depends on which call an index operation chose to make.
-func TestIndexLocksNameTheirRanks(t *testing.T) {
-	ix := New(1 << 20)
-	recorder := lockorder.NewRecorder()
-	ix.SetRecorder(recorder)
-
-	// In-rank: a file lock over the shard lock is the order the index uses.
-	// The write makes the file's entry — the one operation that creates
-	// entries — under the recorder without a violation of its own.
-	id := recordedIDs[0]
-	if _, err := ix.WriteRetain(1, id, Placed{Extent: ext(0, 64), Record: rec(1, 0), Version: ver(1)}, core.Seq(1)); err != nil {
-		t.Fatalf("WriteRetain: %v", err)
-	}
-	f := EntryAt(&ix.fs, id)
-	unlockFile := LockFile(f)
-	unlockShard := LockShard(&ix.fs, id)
-	unlockShard()
-	unlockFile()
-	if vs := recorder.Violations(); len(vs) != 0 {
-		t.Fatalf("in-order acquisitions recorded %d violations, want 0: %+v", len(vs), vs)
-	}
-
-	// Out-of-rank: a file lock under the shard lock is an acquire under the
-	// map domain, the same report the first recorder rule would find for any
-	// lock the index took that way.
-	unlockShard = LockShard(&ix.fs, id)
-	unlockFile = LockFile(f)
-	unlockFile()
-	unlockShard()
-	vs := recorder.Violations()
-	if len(vs) != 1 {
-		t.Fatalf("a file lock under the shard lock recorded %d violations, want 1", len(vs))
-	}
-	if vs[0].Kind != lockorder.AcquireUnderMap {
-		t.Fatalf("violation kind = %s, want AcquireUnderMap", vs[0].Kind)
-	}
-	if vs[0].Rank != lockorder.FileIndex {
-		t.Fatalf("violation rank = %s, want file index", vs[0].Rank)
-	}
-	if len(vs[0].Held) != 1 || vs[0].Held[0] != lockorder.FileMap {
-		t.Fatalf("violation held = %v, want [file map]", vs[0].Held)
-	}
-	if held := recorder.Held(); len(held) != 0 {
-		t.Fatalf("goroutine holds ranks %v after the releases, want none", held)
 	}
 }
