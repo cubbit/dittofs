@@ -26,7 +26,8 @@ func (r *rig) syncOf(ids ...core.FileID) <-chan error {
 	ch := make(chan error, 1)
 	go func() {
 		defer cancel()
-		ch <- r.d.Sync(ctx, ids...)
+		_, err := r.d.Sync(ctx, ids...)
+		ch <- err
 	}()
 	return ch
 }

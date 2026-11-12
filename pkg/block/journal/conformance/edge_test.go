@@ -1422,7 +1422,7 @@ func TestEdge_SyncFailsThenSucceeds(t *testing.T) {
 		beforeFail := s
 
 		f.FailNext(kit.OpSync, segmentName(seg), 1)
-		err := h.Sync(t.Context(), id)
+		_, err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
 		// The failed window resolves one of two ways, and the Sync's return
@@ -1437,7 +1437,7 @@ func TestEdge_SyncFailsThenSucceeds(t *testing.T) {
 				t.Fatalf("share %d: a Sync that failed the window returned the error without the loss generation rising", k)
 			}
 		}
-		if err := ho.Sync(t.Context(), other); err != nil {
+		if _, err := ho.Sync(t.Context(), other); err != nil {
 			stub(t, "Sync", err)
 			t.Fatalf("share %d: the other stream's Sync beside a failed window: %v", k, err)
 		}
@@ -1457,7 +1457,7 @@ func TestEdge_SyncFailsThenSucceeds(t *testing.T) {
 			t.Fatalf("share %d: the write after a failed sync was appended to the failed segment %d", k, seg)
 		}
 		syncs := f.Seam.CallsFor(kit.OpSync, segmentName(next))
-		if err := h.Sync(t.Context(), id); err != nil {
+		if _, err := h.Sync(t.Context(), id); err != nil {
 			stub(t, "Sync", err)
 			t.Fatalf("share %d: the Sync after a failed one: %v", k, err)
 		}
@@ -1686,7 +1686,9 @@ func TestEdge_SegmentRetiredByEvictionAndRepack(t *testing.T) {
 	// the journal's own; both converge on the one retire the holds name.
 	repacked := make(chan error, 1)
 	synced := make(chan error, 1)
-	go func() { synced <- h.Sync(t.Context(), id) }()
+	go func() {
+		synced <- func() error { _, err := h.Sync(t.Context(), id); return err }()
+	}()
 	// A retire always becomes eligible at the durability sync, but nothing
 	// in the rule runs it inside that sync: a journal whose reclaimer runs
 	// once Sync has returned is conforming, so the sync's return is only

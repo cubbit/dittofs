@@ -770,7 +770,7 @@ func TestRFC1B_FailedWindowDoesNotWedge(t *testing.T) {
 		seg := segmentOf(t, f, id, a.Off)
 		gen := f.J.Stats().LossGeneration
 		failWindow(t, f, seg)
-		err := h.Sync(t.Context(), id)
+		_, err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
 		failed := errors.Is(err, journal.ErrSyncFailed)
@@ -785,7 +785,7 @@ func TestRFC1B_FailedWindowDoesNotWedge(t *testing.T) {
 			t.Fatalf("share %d: the write after a failed sync was appended to the failed segment %d", k, seg)
 		}
 		syncs := f.Seam.CallsFor(kit.OpSync, segmentName(bSeg))
-		if err := h.Sync(t.Context(), id); err != nil {
+		if _, err := h.Sync(t.Context(), id); err != nil {
 			stub(t, "Sync", err)
 			t.Fatalf("share %d: the Sync after a failed window: %v; the file is wedged", k, err)
 		}
@@ -874,7 +874,7 @@ func TestRFC1B_SyncFailure(t *testing.T) {
 		seg := segmentOf(t, f, id, 0)
 		failures := f.J.Stats().Counters.SyncFailures
 		f.FailNext(kit.OpSync, segmentName(seg), 1)
-		err := h.Sync(t.Context(), id)
+		_, err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
 		if err != nil && (!errors.Is(err, journal.ErrSyncFailed) || !errors.Is(err, syscall.EIO)) {

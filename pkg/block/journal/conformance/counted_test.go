@@ -215,7 +215,7 @@ func TestCounted_SyncsPerWrite(t *testing.T) {
 					return
 				}
 				gate.entering()
-				err = h.Sync(t.Context(), id)
+				_, err = h.Sync(t.Context(), id)
 				gate.left()
 				if err != nil {
 					errs <- err
@@ -378,7 +378,7 @@ func (e *fixtureMixedEnv) Append() (more bool, err error) {
 	// on this goroutine — the stream's — where the gate would park it.
 	closing := off >= fileLen
 	if closing {
-		if err := e.h.Sync(e.t.Context(), e.streamID); err != nil {
+		if _, err := e.h.Sync(e.t.Context(), e.streamID); err != nil {
 			return false, err
 		}
 	}
@@ -430,7 +430,8 @@ func (e *fixtureMixedEnv) Intervals() int {
 // goroutine with the gate disarmed: it passes through storage without
 // parking, and returns once the journal has flushed what the file holds.
 func (e *fixtureMixedEnv) SyncStream() error {
-	return e.h.Sync(e.t.Context(), e.streamID)
+	_, err := e.h.Sync(e.t.Context(), e.streamID)
+	return err
 }
 
 // WriteSmall lands the small writer's next record at the head of its file,
@@ -450,7 +451,8 @@ func (e *fixtureMixedEnv) WriteSmall() error {
 
 // SyncSmall runs the small writer's measured Sync.
 func (e *fixtureMixedEnv) SyncSmall() error {
-	return e.h.Sync(e.t.Context(), e.smallID)
+	_, err := e.h.Sync(e.t.Context(), e.smallID)
+	return err
 }
 
 // DurableTotal sums the seam's per-name durable totals over the segment

@@ -275,7 +275,7 @@ func TestCorruptLossNamesThePiecesDropped(t *testing.T) {
 			f := file(1)
 			a := cr.write(t, f, 0, "aaaaaaaaaaaaaaaa")
 			if synced {
-				if err := cr.d.Sync(context.Background(), f); err != nil {
+				if _, err := cr.d.Sync(context.Background(), f); err != nil {
 					t.Fatalf("Sync of the record: %v", err)
 				}
 			}
@@ -341,7 +341,7 @@ func TestCorruptUnsyncedGetsUnsyncedLossRecordSyncedGetsSynced(t *testing.T) {
 	}
 
 	s := cr.write(t, g, 0, "bbbb")
-	if err := cr.d.Sync(context.Background(), g); err != nil {
+	if _, err := cr.d.Sync(context.Background(), g); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	cr.corrupt(t, s.c)
@@ -369,7 +369,7 @@ func TestCorruptEventSaysWhetherTheDroppedRecordWasSynced(t *testing.T) {
 	}
 
 	s := cr.write(t, g, 0, "bbbb")
-	if err := cr.d.Sync(context.Background(), g); err != nil {
+	if _, err := cr.d.Sync(context.Background(), g); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	cr.corrupt(t, s.c)
@@ -386,11 +386,11 @@ func TestCorruptSyncedLossMasksWhatItSuperseded(t *testing.T) {
 	cr := newCorruptRig(t, nil)
 	f := file(1)
 	cr.write(t, f, 0, "aaaa")
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v5: %v", err)
 	}
 	v10 := cr.write(t, f, 0, "bbbb")
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v10: %v", err)
 	}
 
@@ -412,7 +412,7 @@ func TestCorruptUnsyncedReholdsAndLeavesLedger(t *testing.T) {
 	cr := newCorruptRig(t, nil)
 	f, g := file(1), file(2)
 	v5 := cr.write(t, f, 0, "aaaa")
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v5: %v", err)
 	}
 	v10 := cr.write(t, f, 0, "bbbb")
@@ -448,7 +448,7 @@ func TestCorruptUnsyncedThenItsSegmentFails(t *testing.T) {
 	cr := newCorruptRig(t, nil)
 	f, g := file(1), file(2)
 	v5 := cr.write(t, f, 0, "aaaa")
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v5: %v", err)
 	}
 	v10 := cr.write(t, f, 0, "bbbb")
@@ -547,7 +547,7 @@ func TestCorruptSyncedRecordStaysDurable(t *testing.T) {
 	cr := newCorruptRig(t, nil)
 	f := file(1)
 	w := cr.write(t, f, 0, "aaaa")
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	cr.corrupt(t, w.c)
@@ -573,7 +573,7 @@ func TestCorruptCoveredBeforeWorkerAppliesCompletion(t *testing.T) {
 	t.Cleanup(release)
 	f := file(1)
 	cr.write(t, f, 0, "aaaa")
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v5: %v", err)
 	}
 
@@ -625,7 +625,7 @@ func TestCorruptSyncBetweenReadAndDecision(t *testing.T) {
 	cr := newCorruptRig(t, nil)
 	f := file(1)
 	cr.write(t, f, 0, "aaaa")
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v5: %v", err)
 	}
 	v10 := cr.write(t, f, 0, "bbbb")
@@ -633,7 +633,7 @@ func TestCorruptSyncBetweenReadAndDecision(t *testing.T) {
 		t.Fatal("v10 reads durable before its sync")
 	}
 	// The read has found v10 unsynced; its sync completes before Corrupt.
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v10: %v", err)
 	}
 

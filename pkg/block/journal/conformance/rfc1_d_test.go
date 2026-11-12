@@ -147,7 +147,7 @@ func loseDirty(t *testing.T, f *journaltest.Fixture, i int) {
 	h, id := f.Share(0), journaltest.File(i)
 	p := pattern(fmt.Sprint("lost", i), 4096)
 	write(t, h, id, 0, p)
-	err := h.Sync(t.Context(), id)
+	_, err := h.Sync(t.Context(), id)
 	stub(t, "Sync", err)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
@@ -371,7 +371,8 @@ func TestRFC1D_MetricsAreReachable(t *testing.T) {
 	// it.
 	f.FailNext(kit.OpSync, "*.seg", 1)
 	write(t, h, journaltest.File(0), 0, pattern("sync", 4096))
-	stub(t, "Sync", h.Sync(t.Context(), journaltest.File(0)))
+	_, err = h.Sync(t.Context(), journaltest.File(0))
+	stub(t, "Sync", err)
 	f.Seam.SetFault(nil)
 	if got := f.J.Stats().Counters.SyncFailures; got == 0 {
 		t.Fatal("SyncFailures is zero after a sync failed at storage")
@@ -408,7 +409,7 @@ func TestRFC1D_MetricsAreReachable(t *testing.T) {
 	const margin = 8
 	other := journaltest.NewUnwatched(t)
 	write(t, other.Share(0), journaltest.File(0), 0, pattern("foreign", 4096))
-	err = other.Share(0).Sync(t.Context(), journaltest.File(0))
+	_, err = other.Share(0).Sync(t.Context(), journaltest.File(0))
 	stub(t, "Sync", err)
 	if err != nil {
 		t.Fatal(err)
@@ -563,7 +564,7 @@ func TestRFC1D_VerificationReports(t *testing.T) {
 	h := f.Share(0)
 	id, p := journaltest.File(0), pattern("verify", 4096)
 	write(t, h, id, 0, p)
-	err := h.Sync(t.Context(), id)
+	_, err := h.Sync(t.Context(), id)
 	stub(t, "Sync", err)
 	if err != nil {
 		t.Fatal(err)
@@ -571,7 +572,7 @@ func TestRFC1D_VerificationReports(t *testing.T) {
 	// A second file, on the other share, that stays whole.
 	whole := journaltest.File(1)
 	write(t, f.Share(1), whole, 0, pattern("whole", 4096))
-	err = f.Share(1).Sync(t.Context(), whole)
+	_, err = f.Share(1).Sync(t.Context(), whole)
 	stub(t, "Sync", err)
 	if err != nil {
 		t.Fatal(err)

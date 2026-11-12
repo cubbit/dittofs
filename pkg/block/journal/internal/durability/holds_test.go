@@ -446,7 +446,7 @@ func TestRepeatedReadWhileOwedAddsNothing(t *testing.T) {
 
 	// With nothing left unsynced, no record's deadline arms the worker's
 	// timer: only the owed claim's own tick keeps it retrying.
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	eventually(t, "the ledger to empty", func() bool { return cr.ledgerLen(0) == 0 })
@@ -486,7 +486,7 @@ func TestOverwrittenOwedRecordRemovedWithoutReappend(t *testing.T) {
 	// f's record is overwritten, and the overwrite synced, so the index keeps
 	// no retained piece of it either.
 	cr.publish(t, f, 0, "zzzz")
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of the overwrite: %v", err)
 	}
 	eventually(t, "the overwritten record to leave the index", func() bool { return len(cr.ix.Retained(f)) == 0 })
@@ -675,7 +675,7 @@ func TestReadOnlyCopyStaysPut(t *testing.T) {
 	// records they serve for are synced before the journal enters read-only,
 	// because the read-only pass fails every unsynced record and leaves a
 	// synced one.
-	if err := cr.d.Sync(context.Background(), file(1), file(2)); err != nil {
+	if _, err := cr.d.Sync(context.Background(), file(1), file(2)); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	eventually(t, "the synced entries to complete", func() bool { return cr.ledgerLen(0) == 0 })
@@ -867,7 +867,7 @@ func TestHeldRecordIsReappendedAndHoldsEnd(t *testing.T) {
 	if got == copyAt(rs[0]) || got == placeAt(rs[0].again) {
 		t.Fatalf("the extent is served from %+v, want a new place outside the copy and the corrupt record", got)
 	}
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync = %v", err)
 	}
 	hs, _ := cr.durableHeaders(t)

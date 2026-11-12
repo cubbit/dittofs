@@ -882,7 +882,7 @@ func TestLoseOfARecordWhoseSegmentWasEndedIsNotDurable(t *testing.T) {
 	// The record is re-appended by the worker, which is not part of the Lose,
 	// and syncs with the next sync of the file: a sync the stream already
 	// had in flight may not cover it.
-	if err := e.d.Sync(context.Background(), l.File); err != nil {
+	if _, err := e.d.Sync(context.Background(), l.File); err != nil {
 		t.Fatalf("Sync of the re-appended record's file = %v, want nil", err)
 	}
 	var got []format.Loss

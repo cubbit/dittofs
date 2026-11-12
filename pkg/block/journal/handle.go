@@ -208,16 +208,27 @@ func (h *Handle) WriteAt(ctx context.Context, id FileID, off int64, p []byte, mt
 }
 
 // Sync returns once every operation on the named files that returned before
-// the call is durable. A failed sync window returns a SyncError naming the
-// files whose writes it lost; a later successful sync never stands in for
-// them. Sync holds no lock across the sync itself.
+// the call is durable, and reports the marks that prove it: per stream, one
+// SyncMark covering the newest named record the stream holds outside a
+// sealed segment -- the stream's number, the segment, its synced-through
+// offset, and that record's end and sequence number -- ordered by stream
+// number (RFC 1 §3.1). A stream holding no named record returns no mark, and
+// so does a Sync whose every named file has nothing unsynced; a failure
+// returns no marks with its error, since a mark would prove records the sync
+// lost. The caller owns the marks it is handed: it keeps each stream's
+// latest and hands the ones a committed metadata transaction recorded to
+// Open.
+//
+// A failed sync window returns a SyncError naming the files whose writes it
+// lost; a later successful sync never stands in for them. Sync holds no
+// lock across the sync itself.
 //
 // A done ctx is refused first with its error, and a file of another share
-// with an OtherShareError; either refusal syncs nothing and clears no file's
-// report. A Sync cancelled while it waits returns ctx's error and leaves the
-// sync running for the other writes it covers, and its outcome to the next
-// Sync of the file.
-func (h *Handle) Sync(ctx context.Context, ids ...FileID) error {
+// with an OtherShareError; either refusal syncs nothing, clears no file's
+// report and returns no marks. A Sync cancelled while it waits returns ctx's
+// error and leaves the sync running for the other writes it covers, and its
+// outcome to the next Sync of the file.
+func (h *Handle) Sync(ctx context.Context, ids ...FileID) ([]SyncMark, error) {
 	return h.j.core.Sync(ctx, h.s, ids...)
 }
 

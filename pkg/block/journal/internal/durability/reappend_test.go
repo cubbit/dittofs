@@ -1908,7 +1908,7 @@ func TestACorruptReadOfAMovedPlaceIsNotCountedDamagedThroughUseCopy(t *testing.T
 	cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
 	// The second copy is synced and complete, so only the move says it was
 	// ever re-appended.
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync = %v", err)
 	}
 	eventually(t, "the second copy to complete", func() bool { return !cr.inLedger(r.again) })

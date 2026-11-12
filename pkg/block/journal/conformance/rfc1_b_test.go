@@ -253,7 +253,7 @@ func evict(t *testing.T, h *journal.Handle, ws []written) int64 {
 func syncNow(t *testing.T, h *journal.Handle, ids ...journal.FileID) {
 	t.Helper()
 
-	err := h.Sync(t.Context(), ids...)
+	_, err := h.Sync(t.Context(), ids...)
 	stub(t, "Sync", err)
 	if err != nil {
 		t.Fatalf("sync: %v", err)

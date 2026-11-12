@@ -101,7 +101,7 @@ func FuzzSyncInterleaving(f *testing.F) {
 				appended = true
 				locs[i] = append(locs[i], last)
 			case 1:
-				err := r.d.Sync(context.Background(), files[i])
+				_, err := r.d.Sync(context.Background(), files[i])
 				switch {
 				case err == nil:
 					for _, l := range locs[i] {
@@ -142,7 +142,7 @@ func FuzzSyncInterleaving(f *testing.F) {
 				}
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
-				if err := r.d.Sync(ctx, files[i]); !errors.Is(err, context.Canceled) {
+				if _, err := r.d.Sync(ctx, files[i]); !errors.Is(err, context.Canceled) {
 					t.Fatalf("a cancelled Sync returned %v, want context.Canceled", err)
 				}
 			case 3:
@@ -255,7 +255,7 @@ func FuzzFailedSyncWindow(f *testing.F) {
 				r.settlePool(t) // a roll takes a spare; keep one ready
 			case 1:
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				err := r.d.Sync(ctx, files[i])
+				_, err := r.d.Sync(ctx, files[i])
 				cancel()
 				doomedFile := false // a failure is owed to the file
 				lossAtRisk := false

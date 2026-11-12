@@ -50,7 +50,8 @@ func (j *wrappedJournal) MarksRecorded([]entity.SyncMark) {}
 type handle struct{ *journal.Handle }
 
 func (h handle) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
-	return nil, h.Handle.Sync(ctx, ids...)
+	_, err := h.Handle.Sync(ctx, ids...)
+	return nil, err
 }
 
 func (h handle) Reserve(n int64, writes int) (engine.Reservation, error) {

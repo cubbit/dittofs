@@ -174,7 +174,7 @@ func TestRollToAnUntrackedSegmentDoesNotSpin(t *testing.T) {
 	// deadline, r1 never being durable.
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	_ = r.d.Sync(ctx, f)
+	_, _ = r.d.Sync(ctx, f)
 	r.clock.Advance(core.SyncBound)
 	time.Sleep(50 * time.Millisecond)
 	c1 := calls.Load()

@@ -80,7 +80,7 @@ func (h spyHandle) WriteAt(ctx context.Context, id journal.FileID, off int64, p 
 	return v, err
 }
 
-func (h spyHandle) Sync(ctx context.Context, ids ...journal.FileID) error {
+func (h spyHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]journal.SyncMark, error) {
 	h.s.events = append(h.s.events, "sync")
 	return h.Handle.Sync(ctx, ids...)
 }

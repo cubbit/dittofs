@@ -50,7 +50,7 @@ func TestSyncMakesEveryNamedFileSurviveACrash(t *testing.T) {
 	vf := mustWrite(t, c, s, f, 0, []byte("ffff"))
 	vg := mustWrite(t, c, s, g, 0, []byte("gggg"))
 
-	if err := c.Sync(context.Background(), s, f, g); err != nil {
+	if _, err := c.Sync(context.Background(), s, f, g); err != nil {
 		t.Fatalf("Sync(f, g) = %v, want nil", err)
 	}
 	crashLosingUnsynced(t, seam)
@@ -76,7 +76,7 @@ func TestSyncReportsAFailedWindowOnce(t *testing.T) {
 	mustWrite(t, c, s, f, 0, []byte("ffff"))
 	failWindowOf(t, c, seam, f)
 
-	err := c.Sync(context.Background(), s, f)
+	_, err := c.Sync(context.Background(), s, f)
 	var se *core.SyncError
 	if !errors.As(err, &se) {
 		t.Fatalf("Sync over a failed window = %v, want a *SyncError", err)
@@ -87,7 +87,7 @@ func TestSyncReportsAFailedWindowOnce(t *testing.T) {
 	if err := seam.Schedule(); err != nil {
 		t.Fatalf("the seam refused to clear its rules: %v", err)
 	}
-	if err := c.Sync(context.Background(), s, f); err != nil {
+	if _, err := c.Sync(context.Background(), s, f); err != nil {
 		t.Fatalf("the Sync after the report = %v, want nil: a failed window is reported once", err)
 	}
 }
@@ -105,7 +105,7 @@ func TestSyncRefusesAnotherSharesFileAndKeepsItsReport(t *testing.T) {
 	mustWrite(t, c, b, g, 0, []byte("gggg"))
 	failWindowOf(t, c, seam, f)
 	for name, ids := range map[string][]core.FileID{"alone": {f}, "beside its own": {g, f}} {
-		err := c.Sync(context.Background(), b, ids...)
+		_, err := c.Sync(context.Background(), b, ids...)
 		var other *core.OtherShareError
 		if !errors.As(err, &other) {
 			t.Fatalf("Sync through the other share (%s) = %v, want an OtherShareError", name, err)
@@ -114,7 +114,7 @@ func TestSyncRefusesAnotherSharesFileAndKeepsItsReport(t *testing.T) {
 			t.Fatalf("Sync through the other share (%s) = %v, want it to match ErrOtherShare", name, err)
 		}
 	}
-	if err := c.Sync(context.Background(), a, f); !errors.Is(err, core.ErrSyncFailed) {
+	if _, err := c.Sync(context.Background(), a, f); !errors.Is(err, core.ErrSyncFailed) {
 		t.Fatalf("the owner's Sync after the refused ones = %v, want the failed window's SyncError", err)
 	}
 }
@@ -132,13 +132,13 @@ func TestSyncChecksTheContextFirst(t *testing.T) {
 	failWindowOf(t, c, seam, f)
 	done, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := c.Sync(done, b, f); !errors.Is(err, context.Canceled) {
+	if _, err := c.Sync(done, b, f); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Sync with a done context of another share's file = %v, want context.Canceled before the share check", err)
 	}
-	if err := c.Sync(done, a, f); !errors.Is(err, context.Canceled) {
+	if _, err := c.Sync(done, a, f); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Sync with a done context = %v, want context.Canceled", err)
 	}
-	if err := c.Sync(context.Background(), a, f); !errors.Is(err, core.ErrSyncFailed) {
+	if _, err := c.Sync(context.Background(), a, f); !errors.Is(err, core.ErrSyncFailed) {
 		t.Fatalf("the Sync after the cancelled ones = %v, want the failed window's SyncError", err)
 	}
 }
@@ -150,7 +150,7 @@ func TestSyncRefusesAClosedHandle(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if err := c.Sync(context.Background(), s, testFile(1)); !errors.Is(err, core.ErrClosed) {
+	if _, err := c.Sync(context.Background(), s, testFile(1)); !errors.Is(err, core.ErrClosed) {
 		t.Fatalf("Sync through a closed handle = %v, want ErrClosed", err)
 	}
 }

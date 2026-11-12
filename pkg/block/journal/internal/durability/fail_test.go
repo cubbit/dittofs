@@ -156,7 +156,7 @@ func (r *rig) lossesOnDisk(t *testing.T) []lossOnDisk {
 func (r *rig) syncedThenOverwritten(t *testing.T, f core.FileID, first, second string) (loc segment.Location, v1, v2 core.Version, seq2 core.Seq) {
 	t.Helper()
 	_, v1 = r.publish(t, f, 0, first)
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of the first write: %v", err)
 	}
 	loc, v2 = r.publish(t, f, 0, second)
@@ -225,7 +225,7 @@ func TestALossEventNamesTheExtentOfThePieceTheFailureDropped(t *testing.T) {
 	fr := newFailRig(t, nil)
 	f := file(1)
 	_, _ = fr.publish(t, f, 0, "aaaaaaaa")
-	if err := fr.d.Sync(context.Background(), f); err != nil {
+	if _, err := fr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	loc, v10 := fr.publish(t, f, 0, "bbbbbbbb")
@@ -263,7 +263,7 @@ func TestAFailedWindowLeavesRecordsOfAnEarlierSegmentHeld(t *testing.T) {
 	fr := newFailRig(t, nil)
 	f := file(1)
 	_, v1 := fr.publish(t, f, 0, "aaaa")
-	if err := fr.d.Sync(context.Background(), f); err != nil {
+	if _, err := fr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	loc, v2 := fr.publish(t, f, 8, "bbbb")
@@ -361,7 +361,7 @@ func TestAWriterThatPublishesAfterTheSyncFailedDoesNotBringTheRecordBack(t *test
 	f, g := file(1), file(2)
 	_, v1 := fr.publish(t, f, 0, "aaaa")
 	fr.publish(t, g, 0, "gggg")
-	if err := fr.d.Sync(context.Background(), f, g); err != nil {
+	if _, err := fr.d.Sync(context.Background(), f, g); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 
@@ -549,7 +549,7 @@ func TestAFailedWindowLeavesWhatARecordStillInTheLedgerHeld(t *testing.T) {
 	f, h := file(1), file(2)
 	fr.publish(t, h, 0, "hhhh")
 	fr.publish(t, f, 0, "aaaa")
-	if err := fr.d.Sync(context.Background(), f, h); err != nil {
+	if _, err := fr.d.Sync(context.Background(), f, h); err != nil {
 		t.Fatal(err)
 	}
 	loc, _ := fr.publish(t, h, 8, "hhhh")
@@ -584,7 +584,7 @@ func TestAFailedWindowLeavesWhatARecordStillInTheLedgerHeld(t *testing.T) {
 	fr.awaitResolved(t)
 	// The waiting Sync is the one told of f's failed records.
 	wantSyncError(t, mustReturn(t, "Sync of the failed file", told), loc.Segment, f)
-	if err := fr.d.Sync(context.Background(), f); err != nil {
+	if _, err := fr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v12: %v", err)
 	}
 	if got := fr.retainedBy(f, v12); len(got) != 0 {
@@ -695,7 +695,7 @@ func TestASplitWriteSyncedInPartLiftsOnlyThatPartsContent(t *testing.T) {
 	fr := newFailRig(t, nil)
 	f := file(1)
 	_, v1 := fr.publish(t, f, 0, "aaaaaaaa")
-	if err := fr.d.Sync(context.Background(), f); err != nil {
+	if _, err := fr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v1: %v", err)
 	}
 	v2, err := fr.d.counters.Draw()

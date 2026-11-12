@@ -183,7 +183,7 @@ func draw(t *testing.T, f *journaltest.Fixture) journal.Version {
 func syncFile(t *testing.T, h *journal.Handle, id journal.FileID) {
 	t.Helper()
 
-	err := h.Sync(t.Context(), id)
+	_, err := h.Sync(t.Context(), id)
 	stub(t, "Sync", err)
 	if err != nil {
 		t.Fatalf("sync: %v", err)

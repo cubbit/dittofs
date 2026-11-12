@@ -77,7 +77,7 @@ func TestSyncLiftsWhatTheSyncedRecordSuperseded(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 	_, v1 := r.publish(t, f, 0, "aaaa")
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v1: %v", err)
 	}
 	_, v2 := r.publish(t, f, 0, "bbbb")
@@ -89,7 +89,7 @@ func TestSyncLiftsWhatTheSyncedRecordSuperseded(t *testing.T) {
 		t.Fatalf("before the sync Lookup serves %+v, %v, want v2", p, ok)
 	}
 
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v2: %v", err)
 	}
 	if got := r.ix.Retained(f); len(got) != 0 {
@@ -107,7 +107,7 @@ func TestSyncOfARecordThatSupersededNothingAccountsNothing(t *testing.T) {
 	f, g := file(1), file(2)
 	_, v1 := r.publish(t, f, 0, "aaaa")
 	r.publish(t, g, 0, "gggg")
-	if err := r.d.Sync(context.Background(), f, g); err != nil {
+	if _, err := r.d.Sync(context.Background(), f, g); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if got := r.ix.Retained(f); len(got) != 0 {
@@ -128,14 +128,14 @@ func TestSyncReleasesTheSegmentsRetainedBytes(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 	loc1, _ := r.publish(t, f, 0, "aaaa")
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v1: %v", err)
 	}
 	r.publish(t, f, 0, "bbbb")
 	if got := r.ix.SegmentBytes(loc1.Segment).Retained; got != 4 {
 		t.Fatalf("before the sync the segment retains %d bytes, want 4", got)
 	}
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v2: %v", err)
 	}
 	if got := r.ix.SegmentBytes(loc1.Segment).Retained; got != 0 {
@@ -149,11 +149,11 @@ func TestSyncAccountsTheLift(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 	r.publish(t, f, 0, "aaaa")
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v1: %v", err)
 	}
 	r.publish(t, f, 0, "bbbb")
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v2: %v", err)
 	}
 	var retained int64
@@ -176,7 +176,7 @@ func TestSyncInTheGapLiftsAfterThePublish(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 	r.publish(t, f, 0, "aaaa")
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v1: %v", err)
 	}
 
@@ -208,7 +208,7 @@ func TestSyncInTheGapLiftsAfterThePublish(t *testing.T) {
 
 	close(release)
 	v2 := <-done
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v2: %v", err)
 	}
 	eventually(t, "v1 to leave the retained set", func() bool { return len(r.retainedBy(f, v2)) == 0 })

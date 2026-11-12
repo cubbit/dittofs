@@ -59,7 +59,7 @@ func TestMetrics_ConditionsMoveTheirMetric(t *testing.T) {
 		write(t, h, journaltest.File(0), 0, pattern("fail", 4096))
 		before := f.J.Stats().Counters
 		f.FailNext(kit.OpSync, "*.seg", 1)
-		err := h.Sync(t.Context(), journaltest.File(0))
+		_, err := h.Sync(t.Context(), journaltest.File(0))
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
 		after := f.J.Stats().Counters
@@ -96,7 +96,7 @@ func TestMetrics_ConditionsMoveTheirMetric(t *testing.T) {
 		seg := segmentOf(t, f, id, 0)
 		before, losses, gen := f.J.Stats().Counters, f.J.Stats().Losses, f.J.Stats().LossGeneration
 		failWindow(t, f, seg)
-		err := h.Sync(t.Context(), id)
+		_, err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
 		after := f.J.Stats().Counters
@@ -214,7 +214,7 @@ func TestMetrics_ConditionsMoveTheirMetric(t *testing.T) {
 
 		before := f.J.Stats().Counters
 		schedule(t, f, readOnlyRules(syscall.EROFS)...)
-		err := h.Sync(t.Context(), id)
+		_, err := h.Sync(t.Context(), id)
 		stub(t, "Sync", err)
 		if !errors.Is(err, journal.ErrJournalReadOnly) {
 			t.Fatalf("a Sync whose writes all failed EROFS returned %v, want ErrJournalReadOnly", err)

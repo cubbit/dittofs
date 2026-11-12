@@ -355,6 +355,14 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 				}
 			}
 		},
+		// A lookup error counts as not sealed, the safe direction: a
+		// segment gone from the registry emits a mark recovery then finds
+		// stale, while filtering it would silently drop the mark covering
+		// the stream's records.
+		Sealed: func(id core.SegmentID) bool {
+			st, err := state.Set.State(id)
+			return err == nil && st == segment.Sealed
+		},
 	})
 	if err != nil {
 		return nil, err

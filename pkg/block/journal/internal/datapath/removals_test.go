@@ -439,7 +439,7 @@ func TestRemovalAfterATimerFailedWindowLeavesItsMarkForSync(t *testing.T) {
 	if rec := removalOf(t, seam, format.KindTruncate); rec.Header.Version != v {
 		t.Fatalf("the record on disk carries %v, the call returned %v", rec.Header.Version, v)
 	}
-	if err := c.Durability().Sync(context.Background(), f); !errors.Is(err, core.ErrSyncFailed) {
+	if _, err := c.Durability().Sync(context.Background(), f); !errors.Is(err, core.ErrSyncFailed) {
 		t.Fatalf("Sync after the truncate = %v, want the failed window's SyncError", err)
 	}
 }

@@ -82,7 +82,7 @@ func tagOnly(t *testing.T) (*Core, *Share, *Share, core.FileID) {
 	); err != nil {
 		t.Fatalf("the seam refused the failing sync and read rules: %v", err)
 	}
-	if err := c.Durability().Sync(context.Background(), f); err == nil {
+	if _, err := c.Durability().Sync(context.Background(), f); err == nil {
 		t.Fatal("the sync of F's unsynced record returned nil")
 	} else if !errors.Is(err, core.ErrSyncFailed) {
 		t.Fatalf("the failed sync returned %v, want a SyncError", err)

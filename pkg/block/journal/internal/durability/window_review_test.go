@@ -358,7 +358,7 @@ func TestAHeaderOnlyAnswerWaitsForTheLossGenerationOfItsWindow(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		err := r.d.Sync(context.Background(), f)
+		_, err := r.d.Sync(context.Background(), f)
 		done <- result{err, r.d.Generation()}
 	}()
 	// The window is taken and held before its records are failed: the failure

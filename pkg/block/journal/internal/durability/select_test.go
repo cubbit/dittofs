@@ -72,7 +72,7 @@ func TestDamagedSegmentAfterDrop(t *testing.T) {
 	cr := newCorruptRig(t, l.install)
 	f := file(1)
 	r := cr.reappend(t, f, 0, "aaaa")
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of the re-append: %v", err)
 	}
 	cr.register(r)

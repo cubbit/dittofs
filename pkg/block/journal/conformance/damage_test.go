@@ -101,7 +101,7 @@ func (d *driven) mirrorSync(s int, ids []journal.FileID, err error) {
 func (d *driven) sync(s int, ids ...journal.FileID) {
 	d.t.Helper()
 
-	err := d.f.Share(s).Sync(d.t.Context(), ids...)
+	_, err := d.f.Share(s).Sync(d.t.Context(), ids...)
 	stub(d.t, "Sync", err)
 	d.mirrorSync(s, ids, err)
 	if err != nil {
@@ -770,7 +770,10 @@ var syncPoints = []struct {
 		name := segmentName(entryAt(t, d.f, w.id, w.extent.Off).Location.Segment)
 		held := d.f.Seam.Hold(d.tb, kit.OpSync, name)
 		done := make(chan error, 1)
-		go func() { done <- d.f.Share(0).Sync(t.Context(), w.id) }()
+		go func() {
+			_, err := d.f.Share(0).Sync(t.Context(), w.id)
+			done <- err
+		}()
 		return parked{held: held, done: done}
 	}},
 	{"seal", func(t *testing.T, d *driven) parked {
@@ -1087,7 +1090,7 @@ var syncPoints = []struct {
 		// changes nothing the model holds, whether the journal returns the
 		// failure or not, so its result is not applied to the model.
 		d.f.FailNext(kit.OpSync, name, 1)
-		err := d.f.Share(0).Sync(t.Context(), a.id)
+		_, err := d.f.Share(0).Sync(t.Context(), a.id)
 		stub(t, "Sync", err)
 		var se *journal.SyncError
 		if err != nil && !errors.As(err, &se) {

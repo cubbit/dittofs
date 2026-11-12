@@ -763,7 +763,7 @@ func TestContentOnBothSidesOfAnUndoneRecordIsAccountedBack(t *testing.T) {
 	r.d.Start(r.streams)
 	f := file(1)
 	synced, _ := r.publish(t, f, 0, "aaaaaaaa")
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of the synced write: %v", err)
 	}
 	base := len(r.acct.all())

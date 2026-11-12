@@ -55,7 +55,7 @@ func TestRearmKeepsTheBoundFromTheRecordsOwnStamp(t *testing.T) {
 	a := r.appendWrite(t, file(1), 0, "a")
 	r.armed(t, before)
 	r.clock.Advance(core.SyncBound / 2)
-	if err := r.d.Sync(context.Background(), file(1)); err != nil {
+	if _, err := r.d.Sync(context.Background(), file(1)); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	r.clock.Advance(core.SyncBound / 10)

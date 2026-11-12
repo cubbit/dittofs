@@ -26,7 +26,7 @@ func syncAtTake(t *testing.T, cr *corruptRig, w written) (gen uint64, err error)
 		defer cancel()
 		// The generation is read after the Sync returns, so it is at least the
 		// one the Sync's caller would sample with its answer.
-		err := cr.d.Sync(ctx, w.c.File)
+		_, err := cr.d.Sync(ctx, w.c.File)
 		ch <- seen{gen: cr.d.Generation(), err: err}
 	}
 	cr.corrupt(t, w.c)

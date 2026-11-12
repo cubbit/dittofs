@@ -32,7 +32,7 @@ var (
 	_ = func(h *Handle) (Version, error) {
 		return h.WriteAt(context.Context(nil), FileID{}, int64(0), []byte(nil), int64(0))
 	}
-	_ = func(h *Handle) error { return h.Sync(context.Context(nil), FileID{}, FileID{}) }
+	_ = func(h *Handle) ([]SyncMark, error) { return h.Sync(context.Context(nil), FileID{}, FileID{}) }
 	_ = func(h *Handle) (int, []Extent, []Held, Version, error) {
 		return h.ReadAt(context.Context(nil), FileID{}, int64(0), []byte(nil))
 	}
