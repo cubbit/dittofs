@@ -1521,11 +1521,11 @@ type Mechanism interface {
 	Context() *Context // once done
 }
 
-// Context is what a finished exchange leaves: what it proved, the session key,
+// Context is what a finished exchange leaves: what it proved, the keys,
 // and the per-message operations the mechanism defines.
 type Context struct {
 	Evidence vfs.Evidence // RFC 18 §3.1 through RFC 17 §3.0's alias: principal, SIDs, expiry
-	Key     []byte          // for SMB's key derivation; never in an Identity
+	Keys    vfs.Keys        // RFC 18 §3.1's Session, Subkey and APRep; never in an Identity
 	MIC     func(msg []byte) ([]byte, error)            // RFC 4121: krb5i, the RPCSEC_GSS verifier
 	Wrap    func(msg []byte) ([]byte, error)            // RFC 4121: krb5p
 	Unwrap  func(tok []byte) ([]byte, error)
@@ -1550,7 +1550,7 @@ func Identity(c *Context, sys *SysCred, proto vfs.Protocol, addr netip.Addr) (vf
 | NTLM mechanism: challenge, then `Service.SignIn` | `gss` | — | inside SPNEGO | wire format, no secret |
 | SPNEGO, which composes the two | `gss` | — | `SESSION_SETUP` | wire format, no secret |
 | `Exchanges`: multi-leg state, deadline, cleanup | `gss` | keyed by GSS context handle | keyed by session ID | one exchange machine for both |
-| RFC 4121 per-message tokens (MIC and wrap) | `gss.Context`, called from NFS's `Security` stage (§5.5) | `krb5i`, `krb5p` and the verifier | — (SMB derives its own keys from `Key`) | RFC 4121, the Kerberos mechanism's |
+| RFC 4121 per-message tokens (MIC and wrap) | `gss.Context`, called from NFS's `Security` stage (§5.5) | `krb5i`, `krb5p` and the verifier | `MIC`, inside SPNEGO for the mechanism-list MIC over Kerberos; its own keys from `Keys.Session` | RFC 4121, the Kerberos mechanism's |
 | `Identity`, expiry | `gss` | the RPC `Router` stage | the SMB `Router` stage | the one place either protocol builds one |
 | failure handling: every error a logon failure, never guest | `gss` | GSS `CREDPROBLEM` | `STATUS_LOGON_FAILURE` | decided once for both |
 | NTLMv2 verification — local NT hash, or pass-through to a domain controller over NETLOGON | the server's authenticator behind `SignIn` ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)) | — | through the NTLM mechanism | needs the NT hash or the machine account's secure channel |
@@ -1564,7 +1564,7 @@ func Identity(c *Context, sys *SysCred, proto vfs.Protocol, addr netip.Addr) (vf
 What stays in each protocol is only what its wire makes it: NFS routes the
 `RPCSEC_GSS` control procedures to `Exchanges.Step` and keeps the context table
 and sequence window; SMB carries SPNEGO in `SESSION_SETUP`, derives signing and
-encryption keys from `Context.Key`, and binds a session to a channel.
+encryption keys from `Context.Keys.Session`, and binds a session to a channel.
 
 **Where it runs is the pipeline, as for any other cross-cutting work.** The
 exchange is not a middleware, since it spans several requests; what runs on

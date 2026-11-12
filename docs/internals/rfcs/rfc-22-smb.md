@@ -852,8 +852,8 @@ Its response carries the share's `ExportPolicy.SMB`:
   it returns only the entries
   [RFC 19 §3.7](rfc-19-authorization.md#3.7%20Listings%20hide%20what%20the%20caller%20cannot%20read)
   lets through. The filter is the service's listing, never the adapter's.
-- The caller's maximal access (`MaximalAccess`) is the service's `Access` on
-  the share root.
+- The caller's maximal access (`MaximalAccess`) is the `ShareInfo.MaximalAccess`
+  that `Root` answers ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)).
 
 The flags every share reports whatever its policy are listed in
 [Appendix C](#Appendix%20C%20%E2%80%94%20flags%20every%20share%20reports).
@@ -952,9 +952,9 @@ up its cache, and how a reconnect finds its open.
   ([RFC 17 §4.6](rfc-17-vfs.md#4.6%20One%20chokepoint)), and the chokepoint
   decides
   ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)).
-  A `MAXIMUM_ALLOWED` open and the `MxAc` answer pass every right as
-  `Files.Granted`'s `want`, not the client's `DesiredAccess`, so they keep the
-  `DELETE` the parent grants (§11).
+  A `MAXIMUM_ALLOWED` open and the `MxAc` answer are resolved by the service
+  with every right as `Files.Granted`'s `want`, not the client's
+  `DesiredAccess`, so they keep the `DELETE` the parent grants (§11).
   Without it, in a 0775 directory a group member can delete over NFS a file
   she cannot delete or rename from Explorer.
 
@@ -1280,8 +1280,8 @@ first, unless both carry an app instance version and the new one is not
 higher, when the create is refused
 ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)). The
 primary applies it, in the open's own step, only when both hold, from the
-`ClientGuid` and the caller's maximal access the adapter passes with the
-create:
+call's `ClientGuid` and the caller's maximal access, which the service
+computes:
 
 - the matching open belongs to a different client (its `ClientGuid` differs
   from the connection's); and
@@ -1296,8 +1296,8 @@ lease like any other create.
 > Windows servers gate it. A same-client match is that client's own open,
 > which it can close itself; a caller that cannot read the file gains, by
 > closing another's open, a denial of service it could not otherwise cause.
-> RFC 14 §8.1 holds the same two conditions at the primary; the adapter's part
-> is to pass `ClientGuid` and maximal access with every create. Revisit if a
+> RFC 14 §8.1 holds the same two conditions at the primary; the adapter passes
+> only the app instance, and the call its `ClientGuid`. Revisit if a
 > failover cluster is shown re-attaching from the same `ClientGuid`.
 
 ### 6.5 Replay
@@ -1886,25 +1886,19 @@ DACL denies, unless an entry for owner rights applies, so an owner can always
 repair a DACL that locks it out
 ([RFC 19 §3.1](rfc-19-authorization.md#3.1%20One%20request%2C%20in%20order),
 step 5). An open asking `MAXIMUM_ALLOWED`
-([RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)),
-the `MxAc` create context and `MaximalAccess` are answered from
-`Files.Granted`, through the service's `Access`
-([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), to which the adapter passes
-the directory the open resolved through, as for `DELETE` at open (§6.1), and
-every right as `want`, not the client's `DesiredAccess`, so the `DELETE` granted
-through the parent is in the answer. A `MAXIMUM_ALLOWED` open whose resolved
-mask is empty, the file granting the caller nothing, is refused
-`STATUS_ACCESS_DENIED` by the adapter before the open, since `Authorize` admits
-an empty `want`. A `MAXIMUM_ALLOWED` open with `FILE_OPEN_FOR_BACKUP_INTENT` is
-not resolved through `Access`, which computes without the open's privilege
-([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)):
-the adapter passes the maximal request to the open (`OpenRequest.Maximal`), and the service resolves it
-there to `G` as
-[RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)
-computes it with the privilege it marks the open with, so execute on a
-non-directory and what the flags refuse stay out
+([RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant))
+passes it as `vfs.MaximumAllowed` in `OpenRequest.Access`, beside the rights
+the client named, with the directory the open resolved through, as for
+`DELETE` at open (§6.1). The service resolves it: the open is granted `G`,
+computed with the open's privilege when it asks backup intent
 ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)),
-and refuses it `ErrAccess` when that `G` is empty.
+and is refused `ErrAccess` when `G` is empty or a right named beside it lies
+outside `G`; the adapter resolves nothing before the call. The `MxAc` create
+context is `OpenResult.MaximalAccess`, which the service answers from
+`Files.Granted` with every right as `want` and without the open's privilege,
+so the `DELETE` granted through the parent is in the answer
+([RFC 17 §5.3](rfc-17-vfs.md#5.3%20Open%20and%20close)); a tree's
+`MaximalAccess` is `Root`'s (§5.1).
 
 **Setting the owner or group** follows
 [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved):
@@ -2390,7 +2384,7 @@ mapping it needs is here.
 | `Client.Reach.Sessions` | the nodes holding an authenticated session of the `ClientGuid`, each added by `Connect` at its first one and again at each new node epoch or when the `Connect` a session skipped behind failed; removed by the `Disconnect` that ends the node's last one, or with the node's loss or restart ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) | — | the nodes asked to pick a session for a break whose opens are all disconnected (§4.4); the record is not released while any remains (RFC 14 §2.1) |
 | `Client.Pending` | never set | — | an SMB client is confirmed in one step, at its first authenticated `SESSION_SETUP` |
 | `Client.Adapter` | — | empty | nothing SMB-only must outlive a connection at the client level |
-| `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` is resolved to the granted mask before the call, except with backup intent (§11) |
+| `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` passed as `vfs.MaximumAllowed`, which the service resolves to the granted mask (§11) |
 | `Open.Mode.Deny` | the complement of `ShareAccess` over read, write and delete | — | a share bit set allows that access; RFC 14 holds what is refused |
 | `Open.Sessioned`, `LockState.Sessioned`, `CachingGrant.Sessioned` | true, from the creating call's session | — | every SMB call carries a session, so the mark never refuses an SMB call ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) |
 | `OpenRequest.Backup` | `FILE_OPEN_FOR_BACKUP_INTENT` | — | the service sets `Open.Mode.Privileged` when its caller is privileged (§11, S28) |
@@ -2897,7 +2891,7 @@ Every share, whatever its policy:
 | `FILE_OPEN_FOR_BACKUP_INTENT` | the open, and every request through it, is privileged when the session's principal is ([§11](#11.%20Security%20descriptors)); otherwise ignored |
 | `GENERIC_*` in `DesiredAccess` | mapped to `FILE_GENERIC_*` / `FILE_ALL_ACCESS` before `Open` ([§6.1](#6.1%20Opening%20a%20file)) |
 | `FILE_OPEN_BY_FILE_ID` | `STATUS_NOT_SUPPORTED`: no index from a numeric id to a file ([RFC 7 §6.5](rfc-7-namespace-metadata.md#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused)) |
-| `MxAc` (maximal access) | `Access` |
+| `MxAc` (maximal access) | `OpenResult.MaximalAccess` ([§11](#11.%20Security%20descriptors)) |
 | `QFid` (on-disk id) | `FileId` as `FileIdInformation` reports it ([Appendix E.1](#E.1%20Supported)) |
 | `RqLs` v1 and v2 (lease request) | a lease request ([§6.2](#6.2%20Oplocks%20are%20leases)) |
 | `DHnQ`, `DH2Q`, `DHnC`, `DH2C` (durable request, reconnect) | durability and reconnect ([§6.4](#6.4%20Durable%20and%20persistent%20handles)) |
@@ -2984,7 +2978,7 @@ What each method then calls below is
 | `LOGOFF` | `Disconnect` with `Logoff`, which closes every open of the session, durable and persistent ones included, running delete on close and orphan releases through `Sink.Closed` as a `CLOSE` runs them, and `Last` with the node entry's latest `Gen` when it was the node's last session of the `ClientGuid`, repeated at the newer `Gen` it returns while the node still holds none; `ErrStaleClient` counts as success | MS-SMB2 3.3.5.6 closes every open of the session; a lost connection's `Disconnect`, without `Logoff`, keeps durable opens ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) |
 | `TREE_CONNECT` | `Root` with the name; `\IPC$`: none | `IPC$` is the adapter's RPC endpoint, not a share, and reaches no file |
 | `TREE_DISCONNECT` | none (adapter only) | |
-| `CREATE` | `Open` | durable and reconnect contexts (`DHnQ`, `DH2Q`, `DHnC`, `DH2C`), `RqLs`, `MxAc`, `QFid`, `SecD`, `ExtA`, `AlSi`, `TWrp` and `AppInstanceId` are `OpenRequest` fields ([Appendix D](#Appendix%20D%20%E2%80%94%20create%20options%20and%20contexts)); `FILE_OPEN_BY_FILE_ID` and shared virtual disks not supported |
+| `CREATE` | `Open` | durable and reconnect contexts (`DHnQ`, `DH2Q`, `DHnC`, `DH2C`), `RqLs`, `QFid`, `SecD`, `ExtA`, `AlSi`, `TWrp` and `AppInstanceId` are `OpenRequest` fields ([Appendix D](#Appendix%20D%20%E2%80%94%20create%20options%20and%20contexts)), and `MxAc`'s answer is `OpenResult.MaximalAccess` ([§11](#11.%20Security%20descriptors)); `FILE_OPEN_BY_FILE_ID` and shared virtual disks not supported |
 | `CLOSE` | `Close` | |
 | `FLUSH` | `Commit` | |
 | `READ`, `WRITE` | `Read`, `Write` | |
