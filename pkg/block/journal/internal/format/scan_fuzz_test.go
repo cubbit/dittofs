@@ -139,6 +139,30 @@ func fuzzAssertHeaders(t *testing.T, mode string, seg []byte, identity core.Jour
 			t.Errorf("%s headers: record %d at %d attached as %+v, want its own decoded header %+v", mode, i, r.Header.Offset, r.Header, decoded)
 		}
 	}
+
+	// The two walks agree where both ran to an end: a record the verifying
+	// walk attaches has a header that verified, so the header walk attaches
+	// it with an equal header, and a seal marker the verifying walk stopped
+	// at stops the header walk too.
+	full, ferr := ScanSegment(bytes.NewReader(seg), size, identity, segment)
+	if ferr != nil || err != nil {
+		return
+	}
+	byOff := make(map[int64]RecordHeader, len(hdrs.Records))
+	for _, r := range hdrs.Records {
+		byOff[r.Header.Offset] = r.Header
+	}
+	for _, r := range full.Records {
+		got, ok := byOff[r.Header.Offset]
+		if !ok {
+			t.Errorf("%s: ScanSegment attached the record at %d and ScanSegmentHeaders did not", mode, r.Header.Offset)
+		} else if got != r.Header {
+			t.Errorf("%s: record at %d header = %+v, want ScanSegment's %+v", mode, r.Header.Offset, got, r.Header)
+		}
+	}
+	if full.Sealed && !hdrs.Sealed {
+		t.Errorf("%s: ScanSegment sealed at %d and ScanSegmentHeaders did not", mode, full.End)
+	}
 }
 
 // scanWhole reads seg as a segment of exactly its own length.
