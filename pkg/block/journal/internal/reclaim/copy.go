@@ -23,14 +23,28 @@ type Domains interface {
 	Lock(id core.FileID) (unlock func())
 }
 
-// Corrupter reports one corrupt source record to the durability layer. It
-// runs with the record's file append domain already held.
-type Corrupter func(ctx context.Context, bad BadSource) error
+// CorruptOutcome is what the durability layer did with a corrupt source: a
+// drop, or a read served from another copy of the record. The zero value is
+// no corrupt call's answer.
+type CorruptOutcome uint8
+
+const (
+	// CorruptDropped is a record whose extents left the index.
+	CorruptDropped CorruptOutcome = iota + 1
+	// CorruptUseCopy is a record served from another copy of it.
+	CorruptUseCopy
+)
+
+// Corrupter reports one corrupt source record to the durability layer and
+// returns what the layer did with it. It runs with the record's file append
+// domain already held.
+type Corrupter func(ctx context.Context, bad BadSource) (CorruptOutcome, error)
 
 // BadSource is one source record whose bytes the pass read but could not
 // verify, so its copies are dropped instead. Extent is the record header's
 // own where the header decoded; where the header's bytes were read but did
 // not decode, it is the hull of the pieces the index holds at the record.
+// Outcome is what the corrupt call did, zero where none ran.
 type BadSource struct {
 	Tag     core.ShareTag
 	File    core.FileID
@@ -38,20 +52,26 @@ type BadSource struct {
 	Seq     core.Seq
 	Version core.Version
 	Extent  core.Extent
+	Outcome CorruptOutcome
 }
 
 // Copied is one copy the pass appended: what it holds of which file, the
-// fresh placement it landed at, and the record it was copied from.
+// fresh placement it landed at, and the records it was copied from — From
+// names the run's first, Sources naming every source piece the placement
+// covers, each carrying the record its bytes read from, so the repoint moves
+// per piece without reading From.
 type Copied struct {
-	File     core.FileID
-	Tag      core.ShareTag
-	Kind     format.Kind
-	Version  core.Version
-	Seq      core.Seq
-	Extent   core.Extent
-	At       time.Time
-	From, To index.RecordAt
-	Loc      segment.Location
+	File    core.FileID
+	Tag     core.ShareTag
+	Kind    format.Kind
+	Version core.Version
+	Seq     core.Seq
+	Extent  core.Extent
+	At      time.Time
+	From    index.RecordAt
+	To      index.RecordAt
+	Loc     segment.Location
+	Sources []index.Piece
 }
 
 // Result is what one Copy appended, and the sources it dropped as corrupt.
@@ -62,24 +82,38 @@ type Result struct {
 
 // Copier copies the live content of a claimed segment into fresh records.
 type Copier struct {
-	ix       *index.Index
-	counters *index.Counters
-	streams  *segment.Streams
-	un       *unread.Set
-	tracker  *Tracker
-	dom      Domains
-	corrupt  Corrupter
-	clock    core.Clock
-	log      *slog.Logger
+	ix         *index.Index
+	counters   *index.Counters
+	streams    *segment.Streams
+	un         *unread.Set
+	tracker    *Tracker
+	dom        Domains
+	forgetting func(core.ShareTag) bool
+	corrupt    Corrupter
+	clock      core.Clock
+	log        *slog.Logger
 }
 
 // NewCopier builds the pass over one journal's pieces. dom is the append
-// domain table; corrupt is called per corrupt source with the file's domain
+// domain table; forgetting answers whether a share is being forgotten,
+// consulted per file under the file's held domain — nil treats no tag as
+// forgetting, the only production wiring while no Forget path writes the
+// mark yet. corrupt is called per corrupt source with the file's domain
 // held; with a nil corrupt no handler is consulted, nothing is dropped from
 // the index either way — dropping is the handler's own — and the source is
 // still reported in the Result.
-func NewCopier(ix *index.Index, c *index.Counters, st *segment.Streams, un *unread.Set, tr *Tracker, dom Domains, corrupt Corrupter, clk core.Clock, log *slog.Logger) *Copier {
-	return &Copier{ix: ix, counters: c, streams: st, un: un, tracker: tr, dom: dom, corrupt: corrupt, clock: clk, log: log}
+//
+// decision: the forgetting mark this takes is a seam, not the tracker's own
+// forget registration: a registration is made after the forget record is
+// durable and outlives the record itself, so consulting it would miss a copy
+// racing the barrier and abandon a re-attached tag's copies long after. The
+// mark belongs to the share registry the Forget path writes before its
+// barrier and clears when it returns, which does not exist yet; until it
+// lands, nil is the whole wiring and copies append undisturbed by forgets.
+// Overturned when the Forget path's mark lands elsewhere than a
+// func(core.ShareTag) bool the pass can hold.
+func NewCopier(ix *index.Index, c *index.Counters, st *segment.Streams, un *unread.Set, tr *Tracker, dom Domains, forgetting func(core.ShareTag) bool, corrupt Corrupter, clk core.Clock, log *slog.Logger) *Copier {
+	return &Copier{ix: ix, counters: c, streams: st, un: un, tracker: tr, dom: dom, forgetting: forgetting, corrupt: corrupt, clock: clk, log: log}
 }
 
 // Copy copies the live content of seg, whose claim the caller holds. The
@@ -282,7 +316,12 @@ func (c *Copier) append(ctx context.Context, sources []source) (Result, error) {
 func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source, res *Result) error {
 	tag, ok := c.ix.Owner(file)
 	if !ok {
-		return fmt.Errorf("reclaim: file %v holds no owner share", file)
+		// The forget path's drop clears the file's tag under this same
+		// domain, so a Forget racing the pass reads here as the tag cleared:
+		// the file is skipped as forgotten, its pieces left to the drop.
+		// An error would fail the unit and strand the copies already
+		// appended for earlier files over a race the forget owns.
+		return nil
 	}
 	// The forgetting mark of the file's tag, consulted under the domain the
 	// caller holds (RFC 1 §8.4): a copy whose held check ran after the mark
@@ -291,7 +330,7 @@ func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source
 	// would resurrect the content the forget drops. The file is abandoned
 	// whole: nothing of it is appended, reported or drawn, since its tag's
 	// drop is the forget's own.
-	if c.tracker.Forgetting(tag) {
+	if c.forgetting != nil && c.forgetting(tag) {
 		return nil
 	}
 	retained := c.ix.Retained(file)
@@ -309,23 +348,25 @@ func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source
 		}
 		src := srcs[i]
 		bad := BadSource{Tag: tag, File: file, Record: src.rec, Seq: src.h.Seq, Version: src.h.Version, Extent: src.h.Extent}
+		pieces := c.ix.HeldAt(file, src.rec)
+		for _, rt := range retained {
+			if rt.Record == src.rec {
+				pieces = append(pieces, rt.Piece)
+			}
+		}
+		// decision: bytes that rot in a record nothing holds count no
+		// damage and drop no extent, whichever half of the record failed
+		// the verify — a body checksum no less than an undecodable header —
+		// since every piece was released or superseded, the record's
+		// unverifiable bytes back nothing and an empty extent names no loss
+		// to record (RFC 28 §3.3). The response to corruption is to stop
+		// holding what the journal holds; a record that still holds pieces
+		// reaches the handler below whatever its rotten half. Overturned
+		// only if a caller is ruled to need an unheld record acknowledged.
+		if len(pieces) == 0 {
+			continue
+		}
 		if bad.Seq == 0 {
-			pieces := c.ix.HeldAt(file, src.rec)
-			for _, rt := range retained {
-				if rt.Record == src.rec {
-					pieces = append(pieces, rt.Piece)
-				}
-			}
-			if len(pieces) == 0 {
-				// decision: a record the index holds no piece of any more
-				// is reported nowhere, corrupt and the result both silent:
-				// every piece was released or superseded, so the record's
-				// unverifiable bytes back nothing and an empty extent names
-				// no loss to record (RFC 28 §3.3). Overturned only if a
-				// caller is ruled to need the record acknowledged while
-				// nothing holds it.
-				continue
-			}
 			bad.Seq, bad.Version = pieces[0].Seq, pieces[0].Version
 			lo, hi := pieces[0].Extent.Off, pieces[0].Extent.Off+pieces[0].Extent.Len
 			for _, p := range pieces[1:] {
@@ -334,9 +375,14 @@ func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source
 			bad.Extent = core.Extent{Off: lo, Len: hi - lo}
 		}
 		if c.corrupt != nil {
-			if err := c.corrupt(ctx, bad); err != nil {
+			out, err := c.corrupt(ctx, bad)
+			if err != nil {
 				return fmt.Errorf("reclaim: dropping the corrupt source of file %v: %w", file, err)
 			}
+			bad.Outcome = out
+			// A source served from another copy is excluded below just the
+			// same: the index was repointed at the copy, and the pass's own
+			// copies are this run's, not the serving copy's.
 		}
 		res.Corrupt = append(res.Corrupt, bad)
 	}
@@ -400,6 +446,12 @@ func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source
 				Tag:     tag,
 			}
 			body := format.RecordBody{MTime: r.pieces[0].mtime, Payload: rest}
+			// decision: the copy appends unadmitted here — the pass that
+			// drives the copier holds the admission and refuses a read-only
+			// journal before a unit runs, so this appends only after the
+			// reserve has already been drawn against. Overturned when a
+			// caller reaches the copier outside the pass, which is the day
+			// the admission moves in here.
 			pl, err := c.streams.For(file).AppendRoll(h, body, segment.Roll{Repack: true})
 			if err != nil {
 				return err
@@ -424,11 +476,29 @@ func (c *Copier) appendFile(ctx context.Context, file core.FileID, srcs []source
 				From:    r.pieces[0].src.rec,
 				To:      index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)},
 				Loc:     pl.Loc,
+				// The placement's sources, as re-read under the domain: each
+				// live piece the bytes stitched came from, in run order,
+				// carrying its own record. A piece straddling a split
+				// placement names its source from both copies.
+				Sources: sourcesOf(r, r.extent.Off+placed, pl.N),
 			})
 			placed += pl.N
 		}
 	}
 	return nil
+}
+
+// sourcesOf returns the pieces of r that overlap [off, off+n), each carrying
+// its own source record, in run order — the live pieces the copy's bytes
+// stitched from.
+func sourcesOf(r run, off, n int64) []index.Piece {
+	var out []index.Piece
+	for _, p := range r.pieces {
+		if p.Extent.Off < off+n && p.Extent.Off+p.Extent.Len > off {
+			out = append(out, p.Piece)
+		}
+	}
+	return out
 }
 
 // pieceInfo is one live piece beside the two facts of its verified source the

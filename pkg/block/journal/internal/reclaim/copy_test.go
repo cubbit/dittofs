@@ -103,9 +103,18 @@ func TestPlanRuns(t *testing.T) {
 			pieces: []int{1, 1},
 		},
 		{
-			name: "a fill beside a write never merges",
+			name: "a fill beside an offloaded write at one version never merges",
 			specs: []spec{
 				{off: 0, n: runKib, rec: recA, version: runVer(1), kind: fill, offload: true},
+				{off: runKib, n: runKib, rec: recA, version: runVer(1), kind: write, mtime: 7, offload: true},
+			},
+			want:   []core.Extent{{Off: 0, Len: runKib}, {Off: runKib, Len: runKib}},
+			pieces: []int{1, 1},
+		},
+		{
+			name: "writes at one version and mtime with different offloaded bits stay separate",
+			specs: []spec{
+				{off: 0, n: runKib, rec: recA, version: runVer(1), kind: write, mtime: 7, offload: true},
 				{off: runKib, n: runKib, rec: recA, version: runVer(1), kind: write, mtime: 7},
 			},
 			want:   []core.Extent{{Off: 0, Len: runKib}, {Off: runKib, Len: runKib}},

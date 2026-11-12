@@ -32,13 +32,14 @@ import (
 // issues one pair once — but the file and the extent make the re-test
 // registries answer by key without reading the record back.
 //
-// Tag is the share the record's header names. It carries no identity of its
-// own — a content record's share reads from its file, and the re-test
-// registries key nothing by it — and exists for the forget record alone: a
-// forget names no file, so its tag is the one thing its registration answers
-// Forgetting by, and dropping it there leaves a mark no tag matches, so a
-// forget registered without its tag abandons nothing (RegisterForget names
-// the rule).
+// Tag is the share the record's header names: part of the key of every
+// registry keyed by Rec — the registrations, the forget snapshots and the
+// loss marks alike — so a registration and its release must carry the same
+// one, or the registry entry the pair disagrees on sits undropped. A content
+// record's tag reads from its file; a forget record names no file, so its
+// tag is the one field its caller must spell out, and a forget registered
+// without its tag registers and releases like any other record but keys no
+// tag's snapshot (RegisterForget names the rule).
 type Rec struct {
 	Kind       format.Kind
 	File       core.FileID
@@ -461,20 +462,20 @@ func (t *Tracker) entryIfLive(seg core.SegmentID) *segState {
 // overturns it. The upgrade is a scan of the snapshot's segments for
 // records of the tag at each retirement.
 //
-// decision: the Rec handed here must name its tag: the registration's whole
-// Rec, Tag included, is the registry key a copy pass's forgetting check
-// (Forgetting) matches a tag by, and the price of the match is the field no
-// other path needs — so a forget whose Rec carries a zero Tag registers and
-// releases like any other, but it is a mark no tag matches and copies of the
-// forgotten share append after it undisturbed. The registry key covers the
-// release too: an Unregister dropping the forget must carry the same Tag
-// the registration set, or the registry entry sits. The Forget that appends
-// the record and the open's rebuild that reads it back build the Rec from
-// the record's own header, which names the tag; nothing else carries it, so
-// the tag is the one field the caller must not invent its own value for.
-// The rule holds while a forget record names exactly one tag; one that ever
-// carries a second tag identity the journal must distinguish overturns it,
-// for the registry key would then have to name both.
+// decision: the Rec handed here must name its tag: Tag is part of the key of
+// every registry this registration enters, so the registration and the
+// Unregister that releases it must carry the same one, or the entry sits.
+// The registration is the forget's liveness snapshot and nothing more — what
+// keeps the record's segment held until every segment that held the tag's
+// records below it leaves the set — since the forgetting mark the copy pass
+// consults is the share registry the Forget path writes before its barrier,
+// not this one. The Forget that appends the record and the open's rebuild
+// that reads it back build the Rec from the record's own header, which names
+// the tag; nothing else carries it, so the tag is the one field the caller
+// must not invent its own value for. The rule holds while a forget record
+// names exactly one tag; one that ever carries a second tag identity the
+// journal must distinguish overturns it, for the registry key would then
+// have to name both.
 func (t *Tracker) RegisterForget(rec Rec, segs []core.SegmentID) {
 	if len(segs) == 0 {
 		t.Register(rec)
@@ -516,27 +517,6 @@ func (t *Tracker) forgetTaken(rec Rec) {
 	if rec.Kind == format.KindForget {
 		delete(t.forgets, rec)
 	}
-}
-
-// Forgetting answers whether a live forget record is registered for the
-// tag. The copy consults it under the file's append domain, so a copy whose
-// held check ran after the mark is abandoned (RFC 1 §8.4).
-// decision: the mark is the tracker's registered forget records consulted
-// per file; the barrier Forget itself takes around its record is its own.
-// Overturned when a second caller needs a consult this shape does not answer
-// — an offer needing the mark outside the file append domain among them —
-// which is the day the mark grows an API of its own.
-// ponytail: a scan of the live forgets, O(live forget records); a tag-keyed
-// index when many forgets run at once.
-func (t *Tracker) Forgetting(tag core.ShareTag) bool {
-	t.rm.Lock()
-	defer t.rm.Unlock()
-	for rec := range t.forgets {
-		if rec.Tag == tag {
-			return true
-		}
-	}
-	return false
 }
 
 // RegisterAtOpen is the registration the rebuild at an open hands its

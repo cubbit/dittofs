@@ -2,6 +2,7 @@ package reclaim_test
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -54,7 +55,11 @@ type copyFixture struct {
 	set      *segment.Set
 	un       *unread.Set
 	tracker  *reclaim.Tracker
-	clock    core.Clock
+	// forgetting is the share-forget mark the copier consults, the seam a
+	// test plants its mark through; nil in every test that forgets nothing,
+	// which is the production wiring too.
+	forgetting func(core.ShareTag) bool
+	clock      core.Clock
 }
 
 // newCopyFixture builds the core, waits for its spare pool to settle, and
@@ -176,16 +181,17 @@ func (f *copyFixture) selector() *reclaim.Selector {
 }
 
 // copier wires the pass over the fixture's core: its domains and its
-// corrupter are the core's own pieces.
+// corrupter are the core's own pieces, and its forget mark the fixture's
+// plant, nil outside a test that forgets something.
 func (f *copyFixture) copier() *reclaim.Copier {
-	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, f.core.Domains(), f.corrupt, f.clock, slog.New(slog.DiscardHandler))
+	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, f.core.Domains(), f.forgetting, f.corrupt, f.clock, slog.New(slog.DiscardHandler))
 }
 
 // copierOver wires the pass over the fixture's core behind dom, the append
 // domain table the copier takes instead of the core's own: a recording
 // wrapper around the real one, or the plain table.
 func (f *copyFixture) copierOver(dom reclaim.Domains) *reclaim.Copier {
-	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, dom, f.corrupt, f.clock, slog.New(slog.DiscardHandler))
+	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, dom, f.forgetting, f.corrupt, f.clock, slog.New(slog.DiscardHandler))
 }
 
 // share returns the fixture core's handle of tag, closed when the test ends.
@@ -254,9 +260,11 @@ func (d *countingDomains) maxHeld() int {
 }
 
 // corrupt drops a record the pass could not verify into the durability
-// layer, the record's append domain already held by the caller.
-func (f *copyFixture) corrupt(ctx context.Context, bad reclaim.BadSource) error {
-	_, err := f.core.Durability().Corrupt(ctx, durability.Corruption{
+// layer, the record's append domain already held by the caller, and maps
+// the layer's outcome onto the pass's own: the mapping keeps package reclaim
+// from importing the durability layer, which the journal wires.
+func (f *copyFixture) corrupt(ctx context.Context, bad reclaim.BadSource) (reclaim.CorruptOutcome, error) {
+	out, err := f.core.Durability().Corrupt(ctx, durability.Corruption{
 		Share:      bad.Tag,
 		File:       bad.File,
 		Record:     bad.Record,
@@ -265,7 +273,16 @@ func (f *copyFixture) corrupt(ctx context.Context, bad reclaim.BadSource) error 
 		Extent:     bad.Extent,
 		DomainHeld: true,
 	})
-	return err
+	if err != nil {
+		return 0, err
+	}
+	switch out.Kind {
+	case durability.CorruptDropped:
+		return reclaim.CorruptDropped, nil
+	case durability.CorruptUseCopy:
+		return reclaim.CorruptUseCopy, nil
+	}
+	return 0, fmt.Errorf("durability answered corrupt with an outcome %d with no mapping", out.Kind)
 }
 
 // flipByte flips every bit of the byte at off of the segment the record at
