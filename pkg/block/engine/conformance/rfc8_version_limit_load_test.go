@@ -17,9 +17,15 @@ const (
 	// set another.
 	versionBlock = 1 << 24
 
+	// existenceAge is RFC 13's proposed existence_age, the one RFC 8 §2.7's
+	// 32 s margin is counted with. The fixture runs a longer one for other
+	// rows, so each load row applies this one before its first draw.
+	existenceAge = time.Second
+
 	// versionMargin is the trigger's margin in seconds: the fence's 30 s, the
-	// existence age and the trigger's sampling second.
-	versionMargin = 32
+	// existence age and the trigger's sampling second. It is counted from
+	// existenceAge, so the row's trigger and the engine's stay the same.
+	versionMargin = fenceSeconds + uint64(existenceAge/time.Second) + 1
 
 	// fenceSeconds is the self-fence's bound.
 	fenceSeconds = 30
@@ -106,6 +112,13 @@ func (r *loadRun) headroom(t *testing.T) uint64 {
 // stalls the store for d and draws the version that makes the raise due.
 func (r *loadRun) stallAtTheRaise(t *testing.T, rate, trigger uint64, d time.Duration) uint64 {
 	t.Helper()
+
+	settings := enginetest.Settings
+	settings.ExistenceAge = existenceAge
+
+	if err := r.f.E.Apply(settings); err != nil {
+		t.Fatalf("apply the existence age: %v", err)
+	}
 
 	if err := r.draw(); err != nil {
 		t.Fatalf("the first version: %v", err)
