@@ -16,7 +16,8 @@ Writing rules for review comments and replies:
 # Description
 
 <!-- One to three sentences: what changes in behavior, and why. Link the issue / RFC
-instead of re-explaining it. -->
+instead of re-explaining it. For each subtask this PR finishes, one line closing its
+issue: Closes #<subtask issue>. That line credits the PR on the burn-up. -->
 
 ## Decision needed
 

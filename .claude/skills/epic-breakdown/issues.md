@@ -2,10 +2,45 @@
 
 Step 6 of the `epic-breakdown` skill (`SKILL.md`, beside this file).
 
-## Step 6 — GitHub issues: only when asked, as pointers to the documents
+## Step 6 — GitHub issues: at each merge, as pointers to the documents
 
-**Do not create issues unasked.** The user asks for this step when the team is ready to
-assign work.
+Issues come at fixed points of the planning lifecycle (the wiki's "From RFC to plan to
+epics"): the RFC's roadmap epic before its plan, the epic issues once the plan merges, and
+an epic's subtask issues once its epic document merges. Create them when the user asks at
+one of those points, never while the document is still in review.
+
+**Once an issue exists, it holds the figures.** The documents keep the first ones and are
+never revised to follow the issues. Each figure is read from the newest source that states
+it, which is also what the burn-up does:
+
+- **Estimate.** A subtask's is its issue's `Estimate`, else its epic document's estimate
+  line, else its share of the plan's epic figure. An epic's is the sum of its subtask
+  issues; with none, its issue's `Estimate`, else its document's figure, else the plan's.
+  To change an estimate once its issue exists, change the issue: a document revision never
+  overwrites an issue's `Estimate` (6.7).
+- **Dependencies.** An issue's blocked-by links, else its document's: a subtask's
+  **Depends on:** line in the epic document's §6; an epic's header **Depends on:** line in
+  its document, else the plan's Blocks column. No links means "not stated here", never
+  "depends on nothing"; a line that says `none` means none of its own.
+- **The first subtask of each epic** also waits on everything its epic waits on, whatever
+  its own links or line say. This is implied, not linked: its issue gets no blocked-by links
+  for its epic's blockers, but whatever computes dependencies (the burn-up, a plan of work)
+  adds them.
+
+**The documents' dependencies stay required, and must be right.** The plan's §2 Blocks
+column and §3, the epic document's header **Depends on:** line and each subtask's in §6 are
+what the blocked-by links are created from, and what the burn-up reads for an issue that has
+none. An issue's body does not copy them; the links carry them.
+
+**Sync points.** A sync point (`S2`, `S4a`) is a named point in the plan's §3 where the
+team converges: the moment a set of epics or subtasks is done, or an agreement outside the
+repository. A document may name one in a **Depends on:** line for brevity, and may name
+it for reasons beyond dependencies too (a review checkpoint, a hand-over). GitHub has no
+sync points, so a link resolves one to what it stands for: one that lists subtasks (`S3`:
+T3.1, T5.2) to their subtask issues; one over whole epics (`S2`, "end of E2"; `S4`, "epics 3
+to 8 done") to their epic issues; one with nothing in the repository to link (`S4a`, an
+agreement with another team) stays one line in the issue's body,
+`**Waits on:** S4a, <what it is>`, the only dependency a body carries.
 
 This step is the **one description** of the RFC's issues: roadmap epics, epic issues,
 subtask issues and deferral-ledger issues. `rfc-to-epic-plan` sends its issue requests here.
@@ -124,7 +159,6 @@ versions`). Body, and nothing more, in one of two forms.
 Epic <k> of <component> v2 (RFC <n>): <the epic's goal, in one sentence>.
 
 **Spec:** [Epic <k> — <title>](<plan link>#<heading anchor>). No epic document yet.
-**Depends on:** epics <j> and <k> (from the plan's §3.3). **Blocks:** epics <m>, ….
 ```
 
 **Once the epic document has merged:**
@@ -133,7 +167,6 @@ Epic <k> of <component> v2 (RFC <n>): <§1's goal, in one sentence>.
 
 **Specification:** [Epic <k>: <title>](https://github.com/<R>/blob/<branch>/docs/internals/planning/<file>.md)
 **Sources:** RFC <n> §…; **Track:** <A|B|C>.
-**Depends on:** epics <j> and <k> (or a sync point, as `S2`, or "every earlier epic").
 
 The document is the specification: requirements, subtasks, acceptance criteria and
 tests live there, not here. Each subtask is a sub-issue.
@@ -149,7 +182,14 @@ gh issue create -R "$R" --title "<component> v2, epic <k>: <title>" \
   --label epic,rfc-<n>-<slug>,rfc-<n>-epic-<k> --milestone <roadmap's milestone> --body-file <body.md>
 ```
 
-Then attach it under its roadmap epic as a sub-issue (6.5).
+Then attach it under its roadmap epic as a sub-issue, and give it its `Estimate` and its
+blocked-by links (6.5). From the plan, it is blocked by every epic whose cell in §2's
+Blocks column names it: that column lists the epics a row blocks, so read it in reverse
+(epic 3's row saying `4, 8` makes epics 4 and 8 blocked by epic 3, never epic 3 blocked by
+them), and `everything` or `all` names every later epic; §3 gives the reasons. Once its
+document has merged, it is blocked by the epics the document's header **Depends on:** line
+names, where "every earlier epic" is a link to each of them. A sync point resolves as
+"Sync points" above says.
 
 ### 6.4 One issue per subtask
 
@@ -181,8 +221,11 @@ Title `<component> v2, subtask T<e>.<n>: <title>`. Body:
 Subtask T<e>.<n> of epic <k> (#<epic-number>): <the subtask's purpose, in one sentence>.
 
 **Specification:** [T<e>.<n> <title>](<document link>#<heading anchor>)
-**Depends on:** #<subtask-number>, … (or the sync point, as `S2`).
 ```
+Its dependencies are blocked-by links (6.5), from the subtask's **Depends on:** line in §6:
+a subtask names that subtask's issue, a whole epic its epic issue, and a sync point what it
+stands for ("Sync points" above). The first subtask gets no links for its epic's blockers:
+it waits on them implicitly.
 The anchor is GitHub's for the `### T<e>.<n> <title>` heading: lower case, dots and
 punctuation other than hyphens dropped, spaces as hyphens (`### T3.1 Usage table` →
 `#t31-usage-table`). Open one link to check it. Requirements, acceptance criteria, tests and
@@ -201,13 +244,26 @@ subtasks come long after the epic issue.
   Moving an issue that already has a parent (6.4's match under another part's epic issue)
   needs `-F replace_parent=true` on the same call; without it the API refuses the child.
 - **Every issue joins the repo's project board** that 6.1 found (for example the cubbit
-  "DittoFS" project). Only subtask issues get `Estimate`, their man-days from §6:
-  a figure on the epic or the roadmap epic too would count it twice in the project's sums.
+  "DittoFS" project). Epic and subtask issues get `Estimate`: a subtask its man-days from
+  §6; an epic the plan's figure (none while it is "planned after Sx"), replaced by the
+  epic document's total, the sum of its subtasks, when that document merges. The roadmap
+  epic gets none. The project's sums then count an epic's work at both levels, so sum one
+  level at a time.
   In a new shell, set `R`, `owner`, `num`, `project` and `field` again as 6.1 does.
   ```bash
   item=$(gh project item-add "$num" --owner "$owner" --url <issue-url> --format json --jq .id)
   gh project item-edit --project-id "$project" --id "$item" --field-id "$field" --number <man-days>
   ```
+- **Blocked-by links**, created from the documents' dependencies (6.3, 6.4) and never
+  written as a **Depends on:** line in the issue's body: an epic issue is blocked by other
+  epic issues, a subtask issue by subtask issues, or by an epic issue when it waits on a
+  whole epic. The API also wants the blocker's numeric `id`:
+  ```bash
+  id=$(gh api "repos/$R/issues/<blocker-number>" --jq .id)
+  gh api -X POST "repos/$R/issues/<blocked-number>/dependencies/blocked_by" -F issue_id="$id"
+  ```
+  Two epics the plan has blocking each other (`9a` blocks `7a` for T9.1 alone) are never
+  linked both ways: link the subtask that waits, once its issue exists.
 
 ### 6.6 Deferral-ledger issues
 
@@ -258,14 +314,22 @@ backticks, which a shell quote ends or runs.
 
 ### 6.7 When a document is revised, or an epic changes release
 
-- The issues follow a revision **after its pull request has merged**, on request, never in
-  the same pass: until then the links still show the old document. The sync covers a renamed
-  subtask's title, a changed estimate's field, a new subtask's issue, a withdrawn subtask's
-  issue closed as not planned, a split subtask (T4.3 into T4.3a and T4.3b: new issues, the
-  old one closed), and a `**Depends on:**` line the revision changed. That line is the one
-  part of a body that copies the documents, kept because release tracking reads it: an epic
-  whose milestone is due before that of an epic it depends on is a conflict to report.
-  Otherwise bodies need no change, because they say nothing the document can contradict.
+- **During the work, changes are made on the issues alone**, with no pull request: a new
+  subtask is a new sub-issue with its `Estimate` (titled `subtask T<e>.<n>:` with the next
+  free id), a split one gets new issues (`T4.3a`, `T4.3b`) and its old one is closed as not
+  planned, a withdrawn one is closed as not planned, and a changed estimate or dependency is
+  a changed `Estimate` or blocked-by link. The epic's own `Estimate` then drifts from the sum
+  of its subtasks, and the documents from both: expected, and not corrected.
+- A document revision that does merge is synced to the issues **after its pull request has
+  merged**, on request, never in the same pass: until then the links still show the old
+  document. The sync covers a renamed subtask's title, a new subtask's issue, a withdrawn
+  subtask's issue closed as not planned, a split subtask, and the blocked-by links of a
+  dependency the revision changed. An estimate is written only to an issue whose `Estimate`
+  is empty: one that has a figure keeps it, since the issue is the newer source, and a
+  revision's different figure is reported, not written. An epic whose milestone is due
+  before that of an epic it depends on is a conflict to report. Bodies need no change,
+  because they say nothing the document can contradict. An older body's `**Depends on:**`
+  line is read only while its issue has no blocked-by links.
 - An epic changes release only by moving under the other release's roadmap epic (the user
   creates it if the RFC has none there yet); then update the milestone copy on the epic
   issue and its open sub-issues. Closed ones keep the release they shipped in.
