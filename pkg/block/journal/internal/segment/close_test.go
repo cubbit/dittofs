@@ -527,6 +527,19 @@ func goroutinesIn(frame string) int {
 	return strings.Count(string(buf), frame)
 }
 
+// goroutinesAtMost is goroutinesIn, polled until it is at most want or a
+// second passes. Close joins a worker on its WaitGroup, which the worker
+// releases in a defer: the goroutine is still in the runtime's list for a
+// moment after Wait returns, and on a loaded runner that moment is long
+// enough for one count to see it. A worker that never exits still fails.
+func goroutinesAtMost(frame string, want int) int {
+	got := goroutinesIn(frame)
+	for end := time.Now().Add(time.Second); got > want && time.Now().Before(end); got = goroutinesIn(frame) {
+		time.Sleep(time.Millisecond)
+	}
+	return got
+}
+
 const (
 	idleWorker = "created by github.com/cubbit/dittofs/pkg/block/journal/internal/segment.(*IdleSealer).Start"
 	poolWorker = "created by github.com/cubbit/dittofs/pkg/block/journal/internal/segment.(*Pool).Start"
@@ -549,10 +562,10 @@ func TestGroupCloseJoinsIdleSealerAndPool(t *testing.T) {
 	if err := e.g.Close(); err != nil {
 		t.Fatalf("Close = %v, want nil", err)
 	}
-	if got := goroutinesIn(idleWorker); got > idleBase {
+	if got := goroutinesAtMost(idleWorker, idleBase); got > idleBase {
 		t.Fatalf("%d idle sealer workers outlived Close, want none", got-idleBase)
 	}
-	if got := goroutinesIn(poolWorker); got > poolBase {
+	if got := goroutinesAtMost(poolWorker, poolBase); got > poolBase {
 		t.Fatalf("%d refill workers outlived Close, want none", got-poolBase)
 	}
 	if _, err := e.pool.Take(segment.Content); !errors.Is(err, core.ErrClosed) {
