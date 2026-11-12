@@ -159,49 +159,32 @@ func TestFailFiresOnItsMethodAlone(t *testing.T) {
 	}
 }
 
-// Which calls a fault fires on: the n-th of its method, counted from when it
-// was armed; one fault per call when several are armed, the earliest first;
-// and any method's next call for AnyOp.
-func TestFailFiresOnTheCallItNames(t *testing.T) {
+// Faults armed on one method fire one call each, the one armed first on the
+// next call, and the call after them all passes through.
+func TestFailsOnOneMethodFireInArmingOrder(t *testing.T) {
 	errSecond := errors.New("second fault")
-	for _, c := range []struct {
-		name  string
-		arm   func(s *vfstest.FaultService)
-		calls []vfs.Op
-		want  []error // what each call answers
-	}{
-		{
-			name:  "the third GetAttr",
-			arm:   func(s *vfstest.FaultService) { s.FailNth(vfs.OpGetAttr, 3, errFault) },
-			calls: []vfs.Op{vfs.OpGetAttr, vfs.OpLookup, vfs.OpGetAttr, vfs.OpLookup, vfs.OpGetAttr, vfs.OpGetAttr},
-			want:  []error{nil, nil, nil, nil, errFault, nil},
-		},
-		{
-			name: "two on one method, one call each in order",
-			arm: func(s *vfstest.FaultService) {
-				s.Fail(vfs.OpWrite, errFault)
-				s.Fail(vfs.OpWrite, errSecond)
-			},
-			calls: []vfs.Op{vfs.OpWrite, vfs.OpWrite, vfs.OpWrite},
-			want:  []error{errFault, errSecond, nil},
-		},
-		{
-			name:  "any method's next call",
-			arm:   func(s *vfstest.FaultService) { s.Fail(vfstest.AnyOp, errFault) },
-			calls: []vfs.Op{vfs.OpRename, vfs.OpRename, vfs.OpRead},
-			want:  []error{errFault, nil, nil},
-		},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			s := vfstest.Faults(vfstest.Null{})
-			c.arm(s)
-			for i, op := range c.calls {
-				errs := call(t.Context(), s, op)
-				if got := errs[len(errs)-1]; got != c.want[i] {
-					t.Errorf("call %d, %v: got %v, want %v", i+1, op, got, c.want[i])
-				}
-			}
-		})
+	s := vfstest.Faults(vfstest.Null{})
+	s.Fail(vfs.OpWrite, errFault)
+	s.Fail(vfs.OpWrite, errSecond)
+	for i, want := range []error{errFault, errSecond, nil} {
+		if _, got := s.Write(t.Context(), vfs.Call{}, vfs.OpenRef{}, 0, nil, vfs.Unstable); got != want {
+			t.Errorf("Write %d: got %v, want %v", i+1, got, want)
+		}
+	}
+}
+
+// A fault on TestState answers its error for every reference, one each.
+func TestFailOnTestStateAnswersEveryReference(t *testing.T) {
+	s := vfstest.Faults(vfstest.Null{})
+	s.Fail(vfs.OpTestState, errFault)
+	errs := s.TestState(t.Context(), vfs.Call{}, 0, make([]vfs.StateRef, 2))
+	if len(errs) != 2 {
+		t.Fatalf("TestState of two references answered %d errors, want 2", len(errs))
+	}
+	for i, err := range errs {
+		if err != errFault {
+			t.Errorf("TestState reference %d: got %v, want %v", i, err, errFault)
+		}
 	}
 }
 
@@ -226,8 +209,18 @@ func TestHoldKeepsTheCallUntilReleased(t *testing.T) {
 	case <-time.After(backstop):
 		t.Fatal("the held Write never arrived")
 	}
-	if _, err := s.GetAttr(ctx, vfs.Call{}, nil); err != nil {
-		t.Fatalf("GetAttr while a Write is held: %v", err)
+	other := make(chan error, 1)
+	go func() {
+		_, err := s.GetAttr(ctx, vfs.Call{}, nil)
+		other <- err
+	}()
+	select {
+	case err := <-other:
+		if err != nil {
+			t.Fatalf("GetAttr while a Write is held: %v", err)
+		}
+	case <-time.After(backstop):
+		t.Fatal("GetAttr did not return while a Write was held")
 	}
 	select {
 	case <-early:
@@ -239,6 +232,14 @@ func TestHoldKeepsTheCallUntilReleased(t *testing.T) {
 	}
 	released.Store(true)
 	h.Release()
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("a second Release panicked: %v, want it to do nothing", r)
+			}
+		}()
+		h.Release()
+	}()
 	select {
 	case e := <-early:
 		if e {

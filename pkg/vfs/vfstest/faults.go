@@ -7,9 +7,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// AnyOp, armed in place of a method's Op, matches a call of every method.
-const AnyOp vfs.Op = 0
-
 // FaultService is the Service Faults returns.
 type FaultService struct {
 	inner vfs.Service
@@ -21,7 +18,6 @@ type FaultService struct {
 // fault is one armed fault: an error to answer or a hold to wait on.
 type fault struct {
 	op   vfs.Op
-	left int // the matching calls until it fires, the one it fires on included
 	err  error
 	hold *Hold
 }
@@ -29,11 +25,13 @@ type fault struct {
 var _ vfs.Service = (*FaultService)(nil)
 
 // Faults is a Service that passes every call to inner, arguments and results
-// unchanged, until a test arms a fault: Fail or FailNth answers a call an
-// error in inner's place, Hold keeps a call until the test releases it. Each
-// fault fires once, on the call it names, and every other call passes
-// through, so inner serves exactly the calls no error answered. Its methods
-// are safe for concurrent use.
+// unchanged, until a test arms a fault: Fail answers a call an error in
+// inner's place, Hold keeps a call until the test releases it. Each fault
+// fires once, on the next call of its method, and every other call passes
+// through, so inner serves exactly the calls no error answered. Where several
+// faults are armed on one method, the one armed first fires on its next call
+// and the others on the calls after it, one each. Its methods are safe for
+// concurrent use.
 //
 // Every Service method is written out here and none is embedded, so a method
 // added to Service fails to compile until it is wrapped.
@@ -41,30 +39,20 @@ func Faults(inner vfs.Service) *FaultService {
 	return &FaultService{inner: inner}
 }
 
-// Fail makes the next call of op, or of any method for AnyOp, answer err
-// without reaching inner.
-func (f *FaultService) Fail(op vfs.Op, err error) { f.FailNth(op, 1, err) }
-
-// FailNth makes the n-th call of op from now, counted from 1, or of any
-// method for AnyOp, answer err without reaching inner. The calls before it
-// pass through. Where two faults would fire on the same call, the one armed
-// first fires and the other fires on the next matching call, so faults armed
-// on one op one after another fire one call after another. A TestState it
-// fires on answers err for every reference. It panics on an n below 1 or a
-// nil err, a mistake in the test.
-func (f *FaultService) FailNth(op vfs.Op, n int, err error) {
-	if n < 1 || err == nil {
-		panic("vfstest: FailNth needs an n of at least 1 and an error")
-	}
-	f.arm(&fault{op: op, left: n, err: err})
+// Fail makes the next call of op answer err, a non-nil error, without
+// reaching inner. A TestState it fires on answers err for every reference.
+func (f *FaultService) Fail(op vfs.Op, err error) {
+	f.arm(&fault{op: op, err: err})
 }
 
-// Hold makes the next call of op, or of any method for AnyOp, wait until
-// Release, or until its context ends, and then pass through to inner, which
-// answers it as it answers a cancelled context in the latter case.
+// Hold makes the next call of op wait until Release, or until its context
+// ends, and then pass through to inner, which answers it as it answers a
+// cancelled context in the latter case. A hold never released, on a call whose
+// context never ends, keeps that call's goroutine: release it or end the
+// context before the test ends.
 func (f *FaultService) Hold(op vfs.Op) *Hold {
 	h := &Hold{reached: make(chan struct{}), release: make(chan struct{})}
-	f.arm(&fault{op: op, left: 1, hold: h})
+	f.arm(&fault{op: op, hold: h})
 	return h
 }
 
@@ -106,28 +94,17 @@ func (f *FaultService) at(ctx context.Context, op vfs.Op) error {
 	return a.err
 }
 
-// take counts a call of op against every fault it matches and removes and
-// answers the first one whose turn it is.
+// take removes and answers the first armed fault on op, if any.
 func (f *FaultService) take(op vfs.Op) *fault {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	fired := -1
 	for i, a := range f.armed {
-		if a.op != AnyOp && a.op != op {
-			continue
-		}
-		if a.left > 1 {
-			a.left--
-		} else if fired < 0 {
-			fired = i
+		if a.op == op {
+			f.armed = append(f.armed[:i], f.armed[i+1:]...)
+			return a
 		}
 	}
-	if fired < 0 {
-		return nil
-	}
-	a := f.armed[fired]
-	f.armed = append(f.armed[:fired], f.armed[fired+1:]...)
-	return a
+	return nil
 }
 
 // failEach is TestState's answer when it fails: err for every reference.
