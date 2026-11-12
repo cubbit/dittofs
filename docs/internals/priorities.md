@@ -9,9 +9,7 @@ The rules cover both kinds of item on the board: repository issues and draft ite
 what must not be public yet, security findings above all, so triage reads them like any issue but
 never copies their content anywhere public: not into an issue, a comment, a commit or a PR.
 
-Triage covers **leaf issues** only: an open issue that is not labelled `epic` or `roadmap`, and
-whose parent, if it has one, is labelled `roadmap`. Two kinds of issue are out of scope, and
-triage never sets or proposes their priority:
+Triage covers every open issue but two kinds, whose priority it never sets or proposes:
 
 - issues labelled `epic` or `roadmap`: they are containers, and how roadmap items are defined;
 - sub-issues of an `epic`: they are subtasks of planned work, ordered by the epic's own plan.
@@ -159,26 +157,24 @@ Any one of these:
    format, such as a file that starts with the compression frame marker. Bugs P0.1 is triggered by
    the operation a client performs or by a background process; here the trigger is the admin
    action or the content itself.
-3. **Silent durability failure**: the system stops uploading data, or stops being able to, and
-   does not report it, while nothing is lost yet. Examples are a missing bucket, a journal that
-   disappeared, and a health check that stays green while uploads fail. Once data is actually lost,
-   Bugs P0.1 or P1.2 places it.
-4. **Storage leaks on the remote**: objects that are never reclaimed, so the bucket grows without
-   limit under the first use case's overwrite pattern.
-5. **First start**: the server does not come up, or its share cannot be mounted, on its first
+3. **Silent durability failure**: the journal stops keeping written data safe, or stops being
+   able to, and nothing reports it, while nothing is lost yet. Examples are a journal that
+   disappeared and is reopened empty, and one that turns read-only while its health stays green.
+   Once data is actually lost, Bugs P0.1 or P1.2 places it.
+4. **First start**: the server does not come up, or its share cannot be mounted, on its first
    start. A documented install path that fails is CI, Infra and packaging P1.
-6. **Breaking configuration changes**: a config key, environment variable, CLI flag or default
+5. **Breaking configuration changes**: a config key, environment variable, CLI flag or default
    that is renamed, removed or changes meaning between releases, so an existing setup stops working
    or silently runs with different settings.
-7. **Regressions**: something that worked in the previous release no longer works, unless it is P0.
-8. **Security that needs an authenticated client**: a client with valid credentials can reach data
+6. **Regressions**: something that worked in the previous release no longer works, unless it is P0.
+7. **Security that needs an authenticated client**: a client with valid credentials can reach data
    or state it should not, such as another user's files or another client's stateids, over any
    protocol.
-9. **Denial of service that needs an authenticated client**: a client with valid credentials
+8. **Denial of service that needs an authenticated client**: a client with valid credentials
    sends crafted or hostile requests, such as an oversized count or a malformed structure, that
    crash the server, exhaust a resource or stop it serving others, over any protocol: SMB, NFS or
    the control plane API. A heavy but legitimate workload is Bugs P0.5, not this rule.
-10. **Non-conformance with POSIX**, whichever protocol it was found through.
+9. **Non-conformance with POSIX**, whichever protocol it was found through.
 
 ### P2 — Medium
 
@@ -189,12 +185,14 @@ Any one of these:
    usually hits Bugs P1.1 first.
 2. **NFS only**: NFSv3 and v4.x bugs, conformance gaps and audit findings whose effect cannot reach
    anything but NFS clients, such as protocol state, delegations or grace. A wrong POSIX result
-   found through NFS is Bugs P1.10, because what it breaks is shared with SMB.
+   found through NFS is Bugs P1.9, because what it breaks is shared with SMB.
 3. **Security that needs more than a client**: an attacker who can already read the bucket or log
    in to the server host, such as metadata exposed in an encrypted bucket, and hardening with no
    known way to exploit it.
 4. **Audit and umbrella issues**: a list of findings or a tracker with sub-issues. Each finding
-   split out of it is placed on its own.
+   filed as its own issue is placed on its own.
+5. **The S3 offload**, which the first use case does not use in v1.0: objects on the remote that
+   are never reclaimed, and uploads that stop without anything reporting it.
 
 ### P3 — Low
 
@@ -210,19 +208,21 @@ Any one of these:
 | #2895: GC deletes the object before its metadata, dedup adopts missing bytes | P0 | Bugs P0.1, a background process loses data |
 | #3056: editing a store that is in use makes the share unreadable after restart | P1 | Bugs P1.2, an admin action that should be refused |
 | #2897: crafted content colliding with the compression magic is unreadable | P1 | Bugs P1.2, content built to collide with an internal format |
-| #3051: uploads to a missing bucket fail silently | P1 | Bugs P1.3, silent durability failure |
-| #3099: a directory's nlink reads one short right after an NFSv3 MKDIR | P1 | Bugs P1.10, POSIX, found through NFS |
+| #3099: a directory's nlink reads one short right after an NFSv3 MKDIR | P1 | Bugs P1.9, POSIX, found through NFS |
 | #3078: REMOVE does not recall another client's delegation | P2 | Bugs P2.1, protocol spec (RFC 8881) |
 | #3080: grace status reports 0 expected clients | P2 | Bugs P2.2, NFS only; a signal that exists and lies is a bug |
 | #2511: SMB adapter audit, ~55 live defects | P2 | Bugs P2.4, an audit tracker |
+| #3051: uploads to a missing bucket fail silently | P2 | Bugs P2.5, the S3 offload |
 | #2625: unlocked access to the SMB position field | P3 | Bugs P3.1, no observable effect |
 
 ## Testing
 
 Tests, suites and the harness: what tells us whether the product works.
 
-- **P0:** a test in a shared gate gives the wrong verdict: it passes while the behaviour it checks is broken, fails while it works every time,
-  or is flaky at any rate.
+- **P0:** a test in a shared gate gives the wrong verdict: it passes while the behaviour it checks
+  is broken, fails while it works every time, or is flaky. A test is flaky once it has failed and
+  then passed on retry on unchanged code, as `dt history` records it; there is no floor on the
+  rate.
 - **P1:** any one of these:
   - a flaky test outside the shared gates;
   - a defect in the harness, a runner or a fixture that can hide or distort the results of other
@@ -289,6 +289,8 @@ someone picks the issue up, not at triage.
 The shared pipelines, the release, and how DittoFS is installed and run as a service.
 
 - **P0:** a shared gate cannot run, or reports a pass without testing anything (a false green).
+  A false green that comes from a test or the harness is Testing P0; this rule covers the pipeline
+  itself, such as a job that runs no test at all.
 - **P1:** a documented install path (package, Docker image, build from source) fails, or the
   installed service does not start or stay up.
 - **P2:** a pipeline that gives the right verdict but is slow, wasteful or noisy, and packaging
@@ -338,10 +340,10 @@ New capability, and how fast or how far an existing one goes.
 
 What an operator can see: health conditions, metrics, logs and traces.
 
-- **P0:** none. A health check that stays green while data is lost or uploads stop is a bug (Bugs
-  P1.3).
+- **P0:** none. A health check that stays green while data is lost or the journal stops keeping it
+  safe is a bug (Bugs P1.3).
 - **P1:** an operator cannot see a condition a P0 or P1 bug rule names, such as a journal turned
-  read-only, stalled uploads or a full journal. A signal that exists and is wrong is a bug.
+  read-only or a journal near full. A signal that exists and is wrong is a bug.
 - **P2:** a metric missing for diagnosing capacity or performance.
 - **P3:** naming, labels, dashboards.
 
