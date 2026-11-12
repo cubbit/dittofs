@@ -76,6 +76,11 @@ type coreOptions struct {
 	wrapDomains func(durability.Domains) durability.Domains
 	// accountSpy is told every non-zero delta Account applied.
 	accountSpy func(index.HeldDelta)
+	// stepSpy runs in Account between its three counter updates, told how many
+	// have been applied.
+	stepSpy func(step int)
+	// betweenHeldReads runs in Stats between its dirty and held reads.
+	betweenHeldReads func()
 	// tracer is the Tracer the core's Deps carry; nil means no tracing.
 	tracer core.Tracer
 	// state is the State newCore continues from; the zero State builds fresh.
@@ -88,6 +93,9 @@ type coreOptions struct {
 	// domain held. It is the window a take's room grant and the append that
 	// spends it are apart in.
 	beforeAppend func()
+	// beforeWrote runs in WriteAt after a record is appended and before the
+	// share counts it, while the record is still reserved.
+	beforeWrote func()
 	// beforeResolve runs in ReadAt after the as-of is read and the file's
 	// append domain released, before the span is resolved.
 	beforeResolve func()
@@ -134,12 +142,14 @@ type coreOptions struct {
 //
 // decision: a Core owns no lock that spans I/O. The one domain it uses is the
 // file append domain, taken through its domain table and held across a file's
-// append and publish, which includes I/O; its counters are atomics. Its one
-// mutex is the dirty-file list's leaf, held only for a map operation. Revisit
+// append and publish, which includes I/O; its counters are atomics. Its two
+// mutexes, the dirty-file list's and the per-share ledger's, are leaves, each
+// held only for a map operation. Revisit
 // if a core-wide invariant ever needs a mutex that outlives one.
 type Core struct {
 	index         *index.Index
 	dirtyFiles    dirtyList
+	shares        shareLedger
 	clock         core.Clock // the injected clock, read for the write time a dirty write carries
 	counters      *index.Counters
 	set           *segment.Set
@@ -150,6 +160,7 @@ type Core struct {
 	domains       durability.Domains
 	cap           *capacity.Capacity
 	headroom      *capacity.Headroom
+	maxBytes      int64               // the configured maximum local footprint, zero when unbounded
 	segCap        int64               // the set's segment cap, what the streams roll at and the admission sizes by
 	contentTarget int                 // the content spare target the pool was built with, for the test helper's wait
 	retirer       *segment.Retirer    // the retirement executor
@@ -161,6 +172,18 @@ type Core struct {
 	fillRefused           atomic.Uint64
 	tracer                core.Tracer
 	accountSpy            func(index.HeldDelta)
+
+	// stepSpy is a test seam that stands between Account's counter updates, so
+	// a test can read the counters with one applied and the next not.
+	//
+	// decision: it is nil outside tests, for the same reason afterAppend is.
+	stepSpy func(step int)
+
+	// betweenHeldReads is a test seam that stands between Stats' reads of the
+	// dirty and held counters, so a test can land an update there.
+	//
+	// decision: it is nil outside tests, for the same reason stepSpy is.
+	betweenHeldReads func()
 
 	// afterAppend is a test seam that holds a write in the gap between its
 	// append and its publish.
@@ -174,6 +197,11 @@ type Core struct {
 	// grant and its first append, the window a take's room grant is spent in.
 	// It is nil outside tests, for the same reason afterAppend is.
 	beforeAppend func()
+	// beforeWrote is a test seam that runs in WriteAt after a record is in its
+	// segment and before the share counts it, the window in which the record
+	// is still reserved. It is nil outside tests, for the same reason
+	// afterAppend is.
+	beforeWrote func()
 
 	// beforeResolve is a test seam that holds a read between reading its
 	// as-of and resolving its span. It is nil outside tests, for the same
@@ -257,7 +285,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
 	var domains durability.Domains = newFileLocks()
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)
@@ -298,6 +326,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	if maxBytes == 0 {
 		maxBytes = o.maxBytes
 	}
+	c.maxBytes = maxBytes
 	headroomRecords := deps.HeadroomRecords
 	if o.headroomRecords != 0 {
 		headroomRecords = o.headroomRecords

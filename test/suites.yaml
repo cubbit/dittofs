@@ -30,7 +30,7 @@ suites:
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
       # going red. None of these tags excludes another.
-      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,engine_conformance,adapter_conformance ./...
+      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,engine_conformance,engine_load,adapter_conformance ./...
       # The adapters run on every platform a node does, and their socket code differs by
       # platform, so they are vetted for Windows and macOS beside the host's own.
       - { sh: 'for os in windows darwin; do GOOS=$os go vet ./pkg/adapter/... ./pkg/resources/... ./internal/adapter/... || exit 1; done' }
@@ -118,6 +118,17 @@ suites:
     cmd: go test -race -tags=engine_conformance -timeout=30m ./pkg/block/engine/conformance/... ./internal/vfs/integration/...
     known: test/engine/known.yaml
     tier: pr
+  # The engine's version-limit load rows: each draws about 2^24 versions through the real journal
+  # under the race detector, which takes far longer than the pull-request gate's limit, so they
+  # run on request behind their own tag (on top of engine_conformance, whose helpers they share).
+  # They are not expected to pass yet: the real journal now draws, so each row loops its draws for
+  # minutes (all three outlast a 3-minute timeout) and the run ends red at the timeout, with no
+  # failure message to record in a known file. Give them one when the journal draws at the speed
+  # the rows need (#4163).
+  engine-load:
+    format: go-json
+    cmd: go test -race -tags=engine_conformance,engine_load -timeout=2h -run '^TestRFC8_VersionLimit(SustainedLoad|Burst250000|Burst500000)$' ./pkg/block/engine/conformance/
+    tier: manual
   # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
   # epic that fills its stub, and each failure is a known one.
   adapter-conformance:
