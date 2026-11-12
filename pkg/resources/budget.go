@@ -20,19 +20,22 @@ import (
 	"testing"
 )
 
-// inTests is read once: a release past zero panics in a test binary and
-// clamps anywhere else.
-var inTests = testing.Testing()
-
 // count is the bytes reserved from one budget of either kind, under its one
 // mutex.
 type count struct {
 	name    string
 	ceiling int64
 
+	panics bool         // a release past zero panics: set in a test binary, read once at construction
+	log    *slog.Logger // where a clamp is logged; nil is slog's default
+
 	mu       sync.Mutex
 	reserved int64
 	pastZero bool // a release past zero was already logged
+}
+
+func newCount(name string, ceiling int64) count {
+	return count{name: name, ceiling: ceiling, panics: testing.Testing()}
 }
 
 func (c *count) read() int64 {
@@ -64,14 +67,18 @@ func (c *count) lowerLocked(n int64) (past, first bool) {
 // reportPastZero is called with the mutex released, so the budget stays usable
 // after the panic.
 func (c *count) reportPastZero(first bool) {
-	if inTests {
+	if c.panics {
 		panic(fmt.Sprintf("resources: release past zero on %s", c.name))
 	}
 	// ponytail: one Error record per budget stands in for RFC 24 §10's count
 	// of releases past zero, since a budget is given no registry and no
 	// logger; the counter replaces it when a budget can reach a registry.
 	if first {
-		slog.Error("resources: release past zero, count clamped", "budget", c.name)
+		log := c.log
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Error("resources: release past zero, count clamped", "budget", c.name)
 	}
 }
 
@@ -83,7 +90,7 @@ type Budget struct {
 
 // NewBudget builds a refusing budget of ceiling bytes.
 func NewBudget(name string, ceiling int64) *Budget {
-	return &Budget{c: count{name: name, ceiling: ceiling}}
+	return &Budget{c: newCount(name, ceiling)}
 }
 
 // Reserve charges n bytes, or refuses at once past the ceiling. It decides
@@ -122,9 +129,9 @@ func (b *Budget) release(n int64) {
 // ponytail: waiters are granted in arrival order from one queue, and nothing
 // passes the head, so a large reservation is not starved by small ones but
 // one busy address can take the whole budget while the others wait their
-// place. Replace the queue with RFC 24 §4.1's turns per key when more than
-// one client shares a budget at its ceiling; the key is already in Reserve's
-// signature and in the Reservation, so no caller changes.
+// place. RFC 24 §4.1's turns per key replace the queue before an adapter
+// serves clients it does not trust on a WaitBudget; the key is already in
+// Reserve's signature and in the Reservation, so no caller changes.
 //
 // ponytail: one mutex over the count and the queue; take the fast path as one
 // atomic step with no waiter when a profile shows the lock limiting the
@@ -143,7 +150,7 @@ type waiter struct {
 
 // NewWaitBudget builds a waiting budget of ceiling bytes.
 func NewWaitBudget(name string, ceiling int64) *WaitBudget {
-	return &WaitBudget{c: count{name: name, ceiling: ceiling}}
+	return &WaitBudget{c: newCount(name, ceiling)}
 }
 
 // Reserve charges n bytes for key. When they do not fit under the ceiling, or
@@ -183,18 +190,21 @@ func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Rese
 	}
 
 	c.mu.Lock()
+	var past, first bool
 	select {
 	case <-w.ready:
 		// A release granted it before the lock was taken: the bytes go back,
 		// which may be the room the next waiter needs.
-		c.reserved -= n
-		b.grantLocked()
+		past, first = c.lowerLocked(n)
 	default:
 		// If it was the head, those it held back may fit now.
 		b.waiters.Remove(elem)
-		b.grantLocked()
 	}
+	b.grantLocked()
 	c.mu.Unlock()
+	if past {
+		c.reportPastZero(first)
+	}
 	return Reservation{}, fmt.Errorf("resources: reserve %d bytes from %s: %w", n, c.name, ctx.Err())
 }
 

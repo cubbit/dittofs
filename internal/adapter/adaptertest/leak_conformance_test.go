@@ -12,8 +12,8 @@ import (
 )
 
 // Every test named TestConformance in the adapters' tree is a specification
-// a later epic builds to. Each fails today on the stub it names and is listed
-// in test/adapter/known.yaml until the change that fills the stub.
+// an epic builds to. One that still fails on a stub is listed in
+// test/adapter/known.yaml until the change that fills the stub.
 
 // budgets returns four budgets with room for a test's reservations.
 func budgets() *resources.Budgets {

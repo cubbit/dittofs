@@ -21,14 +21,21 @@ var client = netip.MustParseAddr("192.0.2.1")
 // reserve that fits, and Reserved.
 var kinds = []struct {
 	name string
-	new  func(name string, ceiling int64) (reserve func(int64) (Reservation, error), reserved func() int64)
+	// clamps, when given, is the logger the budget clamps to as production does.
+	new func(name string, ceiling int64, clamps *slog.Logger) (reserve func(int64) (Reservation, error), reserved func() int64)
 }{
-	{"Budget", func(name string, ceiling int64) (func(int64) (Reservation, error), func() int64) {
+	{"Budget", func(name string, ceiling int64, clamps *slog.Logger) (func(int64) (Reservation, error), func() int64) {
 		b := NewBudget(name, ceiling)
+		if clamps != nil {
+			b.clampTo(clamps)
+		}
 		return b.Reserve, b.Reserved
 	}},
-	{"WaitBudget", func(name string, ceiling int64) (func(int64) (Reservation, error), func() int64) {
+	{"WaitBudget", func(name string, ceiling int64, clamps *slog.Logger) (func(int64) (Reservation, error), func() int64) {
 		b := NewWaitBudget(name, ceiling)
+		if clamps != nil {
+			b.clampTo(clamps)
+		}
 		return func(n int64) (Reservation, error) { return b.Reserve(context.Background(), client, n) }, b.Reserved
 	}},
 }
@@ -65,7 +72,7 @@ func TestBudgetRefusesPastItsCeiling(t *testing.T) {
 func TestReleaseReturnsItsBytesOnce(t *testing.T) {
 	for _, k := range kinds {
 		t.Run(k.name, func(t *testing.T) {
-			reserve, reserved := k.new("b", 10)
+			reserve, reserved := k.new("b", 10, nil)
 			first, second := mustReserve(t, reserve, 4), mustReserve(t, reserve, 3)
 			first.Release()
 			if got := reserved(); got != 3 {
@@ -90,7 +97,7 @@ func TestReleaseReturnsItsBytesOnce(t *testing.T) {
 func TestReleasePastZeroPanicsInTests(t *testing.T) {
 	for _, k := range kinds {
 		t.Run(k.name, func(t *testing.T) {
-			reserve, reserved := k.new("b", 10)
+			reserve, reserved := k.new("b", 10, nil)
 			r := mustReserve(t, reserve, 4)
 			twin := r
 			r.Release()
@@ -132,17 +139,9 @@ func (h *records) Handle(_ context.Context, r slog.Record) error {
 func TestReleasePastZeroClampsAndLogsOncePerBudget(t *testing.T) {
 	for _, k := range kinds {
 		t.Run(k.name, func(t *testing.T) {
-			inTests = false
 			h := &records{}
-			old := slog.Default()
-			slog.SetDefault(slog.New(h))
-			t.Cleanup(func() {
-				inTests = true
-				slog.SetDefault(old)
-			})
-
 			pastZero := func(name string) {
-				reserve, reserved := k.new(name, 10)
+				reserve, reserved := k.new(name, 10, slog.New(h))
 				r := mustReserve(t, reserve, 4)
 				twin := r
 				r.Release()
@@ -513,7 +512,14 @@ func TestWaitBudgetModel(t *testing.T) {
 			}
 		})
 	}
-	wg.Wait()
+	// A waiter never granted would otherwise hang the package to its timeout.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Minute):
+		t.Fatal("reservers still running after a minute: a waiter was never granted")
+	}
 	if got, queued := b.Reserved(), b.waiters.Len(); got != 0 || queued != 0 {
 		t.Errorf("at the end %d reserved and %d queued, want 0 and 0", got, queued)
 	}
