@@ -176,10 +176,7 @@ func toEnd(off int64) core.Extent { return core.Extent{Off: off, Len: math.MaxIn
 // the append returns the removal's own answer, not the context's error, and a
 // read-only journal answers the refusal bare.
 func (c *Core) remove(ctx context.Context, s *Share, id core.FileID, spec removal) (core.Version, error) {
-	if err := ctx.Err(); err != nil {
-		return core.Version{}, err
-	}
-	exit, err := s.enter()
+	exit, err := beginCall(ctx, s)
 	if err != nil {
 		return core.Version{}, err
 	}
