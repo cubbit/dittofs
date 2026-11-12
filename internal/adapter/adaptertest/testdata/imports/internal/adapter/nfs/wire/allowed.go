@@ -3,6 +3,7 @@ package wire
 
 import (
 	_ "encoding/binary"
+	_ "net/netip"
 
 	_ "github.com/cubbit/dittofs/pkg/resources"
 )

@@ -28,9 +28,10 @@ var outsideTests = []string{
 	"github.com/pmezard/go-difflib/difflib", // the frozen surface's test prints a diff against its golden files
 }
 
-// fileIO is the standard library a wire package may not import: a codec is a
+// fileIO is the standard library a wire package may not import, each with the
+// packages below it, but for net/netip, which is values only: a codec is a
 // pure function of bytes.
-var fileIO = []string{"os", "os/exec", "io/ioutil", "net", "syscall"}
+var fileIO = []string{"os", "io/ioutil", "net", "syscall", "plugin"}
 
 // retired is the paths the first adapters used and these do not: no package
 // may exist at one, so nothing can import it either.
@@ -86,7 +87,13 @@ func forbidden(dir string, test bool, imp string) string {
 	}
 	switch {
 	case test:
-		// A test file outside the adapters is held only to the rule below.
+		// A test file outside the adapters is held only to the pkg/ rule below.
+		//
+		// decision: it may import an implementation from outside pkg/, though
+		// RFC 20 §2.5 names no test files, since it never reaches a binary's
+		// build. Withdraw it if a package of test helpers outside
+		// internal/adapter imports an implementation and non-test code
+		// imports that package.
 	case dir == "pkg/adapter/settings":
 		if !standard(imp) {
 			return "pkg/adapter/settings is a leaf: it imports the standard library only"
@@ -117,7 +124,10 @@ func forbiddenToAnAdapter(dir, name string, test bool, imp string) string {
 	p, local := strings.CutPrefix(imp, module)
 	wire := slices.Contains(strings.Split(dir, "/"), "wire")
 	switch {
-	case wire && !test && slices.Contains(fileIO, imp):
+	// decision: a wire package's test files may import fileIO, since a codec's
+	// test reads its vectors from files and the rule keeps the codec pure, not
+	// its test. Withdraw it if a wire test opens a connection.
+	case wire && !test && imp != "net/netip" && slices.ContainsFunc(fileIO, func(r string) bool { return under(imp, r) }):
 		return "a wire package does no file or network I/O"
 	case standard(imp):
 		return ""
@@ -161,9 +171,10 @@ func forbiddenToAnAdapter(dir, name string, test bool, imp string) string {
 }
 
 // violations walks every Go file under root, test files and files behind a
-// build tag included, each testdata directory below root left out, and names
-// each import the adapters' architecture forbids and each package at a
-// retired path.
+// build tag included, and names each import the adapters' architecture
+// forbids and each package at a retired path. It leaves out what go builds no
+// package of this module from: a directory below root named testdata or
+// beginning with . or _, and another module, a directory holding a go.mod.
 //
 // ponytail: a package's path is read from its directory under root, so an
 // import a replace directive or a vendored copy redirects would be missed.
@@ -178,7 +189,13 @@ func violations(t *testing.T, root string) []string {
 		rel, _ := filepath.Rel(root, file)
 		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
-			if file != root && (d.Name() == "testdata" || strings.HasPrefix(d.Name(), ".")) {
+			if file == root {
+				return nil
+			}
+			if n := d.Name(); n == "testdata" || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_") {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(file, "go.mod")); err == nil {
 				return filepath.SkipDir
 			}
 			return nil
@@ -249,6 +266,7 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/adapter/nfs/vfsx.go: imports github.com/cubbit/dittofs/pkg/vfsx: an adapter imports, of the module, only pkg/vfs, pkg/adapter, pkg/adapter/settings, pkg/resources, pkg/metrics, internal/tlsconfig, core and its own packages",
 		"internal/adapter/nfs/wire/errgroup.go: imports golang.org/x/sync/errgroup: a wire package imports only the standard library and pkg/resources",
 		"internal/adapter/nfs/wire/file.go: imports os: a wire package does no file or network I/O",
+		"internal/adapter/nfs/wire/http.go: imports net/http: a wire package does no file or network I/O",
 		"internal/adapter/nfs/wire/net.go: imports net: a wire package does no file or network I/O",
 		"internal/adapter/nfs/wire/service.go: imports github.com/cubbit/dittofs/pkg/vfs: a wire package imports only the standard library and pkg/resources",
 		"internal/adapter/nfs/wire/service_test.go: imports github.com/cubbit/dittofs/pkg/vfs: a wire package imports only the standard library and pkg/resources",
@@ -259,6 +277,7 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/adapter/testruntime/doc.go: a package at internal/adapter/testruntime, a path the first adapters used",
 		"internal/node/impl.go: imports github.com/cubbit/dittofs/internal/adapter/nfs: only the two constructors import an adapter's implementation; a sidecar may import a protocol's wire package",
 		"internal/node/proto.go: imports github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto: adaptertest and its test protocol are imported by test files only",
+		"internal/sidecar/portmap/impl.go: imports github.com/cubbit/dittofs/internal/adapter/nfs: only the two constructors import an adapter's implementation; a sidecar may import a protocol's wire package",
 		"pkg/adapter/core.go: imports github.com/cubbit/dittofs/internal/adapter/core: pkg/adapter imports only the standard library, pkg/vfs, pkg/metrics, pkg/resources, pkg/adapter/settings and the tracing API",
 		"pkg/adapter/errgroup.go: imports golang.org/x/sync/errgroup: pkg/adapter imports only the standard library, pkg/vfs, pkg/metrics, pkg/resources, pkg/adapter/settings and the tracing API",
 		"pkg/adapter/nfs/core.go: imports github.com/cubbit/dittofs/internal/adapter/core: a constructor imports only its own protocol's implementation",
