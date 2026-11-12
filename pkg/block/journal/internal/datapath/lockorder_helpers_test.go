@@ -254,44 +254,31 @@ func TestRecordedCoreFixture(t *testing.T) {
 			[]lockorder.Rank{lockorder.SegmentAppend}, func() { c.streams.Stream(i).Room() })
 	}
 
-	// The descriptor cache's guard is a pin, which orders nothing and
-	// breaks no rule: its wiring is proven by the pin appearing on this
-	// goroutine's books across a reference's lifetime and leaving with it.
-	pins := countRank(rec.Held(), lockorder.StorageGuard)
+	// The descriptor cache's guard reference is checked when it is granted:
+	// taken under the file index it is reported, so a cache whose recorder
+	// was never installed reports nothing and fails the count here.
 	placed, _ := c.index.Span(fid(40), core.Extent{Off: 0, Len: 1024})
 	if len(placed) == 0 {
 		t.Fatalf("the fixture's written file holds no placed record")
 	}
+	before := len(rec.Violations())
+	probe := probeLock{component: "cache"}
+	rec.Acquire(lockorder.FileIndex, probe)
 	ref, err := c.cache.Acquire(placed[0].Record.Segment)
+	rec.Release(probe)
 	if err != nil {
 		t.Fatalf("Acquire of the fixture's segment: %v", err)
 	}
-	// A reference is released exactly once, on the passing path and on a
-	// failed assertion alike: the deferred closure releases a reference no
-	// explicit release returned from, so a failed assertion cannot leak it
-	// into the cleanup's Close — whose Shutdown waits for every reference
-	// and would hang — while a second release on the passing path would
-	// corrupt the cache's refcounts.
-	var released bool
-	defer func() {
-		if !released {
-			ref.Release()
-		}
-	}()
-	if got := countRank(rec.Held(), lockorder.StorageGuard); got != pins+1 {
-		t.Fatalf("cache wiring: storage guard holds while the reference is held = %d, want %d", got, pins+1)
-	}
 	ref.Release()
-	released = true
-	if got := countRank(rec.Held(), lockorder.StorageGuard); got != pins {
-		t.Fatalf("cache wiring: storage guard holds after the reference released = %d, want %d", got, pins)
+	vs := rec.Violations()[before:]
+	if len(vs) != 1 || vs[0].Kind != lockorder.GuardUnderIndex || vs[0].Rank != lockorder.StorageGuard {
+		t.Fatalf("cache wiring: violations for a reference granted under the file index = %+v, want exactly one guard under index of storage guard", vs)
 	}
 }
 
 // expectOutOfOrder drives one component's probe: it holds the rank held by
 // hand on a fresh goroutine — the recorder keeps each goroutine's books
-// apart, so a probe there is free of the pins the fixture's own appends left
-// on the test goroutine's — runs drive, one real entry point of the
+// apart, so a probe there is free of whatever the test goroutine holds — runs drive, one real entry point of the
 // component, and asserts the recorder reports exactly one out-of-order
 // acquisition for each rank in want, in order, each against the probe's own
 // hold. A component whose SetRecorder wiring was dropped keeps its locks
@@ -304,7 +291,7 @@ func expectOutOfOrder(t *testing.T, c *Core, rec *lockorder.Recorder, held locko
 		defer close(done)
 		rec.Acquire(held, probeLock{component: component})
 		drive()
-		rec.Release(held, probeLock{component: component})
+		rec.Release(probeLock{component: component})
 	}()
 	recordedAwait(t, c, component+" probe", done)
 	vs := rec.Violations()
@@ -331,35 +318,10 @@ func expectOutOfOrder(t *testing.T, c *Core, rec *lockorder.Recorder, held locko
 	}
 }
 
-// countRank counts how many of the goroutine's held locks are of rank r.
-func countRank(held []lockorder.Rank, r lockorder.Rank) int {
-	n := 0
-	for _, h := range held {
-		if h == r {
-			n++
-		}
-	}
-	return n
-}
-
 // probeLock names the probe's hold books: the recorder's entry point takes
 // any identity, and one struct per component never collides with a real
 // lock's.
 type probeLock struct{ component string }
-
-// withoutPins returns the held ranks with the storage guard reference pins a
-// stream's appender leaves on the writing goroutine's books taken out: a pin
-// is a shared hold that never waits on anything and orders nothing, so an
-// assertion on a goroutine that appended wants its locks, not its pins.
-func withoutPins(held []lockorder.Rank) []lockorder.Rank {
-	out := held[:0:0]
-	for _, h := range held {
-		if h != lockorder.StorageGuard {
-			out = append(out, h)
-		}
-	}
-	return out
-}
 
 // abandonRecorded leaves the core unclosed when its test already failed on
 // the watchdog: the cleanup's Close would wait on the blocked call the run

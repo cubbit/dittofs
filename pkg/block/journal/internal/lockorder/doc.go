@@ -20,6 +20,9 @@
 // lock is taken, so an order that would deadlock is reported first — and
 // several goroutines may have one lock's hold on the books at once, a
 // contender's recorded attempt beside its holder's hold, which the
-// recorder's per-identity holder set keeps apart. The one same-domain
-// exemption is a reader's nested RLock of its own guard.
+// recorder's per-identity holder set keeps apart. A storage guard
+// reference, granted and kept by the stream or a reader across later
+// acquisitions, is checked when it is granted and kept off every
+// goroutine's books; only the drain's wait, the exclusive guard, is held
+// and recorded.
 package lockorder

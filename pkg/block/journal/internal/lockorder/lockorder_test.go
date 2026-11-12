@@ -174,7 +174,7 @@ func TestNilRecorder_MethodsAreNoOps(t *testing.T) {
 	var rec *lockorder.Recorder
 	id := new(int)
 	rec.Acquire(lockorder.FileAppend, id)
-	rec.Release(lockorder.FileAppend, id)
+	rec.Release(id)
 	rec.IO("read")
 	rec.AssertNoneHeld("offload")
 	rec.AssertNotHeld(lockorder.FileAppend, "wait")

@@ -149,11 +149,9 @@ var reportedViolations = struct {
 }{seen: make(map[*lockorder.Recorder]map[string]struct{})}
 
 // assertNoViolations fails t on every violation the recorder collected, each
-// once, and fails once more when the calling goroutine still holds a rank
-// other than a storage guard pin: a pin is the stream's active ref, held
-// from the roll that took it to the roll or close that releases it, so a
-// worker that ends between the two holds its segment's pin and nothing
-// else. It is called on every goroutine the recorded run launches, at its
+// once, and fails once more when the calling goroutine still holds a rank: a
+// guard reference is on no goroutine's books, so a worker ends holding
+// nothing. It is called on every goroutine the recorded run launches, at its
 // own end.
 func assertNoViolations(t *testing.T, rec *lockorder.Recorder, where string) {
 	t.Helper()
@@ -184,11 +182,8 @@ func assertNoViolations(t *testing.T, rec *lockorder.Recorder, where string) {
 		}
 		return
 	}
-	for _, h := range rec.Held() {
-		if h != lockorder.StorageGuard {
-			t.Errorf("%s: the goroutine holds ranks %v after the run, want only the stream's pin at most", where, rec.Held())
-			return
-		}
+	if held := rec.Held(); len(held) != 0 {
+		t.Errorf("%s: the goroutine holds ranks %v after the run, want none", where, held)
 	}
 }
 
@@ -366,10 +361,8 @@ func TestStreamsUnderRecorder(t *testing.T) {
 		awaitGone(t, e.cache, active)
 		close(release)
 	}()
-	// The retirement runs on a goroutine that holds no pin: the test
-	// goroutine still pins the active segment its own appends landed in,
-	// and a drain wait taken across any pin is reported — production
-	// retirers hold none, so the check must not run on this one's books.
+	// The retirement runs on its own goroutine, as production's does, so
+	// its books hold nothing but the retirement's own locks.
 	retired := make(chan error, 1)
 	go func() {
 		_, err := r.Retire(active, segment.NotHeld)
@@ -383,8 +376,7 @@ func TestStreamsUnderRecorder(t *testing.T) {
 	// The streams close before the cache's Shutdown cleanup: each stream
 	// holds its active segment's reference until its close, and a shutdown
 	// that ran first would wait on them forever. The close is also what
-	// clears the test goroutine's own pin, so the empty-books check runs
-	// after it alone.
+	// is also where the test goroutine's books are checked empty.
 	if err := e.ss.Close(); err != nil {
 		t.Fatalf("the streams' close: %v", err)
 	}
@@ -404,7 +396,7 @@ func TestStreamsUnderRecorder(t *testing.T) {
 	_ = e.pool.Counters()
 	_ = e.set.Counters()
 	vs := e.rec.Violations()
-	e.rec.Release(probe, "probe")
+	e.rec.Release("probe")
 	// One report per lock: rank storage guard is held, so each capacity
 	// and segment append acquisition goes out of order.
 	if len(vs) != 3 {
@@ -450,14 +442,15 @@ type errNoSegment struct{}
 func (errNoSegment) Error() string { return "the append landed in no segment" }
 
 // TestGuardRecorded checks the descriptor reference is the segment's storage
-// guard under the recorder: an Acquire puts the guard on the caller's books
-// until the Release drops it, and Close's drain wait takes the guard for the
-// length of its wait — which a probe holding the file index makes report, so
-// the check cannot pass over an unrecorded guard.
+// guard under the recorder: an Acquire checks the rules as the reference is
+// granted and leaves the caller's books empty, and Close's drain wait takes
+// the guard for the length of its wait — which a probe holding the file index
+// makes report, so the check cannot pass over an unrecorded guard.
 func TestGuardRecorded(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	// The guard until the release.
+	// A reference granted under the file index is the guard-under-index the
+	// recorder exists to report, and is on no books afterwards.
 	seam, _, m := maker(t, 0, noMax)
 	c := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(4))
 	rec := lockorder.NewRecorder()
@@ -470,9 +463,8 @@ func TestGuardRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Acquire of the first segment: %v", err)
 	}
-	wantHeld := []lockorder.Rank{lockorder.StorageGuard}
-	if got := rec.Held(); !slices.Equal(got, wantHeld) {
-		t.Fatalf("Held() after Acquire = %v, want %v", got, wantHeld)
+	if got := rec.Held(); len(got) != 0 {
+		t.Fatalf("Held() after Acquire = %v, want none: a reference is on no goroutine's books", got)
 	}
 	if vs := rec.Violations(); len(vs) != 0 {
 		for _, v := range vs {
@@ -480,8 +472,16 @@ func TestGuardRecorded(t *testing.T) {
 		}
 	}
 	ref.Release()
-	if got := rec.Held(); len(got) != 0 {
-		t.Fatalf("Held() after Release = %v, want none", got)
+	rec.Acquire(lockorder.FileIndex, "probe")
+	ref, err = c.Acquire(id)
+	rec.Release("probe")
+	if err != nil {
+		t.Fatalf("Acquire under the file index: %v", err)
+	}
+	ref.Release()
+	vs := rec.Violations()
+	if len(vs) != 1 || vs[0].Kind != lockorder.GuardUnderIndex || vs[0].Rank != lockorder.StorageGuard {
+		t.Fatalf("a reference granted under the file index recorded %+v, want exactly one guard under index of storage guard", vs)
 	}
 
 	// The drain wait's guard, reported by the probe: a file index held on
@@ -519,11 +519,11 @@ func TestGuardRecorded(t *testing.T) {
 	}()
 	probe.Acquire(lockorder.FileIndex, "probe")
 	if err := c2.Close(id2); err != nil {
-		probe.Release(lockorder.FileIndex, "probe")
+		probe.Release("probe")
 		t.Fatalf("Close under the drain: %v", err)
 	}
-	probe.Release(lockorder.FileIndex, "probe")
-	vs := probe.Violations()
+	probe.Release("probe")
+	vs = probe.Violations()
 	if len(vs) != 1 {
 		t.Fatalf("the probe recorded %d violations, want the drain wait's guard once: %+v", len(vs), vs)
 	}
@@ -578,7 +578,7 @@ func TestCloseRecordsDrainWithoutReaders(t *testing.T) {
 				}
 				err = c.Close(id)
 				if tc.held != 0 {
-					rec.Release(tc.held, "probe")
+					rec.Release("probe")
 				}
 				if err != nil {
 					t.Fatalf("Close with no reference outstanding: %v", err)
@@ -655,7 +655,7 @@ func TestSegmentLocksNameTheirRanks(t *testing.T) {
 	srec.Acquire(lockorder.StorageGuard, "probe")
 	_ = e.s.Room()
 	vs := srec.Violations()
-	srec.Release(lockorder.StorageGuard, "probe")
+	srec.Release("probe")
 	if len(vs) != 1 {
 		t.Fatalf("the append probe recorded %d violations, want the append lock once: %+v", len(vs), vs)
 	}
@@ -669,7 +669,7 @@ func TestSegmentLocksNameTheirRanks(t *testing.T) {
 	prec.Acquire(lockorder.FileIndex, "probe")
 	_ = p.Counters()
 	pvs := prec.Violations()
-	prec.Release(lockorder.FileIndex, "probe")
+	prec.Release("probe")
 	if len(pvs) != 1 {
 		t.Fatalf("the pool probe recorded %d violations, want the pool's capacity lock once: %+v", len(pvs), pvs)
 	}
@@ -686,7 +686,7 @@ func TestSegmentLocksNameTheirRanks(t *testing.T) {
 	setrec.Acquire(lockorder.SegmentAppend, "probe")
 	_ = e.set.Counters()
 	svs := setrec.Violations()
-	setrec.Release(lockorder.SegmentAppend, "probe")
+	setrec.Release("probe")
 	if len(svs) != 1 {
 		t.Fatalf("the ledger probe recorded %d violations, want the ledger's capacity lock once: %+v", len(svs), svs)
 	}
@@ -695,12 +695,10 @@ func TestSegmentLocksNameTheirRanks(t *testing.T) {
 	}
 }
 
-// TestStreamRollsTwiceUnderRecorder checks the case the ref exemption was
-// made for on its own: one stream, one goroutine, appends large enough to
-// roll, twice over. The successor's ref is acquired while the predecessor's
-// is held — two guard references on one goroutine, exempt — and the run
-// must record no violation from the exemption itself and leave the
-// goroutine holding nothing once the stream is closed.
+// TestStreamRollsTwiceUnderRecorder checks one stream, one goroutine and
+// appends large enough to roll, twice over: the successor's reference is
+// granted while the predecessor's is still kept, and the run must record no
+// violation and leave the goroutine holding nothing.
 func TestStreamRollsTwiceUnderRecorder(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	watchdog(t, 60*time.Second)
@@ -711,8 +709,6 @@ func TestStreamRollsTwiceUnderRecorder(t *testing.T) {
 	awaitCounters(t, "the two content spares ready", e.pool,
 		func(c segment.PoolCounters) bool { return c.Spares == 2 })
 
-	// The rolls' books: each successor's ref is pinned while the
-	// predecessor's still is, and the pinned pair must record nothing.
 	// reported counts the violations already failed for, so the first one
 	// names the append that caused it and none is printed twice.
 	payload := make([]byte, segCap/8)
@@ -740,15 +736,13 @@ func TestStreamRollsTwiceUnderRecorder(t *testing.T) {
 	// times over — at least two segments must have been landed in for the
 	// check to have exercised a roll at all.
 	if len(distinct) < 2 {
-		t.Fatalf("the appends landed in %d distinct segments, want at least 2: no roll ran for the exemption to matter", len(distinct))
-	}
-	// The close is what clears the appender's last pin off its books, so
-	// the hold check runs after it, never before.
-	if err := e.ss.Close(); err != nil {
-		t.Fatalf("the streams' close: %v", err)
+		t.Fatalf("the appends landed in %d distinct segments, want at least 2: no roll ran", len(distinct))
 	}
 	if held := rec.Held(); len(held) != 0 {
-		t.Fatalf("the appender holds ranks %v after the close, want none", held)
+		t.Fatalf("the appender holds ranks %v before the close, want none: the stream's kept reference is on no goroutine's books", held)
+	}
+	if err := e.ss.Close(); err != nil {
+		t.Fatalf("the streams' close: %v", err)
 	}
 	// The zero above would pass over a recorder that was never wired: the
 	// same recorder is made to prove it saw this fixture's locks, one
@@ -759,11 +753,99 @@ func TestStreamRollsTwiceUnderRecorder(t *testing.T) {
 	_ = s.Room()
 	_ = e.pool.Counters()
 	vs := rec.Violations()
-	rec.Release(probe, "probe")
+	rec.Release("probe")
 	if got := len(vs) - reported; got < 2 {
 		t.Fatalf("the probes recorded %d new violations, want at least 2 (the append lock once, the pool's and the ledger's capacity lock): %+v", got, vs[reported:])
 	}
 	if held := rec.Held(); len(held) != 0 {
 		t.Fatalf("the appender holds ranks %v after the probes' release, want none", held)
+	}
+}
+
+// TestStreamRollLeavesBooksEmptyBesideReaders checks a goroutine that
+// appended across a roll holds nothing on the recorder's books when it
+// reaches the offload callback's assertion, though the stream keeps its
+// segment's reference and other goroutines hold references to the same
+// segment: a reference is on no goroutine's books, so neither the roll's
+// release nor a reader's can leave a stale entry on the appender's.
+func TestStreamRollLeavesBooksEmptyBesideReaders(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	watchdog(t, 60*time.Second)
+
+	e := recordedStreams(t)
+	rec := e.rec
+	s := e.ss.Stream(0)
+	awaitCounters(t, "the two content spares ready", e.pool,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	payload := make([]byte, segCap/8)
+	appendAt := func(v int) core.SegmentID {
+		if !awaitReadyContent(e.pool, 1) {
+			t.Fatalf("append %d: the pool never readied a content spare", v)
+		}
+		h, body := streamWriteHeader(streamFileID(0), int64(v)*int64(segCap), payload, core.ShareTag(1), core.Version{Counter: uint64(v + 1)})
+		p, err := s.Append(h, body)
+		if err != nil {
+			t.Fatalf("append %d: %v", v, err)
+		}
+		return p.Loc.Segment
+	}
+	first := appendAt(0)
+
+	// Readers on other goroutines hold the first segment while the stream
+	// rolls past it, so its release is not the only one on the books.
+	const readers = 3
+	var granted, done sync.WaitGroup
+	granted.Add(readers)
+	done.Add(readers)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closed := false
+	// A failed assertion must still free the readers and the stream's kept
+	// reference, or the cache's Shutdown cleanup waits on them for ever.
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		done.Wait()
+		if !closed {
+			_ = e.ss.Close()
+		}
+	})
+	for range readers {
+		go func() {
+			defer done.Done()
+			ref, err := e.cache.Acquire(first)
+			granted.Done()
+			if err != nil {
+				t.Errorf("a reader's hold of segment %d: %v", first, err)
+				return
+			}
+			<-release
+			ref.Release()
+			assertNoViolations(t, rec, "a reader")
+		}()
+	}
+	granted.Wait()
+
+	distinct := map[core.SegmentID]struct{}{first: {}}
+	for v := 1; v < 12; v++ {
+		distinct[appendAt(v)] = struct{}{}
+	}
+	if len(distinct) < 2 {
+		t.Fatalf("twelve appends landed in %d segments, want at least 2: no roll ran", len(distinct))
+	}
+	if held := rec.Held(); len(held) != 0 {
+		t.Fatalf("the appender holds ranks %v after twelve appends, want none", held)
+	}
+	rec.AssertNoneHeld("offload callback")
+	if got := rec.Violations(); len(got) != 0 {
+		t.Fatalf("violations at the callback = %+v, want none: a kept reference is not a lock the appender holds", got)
+	}
+	releaseOnce.Do(func() { close(release) })
+	done.Wait()
+	// The streams close before the cache's Shutdown cleanup, which waits
+	// for the stream's kept reference.
+	closed = true
+	if err := e.ss.Close(); err != nil {
+		t.Fatalf("the streams' close: %v", err)
 	}
 }

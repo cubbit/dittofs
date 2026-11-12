@@ -47,23 +47,6 @@ func (r Rank) String() string {
 	return "unranked"
 }
 
-// readIdentity is the identity a read hold records itself under, distinct
-// from the RWMutex pointer an exclusive hold uses. A reader's second,
-// nested RLock of its own guard is the one same-domain exemption; a
-// reader taking its own guard exclusively records under the pointer and
-// is reported like any other hold.
-type readIdentity struct{ rw *RWMutex }
-
-// refIdentity is the identity a storage guard reference records itself
-// under: the entry the reference holds. A reference is a pin — a shared
-// hold that never waits on anything — so while it sits on the acquiring
-// goroutine's books it orders nothing that goroutine takes later. The
-// rules still bind the reference's own acquisition, and the drain wait —
-// the one guarded form that blocks — is checked to hold no lock at all
-// and never to wait for a reference its own caller holds. The recorder's
-// decision marker at its ordering pass names the ceiling of both.
-type refIdentity struct{ e any }
-
 // Mutex is a sync.Mutex that reports every acquisition to a recorder when
 // one is installed. The zero value works as a plain, unranked mutex,
 // before Init and without a recorder.
@@ -104,7 +87,7 @@ func (m *Mutex) Lock() {
 
 func (m *Mutex) Unlock() {
 	if r := m.rec.Load(); r != nil {
-		defer r.Release(m.rank, m)
+		defer r.Release(m)
 	}
 	m.mu.Unlock()
 }
@@ -124,11 +107,10 @@ func (m *Mutex) TryLock() bool {
 	return true
 }
 
-// RWMutex is the same arrangement over sync.RWMutex, for the storage
-// guard: readers hold it shared, an unlink or a recycle exclusively. A
-// read hold records itself under a readIdentity, so a reader's nested
-// RLocks of its own guard are exempt from the same-domain rule while a
-// reader taking its own guard exclusively is reported like any hold.
+// RWMutex is the same arrangement over sync.RWMutex, for the file index
+// lock: readers hold it shared, a writer exclusively. A read hold records
+// under the lock's own identity, so a nested RLock of the same lock reports
+// as the same domain, as does a reader taking it exclusively.
 type RWMutex struct {
 	mu   sync.RWMutex
 	rank Rank
@@ -152,21 +134,21 @@ func (rw *RWMutex) Lock() {
 
 func (rw *RWMutex) Unlock() {
 	if r := rw.rec.Load(); r != nil {
-		defer r.Release(rw.rank, rw)
+		defer r.Release(rw)
 	}
 	rw.mu.Unlock()
 }
 
 func (rw *RWMutex) RLock() {
 	if r := rw.rec.Load(); r != nil {
-		r.Acquire(rw.rank, readIdentity{rw: rw})
+		r.Acquire(rw.rank, rw)
 	}
 	rw.mu.RLock()
 }
 
 func (rw *RWMutex) RUnlock() {
 	if r := rw.rec.Load(); r != nil {
-		defer r.Release(rw.rank, readIdentity{rw: rw})
+		defer r.Release(rw)
 	}
 	rw.mu.RUnlock()
 }
