@@ -14,6 +14,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
@@ -1156,5 +1157,122 @@ func TestSelfFenceOnAnUndecodableOpenGeneration(t *testing.T) {
 	}
 	if _, ok := u.nodeFenced(); !ok {
 		t.Error("node_fenced not raised 31s after the batch")
+	}
+}
+
+// A file whose existence commit fails at the store, then its writes leave
+// the group commit without committing, as an unbind's drop or the journal's
+// loss takes them: the group commit retries it no more, so a node quiet for a
+// minute after does not fence. Keeping the file failing until the owner's
+// next commit fences here, as no commit comes. A lost journal's marks, failing
+// beside the file, are retried no more either.
+func TestSelfFenceNotOnAFileTheGroupCommitDropped(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		marks bool // marks are written, and fail as the file does
+		drop  func(u *fenceUnit) error
+	}{
+		{"its share dropped", false, func(u *fenceUnit) error { return u.e.DropShare(context.Background(), u.rec, u.share.ID) }},
+		{"its journal lost whole", true, func(u *fenceUnit) error { u.e.LostWhole(u.rec); return nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newFenceUnit(t)
+			u.rec.noMarks.Store(!tc.marks) // a marks commit would clear the file
+			a := u.create(t, "a")
+			if _, err := u.tryWrite(a); err != nil {
+				t.Fatal(err)
+			}
+			rule := sim.Rule{Op: kvtest.OpGet, Key: fileRecord(u.share.ID, a), Action: sim.FaultAction{Err: errInjected}}
+			if tc.marks {
+				rule = everyUpdate(sim.FaultAction{Err: errInjected})
+			}
+			u.fault(t, rule)
+			// The stability point is joined before the drop, so it asks the
+			// file again of no one.
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { _ = u.e.CommitExistence(ctx, u.share.ID, a); close(done) }() // the cancel ends it
+			eventually(t, "the group commit failing at the store", func() bool { _, failing := u.e.FenceBusy(); return failing })
+			cancel()
+			<-done
+			if err := tc.drop(u); err != nil {
+				t.Fatal(err)
+			}
+			if _, failing := u.e.FenceBusy(); failing {
+				t.Errorf("group commit failing at the store after %s, want not failing", tc.name)
+			}
+			u.clock.Advance(time.Minute)
+			if c, ok := u.nodeFenced(); ok {
+				t.Errorf("node_fenced %v a quiet minute after %s, want none", c, tc.name)
+			}
+		})
+	}
+}
+
+// A removal loop item whose last attempt failed at the store and which then
+// finishes leaves the loop's failing set: the loop retries it no more, so a
+// quiet node does not fence a minute later.
+func TestSelfFenceNotOnARemovalTheLoopFinished(t *testing.T) {
+	u := newFenceUnit(t)
+	a := u.create(t, "a")
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	_, ct, _ := u.e.StoreViews()
+	ran := make(chan error, 1)
+	u.e.EnqueueKind(u.share.ID, a, entity.RemoveTruncate, false, func(ctx context.Context) {
+		ran <- ct.PruneRemovals(ctx, u.share.ID, a, entity.JournalVersion{15: 1})
+	}, nil)
+	if err := <-ran; !errors.Is(err, errInjected) {
+		t.Fatalf("the item's prune over a failing store: %v, want the injected failure", err)
+	}
+	eventually(t, "the removal loop idle after the item", func() bool { return u.e.LoopParked(u.share.ID) })
+	if _, failing := u.e.FenceBusy(); failing {
+		t.Error("removal loop failing at the store after its item finished, want not failing")
+	}
+	u.clock.Advance(time.Minute)
+	if c, ok := u.nodeFenced(); ok {
+		t.Errorf("node_fenced %v a quiet minute after the item finished, want none", c)
+	}
+}
+
+// A file whose only write a failed window drops out of its batch while the
+// batch fails at the store: nothing of the file is left to retry, so a node
+// quiet for a minute after does not fence.
+func TestSelfFenceNotOnAFileWhoseWritesTheBatchDropped(t *testing.T) {
+	u := &fenceUnit{logs: newLogRecorder()}
+	var jh *hookedHandle
+	u.unit, jh = newHookedUnitWith(t, unitConfig{
+		kv: func(k kv.KV) kv.KV {
+			u.faults = kvtest.NewFaultKV(k)
+			return u.faults
+		},
+		deps: []func(*engine.Deps){func(d *engine.Deps) { d.Logger = slog.New(u.logs) }},
+	})
+	u.e.SetConflictBound(time.Hour)
+	u.rec.noMarks.Store(true)
+	a := u.create(t, "a")
+	if _, err := u.tryWrite(a); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, everyUpdate(sim.FaultAction{Err: errInjected}))
+	var once sync.Once
+	jh.sync.set(func([]journal.FileID) {
+		once.Do(func() { u.j.Lose(journal.NewFileID(a), journal.Extent{Len: 1}, journal.LossFailedWindow) })
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { _ = u.e.CommitExistence(ctx, u.share.ID, a); close(done) }() // the cancel ends it
+	eventually(t, "the batch failing at the store", func() bool {
+		_, ok := u.logged(slog.LevelWarn, "existence_commit_failing")
+		return ok
+	})
+	cancel()
+	<-done
+	if _, failing := u.e.FenceBusy(); failing {
+		t.Error("group commit failing at the store with the file's writes dropped, want not failing")
+	}
+	u.clock.Advance(time.Minute)
+	if c, ok := u.nodeFenced(); ok {
+		t.Errorf("node_fenced %v a quiet minute after the file's writes were dropped, want none", c)
 	}
 }
