@@ -1972,20 +1972,26 @@ A Windows file can carry named alternate data streams beside its main content.
   [RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case) names.
 - `FileStreamInformation` lists `::$DATA` (files only) and `:name:$DATA` for
   each stream.
-- A named stream is not deleted on its own: `FILE_DELETE_ON_CLOSE` on a
-  stream's `CREATE` asking `DELETE`, and `FileDispositionInformation` or
-  `FileDispositionInformationEx` through a stream's open holding `DELETE`, are
-  `STATUS_NOT_SUPPORTED`, answered before open state is called; without
-  `DELETE` each is answered as on any file. Open state refuses both
-  `ErrInvalid` as its guard
-  ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)), which
-  reads as a malformed request (`STATUS_INVALID_PARAMETER`, §16.5) where this
-  one is valid and declined, as an open by file ID is (§16.3).
-- A named stream is not renamed: `FileRenameInformation` through a stream's
-  open, or with a target that starts with `:` or names a stream, never reaches
-  `Rename`: the adapter checks `DELETE` first, answering an open without it
-  `STATUS_ACCESS_DENIED`, so the caller does not learn whether the target
-  exists, and one holding it `STATUS_NOT_SUPPORTED`. No service call renames a
+- A named stream is not deleted on its own. `FILE_DELETE_ON_CLOSE` on a
+  stream's `CREATE` asking `DELETE` is `STATUS_NOT_SUPPORTED`, answered from
+  the request before open state is called; without `DELETE` it is answered as
+  on any file. `FileDispositionInformation` or `FileDispositionInformationEx`
+  through a stream's open is one `SetAttr` through that open, and the adapter
+  checks no access: open state refuses it `ErrInvalid` when the open holds
+  `DELETE` and `ErrAccess` when it does not, as on any file
+  ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)). That
+  `ErrInvalid` is answered `STATUS_NOT_SUPPORTED` (§16.5), not as a malformed
+  request, since the request is valid and declined, as an open by file ID is
+  (§16.3).
+- A named stream is not renamed. `FileRenameInformation` through a stream's
+  open is one `Rename` with that open as `from.Open`, and the adapter checks
+  no access: the service refuses it `ErrAccess` when the open holds no
+  `DELETE`, as on any file, and `ErrInvalid` when it does, answered
+  `STATUS_NOT_SUPPORTED` (§16.5;
+  [RFC 17 §5.4](rfc-17-vfs.md#5.4%20Remove%20and%20rename)). One whose target
+  starts with `:` or names a stream never reaches `Rename`: it is
+  `STATUS_NOT_SUPPORTED` from the request alone, whatever the open holds, so
+  the caller does not learn whether the target exists. No service call renames a
   stream: `Rename` moves an entry
   ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations),
   [RFC 7 §5.3](rfc-7-namespace-metadata.md#5.3%20Rename%20moves%20an%20entry%20and%20nothing%20else)),
@@ -2497,6 +2503,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrQuota` — a logical quota, its scope named ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_DISK_FULL` at once for a share-wide or project quota, the volume the client sees; `STATUS_DISK_QUOTA_EXCEEDED` at once for a user or group one |
 | `ErrGrace` — a new open or lock in a shard in grace | held pending until grace ends, then re-run; at grace's end plus 35 s, `STATUS_FILE_NOT_AVAILABLE` |
 | `ErrInvalid` — a name RFC 7 refuses; a copy or clone of overlapping ranges of one file, or a duplicate-extents request longer than `clone_max_len` (§10) | `STATUS_OBJECT_NAME_INVALID` for the name; `STATUS_REQUEST_NOT_ACCEPTED` or `STATUS_INVALID_OPLOCK_PROTOCOL` for a break acknowledgement (§6.2); `STATUS_INVALID_PARAMETER` at once otherwise |
+| `ErrInvalid` on a `SET_INFO` rename or disposition through a named stream's open holding `DELETE` (§12.1; [RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)) | `STATUS_NOT_SUPPORTED` at once: the request is valid and declined |
 | `ErrReadOnly` — a mutation where only reading is admitted ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_MEDIA_WRITE_PROTECTED` at once |
 | `ErrNameTooLong` — a name past the share's length limit | `STATUS_OBJECT_NAME_INVALID` at once |
 | `ErrCross` (`OtherShard`) — **(cluster)** a by-reference copy or clone whose source and destination are in different shards, whatever their primaries, refused at admission ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | copychunk: never reaches the adapter; the service copies the bytes server-side and the adapter reports them written ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)). Duplicate-extents: `STATUS_NOT_SAME_DEVICE` at once, and the client copies |
@@ -2732,7 +2739,7 @@ name, a SID, a principal or a client address
 | §6.3 handle before sharing, NFS | Client A opens with deny-write under an RWH lease and closes its handle locally; an NFSv4 client opens for write and an NFSv3 client writes. Assert each is told to retry while A's handle caching is broken, then succeeds. | an NFS request refused by a deny mode only a handle cache held |
 | §8 notify | smbtorture `smb2.notify`; overflow returns `STATUS_NOTIFY_ENUM_DIR`; a change made over NFS is reported, except a regular file's through no open made by name ([RFC 17 §3.5](rfc-17-vfs.md#3.5%20What%20each%20method%20calls)'s decision). **(cluster)** With a subtree below the watched directory placed in its own shard, a create in that subtree completes a recursive watch `STATUS_NOTIFY_ENUM_DIR`; create a new shard below the directory after registration and assert a create in it does the same. On a `posix` share, over NFS, create `a:b` and a non-UTF-8 name in the watched directory: assert the first reported as `a` U+F022 `b` and the second not reported. | a recursive watch that sees only its own primary's changes, or a notification naming a file as no listing does |
 | §9 info classes | smbtorture `smb2.getinfo`, `smb2.setinfo`, `smb2.dir`, `smb2.streams`, with `smb2.streams.io` a known failure because a named stream is not deleted on its own ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)), and `smb2.streams.names`, `smb2.streams.rename`, `smb2.streams.rename2` and `smb2.streams.basefile-rename-with-open-stream` known failures until a named stream can be renamed and a rename of a base file with an open stream is refused as Windows does; MS-FSA test cases for the classes of Appendix E.1. | |
-| §12.1 stream delete and rename | `CREATE` a named stream asking `DELETE` with `FILE_DELETE_ON_CLOSE`: assert `STATUS_NOT_SUPPORTED`. Through an open of an existing stream holding `DELETE`, set the disposition with `FileDispositionInformation`, then with `FileDispositionInformationEx`, then clear it: assert each `STATUS_NOT_SUPPORTED`; close the open and assert the stream and its base file are still there. Through a stream's open holding `DELETE`, rename it to `:other:$DATA`, and through the base file's open holding `DELETE`, rename it to `:other`: assert each `STATUS_NOT_SUPPORTED` and nothing renamed; through a stream's open without `DELETE`, rename it, and through the base file's open without `DELETE`, rename it to an existing stream's name: assert each `STATUS_ACCESS_DENIED`. | a stream delete answered `STATUS_INVALID_PARAMETER`, or taken as the base file's delete; a stream rename sent to `Rename` as a `base:stream` entry, or without `DELETE` answered `STATUS_OBJECT_NAME_COLLISION` |
+| §12.1 stream delete and rename | `CREATE` a named stream asking `DELETE` with `FILE_DELETE_ON_CLOSE`: assert `STATUS_NOT_SUPPORTED`. Through an open of an existing stream holding `DELETE`, set the disposition with `FileDispositionInformation`, then with `FileDispositionInformationEx`, then clear it: assert each `STATUS_NOT_SUPPORTED`; close the open and assert the stream and its base file are still there. Through a stream's open holding `DELETE`, rename it to a name with no stream, and to `:other:$DATA`, and through the base file's open holding `DELETE`, rename it to `:other`: assert each `STATUS_NOT_SUPPORTED` and nothing renamed; through a stream's open without `DELETE`, rename it to a name with no stream: assert `STATUS_ACCESS_DENIED`; through the base file's open without `DELETE`, rename it to an existing stream's name: assert `STATUS_NOT_SUPPORTED` and nothing renamed. | a stream delete answered `STATUS_INVALID_PARAMETER`, or taken as the base file's delete; a rename through a stream's open applied to its base file, or answered `STATUS_INVALID_PARAMETER`; a stream target sent to `Rename` as a `base:stream` entry, or answered `STATUS_OBJECT_NAME_COLLISION` |
 | §9.3 timestamps | smbtorture `smb2.timestamps`; −1 on one open, write through it and through a second open on another node: only the second moves `LastWriteTime`. −1 on `ChangeTime` too, write through the first open, and assert an NFSv3 `GETATTR` shows `ctime` moved. | suspension in adapter memory, or a frozen NFS ctime |
 | §9.3 allocation | Set `FileAllocationInformation` 1 GiB past the end of file; assert success, end of file unchanged and `space_used` over NFS unchanged. | a reservation promised that nothing keeps |
 | §9.1 file ids | Query `FileIdInformation`, `FileInternalInformation`, `QFid` and `FSCTL_GET_OBJECT_ID` for a file, and its NFSv3 handle; assert no 8-byte window of the handle's `FileID` appears in any of them. | the `FileID` on the wire |
