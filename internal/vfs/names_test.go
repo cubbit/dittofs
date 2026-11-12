@@ -212,10 +212,10 @@ func TestTheLastUnlinkReleasesOnlyAFileNoOpenHolds(t *testing.T) {
 		_, err := n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte(name))
 		n.must(t, err)
 	}
-	if !n.held(held.File.ID) {
+	if !n.held(t, held.File.ID) {
 		t.Error("the content of a file an open holds was released at its unlink")
 	}
-	if n.held(free.File.ID) {
+	if n.held(t, free.File.ID) {
 		t.Error("the content of a file nothing holds was kept past its last unlink")
 	}
 }
@@ -780,7 +780,7 @@ func TestARemovedNameSucceedsWhateverItsReleaseAnswers(t *testing.T) {
 	g := n.restart(t)
 	g.must(t, g.Start(ctx))
 	for _, f := range []vfs.File{a.File, c.File} {
-		if !g.released(f.ID, 11*time.Second) {
+		if !g.released(t, f.ID, 11*time.Second) {
 			t.Errorf("file %v's release that failed at its name's removal never ran after a restart", f.ID)
 		}
 	}
@@ -858,7 +858,7 @@ func TestAPendingReleasesOutcomeDecidesItsMark(t *testing.T) {
 			if d := deletes.Load(); d != int64(tc.deletes) {
 				t.Errorf("%d Deletes, want %d", d, tc.deletes)
 			}
-			if tc.deletes == 2 && n.held(f) {
+			if tc.deletes == 2 && n.held(t, f) {
 				t.Error("the release run again after a clone's delay left the content held")
 			}
 		})

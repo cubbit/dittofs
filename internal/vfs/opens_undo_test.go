@@ -305,7 +305,7 @@ func TestAFailedReconnectClosesAsCloseDoes(t *testing.T) {
 	if len(p.free) != 1 || p.free[0] {
 		t.Errorf("the failed reconnect's closes, lock free at each: %v; want one, with the lock held", p.free)
 	}
-	if n.held(f.ID) {
+	if n.held(t, f.ID) {
 		t.Error("an unlinked file whose last open's reconnect failed is still held")
 	}
 }
