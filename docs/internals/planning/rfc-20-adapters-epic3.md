@@ -153,10 +153,12 @@ called by E4's and E5's tests.
   reads". The cap is the turns', so nothing would read the count: the `Reservation` keeps the
   key it was given and no count is kept. `ponytail:` beside the key field, naming the turns as
   what adds it. No prior art sought: it is the absence of a counter.
-- **D4, "in tests" is `testing.Testing()`, read once.** An unexported package variable holds
-  it. A release that takes a budget's count below zero panics when it is true and clamps the
-  count to zero otherwise, and the count is clamped before the panic, so a test that recovers
-  reads zero. One in-package test sets the variable false to run the production branch. A
+- **D4, "in tests" is `testing.Testing()`, read once.** Each budget holds it, read at its
+  construction. A release that takes a budget's count below zero panics when it is true and
+  clamps the count to zero otherwise, and the count is clamped before the panic, so a test
+  that recovers reads zero. One in-package test turns it off on the budgets it builds, and
+  gives them its own logger, through `export_test.go`, to run the production branch; no
+  package variable is swapped. A
   double release through one `Reservation` cannot get there (R4); a copy released twice can,
   and is found only once the count would go negative. `decision:` at the clamp. Prior art: the
   standard library added `testing.Testing` for this use.

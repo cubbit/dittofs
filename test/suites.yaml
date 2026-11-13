@@ -114,7 +114,7 @@ suites:
         tier: pr
       # The adapters' allocation gates, which skip under -race.
       adapter-allocs:
-        cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/
+        cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/ ./pkg/resources/
   # The journal's conformance checks, behind their own tag: they fail until the journal they
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:
