@@ -24,7 +24,13 @@ import (
 // durable was ever written into such a segment — a take is made durable only
 // with the records after it — so re-adopting one loses nothing. A segment a
 // successor names is not among them whatever its records hold: it was sealed
-// before its successor was made.
+// before its successor was made. The successor's own re-adoption — its header
+// slot zeroed — leaves the predecessor unnamed at the next open, and that is
+// the unnamed path the classing keeps safe: a predecessor nothing names is
+// one that could have been open at a crash, its tail proven on the device
+// rather than trusted, its synced drops still corrupt by their own
+// synced-through, and a marker rotted into the bytes the successor's claim
+// covered cuts as a torn tail below which no acknowledged record sits.
 //
 // The identity is checked before any record-less test, so a segment whose
 // header verifies naming another journal is never a candidate: no record of
@@ -85,8 +91,17 @@ func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID
 // file the open holds of a candidate: where the candidate's platform files
 // report one, the phase asks whether the device holds the file whole before
 // taking it. The interface is the consumer's own declaration, not the
-// platform's export, so it stays optional: on a platform that does not
-// report allocation the assertion finds nothing and the size alone decides.
+// platform's export, so it stays optional. The Linux platform's own file is
+// the one implementation that answers — FIEMAP's extent report, or the hole
+// seek its fallback runs where the filesystem serves none — so a holed
+// cap-sized spare is caught there whatever its filesystem answers. The
+// darwin and Windows platform files and the crash seam's file answer
+// nothing, deliberately: darwin's and Windows's queries are unmade (the seam
+// below names them), and the seam models crash durability, not allocation —
+// a hole it holds reads as zeros exactly as on the device, nothing the seam
+// could see differently. Over those, and over the same seam the recovery
+// rows here run through, the assertion finds nothing and the size alone
+// decides: a holed spare is adopted unseen.
 type allocProber interface{ Allocated() (bool, error) }
 
 // Spares is what the spares phase did with the candidates it re-adopted:
@@ -242,37 +257,12 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 }
 
 // classesFor returns the classes the next n adoptions take under the pool's
-// targets ts: the fill order fills the headroom first, then the repack
-// reserve, then the content class, and every spare past every target takes
-// the content class. The candidates the phase adopts ascend by id, so the
-// i-th adoption takes the i-th class: the lowest ids land in the headroom.
-//
-// decision: the counting starts at the headroom, not at the reconcile spare
-// — a re-adopted spare counts toward the reconcile spare's quota while the
-// journal has none, and the reconcile spare is not built, so a count toward
-// it is a count no reader ever pays out. Counting re-adoptions toward the
-// reconcile spare's quota first is withdrawn when the reconcile work lands
-// and brings one.
-//
-// decision: a spare past every target still takes the content class, neither
-// held behind an age-gate nor unlinked as an extra: an extra spare is one
-// the pool keeps ready as content — exactly a spare its own worker would
-// have made — and dropping or ageing one out is the orphaning no spare may
-// take. Withdraw only if re-adopted extras ever show up as a cost that
-// outweighs keeping them ready.
+// targets ts: the fill order's own single owner answers, the method the pool
+// itself would adopt into, so the classes the spares phase records are the
+// ones the pool would have filled. The candidates the phase adopts ascend by
+// id, so the i-th adoption takes the i-th class.
 func classesFor(ts segment.Targets, n int) []segment.Class {
-	classes := make([]segment.Class, n)
-	i := 0
-	for ; i < n && i < ts.Headroom; i++ {
-		classes[i] = segment.Headroom
-	}
-	for r := 0; i < n && r < ts.Reserve; i, r = i+1, r+1 {
-		classes[i] = segment.Reserve
-	}
-	for ; i < n; i++ {
-		classes[i] = segment.Content
-	}
-	return classes
+	return ts.AdoptClasses(n)
 }
 
 // unlinkSpare removes the candidate id's segment file, answering the error a
@@ -301,9 +291,11 @@ func spareWholeOnDisk(deps Deps, id core.SegmentID) (bool, error) {
 	}
 
 	// ponytail: only the Linux platform's file answers the allocation query,
-	// so on macOS and Windows the assertion finds nothing and the size alone
-	// decides — a spare a punch holed passes there unseen. Give the darwin
-	// and windows files their own Allocated, over F_LOG2PHYS_EXT and
+	// by FIEMAP or the hole seek it falls back to; darwin's and Windows's
+	// files and the crash seam's answer nothing, so over them the size alone
+	// decides — the seam's spares cannot be holed, and a spare a punch holed
+	// passes on the other two unseen. Give the darwin and windows files
+	// their own Allocated, over F_LOG2PHYS_EXT and
 	// FSCTL_QUERY_ALLOCATED_RANGES, when a short spare is seen on either;
 	// with it, the same assertion takes them.
 	whole := true
@@ -325,7 +317,7 @@ func spareWholeOnDisk(deps Deps, id core.SegmentID) (bool, error) {
 
 // zeroSpareSlots zeroes the two slots of the candidate id, file size bytes
 // long: the header slot of the first SegmentHeaderSize bytes and the
-// trailer slot of the last SealMarkerSize. Each slot is read through the
+// trailer slot of the last TrailerSize. Each slot is read through the
 // open's reader first, so a read the bound did not clear refuses the open
 // rather than zeroing what was never read back, and a candidate whose slots
 // are already clean is never opened: nothing is written for it and no file
@@ -346,14 +338,14 @@ func zeroSpareSlots(deps Deps, rd *reader, id core.SegmentID, size int64) error 
 	// A file shorter than a trailer holds none: its whole self is the
 	// header slot the read above already covered.
 	dirtyTail, tailOff := false, int64(0)
-	if size >= format.SealMarkerSize {
-		tail := make([]byte, format.SealMarkerSize)
-		tn, terr := rd.ReadAt(name, tail, size-format.SealMarkerSize)
+	if size >= format.TrailerSize {
+		tail := make([]byte, format.TrailerSize)
+		tn, terr := rd.ReadAt(name, tail, size-format.TrailerSize)
 		if terr != nil && !errors.Is(terr, io.EOF) {
 			return unreadRefusal(rd, terr)
 		}
 		if tn > 0 && anyHeaderByte(tail[:tn]) {
-			dirtyTail, tailOff = true, size-format.SealMarkerSize
+			dirtyTail, tailOff = true, size-format.TrailerSize
 		}
 	}
 	if !dirtyHdr && !dirtyTail {
@@ -369,7 +361,7 @@ func zeroSpareSlots(deps Deps, rd *reader, id core.SegmentID, size int64) error 
 		_, werr = f.WriteAt(make([]byte, n), 0) // the slot's own bytes: a short file is never grown
 	}
 	if werr == nil && dirtyTail {
-		_, werr = f.WriteAt(make([]byte, format.SealMarkerSize), tailOff)
+		_, werr = f.WriteAt(make([]byte, format.TrailerSize), tailOff)
 	}
 	if werr == nil {
 		werr = f.Sync()
