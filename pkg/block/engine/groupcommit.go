@@ -1010,11 +1010,22 @@ func (g *groupCommit) awaitMarks(ctx context.Context, read uint64) error {
 // if the store's failure shapes grow beyond a file in the map and a whole
 // call.
 func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExistence, mw *kvstore.MarksWrite, failed map[entity.FileID]error, alone map[entity.FileID]bool) (recorded bool, err error) {
-	cctx, cancel := e.bounded(ctx)
+	bound := time.Duration(e.conflictBound.Load())
+	if len(pending) > 1 {
+		bound = min(bound, batchConflictBound)
+	}
+	return e.splitUnder(ctx, bound, pending, mw, failed, alone)
+}
+
+// splitUnder is commitSplit with each store call cut at bound, the batch's
+// own for every call of its split, the leaves' included, so a leaf that keeps
+// conflicting holds the half after it no longer than any other call.
+func (e *Engine) splitUnder(ctx context.Context, bound time.Duration, pending []kvstore.PendingExistence, mw *kvstore.MarksWrite, failed map[entity.FileID]error, alone map[entity.FileID]bool) (recorded bool, err error) {
+	cctx, cancel := context.WithTimeoutCause(ctx, bound, errBoundCut)
 	m, err := e.d.Existence.Commit(cctx, pending, mw)
 	cancel()
 	if mw != nil && (errors.Is(err, kvstore.ErrOpenGenMoved) || errors.Is(err, kvstore.ErrSyncMarks)) {
-		_, _ = e.commitSplit(ctx, pending, nil, failed, alone) // no marks: it reports through failed
+		_, _ = e.splitUnder(ctx, bound, pending, nil, failed, alone) // no marks: it reports through failed
 		return false, err
 	}
 	if err == nil {
@@ -1032,7 +1043,7 @@ func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExist
 		// without them, so none is backed off without having been tried
 		// without the marks (RFC 8 §5.2).
 		merr := e.commitMarksAlone(ctx, mw)
-		_, _ = e.commitSplit(ctx, pending, nil, failed, alone) // no marks: it reports through failed
+		_, _ = e.splitUnder(ctx, bound, pending, nil, failed, alone) // no marks: it reports through failed
 		return merr == nil, merr
 	}
 	if len(pending) == 1 || ctx.Err() != nil || storeWide(err) {
@@ -1050,8 +1061,8 @@ func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExist
 	}
 	e.splits.Add(1)
 	mid := len(pending) / 2
-	recorded, err = e.commitSplit(ctx, pending[:mid], mw, failed, alone)
-	_, _ = e.commitSplit(ctx, pending[mid:], nil, failed, alone) // no marks: it reports through failed
+	recorded, err = e.splitUnder(ctx, bound, pending[:mid], mw, failed, alone)
+	_, _ = e.splitUnder(ctx, bound, pending[mid:], nil, failed, alone) // no marks: it reports through failed
 	return recorded, err
 }
 
@@ -1149,8 +1160,28 @@ func (e *Engine) bounded(ctx context.Context) (context.Context, context.CancelFu
 	return context.WithTimeoutCause(ctx, time.Duration(e.conflictBound.Load()), errBoundCut)
 }
 
+// batchConflictBound bounds an existence commit of more than one file, so a
+// batch the store keeps retrying on a conflict splits after about one attempt
+// rather than after the whole conflict bound: under a steady stream of
+// namespace writes every level of the split conflicts again, and at a second
+// a level the files beside the conflicting one waited seconds, not the few
+// extra transactions the split promises (RFC 8 §5.2). Every call of such a
+// batch's split takes it, a leaf's included, so a leaf that keeps conflicting
+// holds the half after it no longer; a batch of one file keeps the conflict
+// bound, since nothing waits behind it.
+//
+// ponytail: a fixed 50 ms. The bound only stops the store's retries on a
+// backend whose attempt ignores its context, but a backend that cuts an
+// attempt at it reads a healthy batch slower than 50 ms as a store-wide
+// failure and backs the batch off. Upgrade to a one-attempt update for the
+// group commit, a change to kv's Update and Existence.Commit that answers a
+// conflict after a single attempt, when a batch is seen to take near the
+// bound or a backend cuts attempts at their context.
+const batchConflictBound = 50 * time.Millisecond
+
 // errBoundCut is the cause of a store call's context the conflict bound cut,
-// which tells the self-fence that cut from the caller's own (callerEnded).
+// or a batch's batchConflictBound, which tells the self-fence that cut from
+// the caller's own (callerEnded).
 var errBoundCut = errors.New("engine: the conflict bound cut the store call")
 
 // settle ends c's part in its batch under its entry's lock: a committed file
