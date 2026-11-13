@@ -21,7 +21,25 @@ Follow [`.github/pull_request_template.md`](../pull_request_template.md), includ
 guidance in its comments, and the ground rules of
 [`pr-commenting.instructions.md`](pr-commenting.instructions.md). If the PR fixes an issue,
 the body carries `Closes #<N>`. That keyword fires only on `develop`, the default branch: on
-any other target, close the issue by hand after the PR merges. Never mention Claude Code or
+any other target, close the issue by hand after the PR merges. A PR that finishes a subtask
+of an epic closes that subtask's issue the same way, one `Closes #<N>` line per subtask, on
+any target: that line is what credits the PR to the subtask on the burn-up. A subtask
+finished only in part is named, not closed. On every target, also link the PR to each issue
+it closes from the issue's or the PR's sidebar ("Development"), so the issue shows the PR:
+on `develop` the keyword creates that link itself, so check it is there; on any other target
+the sidebar or the API creates it. From a script or an agent:
+
+```bash
+pr=$(gh pr view <PR> -R cubbit/dittofs --json id -q .id)
+issue=$(gh issue view <N> -R cubbit/dittofs --json id -q .id)
+gh api graphql -f query="mutation{addCloseIssueReferences(input:{issueId:\"$issue\",pullRequestIds:[\"$pr\"]}){clientMutationId}}"
+```
+
+`removeCloseIssueReferences`, with the same input, removes a link added this way; a link the
+`Closes` keyword created goes only by editing the PR body. `closingIssuesReferences` on the
+PR and `closedByPullRequestsReferences` on the issue read the links.
+
+Never mention Claude Code or
 AI tooling, and add no `Co-Authored-By` lines for AI.
 
 ## Stack or not

@@ -1,6 +1,19 @@
-# Sums a plan's epic estimate lines and reports every malformed, missing or misplaced one,
-# and a plan line or §2 total row that disagrees; only a TOTAL line means the estimate is sound.
-# Usage: awk -f plan-check.awk <plan>
+# Checks a plan's estimate. Only a TOTAL line means it is sound; every other line is a
+# defect to fix. Usage: awk -f plan-check.awk <plan>
+#
+# Every `### Epic <k> — <title>` heading in §5 holds one `**Epic <k> estimate: <n> subtasks,
+# <d> man-days.**` or `**Epic <k> estimate: planned after S<m>.**`, with <d> a multiple of
+# 0.25. §2's table has `#`, `Subtasks` and `Man-days` columns, one row per epic and one
+# `**Total**` row, and is followed by one `**Plan estimate: <n> subtasks, <d> man-days.**`,
+# ending `, not counting epic <k>, …` when some epic is planned after. Reported: a malformed
+# estimate line (`21,5`, `~20`, indented, bulleted, a missing word); a heading with no
+# estimate line or two; an estimate line with no heading or under another epic's; a
+# duplicate heading; a §2 table with no such columns, no total row or two, a total that is
+# not plain numbers or differs from the sum; an epic with no §2 row, a second row, a row
+# with no §5 heading, or a row whose figures differ from its §5 line or that holds a figure
+# for an epic planned after; a missing or second plan line, one that differs from the sum,
+# or whose "not counting" clause does not name exactly the epics planned after. An epic id
+# is a number with an optional letter (7, 7a), for the parts of a split epic.
 /^## /                                   { in2 = ($0 ~ /^## 2\./); in5 = ($0 ~ /^## 5\./); cur = "" }
 in2 && /^\|/ {
   nc2 = split($0, cell, "|")
@@ -12,27 +25,27 @@ in2 && /^\|/ {
     else { tn = cell[sc]; td = cell[mc]; gsub(/[ *]/, "", tn); gsub(/[ *]/, "", td); tline = NR }
   } else if (ic) {
     id = cell[ic]; gsub(/[ *]/, "", id); sub(/^E/, "", id)
-    if (match(id, /^[0-9]+/)) { id = substr(id, 1, RLENGTH)
+    if (match(id, /^[0-9]+[a-z]?/)) { id = substr(id, 1, RLENGTH)
       if (id in rown) print "a second §2 row for epic " id ", line " NR
       rown[id] = cell[sc]; rowd[id] = cell[mc]; gsub(/[ *]/, "", rown[id]); gsub(/[ *]/, "", rowd[id]); rowl[id] = NR
     }
   }
 }
 in5 && /^### /                           { cur = "" }
-in5 && /^### Epic [0-9]+ /               { cur = $3; head[$3]++; order[++k] = $3
+in5 && /^### Epic [0-9]+[a-z]? /               { cur = $3; head[$3]++; order[++k] = $3
                                            if (head[$3] > 1) print "duplicate heading for epic " $3 }
-/(Epic [0-9]+|Plan) estimate:/ {
-  if ($0 ~ /^\*\*Epic [0-9]+ estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
+/(Epic [0-9]+[a-z]?|Plan) estimate:/ {
+  if ($0 ~ /^\*\*Epic [0-9]+[a-z]? estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days\.\*\*$/) {
     est[$2]++; n += $4; d += $6; en[$2] = $4; ed[$2] = $6
     if ($2 != cur) print "estimate line for epic " $2 " (line " NR ") sits under " (cur == "" ? "no epic heading" : "epic " cur)
-  } else if ($0 ~ /^\*\*Epic [0-9]+ estimate: planned after S[0-9]+[a-z]?\.\*\*$/) {
+  } else if ($0 ~ /^\*\*Epic [0-9]+[a-z]? estimate: planned after S[0-9]+[a-z]?\.\*\*$/) {
     est[$2]++; later[$2] = 1; nl++
     if ($2 != cur) print "estimate line for epic " $2 " (line " NR ") sits under " (cur == "" ? "no epic heading" : "epic " cur)
-  } else if ($0 ~ /^\*\*Plan estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days(, not counting epics? [0-9]+((, | and )[0-9]+)*)?\.\*\*$/) {
+  } else if ($0 ~ /^\*\*Plan estimate: [0-9]+ subtasks, [0-9]+(\.(25|5|75))? man-days(, not counting epics? [0-9]+[a-z]?((, | and )[0-9]+[a-z]?)*)?\.\*\*$/) {
     if (seen++) { print "a second plan estimate line, line " NR; next }
     pn = $3; pd = $5
-    clause = $0; sub(/^.*man-days/, "", clause); gsub(/[^0-9]+/, " ", clause)
-    nc = split(clause, c, " "); for (i = 1; i <= nc; i++) if (c[i] != "") listed[c[i]] = 1
+    clause = $0; sub(/^.*man-days/, "", clause)
+    while (match(clause, /[0-9]+[a-z]?/)) { listed[substr(clause, RSTART, RLENGTH)] = 1; clause = substr(clause, RSTART + RLENGTH) }
   } else print "malformed, line " NR ": " $0
 }
 END {

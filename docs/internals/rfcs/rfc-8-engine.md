@@ -3274,7 +3274,7 @@ refusal of the first chunk returns the error.
    reserve the capacity for the source bytes the journal holds newer than any
    ref over them, with the destination journal's `Reserve(n, writes)` — their
    bytes, footer entries, index entries and versions ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)) — so the
-   copies at step 3 draw on bytes already held and cannot be refused; a refusal
+   copies at step 3 draw on bytes already held and no limit refuses them; a refusal
    undoes the registration and fails the clone here.
 2. **Journal step**, under the destination's guard: `CloneTarget(dst, spec)`
    removes the destination extent at version *v*, its marker carrying the clone
@@ -3289,7 +3289,10 @@ refusal of the first chunk returns the error.
    fails the clone. A
    reservation holds everything its writes need — bytes, footer and index
    entries, versions — and exempts them from the headroom's half rule, so no
-   copy drawn from it is refused part-way.
+   limit refuses a copy drawn from it part-way. A copy's roll refused `spare`
+   while the pool refills the reservation's replacement is a store error after the
+   journal step: the clone resumes from its spec under a new reservation, for what
+   the copies already written do not cover ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)).
 4. **Phase 1**, still under the destination's guard and through the cut gate,
    or behind a closed one as part of a pre-cut commit ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)):
    two transactions. The first commits the destination's pending existence

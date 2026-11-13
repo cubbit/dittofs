@@ -581,10 +581,10 @@ for any file of the share, imported records included) and its version limit
 ([§4.3](#4.3%20Versions), [RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). A share this journal did not serve when
 it opened — moved here, recovered onto this device, cloned or restored into it —
 can carry versions from another journal far above this one's counter. `Share`
-**MUST** raise the journal's version counter above that floor before it returns
-the handle, so no write through it can be assigned a version below a version its
+**MUST** raise the journal's version counter above that floor, and its floor
+buckets to it ([§3.4](#3.4%20Fill)), before it returns the handle, so no write through it can be assigned a version below a version its
 files already hold ([§4.3](#4.3%20Versions)). `Share` of a tag whose handle is already open raises
-the counter the same way, replaces the handle's journal limit (the capacity
+both the same way, replaces the handle's journal limit (the capacity
 `limit` argument, [§6](#6.%20Capacity)) with the one passed, and returns that handle, one handle
 whose one `Close` closes it for every caller, so the engine's `Bind` can take
 over a handle its metadata reconcile opened ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Without it a new write would lose precedence to the
@@ -735,6 +735,10 @@ within the sync bound, whichever comes first ([§5.2](#5.2%20Syncing)). On retur
 file, versions the journal assigns are appended in the order they were assigned.
 Otherwise a lower version can land after a higher one and an offload between them
 offers the higher without the lower, breaking [RFC 6 §4.4](rfc-6-block-metadata.md#4.4%20Commits%20for%20one%20file%20apply%20in%20order).
+
+A zero-length `p` changes nothing, and no version is drawn for it: the write is
+accepted, appends nothing, and returns the zero `Version{}`, which the journal never
+assigns to a write ([§4.3](#4.3%20Versions)).
 
 `Sync` returns once every operation on the named files that returned before the
 call is durable **and proven synced**: below its stream's synced-through offset in
@@ -1320,7 +1324,7 @@ Each **MUST** be durable on return, and **MUST NOT** require the affected
 storage to be reclaimed first — reclamation is asynchronous ([§7](#7.%20Reclamation%20mechanisms)). Their
 records draw on the reserved headroom of [§6](#6.%20Capacity), and are never refused by the
 journal's own limit. Three refusals can reach them: the exhausted headroom of
-[§6](#6.%20Capacity), which only removals of content the journal does not hold can reach, and
+[§6](#6.%20Capacity), which any of them can reach, held content or not, since each draws on it, and
 the version limit ([§4.3](#4.3%20Versions)), since each draws a version; and a release,
 deallocate or clone target that would split a held extent can meet the index's
 cap on what removals add ([§4.2](#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)). A clone target record meets a fourth: it frees nothing, so below
@@ -1969,7 +1973,8 @@ again. A re-append given new numbers would outrank records appended after the
 original — a release, a removal, a later write's loss record — and a crash would
 then bring back what those had covered. On recovery the next of each **MUST** exceed
 every one found on disk, the next sequence number every sync mark's too
-([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)), and the next content version the floor too, taken from
+([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) and every one a read-only journal failed in this
+directory earlier in the process ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)), and the next content version the floor too, taken from
 the maximum observed during reconstruction, not from a separately persisted
 counter. A share attached after open raises the next content version above its
 own floor before it is served ([§3](#3.%20Interface)).
@@ -2330,7 +2335,12 @@ written again until it is closed and reopened, and that open's recovery
   records' failure was already reported, and a removal's failure reached its
   `Sync`. A segment whose sync failed can still hold
   them whole, and without this the reopen's recovery would hold again, and the
-  engine apply, a write or a removal whose `Sync` was told it failed.
+  engine apply, a write or a removal whose `Sync` was told it failed. A failed
+  record that never reached the device leaves its number on no record, so the
+  next sequence number that open issues **MUST** also exceed every number on the
+  list ([§4.3](#4.3%20Versions)): the list stays for the life of the process, and
+  a later open would otherwise drop a record that reused a listed number after its
+  `Sync` succeeded.
 
 > decision: a read-only journal is the one place a window's header-only records
 > are failed, against §5.3's rule, because nothing can be appended. They are
@@ -2432,14 +2442,23 @@ from the pool for the reservation. A reserved write that rolls because the
 stream's other writes filled its segment takes the roll one of them would
 otherwise have made, so the reservation then takes a replacement spare from the
 pool ahead of every unreserved write, and an unreserved roll that would leave an
-open reservation short of its spares is refused `spare` in its place. So a
-reserved write never meets the no-spare refusal while the pool can be refilled.
+open reservation short of its spares is refused `spare` in its place. The pool
+makes the replacement on its own time and a refusal never waits, so a reserved
+roll that finds no spare ready, a replacement still being made included, is
+itself refused `spare`, at once. The write stops there: the pieces it published
+before the refusal stay and its version is spent, so its holder does not retry it
+on the same reservation, which holds one version per write, not per attempt. It
+closes the reservation and reserves again, once the refill has caught up, for what
+those pieces do not cover. A reserved write therefore meets the no-spare refusal
+while the pool is refilling a replacement or cannot make one (see the note below),
+never because an unreserved write took its spare.
 It holds them until `(*Reservation).Close` returns what is left;
 `(*Reservation).WriteAt`, with `WriteAt`'s arguments, draws a write's share of
 each from it, and while it holds enough is refused by none of those limits nor
-by the headroom's half rule, so no reserved copy is refused part-way.
+by the headroom's half rule, so no limit refuses a reserved copy part-way.
 It is how an operation that must not fail part-way — a clone's copies
-([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) — finds every refusal before it changes anything. A reservation
+([RFC 8 §9.1](rfc-8-engine.md#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) — finds every limit's refusal before it changes anything; a `spare` refusal while
+the pool refills ends the reservation, as above. A reservation
 is in memory: a restart drops it, and its holder reserves again at start. For a
 clone, the source is served once its registration and open are rebuilt; the
 destination file is not served until the clone's phase 1 has committed, and its
@@ -2580,7 +2599,7 @@ and the half above is half of the headroom without it.
 > of content the journal does not hold free nothing; an unmark is one per
 > extent the reseed finds wrongly marked, bounded by the offloaded records
 > before it. So the headroom is exhausted only by such removals issued faster
-> than repack returns space, and then those removals, and only they, are
+> than repack returns space, and then every removal, held content or not, is
 > refused until it does. Offloaded records are dropped rather than refused
 > because losing one costs a redundant upload, never content. Overturned by a
 > workload that reaches `headroom_draws` near the headroom's size, less the open
@@ -3154,7 +3173,7 @@ holding it converts disk latency into index contention.
 | `Forget`'s record, then its drop | repack copies and fills of that tag | a copy of the tag appended after the forget record carries a higher sequence number, so a crash would bring it back as held; a copy whose held check ran before the forget is abandoned, never appended after it ([§3](#3.%20Interface)) |
 | a repack copy's held check, then its append | `WriteAt`, removals and `Release` on that file | a copy appended over newer state would reinstate superseded content ([§7.2](#7.2%20Repack)) |
 | an acknowledgement's drop of a file's extents, then its loss records ([§3.3](#3.3%20Offload)) | repack copies of that file | a copy appended after the loss record keeps the version under a higher sequence number, so the loss record does not outrank it and a restart holds the dropped content again; a copy whose held check ran before the drop is abandoned, never appended after it |
-| drawing a write's or a removal's version, then applying it to the index | a read of that file taking its `asOf` | a file with no entry reports its floor bucket as `asOf`, and so may one with an entry not changed since open, and so does one whose entry a `Fill` created; another file in the same bucket can draw a higher version and raise the bucket while this change is still in flight; the read's `asOf` is then above a change it did not see, so a fill from that read is accepted over the change, and the engine can report a loss for bytes the journal still holds ([§3.4](#3.4%20Fill), [RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)) |
+| drawing a write's or a removal's version, then applying it to the index | a read of that file taking its `asOf` | a file with no entry reports its floor bucket as `asOf`, and so may one with an entry not changed since open, and so does one whose entry a `Fill` created; another file in the same bucket can draw a higher version and raise the bucket while this change is still in flight, as can a share's attach, which raises every bucket ([§3.4](#3.4%20Fill)); the read's `asOf` is then above a change it did not see, so a fill from that read is accepted over the change, and the engine can report a loss for bytes the journal still holds ([§3.4](#3.4%20Fill), [RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)) |
 
 Publishing an extent **MUST** be the last step of a write, after its record is
 written, so a read never finds an index entry pointing at bytes not yet in the
@@ -3348,6 +3367,7 @@ A check here fails by **serving or destroying the wrong bytes without an error**
 | [§3.8](#3.8%20Loss%20events) loss by exact record | Write v5 and `Sync` it; overwrite the same 64 KiB at v10 with no `Sync`; fail the timer's sync and resolve by failing the window. Assert a read serves v5, before and after a crash and reopen, and the loss record names v10's sequence number. A loss keyed on version inside the extent drops v5 too, and a design that let v5's record go once v10 was appended has nothing to restore. |
 | [§3.8](#3.8%20Loss%20events) a synced loss masks what it superseded | Write v5, `Sync`; write v10, `Sync`; corrupt v10's payload; reopen with v5's record still on disk. Assert the extent reads `missing`, never v5. A loss record that names only its record brings the superseded v5 back. |
 | [§5.4](#5.4%20A%20journal%20that%20cannot%20write) read-only fails every stream's unsynced records | On a second stream, write file G and leave it unsynced; on the first, write F, fail a sync and then the first sync in the spare it takes, so the journal turns read-only. Assert a loss event names G's write at the transition, the next `Sync(G)` fails, and the loss generation rose once for both streams. Then, in one run, fail the writeback of G's segment at the seam so G is torn on the device and in the cache, clear the faults and reopen in place: assert G is not held and the loss generation stays where the transition put it. In another, leave G whole in its segment and reopen in place: assert the reopen drops G, appending an unsynced loss record for it, and the loss generation stays where the transition put it. The loss generation alone does not tell this rule from one that fails only the failed segment's window, since failing F's window raises it too; that rule publishes no loss event for G, so G's file is never told of the loss, and in the second run the reopen holds G again after its `Sync` was told it failed. |
+| [§5.4](#5.4%20A%20journal%20that%20cannot%20write) a failed number is never issued again | Write A and `Sync` it; write B, C and D, then fail their sync with `EROFS` at the seam and have the seam discard their bytes, so none is on the device or in the cache and the journal turns read-only with B, C and D on its failed list. Clear the faults and reopen in place; write E and `Sync` it, which succeeds. Close and reopen in place again. Assert E's sequence number exceeds D's, and E is held and read after the second reopen. A rule taking the next number from the disk alone gives E B's number, and the second reopen drops a write whose `Sync` succeeded. |
 | [§5.3](#5.3%20A%20failed%20sync) a failed window is reported once | Write to file F with no `Sync` waiting; fail the timer's sync and fail the window. Assert the next `Sync(F)` fails, the one after succeeds, and a `Sync(G)` of a file with no write in the window succeeds throughout. A design that fails only the `Sync` calls waiting at the time lets F's next flush succeed with its data gone. |
 | [§4.3](#4.3%20Versions) a re-append keeps its numbers | Write A, fail its sync and resolve by re-appending; truncate over A; crash so the original, its copy and the truncate are all on disk; reopen. Assert the extent reads `missing`. A re-append given a new sequence number outranks the truncate and brings A back. |
 | [§3.3](#3.3%20Offload) no pin on a segment under repack | Select a segment for repack and hold the pass after its first copy; offload a file with dirty extents in that segment. Assert the offer pins no segment under repack, takes the copied extent from its new location, leaves the rest to a later call, and the repack completes and unlinks the segment. |

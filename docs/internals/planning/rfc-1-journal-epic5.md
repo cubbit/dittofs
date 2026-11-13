@@ -219,7 +219,7 @@ below or in §1.2.
 | R21 | Once making a spare has failed with `ENOSPC` and no full-size retired segment is to hand, a roll that finds no spare is refused with `ENOSPC`, until a spare is made again | MUST | RFC 28 §2.2 | T5.6, T5.11 |
 | R22 | `spare_refusals` counts each refusal naming `spare` | MUST | RFC 28 §2.2, RFC 1 §3.9 | T5.6 |
 | R23 | Header-only records go on drawing on the allocated headroom when no spare is ready: the pool offers them the headroom's spares. A repack copy that needs a new segment draws on the repack reserve's spares, never a content spare | invariant | RFC 28 §2.2, RFC 1 §6 | T5.5, T5.6 |
-| R80 | A reservation holds spares ahead of need: spares held for it are not available to unreserved rolls, a reserved roll takes one of them, and an unreserved roll that would leave an open reservation short of its spares is refused `spare`. So a reserved write never meets the no-spare refusal while the pool can be refilled | invariant | RFC 1 §6 | T5.5, T5.6 |
+| R80 | A reservation holds spares ahead of need: spares held for it are not available to unreserved rolls, a reserved roll takes one of them, and an unreserved roll that would leave an open reservation short of its spares is refused `spare`. A reserved roll that finds no spare ready is refused `spare` at once, and its holder reserves again once the refill has caught up; no unreserved write takes a reserved write's spare | invariant | RFC 1 §6 | T5.5, T5.6 |
 | R83 | A spare whose making fails at any step is never taken. Whatever the attempt left under either name is unlinked and stays accounted at its cap until the unlink has happened, and only then is its reservation returned. A leftover that cannot be unlinked stays in the set, marked ended, until a retirement unlinks it | invariant | RFC 28 §2.2, RFC 1 §3.7, §7.3 | T5.4a, T5.9 |
 | R84 | A spare found at open is accepted into a class, accounted at its cap and counted toward the headroom, the repack reserve or a stream's next segment. (The scan that finds it and the decision that it is a spare are epic 7's) | MUST | RFC 28 §3.1 | T5.5 |
 
@@ -641,7 +641,9 @@ pkg/block/journal/internal/
   durable); a pool emptied, then the refusal with the seam's call count unchanged; the
   `ENOSPC` variant after a failed `Make`, with nothing queued for retirement (T5.11 adds the
   queue); `-race` with 16 appenders over 4 streams and a refill; the spare-refusal counter; a
-  reserved and an unreserved roll with one spare left (catches R80); the failed seal syncs and
+  reserved and an unreserved roll with one spare left (catches R80); a reserved roll with a
+  replacement still being made and no spare ready, refused `spare` at once (catches a roll that
+  waits, R80); the failed seal syncs and
   the failed truncation sync, each followed by a roll (R33, R34); a repack-class roll with
   only reserve spares ready.
 

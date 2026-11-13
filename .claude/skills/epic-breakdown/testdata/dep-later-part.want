@@ -1,0 +1,3 @@
+subtask T7.3a depends on T7.3b, which §6 lists after it
+subtask T7.3b depends on T7.3b, which §6 lists as itself
+TOTAL 4 subtasks, 4 man-days
