@@ -16,79 +16,88 @@ func zeroHeader(b []byte) []byte {
 	return b
 }
 
-// provenTwo is segment id's two records, the second's synced-through covering
-// both, and where they end.
-func provenTwo(id core.SegmentID) ([]byte, int64) {
-	endA := endAfter(tailRec(200, 0x4100))
-	endB := endAfter(tailRec(200, 0x4100), tailRec(201, 0x8100))
-	return buildSeg(id, syncedRec(200, 0x4100, endA), syncedRec(201, 0x8100, endB)), endB
-}
-
-func TestAZeroHeaderSegmentsRecordsAreScannedAndItIsClassed(t *testing.T) {
-	t.Run("unnamed", func(t *testing.T) {
-		seg, endB := provenTwo(2)
+// A segment's header is written before its first record, so every proof a
+// record can carry needs the header durable first: a zeroed header hides no
+// synced record and the rebuild scans none. A spare nobody took, all zeros at
+// the segment cap, is the usual one, and reading it whole at every open would
+// cost the pool's whole size.
+func TestAZeroHeaderSegmentIsNeverScanned(t *testing.T) {
+	t.Run("an all-zero spare", func(t *testing.T) {
 		r := newRig(t)
 		r.writeFormat()
-		r.plantSeg(2, zeroHeader(seg))
+		r.plantSeg(1, buildSeg(1, tailRec(200, 0x4100)))
+		r.plantSeg(2, make([]byte, 1<<16))
 		st := runUnchanged(t, r, 2)
-		if len(st.Attached.ZeroHeader) != 1 {
-			t.Fatalf("Attached.ZeroHeader got %v, want the planted segment", st.Attached.ZeroHeader)
+		if len(st.Attached.ZeroHeader) != 1 || st.Attached.ZeroHeader[0] != 2 {
+			t.Fatalf("Attached.ZeroHeader got %v, want [2]", st.Attached.ZeroHeader)
 		}
-		if got := planted(st); got != 2 {
-			t.Errorf("the index holds %d entries, want 2: the zero-header segment's records attach", got)
+		if sc, ok := scanOf(st, 2); ok {
+			t.Errorf("Rebuilt.Scans holds a scan of the all-zero spare (%+v), want none", sc)
 		}
-		wantFate(t, st, 2, fateIntact, 0)
-		wantDamaged(t, st, 2) // a record's synced-through proves the slot was written
-		if sc, _ := scanOf(st, 2); sc.RecordsEnd != endB {
-			t.Errorf("the scan's RecordsEnd got %d, want %d", sc.RecordsEnd, endB)
+		if got := planted(st); got != 1 {
+			t.Errorf("the index holds %d entries, want segment 1's 1", got)
 		}
+		wantFate(t, st, 1, fateIntact, 0)
+		for _, f := range st.Tails.Fates {
+			if f.ID == 2 {
+				t.Errorf("Tails.Fates holds %+v for the spare, want none: the spare phase owns it", f)
+			}
+		}
+		wantDamaged(t, st)
 	})
-	t.Run("named by a successor", func(t *testing.T) {
-		sealed, _ := buildSealed(1, tailRec(200, 0x4100), tailRec(201, 0x8100))
+	t.Run("spares add no scans", func(t *testing.T) {
+		const spares = 6
 		r := newRig(t)
 		r.writeFormat()
-		r.plantSeg(1, zeroHeader(sealed))
-		r.plantSeg(2, namingSeg(2, 1))
+		r.plantSeg(1, buildSeg(1, tailRec(200, 0x4100)))
+		for id := core.SegmentID(2); id < 2+spares; id++ {
+			r.plantSeg(id, make([]byte, 1<<16))
+		}
 		st := runTails(t, r)
-		if got := planted(st); got != 2 {
-			t.Errorf("the index holds %d entries, want 2", got)
+		if len(st.Attached.ZeroHeader) != spares {
+			t.Fatalf("Attached.ZeroHeader got %v, want %d spares", st.Attached.ZeroHeader, spares)
 		}
-		wantFate(t, st, 1, fateSealed, 0)
-		wantDamaged(t, st, 1)
-	})
-	t.Run("named and cut to nothing refuses", func(t *testing.T) {
-		r := newRig(t)
-		r.writeFormat()
-		r.plantSeg(1, nil)
-		r.plantSeg(2, namingSeg(2, 1))
-		wantRefused(t, r, 1, 0, 0)
+		if got := len(st.Rebuilt.Scans); got != 1 {
+			t.Errorf("Rebuilt.Scans holds %d scans, want 1: the %d spares are never scanned", got, spares)
+		}
 	})
 }
 
-// A spare nobody took, an all-zero file, scans empty and the open succeeds.
-func TestAnAllZeroSegmentScansEmpty(t *testing.T) {
-	r := newRig(t)
-	r.writeFormat()
-	r.plantSeg(1, make([]byte, 4096))
-	st := runUnchanged(t, r, 1)
-	if got := planted(st); got != 0 {
-		t.Errorf("the index holds %d entries, want 0", got)
+// A named predecessor whose header slot reads zero holds no verifying seal
+// whatever its length, so it refuses as a missing end over the whole file,
+// though nothing of it is scanned.
+func TestANamedZeroHeaderPredecessorRefusesWithoutAScan(t *testing.T) {
+	sealed, _ := buildSealed(1, tailRec(200, 0x4100), tailRec(201, 0x8100))
+	for _, row := range []struct {
+		name string
+		seg  []byte
+	}{
+		{"cut to nothing", nil},
+		{"cut to 20 bytes", make([]byte, 20)},
+		{"a whole sealed file", zeroHeader(slices.Clone(sealed))},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			r.plantSeg(1, row.seg)
+			r.plantSeg(2, namingSeg(2, 1))
+			wantRefused(t, r, 1, 0, int64(len(row.seg)))
+		})
 	}
-	if sc, ok := scanOf(st, 1); !ok || len(sc.Records) != 0 {
-		t.Errorf("the all-zero segment's scan got %d records (found %v), want an empty one", len(sc.Records), ok)
-	}
-	wantDamaged(t, st)
 }
 
+// A named predecessor with a header that does not verify, cut at or below its
+// first record slot, refuses with the whole file as its missing end: no record
+// can have survived, so the range starts at 0, never an empty one at the cut.
 func TestANamedPredecessorCutBelowTheFirstRecordSlotRefuses(t *testing.T) {
 	full := buildSeg(1, tailRec(200, 0x4100))
-	for _, size := range []int{0, 20, 47, 48} {
+	for _, size := range []int{20, 47, 48} {
 		t.Run(fmt.Sprintf("%d bytes", size), func(t *testing.T) {
 			r := newRig(t)
 			r.writeFormat()
 			r.plantSeg(1, slices.Clone(full[:size]))
 			r.plantSeg(2, namingSeg(2, 1))
-			wantRefused(t, r, 1, int64(size), int64(size))
+			wantRefused(t, r, 1, 0, int64(size))
 		})
 	}
 }

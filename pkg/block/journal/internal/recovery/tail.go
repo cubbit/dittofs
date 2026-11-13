@@ -80,30 +80,60 @@ type tails struct {
 	Corrupt []corruptRecord
 }
 
-// classifyTails decides, for each scanned segment, whether each bad fact is
-// a crash's tear or damage, and gives the segment its fate. It reads only
-// the attach answer and the scans, plus the open's reader for the one
-// probe it makes, and fails the open when a range names no record it can
-// class: see refuseRange and refuseMissingEnd.
-func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []segmentScan) (tails, error) {
-	// A segment a verified header names as predecessor was sealed before
-	// its successor was made; a segment no header names could have been
-	// open at a crash. An id naming itself names nothing, and a name with
-	// no segment on disk is ignored.
-	named := map[core.SegmentID]bool{}
-	for _, s := range att.Own {
+// successorSet is every own segment another own segment names as its
+// predecessor: a segment a verified header names was sealed before its
+// successor was made, one no header names could have been open at a crash.
+// An id naming itself names nothing, and a name with no segment on disk is
+// ignored. The run builds it once and hands the one set to the rebuild and
+// to the classing, so the two never disagree on who is named.
+func successorSet(own []SegmentInfo) map[core.SegmentID]bool {
+	named := make(map[core.SegmentID]bool, len(own))
+	for _, s := range own {
 		if p := s.Header.Predecessor; p != 0 && p != s.ID {
 			named[p] = true
 		}
 	}
-	unverified := map[core.SegmentID]bool{}
-	for _, id := range slices.Concat(att.Unverified, att.ZeroHeader) {
+	return named
+}
+
+// unverifiedSet is the id of every segment whose header slot did not verify
+// and whose records the rebuild scanned. A zero-header segment is not in it:
+// the rebuild scans none.
+func unverifiedSet(att Attached) map[core.SegmentID]bool {
+	unverified := make(map[core.SegmentID]bool, len(att.Unverified))
+	for _, id := range att.Unverified {
 		unverified[id] = true
 	}
+	return unverified
+}
 
+// classifyTails decides, for each scanned segment, whether each bad fact is
+// a crash's tear or damage, and gives the segment its fate. It reads only
+// the scans and the two sets the run built once, named and unverified, plus
+// the open's reader for the probes it makes, and fails the open when a range
+// names no record it can class: see refuseRange and refuseMissingEnd.
+//
+// A zero-header segment is never scanned: its header is written before any
+// record, so every proof a record can carry needs a header durable first and
+// a zeroed one hides no synced record. A named one still refuses as a
+// missing end, whatever its length; an unnamed one takes no fate and no
+// damage here, the spare phase owning it.
+func classifyTails(rd *reader, identity core.JournalID, named, unverified map[core.SegmentID]bool, zeroHeader []core.SegmentID, scans []segmentScan) (tails, error) {
 	// The refusal is the first one met, so the visit order is the segment
 	// id's, never the listing order the rebuild answered in.
 	scans = slices.Clone(scans)
+	zero := map[core.SegmentID]bool{}
+	for _, id := range zeroHeader {
+		if !named[id] {
+			continue
+		}
+		size, err := segSize(rd, id)
+		if err != nil {
+			return tails{}, err
+		}
+		zero[id] = true
+		scans = append(scans, segmentScan{ID: id, Size: size})
+	}
 	slices.SortStableFunc(scans, func(a, b segmentScan) int { return cmp.Compare(a.ID, b.ID) })
 
 	var out tails
@@ -146,6 +176,12 @@ func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []se
 					return tails{}, refuseRange(id, r)
 				}
 				for _, e := range confined {
+					// The same largest-value rule the catalogue read applies
+					// to the entries it feeds: a number this journal never
+					// issues refuses the open, never a corrupt drop.
+					if nerr := checkNumbers(headerFromEntry(id, e)); nerr != nil {
+						return tails{}, nerr
+					}
 					sc.Dropped = append(sc.Dropped, droppedRecord{
 						Entry: e, Header: headerFromEntry(id, e), Synced: true,
 						Err: fmt.Errorf("%w: segment %d: a record at %d the footer names has a refused header",
@@ -170,9 +206,14 @@ func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []se
 		// its seal marker must verify. One that does not is a missing end
 		// the open refuses, unless the marker alone rotted.
 		if named[id] && !sc.Sealed {
-			exempt, err := markerAloneRotted(rd, sc)
-			if err != nil {
-				return tails{}, err
+			// A zero-header segment holds no verifying trailer: under its
+			// header's size none can, so the exemption is always absent.
+			exempt := false
+			if !zero[id] {
+				var err error
+				if exempt, err = markerAloneRotted(rd, sc); err != nil {
+					return tails{}, err
+				}
 			}
 			if !exempt {
 				return tails{}, refuseMissingEnd(sc)
@@ -279,12 +320,25 @@ func refuseRange(id core.SegmentID, r format.ScanRange) error {
 
 // refuseMissingEnd is the same refusal for a named predecessor that ends
 // without its seal marker: the bytes from the last verifying record to the
-// file's end. It carries refuseRange's decision. A segment cut below the first
-// record slot has its start clamped to its size, so the range is empty, never
-// inverted.
+// file's end. It carries refuseRange's decision. Where no record can have
+// verified, a file no longer than its header slot, the whole file is the
+// missing end, [0, size): never an empty range at the slot's end. Otherwise
+// the start is the last verifying record's end, clamped to the size.
+//
+// decision: a named predecessor ending without its seal marker refuses the
+// open whatever its length, the missing end [0, size) where no verifying
+// record survives. The successor proves the segment was sealed, so
+// everything past its last surviving record may be gone and nothing on disk
+// names what the lost records superseded. The ceiling is a journal that stays
+// closed over such a truncation until the reconcile work gives the open a
+// verdict for content nothing names, which withdraws this marker.
 func refuseMissingEnd(sc segmentScan) error {
+	start := min(sc.RecordsEnd, sc.Size)
+	if sc.Size <= format.SegmentHeaderSize {
+		start = 0
+	}
 	return fmt.Errorf("%w: segment %d: a named predecessor's missing end at [%d,%d) that names no record",
-		core.ErrNotImplemented, sc.ID, min(sc.RecordsEnd, sc.Size), sc.Size)
+		core.ErrNotImplemented, sc.ID, start, sc.Size)
 }
 
 // markerAloneRotted reports whether a named predecessor's missing seal marker

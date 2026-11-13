@@ -54,10 +54,12 @@ func headerFromEntry(segID core.SegmentID, e format.CatalogEntry) format.RecordH
 // derived from the record.
 //
 // A record that does not verify — a header that decodes nowhere the entry
-// names, a claim the record contradicts, a body its checksum refuses —
-// confines to itself: it drops into the scan's Dropped, carried for the
-// tail's classing, and every neighbour the footer names still attaches.
-// The refusals that stay the whole open's are the scan's own: a read the
+// names, a body its checksum refuses — confines to itself: it drops into
+// the scan's Dropped, carried for the tail's classing, and every neighbour
+// the footer names still attaches. An entry its own verified record
+// contradicts is the footer's fault, not the record's: the entries cannot
+// be trusted to bound the records, so the segment is demoted to the walk,
+// which reads what the segments say. The refusals that stay the whole open's are the scan's own: a read the
 // bound did not clear, a counter or sequence number this journal never
 // issues, a format this binary does not read, and the reconcile kinds
 // this journal cannot yet feed.
@@ -118,8 +120,7 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 		}
 		// confine answers one record that did not verify: the corruption
 		// its own bytes showed — a header that decodes nowhere the entry
-		// names, a claim the record contradicts, a body its checksum
-		// refuses — drops that record and carries it for the tail's
+		// names, a body its checksum refuses — drops that record and carries it for the tail's
 		// classing while the read goes on, and returns true. Anything
 		// else is the open's own refusal and returns false.
 		//
@@ -150,6 +151,9 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 			// segment.
 			h, herr := recordHeaderFor(rd, identity, info.ID, e)
 			if herr != nil {
+				if errors.Is(herr, errEntryMismatch) {
+					return segmentScan{ID: info.ID, Size: size}, false, nil
+				}
 				if confine(h, herr) {
 					continue
 				}
@@ -176,6 +180,9 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 			// the aside carries — never the entry's claim of it.
 			h, herr := recordHeaderFor(rd, identity, info.ID, e)
 			if herr != nil {
+				if errors.Is(herr, errEntryMismatch) {
+					return segmentScan{ID: info.ID, Size: size}, false, nil
+				}
 				if confine(h, herr) {
 					continue
 				}
@@ -255,14 +262,20 @@ func readRecordHeaderAt(rd *reader, identity core.JournalID, segID core.SegmentI
 	}
 }
 
+// errEntryMismatch marks an entry the record it names contradicts, whose
+// own header verified: the footer is what is wrong, so the caller demotes
+// the segment to the walk rather than dropping a record that is whole.
+var errEntryMismatch = errors.New("a catalogue entry its record contradicts")
+
 // recordHeaderFor is the fact-check over the header of the record one
 // header-only kind's entry names: the header is read at the entry's own
 // offset and decoded, then held to the entry's word and to the
 // largest-value rule, returning the record's verified header. An error
 // wrapping core.ErrCorrupt — the header does not verify where the entry
-// put it, or it claims what the entry does not — is the record's own
-// corruption, and the caller drops that record and reads on, confined to
-// it. Any other error refuses the open exactly as the scan's own reads do:
+// put it — is the record's own corruption, and the caller drops that
+// record and reads on, confined to it. One wrapping errEntryMismatch — the
+// header verified and claims what the entry does not — demotes the segment.
+// Any other error refuses the open exactly as the scan's own reads do:
 // a read the bound did not clear, a version of a later epoch. A number this
 // journal never issues never reaches the check below as a refusal: the
 // largest-value rule has already run over the entry at the loop top, and
@@ -284,34 +297,34 @@ func recordHeaderFor(rd *reader, identity core.JournalID, segID core.SegmentID, 
 
 // entryMatchesHeader holds one catalogue entry to the header of the record
 // it names: the entry is a summary a writer derived from the record, so
-// wherever the two disagree the record wins and the disagreement is
-// corruption. The first disagreeing column names both sides; the header's
+// wherever the two disagree the record wins and the disagreement is an
+// errEntryMismatch. The first disagreeing column names both sides; the header's
 // own offset is never compared, for the header was decoded at the offset
 // the entry names, and its checksums cover its own bytes alone.
 func entryMatchesHeader(e format.CatalogEntry, h format.RecordHeader) error {
 	if e.File != h.File {
 		return fmt.Errorf("%w: segment %d: the record at %d names the FileID % x, the entry the FileID % x",
-			core.ErrCorrupt, h.Segment, h.Offset, h.File.Bytes(), e.File.Bytes())
+			errEntryMismatch, h.Segment, h.Offset, h.File.Bytes(), e.File.Bytes())
 	}
 	if e.Extent != h.Extent {
 		return fmt.Errorf("%w: segment %d: the record at %d claims the extent %+v, the entry %+v",
-			core.ErrCorrupt, h.Segment, h.Offset, h.Extent, e.Extent)
+			errEntryMismatch, h.Segment, h.Offset, h.Extent, e.Extent)
 	}
 	if e.Seq != h.Seq {
 		return fmt.Errorf("%w: segment %d: the record at %d carries seq %d, the entry %d",
-			core.ErrCorrupt, h.Segment, h.Offset, h.Seq, e.Seq)
+			errEntryMismatch, h.Segment, h.Offset, h.Seq, e.Seq)
 	}
 	if e.Version != h.Version {
 		return fmt.Errorf("%w: segment %d: the record at %d carries version %+v, the entry %+v",
-			core.ErrCorrupt, h.Segment, h.Offset, h.Version, e.Version)
+			errEntryMismatch, h.Segment, h.Offset, h.Version, e.Version)
 	}
 	if e.Kind != h.Kind {
 		return fmt.Errorf("%w: segment %d: the record at %d is a %s record, the entry a %s",
-			core.ErrCorrupt, h.Segment, h.Offset, h.Kind, e.Kind)
+			errEntryMismatch, h.Segment, h.Offset, h.Kind, e.Kind)
 	}
 	if e.Tag != h.Tag {
 		return fmt.Errorf("%w: segment %d: the record at %d names the share tag %d, the entry %d",
-			core.ErrCorrupt, h.Segment, h.Offset, h.Tag, e.Tag)
+			errEntryMismatch, h.Segment, h.Offset, h.Tag, e.Tag)
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -307,6 +308,26 @@ func TestARottedRecordHeaderInAnUnnamedSealedSegmentIsConfinedByItsFooter(t *tes
 		}
 		if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
 			t.Errorf("Damaged got %v, want [1]", st.Tails.Damaged)
+		}
+	})
+	t.Run("an entry in the range carries the largest sequence number", func(t *testing.T) {
+		// The footer verifies and names B inside the refused range, but B's
+		// entry carries a sequence number no writer issues: the open refuses
+		// as the catalogue read does for the entries it feeds, never a drop.
+		b, ents := buildSealed(1, tailRec(200, 0x4100), tailRec(201, 0x8100), tailRec(202, 0xc100))
+		b[endA] ^= 0xff // B's record header
+		es := slices.Clone(ents)
+		es[1].Seq = core.Seq(math.MaxUint64)
+		markerOff := len(b) - raw.TrailerSize - raw.CatalogEntrySize*len(es) - format.SealMarkerSize
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, appendSealed(b[:markerOff], 1, es))
+		_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+		if !errors.Is(err, core.ErrUnknownFormat) {
+			t.Fatalf("Run got err %v, want one wrapping core.ErrUnknownFormat, the largest-value rule's refusal", err)
+		}
+		if got := err.Error(); !strings.Contains(got, "segment 1") {
+			t.Errorf("Run's refusal reads %q, want it to name segment 1", got)
 		}
 	})
 	t.Run("the footer's checksum is broken", func(t *testing.T) {

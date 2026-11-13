@@ -368,7 +368,8 @@ type rebuilt struct {
 // Each segment is read from one of two sources: the catalogue its trailer
 // names, offered to a segment only when another own segment's verified
 // header names it as predecessor, or the header walk, which every other
-// segment takes. A named segment whose trailer holds no verifying footer is
+// segment takes. A named segment whose trailer holds no verifying footer, or
+// whose footer an entry of which its own record contradicts, is
 // demoted to the walk, and the two sources must give the same answer — the
 // catalogue is an accelerator, not a second opinion. forceScan turns the
 // catalogue off, the test-only switch that makes every segment take the
@@ -398,7 +399,7 @@ type rebuilt struct {
 // catalogued offsets — walking the two halves of one segment on two
 // readers, merging the scans — when a start-up profile of a journal with
 // huge segments shows the rebuild bound by one.
-func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool) (rebuilt, error) {
+func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, named map[core.SegmentID]bool, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool) (rebuilt, error) {
 	ix := index.New(extentLimit)
 	ctr := &index.Counters{}
 	b := ix.Rebuilder(ctr)
@@ -412,10 +413,10 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 		own = shuffled
 	}
 
-	// named is the successor set: every own segment another own segment
-	// names as its predecessor. The catalogue a named segment's trailer may
-	// hold is the only thing this buys — a segment nobody names takes the
-	// walk, its trailer never read.
+	// named is the successor set the run built once (successorSet), the
+	// same one the tail's classing reads. The catalogue a named segment's
+	// trailer may hold is the only thing this buys — a segment nobody names
+	// takes the walk, its trailer never read.
 	//
 	// decision: only a verified own header's claim counts. The attach pass
 	// read and verified every own header before this dispatch, so the
@@ -428,14 +429,6 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	// stays beside it — the footer's seal marker is seeded with the
 	// journal's identity and the segment's own id, so no other segment's
 	// footer verifies as a named segment's.
-	named := make(map[core.SegmentID]bool, len(own))
-	for _, seg := range own {
-		// A segment naming itself as its own predecessor is damaged, and
-		// nothing is offered a catalogue off its own claim.
-		if seg.Header.Predecessor != 0 && seg.Header.Predecessor != seg.ID {
-			named[seg.Header.Predecessor] = true
-		}
-	}
 
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()

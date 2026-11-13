@@ -130,6 +130,14 @@ func TestACloneTargetBodyIsClassedTheSameWhereverItIsRead(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Run (forced scan %v): %v", forceScan, err)
 		}
+		wantCatalog := 1 // segment 1 is named and sealed: the catalogue reads it
+		if forceScan {
+			wantCatalog = 0
+		}
+		if st.Rebuilt.ByCatalog != wantCatalog {
+			t.Fatalf("Run (forced scan %v) rebuilt %d segments by catalog, want %d: the leg must use the source it names",
+				forceScan, st.Rebuilt.ByCatalog, wantCatalog)
+		}
 		if len(st.Tails.Corrupt) != 1 || !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
 			t.Fatalf("Run (forced scan %v): Corrupt %+v Damaged %v, want one drop and segment 1 damaged", forceScan, st.Tails.Corrupt, st.Tails.Damaged)
 		}
@@ -158,7 +166,7 @@ func TestClassifyTailsVisitsTheScansByAscendingID(t *testing.T) {
 		named.Own = append(named.Own, SegmentInfo{ID: core.SegmentID(20 + i),
 			Header: format.SegmentHeader{Predecessor: pred}})
 	}
-	_, err := classifyTails(nil, journalID, named, []segmentScan{scan(9), scan(4), scan(7)})
+	_, err := classifyTails(nil, journalID, successorSet(named.Own), nil, nil, []segmentScan{scan(9), scan(4), scan(7)})
 	if !errors.Is(err, core.ErrNotImplemented) {
 		t.Fatalf("classifyTails got err %v, want one wrapping core.ErrNotImplemented", err)
 	}
@@ -207,7 +215,7 @@ func TestTwoCorruptCloneTargetDropsComeInAscendingRecordOffset(t *testing.T) {
 		t.Fatalf("the scan holds %d drops, want 2", len(sc.Dropped))
 	}
 	slices.Reverse(sc.Dropped)
-	got, err := classifyTails(nil, journalID, Attached{}, []segmentScan{sc})
+	got, err := classifyTails(nil, journalID, nil, nil, nil, []segmentScan{sc})
 	if err != nil {
 		t.Fatalf("classifyTails: %v", err)
 	}

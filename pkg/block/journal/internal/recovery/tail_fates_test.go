@@ -325,17 +325,14 @@ func TestATornSlotAndATailRangeEndAtTheLastRecord(t *testing.T) {
 }
 
 // TestACataloguedDropIsCorruptAndItsSegmentDamaged confines one record by a
-// clone-target entry whose seq its header contradicts: the drop carries into
+// clone target whose spec rotted under an honest entry: the drop carries into
 // Tails.Corrupt as synced and the segment is damaged, though the open succeeds.
 func TestACataloguedDropIsCorruptAndItsSegmentDamaged(t *testing.T) {
 	clone := rec(7, func(r *raw.Record) {
 		r.Clone = &raw.CloneBody{Share: srcShare(), File: srcFile(), Off: 0x101, AsOf: raw.Version{Counter: 9}}
 	})
-	b, ents := buildSealed(1, clone, tailRec(201, 0x8100))
-	es := slices.Clone(ents)
-	es[0].Seq++
-	markerOff := len(b) - raw.TrailerSize - raw.CatalogEntrySize*len(es) - format.SealMarkerSize
-	b = appendSealed(b[:markerOff], 1, es)
+	b, es := buildSealed(1, clone, tailRec(201, 0x8100))
+	b[format.SegmentHeaderSize+format.RecordHeaderSize] ^= 0xff // the clone target's spec
 
 	r := newRig(t)
 	r.writeFormat()

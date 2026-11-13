@@ -110,20 +110,23 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 	if limit < 1 {
 		limit = math.MaxInt64
 	}
-	// The unverified-header and zero-header segments' records verify by
-	// identity, segment and offset whatever their header slot says, so they
-	// scan too: a record a later sync proved synced is never lost to a slot
-	// nobody wrote.
+	// The unverified-header segments' records verify by identity, segment
+	// and offset whatever their header slot says, so they scan too: a
+	// record a later sync proved synced is never lost to a slot nobody
+	// wrote. A zero-header segment does not: no proof of a record exists
+	// without its header durable first, and scanning an all-zero spare
+	// would read the whole file for nothing.
 	segs := slices.Clone(st.Attached.Own)
-	for _, id := range slices.Concat(st.Attached.Unverified, st.Attached.ZeroHeader) {
+	for _, id := range st.Attached.Unverified {
 		segs = append(segs, SegmentInfo{ID: id, Unverified: true})
 	}
-	out, err := rebuildIndex(ctx, rd, expect, segs, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan)
+	named := successorSet(st.Attached.Own)
+	out, err := rebuildIndex(ctx, rd, expect, segs, named, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan)
 	if err != nil {
 		return err
 	}
 	st.Rebuilt = out
-	st.Tails, err = classifyTails(rd, expect, st.Attached, out.Scans)
+	st.Tails, err = classifyTails(rd, expect, named, unverifiedSet(st.Attached), st.Attached.ZeroHeader, out.Scans)
 	return err
 }
 

@@ -52,8 +52,9 @@ func TestTheRebuildScansAnUnverifiedHeaderSegment(t *testing.T) {
 	if !ok {
 		t.Fatalf("Rebuilt.Scans holds no scan of segment 2, want one")
 	}
-	if sc.RecordsEnd <= 96 || sc.Sealed {
-		t.Errorf("the scan of segment 2 got RecordsEnd %d, Sealed %v, want an end past the header and unsealed", sc.RecordsEnd, sc.Sealed)
+	endB := endAfter(tailRec(200, 0x4100), tailRec(201, 0x8100))
+	if sc.RecordsEnd != endB || sc.Sealed {
+		t.Errorf("the scan of segment 2 got RecordsEnd %d, Sealed %v, want %d (the end of the second planted record) and unsealed", sc.RecordsEnd, sc.Sealed, endB)
 	}
 }
 

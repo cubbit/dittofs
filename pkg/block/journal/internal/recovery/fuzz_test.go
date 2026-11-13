@@ -91,14 +91,6 @@ func FuzzOpen(f *testing.F) {
 		b[at] ^= 0x01
 		f.Add(b)
 	}
-	// The seed segment with its header slot cleared: the rebuild scans a
-	// zero-header segment too, so the property must hold over its records
-	// as well — a mutation that made the feed skip such a segment would
-	// pass the seed corpus only through this one.
-	zeroedHeader := append([]byte(nil), valid.b...)
-	clear(zeroedHeader[:format.SegmentHeaderSize])
-	f.Add(zeroedHeader)
-
 	seg1 := sealedSeg(1, 0, fuzzRecs(1, 1)...)
 	f.Fuzz(func(t *testing.T, seg2 []byte) {
 		r := newRig(t)
