@@ -112,7 +112,7 @@ green with the epic that makes it pass.
 
 - **`pkg/bootstrap`**, renamed from what RFC 23's plan's epic 1 leaves of `pkg/config`, with RFC 13
   §2.2's facts (but its scratch paths) as `Bootstrap`'s fields, and its loader's signature.
-- **`pkg/bootstrap`'s node identity:** `NodeID` and `InitNodeID`.
+- **`pkg/bootstrap`'s node identity:** `NodeID`, `InitNodeID` and `WriteMissingNodeIDs`.
 - **`pkg/settings`' types:**
   - the binding classes;
   - a section, declared from a component's typed settings with its scope, its override, a class
@@ -122,9 +122,9 @@ green with the epic that makes it pass.
   - the write-path check, its `Put` and `Delete` writes, and its errors. Whether the scope holds
     content is an input to the check, which its caller reads in the write's transaction, so
     `pkg/settings` declares no store interface.
-- **`pkg/secrets`' provider:** RFC 13 §7's `SecretProvider`: `Seal` with its kind and role,
-  `Resolve` with the kind and role its caller expects, `Prune` and `Delete`, each version's number,
-  and the package's own errors.
+- **`pkg/secrets`' provider:** RFC 13 §7's `SecretProvider`: `Seal` with its kind, role and owner,
+  `Resolve` with the kind, role and owner its caller expects, `Prune` and `Delete`, each version's
+  number, and the package's own errors.
 - **The kvstore views' signatures:** the settings delete, the cross-scope read, and secrets.
 
 It declares no internal interface. `keyprovider.KeyProvider` already exists.
@@ -142,7 +142,8 @@ Out of scope, each named in O1:
 - "§7 rotation"'s wrapping-key half, which needs the reseal pass (§4.3);
 - the namespace key rows: "§7 namespace keys", "§7 chunk-ID key", "§7 key table" and "§5.1 encryption bound";
 - the engine's and the remote tier's own validator rows: "§5.3 recorded" and "§6 block target range";
-- "§5 adapter port", which needs a serving adapter and the rebuild RFC 20's plan's epic 7 builds.
+- "§5 adapter port", which needs a serving adapter and the rebuild RFC 20's plan's epic 7 builds;
+- "§2.2 explicit initialisation"'s recovery-import clause, which needs RFC 26.
 
 **Scenarios from other sources:**
 - a v1 key in the host file refuses the start and names its replacement (#3119, route B), in epic 2;
@@ -302,7 +303,8 @@ flowchart TD
   R2 --> S3
   E2 & E3 & E4 --> E5["E5 Integration"]
   S3 -. "partly" .-> E5
-  E2 & E4 -. "X1 in RFC 23's plan: dfs start, dfs init" .-> R35(["RFC 23's epics 3 and 5"]):::sync
+  E2 -. "X1 in RFC 23's plan: dfs start, dfs init" .-> R35(["RFC 23's epics 3 and 5"]):::sync
+  E4 -. "X1: dfs init's first password" .-> R5(["RFC 23's epic 5"]):::sync
   S4(["S4 RFC 23's dfs init exists"]):::sync --> E6["E6 E2E green"]
   E5 -. "X3 in RFC 23's plan" .-> R7(["RFC 23's integration epic"]):::sync
   E5 --> E6
@@ -315,9 +317,10 @@ flowchart TD
 - **S0, before this plan.** RFC 23's plan's epic 1 has stripped `pkg/config` of v1's server sections.
   Unblocks epic 1, which renames what is left to `pkg/bootstrap`.
 - **S1, the configuration surface frozen.** `pkg/bootstrap`, `pkg/settings` and `pkg/secrets` build
-  with stub bodies, with everything a later epic calls: `Load`, `NodeID` and `InitNodeID`; `Of` and
-  its options, `Read`, `Get`, `Diff`, `Keep`, `Check` with `Put` and `Delete`; `Seal` with its kind
-  and role, `Resolve` with the expected kind and role, `Prune` and `Delete`; the kvstore views'
+  with stub bodies, with everything a later epic calls: `Load`, `NodeID`, `InitNodeID` and
+  `WriteMissingNodeIDs`; `Of` and its options, `Read`, `Get`, `Diff`, `Keep`, `Check` with `Put` and
+  `Delete`; `Seal` with its kind, role and owner, `Resolve` with the expected kind, role and owner,
+  `Prune` and `Delete`; the kvstore views'
   delete, cross-scope read and secrets. Unblocks epics 2, 3 and 4.
 - **S2, secrets sealed.** A `Secret` seals, resolves and versions under each role's key. It is
   reached partway through epic 4, once the move, the record and sealing are in; rotation's `Prune`,
@@ -338,7 +341,7 @@ flowchart TD
 | E2, E3, E4 | E5 | Integration wires all three into the node and the API. |
 | E4 | RFC 18's plan (S2) | Identity seals and resolves its secrets here. |
 | E5 | E6 | E2E green runs the wired server. |
-| RFC 23's epic 2 (outside) | E2 and E4, partly | The version gate adds a node's ranges to RFC 23's `Node` record, and `Prune` reads the versions a node holds from its `NodeStatus`. Everything else in both epics starts at S1. |
+| RFC 23's epic 2 (outside) | E2 and E4, partly | The version gate adds a node's ranges to RFC 23's `Node` record, `WriteMissingNodeIDs` reads RFC 16's `JournalID`, and `Prune` reads the versions a node holds from its `NodeStatus`. Everything else in both epics starts at S1. |
 | RFC 23's epics 2, 3 and 4 (outside, S3) | E5, partly | Integration wires this library into RFC 23's reconcile and write path, in the slots those epics leave; the table and D3's check start before (§3.4). |
 | E2 | RFC 23's epics 3 and 5 (its X1), partly | `dfs start` reads `pkg/bootstrap` and the node identity, and `dfs init` writes the identity; the rest of both epics starts before. |
 | E4 | RFC 23's epic 5 (its X1), partly | `dfs init`'s first password and the API's signing key are sealed `Secret` records. |
@@ -440,20 +443,32 @@ and ignores the rest. The variables read outside viper are allowed, by name or b
   `DITTOFS_KNOWN_FAILURES`, `DITTOFS_CLIENT_NS` and the Kerberos fixture's `DITTOFS_SPN`,
   `DITTOFS_UID` and `DITTOFS_GID`.
 
-`DITTOFS_LOGGING_LEVEL`, which `dfsbench` sets, is the bootstrap's log level (RFC 13 §2.2), so it
-stays a bootstrap key. `test/posix/setup-posix.sh` exports v1's `DITTOFS_DATABASE_SQLITE_PATH` and
-`DITTOFS_CACHE_PATH`, which epic 2 drops. The list cannot drift: an epic 2 test reads every
-`"DITTOFS_` literal in the module's Go files outside `_test.go`, and every `DITTOFS_*` variable
-read or set in the repository's shell scripts, Compose file and `docker/`, and fails on one that is
-neither a bootstrap key nor allowed. The operator is its own module, outside the test; it still
-sets v1's `DITTOFS_DATABASE_*` and `DITTOFS_LDAP_*`, which now refuse the start, and moving it is
-RFC 23's plan's O4.
+A bootstrap key wins over an allowed prefix: a future key under `DITTOFS_TEST_*` is read as the key,
+never ignored as a launcher's. `DITTOFS_LOGGING_LEVEL`, which `dfsbench` sets, is the bootstrap's log
+level (RFC 13 §2.2), so it stays a bootstrap key.
 
-The launchers that set the two names RFC 23's plan refuses on purpose, `DITTOFS_CONTROLPLANE_SECRET`
-and `DITTOFS_ADMIN_INITIAL_PASSWORD` (`docker-compose.yml`, `docker/`, and
-`internal/dfsbench/backend/dittofs.go`), are this plan's: epic 2 drops both names, which the test
-would otherwise fail on, and epic 6 starts each launcher through `dfs init` once it exists (S4).
-This is the user's decision; RFC 23's plan's D6 points here.
+The list cannot drift. An epic 2 test scans the repository by content, not by extension, every file
+outside `_test.go` that holds a `DITTOFS_` name (Go, shell with or without a `.sh`, Compose,
+`docker/`), and fails on a name that is neither a bootstrap key nor allowed. It exempts a bare
+`DITTOFS_` prefix literal (its own, `checkEnviron`'s, the fixture's) and `renamed_keys.go`'s
+refusal table, which names the refused forms on purpose. The rule for launchers is the same scan:
+**every launcher in the repository drops, in epic 2, each name the scan refuses**, whichever file
+holds it, so no list of files is kept. Among them today are `DITTOFS_CONTROLPLANE_SECRET`,
+`DITTOFS_ADMIN_INITIAL_PASSWORD` (`docker-compose.yml`, `docker/`, `dfsbench`'s backend,
+`bench/ditto/night.sh`, `scripts/setup-dittofs-demo.sh`, `test/scenarios/lib/tools/dfs-server`,
+`test/posix/setup-posix.sh`, the NLM interop script, and in Go `test/harness/fixture` and
+`test/e2e/helpers`), v1's `DITTOFS_GC_*` and `DITTOFS_BLOCKSTORE_JOURNAL_CHUNK_SIZE`
+(`test/scenarios/57-smb-2shares-compaction-l.sh`) and `test/posix/setup-posix.sh`'s
+`DITTOFS_DATABASE_SQLITE_PATH` and `DITTOFS_CACHE_PATH`. Epic 2 lands after RFC 23's plan's epic 1
+(S0, through epic 1), which owns the fixture and the e2e helpers and leaves them to it. The
+operator is its own module, outside the test; it still sets v1's `DITTOFS_DATABASE_*`,
+`DITTOFS_LDAP_*`, `DITTOFS_CONTROLPLANE_SECRET`, `DITTOFS_ADMIN_INITIAL_PASSWORD` and
+`DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET` (`dittoserver_controller.go`), which now refuse the
+start, and moving it is RFC 23's plan's O4.
+
+Epic 6 starts each launcher through `dfs init` once it exists (S4). Dropping the first-password name
+opens no window of its own: from RFC 23's plan's epic 1 until epic 6 the launchers start no server
+(RFC 23's plan's D6). This is the user's decision; RFC 23's plan's D6 points here.
 - **Prior art (from memory).** etcd and PostgreSQL keep a host file of the same scope.
 - **Applied by** epic 2.
 
@@ -472,13 +487,16 @@ closed. The MVP (#4053) has no remote store, so it loses nothing. Each code site
 `decision:` note naming the rule and its overturn: both pieces built.
 
 The refusal sits at both places a change can enter:
-- **The endpoint, bucket and prefix, at `Check`.** A store location's first value, written when the
-  store is created, is no change and passes; a later put, or a delete that changes the effective
-  value, is refused.
+- **The endpoint, bucket, prefix and credential reference, at `Check`.** RFC 13 §4.2 lists the
+  credential reference with the location, and §5.2 proves a new credential the same way, so
+  repointing the reference at a freshly sealed `remote credential` is a change like any other. A
+  store location's first value, written when the store is created, is no change and passes; a
+  later put, or a delete that changes the effective value, is refused.
 - **The credential, at `Seal`.** `Seal` reads the kind off the stored record, never the caller's: a
   record already there with the `remote credential` kind refuses a new version, and a reseal under
   another kind is refused as a kind change. `Delete` refuses a credential a store record still
-  names, so delete-then-seal cannot land a new value as version 1. A credential's first version,
+  names, checked in the delete's own `ControlPlaneTx` as a tracked read, so a concurrent store
+  create conflicts with it rather than reopening delete-then-seal. A credential's first version,
   sealed when the store is created, passes; an identity provider's bind credential, a
   `protocol`-role secret of another kind, is not refused.
 
@@ -487,9 +505,9 @@ wait with it, in O1.
 - **Prior art.** None found.
 - **Applied by** epics 3 (`Check`) and 4 (`Seal`, `Delete`).
 
-**D10. A reference resolves only to the secret its holder expects.** `Resolve` takes the kind and
-the role from its caller, refuses a record of another kind, and opens the value with the expected
-kind in the additional data, so the binding of D4 proves the caller's expectation rather than
+**D10. A reference resolves only to the secret its holder expects.** `Resolve` takes the kind, the
+role and the owner from its caller, refuses a record of another kind or owner, and opens the value
+with the expected kind and owner in the additional data, so the binding of D4 proves the caller's expectation rather than
 echoing the record's own. A section declares each `SecretRef` field with its kind; `Seal` records
 the secret's owner, the record or setting key whose field names it; and `Check` refuses a reference
 to a secret of another kind or another owner. Without both, an `operator` who may write
@@ -530,12 +548,16 @@ Each carries a `ponytail:` marker at the code site:
   the versions below the lowest one a node holds, so the owner's word is never trusted (RFC 13 §7's
   "only once every such node reports"). On one node that is this node's report, and
   `config_secrets_behind` counts this node's. Each kind that rotates, and who prunes it:
-  - a user's password hash: RFC 23's plan's epic 5 (a password change, `:set-password`), at once,
-    since nothing reads an old hash;
+  - a user's password hash: RFC 23's plan's epic 5 (a password change, `:set-password`), with no
+    retention, since nothing reads an old hash;
   - the API's signing key: RFC 23's plan's epic 5, once an access token's lifetime has passed since
     the switch (RFC 23 §5.3);
-  - NT hashes, at once; a keytab and the machine password, after RFC 18 §3.3's retention: the RFC
-    18 plan (#4058), which rotates them.
+  - NT hashes, with no retention; a keytab and the machine password, after RFC 18 §3.3's retention:
+    the RFC 18 plan (#4058), which rotates them.
+
+  A kind with no retention is pruned by reconcile, not by its owner: a call at the rotation would
+  find the node still reporting the old version and drop nothing, with no one calling again. So each
+  reconcile that reports a new version of such a reference calls `Prune` on it (epic 5).
 
   The owner also makes RFC 13 §7's report that the old credential may be revoked at its service,
   with its prune; none of the kinds above but the keytab and the machine password has such a
@@ -545,8 +567,9 @@ Each carries a `ponytail:` marker at the code site:
   - *Epic:* 4.
 - **`Resolve` caches nothing.** Each call reads the record and unwraps its data key, so with KMIP
   each authentication that resolves a secret costs a network unwrap.
-  - *Ceiling:* KMIP's unwrap latency on a per-authentication path; the trigger is a sign-in
-    benchmark whose unwrap share passes a tenth of its time.
+  - *Ceiling:* KMIP's unwrap latency on a per-authentication path; the trigger is RFC 23's plan's
+    epic 5 sign-in benchmark, whose password check resolves a `Secret`, run against KMIP, with the
+    unwrap's share past a tenth of its time.
   - *Upgrade path:* a cache of unwrapped data keys by reference and version, dropped when the
     generation moves.
   - *Epic:* 4.
@@ -575,11 +598,20 @@ func start(ctx context.Context, configFlag string) error {
 	if err != nil {
 		return err
 	}
-	id, err := bootstrap.NodeID(b) // every copy, parsed, agrees with the others and with b's key, if any (A2)
+	id, err := bootstrap.NodeID(b) // reads and compares only: every copy, parsed, agrees with the others and with b's key, if any (A2)
 	if err != nil {
 		return err // no copy and no key, or a copy that differs, refuses; nothing rewrites a copy
 	}
-	n, err := node.New(ctx, b, id) // RFC 23's plan; refuses outside the active versions (epic 2, §4.3)
+	kv, err := kv.Open(b.Store)
+	if err != nil {
+		return err
+	}
+	// The one write a start makes: a copy only where it is missing, beside a journal the store
+	// records at JD‖node‖device (epic 2). Built here, called by RFC 23's plan's start step 1 (X1).
+	if err := bootstrap.WriteMissingNodeIDs(ctx, b, id, metadata.Open(kv).JournalID); err != nil {
+		return err
+	}
+	n, err := node.New(ctx, b, id, kv) // RFC 23's plan; refuses outside the active versions (epic 2, §4.3)
 	if err != nil {
 		return err
 	}
@@ -669,7 +701,7 @@ func (t Table) Check(tx metadata.ControlPlaneTx, caller auth.Role, w Write, hold
 	if err != nil {
 		return err
 	}
-	if rank(caller) < rank(sec.writeRole) { // roles are strings: compare an explicit rank, never the names
+	if rank(caller) < rank(sec.writeRole) { // an explicit rank, never the names; an empty or unknown role ranks lowest, and Of panics on an unknown WriteRole
 		return ErrForbidden // admin-only sections (RFC 13 Appendix B)
 	}
 	s, err := sec.effectiveAfter(tx, w) // a put's row, or what a delete leaves
@@ -684,7 +716,7 @@ func (t Table) Check(tx metadata.ControlPlaneTx, caller auth.Role, w Write, hold
 	if err := sec.checkSecretRefs(tx, s); err != nil {
 		return err // D10: a reference to a secret of another kind or owner
 	}
-	if storeLocation(s.Key) && sec.isChange(tx, w) { // a first value, when the store is created, is no change
+	if storeLocation(s.Key) && sec.isChange(tx, w) { // endpoint, bucket, prefix and credential reference; a first value is no change
 		// decision: D9. Refused until the capability check finds the claim
 		// (RFC 13 §5.2); withdraw when both are built.
 		return ErrUnproven
@@ -703,6 +735,10 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 	}
 	for section, err := range bad { // decoded per section: an undecodable or newer-schema row stops only its own
 		n.refused(section, err)
+		if !n.started(section) { // the first reconcile has no snapshot to keep: never start on defaults
+			n.hold(section) // its component does not start, so an auth or share policy cannot open on a default
+			continue
+		}
 		cur = cur.Keep(section, n.settings)
 	}
 	for _, ch := range settings.Diff(n.settings, cur) {
@@ -763,7 +799,7 @@ func (p *Provider) Seal(ctx context.Context, role Role, kind entity.SecretKind, 
 	}
 	next := cur.Version + 1
 	dk := freshKey()                                     // one data key per version (D4)
-	sealed := gcmSeal(dk, value, aad(role, kind, ref, next)) // AAD: each field length-prefixed; moved, it fails to open
+	sealed := gcmSeal(dk, value, aad(role, kind, owner, ref, next)) // AAD: each field length-prefixed; moved, it fails to open
 	wrapped, keyID, err := p.keys[role].Wrap(ctx, dk)
 	if err != nil {
 		return ref, err
@@ -772,13 +808,13 @@ func (p *Provider) Seal(ctx context.Context, role Role, kind entity.SecretKind, 
 	return ref, p.cp.PutSecret(ctx, s, cur.Version) // raises CFGGEN, so every node resolves it again
 }
 
-// Resolve takes the kind and role its caller expects (D10); the record never supplies them.
-func (p *Provider) Resolve(ctx context.Context, role Role, kind entity.SecretKind, ref entity.SecretRef) ([]byte, error) {
+// Resolve takes the kind, role and owner its caller expects (D10); the record never supplies them.
+func (p *Provider) Resolve(ctx context.Context, role Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]byte, error) {
 	s, err := p.cp.Secret(ctx, ref, 0) // ponytail: no cache, one unwrap per call (§4.3)
 	if err != nil {
 		return nil, err
 	}
-	if s.Kind != kind {
+	if s.Kind != kind || s.Owner != owner {
 		return nil, ErrWrongKind
 	}
 	wrapped, sealed := open(s.Value)
@@ -786,14 +822,17 @@ func (p *Provider) Resolve(ctx context.Context, role Role, kind entity.SecretKin
 	if err != nil {
 		return nil, err
 	}
-	return gcmOpen(dk, sealed, aad(role, kind, ref, s.Version)) // the caller's kind, so a mismatch also fails to open
+	return gcmOpen(dk, sealed, aad(role, kind, owner, ref, s.Version)) // the caller's kind and owner, so a mismatch also fails to open
 }
 
 // Prune is called by the rotation's owner once its retention ends. It trusts no caller's
 // count: it reads every registered node's NodeStatus.Secrets and drops only the versions
 // below the lowest one any node holds (RFC 13 §7; on one node, this node's, §4.3).
 func (p *Provider) Prune(ctx context.Context, ref entity.SecretRef) error {
-	held, err := p.lowestHeld(ctx, ref) // never above the current version; a node reporting none of ref holds none back
+	// Never above the current version. A node whose NodeStatus.Settings is below the CFGGEN read
+	// here has not reconciled the latest secret write and holds every version back; one past it that
+	// reports none of ref does not use it.
+	held, err := p.lowestHeld(ctx, ref)
 	if err != nil {
 		return err
 	}
@@ -850,9 +889,7 @@ value; D7's drift test passes.
   allowed ones, with a test that each allowed name and prefix passes and a v1 name refuses, naming
   it without its value, since a v1 secret variable such as `DITTOFS_CONTROLPLANE_SECRET` holds one
   (D7).
-- D7's drift test over the repository's `DITTOFS_*` names, and the launchers off the names it
-  refuses: `docker-compose.yml`, `docker/` and `dfsbench` drop `DITTOFS_CONTROLPLANE_SECRET` and
-  `DITTOFS_ADMIN_INITIAL_PASSWORD`, `test/posix/setup-posix.sh` its v1 exports.
+- D7's drift test, scanning by content, and every launcher off the names it refuses (D7).
 - `dfs config show`, `validate` and `schema` on the bootstrap, refusing what `Load` refuses where
   they warned before; `docs/guide/configuration.md` rewritten for the bootstrap, and
   `docs/guide/cli.md` regenerated.
@@ -862,9 +899,14 @@ value; D7's drift test passes.
   #4050 amends them (its A2): `InitNodeID` writes a copy for `dfs init` and a recovery import,
   keeping one already there that agrees, so an interrupted init reruns; `NodeID` reads every copy
   at start and refuses on what the row names, a copy differing from the host file's key among them,
-  and ignores a leftover `node-id.tmp`. A start writes a missing copy, logged, only beside a journal
-  the store records for this node and device; a directory whose journal is not recorded gets its
-  copy only from `dfs init` or a recovery import.
+  and ignores a leftover `node-id.tmp`; it only reads and compares, before the store is open.
+  `WriteMissingNodeIDs`, which RFC 23's plan's start step 1 calls once the store is open, writes a
+  missing copy, logged, through `InitNodeID`'s temporary file, sync and rename, only into a
+  directory whose `format` names the journal RFC 16's `JournalID` records for this node and device;
+  a directory whose journal is not recorded gets its copy only from `dfs init` or a recovery import.
+  Its tests are the node-identity clauses of RFC 13 §9's "§2.2 explicit initialisation": two copies
+  that differ, no copy and no key, a torn and a flipped copy, the golden vector, and a replaced
+  device left empty.
 - The version gate (§4.3 above), over the installation's active versions, the store format's
   active version in `\x00format` (RFC 13 §5.5) and each namespace's block format version, with
   `format_active_version` and `format_supported_range`.
@@ -882,7 +924,8 @@ refusal to advance, on one node.
 **Done when:** RFC 13 §9's rows "§6 unknown field" and "§2.3 schema" pass; "§6 refused" and "§6 one
 validator" pass at the library's layer, on a section declared in the test. So do one test per gate
 of `Check`, each on a section or key declared in the test: the §5.1 bound refusal, for a put and
-for a delete; D9's refusal of a store location's change, and an initial put that passes; D10's
+for a delete; D9's refusal of a store location's change, its credential reference repointed at a
+freshly sealed `remote credential` among them, and an initial put that passes; D10's
 refusal of a reference swapped to a secret of another kind or owner; the §5.4 format-version
 refusal; a required key left unset; and each role's write to an admin-only section and to a default
 one, only an `admin`'s passing the first and an `operator`'s passing the second.
@@ -935,8 +978,8 @@ keeping a version the node's status still holds.
 - `keyprovider` moved to `pkg/keyprovider`, with its importers (D5).
 - The `Secret` record, its codec and its fuzz target.
 - `Seal` given the secret's kind, role and owner, which it records on the `Secret` and binds into
-  the additional data, each field length-prefixed; a kind or owner change refused; D9's refusal on
-  the stored kind.
+  the additional data, each field length-prefixed, as `Resolve` checks them; a kind or owner change
+  refused; D9's refusal on the stored kind.
 - Envelope sealing (D4) and `Resolve` under each role's key, given the kind its caller expects
   (D10).
 - The secrets view: every `Secret` write and delete raises `CFGGEN` in its transaction (RFC 13 §5).
@@ -972,11 +1015,17 @@ reported refused and the second applied; a next-write change is read by the comp
   only itself, keeps the snapshot
   it last ran, and is reported refused (RFC 13 §6, RFC 23 §2.4); a section with live keys and no
   apply fails rather than reading applied; and a moved or deleted secret is resolved again, the
-  versions held written to `NodeStatus.Secrets`, which `Prune`'s callers wait on. What reconcile
+  versions held written to `NodeStatus.Secrets`, which `Prune`'s callers wait on, and `Prune` called
+  for a reported new version of a kind with no retention (§4.3); a section refused at the first
+  reconcile, with no snapshot to keep, holds its component unstarted rather than starting it on
+  its defaults, tested by a start with one undecodable row: that component is not serving and is
+  reported refused. What reconcile
   does with an adapter's change, `Reconfigure` or the rebuild a changed `port` takes, is RFC 20's
   plan's epic 7 (#4050's D12, O7).
 - RFC 23's write path on `Check`, a setting's put and delete with the caller's role, in the slot
-  RFC 23's plan's epic 4 leaves, and its secret writes on `pkg/secrets`.
+  RFC 23's plan's epic 4 leaves, and its secret writes on `pkg/secrets`, the route deriving `Seal`'s
+  owner from the record it writes and checking that section's write role, as RFC 23 §5.2's "written
+  as its owner is" requires.
 - RFC 23's own section (its plan's epic 3) named in the table.
 - D3's Appendix B test.
 
@@ -990,8 +1039,8 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
 
 **Done when:** these RFC 13 §9 rows pass in `unit`:
 - "§5.1 bound", for the bound settings the node's table declares, but the chain's encryption (RFC
-  5, O1) and a remote store's bucket and prefix (D9), each refused both as a put and as a delete of
-  an override;
+  5, O1) and a remote store's bucket, prefix and credential reference (D9), each refused both as a
+  put and as a delete of an override;
 - "§5.1 share binding", whose refusal RFC 23's plan's share routes build (its epic 4), since a
   share's namespace is a field of the share record, not a setting;
 - "§6 refused" and "§6 one validator", for every declared setting;
@@ -1008,7 +1057,9 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
 - "No secret out" over a full test run's answers, exports and logs.
 - "§2.2 explicit initialisation", its pieces owned where they are built: initialise-if-empty
   above; the journal `format` file's installation ID by RFC 1's journal `Init`, which RFC 23's plan's
-  `dfs init` calls; a lost store or journal reported by RFC 23's plan's start step 1.
+  `dfs init` calls; a lost store or journal reported by RFC 23's plan's start step 1; the
+  node-identity clauses by epic 2's `NodeID`, `InitNodeID` and `WriteMissingNodeIDs`, run here end
+  to end. Its last clause, a new identity recorded by a recovery import, waits for RFC 26 (O1).
 - Propagation and the single-node upgrade rows, with RFC 23's plan's `dfs init`.
 - The launchers on `dfs init`: `docker-compose.yml`, `docker/bootstrap.sh` and `dfsbench`'s backend
   initialise the installation, with its first password, through `dfs init` before `dfs start` (D7).
@@ -1025,6 +1076,7 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
   - A store endpoint or credential change and "§5.2 same content" wait for RFC 4 §4.11's capability
     check and RFC 27's claim (D9), with RFC 23's plan's credential rotation and proven endpoint.
   - The call that raises an active version waits for a format's second version (§4.3).
+  - "§2.2 explicit initialisation"'s recovery-import clause waits for RFC 26's recovery import.
   - "§7 rotation"'s wrapping-key half waits for the reseal pass (§4.3).
   - The namespace key table, "§5.1 encryption bound", "§7 namespace keys", "§7 chunk-ID key" and "§7
     key table" wait for RFC 5's plan.
@@ -1056,6 +1108,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | The backup location's record (RFC 13 §2.5); "§5.2 backup location credential" (header, O1, §1.4) | it needs backups | RFC 26 | RFC 26's plan | — |
 | The scratch paths of RFC 13 §2.2; "§2.2 scratch paths" (header, O1, §1.4) | no v1 component reads them | RFC 26, RFC 1 and RFC 25 plans | the first reader: backups' spill, salvage export or the event spool | — |
 | A remote store's endpoint or credential change, refused; "§5.2 same content" (D9, O1, §1.4) | needs the capability check (RFC 4 §4.11) and the claim (RFC 27 §2.1) | RFC 4 and RFC 27; RFC 23 plan (#4050) for its credential rotation and proven endpoint | both pieces built | — |
+| "§2.2 explicit initialisation"'s clause recording a new identity by a recovery import (O1, §1.4) | needs RFC 26's recovery import | RFC 26 plan | RFC 26's plan builds the import | — |
 | The call that raises an active version, `raise-format` (RFC 13 §5.5) (header, §4.3's `ponytail:`, O1) | each format has one version | unowned | a format gains a second version | — |
 | "§7 rotation"'s wrapping-key half and its reseal pass (§4.3's `ponytail:`, O1, §1.4) | a retired role key keeps every secret open | unowned | an operator must remove a role key | — |
 | The namespace key table; "§5.1 encryption bound", "§7 namespace keys", "§7 chunk-ID key", "§7 key table" (header, O1, §1.4) | RFC 13 §7's material bullets are RFC 5's | RFC 5 plan | RFC 5's plan | — |
