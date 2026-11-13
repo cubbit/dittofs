@@ -2031,7 +2031,9 @@ func Bind[Req, Rep any](
 ) func([]byte, Version) (Invocation, int, error)
 
 // NewOpTable builds a table and checks it: codes unique, ranges well formed,
-// and no ErrorRow.Hold unless holds.
+// no ErrorRow.Hold unless holds, and, where it holds, a row mapping
+// ErrCancelled for every operation and version (one naming neither Ops nor
+// Versions), since a cancel ends a hold or a park of any operation (§6.5).
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
 
 // Version is a protocol's version, minor version or dialect; Range a closed
@@ -2060,7 +2062,10 @@ type Status uint32
 // value before one whose Err is a sentinel; then, among those, a row naming
 // Ops and Versions, Ops alone, Versions alone, neither. NewErrorTable refuses
 // two rows equal in that order that can match the same error, operation and
-// version.
+// version, and a table with no row mapping ErrDecode for every operation and
+// version (one naming neither Ops nor Versions): a header's decode error has
+// no operation, and a client's garbage must not reach the fault status
+// (§10.1).
 type ErrorTable struct{ /* unexported */ }
 type ErrorRow struct {
 	Err      error    // matched with errors.Is: a sentinel matches its whole class, a typed value its own kind only (RFC 17 §4.3)
@@ -2379,6 +2384,8 @@ var (
 	ErrExpired        = errors.New("core: credential expired")            // §4.4
 	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")     // Stages.MaxPending
+	ErrDecode         = errors.New("core: cannot decode")                 // a header, an operation's or a member's arguments, a step of the record's walk (§4.1)
+	ErrCancelled      = errors.New("core: cancelled by its client")       // a held or parked request its client cancelled (§6.5); wraps nothing
 	// ErrMoved and ErrDraining are what a request §3.1 does not serve gets
 	// while the adapter drains: ErrMoved where the service names a gateway
 	// node for the request's share (the move signal), ErrDraining where it
