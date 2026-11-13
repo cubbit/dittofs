@@ -245,19 +245,6 @@ func TestRFC1D_StatsTakeNoWriteLock(t *testing.T) {
 // index, not a walk that allocates nothing, which only a counted hook in the
 // journal would show. It skips under the race detector, which changes
 // allocation counts, so it runs only in a leg without it.
-//
-// decision: the large leg builds 2*10^4 extents, not 10^5, because the
-// fixture's watch fails a test whose live heap grows past its slack, and each
-// extent the journal legitimately holds while the test runs costs a footprint
-// of its own: the index holds within its per-entry bound, and the durability
-// sink keeps a write-time copy of each record until a covering sync releases
-// it, which the public Sync cannot reach yet, so no test can drain the sink
-// mid-run. An allocation-count comparison needs far less range than that
-// footprint suggests: the counts are integers, so a Stats that allocates
-// once per thousand extents measures about nineteen higher at this range's
-// far end, far past the compare's granularity. Re-raise the range when the
-// public Sync drains the sink, or if a Stats flatter than that ever needs a
-// wider range to show a slope.
 func TestRFC1D_StatsCostIsFlat(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector changes allocation counts")
@@ -290,10 +277,10 @@ func TestRFC1D_StatsCostIsFlat(t *testing.T) {
 		}
 		return least
 	}
-	small, large := allocsAt(1_000), allocsAt(20_000)
-	t.Logf("Stats allocates %.0f times at 2*10^4 extents and %.0f at 10^3", large, small)
+	small, large := allocsAt(1_000), allocsAt(100_000)
+	t.Logf("Stats allocates %.0f times at 10^5 extents and %.0f at 10^3", large, small)
 	if large > small {
-		t.Fatalf("Stats allocates %.0f times at 2*10^4 extents and %.0f at 10^3: its cost grows with the index", large, small)
+		t.Fatalf("Stats allocates %.0f times at 10^5 extents and %.0f at 10^3: its cost grows with the index", large, small)
 	}
 }
 

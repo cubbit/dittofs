@@ -107,8 +107,8 @@ suites:
       # The journal's allocation checks, which the race detector makes unmeasurable and the race
       # leg of journal-conformance skips as known: the counted calls of RFC 1 §9.7, running
       # without -race, where allocation counting works, with the flat-Stats check, whose rig
-      # builds 2*10^4 extents: wide enough for an allocation count to show a slope, and within
-      # the profiler's heap slack, which the 10^5 extents it once built grew past.
+      # builds 10^5 extents under the profiler's heap check, which it passed once the fixture
+      # stopped keeping the closed journal's core reachable at that check.
       journal-conformance-norace:
         cmd: go test -timeout=5m -tags=journal_conformance -run=^(TestCounted_AllocationsPerCall|TestRFC1D_StatsCostIsFlat) ./pkg/block/journal/conformance/
         tier: pr
