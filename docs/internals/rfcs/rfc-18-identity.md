@@ -501,7 +501,7 @@ type State struct {
 	Generation uint64          // the principals generation (§7.2)
 	Settings   config.Identity // the identity.* settings and the directory record
 	Keytab     []SecretVersion // the keytab's versions in force (§3.3)
-	Machine    []SecretVersion // the machine password's versions in force, current first, each with its key version number; empty when not joined (§3.3, §3.5)
+	Machine    []metadata.Secret // the machine password's versions in force, current first, each with its KeyVersion and HandedOver mark (RFC 16 §2.3); empty when not joined (§3.3, §3.5)
 	NTLM       Revision        // the identity.ntlm setting's revision (§3.5)
 }
 ```
@@ -526,7 +526,7 @@ so an operator's own next call sees it.
 | --- | --- |
 | a principal, membership or protocol-ID row | a new generation; cached callers built under an older one are not served (§7.2) |
 | a keytab `Secret` version | the new key is added, and an older one is kept for one maximum ticket lifetime (§3.3); no restart |
-| a machine password `Secret` version | its derived keys are added and the secure channel signs in with it once the domain controller takes it; the previous version is kept as a keytab's is (§3.3, §3.5); no restart |
+| a machine password `Secret` version | its derived keys are added, unless it is marked `HandedOver`, which derives none, and the secure channel signs in with it once the domain controller takes it; the previous version is kept as a keytab's is (§3.3, §3.5); no restart |
 | the directory record | a new client and an empty directory cache; lookups in flight finish on the old client |
 | `identity.ntlm` turned off | as §3.5 says |
 | `identity.id_range` | applies to the next allocation; no existing ID moves |
@@ -744,8 +744,9 @@ and inside SMB's SPNEGO ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
 > nodes, when a replay across a restart or a fail-over is shown to reach
 > anything.
 
-> ponytail: the clock skew and the old key's retention are constants. Make
-> either a setting when a deployment's KDC is shown to need another value.
+> ponytail: the clock skew, the old key's retention and the hour a pinned
+> domain controller may go unanswered (§3.5) are constants. Make one a setting
+> when a deployment's KDC or domain is shown to need another value.
 
 > decision: an unknown user principal is refused, not made anonymous. A
 > Kerberos user the installation has no record of is either a directory
@@ -769,7 +770,9 @@ field. The account's service names are read from its `servicePrincipalName`
 at each join and rotation, and a ticket's service name is compared with them
 case-insensitively, as Active Directory compares them. A derived key follows its password's version: it is
 applied with it, and kept after it stops being current for the retention
-above. A ticket for one of these names whose key version number no held key
+above. The one exception is a version marked `HandedOver` (RFC 16 §2.3), an
+offline join's (§3.5): no key is derived from it, whichever node applies it and
+after any restart, since the mark is stored with the version. A ticket for one of these names whose key version number no held key
 carries is tried against each held derived key of its encryption type, the
 current one first, so a ticket issued before the rotation has confirmed its
 number, or by a domain controller whose number lags, still verifies. Every other service name a node answers on — `nfs/<host>`, another host
@@ -831,8 +834,14 @@ controller.
 > keytab's seal protects. The password an administrator hands an offline join is
 > known to whoever created the account, so no key is ever derived from it (§3.5):
 > no ticket under a key its creator knows verifies, during the retention or
-> before it. Overturned if the keytab is ever readable without its wrapping key,
-> or a deployment requires KDC-signature checks.
+> before it. Its ceiling is the offline join itself: the closing rotation sets
+> the new password over a secure channel authenticated by the handed-over one,
+> so a creator on the network path during the join can answer that channel as
+> a domain controller and learn the new password. The creator **MUST NOT** be on
+> the path while the join runs. Overturned if the keytab is ever readable
+> without its wrapping key, or a deployment requires KDC-signature checks; the
+> join's ceiling is lifted by setting the closing rotation's password over the
+> directory's verified TLS when a deployment cannot keep the creator off the path.
 
 ### 3.5 NTLMv2
 
@@ -840,14 +849,18 @@ NTLMv2 is accepted inside SPNEGO when `identity.ntlm` is on (the default).
 NTLMv1 and LM are refused ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
 `SignIn` decides one message from one of two sources:
 
-| The message's domain, compared under §4.6's simple case folding | Source | How |
+| The message's domain, compared with ASCII letters folded, since realms and NetBIOS names are ASCII (a simple case fold would match the Kelvin sign U+212A to `k`) | Source | How |
 | --- | --- | --- |
 | empty with a user name that holds no `@`, or the installation's own NetBIOS name, which the CHALLENGE advertises when no pass-through is configured | **local** | the user is found by name; its NT hash, a `Secret` of kind nt-hash, verifies the NTLMv2 response computed with the user and domain as the message names them (MS-NLMP 3.3.2). A directory principal is refused: it has no local NT hash |
-| the directory's NetBIOS domain or its realm, or empty with a user name ending `@` and the directory's realm (a UPN sign-in), with pass-through configured | **pass-through** | the response is sent once to a domain controller over the secure channel of the installation's machine account (MS-NRPC `NetrLogonSamLogonEx`), sealed and signed with AES; the reply carries the user's SID and group SIDs with their attributes, used as a PAC's are (§3.4), and the evidence maps by that user SID. The reply's `UserSessionKey` (MS-NRPC 2.2.1.4.11) is the session base key the domain controller computed (MS-APDS 3.1.5.2.1), and keys the MIC check and the key exchange below as a local NT hash's does; a reply whose key is missing, short or all zero fails `ErrLogonFailure`. The reply's `LogonDomainID` **MUST** be the directory's domain SID |
+| the directory's NetBIOS domain or its realm, or empty with a user name ending `@` and the directory's realm (a UPN sign-in), with pass-through configured | **pass-through** | the response is sent once to a domain controller over the secure channel of the installation's machine account (MS-NRPC `NetrLogonSamLogonEx`), sealed and signed with AES; the reply carries the user's SID and group SIDs with their attributes, used as a PAC's are (§3.4), and the evidence maps by that user SID. The reply's `UserSessionKey` (MS-NRPC 2.2.1.4.11) is the session base key the domain controller computed (MS-APDS 3.1.5.2.1), used as a local sign-in's computed one is (below); a reply whose key is missing, short or all zero fails `ErrLogonFailure`. The reply's `LogonDomainID` **MUST** be the directory's domain SID (§5.1); with none read, pass-through fails `ErrUnavailable` |
 | anything else | — | `ErrLogonFailure`, counted with outcome `unknown_domain` so it is told apart from a wrong password |
 
 A local user or group name never holds `@` (§4.6), so a name with one is never
-local.
+local. `identity.netbios_name` **MUST NOT** equal the directory record's NetBIOS
+domain, or a domain would route to both sources: a settings change naming the
+record's domain, and a directory record naming the installation's own name as
+its domain, later records included, are each refused at validation, naming the
+other ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)).
 
 > decision: a UPN under one of the forest's alternate suffixes (`uPNSuffixes`),
 > or a domain written with a trailing dot, is `unknown_domain`: only the
@@ -859,8 +872,11 @@ local.
 - **The MIC.** When the AUTHENTICATE's `MsvAvFlags` marks a MIC present, the MIC
   **MUST** verify over the exact NEGOTIATE, CHALLENGE and AUTHENTICATE bytes on
   the wire (MS-NLMP 3.2.5.1.2), and a flagged MIC that is missing or zero fails,
-  local or pass-through: the session base key is the NT hash's locally and the
-  reply's `UserSessionKey` through pass-through.
+  local or pass-through. The MIC is keyed by the exported session key: the
+  session base key, or, when `NTLMSSP_NEGOTIATE_KEY_EXCH` is set, the RC4 unwrap
+  of `EncryptedRandomSessionKey` under it (MS-NLMP 3.1.5.1.2). The session base
+  key is computed locally as `HMAC_MD5(NTOWFv2, NTProofStr)` (MS-NLMP 3.3.2),
+  and through pass-through is the reply's `UserSessionKey`.
   Either failure is `ErrLogonFailure`. A message that asks for signing without
   key exchange is refused the same way.
 - **Equal work.** The NTLMv2 proof is compared in constant time, and an unknown
@@ -883,7 +899,9 @@ commit (§7.2) — and deletes every stored NT hash, as an operation in bounded
 batches ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)).
 A password set derives its NT hash under the `identity.ntlm` revision it read,
 and the API's write of it is conditional on that revision still being current,
-so no NT hash is written after the deletion has passed its user. Turning NTLM on
+so no NT hash is written after the deletion has passed its user. A write that
+condition refuses deletes the NT hash version it sealed, which the deletion's
+scan may already have passed. Turning NTLM on
 again stores a hash only at a user's next password set.
 
 > decision: turning NTLM off refuses established NTLM sessions as well, rather
@@ -907,9 +925,15 @@ so a controller that has not replicated the account never reads as "no such
 account". A resumed join creates nothing if that controller already accepts the
 sealed password, so a crash between the two leaves no password only the
 controller knows. The probe has three answers: it accepts, it rejects, or it
-could not be asked, which retries and never reads as a rejection. The
-administrator credential an online join takes is used for that one operation,
-never stored, logged or put in the operation's record. An online join **MUST**
+could not be asked, which retries and never reads as a rejection. A join whose
+pinned controller could not be asked for an hour fails, naming the controller;
+a join run again then pins another, and takes over an account the failed one
+created. The administrator credential an online join takes is used for that
+one operation, held only in the memory of the node that took it, and never
+stored, logged or put in the operation's record. A join resumed without it,
+after a restart or on another node, continues only if the account already
+accepts the sealed password; one that must still create the account fails,
+naming the missing credential, and is run again with a takeover. An online join **MUST**
 refuse a computer account that already exists, naming it, unless the request
 explicitly takes it over: `identity.netbios_name` defaults to `DITTOFS`, so a
 second installation joining the same domain would otherwise reset the first's
@@ -919,14 +943,19 @@ with its password. It verifies the password against a domain controller,
 refuses an account whose `msDS-SupportedEncryptionTypes` lacks either AES bit,
 naming the attribute and the value `0x18` to set, since an account created in
 Active Directory Users and Computers has none, and reports which service names the account holds, so an operator knows which
-names still need an imported key (§3.3), before storing the password; it then
-rotates the password (below), because whoever created the account knows it and
-could derive the computer account's service key and forge a PAC with it. The
-handed-over version derives no Kerberos key, so the computer account's names
-accept no ticket until that rotation completes; only the secure channel may
-still sign in with it, as with any previous version. No ticket issued under it
-is ever accepted, which costs only the tickets a client fetched in the minutes
-the join takes. Either
+names still need an imported key (§3.3), before storing the password as a
+version marked `HandedOver` (RFC 16 §2.3); it then rotates the password
+(below), because whoever created the account knows it and could derive the
+computer account's service key and forge a PAC with it. That rotation is the
+join's own last steps, not a second operation: the join is done only once the
+rotation has confirmed the new password, so a crash between storing and
+rotating resumes the rotation. A version marked `HandedOver` derives no
+Kerberos key, so the computer account's names accept no ticket until the
+rotation completes, and no ticket issued under it is ever accepted, which
+costs only the tickets a client fetched in the minutes the join takes. The
+secure channel signs in with it only to set the closing rotation's password:
+pass-through is refused until that rotation is confirmed, and the previous-version
+fallback below never uses it (§3.4's decision names the join's ceiling). Either
 join writes the account's name, without its `$` and in upper case, as
 `identity.netbios_name`, which a joined
 installation refuses to change; a local principal's `qualified` spelling
@@ -950,7 +979,8 @@ change answers the old number, and the rotation reads only the one it wrote
 to. Until the domain controller takes the
 new password, the secure channel signs in with the previous one, and it falls
 back to the previous one on any controller that refuses the new one until the
-retention passes, since another controller may not have replicated the change.
+retention passes, since another controller may not have replicated the change;
+a previous version marked `HandedOver` is never used this way.
 Each step is
 recorded as RFC 23 §4.6 requires, and a resumed rotation sets the password
 only if the domain controller does not already accept the sealed version, so a
@@ -959,7 +989,11 @@ knows. A rotation **MUST NOT** start until every node reports the previous one
 applied, because a domain controller accepts only the current and the previous
 password, and a second rotation would leave a lagging node with neither. A
 rotation that cannot start by its schedule is reported failed, so a lagging
-node raises `machine_account_unhealthy` before the password ages out.
+node raises `machine_account_unhealthy` before the password ages out. A
+rotation whose pinned controller could not be asked for an hour, to set or to
+confirm, is reported failed the same way, naming the controller; the version
+it sealed stays in force beside the previous one until a later rotation
+completes, since the controller may have taken it before it went away.
 
 > ponytail: pass-through reaches only the one directory's domain; §5.1's
 > ponytail says when to follow trusts.
@@ -1164,7 +1198,7 @@ with a PAC is then checked against the record §3.4 says.
 - **A SID with no principal behind it** — a user of a domain the installation
   does not know — is `ErrUnknownPrincipal` from `Find`; what a set naming one
   does is [RFC 19 §2.8](rfc-19-authorization.md#2.8%20What%20a%20stored%20ACL%20may%20hold)'s.
-  A SID of the directory's domain is asked of the directory first, and minted
+  A SID of the directory's domain (§5.1) is asked of the directory first, and minted
   only when `FindOpts.Mint` is set; otherwise `Find` answers
   `ErrUnknownPrincipal` and writes nothing.
 - **A principal shown over SMB with no SID** — only a deleted one — is shown as
@@ -1231,10 +1265,21 @@ for an RFC 2307 directory), and optionally a domain controller address and a
 DNS server, used instead of the domain's DNS service records (§3.5). There is
 at most one.
 
+**The directory's domain SID** is the `objectSid` of its domain object, the
+entry the root DSE's `defaultNamingContext` names, read by each new client
+before its first answer, so a record change reads it again. Pass-through's
+`LogonDomainID` check (§3.5) and §4.4's routing of a SID compare with it. A
+client that cannot read it answers `ErrUnavailable`; an RFC 2307 directory,
+whose domain object holds none, has no domain SID, routes no SID (§4.4), and
+refuses every pass-through reply.
+
 A directory answers three questions, each by a bounded number of queries under a
-5-second timeout. One resolution's queries together stop at 30 seconds, past
+5-second timeout. One resolution's queries together stop at 20 seconds, past
 which it fails `ErrUnavailable`, so a slow directory holds a sign-in no longer
-than that:
+than that. The bound sits below the 30-second request deadline and the
+handshake timeout ([RFC 20 §6.4](rfc-20-adapters.md#6.4%20Deadlines%20and%20limits)), which bound the whole sign-in, a pass-through call
+and the mints included, so a slow directory fails with this `ErrUnavailable`,
+never with the deadline:
 
 | Question | Asked when |
 | --- | --- |
@@ -2030,7 +2075,7 @@ RFC 16's conformance suite's, not repeated here.
 | pass-through | 1 | A directory user with no `krb` row signs in by NTLM pass-through: the caller is the principal holding its verified user SID; a wrong password raises the domain controller's bad-password count by one. | no mapping path; amplified lockouts |
 | no file spelling | 2 | On a share whose only grant is authenticated users read, a machine principal reads a file: refused, not `authenticated`. A second machine's state operation on the first's `SP4_MACH_CRED` client record: refused. A grant naming a machine or an API-only account: refused. | a machine treated as an authenticated file caller |
 | `none` is stored | 2 | Grant `Finance` read-write and alice `none`: alice refused. Remove alice's grant: alice granted through `Finance`. | `none` stored as no grant |
-| directory deadline | 1 | Resolve bob over NTLM; remove bob from a directory group. Keep the session open past the TTL: his next call drops the group, with no generation change. With every directory query answering after 5 seconds, a cold sign-in of a user in 300 groups fails `ErrUnavailable` at 30 seconds. | a cached caller outliving the directory answer |
+| directory deadline | 1 | Resolve bob over NTLM; remove bob from a directory group. Keep the session open past the TTL: his next call drops the group, with no generation change. On the injected clock, with every directory query answering after 4 seconds, a cold sign-in of a user in 300 groups fails `ErrUnavailable` at 20 seconds. | a cached caller outliving the directory answer |
 | SID-less directory | 1 | An RFC 2307 entry with no SID: the minted principal holds a local SID from the RID counter, unchanged when the directory later adds one. | a directory principal with no SID |
 | logon throttle | 1 | 10 wrong passwords for alice from one address, then the right one: refused, outcome `throttled`, and the domain controller's bad-password count is 10, not 11, a count the domain controller's suite holds to the real one, its reset on a success included. | a throttle that still checks the credential |
 | expiry | 2 | Over `sec=krb5`, keep a context open past its ticket's `Expires`: the next request is refused with the expired-credential answer. | a context served past its ticket |
@@ -2039,16 +2084,17 @@ RFC 16's conformance suite's, not repeated here.
 | replay | 1 | The same AP-REQ twice: the second refused, outcome `replay`. | no replay cache |
 | AES only | 1 | Tickets for a keytab name under RC4 and under DES, and an AES ticket whose session key is RC4: each `ErrLogonFailure`; a keytab import holding an RC4 key: refused whole; under AES128 and AES256: accepted. | an RC4 ticket forged from an NT hash |
 | derived keytab | 1 | Joined to the in-memory domain controller, rotate the machine password, then restart identity over the same store: tickets under the previous and the new key version number are both accepted until the retention passes, then the previous one is refused. Stop a rotation between sealing and setting, and resume it: the password is set once and the channel signs in. A ticket under the new number that arrives before the rotation confirms it, and one under the old number from a second controller that has not replicated the change: both accepted. Import a key for a `cifs/` name the computer account holds: refused. | a rotation breaking Kerberos; a password only the controller knows; a ticket refused while its number is unconfirmed |
-| online join | 1 | Stop an online join between sealing the password and creating the account, and resume it: the account is created once, with the sealed password, and the channel signs in. Join again under the same name: refused, naming the account, its password unchanged; with a takeover asked: joined, the password sealed before it is set. | a password only the controller knows; a second installation breaking the first |
-| offline join | 1 | Offline-join an account whose `msDS-SupportedEncryptionTypes` lacks AES, and one without the attribute: both refused. One that advertises it: joined, with the service names it holds reported, and the password the administrator handed over rotated: a ticket under a key derived from it is refused, before the rotation and after it. | a join whose tickets are all refused; a service key its creator still knows |
-| machine account health | 1 | Fail the secure channel to every domain controller: `machine_account_unhealthy` raised; restore one: cleared. Fail a rotation, then restore the channel: raised until a rotation completes. Hold a node from reporting the previous version past the rotation's schedule: raised. | a failed rotation hidden by a reconnect; a rotation stuck behind a lagging node |
+| online join | 1 | Stop an online join between sealing the password and creating the account, and resume it in the same process: the account is created once, with the sealed password, and the channel signs in. Stop it there again and restart identity before resuming: the join fails, naming the missing administrator credential, and run again with a takeover it joins. Stop it after creating the account, restart and resume: joined with no credential. Join again under the same name: refused, naming the account, its password unchanged; with a takeover asked: joined, the password sealed before it is set. Make the pinned domain controller unreachable for an hour on the injected clock: the join fails, naming it, and a join run again pins another. | a password only the controller knows; a second installation breaking the first; a join wedged on a controller that is gone |
+| offline join | 1 | Offline-join an account whose `msDS-SupportedEncryptionTypes` lacks AES, and one without the attribute: both refused. One that advertises it: joined, with the service names it holds reported, and the password the administrator handed over rotated: a ticket under a key derived from it is refused, before the rotation and after it. Stop the join after storing the handed-over password, restart identity over the same store and resume: the version is still marked `HandedOver` and derives no key, the join resumes its rotation, and it is done only once the rotation is confirmed. Before then, a pass-through sign-in is refused; after it, a controller that refuses the new password is not signed in to with the handed-over one. | a join whose tickets are all refused; a service key its creator still knows; a join left without Kerberos by a crash before its rotation; the handed-over password signing the secure channel |
+| machine account health | 1 | Fail the secure channel to every domain controller: `machine_account_unhealthy` raised; restore one: cleared. Fail a rotation, then restore the channel: raised until a rotation completes. Hold a node from reporting the previous version past the rotation's schedule: raised. Make a rotation's pinned controller unreachable for an hour on the injected clock after it set the password: the rotation fails, naming it, raised, and tickets under both the sealed and the previous version still verify. | a failed rotation hidden by a reconnect; a rotation stuck behind a lagging node or a controller that is gone |
 | rogue domain controller | 1 | A peer at the domain controller's address that does not hold the machine password answers the secure channel's set-up: its server credential fails to verify (MS-NRPC 3.1.4.1), the channel is refused, and no NTLM response is sent to it. | pass-through to whoever answers on the address |
 | NetBIOS name while joined | 1 | On a joined installation, a settings change to `identity.netbios_name`: refused at validation, the name unchanged. | a CHALLENGE naming an account the installation does not hold |
+| NetBIOS name and domain | 1 | A settings change giving `identity.netbios_name` the directory record's NetBIOS domain, and a directory record whose NetBIOS domain is `identity.netbios_name`, in another case: each refused at validation, naming the other. | one domain routing to both sources |
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
 | `ManageGIDs` | 2 | A user in 20 store groups calls over `AUTH_SYS`: a file whose ACL grants only the 20th group is granted. | groups capped at the credential's 16 |
 | NTLM off | 2 | Make a cache hit on a local NTLM session and on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: no NT hash written. | an NTLM context outliving the setting; a stray hash |
-| NTLM MIC | 1 | An AUTHENTICATE with a corrupted MIC, and one with the MIC zeroed while `MsvAvFlags` marks it present: both `ErrLogonFailure`, locally and through pass-through. A pass-through reply whose `UserSessionKey` is all zero, or whose `LogonDomainID` is another domain's: `ErrLogonFailure`. | the drop-the-MIC relay |
-| NTLM domain | 1 | A standalone installation's CHALLENGE advertises its own NetBIOS name; an AUTHENTICATE naming it in another case: verified locally. With pass-through configured, `alice@corp.example.com` with an empty domain, and `corp.example.com\alice`: both passed through. A domain matching nothing: `ErrLogonFailure`, outcome `unknown_domain`. | every standalone login refused; UPN and DNS-domain sign-ins refused as a wrong password |
+| NTLM MIC | 1 | An AUTHENTICATE with a corrupted MIC, and one with the MIC zeroed while `MsvAvFlags` marks it present: both `ErrLogonFailure`, locally and through pass-through. A pass-through reply whose `UserSessionKey` is all zero, or whose `LogonDomainID` is another domain's: `ErrLogonFailure`; with the directory's domain SID unread: `ErrUnavailable`. | the drop-the-MIC relay |
+| NTLM domain | 1 | A standalone installation's CHALLENGE advertises its own NetBIOS name; an AUTHENTICATE naming it in another case: verified locally. With pass-through configured, `alice@corp.example.com` with an empty domain, and `corp.example.com\alice`: both passed through. A domain matching nothing, and an installation name holding `K` sent with the Kelvin sign U+212A in its place: `ErrLogonFailure`, outcome `unknown_domain`. | every standalone login refused; UPN and DNS-domain sign-ins refused as a wrong password |
 | no local password for a directory user | 1 | `NewHashes` for a directory principal: `ErrInvalid`, nothing stored; a local NTLM sign-in naming one: refused. | two passwords for one principal |
 | directory TLS | 1 | A record asking for plain LDAP, or for skipping verification: refused at validation. A directory behind a self-signed certificate, then one whose host name does not match: no bind sent, lookups `ErrUnavailable`, nothing cached. A referral to another host: not followed. | a bind credential handed to whoever answers |
 | one query per key | 1 | 100 concurrent lookups of one key: `identity_directory_lookups_total` rises by 1. | a sign-in storm multiplied per connection |

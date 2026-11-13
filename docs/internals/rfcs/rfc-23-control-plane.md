@@ -839,8 +839,8 @@ encrypts — fixed at creation. The API applies RFC 13's classes and nothing els
   field ([RFC 13 §5.1](rfc-13-configuration.md#5.1%20A%20bound%20setting%20refuses%20change));
 - a new endpoint or credential is proven before it is written
   ([RFC 13 §5.2](rfc-13-configuration.md#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change));
-- **rotating a credential is an operation**: it writes the new version, waits
-  until every node using it reports that version, then deletes the old one
+- **rotating a credential is an operation**: it writes the new version and waits
+  until every node using it reports that version
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). The operation reports the nodes still holding the
   old version, and succeeds once every node reports the new one; the old one is
   then deleted, or kept for the retention RFC 13 §7 names for a keytab, a

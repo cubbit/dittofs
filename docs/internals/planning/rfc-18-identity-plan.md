@@ -106,10 +106,10 @@ that needs it.
 - **A6. Review fixes to RFC 18's Kerberos and PAC rules**: the PAC's server checksum is computed
   over the PAC's bytes as received, and only the first buffer of a type is used (§3.4); §10 gains
   the rows "clock skew" and "service name" for §3.3's two MUSTs that had none; NTLM routes a UPN
-  sign-in and the directory's DNS domain to pass-through, and counts an unknown domain apart (§3.5,
+  sign-in and the directory's realm to pass-through, and counts an unknown domain apart (§3.5,
   §9.2).
 - **A7. Second review's fixes** (RFC 18 §2.6, §3.4, §3.5, §4.6, §5.1 and §10; RFC 13 Appendix B;
-  RFC 16 §2.3 and `SEC‖id‖version`; RFC 23 §4.1):
+  RFC 16 §2.3 and `SEC‖id‖version`; RFC 23 §3.3):
   - pass-through keys the MIC and the key exchange with the reply's `UserSessionKey`, refuses a
     missing or zero one, and checks the reply's `LogonDomainID`;
   - a join records one domain controller and resumes on it; the resume probe has three answers;
@@ -118,11 +118,29 @@ that needs it.
   - identity's `State` carries the machine password's versions, with an `Apply` row;
   - a local user or group name never holds `@`; domain routing folds as §4.6 does, and an
     alternate UPN suffix is `unknown_domain` by a `decision:` note;
-  - one resolution's directory queries stop at 30 seconds;
+  - one resolution's directory queries stop at 20 seconds, below the request deadline;
   - `identity.netbios_name` is written upper-cased by a join and may not equal the directory's
     NetBIOS domain;
-  - `Secret.Kind` gains a machine-password kind, and `Secret.Version`'s comment and RFC 23 §4.1's
+  - `Secret.Kind` gains a machine-password kind, and `Secret.Version`'s comment and RFC 23 §3.3's
     rotation bullet name the retention RFC 13 §7 keeps.
+- **A8. Third review's fixes** (RFC 18 §2.6, §3.3, §3.4, §3.5, §4.4, §5.1 and §10; RFC 13
+  Appendix B's `identity.directory`; RFC 16 §2.3's `Secret`; RFC 23 §3.3):
+  - `Secret` gains `KeyVersion` and `HandedOver`; a version marked `HandedOver` derives no key, on
+    any node and after a restart, and `State.Machine` holds the versions with both;
+  - the offline join's closing rotation is the join's own last steps, so the join is done only once
+    the rotation is confirmed; pass-through is refused until then, the previous-version fallback
+    never uses the handed-over version, and §3.4's decision names the join's ceiling: the account's
+    creator off the network path while the join runs;
+  - a join, or a rotation's set or confirm, whose pinned domain controller goes unanswered for an
+    hour fails, naming it; a join resumed without the administrator credential continues only if
+    the account already accepts the sealed password;
+  - the directory's domain SID is its domain object's `objectSid`, read by each new client;
+  - the MIC is keyed by the exported session key, and the local session base key is
+    `HMAC_MD5(NTOWFv2, NTProofStr)`; NTLM domains fold ASCII letters only;
+  - `identity.netbios_name` and the directory record's NetBIOS domain are refused equal from either
+    side, with a §10 row "NetBIOS name and domain";
+  - a password set whose conditional write is refused deletes the NT hash it sealed;
+  - RFC 23 §3.3's rotation bullet no longer says the old version is deleted before its retention.
 
 ## 1. Introduction
 
@@ -145,6 +163,7 @@ What replaces what:
 | `test/integration/ad-dc`'s tests importing `pkg/identity/ldap` and `internal/auth/netlogon` | the directory's and domain controller's suites against real AD | rewritten in epics 6 and 7 |
 | `dfs netlogon test` | RFC 23's directory-test action and the secure channel's health in node status (§6 O5) | deleted with `cmd/dfs`'s v1 bodies by RFC 23's plan's epic 1 |
 | `dfsctl idmap` and `dfsctl identity-provider` | `Spell`, `Find` and grants by principal (RFC 18 §4.1); the `identity.directory` record | deleted with `cmd/dfsctl`'s v1 bodies by RFC 23's plan's epic 1; not rebuilt |
+| `feat/storage-v2`'s local user names holding `@` (`users.go` accepts `alice@corp`) | refused `ErrInvalid` (RFC 18 §4.6), so an NTLM name with `@` is never local | dropped in epic 2 |
 | develop's join options `ou`, `spns`, `dns_host_name` | `ou` and `dns_host_name` as the online join's parameters (§6 O5); RFC 18 §3.3's fixed `cifs/` and `host/` names | `spns` dropped: another name keeps an imported keytab (RFC 18 §3.3) |
 | squash modes `root_to_admin`, `all_to_admin` | `Squash` of `none`, `root` or `all` (RFC 18 §6.2), admin only from a share grant (ID6) | dropped |
 | develop's `RootKeepsAdmin` bypass at the share gate (`CLAUDE.md` invariant 2) | admin only from a share grant (RFC 18 §6.5, ID6) | dropped |
@@ -203,12 +222,13 @@ There is no test-foundations epic (see the header).
 1 rows that need several middle epics land in the integration epic. Two Tier 2 rows need no adapter,
 and the integration epic runs them in-process against identity: "admin needs proof" (its Kerberos
 and PAC halves) and "NTLM without a domain controller"; it also runs "NTLM off"'s password-set half
-and a Kerberos expiry in-process, ahead of epic 9.
+in-process, ahead of epic 9, and RFC 18 §3.8's expiry of a Kerberos identity at `Resolve`, whose
+§10 row, "expiry", drives it over NFS and stays deferred.
 
 Deferred with the NFS side or OpenID Connect (§6 O2): "one uid, two proofs", "client in the key",
 "root" (its `AUTH_SYS` clauses; its directory clause is epic 6's), "error is not "unknown"",
-"owner strings", "expiry", "`ManageGIDs`", "`AUTH_SYS` from the directory", "mint from a claim, guarded", "lookup cap", "token checks", "key-set outage" and
-"unlinked subject"; the `AUTH_SYS` halves of "squash order follows the proof" and "admin needs
+"owner strings", "expiry", "`ManageGIDs`", "`AUTH_SYS` from the directory", "mint from a claim,
+guarded", "lookup cap", "token checks", "key-set outage" and "unlinked subject"; the `AUTH_SYS` halves of "squash order follows the proof" and "admin needs
 proof"; the NFS halves of "disable takes effect" and "no file spelling"; and `FuzzOwnerString`.
 "roles grant nothing" is RFC 23 §12's row, run by RFC 23's plan.
 
@@ -346,17 +366,17 @@ proof"; the NFS halves of "disable takes effect" and "no file spelling"; and `Fu
 | E3 | Resolution | `admit`'s resolver moved into identity and completed: map, squash, groups, grant, flags; the `State`; the proof key and admission's caller cache | 7 | 10.5 | A | E7, E8; partly E5 |
 | E4 | Local NTLMv2 sign-in | `SignIn` for NTLMv2 against a local NT hash, the MIC, key exchange, the throttle, anonymous sessions, re-authentication | 6 | 9 | B | E5; partly E7 |
 | E5 | Kerberos and the PAC | imported keytab through `Apply`, AES only, AP-REQ, the replay cache, PAC verification and binding, test PACs, machine principals | 8 | 15.5 | B | E8; partly E7 |
-| E6 | The directory | the LDAP provider lifted, paging, `tokenGroups`, the directory cache with stale grace, directory mints, the in-memory directory and its suite | 7 | 14 | C | E8; partly E7 |
-| E7 | NETLOGON and the machine account | the secure channel moved and hardened, pass-through, online and offline join, the derived keytab, rotation, status, the in-memory domain controller | 10 | 23 | A | E8 |
+| E6 | The directory | the LDAP provider lifted, paging, `tokenGroups`, the directory cache with stale grace, directory mints, the domain SID, the in-memory directory and its suite | 7 | 15 | C | E8; partly E7 |
+| E7 | NETLOGON and the machine account | the secure channel moved and hardened, pass-through, online and offline join, the derived keytab, rotation, identity's runner kinds, status, the in-memory domain controller | 11 | 25 | A | E8 |
 | E8 | Integration | identity composed into the node, its `State` from reconcile, `identity.*` validators, the rows several epics meet in | 5 | 9 | team | E9 |
 | E9 🔀 | E2E green | Tier 2 rows through SMB, `e2e/kerberos` | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **56** | **97** | | |
+| | **Total** | | **57** | **100** | | |
 
-**Plan estimate: 56 subtasks, 97 man-days, not counting epic 9.**
+**Plan estimate: 57 subtasks, 100 man-days, not counting epic 9.**
 
-The skill's estimate for RFC 18's 2,188 lines, with A1 to A7, is 5 middle epics (`round(2188 / 400)`);
-this plan has 6. Active Directory's two halves, the directory and NETLOGON, share no state beyond the in-memory
-AD they are tested against, and splitting them keeps Track A busy after resolution.
+The skill's estimate for RFC 18's 2,234 lines, with A1 to A8, is 6 middle epics (`round(2234 / 400)`),
+as this plan has. Active Directory's two halves, the directory and NETLOGON, share no state beyond
+the in-memory AD they are tested against, and splitting them keeps Track A busy after resolution.
 
 **Legend.** ⛔ is a blocker; 🔀 waits on a synchronisation point. "team" is an epic that belongs to
 no track. "Partly" means the dependent epic starts before the blocker lands (§3.3).
@@ -442,7 +462,7 @@ flowchart TD
 
 ### 3.4 Splitting the work
 
-- **Track A** takes epic 3 at S1. Squash, groups, grants and flags need only E1's types and the
+- **Track A** takes epic 3 at S1, and is the plan's long pole: 35.5 man-days across epics 3 and 7. Squash, groups, grants and flags need only E1's types and the
   resolver it moves; the map step joins once epic 2's well-known principals land, and the `State`
   once RFC 23's plan's epic 2 lands the principals generation. Then it takes epic 7, which needs
   real AD in `integration/ad-dc` and the in-memory domain controller.
@@ -520,15 +540,19 @@ SMB session authenticates with Kerberos as the machine account. That SMB session
 `go-msrpc`'s own Kerberos stack (`oiweiwei/gokrb5.fork`), which is held to AES only as `gokrb5` is
 (A4). `NetrLogonSamLogonEx` carries no Netlogon authenticator, so pass-through calls on one channel
 run concurrently; only setting the channel up is serialised, where v1 held its lock across the call.
-A semaphore at the domain controller's `MaxConcurrentApi` bounds them, and a call that cannot take
-it by its deadline answers `ErrUnavailable` rather than queueing at the controller. Two v1
-behaviours change:
+A semaphore of 10 per node bounds them: a node holds one secure channel, `MaxConcurrentApi` cannot
+be read from the controller, and 10 is Windows' default for it. A call waits for the semaphore
+under the request's own deadline, and one that cannot take it by then answers `ErrUnavailable`
+rather than queueing at the controller. Three v1 behaviours change:
 - v1 re-sends a logon after a transport error mid-call (`authenticator.go`), which counts a bad
   password twice toward lockout; v2 retries only a failure from before the request was sent;
 - v1 accepts a reply with no `LogonDomainID` (`securechannel.go`); v2 refuses one that is not the
   directory's domain SID (RFC 18 §3.5), and its `UserSessionKey` keys the MIC (A7), where v1 left a
-  zero key. The logon level `NetlogonNetworkTransitiveInformation` and
-  `MSV1_0_ALLOW_WORKSTATION_TRUST_ACCOUNT` are kept, as Samba's `winbindd` sends them.
+  zero key;
+- v1 sets `MSV1_0_ALLOW_WORKSTATION_TRUST_ACCOUNT`, as Samba's `winbindd` does; v2 drops it, so a
+  computer account such as `BUILD01$` cannot sign in to files by pass-through, as RFC 18 §2.4 keeps
+  a machine off files for Kerberos. The logon level `NetlogonNetworkTransitiveInformation` is
+  kept.
 
 Its secret store is replaced by `Secret` records, and its join and rotation become RFC 23
 operations.
@@ -551,11 +575,12 @@ decision.
 - **Prior art.** None found.
 - **Applied by** epics 2 and 8.
 
-**D8. Join, rotation and NT-hash deletion are operations of RFC 23's runner** (RFC 23 §4.6), which
-RFC 23's plan's epic 3 builds (its D8): a kind is one step function the runner calls with the last
-recorded step, returning the next. The kinds are #4050's A5 names: `join-domain`, online and
-offline, and `rotate-machine-password` (epic 7); and NTLM-off's deletion of every NT hash (epic 2),
-which RFC 23 §4.1's closed `OpKind` set does not list yet, so it is raised on #4050 (§6 O5). Their
+**D8. Identity's operations run on RFC 23's runner** (RFC 23 §4.6), which RFC 23's plan's epic 3
+builds (its D8): a kind is one step function the runner calls with the operation, its parameters
+and last recorded step included, returning the next. The kinds are #4050's A5 names:
+`resolve-principal`, a wrapper of epic 6's `Find` with `FindOpts.Mint`; `test-directory`, a
+wrapper of epic 6's test call; `join-domain`, online and offline; and `rotate-machine-password`,
+all in epic 7; and `identity.nt-hash-delete`, NTLM-off's deletion of every NT hash, in epic 2. Their
 routes are RFC 23's.
 - **Prior art (from memory).** TrueNAS runs its AD join as a job.
 - **Applied by** epics 2 and 7.
@@ -594,6 +619,12 @@ Each carries a `ponytail:` marker at the code site, beside RFC 18's own:
   is this node.
   - *Ceiling:* a second node.
   - *Upgrade path:* the wait on node status, with the cluster rows; RFC 18 §12 item 2 measured then.
+  - *Epic:* 7.
+- **Pass-through's semaphore is a constant 10 per node** (D5).
+  - *Ceiling:* a domain whose controllers raise `MaxConcurrentApi` gets no more than 10 calls at once
+    from a node.
+  - *Upgrade path:* a setting, when a deployment shows sign-ins answered `ErrUnavailable` with the
+    controller below its own limit.
   - *Epic:* 7.
 
 ### 4.4 Code sketch
@@ -725,24 +756,32 @@ func (s *Server) Find(ctx context.Context, sp Spelling, o FindOpts) (metadata.Pr
 }
 
 // Runner kinds (D8, E7): one step function each, called by RFC 23's runner
-// with the last recorded step and returning the next (RFC 23's plan, D8).
-func (s *Server) joinDomain(ctx context.Context, step uint32) (next uint32, done bool, err error) {
-	switch step {
-	case 0: // pin one DC for every later step and a resume (RFC 18 §3.5)
+// with the operation, its parameters and last recorded step, and returning
+// the next (RFC 23's plan, D8). The parameters (online or offline, takeover,
+// ou, dns_host_name, the handed-over password's Secret reference) are the
+// operation's; the administrator credential is not, and lives only in this
+// node's memory for the join (RFC 18 §3.5).
+func (s *Server) joinDomain(ctx context.Context, op metadata.Operation) (next []byte, done bool, err error) {
+	switch step := stepOf(op.Step); step {
+	case 0: // pin one DC for every later step and a resume (RFC 18 §3.5); unanswered for an hour: fail, naming it
 	case 1: // online: seal the password, a Secret version (RFC 13 §7), before the DC sees it
+		// offline: verify the handed-over password, AES bits, report the names; stored marked HandedOver
 	case 2: // online: create the account, cifs/ and host/ names, 0x18 (A4); skipped if the pinned DC
-		// already accepts the sealed version; "could not ask" retries, never reads as "no"
-		// offline: verify the handed-over password, AES bits, report the names; it derives no key
-	case 3: // identity.netbios_name, upper-cased (A2); offline then runs rotateMachinePassword
+		// already accepts the sealed version; "could not ask" retries, never reads as "no";
+		// no credential in memory (a restart, another node) and none accepted: fail, naming it
+	case 3: // identity.netbios_name, upper-cased (A2)
+		done = !offline(op)
+	default: // offline only: rotateMachinePassword's steps, so the join is done once the rotation is confirmed
 	}
-	return step + 1, step == 3, nil
+	return stepBytes(step + 1), done, nil
 }
 
 // rotateMachinePassword's steps, in RFC 18 §3.5's order:
 //   wait until every node reports the previous version (§4.3: this node);
 //   seal, tagged with one DC's kvno plus one; wait applied;
 //   set at that DC, skipped if it already accepts the sealed version;
-//   read that DC's kvno again to confirm or correct the tag;
+//   read that DC's kvno again to confirm or correct the tag (Secret.KeyVersion);
+//   set or confirm unanswered for an hour: failed, naming the DC, its sealed version kept;
 //   prune the previous version once the retention passes (A3).
 // Node status: machine_account_unhealthy while the channel fails to every DC
 // (cleared by a channel set up) or the last rotation failed (cleared only by a
@@ -766,8 +805,8 @@ if h.NTHash != nil {
 		return err
 	}
 }
-// A refused put leaves the sealed NT hash unreferenced: NTLM-off's deletion
-// scans Secrets of kind nt-hash, not users' references, so it still goes (E2).
+// A refused put deletes the NT hash version it sealed: NTLM-off's deletion
+// may already have scanned past it (RFC 18 §3.5, E2).
 err = store.PutUserIf(ctx, u, st.NTLM) // conditional on the ntlm revision still current (§3.5)
 ```
 
@@ -833,9 +872,10 @@ password and NT hash are derived, sealed and checked.
   for a proof of `Secret` or above (RFC 18 §4.1, §4.6).
 - `NewHashes` and the two sealed secrets (D3, A5).
 - `VerifyPassword` and `Account` (RFC 18 §8.1).
-- NTLM-off's deletion of every NT hash, as a runner kind (D8), scanning `Secret`s of kind nt-hash
-  rather than users' references, so a hash sealed for a put that was then refused goes too; and a
-  password set's pruning of the previous NT hash version through #4059's `Prune`.
+- NTLM-off's deletion of every NT hash, as the `identity.nt-hash-delete` runner kind (D8), scanning
+  `Secret`s of kind nt-hash rather than users' references; a password set whose conditional write is
+  refused deleting the NT hash version it sealed, which the scan may have passed (RFC 18 §3.5); and
+  a password set's pruning of the previous NT hash version through #4059's `Prune`.
 - `identity.ntlm` and `identity.netbios_name` declared, the first epic that reads them: the deletion
   reads the one, the `qualified` spelling (RFC 18 §4.6) the other.
 - A local name holding `@` refused (RFC 18 §4.6).
@@ -882,7 +922,8 @@ expiry).
 **Done when:**
 - RFC 18 ID12 holds at identity's layer: a `SignIn` with `step.Context` set replaces the context's
   evidence, a failed one ends it; §10's "re-authentication" row is epic 9's, over SMB;
-- RFC 18 §10's rows "NTLM MIC" and "NTLM domain" (its local and refusal halves) pass, the
+- RFC 18 §10's rows "NTLM MIC" (its local half) and "NTLM domain" (its local and refusal halves)
+  pass, the
   cryptography checked against MS-NLMP §4.2.4's published vectors;
 - `vfs.Service`'s `SignIn` answers an NTLM step.
 
@@ -890,8 +931,8 @@ expiry).
 - NTLM messages built from MS-NLMP's published vectors for the tests, including a MIC over exact
   NEGOTIATE, CHALLENGE and AUTHENTICATE bytes.
 - Domain routing (RFC 18 §3.5's table, its local and refusal rows, the refusal counted
-  `unknown_domain`), against `identity.netbios_name` (A2), folded as RFC 18 §4.6 folds names, with
-  the alternate-suffix `decision:` note.
+  `unknown_domain`), against `identity.netbios_name` (A2), ASCII letters folded (A8), with the
+  alternate-suffix `decision:` note.
 - NTLMv2 verification in constant time, with the same work for an unknown name, lifted from
   `develop` (rule 7).
 - The MIC, key exchange and the session key returned in `Keys`.
@@ -933,7 +974,7 @@ half for Kerberos, §3.8's expiry, and §4.2 steps 1, 2 and 4.
 
 ### Epic 6 — The directory
 
-**Epic 6 estimate: 7 subtasks, 14 man-days.**
+**Epic 6 estimate: 7 subtasks, 15 man-days.**
 
 Identity reads users and groups from Active Directory over verified TLS. It caches the answers with a
 stale grace, and mints each directory principal once.
@@ -943,7 +984,8 @@ stale grace, and mints each directory principal once.
 **Done when:**
 - RFC 18 ID4 and ID9 hold;
 - RFC 18 §10's rows "stale grace", "directory TLS", "one query per key" (through
-  `identity_directory_lookups_total`), "exact queries" and "SID-less directory" pass;
+  `identity_directory_lookups_total`), "exact queries", "SID-less directory" and "NetBIOS name and
+  domain" pass;
 - RFC 18 §10's row "root" passes its directory clause;
 - the directory's suite passes against the in-memory directory in `unit` and against real AD in
   `integration/ad-dc`.
@@ -955,12 +997,17 @@ stale grace, and mints each directory principal once.
   entry.
 - Kerberos names resolved through the directory (RFC 18 §4.2 step 3), and a SID of the directory's
   domain asked of the directory first, minted only with `FindOpts.Mint` (RFC 18 §4.4).
-- A test call that binds and looks up one entry, for RFC 23's directory-test action (§6 O5).
+- The directory's domain SID read from its domain object by each new client (RFC 18 §5.1, A8).
+- The `identity.directory` validator, refusing a NetBIOS domain equal to `identity.netbios_name`,
+  and `identity.netbios_name`'s refusing the record's, each a tracked read of the other (RFC 13 §6,
+  A8).
+- A test call that binds and looks up one entry, which epic 7's `test-directory` kind wraps (D8).
 - The `directory_unreachable` condition.
-- One resolution's directory queries stopped at 30 seconds (RFC 18 §5.1), tested with a fault
+- One resolution's directory queries stopped at 20 seconds (RFC 18 §5.1), tested with a fault
   wrapper that delays the in-memory directory.
 - Benchmarks of a cold resolution of a user in 300 groups, alone and as 50 concurrent first
-  sign-ins (O8).
+  sign-ins, through the delaying fault wrapper at 5 ms per query, a LAN domain controller's order
+  of latency, each asserting no `ErrUnavailable` across its sign-ins (O8).
 - The in-memory directory and its conformance suite.
 - `integration/ad-dc` taken out of the plan job's filter in `.github/workflows/tests.yml`, once RFC
   23's plan's epic 1 has removed the tests that drive the old server; RFC 23's plan's epic 8 then no
@@ -968,7 +1015,7 @@ stale grace, and mints each directory principal once.
 
 ### Epic 7 — NETLOGON and the machine account
 
-**Epic 7 estimate: 10 subtasks, 23 man-days.**
+**Epic 7 estimate: 11 subtasks, 25 man-days.**
 
 NTLM sign-ins of directory users pass through to a domain controller over the installation's secure
 channel. The installation joins the domain, online or offline, and rotates its machine password with
@@ -991,14 +1038,21 @@ the keytab derived from it.
 - `internal/auth/netlogon` moved to `internal/identity/netlogon`, and hardened as D5 says.
 - `NetrLogonSamLogonEx` pass-through, mapped by the verified user SID, with its SIDs and extra SIDs
   used as a PAC's, its `UserSessionKey` keying the MIC and the key exchange, and its `LogonDomainID`
-  checked (RFC 18 §3.5, D5).
+  checked (RFC 18 §3.5, D5), under D5's semaphore, with a test of 11 concurrent pass-throughs
+  against a delayed domain controller: the 11th answers `ErrUnavailable` by its deadline.
 - Domain-controller discovery from DNS, lifted from v1, or the directory record's explicit address
   and DNS server (A3).
 - The online and the offline join as the `join-domain` runner kind (D8), pinned to one domain
-  controller, each writing `identity.netbios_name` upper-cased; the online join's refusal of an
-  existing account unless taken over; the offline join's AES check, its report of the account's
-  service names, and its closing rotation, the handed-over version deriving no key (RFC 18 §3.5).
-- The machine password's versions in identity's `State` (RFC 18 §2.6), applied as a keytab's are.
+  controller and failing once it goes unanswered for an hour, each writing `identity.netbios_name`
+  upper-cased; the online join's refusal of an existing account unless taken over, and its resume
+  without the administrator credential; the offline join's AES check, its report of the account's
+  service names, and its closing rotation as its own last steps, the handed-over version marked
+  `HandedOver` (RFC 18 §3.5, A8).
+- `resolve-principal` and `test-directory` as runner kinds wrapping epic 6's `Find` and test call
+  (D8).
+- The machine password's versions in identity's `State` (RFC 18 §2.6), applied as a keytab's are,
+  except that a version marked `HandedOver` derives no key and backs no previous-version fallback,
+  and pass-through is refused until the offline join's rotation is confirmed (A8).
 - The keys of the names the computer account holds derived from the machine password, tagged with
   its key version number, beside the imported keytab epic 5 loads for every other name (RFC 18
   §3.3).
@@ -1027,13 +1081,15 @@ Identity runs inside the node, and the rows that need several middle epics toget
   record", "disabled directory account", "directory deadline", "mint conflict", "deny-only lookup
   error", "no local password for a directory user", "NTLM without a domain controller" and "NetBIOS
   name while joined" pass;
+- "NTLM off"'s password-set half passes in-process, and a Kerberos identity past its `Expires` is
+  refused by `Resolve` (RFC 18 §3.8), as §1.4 says;
 - `node.New` builds identity and hands it to `*vfs.Filesystem` and the API, and reconcile hands each
   new `State` to `Apply`;
 - the §1.4 scenario assigned to integration passes.
 
 **Expected content:**
-- Identity composed in `node.New` (RFC 23 §2.1), with the keytab, the directory record and
-  `identity.ntlm` in each `State`.
+- Identity composed in `node.New` (RFC 23 §2.1), with the keytab, the machine password's versions,
+  the directory record and `identity.ntlm` in each `State`.
 - The `identity.*` section listed in the node's settings table; each setting is declared through
   #4059's `pkg/settings`, with its default and validator, by the first epic that reads it:
   `identity.id_range`, `identity.ntlm` and `identity.netbios_name` in epic 2,
@@ -1091,17 +1147,20 @@ This epic waits for an SMB adapter serving through the node (S3).
 - **O4. Settled:** RFC 23's plan (#4050) deletes `pkg/identity` whole in its epic 1 (its §1.1
   table); epic 6 lifts the LDAP provider from history (D6), and `internal/auth/netlogon` stays.
 - **O5. Routes from RFC 23 (#4050).** RFC 23's amendment A5 in #4050 adds them, and that plan's
-  epic 4 builds them: `test-directory`, `join-domain` (online and offline) and
-  `rotate-machine-password` as RFC 23 §4.1 actions, each an operation with its own `OpKind`, the
-  online join taking an explicit takeover of an existing account as a parameter (RFC 18 §3.5).
-  Three points are raised on #4050: NTLM-off's NT-hash deletion needs an `OpKind` of its own (D8);
-  RFC 23 §3.5 there has `rotate-machine-password` set the password at the domain controller before
-  writing its `Secret` version, the reverse of RFC 18 §3.5's order; and `leave-domain` has no rule
-  in RFC 18, so epic 7 builds its step only once RFC 18 states one; the
-  join's state on the installation's status, the secure channel's health a node condition; and a
-  grant by name or SID as two calls, `resolve-principal`, which mints the principal in its own
-  transaction, then `PUT /shares/{id}/grants/{principal}` by ID (RFC 23 §3.5, §4.3). A user's `krb`
-  spelling (RFC 18 §4.2) is a field of the user, written by RFC 23 §3.5's edit, in the same epic.
+  epic 4 builds them:
+  - `resolve-principal`, `test-directory`, `join-domain` (online and offline) and
+    `rotate-machine-password` as RFC 23 §4.1 actions, each an operation with its own `OpKind`, the
+    online join taking an explicit takeover of an existing account as a parameter (RFC 18 §3.5);
+  - `identity.nt-hash-delete`, the `OpKind` NTLM-off's deletion runs as (D8);
+  - the join's state on the installation's status, and the secure channel's health a node
+    condition;
+  - a grant by name or SID as two calls, `resolve-principal`, which mints the principal in its own
+    transaction, then `PUT /shares/{id}/grants/{principal}` by ID (RFC 23 §3.5, §4.3).
+
+  A5 also settles the rotation's order, sealing before setting at the domain controller, as RFC 18
+  §3.5 orders it. One point stays open: `leave-domain` has no rule in RFC 18, so epic 7 builds its
+  step only once RFC 18 states one. A user's `krb` spelling (RFC 18 §4.2) is a field of the user,
+  written by RFC 23 §3.5's edit, in the same epic.
 - **O6. One machine account, several nodes** (RFC 18 §12 item 2) is unmeasured, and matters only
   with a second node (§4.3 above).
 - **O7. Estimates least certain.** Epic 7 depends on how much of v1's secure channel survives the
@@ -1110,7 +1169,8 @@ This epic waits for an SMB adapter serving through the node (S3).
 - **O8. A cold sign-in's cost.** A directory user's first sign-in mints each of its groups in its
   own transaction (RFC 18 §5.1's mint), and each raises `PGEN` (§7.2): a user in 300 groups costs
   about 300 directory queries and 300 raises, each of which empties every node's caller cache.
-  Epic 6 benchmarks a cold resolution of such a user; if it shows, the fix is an RFC 18 amendment
+  Epic 6 benchmarks a cold resolution of such a user through a delaying fault wrapper, asserting no
+  `ErrUnavailable`; if that assertion fails, the fix is an RFC 18 amendment
   minting one resolution's records in one transaction with one raise, and looking groups up in
   batches. The same raise leaves the resolution's own `Caller.Built` stale, which §7.2 neither
   stores nor serves: epic 3 re-resolves once, the re-run mints nothing and raises nothing, and a
@@ -1120,7 +1180,7 @@ This epic waits for an SMB adapter serving through the node (S3).
   v1 kept one for 10 s. Two costs a single-user benchmark cannot show, so epic 6 plans for them:
   a burst of first sign-ins, whose mints raise `PGEN` and can make each other's resolutions stale
   twice and fail, which the concurrent benchmark measures; and an outage, which RFC 18 §5.1's
-  30-second bound per resolution (A7) caps, tested with a delaying fault wrapper.
+  20-second bound per resolution (A7) caps, tested with a delaying fault wrapper.
 
 ### 6.1 Deferral ledger
 

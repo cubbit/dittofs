@@ -692,6 +692,8 @@ type Secret struct {
 	Version uint64   // raised by every rotation; the previous version stays resolvable until every node reports this one, a keytab's and a machine password's for RFC 18 §3.3's retention, the API signing key's until its last token expires (RFC 13 §7)
 	KeyID string     // which wrapping key sealed it: one per role or secret kind
 	Value []byte     // sealed
+	KeyVersion uint32 // a machine password's key version number, set when sealed and corrected in place by its rotation's confirm step; zero for every other kind (RFC 18 §3.3, §3.5)
+	HandedOver bool   // a machine password an offline join was handed: derives no Kerberos key and backs no previous-version fallback (RFC 18 §3.5); written with the version, never changed
 }
 ```
 
