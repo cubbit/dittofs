@@ -656,7 +656,8 @@ every field of `Conn`, the calls into the pipeline (`withDefaults`, `newShared`,
 `close` is `Conn.Close`, `serve`, `drain`, `wait`, `close`), `Conn.Close`'s body, and a
 writer whose queue is bounded and which passes the suite of `out` that the epic 5
 document's T5.1a lands. It counts `adapter_connections`, `adapter_connection_closes_total`
-and `adapter_bytes_total` at accept, in the reader and in the writer (§6.2). None of this is
+and `adapter_bytes_total` at accept, in the reader and in the writer; `adapter_connections`
+brings back v1's `dittofs_client_connections_active{protocol}`, deleted in T1.2. None of this is
 priced in the estimate above: the epic's breakdown prices it.
 
 RFC sections: §3.1 (states, drain, abandon at the deadline, auxiliary listeners all or none),
@@ -734,8 +735,6 @@ is read from `memory.New`'s record of mutating calls, §7.2), §4.5, §4.6, §4.
   `known.yaml` entry it removes once CI shows the test passing (S3).
 - T5.2 `OpTable`, `Bind`, `Invocation` (§4.7); the checks of §4.2 (`Needs`, `Versions`, an
   absent or switched-off operation) and §4.4's expired-credential gate, in §4.7's pipeline order.
-  With T5.7, the tables build; if that moves the first failure of `adapter-conformance`'s
-  end-to-end test, the change updates that entry's `message`.
 - T5.3 Admission: the per-connection cap of 64 where `Flow` is nil; the reply-bound reservation
   before the call, its refusal as `ErrDelay` with `DelayResources`.
 - T5.4 The compound runner: stop at the first failure, a cap refused before any operation, the
@@ -770,19 +769,18 @@ is read from `memory.New`'s record of mutating calls, §7.2), §4.5, §4.6, §4.
   calls: a call kept in the service adds one per round trip, and bytes bound them (RFC 20 §4.6).
 - T5.6 The middleware chain: recovery (server fault, logged with the stack, the connection's
   other requests unharmed), trace span, metrics, deadline; order pinned by a test.
-- T5.7 `ErrorTable`: mapping by error, operations and version, `NewOpTable` refusing an
-  `ErrorRow.Hold` in a table that does not hold, and `NoReply` (`Map`'s reply flag,
-  the reply reservation freed with no final reply, and on a table that holds an interim granting the request's credits); `ReplayCache`'s own copy; a kind named by a typed value under `errors.Is` (RFC 17 §4.3; `vfserr` matches by kind from #3869), most specific row first in §4.7's total order; an unmapped
+- T5.7 `ErrorTable`: mapping by error, operations and version, and `NoReply` (`Map`'s reply flag,
+  the reply reservation freed with no final reply, and on a table that holds an interim granting the request's credits); a kind named by a typed value under `errors.Is` (RFC 17 §4.3; `vfserr` matches by kind from #3869), most specific row first in §4.7's total order; an unmapped
   error answered server fault and counted. The totality check against `vfs.Errors()`, and the
   helper each protocol's table will call for it, are a ledger row (§6.2).
 - T5.8 Request context: the 30 s deadline; cancellation on close and drain.
 - T5.9 RFC 20 §10's metrics, spans and logs, all in `core`, but the connection, close and
-  byte series, which E4 counts (§6.2); series resolved once per server and table, through the
+  byte series, which epic 4 counts; series resolved once per server and table, through the
   resolve-once call `metrics.Registry` gains here, its first consumer.
 - T5.10 The pipeline micro-benchmark on `testproto` over `vfstest.Null`, its allocation ceiling
   checked in and registered in `unit/adapter-allocs`.
 - T5.11 Parked requests: RFC 20 §4.7's `Park` as its comment states it, on `testproto`'s parked
-  operation; the pipeline's close that `Conn.Close` calls (the body is E4's); the cancel record's 5 s; §3.1's cancel at drain and §6.5.
+  operation; the pipeline's close, which T5.1a builds, extended to parks (`Conn.Close`'s body is E4's); the cancel record's 5 s; §3.1's cancel at drain and §6.5.
 
 ### Epic 6 — Protocol scaffolds
 
@@ -930,8 +928,6 @@ decision to drop it (its issue closed as not planned).
 | `/api/v1/adapters`, `dfsctl adapter` and the settings watcher (deleted in T1.2) | built on the Runtime | RFC 23's plan (#4050): the adapter and settings routes in its epic 4, the `adapter` and `setting` commands in its epic 6; the watcher becomes reconcile on `settings.Diff`, RFC 13's plan's epic 5 (#4059) | those epics |
 | the persisted `NFSAdapterSettings` and `SMBAdapterSettings` rows and the share adapter config (D4 of `rfc-20-adapters-epic1.md`), never mapped onto `pkg/adapter/settings` | RFC 23's plan has no migration tool and refuses a v1 database at start (#4050, its transition policy and epic 3) | unowned: dropped with v1's database by #4050's fresh-installs-only policy | none; a fresh install writes v2's settings records |
 | the `/clients` and `/mounts` listings and their registries (deleted in T1.2: nothing can add a record), the `/durable-handles` listing, empty once T1.1 deletes its producers; `dfsctl client` (deleted in T1.2) | read v1's connection and handle state | RFC 23's plan (#4050, D12), RFC 22 plan (durable handles) | with their records |
-| `dittofs_client_connections_active{protocol}` (deleted in T1.2 with the client registry that fed it) | its feed, v1's connection registry, is deleted | epic 4 | with accept and close, which count it, as RFC 20 §10.1's `adapter_connections{protocol, state}` |
-| RFC 20 §10.1's `adapter_connection_closes_total{protocol, reason}` and `adapter_bytes_total{protocol, direction}` | accept, the reader and the writer count them, not the request path | epic 4 | with accept, the reader and the writer |
 | RFC 20 §10.1's `adapter_translation_refused_total`, `adapter_record_decode_failures_total` and `adapter_record_replays_total` | their producers, the translations and the client record, are not built | RFC 21/22 plans | with `translate` and the client record |
 | netgroup CRUD under `/api/v1/adapters/{type}/netgroups` (deleted in T1.2) | a control-plane record (RFC 23 §3.5) | RFC 23's plan (#4050, D12) | with RFC 23's records |
 | client eviction: `DELETE /api/v1/clients/{id}`, `dfsctl client evict` (`Runtime.DisconnectClient` → `ForceCloseClientConnection`, deleted in T1.2) | RFC 23 §4.2 makes v2's connection listing read-only, so nothing brings it back | an RFC adding an eviction call; until then the account is disabled (RFC 23's plan, #4050, O9) | that RFC |

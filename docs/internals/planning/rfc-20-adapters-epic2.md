@@ -616,13 +616,14 @@ func (c *Client) Balance() int
     that entry is missing or empty, the connection given one backstop deadline so a server that
     binds but never replies fails `Recv` with an error rather than hanging the suite,
     one `Echo` sent by the client and its reply read, `CheckLeaks` clean after `Stop`; its
-    `known.yaml` entry (`message: 'testproto: tables: not implemented'`, `issue: "#3966"`, its
+    `known.yaml` entry (`message: 'core: new server'` since #4194 built the tables, `issue: "#3966"`, its
     reason naming E5's tables and pipeline and E4's server).
 - **Consumers:** E4's accept, reader, writer and sidecar-runner tests (T4.1–T4.4, T4.9: `Echo`,
   `Client`, `Bare` as the second listener, `Addrs` for the bound port and the `Serving` report),
   and its `Reconfigure` test (T4.6: `MaxVersion` read from each connection's snapshot); E5's T5.1a (nil stages over `Bare`, `Echo`'s role,
   the cap of 64 over `Bare`, `Panic`), T5.2b (`Versions`, `Needs`), T5.5b (`Create` held), T5.1c
-  (the cap of 64 over `Bare` on a socket), T5.10 (the benchmark over `Echo`).
+  (the cap of 64 over `Bare` on a socket), T5.10 (the benchmark over `Echo` and a version 1
+  `PutFH` and `Create` compound).
 - **Acceptance criteria:**
   - Each vector of the package doc decodes to the fields it was written from, and each field
     set encodes to its vector's bytes.
