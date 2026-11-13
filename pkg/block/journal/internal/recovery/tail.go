@@ -181,12 +181,14 @@ func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []se
 		}
 
 		// The header slot of an unverified-header segment is damaged
-		// where a proof covers it (a record's synced-through past it, a
-		// seal marker after it, or a successor naming the segment) and
-		// torn where none does.
+		// where a proof covers it (a record's synced-through past it or a
+		// seal marker after it) and torn where none does. A successor
+		// naming the segment needs no leg of its own: an unsealed one
+		// refused as a missing end above, an exempt one is damaged
+		// there, and a sealed one falls to the marker's leg.
 		tornHeader := false
 		if unverified[id] {
-			if sc.SyncedThrough >= format.SegmentHeaderSize || sc.Sealed || named[id] {
+			if sc.SyncedThrough >= format.SegmentHeaderSize || sc.Sealed {
 				damaged = true
 			} else {
 				tornHeader = true
@@ -229,9 +231,10 @@ func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []se
 		// Nor does it go below a synced-through a verifying header names: the
 		// bytes under it were proven whole, and the last verifying record may
 		// end below it when the records that named it are clone targets whose
-		// body failed. The synced-through is bytes off disk, so it is capped at
-		// the file's size: a cut past the file would fabricate a zero tail.
-		tailAt = min(max(tailAt, sc.SyncedThrough), sc.Size)
+		// body failed. No input reaches past the file — a tail's offset is
+		// always at or past the synced-through and inside the segment — so
+		// this needs no cap.
+		tailAt = max(tailAt, sc.SyncedThrough)
 		f := segmentFate{ID: id}
 		switch {
 		case named[id]:
