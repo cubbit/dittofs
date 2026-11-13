@@ -7,134 +7,134 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: recovery commits a durable write whose existence was uncommitted at the crash. The row gets past its write and the sync bound, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: recovery commits a durable write whose existence was uncommitted at the crash. The row gets past its write and the sync bound, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
 - test: TestRFC8A_StableWriteLazyExistence
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: recovery serves size and mtime at start; also Commit and the group commit (epic 4). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: recovery serves size and mtime at start; also Commit and the group commit (epic 4). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
 - test: TestRFC8A_SyncBeforeExistence
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: the group commit syncs before it commits existence; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#3587'
+  reason: 'the journal''s Open recovering segments: the group commit syncs before it commits existence; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
 - test: TestRFC8A_TruncateSyncBeforeExistence
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 5: a truncate''s phase 1 size is backed by synced records across a crash; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#3588'
+  reason: 'the journal''s Open recovering segments: a truncate''s phase 1 size is backed by synced records across a crash; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
 - test: TestRFC8A_TruncateUpSurvivesACrash
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 5: a truncate up crashed before its group commit is served after the restart; also recovery (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
-  issue: '#3588'
+  reason: 'the journal''s Open recovering segments: a truncate up crashed before its group commit is served after the restart; also recovery (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
+  issue: '#4206'
 - test: TestRFC8A_Verifier
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: start; also the verifier (epic 4). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: start; also the verifier (epic 4). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
+  issue: '#4206'
 - test: TestRFC8A_IncarnationAtStart
   message: 'journal: not implemented'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a restart raises the incarnation of every served shard and opens a new grace instance on it. Init and Open work; the fixture now attaches the share; the row stops at its reopen of a journal that holds segments, which the journal refuses (recovering them is not built).'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: a restart raises the incarnation of every served shard and opens a new grace instance on it. Init and Open work; the fixture now attaches the share; the row stops at its reopen of a journal that holds segments, which the journal refuses (recovering them is not built).'
+  issue: '#4206'
 - test: TestRFC8C_DeclaredInterfaces
   message: 'the engine never calls'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 8: the engine calls every declared method once epics 3 to 8 are built, the clone calls last.'
-  issue: '#3591'
+  reason: 'the engine''s calls to every declared method (engine/conformance/arch_test.go:133): the engine calls every declared method once epics 3 to 8 are built, the clone calls last.'
+  issue: '#4206'
 - test: TestRFC8A_AttachAfterDeviceLoss
   message: 'fixture: journal init: rename'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the fixture''s journal re-initialisation, whose rename of the format file fails, until the journal''s Init and re-initialisation match what the row needs.'
-  issue: '#3589'
+  reason: 'the format file rename in the fixture''s Reinit (journal/open.go:139, engine/enginetest/fixture.go:712): a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the fixture''s journal re-initialisation, whose rename of the format file fails, until the journal''s Init and re-initialisation match what the row needs.'
+  issue: '#4206'
 - test: TestRFC8A_RecoveryThroughSince
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a truncate cut off before its removal record is applied at start, before the file is served, and settled. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: a truncate cut off before its removal record is applied at start, before the file is served, and settled. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
 - test: TestRFC8A_CleanCloseThenRestartReappliesNothing
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a clean stop commits every pending existence and forgets no tag, so the restart finds nothing above applied and the write reads back. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: a clean stop commits every pending existence and forgets no tag, so the restart finds nothing above applied and the write reads back. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
 - test: TestRFC8A_RecoveryReappliesInVersionOrder
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a write, a truncate and a write replay in version order at start. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: a write, a truncate and a write replay in version order at start. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
+  issue: '#4206'
 - test: TestRFC8A_SyncedLossReadsLost
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a synced loss is committed as lost at start and reads as lost. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: a synced loss is committed as lost at start and reads as lost. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
 - test: TestRFC8A_AbortedReleaseAtStart
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a release a holder refuses, found as a marker at start, is settled without its removal and reported as lost. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: a release a holder refuses, found as a marker at start, is settled without its removal and reported as lost. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
+  issue: '#4206'
 - test: TestRFC8A_AbortedReleaseNextRestartQuiet
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the restart after an aborted release is quiet. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: the restart after an aborted release is quiet. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
+  issue: '#4206'
 - test: TestRFC8A_ReleaseLeftMidRetryFinishedByRestart
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a release whose journal step is done and whose first transaction stalled is finished by the restart. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: a release whose journal step is done and whose first transaction stalled is finished by the restart. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
+  issue: '#4206'
 - test: TestRFC8A_RecoveryUsage
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the usage after recovery is the bytes re-applied, and a second restart leaves it unchanged. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: the usage after recovery is the bytes re-applied, and a second restart leaves it unchanged. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
+  issue: '#4206'
 - test: TestRFC8A_VersionLimit
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the version limit, its start and crash halves. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
-  issue: '#3589'
+  reason: 'the journal''s Open recovering segments: the version limit, its start and crash halves. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
+  issue: '#4206'
 - test: TestRFC8A_VersionLimitRaise
   message: 'the raise halves need a block of 16'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: the raise halves of the version limit row, at a block of 16 the conformance package cannot set. Init and Open work; the fixture now attaches the share; the row stops at its own check: the raise halves need a block of 16, which this package cannot set yet. Then back to the row''s own need: until the journal has Share, Draw and SetVersionLimit, then at the missing knob until an issue gives the package one.'
-  issue: '#3589'
+  reason: 'a block of 16 the conformance package cannot set (engine/conformance/rfc8_a_test.go:422): the raise halves of the version limit row, at a block of 16 the conformance package cannot set. Init and Open work; the fixture now attaches the share; the row stops at its own check: the raise halves need a block of 16, which this package cannot set yet. Then back to the row''s own need: until the journal has Share, Draw and SetVersionLimit, then at the missing knob until an issue gives the package one.'
+  issue: '#4206'
 - test: TestRFC8_SelfFenceVersionLimitRaise
   message: 'the failing raise fences the node'
   status: fail
@@ -147,15 +147,15 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a removal crashed between two batches resumes at the restart, the extent reads removed before the loop runs and after, and the record is pruned. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#3700'
+  reason: 'the journal''s Open recovering segments: a removal crashed between two batches resumes at the restart, the extent reads removed before the loop runs and after, and the record is pruned. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
 - test: TestRFC8A_RemovalDoneNotPrunedIsPrunedAtRestart
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a release whose last batch committed and whose prune did not is pruned at the restart, and its index entry goes. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
-  issue: '#3700'
+  reason: 'the journal''s Open recovering segments: a release whose last batch committed and whose prune did not is pruned at the restart, and its index entry goes. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
+  issue: '#4206'
 - test: TestRFC8B_JournalSyncFailed
   message: 'holds segments; recovering them is not built'
   status: fail
@@ -196,15 +196,15 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: an Unbind returns once the removal batch in flight has, and after a Drop the journal names no entry for the share and every accepted write had one Done (§2.3). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes, the Unbind and the held removal batch, and stops at Drop, whose forget of the tag answers journal: not implemented, until the journal''s Forget is built.'
-  issue: '#3589'
+  reason: 'the journal''s Forget: an Unbind returns once the removal batch in flight has, and after a Drop the journal names no entry for the share and every accepted write had one Done (§2.3). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes, the Unbind and the held removal batch, and stops at Drop, whose forget of the tag answers journal: not implemented, until the journal''s Forget is built.'
+  issue: '#4206'
 - test: TestRFC8A_UnsuitableJournalAtStart
   message: 'the retry''s timer is set: not within 10s'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a journal refused as unsuitable at start leaves its share unattached and named, and the retried open attaches it once the check clears. Init and Open work and the journal reports its version counter, so the row gets past its first write; it stops at the retry''s timer check (not within 10s) because the real journal''s own timers sit on the fixture clock, so the pending-timer count reads 6, not 1; the unit tests prove the engine side over the fake journal.'
-  issue: '#3589'
+  reason: 'the journal''s timers on the fixture clock (engine/conformance/rfc8_a_test.go:554, engine/enginetest/fixture.go:838): a journal refused as unsuitable at start leaves its share unattached and named, and the retried open attaches it once the check clears. Init and Open work and the journal reports its version counter, so the row gets past its first write; it stops at the retry''s timer check (not within 10s) because the real journal''s own timers sit on the fixture clock, so the pending-timer count reads 6, not 1; the unit tests prove the engine side over the fake journal.'
+  issue: '#4206'
 - test: TestTheFilesystemStartsAfterTheEngine/journal/restart
   message: 'fixture: engine start: engine: start: open the journal'
   status: fail
