@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -396,32 +397,38 @@ func TestSparesPhaseUnlinksAShortSpare(t *testing.T) {
 	}
 }
 
-// TestSparesPhaseZeroCapUnlinksTheEmptyCandidate plants one empty record-less
-// .seg and runs the open under a zero SegmentCap: no cap is the cap no spare
-// can be right-sized under, so every candidate unlinks — the empty file
-// first of all, whose size 0 would equal the zero cap and read as
-// right-sized by a bare comparison, wrongly adopting it.
-func TestSparesPhaseZeroCapUnlinksTheEmptyCandidate(t *testing.T) {
+// TestSparesPhaseRefusesADepsWithoutSegmentCap plants one empty record-less
+// .seg — the file whose size 0 equals the zero cap — and runs the open under
+// a zero SegmentCap, the Deps literal that forgot the cap: no cap right-sizes
+// any spare, so the phase refuses the open naming the unset cap rather than
+// unlinking each candidate under it, and the directory keeps every file the
+// body planted.
+func TestSparesPhaseRefusesADepsWithoutSegmentCap(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
 	empty := core.SegmentID(4)
 	r.write(format.SegmentName(empty), nil)
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+	removes := r.seam.Calls(kit.OpRemove)
 
 	deps := r.runDeps()
 	deps.SegmentCap = 0
-	st, err := Run(context.Background(), deps, core.Version{}, journalID, nil)
+	_, err := Run(context.Background(), deps, core.Version{}, journalID, nil)
 
-	if err != nil {
-		t.Fatalf("spares: the open under a zero SegmentCap: %v", err)
+	if err == nil {
+		t.Fatalf("spares: the open under a zero SegmentCap succeeded, want the refusal naming the unset cap")
 	}
-	if got, want := st.Spares.Unlinked, []core.SegmentID{empty}; !slices.Equal(got, want) {
-		t.Errorf("spares: the empty candidate under a zero cap got unlinked %v, want %v: no cap right-sizes any spare", got, want)
+	if !strings.Contains(err.Error(), "SegmentCap") {
+		t.Errorf("spares: the zero-cap refusal reads %q, want it to name the unset SegmentCap", err.Error())
 	}
-	if len(st.Spares.Adopted) != 0 {
-		t.Errorf("spares: the empty candidate under a zero cap was adopted %v, want nothing", st.Spares.Adopted)
+	if !slices.Contains(r.listing(), format.SegmentName(empty)) {
+		t.Errorf("spares: the refused zero-cap open unlinked %s; the directory holds %v", format.SegmentName(empty), r.listing())
 	}
-	if slices.Contains(r.listing(), format.SegmentName(empty)) {
-		t.Errorf("spares: the empty candidate %s is still in the directory %v, want it unlinked", format.SegmentName(empty), r.listing())
+	if got, want := r.seam.Calls(kit.OpRemove), removes; got != want {
+		t.Errorf("spares: the refused zero-cap open removed something, got %d removes, want %d, the count before the run", got, want)
+	}
+	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs; got != want {
+		t.Errorf("spares: the refused zero-cap open synced the directory, got %d syncs, want %d, the count before the run", got, want)
 	}
 }
 

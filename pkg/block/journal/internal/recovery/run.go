@@ -30,9 +30,10 @@ type Deps struct {
 
 	// SegmentCap is the size a re-adopted spare's file must hold exactly:
 	// the spares phase unlinks every candidate whose size differs — under
-	// or over — and leaves its id for the pool to make again. Zero, the
-	// cap no spare can be right-sized under, unlinks every candidate; the
-	// open fills the field from the journal's own configured cap.
+	// or over — and leaves its id for the pool to make again. Zero or less,
+	// a Deps literal that forgot the cap, is refused by the spares phase
+	// naming it; the open fills the field from the journal's own
+	// configured cap.
 	SegmentCap int64
 
 	// SpareTargets is how many spares each of the pool's classes keeps, in

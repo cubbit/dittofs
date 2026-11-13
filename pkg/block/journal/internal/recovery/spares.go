@@ -145,6 +145,17 @@ type AdoptedSpare struct {
 // them. Each is left for the pool to make again; every adoption is recorded
 // with the class the pool's own targets' fill order gives its id.
 func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.JournalID, _ core.Version, marks []core.SyncMark) error {
+	// decision: a zero SegmentCap — a Deps literal that forgot the cap —
+	// refuses the phase naming it, rather than unlinking every candidate
+	// under "no cap right-sizes any spare": nothing distinguishes that
+	// refusal from a whole directory of short candidates, and a caller
+	// that reads a fixture "the way an open does" must not lose files to a
+	// literal omitted. The open fills the field from the journal's own
+	// configured cap, so no open that can take a spare passes zero here.
+	if deps.SegmentCap <= 0 {
+		return errors.New("recovery: a Deps without SegmentCap reached the spares phase: fill it with the journal's own configured cap")
+	}
+
 	// decision: this phase is the open's first writing one, so the refusal
 	// runs before any candidate work rather than at the run's end: zeroing
 	// a slot — or writing anything at all — over a range no bounded read
@@ -171,13 +182,10 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 		// a candidate whose file does not — a crash's empty leftover, a
 		// recycle interrupted short, a file grown past the cap — is staged
 		// for unlinking and made again, never zeroed: no byte of a file
-		// about to be removed is read into a slot or written. decision: a
-		// SegmentCap of zero or less unlinks every candidate rather than
-		// skipping the check — under no cap no spare can be
-		// right-sized, and not an empty one by its size 0 equaling the
-		// cap; the open fills the field from the journal's own cap, so no
-		// open that can adopt a spare passes zero.
-		if deps.SegmentCap <= 0 || sizes[id] != deps.SegmentCap {
+		// about to be removed is read into a slot or written. The cap itself
+		// never reaches zero here: the phase above refused a Deps without
+		// one, so the comparison sizes every candidate.
+		if sizes[id] != deps.SegmentCap {
 			unlinked = append(unlinked, id) // candidates ascend, so unlinked does too
 			continue
 		}

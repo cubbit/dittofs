@@ -1670,7 +1670,7 @@ func (f *copyFixture) shutdown(t *testing.T) {
 func (f *copyFixture) reopen(t *testing.T) (recovery.State, *index.Index, []format.RecordHeader) {
 	t.Helper()
 	st, err := recovery.Run(context.Background(), recovery.Deps{
-		FS: f.seam.FS(), Clock: f.clock,
+		FS: f.seam.FS(), Clock: f.clock, SegmentCap: copySegCap,
 	}, core.Version{}, copyIdentity, nil)
 	if err != nil {
 		t.Fatalf("the reopen over the fixture's directory: %v", err)

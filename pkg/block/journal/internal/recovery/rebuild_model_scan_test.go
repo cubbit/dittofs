@@ -21,6 +21,11 @@ import (
 // modelID is the journal identity the planted format file names.
 var modelID = core.JournalID{'o', 'w', 'n', '-', 'i', 'd', 'e', 'n', 't', 'i', 't', 'y'}
 
+// modelSegCap is the segment cap the rig's reopens name: the workload plants
+// its segments at their natural sizes — six records each, no spares — so
+// nothing sizes against it; the spares phase refuses a Deps without a cap.
+const modelSegCap = int64(1 << 20)
+
 // modelInstall is the installation ID the planted format file names.
 var modelInstall = core.InstallationID{'k', 'i', 't'}
 
@@ -344,7 +349,13 @@ func rebuildAndCompare(t *testing.T, w *workload) recovery.State {
 	r.writeFormat()
 	r.plantWorkload(w)
 
-	st, err := recovery.Run(context.Background(), recovery.Deps{FS: r.seam.FS(), Clock: r.clk}, core.Version{}, modelID, nil)
+	// The workload plants no spares — every segment holds verifying
+	// records, so none is a candidate whatever its size — so the cap below
+	// right-sizes nothing; it names one because the spares phase refuses a
+	// Deps without it, the same refusal an open would answer for real.
+	st, err := recovery.Run(context.Background(), recovery.Deps{
+		FS: r.seam.FS(), Clock: r.clk, SegmentCap: modelSegCap,
+	}, core.Version{}, modelID, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

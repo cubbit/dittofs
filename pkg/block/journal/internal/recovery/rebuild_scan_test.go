@@ -397,7 +397,7 @@ func TestRunRebuildScansConcurrentlyUpToTheReaderBound(t *testing.T) {
 	defer rec.releaseSegReads()
 	done := make(chan error, 1)
 	go func() {
-		_, err := Run(context.Background(), Deps{FS: rec, Clock: r.clk, rebuildReaders: procs}, core.Version{}, journalID, nil)
+		_, err := Run(context.Background(), Deps{FS: rec, Clock: r.clk, SegmentCap: testCap, rebuildReaders: procs}, core.Version{}, journalID, nil)
 		done <- err
 	}()
 
@@ -616,7 +616,7 @@ func TestRunRebuildEIOTwiceThenSucceedsBuildsTheSameIndex(t *testing.T) {
 			}
 		}
 		rec := newReadsOf(r.seam.FS())
-		st, err := Run(context.Background(), Deps{FS: rec, Clock: r.clk}, core.Version{}, journalID, nil)
+		st, err := Run(context.Background(), Deps{FS: rec, Clock: r.clk, SegmentCap: testCap}, core.Version{}, journalID, nil)
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -1171,7 +1171,7 @@ func TestRunRebuildReadsNoPayloadOfAnyNewestOrOlderSegment(t *testing.T) {
 	}
 
 	rec := newReadsOf(r.seam.FS())
-	if _, err := Run(context.Background(), Deps{FS: rec, Clock: r.clk}, core.Version{}, journalID, nil); err != nil {
+	if _, err := Run(context.Background(), Deps{FS: rec, Clock: r.clk, SegmentCap: testCap}, core.Version{}, journalID, nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
