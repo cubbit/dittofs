@@ -1126,9 +1126,9 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) ([]core.SyncM
 	// was there: a concurrent writer may append a newer record of the file
 	// after this call's targets and before its Latest, and the call then
 	// names that record but does not wait for it, the targets naming only
-	// what the call began with. Its failure still reaches the call through
-	// the marks a failed window leaves on the file, keyed as they are by the
-	// named ids. The fallback narrows what the marks name, never what the
+	// what the call began with. A failure of its window goes, like any failed
+	// window's, to the first Sync naming the file after it, keyed as failures
+	// are by the named ids. The fallback narrows what the marks name, never what the
 	// call waits for, and a fallback record whose cover no sync proved
 	// reaches its end is dropped, so no mark names a record a sync did not
 	// cover (resolveCandsLocked). Nil Latest keeps the behaviour the layer
