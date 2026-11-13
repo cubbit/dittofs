@@ -62,6 +62,14 @@ func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID
 	return out
 }
 
+// allocProber is the platform's optional allocation query, asserted on the
+// file the open holds of a candidate: where the candidate's platform files
+// report one, the phase asks whether the device holds the file whole before
+// taking it. The interface is the consumer's own declaration, not the
+// platform's export, so it stays optional: on a platform that does not
+// report allocation the assertion finds nothing and the size alone decides.
+type allocProber interface{ Allocated() (bool, error) }
+
 // Spares is what the spares phase did with the candidates it re-adopted:
 // each adoption, naming the id the allocator owns again, and each id the
 // phase unlinked. Both lists are ascending by id.
@@ -100,10 +108,13 @@ type AdoptedSpare struct {
 // adoption takes the segment's tail fate with it: a re-adopted spare's tail
 // is nobody's to cut, and the phases that cut find no fate for it.
 //
-// A candidate whose file does not hold exactly the segment cap is unlinked
-// rather than adopted — the pool takes whole cap-sized segments only — and
-// its id is left for the pool to make again; the class each adoption takes
-// under is a later step of this open's own list, not this phase's.
+// A candidate whose file does not hold exactly the segment cap — or whose
+// body the device does not hold allocated whole, where the platform reports
+// the allocation of its files — is unlinked rather than adopted: the pool
+// takes whole cap-sized segments only, and a hole no byte of its size can
+// name would take the writes of a whole segment and lose a crash's worth of
+// them. Each is left for the pool to make again; the class each adoption
+// takes under is a later step of this open's own list, not this phase's.
 func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.JournalID, _ core.Version) error {
 	// decision: this phase is the open's first writing one, so the refusal
 	// runs before any candidate work rather than at the run's end: zeroing
@@ -138,13 +149,21 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 		// cap; the open fills the field from the journal's own cap, so no
 		// open that can adopt a spare passes zero.
 		if deps.SegmentCap <= 0 || sizes[id] != deps.SegmentCap {
-			if err := deps.FS.Remove(format.SegmentName(id)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				// A name already gone is the unlink done; anything else
-				// the device said of the removal fails the open, which
-				// takes no spare over a name it could not clear.
+			if err := unlinkSpare(deps, id); err != nil {
 				return err
 			}
 			unlinked = append(unlinked, id) // candidates ascend, so unlinked does too
+			continue
+		}
+		whole, qerr := spareWholeOnDisk(deps, id)
+		if qerr != nil {
+			return qerr
+		}
+		if !whole {
+			if err := unlinkSpare(deps, id); err != nil {
+				return err
+			}
+			unlinked = append(unlinked, id)
 			continue
 		}
 		if err := zeroSpareSlots(deps, rd, id, sizes[id]); err != nil {
@@ -173,6 +192,54 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 		return reAdopted[f.ID]
 	})
 	return nil
+}
+
+// unlinkSpare removes the candidate id's segment file, answering the error a
+// removal the device refused — the open takes and unlinks nothing over a name
+// it could not clear. A name already gone is the unlink done.
+func unlinkSpare(deps Deps, id core.SegmentID) error {
+	if err := deps.FS.Remove(format.SegmentName(id)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		// A name already gone is the unlink done; anything else the device
+		// said of the removal fails the open.
+		return err
+	}
+	return nil
+}
+
+// spareWholeOnDisk asks, where the platform reports the allocation of its
+// files, whether the device holds every byte of the candidate id's file
+// allocated and written: a cap-sized file whose middle a recycle's punch left
+// a hole in reads back zeros no size can tell from a made spare, and adopting
+// it would take writes a crash would lose into the hole. The file is opened
+// only for the query and no byte of it is read, written or zeroed: what it
+// fails the unlink answers, never a slot.
+func spareWholeOnDisk(deps Deps, id core.SegmentID) (bool, error) {
+	f, err := deps.FS.Open(format.SegmentName(id))
+	if err != nil {
+		return false, err
+	}
+
+	// ponytail: only the Linux platform's file answers the allocation query,
+	// so on macOS and Windows the assertion finds nothing and the size alone
+	// decides — a spare a punch holed passes there unseen. Give the darwin
+	// and windows files their own Allocated, over F_LOG2PHYS_EXT and
+	// FSCTL_QUERY_ALLOCATED_RANGES, when a short spare is seen on either;
+	// with it, the same assertion takes them.
+	whole := true
+	if p, ok := f.(allocProber); ok {
+		whole, err = p.Allocated()
+	}
+
+	if err == nil {
+		err = f.Close()
+	} else {
+		_ = f.Close() // the query's own error is the one the open answers
+	}
+
+	// A query the device refused fails the open naming the spare, as its
+	// own reads elsewhere do: adopting over a file whose allocation the
+	// device never answered would take a hole the open chose not to see.
+	return whole, err
 }
 
 // zeroSpareSlots zeroes the two slots of the candidate id, file size bytes

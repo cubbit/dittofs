@@ -17,7 +17,7 @@ import (
 
 // call is one entry of a recorder's log.
 type call struct {
-	op   string // open, fsync, fdatasync, close, fallocate or pwrite
+	op   string // open, fsync, fdatasync, close, fallocate, pwrite or fiemap
 	fd   int    // the descriptor acted on, or open's result; -1 for a failed open
 	path string // open: the path opened
 	mode int    // open: its flags; fallocate: its mode
@@ -255,6 +255,19 @@ func (r *recorder) table() calls {
 			}
 
 			return unix.Pread(fd, p, off)
+		},
+		fiemap: func(fd int, fm *fiemap) error {
+			c := call{
+				op: "fiemap",
+				fd: fd,
+			}
+			c.dev, c.ino = fdIdentity(fd)
+
+			if err := r.add(c); err != nil {
+				return err
+			}
+
+			return fiemapIoctl(fd, fm)
 		},
 	}
 }
