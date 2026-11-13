@@ -116,10 +116,10 @@ cited by number and title, and how it applies here or why it does not.
 | R9 | Buffers come in four classes, small 4 KiB, directory 64 KiB, transfer 1 MiB and large 8 MiB, and a request draws the smallest class whose capacity (D5) holds it | MUST | RFC 24 §3.1 | T3.2 |
 | R10 | Each class holds its size plus the protocol's headers (D5 says how much, and for which classes) | MUST | RFC 24 §3.1 | T3.2 |
 | R11 | A buffer larger than the largest class's capacity (D5) is not pooled, and is charged its exact size (D6 reads RFC 24 §3.1's "its protocol uses" as the pool's own largest class) | MUST | RFC 24 §3.1 | T3.2 |
-| R12 | `Get` takes one reservation for key, of n's class plus the per-request overhead of 8 KiB, before it takes any bytes; it waits in the budget, never in the allocator | MUST | RFC 20 §6.8; RFC 24 §2.5, §3.1 | T3.2 |
+| R12 | `Get` takes one reservation for key, of n's class's capacity plus the per-request overhead of 8 KiB, before it takes any bytes; it waits in the budget, never in the allocator | MUST | RFC 20 §6.8; RFC 24 §2.5, §3.1 | T3.2 |
 | R13 | `Get` returns a `Buf` with one reference, whose `B` has its class's capacity and the record's or reply's length (D8: the n asked) | MUST | RFC 20 §6.8 | T3.2 |
 | R14 | Each class has one free list, a `sync.Pool` of `*Buf`; this epic's gate holds a `Get` on a class with a free buffer, and the `Release` that returns it, at no allocation, in the non-race cell | bound | RFC 20 §6.8, §6.10 | T3.2 |
-| R15 | `Retain` adds a borrower; a pooled buffer returns to its pool, with its reservation, only at its last borrower's `Release`, so it is never reused while a borrower holds it, budget and memory never disagree, and an idle pool holds zero reserved bytes | invariant | RFC 20 §5.3, §6.8, §9 A18; RFC 24 §2.5 | T3.2 |
+| R15 | `Retain` adds a borrower; a pooled buffer returns to its pool, with its reservation, only at its last borrower's `Release`, so it is never reused while a borrower holds it, no byte a holder has is uncharged, and an idle pool holds zero reserved bytes | invariant | RFC 20 §5.3, §6.8, §9 A18; RFC 24 §2.5 | T3.2 |
 | R16 | Under the race detector, `Release` fills the buffer with a poison byte | MUST | RFC 20 §6.8 | T3.2 |
 | R17 | A second `Release` past zero panics | MUST | RFC 20 §6.8 | T3.2 |
 
@@ -199,8 +199,11 @@ called by E4's and E5's tests.
   log: it stands in for RFC 24 §10's counter, which replaces it. No prior art sought: the
   question is who owns the registration.
 - **D8, `Get` returns `B` at the length asked.** RFC 20 §6.8 has `len` "the record's or
-  reply's", and `Get` is told that length: `len(B) == n`. A caller that fills by appending
-  cuts to `B[:0]` first, as `testproto`'s replay stage does. E4's reader and E5's encoders
+  reply's", and `Get` is told that length: `len(B) == n`, zeroed, so a holder that sends
+  `B` short of what it wrote sends zeros and never its last holder's bytes (`ponytail:` at
+  the clear: hand the bytes out as they are to a caller that fills `B` whole, when a profile
+  shows the clear). A caller that fills by appending cuts to `B[:0]` first, as `testproto`'s
+  replay stage does. E4's reader and E5's encoders
   build on this. `decision:` at the cut. Prior art: `make([]byte, n)`; a pool that returned
   zero length would make every reader cut it up to n.
 - **D9, the pool keeps its own slice of a buffer's bytes.** A holder may cut or reassign `B`,
@@ -212,8 +215,10 @@ called by E4's and E5's tests.
   `Retain` and `Release` pair on it, its last `Release` frees nothing, having no pool and no
   reservation, and one more panics (R17). A `Retain` after the last `Release` would bring
   the count back to zero and read as one holder of a buffer the pool may already have handed
-  out, so it panics as well, in tests and in production, as R17's release does. `decision:`
-  at the field. No prior art found.
+  out, so it panics as well, in tests and in production, as R17's release does. Both panics
+  hold only while the buffer sits released: once the pool hands it out again, a stale `Retain`
+  or `Release` cannot be told from the new holder's, and R16's poison read under the race
+  detector is what catches the stale holder. `decision:` at the field. No prior art found.
 
 ## 5. Target tree
 

@@ -561,7 +561,9 @@ pkg/resources/
 
 Receive and reply buffers come in a few classes, as
 [RFC 20 §6.6](rfc-20-adapters.md#6.6%20Throughput%20and%20latency) has them, each
-its size plus the protocol's headers:
+its size plus the protocol's headers: 4 KiB of header room on the directory,
+transfer and large classes, which carry a payload, and none on the small
+class, which carries headers only. That is a class's capacity:
 
 | Class | Size | Drawn for |
 | --- | --- | --- |
@@ -570,10 +572,17 @@ its size plus the protocol's headers:
 | transfer | 1 MiB | `READ` and `WRITE` up to 1 MiB: NFS's largest ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)), and the size SMB clients commonly use |
 | large | 8 MiB | SMB `READ` and `WRITE` past 1 MiB, up to SMB's largest ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)) |
 
-A request draws the smallest class that holds it. A buffer larger than the
-largest class its protocol uses is not pooled, and is charged its exact size.
+A request draws the smallest class whose capacity holds it. A buffer larger
+than the largest class's capacity is not pooled, and is charged its exact
+size.
 
-Each request is charged its buffer's class size plus a fixed **per-request
+> ponytail: the header room is 4 KiB, fixed, the same for every protocol, and
+> charged. It is a cost figure, not a limit: a record past its class's size
+> plus the room draws the next class and costs more. Make it the protocol's
+> own figure when a protocol's records are shown to pass it often enough to
+> matter.
+
+Each request is charged its buffer's capacity plus a fixed **per-request
 overhead** for what the request holds besides its buffer — its goroutine's
 stack, its decoded arguments, its context. The overhead is proposed at 8 KiB,
 and settled by §8's M1. So a node's requests in flight are bounded by the
@@ -711,7 +720,7 @@ are what bound how many large requests a node runs:
 | NFS `WRITE` of 1 MiB | receive: transfer class and overhead, about 1 MiB | about 500 node-wide |
 | NFS `READ` of 1 MiB | reply: transfer class; receive: small | about 500 node-wide |
 | SMB `WRITE` of 8 MiB | receive: large class, about 8 MiB | about 64 node-wide |
-| SMB `WRITE` of 64 KiB, one credit | receive: directory class and overhead, about 72 KiB | about 7,000 node-wide |
+| SMB `WRITE` of 64 KiB, one credit | receive: directory class and overhead, 76 KiB | about 7,000 node-wide |
 | `GETATTR`, `QUERY_INFO` | small class and overhead, about 12 KiB | about 43,000 node-wide |
 
 Raising a transfer size raises every large request's charge with it, so fewer
