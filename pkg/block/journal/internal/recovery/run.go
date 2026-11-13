@@ -11,6 +11,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
@@ -33,6 +34,15 @@ type Deps struct {
 	// cap no spare can be right-sized under, unlinks every candidate; the
 	// open fills the field from the journal's own configured cap.
 	SegmentCap int64
+
+	// SpareTargets is how many spares each of the pool's classes keeps, in
+	// segments: it decides the class each adopted spare is recorded under,
+	// in the fill order — the headroom first, then the repack reserve, then
+	// the content class, with every spare past every target taking the
+	// content class, for none is ever orphaned. The open fills it with the
+	// pool's own targets, so a re-adopted spare lands in the class the pool
+	// would have made it in.
+	SpareTargets segment.Targets
 
 	// rebuildOrder reorders the segments the rebuild dispatches before it
 	// starts a reader; nil keeps the listing's order, the one the open runs

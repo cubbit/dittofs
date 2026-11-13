@@ -33,6 +33,14 @@ func (s seamDir) plantSegment(t *testing.T, name string, b []byte) {
 	}
 }
 
+// takeBytes returns the bytes of the record-less take a take on the pool's
+// own spare leaves: the header b, zero-filled to the open's segment cap. A
+// spare short of the cap is unlinked, never re-adopted, so a fixture whose
+// take the spares phase re-adopts plants it whole.
+func takeBytes(b []byte) []byte {
+	return append(b, make([]byte, openSegmentCap-len(b))...)
+}
+
 // TestOpen_FormatUnreadableRefusesByFlag fails an Open that judges a format
 // file on the bytes a failing read returned: every read of a good file
 // failing with EIO, the open answers an UnreadableRangesError whose Format
@@ -85,9 +93,11 @@ func TestOpen_FormatUnreadableRefusesByFlag(t *testing.T) {
 // zero, damaged or foreign, never taking it off disk. The refusing open ends
 // in the spares phase, the recovery's first writing one, at the three
 // attempts the bound made and before any candidate read; the recovering one
-// runs the phase past it, whose two slot reads of the record-less take it
-// re-adopts bring the count to five — and still answers ErrNotImplemented,
-// the recovery after the spares phase being unbuilt.
+// runs the phase past it — the rebuild's two reads of the record-less take
+// and the two slot reads of the spare it re-adopts bringing the count to
+// seven (a whole-cap take: a short one is unlinked, never re-adopted) — and
+// still answers ErrNotImplemented, the recovery after the spares phase
+// being unbuilt.
 func TestOpen_SegmentHeaderRetryThenRefusal(t *testing.T) {
 	plan := []struct {
 		name      string
@@ -95,7 +105,7 @@ func TestOpen_SegmentHeaderRetryThenRefusal(t *testing.T) {
 		want      error
 		wantCalls int
 	}{
-		{"recovers on the third attempt", 2, ErrNotImplemented, 5},
+		{"recovers on the third attempt", 2, ErrNotImplemented, 7},
 		{"fails every attempt", 0, ErrUnreadable, 3},
 	}
 	for _, c := range plan {
@@ -106,7 +116,10 @@ func TestOpen_SegmentHeaderRetryThenRefusal(t *testing.T) {
 				t.Fatalf("Init: %v", err)
 			}
 			seg := format.SegmentName(1)
-			s.plantSegment(t, seg, raw.SegmentHeader{Identity: id, ID: 1}.Bytes())
+			// A cap-sized record-less take: a spare short of the cap is
+			// unlinked and made again, so only a whole one stays for the
+			// spares phase to re-adopt and zero.
+			s.plantSegment(t, seg, takeBytes(raw.SegmentHeader{Identity: id, ID: 1}.Bytes()))
 			if err := s.seam.Schedule(kit.Failing(kit.OpRead, seg, c.failures, syscall.EIO)); err != nil {
 				t.Fatalf("schedule: %v", err)
 			}
@@ -238,8 +251,10 @@ func TestOpen_IdentityRefusalLeavesTheDirectoryPinned(t *testing.T) {
 // TestOpen_AttachPassLeavesDirectoryPinned pins what a completed attach pass
 // leaves in the directory at the public Open: every .spare.tmp unlinked, an
 // unrecognised name and a foreign segment's bytes untouched, and the open
-// answering ErrNotImplemented with the recovery after the pass unbuilt —
-// the file names the pass changed are the spares' temporaries alone.
+// answering ErrNotImplemented with the recovery after the spares phase
+// unbuilt — the file names the open changed are the spares' temporaries
+// alone (the spares phase adopts the cap-sized take, changing its bytes, and
+// unlinks nothing here).
 func TestOpen_AttachPassLeavesDirectoryPinned(t *testing.T) {
 	s := newSeam(t)
 	id, err := s.init(t)
@@ -247,7 +262,9 @@ func TestOpen_AttachPassLeavesDirectoryPinned(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	own := format.SegmentName(2)
-	s.plantSegment(t, own, raw.SegmentHeader{Identity: id, ID: 2}.Bytes())
+	// A cap-sized record-less take, the shape the spares phase re-adopts
+	// rather than unlinks for falling short of the cap.
+	s.plantSegment(t, own, takeBytes(raw.SegmentHeader{Identity: id, ID: 2}.Bytes()))
 	foreign := format.SegmentName(3)
 	s.plantSegment(t, foreign, raw.SegmentHeader{ID: 3}.Bytes())
 	backup := "00000000000000000042.seg.bak"
