@@ -140,7 +140,7 @@ func TestOverwriteRetiresItsEmptiedSegmentOnlyAfterTheSync(t *testing.T) {
 	hold := seam.Hold(t, kit.OpSync, "*.seg")
 	mustWrite(t, c, s, f, 0, make([]byte, payload))
 	syncDone := make(chan error, 1)
-	go func() { syncDone <- c.Durability().Sync(ctx, f) }()
+	go func() { _, err := c.Durability().Sync(ctx, f); syncDone <- err }()
 	select {
 	case <-hold.Reached():
 	case <-time.After(5 * time.Second):
@@ -225,7 +225,7 @@ func TestALiftsOfferWaitsOnARemovalLeftUnsyncedByAnotherFile(t *testing.T) {
 	}
 	leadSync := seam.Hold(t, kit.OpSync, format.SegmentName(active))
 	syncDone := make(chan error, 1)
-	go func() { syncDone <- c.Durability().Sync(ctx, f) }()
+	go func() { _, err := c.Durability().Sync(ctx, f); syncDone <- err }()
 	select {
 	case <-leadSync.Reached():
 	case <-time.After(5 * time.Second):
@@ -349,7 +349,7 @@ func TestALiftsOfferWaitsOnARemovalItsSegmentFailedToSync(t *testing.T) {
 	}
 	leadSync := seam.Hold(t, kit.OpSync, format.SegmentName(home))
 	syncDone := make(chan error, 1)
-	go func() { syncDone <- c.Durability().Sync(ctx, f) }()
+	go func() { _, err := c.Durability().Sync(ctx, f); syncDone <- err }()
 	select {
 	case <-leadSync.Reached():
 	case <-time.After(5 * time.Second):

@@ -314,7 +314,7 @@ func TestANotYetDurableRecordRequeuesUntilItsSyncCoversIt(t *testing.T) {
 	loc := f.appendRecord(t, fid(3), ver(1))
 	hold := f.seam.Hold(t, kit.OpSync, format.SegmentName(loc.Segment))
 	syncDone := make(chan error, 1)
-	go func() { syncDone <- d.Sync(context.Background(), fid(3)) }()
+	go func() { _, err := d.Sync(context.Background(), fid(3)); syncDone <- err }()
 	select {
 	case <-hold.Reached():
 	case <-time.After(5 * time.Second):
@@ -388,7 +388,7 @@ func TestTheHandOverWaitsOnARecordAnotherMoverLeftUnsynced(t *testing.T) {
 	// The first mover's record, appended and made durable by its own sync:
 	// the record its offer is gated on.
 	first := f.appendRecord(t, fid(3), ver(1))
-	if err := d.Sync(context.Background(), fid(3)); err != nil {
+	if _, err := d.Sync(context.Background(), fid(3)); err != nil {
 		t.Fatalf("the first record's sync: %v", err)
 	}
 	if !d.Durable(first) {
@@ -403,7 +403,7 @@ func TestTheHandOverWaitsOnARecordAnotherMoverLeftUnsynced(t *testing.T) {
 	}
 	hold := f.seam.Hold(t, kit.OpSync, format.SegmentName(second.Segment))
 	syncDone := make(chan error, 1)
-	go func() { syncDone <- d.Sync(context.Background(), fid(4)) }()
+	go func() { _, err := d.Sync(context.Background(), fid(4)); syncDone <- err }()
 	select {
 	case <-hold.Reached():
 	case <-time.After(5 * time.Second):

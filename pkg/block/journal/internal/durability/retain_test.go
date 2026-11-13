@@ -286,11 +286,11 @@ func TestTheCompletedSyncsLiftReportsTheTouchedSegments(t *testing.T) {
 	moved, r := newMovedRig(t, false)
 	f := file(1)
 	loc1, _ := r.publish(t, f, 0, "aaaa")
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v1: %v", err)
 	}
 	loc2, _ := r.publish(t, f, 0, "bbbb")
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v2: %v", err)
 	}
 	// The Sync that completed v2 has lifted it: the lift the report names has
@@ -318,7 +318,7 @@ func TestASyncedLossReportsTheSegmentsItsMarkerEmptied(t *testing.T) {
 	moved, r := newMovedRig(t, true)
 	f := file(1)
 	loc1, _ := r.publish(t, f, 0, "aaaa")
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v1: %v", err)
 	}
 
