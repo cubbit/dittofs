@@ -28,7 +28,7 @@ func TestWriteSink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ro.Close()
+	defer func() { _ = ro.Close() }()
 
 	var rawID [16]byte
 	copy(rawID[:], "sink-test-file-1")
@@ -102,11 +102,11 @@ func TestOffloadParse(t *testing.T) {
 func TestOffloadAndRepackPropagateTheStub(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "journal")
 	socket := tmpSocket(t)
-	srv := &Server{Dir: dir, SocketPath: socket, OffloadDir: filepath.Join(t.TempDir(), "objects")}
+	srv := &Server{Options: testJournalOptions(), Dir: dir, SocketPath: socket, OffloadDir: filepath.Join(t.TempDir(), "objects")}
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	file := hex.EncodeToString([]byte("offload-file-xyz"))
 	out, err := exec(t, socket, "share", "--tag", "1")
@@ -137,11 +137,11 @@ func TestForgetDropsTheHandle(t *testing.T) {
 	// must drop its handle before calling it — otherwise the command could
 	// never succeed once the journal builds Forget.
 	socket := tmpSocket(t)
-	srv := &Server{Dir: filepath.Join(t.TempDir(), "journal"), SocketPath: socket}
+	srv := &Server{Options: testJournalOptions(), Dir: filepath.Join(t.TempDir(), "journal"), SocketPath: socket}
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 	if out, err := exec(t, socket, "share", "--tag", "1"); err != nil {
 		t.Fatalf("share: %v (out %q)", err, out)
 	}

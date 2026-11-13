@@ -80,11 +80,11 @@ func TestReadAtParse(t *testing.T) {
 func TestWriteReadRoundTrip(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "journal")
 	socket := tmpSocket(t)
-	srv := &Server{Dir: dir, SocketPath: socket}
+	srv := &Server{Options: testJournalOptions(), Dir: dir, SocketPath: socket}
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	var rawID [16]byte
 	copy(rawID[:], "round-trip-file")
@@ -113,11 +113,11 @@ func TestWriteReadRoundTrip(t *testing.T) {
 
 func TestUnboundedSizesRefused(t *testing.T) {
 	socket := tmpSocket(t)
-	srv := &Server{Dir: filepath.Join(t.TempDir(), "journal"), SocketPath: socket}
+	srv := &Server{Options: testJournalOptions(), Dir: filepath.Join(t.TempDir(), "journal"), SocketPath: socket}
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 	if out, err := exec(t, socket, "share", "--tag", "1"); err != nil {
 		t.Fatalf("share: %v (out %q)", err, out)
 	}

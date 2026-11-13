@@ -67,7 +67,7 @@ func (c *Client) Do(ctx context.Context, method, path string, req any, resp any)
 	if err != nil {
 		return &unreachableError{path: c.socket, err: err}
 	}
-	defer hresp.Body.Close()
+	defer func() { _ = hresp.Body.Close() }()
 	var env envelope
 	if err := json.NewDecoder(hresp.Body).Decode(&env); err != nil {
 		return fmt.Errorf("jdemo: %s %s: decoding answer: %w", method, path, err)

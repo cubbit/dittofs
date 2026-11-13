@@ -88,11 +88,11 @@ func TestRenderVerify(t *testing.T) {
 func TestViewerRoutes(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "journal")
 	socket := tmpSocket(t)
-	srv := &Server{Dir: dir, SocketPath: socket}
+	srv := &Server{Options: testJournalOptions(), Dir: dir, SocketPath: socket}
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	file := hex.EncodeToString([]byte("viewer-file-test"))
 	out, err := exec(t, socket, "share", "--tag", "1")

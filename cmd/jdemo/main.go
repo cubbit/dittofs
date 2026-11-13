@@ -28,7 +28,9 @@ func runCLI(out, errw io.Writer, args []string) int {
 	root.SetErr(errw)
 	root.SetArgs(args)
 	if err := root.Execute(); err != nil {
-		friendly(errw, err)
+		// One line, fmt.Fprintln's own error discarded: there is nowhere
+		// to report a failure to report.
+		_, _ = fmt.Fprintln(errw, friendlyLine(err))
 		return 1
 	}
 	return 0
