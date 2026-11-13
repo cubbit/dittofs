@@ -731,8 +731,13 @@ func TestRFC1B_PinsBoundedAcrossOffers(t *testing.T) {
 // fail too, so a journal can resolve the window only from a copy it kept.
 func failWindow(t *testing.T, f *journaltest.Fixture, seg journal.SegmentID) {
 	t.Helper()
+	failWindowOf(t, f, segmentName(seg))
+}
 
-	name := segmentName(seg)
+// failWindowOf is failWindow for every segment whose name matches name.
+func failWindowOf(t *testing.T, f *journaltest.Fixture, name string) {
+	t.Helper()
+
 	eio := sim.FaultAction{Err: syscall.EIO}
 	fault, err := sim.NewSchedule(1, nil,
 		sim.Rule{Op: kit.OpSync, Key: name, Count: 1, Action: eio},
@@ -740,7 +745,7 @@ func failWindow(t *testing.T, f *journaltest.Fixture, seg journal.SegmentID) {
 		sim.Rule{Op: kit.OpReadDirect, Key: name, Action: eio},
 	)
 	if err != nil {
-		t.Fatalf("fail segment %d's sync: %v", seg, err)
+		t.Fatalf("fail the sync of %s: %v", name, err)
 	}
 	f.Seam.SetFault(fault)
 }

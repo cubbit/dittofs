@@ -741,7 +741,9 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		seg := segmentOf(t, f, id, 0)
 		name := segmentName(seg)
 
-		f.FailNext(kit.OpSync, name, 1)
+		// The window, not the sync alone, is failed: see the done-context leg.
+		failWindow(t, f, seg)
+		reappended := f.J.Stats().Counters.SyncReappendedBytes
 		hold := f.Seam.HoldFirst(t, kit.OpSync, name)
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
@@ -758,6 +760,9 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		f.Seam.SetFault(nil)
 		_, err = h.Sync(t.Context(), id)
 		stub(t, "Sync", err)
+		if err == nil && f.J.Stats().Counters.SyncReappendedBytes > reappended {
+			return // the window was re-appended from a kept copy: nothing to report
+		}
 		if !errors.Is(err, journal.ErrSyncFailed) {
 			t.Fatalf("the Sync after the cancelled one returned %v, want the failure it raced", err)
 		}
@@ -771,9 +776,20 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		// A fresh write, so the second failing sync has its own window on a
 		// segment the first failure never touched; the failed segment takes
 		// no further append, so the fault is armed on any segment.
+		//
+		// decision: a window whose records re-read and verify is re-appended,
+		// and a re-appended window is resolved, not lost, so it owes no
+		// report (as TestRFC1A_FailedWindowReportedOnce has it). Failing the
+		// sync alone leaves that path open, and the Sync after then rightly
+		// returns nil. Every read of the segment fails too, so the window can
+		// be re-appended only from a copy the journal kept in memory; a
+		// journal that keeps one reports nothing, and the leg then asserts the
+		// re-append instead, leaving the done context's rule unexercised on
+		// it. Overturned if the journal's resolution becomes settable.
 		write(t, h, id, 0, distinct(0, size))
-		f.FailNext(kit.OpSync, "*.seg", 1)
+		failWindowOf(t, f, "*.seg")
 		before := f.J.Stats().Counters.SyncFailures
+		reappended := f.J.Stats().Counters.SyncReappendedBytes
 		// The worker arms the bound's timer only once it observes the write,
 		// not when the write answers: an advance landing first fires nothing,
 		// and the timer armed then is due a whole bound past the advanced
@@ -796,6 +812,9 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		}
 		_, err = h.Sync(t.Context(), id)
 		stub(t, "Sync", err)
+		if err == nil && f.J.Stats().Counters.SyncReappendedBytes > reappended {
+			return // the window was re-appended from a kept copy: nothing to report
+		}
 		if !errors.Is(err, journal.ErrSyncFailed) {
 			t.Fatalf("the Sync after the refused one returned %v, want the failure to still report", err)
 		}
