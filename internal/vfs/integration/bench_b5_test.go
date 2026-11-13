@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"context"
 	"math"
 	"slices"
 	"testing"
@@ -39,7 +40,7 @@ func benchB5Append(b *testing.B) {
 	for i := range b.N {
 		for k := range b5Bursts {
 			off := int64(i*b5Bursts+k) * mib
-			if err := together(benchWriters, func(w int) error {
+			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 				_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(c.files[w]), off, data, vfs.Unstable)
 				return err
 			}); err != nil {
@@ -49,7 +50,7 @@ func benchB5Append(b *testing.B) {
 			before := c.committedSizes(b)
 			c.counts.TakeUpdates()
 			took := make([]time.Duration, benchWriters)
-			if err := together(benchWriters, func(w int) error {
+			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 				start := time.Now()
 				_, err := c.fs.Commit(ctx, c.admin, vfs.Anonymous(c.files[w]), 0, 0)
 				took[w] = time.Since(start)
@@ -112,7 +113,7 @@ func benchB5Overwrite(b *testing.B) {
 	ctx := b.Context()
 	data := make([]byte, mib)
 	for k := range b5Bursts {
-		if err := together(benchWriters, func(w int) error {
+		if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 			_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(c.files[w]), int64(k)*mib, data, vfs.Unstable)
 			return err
 		}); err != nil {
@@ -127,7 +128,7 @@ func benchB5Overwrite(b *testing.B) {
 	for i := range b.N {
 		for k := range b5Bursts {
 			written := time.Now()
-			if err := together(benchWriters, func(w int) error {
+			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 				_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(c.files[w]), int64(k)*mib, data, vfs.Unstable)
 				return err
 			}); err != nil {
@@ -136,7 +137,7 @@ func benchB5Overwrite(b *testing.B) {
 
 			c.counts.TakeUpdates()
 			took := make([]time.Duration, benchWriters)
-			if err := together(benchWriters, func(w int) error {
+			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 				start := time.Now()
 				_, err := c.fs.Commit(ctx, c.admin, vfs.Anonymous(c.files[w]), 0, 0)
 				took[w] = time.Since(start)

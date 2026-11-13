@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ func benchB9(b *testing.B, s vfs.Stability) {
 	ctx := b.Context()
 	data := make([]byte, b9Write)
 	fill := make([]byte, b9Size)
-	if err := together(benchWriters, func(w int) error {
+	if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 		_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(c.files[w]), 0, fill, vfs.Unstable)
 		return err
 	}); err != nil {
@@ -65,7 +66,7 @@ func benchB9(b *testing.B, s vfs.Stability) {
 		for off := int64(0); time.Now().Before(end); off = (off + b9Write) % b9Size {
 			c.counts.TakeUpdates()
 			took := make([]time.Duration, benchWriters)
-			if err := together(benchWriters, func(w int) error {
+			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 				start := time.Now()
 				_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(c.files[w]), off, data, s)
 				took[w] = time.Since(start)
@@ -81,7 +82,7 @@ func benchB9(b *testing.B, s vfs.Stability) {
 			}
 
 			if s == vfs.Unstable && time.Since(flushed) >= b9Flush {
-				if err := together(benchWriters, func(w int) error {
+				if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 					_, err := c.fs.Commit(ctx, c.admin, vfs.Anonymous(c.files[w]), 0, 0)
 					return err
 				}); err != nil {

@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"slices"
@@ -95,10 +96,15 @@ func startStorm(ctx context.Context, c *bench) *storm {
 	return s
 }
 
-// end stops the storm and waits for its last chmod.
+// end stops the storm and waits for its last chmod, at most
+// benchBurstDeadline.
 func (s *storm) end() error {
 	close(s.stop)
-	<-s.ended
+	select {
+	case <-s.ended:
+	case <-time.After(benchBurstDeadline):
+		return fmt.Errorf("the storm's last chmod still running after %v", benchBurstDeadline)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -153,7 +159,7 @@ func benchB7(b *testing.B) {
 
 		for k := range b5Bursts {
 			off := int64(i*b5Bursts+k) * mib
-			if err := together(benchWriters, func(w int) error {
+			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 				_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(c.files[w]), off, data, vfs.Unstable)
 				return err
 			}); err != nil {
@@ -164,7 +170,7 @@ func benchB7(b *testing.B) {
 			c.counts.TakeUpdates()
 			from := s.mark()
 			took := make([]time.Duration, benchWriters)
-			if err := together(benchWriters, func(w int) error {
+			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 				start := time.Now()
 				_, err := c.fs.Commit(ctx, c.admin, vfs.Anonymous(c.files[w]), 0, 0)
 				took[w] = time.Since(start)

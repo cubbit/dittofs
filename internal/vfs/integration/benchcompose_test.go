@@ -189,7 +189,9 @@ func (c *bench) start(b *testing.B, clock *wallClock) {
 		b.Fatalf("bench: filesystem start: %v", err)
 	}
 	b.Cleanup(func() {
-		if err := c.fs.Drain(context.Background()); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), benchBurstDeadline)
+		defer cancel()
+		if err := c.fs.Drain(ctx); err != nil {
 			b.Errorf("bench: filesystem drain: %v", err)
 		}
 		if err := c.fs.Stop(); err != nil {
@@ -559,18 +561,66 @@ func microseconds(d time.Duration) float64 {
 	return float64(d) / float64(time.Microsecond)
 }
 
-// together runs fn(i) for every i below n at once and waits for all of them:
-// the calls between two of its barriers are one burst. It returns the first
-// error, naming the writer.
-func together(n int, fn func(i int) error) error {
+// benchBurstDeadline bounds one burst, and every other wait of a benchmark
+// on the code under test: a call stuck past it fails the benchmark with the
+// writers still running, rather than hanging it.
+const benchBurstDeadline = time.Minute
+
+// together runs fn(ctx, i) for every i below n at once and waits for all of
+// them: the calls between two of its barriers are one burst, and the return
+// of one call of together is the barrier the next one's writers start from. The first error
+// cancels the others' ctx; it returns that error, naming the writer, or, once
+// benchBurstDeadline passes, the writers still running.
+func together(ctx context.Context, n int, fn func(ctx context.Context, i int) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	errs := make([]error, n)
+	running := make([]bool, n)
+	var mu sync.Mutex
+	done := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := range n {
+		running[i] = true
 		wg.Go(func() {
-			errs[i] = fn(i)
+			err := fn(ctx, i)
+			mu.Lock()
+			errs[i], running[i] = err, false
+			mu.Unlock()
+			if err != nil {
+				cancel()
+			}
 		})
 	}
-	wg.Wait()
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(benchBurstDeadline):
+		mu.Lock()
+		defer mu.Unlock()
+		var stuck []int
+		for i, r := range running {
+			if r {
+				stuck = append(stuck, i)
+			}
+		}
+		for i, err := range errs {
+			if err != nil {
+				return fmt.Errorf(
+					"writer %d: %w; writers %v still running after %v",
+					i,
+					err,
+					stuck,
+					benchBurstDeadline,
+				)
+			}
+		}
+
+		return fmt.Errorf("writers %v still running after %v", stuck, benchBurstDeadline)
+	}
 	for i, err := range errs {
 		if err != nil {
 			return fmt.Errorf("writer %d: %w", i, err)
