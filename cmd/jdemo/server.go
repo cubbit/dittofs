@@ -151,6 +151,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.mountRoutes(mux)
 	s.mountRemovalRoutes(mux)
 	s.mountOffloadRoutes(mux)
+	s.mountChangeRoutes(mux)
 
 	s.mu.Lock()
 	s.j = j
