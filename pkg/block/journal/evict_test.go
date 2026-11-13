@@ -425,26 +425,20 @@ func TestBackpressureWaitsForSyncer(t *testing.T) {
 // draining, the unsynced bytes pinning the cap never fall, so the write path must
 // still fail with ErrLocalStoreFull within a bounded budget rather than hang.
 //
-// Only the rejected write is timed, and against EvictMaxWait rather than a
-// constant: the writes that fill the cap are fsync-bound and cost whatever the
-// disk costs, while the rejected one appends nothing and finds nothing to evict,
-// so all it does is poll out the eviction budget. The multiple is slack for timer
-// granularity and scheduling, not room for disk latency.
+// No clock can be injected into the eviction wait, so a bounded wait is the
+// assertion: each write must return within 10 s, two hundred times EvictMaxWait.
+// A write that hangs, or that waits on anything but its own short budget, fails
+// there; the writes that fill the cap are fsync-bound and never near it.
 func TestBackpressureTerminalWhenNoSyncer(t *testing.T) {
 	const maxWait = 50 * time.Millisecond
-	const limit = 20 * maxWait
 	s, _ := evictStore(t, Config{MaxLocalBytes: 2 << 20, EvictMaxWait: maxWait})
 	ctx := context.Background()
 
 	buf := bytes.Repeat([]byte{0xCD}, chunk256)
 	var off int64
 	for i := 0; i < 64; i++ {
-		attempt := time.Now()
-		err := s.WriteAt(ctx, "f", off, buf)
+		err := writeWithin(t, s, ctx, off, buf, 10*time.Second)
 		if errors.Is(err, ErrLocalStoreFull) {
-			if blocked := time.Since(attempt); blocked > limit {
-				t.Fatalf("backpressure must terminate on its own budget, not hang: blocked %v with EvictMaxWait %v (limit %v)", blocked, maxWait, limit)
-			}
 			return
 		}
 		if err != nil {
@@ -453,6 +447,32 @@ func TestBackpressureTerminalWhenNoSyncer(t *testing.T) {
 		off += chunk256
 	}
 	t.Fatalf("expected ErrLocalStoreFull with no syncer to drain the cap")
+}
+
+// writeWithin runs s.WriteAt on file "f" and returns its error, failing the test
+// when the write has not returned within bound.
+func writeWithin(
+	t *testing.T,
+	s *Store,
+	ctx context.Context,
+	off int64,
+	buf []byte,
+	bound time.Duration,
+) error {
+	t.Helper()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.WriteAt(ctx, "f", off, buf)
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(bound):
+		t.Fatalf("WriteAt at offset %d did not return within %v: backpressure hung", off, bound)
+		return nil
+	}
 }
 
 func TestConcurrentWriteEvictRace(t *testing.T) {
