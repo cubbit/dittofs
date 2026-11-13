@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	filesystem "github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -530,4 +531,147 @@ func (c *composition) forgetClones(t *testing.T, h vfs.Handle, offs ...int64) {
 			t.Fatalf("write back the byte at %d: %v", off, err)
 		}
 	}
+}
+
+// beforeCopy is the engine with run called before each Copy reaches it: a
+// pause wrapper, the engine answering every call.
+type beforeCopy struct {
+	filesystem.Content
+	run func(ctx context.Context)
+}
+
+func (b *beforeCopy) Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfs.Extent) (int64, error) {
+	if b.run != nil {
+		b.run(ctx)
+	}
+	return b.Content.Copy(ctx, srcShare, src, dstShare, dst, xs)
+}
+
+// over is a composeOver wrap calling the engine through b.
+func (b *beforeCopy) over(_ *composition, e filesystem.Content) filesystem.Content {
+	b.Content = e
+	return b
+}
+
+// A copy holds the source's admission lock until the engine has registered
+// its clone: a truncate of the source made after the filesystem judged the
+// copy and before the engine's Copy waits on that lock and answers
+// DelayConflict at its deadline, and the copy of 4 bytes lands whole.
+// Released before the engine, the truncate would land and the copy answer
+// ErrInvalid past the source's new size. The truncate's deadline is the
+// assertion that it does not land: the lock wait runs on real time.
+func TestACopyHoldsTheSourceUntilTheEngineRegisters(t *testing.T) {
+	b := &beforeCopy{}
+	c := composeOver(t, b.over, enginetest.WithFakeJournal())
+	src := c.written(t, "src", c.FS.Admin.Principal, 0o644, []byte("copy"))
+	dst := c.written(t, "dst", c.FS.Admin.Principal, 0o644, []byte("data"))
+	var truncated error
+	b.run = func(context.Context) {
+		b.run = nil
+		ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+		defer cancel()
+		_, truncated = c.fs.SetAttr(ctx, c.admin, vfs.Target{H: src}, vfs.AttrChange{Attrs: entity.Attrs{}.WithSize(2)})
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), backstop)
+	defer cancel()
+	res, err := c.fs.Copy(ctx, c.admin, copyArgs(src, dst, vfs.Extent{Len: 4}))
+	if !errors.Is(truncated, &vfs.Delay{Cause: vfs.DelayConflict}) {
+		t.Errorf("the truncate of the source before the engine's Copy: %v, want DelayConflict behind the copy's lock", truncated)
+	}
+	if err != nil || res.N != 4 {
+		t.Fatalf("the copy: %d, %v; want 4, nil", res.N, err)
+	}
+	if got, err := c.readAt(t, dst, 0, 4); err != nil || !bytes.Equal(got, []byte("copy")) {
+		t.Errorf("the destination after the copy reads %q, %v; want %q", got, err, "copy")
+	}
+	c.forgetClones(t, dst, 0)
+}
+
+// A clone meeting a removal its loop retries answers DelayConflict at once
+// rather than waiting it out with both files' admission locks held: a
+// deallocate of dst [4,8) whose phase 1 the store refuses keeps its guard,
+// and a clone of src [0,4) into dst [4,8) is then refused well inside its
+// deadline. Waiting, it would answer only at that deadline. Over the fake
+// journal alone, as the journal stops at the first write.
+func TestACloneDoesNotWaitOutARemovalItsLoopRetries(t *testing.T) {
+	c := compose(t, enginetest.WithFakeJournal())
+	src := c.written(t, "src", c.FS.Admin.Principal, 0o644, []byte("abcd"))
+	dst := c.written(t, "dst", c.FS.Admin.Principal, 0o644, []byte("01234567"))
+	c.FailUpdatesAfter(0)
+	defer c.FailUpdatesAfter(-1)
+	if _, err := c.fs.Deallocate(t.Context(), c.admin, vfs.Anonymous(dst), 4, 4); !errors.Is(err, &vfs.Delay{Cause: vfs.DelayCommit}) {
+		t.Fatalf("the deallocate whose phase 1 the store refuses: %v, want DelayCommit, left to the loop", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), backstop)
+	defer cancel()
+	_, err := c.fs.Clone(ctx, c.admin, copyArgs(src, dst, vfs.Extent{DstOff: 4, Len: 4}))
+	if !errors.Is(err, &vfs.Delay{Cause: vfs.DelayConflict}) || ctx.Err() != nil {
+		t.Errorf("the clone over the removal in flight: %v (deadline passed: %v), want DelayConflict before its deadline", err, ctx.Err() != nil)
+	}
+}
+
+// While a clone sits in its step 1, the source's pending existence held at
+// the store, it holds none of the filesystem's locks: a read and a write of
+// the destination outside its extent, and an open of it by name, each answer
+// at once. Were the admitted hook called after step 1, each would wait on the
+// destination's admission lock and answer DelayConflict at its deadline, the
+// assertion here: the lock wait runs on real time.
+func TestACloneInItsStep1HoldsNoLockOfItsFiles(t *testing.T) {
+	c := compose(t, enginetest.WithFakeJournal())
+	src := c.written(t, "src", c.FS.Admin.Principal, 0o644, []byte("abcdefgh"))
+	dst := c.written(t, "dst", c.FS.Admin.Principal, 0o644, []byte("01234567"))
+	entered, release := c.HoldNextCommit()
+	cloned := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), backstop)
+		defer cancel()
+		_, err := c.fs.Clone(ctx, c.admin, copyArgs(src, dst, vfs.Extent{Len: 4}))
+		cloned <- err
+	}()
+	select {
+	case <-entered:
+	case err := <-cloned:
+		t.Fatalf("the clone answered %v before its step 1 committed the source", err)
+	case <-time.After(backstop):
+		t.Fatalf("the clone's step 1 did not reach the store within %v", backstop)
+	}
+	// Shorter than the engine's conflict bound on a commit, 1 s, past which
+	// the held commit gives up and a hook after step 1 would release the
+	// locks anyway.
+	const short = 500 * time.Millisecond
+	call := func(name string, do func(ctx context.Context) error) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), short)
+		defer cancel()
+		if err := do(ctx); err != nil {
+			t.Errorf("%s during the clone's step 1: %v, want nil", name, err)
+		}
+	}
+	call("a read outside the extent", func(ctx context.Context) error {
+		_, _, err := c.fs.Read(ctx, c.admin, vfs.Anonymous(dst), 4, make([]byte, 4))
+		return err
+	})
+	call("a write outside the extent", func(ctx context.Context) error {
+		_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(dst), 4, []byte("wxyz"), vfs.Unstable)
+		return err
+	})
+	pc := c.smb(t, "pc", c.FS.Admin.Principal)
+	call("an open of the destination by name", func(ctx context.Context) error {
+		_, err := c.fs.Open(ctx, pc, vfs.OpenRequest{Dir: c.FS.Root, Name: []byte("dst"), Disposition: vfs.OpenExisting,
+			Access: entity.ReadData, Timeout: time.Minute})
+		return err
+	})
+	release()
+	select {
+	case err := <-cloned:
+		if err != nil {
+			t.Fatalf("the clone once released: %v", err)
+		}
+	case <-time.After(backstop):
+		t.Fatalf("the clone did not answer within %v of its release", backstop)
+	}
+	if got, err := c.readAt(t, dst, 0, 8); err != nil || !bytes.Equal(got, []byte("abcdwxyz")) {
+		t.Errorf("the destination after the clone reads %q, %v; want %q", got, err, "abcdwxyz")
+	}
+	c.forgetClones(t, dst, 0)
 }
