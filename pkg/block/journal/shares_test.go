@@ -60,16 +60,21 @@ func withLimit(t *testing.T, j *Journal) {
 	}
 }
 
-// writeReady writes through h, retrying a refusal for want of a spare segment,
-// which clears once the pool has readied its spares.
+// writeReady writes through h, waiting out a refusal for want of a spare
+// segment on the pool's own settle event, which clears once the pool has
+// readied its spares. The wait parks on the refill's settle alone, so the
+// helper answers a first fill slower than any fixed window would have been,
+// and reports only a pool that stopped; the test's own context is the only
+// bound on it.
 func writeReady(t *testing.T, h *Handle, id FileID, p string) Version {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
 	for {
 		v, err := h.WriteAt(context.Background(), id, 0, []byte(p), 1)
 		var ns *NoSpaceError
-		if errors.As(err, &ns) && ns.Limit == LimitSpare && time.Now().Before(deadline) {
-			time.Sleep(time.Millisecond)
+		if errors.As(err, &ns) && ns.Limit == LimitSpare {
+			if werr := h.j.core.WaitSpares(t.Context()); werr != nil {
+				t.Fatalf("WaitSpares after a write refused at the spare limit: got %v, want the pool readied", werr)
+			}
 			continue
 		}
 		if err != nil {
@@ -190,6 +195,15 @@ func TestHandleClose_PublicRefusesAndWaits(t *testing.T) {
 	wg.Go(func() {
 		// The file's stream may have no spare segment ready yet, which refuses
 		// the write with the retryable spare limit before it reaches the seam.
+		//
+		// decision: that refusal is retried against a deadline, not waited out
+		// on the pool's settle event as writeReady waits it, because the hold
+		// below stops every write at the seam — the spare maker's included —
+		// so an event wait would park this write on a maker the test itself
+		// has stopped, and the hold's waiting count would name the maker
+		// instead of the write the choreography waits for. The deadline bounds
+		// the retry here alone; overtake it with the pool's own wait when a
+		// hold can name the call that waits on it.
 		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
 			_, err := h.WriteAt(context.Background(), fileOf(2), 0, []byte("held"), 1)
 			var ns *NoSpaceError
