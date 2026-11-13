@@ -377,17 +377,115 @@ func (r *reader) Scan(prefix, after []byte) iter.Seq2[kv.KeyValue, error] {
 // Before merges a reverse walk of the snapshot below key with the
 // transaction's own writes.
 func (r *reader) Before(prefix, key []byte) (kv.KeyValue, bool, error) {
+	c := newBelow(r.snap, prefix, key)
+	defer c.it.Close()
+
+	return r.own.Before(prefix, key, c)
+}
+
+// below walks the live keys under prefix below a key in reverse, for the
+// overlay's merge. Badger's own reverse walk skips deleted keys without
+// checking the prefix, so it would cross every deleted key below the prefix
+// until it found a live one. below reads every version itself instead and
+// stops at the prefix's edge, so a seek costs the versions under its prefix
+// only.
+type below struct {
+	it      *badger.Iterator
+	prefix  []byte
+	key     []byte
+	value   []byte
+	ok      bool
+	err     error
+	visited int // versions read, for tests: the walk's cost
+}
+
+func newBelow(snap *badger.Txn, prefix, key []byte) *below {
 	opts := badger.DefaultIteratorOptions
-	opts.Prefix = prefix
 	opts.Reverse = true
+	opts.AllVersions = true
 	opts.PrefetchValues = false
-	it := r.snap.NewIterator(opts)
-	defer it.Close()
-	it.Seek(key)
-	if it.Valid() && bytes.Equal(it.Item().Key(), key) {
-		it.Next()
+
+	c := &below{it: snap.NewIterator(opts), prefix: prefix}
+
+	// A key past the prefix's range seeks from the range's end, so the keys
+	// between them are never read. The end itself lies outside the range.
+	seek := key
+	if end := prefixEnd(prefix); end != nil && bytes.Compare(key, end) > 0 {
+		seek = end
 	}
-	return r.own.Before(prefix, key, cursor{it})
+
+	c.it.Seek(seek)
+
+	for c.it.Valid() && bytes.Equal(c.it.Item().Key(), seek) {
+		c.visited++
+		c.it.Next()
+	}
+
+	c.Next()
+
+	return c
+}
+
+// prefixEnd is the first key past every key under prefix, nil if none.
+func prefixEnd(prefix []byte) []byte {
+	for i := len(prefix) - 1; i >= 0; i-- {
+		if prefix[i] != 0xFF {
+			return append(bytes.Clone(prefix[:i]), prefix[i]+1)
+		}
+	}
+
+	return nil
+}
+
+// Next moves to the next live key below. In reverse a key's versions come
+// oldest first, all at or below the snapshot, so its last one is what the
+// snapshot reads.
+func (c *below) Next() {
+	c.ok = false
+
+	var value []byte // reused for every version this call copies; the last live one stays
+
+	for c.it.Valid() && bytes.HasPrefix(c.it.Item().Key(), c.prefix) && c.err == nil {
+		key := c.it.Item().KeyCopy(nil)
+		live := false
+
+		for c.it.Valid() && bytes.Equal(c.it.Item().Key(), key) {
+			c.visited++
+
+			item := c.it.Item()
+
+			live = !item.IsDeletedOrExpired()
+			if live {
+				if value, c.err = item.ValueCopy(value); c.err != nil {
+					return
+				}
+			}
+
+			c.it.Next()
+		}
+
+		if live {
+			c.key, c.value, c.ok = key, value, true
+
+			return
+		}
+	}
+}
+
+func (c *below) Valid() bool {
+	return c.ok
+}
+
+func (c *below) Key() []byte {
+	return c.key
+}
+
+func (c *below) Value() ([]byte, error) {
+	return c.value, nil
+}
+
+func (c *below) Err() error {
+	return c.err
 }
 
 // cursor walks a Badger iterator for the overlay's merge.
