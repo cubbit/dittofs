@@ -504,24 +504,31 @@ func (ks *kindState) applyCuts(ix *index.Index) error {
 
 // subtractCopies is the bad-copy half of the copies rule, run once the tail's
 // classing has judged every drop: a corrupt drop an equal-sequence record
-// another scan holds — in a segment whose fate the open keeps, neither torn
-// nor ended — is removed from Corrupt, for the live copy serves what the drop
-// guarded and the loss record a later open would append for it would drop a
-// record a twin contradicts. Damaged is not touched: the classing's verdict
-// on the segment stands whatever serves in its place, and the tail phases cut
-// and report by it.
-func (ks *kindState) subtractCopies(scans []segmentScan, tl tails) []corruptRecord {
-	// kept answers whether the open keeps a segment — the fates neither
-	// torn-tail nor ended. A segment with no fate the classing left keeps:
-	// only the classing names an ending, and nothing else ends one.
+// another scan holds in a kept-fate segment — kept by keptFate's one policy
+// — is removed from Corrupt, for the live copy serves what the drop guarded
+// and the loss record a later open would append for it would drop a record
+// a twin contradicts. Damaged is not touched: the classing's verdict on the
+// segment stands whatever serves in its place, and the tail phases cut and
+// report by it.
+// keptFate is the open's fate policy as one predicate: whether the open
+// keeps a segment — every fate the classing names except torn-tail and
+// ended, and a segment no fate names keeps, for only the classing names an
+// ending and nothing else ends one. The subtraction over the corrupt drops
+// and the repoint over the fed copies both judge a copy by this, so the
+// policy is written once.
+func keptFate(tl tails) func(core.SegmentID) bool {
 	fates := make(map[core.SegmentID]fateKind, len(tl.Fates))
 	for _, f := range tl.Fates {
 		fates[f.ID] = f.Kind
 	}
-	kept := func(id core.SegmentID) bool {
+	return func(id core.SegmentID) bool {
 		k, judged := fates[id]
 		return !judged || (k != fateTornTail && k != fateEnded)
 	}
+}
+
+func (ks *kindState) subtractCopies(scans []segmentScan, tl tails) []corruptRecord {
+	kept := keptFate(tl)
 	// live is every seq a kept-fate segment holds a record of, in whichever
 	// segment: the one membership test below, not one per drop.
 	var live map[core.Seq][]core.SegmentID
@@ -565,14 +572,7 @@ func (ks *kindState) repointCopies(ix *index.Index, tl tails) {
 	if len(ks.copies) == 0 {
 		return
 	}
-	fates := make(map[core.SegmentID]fateKind, len(tl.Fates))
-	for _, f := range tl.Fates {
-		fates[f.ID] = f.Kind
-	}
-	kept := func(id core.SegmentID) bool {
-		k, judged := fates[id]
-		return !judged || (k != fateTornTail && k != fateEnded)
-	}
+	kept := keptFate(tl)
 	greatest := func(cps []index.RecordAt) int {
 		best := 0
 		for i := 1; i < len(cps); i++ {
@@ -606,6 +606,11 @@ func (ks *kindState) repointCopies(ix *index.Index, tl tails) {
 		if best < 0 {
 			continue
 		}
+		// decision: a repoint that fails is dropped, not surfaced: the
+		// piece still serves from the end the collapse kept until the tail's
+		// cut empties it, so a failure here loses a preference, not the
+		// read, and refusing the open would drop a journal that serves.
+		// Overturned by a failure that leaves the piece unreachable instead.
 		_, _, _ = ix.RepointRecord(k.file, cps[keep], cps[best])
 	}
 }
