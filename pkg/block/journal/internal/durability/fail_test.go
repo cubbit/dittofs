@@ -92,12 +92,7 @@ func releaser(t *testing.T) (<-chan struct{}, func()) {
 
 // events returns a copy of the loss events published so far, oldest first.
 func (r *rig) events() []core.LossEvent {
-	r.d.lmu.Lock()
-	defer r.d.lmu.Unlock()
-	out := make([]core.LossEvent, 0, r.d.count)
-	for i := range r.d.count {
-		out = append(out, r.d.ring[(r.d.head+i)%core.LossRingSize])
-	}
+	out, _ := r.d.dir.losses()
 	return out
 }
 
