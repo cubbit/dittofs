@@ -249,13 +249,17 @@ func TestTailsClassifyEverySegmentFate(t *testing.T) {
 	st := runTails(t, r)
 
 	wantFate(t, st, 1, fateSealed, 0)
-	wantFate(t, st, 2, fateIntact, 0)
 	wantFate(t, st, 3, fateSealToProve, 0)
 	if sc, _ := scanOf(st, 2); sc.RecordsEnd != format.SegmentHeaderSize {
 		t.Errorf("the empty segment's RecordsEnd got %d, want %d", sc.RecordsEnd, format.SegmentHeaderSize)
 	}
-	if len(st.Tails.Fates) != 3 || len(st.Tails.Damaged) != 0 {
-		t.Errorf("Tails got %+v, want three fates and nothing damaged", st.Tails)
+	// Segment 2 is a record-less take, so the spares phase re-adopted it:
+	// its fate is nobody's to hold, and only the two sealed lives keep one.
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 2}}; !slices.Equal(got, want) {
+		t.Errorf("the re-adopted spares got %v, want %v", got, want)
+	}
+	if len(st.Tails.Fates) != 2 || len(st.Tails.Damaged) != 0 {
+		t.Errorf("Tails got %+v, want two fates and nothing damaged", st.Tails)
 	}
 }
 
@@ -267,7 +271,12 @@ func TestTheTopologyIgnoresNamesOfSegmentsNotOnDisk(t *testing.T) {
 	st := runTails(t, r)
 
 	wantFate(t, st, 5, fateIntact, 0)
-	wantFate(t, st, 6, fateIntact, 0)
+	// Segment 6's claim of a predecessor no directory holds seals nothing,
+	// and its record-less take is the spares phase's: re-adopted, so it
+	// keeps no fate.
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 6}}; !slices.Equal(got, want) {
+		t.Errorf("the re-adopted spares got %v, want %v", got, want)
+	}
 }
 
 func TestTwoSuccessorsMayNameOnePredecessor(t *testing.T) {
@@ -280,8 +289,11 @@ func TestTwoSuccessorsMayNameOnePredecessor(t *testing.T) {
 	st := runTails(t, r)
 
 	wantFate(t, st, 1, fateSealed, 0)
-	wantFate(t, st, 2, fateIntact, 0)
-	wantFate(t, st, 3, fateIntact, 0)
+	// Both successors are record-less takes, so the spares phase re-adopted
+	// both: the predecessor's fate stays the one their headers named.
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 2}, {ID: 3}}; !slices.Equal(got, want) {
+		t.Errorf("the re-adopted spares got %v, want %v", got, want)
+	}
 }
 
 func TestAZeroSlotAProofCoversRefusesTheOpen(t *testing.T) {

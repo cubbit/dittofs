@@ -2,11 +2,15 @@ package recovery
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -60,33 +64,7 @@ func TestSpareCandidatesHasAnInterruptedRecycleSpared(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
 	x, y := core.SegmentID(3), core.SegmentID(9)
-
-	b := raw.SegmentHeader{Identity: journalID, ID: uint64(x)}.Bytes()
-	rec := rec(1, func(rr *raw.Record) {
-		rr.Write = &raw.WriteBody{MTime: 1, Payload: bytes16()}
-	})
-	rec.Identity = journalID
-	rec.Segment = uint64(x)
-	rec.RecordOffset = uint32(len(b))
-	rec.SyncedThrough = uint64(format.SegmentHeaderSize + int64(len(rec.Bytes()))) // the sync covered the record whole
-	b = append(b, rec.Bytes()...)
-	markerAt := int64(len(b))
-	b = append(b, raw.SealMarker{Identity: journalID, Segment: uint64(x), Offset: uint64(markerAt)}.Bytes()...)
-	if int64(len(b)) > testCap-raw.TrailerSize {
-		t.Fatalf("fixture: header, record and marker take %d bytes, above the cap %d", len(b), testCap)
-	}
-	b = append(b, make([]byte, testCap-raw.TrailerSize-int64(len(b)))...)
-	b = append(b, raw.Trailer(1, uint64(markerAt+format.SealMarkerSize))...)
-	r.plantSeg(x, b)
-
-	// The interrupted recycle's one durable step: the rename, and the
-	// directory sync that made it survive the crash.
-	if err := r.seam.Rename(format.SegmentName(x), format.SegmentName(y)); err != nil {
-		t.Fatalf("fixture: rename %s to %s: %v", format.SegmentName(x), format.SegmentName(y), err)
-	}
-	if err := r.seam.SyncDir(); err != nil {
-		t.Fatalf("fixture: sync dir: %v", err)
-	}
+	plantInterruptedRecycle(r, x, y)
 
 	st := r.runCandidates()
 
@@ -240,5 +218,202 @@ func TestSpareCandidatesNeverHasASuccessorsPredecessor(t *testing.T) {
 
 	if got := candidates(st); slices.Contains(got, z) {
 		t.Errorf("spareCandidates: segment %d, named as its successor %d's predecessor, was a candidate, got %v, want it absent", z, w, got)
+	}
+}
+
+// sealedFull returns the bytes of segment id sealed full — its header, one
+// synced record, a seal marker and the cap's trailer — as the journal's
+// writer would have left a segment it sealed for recycle.
+func sealedFull(id core.SegmentID) []byte {
+	b := raw.SegmentHeader{Identity: journalID, ID: uint64(id)}.Bytes()
+	rec := rec(1, func(rr *raw.Record) {
+		rr.Write = &raw.WriteBody{MTime: 1, Payload: bytes16()}
+	})
+	rec.Identity = journalID
+	rec.Segment = uint64(id)
+	rec.RecordOffset = uint32(len(b))
+	rec.SyncedThrough = uint64(format.SegmentHeaderSize + int64(len(rec.Bytes()))) // the sync covered the record whole
+	b = append(b, rec.Bytes()...)
+	markerAt := int64(len(b))
+	b = append(b, raw.SealMarker{Identity: journalID, Segment: uint64(id), Offset: uint64(markerAt)}.Bytes()...)
+	b = append(b, make([]byte, testCap-raw.TrailerSize-int64(len(b)))...)
+	b = append(b, raw.Trailer(1, uint64(markerAt+format.SealMarkerSize))...)
+	return b
+}
+
+// plantInterruptedRecycle plants a sealed full segment under its old id and
+// renames it to its fresh y, syncing the directory between: the durable
+// state of a recycle a crash interrupted after its rename, the old header
+// and the old trailer still in the file the new name reaches.
+func plantInterruptedRecycle(r *rig, x, y core.SegmentID) {
+	r.t.Helper()
+	r.plantSeg(x, sealedFull(x))
+	if err := r.seam.Rename(format.SegmentName(x), format.SegmentName(y)); err != nil {
+		r.t.Fatalf("fixture: rename %s to %s: %v", format.SegmentName(x), format.SegmentName(y), err)
+	}
+	if err := r.seam.SyncDir(); err != nil {
+		r.t.Fatalf("fixture: sync dir: %v", err)
+	}
+}
+
+// TestSparesPhaseRefusesOnUnreadableSegmentsBeforeWriting plants a sealed
+// full segment whose every read fails, beside an all-zero spare and an
+// interrupted recycle — the two other shapes the phase would otherwise
+// re-adopt, one with clean slots and one with dirty ones: the phase is the
+// open's first writing one, and the range the attach pass collected refuses
+// the open there, before any candidate is touched — so the durable bytes of
+// every file are the bytes the fixture planted, the dirty slots included,
+// nothing is unlinked and no spare is written to — and no phase after the
+// spares one opens: the refusal is its own answer, and the whole open ends
+// with it.
+func TestSparesPhaseRefusesOnUnreadableSegmentsBeforeWriting(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	x, y, spare := core.SegmentID(3), core.SegmentID(9), core.SegmentID(6)
+	r.plantSeg(x, sealedFull(x))
+	plantInterruptedRecycle(r, 10, y)
+	r.write(format.SegmentName(spare), make([]byte, testCap))
+	r.failReads(format.SegmentName(x), 0)
+
+	before := map[string][]byte{
+		format.SegmentName(x):     r.fileBytes(format.SegmentName(x)),
+		format.SegmentName(y):     r.fileBytes(format.SegmentName(y)),
+		format.SegmentName(spare): r.fileBytes(format.SegmentName(spare)),
+	}
+	removes := r.seam.Calls(kit.OpRemove)
+	writes := r.seam.CallsFor(kit.OpWrite, format.SegmentName(spare))
+
+	var mu sync.Mutex
+	tracer, spansOf := recordingTracer(&mu)
+
+	_, err := Run(context.Background(), r.runDepsWithTracer(tracer), core.Version{}, journalID, nil)
+
+	var ure *core.UnreadableRangesError
+	if !errors.As(err, &ure) {
+		t.Fatalf("spares: a segment whose every read failed answered err %v, want an UnreadableRangesError", err)
+	}
+	wantRanges := []core.SegmentRange{{Segment: x, Off: 0, Len: format.SegmentHeaderSize}}
+	if !slices.Equal(ure.Ranges, wantRanges) {
+		t.Errorf("spares: the refusal's ranges got %v, want %v, the header slot no read completed", ure.Ranges, wantRanges)
+	}
+	for name, was := range before {
+		if got := r.fileBytes(name); !slices.Equal(got, was) {
+			t.Errorf("spares: the refusal changed %s's durable bytes, got %x, want the bytes it held", name, got[:format.SegmentHeaderSize])
+		}
+	}
+	for _, name := range []string{format.SegmentName(x), format.SegmentName(y), format.SegmentName(spare)} {
+		if !slices.Contains(r.listing(), name) {
+			t.Errorf("spares: the refusal removed %s; the directory holds %v", name, r.listing())
+		}
+	}
+	if got := r.seam.Calls(kit.OpRemove); got != removes {
+		t.Errorf("spares: the refusal unlinked something, got %d removes, want %d, the count before the run", got, removes)
+	}
+	if got := r.seam.CallsFor(kit.OpWrite, format.SegmentName(spare)); got != writes {
+		t.Errorf("spares: the refusal wrote to the spare, got %d writes, want %d, the count before the run", got, writes)
+	}
+	spans := spansOf()
+	if last := spans[len(spans)-1].op; last != core.SpanOpenSpares {
+		t.Errorf("spares: the refusal was answered after %s, want the spares phase's own span: no phase past the first writing one opens", last)
+	}
+	if last := spans[len(spans)-1]; last.err != err {
+		t.Errorf("spares: the spares span ended with %v, want %v, the refusal the run answered with", last.err, err)
+	}
+}
+
+// TestSparesPhaseZeroesBothSlotsOfAnInterruptedRecycle runs the open over
+// the interrupted recycle: the old header slot and the cap's trailer slot —
+// the two places a take writes before its records — are zeroed on the
+// device through one handle and one sync, without touching the dead bytes
+// between that no open reads again, and the rebuilt index holds nothing
+// from the new id, whose old life's records verify nowhere under it.
+func TestSparesPhaseZeroesBothSlotsOfAnInterruptedRecycle(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	x, y := core.SegmentID(3), core.SegmentID(9)
+	plantInterruptedRecycle(r, x, y)
+	before := r.fileBytes(format.SegmentName(y))
+	syncs := r.seam.CallsFor(kit.OpSync, format.SegmentName(y))
+
+	st := r.runCandidates()
+
+	after := r.fileBytes(format.SegmentName(y))
+	if hdr := after[:format.SegmentHeaderSize]; anyHeaderByte(hdr) {
+		t.Errorf("spares: the interrupted recycle's header slot zeroing got %x, want zeros", hdr)
+	}
+	if tail := after[testCap-format.SealMarkerSize:]; anyHeaderByte(tail) {
+		t.Errorf("spares: the interrupted recycle's trailer slot zeroing got %x, want zeros", tail)
+	}
+	if mid := after[format.SegmentHeaderSize : testCap-format.SealMarkerSize]; !slices.Equal(mid, before[format.SegmentHeaderSize:testCap-format.SealMarkerSize]) {
+		t.Errorf("spares: the phase zeroed past the two slots, got %x, want the dead bytes it held before the run", mid[:16])
+	}
+	if got := r.seam.CallsFor(kit.OpSync, format.SegmentName(y)); got <= syncs {
+		t.Errorf("spares: the slot writes were not synced, got %d file syncs, want more than %d, the count before the run", got, syncs)
+	}
+	if got, want := st.Rebuilt.Index.SegmentBytes(y), (index.SegmentBytes{}); got != want {
+		t.Errorf("spares: the rebuilt index holds bytes of the candidate %d, got %+v, want none: its old life verifies nowhere under the new id", y, got)
+	}
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: y}}; !slices.Equal(got, want) {
+		t.Errorf("spares: the re-adopted spares got %v, want %v", got, want)
+	}
+}
+
+// TestSparesPhaseLeavesCleanSlotsUnwritten plants a fresh all-zero spare and
+// runs the open over it: the phase reads both slots, finds them clean and
+// writes nothing — zeroing a clean slot would spend a sync on bytes already
+// zeros — while the adoption still lands, and no fate names the id: a
+// spare's tail is nobody's to cut.
+func TestSparesPhaseLeavesCleanSlotsUnwritten(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	id := core.SegmentID(6)
+	name := format.SegmentName(id)
+	r.write(name, make([]byte, testCap))
+	writes := r.seam.CallsFor(kit.OpWrite, name)
+	syncs := r.seam.CallsFor(kit.OpSync, name)
+
+	st := r.runCandidates()
+
+	if got := r.seam.CallsFor(kit.OpWrite, name); got != writes {
+		t.Errorf("spares: a clean spare was written to, got %d writes, want %d, the count before the run", got, writes)
+	}
+	if got := r.seam.CallsFor(kit.OpSync, name); got != syncs {
+		t.Errorf("spares: a clean spare was synced, got %d syncs, want %d, the count before the run", got, syncs)
+	}
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: id}}; !slices.Equal(got, want) {
+		t.Errorf("spares: the all-zero spare was not adopted, got %v, want %v", got, want)
+	}
+	for _, f := range st.Tails.Fates {
+		if f.ID == id {
+			t.Errorf("spares: the re-adopted spare %d kept its fate %s, want none: a spare's tail is nobody's to cut", id, f.Kind)
+		}
+	}
+}
+
+// TestSparesPhaseDropsTheAdoptedSegmentsFate runs the open over the
+// interrupted recycle and checks the adoption's bookkeeping alone: no fate
+// names the re-adopted id — a spare's tail is nobody's to cut, and the later
+// cutting phases find none for it — and nothing is reported as damage, a
+// rejection or an unrecognised name: an unprovoked orphan or damage report
+// over a spare's adoption is what this fails.
+func TestSparesPhaseDropsTheAdoptedSegmentsFate(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	y := core.SegmentID(9)
+	plantInterruptedRecycle(r, core.SegmentID(3), y)
+
+	st := r.runCandidates()
+
+	for _, f := range st.Tails.Fates {
+		if f.ID == y {
+			t.Errorf("spares: the re-adopted spare %d kept its fate %s, want none: a spare's tail is nobody's to cut", y, f.Kind)
+		}
+	}
+	if len(st.Tails.Damaged) != 0 {
+		t.Errorf("spares: the re-adopted spare was reported damaged, got %v, want none", st.Tails.Damaged)
+	}
+	if st.Attached.Rejected != 0 || len(st.Attached.Unrecognised) != 0 {
+		t.Errorf("spares: the adoption reported a rejected or an unrecognised segment, got rejected %d, unrecognised %v, want none",
+			st.Attached.Rejected, st.Attached.Unrecognised)
 	}
 }

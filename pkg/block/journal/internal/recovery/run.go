@@ -61,6 +61,11 @@ type State struct {
 	// Tails is the torn-or-corrupt classing of every own and unverified
 	// segment: each one's fate, the damaged set and the corrupt drops.
 	Tails tails
+
+	// Spares is what the spares phase did with the segments it re-adopted:
+	// each adoption, with the id the allocator owns again, and each id the
+	// phase unlinked.
+	Spares Spares
 }
 
 // phase is one step of the open's recovery: the span it runs under, and
@@ -86,7 +91,7 @@ var phases = [...]phase{
 	{span: core.SpanOpenMarksRaise},
 	{span: core.SpanOpenTailProof},
 	{span: core.SpanOpenMarksLostTail},
-	{span: core.SpanOpenSpares},
+	{span: core.SpanOpenSpares, run: runSpares},
 	{span: core.SpanOpenReappend},
 	{span: core.SpanOpenAssembly},
 	{span: core.SpanOpenSeal},
@@ -138,13 +143,15 @@ func rebuildReaders(deps Deps) int {
 // Run rebuilds the journal's state from its directory, running the open's
 // recovery phases in order under one open span, checking ctx before each,
 // and running each phase under the context its parent span returned, so
-// every phase span is the open span's child. Only the attach pass is
-// built; the phases after it are named, span-covered steps that change
-// nothing, each checked for the context, so a cancelled open is answered
-// at the boundary the cancellation reached and the directory is left for
-// a later open. floor and marks are carried for the phases that consume
-// them — the rebuild, the marks and the tail's proof — and are unread
-// until one exists.
+// every phase span is the open span's child. The attach pass, the rebuild
+// and the spares phase — the open's first writing one, which re-adopts the
+// spare candidates and zeroes their dirty slots after refusing on every
+// range no bounded read completed — are built; the phases around them are
+// named, span-covered steps that change nothing, each checked for the
+// context, so a cancelled open is answered at the boundary the
+// cancellation reached and the directory is left for a later open. floor
+// and marks are carried for the phases that consume them — the rebuild, the
+// marks and the tail's proof — and are unread until one exists.
 func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {
 	if err := ctx.Err(); err != nil {
 		return State{}, err
