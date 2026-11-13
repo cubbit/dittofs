@@ -82,9 +82,12 @@ func TestOpen_FormatUnreadableRefusesByFlag(t *testing.T) {
 // on a failing device at the public Open: a read that faults twice and
 // succeeds on the third attaches the segment, and one that faults on every
 // attempt refuses the open naming the segment's range — never judging it
-// zero, damaged or foreign, never taking it off disk — with three attempts
-// exactly. Both opens end at the attach pass: one that read everything
-// still answers ErrNotImplemented, the recovery after it being unbuilt.
+// zero, damaged or foreign, never taking it off disk. The refusing open ends
+// in the spares phase, the recovery's first writing one, at the three
+// attempts the bound made and before any candidate read; the recovering one
+// runs the phase past it, whose two slot reads of the record-less take it
+// re-adopts bring the count to five — and still answers ErrNotImplemented,
+// the recovery after the spares phase being unbuilt.
 func TestOpen_SegmentHeaderRetryThenRefusal(t *testing.T) {
 	plan := []struct {
 		name      string
@@ -92,7 +95,7 @@ func TestOpen_SegmentHeaderRetryThenRefusal(t *testing.T) {
 		want      error
 		wantCalls int
 	}{
-		{"recovers on the third attempt", 2, ErrNotImplemented, 3},
+		{"recovers on the third attempt", 2, ErrNotImplemented, 5},
 		{"fails every attempt", 0, ErrUnreadable, 3},
 	}
 	for _, c := range plan {

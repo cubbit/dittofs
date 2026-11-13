@@ -84,6 +84,11 @@ type State struct {
 	// segment: each one's fate, the damaged set and the corrupt drops.
 	Tails tails
 
+	// Spares is what the spares phase did with the segments it re-adopted:
+	// each adoption, with the id the allocator owns again, and each id the
+	// phase unlinked.
+	Spares Spares
+
 	// Assembled is what the assembly phase built over the rebuilt state:
 	// the seeded segment ledger and the open's liveness registrations, the
 	// state the open continues from. The assembly phase fills it.
@@ -113,7 +118,7 @@ var phases = [...]phase{
 	{span: core.SpanOpenMarksRaise},
 	{span: core.SpanOpenTailProof},
 	{span: core.SpanOpenMarksLostTail},
-	{span: core.SpanOpenSpares},
+	{span: core.SpanOpenSpares, run: runSpares},
 	{span: core.SpanOpenReappend},
 	{span: core.SpanOpenAssembly, run: runAssemble},
 	{span: core.SpanOpenSeal},
@@ -176,13 +181,16 @@ func rebuildReaders(deps Deps) int {
 // Run rebuilds the journal's state from its directory, running the open's
 // recovery phases in order under one open span, checking ctx before each,
 // and running each phase under the context its parent span returned, so
-// every phase span is the open span's child. The attach pass, the rebuild
-// and the assembly are built; the phases between and after them are named,
-// span-covered steps that change nothing, each checked for the context, so
-// a cancelled open is answered at the boundary the cancellation reached
-// and the directory is left for a later open. floor and marks are carried
-// for the phases that consume them — the rebuild, the marks and the tail's
-// proof — and are unread until one exists.
+// every phase span is the open span's child. The attach pass, the rebuild,
+// the spares phase — the open's first writing one, which re-adopts the
+// spare candidates and zeroes their dirty slots after refusing on every
+// range no bounded read completed — and the assembly are built; the phases
+// between them are named, span-covered steps that change nothing, each
+// checked for the context, so a cancelled open is answered at the boundary
+// the cancellation reached and the directory is left for a later open.
+// floor and marks are carried for the phases that consume them — the
+// rebuild, the marks and the tail's proof — and are unread until one
+// exists.
 func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {
 	if err := ctx.Err(); err != nil {
 		return State{}, err
