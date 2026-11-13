@@ -84,6 +84,40 @@ func (fs *files) lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta,
 	return fs.update(id, func(f *file) error { return f.lose(e, v) })
 }
 
+// loseSuperseded applies a superseded synced loss of e at v to id as lose
+// applies any other: under the file's lock, with no admission, returning the
+// held-state change the loss made, the zero HeldDelta when nothing was held
+// over e or the loss was refused. A zero-length e is refused with
+// core.ErrZeroLength before anything changes.
+//
+// See the decision at file.loseSuperseded for why it leaves no marker.
+func (fs *files) loseSuperseded(id core.FileID, e core.Extent, v core.Version) (HeldDelta, error) {
+	if e.Len == 0 {
+		return HeldDelta{}, core.ErrZeroLength
+	}
+	return fs.update(id, func(f *file) error { return f.loseSuperseded(e, v) })
+}
+
+// loseSuperseded stops holding e below v, for a synced loss record whose
+// reason is that the content was superseded, and leaves no marker over it.
+//
+// decision: a superseded loss record on disk applies its cut with no unsettled
+// marker — the caller settles nothing for a drop metadata asked for (RFC 1
+// §3.8), so Since never yields it; overturned only if Since is ever asked to
+// answer for superseded drops. The cut and the version raise are remove's
+// minus the marker insert, kept here rather than a flag on remove so the
+// markered path stays the only writer of f.markers.
+func (f *file) loseSuperseded(e core.Extent, v core.Version) error {
+	if e.Len == 0 {
+		return core.ErrZeroLength
+	}
+	f.held.cutBelow(e, v)
+	if v.Compare(f.change) > 0 {
+		f.change = v
+	}
+	return nil
+}
+
 // delete stops holding every extent of the file below v and leaves a marker
 // over the whole file.
 func (f *file) delete(v core.Version) {

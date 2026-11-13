@@ -612,8 +612,12 @@ func withoutTheCloneEntry(ix *index.Index) map[string][]index.Entry {
 // headers the entries claim, and exactly what a forced scan of the same
 // directory sets aside.
 func TestCatalogReadsTheHeaderOnlyKindsAtTheirEntry(t *testing.T) {
+	// The four asides share one header seq, and the loss names it: the kinds
+	// pass refuses an open whose hold, unhold or stamp record no drop covers,
+	// so a loss covering the seq the three share is what lets this open run
+	// and read them back at all.
 	aside := []raw.Record{
-		rec(10, func(r *raw.Record) { r.Loss = &raw.LossBody{Dropped: 99, Flags: 1 | 1<<8} }),
+		rec(10, func(r *raw.Record) { r.Loss = &raw.LossBody{Dropped: 100, Flags: 1 | 1<<8} }),
 		rec(11, func(r *raw.Record) { r.Cut = &raw.CutBody{Cut: 3}; r.Offset, r.Length = 0, 0 }), // hold
 		rec(12, func(r *raw.Record) { // unhold: no file, no version, no extent
 			r.Cut = &raw.CutBody{Cut: 4}

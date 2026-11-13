@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -361,9 +362,20 @@ type rebuilt struct {
 }
 
 // rebuildIndex rebuilds the index over every own segment the attach pass
-// found and feeds the records into a fresh index, floor the version floor
-// the journal was opened with — Finish takes it, refusing one with a
-// non-zero epoch the same error a record of that shape takes.
+// found, floor the version floor the journal was opened with — Finish takes
+// it, refusing one with a non-zero epoch the same error a record of that
+// shape takes. The workers only scan: the records they convert stay buffered
+// on their scans, and once the last one has returned the rest of the phase
+// runs serially in one fixed order — the aside kinds' bodies are decoded and
+// decided against their own rules (losses reaching the sink given), the
+// tails are classed, then the buffered records are fed into a fresh index,
+// segments in ascending-id order and each scan's records in their walk
+// order, and Finish closes the builder. The kinds pass's collected answer
+// and the classing's come back with the rebuilt state, for the State fields
+// the phase owns: the maps the kinds pass builds are the feed's to filter
+// by, and no aside is ever fed — the aside kinds are carried for the phases
+// that own their rules, the decode's confinements landing on the same scans
+// the classing reads.
 //
 // Each segment is read from one of two sources: the catalogue its trailer
 // names, offered to a segment only when another own segment's verified
@@ -375,9 +387,11 @@ type rebuilt struct {
 // walk so a check can compare the sources' answers.
 //
 // order reorders the segments before the dispatch — nil keeps the listing
-// order — and is the one seam the order check drives: the index must come
-// out identical whatever order the segments are walked in. extentLimit
-// bounds the index the way the journal's settings do.
+// order — and is the one seam the order check drives: the workers' answer
+// is scanned in whatever order it lands, but the feed is the one order
+// above, so the index must come out identical whatever order the segments
+// are walked in. extentLimit bounds the index the way the journal's
+// settings do.
 //
 // Every segment is scanned by its own reader, at most readers at a time
 // (the open passes GOMAXPROCS; a value below one runs one):
@@ -388,7 +402,10 @@ type rebuilt struct {
 // index discarded unbuilt, so a refused open returns no half-built state.
 // A read no bounded attempt completed is collected by its worker's reader
 // and merged into rd here, so the open refuses on every range the phase
-// could not read, as the attach pass's own are.
+// could not read, as the attach pass's own are. losses is the loss sink
+// the kinds pass delivers to, nil when the open runs without one; att is
+// the attach pass's answer for the segments in own, which the classing
+// reads for what a segment's fate depends on.
 //
 // Nothing is written: the phase reads, feeds and finishes; the phases after
 // it own every change the open makes.
@@ -398,7 +415,7 @@ type rebuilt struct {
 // catalogued offsets — walking the two halves of one segment on two
 // readers, merging the scans — when a start-up profile of a journal with
 // huge segments shows the rebuild bound by one.
-func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool) (rebuilt, error) {
+func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool, losses LossSink, att Attached) (rebuilt, kindResults, tails, error) {
 	ix := index.New(extentLimit)
 	ctr := &index.Counters{}
 	b := ix.Rebuilder(ctr)
@@ -487,15 +504,6 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 					scans[i], errs[i] = scanSegment(srd, identity, own[i])
 				}
 			}
-			if errs[i] == nil {
-				for _, rec := range scans[i].Records {
-					if errs[i] = b.Feed(rec); errs[i] != nil {
-						break
-					}
-				}
-				// The aside kinds are carried for the phase that owns their
-				// rules, fed nowhere: the index sees none of them.
-			}
 			if errs[i] != nil {
 				cancel() // the running workers answer their next read at the context's error
 			}
@@ -515,34 +523,108 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 		rd.unread = append(rd.unread, srd.Unreadable()...)
 	}
 
-	// A segment's refusal or the context's error answers the phase: the
-	// index is discarded unbuilt, no half-built state returned, and every
-	// feeder has returned by the wait above. The worker errors reach Run raw
-	// — wrapped only where scanSegment named the segment — so errors.Is
-	// answers the caller's own sentinel. A refusal that is not a read's own
-	// is answered as the unreadable ranges when any range was collected, the
-	// attach pass's included, because the ranges are the unknown the
-	// operator must clear first; a cancellation is always answered as itself.
+	// A segment's refusal or the context's error answers the phase: nothing
+	// is fed and no index is returned, every worker having returned by the
+	// wait above. The worker errors reach Run raw — wrapped only where
+	// scanSegment named the segment — so errors.Is answers the caller's own
+	// sentinel. A refusal that is not a read's own is answered as the
+	// unreadable ranges when any range was collected, the attach pass's
+	// included, because the ranges are the unknown the operator must clear
+	// first; a cancellation is always answered as itself.
 	if first := firstFailure(ctx, own, errs); first != nil {
 		if len(rd.unread) > 0 && !isContextErr(first) {
-			return rebuilt{}, &core.UnreadableRangesError{Ranges: slices.Clone(rd.unread)}
+			return rebuilt{}, kindResults{}, tails{}, &core.UnreadableRangesError{Ranges: slices.Clone(rd.unread)}
 		}
-		return rebuilt{}, first
+		return rebuilt{}, kindResults{}, tails{}, first
 	}
-	// Finish runs once every feeder returned. The floor's epoch half is
+
+	// The kinds pass reads the bodies the workers set aside — every loss,
+	// hold, unhold, stamp and forget record the scans carry — and decides
+	// them against their own rules, before the tail's classing judges the
+	// corrupt drops the decode confines onto the same scans.
+	ks, kerr := decodeAsides(rd, identity, losses, scans)
+	if kerr != nil {
+		return rebuilt{}, kindResults{}, tails{}, kerr
+	}
+	// The partly-superseded remainders verify before the classing, over the
+	// buffered records and through the same reader, so a rotten kept run
+	// reaches the classing as the corrupt drop it is.
+	if verr := ks.verifyRemainders(rd, identity, scans); verr != nil {
+		return rebuilt{}, kindResults{}, tails{}, verr
+	}
+	// The classing reads the scans only after the kinds pass has confined
+	// every unread aside body onto them, so a lost loss record reaches the
+	// classing as the corrupt drop it is.
+	tl, terr := classifyTails(rd, identity, att, scans)
+	if terr != nil {
+		return rebuilt{}, kindResults{}, tails{}, terr
+	}
+	// The subtraction reads the classing's answer over the scans, before a
+	// record feeds: the drops it leaves are the ones the tail's append phase
+	// will report, and every one of them named a copy that never feeds.
+	tl.Corrupt = ks.subtractCopies(scans, tl)
+
+	// The workers did not feed — the scans hold every converted record —
+	// because the feed must wait for the kinds pass and the classing over
+	// all of them, so this is where the buffered records go.
+	//
+	// ponytail: records of every segment stay in memory until the kinds pass
+	// has decided what the loss and forget records withhold, so the rebuild
+	// peaks at about twice the builder's own buffer, which index/rebuild.go's
+	// note already prices; upgrade to a two-pass header walk (asides first,
+	// then a filtered scan) when J6's time-to-first-read profile shows the
+	// peak or the open span mattering.
+	//
+	// decision: the feed is serial because the withhold set is global — a loss
+	// record anywhere names a record anywhere — overturnable by a rebuilder
+	// that can un-feed a sequence number. This amends the builder's own
+	// concurrent-feeder note (index/rebuild.go): the builder still takes
+	// concurrent feeders, and what it builds is order-independent, but this
+	// caller cannot feed a segment's records before every aside has been
+	// decided, whatever order the dispatch happened to scan in.
+	byID := make([]int, len(scans))
+	for i := range byID {
+		byID[i] = i
+	}
+	slices.SortFunc(byID, func(a, c int) int { return cmp.Compare(scans[a].ID, scans[c].ID) })
+	filter := ks.newFeedFilter()
+	for _, i := range byID {
+		sc := &scans[i]
+		for _, rec := range sc.Records {
+			if ferr := filter.feed(rec, b.Feed); ferr != nil {
+				// The refused record's error answers as the phase's other
+				// refusals do: as the unreadable ranges when any range was
+				// collected, otherwise as itself, the index discarded unbuilt.
+				if len(rd.unread) > 0 && !isContextErr(ferr) {
+					return rebuilt{}, kindResults{}, tails{}, &core.UnreadableRangesError{Ranges: slices.Clone(rd.unread)}
+				}
+				return rebuilt{}, kindResults{}, tails{}, ferr
+			}
+		}
+		// The index buffer holds what the record said; the scan keeps only
+		// what the later phases read, so a journal of millions of records
+		// does not hold every converted record twice.
+		sc.Records = nil
+	}
+
+	// Finish runs with every scan's records fed. The floor's epoch half is
 	// refused before the claim takes it, so a refused floor builds nothing
 	// and changes nothing, and the counters' error answers as the record's
 	// own epoch refusal does.
 	if err := b.Finish(floor); err != nil {
-		return rebuilt{}, err
+		return rebuilt{}, kindResults{}, tails{}, err
 	}
-
-	// The index holds what the records said; the scans keep only what the
-	// later phases read, so a journal of millions of records does not hold
-	// every converted record twice.
-	for i := range scans {
-		scans[i].Records = nil
+	// The cuts the synced loss records carry apply over the finished index,
+	// where their extent-marker discipline and the version raise below it
+	// hold; the withheld records never reached it, so the cut is what drops
+	// the older content the open still sees beneath a reported loss.
+	if cerr := ks.applyCuts(ix); cerr != nil {
+		return rebuilt{}, kindResults{}, tails{}, cerr
 	}
+	// The repoint reads the fates over the fed copies last: it moves the
+	// pieces the collapse kept in a segment the open ends or saw fail, and
+	// nothing before it changes where a fed copy sits.
+	ks.repointCopies(ix, tl)
 	out := rebuilt{Index: ix, Counters: ctr, Scans: scans}
 	resyncs := 0
 	byCatalog := 0
@@ -556,7 +638,7 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	}
 	out.ScanResyncs = resyncs
 	out.ByCatalog = byCatalog
-	return out, nil
+	return out, ks.kindResults, tl, nil
 }
 
 // isContextErr reports a cancellation or a deadline, the errors a worker

@@ -341,6 +341,33 @@ func DecodeRecordHeader(b []byte, identity core.JournalID, segment core.SegmentI
 	return h, nil
 }
 
+// DecodeLossBody decodes the 16 checksum-verified body bytes of a loss
+// record: the dropped sequence number, then the flag word the kinds' table
+// layout writes as AppendRecord does — bit 0 the dropped record's synced bit,
+// bit 1 its offloaded bit, bytes' worth 8-15 its reason, every other bit zero.
+// It refuses what this format version does not define: a reason outside 1-5,
+// a flag word holding any other bit — which a writer of this format never
+// writes — or an input short of the body, each as damage, with the zero Loss.
+func DecodeLossBody(b []byte) (Loss, error) {
+	if len(b) < 16 {
+		return Loss{}, fmt.Errorf("%w: body of %d bytes, want 16", ErrDamaged, len(b))
+	}
+	flags := binary.LittleEndian.Uint64(b[8:16])
+	if flags & ^uint64(0x000000000000ff03) != 0 {
+		return Loss{}, fmt.Errorf("%w: flag word %#x holds bits outside 0, 1 and 8-15", ErrDamaged, flags)
+	}
+	reason := LossReason(flags >> 8)
+	if !reason.known() {
+		return Loss{}, fmt.Errorf("%w: loss reason %d, want one of 1-5", ErrDamaged, uint8(reason))
+	}
+	return Loss{
+		Dropped:   core.Seq(binary.LittleEndian.Uint64(b[0:8])),
+		Synced:    flags&(1<<0) != 0,
+		Offloaded: flags&(1<<1) != 0,
+		Reason:    reason,
+	}, nil
+}
+
 // VerifyRecordBody checks a record's whole body, of the length the header
 // names, against the header's payload checksum, and decodes it. It is the
 // only verify function: every path that hands a record's bytes to anyone
@@ -374,20 +401,11 @@ func VerifyRecordBody(body []byte, identity core.JournalID, h RecordHeader) (Rec
 	case KindFill:
 		out.Payload = body
 	case KindLoss:
-		flags := binary.LittleEndian.Uint64(body[8:16])
-		if flags & ^uint64(0x000000000000ff03) != 0 {
-			return RecordBody{}, fmt.Errorf("%w: flag word %#x holds bits outside 0, 1 and 8-15", ErrDamaged, flags)
+		loss, err := DecodeLossBody(body)
+		if err != nil {
+			return RecordBody{}, err
 		}
-		reason := LossReason(flags >> 8)
-		if !reason.known() {
-			return RecordBody{}, fmt.Errorf("%w: loss reason %d, want one of 1-5", ErrDamaged, uint8(reason))
-		}
-		out.Loss = Loss{
-			Dropped:   core.Seq(binary.LittleEndian.Uint64(body[0:8])),
-			Synced:    flags&(1<<0) != 0,
-			Offloaded: flags&(1<<1) != 0,
-			Reason:    reason,
-		}
+		out.Loss = loss
 	case KindCloneTarget:
 		if epoch := binary.LittleEndian.Uint64(body[40:48]); epoch != 0 {
 			return RecordBody{}, fmt.Errorf("%w: AsOf epoch %d, want 0", ErrNonZeroEpoch, epoch)

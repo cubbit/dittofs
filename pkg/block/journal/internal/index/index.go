@@ -138,6 +138,16 @@ func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta,
 	return ix.fs.lose(id, e, v)
 }
 
+// LoseSuperseded applies a superseded synced loss — one whose reason is that
+// the content was superseded, a drop metadata itself asked for — to id under
+// the file's lock, with no admission, and returns the change to the file's
+// held state. It makes the cut Lose does over e below v but leaves no marker,
+// so nothing is ever settled for it. A zero-length e is refused with
+// core.ErrZeroLength and changes nothing.
+func (ix *Index) LoseSuperseded(id core.FileID, e core.Extent, v core.Version) (HeldDelta, error) {
+	return ix.fs.loseSuperseded(id, e, v)
+}
+
 // ApplyRemoval applies the removal of kind k that a record already in its
 // segment carries, exactly as Truncate, Deallocate, Delete and CloneTarget
 // apply theirs, but without asking the removal allowance: it notes the

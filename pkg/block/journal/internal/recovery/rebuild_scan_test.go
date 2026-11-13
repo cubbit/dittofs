@@ -738,7 +738,7 @@ func TestRebuildIndexTwoSegmentsFailingAtOnceAnswerWithTheLowestSegmentID(t *tes
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 2, nil, nil, false)
+		_, _, _, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 2, nil, nil, false, nil, Attached{})
 		done <- err
 	}()
 	for rec.inFlightSegReads() < 2 {
@@ -789,7 +789,7 @@ func TestRebuildIndexAFailedSegmentStopsTheDispatch(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil, onStart, false)
+		_, _, _, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil, onStart, false, nil, Attached{})
 		done <- err
 	}()
 	// Segment 1's walk is parked in its first read. Polling the condition
@@ -838,7 +838,7 @@ func TestRebuildIndexCancelledMidFeedChangesNothing(t *testing.T) {
 	done := make(chan rebuiltOrErr, 1)
 	rd := newReader(ctx, r.seam.FS(), r.clk, nil)
 	go func() {
-		out, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil, nil, false)
+		out, _, _, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil, nil, false, nil, Attached{})
 		done <- rebuiltOrErr{out, err}
 	}()
 
@@ -949,7 +949,9 @@ func TestRunRebuildAsideCarriedNotFed(t *testing.T) {
 	seg := buildSeg(id,
 		rec(10, func(rc *raw.Record) {
 			rc.FileID = asideFile
-			rc.Loss = &raw.LossBody{Dropped: 99, Flags: 1 | 1<<8}
+			// Unsynced: a synced loss record would cut, giving the aside's
+			// file its loss marker, and the cut is another rule's rule.
+			rc.Loss = &raw.LossBody{Dropped: 99, Flags: 1 << 8}
 			rc.SyncedThrough = 240 // no other record in the segment names higher
 		}),
 		rec(1, func(rc *raw.Record) {
