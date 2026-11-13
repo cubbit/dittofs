@@ -319,7 +319,9 @@ holding it picks from its own session table
 at an interval, so a session signed in as an opener meanwhile takes it, until
 its deadline (§5.3). The nodes asked are `Reach.Sessions`: an SMB `Connect` adds its node,
 and the adapter calls it at each node's first authenticated session of the
-client, so no other `SESSION_SETUP` makes a mutating call; an NFSv4.1
+client, one of the session setup calls
+[RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)
+places outside its one-call rule; an NFSv4.1
 `AddSession` adds its node too. A node asked that holds no session of the
 client signed in as an opener picks none. Otherwise
 the service picks the session from the grant's opens as `Grants.Openers` returns them

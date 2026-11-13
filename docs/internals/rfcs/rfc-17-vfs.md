@@ -671,7 +671,7 @@ holds.
 | `Access` | an access mask in RFC 7's terms ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)), plus `MaximumAllowed` (`0x02000000`, SMB's `MAXIMUM_ALLOWED`), which only `OpenRequest.Access` carries and §5.3 resolves to `G` before any check |
 | `WCC` | `{Before *File; After File}`: one object's attributes either side of a mutation, from one hold of its accept lock; when `Before` is nil is [§5.7](#5.7%20GetAttr)'s |
 | `CreateResult`, `UnlinkResult`, `RenameResult` | `{Handle; File; Dir WCC}`; `{Dir WCC}`; `{From, To WCC; Moved *WCC}` — `Moved` when the moved file's own attributes changed |
-| `ShareRef`, `ShareInfo` | a share named as the client sent it — an NFS path or an SMB name; the zero value is the pseudo-root / a share's name, `Flavors []AuthFlavor`, comment, `Hidden`, the root's `MaximalAccess`, and the share policy's SMB flags (`ExportPolicy.SMB`: encrypt, continuously available, [RFC 16](rfc-16-metadata-store.md)) |
+| `ShareRef`, `ShareInfo` | a share named as the client sent it, an NFS path or an SMB name; the zero value is the pseudo-root / a share's name, `Flavors []AuthFlavor`, comment, `Hidden`, the root's `MaximalAccess`, computed for `c.ForOpen(false)` as an open's is ([§5.3](#5.3%20Open%20and%20close)), so over SMB it leaves out what only privilege grants, and the share policy's SMB flags (`ExportPolicy.SMB`: encrypt, continuously available, [RFC 16](rfc-16-metadata-store.md)) |
 | `Change`, `Op` | one change a watch reports; the operation an event or metric names |
 | `ClientInfo`, `ClientStatus`, `ClientRecord` | what `Propose` and `Connect` register — protocol, name, boot, whether state protection is on, the adapter's own bytes, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1); RFC 14's `Client`, aliased, as `Record` and `AddSession` return it |
 
@@ -815,7 +815,7 @@ and verifying a handshake is
 [RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)'s;
 the service exposes both as `Principals`, so an adapter imports `pkg/vfs` and
 nothing else of the core. The resolver that maps an `Identity` per share stays
-internal to the filesystem. `SignInStep`, `SignInResult`, `Scheme` and `Spelling`
+internal to the filesystem. `SignInStep`, `SignInResult`, `Keys`, `Scheme` and `Spelling`
 alias RFC 18's types; `SignInResult` carries the session keys beside the
 `Identity`, never inside it.
 
@@ -844,9 +844,9 @@ client record or lease — and a handler may make any number of them:
 state, and RFC 20 §4.3 allows a handler one. `vfs.Mutates(op Op) bool` answers
 it, so the adapters' one-call check reads it from one place.
 `Propose` is on the list because its record is volatile and nothing reads it
-but the confirm. SMB's `SESSION_SETUP` calls `SignIn`, the first on a node
-`Connect`, and one naming a `PreviousSessionId` `Disconnect`, each outside
-RFC 20 §4.3's one-call rule. `Spell` is on it because an NFSv4 `GETATTR` asking `owner`
+but the confirm. The calls SMB's `SESSION_SETUP` makes outside the one-call rule are
+those RFC 20 §4.3 lists: the `Principals` calls and session setup's client-record
+calls. `Spell` is on it because an NFSv4 `GETATTR` asking `owner`
 and `owner_group` makes two `Spell` calls and no mutation; `Find` is not,
 since it may mint a directory principal. `Read` is on it although the store may advance access time;
 that is a side effect of serving the read, never a second call.
@@ -2113,6 +2113,12 @@ exists, for the target:
 
 ```go
 func (s *Filesystem) renameAt(ctx context.Context, c Caller, from Target, fromName []byte, to Handle, toName []byte, noReplace bool) (RenameResult, error) {
+	if from.Open != nil && isStream(from.Open) { // before either name is looked up, so the answer shows neither the target nor the base's name
+		if err := s.authz.Grant(ctx, c, from.Open, Delete); err != nil { // the open's grant, as authz.Rename checks it (§4.6): ErrAccess without DELETE
+			return RenameResult{}, err
+		}
+		return RenameResult{}, ErrInvalid // open state's refusal (RFC 14 §9.4), answered here: a stream has no entry, so nothing is renamed
+	}
 	src, err := s.lookup(ctx, c, from.H, fromName) // ErrNotFound
 	if err != nil {
 		return RenameResult{}, err
@@ -2185,7 +2191,9 @@ changing nothing
 ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)): a stream has
 no entry
 ([RFC 7 §2.7](rfc-7-namespace-metadata.md#2.7%20Extended%20attributes%20and%20named%20streams)).
-The service decides it, never the adapter
+`renameAt` refuses such a rename first, before it looks up either name, so
+neither answer depends on whether the target exists or the base file's name
+is still there. The service decides it, never the adapter
 ([RFC 22 §12.1](rfc-22-smb.md#12.1%20Streams)).
 
 **A delete-pending directory takes no new entries.** Before it applies a create

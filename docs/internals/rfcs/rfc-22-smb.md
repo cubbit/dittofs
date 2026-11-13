@@ -869,8 +869,8 @@ three services:
 | workstation service (wkssvc) | `NetWkstaGetInfo` (100, 101) | the installation's name |
 | local security authority (lsarpc) | `OpenPolicy2`, `LookupSids2/3`, `LookupNames3/4`, `Close` | RFC 18's principals, spelled as [RFC 18 §4.6](rfc-18-identity.md#4.6%20Names) says — the security tab cannot show names without it |
 
-Every other call is answered `DCERPC_FAULT_OP_RNG_ERROR`. Witness is served over
-RPC on TCP, not on `IPC$` ([§14](#14.%20Witness)).
+Every other call is answered `DCERPC_FAULT_OP_RNG_ERROR`. Witness, **(cluster)**,
+is served over RPC on TCP, not on `IPC$` ([§14](#14.%20Witness)).
 
 > ponytail: three services, the subset Explorer, `net view` and the security tab
 > call. Any other management tool that needs a fourth fails. Add a service when
@@ -1124,7 +1124,7 @@ The hold and the re-run are the pipeline mechanism of
   operator moves that name's address to the new installation, or points the
   name there, once the new owner serves (its claim `owned`,
   [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)),
-  and Witness clients are sent
+  and **(cluster)** Witness clients are sent
   `RESOURCE_CHANGE` for it (§14). This server sends no referral (§1.1).
 - **A write refused for capacity is held, not failed, while the cause is
   transient.** A write answered `ErrDelay` because the journal's capacity or
@@ -1966,7 +1966,8 @@ A Windows file can carry named alternate data streams beside its main content.
 
 - A path component `name:stream` or `name:stream:$DATA` opens the named stream
   (RFC 7's `Stream` file); `name::$DATA` and `name` open the file.
-- Any other type after the second colon is `STATUS_OBJECT_NAME_INVALID`.
+- Any other type after the second colon is `STATUS_OBJECT_NAME_INVALID`; the
+  type `$DATA` is matched without case.
 - Stream names compare without case on every share, folded unit for unit by
   the share's upcase table, or on a case-sensitive share by the first table
   [RFC 7 §3.3](rfc-7-namespace-metadata.md#3.3%20Case) names.
@@ -1988,7 +1989,9 @@ A Windows file can carry named alternate data streams beside its main content.
   no access: the service refuses it `ErrAccess` when the open holds no
   `DELETE`, as on any file, and `ErrInvalid` when it does, answered
   `STATUS_NOT_SUPPORTED` (§16.5;
-  [RFC 17 §5.4](rfc-17-vfs.md#5.4%20Remove%20and%20rename)). One whose target
+  [RFC 17 §5.4](rfc-17-vfs.md#5.4%20Remove%20and%20rename)). A rename
+  target is parsed by the rules above, by the code that parses a `CREATE`'s
+  path, so `b::$DATA` is `b`. One whose target
   starts with `:` or names a stream never reaches `Rename`: it is
   `STATUS_NOT_SUPPORTED` from the request alone, whatever the open holds, so
   the caller does not learn whether the target exists. No service call renames a
@@ -2515,7 +2518,7 @@ a freeze is held for the freeze's bound, not as capacity, and so never ends
 | `ErrState` (`NoGrace`) — a reclaim from a client with nothing left to reclaim ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | not met: SMB reclaims only by `Reconnect`, which is never refused `NoGrace`; were it met, `STATUS_OBJECT_NAME_NOT_FOUND` as for `NoReclaim` |
 | `ErrState` (`ReclaimConflict`) — a reclaim that conflicts with one already reclaimed in the same grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)) | not met: a reconnect reclaims a persistent open its durable record holds, which no other reclaim can hold; were it met, `STATUS_OBJECT_NAME_NOT_FOUND` as for `NoReclaim` |
 | `ErrState` (`StaleState`) — a FileId whose open was lost with its shard's open state ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED` |
-| `ErrState` (`Revoked`) — a FileId whose open an administrator revoked, its client kept ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED`: SMB has no revoked status, and the client reopens. Once it has so answered a FileId, the adapter calls `FreeState` for it ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)), as SMB has no `FREE_STATEID`; a later use is `ErrState` (`BadState`) |
+| `ErrState` (`Revoked`) — a FileId whose open an administrator revoked, its client kept ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED`: SMB has no revoked status, and the client reopens. The handler that so answers a FileId then calls `FreeState` for it ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)), as SMB has no `FREE_STATEID`, a call outside the one-call rule ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)); a later use is `ErrState` (`BadState`) |
 | `ErrState` (`BadState`) — a FileId whose open is gone: closed, a removed share's, or never issued ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `STATUS_FILE_CLOSED`; a durable reconnect naming it is `ErrState` (`NoReclaim`), below |
 | `ErrState` (`StaleClient`) — the client's record expired, or was marked by a loss of a shard's open state ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) | `STATUS_FILE_CLOSED` for an open of that client |
 | `ErrState` (`CreateInUse`) — a create naming a create ID another open of the client holds, not marked as a replay, a replay of a disconnected open, or a replay on another session than the open's ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)) | `STATUS_DUPLICATE_OBJECTID` |
@@ -2578,7 +2581,7 @@ pends ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%2
 `STATUS_PENDING` that grants the request's credits, and the credits of the
 chain members after it, which do not run and of which `core` reads only the
 headers (`HoldCodec.Interim`'s `after`), and that no final response ever
-follows (§14's Witness move comes first). A parked request ended by a drain
+follows (§14's Witness move, **(cluster)**, comes first). A parked request ended by a drain
 gets no final response either, its interim having gone out when it parked: a waiting lock has `CancelLock` called first, and one it reports
 granted is answered success. On a continuously available share the client
 replays the lock or the notification once it reconnects, so the application
@@ -2739,7 +2742,7 @@ name, a SID, a principal or a client address
 | §6.3 handle before sharing, NFS | Client A opens with deny-write under an RWH lease and closes its handle locally; an NFSv4 client opens for write and an NFSv3 client writes. Assert each is told to retry while A's handle caching is broken, then succeeds. | an NFS request refused by a deny mode only a handle cache held |
 | §8 notify | smbtorture `smb2.notify`; overflow returns `STATUS_NOTIFY_ENUM_DIR`; a change made over NFS is reported, except a regular file's through no open made by name ([RFC 17 §3.5](rfc-17-vfs.md#3.5%20What%20each%20method%20calls)'s decision). **(cluster)** With a subtree below the watched directory placed in its own shard, a create in that subtree completes a recursive watch `STATUS_NOTIFY_ENUM_DIR`; create a new shard below the directory after registration and assert a create in it does the same. On a `posix` share, over NFS, create `a:b` and a non-UTF-8 name in the watched directory: assert the first reported as `a` U+F022 `b` and the second not reported. | a recursive watch that sees only its own primary's changes, or a notification naming a file as no listing does |
 | §9 info classes | smbtorture `smb2.getinfo`, `smb2.setinfo`, `smb2.dir`, `smb2.streams`, with `smb2.streams.io` a known failure because a named stream is not deleted on its own ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)), and `smb2.streams.names`, `smb2.streams.rename`, `smb2.streams.rename2` and `smb2.streams.basefile-rename-with-open-stream` known failures until a named stream can be renamed and a rename of a base file with an open stream is refused as Windows does; MS-FSA test cases for the classes of Appendix E.1. | |
-| §12.1 stream delete and rename | `CREATE` a named stream asking `DELETE` with `FILE_DELETE_ON_CLOSE`: assert `STATUS_NOT_SUPPORTED`. Through an open of an existing stream holding `DELETE`, set the disposition with `FileDispositionInformation`, then with `FileDispositionInformationEx`, then clear it: assert each `STATUS_NOT_SUPPORTED`; close the open and assert the stream and its base file are still there. Through a stream's open holding `DELETE`, rename it to a name with no stream, and to `:other:$DATA`, and through the base file's open holding `DELETE`, rename it to `:other`: assert each `STATUS_NOT_SUPPORTED` and nothing renamed; through a stream's open without `DELETE`, rename it to a name with no stream: assert `STATUS_ACCESS_DENIED`; through the base file's open without `DELETE`, rename it to an existing stream's name: assert `STATUS_NOT_SUPPORTED` and nothing renamed. | a stream delete answered `STATUS_INVALID_PARAMETER`, or taken as the base file's delete; a rename through a stream's open applied to its base file, or answered `STATUS_INVALID_PARAMETER`; a stream target sent to `Rename` as a `base:stream` entry, or answered `STATUS_OBJECT_NAME_COLLISION` |
+| §12.1 stream delete and rename | `CREATE` a named stream asking `DELETE` with `FILE_DELETE_ON_CLOSE`: assert `STATUS_NOT_SUPPORTED`. Through an open of an existing stream holding `DELETE`, set the disposition with `FileDispositionInformation`, then with `FileDispositionInformationEx`, then clear it: assert each `STATUS_NOT_SUPPORTED`; close the open and assert the stream and its base file are still there. Through a stream's open holding `DELETE`, rename it to a name with no stream, and to `:other:$DATA`, and through the base file's open holding `DELETE`, rename it to `:other`: assert each `STATUS_NOT_SUPPORTED` and nothing renamed; through a stream's open without `DELETE`, rename it to a name with no stream: assert `STATUS_ACCESS_DENIED`; through the base file's open without `DELETE`, rename it to an existing stream's name: assert `STATUS_NOT_SUPPORTED` and nothing renamed. Through a stream's open, rename it onto an existing file's name with `ReplaceIfExists` clear: assert `STATUS_ACCESS_DENIED` without `DELETE` and `STATUS_NOT_SUPPORTED` with it, never `STATUS_OBJECT_NAME_COLLISION`. Hold a stream's open with `DELETE` that shares delete, unlink its base file's name over NFS and create another file under it, then rename through the open: assert `STATUS_NOT_SUPPORTED` and the other file still named so. Rename a file to `b::$DATA`, to `b:s:$data` and to `b:s:$X`: assert it named `b`, then `STATUS_NOT_SUPPORTED`, then `STATUS_OBJECT_NAME_INVALID`, and no entry named `b::$DATA` or `b:s:$data`. | a stream delete answered `STATUS_INVALID_PARAMETER`, or taken as the base file's delete; a rename through a stream's open applied to its base file, or answered `STATUS_INVALID_PARAMETER`; a stream target sent to `Rename` as a `base:stream` entry, or answered `STATUS_OBJECT_NAME_COLLISION`; a stream's rename refused only after the target or the base name is looked up; a rename target parsed apart from `CREATE`'s path |
 | §9.3 timestamps | smbtorture `smb2.timestamps`; −1 on one open, write through it and through a second open on another node: only the second moves `LastWriteTime`. −1 on `ChangeTime` too, write through the first open, and assert an NFSv3 `GETATTR` shows `ctime` moved. | suspension in adapter memory, or a frozen NFS ctime |
 | §9.3 allocation | Set `FileAllocationInformation` 1 GiB past the end of file; assert success, end of file unchanged and `space_used` over NFS unchanged. | a reservation promised that nothing keeps |
 | §9.1 file ids | Query `FileIdInformation`, `FileInternalInformation`, `QFid` and `FSCTL_GET_OBJECT_ID` for a file, and its NFSv3 handle; assert no 8-byte window of the handle's `FileID` appears in any of them. | the `FileID` on the wire |
@@ -2750,7 +2753,7 @@ name, a SID, a principal or a client address
 | §12.3 names | On a `posix` share, create over NFS a non-UTF-8 name and `a:b`; list over SMB. Assert the first absent, the second shown with U+F022 and openable. On a `windows` share, assert both NFS creates refused as invalid names. Create `x?` over SMB: assert `STATUS_OBJECT_NAME_INVALID`. On a `posix` share, create `x` followed by U+F025 over SMB and see `x?` over NFS; on a `windows` share, the same create succeeds and NFS sees the U+F025 code point itself. Create `CON`, `con.txt` and `LPT1` over SMB: assert each `STATUS_OBJECT_NAME_INVALID`; create `CON` over NFS and open it over SMB. | an escape that collides, a forbidden character accepted from SMB, or a device name created from SMB |
 | §12.4 symlink targets | Over NFS, create links to `../a/b` and `/srv/x`; query each over SMB. Assert `..\a\b` with `SYMLINK_FLAG_RELATIVE` set and `\srv\x` with it clear. Set a relative target `c\d` over SMB; assert NFS `READLINK` returns `c/d`. | targets shown with `/`, or every target marked absolute |
 | §13 rename | smbtorture `smb2.rename`, `smb2.sharemode`; rename a directory with a file below it open over NFS. | |
-| §14 Witness | smbtorture `rpc.witness`; drain a node and assert a registered client receives `CLIENT_MOVE` and moves. | |
+| §14 Witness | **(cluster)** smbtorture `rpc.witness`; drain a node and assert a registered client receives `CLIENT_MOVE` and moves. | |
 | §15 snapshots | smbtorture `smb2.twrp`; Explorer's Previous Versions tab lists and restores a file. With subtree snapshots of two disjoint home directories sharing an ordinal, enumerate at each home and at the share root: assert each lists only the snapshots visible at its path, with no token twice, and a `TWrp` open at each home reaches its own subtree's snapshot. Query `FsVolume` and `FileIdInformation` for one file live and through two snapshots; assert three distinct volume serials and three distinct file ids. | a snapshot reporting the share's volume serial, so a client takes its file for the live one |
 | §3.1 capabilities | Negotiate 2.1, 3.0, 3.0.2 and 3.1.1, each once with every capability bit set in the request and once with none; assert `Capabilities` equals the §3.1 table's column for each dialect, the "if asked" bits clear when the request left them clear. On a continuously available share, a Windows client asks for a persistent handle. | a continuously available share whose clients ask only for durable handles |
 | §4.3 per-session disconnect | Bind two channels of one session; drop one: assert no volatile open closes and no durable timeout starts. On one `ClientGuid`, alice and bob each hold a durable open; alice reconnects with `PreviousSessionId`: assert bob's open stays connected. | a disconnect or previous-session teardown scoped to the machine |
