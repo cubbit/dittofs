@@ -21,6 +21,9 @@ rfc1 / 9.4 / A / "refusal":
 rfc1 / 9.4 / A / "unsuitable storage refused":
   owner: epic 7
   reason: 'Init and Open refuse what epic 3''s Appendix A probes reject'
+rfc1 / 9.4 / A / "a failed number is never issued again":
+  owner: epic 7
+  reason: 'T7.6 rebuilds the counters at reopen; the row''s test lands with it'
 rfc1 / 9.4 / A / "partial release keeps the record whole":
   tests: [TestRFC1A_PartialReleaseKeepsRecordWhole]
 rfc1 / 9.4 / A / "release frees nothing inside a segment":
