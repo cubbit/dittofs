@@ -1,0 +1,112 @@
+package main
+
+import (
+	"context"
+	"encoding/hex"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// exec runs the jdemo CLI with args against socket, returning the command's
+// output and error.
+func exec(t *testing.T, socket string, args ...string) (string, error) {
+	t.Helper()
+	root := newRoot()
+	var buf strings.Builder
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	root.SetArgs(append([]string{"--socket", socket}, args...))
+	err := root.Execute()
+	return buf.String(), err
+}
+
+func TestWriteAtParse(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string // a fragment of the expected error
+	}{
+		{"no tag", []string{"write-at", "file", "0", "--str", "hi"}, "tag"},
+		{"bad file id", []string{"write-at", "--tag", "1", "nothex", "0", "--str", "hi"}, "nothex"},
+		{"bad offset", []string{"write-at", "--tag", "1",
+			"0102030405060708090a0b0c0d0e0f10", "x", "--str", "hi"}, "x"},
+		{"negative offset", []string{"write-at", "--tag", "1",
+			"0102030405060708090a0b0c0d0e0f10", "-9", "--str", "hi"}, "-9"},
+		{"two data sources", []string{"write-at", "--tag", "1",
+			"0102030405060708090a0b0c0d0e0f10", "0", "--str", "hi", "--hex", "00"}, "one of"},
+		{"no data source", []string{"write-at", "--tag", "1",
+			"0102030405060708090a0b0c0d0e0f10", "0"}, "one of"},
+		{"missing offset arg", []string{"write-at", "--tag", "1",
+			"0102030405060708090a0b0c0d0e0f10"}, "accepts 2"},
+	}
+	for _, c := range cases {
+		_, err := exec(t, filepath.Join(t.TempDir(), "nope.sock"), c.args...)
+		if err == nil {
+			t.Errorf("%s: err nil, want an error containing %q", c.name, c.want)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got err %v, want it to contain %q", c.name, err, c.want)
+		}
+	}
+}
+
+func TestReadAtParse(t *testing.T) {
+	id := hex.EncodeToString([]byte("read-at-len-test"))
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"zero len", []string{"read-at", "--tag", "1", id, "0", "0"}, `length "0"`},
+		// pflag takes a leading '-' as a flag: cobra refuses it before the
+		// RunE sees it, naming it all the same.
+		{"negative len", []string{"read-at", "--tag", "1", id, "0", "-9"}, "in -9"},
+		{"bad id", []string{"read-at", "--tag", "1", "zz", "0", "9"}, "zz"},
+	}
+	for _, c := range cases {
+		_, err := exec(t, filepath.Join(t.TempDir(), "nope.sock"), c.args...)
+		if err == nil {
+			t.Errorf("%s: err nil, want an error containing %q", c.name, c.want)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: got err %v, want it to contain %q", c.name, err, c.want)
+		}
+	}
+}
+
+func TestWriteReadRoundTrip(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "journal")
+	socket := filepath.Join(t.TempDir(), "s.sock")
+	srv := &Server{Dir: dir, SocketPath: socket}
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	var rawID [16]byte
+	copy(rawID[:], "round-trip-file")
+	file := hex.EncodeToString(rawID[:])
+
+	if out, err := exec(t, socket, "share", "--tag", "1"); err != nil {
+		t.Fatalf("share: %v (out %q)", err, out)
+	}
+	wout, err := exec(t, socket, "write-at", "--tag", "1", file, "0", "--str", "hello")
+	if err != nil {
+		t.Fatalf("write-at: %v (out %q)", err, wout)
+	}
+	// The first write of the journal's first window issues v1.
+	if !strings.Contains(wout, "wrote 5 bytes") || !strings.Contains(wout, "v1") {
+		t.Errorf("write-at output: got %q, want it to name the byte count and the issued version v1", wout)
+	}
+
+	rout, err := exec(t, socket, "read-at", "--tag", "1", file, "0", "5")
+	if err != nil {
+		t.Fatalf("read-at: %v (out %q)", err, rout)
+	}
+	if !strings.Contains(rout, "68 65 6c 6c 6f") {
+		t.Errorf("read-at output: got %q, want a hexdump of %q", rout, "hello")
+	}
+}

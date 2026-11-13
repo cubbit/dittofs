@@ -37,6 +37,13 @@ func newRoot() *cobra.Command {
 	start.Flags().String("offload-dir", "", "directory the offload command writes payloads to (default: <dir>-offload)")
 	_ = start.MarkFlagRequired("dir")
 	root.AddCommand(start)
+	for _, c := range []*cobra.Command{
+		newShareCmd(), newForgetCmd(), newStrandCmd(),
+		newDrawCmd(), newSetVersionLimitCmd(),
+		newWriteAtCmd(), newReadAtCmd(), newSyncCmd(),
+	} {
+		root.AddCommand(c)
+	}
 	return root
 }
 
