@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
 
 // health is what GET /health answers.
@@ -55,7 +56,7 @@ func getHealth(t *testing.T, socket string) health {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var h health
 	if err := json.NewDecoder(resp.Body).Decode(&h); err != nil {
 		t.Fatalf("decode /health: %v", err)
@@ -66,7 +67,7 @@ func getHealth(t *testing.T, socket string) health {
 func TestServerStartStop(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "journal")
 	socket := tmpSocket(t)
-	srv := &Server{Dir: dir, SocketPath: socket}
+	srv := &Server{Options: testJournalOptions(), Dir: dir, SocketPath: socket}
 
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
@@ -96,7 +97,7 @@ func TestServerRestart(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "journal")
 	socket := tmpSocket(t)
 
-	first := &Server{Dir: dir, SocketPath: socket}
+	first := &Server{Options: testJournalOptions(), Dir: dir, SocketPath: socket}
 	if err := first.Start(context.Background()); err != nil {
 		t.Fatalf("first start: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestServerRestart(t *testing.T) {
 		t.Fatalf("first shutdown: %v", err)
 	}
 
-	second := &Server{Dir: dir, SocketPath: socket}
+	second := &Server{Options: testJournalOptions(), Dir: dir, SocketPath: socket}
 	err := second.Start(context.Background())
 	if err != nil && !strings.Contains(err.Error(), "recovering") {
 		t.Fatalf("second start (reopen): got err %v, want the journal's own answer", err)
@@ -113,7 +114,7 @@ func TestServerRestart(t *testing.T) {
 	if err == nil {
 		// The rebase that lands T7.6 flips this test: recovery opens the
 		// segments, and the assertion becomes "same journal id".
-		defer second.Shutdown(context.Background())
+		defer func() { _ = second.Shutdown(context.Background()) }()
 		if got := getHealth(t, socket).ID; got != id {
 			t.Errorf("reopen: journal id: got %q, want %q", got, id)
 		}
@@ -123,7 +124,7 @@ func TestServerRestart(t *testing.T) {
 	// the first open wrote — because recovery's assembly is T7.6. The
 	// refusal is surfaced verbatim, the demo's restart beat, and nothing is
 	// touched: a third start answers the same.
-	third := &Server{Dir: dir, SocketPath: socket}
+	third := &Server{Options: testJournalOptions(), Dir: dir, SocketPath: socket}
 	if err := third.Start(context.Background()); err == nil {
 		t.Fatalf("third start after refused reopen: err nil, want the same refusal")
 		_ = third.Shutdown(context.Background())
@@ -136,7 +137,7 @@ func TestServerRefusesWithoutState(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := journal.Init(context.Background(), dir, demoInstallID, journal.WithSettings(demoSettings)); err != nil {
+	if _, err := journal.Init(context.Background(), dir, demoInstallID, journal.WithSettings(demoSettings), journaltest.SuitableMount()); err != nil {
 		t.Fatalf("hand-crafted init: %v", err)
 	}
 	before, err := os.ReadDir(dir)
@@ -144,7 +145,7 @@ func TestServerRefusesWithoutState(t *testing.T) {
 		t.Fatalf("list dir: %v", err)
 	}
 
-	srv := &Server{Dir: dir, SocketPath: tmpSocket(t)}
+	srv := &Server{Options: testJournalOptions(), Dir: dir, SocketPath: tmpSocket(t)}
 	err = srv.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "state file") {
 		t.Fatalf("start without state file: got err %v, want an error naming the state file", err)
@@ -166,7 +167,7 @@ func TestServerRefusesCorruptState(t *testing.T) {
 	if err := os.WriteFile(statePath(dir), []byte("{{junk"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	srv := &Server{Dir: dir, SocketPath: tmpSocket(t)}
+	srv := &Server{Options: testJournalOptions(), Dir: dir, SocketPath: tmpSocket(t)}
 	err := srv.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "state file") {
 		t.Fatalf("start on corrupt state file: got err %v, want an error naming the state file", err)
@@ -183,8 +184,8 @@ func TestServerRefusesCorruptState(t *testing.T) {
 
 func TestStartTrailingSlashKeepsStateSibling(t *testing.T) {
 	base := t.TempDir()
-	srv := &Server{Dir: filepath.Join(base, "journal") + "/", SocketPath: tmpSocket(t)}
-	defer srv.Shutdown(context.Background())
+	srv := &Server{Options: testJournalOptions(), Dir: filepath.Join(base, "journal") + "/", SocketPath: tmpSocket(t)}
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("start with trailing slash: %v", err)
 	}
@@ -212,10 +213,10 @@ func TestStartRefusesBusySocketWithoutTouchingTheDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	base := t.TempDir()
-	srv := &Server{Dir: filepath.Join(base, "journal"), SocketPath: busy}
+	srv := &Server{Options: testJournalOptions(), Dir: filepath.Join(base, "journal"), SocketPath: busy}
 	err = srv.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "already") {
 		t.Fatalf("start against a live socket: got err %v, want a refusal naming the running daemon", err)
@@ -232,8 +233,8 @@ func TestStartRemovesStaleSocket(t *testing.T) {
 	if err := os.WriteFile(stale, []byte("stale"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	srv := &Server{Dir: filepath.Join(t.TempDir(), "journal"), SocketPath: stale}
-	defer srv.Shutdown(context.Background())
+	srv := &Server{Options: testJournalOptions(), Dir: filepath.Join(t.TempDir(), "journal"), SocketPath: stale}
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("start over a stale socket: %v (want it removed and the start to go on)", err)
 	}
@@ -241,5 +242,13 @@ func TestStartRemovesStaleSocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("health over the replaced socket: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
+}
+
+// testJournalOptions passes journaltest's mount probe: a test cannot choose
+// its host's filesystem, and the platform check refuses the CI runner's
+// mounts (a barrier-less /tmp among them), so tests judge a suitable mount
+// the same way the fixture does. The daemon's own start passes none.
+func testJournalOptions() []journal.Option {
+	return []journal.Option{journaltest.SuitableMount()}
 }

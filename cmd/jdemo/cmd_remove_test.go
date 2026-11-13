@@ -71,11 +71,11 @@ func TestReserveParse(t *testing.T) {
 func TestRemovalsAndReservationsRoundTrip(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "journal")
 	socket := tmpSocket(t)
-	srv := &Server{Dir: dir, SocketPath: socket}
+	srv := &Server{Options: testJournalOptions(), Dir: dir, SocketPath: socket}
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	var raw [16]byte
 	copy(raw[:], "removal-file-tes")

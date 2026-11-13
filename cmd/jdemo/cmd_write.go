@@ -127,7 +127,9 @@ func newReadAtCmd() *cobra.Command {
 		if _, err := dumper.Write(raw[:limit]); err != nil {
 			return err
 		}
-		dumper.Close()
+		if err := dumper.Close(); err != nil {
+			return err
+		}
 		if !full && len(raw) > limit {
 			cmd.Printf("(+%d more bytes, --full shows them)\n", len(raw)-limit)
 		}

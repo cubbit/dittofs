@@ -15,11 +15,9 @@ func TestClientDaemonDown(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Do against no daemon: err nil, want an unreachable error")
 	}
-	var buf bytes.Buffer
-	friendly(&buf, err)
 	want := "jdemo: daemon not reachable at " + socket + " — run 'jdemo start' first"
-	if got := buf.String(); got != want+"\n" {
-		t.Errorf("friendly(unreachable): got %q, want %q", got, want)
+	if got := friendlyLine(err); got != want {
+		t.Errorf("friendlyLine(unreachable): got %q, want %q", got, want)
 	}
 }
 
@@ -44,11 +42,11 @@ func TestRunCLIDaemonDown(t *testing.T) {
 func TestRunCLIJournalErrorIsOneLine(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "journal")
 	socket := tmpSocket(t)
-	srv := &Server{Dir: dir, SocketPath: socket}
+	srv := &Server{Options: testJournalOptions(), Dir: dir, SocketPath: socket}
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer srv.Shutdown(context.Background())
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 	if out2, err := exec(t, socket, "share", "--tag", "1"); err != nil {
 		t.Fatalf("share: %v (out %q)", err, out2)
 	}
