@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
 // Rec is one record as reclamation sees it: what the record is, the file it
@@ -51,6 +52,14 @@ type Rec struct {
 	Tag        core.ShareTag
 	Synced     bool
 	Superseded bool
+	// Loc is where the record's own bytes sit, the placement its append
+	// reported. Zero is tolerated — a registration without one keys,
+	// releases and drops exactly like any other — and a carry reaching a
+	// record with no place fails its unit, since it cannot read or move
+	// the record. Loc is part of the key of every registry this type keys
+	// by the whole Rec, Tag's own rule: a registration and its release
+	// must spell the same one, or the entry twice-keyed sits undropped.
+	Loc segment.Location
 }
 
 // Tracker is one journal's segment liveness: per segment, beside the bytes
@@ -85,6 +94,20 @@ type Tracker struct {
 	// reaches only the record it names, whose registrations sit here under
 	// the sequence number the loss carries.
 	recs map[core.FileID]map[Rec]int
+	// released keeps, per segment, the records a re-test's release spent:
+	// one count per released registration, mirroring how recs counts the
+	// live ones, so a release is recoverable by count. A re-test's release
+	// spends the record's liveness, not its bytes: the record keeps its
+	// place in its segment until the segment retires, and a pass that moves
+	// what the record covered — the copies a pass notes under it — re-learns
+	// it at its prologue with the pass's own copies counted, so the release
+	// is recoverable exactly while the bytes remain: the same closed window
+	// the durable-unlink gate keeps, seen from the other side. Only the
+	// re-test's releases enter the set: an explicit Unregister is a caller
+	// retiring the record by its own rules, and SegmentRetired clears the
+	// segment's whole set — the bytes left with the segment, and the
+	// recoverability with them. Guarded by rm, like recs.
+	released map[core.SegmentID]map[Rec]int
 	// forgets is each live forget record's snapshot, keyed by the whole Rec
 	// like recs: the segments that held records of the record's share tag
 	// when the forget was appended — the only ones that can hold a record
@@ -105,6 +128,28 @@ type Tracker struct {
 	// leaves when the loss's registration does, and a retired holder
 	// segment leaves every mark set that names it.
 	marks map[Rec]map[core.SegmentID]struct{}
+	// pendingGone is each retired segment's file list waiting for the
+	// unlink that retired it to become durable: SegmentRetired fills it
+	// with the files whose drop ranges name the segment, and RemovalDurable
+	// — the retirer's durable signal — consumes it, relaying each file's
+	// index drop of the segment's ranges. Between the two, no removal the
+	// segment's records kept answers droppable, so a removal record never
+	// leaves the journal before the unlink it counted on is durable. A
+	// segment's relay may fire twice — the journal's own retirement beside
+	// the retirer's hook — so the lists accumulate per segment, and a file
+	// named twice reaches RemovalDurable twice, which SegmentGone and the
+	// re-test both tolerate as the repeat it is.
+	//
+	// decision: an entry whose retirement's directory sync failed is never
+	// consumed in this process — a failed sync is never re-reported durable
+	// by a later one — so every removal the segment kept answers not
+	// droppable until the process ends, the safe direction: a drop before
+	// the unlink is durable would have a crash bring the retired segment
+	// back without the removal record that covered it. The next open's
+	// scan settles what the failed sync left on disk: a segment it finds
+	// gone rebuilds no ranges of, and one it still finds named is retired
+	// and dropped again there.
+	pendingGone map[core.SegmentID][]core.FileID
 
 	// mu serialises creating states: a leaf lock, held only while the state
 	// table is copied, never across the index or a candidate call.
@@ -386,15 +431,15 @@ func (t *Tracker) lowerCount(seg core.SegmentID, st *segState, n *atomic.Int64) 
 // that retires this segment, so the segment stays held while one stands —
 // and lowered when a deferral ends, once the copy that writes the loss
 // record has it durable. The registry of deferred losses lives with the
-// durability layer, which counts per segment the losses it deferred and
-// the segments holding their dropped records: it must call SetDeferred
-// once per deferral that starts, and once per deferral that ends, on the
-// segment holding the dropped record. No such registry exists yet, so
-// nothing moves the count; it and Held's read of it are in place for the
-// day one does. The count clamps at zero: an end without a start, or a
-// repeated end, lowers nothing. The last end on a segment holding nothing
-// else crosses to not held and fires the candidate, exactly as any release
-// does.
+// durability layer (loss.go's deferred registry): a deferred Lose stores
+// each entry against the segment holding the dropped record, and the pass
+// that retires the segment reads them through DeferredAgainst and ends
+// each with EndDeferral and SetDeferred(seg, false) once the record's
+// place is durable; the deferring path raises the count with its own
+// SetDeferred call beside its Lose. The count clamps at zero: an end
+// without a start, or a repeated end, lowers nothing. The last end on a
+// segment holding nothing else crosses to not held and fires the candidate,
+// exactly as any release does.
 //
 // A segment named here is not re-created for the set's word alone: with a
 // member check set, a segment the set no longer holds answers nothing, for
@@ -553,8 +598,11 @@ func (t *Tracker) forgetTaken(rec Rec) {
 // once, whatever its copies. The open ends its registration with one
 // OpenDone call, after every RegisterAtOpen and after SetMember.
 //
-// The plain records carry no location: the tracker keys a record by the whole
-// Rec, which names its segment, so a location is added when a reader exists.
+// The plain records carry no location. The tracker keys a record by the
+// fields the drop test reads, so a registration without its place works —
+// but a carry reaching one fails its unit, since it can no longer read the
+// record: the open's feed must hand each record its placement once the pass
+// that runs the carry lands.
 func (t *Tracker) RegisterAtOpen(recs []Rec, forgets []ForgetSet, unsynced []UnsyncedLoss) {
 	for _, r := range recs {
 		t.Register(r)
@@ -814,8 +862,8 @@ type segState struct {
 	// the durability layer still defers — one per loss that started, taken
 	// back per loss that ended. SetDeferred raises and lowers it, and the
 	// registry of deferred losses reaches the tracker through that call
-	// alone. No such registry exists yet, so nothing moves it and it reads
-	// zero; Held consults it for the day one does.
+	// alone, the pass ending each deferral the registry gives up once the
+	// copy's record is durable.
 	deferred atomic.Int64
 	// Holds is the count of ended holds registered on the segment — one per
 	// HoldEnded — each released at the proof its registration named, a mark

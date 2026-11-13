@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
@@ -90,8 +91,17 @@ type Copier struct {
 	dom        Domains
 	forgetting func(core.ShareTag) bool
 	corrupt    Corrupter
-	clock      core.Clock
-	log        *slog.Logger
+	// deferred answers, per segment, the losses whose record the copy that
+	// retires the segment owes — the registry the layer that defers them
+	// keeps, mapped field by field. admit is the admission every appending
+	// call asks before it draws, and drawn pairs an admitted draw with its
+	// appended record. The three are one wiring: deferred without admit is
+	// a caller bug Carry answers with an error.
+	deferred func(core.SegmentID) []DeferredLoss
+	admit    func(capacity.RecordClass) (capacity.Draw, error)
+	drawn    func(capacity.Draw)
+	clock    core.Clock
+	log      *slog.Logger
 }
 
 // NewCopier builds the pass over one journal's pieces. dom is the append
@@ -112,8 +122,17 @@ type Copier struct {
 // lands, nil is the whole wiring and copies append undisturbed by forgets.
 // Overturned when the Forget path's mark lands elsewhere than a
 // func(core.ShareTag) bool the pass can hold.
-func NewCopier(ix *index.Index, c *index.Counters, st *segment.Streams, un *unread.Set, tr *Tracker, dom Domains, forgetting func(core.ShareTag) bool, corrupt Corrupter, clk core.Clock, log *slog.Logger) *Copier {
-	return &Copier{ix: ix, counters: c, streams: st, un: un, tracker: tr, dom: dom, forgetting: forgetting, corrupt: corrupt, clock: clk, log: log}
+//
+// deferred answers, per segment, the losses whose record the copy that
+// retires the segment owes — the registry the layer that defers them keeps,
+// mapped field by field; nil defers nothing, the only nil wiring beside a
+// nil admit and drawn, which no deferred entry ever reaches. admit is the
+// admission every appending call asks before it draws — the headroom's own,
+// consulted once per deferred loss under the class the repack reserve
+// serves — and drawn pairs each admitted draw with the record that
+// appended.
+func NewCopier(ix *index.Index, c *index.Counters, st *segment.Streams, un *unread.Set, tr *Tracker, dom Domains, forgetting func(core.ShareTag) bool, corrupt Corrupter, clk core.Clock, log *slog.Logger, deferred func(core.SegmentID) []DeferredLoss, admit func(capacity.RecordClass) (capacity.Draw, error), drawn func(capacity.Draw)) *Copier {
+	return &Copier{ix: ix, counters: c, streams: st, un: un, tracker: tr, dom: dom, forgetting: forgetting, corrupt: corrupt, deferred: deferred, admit: admit, drawn: drawn, clock: clk, log: log}
 }
 
 // Copy copies the live content of seg, whose claim the caller holds. The

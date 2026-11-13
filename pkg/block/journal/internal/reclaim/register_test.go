@@ -531,11 +531,16 @@ func TestRetireHolder_LossKeptByOutrankingGuard(t *testing.T) {
 		t.Fatalf("the unsynced loss record left the registry at the holder's retirement, want the outranking guard to keep it")
 	}
 
-	// The guard's end: retire the overlapping record's segment too, and
-	// the same appended re-test drops the loss at last.
+	// The guard's end: retire the overlapping record's segment too — its
+	// ranges answer until the unlink is durable — and the same appended
+	// re-test drops the loss at last.
 	tr.SegmentRetired(sitA, []core.FileID{id})
+	if got := tr.Droppable(loss); got {
+		t.Fatalf("Droppable after the overlapping record's retirement, before its unlink is durable = %v, want false: the overlapping record's range answers still", got)
+	}
+	tr.RemovalDurable(sitA)
 	if got := tr.Droppable(loss); !got {
-		t.Fatalf("Droppable after the overlapping record's segment retired too = %v, want true: nothing keeps the loss any more", got)
+		t.Fatalf("Droppable after the overlapping record's segment retired and its unlink is durable = %v, want true: nothing keeps the loss any more", got)
 	}
 	if _, ok := tr.recs[id][loss]; ok {
 		t.Fatalf("the unsynced loss record is still registered after nothing keeps it, want the re-test to have taken it")

@@ -49,6 +49,10 @@ type Loss struct {
 	// Deferred appends no record: the copy that retires the dropped
 	// record's segment writes it.
 	Deferred bool
+
+	// Seg is the segment holding the dropped record; required when
+	// Deferred, ignored otherwise.
+	Seg core.SegmentID
 }
 
 // toFormat maps a reason to the number its loss record carries. It panics on
@@ -114,6 +118,14 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	// is named, so every path refuses it alike.
 	toFormat(l.Reason)
 
+	// A deferred loss names the segment holding its dropped record, the
+	// segment whose copy writes the record this one defers; a zero Seg is a
+	// caller bug refused here too, before the piece is taken, so the loss
+	// can be raised again with one, like the not-started refusal.
+	if l.Deferred && l.Seg == 0 {
+		return core.LossEvent{}, errors.New("durability: a deferred loss names no segment holding its dropped record")
+	}
+
 	d.lmu.Lock()
 	k := piece{l.Seq, l.Extent}
 	if _, ok := d.pieces[k]; ok {
@@ -135,6 +147,13 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 		if d.afterAppend != nil {
 			d.afterAppend()
 		}
+	} else {
+		// The registry entry the copy that retires l.Seg builds its loss
+		// record from, stored once the piece is taken: the deferral ends on
+		// EndDeferral alone.
+		d.lmu.Lock()
+		d.deferredLosses[l.Seg] = append(d.deferredLosses[l.Seg], l)
+		d.lmu.Unlock()
 	}
 
 	firstErr := recErr
@@ -318,6 +337,40 @@ func (d *Durability) RaiseWindow() uint64 { return d.dir.raise() }
 // appended, in the directory's life in this process. A later Durability on
 // the directory sees them too.
 func (d *Durability) Failed() []core.Seq { return d.dir.failedSeqs() }
+
+// DeferredAgainst returns the losses whose record the copy that retires seg
+// owes, the entries Lose deferred against it, in the order they deferred.
+// Each entry names its Seg; the caller hands the entry back on EndDeferral
+// once the copy has the record durable.
+func (d *Durability) DeferredAgainst(seg core.SegmentID) []Loss {
+	d.lmu.Lock()
+	defer d.lmu.Unlock()
+	return append([]Loss(nil), d.deferredLosses[seg]...)
+}
+
+// EndDeferral ends one deferred loss of seg: the copy that retires it has
+// the loss record durable, so the registry gives the entry up. l names the
+// entry as DeferredAgainst returned it. An entry leaves on this call alone,
+// so the call is idempotent: a second one, or a call whose entry already
+// left, answers false and changes nothing; true says an entry left.
+func (d *Durability) EndDeferral(seg core.SegmentID, l Loss) bool {
+	d.lmu.Lock()
+	defer d.lmu.Unlock()
+	es := d.deferredLosses[seg]
+	for i, e := range es {
+		if e != l {
+			continue
+		}
+		es = append(es[:i], es[i+1:]...)
+		if len(es) == 0 {
+			delete(d.deferredLosses, seg)
+		} else {
+			d.deferredLosses[seg] = es
+		}
+		return true
+	}
+	return false
+}
 
 // pushLocked publishes ev with the next event number, overwriting the oldest
 // when the ring is full. The caller holds mu.

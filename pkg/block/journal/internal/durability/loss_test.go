@@ -627,6 +627,7 @@ func TestLoseDeferredAppendsNothingAndOwesNoFailedSeq(t *testing.T) {
 	l := loss(5)
 	l.Synced = true
 	l.Deferred = true
+	l.Seg = 2
 	ev, err := e.d.Lose(context.Background(), l)
 	if err != nil {
 		t.Fatalf("Lose: %v", err)
@@ -657,6 +658,7 @@ func TestLoseDeferredUnsyncedMarksNothing(t *testing.T) {
 
 	l := loss(5)
 	l.Deferred = true
+	l.Seg = 2
 	if _, err := e.d.Lose(context.Background(), l); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
@@ -1520,6 +1522,7 @@ func TestADeferredLossRegistersNothing(t *testing.T) {
 	l := loss(5)
 	l.Synced = true
 	l.Deferred = true
+	l.Seg = 2
 	if _, err := e.d.Lose(context.Background(), l); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}

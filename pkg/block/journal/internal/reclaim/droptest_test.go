@@ -163,15 +163,82 @@ func TestDroppable_SettledTruncate(t *testing.T) {
 		t.Fatalf("Held while the truncate is kept = %v, want true", got)
 	}
 
-	// Retire the record's segment: the ranges of the retired segment answer
-	// nothing any more, so the re-test the retirement carries drops the
-	// truncate.
+	// Retire the record's segment: the retirement ends the segment's
+	// liveness, but the ranges of it answer still while the unlink is not
+	// durable, so the truncate stays live until the durable signal relays
+	// them out of the index.
 	tr2.SegmentRetired(over, []core.FileID{id2})
+	if got := tr2.Droppable(rec2); got {
+		t.Fatalf("Droppable after the lower record's segment retired, before its unlink is durable = %v, want false: the retired segment's ranges answer still", got)
+	}
+	tr2.RemovalDurable(over)
 	if got := tr2.Droppable(rec2); !got {
-		t.Fatalf("Droppable after the lower record's segment retired = %v, want true: nothing it can outrank remains", got)
+		t.Fatalf("Droppable after the lower record's segment retired and its unlink is durable = %v, want true: nothing it can outrank remains", got)
 	}
 	if got := tr2.Held(f2.seg); got {
 		t.Fatalf("Held after the retirement re-tested the truncate = %v, want false", got)
+	}
+}
+
+// TestSegmentRetired_TwoRelaysKeepBothFiles: a second SegmentRetired for
+// one segment — the journal's own relay beside the retirer's hook — must
+// accumulate its file list with the first's: replacing it would strand the
+// first relay's files, whose drop ranges would then stay in the index after
+// RemovalDurable, keeping every removal that counted on the segment live
+// forever. Two files whose removals count on the one retired segment, each
+// named by one of the two relays, both leave at the durable signal.
+func TestSegmentRetired_TwoRelaysKeepBothFiles(t *testing.T) {
+	f := newFixture(t)
+	idA, idB := fid(45), fid(46)
+	over := f.seg
+	p := newPlant(f)
+	p.write(t, idA, over, core.Extent{Off: 0, Len: 4096}, 0, 3, 1)
+	p.write(t, idB, over, core.Extent{Off: 0, Len: 4096}, 4096, 3, 2)
+	p.finish(t)
+	tr := New(f.ix, nil)
+
+	// Each file's removal record, in a segment of its own, settled: its
+	// answer hinges on the retired segment's ranges alone.
+	delA := Rec{
+		Kind: format.KindDelete, File: idA, Seg: over + 1,
+		Pair: index.Numbers{Version: ver(5), Seq: 6}, Seq: 6,
+	}
+	delB := Rec{
+		Kind: format.KindDelete, File: idB, Seg: over + 2,
+		Pair: index.Numbers{Version: ver(5), Seq: 7}, Seq: 7,
+	}
+	if got := tr.Droppable(delA); got {
+		t.Fatalf("Droppable of the delete beside the record it counts on = %v, want false", got)
+	}
+	if got := tr.Droppable(delB); got {
+		t.Fatalf("Droppable of the second delete beside the record it counts on = %v, want false", got)
+	}
+
+	// Two relays of the one retirement, each naming one file.
+	tr.SegmentRetired(over, []core.FileID{idA})
+	tr.SegmentRetired(over, []core.FileID{idB})
+	for _, look := range []struct {
+		name string
+		rec  Rec
+	}{
+		{"the first relay's delete", delA},
+		{"the second relay's delete", delB},
+	} {
+		if got := tr.Droppable(look.rec); got {
+			t.Fatalf("Droppable of %s after the retirement, before the unlink is durable = %v, want false: the retired segment's ranges answer still", look.name, got)
+		}
+	}
+	tr.RemovalDurable(over)
+	for _, look := range []struct {
+		name string
+		rec  Rec
+	}{
+		{"the first relay's delete", delA},
+		{"the second relay's delete", delB},
+	} {
+		if got := tr.Droppable(look.rec); !got {
+			t.Fatalf("Droppable of %s after the durable signal = %v, want true: a second relay's file list must not strand the first's in the index", look.name, got)
+		}
 	}
 }
 
@@ -304,14 +371,18 @@ func TestDroppable_PlantedSection72(t *testing.T) {
 		t.Fatalf("Droppable over a copy of higher sequence but lower version = %v, want false: the pair comparison keeps the truncate over the copy", got)
 	}
 
-	// The copy's segment retiring ends it: nothing the truncate can outrank
-	// remains, so it drops — the state a sequence-only comparison would
-	// have declared before the retirement, while the copy's bytes were
-	// still on disk.
+	// The copy's segment retiring ends it: nothing the truncate can
+	// outrank remains once the unlink is durable, so it drops — the state
+	// a sequence-only comparison would have declared before the retirement,
+	// while the copy's bytes were still on disk.
 	tr.Register(trunc)
 	tr.SegmentRetired(f.seg+1, []core.FileID{id})
+	if got := tr.Droppable(trunc); got {
+		t.Fatalf("Droppable after the copy's segment retired, before its unlink is durable = %v, want false: the copy's range answers still", got)
+	}
+	tr.RemovalDurable(f.seg + 1)
 	if got := tr.Droppable(trunc); !got {
-		t.Fatalf("Droppable after the copy's segment retired = %v, want true: nothing it can outrank remains", got)
+		t.Fatalf("Droppable after the copy's segment retired and its unlink is durable = %v, want true: nothing it can outrank remains", got)
 	}
 }
 
@@ -382,10 +453,15 @@ func TestDroppable_SyncedLoss(t *testing.T) {
 		t.Fatalf("Droppable of a settled synced loss over a lower-pair record = %v, want false: the record may still be outranked", got)
 	}
 	// Retiring the record's segment is the last thing the loss's answer
-	// waits on: nothing it can outrank remains, so it drops.
+	// waits on: the ranges keep it until the unlink is durable, then
+	// nothing it can outrank remains and it drops.
 	tr2.SegmentRetired(f2.seg, []core.FileID{id2})
+	if got := tr2.Droppable(loss); got {
+		t.Fatalf("Droppable after its outranker's retirement, before the unlink is durable = %v, want false: the outranking record's range answers still", got)
+	}
+	tr2.RemovalDurable(f2.seg)
 	if got := tr2.Droppable(loss); !got {
-		t.Fatalf("Droppable after the last record it could outrank left = %v, want true", got)
+		t.Fatalf("Droppable after the last record it could outrank left and the unlink is durable = %v, want true", got)
 	}
 
 	// A superseded loss: the journal dropped the record because newer
@@ -408,8 +484,12 @@ func TestDroppable_SyncedLoss(t *testing.T) {
 		t.Fatalf("Droppable of a superseded loss over a lower-pair record, before any settle = %v, want false: the record may still be outranked, the marker is not its reason to live", got)
 	}
 	tr3.SegmentRetired(f3.seg, []core.FileID{id3})
+	if got := tr3.Droppable(superseded); got {
+		t.Fatalf("Droppable of a superseded loss after its outranker's retirement, before the unlink is durable = %v, want false", got)
+	}
+	tr3.RemovalDurable(f3.seg)
 	if got := tr3.Droppable(superseded); !got {
-		t.Fatalf("Droppable of a superseded loss with nothing to outrank, no settle run = %v, want true", got)
+		t.Fatalf("Droppable of a superseded loss with nothing to outrank, once the unlink is durable, no settle run = %v, want true", got)
 	}
 }
 
@@ -470,8 +550,12 @@ func TestDroppable_UnsyncedLoss(t *testing.T) {
 	// The guard's own end: retire the overlapping record's segment and the
 	// loss drops at last.
 	tr2.SegmentRetired(f2.seg, []core.FileID{id2})
+	if got := tr2.Droppable(loss2); got {
+		t.Fatalf("Droppable after the overlapping record's retirement, before the unlink is durable = %v, want false: the overlapping record's range answers still", got)
+	}
+	tr2.RemovalDurable(f2.seg)
 	if got := tr2.Droppable(loss2); !got {
-		t.Fatalf("Droppable after the last segment holding the named record and its overlapping record retired = %v, want true", got)
+		t.Fatalf("Droppable after the last segment holding the named record and its overlapping record retired, and the unlink durable = %v, want true", got)
 	}
 
 	// Case 3: the named record was never registered — a registry gap — but
@@ -829,8 +913,9 @@ func TestDroppable_DeleteCoversTheWholeFile(t *testing.T) {
 	}
 
 	tr.SegmentRetired(lower, []core.FileID{id})
+	tr.RemovalDurable(lower)
 	if got := tr.Droppable(del); !got {
-		t.Fatalf("Droppable of the delete once the lower-pair write's segment retired = %v, want true", got)
+		t.Fatalf("Droppable of the delete once the lower-pair write's segment retired and its unlink is durable = %v, want true", got)
 	}
 }
 
