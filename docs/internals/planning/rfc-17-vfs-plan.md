@@ -248,6 +248,7 @@ and bound as §4.7 binds `WRITE`; the RFC 20 plan's §4.1 sketches one.
 | 10 | Locks, grants, watches | §5.11, §3.2 | pieces 4, 7, 8; stage 1 pieces 4, 5, 8 |
 | 11 | Copy and clone | §5.9 | piece 8; the engine's S3 (#3546), not all of stage 3 |
 | 12 | Test doubles (open) | §8 | pieces 1 and 2; before RFC 20's E4 |
+| 13 | Held wait behind a clone (open) | §5.9 | piece 11; stage 5 puts an adapter on `vfs.Service` that passes a hold (RFC 20 §4.6) |
 
 "Done when" means every listed row passes and each of its cases is revert-checked. A row may be
 split: its first piece lands the cases it can reach, and the piece that completes it is named
@@ -391,9 +392,9 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
     S3 (#3546), not all of stage 3: against the in-memory `Content`, `Copy` is a memcpy whose
     tests can only pass. Stage 2's clone path calls `Clone` and takes no open: the engine takes the clone-kind
     open through `Deps.Holds`, a `CloneHold` the root adapts from open state (#3546 §6 point 13).
-    Done when: V22 and V26 pass, and V29 and V31 pass but for their clone and copy cases. V30, V29's
-    clone case (the held wait behind a running clone) and V31's copy and clone case (the WCC read
-    in two holds) are §6.1 ledger rows.
+    Done when: V22 and V26 pass, and V29 and V31 pass but for their clone and copy cases. V30 and
+    V29's clone case (the held wait behind a running clone) are piece 13's; V31's copy and clone
+    case (the WCC read in two holds) is a §6.1 ledger row.
 12. **Test doubles (open, a stage-2 follow-up):** pieces 1 and 2 merged with `vfstest.Record`,
     `vfstest.RecordingCallbacks` and `internal/vfs/content_test.go`'s `fakeContent`, whose
     `truncErr` is a canned answer [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)
@@ -408,6 +409,12 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
     `Memory` and its wrapper 1.5, `Callbacks` 0.5, the test migration and deletions 2).
     Done when: the `Content` suite passes over the in-memory `Content`, `suite.Run` passes over
     `Memory`, and no Go file names `Record`, `RecordingCallbacks` or `fakeContent`.
+13. **Held wait behind a clone (open, a follow-up):** §5.9's held wait behind a running clone,
+    through `WithHold`: a call behind a clone waits up to its hold and completes when the clone
+    ends, instead of answering `DelayClone` at once. Until it lands, every such call answers
+    `DelayClone` at once, as `WithHold(0)` does. Owner: this plan; it starts when stage 5 puts an
+    adapter on `vfs.Service` that passes a hold (RFC 20 §4.6).
+    Done when: V29's clone case and V30 pass.
 
 ## 4. The engine contract
 
@@ -489,5 +496,4 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | The integration tier against the real engine; V19, V20 and V25 completed (D6, plan §3) | needs the engine | RFC 8 plan | stage 3 |
 | §8's nightly fuzz targets beyond their seeds (D6) | no registered suite runs `go test -fuzz` | RFC 29 harness | a suite runs `-fuzz` |
 | The upgrade mapping of `develop`'s shares into this store (plan §5 Q3) | storage v2 serves new installations only, so no stage carries `develop`'s shares over; the mapping is part of the migration the RFC 1 plan's ledger holds as unowned (its §6.1, "A migration tool from v1") | unowned (its own RFC, none yet) | demand for one |
-| §5.9's held wait behind a running clone, `WithHold`; V29's clone case and V30 (piece 11) | a call behind a clone answers `DelayClone` at once, as `WithHold(0)` does, until an adapter passes a hold (RFC 20 §4.6) | RFC 20 plan | stage 5 puts an adapter on `vfs.Service` |
 | V31's one hold for `Copy` and `Clone` (piece 11) | their `WCC.Before` is read under the destination's accept lock in the engine's admitted hook and their `After` once the engine answers, in two holds, as V31 now allows them (RFC 17 §5.9 step 4), since no adapter answers their pre-operation attributes | unowned | an adapter answers a copy's or clone's pre-operation attributes |
