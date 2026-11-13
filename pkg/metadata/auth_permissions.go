@@ -654,7 +654,7 @@ func (s *Service) HasMaximalReadAccess(file *File, authCtx *AuthContext) bool {
 	if file == nil {
 		return false
 	}
-	return s.ComputeMaximalAccess(file, authCtx)&accessMaskPosixRead == accessMaskPosixRead
+	return s.ComputeMaximalAccess(file, nil, authCtx)&accessMaskPosixRead == accessMaskPosixRead
 }
 
 // CheckFileAccess validates a CREATE DesiredAccess request against an
@@ -908,17 +908,12 @@ func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, aut
 }
 
 // posixFileAccess maps a file with no stored DACL to the access rights its
-// POSIX mode and owner grant the requester: the ComputeMaximalAccess bundles,
-// plus FILE_READ_ATTRIBUTES (always granted from the containing directory,
-// MS-FSA §2.1.5.1.2.1), with DELETE decided only by posixMayUnlink. The
-// owner's GENERIC_ALL bundle carries DELETE, but owning a file does not make
-// it removable: unlink is a right on the parent directory.
+// POSIX mode, owner and parent grant the requester: the ComputeMaximalAccess
+// bundles, DELETE among them only as posixMayUnlink decides it, plus
+// FILE_READ_ATTRIBUTES (always granted from the containing directory,
+// MS-FSA §2.1.5.1.2.1).
 func (s *Service) posixFileAccess(file, parent *File, authCtx *AuthContext) uint32 {
-	access := s.ComputeMaximalAccess(file, authCtx)&^acl.ACE4_DELETE | acl.ACE4_READ_ATTRIBUTES
-	if s.posixMayUnlink(file, parent, authCtx) {
-		access |= acl.ACE4_DELETE
-	}
-	return access
+	return s.ComputeMaximalAccess(file, parent, authCtx) | acl.ACE4_READ_ATTRIBUTES
 }
 
 // posixMayUnlink reports whether the requester may remove file from parent
@@ -979,12 +974,15 @@ func (s *Service) parentGrantsDeleteChild(file, parent *File, authCtx *AuthConte
 // CheckFileAccessWithParentGeneric.
 //
 // When file.ACL is nil, the POSIX fallback maps the file's mode bits:
-//   - Owner: GENERIC_ALL.
+//   - Owner: GENERIC_ALL but DELETE.
 //   - Group member / other: the rwx bundles (accessMaskPosixRead/Write/Execute),
 //     with FILE_DELETE_CHILD added to write on a directory.
 //   - Any authenticated user with no granted bits still receives the minimal
 //     READ_CONTROL | SYNCHRONIZE set.
-func (s *Service) ComputeMaximalAccess(file *File, authCtx *AuthContext) uint32 {
+//   - DELETE, owner or not, only when posixMayUnlink lets the requester
+//     remove file from parent, its directory; a nil parent leaves it out.
+//     The ACL path ignores parent.
+func (s *Service) ComputeMaximalAccess(file, parent *File, authCtx *AuthContext) uint32 {
 	// ACL-aware path: probe each defined access-right bit against the SD.
 	// No owner short-circuit — the DACL may legitimately restrict the owner.
 	if file.ACL != nil {
@@ -1005,9 +1003,18 @@ func (s *Service) ComputeMaximalAccess(file *File, authCtx *AuthContext) uint32 
 		return acl.ExpandGenericMask(granted)
 	}
 
-	// POSIX fallback: owner gets GENERIC_ALL.
+	// POSIX fallback. DELETE is a right on the parent directory, not on the
+	// file: owner or not, the requester has it only when posixMayUnlink lets
+	// them remove file from parent, as the open's own grant decides it
+	// (posixFileAccess), so the reply never offers a delete the open refuses.
+	var del uint32
+	if s.posixMayUnlink(file, parent, authCtx) {
+		del = acl.ACE4_DELETE
+	}
+
+	// The owner gets the rest of GENERIC_ALL.
 	if authCtx != nil && authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == file.UID {
-		return accessMaskPosixGenericAll
+		return accessMaskPosixGenericAll&^acl.ACE4_DELETE | del
 	}
 
 	// Compute from POSIX mode bits for a non-owner. Use group permission bits
@@ -1051,7 +1058,7 @@ func (s *Service) ComputeMaximalAccess(file *File, authCtx *AuthContext) uint32 
 		access = accessMaskPosixMinimal
 	}
 
-	return access
+	return access | del
 }
 
 // buildFileAccessEvalContext builds the EvaluateContext used for per-bit ACL

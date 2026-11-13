@@ -26,7 +26,12 @@ type createDraft struct {
 	// CREATE path (alongside the parent-create permission gate). createNewFile
 	// reuses it for compression-attribute inheritance instead of re-reading the
 	// same handle. Nil for pure-open dispositions, which never reach createNewFile.
-	parentFile     *metadata.File
+	parentFile *metadata.File
+	// accessParent is the parent directory recheckExistingFileGates judged the
+	// existing file's open against. The MxAc reply reuses it, so the DELETE it
+	// offers is the one the open grants. Nil when no existing file was judged
+	// or the parent lookup failed.
+	accessParent   *metadata.File
 	existingFile   *metadata.File
 	existingHandle metadata.FileHandle
 	fileExists     bool
@@ -571,6 +576,7 @@ func (h *Handler) recheckExistingFileGates(d *createDraft, effectiveAccess uint3
 				parentFile = pf
 			}
 		}
+		d.accessParent = parentFile
 
 		// effectiveAccess (computed by the caller) folds the
 		// disposition-implied FILE_WRITE_DATA into the mask. The DACL check

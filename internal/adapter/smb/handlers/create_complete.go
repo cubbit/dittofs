@@ -844,7 +844,13 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	}
 
 	if FindCreateContext(req.CreateContexts, "MxAc") != nil {
-		maxAccess := metaSvc.ComputeMaximalAccess(file, authCtx)
+		// The parent decides DELETE on a file with no stored ACL: the one the
+		// existing file's open was judged against, else the one a create loaded.
+		parent := d.accessParent
+		if parent == nil {
+			parent = d.parentFile
+		}
+		maxAccess := metaSvc.ComputeMaximalAccess(file, parent, authCtx)
 		mxW := smbenc.NewWriter(8)
 		mxW.WriteUint32(0)
 		mxW.WriteUint32(maxAccess)

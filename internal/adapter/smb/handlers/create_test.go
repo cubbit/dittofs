@@ -679,7 +679,7 @@ func TestWalkPath_ParentNavigation(t *testing.T) {
 // =============================================================================
 
 func TestHandleCreate_MxAcContext(t *testing.T) {
-	t.Run("OwnerGetsGenericAll", func(t *testing.T) {
+	t.Run("OwnerGetsGenericAllButDeleteWithNoParent", func(t *testing.T) {
 		uid := uint32(1000)
 		gid := uint32(1000)
 		authCtx := &metadata.AuthContext{
@@ -697,9 +697,9 @@ func TestHandleCreate_MxAcContext(t *testing.T) {
 			},
 		}
 
-		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
-		if access != 0x001F01FF {
-			t.Errorf("Owner access = 0x%08x, expected 0x001F01FF (GENERIC_ALL)", access)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, nil, authCtx)
+		if access != 0x001E01FF {
+			t.Errorf("Owner access = 0x%08x, expected 0x001E01FF (GENERIC_ALL but DELETE, which the parent decides)", access)
 		}
 	})
 
@@ -721,7 +721,7 @@ func TestHandleCreate_MxAcContext(t *testing.T) {
 			},
 		}
 
-		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, nil, authCtx)
 		// Group bits: r-x (5) => read + execute
 		expectedRead := uint32(0x00120089)
 		expectedExec := uint32(0x001200A0)
@@ -749,7 +749,7 @@ func TestHandleCreate_MxAcContext(t *testing.T) {
 			},
 		}
 
-		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, nil, authCtx)
 		// Other bits: --- (0) => minimum access only
 		expected := uint32(0x00100000 | 0x00020000) // SYNCHRONIZE | READ_CONTROL
 		if access != expected {
@@ -825,7 +825,7 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 			},
 		}
 
-		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, nil, authCtx)
 		if access&acl.ACE4_WRITE_DATA != 0 {
 			t.Errorf("ACE4_WRITE_DATA must be cleared, got 0x%08x", access)
 		}
@@ -873,7 +873,7 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 			},
 		}
 
-		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, nil, authCtx)
 		if access != want {
 			t.Errorf("MxAc = 0x%08x, expected 0x%08x (explicit 0x%08x + owner-implicit 0x%08x per MS-DTYP §2.5.3.2)",
 				access, want, explicit, ownerImplicit)
@@ -901,7 +901,7 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 			},
 		}
 
-		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, nil, authCtx)
 		if access != ownerImplicit {
 			t.Errorf("Empty ACL: owner must receive only implicit RC|WRITE_DAC, got 0x%08x want 0x%08x", access, ownerImplicit)
 		}
@@ -933,7 +933,7 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 				ACL:  &acl.ACL{},
 			},
 		}
-		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, nil, authCtx)
 		want := uint32(acl.ACE4_READ_ACL | acl.ACE4_WRITE_ACL | acl.ACE4_WRITE_OWNER)
 		if access != want {
 			t.Errorf("Admin owner MxAc = 0x%08x, want 0x%08x (RC|WRITE_DAC|WRITE_OWNER)", access, want)
@@ -941,8 +941,8 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 	})
 
 	t.Run("NilACLFallsBackToPOSIX", func(t *testing.T) {
-		// Regression guard: file.ACL == nil must preserve the legacy owner
-		// short-circuit returning GENERIC_ALL.
+		// Regression guard: file.ACL == nil keeps the owner short-circuit to
+		// GENERIC_ALL, but DELETE, which only the parent can grant.
 		authCtx := mkOwnerCtx()
 		file := &metadata.File{
 			FileAttr: metadata.FileAttr{
@@ -952,9 +952,9 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 			},
 		}
 
-		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
-		if access != 0x001F01FF {
-			t.Errorf("POSIX fallback owner access = 0x%08x, expected 0x001F01FF", access)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, nil, authCtx)
+		if access != 0x001E01FF {
+			t.Errorf("POSIX fallback owner access = 0x%08x, expected 0x001E01FF", access)
 		}
 	})
 }
