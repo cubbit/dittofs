@@ -747,7 +747,11 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   `FuzzOpen` (rule 2).
 - **Acceptance criteria:**
   - In the newest segment, A and B synced, C written, A's payload corrupted: A is corruption, B is
-    held, C is cut as a torn tail.
+    held, C is cut as a torn tail. A's payload rot under its verifying header is not found by this
+    epic's open: the rebuild's scan reads headers only, so A is indexed and the serving read raises
+    the loss event when the extent is read. The RFC 28 rows that give a scanned segment's payload
+    rot its corrupt loss record at the open wait on E7b's report-only `Verify` (RFC 1 §4.4) or an
+    RFC ruling naming another owner.
   - A zero slot with a verifying record after it is stepped over and reported as nothing; the
     same zeros below a later record's synced-through offset are corruption.
   - A segment named as a predecessor and truncated mid-record fails the open naming its missing
