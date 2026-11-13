@@ -204,8 +204,9 @@ func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []se
 				damaged = true
 				out.Corrupt = append(out.Corrupt, corruptRecord{Segment: id, Drop: d})
 			case d.Header.Offset >= sc.VerifiedEnd:
+				// The tail starts at VerifiedEnd, before the record, never
+				// at it: the drop did not verify, so nothing below may reach.
 				tail = true
-				tailAt = min(tailAt, d.Header.Offset)
 			default:
 				tornSlot = true
 			}
