@@ -949,7 +949,9 @@ func TestRunRebuildAsideCarriedNotFed(t *testing.T) {
 	seg := buildSeg(id,
 		rec(10, func(rc *raw.Record) {
 			rc.FileID = asideFile
-			rc.Loss = &raw.LossBody{Dropped: 99, Flags: 1 | 1<<8}
+			// Unsynced: a synced loss record would cut, giving the aside's
+			// file its loss marker, and the cut is another rule's rule.
+			rc.Loss = &raw.LossBody{Dropped: 99, Flags: 1 << 8}
 			rc.SyncedThrough = 240 // no other record in the segment names higher
 		}),
 		rec(1, func(rc *raw.Record) {
