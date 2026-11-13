@@ -774,6 +774,13 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		write(t, h, id, 0, distinct(0, size))
 		f.FailNext(kit.OpSync, "*.seg", 1)
 		before := f.J.Stats().Counters.SyncFailures
+		// The worker arms the bound's timer only once it observes the write,
+		// not when the write answers: an advance landing first fires nothing,
+		// and the timer armed then is due a whole bound past the advanced
+		// clock, which this one advance never reaches. The idle sealer holds
+		// the only other timer of a fresh fixture, so a pending count of two
+		// names the bound's timer.
+		eventually(t, "the sync bound's timer is armed", func() bool { return f.Pending() == 2 })
 		f.Advance(journal.SyncBound)
 		eventually(t, "the background sync of the sync bound hits the failing one", func() bool {
 			return f.J.Stats().Counters.SyncFailures > before

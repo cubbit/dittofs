@@ -561,6 +561,12 @@ func (f *Fixture) Drop(op, key string) {
 // Advance moves the journal's clock by d, firing every timer it reaches.
 func (f *Fixture) Advance(d time.Duration) { f.clock.Advance(d) }
 
+// Pending returns how many timers the fixture's clock holds that no Advance
+// has reached yet. A timer is armed only when the component that owns it gets
+// there, so a count that names the timer a test is about to wait on keeps an
+// advance from firing nothing.
+func (f *Fixture) Pending() int { return f.clock.Pending() }
+
 // Jump steps the journal's wall clock by d, firing no timer.
 func (f *Fixture) Jump(d time.Duration) { f.clock.Jump(d) }
 
