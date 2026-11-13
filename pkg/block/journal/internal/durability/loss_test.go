@@ -1522,6 +1522,7 @@ func TestADeferredLossRegistersNothing(t *testing.T) {
 	l := loss(5)
 	l.Synced = true
 	l.Deferred = true
+	l.Seg = 2
 	if _, err := e.d.Lose(context.Background(), l); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}

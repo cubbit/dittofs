@@ -125,7 +125,7 @@ func (f *copyFixture) plantDelete(t *testing.T, tag core.ShareTag, file core.Fil
 		t.Fatalf("Append of the delete: %v", err)
 	}
 	at := index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}
-	hd, err := f.ix.ApplyRemoval(tag, file, core.ChangeDelete, core.Extent{Off: 0, Len: math.MaxInt64}, v, seq, at, nil)
+	hd, _, err := f.ix.ApplyRemoval(tag, file, core.ChangeDelete, core.Extent{Off: 0, Len: math.MaxInt64}, v, seq, at, nil)
 	if err != nil {
 		t.Fatalf("ApplyRemoval of the delete: %v", err)
 	}

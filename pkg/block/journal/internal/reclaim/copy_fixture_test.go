@@ -353,7 +353,7 @@ func (f *copyFixture) plantRemoval(t *testing.T, tag core.ShareTag, file core.Fi
 		t.Fatalf("Append of the %s record: %v", kind, err)
 	}
 	at := index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}
-	hd, err := f.ix.ApplyRemoval(tag, file, change, over, v, seq, at, nil)
+	hd, _, err := f.ix.ApplyRemoval(tag, file, change, over, v, seq, at, nil)
 	if err != nil {
 		t.Fatalf("ApplyRemoval of the %s: %v", kind, err)
 	}
@@ -395,7 +395,7 @@ func (f *copyFixture) plantLoss(t *testing.T, tag core.ShareTag, file core.FileI
 		t.Fatalf("Append of the loss record: %v", err)
 	}
 	at := index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}
-	hd, err := f.ix.Lose(file, e, v)
+	hd, _, err := f.ix.Lose(file, e, v)
 	if err != nil {
 		t.Fatalf("Lose of the loss record: %v", err)
 	}
