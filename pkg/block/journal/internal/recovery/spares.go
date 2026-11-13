@@ -87,15 +87,19 @@ type AdoptedSpare struct {
 // slot at the file's end. Nothing durable ever reached a candidate, so the
 // old life's bytes become unreadable and each id is the allocator's again.
 //
+// The adoptions are recorded only after the one directory sync the open
+// spends has made the spares' entries durable; its failure is the open's —
+// no spare is taken and nothing is unlinked over a name no sync proved.
+//
 // The phase is the open's first writing one, so it refuses first, before
 // any candidate is touched; each slot is read through the open's reader, so
 // a read the bound did not clear refuses rather than zeroes, and the
 // adoption takes the segment's tail fate with it: a re-adopted spare's tail
 // is nobody's to cut, and the phases that cut find no fate for it.
 //
-// The unlinking of a re-adopted id the pool's sizes refuse, the one
-// directory sync the adoptions owe and the class each adoption takes under
-// are the later steps of this open's own list, not this phase's.
+// The unlinking of a re-adopted id the pool's sizes refuse and the class each
+// adoption takes under are the later steps of this open's own list, not this
+// phase's.
 func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.JournalID, _ core.Version) error {
 	// decision: this phase is the open's first writing one, so the refusal
 	// runs before any candidate work rather than at the run's end: zeroing
@@ -122,6 +126,16 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 		}
 		adopted = append(adopted, AdoptedSpare{ID: id})
 	}
+	if len(adopted) > 0 {
+		// A process that died may have left a spare's directory entry without
+		// the sync its own rename was owed: a spare taken before this sync
+		// could lose its name — and the records a later open re-appends into
+		// it — to a power cut, so the one sync precedes every recorded
+		// adoption and its failure answers the open taking nothing.
+		if err := deps.FS.SyncDir(); err != nil {
+			return err
+		}
+	}
 	st.Spares.Adopted = adopted
 
 	reAdopted := make(map[core.SegmentID]bool, len(adopted))
@@ -139,8 +153,9 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 // trailer slot of the last SealMarkerSize. Each slot is read through the
 // open's reader first, so a read the bound did not clear refuses the open
 // rather than zeroing what was never read back, and a candidate whose slots
-// are already clean is never opened: nothing is written for it and no sync
-// is spent. What is dirty is opened once, zeroed and synced once, so a
+// are already clean is never opened: nothing is written for it and no file
+// sync is spent; the adoption still owes the phase's one directory sync.
+// What is dirty is opened once, zeroed and synced once, so a
 // crash under the phase leaves a half-zeroed slot the next open zeroes the
 // same way.
 func zeroSpareSlots(deps Deps, rd *reader, id core.SegmentID, size int64) error {

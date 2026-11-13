@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -387,6 +388,65 @@ func TestSparesPhaseLeavesCleanSlotsUnwritten(t *testing.T) {
 		if f.ID == id {
 			t.Errorf("spares: the re-adopted spare %d kept its fate %s, want none: a spare's tail is nobody's to cut", id, f.Kind)
 		}
+	}
+}
+
+// TestSparesPhaseFailsTheOpenWhenTheDirectorySyncFails plants several whole
+// untaken spares, so adoptions are pending, and fails the one directory sync
+// the phase owes: the open fails with the sync's own error and takes no spare
+// — every .seg is still in the directory and nothing is unlinked, for a spare
+// taken before its name is durable could lose that name, and the records a
+// later open re-appends into it, to a power cut. The refusal spent exactly
+// the phase's one sync; run again with the fault spent, the open adopts every
+// candidate: all of them in Spares.Adopted, nothing unlinked, nothing
+// rejected.
+func TestSparesPhaseFailsTheOpenWhenTheDirectorySyncFails(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	ids := []core.SegmentID{5, 6, 9}
+	for _, id := range ids {
+		r.write(format.SegmentName(id), make([]byte, testCap))
+	}
+
+	// The fault is scheduled after the planting: the rig's write syncs the
+	// directory per file, and the fixture must not spend the failure.
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+	removes := r.seam.Calls(kit.OpRemove)
+	// Directory calls carry the empty key, and "*" is the pattern that
+	// matches it.
+	if err := r.seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 1, syscall.EIO)); err != nil {
+		t.Fatalf("fixture: schedule the failed sync: %v", err)
+	}
+
+	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("spares: the failed directory sync answered err %v, want %v, the sync's own error", err, syscall.EIO)
+	}
+	for _, id := range ids {
+		if !slices.Contains(r.listing(), format.SegmentName(id)) {
+			t.Errorf("spares: the failed sync removed %s; the directory holds %v", format.SegmentName(id), r.listing())
+		}
+	}
+	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs+1; got != want {
+		t.Errorf("spares: the phase spent %d directory syncs, want exactly %d: its one sync beside the fixture's %d, so a second sync cannot mask the first's failure", got, want, dirSyncs)
+	}
+	if got := r.seam.Calls(kit.OpRemove); got != removes {
+		t.Errorf("spares: the failed sync unlinked something, got %d removes, want %d, the count before the run", got, removes)
+	}
+
+	// The fault is spent: the run takes the spares under a passing sync.
+	st := r.runCandidates()
+
+	want := []AdoptedSpare{{ID: ids[0]}, {ID: ids[1]}, {ID: ids[2]}}
+	if got := st.Spares.Adopted; !slices.Equal(got, want) {
+		t.Errorf("spares: the re-run's adoptions got %v, want %v, every candidate under a passing sync", got, want)
+	}
+	if len(st.Spares.Unlinked) != 0 {
+		t.Errorf("spares: the re-run unlinked %v, want nothing", st.Spares.Unlinked)
+	}
+	if st.Attached.Rejected != 0 {
+		t.Errorf("spares: the re-run rejected %d segments, want none: whole untaken spares are candidates, not rejects", st.Attached.Rejected)
 	}
 }
 
