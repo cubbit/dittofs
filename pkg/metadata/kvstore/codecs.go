@@ -14,6 +14,31 @@ const v1 = 1
 // errMalformed is a value whose fields decode but name no valid choice.
 var errMalformed = errors.New("kvstore: malformed value")
 
+// fileRecordError is one of a file's own ref, hole, overwrite or removal
+// records, its value or its key, that does not decode.
+type fileRecordError struct{ error }
+
+func (e fileRecordError) Unwrap() error { return e.error }
+
+// fileRecord marks err, a decode of one of a file's own records, as that
+// file's; nil stays nil.
+func fileRecord(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fileRecordError{err}
+}
+
+// FileRecordUndecodable reports that err is one of a file's own ref, hole,
+// overwrite or removal records, or its key, that does not decode: every call
+// reading it fails the same way until the record is repaired, whatever the
+// store's health, and no other file's call reads it. A record shared by
+// files, a journal's open generation or a share's namespaces, is not one.
+func FileRecordUndecodable(err error) bool {
+	var fe fileRecordError
+	return errors.As(err, &fe)
+}
+
 func open(b []byte) (*codec.Reader, error) {
 	r, _, err := codec.NewReader(b, v1)
 	return r, err

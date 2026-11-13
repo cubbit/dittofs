@@ -10,6 +10,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
 // checkNamed reports a sample of Stats that breaks a documented inequality.
@@ -20,6 +21,11 @@ func checkNamed(t *testing.T, when string, s Stats) {
 	}
 	if s.ReservedBytes < 0 {
 		t.Errorf("%s: ReservedBytes = %d, want >= 0", when, s.ReservedBytes)
+	}
+	for tag, ss := range s.Shares {
+		if ss.HeldBytes+ss.UnreclaimedBytes > ss.UsedBytes {
+			t.Errorf("%s: share %d HeldBytes %d + UnreclaimedBytes %d > UsedBytes %d", when, tag, ss.HeldBytes, ss.UnreclaimedBytes, ss.UsedBytes)
+		}
 	}
 }
 
@@ -431,4 +437,30 @@ func TestRFC1D_StatsReservedCoversARecordNotYetCounted(t *testing.T) {
 	if !sampled {
 		t.Fatal("the beforeWrote seam never ran")
 	}
+}
+
+// TestRFC1D_UnreclaimedClampsAStaleHeldFigure retires a segment the index
+// still holds an extent in, which leaves the set below held: the analog of a
+// release followed by a retire, which retirement will make reachable. The raw
+// figure is then negative, and the Stats figures read zero, the total being the
+// sum of the shares'.
+func TestRFC1D_UnreclaimedClampsAStaleHeldFigure(t *testing.T) {
+	c, _ := newTestCore(t)
+	s1, s2 := mustShare(t, c, 1), mustShare(t, c, 2)
+	lost := testFile(9)
+	mustWrite(t, c, s1, lost, 0, make([]byte, 4096))
+	seg := recordOf(t, c, lost, 0).Record.Segment
+	if _, err := c.Streams().For(lost).Seal(false); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	mustWrite(t, c, s2, sameStreamFile(c, lost), 0, make([]byte, 4096))
+	syncFiles(t, c, lost)
+	if _, err := c.Retirer().Retire(seg, segment.NotHeld); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	used, over := c.set.TagFigures()
+	if raw := unreclaimedRaw(used[1], over[1], c.shareFigures()[1]); raw >= 0 {
+		t.Fatalf("share 1's figure before the clamp = %d, want it negative with its held extent's segment gone", raw)
+	}
+	wantUnreclaimed(t, c, "with the set below held", 1, 0)
 }

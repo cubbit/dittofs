@@ -20,6 +20,31 @@ func TestGenerateIsDecidedBySeed(t *testing.T) {
 	}
 }
 
+// A draw restricted to some operations draws, from the same seed, the same
+// steps every time, and only those operations: the data-path set never draws
+// an offload whose content one of its fills would have taken.
+func TestGenerateWithinDrawsOnlyTheGivenOps(t *testing.T) {
+	a, b := GenerateWithin(1, 200, DataPathOps), GenerateWithin(1, 200, DataPathOps)
+	if !slices.Equal(a, b) {
+		t.Fatal("seed 1 drew two different restricted sequences")
+	}
+	got := map[Op]bool{}
+	for _, s := range a {
+		if !slices.Contains(DataPathOps, s.Op) {
+			t.Fatalf("drew %s, which the given operations do not name", s.Op)
+		}
+		if why := s.valid(); why != "" {
+			t.Fatalf("drew %+v: %s", s, why)
+		}
+		got[s.Op] = true
+	}
+	for _, op := range DataPathOps {
+		if !got[op] {
+			t.Errorf("never drew %s", op)
+		}
+	}
+}
+
 // Over a few seeds every operation, every crash, every offload limit and widen,
 // every share and every file is
 // drawn, along with a call through the share that does not have the file, a

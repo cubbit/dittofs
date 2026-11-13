@@ -76,26 +76,46 @@ func raise(a *atomic.Int64, v int64) {
 	}
 }
 
-// end brackets the write transaction begin started, ctx and err being the
-// call's. A nil err is a commit, and restarts the fence's clock. Failing is
-// per owner (RFC 8 §11.2): an error fails ctx's retrying owner when it is
-// the store's (storeFailed), and its commit or an attempt that fails on its
-// own (a conflict, a stale file, a cancelled context) clears that owner
-// alone, since an owner's failing is timed from its latest attempt. Neither
-// clears another owner still failing at the store. A one-shot call's error
-// is neither a commit nor a failure.
-func (f *fence) end(ctx context.Context, err error) {
+// end brackets the write transaction begin started: ctx and err are the
+// call's, items what it carried (its files, marksItem for marks, wholeItem
+// for neither). A nil err is a commit: it restarts the fence's clock and
+// clears ctx's retrying owner and every item of it. Failing is per owner
+// (RFC 8 §11.2) and, within one, per item, each timed from its latest
+// attempt. A call its caller's own context ended, by a cancel or a deadline
+// other than the conflict bound's, is neither a commit nor a failure: it
+// leaves the owner and its items as they were. An error the store's
+// (storeFailed) fails the owner and marks the call's items failing at the
+// store, but a record of a file's own that does not decode marks none: the
+// split names its file. Any other error, that record in a call carrying its
+// file alone included, fails on its own: it clears the call's items, and the
+// owner once none of its items is left failing at the store. No call clears
+// another owner. A one-shot call's error is neither a commit nor a failure.
+//
+// An item also leaves when its owner stops retrying it without either, as
+// forget says.
+func (f *fence) end(ctx context.Context, err error, items ...any) {
 	o := ownerOf(ctx)
+	if len(items) == 0 {
+		items = []any{wholeItem{}}
+	}
 	switch {
-	case o != nil && err != nil && storeFailed(err):
+	case o == nil:
+	case err == nil:
+		f.forget(o)
+	case callerEnded(ctx):
+	case storeFailed(err) && !ownRecord(err, items):
+		var failed []any
+		if !kvstore.FileRecordUndecodable(err) {
+			failed = items
+		}
 		f.lastErr.Store(&err)
 		// Counted before outstanding leaves zero, so no reader sees the
 		// node idle meanwhile.
-		if !o.failing.Swap(true) {
+		if o.fail(failed) {
 			f.failing.Add(1)
 		}
-	case o != nil:
-		f.release(o)
+	default:
+		f.forget(o, items...)
 	}
 	if err == nil {
 		f.committed()
@@ -103,19 +123,54 @@ func (f *fence) end(ctx context.Context, err error) {
 	f.outstanding.Add(-1)
 }
 
-// release ends o's failing, if it is, so an owner that commits, fails on
-// its own, or stops leaves no failing behind. A retrying owner's loop calls
-// it as it returns, after its last store call, so an owner that stops while
-// failing does not keep an idle node fenced. f is nil only in a test that
-// builds its engine without New.
+// callerEnded reports that ctx, a store call's, ended by its caller's cancel
+// or deadline. The conflict bound's cut is not the caller's: it is how a
+// store that answers nothing fails a call (storeFailed).
+func callerEnded(ctx context.Context) bool {
+	return ctx.Err() != nil && !errors.Is(context.Cause(ctx), errBoundCut)
+}
+
+// ownRecord reports that err is a record of the one file items carry that
+// does not decode: that file's failure, not the store's. A call carrying
+// several files leaves it to the split to name the file.
+func ownRecord(err error, items []any) bool {
+	n := 0
+	for _, it := range items {
+		if _, ok := it.(entity.FileID); ok {
+			n++
+		}
+	}
+	return n == 1 && kvstore.FileRecordUndecodable(err)
+}
+
+// marksItem is a marks write's item, failing at the store apart from the
+// files beside it; wholeItem is the item of a call that carries none.
+type (
+	marksItem struct{}
+	wholeItem struct{}
+)
+
+// release ends o's failing, if it is, so an owner that stops leaves no
+// failing behind. A retrying owner's loop calls it as it returns, after its
+// last store call, so an owner that stops while failing does not keep an idle
+// node fenced. f is nil only in a test that builds its engine without New.
 //
 // decision: runClone and unstage carry the removal loop's mark off its
 // goroutine, so a store error of theirs after the loop's release marks the
 // owner failing again, and nothing releases it. That holds only while such an
 // error comes after Close halted the loops; release from cloning's join too
 // if one is seen fencing a live node.
-func (f *fence) release(o *ownerState) {
-	if f != nil && o != nil && o.failing.Swap(false) {
+func (f *fence) release(o *ownerState) { f.forget(o) }
+
+// forget clears o's items, every item when none is named, and ends o's
+// failing once none is left failing at the store. Besides a commit and a
+// failure of the item's own, an item leaves this way when its owner stops
+// retrying it: the group commit's file whose writes left another way, was
+// taken off by an unbind or lost with its journal, and the removal loop's
+// item that finished or was ended. Kept, it would hold the owner failing
+// and fence a quiet node on a healthy store.
+func (f *fence) forget(o *ownerState, items ...any) {
+	if f != nil && o != nil && o.settle(items) {
 		f.failing.Add(-1)
 	}
 }
@@ -138,9 +193,9 @@ func (f *fence) committed() {
 // in Existence.Commit's map never reaches here, as that call committed. Every
 // other error is the store's, a deadline the engine's own bound cut included,
 // since an erroring store must fence as one that answers nothing does. A
-// file's own failure the store reports as an error of the whole call, not one
-// listed here, counts as the store's: name it here once the store gives it a
-// value of its own.
+// record of a file's own that does not decode, which the store reports as an
+// error of the whole call, counts here as the store's; end counts it as the
+// file's once a call carries that file alone.
 func storeFailed(err error) bool {
 	return !errors.Is(err, kvstore.ErrConflict) &&
 		!errors.Is(err, context.Canceled) &&
@@ -264,23 +319,39 @@ type fencedExistence struct {
 }
 
 func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+	// decision: a marks write carrying no marks sets no key, and a store
+	// commits it without writing, so it is no write transaction: counted,
+	// it would restart the fence's clock on a store that refuses every write.
+	// Its failure is not counted either, as the files' calls of its batch
+	// report the store. Count it again if a marks write with no marks is ever
+	// seen to write.
+	if len(pending) == 0 && (marks == nil || len(marks.Marks) == 0) {
+		return x.Existence.Commit(ctx, pending, marks)
+	}
+	items := make([]any, 0, len(pending)+1)
+	for _, p := range pending {
+		items = append(items, p.File)
+	}
+	if marks != nil && len(marks.Marks) > 0 {
+		items = append(items, marksItem{})
+	}
 	x.f.begin()
 	m, err := x.Existence.Commit(ctx, pending, marks)
-	x.f.end(ctx, err)
+	x.f.end(ctx, err, items...)
 	return m, err
 }
 
 func (x fencedExistence) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {
 	x.f.begin()
 	err := x.Existence.Remove(ctx, share, file, epoch, op, pending)
-	x.f.end(ctx, err)
+	x.f.end(ctx, err, file)
 	return err
 }
 
 func (x fencedExistence) Clone(ctx context.Context, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
 	x.f.begin()
 	err := x.Existence.Clone(ctx, op, pending)
-	x.f.end(ctx, err)
+	x.f.end(ctx, err, op.File)
 	return err
 }
 
@@ -297,14 +368,14 @@ func (c fencedContent) Resume(ctx context.Context, share entity.ShareID, file en
 	if advanced && err != nil {
 		c.f.committed()
 	}
-	c.f.end(ctx, err)
+	c.f.end(ctx, err, file)
 	return advanced, err
 }
 
 func (c fencedContent) PruneRemovals(ctx context.Context, share entity.ShareID, file entity.FileID, atOrBelow entity.JournalVersion) error {
 	c.f.begin()
 	err := c.Content.PruneRemovals(ctx, share, file, atOrBelow)
-	c.f.end(ctx, err)
+	c.f.end(ctx, err, file)
 	return err
 }
 

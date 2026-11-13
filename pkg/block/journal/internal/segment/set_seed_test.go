@@ -48,7 +48,7 @@ func TestSeedReplay(t *testing.T) {
 				case opShrink:
 					got = s.Shrink(op.id, op.n)
 				case opAddRecord:
-					got = s.AddRecord(op.id, op.tag, op.n)
+					got = s.AddRecord(op.id, op.tag, op.n, op.n/2)
 				case opClaim:
 					if s.Claim(op.id) != (want == nil) {
 						t.Fatalf("%s: op %d (%d): the oracle holds the claim %v, the set does not", sd.name, op.kind, op.id, want == nil)

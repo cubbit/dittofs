@@ -2,13 +2,6 @@
 # naming the epic expected to turn it green. A test that starts to pass fails the run: remove
 # its entry in the change that turned it green, a journal change included. Each entry's
 # message is the failure it is known by: a test failing for any other reason is unexpected.
-- test: TestRFC8A_JournalAuthority
-  message: 'holds segments; recovering them is not built'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 6: recovery re-applies existence at start; also Write, Read, Overlay and Allocation (epic 3). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
-  issue: '#3589'
 - test: TestRFC8A_StableWriteLazyExistence
   message: 'holds segments; recovering them is not built'
   status: fail
@@ -140,7 +133,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: the version limit''s raise failing for 31s fences the node and its commit clears it. The engine side is done: the raise loop runs as a retrying owner. The row stops before its own check: the real journal refuses every Draw by the version limit with no raise in flight, answered retry-later (commit), and its Stats has no NextVersion (zero), so no raise ever falls due and the node never fences. Waits for the journal to report its version counter. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at its own assertion, until the journal has what it needs.'
+  reason: 'Epic 7: the version limit''s raise failing for 31s fences the node and its commit clears it. The engine side is done: the raise loop runs as a retrying owner. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at its own assertion, that the failing raise fences the node, until the journal has what it needs.'
   issue: '#3590'
 - test: TestRFC8A_RemovalCrashedBetweenBatchesResumes
   message: 'holds segments; recovering them is not built'
@@ -203,7 +196,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a journal refused as unsuitable at start leaves its share unattached and named, and the retried open attaches it once the check clears. The row stops at its first journal-backed write, which the engine answers retry-shortly because the journal''s Stats is still a zero value until the journal reports its version counter and recovers its segments at open; the unit tests prove the engine side over the fake journal.'
+  reason: 'Epic 6: a journal refused as unsuitable at start leaves its share unattached and named, and the retried open attaches it once the check clears. Init and Open work and the journal reports its version counter, so the row gets past its first write; it stops at the retry''s timer check (not within 10s) because the real journal''s own timers sit on the fixture clock, so the pending-timer count reads 6, not 1; the unit tests prove the engine side over the fake journal.'
   issue: '#3589'
 - test: TestTheFilesystemStartsAfterTheEngine/journal/restart
   message: 'fixture: engine start: engine: start: open the journal'
