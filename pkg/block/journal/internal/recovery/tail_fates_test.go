@@ -184,6 +184,7 @@ func TestATornSegmentHeaderIsDamageWhenASealMarkerFollowsIt(t *testing.T) {
 		if got := planted(st); got != 2 {
 			t.Errorf("the index holds %d entries, want 2", got)
 		}
+		// Its marker is durable, so the proof sealed it at this open.
 		wantFate(t, st, 1, fateSealed, 0)
 		if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
 			t.Errorf("Damaged got %v, want [1]", st.Tails.Damaged)
