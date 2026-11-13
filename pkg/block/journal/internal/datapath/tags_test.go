@@ -59,7 +59,12 @@ func wantOtherShare(t *testing.T, err error, f core.FileID, tag, owner core.Shar
 // still holds the record: F's tag-only life, the state a rebuild reaches from
 // the record on disk and a call through B is refused for. It settles the
 // failure first, so the assertions below see the applied failure, and returns
-// with A still owning F.
+// with A still owning F. The ended segment's unlink is parked for the whole
+// row: once the record leaves the disk with the segment's retirement, the
+// index answers the retirement with the file's SegmentGone, the entry goes —
+// and the tag with it, exactly what a rebuild would reach from the empty
+// disk — so the assertions below read a phase whose end must not race them;
+// the park goes with the test.
 func tagOnly(t *testing.T) (*Core, *Share, *Share, core.FileID) {
 	t.Helper()
 	c, seam := newTestCore(t)
@@ -74,6 +79,11 @@ func tagOnly(t *testing.T) (*Core, *Share, *Share, core.FileID) {
 		t.Fatalf("F holds no piece at 0 after A's write")
 	}
 	seg := format.SegmentName(p.Record.Segment)
+	// The park: while the record stays on disk, the tag-only entry outlives
+	// its own pieces, and the retirement whose delivery ends that life is
+	// held back so the row's assertions cannot race it.
+	park := seam.Hold(t, kit.OpRemove, seg)
+	t.Cleanup(park.Release)
 	// The failed segment's pages do not read back either, so its window cannot
 	// re-append the record from them and fails it.
 	if err := seam.Schedule(

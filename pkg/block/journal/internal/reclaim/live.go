@@ -294,9 +294,11 @@ func (t *Tracker) Held(seg core.SegmentID) bool {
 // and the registration of a rebuilt journal's records at open, which must
 // have run before the retirement worker starts — a rebuild that registered
 // nothing leaves its segments answering not held and hands them straight
-// to retirement. And no production path settles and re-tests yet, so a
-// registered removal or loss record stays counted for the process's life
-// unless its segment retires.
+// to retirement. The journal's settle path does re-test live records: it
+// relays a settle into the tracker's re-test of the settled file, so a
+// registered removal or loss record's liveness ends with its marker's
+// settle, and only a record whose settle never comes stays counted until
+// its segment retires.
 func (t *Tracker) Register(rec Rec) {
 	t.count(rec)
 	t.rm.Lock()

@@ -285,15 +285,26 @@ func (ix *Index) Settle(id core.FileID, v core.Version) {
 	ix.fs.settleRemovals(id, v)
 }
 
+// FilesOfSegment returns the ids of the files whose records seg held,
+// content and header-only alike, in no order. A retired segment's caller
+// relays them into SegmentGone, one per file; the registry-built lists
+// name only files the liveness tracker registered, so the index is the
+// one place a segment's whole set of files answers from. It creates no
+// entry and holds no lock across the walk.
+func (ix *Index) FilesOfSegment(seg core.SegmentID) []core.FileID {
+	return ix.fs.segFiles(seg)
+}
+
 // SegmentGone notes that seg — unlinked or recycled — no longer holds a
 // record of id, dropping the file's drop ranges naming it, so no drop query
 // is answered against the retired segment's records again. It claims
 // nothing: a file the index has no entry for is left alone rather than
 // given one to drop nothing from. Call it only once the unlink or recycle
 // is durable, once per file its records named: the tracker's RemovalDurable
-// — the retirer's durable signal — relays it for each file its own registry
-// knows the segment named, the journal's own retirement carrying it where it
-// knows the segment's bytes through RetiredBytes instead.
+// — the retirer's durable signal — relays it for each file the union of its
+// caller's list and its own registry names, and the journal's wiring feeds
+// it this index's own files-of-segment, so every file the index knows the
+// segment held reaches the call beside every one the registry registered.
 func (ix *Index) SegmentGone(id core.FileID, seg core.SegmentID) {
 	if !ix.fs.view(id, func(*file) {}) {
 		return

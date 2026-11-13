@@ -477,17 +477,31 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		Retired:  func(id core.SegmentID) { c.retiredSegment(id) },
 		// decision: the retired segment reaches the liveness tracker
 		// through this durable-retirement signal alone, not through the
-		// set's retire observer: the observer fires before the unlink's
-		// directory sync, while SegmentRetired reaches the index's
-		// SegmentGone, whose contract demands the unlink be durable —
-		// telling it earlier would let a drop query answer against a segment
-		// whose records the crash the failed sync covers may still name. The
-		// ceiling: a failed directory sync delivers no signal at all, so the
-		// tracker keeps a retired segment's registrations — holds it answered
-		// not held, for the segment is gone from the set — until the next
-		// open's rebuild drops them.
-		Durable: func(ret segment.Retirement) { tr.SegmentRetired(ret.ID, nil) },
-		Log:     deps.Log,
+		// retirer's retired hook or the set's retire observer: on the
+		// unlink's own path those fire before the unlink's directory sync
+		// (a recycle has made its removal durable before its hooks run)
+		// — and a crash that undoes the retirement must find the
+		// tracker's registrations intact — the
+		// surviving file rebuilds its records, and what a rebuild is owed
+		// cannot have been released on an unlink nothing made durable.
+		// Both halves of the tracker's own gate ride the signal: the
+		// files the call carries are the index's own, not the tracker's
+		// registry fill — the registry names only files with registered
+		// records, so a segment whose files were all content would leave
+		// their drop ranges parked behind RemovalDurable for a list that
+		// never named them — and RemovalDurable consumes the park the call
+		// itself made, so the ranges reach the index's SegmentGone, whose
+		// contract demands the unlink be durable, in the same delivery.
+		// The ceiling: a failed directory sync delivers neither, so the
+		// tracker keeps a retired segment's registrations — holds it
+		// answered not held, for the segment is gone from the set — and
+		// its files' drop ranges stay, until the next open's rebuild
+		// recomputes both.
+		Durable: func(ret segment.Retirement) {
+			tr.SegmentRetired(ret.ID, state.Index.FilesOfSegment(ret.ID))
+			tr.RemovalDurable(ret.ID)
+		},
+		Log: deps.Log,
 	})
 
 	// The liveness tracker and the retirement worker close the loop the

@@ -713,18 +713,35 @@ func (fs *files) mayOutrank(id core.FileID, seg core.SegmentID, e core.Extent, n
 // segment.
 func (fs *files) dropRangeCount() int64 { return fs.dropRanges.Load() }
 
-// list returns the files tagged tag that hold a piece or an unsettled marker,
-// in no order. A shard's lock is released before any file's is taken, so it
-// is never held while waiting on a file.
+// segFiles returns the ids of the files whose records seg held — every file
+// with an entry naming it, content and header-only records alike — in no
+// order. It is the list a retirement relays into SegmentGone per file, which
+// the callers built from the liveness registry alone cannot name for
+// content-only files. Each file's own lock guards its segment records.
 //
-// decision: a file holding no piece and no marker is not listed, whatever
-// else its entry keeps (segment records, retained extents, a tag): since
-// yields only pieces and markers, and an entry holding neither has had its
-// superseded runs cleared with the held set, so none can be waiting on a
-// settle. Overturned by an entry that keeps such runs without a piece or a
-// marker.
-func (fs *files) list(tag core.ShareTag) []core.FileID {
+// ponytail: the query walks every file entry, O(files) once per retiring
+// segment, beside a retirement whose registry walk is already O(registers).
+// Upgrade to a segment->files registry when a retirement of a busy journal
+// shows in a profile.
+func (fs *files) segFiles(seg core.SegmentID) []core.FileID {
 	var out []core.FileID
+	fs.walk(func(id core.FileID, f *file) {
+		for k := range f.segs {
+			if f.segs[k].seg == seg {
+				out = append(out, id)
+				break
+			}
+		}
+	})
+	return out
+}
+
+// walk visits every file entry with its id, a shard's lock released before
+// any file's is taken, so neither is held while waiting on the other; the
+// visitor runs under each file's own read lock. An entry the walk hands over
+// may have gone since the shard let it go, so a visitor that the gone state
+// changes names it itself.
+func (fs *files) walk(fn func(core.FileID, *file)) {
 	for i := range fs.shards {
 		s := &fs.shards[i]
 		s.mu.Lock()
@@ -736,11 +753,27 @@ func (fs *files) list(tag core.ShareTag) []core.FileID {
 		s.mu.Unlock()
 		for j, f := range fl {
 			f.mu.RLock()
-			if !f.gone && f.tagged && f.tag == tag && (f.held.len() > 0 || len(f.markers) > 0) {
-				out = append(out, ids[j])
-			}
+			fn(ids[j], f)
 			f.mu.RUnlock()
 		}
 	}
+}
+
+// list returns the files tagged tag that hold a piece or an unsettled marker,
+// in no order.
+//
+// decision: a file holding no piece and no marker is not listed, whatever
+// else its entry keeps (segment records, retained extents, a tag): since
+// yields only pieces and markers, and an entry holding neither has had its
+// superseded runs cleared with the held set, so none can be waiting on a
+// settle. Overturned by an entry that keeps such runs without a piece or a
+// marker.
+func (fs *files) list(tag core.ShareTag) []core.FileID {
+	var out []core.FileID
+	fs.walk(func(id core.FileID, f *file) {
+		if !f.gone && f.tagged && f.tag == tag && (f.held.len() > 0 || len(f.markers) > 0) {
+			out = append(out, id)
+		}
+	})
 	return out
 }

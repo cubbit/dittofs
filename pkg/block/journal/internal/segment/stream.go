@@ -268,6 +268,18 @@ type Stream struct {
 	// by NewStream and never changes, so it needs no lock domain.
 	sink Sink
 
+	// rollTakeHook and rollWaitHook are the instance's test pause hooks,
+	// set per stream through the package's test exports and never in
+	// production: rollTakeHook pauses the roll after its spare take,
+	// before the append lock it reads the old segment under — the staging
+	// a racing seal needs; rollWaitHook fires where the roll has just
+	// read a sealing state and is about to park on the drain — the row
+	// that holds a finishing seal open releases its sync only once it
+	// sees the hook, so the roll is on the drain when the seal's sealed
+	// tail runs. Neither may block: both run holding appendMu.
+	rollTakeHook func()
+	rollWaitHook func()
+
 	// decision: every field below is guarded by appendMu, the segment append
 	// domain of RFC 1 §8.2 — next, count, entries, the tracker, the active
 	// segment and its ref, the roll's single-flight gate, the closed flag,
@@ -1050,6 +1062,9 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	if err != nil {
 		return err
 	}
+	if s.rollTakeHook != nil {
+		s.rollTakeHook()
+	}
 
 	// The predecessor: the segment the stream leaves, sealed here when it
 	// was open, for the successor may be taken only once the seal's marker,
@@ -1066,21 +1081,33 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	// seal's settled state the moment the seal returned.
 	//
 	// decision: this wait is defense in depth over the loop's own park on
-	// a sealing state, and no test can force it. The window it closes is
-	// the length of the pool's take, between the roll's caller releasing
-	// appendMu and this read, and it holds no seam call a hold could park;
-	// every seal the loop can see is parked there, so a seal this read
-	// still finds must have started inside those microseconds, and this
-	// wait alone keeps the predecessor off a footer still being written.
-	// Withdrawn only by a hold the roll can be parked on, which the seam
-	// would have to grow.
+	// a sealing state, and it is load-bearing rather than decorative: the
+	// write reference read below the wait is correct only because the
+	// wait covers the window between the roll's caller releasing appendMu
+	// and this read, in which a racing seal can start and reach its own
+	// sealed tail — the tail that releases the segment's write reference
+	// — before the roll reads it. The row that forces it stages the
+	// crossing with the instance's rollTakeHook and confirms the park with
+	// rollWaitHook, so the seal's tail runs only once the roll is on the
+	// drain; a seal this read still finds is a seal still mid-flight, and
+	// this wait keeps the predecessor off a footer still being written.
 	s.appendMu.Lock()
-	old, oldRef := s.id, s.ref
+	old := s.id
 	state := s.sealState
 	for state == sealSealing {
+		if s.rollWaitHook != nil {
+			s.rollWaitHook()
+		}
 		s.drained.Wait()
 		state = s.sealState
 	}
+	// The ref is read after the wait, never before it: a seal that finished
+	// under the wait released the segment's write reference itself
+	// (sealLocked), and the snapshot that read the still-held handle would
+	// release a second one below. What the stream still holds after the
+	// wait — the sealed segment's nothing, an open or ended one's own — is
+	// the exactly-one the tail may take.
+	oldRef := s.ref
 	s.appendMu.Unlock()
 
 	var pred core.SegmentID
@@ -1121,6 +1148,13 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 		if s.sealState == sealSealed {
 			pred = old
 		}
+		// The seal this roll ran released the sealed segment's write
+		// reference — the snapshot's handle below must not release a
+		// second one — while an ended segment keeps it, released with
+		// the roll's install as before: the ref is re-read under the
+		// lock, so the tail releases exactly what the stream still
+		// holds.
+		oldRef = s.ref
 		closed := s.closed
 		ended := s.sealState == sealEnded
 		leftEnded = ended
@@ -1248,8 +1282,13 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	s.syncedOnce = false
 	s.appendMu.Unlock()
 
-	// The old ref is released only after its seal's syncs, outside the lock:
-	// a descriptor that wrote is never closed before a sync covered it.
+	// The old ref is released only outside the lock, and never before a
+	// sync covered its writes: a sealed segment's were covered by its
+	// seal, which released the stream's reference already (sealLocked), so
+	// the handle released here reads zero — from the snapshot for one
+	// sealed before it, from the re-read above for one this roll sealed —
+	// while an ended segment's coverage came with its window, and its
+	// handle stays the stream's until this install.
 	if oldRef != (Ref{}) {
 		oldRef.Release()
 	}
@@ -1514,9 +1553,11 @@ func (s *Stream) SyncAt(loc Location) error {
 // writes the marker, the footer and the trailer, makes them durable, and, for
 // an early seal, truncates and makes that durable (R26).
 //
-// After a seal the stream stays on its segment and the next append rolls:
-// the seal closed the segment, so the roll takes the pool's next spare and
-// names the sealed one as the new segment's predecessor.
+// After a seal the stream stays on its segment — its id alone, for the seal
+// made the segment's every bit durable and released the write reference
+// (see sealLocked) — and the next append rolls: the seal closed the segment,
+// so the roll takes the pool's next spare and names the sealed one as the new
+// segment's predecessor.
 //
 // A second seal is refused with ErrWrongState or ErrSegmentEnded and writes
 // nothing: a sealed segment keeps the footer it already carries, and an ended
@@ -1661,8 +1702,17 @@ func (s *Stream) sealLocked(early bool) (SealResult, error) {
 			// reach the caller beside the refusal — never "ended",
 			// which the durable bytes contradict.
 			s.sealState = sealSealed
+			ours := s.ref == sealedRef
+			if ours {
+				s.ref = Ref{}
+			}
 			s.drained.Broadcast()
 			s.appendMu.Unlock()
+			if ours {
+				// The ref went with the sealed state exactly as the
+				// success tail below, ref-for-ref the one it carries in.
+				sealedRef.Release()
+			}
 			return res, err
 		}
 		// The seal failed: the segment takes no further append and no
@@ -1702,8 +1752,28 @@ func (s *Stream) sealLocked(early bool) (SealResult, error) {
 		return SealResult{}, err
 	}
 	s.sealState = sealSealed
+	// The write reference goes with the sealed state only when the stream
+	// still holds the pair this seal read: a close that took it while the
+	// seal's storage steps ran without the lock owns it — the seal is one
+	// of Close's in-flight operations, and the pair's release is Close's
+	// own wait.
+	ours := s.ref == sealedRef
+	if ours {
+		s.ref = Ref{}
+	}
 	s.drained.Broadcast() // the Syncs parked on the seal leave with the seal
 	s.appendMu.Unlock()
+	// Here, at the seal that made the segment durable whole — records,
+	// marker, footer and trailer alike — rather than at the roll that may
+	// never come: a stream that never appends again stays on a sealed
+	// segment for the journal's life, and a retirement of it would
+	// otherwise park on the descriptor drain for a file nothing will
+	// write again. Appends and syncs of the sealed segment take no
+	// reference of it: they roll, or answer already durable, and a reader
+	// reaches it through the cache, never through the stream.
+	if ours {
+		sealedRef.Release()
+	}
 	return res, nil
 }
 
