@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -15,16 +16,32 @@ import (
 )
 
 func main() {
-	if err := newRoot().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	os.Exit(runCLI(os.Stdout, os.Stderr, os.Args[1:]))
+}
+
+// runCLI is the binary's whole entry: run the command tree, and on any
+// failure print exactly one friendly line, never a usage dump — a pane
+// stays readable while the presenter re-runs what failed.
+func runCLI(out, errw io.Writer, args []string) int {
+	root := newRoot()
+	root.SetOut(out)
+	root.SetErr(errw)
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		friendly(errw, err)
+		return 1
 	}
+	return 0
 }
 
 func newRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "jdemo",
 		Short: "Drive the journal from its public API and view its state, for demos.",
+		// The CLI prints its own one-line answers; cobra's Error line and
+		// usage dump under them would only bury each one.
+		SilenceErrors: true,
+		SilenceUsage:  true,
 	}
 	root.PersistentFlags().String("socket", "jdemo.sock", "path of the daemon's unix socket")
 
@@ -57,10 +74,11 @@ func newRoot() *cobra.Command {
 
 func runStart(cmd *cobra.Command, args []string) error {
 	dir, _ := cmd.Flags().GetString("dir")
+	dir = filepath.Clean(dir)
 	socket, _ := cmd.Flags().GetString("socket")
 	offload, _ := cmd.Flags().GetString("offload-dir")
 	if offload == "" {
-		offload = filepath.Join(filepath.Dir(dir), filepath.Base(filepath.Clean(dir))+"-offload")
+		offload = filepath.Join(filepath.Dir(dir), filepath.Base(dir)+"-offload")
 	}
 
 	srv := &Server{Dir: dir, SocketPath: socket, OffloadDir: offload}

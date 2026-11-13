@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"text/tabwriter"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -45,22 +46,31 @@ func entryKindName(k journal.EntryKind) string {
 	return fmt.Sprintf("kind%d", uint8(k))
 }
 
-// renderIndexEntries prints one row per entry: kind, extent range, version,
-// the backing record's segment and offset, the owning tag, the offloaded bit.
-func renderIndexEntries(w io.Writer, es []journal.IndexEntry) {
-	if len(es) == 0 {
+// indexRow is one index entry with the file it belongs to, so All's
+// interleaved files stay distinguishable on screen.
+type indexRow struct {
+	file  string // the file's short hex, 8 chars
+	entry journal.IndexEntry
+}
+
+// renderIndexRows prints one row per entry: file, kind, extent range,
+// version, the backing record's segment and offset, the owning tag, the
+// offloaded bit.
+func renderIndexRows(w io.Writer, rows []indexRow) {
+	if len(rows) == 0 {
 		fmt.Fprintln(w, "no index entries")
 		return
 	}
 	tw := newTabWriter(w)
-	fmt.Fprint(tw, "kind\trange\tversion\trecord\tag\toffloaded\n")
-	for _, e := range es {
+	fmt.Fprint(tw, "file\tkind\trange\tversion\trecord\tag\toffloaded\n")
+	for _, r := range rows {
+		e := r.entry
 		offloaded := "no"
 		if e.Offloaded {
 			offloaded = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%d–%d\tv%s\t%d/%d\t%d\t%s\n",
-			entryKindName(e.Kind), e.Extent.Off, e.Extent.Off+e.Extent.Len,
+		fmt.Fprintf(tw, "%s\t%s\t%d–%d\tv%s\t%d/%d\t%d\t%s\n",
+			r.file, entryKindName(e.Kind), e.Extent.Off, e.Extent.Off+e.Extent.Len,
 			fmtVersion(e.Version), e.Location.Segment, e.Location.Offset,
 			e.Tag, offloaded)
 	}
@@ -134,9 +144,17 @@ func renderStats(w io.Writer, st journal.Stats) {
 
 	if len(st.Shares) > 0 {
 		fmt.Fprintln(w)
+		// The rows are sorted by tag: a map's iteration is not an order,
+		// and the panes must not reshuffle between refreshes.
+		tags := make([]journal.ShareTag, 0, len(st.Shares))
+		for tag := range st.Shares {
+			tags = append(tags, tag)
+		}
+		slices.Sort(tags)
 		tw := newTabWriter(w)
 		fmt.Fprint(tw, "share\tlimit\tused\theld\tdirty\tunreclaimed\n")
-		for tag, s := range st.Shares {
+		for _, tag := range tags {
+			s := st.Shares[tag]
 			fmt.Fprintf(tw, "share %d\t%d\t%d\t%d\t%d\t%d\n",
 				tag, s.Limit, s.UsedBytes, s.HeldBytes, s.DirtyBytes, s.UnreclaimedBytes)
 		}

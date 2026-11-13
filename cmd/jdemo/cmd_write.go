@@ -52,6 +52,9 @@ func newWriteAtCmd() *cobra.Command {
 		}
 		if cmd.Flags().Changed("size") {
 			chosen = append(chosen, "--size")
+			if size > opCapBytes {
+				return fmt.Errorf("write-at: size %d exceeds the %d-byte cap", size, opCapBytes)
+			}
 			req["size"] = size
 		}
 		if len(chosen) != 1 {
@@ -93,6 +96,9 @@ func newReadAtCmd() *cobra.Command {
 		length, err := strconv.ParseInt(args[2], 10, 64)
 		if err != nil || length <= 0 {
 			return fmt.Errorf("length %q, want a positive byte count", args[2])
+		}
+		if length > opCapBytes {
+			return fmt.Errorf("length %d exceeds the %d-byte cap, ask in pieces if you must", length, opCapBytes)
 		}
 		var resp struct {
 			N       int64        `json:"n"`

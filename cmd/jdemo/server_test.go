@@ -180,3 +180,66 @@ func TestServerRefusesCorruptState(t *testing.T) {
 		t.Errorf("refused start on corrupt state created %d entries in the journal dir, want none", len(entries))
 	}
 }
+
+func TestStartTrailingSlashKeepsStateSibling(t *testing.T) {
+	base := t.TempDir()
+	srv := &Server{Dir: filepath.Join(base, "journal") + "/", SocketPath: tmpSocket(t)}
+	defer srv.Shutdown(context.Background())
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("start with trailing slash: %v", err)
+	}
+	// The state file is a sibling of the journal dir, never inside it —
+	// that is what keeps the journal's own listing what the format owns.
+	if _, err := os.Stat(filepath.Join(base, "journal.jdemo.json")); os.IsNotExist(err) {
+		t.Errorf("state file: %s missing after a start", filepath.Join(base, "journal.jdemo.json"))
+	}
+	entries, err := os.ReadDir(filepath.Join(base, "journal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".jdemo.json") {
+			t.Errorf("state file %s sits inside the journal dir, want a sibling", e.Name())
+		}
+	}
+}
+
+func TestStartRefusesBusySocketWithoutTouchingTheDir(t *testing.T) {
+	// A live daemon owns the socket: a second start must refuse before it
+	// initialises anything, or the talk's fresh dir is burned for nothing.
+	busy := tmpSocket(t)
+	ln, err := net.Listen("unix", busy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	base := t.TempDir()
+	srv := &Server{Dir: filepath.Join(base, "journal"), SocketPath: busy}
+	err = srv.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already") {
+		t.Fatalf("start against a live socket: got err %v, want a refusal naming the running daemon", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(base, "journal")); len(entries) > 0 {
+		t.Errorf("refused start left %d entries in the journal dir, want none", len(entries))
+	}
+}
+
+func TestStartRemovesStaleSocket(t *testing.T) {
+	// A crashed daemon leaves its socket file behind; the next start cleans
+	// it up rather than failing.
+	stale := tmpSocket(t)
+	if err := os.WriteFile(stale, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{Dir: filepath.Join(t.TempDir(), "journal"), SocketPath: stale}
+	defer srv.Shutdown(context.Background())
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("start over a stale socket: %v (want it removed and the start to go on)", err)
+	}
+	resp, err := unixClient(t, stale).Get("http://jdaemon/health")
+	if err != nil {
+		t.Fatalf("health over the replaced socket: %v", err)
+	}
+	resp.Body.Close()
+}

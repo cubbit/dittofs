@@ -42,6 +42,11 @@ func TestParseVersion(t *testing.T) {
 	}{
 		{"0", journal.Version{}, ""},
 		{"42", journal.Version{Counter: 42}, ""},
+		// What fmtVersion prints, fmtVersion's reader takes back: the
+		// presenter retypes a version the pane showed.
+		{"v42", journal.Version{Counter: 42}, ""},
+		{"v0", journal.Version{}, ""},
+		{"7/v42", journal.Version{Epoch: 7, Counter: 42}, ""},
 		{"0/42", journal.Version{Counter: 42}, ""},
 		{"7/42", journal.Version{Epoch: 7, Counter: 42}, ""},
 		{"", journal.Version{}, "empty"},

@@ -110,3 +110,41 @@ func TestWriteReadRoundTrip(t *testing.T) {
 		t.Errorf("read-at output: got %q, want a hexdump of %q", rout, "hello")
 	}
 }
+
+func TestUnboundedSizesRefused(t *testing.T) {
+	socket := tmpSocket(t)
+	srv := &Server{Dir: filepath.Join(t.TempDir(), "journal"), SocketPath: socket}
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+	if out, err := exec(t, socket, "share", "--tag", "1"); err != nil {
+		t.Fatalf("share: %v (out %q)", err, out)
+	}
+	var capRaw [16]byte
+	copy(capRaw[:], "cap-check-file")
+	file := hex.EncodeToString(capRaw[:])
+
+	// The daemon refuses a read whose allocation is a typo away from a
+	// fatal out-of-memory: the cap is 1 GiB.
+	var resp struct {
+		Error string `json:"error"`
+	}
+	c := Dial(socket)
+	derr := c.Do(context.Background(), "POST", "/read-at", map[string]any{
+		"tag": 1, "file": file, "off": int64(0), "len": int64(1) << 40, "full": true,
+	}, &resp)
+	if derr == nil || !strings.Contains(derr.Error(), "exceeds") {
+		t.Errorf("read-at 1 TiB: got err %v, want a refusal naming the cap", derr)
+	}
+
+	// And CLI-side, so the daemon never meets the typo at all.
+	_, err := exec(t, socket, "read-at", "--tag", "1", file, "0", "1099511627776")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("cli read-at 1 TiB: got err %v, want a client-side refusal before any call", err)
+	}
+	_, err = exec(t, socket, "write-at", "--tag", "1", file, "0", "--size", "1099511627776")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("cli write-at --size 1 TiB: got err %v, want a client-side refusal before any call", err)
+	}
+}
