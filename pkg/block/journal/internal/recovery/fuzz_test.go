@@ -18,6 +18,7 @@ import (
 type sealedSegment struct {
 	b                    []byte
 	recOff               []int
+	size                 []int64 // each record's whole size, header and body
 	markerOff, footerOff int
 }
 
@@ -30,6 +31,7 @@ func sealedSeg(id, pred core.SegmentID, recs ...raw.Record) sealedSegment {
 		recs[i].Segment = uint64(id)
 		recs[i].RecordOffset = uint32(len(b))
 		s.recOff = append(s.recOff, len(b))
+		s.size = append(s.size, int64(len(recs[i].Bytes())))
 		entries = append(entries, raw.Entry{
 			FileID: recs[i].FileID, Offset: recs[i].Offset, RecordOffset: recs[i].RecordOffset,
 			Length: recs[i].Length, Seq: recs[i].Seq, Version: recs[i].Version,
@@ -124,17 +126,63 @@ func FuzzOpen(f *testing.F) {
 				t.Fatalf("fate %+v: offset outside [%d,%d]", f, format.SegmentHeaderSize, sz)
 			}
 		}
+		bytesOf := map[core.SegmentID][]byte{1: seg1.b, 2: seg2}
+		// header decodes the record header a segment's bytes hold at off, as
+		// the scan would read it; false when it does not decode there, where
+		// no property about it holds.
+		header := func(seg core.SegmentID, off int64) (format.RecordHeader, bool) {
+			b := bytesOf[seg]
+			if off < 0 || off+format.RecordHeaderSize > int64(len(b)) {
+				return format.RecordHeader{}, false
+			}
+			h, err := format.DecodeRecordHeader(b[off:off+format.RecordHeaderSize], journalID, seg, off)
+			return h, err == nil
+		}
+		indexed := map[int64]bool{} // the record offsets of segment 2 the index names
 		for _, tag := range []core.ShareTag{1, 7} {
 			for _, id := range st.Rebuilt.Index.Files(tag) {
 				for _, e := range st.Rebuilt.Index.FileEntries(id) {
+					if e.Record.Segment == 2 {
+						indexed[int64(e.Record.Offset)] = true
+					}
 					if e.Kind != index.EntryHeld && e.Kind != index.EntryRetained {
 						continue
 					}
 					sz, ok := size[e.Record.Segment]
-					if !ok || int64(e.Record.Offset) < format.SegmentHeaderSize || int64(e.Record.Offset)+format.RecordHeaderSize > sz {
+					if !ok || int64(e.Record.Offset) < format.SegmentHeaderSize {
 						t.Fatalf("entry %+v: record %+v names no slot of a scanned segment (sizes %v)", e, e.Record, size)
 					}
+					// The whole record lies inside the segment: a header that
+					// decodes where the entry names it sets its size.
+					if h, ok := header(e.Record.Segment, int64(e.Record.Offset)); ok && int64(e.Record.Offset)+h.Size() > sz {
+						t.Fatalf("entry %+v: record of %d bytes at %d runs past its segment's %d", e, h.Size(), e.Record.Offset, sz)
+					}
 				}
+			}
+		}
+
+		// Every seed record whose header still verifies is indexed or dropped
+		// as corrupt, when its segment was attached at all. A clone target is
+		// left out: its body may rot, which drops it as a torn slot or tail.
+		// The walk reads the records in order, so one before this whose
+		// verifying header changed its length may have swallowed the rest.
+		corrupt := map[int64]bool{}
+		for _, c := range st.Tails.Corrupt {
+			if c.Segment == 2 {
+				corrupt[c.at()] = true
+			}
+		}
+		if _, scanned := size[2]; !scanned {
+			return
+		}
+		for i, off := range valid.recOff {
+			h, ok := header(2, int64(off))
+			// A record the segment cannot hold is the tail's, neither indexed nor dropped.
+			if !ok || h.Size() != valid.size[i] || int64(off)+valid.size[i] > int64(len(seg2)) {
+				break
+			}
+			if h.Kind <= format.KindUnmark && h.Kind != format.KindCloneTarget && !indexed[int64(off)] && !corrupt[int64(off)] {
+				t.Fatalf("record %d at %d verifies but is neither indexed nor dropped as corrupt (corrupt %+v)", i, off, st.Tails.Corrupt)
 			}
 		}
 	})
