@@ -118,14 +118,17 @@ func TestReleasePastZeroPanicsInTests(t *testing.T) {
 	}
 }
 
-// records keeps what the default logger was handed.
+// records keeps what the budgets' logger was handed.
 type records struct {
-	slog.Handler
 	mu  sync.Mutex
 	got []slog.Record
 }
 
 func (h *records) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *records) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *records) WithGroup(string) slog.Handler { return h }
 
 func (h *records) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
@@ -414,31 +417,32 @@ func TestWaitBudgetCancelRacingGrant(t *testing.T) {
 	}
 	for name, both := range orders {
 		t.Run(name, func(t *testing.T) {
+			// Inside synctest each order runs the same way every time: grant
+			// then cancel wakes on ready, cancel then grant takes the bytes
+			// back. One round of each covers both branches.
 			synctest.Test(t, func(t *testing.T) {
 				b := NewWaitBudget("receive", 10)
-				for range 200 {
-					held := mustReserve(t, kindOf(b), 10)
-					ctx, cancel := context.WithCancel(t.Context())
-					w := startWaiting(t, ctx, b, 10)
-					behind := startWaiting(t, t.Context(), b, 10)
-					both(held.Release, cancel)
-					synctest.Wait()
-					switch {
-					case !w.returned():
-						t.Fatal("the waiter neither took its grant nor its cancel")
-					case w.err == nil:
-						w.res.Release()
-					case !errors.Is(w.err, context.Canceled):
-						t.Fatalf("the waiter returned %v", w.err)
-					}
-					synctest.Wait()
-					if !behind.returned() || behind.err != nil {
-						t.Fatalf("the waiter behind returned %v (%v), want it granted the bytes", behind.returned(), behind.err)
-					}
-					behind.res.Release()
-					if got, queued := b.Reserved(), b.waiters.Len(); got != 0 || queued != 0 {
-						t.Fatalf("a round ended at %d reserved and %d queued, want 0 and 0", got, queued)
-					}
+				held := mustReserve(t, kindOf(b), 10)
+				ctx, cancel := context.WithCancel(t.Context())
+				w := startWaiting(t, ctx, b, 10)
+				behind := startWaiting(t, t.Context(), b, 10)
+				both(held.Release, cancel)
+				synctest.Wait()
+				switch {
+				case !w.returned():
+					t.Fatal("the waiter neither took its grant nor its cancel")
+				case w.err == nil:
+					w.res.Release()
+				case !errors.Is(w.err, context.Canceled):
+					t.Fatalf("the waiter returned %v", w.err)
+				}
+				synctest.Wait()
+				if !behind.returned() || behind.err != nil {
+					t.Fatalf("the waiter behind returned %v (%v), want it granted the bytes", behind.returned(), behind.err)
+				}
+				behind.res.Release()
+				if got, queued := b.Reserved(), b.waiters.Len(); got != 0 || queued != 0 {
+					t.Fatalf("the round ended at %d reserved and %d queued, want 0 and 0", got, queued)
 				}
 			})
 		})
