@@ -710,10 +710,10 @@ func TestCatalogConfinesARecordThatDoesNotVerify(t *testing.T) {
 		// flipBody flips one byte of the confined record's body instead;
 		// the entries are left honest.
 		flipBody bool
-		// scanRefuses holds that the header walk over the broken bytes
-		// refuses the open itself, so the index leg compares against an
-		// honest directory's scan rather than the broken one's.
-		scanRefuses bool
+		// scanDrops holds that the header walk drops the broken record
+		// itself, so the index leg compares against an honest
+		// directory's scan rather than the broken one's.
+		scanDrops bool
 	}{
 		{"a loss whose body bytes are flipped", 3, nil, true, false},
 		{"a clone target whose spec flips", 0, nil, true, true},
@@ -800,7 +800,7 @@ func TestCatalogConfinesARecordThatDoesNotVerify(t *testing.T) {
 			// Every neighbour attaches: the index is the scan's, minus the
 			// confined record's own contribution.
 			sr, _, _, _ := plant(true)
-			if row.scanRefuses {
+			if row.scanDrops {
 				scanSt, scanErr := open(sr, true)
 				if scanErr != nil {
 					t.Fatalf("the forced scan over the damaged directory: %v, want it to drop the record as the catalogue does", scanErr)
