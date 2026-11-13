@@ -1317,8 +1317,9 @@ func TestASealedSegmentHoldingOnlyATruncateRecordStays(t *testing.T) {
 // retired segment carried: a crash between the unlink and the sync has the
 // next open rebuild the segment from its surviving file, so releasing the
 // registrations on an unlink nothing made durable would treat a retirement
-// the crash undoes as done. The green twin beside it: the identical
-// retirement with its directory sync intact releases the witness.
+// the crash undoes as done. The green twin runs first, its directory
+// sync intact: the identical retirement releases its witness. The fault
+// then stays on through the failed twin, so no later sync can race it.
 func TestTheDurableRetirementSignalWaitsForTheDirectorySync(t *testing.T) {
 	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
@@ -1338,26 +1339,8 @@ func TestTheDurableRetirementSignalWaitsForTheDirectorySync(t *testing.T) {
 	rec := witnessOn(t, c, s, testFile(10), seg)
 	recB := witnessOn(t, c, s, testFile(11), segB)
 
-	// Every directory sync fails from here: the retirement's unlink runs,
-	// the sync that would make it durable does not.
-	if err := seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 0, errors.New("the failed directory sync"))); err != nil {
-		t.Fatalf("the seam refused the directory sync fault: %v", err)
-	}
-
-	// The failed-sync twin: f's overwrite empties its sealed segment, the
-	// retirement unlinks, the directory sync fails, and the witness stays.
-	mustWrite(t, c, s, f, 0, make([]byte, payload))
-	syncFiles(t, c, f)
-	gone(t, c, "the segment whose retirement's directory sync failed", seg)
-	if c.liveness.Droppable(rec) {
-		t.Fatal("the tracker released a retired segment's registrations on a retirement whose directory sync failed, want the durable-retirement signal kept back")
-	}
-
-	// The green twin: g's identical retirement, its directory sync intact,
-	// carries the signal and releases its witness.
-	if err := seam.Schedule(); err != nil {
-		t.Fatalf("the seam refused to clear its rules: %v", err)
-	}
+	// The green twin first: g's retirement, its directory sync intact,
+	// carries the signal and releases its own witness only.
 	mustWrite(t, c, s, g, 0, make([]byte, payload))
 	syncFiles(t, c, g)
 	gone(t, c, "the segment whose retirement's directory sync succeeded", segB)
@@ -1368,8 +1351,25 @@ func TestTheDurableRetirementSignalWaitsForTheDirectorySync(t *testing.T) {
 		return c.liveness.Droppable(recB)
 	})
 	if c.liveness.Droppable(rec) {
-		t.Fatal("the failed-sync witness was released by the second retirement, want each retirement's signal to name only its own segment")
+		t.Fatal("the other segment's witness was released by the first retirement, want each retirement's signal to name only its own segment")
 	}
+
+	// Every directory sync fails from here to the end of the row, so no
+	// later sync can race the failed one.
+	if err := seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 0, errors.New("the failed directory sync"))); err != nil {
+		t.Fatalf("the seam refused the directory sync fault: %v", err)
+	}
+
+	// The failed-sync twin: f's overwrite empties its sealed segment, the
+	// retirement unlinks, the directory sync fails, and the witness stays.
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
+	syncFiles(t, c, f)
+	gone(t, c, "the segment whose retirement's directory sync failed", seg)
+	// Bounding window, not a truth: the sync runs after the segment leaves
+	// the set, and a signal it wrongly sent would land inside it.
+	notWithin(t, 2*time.Second, "the failed-sync witness's release", func() bool {
+		return c.liveness.Droppable(rec)
+	})
 }
 
 // earlySealedWithWitness writes payload at 0 of f through s, syncs it and
@@ -1411,8 +1411,9 @@ func witnessOn(t *testing.T, c *Core, s *Share, home core.FileID, seg core.Segme
 // run ahead of its emptier's sync loses acknowledged content at a crash —
 // the unlink is durable, the record that emptied the segment is not, and
 // the rebuild holds nothing over the file the retirement removed. The row
-// parks the emptier's own sync at the seam, so the barrier is the only
-// thing holding the retirement back, and crashes inside that window: the
+// parks the emptier's own sync at the seam, so two covers hold the
+// retirement back, the superseded content's retention and the barrier, and
+// it crashes inside that window: the
 // durable image keeps the emptied segment's file and its synced content,
 // because no unlink was allowed to reach the directory at all.
 func TestACrashSparesASegmentWhoseEmptierWasUnsynced(t *testing.T) {

@@ -290,9 +290,9 @@ func (w *Worker) pass() {
 
 // handle is one candidate's pass, on locs and first as the pass read them.
 // Its refusals in order: the claim (someone else won the segment), the
-// tracker's Held re-checked under the claim, the gate's answer for each
-// recorded location and the entry's frozen pending tail, the segment's
-// state, the ended window and block re-read, and the prompt-only tick wait.
+// tracker's Held re-checked under the claim, the segment's state with the
+// ended window and block re-read, the gate's answer for each recorded
+// location and the entry's frozen pending tail, and the prompt-only tick wait.
 // A refusal drops the entry or sends it back; the hand-over releases the
 // claim and hands the segment to the executor.
 func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.Time) {
