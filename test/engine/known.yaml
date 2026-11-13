@@ -168,29 +168,29 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Engine integration: a write committed through the filesystem, its existence still pending, reads back through the composition rebuilt after a crash, the store holding the size the start''s re-application of existence wrote. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#4052'
+  reason: 'the journal''s Open recovering segments: a write committed through the filesystem, its existence still pending, reads back through the composition rebuilt after a crash, the store holding the size the start''s re-application of existence wrote. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
 - test: TestV19/journal/an_unstable_write_on_a_persistent_open_survives_a_crash
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Engine integration, RFC 17 V19: an unstable write through a persistent open on a continuously available share is synced before its reply and reads back after a crash. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#4052'
+  reason: 'the journal''s Open recovering segments: an unstable write through a persistent open on a continuously available share is synced before its reply and reads back after a crash. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
 - test: TestV20/journal/a_refusal_repack_can_answer_is_a_delay_until_it_frees
   message: 'the write past the limit answered vfs: retry shortly: capacity before its repack reached the journal'
   status: fail
   fix: planned
   category: feature
-  reason: 'Engine integration, RFC 17 V20: a write refused at the share''s journal limit while another refusal''s repack runs answers ErrDelay (DelayCapacity), and is served once that repack frees the superseded records. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#4052'
+  reason: 'the journal''s Repack: a write refused at the share''s journal limit while another refusal''s repack runs answers ErrDelay (DelayCapacity), and is served once that repack frees the superseded records. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
+  issue: '#4206'
 - test: TestV20/journal/a_refusal_nothing_can_free_is_no_space_at_once
   message: 'a write past the limit with nothing to free: vfs: retry shortly: capacity, want ErrNoSpace'
   status: fail
   fix: planned
   category: feature
-  reason: 'Engine integration, RFC 17 V20: a write refused at the share''s journal limit with nothing superseded answers ErrNoSpace at once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#4052'
+  reason: 'the journal''s Repack: a write refused at the share''s journal limit with nothing superseded answers ErrNoSpace at once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
+  issue: '#4206'
 - test: TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag
   message: 'forget the tag: engine: journal: not implemented: vfs: unavailable'
   status: fail
@@ -210,15 +210,15 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Engine integration, over the journal: a restart starts the filesystem only after the engine''s start has finished. Init and Open work; the composition starts; the row stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built). The same order is checked green over the fake journal, in the test''s other half.'
-  issue: '#4052'
+  reason: 'the journal''s Open recovering segments: a restart starts the filesystem only after the engine''s start has finished. Init and Open work; the composition starts; the row stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built). The same order is checked green over the fake journal, in the test''s other half.'
+  issue: '#4206'
 - test: TestTheFilesystemStartsAfterTheEngine/journal/crash
   message: 'fixture: engine start: engine: start: open the journal'
   status: fail
   fix: planned
   category: feature
-  reason: 'Engine integration, over the journal: a crash starts the filesystem only after the engine''s start has finished. Init and Open work; the composition starts; the row stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built). The same order is checked green over the fake journal, in the test''s other half.'
-  issue: '#4052'
+  reason: 'the journal''s Open recovering segments: a crash starts the filesystem only after the engine''s start has finished. Init and Open work; the composition starts; the row stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built). The same order is checked green over the fake journal, in the test''s other half.'
+  issue: '#4206'
 - test: TestRFC8A_CapacityScopedRepack
   message: 'write 3 of b: vfs: retry shortly: capacity'
   status: fail
@@ -280,12 +280,12 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Engine integration, RFC 17 V26: a clone of a source whose synced run the journal lost reads ErrLost there at the destination and the source''s bytes elsewhere. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#4052'
+  reason: 'the journal''s Open recovering segments: a clone of a source whose synced run the journal lost reads ErrLost there at the destination and the source''s bytes elsewhere. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
 - test: TestContentSuiteOverTheJournal/ALossChangesTheVerifierAndRaisesTheLossSequence
   message: 'the Content under test cannot be made to lose a write'
   status: skip
   fix: planned
   category: feature
-  reason: 'Engine integration, the Content suite over the real journal: a loss changes the verifier and raises only the lost file''s loss sequence. The run supplies no Lose, so the case skips: the fixture fails a whole sync window, every file pending in it, where the case needs one file''s content lost and another''s loss sequence left alone; the engine''s run over the fake journal covers it. It runs once the fixture can fail one file''s window.'
-  issue: '#4052'
+  reason: 'the fixture failing one file''s sync window (internal/vfs/integration/content_journal_test.go:18): a loss changes the verifier and raises only the lost file''s loss sequence. The run supplies no Lose, so the case skips: the fixture fails a whole sync window, every file pending in it, where the case needs one file''s content lost and another''s loss sequence left alone; the engine''s run over the fake journal covers it. It runs once the fixture can fail one file''s window.'
+  issue: '#4206'
