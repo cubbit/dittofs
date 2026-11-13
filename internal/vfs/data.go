@@ -19,6 +19,10 @@ import (
 // answered with the WCC read in that one hold. No sync runs under either: a
 // commit, a stable write's included, runs once the admission lock is
 // released, so an open, a close or a lock on the file never waits on one.
+// Copy and clone (copy.go) are the exception: they hold both files'
+// admission locks only until the engine has registered the clone, not to
+// its I/O, and read the destination's WCC Before under the accept lock then
+// and its After once the engine answers, in two holds.
 
 // Read reads the file ref names into dst from off, and answers how many
 // verified bytes it read and whether they reach the file's end. The engine

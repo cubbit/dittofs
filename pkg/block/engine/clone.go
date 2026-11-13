@@ -334,14 +334,18 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 type admittedKey struct{}
 
 // WithAdmitted returns ctx carrying admitted, which Clone, each of Copy's
-// chunks included, calls once the call has passed every refusal its admission
-// answers and holds its registrations, or has found the running clone it
-// joins, and before anything changes the destination. Its error refuses the
-// call, changing nothing. The filesystem service clears setuid and setgid
-// there, so a clone the engine refuses leaves the mode alone, and releases
-// the files' locks, since from there the registrations order every call
-// meeting the clone's extents (RFC 17 §5.9). The engine calls it with none of
-// its own locks held; it may be called more than once.
+// chunks included, calls on the calling goroutine with none of the engine's
+// locks held: on a new clone once its admission's refusals have passed and
+// it holds its registrations, before step 1 and before anything changes the
+// destination; on a join once it has found the running clone, which may
+// already have changed the destination. A retry of a done clone answers
+// without calling it. Its error refuses the call, changing nothing; on a
+// copy's later chunk it ends the copy short. The filesystem service clears
+// setuid and setgid there and releases the files' locks, since from there
+// the registrations order every call meeting the clone's extents (RFC 17
+// §5.9). A clone the engine's admission refuses therefore leaves the mode
+// alone; one refused in step 1 or at its journal step leaves the bits
+// cleared, as a write the engine refuses does. admitted must not be nil.
 func WithAdmitted(ctx context.Context, admitted func() error) context.Context {
 	return context.WithValue(ctx, admittedKey{}, admitted)
 }
