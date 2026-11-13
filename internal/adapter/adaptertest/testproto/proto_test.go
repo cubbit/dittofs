@@ -2,7 +2,6 @@ package testproto
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -237,7 +236,7 @@ func TestErrorRows(t *testing.T) {
 			return found
 		}
 		statuses := map[core.Status]error{}
-		for _, err := range append(core.Errors(), vfs.ErrDelay, context.Canceled) {
+		for _, err := range append(core.Errors(), vfs.ErrDelay) {
 			r := find(err)
 			if r == nil {
 				t.Errorf("holds %v: no row maps %v", holds, err)

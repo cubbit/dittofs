@@ -20,10 +20,14 @@ func opTablePanic(errs *core.ErrorTable, holds bool, ops ...*core.Op) (p any) {
 // NewOpTable refuses a table with two rows under one code, a row whose
 // versions run backwards, or a row of its error table that holds when the
 // table does not, each naming the row; a table that holds takes the row.
+// A table that holds also maps ErrCancelled for every operation and version:
+// one with no row for it, or whose only row for it names operations or
+// versions, is refused, naming it; a table that does not hold needs none.
 func TestNewOpTableChecksItsRows(t *testing.T) {
-	plain := core.NewErrorTable(fault, core.ErrorRow{Err: vfs.ErrDelay, Status: delayed})
+	plain := table(core.ErrorRow{Err: vfs.ErrDelay, Status: delayed})
 	hold := func(error, time.Time) time.Time { return time.Time{} }
-	holding := core.NewErrorTable(fault, core.ErrorRow{Err: vfs.ErrDelay, Hold: hold, Status: delayed})
+	cancel := core.ErrorRow{Err: core.ErrCancelled, Status: cancelled}
+	holding := table(core.ErrorRow{Err: vfs.ErrDelay, Hold: hold, Status: delayed}, cancel)
 	one := core.Range{First: 1, Last: 1}
 	for _, c := range []struct {
 		name  string
@@ -36,6 +40,10 @@ func TestNewOpTableChecksItsRows(t *testing.T) {
 		{"versions backwards", plain, false, []*core.Op{{Code: 7, Name: "Read", Versions: core.Range{First: 2, Last: 1}}}, "Read"},
 		{"a hold where the table does not hold", holding, false, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, vfs.ErrDelay.Error()},
 		{"a hold where the table holds", holding, true, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, ""},
+		{"a table that holds with no ErrCancelled row", table(core.ErrorRow{Err: vfs.ErrDelay, Hold: hold, Status: delayed}), true, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, "ErrCancelled"},
+		{"a table that holds whose ErrCancelled row names an operation", table(core.ErrorRow{Err: core.ErrCancelled, Ops: []uint32{7}, Status: cancelled}), true, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, "ErrCancelled"},
+		{"a table that holds whose ErrCancelled row names versions", table(core.ErrorRow{Err: core.ErrCancelled, Versions: &one, Status: cancelled}), true, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, "ErrCancelled"},
+		{"a table that does not hold, with no ErrCancelled row", plain, false, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p := opTablePanic(c.errs, c.holds, c.ops...)
