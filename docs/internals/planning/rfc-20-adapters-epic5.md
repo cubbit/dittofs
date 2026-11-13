@@ -247,7 +247,7 @@ cited by number and title, and how it applies here or why it does not.
 | R40 | A chain's members come from one record, each with its header at its own offset; `Decode`, `Unwrap`, `Admit` and `Lookup` run per member, and so does everything from the row checks to the encoding. Each member's admission is released once its reply is encoded, before the next member is admitted (D8) | MUST | §4.7, amended (D8, §9) | T5.4 |
 | R41 | `Unwrap` and `Route` are handed the member before a related one, so the IDs it inherits are resolved before its check and its handles carry over | MUST | §4.7 | T5.4 |
 | R42 | A related member after one that failed is answered with the same status and reaches no service call | MUST | §4.3 | T5.4 |
-| R43 | A chain's replies are joined with `HeaderCodec.Chain`, and `Wrap` is called once on the joined record; a member `Unwrap` refused is not in it, and goes out in a record of its own (D6); the replies before a member whose bound, with the reply reservations its chain already holds, would pass the reply pool's ceiling go out as a record of their own before it reserves (D8) | MUST | §4.7, amended (D6, D8, §9) | T5.4 |
+| R43 | A chain's replies are joined with `HeaderCodec.Chain`, and `Wrap` is called once on the joined record; a member `Unwrap` refused is not in it, and goes out in a record of its own (D6); the replies before a member whose reply buffer does not fit at once while its chain holds reply reservations go out as a record of their own before it waits (D8) | MUST | §4.7, amended (D6, D8, §9) | T5.4 |
 | R44 | A chain member whose row is `NoReply` stops the chain: the members after it do not run; those before it stay applied and are answered, chained with the refused member's interim, and no final reply follows | MUST | §4.7 | T5.4 |
 | R45 | That interim is handed the headers of the members after it, the only part of them decoded, in a slice taken from a `sync.Pool`; a later header that does not decode ends the list there | MUST | §4.7 | T5.4 |
 | R46 | While draining, a single-reply compound is judged whole before any operation runs: each operation's role is `Op.Role`, or `Invocation.Role` over its decoded arguments, called before `Resolve`; an operation that does not decode counts as refused | MUST | §4.7, §3.1 | T5.4 |
@@ -301,7 +301,7 @@ cited by number and title, and how it applies here or why it does not.
 | --- | --- | --- | --- | --- |
 | R79 | The cross-cutting work is one chain, built once by `core` in one fixed order: recovery, trace span, metrics, deadline; a test pins the order | MUST | §4.7, §4.2 | T5.6 |
 | R80 | A handler that panics is answered the protocol's server-fault status, logged at error with the operation and the stack, counted in `adapter_handler_panics_total`, and does not take down the connection's other requests | MUST | §4.2, §10.1 | T5.6, T5.1a |
-| R81 | Each attempt of every service call carries a deadline of a fixed 30 s from the attempt's start, set by the pipeline in the context before the attempt's reply reservation: the first attempt's start is the request's arrival, when `serve` takes its record, and a re-drive's is its own (R55) | MUST | §6.4; RFC 17 §4.3; RFC 24 §3.3 | T5.6, T5.8 |
+| R81 | Each attempt of every service call carries a deadline of a fixed 30 s from the attempt's start, which the pipeline keeps in the context before the attempt's reply reservation: the first attempt's start is the request's arrival, when `serve` takes its record, and a re-drive's is its own (R55). The reservation waits until that deadline (R24), and the chain's deadline stage sets it for the call (R79) | MUST | §6.4; RFC 17 §4.3; RFC 24 §3.3 | T5.6, T5.8 |
 | R82 | A request has one context, derived from its connection's, so closing the connection cancels it | MUST | §6.9, §6.5 | T5.8 |
 | R83 | The service's answer at the deadline is mapped as any other | MUST | §6.4 | T5.8 |
 
@@ -516,22 +516,27 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   one place under `Flow` at a time, so a chain longer than the cap of 64 (nothing caps a
   chain's length but its record's) never waits on its own members under a context with no
   deadline. **Its reply reservations are not released so**: each member's is held until the
-  chain's joined record goes out (R25, R43). **A member whose bound, added to the reservations
-  its chain already holds, would pass the reply pool's ceiling first sends the replies before
-  it as a record of their own, wrapped once, as D6's split does, and only then reserves**: it
-  waits on replies already handed to the writer and on other requests, never on its own
-  record, so no chain waits out its deadline at the head of the pool's queue, which nothing
-  passes, with every connection's replies behind it. Not a refusal: the refused member's status
-  would itself need a reply buffer from the pool its chain fills (D9). The ceiling, not D11's
-  quarter: an SMB command's own reply reaches 8 MiB (RFC 22 §3.3), half the floor's ceiling.
+  chain's joined record goes out (R25, R43). **A member whose reply buffer does not fit at
+  once while its chain holds reply reservations (tried once under a context already done, as
+  RFC 24 §2.5's `Reserve` allows) first sends the replies before it as a record of their own,
+  wrapped once, as D6's split does, and only then reserves under its deadline**: a chain never
+  waits on the reply pool while holding it (RFC 24 §2.6), so neither one chain nor two that
+  each hold part of the pool wait out their deadlines at the head of its queue, which nothing
+  passes, with every connection's replies behind them. Not a refusal: the refused member's
+  status would itself need a reply buffer from the pool its chain fills (D9).
   It amends RFC 20 §4.7's chain paragraph. `decision:` in `serve`, beside RFC 20 §5.5's
-  `ponytail:` for `unwrap` on the reader, and in the runner at the ceiling. Prior art: the
+  `ponytail:` for `unwrap` on the reader, and in the runner at the try. Prior art: the
   standard library's `net/http` server reads on the connection's goroutine and runs HTTP/2
   handlers on their own (from memory).
 - **D9, every reply buffer is taken from the reply pool, the small class included.** RFC 24
   §3.3 charges a small reply to the receive reservation's overhead, and `BufPool` hands out no
   buffer without a reservation. **The pipeline calls `Get` on the reply pool for every reply,
   of the bound plus the header.** A small request is then charged 12 KiB twice while it runs.
+  **A reply that carries a status alone (a refusal, or R24's delay once a reservation's wait
+  ends) takes its buffer under the request's context, not the attempt's deadline**: under an
+  expired deadline `Reserve` refuses unless the pool has room at once, and the status would
+  never go out; it waits while its connection lives, holding no reply reservation (D8), until
+  the writer's sends free room (RFC 24 §2.6).
   `ponytail:` at the call: at 64 requests in flight a connection over-reserves 768 KiB; give
   `BufPool` an unreserved small buffer when the reply budget is shown to bind before the
   receive budget does. RFC 24 is amended in three places that rely on a small reply riding
@@ -557,7 +562,9 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   whole across every member's call, and the pool grants in arrival order with nothing passing
   its head (`pkg/resources/budget.go`'s `ponytail:`), so a sum the whole ceiling could hold
   would let one request stall every reply on the node until it ends. A quarter is 4 MiB at the
-  floor, against RFC 21 §2.3's 1 MiB of data per read and per NFSv4.1 reply.
+  floor, against RFC 21 §2.3's 1 MiB of data per read and per NFSv4.1 reply. The runner reads
+  the ceiling through `WaitBudget.Ceiling() int64`, which T5.3 adds with RFC 24 §2.5's line and
+  `resources.golden`, since nothing on the frozen surface gives it.
   `WaitBudget.Reserve` refuses a single charge past its ceiling at once, under any context,
   with an error that matches no context error (its `decision:` on the branch), so it never
   waits out its deadline; `reserveReply` answers that refusal `ErrReplyTooBig` (T5.3), rather
@@ -568,8 +575,8 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   session's `ca_maxresponsesize` needs a limit set by a `SEQUENCE` that has run and an error
   for it, and the frozen surface carries neither: it comes with the slots (§1.2). RFC 20
   §4.3's sentence on `ca_maxresponsesize` and `NFS4ERR_REP_TOO_BIG` is not amended: it is
-  deferred, under the ledger's row for NFSv4.1's slots; the refusal of a sum past the reply
-  pool's ceiling is added to §4.3 (T5.4), and `ErrReplyTooBig` to §4.7's `Errors()` and
+  deferred, under the ledger's row for NFSv4.1's slots; the refusal of a sum past a quarter of
+  the reply pool's ceiling is added to §4.3 (T5.4), and `ErrReplyTooBig` to §4.7's `Errors()` and
   `core.golden` (T5.3). Which status each protocol answers it with is its table's row, which
   its totality test demands (D5); for RFC 21 §11.5, `NFS4ERR_REP_TOO_BIG` for NFSv4.1 and
   `NFS4ERR_RESOURCE` for NFSv4.0 (§9). `ponytail:` in the runner: one reservation of the
@@ -730,10 +737,11 @@ internal/adapter/core/
   testdata/surface/core.golden        T5.7: ErrDecode; T5.2a: ErrCancelled; T5.3: ErrReplyTooBig;
                                       T5.4: Op.MaxMembers; T5.1a: Stages.Errors;
                                       T5.9: OpTable.Protocol
-  testdata/surface/resources.golden   T5.5a: Buf.Recharge
+  testdata/surface/resources.golden   T5.5a: Buf.Recharge; T5.3: WaitBudget.Ceiling
   testdata/allocs                     T5.10: the checked-in number
 pkg/metrics/registry.go               T5.9: Spec, Buckets, Counter, Gauge, Histogram
 pkg/resources/buf.go                  T5.5a: Buf.Recharge
+pkg/resources/budget.go               T5.3: WaitBudget.Ceiling
 pkg/vfs/hold.go                       T5.5d: WithHold, Hold
 internal/adapter/adaptertest/testproto/   the eleven changes of §1.1, each by its subtask
 test/adapter/known.yaml  T5.1c: the end-to-end entry removed
@@ -742,13 +750,14 @@ docs/internals/rfcs/rfc-20-adapters.md   T5.7: §4.7 (D7); T5.2a: §4.7 (D17); T
                                          T5.1a: §4.7, §4.1, §5.5 (D6); T5.9: §4.7, §10.1,
                                          §6.9 (D18); T5.4: §4.7 (D6's chain, D8, D10),
                                          §4.3 (D11); T5.5b: §4.6 (D12)
-docs/internals/rfcs/rfc-24-resources.md  T5.5a: §4.3 Recharge; T5.1a: §3.3, §4.2 (D9)
+docs/internals/rfcs/rfc-24-resources.md  T5.5a: §4.3 Recharge; T5.1a: §3.3, §4.2 (D9);
+                                         T5.3: §2.5 Ceiling (D11)
 docs/internals/rfcs/rfc-17-vfs.md        T5.5d: §5.9 Hold (D16)
 ```
 
 Exported symbols added: `Stages.Errors *ErrorTable`; `OpTable.Protocol string`;
 `Op.MaxMembers int`; `ErrDecode`, `ErrCancelled` and `ErrReplyTooBig`, each in `Errors()`;
-`func (b *Buf) Recharge(to *Budget) error`;
+`func (b *Buf) Recharge(to *Budget) error`; `func (b *WaitBudget) Ceiling() int64`;
 `vfs.WithHold(ctx context.Context, max time.Duration) context.Context` and
 `vfs.Hold(ctx context.Context) (max time.Duration, ok bool)`; in `pkg/metrics`, `Spec`,
 `Buckets`, `None`, `Request`, and `Counter(Spec)`, `Gauge(Spec)`, `Histogram(Spec)` on the
@@ -901,8 +910,8 @@ registry. Nothing else is exported.
   for a single operation, its attributes R90's, ended in a deferred call), metrics (the stage
   clock of `adapter_wire_seconds` around the call, observed in a deferred call), deadline
   (D24's context, 30 s from the attempt's start, which the pipeline keeps in the context: the
-  request's arrival or a re-drive's start, R81; T5.8 runs `reserveReply` under the same
-  deadline).
+  request's arrival or a re-drive's start, R81; with no start in the context, the clock's now,
+  until T5.8 stores the arrival; T5.8 runs `reserveReply` under the same deadline).
 - **Consumers:** T5.1a, which runs every `Invocation.Call` through it; T5.5b, whose every
   attempt passes it again.
 - **Acceptance criteria:**
@@ -960,7 +969,9 @@ registry. Nothing else is exported.
   `&vfs.Delay{Cause: vfs.DelayResources}`, leaves a cancellation as it is, and answers
   `ErrReplyTooBig` for the refusal that matches neither context error: `WaitBudget.Reserve`
   refuses at once, under any context, a charge past the reply pool's ceiling (D11).
-  `ErrReplyTooBig`, added to `Errors()`, with RFC 20 §4.7's amendment and `core.golden`.
+  `ErrReplyTooBig`, added to `Errors()`, with RFC 20 §4.7's amendment and `core.golden`. In
+  `pkg/resources`, `WaitBudget.Ceiling() int64`, which T5.4's quarter reads (D11), with RFC 24
+  §2.5's line and `resources.golden`; T5.4's test at the quarter is its test.
 - **Consumers:** T5.1a (`withDefaults`, the call before every handler), T5.4, T5.5b (each
   re-run), T5.11.
 - **Acceptance criteria:**
@@ -1184,13 +1195,14 @@ registry. Nothing else is exported.
   its reply is encoded (D8), `prev` handed to `Unwrap` and `Route`, a related member after a
   failed one answered the failed member's status without a call (R42), a member `Unwrap`
   refuses splitting the chain's replies as D6 says, the replies joined with `Chain` and
-  wrapped once per record, and sent before a member whose bound, with what the chain holds,
-  would pass the reply pool's ceiling (D8); at a
+  wrapped once per record, and sent before a member whose reply buffer does not fit at once
+  while the chain holds reply reservations (D8); at a
   `NoReply` member, the later members' headers decoded into a pooled slice and handed to
   `Interim`. `Op.MaxMembers`, with RFC 20 §4.7's amendment and `core.golden`, and
   `NewOpTable` refusing a row with `Members` and no `MaxMembers`; `testproto`'s compound row
   sets it to 8 (§1.1's change 4), and its tables gain the row for `ErrReplyTooBig` (change 8).
-  RFC 20's amendments for D6's chain rule and D8's release (§4.7) and D11's ceiling (§4.3).
+  RFC 20's amendments for D6's chain rule and D8's release and early send (§4.7) and D11's
+  quarter (§4.3).
   `FuzzRecordWalk`, its crashers kept under `testdata/fuzz/FuzzRecordWalk/`.
 - **Consumers:** T5.8, T5.5b, T5.5c, T5.11, whose tests reach the service through a chain;
   E4, whose `drainErr` reads the handles `judge` collects (D23).
@@ -1229,7 +1241,10 @@ registry. Nothing else is exported.
   - On a server whose reply budget the test sets to three `Echo` payloads, a chain of four
     such `Echo` on `Bare` is answered in two records, the first three replies and then the
     fourth, and an `Echo` on a second connection of that server, sent after the chain, is
-    answered too, with no time passing on the clock.
+    answered too, with no time passing on the clock. Two chains of a `PutFH`, a related
+    `Create` and an `Echo`, on two connections of a server whose reply budget the test sets to
+    the four replies before the `Echo`s, each `Create` held in the service until both are
+    reached, are both answered once the test releases them, with no time passing on the clock.
   - A chain member whose `Next` points at its own header, behind it or past the record, and
     a compound member whose code takes no byte or whose arguments claim more bytes than are
     left, are answered `ErrDecode`'s status, and nothing past them is read.
@@ -1273,7 +1288,9 @@ registry. Nothing else is exported.
   released at the join, which leaves the 65th waiting on its own chain until the bubble
   deadlocks). The chain past the reply budget, in a `synctest` bubble too (catches a member
   that waits on reservations its own record holds, at the head of the reply pool's queue with
-  the second connection's `Echo` behind it, until the bubble deadlocks). The walk's bad steps, through a header codec and a members table declared in the
+  the second connection's `Echo` behind it, until the bubble deadlocks). The two chains, with
+  `Faults.Hold` and its `Reached`, in the same bubble (catches an early send only past the
+  ceiling, which leaves each chain waiting on bytes only the other's record frees). The walk's bad steps, through a header codec and a members table declared in the
   test that take each `Next` and each count as the bytes give them, inputs that stand for a lax
   protocol and not doubles (catch a `Next` that loops on its own header, appending replies for
   ever, and a slice past the record, which panics outside the recovery middleware).
@@ -1661,9 +1678,10 @@ A suggestion only: one pull request per subtask works as well.
   place of the address and context read from `Conn`, the queue's bound, and `Conn.Settings`
   and `Conn.Established` needed only from T5.1c (§1.1's changes 10 and 11), all for the seam
   tests D2 allows; D6's chain rule; D8's release of each member's admission, and its chain
-  sending the replies it holds before a member that would pass the reply pool's ceiling;
-  D11's refusal of a compound's summed bounds past a quarter of that ceiling, with its own
-  error; D18's once per server and table, through
+  sending the replies it holds before a member whose reply buffer does not fit at once; D9's
+  status-only reply waiting under the request's context; D11's refusal of a compound's summed
+  bounds past a quarter of the reply pool's ceiling, with its own error, and
+  `WaitBudget.Ceiling`, which reads it; D18's once per server and table, through
   a map every request indexes with no lock, in place of the `sync.Once` per table he asked
   for, since two servers can share a table and each registers into its own registry. Also
   his to say before T5.2a lands: `ErrCancelled` follows RFC 20's spelling and `testproto`'s
@@ -1673,9 +1691,9 @@ A suggestion only: one pull request per subtask works as well.
   `Unwrap` going out unwrapped, and `Unwrap`'s nil header closing the connection (§4.7, §4.1,
   §5.5; T5.1a, D6); a chain member `Unwrap` refuses splitting the chain's replies, and a
   member's admission released before the next is admitted, and the replies before a member
-  that would pass the reply pool's ceiling sent first (§4.7; T5.4, D6, D8); a compound whose
-  summed bounds pass a quarter of that ceiling refused `ErrReplyTooBig` (§4.3, §4.7; T5.3,
-  T5.4, D11). D27's cancel key, and the queue behind `out` counting every message (D1),
+  whose reply buffer does not fit at once sent first (§4.7; T5.4, D6, D8); a compound whose
+  summed bounds pass a quarter of the reply pool's ceiling refused `ErrReplyTooBig` (§4.3,
+  §4.7; T5.3, T5.4, D11). D27's cancel key, and the queue behind `out` counting every message (D1),
   need none: the first is the protocol's key by §4.7, the second RFC 20 §6.1 and §6.2 already
   say.
 - **Findings for other documents, not edited here.** RFC 21 §11.5 lacks a row for

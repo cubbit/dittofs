@@ -266,7 +266,8 @@ names the epic that owns the rest.
   first `Route` and recovered there (`testproto: tables: not implemented` until E5's T5.2a and
   T5.7 give `NewOpTable` and `NewErrorTable` their bodies), then `NewServer` and `Start` (`core:
   new server` until E4), then the reply. Whichever of E4 and E5 moves the first failure updates
-  the entry's `message` in that change; E4's and E5's descriptions say so. A panicking stub is
+  the entry's `message` in that change: E4's description says so, and E5's move landed with
+  #4194 (the entry now reads `core: new server`). A panicking stub is
   never reached from a server goroutine, where it would stop the binary, because the tables are
   built before the server starts. No red specification registers a cleanup or `defer` that
   reaches a panicking stub (`Reserved`, `Reservation.Release`, `Buf.Release`) before the step
