@@ -28,6 +28,11 @@ type rig struct {
 	seam *kit.Seam
 
 	clk kit.DrivenClock
+
+	// faults holds the rules the rig's fault helpers have collected,
+	// scheduled together each time: the seam's fault is one schedule, and
+	// rescheduling only the last rule would drop the ones a leg set before it.
+	faults []kit.Rule
 }
 
 // newRig makes the directory and the seam over it, and registers the cleanup.

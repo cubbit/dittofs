@@ -97,6 +97,11 @@ type State struct {
 	// segment: each one's fate, the damaged set and the corrupt drops.
 	Tails tails
 
+	// Proof is the tail proof's answer, the records the re-append phase
+	// takes and the segments whose proof sync failed; the marks phase
+	// reads Reappends for its lost-tail check.
+	Proof proof
+
 	// Spares is what the spares phase did with the segments it re-adopted:
 	// each adoption, with the id the allocator owns again, and each id the
 	// phase unlinked.
@@ -129,7 +134,7 @@ var phases = [...]phase{
 	{span: core.SpanOpenAttach, run: runAttach},
 	{span: core.SpanOpenRebuild, run: runRebuild},
 	{span: core.SpanOpenMarksRaise},
-	{span: core.SpanOpenTailProof},
+	{span: core.SpanOpenTailProof, run: runTailProof},
 	{span: core.SpanOpenMarksLostTail},
 	{span: core.SpanOpenSpares, run: runSpares},
 	{span: core.SpanOpenReappend},
