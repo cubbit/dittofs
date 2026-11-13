@@ -689,6 +689,7 @@ RFC gaps go to the RFC, not here; each is listed until its RFC change merges.
    [RFC 8 §5.1](../rfcs/rfc-8-engine.md) raises a file's sequence "each time the metadata
    reconcile finds content of the file superseded where only an overwrite record knew the
    newer bytes, whether `DropOlder` drops it or a snapshot hold keeps it retained". R27
-   leaves that raise to epic 6, whose reconcile it belongs to, but epic 6's document has no
-   subtask that builds it. Listed here until epic 6 names one; T4.5's sequence is what it
-   raises.
+   leaves that raise to epic 6, whose reconcile it belongs to. The journal-only engine plan
+   leaves the reconcile out, so the raise goes with the reconcile task of epic 6 in the
+   engine plus offload plan, which is not written yet. Listed here until that task exists;
+   T4.5's sequence is what it raises.
