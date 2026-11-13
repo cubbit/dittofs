@@ -297,6 +297,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 	if expect == (JournalID{}) || expect != ff.Identity {
 		return nil, &IdentityError{Found: ff.Identity, Installation: ff.Installation, Segments: hasSegment}
 	}
+	s := resolveDefaults(cfg.Settings)
 	if hasSegment {
 		// The attach pass runs over the directory: its bounded reads, the
 		// .spare.tmp unlinks and the classes it sorts the segments into. A
@@ -307,7 +308,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			Clock:       cfg.Clock,
 			Tracer:      cfg.Tracer,
 			Log:         cfg.Logger,
-			ExtentLimit: resolveDefaults(cfg.Settings).ExtentLimit,
+			ExtentLimit: s.ExtentLimit,
 		}, floor, expect, marks); err != nil {
 			return nil, err
 		}
@@ -332,7 +333,6 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		return nil, err
 	}
 
-	s := resolveDefaults(cfg.Settings)
 	c, err := datapath.New(datapath.Deps{
 		FS:          cfg.Storage,
 		Clock:       cfg.Clock,
