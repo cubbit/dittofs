@@ -88,7 +88,7 @@ func (f *copyFixture) plantCorruptSource(t *testing.T) corruptPlant {
 	if p.recS.Segment == p.seg {
 		t.Fatalf("the superseder landed in the sealed source segment %d, want a segment of its own", p.seg)
 	}
-	if _, err := f.ix.LiftSuperseded(p.file, vS, middle); err != nil {
+	if _, _, err := f.ix.LiftSuperseded(p.file, vS, middle); err != nil {
 		t.Fatalf("LiftSuperseded: %v", err)
 	}
 	// The precondition the pass relies on: A is held at its two ends, the
@@ -316,7 +316,7 @@ func TestCopyCorruptNoPieceLeft(t *testing.T) {
 				h.Release()
 				t.Fatalf("the copy never reached A's source read within %v, want it held", copyWait)
 			}
-			if _, err := f.ix.LiftSuperseded(file, vS, core.Extent{Len: copyKib}); err != nil {
+			if _, _, err := f.ix.LiftSuperseded(file, vS, core.Extent{Len: copyKib}); err != nil {
 				h.Release()
 				t.Fatalf("LiftSuperseded of A's whole extent: %v", err)
 			}
@@ -808,7 +808,7 @@ func TestCopySupersededMiddle(t *testing.T) {
 	f.plantAt(t, copyTag, file1, middle, payS, mtimeS, vS)
 
 	// The superseder is synced, so the middle it superseded names nothing.
-	if _, err := f.ix.LiftSuperseded(file1, vS, middle); err != nil {
+	if _, _, err := f.ix.LiftSuperseded(file1, vS, middle); err != nil {
 		t.Fatalf("LiftSuperseded: %v", err)
 	}
 	// The precondition the pass relies on: the middle backs neither a held
@@ -1022,7 +1022,7 @@ func TestCopyLosesToNewerWrite(t *testing.T) {
 					// The superseder settled: its publish lift dropped what it
 					// superseded, the same lift a synced writer's path takes,
 					// so nothing of the source is left at the check.
-					if _, err := f.ix.LiftSuperseded(file, v, core.Extent{Len: copyKib}); err != nil {
+					if _, _, err := f.ix.LiftSuperseded(file, v, core.Extent{Len: copyKib}); err != nil {
 						t.Fatalf("LiftSuperseded over the source's extent: %v", err)
 					}
 					if got := f.ix.HeldAt(file, recA); got != nil {

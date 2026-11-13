@@ -218,12 +218,16 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 	// that matters.
 	marked := map[core.Extent]bool{}
 	if synced {
-		d.lift(c.File, c.Version, c.Extent)
+		// The lift has no place to gate a report on: the corrupt record that
+		// superseded the lifted content is itself being dropped, and the
+		// causality record of the emptied segments is the loss record the
+		// worker appends below, which does not exist yet.
+		d.lift(c.File, c.Version, c.Extent, segment.Location{})
 		for _, p := range held {
 			if marked[p.Extent] {
 				continue
 			}
-			delta, err := d.markLoss(c.File, p.Extent, c.Version)
+			delta, _, err := d.markLoss(c.File, p.Extent, c.Version)
 			if err != nil {
 				d.log.Error("a synced loss left no marker", "file", c.File, "err", err)
 				continue
@@ -241,7 +245,7 @@ func (d *Durability) dropCorrupt(st *stream, c Corruption, unlock func()) Corrup
 	d.accountDelta(hd)
 	for _, cv := range fw.Covers {
 		if !d.hasEntry(st, c.File, cv) {
-			d.lift(c.File, cv.Version, cv.Extent)
+			d.lift(c.File, cv.Version, cv.Extent, segment.Location{})
 		}
 	}
 	if d.afterCorruptDrop != nil {

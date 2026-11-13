@@ -216,17 +216,31 @@ func TestEdge_SameExtentOverwrittenManyTimes(t *testing.T) {
 			t.Fatalf("after %d writes the extent has %d index entries, want 1", i+1, n)
 		}
 	}
+	// Each write leaves a record whose sequence tops the one before it, and
+	// the held write's record is on disk. The records the check runs over are
+	// the survivors alone: a segment whose every record a seal's sync lifted —
+	// superseded, settled, dropped from the index — is retired by the liveness
+	// wiring and unlinked, so the oldest writes' records may be gone from the
+	// directory by the time this counts, and their count is pinned by nothing.
 	seqOf := map[core.Version]core.Seq{}
 	for _, r := range fileWrites(t, seam, f) {
 		seqOf[r.Header.Version] = r.Header.Seq
 	}
-	if len(seqOf) != 200 {
-		t.Fatalf("%d records on disk, want 200", len(seqOf))
-	}
-	for i := 1; i < len(vs); i++ {
-		if seqOf[vs[i]] <= seqOf[vs[i-1]] {
-			t.Fatalf("write %d has sequence %d, not above %d", i, seqOf[vs[i]], seqOf[vs[i-1]])
+	var last core.Seq
+	survived := 0
+	for _, v := range vs {
+		seq, ok := seqOf[v]
+		if !ok {
+			continue
 		}
+		survived++
+		if seq <= last {
+			t.Fatalf("the write with sequence %d is not above the survived %d", seq, last)
+		}
+		last = seq
+	}
+	if _, ok := seqOf[vs[199]]; !ok {
+		t.Fatalf("the held write's record is not on disk: %d of %d survived", survived, len(vs))
 	}
 	if p, _ := c.Index().Lookup(f, 4096); p.Version != vs[199] {
 		t.Fatalf("held version %v, want the last, %v", p.Version, vs[199])

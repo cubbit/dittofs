@@ -1,9 +1,9 @@
 package durability_test
 
 import (
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"log/slog"
 	"math"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +14,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // harnessCap is the segment cap of the sets the tests build: small enough to
@@ -28,6 +29,21 @@ type marked struct {
 	File    core.FileID
 	Extent  core.Extent
 	Version core.Version
+}
+
+// registered is one loss the recording Config.LossRegistered hook was told of,
+// with the record's drawn sequence number and place.
+type registered struct {
+	l   durability.Loss
+	seq core.Seq
+	at  segment.Location
+}
+
+// emptying is one move the recording Config.Emptied hook reported, with the
+// causality location it gated its segments on.
+type emptying struct {
+	segs []core.SegmentID
+	at   segment.Location
 }
 
 // env is a Durability over real streams on a real directory, the way E8 will
@@ -49,6 +65,9 @@ type env struct {
 	noAcct  bool            // leaves Config.Account nil
 	accts   []index.HeldDelta
 	log     *slog.Logger // handed to the Durability the next newDurability builds
+
+	regs    []registered // what the recording LossRegistered hook was told
+	empties []emptying   // what the recording Emptied hook was told
 }
 
 // newEnv builds the env over a fresh directory.
@@ -167,11 +186,21 @@ func (e *env) newDurabilityAt(dir string) *durability.Durability {
 		Dir:      dir,
 		Counters: e.counters,
 		Log:      e.log,
-		MarkLoss: func(f core.FileID, x core.Extent, v core.Version) (index.HeldDelta, error) {
+		MarkLoss: func(f core.FileID, x core.Extent, v core.Version) (index.HeldDelta, []core.SegmentID, error) {
 			e.mu.Lock()
 			defer e.mu.Unlock()
 			e.marks = append(e.marks, marked{f, x, v})
-			return e.delta, e.markErr
+			return e.delta, nil, e.markErr
+		},
+		LossRegistered: func(l durability.Loss, seq core.Seq, at segment.Location) {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			e.regs = append(e.regs, registered{l: l, seq: seq, at: at})
+		},
+		Emptied: func(segs []core.SegmentID, at segment.Location) {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			e.empties = append(e.empties, emptying{segs: slices.Clone(segs), at: at})
 		},
 		Account: account,
 	})
@@ -193,6 +222,20 @@ func (e *env) marked() []marked {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return append([]marked(nil), e.marks...)
+}
+
+// registrations returns the losses the LossRegistered hook was told of so far.
+func (e *env) registrations() []registered {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.regs)
+}
+
+// emptyings returns the moves the Emptied hook was told of so far.
+func (e *env) emptyings() []emptying {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.empties)
 }
 
 // awaitSpares waits for the pool's worker to ready every spare the targets

@@ -52,8 +52,10 @@ func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (delta, ma
 		Index:    index.New(1 << 20),
 		Dir:      t.TempDir(),
 		Counters: &index.Counters{},
-		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error) { return index.HeldDelta{}, nil },
-		Check:    func() error { return nil },
+		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error) {
+			return index.HeldDelta{}, nil, nil
+		},
+		Check: func() error { return nil },
 		MakeSpare: func() error {
 			_, err := maker.Make()
 			return err

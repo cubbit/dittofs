@@ -70,7 +70,7 @@ func driveStats(t *testing.T) []statsScenario {
 		other := testFile(2)
 		for k := int64(0); len(c.Index().FileEntries(other)) < limit+limit/8; k++ {
 			at := index.RecordAt{Segment: core.SegmentID(1 + k/16), Offset: uint32(k%16) * 8}
-			if _, err := c.Index().ApplyRemoval(s.Tag, other, core.ChangeDeallocate, core.Extent{Off: k * 8, Len: 8}, ver(uint64(k)+1), core.Seq(uint64(k)+1), at, nil); err != nil {
+			if _, _, err := c.Index().ApplyRemoval(s.Tag, other, core.ChangeDeallocate, core.Extent{Off: k * 8, Len: 8}, ver(uint64(k)+1), core.Seq(uint64(k)+1), at, nil); err != nil {
 				t.Fatalf("padding the count: %v", err)
 			}
 		}

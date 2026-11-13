@@ -56,7 +56,9 @@ func newUnwatchedProbeRig(t *testing.T) *probeRig {
 		Index:    index.New(1 << 20),
 		Dir:      t.TempDir(),
 		Counters: &index.Counters{},
-		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error) { return index.HeldDelta{}, nil },
+		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error) {
+			return index.HeldDelta{}, nil, nil
+		},
 		Check: func() error {
 			r.checks.Add(1)
 			if e := r.checkErr.Load(); e != nil {
@@ -246,7 +248,9 @@ func TestProbeNilHooks(t *testing.T) {
 	d, err := durability.New(durability.Config{
 		Clock: timers, Domains: noDomains{}, Index: index.New(1 << 20), Dir: t.TempDir(),
 		Counters: &index.Counters{},
-		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error) { return index.HeldDelta{}, nil },
+		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error) {
+			return index.HeldDelta{}, nil, nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -277,7 +281,9 @@ func TestProbeStopWaitsForACheckInFlight(t *testing.T) {
 	d, err := durability.New(durability.Config{
 		Clock: timers, Domains: noDomains{}, Index: index.New(1 << 20), Dir: t.TempDir(),
 		Counters: &index.Counters{},
-		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error) { return index.HeldDelta{}, nil },
+		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error) {
+			return index.HeldDelta{}, nil, nil
+		},
 		Check: func() error {
 			if stopReturned.Load() {
 				lateCall.Store(true)

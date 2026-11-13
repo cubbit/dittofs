@@ -76,12 +76,20 @@ func (f *file) lose(e core.Extent, v core.Version) error {
 // of losses.
 //
 // It returns the held-state change the loss made, the zero HeldDelta when
-// nothing was held over e or the loss was refused.
-func (fs *files) lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta, error) {
+// nothing was held over e or the loss was refused, and the ids of the
+// segments whose held counters the marker's cut lowered, distinct and
+// ascending, nil when it lowered none.
+func (fs *files) lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta, []core.SegmentID, error) {
 	if e.Len == 0 {
-		return HeldDelta{}, core.ErrZeroLength
+		return HeldDelta{}, nil, core.ErrZeroLength
 	}
-	return fs.update(id, func(f *file) error { return f.lose(e, v) })
+	var m touched
+	hd, err := fs.update(id, func(f *file) error {
+		f.held.touched = &m
+		defer func() { f.held.touched = nil }()
+		return f.lose(e, v)
+	})
+	return hd, m.named(), err
 }
 
 // delete stops holding every extent of the file below v and leaves a marker
@@ -276,12 +284,15 @@ func (fs *files) fill(tag core.ShareTag, id core.FileID, p Placed, seq core.Seq,
 // content the caller removed. Overturned by a bound that must hold against
 // the records already written, which only reserving the bound before the
 // append can give.
-func (fs *files) applyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec) (HeldDelta, error) {
+//
+// It also returns the ids of the segments whose held counters the removal
+// lowered, distinct and ascending, nil when it lowered none.
+func (fs *files) applyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec) (HeldDelta, []core.SegmentID, error) {
 	// The tag check runs first, as every journal call's does, before the
 	// zero-length refusal and before anything is admitted or noted.
 	var err error
 	if fs.view(id, func(f *file) { err = f.check(tag, id) }) && err != nil {
-		return HeldDelta{}, err
+		return HeldDelta{}, nil, err
 	}
 	switch k {
 	case core.ChangeDeallocate, core.ChangeCloneTarget:
@@ -289,10 +300,13 @@ func (fs *files) applyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKi
 		// length 0 would read, after a restart, as a removal to the end of the
 		// file.
 		if e.Len == 0 {
-			return HeldDelta{}, core.ErrZeroLength
+			return HeldDelta{}, nil, core.ErrZeroLength
 		}
 	}
-	return fs.commit(id, 0, func(f *file) error {
+	var m touched
+	hd, err := fs.commit(id, 0, func(f *file) error {
+		f.held.touched = &m
+		defer func() { f.held.touched = nil }()
 		if err := f.recorded(at.Segment, e, Numbers{Version: v, Seq: seq}, tag, id); err != nil {
 			return err
 		}
@@ -308,6 +322,7 @@ func (fs *files) applyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKi
 		}
 		return nil
 	})
+	return hd, m.named(), err
 }
 
 // fill holds p as a fill does, where nothing is held, except inside a marker

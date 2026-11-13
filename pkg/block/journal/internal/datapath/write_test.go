@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"math"
 	"slices"
 	"sync"
@@ -40,6 +41,12 @@ func readRecords(t *testing.T, seam *kit.Seam) []onDisk {
 		}
 		f, err := seam.Open(name)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				// A retirement unlinked the segment between the listing and
+				// this open: its records left the journal, and the walk
+				// reads on with what the directory still serves.
+				continue
+			}
 			t.Fatalf("Open %s: %v", name, err)
 		}
 		size, err := f.Size()

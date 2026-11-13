@@ -225,10 +225,12 @@ func (d *Durability) failContent(st *stream, win uint64, f core.FileID, entries 
 	// A newer record that took over what a failed one had superseded holds it
 	// retained until that record syncs. One that already synced was lifted
 	// before the failed record handed it the parts, so it is lifted now; one
-	// still in the ledger or a window lifts when it completes.
+	// still in the ledger or a window lifts when it completes. The index
+	// names the cover's superseder by version alone, so the lift has no
+	// place to gate a report on and reports nothing.
 	for _, c := range fw.Covers {
 		if !d.hasEntry(st, f, c) {
-			d.lift(f, c.Version, c.Extent)
+			d.lift(f, c.Version, c.Extent, segment.Location{})
 		}
 	}
 	return fw.Dropped
@@ -264,6 +266,10 @@ func (d *Durability) hasEntry(st *stream, file core.FileID, c index.Cover) bool 
 // failed record has a loss record.
 func (d *Durability) loseRecord(e entry, dropped []index.Piece) {
 	at := recordAt(e.w)
+	// The window's index cut already emptied the lost record's own segment;
+	// the loss record named below is the causality record a retirement of
+	// that segment waits on: each report is gated on the record's place.
+	moved := []core.SegmentID{e.w.Loc.Segment}
 	l := Loss{
 		Share:   e.w.Tag,
 		File:    e.w.File,
@@ -280,10 +286,10 @@ func (d *Durability) loseRecord(e entry, dropped []index.Piece) {
 		}
 		named = true
 		l.Extent, l.Offloaded = p.Extent, p.Offloaded
-		d.lose(l)
+		_, _ = d.loseMoved(context.Background(), l, moved)
 	}
 	if !named {
-		d.lose(l)
+		_, _ = d.loseMoved(context.Background(), l, moved)
 	}
 }
 

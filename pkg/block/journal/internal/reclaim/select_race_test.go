@@ -244,7 +244,7 @@ func TestSuspectUnreadMixed(t *testing.T) {
 		un := unread.New(clk)
 		seg := seed(t, f)
 		supersede(t, f)
-		if _, err := f.ix.LiftSuperseded(selFid(1), selVer(2), core.Extent{Len: ln}); err != nil {
+		if _, _, err := f.ix.LiftSuperseded(selFid(1), selVer(2), core.Extent{Len: ln}); err != nil {
 			t.Fatalf("LiftSuperseded: %v", err)
 		}
 		failedUnread(t, un, clk, seg, at, unread.Content, selFid(1))

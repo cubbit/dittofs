@@ -94,7 +94,7 @@ func TestRemovalTruncateNarrowsAndLeavesAMarker(t *testing.T) {
 	id := testFile
 	publish(t, ix, testTag, id, write(0, 16, rec(1, 0), 2), 2)
 
-	hd, err := ix.ApplyRemoval(testTag, id, core.ChangeTruncate, toEnd(4), ver(3), 7, rec(2, 0), nil)
+	hd, _, err := ix.ApplyRemoval(testTag, id, core.ChangeTruncate, toEnd(4), ver(3), 7, rec(2, 0), nil)
 	if err != nil {
 		t.Fatalf("Truncate = %v, want no error", err)
 	}
@@ -127,7 +127,7 @@ func TestRemovalDeallocateAcrossExtents(t *testing.T) {
 	publish(t, ix, testTag, id, write(0, 8, rec(1, 0), 2), 2)
 	publish(t, ix, testTag, id, write(16, 8, rec(1, 64), 3), 3)
 
-	hd, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(4, 20), ver(4), 9, rec(2, 0), nil)
+	hd, _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(4, 20), ver(4), 9, rec(2, 0), nil)
 	if err != nil {
 		t.Fatalf("Deallocate = %v, want no error", err)
 	}
@@ -151,7 +151,7 @@ func TestRemovalDeleteClearsAll(t *testing.T) {
 	publish(t, ix, testTag, id, write(0, 8, rec(1, 0), 2), 2)
 	publish(t, ix, testTag, id, write(16, 8, rec(1, 64), 3), 3)
 
-	hd, err := ix.ApplyRemoval(testTag, id, core.ChangeDelete, toEnd(0), ver(4), 5, rec(2, 0), nil)
+	hd, _, err := ix.ApplyRemoval(testTag, id, core.ChangeDelete, toEnd(0), ver(4), 5, rec(2, 0), nil)
 	if err != nil {
 		t.Fatalf("Delete = %v, want no error", err)
 	}
@@ -185,7 +185,7 @@ func TestRemovalCloneTargetKeepsItsSpec(t *testing.T) {
 	want := spec
 	publish(t, ix, testTag, id, write(0, 16, rec(1, 0), 2), 2)
 
-	hd, err := ix.ApplyRemoval(testTag, id, core.ChangeCloneTarget, ext(spec.DstOff, spec.Len), ver(12), 6, rec(2, 0), &spec)
+	hd, _, err := ix.ApplyRemoval(testTag, id, core.ChangeCloneTarget, ext(spec.DstOff, spec.Len), ver(12), 6, rec(2, 0), &spec)
 	if err != nil {
 		t.Fatalf("CloneTarget = %v, want no error", err)
 	}
@@ -215,11 +215,13 @@ func TestRemovalCloneTargetKeepsItsSpec(t *testing.T) {
 func TestRemovalZeroLengthRefused(t *testing.T) {
 	for name, call := range map[string]func(ix *Index, id core.FileID) (HeldDelta, error){
 		"deallocate": func(ix *Index, id core.FileID) (HeldDelta, error) {
-			return ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(4, 0), ver(3), 5, rec(2, 0), nil)
+			hd, _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(4, 0), ver(3), 5, rec(2, 0), nil)
+			return hd, err
 		},
 		"clone target": func(ix *Index, id core.FileID) (HeldDelta, error) {
 			spec := core.CloneSpec{DstOff: 4}
-			return ix.ApplyRemoval(testTag, id, core.ChangeCloneTarget, ext(4, 0), ver(3), 5, rec(2, 0), &spec)
+			hd, _, err := ix.ApplyRemoval(testTag, id, core.ChangeCloneTarget, ext(4, 0), ver(3), 5, rec(2, 0), &spec)
+			return hd, err
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -309,7 +311,7 @@ func TestRemovalSplittingRefusedAtTheCeiling(t *testing.T) {
 	if err := ix.CheckRemoval(id, ext(0, 4096)); err != nil {
 		t.Fatalf("CheckRemoval of a narrowing removal at the ceiling = %v, want nil", err)
 	}
-	if _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(0, 4096), ver(2), 10, rec(3, 0), nil); err != nil {
+	if _, _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(0, 4096), ver(2), 10, rec(3, 0), nil); err != nil {
 		t.Fatalf("a narrowing deallocate at the ceiling = %v, want no error", err)
 	}
 	if got := ix.Refused(); got != 2 {
@@ -334,20 +336,20 @@ func TestRemovalDropsOffloadedExtents(t *testing.T) {
 		want  []Entry     // the held entries left
 	}{
 		{"truncate", func(ix *Index, id core.FileID) error {
-			_, err := ix.ApplyRemoval(testTag, id, core.ChangeTruncate, toEnd(4), ver(3), 5, rec(2, 0), nil)
+			_, _, err := ix.ApplyRemoval(testTag, id, core.ChangeTruncate, toEnd(4), ver(3), 5, rec(2, 0), nil)
 			return err
 		}, ext(4, math.MaxInt64-4), []Entry{
 			{Kind: EntryHeld, Extent: ext(0, 4), Version: ver(2), Tag: testTag, Record: rec(1, 0), Offloaded: true},
 		}},
 		{"deallocate", func(ix *Index, id core.FileID) error {
-			_, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(4, 4), ver(3), 5, rec(2, 0), nil)
+			_, _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(4, 4), ver(3), 5, rec(2, 0), nil)
 			return err
 		}, ext(4, 4), []Entry{
 			{Kind: EntryHeld, Extent: ext(0, 4), Version: ver(2), Tag: testTag, Record: rec(1, 0), Offloaded: true},
 			{Kind: EntryHeld, Extent: ext(8, 4), Version: ver(2), Tag: testTag, Record: rec(1, 0), Skip: 8, Offloaded: true},
 		}},
 		{"delete", func(ix *Index, id core.FileID) error {
-			_, err := ix.ApplyRemoval(testTag, id, core.ChangeDelete, toEnd(0), ver(3), 5, rec(2, 0), nil)
+			_, _, err := ix.ApplyRemoval(testTag, id, core.ChangeDelete, toEnd(0), ver(3), 5, rec(2, 0), nil)
 			return err
 		}, ext(0, math.MaxInt64-0), nil},
 	}
@@ -409,7 +411,7 @@ func TestRemovalNotesTheRecordAndClaimsTheFile(t *testing.T) {
 	// A removal on a file the index has never seen claims it for the tag and
 	// notes its record.
 	id := testFile
-	if _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(4, 8), ver(3), 9, rec(5, 64), nil); err != nil {
+	if _, _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(4, 8), ver(3), 9, rec(5, 64), nil); err != nil {
 		t.Fatalf("Deallocate = %v, want no error", err)
 	}
 	if tag, ok := ix.Owner(id); !ok || tag != testTag {
@@ -428,7 +430,7 @@ func TestRemovalNotesTheRecordAndClaimsTheFile(t *testing.T) {
 
 	// A truncate notes the to-end extent a rebuild notes.
 	tid := fid(3)
-	if _, err := ix.ApplyRemoval(testTag, tid, core.ChangeTruncate, toEnd(8), ver(3), 4, rec(6, 0), nil); err != nil {
+	if _, _, err := ix.ApplyRemoval(testTag, tid, core.ChangeTruncate, toEnd(8), ver(3), 4, rec(6, 0), nil); err != nil {
 		t.Fatalf("Truncate = %v, want no error", err)
 	}
 	note(tid, 9, ext(8, 8))
@@ -441,7 +443,7 @@ func TestRemovalNotesTheRecordAndClaimsTheFile(t *testing.T) {
 
 	// A delete notes the whole file.
 	did := fid(4)
-	if _, err := ix.ApplyRemoval(testTag, did, core.ChangeDelete, toEnd(0), ver(3), 4, rec(7, 0), nil); err != nil {
+	if _, _, err := ix.ApplyRemoval(testTag, did, core.ChangeDelete, toEnd(0), ver(3), 4, rec(7, 0), nil); err != nil {
 		t.Fatalf("Delete = %v, want no error", err)
 	}
 	note(did, 9, ext(0, 8))
@@ -452,7 +454,7 @@ func TestRemovalNotesTheRecordAndClaimsTheFile(t *testing.T) {
 	// A removal through another share's tag is refused, appending, noting and
 	// reserving nothing.
 	before, refused := ix.FileEntries(id), ix.Refused()
-	if _, err := ix.ApplyRemoval(testTag+1, id, core.ChangeDeallocate, ext(20, 4), ver(4), 10, rec(8, 0), nil); !errors.Is(err, core.ErrOtherShare) {
+	if _, _, err := ix.ApplyRemoval(testTag+1, id, core.ChangeDeallocate, ext(20, 4), ver(4), 10, rec(8, 0), nil); !errors.Is(err, core.ErrOtherShare) {
 		t.Fatalf("a removal through another share = %v, want OtherShareError", err)
 	}
 	if got := ix.FileEntries(id); !entriesEqual(got, before) {
@@ -476,7 +478,7 @@ func TestApplyRemovalAppliesPastTheCeiling(t *testing.T) {
 	padTo(t, ix, ceiling)
 	refused := ix.Refused()
 
-	hd, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(4096, 4096), ver(2), 9, rec(3, 0), nil)
+	hd, _, err := ix.ApplyRemoval(testTag, id, core.ChangeDeallocate, ext(4096, 4096), ver(2), 9, rec(3, 0), nil)
 	if err != nil {
 		t.Fatalf("ApplyRemoval at the ceiling = %v, want no error", err)
 	}
@@ -511,7 +513,7 @@ func TestApplyRemovalRefusesAnotherSharesTag(t *testing.T) {
 	before := ix.FileEntries(id)
 	ranges, count := ix.fs.dropRangeCount(), ix.fs.extentCount()
 
-	if _, err := ix.ApplyRemoval(testTag+1, id, core.ChangeDeallocate, ext(0, 4), ver(3), 9, rec(2, 0), nil); !errors.Is(err, core.ErrOtherShare) {
+	if _, _, err := ix.ApplyRemoval(testTag+1, id, core.ChangeDeallocate, ext(0, 4), ver(3), 9, rec(2, 0), nil); !errors.Is(err, core.ErrOtherShare) {
 		t.Fatalf("ApplyRemoval through another share = %v, want OtherShareError", err)
 	}
 	if got := ix.FileEntries(id); !entriesEqual(got, before) {

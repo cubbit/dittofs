@@ -264,8 +264,9 @@ func (d *Durability) complete(st *stream) {
 		if isContent(w) {
 			// st.mu is not held: the index takes the file's lock and the
 			// account is the caller's. The entry is done only after the
-			// lift, so a Sync that returns on it sees the lift.
-			d.lift(w.File, w.Version, w.Extent)
+			// lift, so a Sync that returns on it sees the lift. The lift's
+			// report is gated on the record's own place, the superseder's.
+			d.lift(w.File, w.Version, w.Extent, w.Loc)
 		}
 		st.mu.Lock()
 		if i, ok := st.findLocked(no); ok {

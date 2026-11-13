@@ -90,6 +90,11 @@ type retainedSet struct {
 	// those bytes before flushGone applies them, so a concurrent reader of a
 	// segment the pass never writes to sees no dip.
 	holdGone bool
+	// touched, when set for the span of one update, collects the ids of the
+	// segments whose retained counters that update is lowering, at the edge
+	// flushGone subtracts them; nil keeps every drop silent. It is set and
+	// cleared by the move's own closure, under the file's exclusive lock.
+	touched *touched
 }
 
 // goneLen is one matched piece's segment and the length that leaves it.
@@ -256,6 +261,9 @@ func (s *retainedSet) flushGone() {
 	if s.acct != nil {
 		for _, sub := range s.gone {
 			s.acct.add(sub.seg, 0, -sub.n)
+			if s.touched != nil {
+				s.touched.note(sub.seg)
+			}
 		}
 	}
 	s.gone = s.gone[:0]
