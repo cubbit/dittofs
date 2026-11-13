@@ -141,6 +141,9 @@ that needs it.
     side, with a §10 row "NetBIOS name and domain";
   - a password set whose conditional write is refused deletes the NT hash it sealed;
   - RFC 23 §3.3's rotation bullet no longer says the old version is deleted before its retention.
+- **A9. NTLM turned back on is refused while the NT-hash deletion runs** (RFC 18 §3.5 and §10's "NTLM
+  off" row): the administrator retries once it has finished, so no hash the deletion has not reached
+  becomes valid again. This is the user's decision.
 
 ## 1. Introduction
 
@@ -362,7 +365,7 @@ proof"; the NFS halves of "disable takes effect" and "no file spelling"; and `Fu
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | The contract and the server's surface | `pkg/identity` with the value types moved from `pkg/vfs`, the errors, the interfaces; `internal/identity`'s surface; `vfs.Deps`' three fields | 6 | 6 | team | every epic |
-| E2 | Principals and accounts | the `Minter` on the store's ID counters, well-known principals with root's fixed ID, the `Machine` kind, the domain SID, names, `Spell` and `Find`, `NewHashes` with two secrets, `APISignIn`, NT-hash deletion | 7 | 10 | C | E6; partly E3, E4, E5; RFC 23's plan's E5 |
+| E2 | Principals and accounts | the `Minter` on the store's ID counters, well-known principals with root's fixed ID, the `Machine` kind, the domain SID, names, `Spell` and `Find`, `NewHashes` with two secrets, `APISignIn`, NT-hash deletion | 7 | 10.5 | C | E6; partly E3, E4, E5; RFC 23's plan's E5 |
 | E3 | Resolution | `admit`'s resolver moved into identity and completed: map, squash, groups, grant, flags; the `State`; the proof key and admission's caller cache | 7 | 10.5 | A | E7, E8; partly E5 |
 | E4 | Local NTLMv2 sign-in | `SignIn` for NTLMv2 against a local NT hash, the MIC, key exchange, the throttle, anonymous sessions, re-authentication | 6 | 9 | B | E5; partly E7 |
 | E5 | Kerberos and the PAC | imported keytab through `Apply`, AES only, AP-REQ, the replay cache, PAC verification and binding, test PACs, machine principals | 8 | 15.5 | B | E8; partly E7 |
@@ -370,11 +373,11 @@ proof"; the NFS halves of "disable takes effect" and "no file spelling"; and `Fu
 | E7 | NETLOGON and the machine account | the secure channel moved and hardened, pass-through, online and offline join, the derived keytab, rotation, identity's runner kinds, status, the in-memory domain controller | 11 | 25 | A | E8 |
 | E8 | Integration | identity composed into the node, its `State` from reconcile, `identity.*` validators, the rows several epics meet in | 5 | 9 | team | E9 |
 | E9 🔀 | E2E green | Tier 2 rows through SMB, `e2e/kerberos` | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **57** | **100** | | |
+| | **Total** | | **57** | **100.5** | | |
 
-**Plan estimate: 57 subtasks, 100 man-days, not counting epic 9.**
+**Plan estimate: 57 subtasks, 100.5 man-days, not counting epic 9.**
 
-The skill's estimate for RFC 18's 2,234 lines, with A1 to A8, is 6 middle epics (`round(2234 / 400)`),
+The skill's estimate for RFC 18's 2,237 lines, with A1 to A9, is 6 middle epics (`round(2237 / 400)`),
 as this plan has. Active Directory's two halves, the directory and NETLOGON, share no state beyond
 the in-memory AD they are tested against, and splitting them keeps Track A busy after resolution.
 
@@ -839,7 +842,7 @@ This epic freezes the identity contract and the server every later epic fills in
 
 ### Epic 2 — Principals and accounts
 
-**Epic 2 estimate: 7 subtasks, 10 man-days.**
+**Epic 2 estimate: 7 subtasks, 10.5 man-days.**
 
 The store mints principals and allocates their IDs once. Spellings map both ways. An account's
 password and NT hash are derived, sealed and checked.
@@ -875,7 +878,9 @@ password and NT hash are derived, sealed and checked.
 - NTLM-off's deletion of every NT hash, as the `identity.nt-hash-delete` runner kind (D8), scanning
   `Secret`s of kind nt-hash rather than users' references; a password set whose conditional write is
   refused deleting the NT hash version it sealed, which the scan may have passed (RFC 18 §3.5); and
-  a password set's pruning of the previous NT hash version through #4059's `Prune`.
+  a password set's pruning of the previous NT hash version through #4059's `Prune`; and
+  `identity.ntlm`'s validator refusing it turned on while the deletion runs, naming the operation,
+  as RFC 23's `409` `operation_running` (RFC 18 §3.5, A9).
 - `identity.ntlm` and `identity.netbios_name` declared, the first epic that reads them: the deletion
   reads the one, the `qualified` spelling (RFC 18 §4.6) the other.
 - A local name holding `@` refused (RFC 18 §4.6).
@@ -1081,7 +1086,8 @@ Identity runs inside the node, and the rows that need several middle epics toget
   record", "disabled directory account", "directory deadline", "mint conflict", "deny-only lookup
   error", "no local password for a directory user", "NTLM without a domain controller" and "NetBIOS
   name while joined" pass;
-- "NTLM off"'s password-set half passes in-process, and a Kerberos identity past its `Expires` is
+- "NTLM off"'s password-set half and its turn-back-on refusal pass in-process, and a Kerberos
+  identity past its `Expires` is
   refused by `Resolve` (RFC 18 §3.8), as §1.4 says;
 - `node.New` builds identity and hands it to `*vfs.Filesystem` and the API, and reconcile hands each
   new `State` to `Apply`;
@@ -1098,7 +1104,8 @@ Identity runs inside the node, and the rows that need several middle epics toget
 - The cross-epic rows above, on the in-memory directory and domain controller.
 - The `machine_account_unhealthy` alert rule (RFC 25 §3.9, §7).
 - An SMB sign-in by a user created through the API, run in-process.
-- Two Tier 2 rows' halves that need no adapter, run in-process: "NTLM off"'s password set held
+- Two Tier 2 rows' halves that need no adapter, run in-process: "NTLM off"'s turn-back-on refusal
+  and its password set held
   across the change, and a Kerberos identity past its `Expires` refused by `Resolve` (RFC 18 §3.8).
 
 ### Epic 9 — E2E green 🔀

@@ -901,8 +901,11 @@ A password set derives its NT hash under the `identity.ntlm` revision it read,
 and the API's write of it is conditional on that revision still being current,
 so no NT hash is written after the deletion has passed its user. A write that
 condition refuses deletes the NT hash version it sealed, which the deletion's
-scan may already have passed. Turning NTLM on
-again stores a hash only at a user's next password set.
+scan may already have passed. Turning NTLM on again **MUST** be refused while
+that deletion is running, naming it, and the administrator retries once it has
+finished ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)'s
+`operation_running`), so no hash the deletion has not yet reached becomes valid
+again. Once on, it stores a hash only at a user's next password set.
 
 > decision: turning NTLM off refuses established NTLM sessions as well, rather
 > than letting them run to their end, because an operator turning it off is
@@ -2092,7 +2095,7 @@ RFC 16's conformance suite's, not repeated here.
 | NetBIOS name and domain | 1 | A settings change giving `identity.netbios_name` the directory record's NetBIOS domain, and a directory record whose NetBIOS domain is `identity.netbios_name`, in another case: each refused at validation, naming the other. | one domain routing to both sources |
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
 | `ManageGIDs` | 2 | A user in 20 store groups calls over `AUTH_SYS`: a file whose ACL grants only the 20th group is granted. | groups capped at the credential's 16 |
-| NTLM off | 2 | Make a cache hit on a local NTLM session and on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: no NT hash written. | an NTLM context outliving the setting; a stray hash |
+| NTLM off | 2 | Make a cache hit on a local NTLM session and on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: no NT hash written. While the deletion runs, a settings change turning `identity.ntlm` on: refused, naming the deletion; once it has finished: accepted. | an NTLM context outliving the setting; a stray hash |
 | NTLM MIC | 1 | An AUTHENTICATE with a corrupted MIC, and one with the MIC zeroed while `MsvAvFlags` marks it present: both `ErrLogonFailure`, locally and through pass-through. A pass-through reply whose `UserSessionKey` is all zero, or whose `LogonDomainID` is another domain's: `ErrLogonFailure`; with the directory's domain SID unread: `ErrUnavailable`. | the drop-the-MIC relay |
 | NTLM domain | 1 | A standalone installation's CHALLENGE advertises its own NetBIOS name; an AUTHENTICATE naming it in another case: verified locally. With pass-through configured, `alice@corp.example.com` with an empty domain, and `corp.example.com\alice`: both passed through. A domain matching nothing, and an installation name holding `K` sent with the Kelvin sign U+212A in its place: `ErrLogonFailure`, outcome `unknown_domain`. | every standalone login refused; UPN and DNS-domain sign-ins refused as a wrong password |
 | no local password for a directory user | 1 | `NewHashes` for a directory principal: `ErrInvalid`, nothing stored; a local NTLM sign-in naming one: refused. | two passwords for one principal |
