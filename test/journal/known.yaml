@@ -399,14 +399,6 @@
   issue: '#3814'
   message: 'holds segments; recovering them is not built'
 
-- test: TestRFC1C_EpochHalfIsZero
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; every failing leg of the check fails on a stub call. Needs the open refusing a planted record whose version has a non-zero epoch half, as it refuses one of an unknown kind.'
-  issue: '#3814'
-  message: 'stub:'
-
 - test: TestRFC1C_FileIsItsSharesShare
   status: fail
   fix: planned
@@ -585,9 +577,9 @@
 
 - test: TestRFC1D_StatsCostIsFlat
   status: skip
-  fix: planned
+  fix: wontfix
   category: env
-  reason: 'Counts allocations, which the race detector changes, so it skips in the race leg. A norace leg now runs; what unblocks it is the heap slack the flat-Stats run needs (#4150).'
+  reason: 'Counts allocations, which -race changes; runs in unit/journal-conformance-norace instead.'
   issue: '#3395'
   message: 'the race detector changes allocation counts'
 
@@ -907,9 +899,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery by scan that fails the open on a kind the format does not define.'
+  reason: 'The journal opens and refuses the planted kinds; its control, a planted record of a known kind, reopens a journal that has run, which cannot be done until recovery lands. Needs recovery by scan.'
   issue: '#3814'
-  message: 'stub: Open'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC28C_FormatFile
   status: fail

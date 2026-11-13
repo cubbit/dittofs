@@ -126,6 +126,8 @@ type Fixture struct {
 
 	// cloneGate, once set by HoldNextClone, holds the next clone's phase 1.
 	cloneGate atomic.Pointer[gate]
+	// commitGate, once set by HoldNextCommit, holds the next existence commit.
+	commitGate atomic.Pointer[gate]
 	// startGate, once set by HoldNextStart, holds the next engine start.
 	startGate atomic.Pointer[gate]
 	handles   sync.Map // journal.ShareTag → the handle the running engine opened on it
@@ -162,6 +164,13 @@ func (f *Fixture) Stall() {
 // arrives. A test's cleanup releases it.
 func (f *Fixture) HoldNextClone() (entered <-chan struct{}, release func()) {
 	return f.holdNext(&f.cloneGate)
+}
+
+// HoldNextCommit holds the store's next existence commit until release is
+// called, as Stall holds every one; entered is closed once it arrives. A
+// test's cleanup releases it.
+func (f *Fixture) HoldNextCommit() (entered <-chan struct{}, release func()) {
+	return f.holdNext(&f.commitGate)
 }
 
 // HoldNextStart holds the next raise of the shards' incarnations at the
@@ -837,7 +846,7 @@ func (f *Fixture) start() {
 			}
 			return wrapJournal(j, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
 		},
-		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate},
+		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate, commitGate: &f.commitGate},
 		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
 		Lifecycle: gatedLifecycle{Lifecycle: f.FS.Store.Lifecycle(), startGate: &f.startGate},
 		Holds:     Holds(f.Opens, f.FS.Store.Opens()),
@@ -1046,9 +1055,10 @@ var errCrashed = errors.New("fixture: the process crashed: its engine commits no
 // recovery.
 type fencedExistence struct {
 	engine.Existence
-	crashed   *atomic.Bool
-	stalled   *atomic.Bool
-	cloneGate *atomic.Pointer[gate]
+	crashed    *atomic.Bool
+	stalled    *atomic.Bool
+	cloneGate  *atomic.Pointer[gate]
+	commitGate *atomic.Pointer[gate]
 }
 
 // Commit answers a crashed process's existence commit as done and writes
@@ -1065,6 +1075,9 @@ func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingEx
 	if x.stalled.Load() {
 		<-ctx.Done()
 		return nil, ctx.Err()
+	}
+	if err := pass(ctx, x.commitGate); err != nil {
+		return nil, err
 	}
 	return x.Existence.Commit(ctx, pending, marks)
 }

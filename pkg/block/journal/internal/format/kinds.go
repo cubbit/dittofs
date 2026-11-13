@@ -7,10 +7,10 @@ import (
 )
 
 // Kind is a record's kind: what the record does — stages bytes, removes or
-// marks them. Values are stable: a value is never reassigned, and 0 is never
-// a kind, so a slot of zeros never reads as one. 15–127 are reserved for
-// later core kinds and 128–255 for extensions, each assigned with the format
-// version that introduces it.
+// marks them, or records the journal's own state. Values are stable: a value
+// is never reassigned, and 0 is never a kind, so a slot of zeros never reads
+// as one. 17–127 are reserved for later core kinds and 128–255 for
+// extensions, each assigned with the format version that introduces it.
 type Kind uint8
 
 const (
@@ -28,31 +28,34 @@ const (
 	KindUnhold      Kind = 12 // releases the hold a cut held
 	KindStamp       Kind = 13 // stamps the cut the existence commit is for
 	KindForget      Kind = 14 // forgets a share, naming only its tag
+	KindReconcile   Kind = 15 // the engine owes a metadata reconcile
+	KindReconciled  Kind = 16 // marks a range counted, or with a zero range settles every reconcile
 )
 
 // known reports whether k is one of the kinds this format version defines.
 func (k Kind) known() bool {
-	return k >= KindWrite && k <= KindForget
+	return k >= KindWrite && k <= KindReconciled
 }
 
 // bodySize returns the bytes a record of kind k leaves after its header and
 // before its padding: write an 8-byte modification time plus the length's
-// payload bytes; fill the length's payload bytes; loss 16, clone target 56,
-// hold, unhold and stamp 8; and none otherwise. panics on an unknown kind —
-// no caller may ask how much room to step over a record it cannot name.
+// payload bytes; fill the length's payload bytes; loss and reconciled 16,
+// clone target 56, hold, unhold and stamp 8; and none otherwise. panics on an
+// unknown kind — no caller may ask how much room to step over a record it
+// cannot name.
 func bodySize(k Kind, length int64) int64 {
 	switch k {
 	case KindWrite:
 		return 8 + length
 	case KindFill:
 		return length
-	case KindLoss:
+	case KindLoss, KindReconciled:
 		return 16
 	case KindCloneTarget:
 		return 56
 	case KindHold, KindUnhold, KindStamp:
 		return 8
-	case KindRelease, KindTruncate, KindDeallocate, KindDelete, KindOffloaded, KindUnmark, KindForget:
+	case KindRelease, KindTruncate, KindDeallocate, KindDelete, KindOffloaded, KindUnmark, KindForget, KindReconcile:
 		return 0
 	default:
 		panic(fmt.Sprintf("format: body size of unknown kind %d", uint8(k)))
@@ -65,7 +68,7 @@ func bodySize(k Kind, length int64) int64 {
 // beside each other.
 func hasBody(k Kind) bool {
 	switch k {
-	case KindRelease, KindTruncate, KindDeallocate, KindDelete, KindOffloaded, KindUnmark, KindForget:
+	case KindRelease, KindTruncate, KindDeallocate, KindDelete, KindOffloaded, KindUnmark, KindForget, KindReconcile:
 		return false
 	default:
 		return k.known()
@@ -112,6 +115,16 @@ type CloneSource struct {
 	AsOf  core.Version // content version of the source to copy from
 }
 
+// Reconciled is a reconciled record's body: the range it marks counted, as
+// the segment the range lies in and its start and end in it. The zero range
+// carries no counts — it settles every reconcile record with a lower sequence
+// number, as the field order that decodes all-zero bytes gives it does.
+type Reconciled struct {
+	Segment core.SegmentID // the segment the counted range lies in
+	Start   uint32         // the range's start in the segment
+	End     uint32         // the range's end in the segment
+}
+
 // RecordBody is a record's body, of whichever fields its kind carries; every
 // other field is zero. A kind never reads a body a later format version adds.
 type RecordBody struct {
@@ -131,6 +144,10 @@ type RecordBody struct {
 
 	// Cut is the cut number a hold, unhold or stamp records.
 	Cut core.SnapshotCut
+
+	// Reconciled is a reconciled record's counted range, zero when it
+	// settles every reconcile with a lower sequence number.
+	Reconciled Reconciled
 }
 
 // checkFields refuses a header whose fields the kinds table gives as 0, and
@@ -175,12 +192,32 @@ func checkFields(h RecordHeader) error {
 		if h.Version != (core.Version{}) {
 			return fmt.Errorf("%w: %s names version %+v, want zeros", ErrDamaged, h.Kind, h.Version)
 		}
+
+	// The journal's own two kinds name no share either, so their tag is
+	// zero — which no share is given — on top of the fields above, and
+	// the same rules refuse what a writer could never have produced.
+	case KindReconcile, KindReconciled:
+		if h.Extent.Off != 0 {
+			return fmt.Errorf("%w: %s file offset %d, want 0", ErrDamaged, h.Kind, h.Extent.Off)
+		}
+		if h.Extent.Len != 0 {
+			return fmt.Errorf("%w: %s length %d, want 0", ErrDamaged, h.Kind, h.Extent.Len)
+		}
+		if h.File != (core.FileID{}) {
+			return fmt.Errorf("%w: %s names the FileID % x, want zeros", ErrDamaged, h.Kind, h.File.Bytes())
+		}
+		if h.Version != (core.Version{}) {
+			return fmt.Errorf("%w: %s names version %+v, want zeros", ErrDamaged, h.Kind, h.Version)
+		}
+		if h.Tag != 0 {
+			return fmt.Errorf("%w: %s names the share tag %d, want 0", ErrDamaged, h.Kind, h.Tag)
+		}
 	case KindWrite, KindFill, KindRelease, KindOffloaded, KindUnmark, KindLoss:
 		// Lengths and sequence numbers are unconstrained.
 	}
 
-	// Every kind but unhold and forget names a file.
-	if h.Kind != KindUnhold && h.Kind != KindForget && h.File == (core.FileID{}) {
+	// Every kind but unhold, forget, reconcile and reconciled names a file.
+	if h.Kind != KindUnhold && h.Kind != KindForget && h.Kind != KindReconcile && h.Kind != KindReconciled && h.File == (core.FileID{}) {
 		return fmt.Errorf("%w: %s names no FileID, want one", ErrDamaged, h.Kind)
 	}
 	return nil
@@ -218,6 +255,10 @@ func (k Kind) String() string {
 		return "stamp"
 	case KindForget:
 		return "forget"
+	case KindReconcile:
+		return "reconcile"
+	case KindReconciled:
+		return "reconciled"
 	}
 	return fmt.Sprintf("unknown %d", uint8(k))
 }

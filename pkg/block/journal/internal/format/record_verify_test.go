@@ -16,7 +16,7 @@ import (
 // it: a test whose body never verifies would refuse every flip for the wrong
 // reason.
 func TestVerifyRecordBodyRefusesAChangedByte(t *testing.T) {
-	for _, name := range []string{"write", "fill", "loss", "clone_target"} {
+	for _, name := range []string{"write", "fill", "loss", "clone_target", "reconciled"} {
 		want := wantRecordAt(t, name)
 		want.h.PayloadCRC = wantSeededCRC(testIdentity, want.bodyBytes())
 		golden := readGolden(t, "record_"+name)
@@ -52,7 +52,7 @@ func TestVerifyRecordBodyRefusesAChangedByte(t *testing.T) {
 // own bytes, so only the length rule can refuse it — the short body's
 // checksum is set to the seeded checksum of the bytes it does hold.
 func TestVerifyRecordBodyRefusesAWrongLength(t *testing.T) {
-	for _, name := range []string{"write", "fill", "loss", "clone_target", "hold"} {
+	for _, name := range []string{"write", "fill", "loss", "clone_target", "hold", "reconciled"} {
 		want := wantRecordAt(t, name)
 		body := readGolden(t, "record_"+name)[RecordHeaderSize:]
 

@@ -89,7 +89,7 @@ func TestFillChargesGapsAdjacentToHeldPiece(t *testing.T) {
 	f := testFile(2)
 	// One record, cut into two held pieces by a loss between them.
 	mustWrite(t, c, s, f, 4096, bytes.Repeat([]byte{'a'}, 16384))
-	if _, err := c.Index().Lose(f, core.Extent{Off: 8192, Len: 8192}, ver(9)); err != nil {
+	if _, _, err := c.Index().Lose(f, core.Extent{Off: 8192, Len: 8192}, ver(9)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
 	before := len(c.Index().FileEntries(f))
@@ -108,7 +108,7 @@ func TestFillMaskedByNewerMarker(t *testing.T) {
 	s := mustShare(t, c, 1)
 	f := testFile(3)
 	mustWrite(t, c, s, f, 0, bytes.Repeat([]byte{'a'}, 1024))
-	if _, err := c.Index().Lose(f, core.Extent{Off: 4096, Len: 4096}, ver(9)); err != nil {
+	if _, _, err := c.Index().Lose(f, core.Extent{Off: 4096, Len: 4096}, ver(9)); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
 	if err := c.Fill(context.Background(), s, f, 0, ff(12288), c.Index().AsOf(f), ver(2)); err != nil {

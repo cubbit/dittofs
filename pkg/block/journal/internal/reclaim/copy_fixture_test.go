@@ -2,12 +2,15 @@ package reclaim_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/datapath"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
@@ -59,7 +62,16 @@ type copyFixture struct {
 	// test plants its mark through; nil in every test that forgets nothing,
 	// which is the production wiring too.
 	forgetting func(core.ShareTag) bool
-	clock      core.Clock
+	// deferred, admit and drawn are the deferred-loss wirings the pass hands
+	// the copier: the registry the durability layer keeps, mapped field by
+	// field, and the headroom's admission with the counting of its draws.
+	// nil in every test that defers nothing, which is every wiring but the
+	// pass's own.
+	deferred func(core.SegmentID) []reclaim.DeferredLoss
+	admit    func(capacity.RecordClass) (capacity.Draw, error)
+	drawn    func(capacity.Draw)
+	crashed  bool // set by a test that crashes the seam; read by the cleanup
+	clock    core.Clock
 }
 
 // newCopyFixture builds the core, waits for its spare pool to settle, and
@@ -93,11 +105,6 @@ func newCopyFixture(t *testing.T) *copyFixture {
 	if err != nil {
 		t.Fatalf("datapath.New: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := c.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	})
 	f := &copyFixture{
 		core:     c,
 		seam:     seam,
@@ -108,8 +115,40 @@ func newCopyFixture(t *testing.T) *copyFixture {
 		tracker:  reclaim.New(ix, nil),
 		clock:    clock,
 	}
+	t.Cleanup(func() {
+		err := c.Close()
+		if f.crashed {
+			// Only a seam that was crashed closed every descriptor under the
+			// core, so only then may a close error be fs.ErrClosed; any other
+			// error the join keeps still fails the test.
+			err = withoutErrClosed(err)
+		}
+		if err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
 	f.waitSpares(t)
 	return f
+}
+
+// withoutErrClosed returns the leaves of err that are not fs.ErrClosed, joined,
+// or nil when there are none.
+func withoutErrClosed(err error) error {
+	switch e := err.(type) {
+	case nil:
+		return nil
+	case interface{ Unwrap() []error }:
+		var rest []error
+		for _, c := range e.Unwrap() {
+			rest = append(rest, withoutErrClosed(c))
+		}
+		return errors.Join(rest...)
+	default:
+		if errors.Is(err, fs.ErrClosed) {
+			return nil
+		}
+		return err
+	}
 }
 
 // waitSpares waits for the spare pool's own settle event: every draw a test
@@ -181,17 +220,19 @@ func (f *copyFixture) selector() *reclaim.Selector {
 }
 
 // copier wires the pass over the fixture's core: its domains and its
-// corrupter are the core's own pieces, and its forget mark the fixture's
-// plant, nil outside a test that forgets something.
+// corrupter are the core's own pieces, its forget mark the fixture's
+// plant, nil outside a test that forgets something, and its deferred-loss
+// wirings the fixture's plants likewise, nil outside a test that defers
+// something.
 func (f *copyFixture) copier() *reclaim.Copier {
-	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, f.core.Domains(), f.forgetting, f.corrupt, f.clock, slog.New(slog.DiscardHandler))
+	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, f.core.Domains(), f.forgetting, f.corrupt, f.clock, slog.New(slog.DiscardHandler), f.deferred, f.admit, f.drawn)
 }
 
 // copierOver wires the pass over the fixture's core behind dom, the append
 // domain table the copier takes instead of the core's own: a recording
 // wrapper around the real one, or the plain table.
 func (f *copyFixture) copierOver(dom reclaim.Domains) *reclaim.Copier {
-	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, dom, f.forgetting, f.corrupt, f.clock, slog.New(slog.DiscardHandler))
+	return reclaim.NewCopier(f.ix, f.counters, f.core.Streams(), f.un, f.tracker, dom, f.forgetting, f.corrupt, f.clock, slog.New(slog.DiscardHandler), f.deferred, f.admit, f.drawn)
 }
 
 // share returns the fixture core's handle of tag, closed when the test ends.
@@ -283,6 +324,93 @@ func (f *copyFixture) corrupt(ctx context.Context, bad reclaim.BadSource) (recla
 		return reclaim.CorruptUseCopy, nil
 	}
 	return 0, fmt.Errorf("durability answered corrupt with an outcome %d with no mapping", out.Kind)
+}
+
+// plantRemoval appends one header-only removal record of kind of file and
+// publishes it the way the writer's own removal path does: the file's append
+// domain held, a version and a sequence number drawn, the record appended,
+// the removal applied with its marker left over over, the held delta
+// accounted. The record registers live with the tracker at the place its
+// append reported, and settle names whether metadata's settle covers the
+// removal's own version at once, the re-test of its file included, the way
+// a settle racing a pass would.
+func (f *copyFixture) plantRemoval(t *testing.T, tag core.ShareTag, file core.FileID, kind format.Kind, change core.ChangeKind, header, over core.Extent, settle bool) (reclaim.Rec, index.RecordAt, core.Seq, core.Version) {
+	t.Helper()
+	unlock := f.core.Domains().Lock(file)
+	defer unlock()
+	v, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw of the %s's version: %v", kind, err)
+	}
+	seq, err := f.counters.NextSeq()
+	if err != nil {
+		t.Fatalf("NextSeq of the %s: %v", kind, err)
+	}
+	pl, err := f.core.Streams().For(file).Append(format.RecordHeader{
+		Kind: kind, File: file, Extent: header, Seq: seq, Version: v, Tag: tag,
+	}, format.RecordBody{})
+	if err != nil {
+		t.Fatalf("Append of the %s record: %v", kind, err)
+	}
+	at := index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}
+	hd, _, err := f.ix.ApplyRemoval(tag, file, change, over, v, seq, at, nil)
+	if err != nil {
+		t.Fatalf("ApplyRemoval of the %s: %v", kind, err)
+	}
+	f.core.Account(hd)
+	rec := reclaim.Rec{
+		Kind: kind, File: file, Seg: pl.Loc.Segment, Ext: header,
+		Pair: index.Numbers{Version: v, Seq: seq}, Seq: seq, Tag: tag, Loc: pl.Loc,
+	}
+	f.tracker.Register(rec)
+	if settle {
+		f.tracker.MarkerSettled(file, v)
+	}
+	return rec, at, seq, v
+}
+
+// plantLoss appends one header-only loss record of file naming the dropped
+// record's sequence number and publishes it the way the durability layer's
+// own loss path does: the file's append domain held, a version and a
+// sequence number drawn, the record appended with its loss body, the synced
+// loss applied over the extent e it covers, its marker left over it. The
+// record registers live with the tracker at the place its append reported,
+// settle is plantRemoval's.
+func (f *copyFixture) plantLoss(t *testing.T, tag core.ShareTag, file core.FileID, dropped core.Seq, why format.LossReason, e core.Extent, settle bool) (reclaim.Rec, index.RecordAt, core.Seq, core.Version) {
+	t.Helper()
+	unlock := f.core.Domains().Lock(file)
+	defer unlock()
+	v, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw of the loss record's version: %v", err)
+	}
+	seq, err := f.counters.NextSeq()
+	if err != nil {
+		t.Fatalf("NextSeq of the loss record: %v", err)
+	}
+	pl, err := f.core.Streams().For(file).Append(format.RecordHeader{
+		Kind: format.KindLoss, File: file, Extent: e, Seq: seq, Version: v, Tag: tag,
+	}, format.RecordBody{Loss: format.Loss{Dropped: dropped, Synced: true, Reason: why}})
+	if err != nil {
+		t.Fatalf("Append of the loss record: %v", err)
+	}
+	at := index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}
+	hd, _, err := f.ix.Lose(file, e, v)
+	if err != nil {
+		t.Fatalf("Lose of the loss record: %v", err)
+	}
+	f.core.Account(hd)
+	rec := reclaim.Rec{
+		Kind: format.KindLoss, File: file, Seg: pl.Loc.Segment, Ext: e,
+		Pair: index.Numbers{Version: v, Seq: seq},
+		Seq:  seq, Named: dropped, Tag: tag,
+		Synced: true, Superseded: why == format.LossSuperseded, Loc: pl.Loc,
+	}
+	f.tracker.Register(rec)
+	if settle {
+		f.tracker.MarkerSettled(file, v)
+	}
+	return rec, at, seq, v
 }
 
 // flipByte flips every bit of the byte at off of the segment the record at

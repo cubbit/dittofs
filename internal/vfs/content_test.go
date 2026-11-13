@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
@@ -296,6 +297,9 @@ func (c *fakeContent) Clone(ctx context.Context, srcShare entity.ShareID, src en
 }
 
 func (c *fakeContent) Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfs.Extent) (int64, error) {
+	if err := engine.Admitted(ctx); err != nil {
+		return 0, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.placed(srcShare, src); err != nil {

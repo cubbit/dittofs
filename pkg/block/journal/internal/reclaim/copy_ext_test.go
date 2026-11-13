@@ -88,7 +88,7 @@ func (f *copyFixture) plantCorruptSource(t *testing.T) corruptPlant {
 	if p.recS.Segment == p.seg {
 		t.Fatalf("the superseder landed in the sealed source segment %d, want a segment of its own", p.seg)
 	}
-	if _, err := f.ix.LiftSuperseded(p.file, vS, middle); err != nil {
+	if _, _, err := f.ix.LiftSuperseded(p.file, vS, middle); err != nil {
 		t.Fatalf("LiftSuperseded: %v", err)
 	}
 	// The precondition the pass relies on: A is held at its two ends, the
@@ -316,7 +316,7 @@ func TestCopyCorruptNoPieceLeft(t *testing.T) {
 				h.Release()
 				t.Fatalf("the copy never reached A's source read within %v, want it held", copyWait)
 			}
-			if _, err := f.ix.LiftSuperseded(file, vS, core.Extent{Len: copyKib}); err != nil {
+			if _, _, err := f.ix.LiftSuperseded(file, vS, core.Extent{Len: copyKib}); err != nil {
 				h.Release()
 				t.Fatalf("LiftSuperseded of A's whole extent: %v", err)
 			}
@@ -808,7 +808,7 @@ func TestCopySupersededMiddle(t *testing.T) {
 	f.plantAt(t, copyTag, file1, middle, payS, mtimeS, vS)
 
 	// The superseder is synced, so the middle it superseded names nothing.
-	if _, err := f.ix.LiftSuperseded(file1, vS, middle); err != nil {
+	if _, _, err := f.ix.LiftSuperseded(file1, vS, middle); err != nil {
 		t.Fatalf("LiftSuperseded: %v", err)
 	}
 	// The precondition the pass relies on: the middle backs neither a held
@@ -1022,7 +1022,7 @@ func TestCopyLosesToNewerWrite(t *testing.T) {
 					// The superseder settled: its publish lift dropped what it
 					// superseded, the same lift a synced writer's path takes,
 					// so nothing of the source is left at the check.
-					if _, err := f.ix.LiftSuperseded(file, v, core.Extent{Len: copyKib}); err != nil {
+					if _, _, err := f.ix.LiftSuperseded(file, v, core.Extent{Len: copyKib}); err != nil {
 						t.Fatalf("LiftSuperseded over the source's extent: %v", err)
 					}
 					if got := f.ix.HeldAt(file, recA); got != nil {
@@ -1662,11 +1662,12 @@ func (f *copyFixture) shutdown(t *testing.T) {
 // reopen reads the fixture's directory the way an open of it does: the
 // attach pass runs over the seam, and every record the format's real scan
 // attaches is fed to a fresh rebuild. The feed stands in for the open's own
-// record walk until that exists, and carries only the content kinds a
-// journal's copies are — a write or a fill: any other kind the scan
-// attached, or any record whose bytes it refused, fails the test rather than
-// being skipped in the feed. It returns the run's state, the rebuilt index
-// and the records the scan attached.
+// record walk until that exists, and carries only the kinds a journal's
+// copies and carried records are — a write or a fill of content, a truncate
+// or a delete of a removal, the kinds a carry places fresh records of: any
+// other kind the scan attached, or any record whose bytes it refused, fails
+// the test rather than being skipped in the feed. It returns the run's
+// state, the rebuilt index and the records the scan attached.
 func (f *copyFixture) reopen(t *testing.T) (recovery.State, *index.Index, []format.RecordHeader) {
 	t.Helper()
 	st, err := recovery.Run(context.Background(), recovery.Deps{
@@ -1708,8 +1709,12 @@ func (f *copyFixture) reopen(t *testing.T) (recovery.State, *index.Index, []form
 				k = index.RecWrite
 			case format.KindFill:
 				k = index.RecFill
+			case format.KindTruncate:
+				k = index.RecTruncate
+			case format.KindDelete:
+				k = index.RecDelete
 			default:
-				t.Fatalf("the scan attached a %s record of file %v in segment %d, want only a write or a fill", r.Header.Kind, r.Header.File, si.ID)
+				t.Fatalf("the scan attached a %s record of file %v in segment %d, want only a write, a fill, a truncate or a delete", r.Header.Kind, r.Header.File, si.ID)
 			}
 			if err := b.Feed(index.Record{
 				Kind:    k,

@@ -293,6 +293,12 @@ func (f *Fixture) close() {
 	}
 	errs = append(errs, f.J.Close())
 	f.J = nil
+	// The watch's heap check runs after this cleanup, so every reference the
+	// fixture keeps to the closed core — the handles, the spares wait — holds
+	// that core's index and sink copies live at the check, which is for what a
+	// test retains, not what the fixture does.
+	clear(f.handles)
+	f.spares = nil
 
 	for _, err := range errs {
 		if err != nil && !errors.Is(err, journal.ErrClosed) {

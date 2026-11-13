@@ -272,7 +272,7 @@ func TestACallOutsideServingIsUnavailable(t *testing.T) {
 	refused := func(when string) {
 		for m, errs := range callAll(f) {
 			for _, err := range errs {
-				if !errors.Is(err, vfs.ErrUnavailable) || errors.Is(err, errUnbuilt) {
+				if !errors.Is(err, vfs.ErrUnavailable) {
 					t.Errorf("%s: %s answered %v, want ErrUnavailable before its body", when, m, err)
 				}
 			}
@@ -284,7 +284,7 @@ func TestACallOutsideServingIsUnavailable(t *testing.T) {
 	}
 	for m, errs := range callAll(f) {
 		for _, err := range errs {
-			if errors.Is(err, vfs.ErrUnavailable) && !errors.Is(err, errUnbuilt) {
+			if errors.Is(err, vfs.ErrUnavailable) {
 				t.Errorf("serving: %s answered %v, want its body's answer", m, err)
 			}
 		}

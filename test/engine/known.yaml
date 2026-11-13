@@ -275,63 +275,7 @@
   category: feature
   reason: 'Epic 7: repack draws on the reserve, so a third share is served. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
   issue: '#3590'
-- test: TestV22CopyAndClone/a_copy_by_bob
-  message: 'a copy by bob into alice''s setuid file: vfs: call not built yet: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V22: an unprivileged copy into a setuid and setgid file clears the bits in a committed change, read back through GetAttr before any existence commit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a call the vfs does not build yet (vfs: call not built yet), until it does.'
-  issue: '#4052'
-- test: TestV22CopyAndClone/a_clone_by_bob
-  message: 'a clone by bob into alice''s setuid file: vfs: call not built yet: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V22: an unprivileged clone into a setuid and setgid file clears the bits in a committed change, read back through GetAttr before any existence commit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a call the vfs does not build yet (vfs: call not built yet), until it does.'
-  issue: '#4052'
-- test: TestV26/a_refusal_changes_nothing/a_same-file_clone_whose_extents_overlap
-  message: 'a same-file clone whose extents overlap: vfs: call not built yet: vfs: unavailable, want it refused'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V26: a same-file clone whose extents overlap is ErrInvalid and leaves the file readable as it was. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a call the vfs does not build yet (vfs: call not built yet), until it does.'
-  issue: '#4052'
-- test: TestV26/a_refusal_changes_nothing/a_same-file_copy_whose_extents_overlap
-  message: 'a same-file copy whose extents overlap: vfs: call not built yet: vfs: unavailable, want it refused'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V26: a same-file copy whose extents overlap is ErrInvalid and leaves the file readable as it was. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a call the vfs does not build yet (vfs: call not built yet), until it does.'
-  issue: '#4052'
-- test: TestV26/a_refusal_changes_nothing/a_copy_ending_one_byte_past_the_source's_size
-  message: 'a copy ending one byte past the source''s size: vfs: call not built yet: vfs: unavailable, want it refused'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V26: a copy whose range ends one byte past the source''s size is ErrInvalid and leaves the destination readable as it was. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a call the vfs does not build yet (vfs: call not built yet), until it does.'
-  issue: '#4052'
-- test: TestV26/a_refusal_changes_nothing/a_clone_one_byte_over_clone_max_len
-  message: 'a clone one byte over clone_max_len: vfs: call not built yet: vfs: unavailable, want it refused'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V26: a clone one byte over clone_max_len is ErrInvalid and leaves the destination readable as it was. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a call the vfs does not build yet (vfs: call not built yet), until it does.'
-  issue: '#4052'
-- test: TestV26/a_refusal_changes_nothing/a_clone_into_a_share_of_another_namespace
-  message: 'a clone into a share of another namespace: vfs: call not built yet: vfs: unavailable, want it refused'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V26: a clone into a share bound in another namespace is ErrCross (CrossNamespace) and leaves the destination readable as it was. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a call the vfs does not build yet (vfs: call not built yet), until it does.'
-  issue: '#4052'
-- test: TestV26/a_copy_past_its_deadline_is_short_and_its_running_chunk_completes
-  message: 'the copy answered 0, vfs: call not built yet: vfs: unavailable before its first chunk reached the store'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V26: a 200 MiB copy whose deadline passes in its second chunk answers 64 MiB, the destination holding exactly those bytes, and the second chunk completes past the count before the copy continues from it. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a call the vfs does not build yet (vfs: call not built yet), until it does.'
-  issue: '#4052'
-- test: TestV26/a_clone_of_a_lost_run_reads_lost_there
+- test: TestV26/journal/a_clone_of_a_lost_run_reads_lost_there
   message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned

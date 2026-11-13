@@ -8,6 +8,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
@@ -276,6 +277,23 @@ func (c *Core) appendRemoval(ctx context.Context, s *Share, id core.FileID, spec
 		return core.Version{}, segment.Location{}, err
 	}
 	c.headroom.Drawn(draw)
+	// Header-only records are registered with the liveness tracker before
+	// the removal is applied, so a segment whose last content this record's
+	// marker cuts is still answered held by the record's own registration
+	// while it carries it: the offer to the retirement worker below reads
+	// the tracker after the marker's cut, and a wrongly-ordered registration
+	// would offer the very segment the record keeps live.
+	c.liveness.Register(reclaim.Rec{
+		Kind: spec.kind,
+		File: id,
+		Seg:  pl.Loc.Segment,
+		Ext:  spec.header,
+		// The pair the drop test compares this record by, and its own
+		// sequence number; a removal names no other record, and its liveness
+		// ends when its marker settles, so the loss-only flags stay zero.
+		Pair: index.Numbers{Version: v, Seq: seq},
+		Seq:  seq,
+	})
 	// decision: the removal is applied to the index whatever the allowance
 	// says, past its ceiling if it must be. The pre-check above answers the
 	// caller before anything is appended, but another file's reservation can
@@ -286,12 +304,23 @@ func (c *Core) appendRemoval(ctx context.Context, s *Share, id core.FileID, spec
 	// keeps counted, and the next admitted operation sees it. Overturned by
 	// reserving the allowance before the append, which needs the entries a
 	// removal will add known ahead of the index change that decides them.
-	hd, err := c.index.ApplyRemoval(s.Tag, id, spec.change, spec.marker, v, seq, index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}, spec.spec)
+	hd, moved, err := c.index.ApplyRemoval(s.Tag, id, spec.change, spec.marker, v, seq, index.RecordAt{Segment: pl.Loc.Segment, Offset: uint32(pl.Loc.Off)}, spec.spec)
 	if err != nil {
 		// The claim's refusal is unreachable here, the tag having been
 		// checked under this same domain a moment ago; the record stays on
 		// disk and a rebuild applies what this run could not.
 		return core.Version{}, segment.Location{}, err
+	}
+	// Every segment the marker's cut lowered to nothing is offered to the
+	// retirement worker, with this record's location as the causality record
+	// its retirement waits durable on. The offer runs under the file's
+	// append domain, so it takes only the tracker's lock-free read and the
+	// worker's queue lock — the worker's claim and the gate's answers come
+	// later, on the worker's own goroutine.
+	for _, seg := range moved {
+		if !c.liveness.Held(seg) {
+			c.retiring.Emptied(seg, pl.Loc)
+		}
 	}
 	c.Account(hd)
 	return v, pl.Loc, nil

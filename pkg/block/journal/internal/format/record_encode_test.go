@@ -72,7 +72,7 @@ func TestAppendRecordPanics(t *testing.T) {
 	}{
 		{"an unknown kind", func() RecordHeader {
 			h := write.h
-			h.Kind = Kind(15)
+			h.Kind = Kind(17)
 			return h
 		}(), write.body, "format: unknown kind"},
 		{"kind 0", func() RecordHeader {

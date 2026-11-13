@@ -480,15 +480,8 @@ func (fs *Filesystem) Close(ctx context.Context, c vfs.Call, ref vfs.OpenRef, q 
 // mark open state keeps on it, both NotYours, Sessioned. Overturned if a
 // second NFSv4 adapter is ever written that does not read them.
 func (fs *Filesystem) opened(ctx context.Context, c vfs.Call, ref vfs.OpenRef, releases bool) (*admitted, func(), func(), error) {
-	if err := onSession(c, &ref); err != nil {
-		return nil, nil, nil, err
-	}
-	a, release, err := fs.admitHandleFor(ctx, c, ref.Handle, releases)
-	if err == nil && a == nil {
-		err = &vfs.StateError{Kind: vfs.StateBadState}
-	}
+	a, release, err := fs.admitRef(ctx, c, ref, releases)
 	if err != nil {
-		release()
 		return nil, nil, nil, err
 	}
 	unlock, err := fs.locks.Take(ctx, lockorder.Set{Admit: []lockorder.Key{lockorder.Key(fileOf(ref.Handle))}})
@@ -497,6 +490,23 @@ func (fs *Filesystem) opened(ctx context.Context, c vfs.Call, ref vfs.OpenRef, r
 		return nil, nil, nil, errContended
 	}
 	return a, unlock, release, nil
+}
+
+// admitRef is opened short of the admission lock: the call admitted through
+// ref, and its uncount.
+func (fs *Filesystem) admitRef(ctx context.Context, c vfs.Call, ref vfs.OpenRef, releases bool) (*admitted, func(), error) {
+	if err := onSession(c, &ref); err != nil {
+		return nil, nil, err
+	}
+	a, release, err := fs.admitHandleFor(ctx, c, ref.Handle, releases)
+	if err == nil && a == nil {
+		err = &vfs.StateError{Kind: vfs.StateBadState}
+	}
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	return a, release, nil
 }
 
 // closed runs what a close left file f of share, a close of the service's or

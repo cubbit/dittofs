@@ -297,29 +297,30 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 	if expect == (JournalID{}) || expect != ff.Identity {
 		return nil, &IdentityError{Found: ff.Identity, Installation: ff.Installation, Segments: hasSegment}
 	}
+	s := resolveDefaults(cfg.Settings)
 	if hasSegment {
 		// The attach pass runs over the directory: its bounded reads, the
 		// .spare.tmp unlinks and the classes it sorts the segments into. A
 		// read the device never completed refuses the open on its ranges;
 		// a pass that ran answers ErrNotImplemented below.
 		if _, err := recovery.Run(ctx, recovery.Deps{
-			FS:     cfg.Storage,
-			Clock:  cfg.Clock,
-			Tracer: cfg.Tracer,
-			Log:    cfg.Logger,
+			FS:          cfg.Storage,
+			Clock:       cfg.Clock,
+			Tracer:      cfg.Tracer,
+			Log:         cfg.Logger,
+			ExtentLimit: s.ExtentLimit,
 		}, floor, expect, marks); err != nil {
 			return nil, err
 		}
 		// decision: a directory holding a segment is refused with
-		// ErrNotImplemented, not recovered: the attach pass above is the
-		// one step of a recovering open this implementation has, and the
-		// recovery after it — the rebuild, the marks, the tail's proof, the
-		// spares and the emptying — is not built. Every reopen of a journal
-		// that has run meets this, because the spare pool leaves its
-		// finished spares as segment files, so no journal that has served
-		// can be opened again here. The refusal keeps the directory as the
-		// attach pass left it, so the recovery that exists later takes it
-		// whole.
+		// ErrNotImplemented, not recovered: the attach pass and the rebuild
+		// above have run, and the recovery after them — the marks, the
+		// tail's proof, the spares and the emptying — is not built. Every
+		// reopen of a journal that has run meets this, because the spare
+		// pool leaves its finished spares as segment files, so no journal
+		// that has served can be opened again here. The refusal keeps the
+		// directory as the attach and rebuild passes left it, so the
+		// recovery that exists later takes it whole.
 		return nil, fmt.Errorf("%w: %s holds segments; recovering them is not built", ErrNotImplemented, dir)
 	}
 
@@ -332,7 +333,6 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		return nil, err
 	}
 
-	s := resolveDefaults(cfg.Settings)
 	c, err := datapath.New(datapath.Deps{
 		FS:          cfg.Storage,
 		Clock:       cfg.Clock,

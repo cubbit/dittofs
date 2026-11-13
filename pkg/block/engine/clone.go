@@ -39,10 +39,11 @@ func (r *reg) delay() error {
 // delayClone is the answer to a call behind a running clone.
 //
 // decision: a call behind a clone answers at once and the engine never waits
-// inside it, since the filesystem service holds the file's admission and
-// accept locks across the call and holds it behind the clone itself (RFC 17
-// §5.9), and a call held behind a clone holds no entry mutex (RFC 14 §11).
-// Withdraw it if RFC 17 moves that hold into the engine.
+// inside it: RFC 17 §5.9 puts the held wait, bounded by the call's WithHold,
+// in the filesystem service, which holds none of the file's locks across a
+// clone past its admission (WithAdmitted), and a call held behind a clone
+// holds no entry mutex (RFC 14 §11). Withdraw it if RFC 17 moves that hold
+// into the engine.
 func delayClone() error { return &vfserr.Delay{Cause: vfserr.DelayClone} }
 
 // refuseWrite answers delayClone() if x of the file overlaps an extent a
@@ -136,6 +137,20 @@ func (e *Engine) register(ctx context.Context, f entity.FileID, r *reg) error {
 		if fe.removing == nil || !fe.removing.Overlaps(r.Extent) {
 			break
 		}
+		// decision: a call carrying an admitted hook answers a removal in
+		// flight DelayConflict at once rather than waiting it out. Its caller,
+		// the filesystem, holds both files' admission locks until the hook
+		// runs, and a removal under the filesystem holds the file's admission
+		// lock through its own phase 1, so one met here is one the removal
+		// loop retries, keeping its guard for as long as the store refuses it:
+		// waiting would hold an open, a close or a lock of either file that
+		// long. A copy's later chunk, whose locks are gone, ends the copy short
+		// the same way. Withdraw it if the filesystem stops holding the locks
+		// to the hook.
+		if hasAdmitted(ctx) {
+			e.files.unlock(f, fe)
+			return &vfserr.Delay{Cause: vfserr.DelayConflict}
+		}
 		if fe, err = e.awaitGuard(ctx, f, fe); err != nil {
 			return err
 		}
@@ -176,11 +191,12 @@ func (fe *fileEntry) drop(r *reg) {
 // (ErrInvalid), two write namespaces (ErrCross with CrossNamespace), and an
 // extent a running clone holds (DelayClone). A call naming the source,
 // destination, offsets and length of a clone running into the destination
-// joins it (RFC 8 §9.1), starting no second clone; one naming another spec
-// meets the running clone's registrations, answering DelayClone. One naming
-// a done clone's spec, neither extent changed since, answers nil at once
-// (doneBefore). Otherwise it
-// registers the source extent and the destination extent, then runs step 1
+// joins it (RFC 8 §9.1), starting no second clone, once ctx's admitted hook
+// (WithAdmitted) has run; one naming another spec meets the running clone's
+// registrations, answering DelayClone. One naming a done clone's spec,
+// neither extent changed since, answers nil at once (doneBefore). Otherwise
+// it registers the source extent and the destination extent, runs ctx's
+// admitted hook, whose error undoes both registrations, then runs step 1
 // on the call (prepare), whose refusal undoes both registrations and changes
 // nothing, then from the journal step on its own goroutine (runClone) and the
 // removal loop (clonePhase2), where it fails only if the loop ends first,
@@ -241,8 +257,20 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	// the whole extent, up to clone_max_len, so a long clone's retries answer
 	// DelayClone for longer. Join it there too if retries are seen answered
 	// DelayClone behind clones that were not slow.
+	//
+	// decision: the filesystem service does not reach the join today: its
+	// sizing reads the destination's Allocation before calling the engine,
+	// and the running clone's registration refuses that DelayClone, so its
+	// retry answers DelayClone until the clone is done and is then answered
+	// by doneBefore. The join serves engine-direct calls, a copy continued
+	// from a running chunk among them; its hook is pinned by an engine test.
+	// Overturned by retries through the filesystem seen answered DelayClone
+	// for long behind clones, which would let a joining retry past its sizing.
 	req := cloneRequest{srcShare: srcShare, dstShare: dstShare, src: src, dst: dst, ext: x}
 	if c := e.joinable(req); c != nil {
+		if err := Admitted(ctx); err != nil {
+			return err
+		}
 		return c.wait(ctx)
 	}
 	if e.doneBefore(req) {
@@ -272,6 +300,19 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		e.unregister(src, rs)
 		return errRemoved
 	}
+	// decision: the admitted hook runs once the registrations are installed
+	// and before step 1 (prepare), so step 1's sync of the source, its
+	// CloneFree read and its reservation run with the filesystem's locks
+	// already released, and only a refusal at admission leaves the
+	// destination's mode alone. RFC 17 §5.9 still clears setuid and setgid in
+	// its step 3, before the engine is called; this order stands until it
+	// names the hook. Overturned by a refusal in step 1 that must leave the
+	// mode alone, which would move the hook past prepare and step 1's sync
+	// back under both locks.
+	if err := Admitted(ctx); err != nil {
+		e.endClone(c, err)
+		return err
+	}
 	if err := e.prepare(ctx, c, x); err != nil {
 		e.endClone(c, err)
 		return err
@@ -287,6 +328,42 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	}()
 
 	return c.wait(ctx)
+}
+
+// admittedKey is the context key of a Clone call's admitted hook.
+type admittedKey struct{}
+
+// WithAdmitted returns ctx carrying admitted, which Clone, each of Copy's
+// chunks included, calls on the calling goroutine with none of the engine's
+// locks held: on a new clone once its admission's refusals have passed and
+// it holds its registrations, before step 1 and before anything changes the
+// destination; on a join once it has found the running clone, which may
+// already have changed the destination. A retry of a done clone answers
+// without calling it. Its error refuses the call, changing nothing; on a
+// copy's later chunk it ends the copy short. The filesystem service clears
+// setuid and setgid there and releases the files' locks, since from there
+// the registrations order every call meeting the clone's extents (RFC 17
+// §5.9). A clone the engine's admission refuses therefore leaves the mode
+// alone; one refused in step 1 or at its journal step leaves the bits
+// cleared, as a write the engine refuses does. admitted must not be nil.
+func WithAdmitted(ctx context.Context, admitted func() error) context.Context {
+	return context.WithValue(ctx, admittedKey{}, admitted)
+}
+
+// Admitted runs the admitted hook ctx carries, if any, and answers its
+// error: what Clone calls, and what another Content calls at the same point.
+func Admitted(ctx context.Context) error {
+	if h, ok := ctx.Value(admittedKey{}).(func() error); ok {
+		return h()
+	}
+	return nil
+}
+
+// hasAdmitted reports whether ctx carries an admitted hook: whether the
+// caller holds its own locks until the hook runs.
+func hasAdmitted(ctx context.Context) bool {
+	_, ok := ctx.Value(admittedKey{}).(func() error)
+	return ok
 }
 
 // wait answers c's outcome once it is done, or DelayClone at ctx's end,

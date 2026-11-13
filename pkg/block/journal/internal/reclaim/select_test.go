@@ -286,7 +286,7 @@ func TestSuspectUnread(t *testing.T) {
 		if _, err := f.ix.WriteRetain(selTag, selFid(1), p, 2); err != nil {
 			t.Fatalf("WriteRetain: %v", err)
 		}
-		if _, err := f.ix.LiftSuperseded(selFid(1), selVer(2), core.Extent{Len: ln}); err != nil {
+		if _, _, err := f.ix.LiftSuperseded(selFid(1), selVer(2), core.Extent{Len: ln}); err != nil {
 			t.Fatalf("LiftSuperseded: %v", err)
 		}
 		if f.ix.Names(selFid(1), index.RecordAt{Segment: seg, Offset: at}) {

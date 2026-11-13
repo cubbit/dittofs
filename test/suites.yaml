@@ -106,15 +106,15 @@ suites:
           - go test -tags=journal_plant_split,journal_conformance -timeout=10m -run=^TestModelDataPathFindsPlantedSupersession$ ./pkg/block/journal/conformance/
       # The journal's allocation checks, which the race detector makes unmeasurable and the race
       # leg of journal-conformance skips as known: the counted calls of RFC 1 §9.7, running
-      # without -race, where allocation counting works. TestRFC1D_StatsCostIsFlat joins this
-      # command once the index's heap growth sits under the profiler's slack; it fails the
-      # watchdog today on the 10^5 extents it builds.
+      # without -race, where allocation counting works, with the flat-Stats check, whose rig
+      # builds 10^5 extents under the profiler's heap check, which it passed once the fixture
+      # stopped keeping the closed journal's core reachable at that check.
       journal-conformance-norace:
-        cmd: go test -timeout=5m -tags=journal_conformance -run=^TestCounted_AllocationsPerCall ./pkg/block/journal/conformance/
+        cmd: go test -timeout=5m -tags=journal_conformance -run=^(TestCounted_AllocationsPerCall|TestRFC1D_StatsCostIsFlat) ./pkg/block/journal/conformance/
         tier: pr
       # The adapters' allocation gates, which skip under -race.
       adapter-allocs:
-        cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/
+        cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/ ./pkg/resources/
   # The journal's conformance checks, behind their own tag: they fail until the journal they
   # check is written, and each failure is a known one, so the unit suite would turn red on them.
   journal-conformance:

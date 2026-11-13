@@ -133,8 +133,10 @@ func (ix *Index) Refused() uint64 { return ix.fs.indexRefusals() }
 
 // Lose applies a synced loss of e at v to id under the file's lock, with no
 // admission, and returns the change to the file's held state. A zero-length e
-// is refused with core.ErrZeroLength and changes nothing.
-func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta, error) {
+// is refused with core.ErrZeroLength and changes nothing. It also returns
+// the distinct, ascending ids of the segments whose held counters the loss's
+// cut lowered, nil when it lowered none.
+func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta, []core.SegmentID, error) {
 	return ix.fs.lose(id, e, v)
 }
 
@@ -148,6 +150,8 @@ func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta,
 // is the clone target's, kept by its marker, and nil for every other kind. A
 // zero-length deallocate or clone target is refused with ErrZeroLength as
 // those are, and a file another share owns with the claim's OtherShareError.
+// It also returns the distinct, ascending ids of the segments whose held
+// counters the removal lowered, nil when it lowered none.
 //
 // It is the only call into the index's removal operations: the journal checks
 // the allowance through CheckRemoval before it appends and applies the
@@ -164,7 +168,7 @@ func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta,
 // and that is what the note is for. Overturned by a removal whose record never
 // outranks anything, which the drop query could then answer without its
 // segment.
-func (ix *Index) ApplyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec) (HeldDelta, error) {
+func (ix *Index) ApplyRemoval(tag core.ShareTag, id core.FileID, k core.ChangeKind, e core.Extent, v core.Version, seq core.Seq, at RecordAt, spec *core.CloneSpec) (HeldDelta, []core.SegmentID, error) {
 	return ix.fs.applyRemoval(tag, id, k, e, v, seq, at, spec)
 }
 
@@ -286,10 +290,10 @@ func (ix *Index) Settle(id core.FileID, v core.Version) {
 // is answered against the retired segment's records again. It claims
 // nothing: a file the index has no entry for is left alone rather than
 // given one to drop nothing from. Call it only once the unlink or recycle
-// is durable, once per file its records named: the tracker's SegmentRetired
-// relays it for each file its own registry knows the segment named, the
-// journal's own retirement carrying it where it knows the segment's bytes
-// through RetiredBytes instead.
+// is durable, once per file its records named: the tracker's RemovalDurable
+// — the retirer's durable signal — relays it for each file its own registry
+// knows the segment named, the journal's own retirement carrying it where it
+// knows the segment's bytes through RetiredBytes instead.
 func (ix *Index) SegmentGone(id core.FileID, seg core.SegmentID) {
 	if !ix.fs.view(id, func(*file) {}) {
 		return
@@ -298,6 +302,27 @@ func (ix *Index) SegmentGone(id core.FileID, seg core.SegmentID) {
 		f.segmentGone(seg)
 		return nil
 	})
+}
+
+// NotePlaced notes a record the caller appended to its stream outside the
+// index's own publish calls — a carried header-only record, placed by a
+// reclamation pass the way the pass appends its content copies — over the
+// extent e it covers and with the pair n it carries, so the record never
+// sits on disk unnoted: seg joins the file's drop ranges and the file is
+// claimed for tag, exactly as a write's or a removal's own note does. The
+// note over e and n is the caller's word about the record it already
+// appended; nothing is admitted and no extent is held. A file the index has
+// no entry for is a no-op, claiming nothing and noting no range — a caller
+// carrying a record of a file nothing holds publishes only the placement,
+// which no drop query reads.
+func (ix *Index) NotePlaced(tag core.ShareTag, id core.FileID, seg core.SegmentID, e core.Extent, n Numbers) error {
+	if !ix.fs.view(id, func(*file) {}) {
+		return nil
+	}
+	_, err := ix.fs.update(id, func(f *file) error {
+		return f.recorded(seg, e, n, tag, id)
+	})
+	return err
 }
 
 // RetireSegment withdraws seg's per-segment byte counters, so a segment

@@ -278,6 +278,7 @@ func TestRFC1D_StatsCostIsFlat(t *testing.T) {
 		return least
 	}
 	small, large := allocsAt(1_000), allocsAt(100_000)
+	t.Logf("Stats allocates %.0f times at 10^5 extents and %.0f at 10^3", large, small)
 	if large > small {
 		t.Fatalf("Stats allocates %.0f times at 10^5 extents and %.0f at 10^3: its cost grows with the index", large, small)
 	}

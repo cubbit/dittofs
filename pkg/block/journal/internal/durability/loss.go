@@ -49,6 +49,10 @@ type Loss struct {
 	// Deferred appends no record: the copy that retires the dropped
 	// record's segment writes it.
 	Deferred bool
+
+	// Seg is the segment holding the dropped record; required when
+	// Deferred, ignored otherwise.
+	Seg core.SegmentID
 }
 
 // toFormat maps a reason to the number its loss record carries. It panics on
@@ -89,6 +93,17 @@ func toFormat(r core.LossReason) format.LossReason {
 // Withdraw this once that admission exists and Lose is told which class of
 // caller it serves.
 func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
+	return d.loseMoved(ctx, l, nil)
+}
+
+// loseMoved is Lose with moved: the segments whose held bytes the caller's
+// move already took out of the index without a marker of this layer's own —
+// a failed window's cut of its lost records, which frees the segments before
+// the loss record that names the loss exists. Once this call has placed that
+// record, the move is reported through Config.Emptied gated on its place; a
+// caller whose move lowered no segment of its own, or whose marker does the
+// accounting (a synced loss), passes nil.
+func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.SegmentID) (core.LossEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return core.LossEvent{}, err
 	}
@@ -103,6 +118,14 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	// is named, so every path refuses it alike.
 	toFormat(l.Reason)
 
+	// A deferred loss names the segment holding its dropped record, the
+	// segment whose copy writes the record this one defers; a zero Seg is a
+	// caller bug refused here too, before the piece is taken, so the loss
+	// can be raised again with one, like the not-started refusal.
+	if l.Deferred && l.Seg == 0 {
+		return core.LossEvent{}, errors.New("durability: a deferred loss names no segment holding its dropped record")
+	}
+
 	d.lmu.Lock()
 	k := piece{l.Seq, l.Extent}
 	if _, ok := d.pieces[k]; ok {
@@ -112,33 +135,55 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	d.pieces[k] = struct{}{}
 	d.lmu.Unlock()
 
+	var at segment.Location
 	var recErr error
 	refused := false
 	if !l.Deferred {
 		if recErr = d.refuse(); recErr != nil {
 			refused = true
 		} else {
-			recErr = d.appendRecord(l)
+			at, recErr = d.appendRecord(l)
 		}
 		if d.afterAppend != nil {
 			d.afterAppend()
 		}
+	} else {
+		// The registry entry the copy that retires l.Seg builds its loss
+		// record from, stored once the piece is taken: the deferral ends on
+		// EndDeferral alone.
+		d.lmu.Lock()
+		d.deferredLosses[l.Seg] = append(d.deferredLosses[l.Seg], l)
+		d.lmu.Unlock()
 	}
 
 	firstErr := recErr
+	// A window's own cut of its lost records named no causality record of
+	// theirs: the loss record this call has just placed is the one a
+	// retirement of their segment waits on. reportEmptied drops the report
+	// when nothing was appended, so a refusal names nothing. A record placed
+	// but unsyncable — its sync failing, its segment ending — is still
+	// reported, deliberately: the retirement waiting on that record then
+	// waits on a durability that never comes and keeps the segment, on the
+	// safe side; nothing is lost.
+	d.reportEmptied(moved, at)
 	// decision: a superseded loss leaves no marker even when synced. It
 	// reports no write lost, so Since does not yield it and it needs no
 	// Settle; a marker would make a later DropOlder inherit one that nothing
 	// settles. Withdraw this if a superseded loss ever has to be settled.
 	if l.Synced && !l.Marked && l.Reason != core.LossSuperseded {
-		delta, err := d.markLoss(l.File, l.Extent, l.Version)
+		delta, touched, err := d.markLoss(l.File, l.Extent, l.Version)
 		if err != nil {
 			d.log.Error("a synced loss left no marker", "file", l.File, "err", err)
 			if firstErr == nil {
 				firstErr = err
 			}
-		} else if d.account != nil {
-			d.account(delta)
+		} else {
+			if d.account != nil {
+				d.account(delta)
+			}
+			// The marker's cut and the record the marker rode on name one
+			// crossing, so the report is gated on the record's place.
+			d.reportEmptied(touched, at)
 		}
 	}
 
@@ -207,7 +252,9 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 	return ev, firstErr
 }
 
-// appendRecord appends the loss record to the file's stream and syncs it.
+// appendRecord appends the loss record to the file's stream and syncs it. It
+// returns the record's place, zero when it appended nothing, and the sync's
+// error when it placed the record but could not make it durable.
 //
 // ponytail: the sync is the segment's own, one per loss, issued outside the
 // group commit. A failed window of N content records therefore costs N serial
@@ -222,10 +269,10 @@ func (d *Durability) Lose(ctx context.Context, l Loss) (core.LossEvent, error) {
 // WaitDurable or Durable for the record's location instead, when a loss
 // record's sync failure shows up in a sync_failures reading or the layer's own
 // accounting needs it.
-func (d *Durability) appendRecord(l Loss) error {
+func (d *Durability) appendRecord(l Loss) (segment.Location, error) {
 	seq, err := d.counters.NextSeq()
 	if err != nil {
-		return err
+		return segment.Location{}, err
 	}
 	h := format.RecordHeader{
 		Kind:    format.KindLoss,
@@ -243,12 +290,17 @@ func (d *Durability) appendRecord(l Loss) error {
 	}}
 	streams := d.streams.Load()
 	if streams == nil {
-		return fmt.Errorf("durability: the layer is not started: %w", core.ErrClosed)
+		return segment.Location{}, fmt.Errorf("durability: the layer is not started: %w", core.ErrClosed)
 	}
 	s := streams.For(l.File)
 	placed, err := s.Append(h, body)
 	if err != nil {
-		return err
+		return segment.Location{}, err
+	}
+	// Registered between the append and the sync, so the record is named
+	// before the segment carrying it can seal.
+	if d.lossRegistered != nil {
+		d.lossRegistered(l, seq, placed.Loc)
 	}
 	if d.beforeSync != nil {
 		d.beforeSync()
@@ -265,7 +317,7 @@ func (d *Durability) appendRecord(l Loss) error {
 			d.log.Debug("could not end the segment a loss record's sync failed", "segment", placed.Loc.Segment, "err", eerr)
 		}
 	}
-	return err
+	return placed.Loc, err
 }
 
 // piece is one extent of one dropped record.
@@ -285,6 +337,40 @@ func (d *Durability) RaiseWindow() uint64 { return d.dir.raise() }
 // appended, in the directory's life in this process. A later Durability on
 // the directory sees them too.
 func (d *Durability) Failed() []core.Seq { return d.dir.failedSeqs() }
+
+// DeferredAgainst returns the losses whose record the copy that retires seg
+// owes, the entries Lose deferred against it, in the order they deferred.
+// Each entry names its Seg; the caller hands the entry back on EndDeferral
+// once the copy has the record durable.
+func (d *Durability) DeferredAgainst(seg core.SegmentID) []Loss {
+	d.lmu.Lock()
+	defer d.lmu.Unlock()
+	return append([]Loss(nil), d.deferredLosses[seg]...)
+}
+
+// EndDeferral ends one deferred loss of seg: the copy that retires it has
+// the loss record durable, so the registry gives the entry up. l names the
+// entry as DeferredAgainst returned it. An entry leaves on this call alone,
+// so the call is idempotent: a second one, or a call whose entry already
+// left, answers false and changes nothing; true says an entry left.
+func (d *Durability) EndDeferral(seg core.SegmentID, l Loss) bool {
+	d.lmu.Lock()
+	defer d.lmu.Unlock()
+	es := d.deferredLosses[seg]
+	for i, e := range es {
+		if e != l {
+			continue
+		}
+		es = append(es[:i], es[i+1:]...)
+		if len(es) == 0 {
+			delete(d.deferredLosses, seg)
+		} else {
+			d.deferredLosses[seg] = es
+		}
+		return true
+	}
+	return false
+}
 
 // pushLocked publishes ev with the next event number, overwriting the oldest
 // when the ring is full. The caller holds mu.

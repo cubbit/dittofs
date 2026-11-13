@@ -77,7 +77,7 @@ func TestLose_AccountsTheMarkersDeltaOnceAndSurfacesItsError(t *testing.T) {
 	}
 	if _, err := c.Durability().Lose(context.Background(), durability.Loss{
 		Share: 1, File: f, Extent: core.Extent{Off: 0, Len: 4}, Version: core.Version{Counter: 1 << 20},
-		Seq: 1000, Synced: true, Deferred: true, Reason: core.LossStale,
+		Seq: 1000, Synced: true, Deferred: true, Seg: 1, Reason: core.LossStale,
 	}); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestLose_AccountsTheMarkersDeltaOnceAndSurfacesItsError(t *testing.T) {
 	}
 	if _, err := c.Durability().Lose(context.Background(), durability.Loss{
 		Share: 1, File: f, Extent: core.Extent{Off: 0, Len: 0}, Version: core.Version{Counter: 1 << 21},
-		Seq: 1001, Synced: true, Deferred: true, Reason: core.LossStale,
+		Seq: 1001, Synced: true, Deferred: true, Seg: 1, Reason: core.LossStale,
 	}); !errors.Is(err, core.ErrZeroLength) {
 		t.Fatalf("Lose of a zero extent = %v, want ErrZeroLength", err)
 	}

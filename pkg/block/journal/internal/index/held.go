@@ -174,6 +174,11 @@ type heldSet struct {
 	bytes, dirty int64
 	scratch      []Piece // the pieces cut is changing
 	work         []Piece // the pieces a mark, fill or repoint will put, or a removal will cut
+	// touched, when set for the span of one update, collects the ids of the
+	// segments whose held counters that update's cuts are lowering, at the
+	// edge the subtraction happens; nil keeps every cut silent. It is set and
+	// cleared by the move's own closure, under the file's exclusive lock.
+	touched *touched
 	// over are the runs where one write superseded another, kept beside the
 	// tree rather than in its entries so an entry stays 40 bytes, and so a run
 	// outlives the superseded piece, which is gone from the tree by then. They
@@ -583,6 +588,9 @@ func (s *heldSet) cut(e core.Extent) {
 			}
 			if s.acct != nil {
 				s.acct.add(p.Record.Segment, -n, 0)
+				if s.touched != nil {
+					s.touched.note(p.Record.Segment)
+				}
 			}
 		}
 		if p.Extent.Off < e.Off {

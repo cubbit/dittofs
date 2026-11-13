@@ -43,9 +43,10 @@ type Config struct {
 	Counters *index.Counters
 
 	// MarkLoss leaves the index's loss marker for a synced loss, and returns
-	// the change to the file's held bytes that the marker made. It is
-	// required.
-	MarkLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error)
+	// the change to the file's held bytes that the marker made, with the
+	// ids of the segments whose held counters the marker's cut lowered. It
+	// is required.
+	MarkLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error)
 
 	// Account, when set, is handed every change the layer makes to the index
 	// as a held delta, so the byte counters kept above it see it: the delta
@@ -57,6 +58,28 @@ type Config struct {
 	// append domain held. It must therefore not wait on a
 	// Sync or take a file's append domain.
 	Account func(index.HeldDelta)
+
+	// LossRegistered, when set, is told of each loss record the layer
+	// appends: the loss the record names, the sequence number the record
+	// drew, and the place it landed. It runs between the record's append and
+	// its sync, so the record is registered before the segment carrying it
+	// can seal. A deferred loss appends nothing, so it is not called. Nil
+	// registers nothing.
+	LossRegistered func(l Loss, seq core.Seq, at segment.Location)
+
+	// Emptied, when set, is told of the segments whose per-segment held or
+	// retained counters a move of this layer lowered — a lift of a completed
+	// sync, a synced loss's marker, a failed window's cut of its records —
+	// with at the location of the causality record whose durability a
+	// retirement of those segments waits on: the superseding record for a
+	// lift, the loss record itself for the loss paths. It runs where the move
+	// ran, on the stream's worker or the caller's goroutine, holding no lock
+	// of this layer — a lift holds the file's append domain, the loss paths
+	// hold none — so it must not wait on a Sync or take a file's append
+	// domain, the restriction Account names. A move that lowered nothing,
+	// or whose causality record the layer cannot place (a deferred loss, one
+	// whose append was refused) is not reported. Nil reports nothing.
+	Emptied func(segs []core.SegmentID, at segment.Location)
 
 	// Undo, when set, undoes in memory one header-only record a read-only
 	// journal fails: a truncate, deallocate, delete, release or any other kind
@@ -176,8 +199,14 @@ type Durability struct {
 
 	dir      *dirState
 	counters *index.Counters
-	markLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, error)
+	markLoss func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error)
 	account  func(index.HeldDelta)
+
+	// lossRegistered and emptied are Config.LossRegistered and Config.Emptied.
+	lossRegistered func(Loss, core.Seq, segment.Location)
+	// A move with no segment to name, or no causality record to gate them on,
+	// reports nothing, so a nil hook is a no-op by the same guard.
+	emptied func([]core.SegmentID, segment.Location)
 
 	// streams are the append streams a loss record is written through, bound
 	// by Start. It is nil before Start, which Lose reports as an error.
@@ -310,6 +339,12 @@ type Durability struct {
 	// a journal with a long loss history shows up in a heap profile.
 	pieces map[piece]struct{}
 
+	// deferredLosses holds, per segment, the losses Lose deferred against
+	// it — one entry per deferred piece it took, the entry the copy that
+	// retires the segment builds its loss record from. An entry leaves on
+	// EndDeferral alone. Guarded by lmu, like pieces.
+	deferredLosses map[core.SegmentID][]Loss
+
 	// resolved is Config.Resolved: the announcement of a resolved window.
 	resolved func(stream uint32, seg core.SegmentID)
 
@@ -411,11 +446,14 @@ func New(cfg Config) (*Durability, error) {
 		makeSpare: cfg.MakeSpare,
 		probeDone: make(chan struct{}),
 
-		dir:      dir,
-		counters: cfg.Counters,
-		markLoss: cfg.MarkLoss,
-		account:  cfg.Account,
-		pieces:   map[piece]struct{}{},
+		dir:            dir,
+		counters:       cfg.Counters,
+		markLoss:       cfg.MarkLoss,
+		account:        cfg.Account,
+		lossRegistered: cfg.LossRegistered,
+		emptied:        cfg.Emptied,
+		pieces:         map[piece]struct{}{},
+		deferredLosses: map[core.SegmentID][]Loss{},
 	}
 	d.refuse = d.Admit
 	d.readOnly = d.Enter
@@ -768,6 +806,71 @@ func (d *Durability) Durable(at segment.Location) bool {
 		st.mu.Unlock()
 	}
 	return true
+}
+
+// Pending returns the locations of the records appended but not yet known
+// durable at the moment of the call: one per entry every stream's ledger
+// still holds that no sync has covered, and one per record a still-pending
+// window holds — the failed segment's uncovered records, which left the
+// ledger when the window took them and answer nothing durable until their
+// re-appended place syncs or the journal fails them. A covered record is
+// durable on disk whether or not the worker has lifted what it superseded,
+// so it is not named. A record the window's failure dropped is excluded by
+// construction once the drop happens: settle removes it from the window in
+// the step that records it lost, so a lost location is never named here and
+// no retirement may wait on a record that can no longer sync.
+//
+// It is the pending-tail barrier a retirement hand-over asks: the worker
+// freezes one snapshot per candidate, at the entry's first not-held pass,
+// and waits on the frozen locations beside the ones the mover's offer
+// recorded, so the hand-over is held back while any stream's unsynced
+// record — in a ledger or held by a pending window — could name content of
+// a segment the retirement would unlink. Freezing, rather than re-sampling
+// each pass, is what keeps steady writers on an unrelated stream from
+// starving an unrelated retirement.
+//
+// ponytail: it scans every stream's ledger and pending windows, like Durable,
+// once per candidate at its first not-held pass. Upgrade alongside Durable
+// to a per-segment index when a profile shows the scan.
+func (d *Durability) Pending() []segment.Location {
+	var out []segment.Location
+	for _, st := range d.snapshot() {
+		st.mu.Lock()
+		for i := range st.ledger {
+			if loc := st.ledger[i].w.Loc; !st.covered(loc) {
+				out = append(out, loc)
+			}
+		}
+		// A window's entries are uncovered by the take that collected them,
+		// and each leaves the window in the same step that settles or
+		// re-appends it, so the walk never holds a done or lost record.
+		for _, w := range st.windows {
+			for i := range w.entries {
+				out = append(out, w.entries[i].w.Loc)
+			}
+		}
+		st.mu.Unlock()
+	}
+	return out
+}
+
+// Lost reports whether the record at the location can never become
+// durable: a failed window settled it as lost, or a read-only journal undid
+// it. A record that failed and was re-appended elsewhere reports false —
+// its place chain leads somewhere that can still sync — and the re-appended
+// place is answered like any other record's. It is what lets a retirement
+// hand-over drop a frozen pending location whose record failed, rather than
+// wait on a durability that will never come.
+func (d *Durability) Lost(at segment.Location) bool {
+	for _, st := range d.snapshot() {
+		st.mu.Lock()
+		_, lost := st.lost[st.followLocked(at)]
+		st.mu.Unlock()
+		if lost {
+			return true
+		}
+	}
+	return false
 }
 
 // SyncBound returns the longest a record waits for a sync.

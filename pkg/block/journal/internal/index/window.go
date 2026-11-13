@@ -20,17 +20,24 @@ import (
 // snapshot hold exists in this package to exempt one. A hold must keep the
 // pieces it covers past the sync that superseded them. Withdraw this when
 // holds land, and have the lift skip a held piece.
-func (ix *Index) LiftSuperseded(id core.FileID, v core.Version, e core.Extent) (HeldDelta, error) {
+//
+// It also returns the ids of the segments whose retained counters the lift
+// lowered, distinct and ascending, nil when it lowered none.
+func (ix *Index) LiftSuperseded(id core.FileID, v core.Version, e core.Extent) (HeldDelta, []core.SegmentID, error) {
 	var any bool
 	if !ix.fs.view(id, func(f *file) {
 		any = slices.ContainsFunc(f.retained.pieces, supersededBy(v, e))
 	}) || !any {
-		return HeldDelta{}, nil
+		return HeldDelta{}, nil, nil
 	}
-	return ix.fs.update(id, func(f *file) error {
+	var m touched
+	hd, err := ix.fs.update(id, func(f *file) error {
+		f.retained.touched = &m
+		defer func() { f.retained.touched = nil }()
 		f.retained.drop(whole, supersededBy(v, e), nil)
 		return nil
 	})
+	return hd, m.named(), err
 }
 
 // FailedWindow is what failing a window did to one file.

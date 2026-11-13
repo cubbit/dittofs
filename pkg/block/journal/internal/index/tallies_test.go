@@ -33,11 +33,11 @@ func TestFilesHeldAndRemovalMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("second extent in a held file", 3, 0)
-	if _, err := ix.ApplyRemoval(testTag, fid(1), core.ChangeTruncate, toEnd(0), ver(5), 5, rec(2, 0), nil); err != nil {
+	if _, _, err := ix.ApplyRemoval(testTag, fid(1), core.ChangeTruncate, toEnd(0), ver(5), 5, rec(2, 0), nil); err != nil {
 		t.Fatal(err)
 	}
 	check("truncate to zero", 2, 1)
-	if _, err := ix.ApplyRemoval(testTag, fid(2), core.ChangeDelete, toEnd(0), ver(6), 6, rec(2, 64), nil); err != nil {
+	if _, _, err := ix.ApplyRemoval(testTag, fid(2), core.ChangeDelete, toEnd(0), ver(6), 6, rec(2, 64), nil); err != nil {
 		t.Fatal(err)
 	}
 	check("delete", 1, 2)
@@ -70,7 +70,7 @@ func TestRebuiltTalliesMatchIncremental(t *testing.T) {
 		if r.Kind == RecDelete {
 			k = core.ChangeDelete
 		}
-		if _, err := ix.ApplyRemoval(7, r.File, k, toEnd(0), r.Numbers.Version, r.Numbers.Seq, RecordAt{Segment: r.Segment, Offset: r.At}, nil); err != nil {
+		if _, _, err := ix.ApplyRemoval(7, r.File, k, toEnd(0), r.Numbers.Version, r.Numbers.Seq, RecordAt{Segment: r.Segment, Offset: r.At}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

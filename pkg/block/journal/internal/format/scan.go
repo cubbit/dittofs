@@ -130,16 +130,59 @@ type slot struct {
 // On every error return the Scan holds everything attached and every range
 // closed before the failing offset, and End is that offset.
 func ScanSegment(r io.ReaderAt, size int64, identity core.JournalID, segment core.SegmentID) (Scan, error) {
+	return scan(r, size, identity, segment, false)
+}
+
+// ScanSegmentHeaders walks one segment by its record headers alone, the
+// same walk ScanSegment makes over them save the one place it differs — the
+// body, in scanner.examineRecord — headed for recovery's rebuild: it takes a
+// record that fits from its verifying header, and the payload bytes it has
+// no reason to check are a read the open on a fresh tail would otherwise
+// multiply by that tail's own size.
+//
+// A record attaches with its full header — the same fields ScanSegment
+// attaches — and every field its body carries zero (Payload nil): the kinds
+// 15 and 16 attach by their headers like all other kinds, and nothing about
+// the loss, clone-target, hold and reconciled bodies RecordBody carries is
+// decoded here; recovery reads the bodies it needs at their offsets, where
+// each is verified whole before it is used (VerifyRecordBody is the only
+// path that hands a record's bytes out). Refused is always empty: a record
+// whose header verifies is never refused, for its body's content is a read
+// this walk never made. Everything else — resynchronisation over a header
+// that does not verify, the ranges tiling [SegmentHeaderSize, End), the
+// seal marker stop, the stop an unknown kind or a non-zero epoch makes, and
+// a failed read returned as itself with the offset it failed at — behaves
+// exactly as ScanSegment's, so the caller judges records by their headers
+// alone over the same Scan.
+//
+// decision: the bodies are skipped because the two checksums are separate —
+// the header verifies on its own, so a scan can trust a record's boundaries
+// without reading its payload, and each live payload is
+// verified whole where it is handed out instead: recovery's own body reads,
+// which re-read and verify each record they use. Overturned the day the
+// format rules that a scan verifies every live payload at open; until then,
+// a header-only walk that re-read its bodies would pay exactly the body I/O
+// this function exists to skip.
+func ScanSegmentHeaders(r io.ReaderAt, size int64, identity core.JournalID, segment core.SegmentID) (Scan, error) {
+	return scan(r, size, identity, segment, true)
+}
+
+// scan is the one walk both entry points share; headerOnly names the one
+// stub a ScanSegmentHeaders walk skips — the record body, in
+// scanner.examineRecord (and the refills scanner.read narrows to a slot's
+// own bytes so no read reaches a body).
+func scan(r io.ReaderAt, size int64, identity core.JournalID, segment core.SegmentID, headerOnly bool) (Scan, error) {
 	if size < SegmentHeaderSize {
 		return Scan{}, fmt.Errorf("%w: %d bytes, too short for the first record slot at %d", ErrDamaged, size, SegmentHeaderSize)
 	}
 
 	sc := scanner{
-		r:        r,
-		size:     size,
-		identity: identity,
-		segment:  segment,
-		window:   make([]byte, min(scanWindow, size)),
+		r:          r,
+		size:       size,
+		identity:   identity,
+		segment:    segment,
+		window:     make([]byte, min(scanWindow, size)),
+		headerOnly: headerOnly,
 	}
 	sc.End = SegmentHeaderSize
 	off := int64(SegmentHeaderSize)
@@ -233,6 +276,14 @@ type scanner struct {
 	have        int64 // the bytes the window holds
 	narrowUntil int64 // below it a wide refill failed; each slot's own bytes alone
 	body        []byte
+	// headerOnly names the walk's one stub: when true, the record body is
+	// never read (examineRecord) and each slot is refilled by its own bytes
+	// alone (read), so no read reaches a body. The window's fetch of
+	// already-held bytes keeps serving the search's zero-telling.
+	headerOnly bool
+	// searching is set while the forward search runs: a header-only refill
+	// goes wide there, for the bytes it crosses are no attached record's.
+	searching bool
 
 	Scan
 }
@@ -245,8 +296,20 @@ type scanner struct {
 // tested cheap before any checksum is computed — and only then the
 // decoders, which is what makes a forward search cheap to run.
 func (sc *scanner) examine(off int64) slot {
+	// A slot is first read as far as a seal marker reaches, and only a record
+	// prefix widens the read to the header's size, so a header-only walk makes
+	// no read past a marker's own bytes into the footer a sealed segment holds
+	// after it.
+	//
+	// decision: the verifying walk's window refills wide, so the bytes past a
+	// marker — the footer — may be read ahead of the slot that reaches the
+	// marker: read, never judged, and a refill that fails there is retried on
+	// the slot's own bytes (scanner.read). Withdrawn if a verifying walk is
+	// ever ruled to read no footer byte, for its window would then need to stop
+	// at the first slot that could be a marker.
 	n := min(int64(RecordHeaderSize), sc.size-off)
-	b, err := sc.read(off, n)
+	first := min(n, SealMarkerSize)
+	b, err := sc.read(off, first)
 	if err != nil {
 		return slot{outcome: slotStop, err: err}
 	}
@@ -259,15 +322,20 @@ func (sc *scanner) examine(off int64) slot {
 	// neither a prefix to tell by nor a record: whatever its bytes, the
 	// forward search reports them in the range they end in, and the slot
 	// contributes no run of its own.
-	if n < 4 {
+	if first < 4 {
 		return slot{outcome: slotNothing}
 	}
 
 	switch {
 	case string(b[:4]) == "DJR1":
+		if n > first {
+			if b, err = sc.extend(off, n); err != nil {
+				return slot{outcome: slotStop, err: err}
+			}
+		}
 		return sc.examineRecord(b, off)
 	case string(b[:4]) == "DJS1":
-		if n < SealMarkerSize {
+		if first < SealMarkerSize {
 			// A marker the segment ends in the middle of is not a marker;
 			// bad, like a header cut short.
 			return slot{outcome: slotNothing}
@@ -287,6 +355,23 @@ func (sc *scanner) examine(off int64) slot {
 		// change what it returns by nothing at all.
 		return slot{outcome: slotNothing}
 	}
+}
+
+// extend widens the slot just read at off to n bytes: the window's own bytes
+// when it holds them, the bytes it lacks read from where a window that starts
+// at off ends — so the bytes already read are never read twice — and an
+// ordinary refill when the slot sits inside a window that ends short of it.
+func (sc *scanner) extend(off, n int64) ([]byte, error) {
+	if off != sc.cur {
+		return sc.read(off, n)
+	}
+	if n > sc.have {
+		if err := readFull(sc.r, sc.window[sc.have:n], off+sc.have); err != nil {
+			return nil, fmt.Errorf("format: read slot at %d: %w", off+sc.have, err)
+		}
+		sc.have = n
+	}
+	return sc.window[:n], nil
 }
 
 // examineRecord judges a DJR1 slot's whole record: the header decodes, the
@@ -317,13 +402,18 @@ func (sc *scanner) examineRecord(b []byte, off int64) slot {
 	}
 
 	// The body, whole: one checksum covers it all, so no part of a record
-	// that does not verify is ever read as content.
+	// that does not verify is ever read as content. A header-only walk
+	// stops here, its record already safe in hand — with no refused slot
+	// either, for its header verifies whatever the body holds.
 	//
 	// ponytail: the body is read by its own readFull even when the window
 	// already holds it, so every record body costs its bytes a second read
 	// and an open's fallback scan of a newest segment pays about twice its
 	// content I/O. Copy the bytes the window holds and readFull only the
 	// remainder when an open's recovery time shows the double read.
+	if sc.headerOnly {
+		return slot{outcome: slotRecord, record: ScannedRecord{Header: h}}
+	}
 	bs := h.BodySize()
 	if int64(cap(sc.body)) < bs {
 		// bs fits the segment by the overrun check above, so it is the
@@ -386,6 +476,8 @@ func (sc *scanner) examineRecord(b []byte, off int64) slot {
 func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err error) {
 	end = sc.size
 	found = slot{outcome: slotNothing}
+	sc.searching = true
+	defer func() { sc.searching = false }()
 	// The walk's examination of off has already put [off, off+8) in the
 	// window, so this telling is a window hit: it cannot fail, and the
 	// branch below keeps the error contract without ever being taken —
@@ -463,7 +555,31 @@ func (sc *scanner) read(off, n int64) ([]byte, error) {
 		return sc.window[off-sc.cur : off-sc.cur+n], nil
 	}
 	want := min(int64(scanWindow), sc.size-off)
-	if off < sc.narrowUntil {
+	// A header-only walk refills each slot's own bytes alone while it
+	// steps from one attached record to the next, never wide: a wide
+	// refill there would run ahead through the body of the record the walk
+	// is about to step over, and narrowUntil cannot stop it, for it
+	// narrows only after a refill has already failed. The forward search
+	// refills wide, header-only or not: the bytes it crosses are past the
+	// last attached record or between records that did not verify, so no
+	// attached body is among them, and a per-slot refill there would cost
+	// one read per 8 bytes over an unwritten tail. A ScanSegment walk
+	// keeps the wide window throughout, whose one read of each byte it
+	// crosses is the cheaper walk there.
+	//
+	// decision: after a bad range the search refills with the wide window,
+	// so the bodies of every record that lies within one window
+	// (scanWindow bytes) of the search position may be read incidentally:
+	// read, never verified or reported. Records the walk steps over by
+	// length still read exact sizes, and no read starts inside an attached
+	// record's body. The ceiling is one window per resynchronisation.
+	// Overturned if a profile shows that over-reading; upgrade by capping
+	// the refill at the first verifying header found. Withdrawn if a scan
+	// is ever ruled to read no payload byte at all, for the search would
+	// then need a header-sized read per slot or a bounded window.
+	if sc.headerOnly && !sc.searching {
+		want = n
+	} else if off < sc.narrowUntil {
 		// Every caller asks only the bytes its own slot holds, min(96,
 		// size-off) or fewer, so a healthy refill always serves them;
 		// under narrow, the slot's own bytes are all the scan reads.

@@ -64,7 +64,7 @@ func noFooterCases() []noFooterCase {
 		{"entry non-zero epoch", func(seg, tr []byte) {
 			binary.LittleEndian.PutUint64(seg[testFooterOffset+44:testFooterOffset+52], 1)
 		}, "epoch"},
-		{"entry of an unknown kind", func(seg, tr []byte) { seg[testFooterOffset+60] = 15 }, "unknown kind"},
+		{"entry of an unknown kind", func(seg, tr []byte) { seg[testFooterOffset+60] = 17 }, "unknown kind"},
 		{"entry recordOffset below the first record slot", func(seg, tr []byte) {
 			binary.LittleEndian.PutUint32(seg[testFooterOffset+24:testFooterOffset+28], 8)
 		}, "recordOffset 8 is below the first record slot 48"},
@@ -72,16 +72,22 @@ func noFooterCases() []noFooterCase {
 			binary.LittleEndian.PutUint32(seg[testFooterOffset+24:testFooterOffset+28], 50)
 		}, "recordOffset 50 is not a multiple of 8"},
 		{"entries equal in recordOffset", func(seg, tr []byte) {
-			binary.LittleEndian.PutUint32(seg[testFooterOffset+24:testFooterOffset+28], 144)
-		}, "recordOffset 144 is not above the one before it, 144"},
+			binary.LittleEndian.PutUint32(seg[testFooterOffset+72+24:testFooterOffset+72+28], 48)
+		}, "recordOffset 48, want 144 where the record before it ends"},
 		{"entries descending in recordOffset", func(seg, tr []byte) {
-			binary.LittleEndian.PutUint32(seg[testFooterOffset+24:testFooterOffset+28], 240)
-		}, "recordOffset 144 is not above the one before it, 240"},
-		{"records end short of the seal marker", func(seg, tr []byte) {
 			binary.LittleEndian.PutUint32(seg[testFooterOffset+72+24:testFooterOffset+72+28], 136)
-		}, "last record ends at 232, the seal marker is at 240"},
+		}, "recordOffset 136, want 144 where the record before it ends"},
+		{"records end short of the seal marker", func(seg, tr []byte) {
+			// The trailer names only entry A, so the named records end at
+			// 144 while the marker sits at 240: a footer describing fewer
+			// records than the segment holds.
+			binary.LittleEndian.PutUint32(tr[16:20], 1)
+		}, "last record ends at 144, the seal marker is at 240"},
 		{"records end past the seal marker", func(seg, tr []byte) {
-			binary.LittleEndian.PutUint32(seg[testFooterOffset+72+24:testFooterOffset+72+28], 152)
+			// Entry B's kind becomes one whose body its record holds — a
+			// hold's 8 bytes — so the tiling holds but the record it
+			// spells ends past the marker, at 144 + 104.
+			seg[testFooterOffset+72+60] = uint8(KindHold)
 		}, "last record ends at 248, the seal marker is at 240"},
 		{"a last write whose length leaves its record no room", func(seg, tr []byte) {
 			seg[testFooterOffset+72+60] = uint8(KindWrite)
@@ -107,17 +113,16 @@ func noFooterCases() []noFooterCase {
 			clear(seg[testFooterOffset+72+16 : testFooterOffset+72+24])
 			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-7+1)
 		}, "fill length 9223372036854775705 leaves the record no room"},
-		{"a last record whose offset leaves it no room", func(seg, tr []byte) {
-			// A fill at the highest 8-multiple the recordOffset column
-			// holds, with the length well under the fill band's top:
-			// every entry check passes and so does the fill band, and
-			// only the end sum, which even the recordOffset column's top
-			// can drive past MaxInt64, refuses it.
-			seg[testFooterOffset+72+60] = uint8(KindFill)
+		{"an entry whose end sum leaves its record no room", func(seg, tr []byte) {
+			// A write at the band's very top — the length the band admits,
+			// so the padding step in Size() still holds inside an int64 —
+			// sitting where entry B's tiling requires, at 144: the tiling
+			// checks pass and so does the write band, and only the end
+			// sum, whose whole tops out at MaxInt64-7, refuses it.
+			seg[testFooterOffset+72+60] = uint8(KindWrite)
 			clear(seg[testFooterOffset+72+16 : testFooterOffset+72+24])
-			binary.LittleEndian.PutUint32(seg[testFooterOffset+72+24:testFooterOffset+72+28], math.MaxUint32-7)
-			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-0x10000000-7)
-		}, "recordOffset 4294967288 plus the record's size"},
+			binary.LittleEndian.PutUint64(seg[testFooterOffset+72+28:testFooterOffset+72+36], math.MaxInt64-RecordHeaderSize-8-7)
+		}, "recordOffset 144 plus the record's size 9223372036854775800"},
 	}
 }
 
@@ -226,6 +231,24 @@ func TestReadFooterNoFooter(t *testing.T) {
 	f, err = ReadFooter(bytes.NewReader(segment[:31]), 31, testIdentity, testSegment)
 	assertNoFooter(t, "a file of 31 bytes", f, err, "31 bytes, shorter than the 32 a trailer takes")
 
+	// A footer that skips a middle entry: three records tile the segment and
+	// the middle one's entry is dropped, so the two the footer names still
+	// checksum honestly — entry C's record ending where the seal marker
+	// sits — and only the entries' tiling against the records catches it. A
+	// footer that slipped it would answer an index without the skipped
+	// record, an index the scan of the same bytes never builds.
+	{
+		third := testEntryB
+		third.RecordOffset = 240 // just past entry B's record, which ends at 240
+		seg := sealedSegment(t, []CatalogEntry{testEntryA, testEntryB, third}, 0)
+		fo := binary.LittleEndian.Uint64(seg[len(seg)-TrailerSize+8 : len(seg)-TrailerSize+16])
+		seg = slices.Concat(seg[:fo+72], seg[fo+144:]) // entry B's 72 bytes out
+		seg[len(seg)-TrailerSize+16] = 2               // entryCount, honestly re-checksummed
+		rechecksumFooter(seg)
+		f, err := ReadFooter(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		assertNoFooter(t, "a footer that skips a middle entry", f, err, "recordOffset 240, want 144 where the record before it ends")
+	}
+
 	// A footer with no entry whose marker sits past the first record slot:
 	// the records end at 48 and the marker names 56, so the extent check
 	// refuses — a segment cannot hold a marker its own records have already
@@ -300,12 +323,19 @@ func TestReadFooterEntryKinds(t *testing.T) {
 		{"unhold of length 0", KindUnhold, 0, 152},
 		{"stamp of length 0", KindStamp, 0, 152},
 		{"forget of length 0", KindForget, 0, 144},
+		{"reconcile of length 0", KindReconcile, 0, 144},
+		{"reconciled of length 0", KindReconciled, 0, 160},
 	}
 
 	for _, c := range cases {
 		e := testEntryA
 		e.Kind = c.kind
 		e.Extent = core.Extent{Off: testRecordFileOffset, Len: c.len}
+		if c.kind == KindReconcile || c.kind == KindReconciled {
+			// The journal's own kinds name no file, version or share.
+			e.Extent = core.Extent{}
+			e.File, e.Version, e.Tag = core.FileID{}, core.Version{}, 0
+		}
 
 		seg := sealedSegment(t, []CatalogEntry{e}, 0)
 		f, err := ReadFooter(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
@@ -343,10 +373,10 @@ func TestReadFooterRefusesEveryEntryOfEveryUnknownKindInAnyPlace(t *testing.T) {
 		entry int
 	}{
 		{"the last entry of kind 0", 0, 1},
-		{"the last entry of kind 15", 15, 1},
+		{"the last entry of kind 17", 17, 1},
 		{"the last entry of kind 128", 128, 1},
 		{"the last entry of kind 255", 255, 1},
-		{"a middle entry of kind 15", 15, 0},
+		{"a middle entry of kind 17", 17, 0},
 	} {
 		seg := sealedSegment(t, []CatalogEntry{testEntryA, testEntryB}, 0)
 		seg[testFooterOffset+int64(c.entry)*CatalogEntrySize+60] = c.kind
@@ -526,7 +556,7 @@ func TestAppendCatalogEntryPanics(t *testing.T) {
 	}{
 		{"an unknown kind", func() CatalogEntry {
 			e := testEntryA
-			e.Kind = Kind(15)
+			e.Kind = Kind(17)
 			return e
 		}(), "unknown kind"},
 		{"kind 0", func() CatalogEntry {

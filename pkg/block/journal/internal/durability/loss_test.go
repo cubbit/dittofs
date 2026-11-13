@@ -627,6 +627,7 @@ func TestLoseDeferredAppendsNothingAndOwesNoFailedSeq(t *testing.T) {
 	l := loss(5)
 	l.Synced = true
 	l.Deferred = true
+	l.Seg = 2
 	ev, err := e.d.Lose(context.Background(), l)
 	if err != nil {
 		t.Fatalf("Lose: %v", err)
@@ -657,6 +658,7 @@ func TestLoseDeferredUnsyncedMarksNothing(t *testing.T) {
 
 	l := loss(5)
 	l.Deferred = true
+	l.Seg = 2
 	if _, err := e.d.Lose(context.Background(), l); err != nil {
 		t.Fatalf("Lose: %v", err)
 	}
@@ -1408,5 +1410,126 @@ func TestLoseWithNoAccountFunctionIsFine(t *testing.T) {
 	}
 	if got := e.marked(); len(got) != 1 {
 		t.Errorf("MarkLoss called %d times, want 1", len(got))
+	}
+}
+
+// lossPlace is one durable loss record: the sequence number its header drew
+// and the place it sits at.
+type lossPlace struct {
+	Seq core.Seq
+	Loc segment.Location
+}
+
+// lossPlaces reads the journal's durable loss records with the places they
+// sit at, the way durableRecordsAndBodies walks the directory's segments.
+func lossPlaces(t *testing.T, e *env) []lossPlace {
+	t.Helper()
+	var out []lossPlace
+	for id := core.SegmentID(1); id < 32; id++ {
+		raw, err := e.seam.Durable(format.SegmentName(id))
+		if err != nil {
+			continue
+		}
+		off := int64(format.SegmentHeaderSize)
+		for off+format.RecordHeaderSize <= int64(len(raw)) {
+			h, err := format.DecodeRecordHeader(raw[off:off+format.RecordHeaderSize], harnessIdentity, id, off)
+			if err != nil {
+				break // the zero tail of a segment ends the scan
+			}
+			end := off + format.RecordHeaderSize + h.BodySize()
+			if end > int64(len(raw)) {
+				t.Fatalf("record at %d of segment %d runs past the durable bytes", off, id)
+			}
+			if _, err := format.VerifyRecordBody(raw[off+format.RecordHeaderSize:end], harnessIdentity, h); err != nil {
+				t.Fatalf("record at %d of segment %d: %v", off, id, err)
+			}
+			if h.Kind == format.KindLoss {
+				out = append(out, lossPlace{Seq: h.Seq, Loc: segment.Location{Segment: id, Off: off, Len: h.Size()}})
+			}
+			off += h.Size()
+		}
+	}
+	return out
+}
+
+// TestALoseRegistersItsRecordBetweenTheAppendAndTheSync pins the mover's
+// contract: each loss record the layer appends is handed, through
+// Config.LossRegistered, the loss it names, the sequence number the record
+// drew and its place, once the append has returned and before the record is
+// synced, so it is registered before the segment carrying it can seal.
+func TestALoseRegistersItsRecordBetweenTheAppendAndTheSync(t *testing.T) {
+	e := newEnv(t)
+	synced := false
+	e.d.SetBeforeSync(func() {
+		if len(e.registrations()) == 0 {
+			t.Errorf("the loss record's sync began before Config.LossRegistered was called")
+		}
+		synced = true
+	})
+
+	l := loss(11)
+	l.Synced = true
+	l.Reason = core.LossStale
+	if _, err := e.d.Lose(context.Background(), l); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+	if !synced {
+		t.Fatal("the loss record was never synced: the before-sync hook did not run")
+	}
+
+	got := e.registrations()
+	if len(got) != 1 {
+		t.Fatalf("Config.LossRegistered was told of %d losses, want the 1 record Lose appended", len(got))
+	}
+	if got[0].l != l {
+		t.Errorf("the registration carried the loss %+v, want the caller's %+v", got[0].l, l)
+	}
+	places := lossPlaces(t, e)
+	if len(places) != 1 {
+		t.Fatalf("the journal holds %d durable loss records, want the 1 the Lose appended", len(places))
+	}
+	if got[0].seq != places[0].Seq {
+		t.Errorf("the registration named seq %d, want the record's own drawn seq %d", got[0].seq, places[0].Seq)
+	}
+	if got[0].seq == l.Seq {
+		t.Errorf("the registration named the dropped record's seq %d, want the fresh one the record drew", got[0].seq)
+	}
+	if got[0].at != places[0].Loc {
+		t.Errorf("the registration named the place %+v, want the record's own %+v", got[0].at, places[0].Loc)
+	}
+}
+
+// TestALoseRegistersNothingWhenItsRecordCannotBeAppended pins that a refused
+// record registers nothing rather than a place no record sits at.
+func TestALoseRegistersNothingWhenItsRecordCannotBeAppended(t *testing.T) {
+	e := newEnv(t)
+	e.d.SetReadOnly(func() error { return errReadOnly })
+
+	if _, err := e.d.Lose(context.Background(), loss(5)); !errors.Is(err, errReadOnly) {
+		t.Fatalf("Lose = %v, want the refusal", err)
+	}
+	if got := e.registrations(); len(got) != 0 {
+		t.Errorf("Config.LossRegistered was told of %+v for a refused record, want none", got)
+	}
+}
+
+// TestADeferredLossRegistersNothing pins that a deferred loss, which appends
+// no record, registers none: the record is owed to the copy that will retire
+// the dropped record's segment.
+func TestADeferredLossRegistersNothing(t *testing.T) {
+	e := newEnv(t)
+
+	l := loss(5)
+	l.Synced = true
+	l.Deferred = true
+	l.Seg = 2
+	if _, err := e.d.Lose(context.Background(), l); err != nil {
+		t.Fatalf("Lose: %v", err)
+	}
+	if got := e.registrations(); len(got) != 0 {
+		t.Errorf("Config.LossRegistered was told of %+v for a deferred loss, want none", got)
+	}
+	if got := e.emptyings(); len(got) != 0 {
+		t.Errorf("Config.Emptied was told of %+v for a deferred loss, want none: no record exists to gate a retirement on", got)
 	}
 }

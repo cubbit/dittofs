@@ -20,7 +20,7 @@ func totalsOf(ix *Index, id core.FileID) heldTotals {
 func TestFailWindowServesTheLastSyncedWriteAndDropsOnlyThatRecord(t *testing.T) {
 	ix := New(1 << 20)
 	writeRetained(t, ix, write(0, 4096, rec(1, 0), 5))
-	if _, err := ix.LiftSuperseded(testFile, ver(5), whole); err != nil {
+	if _, _, err := ix.LiftSuperseded(testFile, ver(5), whole); err != nil {
 		t.Fatal(err)
 	}
 	writeRetained(t, ix, write(0, 4096, rec(2, 0), 10))
@@ -49,7 +49,7 @@ func TestFailWindowLeavesOtherRecordsAlone(t *testing.T) {
 	ix := New(1 << 20)
 	writeRetained(t, ix, write(0, 4096, rec(1, 0), 5))
 	writeRetained(t, ix, write(8192, 4096, rec(1, 4096), 7))
-	if _, err := ix.LiftSuperseded(testFile, ver(7), whole); err != nil {
+	if _, _, err := ix.LiftSuperseded(testFile, ver(7), whole); err != nil {
 		t.Fatal(err)
 	}
 	writeRetained(t, ix, write(8192, 2048, rec(2, 0), 9)) // over v7's first half
@@ -154,7 +154,7 @@ func splitWrite(t *testing.T) *Index {
 	t.Helper()
 	ix := New(1 << 20)
 	writeRetained(t, ix, write(0, 8, rec(1, 0), 1))
-	if _, err := ix.LiftSuperseded(testFile, ver(1), whole); err != nil {
+	if _, _, err := ix.LiftSuperseded(testFile, ver(1), whole); err != nil {
 		t.Fatal(err)
 	}
 	writeRetained(t, ix, write(0, 4, rec(2, 0), 2))
@@ -171,7 +171,7 @@ func TestLiftSupersededOfOnePieceLeavesTheOtherPiecesOfItsVersion(t *testing.T) 
 	if got := ix.Retained(testFile); len(got) != 2 {
 		t.Fatalf("Retained = %+v, want both halves of v1 retained by v2", got)
 	}
-	if _, err := ix.LiftSuperseded(testFile, ver(2), ext(0, 4)); err != nil {
+	if _, _, err := ix.LiftSuperseded(testFile, ver(2), ext(0, 4)); err != nil {
 		t.Fatal(err)
 	}
 	ret := ix.Retained(testFile)
