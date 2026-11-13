@@ -713,6 +713,43 @@ func (fs *files) mayOutrank(id core.FileID, seg core.SegmentID, e core.Extent, n
 // segment.
 func (fs *files) dropRangeCount() int64 { return fs.dropRanges.Load() }
 
+// segFiles returns the ids of the files whose records seg held — every file
+// with an entry naming it, content and header-only records alike — in no
+// order and without holding any lock across the walk's whole extent. It is
+// the list a retirement relays into SegmentGone per file, which the callers
+// built from the liveness registry alone cannot name for content-only files.
+// A shard's lock is released before any file's is taken, so it is never held
+// while waiting on a file; each file's own lock guards its segment records.
+//
+// ponytail: the query walks every file entry, O(files) once per retiring
+// segment, beside a retirement whose registry walk is already O(registers).
+// Upgrade to a segment->files registry when a retirement of a busy journal
+// shows in a profile.
+func (fs *files) segFiles(seg core.SegmentID) []core.FileID {
+	var out []core.FileID
+	for i := range fs.shards {
+		s := &fs.shards[i]
+		s.mu.Lock()
+		ids := make([]core.FileID, 0, len(s.m))
+		fl := make([]*file, 0, len(s.m))
+		for id, f := range s.m {
+			ids, fl = append(ids, id), append(fl, f)
+		}
+		s.mu.Unlock()
+		for j, f := range fl {
+			f.mu.RLock()
+			for k := range f.segs {
+				if f.segs[k].seg == seg {
+					out = append(out, ids[j])
+					break
+				}
+			}
+			f.mu.RUnlock()
+		}
+	}
+	return out
+}
+
 // list returns the files tagged tag that hold a piece or an unsettled marker,
 // in no order. A shard's lock is released before any file's is taken, so it
 // is never held while waiting on a file.

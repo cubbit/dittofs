@@ -457,19 +457,21 @@ func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.T
 	// the release race is covered on its side.
 	//
 	// decision: the worker hands a segment over on its own gates alone, never
-	// checking whether the stream that owned it still references it, because
-	// today nothing can reach this point with one that does: a hand-over
-	// reaches only Sealed or Ended segments, every header-only record a
-	// segment of either state holds is registered with the liveness tracker
-	// and nothing settles or re-tests a registration, so a Referenced
-	// segment answers held and never becomes a candidate. The ceiling is the
-	// reachability, not the safety: once records can be settled, a settled
-	// registration can release a segment while its stream still holds it,
-	// and the hand-over would retire it out from under the executor's close —
-	// which then parks on the stream's next append for the descriptor. The
-	// settle relay must land with one of the two covers: the stream dropping
-	// its old segment on seal, or this worker skipping the id its stream
-	// names.
+	// checking whether the stream that owned it still references it. A
+	// settle that covers a segment's removal records can release the last
+	// registration while the stream still names the segment — the settle
+	// relay does exactly that — but the seal that closed the segment
+	// released the stream's write reference (see sealLocked), its every
+	// record already durable, so the executor's descriptor drain finds
+	// nothing of the stream's to wait for. An ENDED segment is handed over
+	// only once its window's re-append rolled the stream off it, and a
+	// rolled-past segment holds no reference at all. The safety of handing
+	// over a stream-named id behind the roll's predecessor write is the
+	// roll's own: it reads the old id and the seal state alone, never the
+	// set's membership of the old, and a retired predecessor stays a name
+	// a successor may carry. Overturned by a writer of a sealed or ended
+	// segment — no path may append to one, whatever its state of
+	// reference.
 	w.segs.Release(id)
 	w.exec.Enqueue(id, reason)
 }

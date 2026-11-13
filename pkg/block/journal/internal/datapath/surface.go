@@ -3,30 +3,27 @@ package datapath
 import "github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 
 // Settle drops the removal and loss markers of file id at or below v, and
-// never a held extent. It appends nothing, persists nothing and takes the
-// file's index lock alone. It does nothing on a closed handle, and leaves
-// another share's file untouched.
+// never a held extent, then re-tests the records registered live of the
+// file with the liveness tracker: a removal, release or loss record whose
+// marker the settle covered may now be droppable, and its release is what
+// lets its segment retire. It appends nothing, persists nothing, takes the
+// file's index lock for the settle and the tracker's registry lock for the
+// re-test. It does nothing on a closed handle, and leaves another share's
+// markers untouched — the re-test names only records already droppable by
+// the index's own answer, the same answer any later event of the file
+// would give.
 func (c *Core) Settle(s *Share, id core.FileID, v core.Version) {
 	exit, err := s.enter()
 	if err != nil {
 		return
 	}
 	defer exit()
-	// decision: a settled marker is not relayed to the liveness tracker —
-	// nothing in production fires the re-test events a registered record
-	// waits to be released by. The cost is wider than a single record: a
-	// removal or loss record keeps its registration for the process's life,
-	// so EVERY segment that ever held one — a truncate, deallocate, delete
-	// or loss record — stays pinned until the journal closes, and space
-	// returns only for segments that never took one; under workloads heavy
-	// in truncations and attribute changes that is most segments. The next
-	// open re-tests nothing even after a clean close, because Open refuses
-	// a directory holding segments, so the pin is process-shaped only until
-	// recovery lands: its open registration must register these records
-	// before the retirement worker starts, or retire them the way the
-	// settle relay would. Overturned by the settle relay, or the open
-	// registration, landing.
 	c.index.SettleFor(s.Tag, id, v)
+	// The settle's relay to the liveness tracker: the re-test event a
+	// registered removal or loss record of the file waits to be released
+	// by. The drop tests read the index alone, so the event changes no
+	// answer — it only runs the ones the settle just created.
+	c.liveness.Retest(id)
 }
 
 // Extents returns the extents of file id the journal holds, in offset order.

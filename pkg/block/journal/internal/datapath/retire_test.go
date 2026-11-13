@@ -1127,8 +1127,12 @@ func TestSteadyWritesOnAnotherStreamDoNotStarveRetirement(t *testing.T) {
 // held, its window holds the failed records, nothing has named the loss
 // record anywhere, and no retirement may take the empty segment while any
 // of that stands. The parked append released, the loss record lands, syncs
-// and registers — and the segment carrying it stays held for the process's
-// life, sealed holding only that record.
+// and registers — and stays held exactly as long as the file's state keeps
+// it: until the failed segment's own retirement — the first re-test event
+// the file ever sees — drops the ranges the loss still outranked and
+// re-tests it. Released, the segment carrying the loss record, sealed holding
+// only that record, retires too: a loss record's liveness ends at the
+// re-test events, never at the journal's close.
 func TestAFailedWindowsResolutionHoldsItsSegmentAndItsLossRecord(t *testing.T) {
 	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
@@ -1178,6 +1182,14 @@ func TestAFailedWindowsResolutionHoldsItsSegmentAndItsLossRecord(t *testing.T) {
 		return !inSet(c, seg) || c.Retirer().Counters().FreedBytes != 0
 	})
 
+	// The ended segment's unlink parks at the seam, so the resolution below
+	// cannot run the retirement whose re-test ends the loss record's
+	// liveness: the held-phase assertions read a state nothing can race.
+	// The pattern names the segment alone, so the pool's spare files and
+	// any other retirement pass untouched.
+	unlinkHold := seam.Hold(t, kit.OpRemove, format.SegmentName(seg))
+	t.Cleanup(unlinkHold.Release)
+
 	// The release lets the loss record land: appended, synced, registered
 	// with the tracker before its segment can seal, and the moved report the
 	// durability layer makes names the segment gated on it.
@@ -1190,26 +1202,33 @@ func TestAFailedWindowsResolutionHoldsItsSegmentAndItsLossRecord(t *testing.T) {
 		t.Fatal("no loss record reached the disk once the window resolved, want the failure's crossing recorded")
 	}
 	if !c.liveness.Held(lossSeg) {
-		t.Fatal("the segment carrying the loss record answered not held, want the record's registration to keep it for its life")
+		t.Fatal("the segment carrying the loss record answered not held while the failed segment's retirement was parked, want the record's registration to keep it")
 	}
-	gone(t, c, "the ended segment to retire once its window resolved", seg)
 
-	// The loss record's own segment now holds only that record: sealed
-	// early and rolled off, it must never retire — the registration pins it
-	// for the process's life, the one thing a settled journal never
-	// re-tests.
+	// The parked unlink released, the ended segment retires: its durable
+	// retirement relay re-tests the file — the first in-process event that
+	// ever names the loss record — and the records the failed segment still
+	// outranked have left the drop ranges with the segment, so the loss's
+	// registration releases with them.
+	unlinkHold.Release()
+	gone(t, c, "the ended segment to retire once its window resolved", seg)
+	waitIn(t, 5*time.Second, "the loss record's registration to be released by the failed segment's own retirement", func() bool {
+		return !c.liveness.Held(lossSeg)
+	})
+
+	// The loss record's own segment, sealed early holding only that record,
+	// now answers held by nothing — a loss record's liveness ended at the
+	// re-test event, its segment retires with it.
 	if _, err := c.Streams().For(f).Seal(true); err != nil {
 		t.Fatalf("the early seal of the loss record's segment: %v", err)
 	}
 	if st, err := c.set.State(lossSeg); err != nil || st != segment.Sealed {
 		t.Fatalf("the loss record's segment's state = %v, %v, want Sealed", st, err)
 	}
-	mustWrite(t, c, s, f, 0, make([]byte, payload))
-	notWithin(t, 4*time.Second, "a retirement of the segment holding the loss record", func() bool {
-		return !inSet(c, lossSeg)
-	})
-	if !c.liveness.Held(lossSeg) {
-		t.Fatal("the loss record's registration was released over its segment's life, want it held until the journal closes")
+	lossSize := setSize(t, c, lossSeg)
+	retiredTo(t, c, "the loss record's segment to retire once its registration went", uint64(testSegmentCap+lossSize), lossSeg)
+	if got, want := c.Retirer().Counters().FreedBytes, uint64(testSegmentCap+lossSize); got != want {
+		t.Fatalf("FreedBytes after both retirements = %d, want %d (the ended segment's cap %d and the loss record segment's %d)", got, want, testSegmentCap, lossSize)
 	}
 	if got := c.set.Counters().DoubleRetires; got != 0 {
 		t.Fatalf("DoubleRetires = %d, want 0", got)
@@ -1472,4 +1491,141 @@ func segmentFilePresent(t *testing.T, seam *kit.Seam, seg core.SegmentID) bool {
 		t.Fatalf("List: %v", err)
 	}
 	return slices.Contains(names, format.SegmentName(seg))
+}
+
+// TestTheSettleReTestsThePinnedRemovalSegment: a removal record's liveness
+// ends at its marker's settle, not at the journal's close. The row truncates
+// a file whose emptied content retires from one segment while the removal
+// record itself sits sealed in another, then settles at the removal's own
+// version: the settle relays the re-test to the tracker, the record's
+// registration is released and its segment retires in-process. Without the
+// relay nothing in-process fires the re-test, and the record holds its
+// segment for the journal's life.
+func TestTheSettleReTestsThePinnedRemovalSegment(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	w := otherStreamFile(c, f)
+
+	// The content in one early-sealed segment, and a witness on another
+	// stream waiting for its durable retirement, whose home write holds a
+	// segment the row leaves alone.
+	const payload = 4 << 10
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
+	syncFiles(t, c, f)
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Fatalf("the early seal: %v", err)
+	}
+	seg := recordOf(t, c, f, 0).Record.Segment
+	size := setSize(t, c, seg)
+	rec := witnessOn(t, c, s, w, seg)
+
+	// The truncation empties the sealed segment — which retires on the
+	// truncation's own offer — and lands its own record in the stream's next
+	// active segment, registered live for as long as its marker stands.
+	tr, err := c.Truncate(ctx, s, f, 0)
+	if err != nil {
+		t.Fatalf("Truncate(%d, 0): %v", f, err)
+	}
+	gone(t, c, "the emptied content segment", seg)
+	// The witness releases only once the tracker has heard the retirement in
+	// full, so the settle below re-tests the removal record only after the
+	// file's drop ranges naming the emptied segment have left the index.
+	waitIn(t, 8*time.Second, "the retired segment's witness to be released", func() bool {
+		return c.liveness.Droppable(rec)
+	})
+
+	// The removal record's own segment, sealed early too and holding it
+	// alone: of the snapshot's members only it and the witness's home
+	// remain, and the witness's home stays for its live content.
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Fatalf("the early seal of the removal record's segment: %v", err)
+	}
+	var home core.SegmentID
+	for _, r := range c.set.Snapshot() {
+		if r.ID == rec.Seg {
+			continue // the witness's home, live content the row leaves alone
+		}
+		home = r.ID
+		if r.State != segment.Sealed {
+			t.Fatalf("the removal record's segment state = %v, want Sealed", r.State)
+		}
+	}
+	if home == 0 {
+		t.Fatal("the snapshot named no sealed segment for the removal record")
+	}
+	homeSize := setSize(t, c, home)
+	if !c.liveness.Held(home) {
+		t.Fatal("the removal record's segment answered not held before the settle, want its registration to pin it")
+	}
+
+	// Bounded window, not a truth: while its marker is unsettled no re-test
+	// answers the record droppable, whatever the worker's ticks ask.
+	notWithin(t, 2*time.Second, "a retirement of the removal record's segment before its marker settled", func() bool {
+		return !inSet(c, home)
+	})
+
+	// The settle at the removal's own version releases the record: the
+	// marker the index held for it is gone, and the candidate crosses the
+	// segment it pinned to retirement.
+	c.Settle(s, f, tr)
+	if c.liveness.Held(home) {
+		t.Fatal("Held of the removal record's segment after the settle = true, want false: the settle's re-test releases the record's registration")
+	}
+	gone(t, c, "the removal record's segment to retire once the settle released it", home)
+	if got, want := c.Retirer().Counters().FreedBytes, uint64(size+homeSize); got != want {
+		t.Fatalf("FreedBytes after both retirements = %d, want %d (the content segment's %d and the removal record's %d)", got, want, size, homeSize)
+	}
+	if got := c.set.Counters().DoubleRetires; got != 0 {
+		t.Fatalf("DoubleRetires = %d, want 0", got)
+	}
+}
+
+// TestTheDurableRetirementCarriesTheSegmentsFiles: a retirement must tell
+// the index each file the retired segment held, which the tracker's own
+// registry cannot name for content-only files — a file whose every record
+// in the segment is content, never registered live. The row retires a
+// sealed segment holding one file's content alone and checks the file's
+// drop ranges naming it leave with the segment: a range left behind keeps
+// every later removal of the file answering the outranking guard true
+// against a segment a crash can no longer resurrect.
+func TestTheDurableRetirementCarriesTheSegmentsFiles(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+
+	// One file's content in one early-sealed segment: a content-only
+	// segment, whose files the tracker's registry never hears of.
+	const payload = 4 << 10
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
+	syncFiles(t, c, f)
+	if _, err := c.Streams().For(f).Seal(true); err != nil {
+		t.Fatalf("the early seal: %v", err)
+	}
+	seg := recordOf(t, c, f, 0).Record.Segment
+	if got, want := c.index.DropRanges(), 1; got != want {
+		t.Fatalf("DropRanges after the first write = %d, want %d: one range of one record", got, want)
+	}
+
+	// The overwrite past the seal retires the emptied segment once its own
+	// record is durable, and notes the file's second range of the active
+	// segment.
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
+	if got, want := c.index.DropRanges(), 2; got != want {
+		t.Fatalf("DropRanges after the overwrite = %d, want %d (one range per segment)", got, want)
+	}
+	syncFiles(t, c, f)
+	gone(t, c, "the emptied content segment", seg)
+
+	// The durable retirement relays each file the segment held into the
+	// index's SegmentGone, so the file's range of the retired segment drops
+	// with it. Nothing else wrote f, so the surviving range is the
+	// overwrite's.
+	waitIn(t, 5*time.Second, "the retired segment's drop ranges to leave the index", func() bool {
+		return c.index.DropRanges() == 1
+	})
+	if got, want := c.index.DropRanges(), 1; got != want {
+		t.Fatalf("DropRanges after the retirement = %d, want %d (the overwrite's range alone)", got, want)
+	}
 }

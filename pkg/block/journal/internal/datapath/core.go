@@ -469,12 +469,22 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		// SegmentGone, whose contract demands the unlink be durable —
 		// telling it earlier would let a drop query answer against a segment
 		// whose records the crash the failed sync covers may still name. The
-		// ceiling: a failed directory sync delivers no signal at all, so the
-		// tracker keeps a retired segment's registrations — holds it answered
-		// not held, for the segment is gone from the set — until the next
-		// open's rebuild drops them.
-		Durable: func(ret segment.Retirement) { tr.SegmentRetired(ret.ID, nil) },
-		Log:     deps.Log,
+		// files the signal carries are the index's own, not the tracker's
+		// registry fill: the registry names only files with registered
+		// records, so a segment whose files were all content — never
+		// registered live — would leave their drop ranges behind, keeping
+		// every later removal of theirs answering the outranking guard
+		// true against a segment a crash can no longer resurrect. The index
+		// names every file the segment holds a record of, registry and
+		// content alike, and an empty list still falls back to the registry
+		// fill. The ceiling: a failed directory sync delivers no signal at
+		// all, so the tracker keeps a retired segment's registrations —
+		// holds it answered not held, for the segment is gone from the set —
+		// until the next open's rebuild drops them.
+		Durable: func(ret segment.Retirement) {
+			tr.SegmentRetired(ret.ID, state.Index.FilesOfSegment(ret.ID))
+		},
+		Log: deps.Log,
 	})
 
 	// The liveness tracker and the retirement worker close the loop the
