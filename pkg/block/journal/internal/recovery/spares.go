@@ -17,12 +17,14 @@ import (
 // — a spare no stream took, a segment whose header slot does not verify, and
 // a recycle a crash interrupted after its rename, whose old header names
 // this journal under another id — in which no record header verifies anywhere
-// (the scan's VerifiedEnd sits at the first record slot) and no seal marker
-// verifies (the scan is not sealed). Nothing durable was ever written into
-// such a segment — a take is made durable only with the records after it — so
-// re-adopting one loses nothing. A segment a successor names is not among
-// them whatever its records hold: it was sealed before its successor was
-// made.
+// (the scan's RecordsEnd sits at the first record slot: the walk raises it
+// past every record whose header verified, a clone target whose body failed
+// among them, so its lower VerifiedEnd alone would take such a segment for a
+// spare) and no seal marker verifies (the scan is not sealed). Nothing
+// durable was ever written into such a segment — a take is made durable only
+// with the records after it — so re-adopting one loses nothing. A segment a
+// successor names is not among them whatever its records hold: it was sealed
+// before its successor was made.
 //
 // The identity is checked before any record-less test, so a segment whose
 // header verifies naming another journal is never a candidate: no record of
@@ -32,10 +34,26 @@ import (
 // no scan cannot be a candidate either: its read failed, and the open refuses
 // on the range the reader collected before any phase re-adopts — unreadable
 // is never read as empty.
-func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID]bool) []core.SegmentID {
+//
+// decision: a candidate a sync mark names is withheld, never re-adopted,
+// zeroed or unlinked whatever its own bytes say, for the mark is the caller's
+// durable record that its stream synced through the segment, and the mark's
+// own work — its contribution to the counters, the proof below its Through,
+// the lost-tail check — belongs to the marks phases that run later and must
+// find the segment as it stands. The ceiling is the withholding alone, a
+// filter at this one choke point; withdraw it when the marks phases land and
+// own the named segments' fates under their own rules.
+func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID]bool, marks []core.SyncMark) []core.SegmentID {
 	scanned := make(map[core.SegmentID]segmentScan, len(scans))
 	for _, sc := range scans {
 		scanned[sc.ID] = sc
+	}
+
+	// The segments the caller's sync marks name: each stays on disk, whatever
+	// its bytes say, for the marks phases to read.
+	marked := make(map[core.SegmentID]bool, len(marks))
+	for _, m := range marks {
+		marked[core.SegmentID(m.Segment)] = true
 	}
 
 	// The classes that name a segment of this journal; the foreign class is
@@ -52,9 +70,10 @@ func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID
 	for _, id := range ids {
 		sc, ok := scanned[id]
 		switch {
-		case !ok, named[id], sc.Sealed, sc.VerifiedEnd != format.SegmentHeaderSize:
-			// Unreadable, a sealed predecessor, or a segment holding a
-			// record: nothing the spares phase may take.
+		case !ok, named[id], marked[id], sc.Sealed, sc.RecordsEnd != format.SegmentHeaderSize:
+			// Unreadable, a sealed predecessor, a segment a sync mark names,
+			// or a segment in which a record header verified: nothing the
+			// spares phase may take.
 		default:
 			out = append(out, id)
 		}
@@ -103,17 +122,20 @@ type AdoptedSpare struct {
 // slot at the file's end. Nothing durable ever reached a candidate, so the
 // old life's bytes become unreadable and each id is the allocator's again.
 //
-// The adoptions are recorded only after the one directory sync the open
-// spends has made the spares' entries durable; its failure is the open's —
-// no spare is taken and nothing is unlinked over a name no sync proved.
-// The same one sync covers an open that only unlinked: a removal its sync
-// never proved could come back after a power cut.
+// The phase decides every adoption and unlink first, then spends its one
+// directory sync, and only past that sync records the adoptions and performs
+// the removals; the sync's failure is the open's — no spare is taken and
+// nothing is unlinked, every candidate keeping its name over a sync that
+// proved none. Each removal runs after the sync, so the sync does not itself
+// prove it: a power cut may resurrect a short spare, which is harmless — the
+// next open re-reads the same bytes, decides the same and unlinks it again.
 //
 // The phase is the open's first writing one, so it refuses first, before
 // any candidate is touched; each slot is read through the open's reader, so
 // a read the bound did not clear refuses rather than zeroes, and the
-// adoption takes the segment's tail fate with it: a re-adopted spare's tail
-// is nobody's to cut, and the phases that cut find no fate for it.
+// adoption or unlink takes the segment's tail fate with it: a re-adopted
+// spare's tail is nobody's to cut, and an unlinked one would name a cut at
+// a file that no longer exists.
 //
 // A candidate whose file does not hold exactly the segment cap — or whose
 // body the device does not hold allocated whole, where the platform reports
@@ -122,7 +144,7 @@ type AdoptedSpare struct {
 // name would take the writes of a whole segment and lose a crash's worth of
 // them. Each is left for the pool to make again; every adoption is recorded
 // with the class the pool's own targets' fill order gives its id.
-func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.JournalID, _ core.Version) error {
+func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.JournalID, _ core.Version, marks []core.SyncMark) error {
 	// decision: this phase is the open's first writing one, so the refusal
 	// runs before any candidate work rather than at the run's end: zeroing
 	// a slot — or writing anything at all — over a range no bounded read
@@ -136,7 +158,7 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 		return &core.UnreadableRangesError{Ranges: ranges}
 	}
 
-	cand := spareCandidates(st.Attached, st.Rebuilt.Scans, namedBySuccessor(st.Attached))
+	cand := spareCandidates(st.Attached, st.Rebuilt.Scans, namedBySuccessor(st.Attached), marks)
 	sizes := make(map[core.SegmentID]int64, len(st.Rebuilt.Scans))
 	for _, sc := range st.Rebuilt.Scans {
 		sizes[sc.ID] = sc.Size
@@ -147,18 +169,15 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 		// The size is the scan's own answer, read through the open's retry
 		// bound: a spare the pool could take must hold exactly the cap, so
 		// a candidate whose file does not — a crash's empty leftover, a
-		// recycle interrupted short, a file grown past the cap — is
-		// unlinked and made again, never zeroed: no byte of a file about
-		// to be removed is read into a slot or written. decision: a
+		// recycle interrupted short, a file grown past the cap — is staged
+		// for unlinking and made again, never zeroed: no byte of a file
+		// about to be removed is read into a slot or written. decision: a
 		// SegmentCap of zero or less unlinks every candidate rather than
 		// skipping the check — under no cap no spare can be
 		// right-sized, and not an empty one by its size 0 equaling the
 		// cap; the open fills the field from the journal's own cap, so no
 		// open that can adopt a spare passes zero.
 		if deps.SegmentCap <= 0 || sizes[id] != deps.SegmentCap {
-			if err := unlinkSpare(deps, id); err != nil {
-				return err
-			}
 			unlinked = append(unlinked, id) // candidates ascend, so unlinked does too
 			continue
 		}
@@ -167,9 +186,6 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 			return qerr
 		}
 		if !whole {
-			if err := unlinkSpare(deps, id); err != nil {
-				return err
-			}
 			unlinked = append(unlinked, id)
 			continue
 		}
@@ -183,8 +199,17 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 		// the sync its own rename was owed: a spare taken before this sync
 		// could lose its name — and the records a later open re-appends into
 		// it — to a power cut, so the one sync precedes every recorded
-		// adoption and its failure answers the open taking nothing.
+		// adoption and every performed removal, and its failure answers the
+		// open taking and unlinking nothing.
 		if err := deps.FS.SyncDir(); err != nil {
+			return err
+		}
+	}
+	// The removals run after the sync and are not proved by it: a power cut
+	// may resurrect a short spare, which is harmless — the next open
+	// re-reads it, re-decides and unlinks it again.
+	for _, id := range unlinked {
+		if err := unlinkSpare(deps, id); err != nil {
 			return err
 		}
 	}
@@ -195,12 +220,15 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 	st.Spares.Adopted = adopted
 	st.Spares.Unlinked = unlinked
 
-	reAdopted := make(map[core.SegmentID]bool, len(adopted))
+	taken := make(map[core.SegmentID]bool, len(adopted)+len(unlinked))
 	for _, a := range adopted {
-		reAdopted[a.ID] = true
+		taken[a.ID] = true
+	}
+	for _, id := range unlinked {
+		taken[id] = true
 	}
 	st.Tails.Fates = slices.DeleteFunc(st.Tails.Fates, func(f segmentFate) bool {
-		return reAdopted[f.ID]
+		return taken[f.ID]
 	})
 	return nil
 }
@@ -212,10 +240,11 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 // i-th adoption takes the i-th class: the lowest ids land in the headroom.
 //
 // decision: the counting starts at the headroom, not at the reconcile spare
-// a re-adopted spare is counted first toward while the journal has none —
-// the reconcile spare is not built, so a count toward it is a count no
-// reader ever pays out. Counting re-adoptions toward the reconcile spare
-// first is withdrawn when the reconcile work lands and brings one.
+// — a re-adopted spare counts toward the reconcile spare's quota while the
+// journal has none, and the reconcile spare is not built, so a count toward
+// it is a count no reader ever pays out. Counting re-adoptions toward the
+// reconcile spare's quota first is withdrawn when the reconcile work lands
+// and brings one.
 //
 // decision: a spare past every target still takes the content class, neither
 // held behind an age-gate nor unlinked as an extra: an extra spare is one

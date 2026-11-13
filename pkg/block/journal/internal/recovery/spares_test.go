@@ -43,9 +43,10 @@ func (r *rig) runCandidates() State {
 }
 
 // candidates returns the spare candidates the state names: the record-less
-// segments of the classes an open under this journal's identity may re-adopt.
+// segments of the classes an open under this journal's identity may re-adopt,
+// with no sync mark naming any of them.
 func candidates(st State) []core.SegmentID {
-	return spareCandidates(st.Attached, st.Rebuilt.Scans, namedBySuccessor(st.Attached))
+	return spareCandidates(st.Attached, st.Rebuilt.Scans, namedBySuccessor(st.Attached), nil)
 }
 
 // TestSpareCandidatesHasARecordlessUntakenSpare plants one all-zero segment
@@ -242,6 +243,78 @@ func TestSpareCandidatesNeverHasASuccessorsPredecessor(t *testing.T) {
 	}
 }
 
+// TestSpareCandidatesNeverHasASyncedCloneTargetWithAFailedBody plants an own
+// segment, named by no successor, whose only record is a clone target its own
+// sync proof covers — so the tail's classing judges it, corrupt — and whose
+// body failed while its header did verify. A record header verifies in the
+// segment, so it is no spare whatever the body did: re-adopting it would zero
+// the header evidence of a synced record. It is not a candidate and Run
+// leaves its bytes exactly as planted, on disk and reported as the classing's
+// corrupt drop.
+func TestSpareCandidatesNeverHasASyncedCloneTargetWithAFailedBody(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	id := core.SegmentID(4)
+	seg, _ := appendClone(raw.SegmentHeader{Identity: journalID, ID: uint64(id)}.Bytes(), id,
+		func(at int64) int64 { return at + format.RecordHeaderSize })
+	seg = append(seg, make([]byte, testCap-int64(len(seg)))...)
+	r.plantSeg(id, seg)
+
+	st := r.runCandidates()
+
+	if got := candidates(st); slices.Contains(got, id) {
+		t.Errorf("spareCandidates: segment %d, whose one record's header verified, was a candidate, got %v, want it absent: no record header may verify anywhere in a spare", id, got)
+	}
+	if len(st.Spares.Adopted) != 0 || len(st.Spares.Unlinked) != 0 {
+		t.Errorf("spares: the segment whose record header verified got adopted %v and unlinked %v, want neither", st.Spares.Adopted, st.Spares.Unlinked)
+	}
+	if after := r.fileBytes(format.SegmentName(id)); !slices.Equal(after, seg) {
+		t.Errorf("spares: the segment whose record header verified was touched, got %x, want the bytes it arrived with", after[:format.SegmentHeaderSize])
+	}
+	if len(st.Tails.Corrupt) != 1 || st.Tails.Corrupt[0].Segment != id {
+		t.Errorf("spares: the clone target was not classed the corrupt drop it is, got %+v, want exactly one in segment %d", st.Tails.Corrupt, id)
+	}
+}
+
+// TestSparesPhaseWithholdsACandidateASyncMarkNames plants two record-less
+// whole spares and hands Run a sync mark naming one: a mark is the caller's
+// durable record that its stream synced through the segment it names, so the
+// marked candidate is never re-adopted, zeroed or unlinked — its bytes are
+// evidence the marks phases still read — while its unmarked neighbour beside
+// it is adopted.
+func TestSparesPhaseWithholdsACandidateASyncMarkNames(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	marked, plain := core.SegmentID(5), core.SegmentID(7)
+	markName := format.SegmentName(marked)
+	r.write(markName, make([]byte, testCap))
+	r.write(format.SegmentName(plain), make([]byte, testCap))
+	writes := r.seam.CallsFor(kit.OpWrite, markName)
+	removes := r.seam.Calls(kit.OpRemove)
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID,
+		[]core.SyncMark{{Stream: 1, Segment: uint64(marked), Through: testCap, Offset: testCap, Sequence: 1}})
+	if err != nil {
+		t.Fatalf("spares: the open under a sync mark: %v", err)
+	}
+
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: plain, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Errorf("spares: under a mark naming %d the adoptions got %v, want %v: a candidate a mark names is withheld", marked, got, want)
+	}
+	if len(st.Spares.Unlinked) != 0 {
+		t.Errorf("spares: the candidate the mark names got unlinked %v, want nothing: its bytes stay for the marks phases", st.Spares.Unlinked)
+	}
+	if !slices.Contains(r.listing(), markName) {
+		t.Errorf("spares: the marked candidate %s is gone from the directory %v, want it kept", markName, r.listing())
+	}
+	if got, want := r.seam.CallsFor(kit.OpWrite, markName), writes; got != want {
+		t.Errorf("spares: the marked candidate was written to, got %d writes, want %d, the count before the run", got, want)
+	}
+	if got, want := r.seam.Calls(kit.OpRemove), removes; got != want {
+		t.Errorf("spares: the marked candidate was removed, got %d removes, want %d, the count before the run", got, want)
+	}
+}
+
 // sealedFull returns the bytes of segment id sealed full — its header, one
 // synced record, a seal marker and the cap's trailer — as the journal's
 // writer would have left a segment it sealed for recycle.
@@ -283,7 +356,9 @@ func plantInterruptedRecycle(r *rig, x, y core.SegmentID) {
 // a spare the pool could take must hold exactly the cap, so each short one
 // is unlinked and left for the pool to make again — never zeroed, no byte of
 // a file about to be removed is written — while the whole one beside them is
-// adopted. The unlinks are recorded ascending by id.
+// adopted. The unlinks are recorded ascending by id, and no fate is left
+// naming an unlinked id: the later cutting phases would truncate a file that
+// no longer exists.
 func TestSparesPhaseUnlinksAShortSpare(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
@@ -300,6 +375,13 @@ func TestSparesPhaseUnlinksAShortSpare(t *testing.T) {
 	}
 	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: whole, Class: segment.Content}}; !slices.Equal(got, want) {
 		t.Errorf("spares: the whole spare beside the short ones got adoptions %v, want %v", got, want)
+	}
+	for _, id := range []core.SegmentID{empty, half} {
+		for _, f := range st.Tails.Fates {
+			if f.ID == id {
+				t.Errorf("spares: the unlinked spare %d kept its fate %s, want none: the cutting phases would truncate a file that no longer exists", id, f.Kind)
+			}
+		}
 	}
 	for _, id := range []core.SegmentID{empty, half} {
 		if slices.Contains(r.listing(), format.SegmentName(id)) {
@@ -569,17 +651,20 @@ func TestSparesPhaseLeavesCleanSlotsUnwritten(t *testing.T) {
 }
 
 // TestSparesPhaseFailsTheOpenWhenTheDirectorySyncFails plants several whole
-// untaken spares, so adoptions are pending, and fails the one directory sync
-// the phase owes: the open fails with the sync's own error and takes no spare
-// — every .seg is still in the directory and nothing is unlinked, for a spare
-// taken before its name is durable could lose that name, and the records a
-// later open re-appends into it, to a power cut. The refusal spent exactly
-// the phase's one sync; run again with the fault spent, the open adopts every
-// candidate: all of them in Spares.Adopted, nothing unlinked, nothing
-// rejected.
+// untaken spares beside one short one, so adoptions and an unlink are
+// pending, and fails the one directory sync the phase owes: the open fails
+// with the sync's own error and takes no spare — every .seg is still in the
+// directory, the short one included, and nothing is unlinked, for the
+// removals are staged and run only past the sync, and a spare taken before
+// its name is durable could lose that name, and the records a later open
+// re-appends into it, to a power cut. The refusal spent exactly the phase's
+// one sync; run again with the fault spent, the open adopts every whole
+// candidate and unlinks the short one.
 func TestSparesPhaseFailsTheOpenWhenTheDirectorySyncFails(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
+	short := core.SegmentID(4)
+	r.write(format.SegmentName(short), make([]byte, testCap/2))
 	ids := []core.SegmentID{5, 6, 9}
 	for _, id := range ids {
 		r.write(format.SegmentName(id), make([]byte, testCap))
@@ -600,7 +685,7 @@ func TestSparesPhaseFailsTheOpenWhenTheDirectorySyncFails(t *testing.T) {
 	if !errors.Is(err, syscall.EIO) {
 		t.Fatalf("spares: the failed directory sync answered err %v, want %v, the sync's own error", err, syscall.EIO)
 	}
-	for _, id := range ids {
+	for _, id := range slices.Concat(ids, []core.SegmentID{short}) {
 		if !slices.Contains(r.listing(), format.SegmentName(id)) {
 			t.Errorf("spares: the failed sync removed %s; the directory holds %v", format.SegmentName(id), r.listing())
 		}
@@ -617,10 +702,10 @@ func TestSparesPhaseFailsTheOpenWhenTheDirectorySyncFails(t *testing.T) {
 
 	want := []AdoptedSpare{{ID: ids[0], Class: segment.Content}, {ID: ids[1], Class: segment.Content}, {ID: ids[2], Class: segment.Content}}
 	if got := st.Spares.Adopted; !slices.Equal(got, want) {
-		t.Errorf("spares: the re-run's adoptions got %v, want %v, every candidate under a passing sync", got, want)
+		t.Errorf("spares: the re-run's adoptions got %v, want %v, every whole candidate under a passing sync", got, want)
 	}
-	if len(st.Spares.Unlinked) != 0 {
-		t.Errorf("spares: the re-run unlinked %v, want nothing", st.Spares.Unlinked)
+	if got, want := st.Spares.Unlinked, []core.SegmentID{short}; !slices.Equal(got, want) {
+		t.Errorf("spares: the re-run's unlinking got %v, want %v, the short candidate under a passing sync", got, want)
 	}
 	if st.Attached.Rejected != 0 {
 		t.Errorf("spares: the re-run rejected %d segments, want none: whole untaken spares are candidates, not rejects", st.Attached.Rejected)

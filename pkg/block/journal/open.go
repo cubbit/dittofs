@@ -322,12 +322,14 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// unlinking the wrongly-sized ones, syncing the directory once
 		// before the re-adoptions are recorded with their classes — and
 		// the recovery after them — the marks, the tail's proof, the
-		// re-append, the assembly and the emptying — is not built. Every
-		// reopen of a journal that has run meets this, because the spare
-		// pool leaves its finished spares as segment files, so no journal
-		// that has served can be opened again here. The refusal keeps the
-		// directory as the phases above left it, so the recovery that
-		// exists later takes it whole.
+		// re-append, the assembly and the emptying — is not built, which
+		// is the refusal's reason, not the directory's shape: the spares
+		// phase may have moved the directory by its own rules, and every
+		// change it made is one a later open re-reads and re-decides, so
+		// the recovery that exists later takes the directory as it
+		// stands. Every reopen of a journal that has run meets this,
+		// because the spare pool leaves its finished spares as segment
+		// files, so no journal that has served can be opened again here.
 		return nil, fmt.Errorf("%w: %s holds segments; recovering them is not built", ErrNotImplemented, dir)
 	}
 

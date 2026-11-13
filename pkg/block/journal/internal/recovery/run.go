@@ -91,7 +91,7 @@ type State struct {
 // built runs as a no-op whose span still opens.
 type phase struct {
 	span core.SpanOp
-	run  func(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version) error
+	run  func(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, marks []core.SyncMark) error
 }
 
 // String names the phase by its span.
@@ -117,7 +117,7 @@ var phases = [...]phase{
 
 // runAttach is the attach pass as a phase of the run: over the reader the
 // run built, so its collected ranges reach the open's refusal below.
-func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, _ core.Version) error {
+func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, _ core.Version, _ []core.SyncMark) error {
 	att, err := attach(ctx, deps.FS, rd, expect, deps.Log)
 	st.Attached = att
 	return err
@@ -127,7 +127,7 @@ func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 // attached, through the same reader the open refuses on. The index carries
 // deps.ExtentLimit, no bound when it is unset; the builder never consults the
 // bound while rebuilding, so a directory past it still opens.
-func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version) error {
+func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, _ []core.SyncMark) error {
 	limit := deps.ExtentLimit
 	if limit < 1 {
 		limit = math.MaxInt64
@@ -167,8 +167,9 @@ func rebuildReaders(deps Deps) int {
 // named, span-covered steps that change nothing, each checked for the
 // context, so a cancelled open is answered at the boundary the
 // cancellation reached and the directory is left for a later open. floor
-// and marks are carried for the phases that consume them — the rebuild, the
-// marks and the tail's proof — and are unread until one exists.
+// and marks are carried for the phases that consume them — floor for the
+// rebuild, and marks for the spares phase, which withholds every candidate
+// a mark names, and for the marks and tail-proof phases not yet built.
 func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {
 	if err := ctx.Err(); err != nil {
 		return State{}, err
@@ -184,7 +185,7 @@ func Run(ctx context.Context, deps Deps, floor core.Version, expect core.Journal
 		phCtx, end := startSpan(ctx, deps, ph.span)
 		perr := error(nil)
 		if ph.run != nil {
-			perr = ph.run(phCtx, deps, rd, &st, expect, floor)
+			perr = ph.run(phCtx, deps, rd, &st, expect, floor, marks)
 		}
 		// decision: a phase not yet built changes nothing. Its step is a
 		// named, traced no-op, and the phases around it keep this list,
