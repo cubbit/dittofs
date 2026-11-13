@@ -116,8 +116,9 @@ func runStoreMatrixTest(t *testing.T, sc matrixStoreConfig, lsHelper *framework.
 func mountNFSExport(t *testing.T, port int, exportPath string) *framework.Mount {
 	t.Helper()
 
-	time.Sleep(500 * time.Millisecond)
-
+	// Every caller waits for the NFS port before calling this (WaitForServer),
+	// and the share exists before the adapter starts, so the first mount must
+	// succeed: a failure here is the result, not a race to retry.
 	mountPath, err := os.MkdirTemp("", "dittofs-e2e-matrix-*")
 	if err != nil {
 		t.Fatalf("Failed to create NFS mount directory: %v", err)
@@ -137,30 +138,15 @@ func mountNFSExport(t *testing.T, port int, exportPath string) *framework.Mount 
 
 	mountArgs := []string{"-t", "nfs", "-o", mountOptions, fmt.Sprintf("localhost:%s", exportPath), mountPath}
 
-	var output []byte
-	var lastErr error
-	const maxRetries = 3
-
-	for i := 0; i < maxRetries; i++ {
-		cmd := exec.Command("mount", mountArgs...)
-		output, lastErr = cmd.CombinedOutput()
-
-		if lastErr == nil {
-			t.Logf("NFS share mounted successfully at %s (export: %s)", mountPath, exportPath)
-			break
-		}
-
-		if i < maxRetries-1 {
-			t.Logf("NFS mount attempt %d failed (error: %v), retrying in 1 second...", i+1, lastErr)
-			time.Sleep(time.Second)
-		}
-	}
-
-	if lastErr != nil {
+	output, err := exec.Command("mount", mountArgs...).CombinedOutput()
+	if err != nil {
 		_ = os.RemoveAll(mountPath)
-		t.Fatalf("Failed to mount NFS share after %d attempts: %v\nOutput: %s\nMount command: mount %v",
-			maxRetries, lastErr, string(output), mountArgs)
+
+		t.Fatalf("mount NFS export %s: %v\nOutput: %s\nMount command: mount %v",
+			exportPath, err, string(output), mountArgs)
 	}
+
+	t.Logf("NFS share mounted successfully at %s (export: %s)", mountPath, exportPath)
 
 	return &framework.Mount{
 		T:        t,
