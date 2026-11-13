@@ -19,9 +19,14 @@ import (
 // b7Files files of the share's journal, the first benchWriters of which the
 // writers overwrite.
 const (
-	b7Files = 50000
+	b7Files = 100000
 	b7Rate  = 1000
 	b7Log2G = 6 // log₂ of benchMaxFiles
+
+	// b7MaxK is the most conflicting files a burst may have and still be
+	// evaluated: above it 1 + k × 6 passes the 65 transactions of a batch
+	// committed file by file, and the bound cannot tell the two apart.
+	b7MaxK = 10
 
 	// b7ExistenceAge is long enough that no group commit comes due by its
 	// timer during a run, so each burst's transactions are its fsyncs'
@@ -44,16 +49,20 @@ const (
 // engine's, one that wrote both kinds counts once for the engine and is
 // reported as mixed, and the storm's are left out. The conflicting files of a
 // burst, k, are the writers' files a storm chmod ran on during it, from the
-// storm's own record, and the burst is bounded at 1 + k × 6. A burst with
-// k = 0 is not evaluated: its bound would be 1, which the engine does not meet
-// today, since the stability points of one burst start several batches (each
-// the files due when the last one returned), not because of a conflict; B7
-// fails when fewer than half of its bursts are evaluated. The pool of 50 000
-// files keeps k small at the RFC's rate (about 2 700 chmods a burst touch a
-// few of the 64), and costs about 6 s of a setup of minutes. Overturned when
-// the engine gathers a burst into one batch (then k = 0 is evaluated at 1),
-// when the key layout changes (the classifier must follow it), or when bursts
-// grow long enough that k × 6 passes 64 even at this pool.
+// storm's own record, and the burst is bounded at 1 + k × 6. Only bursts with
+// 1 ≤ k ≤ 10 are evaluated. At k = 0 the bound would be 1, which the engine
+// does not meet today: the stability points of one burst start several batches
+// (each the files due when the last one returned), 3 to 5 of them, not
+// because of a conflict. Above 10 the bound passes the 65 transactions of a
+// batch committed file by file, so it cannot fail. B7 fails when fewer than
+// half of its bursts are evaluated. The pool of 100 000 files keeps most
+// bursts in range at the RFC's rate: with 50 000 the measured k ran from 0 to
+// 12, 6.1 on average, and doubling the pool halves it. The files take seconds
+// to create against a setup of minutes. Overturned when the engine gathers a
+// burst into one batch (then k = 0 is evaluated at 1), when the key layout
+// changes (the classifier must follow it), or when bursts grow long enough
+// that most of them fall above 10 even at this pool, which the
+// evaluated-bursts floor shows.
 func BenchmarkB7(b *testing.B) {
 	b.Run("overwrite/writers=64/chmod=1000ps", benchB7)
 }
@@ -241,7 +250,7 @@ func benchB7(b *testing.B) {
 				mixed,
 			)
 
-			if touched == 0 {
+			if touched == 0 || touched > b7MaxK {
 				continue
 			}
 
@@ -281,7 +290,8 @@ func benchB7(b *testing.B) {
 	b.ReportMetric(float64(stormTotal)/stormed.Seconds(), "chmods/s")
 
 	if bursts := b.N * b5Bursts; 2*evaluated < bursts {
-		b.Fatalf("%d of %d bursts evaluated, want at least half: the storm touched no writer's "+
-			"file during the rest, so the bound went unchecked", evaluated, bursts)
+		b.Fatalf("%d of %d bursts evaluated, want at least half: the storm touched none or more "+
+			"than %d of the writers' files during the rest, so the bound went unchecked",
+			evaluated, bursts, b7MaxK)
 	}
 }
