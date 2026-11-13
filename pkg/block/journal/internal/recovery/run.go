@@ -127,9 +127,13 @@ func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 }
 
 // runRebuild is the rebuild phase: it scans the segments the attach pass
-// attached, through the same reader the open refuses on. The index carries
-// deps.ExtentLimit, no bound when it is unset; the builder never consults the
-// bound while rebuilding, so a directory past it still opens.
+// attached, through the same reader the open refuses on. The scans the
+// workers buffer are decoded, classed and fed inside the rebuild, in that
+// order — the kinds pass and the classing run before a single record is fed,
+// over the same scans — and the phase's answer fills the State's rebuilt,
+// kinds and tails fields. The index carries deps.ExtentLimit, no bound when
+// it is unset; the builder never consults the bound while rebuilding, so a
+// directory past it still opens.
 func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version) error {
 	limit := deps.ExtentLimit
 	if limit < 1 {
@@ -143,24 +147,14 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 	for _, id := range slices.Concat(st.Attached.Unverified, st.Attached.ZeroHeader) {
 		segs = append(segs, SegmentInfo{ID: id, Unverified: true})
 	}
-	out, err := rebuildIndex(ctx, rd, expect, segs, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan)
+	out, kinds, tl, err := rebuildIndex(ctx, rd, expect, segs, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan, deps.Losses, st.Attached)
 	if err != nil {
 		return err
 	}
 	st.Rebuilt = out
-	// The kinds pass reads the bodies the rebuild set aside — every loss,
-	// hold, unhold, stamp and forget record the scans carry — and decides
-	// them against their own rules, before the tail's classing judges the
-	// corrupt drops it confines onto the same scans. The maps it builds are
-	// the feed filter's; the losses it collects and the records it refuses
-	// are this phase's.
-	ks, kerr := decodeAsides(rd, expect, deps.Losses, out.Scans)
-	if kerr != nil {
-		return kerr
-	}
-	st.Kinds = ks.kindResults
-	st.Tails, err = classifyTails(rd, expect, st.Attached, out.Scans)
-	return err
+	st.Kinds = kinds
+	st.Tails = tl
+	return nil
 }
 
 // rebuildReaders is the reader bound the rebuild runs under.
