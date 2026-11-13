@@ -66,6 +66,40 @@ type Targets struct {
 	Reserve  int
 }
 
+// AdoptClasses returns the classes of the first n adopted spares: the fill
+// order fills the headroom first, then the repack reserve, then the content
+// class, and every spare past every target takes the content class. The
+// re-adoptions the spares phase records ascend by id, so the caller hands the
+// i-th class to the i-th id: the lowest ids land in the headroom.
+//
+// decision: the counting starts at the headroom, not at the reconcile spare
+// — a re-adopted spare counts toward the reconcile spare's quota while the
+// journal has none, and the reconcile spare is not built, so a count toward
+// it is a count no reader ever pays out. Counting re-adoptions toward the
+// reconcile spare's quota first is withdrawn when the reconcile work lands
+// and brings one.
+//
+// decision: a spare past every target still takes the content class, neither
+// held behind an age-gate nor unlinked as an extra: an extra spare is one
+// the pool keeps ready as content — exactly a spare its own worker would
+// have made — and dropping or ageing one out is the orphaning no spare may
+// take. Withdraw only if re-adopted extras ever show up as a cost that
+// outweighs keeping them ready.
+func (t Targets) AdoptClasses(n int) []Class {
+	classes := make([]Class, n)
+	i := 0
+	for ; i < n && i < t.Headroom; i++ {
+		classes[i] = Headroom
+	}
+	for r := 0; i < n && r < t.Reserve; i, r = i+1, r+1 {
+		classes[i] = Reserve
+	}
+	for ; i < n; i++ {
+		classes[i] = Content
+	}
+	return classes
+}
+
 // PoolCounters is the pool's read: one lock and a copy from fields the pool
 // maintains at each event that moves one, never a walk of its slices.
 type PoolCounters struct {

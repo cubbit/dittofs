@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -2227,5 +2228,33 @@ func TestPoolAnAbandonedAskIsClearedByTheSpareThatCoversIt(t *testing.T) {
 		func(c segment.PoolCounters) bool { return c.Spares == 4 })
 	if got := p.PendingForTest(); got != 0 {
 		t.Fatalf("the made spare that covered the ask left the level at %d, want 0", got)
+	}
+}
+
+// TestTargetsAdoptClassesNamesTheFillOrder pins the fill order the spares
+// phase reads through the one method that owns it: the headroom first, then
+// the repack reserve, then the content class, and every spare past every
+// target takes the content class — the order the pool's own refill fills a
+// short pool in, so a re-adopted spare lands in the class its own worker
+// would have made it in.
+func TestTargetsAdoptClassesNamesTheFillOrder(t *testing.T) {
+	same := segment.Targets{Content: 2, Headroom: 1, Reserve: 1}
+	for _, row := range []struct {
+		name string
+		t    segment.Targets
+		n    int
+		want []segment.Class
+	}{
+		{"none adopted", same, 0, nil},
+		{"the headroom first", same, 1, []segment.Class{segment.Headroom}},
+		{"then the repack reserve", same, 2, []segment.Class{segment.Headroom, segment.Reserve}},
+		{"then the content class", same, 4,
+			[]segment.Class{segment.Headroom, segment.Reserve, segment.Content, segment.Content}},
+		{"every spare past every target takes the content class", segment.Targets{}, 3,
+			[]segment.Class{segment.Content, segment.Content, segment.Content}},
+	} {
+		if got := row.t.AdoptClasses(row.n); !slices.Equal(got, row.want) {
+			t.Errorf("AdoptClasses over %d adoptions of %s got %v, want %v", row.n, row.name, got, row.want)
+		}
 	}
 }

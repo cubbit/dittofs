@@ -166,11 +166,16 @@ func rebuildReaders(deps Deps) int {
 // spare candidates and zeroes their dirty slots after refusing on every
 // range no bounded read completed — are built; the phases around them are
 // named, span-covered steps that change nothing, each checked for the
-// context, so a cancelled open is answered at the boundary the
-// cancellation reached and the directory is left for a later open. floor
-// and marks are carried for the phases that consume them — floor for the
-// rebuild, and marks for the spares phase, which withholds every candidate
-// a mark names, and for the marks and tail-proof phases not yet built.
+// context. A cancelled open answers the context's error at the boundary it
+// reached, the directory left as it began for a later open — with one
+// exception: a cancellation after the spares phase keeps that phase's
+// unlinks and zeroed slots, which a later open re-reads and re-decides;
+// cancelling under the spares phase's own span cuts it at its first read,
+// over a range the cancellation made the reader refuse, before anything is
+// written. floor and marks are carried for the phases that consume them —
+// floor for the rebuild, and marks for the spares phase, which withholds
+// every candidate a mark names, and for the marks and tail-proof phases not
+// yet built.
 func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {
 	if err := ctx.Err(); err != nil {
 		return State{}, err

@@ -145,8 +145,12 @@ func TestSpareCandidatesHasAZeroHeaderTakeACrashNeverSynced(t *testing.T) {
 // whose header verifies naming another journal: no candidate test may reach
 // it, for the identity is checked first — a foreign segment is never
 // re-adopted and never zeroed, whatever its records hold, because adopting it
-// could destroy the only copy of another journal's content. Its bytes are
-// unchanged and Rejected counts it.
+// could destroy the only copy of another journal's content. The row asks
+// spareCandidates directly with a hand-made record-less scan for it, so the
+// identity's exclusion is the only thing keeping it out: the rebuild scans
+// no foreign segment, so through the open alone its missing scan would drop
+// it before the identity answered. Its bytes are unchanged and Rejected
+// counts it.
 func TestSpareCandidatesNeverHasAForeignSegment(t *testing.T) {
 	other := core.JournalID{'a', 'n', 'o', 't', 'h', 'e', 'r'}
 	r := newRig(t)
@@ -158,6 +162,13 @@ func TestSpareCandidatesNeverHasAForeignSegment(t *testing.T) {
 
 	st := r.runCandidates()
 
+	// The record-less scan a foreign segment would show, had the rebuild
+	// scanned it: with it the identity check is the only thing excluding
+	// the id.
+	scans := append(slices.Clone(st.Rebuilt.Scans), segmentScan{ID: id, Size: testCap, RecordsEnd: format.SegmentHeaderSize})
+	if got := spareCandidates(st.Attached, scans, nil, nil); slices.Contains(got, id) {
+		t.Errorf("spareCandidates: the foreign segment %d with a record-less scan was a candidate, got %v: the identity is checked before the record-less test", id, got)
+	}
 	if got := candidates(st); slices.Contains(got, id) {
 		t.Errorf("spareCandidates: the foreign segment %d was a candidate, got %v: the identity is checked before any record-less test", id, got)
 	}
@@ -826,5 +837,87 @@ func TestSparesPhaseClassesAdoptedSparesIntoTheThreeClasses(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSparesPhaseFailsTheOpenWhenTheSlotSyncFails plants the interrupted
+// recycle and fails the one file sync its zeroing alone owes: the sync's own
+// error answers the open, no adoption is recorded — the failed sync rolled
+// the two slot writes back, so the candidate's bytes are the bytes it
+// arrived with — and the phase's directory sync is never reached, for no
+// adoption and no removal stand to be made durable.
+func TestSparesPhaseFailsTheOpenWhenTheSlotSyncFails(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	x, y := core.SegmentID(3), core.SegmentID(9)
+	plantInterruptedRecycle(r, x, y)
+	before := r.fileBytes(format.SegmentName(y))
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(y), 1, syscall.EIO)); err != nil {
+		t.Fatalf("fixture: schedule the failed file sync: %v", err)
+	}
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("spares: the failed slot sync answered err %v, want %v, the sync's own error", err, syscall.EIO)
+	}
+	if len(st.Spares.Adopted) != 0 || len(st.Spares.Unlinked) != 0 {
+		t.Errorf("spares: the open over a failed slot sync got adopted %v and unlinked %v, want neither", st.Spares.Adopted, st.Spares.Unlinked)
+	}
+	if after := r.fileBytes(format.SegmentName(y)); !slices.Equal(after, before) {
+		t.Errorf("spares: the failed sync's slot writes became durable, got %x..., want the bytes the file arrived with", after[:format.SegmentHeaderSize])
+	}
+	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs; got != want {
+		t.Errorf("spares: the failed slot sync still synced the directory, got %d syncs, want %d, the count before the run", got, want)
+	}
+	if !slices.Contains(r.listing(), format.SegmentName(y)) {
+		t.Errorf("spares: the failed slot sync removed %s; the directory holds %v", format.SegmentName(y), r.listing())
+	}
+}
+
+// TestSparesPhaseRefusesWhenItsOwnSlotReadNeverCompletes plants the
+// interrupted recycle and makes the three attempts of the phase's own
+// header-slot read fail — every read of the file before it, its header at
+// attach and the rebuild's three, answered — so the bound refuses the open
+// on the range it collected rather than zeroing a slot no read returned: the
+// error is the unreadable-ranges refusal naming the candidate, the file's
+// durable bytes are the bytes it arrived with, and nothing is adopted,
+// unlinked or synced.
+func TestSparesPhaseRefusesWhenItsOwnSlotReadNeverCompletes(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	x, y := core.SegmentID(3), core.SegmentID(9)
+	plantInterruptedRecycle(r, x, y)
+	before := r.fileBytes(format.SegmentName(y))
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+	// The fourth read of the file the open makes is the last before the
+	// phase; its header-slot read is the fifth, and the bound pays three
+	// attempts on the ones that fail.
+	if err := r.seam.Schedule(kit.FailingFrom(kit.OpRead, format.SegmentName(y), 5, 3, syscall.EIO)); err != nil {
+		t.Fatalf("fixture: schedule the refused slot read: %v", err)
+	}
+	writesBefore := r.seam.CallsFor(kit.OpWrite, format.SegmentName(y))
+
+	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+
+	var ure *core.UnreadableRangesError
+	if !errors.As(err, &ure) {
+		t.Fatalf("spares: the slot read no attempt completed answered err %v, want an UnreadableRangesError", err)
+	}
+	if len(ure.Ranges) != 1 || ure.Ranges[0].Segment != y || ure.Ranges[0].Off != 0 || ure.Ranges[0].Len != format.SegmentHeaderSize {
+		t.Errorf("spares: the refusal's ranges got %v, want exactly the candidate %d's header slot [0,%d)", ure.Ranges, y, format.SegmentHeaderSize)
+	}
+	if after := r.fileBytes(format.SegmentName(y)); !slices.Equal(after, before) {
+		t.Errorf("spares: the refused slot read changed the candidate's bytes, got %x..., want the bytes the file arrived with", after[:format.SegmentHeaderSize])
+	}
+	if got, want := r.seam.CallsFor(kit.OpWrite, format.SegmentName(y)), writesBefore; got != want {
+		t.Errorf("spares: the refused slot read preceded %d writes, want %d, the count before the run: no slot is written over an unread range", got, want)
+	}
+	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs; got != want {
+		t.Errorf("spares: the refused slot read still synced the directory, got %d syncs, want %d, the count before the run", got, want)
+	}
+	if !slices.Contains(r.listing(), format.SegmentName(y)) {
+		t.Errorf("spares: the refused slot read removed %s; the directory holds %v", format.SegmentName(y), r.listing())
 	}
 }

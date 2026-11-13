@@ -373,8 +373,18 @@ func TestRun_CancelledContextAnswersTheContextsError(t *testing.T) {
 // next phase's context check is the first thing after — and the run must
 // answer the context's error there, leaving the directory as the leg began
 // it but for the .spare.tmp unlinks the attach pass already made before the
-// cancellation landed. A phase whose boundary check is skipped, or a run that
-// answers a partial state, is what this fails.
+// cancellation landed. A cancellation after the spares phase keeps that
+// phase's unlinks and zeroed slots: the take beside the legs is re-adopted
+// with its slots zeroed and the short spare named below is unlinked, and the
+// legs at the boundaries from the assembly phase on hold those effects by the
+// bytes, never by a name-only listing, which would pass with the slots
+// unzeroed underneath. The boundary into the reappend phase — the one that
+// cancels under the spares phase's own span — is not one of those: the
+// cancellation reaches the run's reader the phase reads through, and its
+// first read refuses before anything is written, so the directory meets it
+// as it began. A phase whose boundary check is skipped, or a run that answers
+// a partial state past the spares phase without its effects, is what this
+// fails.
 //
 // The boundary into each phase is reached by cancelling when the span of the
 // phase before it opens (the open's own span for the attach pass): the phase
@@ -386,14 +396,19 @@ func TestRun_CancelledBetweenPhasesKeepsOnlySpareUnlinks(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
 	plantTake(r, 3, 0)
+	take := r.fileBytes(format.SegmentName(3))
+	short := core.SegmentID(5)
+	r.write(format.SegmentName(short), make([]byte, testCap/2))
 	r.write("notes.txt", []byte("bytes of a file the journal did not write"))
-	keep := []string{format.SegmentName(3), "notes.txt", format.FormatFileName}
+	keep := []string{format.SegmentName(3), format.SegmentName(short), "notes.txt", format.FormatFileName}
+	sparesAt := slices.IndexFunc(phases[:], func(ph phase) bool { return ph.span == core.SpanOpenSpares })
 
 	for k, into := range phases {
 		// The spare's temporary name is re-made for each leg: a leg whose
 		// attach pass ran whole before the cancellation landed dropped it —
-		// the one change a cancelled open is allowed — and a leg cancelled
-		// before the pass leaves it, so each leg starts with one to name.
+		// the one change a cancelled open before the spares phase is
+		// allowed — and a leg cancelled before the pass leaves it, so each
+		// leg starts with one to name.
 		if slices.Contains(r.listing(), format.SpareName(4)) {
 			if err := r.seam.Remove(format.SpareName(4)); err != nil {
 				t.Fatalf("remove the stale .spare.tmp: %v", err)
@@ -422,11 +437,36 @@ func TestRun_CancelledBetweenPhasesKeepsOnlySpareUnlinks(t *testing.T) {
 			t.Errorf("Run: the boundary into %s, cancelled under the phase before it, got err %v, want context.Canceled",
 				into, err)
 		}
+		pastSpares := k > sparesAt+1 // the assembly phase's boundary is the first past the spares one; reappend's own cancels the spares phase under way
+		if pastSpares {
+			// The spares phase ran to its end under this leg: the take's
+			// two slots are zeroed — its zeros-rise middle beside them,
+			// the whole file reads zeros — and the short spare is unlinked.
+			if after := r.fileBytes(format.SegmentName(3)); anyHeaderByte(after) {
+				t.Errorf("Run: a run cancelled at the boundary into %s left the take's slots unzeroed, got %x..., want the re-adopted take's header and trailer zeroed",
+					into, after[:format.SegmentHeaderSize])
+			}
+			if slices.Contains(r.listing(), format.SegmentName(short)) {
+				t.Errorf("Run: a run cancelled at the boundary into %s kept the short spare %s; directory holds %v, want it unlinked by the spares phase that completed",
+					into, format.SegmentName(short), r.listing())
+			}
+		}
 		got := r.listing()
 		for _, name := range keep {
+			if pastSpares && name == format.SegmentName(short) {
+				continue // the completed spares phase unlinked it
+			}
 			if !slices.Contains(got, name) {
 				t.Errorf("Run: a run cancelled at the boundary into %s removed %s; directory holds %v",
 					into, name, got)
+			}
+		}
+		if !pastSpares {
+			// Nothing before or at the spares phase writes: the take's
+			// bytes are the ones planted.
+			if after := r.fileBytes(format.SegmentName(3)); !bytes.Equal(after, take) {
+				t.Errorf("Run: a run cancelled at the boundary into %s changed segment 3's bytes: got %x, want the bytes planted",
+					into, after[:format.SegmentHeaderSize])
 			}
 		}
 		if extra := slices.DeleteFunc(slices.Clone(got), func(n string) bool {
