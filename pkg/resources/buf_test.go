@@ -3,6 +3,7 @@ package resources
 import (
 	"context"
 	"errors"
+	"runtime"
 	"runtime/debug"
 	"sync"
 	"testing"
@@ -86,6 +87,8 @@ func TestOversizedBufferIsNotPooled(t *testing.T) {
 		t.Skip("under the race detector sync.Pool drops some of what it is given")
 	}
 	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	// Put fills the current P's private slot, which a Get on another P cannot reach.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	p := NewBufPool(NewWaitBudget("receive", 64*mib))
 	made := countNew(p)
 	mustGet(t, p, capacity(len(classes)-1)+1).Release()
@@ -148,6 +151,8 @@ func TestGetHandsOutZeroedBytes(t *testing.T) {
 		t.Skip("under the race detector sync.Pool drops some of what it is given")
 	}
 	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	// Put fills the current P's private slot, which a Get on another P cannot reach.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	p := NewBufPool(NewWaitBudget("reply", mib))
 	first := mustGet(t, p, 3)
 	copy(first.B, "abc")

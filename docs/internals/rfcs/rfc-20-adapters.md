@@ -3063,14 +3063,14 @@ allocator only avoids allocating it again.
 package resources // pkg/resources (RFC 24 §2.8): shared by every component
 
 // Buf is one pooled buffer, shared by reference count. Its reservation is
-// released with its bytes, so budget and memory never disagree.
+// released with its bytes, so no byte a holder has is uncharged.
 type Buf struct {
 	B []byte // len is the record's or reply's; cap is the class's capacity (RFC 24 §3.1)
 	// unexported: its class, its reference count and its Reservation
 }
 
 func NewBufPool(b *WaitBudget) *BufPool                         // RFC 24 §2.5: every buffer it hands out is reserved from b, the receive or reply budget
-func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) // one reservation for key of n's class plus RFC 24 §3.1's per-request overhead (8 KiB), released with the buffer; then a buffer: refs = 1
+func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) // one reservation for key of n's class's capacity plus RFC 24 §3.1's per-request overhead (8 KiB), released with the buffer; then a buffer: refs = 1
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
 ```

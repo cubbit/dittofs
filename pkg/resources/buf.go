@@ -63,6 +63,8 @@ func classOf(n int) int {
 type Buf struct {
 	// B has the record's or reply's length. Its capacity is its class's: the
 	// class size plus, on every class but the small one, 4 KiB of header room.
+	// Only B[:n] is zeroed: past it lie the last holder's bytes, so a holder
+	// grows B only by appending to B[:0], never by reslicing past len(B).
 	B []byte
 
 	// decision: the pool keeps its own slice of the bytes Get took, since a
@@ -82,7 +84,10 @@ type Buf struct {
 	// Release cannot be told from the new holder's. Under the race detector
 	// a stale holder that reads sees the poison; a stale Release is not
 	// caught where it happens: it returns the new holder's bytes and
-	// reservation, and the panic falls on the new holder's own Release.
+	// reservation, and the next Get can hand the same bytes to a second
+	// request. The panic falls on whichever holder releases last, unless a
+	// further Get takes the buffer first; outside the race detector nothing
+	// is poisoned, so one request can read another's bytes undetected.
 	borrowers atomic.Int32
 }
 
@@ -137,7 +142,6 @@ func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) 
 		return &Buf{B: mem, mem: mem, pool: p, class: unpooled, res: res}, nil
 	}
 	b := p.free[class].Get().(*Buf)
-	b.borrowers.Store(0)
 	b.res = res
 	// decision: B is handed out at the length asked and zeroed, as
 	// make([]byte, n) would be, so a reader fills it as it is and a holder
@@ -151,6 +155,9 @@ func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) 
 	// transfer-class request.
 	b.B = b.mem[:n]
 	clear(b.B)
+	// The count leaves -1 last, so a stale call on the buffer panics until
+	// it is ready to hand out.
+	b.borrowers.Store(0)
 	return b, nil
 }
 

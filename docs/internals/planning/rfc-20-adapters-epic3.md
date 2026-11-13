@@ -119,7 +119,7 @@ cited by number and title, and how it applies here or why it does not.
 | R12 | `Get` takes one reservation for key, of n's class plus the per-request overhead of 8 KiB, before it takes any bytes; it waits in the budget, never in the allocator | MUST | RFC 20 §6.8; RFC 24 §2.5, §3.1 | T3.2 |
 | R13 | `Get` returns a `Buf` with one reference, whose `B` has its class's capacity and the record's or reply's length (D8: the n asked) | MUST | RFC 20 §6.8 | T3.2 |
 | R14 | Each class has one free list, a `sync.Pool` of `*Buf`; this epic's gate holds a `Get` on a class with a free buffer, and the `Release` that returns it, at no allocation, in the non-race cell | bound | RFC 20 §6.8, §6.10 | T3.2 |
-| R15 | `Retain` adds a borrower; a pooled buffer returns to its pool, with its reservation, only at its last borrower's `Release`, so it is never reused while a borrower holds it, budget and memory never disagree, and an idle pool holds zero reserved bytes | invariant | RFC 20 §5.3, §6.8, §9 A18; RFC 24 §2.5 | T3.2 |
+| R15 | `Retain` adds a borrower; a pooled buffer returns to its pool, with its reservation, only at its last borrower's `Release`, so it is never reused while a borrower holds it, no byte a holder has is uncharged, and an idle pool holds zero reserved bytes | invariant | RFC 20 §5.3, §6.8, §9 A18; RFC 24 §2.5 | T3.2 |
 | R16 | Under the race detector, `Release` fills the buffer with a poison byte | MUST | RFC 20 §6.8 | T3.2 |
 | R17 | A second `Release` past zero panics | MUST | RFC 20 §6.8 | T3.2 |
 
