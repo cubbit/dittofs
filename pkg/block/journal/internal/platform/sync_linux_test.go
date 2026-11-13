@@ -17,14 +17,15 @@ import (
 
 // call is one entry of a recorder's log.
 type call struct {
-	op   string // open, fsync, fdatasync, close, fallocate, pwrite or fiemap
+	op   string // open, fsync, fdatasync, close, fallocate, pwrite, fiemap or lseek
 	fd   int    // the descriptor acted on, or open's result; -1 for a failed open
 	path string // open: the path opened
 	mode int    // open: its flags; fallocate: its mode
 
 	// fallocate: the range asked for. pwrite: the offset, the bytes asked
 	// for, the bytes the call reported written and whether every byte asked
-	// for was zero.
+	// for was zero. lseek: the offset and the whence of Allocated's fallback
+	// question.
 	off, n  int64
 	asked   int
 	zero    bool
@@ -268,6 +269,21 @@ func (r *recorder) table() calls {
 			}
 
 			return fiemapIoctl(fd, fm)
+		},
+		lseek: func(fd int, off int64, whence int) (int64, error) {
+			c := call{
+				op:    "lseek",
+				fd:    fd,
+				off:   off,
+				asked: whence,
+			}
+			c.dev, c.ino = fdIdentity(fd)
+
+			if err := r.add(c); err != nil {
+				return -1, err
+			}
+
+			return unix.Seek(fd, off, whence)
 		},
 	}
 }

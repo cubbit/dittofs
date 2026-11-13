@@ -28,9 +28,10 @@ const (
 // rather than the crash seam: nothing in its bytes differs from a spare the
 // pool made — a hole reads as zeros — so only the platform's allocation query
 // can catch it, and the phase unlinks it and adopts nothing, leaving its id
-// for the pool to make again. Where the filesystem does not answer FIEMAP the
-// platform cannot see the hole, so the row skips naming that: no assertion
-// under it could hold.
+// for the pool to make again. The row never asks the query itself: the guard
+// below asks the punch's own effect — the blocks it freed — and where a
+// filesystem answers neither extents nor holes the phase's answer will fail
+// the row here as anywhere, never skip it away.
 func TestSparesPhaseUnlinksASpareWithAnAllocatedHole(t *testing.T) {
 	dir := t.TempDir()
 	fs := platform.NewOS(dir)
@@ -115,26 +116,17 @@ func TestSparesPhaseUnlinksASpareWithAnAllocatedHole(t *testing.T) {
 		t.Fatalf("fixture: close %s: %v", name, err)
 	}
 
-	// The skip guard, asked with the query the phase itself asks: where the
-	// platform's answer is whole, the filesystem does not report extents here
-	// and the row has nothing to assert.
-	q, err := fs.Open(name)
-	if err != nil {
-		t.Fatalf("fixture: open %s for the guard: %v", name, err)
+	// The guard asks the punch's own effect, never the query the phase asks:
+	// blocks the punch freed are the hole, whatever the platform would answer
+	// over it. A punch that freed nothing zeroed in place — the filesystem
+	// deallocates no block inside a block boundary — so no extent hole exists
+	// and nothing, the phase included, could see one.
+	var after syscall.Stat_t
+	if err = syscall.Stat(filepath.Join(dir, name), &after); err != nil {
+		t.Fatalf("fixture: stat %s: %v", name, err)
 	}
-	p, ok := q.(allocProber)
-	if !ok {
-		t.Fatalf("the platform's file does not implement the allocation query the spares phase asserts")
-	}
-	whole, aerr := p.Allocated()
-	if cerr := q.Close(); aerr == nil {
-		aerr = cerr
-	}
-	if aerr != nil {
-		t.Skipf("the allocation query over %s failed (%v), so the row cannot check the hole", name, aerr)
-	}
-	if whole {
-		t.Skipf("%s does not report the punched hole to FIEMAP, so the size alone is what the open sees", name)
+	if after.Blocks >= fi.Blocks {
+		t.Skipf("%s zeroed the punch in place (%d blocks before, %d after), so no allocated hole exists to catch", name, fi.Blocks, after.Blocks)
 	}
 
 	st, err := Run(context.Background(), Deps{
