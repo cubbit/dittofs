@@ -3154,6 +3154,18 @@ acquiring the storage guard. Reclamation **MUST** repoint under the file index
 alone and take the storage guard only to unlink, holding no other lock: the
 guard is the last lock in the order, so nothing may be acquired after it.
 
+The guard has two forms. A reader holds it shared, as a *reference*: once
+granted, it never waits on a lock or on a drain, so it may be held across
+later acquisitions. A stream may keep one on its active segment across many
+appends, and a roll may hold two at once, naming the successor before it
+releases the predecessor. Granting a reference can wait on an open of the same
+segment in flight and on the descriptor budget's reclaim — which closes only a
+descriptor no reference holds, and never waits for one — and it **MUST NOT**
+be requested while holding the file index or the file map. Only the exclusive
+form, the drain that waits for a segment's references, is the guard the order,
+the one-lock-per-domain rule and the last-lock rule above describe: it
+**MUST** be taken holding no other lock and no reference.
+
 **No lock may be held across the `Offload` callback** ([§3.3](#3.3%20Offload)), which hands control
 to code that may take seconds.
 
@@ -3210,7 +3222,8 @@ freed or reused.
 
 The mechanism is a **shared/exclusive guard per segment**: readers hold it
 shared; an unlink or a recycle ([RFC 28 §2.2](rfc-28-journal-format.md#2.2%20Segments)) takes it exclusively, which waits for
-in-flight reads of that segment only, and unlinks or renames only then: a
+in-flight reads and any reference a stream or a roll holds and nothing else,
+and unlinks or renames only then: a
 recycled segment's storage is reused, so a read still holding its old
 resolution would read the new life's bytes. An implementation **MAY**
 use another mechanism with the same guarantee, provided freeing storage is still
@@ -3404,7 +3417,7 @@ A check here fails by **reaching a state it cannot leave**, or by consuming with
 | [§7.1](#7.1%20Releasing%20storage) storage returned | Each `Stats` read is taken with the spare pool at its target and no write or reservation in flight. Release every held extent of a sealed segment; assert it is retired without a `Repack` call, and the storage in use, `UsedBytes` − `Spares` × the segment cap, falls by its size. Release part of another; assert the storage in use is unchanged and `UnreclaimedBytes` grows by the released bytes. |
 | [§8.6](#8.6%20Progress) reclaim not starved | Hold sustained read load on one segment; assert reclamation still acquires it within a bounded time. |
 | [§8.1](#8.1%20What%20must%20not%20block%20what) removals do not wait on offload | Stall an offload pass inside `fn`, mid-upload; delete another file whose records share a segment with the offered ones, then truncate and deallocate the offered file itself. Assert each call returns without waiting for `fn`, and that the deleted file's storage is reclaimed once the pass returns. A design that holds a lock across the pass blocks the delete until the upload ends. |
-| [§8.3](#8.3%20Lock%20ordering%2C%20and%20what%20may%20never%20be%20held) no deadlock | Run readers, writers, fills, repack and release concurrently on the same segments under a deadlock detector and a lock-order recorder; assert no cycle, every acquisition follows the total order, no two locks of one domain are held together, the storage guard is taken with no other lock held, and no lock is held across the offload callback. |
+| [§8.3](#8.3%20Lock%20ordering%2C%20and%20what%20may%20never%20be%20held) no deadlock | Run readers, writers, fills, repack and release concurrently on the same segments under a deadlock detector and a lock-order recorder; assert no cycle, every acquisition follows the total order, no two exclusive locks of one domain are held together, the drain is taken with no other lock or reference held, a reference is never requested under the file index or the file map, and no lock is held across the offload callback. |
 | [§8.7](#8.7%20Shutdown) background joined | Close the store with a repack in flight; assert it stops before any segment is closed and no work continues afterwards. |
 | [§7.2](#7.2%20Repack) removal records dropped per extent | Keep one segment holding file X's filled content at an old version for the whole run; on file Y, issue 10^5 truncates, deallocates and releases, repacking as it goes. Assert Y's header-only records are dropped once no segment holds an older record of Y, and `HeadroomBytes` stays above half its size. A drop test against the lowest pair journal-wide keeps every one of them behind X's segment and drains the headroom. Then, in one file Z, keep one segment holding Z's filled content over `[0, 1 MiB)` for the whole run, and issue 10^5 releases and deallocates over `[1 GiB, 2 GiB)` of Z; assert they are dropped too. A drop test per file keeps them all behind Z's own old segment. |
 | [§7.2](#7.2%20Repack) repack aimed at a share | Fill share A to its limit with records interleaved in segments mostly holding share B's unreclaimed bytes, and leave sparser segments of B alone elsewhere; `Repack` with A's scope. Assert `freed` comes from segments holding A's records and A's `UsedBytes` falls. Repeat with a segment-set scope naming two segments; assert only they are repacked. A journal-wide pass spends its budget on B's sparser segments. |
