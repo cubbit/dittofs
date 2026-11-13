@@ -51,7 +51,7 @@ func TestASealFinishingUnderARollingWaitsRefOnce(t *testing.T) {
 	// whatever the scheduler interleaves outside the parked state.
 	taken := make(chan struct{})
 	letThrough := make(chan struct{})
-	rolledToWait := make(chan struct{})
+	rolledToWait := make(chan struct{}, 1)
 	e.s.SetRollTakeHook(func() {
 		close(taken)
 		<-letThrough
