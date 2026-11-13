@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -87,8 +88,11 @@ type kindState struct {
 	whole map[core.Seq]bool
 
 	// superseded holds, per seq a synced loss record of the superseded
-	// reason names, the extents its records feed clipped over.
-	superseded map[core.Seq][]core.Extent
+	// reason names, the extents its records feed clipped over and the synced
+	// bit every such loss payload carried — constant true today, since only
+	// a synced superseded loss reaches the map, kept a field so the drops a
+	// confined remainder confines read the bit the records named.
+	superseded map[core.Seq]supersededLoss
 
 	// forget holds the greatest seq each share tag's forget records name.
 	forget map[core.ShareTag]core.Seq
@@ -100,6 +104,34 @@ type kindState struct {
 	// pieces holds the (dropped, extent) pairs already delivered, so two
 	// identical loss records — a copy carried forward — report one loss.
 	pieces map[lossPiece]bool
+
+	// confined holds, by location, the content records whose superseded kept
+	// remainder did not verify: the feed withholds that exact copy — never
+	// its sequence number, or a healthy equal-seq twin elsewhere would
+	// withhold with it — and the corrupt drops its kept runs became name the
+	// same place for the classing and the append a later open makes.
+	confined map[index.RecordAt]bool
+
+	// copies holds, per fed record — its file and the seq every copy
+	// carries — where the fed copies sit, for the repoint pass after the
+	// cuts: a copy the collapse kept in a segment the open ends or saw fail
+	// moves to the greatest copy a kept segment holds.
+	copies map[copyKey][]index.RecordAt
+}
+
+// supersededLoss is the union of every synced-superseded loss record naming
+// one seq: the extents its records feed clipped over and the synced bit the
+// loss payloads carried.
+type supersededLoss struct {
+	extents []core.Extent
+	synced  bool
+}
+
+// copyKey is one record across its copies: the file it belongs to and the
+// sequence number every copy of it carries.
+type copyKey struct {
+	file core.FileID
+	seq  core.Seq
 }
 
 // lossPiece is one extent of one dropped record, the key a loss record names.
@@ -125,10 +157,12 @@ type lossPiece struct {
 func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []segmentScan) (kindState, error) {
 	ks := kindState{
 		whole:      map[core.Seq]bool{},
-		superseded: map[core.Seq][]core.Extent{},
+		superseded: map[core.Seq]supersededLoss{},
 		forget:     map[core.ShareTag]core.Seq{},
 		failed:     map[core.Seq]bool{},
 		pieces:     map[lossPiece]bool{},
+		confined:   map[index.RecordAt]bool{},
+		copies:     map[copyKey][]index.RecordAt{},
 	}
 	if losses != nil {
 		for _, seq := range losses.Failed() {
@@ -190,7 +224,10 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 	// also drops is covered only by that record, never by its own name.
 	for _, d := range dl {
 		if d.l.Synced && d.l.Reason == format.LossSuperseded {
-			ks.superseded[d.l.Dropped] = append(ks.superseded[d.l.Dropped], d.h.Extent)
+			sup := ks.superseded[d.l.Dropped]
+			sup.extents = append(sup.extents, d.h.Extent)
+			sup.synced = true
+			ks.superseded[d.l.Dropped] = sup
 		} else {
 			ks.whole[d.l.Dropped] = true
 		}
@@ -236,6 +273,10 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 		}
 	}
 	for _, tag := range slices.Sorted(maps.Keys(highest)) {
+		// A covered forget reaches the cover map above but never this
+		// slice: the record that covers its seq drops it whole, so withholds
+		// below its seq are still the truth of the feed, while a collected
+		// forget would name a tag whose seq the feed dropped another way.
 		ks.Forgets = append(ks.Forgets, OpenForget{Tag: tag, Seq: highest[tag]})
 	}
 
@@ -284,8 +325,9 @@ func (ks *kindState) covered(seq core.Seq, tag core.ShareTag) bool {
 }
 
 // fromFormat maps a decoded loss reason to the reason the event it names
-// carries. It panics on a reason that names none, which no decoded body can
-// hold, for the format's decoder refuses one.
+// carries. The panics on a reason that names none are chosen over refusing
+// because no decoded body can hold one — the format's decoder already
+// refused it before the body reached this converter.
 func fromFormat(r format.LossReason) core.LossReason {
 	switch r {
 	case format.LossCorrupt:
@@ -323,4 +365,184 @@ func verifyAsideBody(rd *reader, identity core.JournalID, sc *segmentScan, h for
 		return format.RecordBody{}, core.ErrCorrupt
 	}
 	return vb, nil
+}
+
+// keptRuns returns the runs of e the cuts leave, in offset order: the runs a
+// record a synced superseded loss names feeds over, its extent minus the
+// union of every extent the loss records naming it cover.
+func keptRuns(e core.Extent, cuts []core.Extent) []core.Extent {
+	cs := slices.Clone(cuts)
+	slices.SortFunc(cs, func(a, b core.Extent) int { return cmp.Compare(a.Off, b.Off) })
+	end := e.Off + e.Len
+	var out []core.Extent
+	cursor := e.Off
+	for _, c := range cs {
+		lo, hi := max(c.Off, e.Off), min(c.Off+c.Len, end)
+		if lo > cursor {
+			out = append(out, core.Extent{Off: cursor, Len: lo - cursor})
+		}
+		cursor = max(cursor, hi)
+	}
+	if cursor < end {
+		out = append(out, core.Extent{Off: cursor, Len: end - cursor})
+	}
+	return out
+}
+
+// feedFilter is the serial feed's per-record decision, built once over the
+// kinds the decode pass collected before a single record is fed. Each
+// buffered record meets every on-disk aside rule in the fixed order below —
+// withheld records' segments and fed copies are collected as the feed runs,
+// so the liveness the State carries and the repoint pass reads are answers
+// over the records that actually sat on the segments the open scanned.
+type feedFilter struct {
+	ks *kindState
+	// losses indexes, per named seq, the collected losses naming it;
+	// forgets, per tag, the collected forgets of the tag; drops, per failed
+	// seq, the collected read-only note of the seq.
+	losses  map[core.Seq][]int
+	forgets map[core.ShareTag][]int
+	drops   map[core.Seq]int
+}
+
+// newFeedFilter makes the filter's lookups over the collected losses,
+// forgets and read-only drops, in collection order.
+func (ks *kindState) newFeedFilter() *feedFilter {
+	f := &feedFilter{ks: ks,
+		losses:  make(map[core.Seq][]int, len(ks.Losses)),
+		forgets: make(map[core.ShareTag][]int, len(ks.Forgets)),
+		drops:   make(map[core.Seq]int, len(ks.ReadOnlyDrops)),
+	}
+	for i := range ks.Losses {
+		f.losses[ks.Losses[i].Dropped] = append(f.losses[ks.Losses[i].Dropped], i)
+	}
+	for i := range ks.Forgets {
+		f.forgets[ks.Forgets[i].Tag] = append(f.forgets[ks.Forgets[i].Tag], i)
+	}
+	for i := range ks.ReadOnlyDrops {
+		f.drops[ks.ReadOnlyDrops[i].Dropped] = i
+	}
+	return f
+}
+
+// appendSeg joins id to the tail of segs once, so one record seen twice in
+// one segment names it once.
+func appendSeg(segs []core.SegmentID, id core.SegmentID) []core.SegmentID {
+	if !slices.Contains(segs, id) {
+		segs = append(segs, id)
+	}
+	return segs
+}
+
+// feed judges one buffered record against every rule the decoded asides
+// carry, and feeds what survives to do — the serial feed drives a whole scan
+// by it, so this is the only path a converted record reaches the builder
+// through. The rules decide, in feed order:
+//
+//   - a seq on the failed list, a forget of the record's tag above its seq,
+//     or a loss record naming the seq whole withholds the record whole;
+//   - a location the remainder pass confined withholds that exact copy — by
+//     where it sits, never by its seq, or a healthy equal-seq twin elsewhere
+//     would withhold with it;
+//   - a synced superseded loss naming the record clips the runs of the
+//     record's own extent outside the union of the loss extents, and feeds
+//     the clipped runs under the record's own numbers;
+//   - everything else feeds, and every fed location joins the copies the
+//     repoint pass reads.
+//
+// Every rule that names the record — a loss whole or superseded, a forget of
+// the tag, the failed list — collects the segment the record sits in,
+// whatever the decision was: withheld records' homes included, for a withheld
+// record stays on disk until the same copy that retires it does, and the
+// liveness the State carries is what names when that may be.
+//
+// A withheld record's numbers fold into Withheld, so the counters a later
+// pass raises open above the numbers the feed never saw.
+func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
+	ks := f.ks
+	seq := rec.Numbers.Seq
+	for _, i := range f.losses[seq] {
+		ks.Losses[i].Segments = appendSeg(ks.Losses[i].Segments, rec.Segment)
+	}
+	for _, i := range f.forgets[rec.Tag] {
+		if seq < ks.Forgets[i].Seq {
+			ks.Forgets[i].Segments = appendSeg(ks.Forgets[i].Segments, rec.Segment)
+		}
+	}
+	if ks.failed[seq] {
+		if i, ok := f.drops[seq]; ok {
+			ks.ReadOnlyDrops[i].Segments = appendSeg(ks.ReadOnlyDrops[i].Segments, rec.Segment)
+		} else {
+			// One note per seq, its event the first record the feed finds
+			// answers with — the feed runs in one deterministic order, so
+			// the note names the same record whatever segment holds a copy.
+			ks.ReadOnlyDrops = append(ks.ReadOnlyDrops, ReadOnlyDrop{
+				Ev: core.LossEvent{
+					Share:   rec.Tag,
+					File:    rec.File,
+					Extent:  core.Extent{Off: rec.Off, Len: rec.Len},
+					Version: rec.Numbers.Version,
+					Reason:  core.LossFailedWindow,
+				},
+				Dropped:  seq,
+				Segments: []core.SegmentID{rec.Segment},
+			})
+			f.drops[seq] = len(ks.ReadOnlyDrops) - 1
+		}
+	}
+
+	withheld := ks.failed[seq] || ks.whole[seq] ||
+		ks.confined[index.RecordAt{Segment: rec.Segment, Offset: rec.At}]
+	for _, i := range f.forgets[rec.Tag] {
+		if seq < ks.Forgets[i].Seq {
+			withheld = true
+		}
+	}
+	if !withheld {
+		if sup, named := ks.superseded[seq]; named &&
+			(rec.Kind == index.RecWrite || rec.Kind == index.RecFill) {
+			kept := keptRuns(core.Extent{Off: rec.Off, Len: rec.Len}, sup.extents)
+			if len(kept) > 0 {
+				for _, run := range kept {
+					rr := rec
+					rr.Off, rr.Len = run.Off, run.Len
+					if err := do(rr); err != nil {
+						return err
+					}
+				}
+				f.noteCopy(rec)
+				return nil
+			}
+			withheld = true // the loss extents cover the record's whole extent
+		}
+	}
+	if withheld {
+		if rec.Numbers.Compare(ks.Withheld) > 0 {
+			ks.Withheld = rec.Numbers
+		}
+		return nil
+	}
+	// decision: the clip a superseded loss record carries applies to the
+	// content records it names — its write and fill alone. A removal it names
+	// feeds whole: the loss's own cut is a content cut below the loss's
+	// version, while a removal's marker runs from its offset to the end of
+	// the file, so clipping the removal to the loss's extent would leave the
+	// bytes past the extent held by the removal's unclipped half. Overturned
+	// by a loss reason that ever names removal records.
+	if err := do(rec); err != nil {
+		return err
+	}
+	f.noteCopy(rec)
+	return nil
+}
+
+// noteCopy joins where rec sits to the copies of its seq, one entry per fed
+// record: a record clipped into runs is one copy, and the runs share where
+// it sits.
+func (f *feedFilter) noteCopy(rec index.Record) {
+	k := copyKey{file: rec.File, seq: rec.Numbers.Seq}
+	at := index.RecordAt{Segment: rec.Segment, Offset: rec.At}
+	if !slices.Contains(f.ks.copies[k], at) {
+		f.ks.copies[k] = append(f.ks.copies[k], at)
+	}
 }

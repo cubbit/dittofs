@@ -577,10 +577,11 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 		byID[i] = i
 	}
 	slices.SortFunc(byID, func(a, c int) int { return cmp.Compare(scans[a].ID, scans[c].ID) })
+	filter := ks.newFeedFilter()
 	for _, i := range byID {
 		sc := &scans[i]
 		for _, rec := range sc.Records {
-			if ferr := b.Feed(rec); ferr != nil {
+			if ferr := filter.feed(rec, b.Feed); ferr != nil {
 				// The refused record's error answers as the phase's other
 				// refusals do: as the unreadable ranges when any range was
 				// collected, otherwise as itself, the index discarded unbuilt.

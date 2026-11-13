@@ -10,6 +10,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -109,8 +110,245 @@ func TestRunPlacesAnUnsyncedLossRecordWithEveryField(t *testing.T) {
 	if got := st.Kinds.Losses[0]; got.Ev != want || got.Dropped != 100 {
 		t.Errorf("Run: the collected OpenLoss got %+v, want the placed event %+v of the dropped record 100", got, want)
 	}
-	if got := st.Kinds.Losses[0].Segments; len(got) != 0 {
-		t.Errorf("Run: the collected loss holds segments %v, want none yet: the feed that collects them is not built", got)
+	if got := st.Kinds.Losses[0].Segments; !slices.Equal(got, []core.SegmentID{2}) {
+		t.Errorf("Run: the collected loss holds segments %v, want [2]: the segment of the one withheld copy the feed saw", got)
+	}
+}
+
+// kindsFile is the file the seeding rig's default record of kind k names, so
+// a test's records and the aside records naming them agree on one file.
+func kindsFile(k byte) core.FileID { return core.NewFileID(rec(k, nil).FileID) }
+
+// writeRec builds one write record of its own numbers over [off, off+n),
+// carrying the payload its length names so a verification pass can check it.
+func writeRec(seq, counter uint64, off, n int64) raw.Record {
+	return rec(1, func(rc *raw.Record) {
+		rc.Seq, rc.Version = seq, raw.Version{Counter: counter}
+		rc.Offset, rc.Length = uint64(off), uint64(n)
+		rc.Write = &raw.WriteBody{MTime: 1, Payload: make([]byte, n)}
+	})
+}
+
+// lossRec builds one loss record: its header names the file, extent and
+// version its event reads, and its body the dropped seq and the flag word.
+func lossRec(file core.FileID, dropped, seq, counter uint64, off, n int64, flags uint64) raw.Record {
+	return rec(10, func(rc *raw.Record) {
+		rc.FileID = file.Bytes()
+		rc.Seq, rc.Version = seq, raw.Version{Counter: counter}
+		rc.Offset, rc.Length = uint64(off), uint64(n)
+		rc.Loss = &raw.LossBody{Dropped: dropped, Flags: flags}
+	})
+}
+
+// kindsRun opens the rig's journal with no loss sink and returns the state,
+// refusing the test on the open's own refusal.
+func kindsRun(t *testing.T, r *rig) State {
+	t.Helper()
+	st, err := r.asideRun(nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return st
+}
+
+// TestRunWithholdsTheWholeRecordAnUnsyncedLossNames holds the feed filter's
+// whole-loss rule: a loss record whose payload says unsynced names a record
+// by sequence number, so the record is withheld whole however intact its
+// payload — repaired bytes under a position the loss named still belong to a
+// record the journal reported lost — while the write it superseded, Q over
+// the same extent, feeds again at its own version, precedence as if R never
+// was. An unsynced loss cuts nothing and marks nothing.
+func TestRunWithholdsTheWholeRecordAnUnsyncedLossNames(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	seg := buildSeg(2,
+		writeRec(10, 3, 0, 64),                  // Q at v3
+		writeRec(11, 5, 0, 64),                  // R at v5, the record the loss names
+		lossRec(file, 11, 12, 201, 0, 64, 1<<8), // unsynced, corrupt
+	)
+	r.plantSeg(2, seg)
+
+	st := kindsRun(t, r)
+
+	p, ok := st.Rebuilt.Index.Lookup(file, 0)
+	if !ok {
+		t.Fatalf("Lookup over [0,64) missed, want Q re-held at its own version")
+	}
+	if p.Version.Counter != 3 {
+		t.Errorf("the record over [0,64) holds version %d, want 3: R is withheld whole and Q re-held, precedence as if R never was", p.Version.Counter)
+	}
+	for _, ch := range st.Rebuilt.Index.Since(file, core.Version{}) {
+		if ch.Kind != core.ChangeWrite {
+			t.Errorf("Since yielded %+v over a file an unsynced loss names, want the held write alone: an unsynced loss cuts nothing and marks nothing", ch)
+		}
+	}
+	if got := st.Kinds.Losses[0].Segments; !slices.Equal(got, []core.SegmentID{2}) {
+		t.Errorf("the loss names segments %v, want [2]: the home of the one withheld copy", got)
+	}
+}
+
+// TestRunWithholdsEveryCopyOfALossNamedRecord holds the by-sequence reach of
+// a loss record against copies: two healthy copies of the named record sit
+// in two segments and neither feeds — a surviving twin would resurrect a
+// loss the journal already reported — so the rebuilt index holds nothing of
+// the file and no marker or cut brings any copy back.
+func TestRunWithholdsEveryCopyOfALossNamedRecord(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	r.plantSeg(1, buildSeg(1, writeRec(11, 5, 0, 64)))
+	r.plantSeg(2, buildSeg(2, writeRec(11, 5, 0, 64))) // the carried copy
+	r.plantSeg(3, buildSeg(3, lossRec(file, 11, 12, 201, 0, 64, 1<<8)))
+
+	st := kindsRun(t, r)
+
+	if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+		t.Errorf("Lookup over the loss-named record's extent hit, want a miss: a twin does not resurrect a reported loss")
+	}
+	if got := st.Rebuilt.Index.FileEntries(file); len(got) != 0 {
+		t.Errorf("the index holds %d entries of the loss-named file, want none: every copy is withheld", len(got))
+	}
+	if got := st.Kinds.Losses[0].Segments; !slices.Equal(got, []core.SegmentID{1, 2}) {
+		t.Errorf("the loss names segments %v, want [1 2]: the home of every withheld copy", got)
+	}
+}
+
+// TestRunWithholdsAForgottenTagBelowTheForgetsSeq holds the forget rule over
+// the feed: no record of the forgotten tag below the forget's seq feeds,
+// whatever its kind — writes, a truncate, an offloaded mark — so the withheld
+// truncate builds no removal marker and the rebuilt file of the tag holds
+// nothing below the forget, while a write above the forget's seq feeds
+// normally. The forget collects the home segment of every record it withheld.
+func TestRunWithholdsAForgottenTagBelowTheForgetsSeq(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	truncate := rec(4, func(rc *raw.Record) {
+		rc.Seq, rc.Version = 13, raw.Version{Counter: 13}
+		rc.Offset, rc.Length = 0x100, 0
+	})
+	offloaded := rec(8, func(rc *raw.Record) {
+		rc.Seq, rc.Version = 14, raw.Version{Counter: 14}
+		rc.Offset, rc.Length = 0x200, 16
+	})
+	r.plantSeg(1, buildSeg(1, writeRec(10, 10, 0, 16), writeRec(11, 11, 0x80, 16), truncate))
+	r.plantSeg(2, buildSeg(2, writeRec(12, 12, 0x300, 16), offloaded))
+	r.plantSeg(3, buildSeg(3, forgetRec(7, 30), writeRec(40, 40, 0x400, 16)))
+
+	st := kindsRun(t, r)
+
+	for _, off := range []int64{0, 0x80, 0x100, 0x200, 0x300} {
+		if _, ok := st.Rebuilt.Index.Lookup(file, off); ok {
+			t.Errorf("Lookup at %d hit, want a miss: the record of the tag is below the forget's seq and withholds", off)
+		}
+	}
+	for _, ch := range st.Rebuilt.Index.Since(file, core.Version{}) {
+		if ch.Kind != core.ChangeWrite {
+			t.Errorf("Since yielded %+v over a forgotten file, want the held write above the forget alone: a withheld truncate builds no marker", ch)
+		}
+	}
+	if p, ok := st.Rebuilt.Index.Lookup(file, 0x400); !ok {
+		t.Fatalf("Lookup at 0x400 missed, want the write above the forget's seq to feed")
+	} else if p.Seq != 40 {
+		t.Errorf("the record at 0x400 holds seq %d, want 40: a write above the forget feeds with its own numbers", p.Seq)
+	}
+	if len(st.Kinds.Forgets) != 1 {
+		t.Fatalf("State.Kinds.Forgets holds %d entries, want the one forget of the tag", len(st.Kinds.Forgets))
+	}
+	if got := st.Kinds.Forgets[0]; got.Tag != 7 || got.Seq != 30 {
+		t.Errorf("the forget got tag %d at seq %d, want tag 7 at seq 30", got.Tag, got.Seq)
+	}
+	if got := st.Kinds.Forgets[0].Segments; !slices.Equal(got, []core.SegmentID{1, 2}) {
+		t.Errorf("the forget of tag 7 names segments %v, want [1 2]: the home of every record it withheld", got)
+	}
+}
+
+// TestRunWithholdsARecordTheFailedListNamesAsAReadOnlyDrop holds the
+// read-only-failure rule: each seq the loss sink's failed list names that a
+// scan finds on disk withholds whole — in every segment holding it, one note
+// per seq — and the note carries the found record's own file, extent,
+// version and tag with the reason a failed sync window takes, unsynced. No
+// ring event is raised for it: Place is never handed one.
+func TestRunWithholdsARecordTheFailedListNamesAsAReadOnlyDrop(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	failed := writeRec(77, 5, 0, 32)
+	r.plantSeg(1, buildSeg(1, failed))
+	r.plantSeg(2, buildSeg(2, writeRec(77, 5, 0, 32), writeRec(78, 6, 0x4100, 16))) // the copy, and G feeding
+
+	sink := &lossSink{failed: []core.Seq{77}}
+	st, err := r.asideRun(sink)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+		t.Errorf("Lookup over the failed record's extent hit, want a miss: the failed seq withholds whole")
+	}
+	if p, ok := st.Rebuilt.Index.Lookup(file, 0x4100); !ok {
+		t.Fatalf("Lookup at 0x4100 missed, want the record no rule names to feed")
+	} else if p.Seq != 78 {
+		t.Errorf("the record at 0x4100 holds seq %d, want 78", p.Seq)
+	}
+	if len(sink.placed) != 0 {
+		t.Errorf("the sink was handed %d loss events for a failed-list drop, want none: no ring event and no generation raise", len(sink.placed))
+	}
+	if len(st.Kinds.ReadOnlyDrops) != 1 {
+		t.Fatalf("State.Kinds.ReadOnlyDrops holds %d drops, want the one note of the failed seq: %+v", len(st.Kinds.ReadOnlyDrops), st.Kinds.ReadOnlyDrops)
+	}
+	got := st.Kinds.ReadOnlyDrops[0]
+	want := ReadOnlyDrop{
+		Ev: core.LossEvent{
+			Share:   7,
+			File:    file,
+			Extent:  core.Extent{Off: 0, Len: 32},
+			Version: core.Version{Counter: 5},
+			Reason:  core.LossFailedWindow,
+		},
+		Dropped: 77,
+	}
+	if got.Ev != want.Ev || got.Dropped != want.Dropped {
+		t.Errorf("the read-only drop got %+v of seq %d, want %+v of seq 77: the found record's own header with the failed-window reason, unsynced", got, got.Dropped, want)
+	}
+	if !slices.Equal(got.Segments, []core.SegmentID{1, 2}) {
+		t.Errorf("the read-only drop names segments %v, want [1 2]: every segment still holding the record", got.Segments)
+	}
+}
+
+// TestRunWithholdsARecordTwoRulesNameTogether holds the overlap row: a
+// record both a forget and an unsynced loss name — whichever drops it, no
+// other path re-holds it — withholds whole, while a record of the same tag
+// after the forget's seq feeds normally and the loss, covered by no other
+// rule, still delivers its event once.
+func TestRunWithholdsARecordTwoRulesNameTogether(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	r.plantSeg(1, buildSeg(1, writeRec(10, 3, 0, 16)))
+	r.plantSeg(2, buildSeg(2, writeRec(40, 4, 0x4100, 16)))
+	r.plantSeg(3, buildSeg(3, forgetRec(7, 30), lossRec(file, 10, 31, 201, 0, 16, 1<<8)))
+
+	sink := &lossSink{}
+	st, err := r.asideRun(sink)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+		t.Errorf("Lookup over the twice-named record's extent hit, want a miss: no path re-holds what one rule dropped")
+	}
+	if p, ok := st.Rebuilt.Index.Lookup(file, 0x4100); !ok {
+		t.Fatalf("Lookup at 0x4100 missed, want the write after the forget to feed")
+	} else if p.Seq != 40 {
+		t.Errorf("the record at 0x4100 holds seq %d, want 40", p.Seq)
+	}
+	if len(sink.placed) != 1 {
+		t.Errorf("the sink was handed %d loss events, want the one unsynced loss, covered by no rule", len(sink.placed))
+	}
+	if st.Kinds.Withheld != (index.Numbers{Version: core.Version{Counter: 3}, Seq: 10}) {
+		t.Errorf("Withheld got %+v, want the greatest numbers a withheld record carried ({3,10})", st.Kinds.Withheld)
 	}
 }
 
