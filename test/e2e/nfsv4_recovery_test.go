@@ -91,8 +91,9 @@ func TestServerRestartRecovery(t *testing.T) {
 		t.Logf("StopGracefully returned (non-fatal): %v", err)
 	}
 
-	// Give OS time to release ports and resources
-	time.Sleep(2 * time.Second)
+	// The new server binds the same NFS port: wait until the old process's
+	// listener is gone rather than sleeping a fixed time.
+	waitPortBindable(t, nfsPort, 10*time.Second)
 
 	// -- Phase 3: Start NEW server with same data directories --
 
