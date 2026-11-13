@@ -479,6 +479,21 @@ func TestHandleClose_TwiceAndConcurrently(t *testing.T) {
 	}
 }
 
+// A Close of a share the core's own close already fenced answers nil, as it
+// did before the fence existed: a cleanup that shut the core down first must
+// not read its handles' end as the refusal. The double Close while the core
+// lives is still the one that says ErrClosed, above.
+func TestHandleClose_AfterTheCoreClosed(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	if err := c.Close(); err != nil {
+		t.Fatalf("the core's Close: %v", err)
+	}
+	if returned, err := closeWithin(s); !returned || err != nil {
+		t.Fatalf("the Close of the fenced share = %v (returned: %v), want nil at once", err, returned)
+	}
+}
+
 // A call refused with ErrClosed leaves no in-flight count behind.
 func TestHandleClose_RefusedCallLeavesNoCount(t *testing.T) {
 	c, _ := newTestCore(t)
