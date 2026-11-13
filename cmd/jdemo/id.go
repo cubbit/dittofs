@@ -40,13 +40,16 @@ func decodeHex16(s string) ([16]byte, error) {
 }
 
 // parseVersion parses a version: "0" or a decimal counter, or "<epoch>/<counter>"
-// when the epoch half matters. It names its input in every refusal.
+// when the epoch half matters, each half optionally carrying the "v" the
+// pane prints before a counter. It names its input in every refusal.
 func parseVersion(s string) (journal.Version, error) {
 	bad := fmt.Errorf("not a version %q", s)
 	if s == "" {
 		return journal.Version{}, bad
 	}
+	s = strings.TrimPrefix(s, "v")
 	if e, c, ok := strings.Cut(s, "/"); ok {
+		e, c = strings.TrimPrefix(e, "v"), strings.TrimPrefix(c, "v")
 		epoch, err1 := strconv.ParseUint(e, 10, 64)
 		counter, err2 := strconv.ParseUint(c, 10, 64)
 		if err1 != nil || err2 != nil {

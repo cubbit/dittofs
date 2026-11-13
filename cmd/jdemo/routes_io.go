@@ -124,6 +124,20 @@ func (s *Server) handle(tag journal.ShareTag) (*journal.Handle, error) {
 	return h, nil
 }
 
+// dropHandle closes the tag's handle and drops it from the registry;
+// Forget is refused while a handle is open, so the daemon must release its
+// own before calling it.
+func (s *Server) dropHandle(tag journal.ShareTag) error {
+	s.mu.Lock()
+	h := s.handles[tag]
+	delete(s.handles, tag)
+	s.mu.Unlock()
+	if h == nil {
+		return nil
+	}
+	return h.Close()
+}
+
 func (s *Server) share(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Tag   uint32      `json:"tag"`
@@ -160,6 +174,10 @@ func (s *Server) forget(w http.ResponseWriter, r *http.Request) {
 	}
 	j, err := s.journal()
 	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if err := s.dropHandle(journal.ShareTag(req.Tag)); err != nil {
 		respond(w, nil, err)
 		return
 	}
@@ -298,6 +316,9 @@ func writePayload(str, hexp *string, size *int64) ([]byte, error) {
 		if *size < 0 {
 			return nil, fmt.Errorf("write-at: size %d is negative", *size)
 		}
+		if *size > opCapBytes {
+			return nil, fmt.Errorf("write-at: size %d exceeds the %d-byte cap", *size, opCapBytes)
+		}
 		// A cycling pattern so every read of a filled range is visibly
 		// alive without carrying real content over the socket.
 		pattern := []byte("0123456789abcdef")
@@ -323,6 +344,10 @@ func (s *Server) readAt(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Len <= 0 {
 		respond(w, nil, fmt.Errorf("read-at: length %d", req.Len))
+		return
+	}
+	if req.Len > opCapBytes {
+		respond(w, nil, fmt.Errorf("read-at: length %d exceeds the %d-byte cap", req.Len, opCapBytes))
 		return
 	}
 	h, err := s.handle(journal.ShareTag(req.Tag))
@@ -396,3 +421,8 @@ func parseOffset(s string) (int64, error) {
 	}
 	return off, nil
 }
+
+// opCapBytes bounds one payload an op may allocate: the daemon is a laptop's
+// demo process, and a mistyped length must answer an error, not an
+// out-of-memory that kills the only journal owner.
+const opCapBytes = 1 << 30

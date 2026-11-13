@@ -33,25 +33,24 @@ func newIndexCmd() *cobra.Command {
 		if err := cGet(cmd, route, &resp); err != nil {
 			return err
 		}
-		renderIndexEntries(cmd.OutOrStdout(), indexEntriesFromWire(resp.Entries))
+		rows := make([]indexRow, 0, len(resp.Entries))
+		for _, e := range resp.Entries {
+			rows = append(rows, indexRow{
+				file: e.File,
+				entry: journal.IndexEntry{
+					Kind:      kindFromEntryName(e.Kind),
+					Extent:    journal.Extent{Off: e.Off, Len: e.Len},
+					Version:   versionFromJSON(e.Version),
+					Tag:       journal.ShareTag(e.Tag),
+					Location:  journal.RecordRef{Segment: journal.SegmentID(e.Segment), Offset: e.SegOff},
+					Offloaded: e.Offloaded,
+				},
+			})
+		}
+		renderIndexRows(cmd.OutOrStdout(), rows)
 		return nil
 	}
 	return cmd
-}
-
-func indexEntriesFromWire(wire []indexEntryJSON) []journal.IndexEntry {
-	out := make([]journal.IndexEntry, 0, len(wire))
-	for _, e := range wire {
-		out = append(out, journal.IndexEntry{
-			Kind:      kindFromEntryName(e.Kind),
-			Extent:    journal.Extent{Off: e.Off, Len: e.Len},
-			Version:   versionFromJSON(e.Version),
-			Tag:       journal.ShareTag(e.Tag),
-			Location:  journal.RecordRef{Segment: journal.SegmentID(e.Segment), Offset: e.SegOff},
-			Offloaded: e.Offloaded,
-		})
-	}
-	return out
 }
 
 func kindFromEntryName(name string) journal.EntryKind {

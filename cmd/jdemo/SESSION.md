@@ -16,7 +16,7 @@ says so itself — the honest answer, verbatim).
 | 3 | a small write | `jdemo write-at --tag 1 FILE 0 --str hello` | `jdemo stats`: held/dirty +5; `jdemo index --file FILE` (once T7.6 lands): one held entry, v1 |
 | 4 | over-write part of it | `jdemo write-at --tag 1 FILE 2 --str XYZ` | `index`: the old entry narrowed, the new one at v2; the superseded range retained until settle |
 | 5 | a big write (roll!) | `jdemo write-at --tag 1 FILE 4096 --size 300000000` | `jdemo stats`: segments 2 (1 sealed) — the 256 MiB cap rolled a segment |
-| 6 | read with a gap | `jdemo read-at --tag 1 FILE 0 16` | the pane itself: mixed `held` extents at different versions, `missing 5–8` for the unwritten gap |
+| 6 | read with a gap | `jdemo read-at --tag 1 FILE 0 16` | the pane itself: mixed `held` extents at different versions, `missing 5–8` for the gap between the two writes |
 | 7 | changes feed | `jdemo since --tag 1 FILE 0` | one line per change, version order |
 | 8 | truncate | `jdemo truncate --tag 1 FILE 32` | `since`: the write narrowed, a `truncate` marker beyond 32 |
 | 9 | settle it | `jdemo settle --tag 1 FILE v3` | `since` from v0: the marker gone |
@@ -24,15 +24,23 @@ says so itself — the honest answer, verbatim).
 | 11 | offload (once it lands) | `jdemo offload --tag 1 FILE v999` | `ls journal-offload/<file hex>/`: payload files named by range; `jdemo index`: entries' offloaded bits turn |
 | 12 | verify (once E9a lands) | `jdemo verify` | counts, zero on a clean journal |
 
-## What answers "journal: not implemented" today, and why
+## What answers what today, and why
 
-`sync`, `index`'s `File`/`All` read-outs, `segments`, `verify`, the offload
-family, `hold`/`unhold`/`stamp` and `repack` are declared but not built on
-this base of `feat/storage-v2`; the CLI prints the journal's own answer
-verbatim, so the tool never lies about what the layer beneath can do. Each
-lands with its subtask (T7.6 wires `Inspect().File`/`All`, E9a ` Segments`,
-epic 7a/9a the rest); rebase `demo/journal-cli` onto fresh `feat/storage-v2`
-and re-run the beat.
+`sync`, `forget`, `index --file FILE`, `verify`, the offload family,
+`hold`/`unhold`/`stamp` and `repack` answer the journal's own
+`journal: not implemented` verbatim — the tool never claims a layer beneath
+the built ones.
+
+`index` with no `--file`, `segments` and `held` answer **nothing at all**:
+their stubs carry no error to surface, so the pane shows the empty view
+(`no index entries`, `no segments`, `0 bytes held`) even while `stats`
+counts real entries and segments. Don't narrate a bug there — narrate the
+boundary: the figures `stats` reports are measured by the journal itself,
+the read-outs behind those three views are what recovery's assembly (and
+per-segment accounting) still owe.
+
+Each lands with its subtask; rebase `demo/journal-cli` onto fresh
+`feat/storage-v2` and re-run the beat to see each view fill in.
 
 ## Numbers worth narrating
 

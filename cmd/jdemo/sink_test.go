@@ -131,3 +131,34 @@ func TestOffloadAndRepackPropagateTheStub(t *testing.T) {
 		t.Fatalf("repack: got err %v (out %q), want the journal's not-implemented answer verbatim", err, out)
 	}
 }
+
+func TestForgetDropsTheHandle(t *testing.T) {
+	// Forget is refused while a handle of the tag is open, so the daemon
+	// must drop its handle before calling it — otherwise the command could
+	// never succeed once the journal builds Forget.
+	socket := tmpSocket(t)
+	srv := &Server{Dir: filepath.Join(t.TempDir(), "journal"), SocketPath: socket}
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+	if out, err := exec(t, socket, "share", "--tag", "1"); err != nil {
+		t.Fatalf("share: %v (out %q)", err, out)
+	}
+	srv.mu.Lock()
+	open := len(srv.handles)
+	srv.mu.Unlock()
+	if open != 1 {
+		t.Fatalf("share left %d handles, want 1", open)
+	}
+	if out, err := exec(t, socket, "forget", "--tag", "1"); err == nil ||
+		!strings.Contains(err.Error(), "not implemented") {
+		t.Fatalf("forget on this base: got err %v (out %q), want the stub refusal verbatim", err, out)
+	}
+	srv.mu.Lock()
+	open = len(srv.handles)
+	srv.mu.Unlock()
+	if open != 0 {
+		t.Errorf("forget left the tag's handle open (%d handles), want it closed first", open)
+	}
+}

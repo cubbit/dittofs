@@ -13,31 +13,32 @@ import (
 )
 
 func TestRenderIndexEntries(t *testing.T) {
-	es := []journal.IndexEntry{
-		{
+	fileHex := "64656d6f"
+	es := []indexRow{
+		{file: fileHex, entry: journal.IndexEntry{
 			Kind:     journal.EntryHeld,
 			Extent:   journal.Extent{Off: 0, Len: 5},
 			Version:  journal.Version{Counter: 1},
 			Tag:      1,
 			Location: journal.RecordRef{Segment: 3, Offset: 4096},
-		},
-		{
+		}},
+		{file: fileHex, entry: journal.IndexEntry{
 			Kind:      journal.EntryMarker,
 			Extent:    journal.Extent{Off: 8, Len: 2},
 			Version:   journal.Version{Counter: 7, Epoch: 0},
 			Tag:       2,
 			Offloaded: false,
-		},
-		{
+		}},
+		{file: fileHex, entry: journal.IndexEntry{
 			Kind:      journal.EntryRetained,
 			Extent:    journal.Extent{Off: 16, Len: 3},
 			Version:   journal.Version{Counter: 4},
 			Tag:       1,
 			Offloaded: true,
-		},
+		}},
 	}
 	var buf bytes.Buffer
-	renderIndexEntries(&buf, es)
+	renderIndexRows(&buf, es)
 	out := buf.String()
 	for _, want := range []struct {
 		field, val string
@@ -152,5 +153,48 @@ func TestViewerRoutes(t *testing.T) {
 		if err != nil || !strings.Contains(out, c.want) {
 			t.Errorf("%s: got out %q err %v, want the empty stub view %q", c.name, out, err, c.want)
 		}
+	}
+}
+
+func TestRenderStatsRowsAreInTagOrder(t *testing.T) {
+	// Two panes refreshing during the talk must show the same rows in the
+	// same order every time: a map's iteration is not an order, so the
+	// renderer makes one.
+	st := journal.Stats{Shares: map[journal.ShareTag]journal.ShareStats{
+		2: {HeldBytes: 2},
+		1: {HeldBytes: 1},
+		3: {HeldBytes: 3},
+	}}
+	var buf bytes.Buffer
+	renderStats(&buf, st)
+	out := buf.String()
+	last := -1
+	for _, tag := range []string{"share 1", "share 2", "share 3"} {
+		at := strings.Index(out, tag)
+		if at < 0 {
+			t.Fatalf("renderStats lacks %s:\n%s", tag, out)
+		}
+		if at < last {
+			t.Errorf("renderStats shows %s before the previous row; rows must be in tag order:\n%s", tag, out)
+		}
+		last = at
+	}
+}
+
+func TestRenderIndexRowsCarryTheFile(t *testing.T) {
+	var a, b [16]byte
+	copy(a[:], "index-file-aaaa")
+	copy(b[:], "index-file-bbbb")
+	rows := []indexRow{
+		{file: hex.EncodeToString(a[:8]), entry: journal.IndexEntry{
+			Kind: journal.EntryHeld, Extent: journal.Extent{Off: 0, Len: 5}, Version: journal.Version{Counter: 1}, Tag: 1}},
+		{file: hex.EncodeToString(b[:8]), entry: journal.IndexEntry{
+			Kind: journal.EntryHeld, Extent: journal.Extent{Off: 0, Len: 2}, Version: journal.Version{Counter: 2}, Tag: 1}},
+	}
+	var buf bytes.Buffer
+	renderIndexRows(&buf, rows)
+	out := buf.String()
+	if !strings.Contains(out, hex.EncodeToString(a[:8])) || !strings.Contains(out, hex.EncodeToString(b[:8])) {
+		t.Errorf("renderIndexRows: a file's rows lose which file they belong to:\n%s", out)
 	}
 }

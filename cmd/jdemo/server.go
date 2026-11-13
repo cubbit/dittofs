@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -78,11 +79,47 @@ func (s *Server) journalOptions() []journal.Option {
 	}
 }
 
-// Start initialises or opens the journal and serves on the socket until
-// Shutdown. A fresh, empty directory is initialised; a journal with a state
-// file is reopened through recovery; anything else is refused.
+// takeSocket refuses a start whose socket something already listens on, and
+// silently removes a stale socket file a crashed daemon left behind, so the
+// next start is not refused by a dead predecessor. The dial is the whole
+// question: what accepts is an owner, whatever it speaks; what refuses
+// nothing left but the file.
+func (s *Server) takeSocket() error {
+	if _, err := os.Stat(s.SocketPath); os.IsNotExist(err) {
+		return nil
+	}
+	conn, err := net.DialTimeout("unix", s.SocketPath, 500*time.Millisecond)
+	if err == nil {
+		_ = conn.Close()
+		return fmt.Errorf("another daemon already owns %s; stop it or choose another socket", s.SocketPath)
+	}
+	if err := os.Remove(s.SocketPath); err != nil {
+		return fmt.Errorf("removing stale socket %s: %w", s.SocketPath, err)
+	}
+	return nil
+}
+
+// Start takes the socket first, then initialises or opens the journal and
+// serves until Shutdown. A fresh, empty directory is initialised; a journal
+// with a state file is reopened through recovery; anything else is refused.
+// The socket-first order is deliberate: a start that fails at the socket
+// must not have burned a fresh directory first, and a journal directory a
+// second daemon would touch stays owned by the one that holds the socket.
 func (s *Server) Start(ctx context.Context) error {
-	dir := s.Dir
+	dir := filepath.Clean(s.Dir)
+
+	if err := s.takeSocket(); err != nil {
+		return err
+	}
+	ln, err := net.Listen("unix", s.SocketPath)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", s.SocketPath, err)
+	}
+	dropSocket := func() {
+		_ = ln.Close()
+		_ = os.Remove(s.SocketPath)
+	}
+
 	passed, err := loadState(statePath(dir))
 	var (
 		j     *journal.Journal
@@ -94,58 +131,70 @@ func (s *Server) Start(ctx context.Context) error {
 		id = passed.ID
 		j, err = journal.Open(ctx, dir, journal.Version{Counter: passed.Limit}, id, nil, s.journalOptions()...)
 		if err != nil {
-			return fmt.Errorf("jdemo: open %s: %w", dir, err)
+			dropSocket()
+			return fmt.Errorf("open %s: %w", dir, err)
 		}
 		floor = passed.Limit
 
 	case errors.Is(err, fs.ErrNotExist):
 		empty, lerr := dirEmpty(dir)
 		if lerr != nil {
-			return fmt.Errorf("jdemo: %s: %w", dir, lerr)
+			dropSocket()
+			return fmt.Errorf("%s: %w", dir, lerr)
 		}
 		if !empty {
-			return fmt.Errorf("jdemo: %s holds a journal but the state file %s is missing; refusing to initialise over it", dir, statePath(dir))
+			dropSocket()
+			return fmt.Errorf("%s holds a journal but the state file %s is missing; refusing to initialise over it", dir, statePath(dir))
 		}
 		// Init requires the directory to exist; an empty listing saw to
 		// nothing else being in it.
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("jdemo: %s: %w", dir, err)
+			dropSocket()
+			return fmt.Errorf("%s: %w", dir, err)
 		}
 		id, err = journal.Init(ctx, dir, demoInstallID, s.journalOptions()...)
 		if err != nil {
-			return fmt.Errorf("jdemo: init %s: %w", dir, err)
+			dropSocket()
+			return fmt.Errorf("init %s: %w", dir, err)
+		}
+		// The identity is durable the moment it exists: a later refusal or
+		// a ctrl-c during the open must leave a journal Open can name on the
+		// next start, not a directory no state file describes.
+		if err := saveState(statePath(dir), stateFile{ID: id}); err != nil {
+			dropSocket()
+			return err
 		}
 		j, err = journal.Open(ctx, dir, journal.Version{}, id, nil, s.journalOptions()...)
 		if err != nil {
-			return fmt.Errorf("jdemo: open fresh %s: %w", dir, err)
+			dropSocket()
+			return fmt.Errorf("open fresh %s: %w", dir, err)
 		}
 
 	default:
-		return fmt.Errorf("jdemo: refusing to start, %w", err)
+		dropSocket()
+		return fmt.Errorf("refusing to start, %w", err)
 	}
 
 	limit := journal.Version{Counter: floor + versionWindow}
 	if err := j.SetVersionLimit(limit); err != nil {
+		dropSocket()
 		_ = j.Close()
-		return fmt.Errorf("jdemo: setting version limit: %w", err)
+		return fmt.Errorf("setting version limit: %w", err)
 	}
 	// The pool makes its spares asynchronously once the open returns, and a
 	// write racing it answers "refused by the spare limit"; the demo's
 	// first command is at the talk, so Start waits them out.
 	if err := awaitSpares(ctx, j); err != nil {
+		dropSocket()
 		_ = j.Close()
-		return fmt.Errorf("jdemo: %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	if err := saveState(statePath(dir), stateFile{ID: id, Limit: limit.Counter}); err != nil {
+		dropSocket()
 		_ = j.Close()
 		return err
 	}
 
-	ln, err := net.Listen("unix", s.SocketPath)
-	if err != nil {
-		_ = j.Close()
-		return fmt.Errorf("jdemo: listen %s: %w", s.SocketPath, err)
-	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	s.mountRoutes(mux)
@@ -188,7 +237,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var firstErr error
 	join := func(err error, what string) {
 		if err != nil {
-			firstErr = errors.Join(firstErr, fmt.Errorf("jdemo: %s: %w", what, err))
+			firstErr = errors.Join(firstErr, fmt.Errorf("%s: %w", what, err))
 		}
 	}
 	if ln != nil {
