@@ -15,7 +15,7 @@ type fateKind uint8
 
 const (
 	fateIntact      fateKind = iota // could have been open at a crash; whole; the tail's proof owns it
-	fateSealed                      // sealed, the seal proven: a successor names it
+	fateSealed                      // sealed, the seal proven: a successor names it, or a marker no successor names was proven on the device at this open
 	fateSealToProve                 // sealed by a marker no successor names; re-proven on the device later
 	fateTornTail                    // a torn tail from Offset; truncated there and sealed
 	fateEnded                       // ended at Offset; truncated there and then emptied

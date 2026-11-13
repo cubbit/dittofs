@@ -320,7 +320,9 @@ func TestARottedCloneTargetInASealedSegmentNothingNamesIsCorrupt(t *testing.T) {
 	if len(st.Tails.Corrupt) != 1 || st.Tails.Corrupt[0].Drop.Header.Offset != format.SegmentHeaderSize {
 		t.Fatalf("Corrupt got %+v, want the clone target at %d", st.Tails.Corrupt, format.SegmentHeaderSize)
 	}
-	wantFate(t, st, 1, fateSealToProve, 0)
+	// The marker is durable and verifies on the device, so the proof seals
+	// the segment; the seal proves the drop corrupt before it.
+	wantFate(t, st, 1, fateSealed, 0)
 }
 
 // TestACloneTargetDropAtTheSyncedThroughIsNotCorrupt holds the proof's edge:
