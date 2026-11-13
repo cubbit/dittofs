@@ -37,11 +37,23 @@ var client = netip.MustParseAddr("10.0.0.5")
 // the engine fixture composes.
 func compose(t *testing.T, opts ...enginetest.Option) *composition {
 	t.Helper()
+	return composeOver(t, nil, opts...)
+}
+
+// composeOver is compose with the filesystem calling the engine through
+// wrap(c, engine), a fault or pause wrapper of the real engine; nil calls it
+// directly.
+func composeOver(t *testing.T, wrap func(c *composition, e filesystem.Content) filesystem.Content, opts ...enginetest.Option) *composition {
+	t.Helper()
 	c := &composition{}
 	c.Fixture = enginetest.New(t, append(opts, enginetest.WithCompose(func(f *enginetest.Fixture, e *engine.Engine) enginetest.Service {
 		// Read before the engine starts, which binds the share with it.
 		f.Share = enginetest.ShareOf(t, f.FS.Store, f.Share.ID, shareLimit)
-		fs, err := filesystem.New(filesystem.Deps{Meta: f.FS.Store, Open: f.Opens, Engine: e, Logger: f.Logger()})
+		var content filesystem.Content = e
+		if wrap != nil {
+			content = wrap(c, e)
+		}
+		fs, err := filesystem.New(filesystem.Deps{Meta: f.FS.Store, Open: f.Opens, Engine: content, Logger: f.Logger()})
 		if err != nil {
 			t.Fatalf("compose: %v", err)
 		}

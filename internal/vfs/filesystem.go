@@ -83,7 +83,8 @@ type Content interface {
 	// is named with its own share, as on one node a clone between two
 	// shares of one namespace reaches the engine. Each runs its context's
 	// admitted hook (engine.WithAdmitted) once its admission passed and
-	// before the destination changes, perhaps more than once.
+	// before the destination changes, or once it joins a running clone; a
+	// copy runs it per chunk, and a retry of a done clone not at all.
 	Clone(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, x vfs.Extent) error
 	Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfs.Extent) (int64, error)
 	// Overlay is the file's size, times and version as the journal's

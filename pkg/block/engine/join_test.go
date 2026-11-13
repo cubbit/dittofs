@@ -3,6 +3,7 @@ package engine_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -342,5 +343,48 @@ func TestACopyContinuedJoinsTheRunningChunk(t *testing.T) {
 	}
 	if got := u.read(t, dst, 0, 3*chunk); !bytes.Equal(got, p) {
 		t.Error("the destination does not read the source")
+	}
+}
+
+// A retry joining a running clone runs its admitted hook once before it
+// waits, and the hook's error refuses the joiner alone: the clone runs on
+// and its first call is answered nil (catches a join that skips the hook,
+// which would leave a caller's locks held across the whole clone, and one
+// whose refusal ends the clone it joined).
+func TestAJoinRunsItsAdmittedHook(t *testing.T) {
+	u, h, src, dst := heldCloneUnit(t)
+	first := u.startClone(context.Background(), src, dst, vfserr.Extent{Len: mib})
+	select {
+	case <-h.entered:
+	case err := <-first:
+		t.Fatalf("the clone answered %v before its phase 1", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the clone never reached its phase 1")
+	}
+	refused := errors.New("refused by the joiner's hook")
+	ran := 0
+	// Bounded, so a join that skips the hook answers DelayClone at its
+	// deadline rather than holding the test until the clone ends.
+	bounded, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ctx := engine.WithAdmitted(bounded, func() error { ran++; return refused })
+	if err := u.e.Clone(ctx, u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: mib}); !errors.Is(err, refused) || ran != 1 {
+		t.Errorf("a joiner whose hook refuses = %v, hook ran %d times; want the hook's error, once", err, ran)
+	}
+	ran = 0
+	retry := joined(t, func(ctx context.Context) error {
+		return u.e.Clone(engine.WithAdmitted(ctx, func() error { ran++; return nil }), u.share.ID, src, u.share.ID, dst, vfserr.Extent{Len: mib})
+	})
+
+	h.let()
+
+	if err := u.answered(t, "the first call", first); err != nil {
+		t.Errorf("the first call once a joiner was refused = %v, want nil", err)
+	}
+	if err := u.answered(t, "the joined retry", retry); err != nil || ran != 1 {
+		t.Errorf("the joined retry = %v, hook ran %d times; want nil, once", err, ran)
+	}
+	if n := len(u.cloneMarkers(dst)); n != 1 {
+		t.Errorf("the journal holds %d clone markers, want one clone", n)
 	}
 }

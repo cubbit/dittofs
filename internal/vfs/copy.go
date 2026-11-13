@@ -45,7 +45,10 @@ func (fs *Filesystem) Clone(ctx context.Context, c vfs.Call, a vfs.CopyArgs) (vf
 // released. From there the clone's registrations, not the locks, hold off
 // what meets its extents, so no sync, phase 1 or wait for the clone runs
 // under either lock, and a call on the destination outside the extents, or
-// an open, a close or a lock of either file, does not wait for the clone.
+// an open, a close or a lock of either file, does not wait for the clone. A
+// removal in flight over an extent, one its loop retries, is answered
+// DelayConflict at the engine's registration rather than waited out under
+// both locks.
 //
 // decision: the two admission locks are held until the engine has
 // registered the clone, not until its I/O ends. A lock or deny mode granted
