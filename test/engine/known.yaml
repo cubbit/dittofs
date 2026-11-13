@@ -9,6 +9,13 @@
   category: feature
   reason: 'Epic 4: a group commit conflict delays only the conflicting files; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past every file''s first commit and stops at its own check: each of the 64 flushes beside the chmods answers vfs: retry shortly: commit at its 5 s deadline.'
   issue: '#3587'
+- test: TestRFC8A_JournalAuthority
+  message: 'holds segments; recovering them is not built'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 6: recovery commits a durable write whose existence was uncommitted at the crash. The row gets past its write and the sync bound, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#3589'
 - test: TestRFC8A_StableWriteLazyExistence
   message: 'holds segments; recovering them is not built'
   status: fail
