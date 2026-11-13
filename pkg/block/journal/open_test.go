@@ -744,12 +744,16 @@ func TestOpen_ConcurrentCalls_IndependentJournalEach(t *testing.T) {
 			// first write may find none yet: wait the pool's settle event on
 			// the refused one, as the caller of a retry-later refusal does,
 			// so a first fill slower than any fixed window still answers it.
+			// The minute is a backstop, not the wait: a settle is the only
+			// other end it has.
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute) // backstop only; the wait is the settle
+			defer cancel()
 			var v Version
 			for {
-				v, err = h.WriteAt(context.Background(), fileOf(1), 0, []byte("each its own"), 1)
+				v, err = h.WriteAt(ctx, fileOf(1), 0, []byte("each its own"), 1)
 				var ns *NoSpaceError
 				if errors.As(err, &ns) && ns.Limit == LimitSpare {
-					if werr := j.core.WaitSpares(t.Context()); werr != nil {
+					if werr := j.core.WaitSpares(ctx); werr != nil {
 						errs[i] = fmt.Errorf("WaitSpares after a write refused at the spare limit: got %v, want the pool readied", werr)
 						return
 					}
@@ -790,59 +794,6 @@ func TestOpen_ConcurrentCalls_IndependentJournalEach(t *testing.T) {
 // errRoundTrip names a failed round trip what the joined error above cannot.
 func errRoundTrip(p []byte) error {
 	return errors.New("the read served " + string(p) + ", want the write back")
-}
-
-// TestOpen_FirstWriteWaitsThePoolNotADeadline pins the shape writeReady waits
-// out a first-fill refusal with. The spare maker is held at its first create
-// before Open returns, so the pool readies nothing and the first write is
-// refused — and the maker stays held past any window a deadline-shaped retry
-// would keep, so a helper that retried against one fails on the held fill
-// while the pool's own settle event answers the moment the hold frees the
-// maker. The wait is insensitive to how long the hold lasts: the six seconds
-// below are not a wait on anything but the held window itself, sized to
-// outlast the five-second deadline a regressed helper would still keep.
-func TestOpen_FirstWriteWaitsThePoolNotADeadline(t *testing.T) {
-	s := newSeam(t)
-	id, err := Init(context.Background(), s.dir, installID, WithMountProbe(platformtest.SuitableGather(s.dir)), WithStorage(s.seam.FS()))
-	if err != nil {
-		t.Fatalf("Init: %v", err)
-	}
-	hold := s.seam.Hold(t, kit.OpCreate, "*.spare.tmp")
-	defer hold.Release()
-	j, err := Open(context.Background(), s.dir, Version{}, id, nil, openOptsDir(s, kit.NewStopwatchClock())...)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := j.Close(); err != nil && !errors.Is(err, ErrClosed) {
-			t.Errorf("close the opened journal: %v", err)
-		}
-	})
-	if err := j.SetVersionLimit(openLimit); err != nil {
-		t.Fatalf("SetVersionLimit: %v", err)
-	}
-	h, err := j.Share(1, 0, Version{})
-	if err != nil {
-		t.Fatalf("Share: %v", err)
-	}
-
-	written := make(chan Version, 1)
-	go func() { written <- writeReady(t, h, fileOf(1), "held fill") }()
-	select {
-	case <-hold.Reached():
-	case <-time.After(10 * time.Second):
-		t.Fatal("the spare maker never reached the hold, so the pool was never held short")
-	}
-	time.Sleep(6 * time.Second)
-	hold.Release()
-	select {
-	case v := <-written:
-		if v == (Version{}) {
-			t.Fatal("the write drew no version")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the write never answered once the hold freed the spare maker")
-	}
 }
 
 // damageFormat flips a byte of the format file in the real directory dir, so

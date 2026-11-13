@@ -63,16 +63,19 @@ func withLimit(t *testing.T, j *Journal) {
 // writeReady writes through h, waiting out a refusal for want of a spare
 // segment on the pool's own settle event, which clears once the pool has
 // readied its spares. The wait parks on the refill's settle alone, so the
-// helper answers a first fill slower than any fixed window would have been,
-// and reports only a pool that stopped; the test's own context is the only
-// bound on it.
+// helper answers a first fill slower than any fixed window would have been;
+// it reports the pool's own answers — a stop, or the idle short a failed
+// make leaves — never its own. The minute below is a backstop, not the
+// wait: a settle is the only other end it has.
 func writeReady(t *testing.T, h *Handle, id FileID, p string) Version {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute) // backstop only; the wait is the settle
+	defer cancel()
 	for {
-		v, err := h.WriteAt(context.Background(), id, 0, []byte(p), 1)
+		v, err := h.WriteAt(ctx, id, 0, []byte(p), 1)
 		var ns *NoSpaceError
 		if errors.As(err, &ns) && ns.Limit == LimitSpare {
-			if werr := h.j.core.WaitSpares(t.Context()); werr != nil {
+			if werr := h.j.core.WaitSpares(ctx); werr != nil {
 				t.Fatalf("WaitSpares after a write refused at the spare limit: got %v, want the pool readied", werr)
 			}
 			continue
@@ -188,32 +191,18 @@ func TestHandleClose_PublicRefusesAndWaits(t *testing.T) {
 		t.Fatalf("Share: %v", err)
 	}
 	writeReady(t, h, fileOf(1), "kept")
+	// The pool settles before the hold goes up, so the write below takes a
+	// spare that is ready and never meets the refusal it would have retried.
+	if err := j.core.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares before the hold: %v", err)
+	}
 
 	hold := seam.Hold(t, kit.OpWrite, "*")
 	defer hold.Release()
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		// The file's stream may have no spare segment ready yet, which refuses
-		// the write with the retryable spare limit before it reaches the seam.
-		//
-		// decision: that refusal is retried against a deadline, not waited out
-		// on the pool's settle event as writeReady waits it, because the hold
-		// below stops every write at the seam — the spare maker's included —
-		// so an event wait would park this write on a maker the test itself
-		// has stopped, and the hold's waiting count would name the maker
-		// instead of the write the choreography waits for. The deadline bounds
-		// the retry here alone; overtake it with the pool's own wait when a
-		// hold can name the call that waits on it.
-		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
-			_, err := h.WriteAt(context.Background(), fileOf(2), 0, []byte("held"), 1)
-			var ns *NoSpaceError
-			if errors.As(err, &ns) && ns.Limit == LimitSpare && time.Now().Before(deadline) {
-				continue
-			}
-			if err != nil {
-				t.Errorf("the write in flight: %v", err)
-			}
-			return
+		if _, err := h.WriteAt(context.Background(), fileOf(2), 0, []byte("held"), 1); err != nil {
+			t.Errorf("the write in flight: %v", err)
 		}
 	})
 	deadline := time.Now().Add(5 * time.Second)
