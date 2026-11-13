@@ -166,8 +166,15 @@ run_case() { # name holder_path tester_path
   fi
   local res; res=$(python3 "$LOCKPY" try "$tp" w 0 100 2>/dev/null)
   touch "$REL"; wait $hpid 2>/dev/null
-  sleep 0.3
-  local res2; res2=$(python3 "$LOCKPY" try "$tp" w 0 100 2>/dev/null)
+  # The holder has exited, but its unlock travels through its client's kernel
+  # to the server, and one try after a fixed pause can arrive first. Poll the
+  # conflicting lock for up to 10 s instead.
+  local res2=""
+  for _ in $(seq 1 100); do
+    res2=$(python3 "$LOCKPY" try "$tp" w 0 100 2>/dev/null)
+    [ "$res2" = ACQUIRED ] && break
+    sleep 0.1
+  done
   echo "$name conflict=$res afterRelease=$res2"
   # A pass = the conflicting lock was denied by the server, then granted once
   # the holder released. Anything else (ACQUIRED-while-held, ERROR, ...) fails.
