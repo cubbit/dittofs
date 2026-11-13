@@ -130,10 +130,8 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 		// alone, never the open. The identical-index rule the two
 		// sources are held to covers a segment whose records verify;
 		// a segment holding one that does not is the tail's to judge,
-		// not two indexes that must agree. What Dropped carries is the
-		// tail's classing's to consume, and no phase reads it yet: until
-		// that classing exists a dropped record goes unreported — the
-		// open succeeds, and the phases quietly do not see the record.
+		// not two indexes that must agree: the classing reports each
+		// drop as corrupt and damages its segment.
 		confine := func(h format.RecordHeader, err error) bool {
 			if !errors.Is(err, core.ErrCorrupt) {
 				return false
