@@ -305,6 +305,35 @@ func TestSparesPhaseUnlinksAShortSpare(t *testing.T) {
 	}
 }
 
+// TestSparesPhaseZeroCapUnlinksTheEmptyCandidate plants one empty record-less
+// .seg and runs the open under a zero SegmentCap: no cap is the cap no spare
+// can be right-sized under, so every candidate unlinks — the empty file
+// first of all, whose size 0 would equal the zero cap and read as
+// right-sized by a bare comparison, wrongly adopting it.
+func TestSparesPhaseZeroCapUnlinksTheEmptyCandidate(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	empty := core.SegmentID(4)
+	r.write(format.SegmentName(empty), nil)
+
+	deps := r.runDeps()
+	deps.SegmentCap = 0
+	st, err := Run(context.Background(), deps, core.Version{}, journalID, nil)
+
+	if err != nil {
+		t.Fatalf("spares: the open under a zero SegmentCap: %v", err)
+	}
+	if got, want := st.Spares.Unlinked, []core.SegmentID{empty}; !slices.Equal(got, want) {
+		t.Errorf("spares: the empty candidate under a zero cap got unlinked %v, want %v: no cap right-sizes any spare", got, want)
+	}
+	if len(st.Spares.Adopted) != 0 {
+		t.Errorf("spares: the empty candidate under a zero cap was adopted %v, want nothing", st.Spares.Adopted)
+	}
+	if slices.Contains(r.listing(), format.SegmentName(empty)) {
+		t.Errorf("spares: the empty candidate %s is still in the directory %v, want it unlinked", format.SegmentName(empty), r.listing())
+	}
+}
+
 // TestSparesPhaseUnlinksAnOverCapSpare plants a record-less .seg over the
 // cap beside one whole spare for each size: a file over the cap answers the
 // size check the same way one under it does — the pool takes whole
