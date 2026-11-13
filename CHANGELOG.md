@@ -12,6 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > that actually shipped them. Nothing here has been reconstructed after the
 > fact.
 
+## [Unreleased]
+
+### Changed
+
+- **The journal's open tells a crash's torn tail from damage.** A record that
+  fails its checksum no longer refuses the open on the spot: it is dropped and
+  reported as corrupt where a sync or a seal proved it whole, and cut as a torn
+  tail where nothing did. A sealed segment whose footer disagrees with a record
+  that verifies is read by scanning it, as one with no footer is. The open
+  still refuses a named predecessor that ends without its seal marker, at any
+  length, and a range inside a sealed segment that no footer names.
+- **The journal's open no longer reads its all-zero spare segments.** Each one
+  cost a full read of the segment at every open.
+
 ## [0.36.0] — 2026-10-19
 
 0.36.0 is a fix release, mostly for SMB. Before upgrading, check any SMB
