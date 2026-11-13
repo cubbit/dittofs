@@ -65,8 +65,9 @@ and E5 to E8, for sign-in (§3.2).
   where RFC 22 states it: §5.1's continuously available flag, §14's serving sentence (linking RFC 0
   §1.4's single-node profile) and §19's gauge; it joins §18's "Where each check runs" list of
   (cluster) steps, and so does the half of §18's §8 row on a recursive watch whose subtree is
-  another shard's, marked (cluster) in the row; §5.2's and §6.3's mentions, §16.5's sentence on
-  `ErrMoved` and §18's §14 row are marked too, and so is RFC 20 §3.1's Witness move. §16.5 drops its
+  another shard's, marked (cluster) in the row; §5.2's and §6.3's mentions, §16.4's topology
+  sentence, §16.5's sentence on `ErrMoved` and §18's §14 row are marked too, and so is RFC 20
+  §3.1's Witness move. §16.5 drops its
   sentence on an `ErrDelay` with no cause, a case RFC 17 §4.3 rules out. Plan gaps 3 and 8; §6.2,
   point 13.
 - **A2. RFC 20 §4.3: `FreeState` after a revoked answer is not a second call.** In a protocol with
@@ -75,7 +76,7 @@ and E5 to E8, for sign-in (§3.2).
   request's context (A5), and RFC 22 §16.5's `Revoked` row says the handler makes it. Plan gap 14.
 - **A3. RFC 22, RFC 19 §3.4 and Z4, RFC 17 §3.0 and §5.3: maximal access is the service's.** An
   open passes `MAXIMUM_ALLOWED` as `vfs.MaximumAllowed` in `OpenRequest.Access`, with or without
-  backup intent, and the service grants `G` or refuses it, as `pkg/vfs` does on
+  backup intent, and the service grants `G` or refuses it, as `pkg/vfs`'s `Open` does on
   `feat/storage-v2`; `OpenRequest.Maximal` goes. The adapter computes no maximal access: `MxAc` is
   `OpenResult.MaximalAccess`, a tree's is `Root`'s `ShareInfo.MaximalAccess`, and an app
   instance's read check is the service's (RFC 14 §8.1). RFC 22 §5.1, §6.1, §6.4, §11, §16.4's
@@ -96,16 +97,17 @@ and E5 to E8, for sign-in (§3.2).
   `Gen`, in any handler. §7.2's record keeps them, with the calls §4.3 already exempts, and its
   test exempts each by the request's context, never by its operation; §9's invariant A5 names
   those exceptions, and RFC 17 §3.1's and RFC 14 §2.1's sentences on `SESSION_SETUP`'s calls point
-  at §4.3. `vfs.Mutates` is unchanged; T2.1 changes `vfstest.Mutations` to keep each call's
+  at §4.3. `vfs.Mutates` is unchanged, and RFC 17 §3.1 says the check exempts those calls by
+  context; T2.1 changes `vfstest.Mutations` to keep each call's
   reference and answer. T2.1, T5.3, T5.4, T5.7, T6.5, T12.2 and T12.4.
 - **A6. RFC 22 §12.1, §16.5 and §18, RFC 14 §9.4 and L36, RFC 17 §5.4: the service refuses a
   stream's rename and disposition.** The adapter checks no `DELETE` for either: a rename or a
   disposition through a named stream's open is one call through that open, `Rename` or `SetAttr`,
   which the service refuses `ErrAccess` when the open holds no `DELETE` and `ErrInvalid` when it
-  does, answered `STATUS_NOT_SUPPORTED` by a new §16.5 row. A rename whose target names a stream
-  is refused from the request alone, as a stream's delete on close at `CREATE` is (T7.5), and
-  §18's §12.1 row and RFC 14's L36 follow. RFC 17 §5.4's `renameAt` refuses a stream's open before
-  it looks up either name; RFC 22 §12.1 parses a rename target as a `CREATE` path, `$DATA` without
+  does, answered `STATUS_NOT_SUPPORTED` by a new §16.5 row, which an RFC 20 §4.5 table can hold
+  only once plan gap 6 settles. A rename whose target names a stream is refused from the request
+  alone, whatever the open holds, and §18's §12.1 row and RFC 14's L36 follow. RFC 17 §5.4's
+  `renameAt` refuses a stream's open before it looks up either name; RFC 22 §12.1 parses a rename target as a `CREATE` path, `$DATA` without
   case, and §18's §12.1 row adds an existing target, an unlinked base name and the target's
   parse. T2.4 (the service's half), T8.4, T8.5; plan gaps 6 and 25.
 
@@ -349,10 +351,10 @@ rows of RFC 20's deferral ledger.
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | SMB surface | `smb/protocol`'s request state; `smb/ops`' handler set, table and `ioctl/` table; the callbacks value | 3 | 3 | team | all |
 | E2 ⛔ | Test foundations | the SMB handler harness on `memory.New` and `vfstest.Faults`; golden files cut from Samba captures; the import test's call-site and file-size rules; the service's halves of A3 and A6 | 4 | 8.5 | team | E3 to E14 |
-| E3 | Negotiation and the connection's stages | `NEGOTIATE`, `Caps`, signing, encryption, preauthentication, credits, the message-ID window, `HoldCodec`, the error table and its totality test, `ECHO`, `CANCEL` | 9 | 24 | A | E5 |
-| E4 | Authentication mechanisms | `gss`: `Exchanges`, NTLM, Kerberos, SPNEGO, `Identity`, `gsstest` | 6 | 17.5 | B | E5 |
-| E5 🔀 | Sessions | `SESSION_SETUP`, `LOGOFF`, the session registry, the client record, re-authentication, expiry, multichannel, `PreviousSessionId`, the scripted client | 8 | 15 | A | E9, E14 (partly) |
-| E6 | Trees, IPC$ and the RPC services | `TREE_CONNECT`, share flags, keyless confinement, DCE/RPC, named pipes, srvsvc, wkssvc, lsarpc | 5 | 18.5 | B | E9, E11 (partly), S4; E16 |
+| E3 | Negotiation and the connection's stages | `NEGOTIATE`, `Caps`, signing, encryption, preauthentication, credits, the message-ID window, `HoldCodec`, the error table and its totality test, `ECHO`, `CANCEL` | 9 | 24 | A | E5; S4 |
+| E4 | Authentication mechanisms | `gss`: `Exchanges`, NTLM, Kerberos, SPNEGO, `Identity`, `gsstest` | 6 | 17.5 | B | E5; S4 |
+| E5 🔀 | Sessions | `SESSION_SETUP`, `LOGOFF`, the session registry, the client record, re-authentication, expiry, multichannel, `PreviousSessionId`, the scripted client | 8 | 15 | A | E9; E14 (partly); S4 |
+| E6 | Trees, IPC$ and the RPC services | `TREE_CONNECT`, share flags, keyless confinement, DCE/RPC, named pipes, srvsvc, wkssvc, lsarpc | 5 | 18.5 | B | E9 and E11 (partly); S4; E16 |
 | E7 | Opens and the data path | `CREATE`, `CLOSE`, `READ`, `WRITE`, `FLUSH`, `FileId`s, path resolution, access translation, `Adapter` bytes | 8 | 21 | C | E8; E6, E9, E11 to E13 (partly) |
 | E8 | File information, directories and names | information classes, `QUERY_INFO`, `SET_INFO`, `QUERY_DIRECTORY`, rename and link, the name mapping, streams, reparse points | 8 | 22 | C | E11 to E13 (partly), E16 |
 | E9 | Leases, breaks and held requests | caching requests, break callbacks and acknowledgements, `Revoked`, holds by cause | 6 | 18 | A | E10; E11 (partly) |
@@ -693,9 +695,12 @@ sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`).
 - T2.4 The service's halves of amendments A3 and A6, on `feat/storage-v2`, before T6.1 and T8.5
   rely on them: `Root`'s `MaximalAccess` computed for `ForOpen(false)` (RFC 17 §3.0); `Rename`
   through a named stream's open refused before either name is looked up (RFC 17 §5.4), and open
-  state's `CheckChange` refusing it (RFC 14 §9.4). Tests: a privileged admin's `Root` over SMB,
-  and RFC 14's L36 rename case in `pkg/openstate`. The adapter's test, the base file keeping its
-  name, is RFC 22 §18's §12.1 row in T8.8, once `memory.New` opens a named stream (plan gap 25).
+  state's `CheckChange` refusing it (RFC 14 §9.4). Tests: a privileged admin's `Root` over SMB;
+  on `memory.New`, the refusals A3 leaves to the service, a maximal open refused for each of RFC
+  19 §3.4's two reasons, and a backup-intent maximal open (RFC 19 §3.5): an unprivileged caller's
+  granted no right only privilege gives, an admin's answering a `MaximalAccess` with none; RFC
+  14's L36 rename case in `pkg/openstate`. `Rename`'s own refusal has no test that can fail until `memory.New` opens a
+  named stream (plan gap 25); RFC 22 §18's §12.1 row in T8.8 is then its test.
 
 ### Epic 3 - Negotiation and the connection's stages
 
@@ -721,7 +726,8 @@ RFC sections: §3.1, §3.2, §3.3's credits and pending ceiling, §4.1's signing
 - T3.3 Key derivation and signing: each dialect's keys (3.1.1's from the preauthentication hash),
   HMAC-SHA256, AES-CMAC and AES-GMAC; an unsigned request after setup and a bad signature each
   `STATUS_ACCESS_DENIED` on its message ID with the connection kept; keyless sessions exempt;
-  MS-SMB2's test vectors.
+  MS-SMB2's test vectors; the session key's first 16 bytes for signing, the whole key only for
+  AES-256 encryption (MS-SMB2 3.3.5.5.3), with a vector for a 32-byte Kerberos key.
 - T3.4 Encryption: the transform header; AES-128 and AES-256, CCM and GCM, in place, with room for
   the transform header in reply buffers, nonces as plan gap 24 settles them; a message that fails
   decryption closes the connection; a
@@ -858,7 +864,8 @@ lsarpc.
   `MaximalAccess` from `Root`'s `ShareInfo` (amendment A3); null and guest confinement; a client
   that cannot encrypt refused at an encrypting share; `IPC$` marked as the pipe endpoint with no
   call; tree IDs never reissued while a held request names one (RFC 20 §2.2); §18's §4.1 signing
-  and §4.1, §5.1 encryption rows over loopback.
+  and §4.1, §5.1 encryption rows over loopback, which wait for S4b, so T6.1 closes only after
+  RFC 18's plan's S2 (S6a).
 - T6.2 DCE/RPC: NDR codecs, bind and alter-context, request, response and fault PDUs, fragments;
   each interface a table keyed by opnum; an unknown opnum `DCERPC_FAULT_OP_RNG_ERROR`.
 - T6.3 Named pipes on `IPC$`: the pipe endpoints E7's `CREATE`, `WRITE` and `READ` rows dispatch to
@@ -896,7 +903,8 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
   the last one opened (plan gap 6); a stream in either parsed by one function, §12.1's rules.
 - T7.4 Access translation in `translate`: generic rights to `FILE_GENERIC_*`, `ShareAccess` to the
   deny mode, `MAXIMUM_ALLOWED` as `vfs.MaximumAllowed` in `OpenRequest.Access`, granted or refused
-  by the service, backup intent included (amendment A3); masks total and round-tripping.
+  by the service, backup intent included (amendment A3; the refusals are T2.4's tests); masks total
+  and round-tripping.
 - T7.5 `CREATE`: one `Open` with disposition, access, deny mode, directory, name and the options of
   Appendix D; open by file ID and shared virtual disks refused; a named stream opened as plan gap 25
   settles; a stream's delete refused before the call, from the request alone (§12.1); the reply's
@@ -933,11 +941,12 @@ Appendix F's reparse codes; RFC 20 §4.9's `Fit`, §6.10's `QUERY_INFO` gate.
   flags, Appendix E.3's answers.
 - T8.4 `SET_INFO`: times with -1 and -2 held at the open and `ChangeTime` never suspended, DOS
   attributes, end of file, allocation, disposition as one `SetAttr` through the open, a stream's
-  refused by the service and answered `STATUS_NOT_SUPPORTED` (amendment A6), extended attributes
-  compared without case (plan gap 20); the refusals of Appendix E.3.
+  refused by the service and answered `STATUS_NOT_SUPPORTED` (amendment A6, plan gap 6), extended
+  attributes compared without case (plan gap 20); the refusals of Appendix E.3.
 - T8.5 Rename and link (§13): the target from the share root, `ReplaceIfExists`, one `Rename` with
-  the open as `from.Open`, a stream's open's refused by the service (A6, T2.4); a target naming a
-  stream, as T7.3 parses it, refused from the request alone.
+  the open as `from.Open`, a stream's open's refused by the service (A6, T2.4) and answered
+  `STATUS_NOT_SUPPORTED` (plan gap 6); a target naming a stream, as T7.3 parses it, refused from
+  the request alone.
 - T8.6 `QUERY_DIRECTORY`: `ReadDir` by cursor, `Fit` to the client's buffer, every directory class,
   MS-FSA's wildcards, the restart and single-entry flags, hidden names skipped.
 - T8.7 Reparse points (§12.4): symlink and junction tags, targets translated both ways,
@@ -1232,8 +1241,10 @@ settled keeps its number, with what settled it.
    otherwise; `ErrShareViolation` as `STATUS_ACCESS_DENIED` only for a directory with an open
    child. The adapter can tell each case from the request it decoded, and the stream's from the
    path the open's `CREATE` named, but an RFC 20 §4.5 row sees only the error, the operation and
-   the version, and §4.5 sends an answer that turns on more to two kinds
-   the service tells apart. The finding is §4.5's key. Epics 3, 7, 8 and 9.
+   the version, and §4.5 sends an answer that turns on more to two kinds the service tells apart,
+   while the service refuses a stream's rename or disposition with a bare `ErrInvalid`. The
+   finding is §4.5's key. It is a precondition of T8.4's and T8.5's answer for a stream. Epics 3,
+   7, 8 and 9.
 7. **Live SMB settings** (RFC 13 Appendix B; RFC 20 §3.4, §3.6). Settled by #3961 and #4000's D20:
    `Reconfigure` takes `settings.Settings`, which `settings.SMB` implements, and every SMB setting
    is live but `port`, which the node applies by building a new adapter (RFC 20 §3.6, as #4050's
@@ -1283,7 +1294,8 @@ settled keeps its number, with what settled it.
     without it. Options for the RFC pull request: (a) RFC 22 §4.1 keys an anonymous NTLM session
     from that base key, encrypting only beside an authenticated session on its connection, its
     confinement unchanged, and RFC 18 §3.6 stands, since a key any observer derives is not secret;
-    that key then never meets a share's signing requirement beyond `IPC$`, and §4.1's `decision:`
+    that key then never meets a share's signing requirement beyond `IPC$`, with a test refusing
+    such a session at an encrypting share and at every share but `IPC$`, and §4.1's `decision:`
     on keyless sessions is reworded for a session holding one;
     (b) both keep it keyless and RFC 22 §18 names the tests given up. Until it settles, each of
     those tests that fails is a `known.yaml` entry naming this gap (T16.3). Epics 3, 4, 5 and 16.

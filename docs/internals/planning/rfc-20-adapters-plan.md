@@ -823,7 +823,8 @@ RFC sections: §6.10's codec and pipeline rows.
 4. **RFC 24 has no plan.** Epic 3 builds its minimal slice; a future RFC 24 plan starts from
    `pkg/resources` as epic 3 leaves it.
 5. **RFC 20 §4.4 as an RFC of its own.** The owner expects `gss` to become a separate RFC.
-   Until one exists, `gss` sits with the RFC 22 plan, whose SMB sign-in needs it first.
+   Until one exists, `gss` sits with the RFC 22 plan, whose SMB sign-in needs it first, but for
+   RFC 4121's `Wrap` and `Unwrap`, which no SMB handler calls (§6.2).
 6. **NFS XDR, generated or by hand.** Epic 6 writes the RPC header's XDR by hand; whether every
    program's codecs are generated (RFC 20 §5.1) is RFC 21's plan's call.
 7. **`pkg/discovery/mdns` and `wsd` are deleted in epic 1** with the other packages v1 alone
