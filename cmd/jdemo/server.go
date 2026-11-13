@@ -55,6 +55,12 @@ type Server struct {
 	// OffloadDir holds offloaded payloads the offload command writes.
 	OffloadDir string
 
+	// Options are extra journal Options Start opens with, appended after
+	// its own clock and settings. Tests pass the platform probe they cannot
+	// choose on their host; the daemon's start adds none, so a real
+	// directory is judged by the real mount it lives on.
+	Options []journal.Option
+
 	mu      sync.Mutex
 	j       *journal.Journal
 	id      journal.JournalID
@@ -70,13 +76,14 @@ type Server struct {
 	ln  net.Listener
 }
 
-// Options are the journal options Start opens with, appended after its own
-// clock and settings.
+// journalOptions are the options Start opens with: its own clock and
+// settings, then whatever extra Options the Server carries.
 func (s *Server) journalOptions() []journal.Option {
-	return []journal.Option{
+	opts := []journal.Option{
 		journal.WithClock(realClock{}),
 		journal.WithSettings(demoSettings),
 	}
+	return append(opts, s.Options...)
 }
 
 // takeSocket refuses a start whose socket something already listens on, and
