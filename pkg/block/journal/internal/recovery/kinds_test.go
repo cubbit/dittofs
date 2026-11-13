@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -512,7 +513,143 @@ func TestRunDeliversALossForASeqNoSegmentHolds(t *testing.T) {
 	}
 }
 
-// TestRunConfinesARottenSupersededRemainderAsCorrupt holds the open's check
+// TestRunServesABadCopyFromItsLiveTwin holds the bad-copy rule over the open:
+// a record whose original rots — here its kept superseded run, the one
+// payload an open reads — is confined as corrupt on its own segment, and a
+// re-appended copy the intact segment holds with the same sequence number
+// serves what the drop guarded. The subtraction empties Corrupt of the drop
+// — no loss record names a record a live copy contradicts — while Damaged
+// stands as the classing judged it, and the piece reads back naming the good
+// segment, the withheld rotten original never feeding. The same geometry
+// over a torn tail instead of an ended slot answers the same.
+func TestRunServesABadCopyFromItsLiveTwin(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tail func(id core.SegmentID, b []byte) []byte // the original's segment, after its first record
+	}{
+		{"an ended segment", func(id core.SegmentID, b []byte) []byte {
+			// A zero slot mid-segment, then a verifying record whose
+			// synced-through stays at the slot's start: the slot was never
+			// proven, so a torn slot ends the segment.
+			slot := int64(len(b))
+			b = append(b, make([]byte, 16)...)
+			after := writeRec(70, 6, 0x10000, 16)
+			after.Identity, after.Segment = journalID, uint64(id)
+			after.SyncedThrough = uint64(slot) // at the slot's start: the slot lies past it
+			after.RecordOffset = uint32(len(b))
+			return append(b, after.Bytes()...)
+		}},
+		{"a torn tail", func(id core.SegmentID, b []byte) []byte {
+			return append(b, bytes.Repeat([]byte{0xff}, 16)...)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			file := kindsFile(1)
+			id := core.SegmentID(1)
+			seg := buildSeg(id, writeRec(60, 5, 0, 128))
+			seg[format.SegmentHeaderSize+format.RecordHeaderSize+8+70] ^= 0xff // the payload rots
+			r.plantSeg(id, tc.tail(id, seg))
+			// The re-appended copy, healthy, in an intact segment of its own.
+			r.plantSeg(2, buildSeg(2, writeRec(60, 5, 0, 128)))
+			// The synced superseded loss whose kept run [64,128) the original rots in.
+			r.plantSeg(3, buildSeg(3, lossRec(file, 60, 61, 9, 0, 64, 1|4<<8)))
+
+			st := kindsRun(t, r)
+
+			if fate := fateOf(t, st, 1); fate.Kind != fateEnded && fate.Kind != fateTornTail {
+				t.Fatalf("segment 1's fate got %v, want ended or torn-tail", fate.Kind)
+			}
+			if got := st.Tails.Corrupt; len(got) != 0 {
+				t.Fatalf("Tails.Corrupt got %+v, want it emptied of the original a live twin contradicts", got)
+			}
+			if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+				t.Errorf("Tails.Damaged got %v, want [1]: the subtraction leaves the classing's verdict alone", st.Tails.Damaged)
+			}
+			p, ok := st.Rebuilt.Index.Lookup(file, 64)
+			if !ok {
+				t.Fatalf("Lookup at 64 missed, want the kept run of the healthy copy to feed")
+			}
+			if p.Record.Segment != 2 {
+				t.Errorf("the kept run reads from segment %d at %d, want segment 2, the good copy's home", p.Record.Segment, p.Record.Offset)
+			}
+			if p.Seq != 60 || p.Extent != (core.Extent{Off: 64, Len: 64}) {
+				t.Errorf("the kept run got seq %d over %+v, want 60 over [64,128), the clipped twin's own numbers", p.Seq, p.Extent)
+			}
+			if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+				t.Errorf("Lookup at 0 hit, want a miss: the loss's extent covers it and the rotten original never feeds")
+			}
+		})
+	}
+}
+
+// TestRunRepointsAPieceOutOfASegmentTheOpenEnds holds the copy preference on
+// healthy equal-number copies: the rebuild's collapse keeps the one at the
+// greater (segment, offset), and when that copy sits in a segment the open
+// ends — torn-tail here — while another fed copy sits in a segment the open
+// keeps, the built piece is repointed to the greatest kept copy, so the read
+// that serves it names a segment the open holds open.
+func TestRunRepointsAPieceOutOfASegmentTheOpenEnds(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	seg := buildSeg(9, writeRec(80, 5, 0, 64))
+	seg = append(seg, bytes.Repeat([]byte{0xff}, 16)...) // the torn tail that ends segment 9
+	r.plantSeg(9, seg)
+	r.plantSeg(2, buildSeg(2, writeRec(80, 5, 0, 64))) // the kept twin, in a segment the open keeps
+
+	st := kindsRun(t, r)
+
+	if fate := fateOf(t, st, 9); fate.Kind != fateTornTail {
+		t.Fatalf("segment 9's fate got %v, want torn-tail", fate.Kind)
+	}
+	if fate := fateOf(t, st, 2); fate.Kind != fateIntact {
+		t.Fatalf("segment 2's fate got %v, want intact", fate.Kind)
+	}
+	p, ok := st.Rebuilt.Index.Lookup(file, 0)
+	if !ok {
+		t.Fatalf("Lookup over the copied record's extent missed, want the piece held")
+	}
+	if p.Record != (index.RecordAt{Segment: 2, Offset: uint32(format.SegmentHeaderSize)}) {
+		t.Errorf("the piece reads from %+v, want {2 %d}: the greatest kept-segment copy, repointed out of the ended segment 9", p.Record, format.SegmentHeaderSize)
+	}
+	if p.Seq != 80 {
+		t.Errorf("the repointed piece carries seq %d, want 80: a copy keeps its record's numbers", p.Seq)
+	}
+}
+
+// TestRunWithheldNumbersCarryTheGreatestPairWithheld holds the counters' net:
+// a withheld record's numbers fold into Withheld as the pair they are, the
+// greatest pair among the withheld — a number pair greater than every fed
+// record's own, so the counters a later pass raises open above what the feed
+// saw even where no fed record reaches either half.
+func TestRunWithheldNumbersCarryTheGreatestPairWithheld(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	r.plantSeg(1, buildSeg(1,
+		writeRec(1000, 900, 0, 16), // the withheld record holding the disk's greatest seq
+		lossRec(file, 1000, 12, 201, 0, 16, 1<<8),
+		writeRec(500, 100, 0x4100, 16), // feeding, past every rule
+	))
+	r.plantSeg(2, buildSeg(2,
+		writeRec(100, 10, 0x100, 16), // withheld too, by a loss of its own
+		lossRec(file, 100, 13, 202, 0x100, 16, 1<<8),
+	))
+
+	st := kindsRun(t, r)
+
+	if got, want := st.Kinds.Withheld, (index.Numbers{Version: core.Version{Counter: 900}, Seq: 1000}); got != want {
+		t.Errorf("Withheld got %+v, want %+v: the greatest pair a withheld record carried, not a fed record's numbers", got, want)
+	}
+	if p, ok := st.Rebuilt.Index.Lookup(file, 0x4100); !ok {
+		t.Errorf("Lookup at 0x4100 missed, want the record no rule names to feed")
+	} else if p.Seq != 500 {
+		t.Errorf("the fed record at 0x4100 carries seq %d, want 500", p.Seq)
+	}
+}
+
 // of a partly-superseded record: its kept runs are bytes no serving read
 // would ever verify again — the loss stopped naming them — so the open reads
 // the record's whole payload and, when it fails, confines the kept runs as

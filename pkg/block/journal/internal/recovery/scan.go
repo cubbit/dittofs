@@ -559,6 +559,10 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	if terr != nil {
 		return rebuilt{}, kindResults{}, tails{}, terr
 	}
+	// The subtraction reads the classing's answer over the scans, before a
+	// record feeds: the drops it leaves are the ones the tail's append phase
+	// will report, and every one of them named a copy that never feeds.
+	tl.Corrupt = ks.subtractCopies(scans, tl)
 
 	// The workers did not feed — the scans hold every converted record —
 	// because the feed must wait for the kinds pass and the classing over
@@ -617,6 +621,10 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	if cerr := ks.applyCuts(ix); cerr != nil {
 		return rebuilt{}, kindResults{}, tails{}, cerr
 	}
+	// The repoint reads the fates over the fed copies last: it moves the
+	// pieces the collapse kept in a segment the open ends or saw fail, and
+	// nothing before it changes where a fed copy sits.
+	ks.repointCopies(ix, tl)
 	out := rebuilt{Index: ix, Counters: ctr, Scans: scans}
 	resyncs := 0
 	byCatalog := 0

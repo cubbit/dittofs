@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"bytes"
 	"cmp"
 	"errors"
 	"fmt"
@@ -486,6 +487,125 @@ func (ks *kindState) applyCuts(ix *index.Index) error {
 		}
 	}
 	return nil
+}
+
+// subtractCopies is the bad-copy half of the copies rule, run once the tail's
+// classing has judged every drop: a corrupt drop an equal-sequence record
+// another scan holds — in a segment whose fate the open keeps, neither torn
+// nor ended — is removed from Corrupt, for the live copy serves what the drop
+// guarded and the loss record a later open would append for it would drop a
+// record a twin contradicts. Damaged is not touched: the classing's verdict
+// on the segment stands whatever serves in its place, and the tail phases cut
+// and report by it.
+func (ks *kindState) subtractCopies(scans []segmentScan, tl tails) []corruptRecord {
+	// kept answers whether the open keeps a segment — the fates neither
+	// torn-tail nor ended. A segment with no fate the classing left keeps:
+	// only the classing names an ending, and nothing else ends one.
+	fates := make(map[core.SegmentID]fateKind, len(tl.Fates))
+	for _, f := range tl.Fates {
+		fates[f.ID] = f.Kind
+	}
+	kept := func(id core.SegmentID) bool {
+		k, judged := fates[id]
+		return !judged || (k != fateTornTail && k != fateEnded)
+	}
+	// live is every seq a kept-fate segment holds a record of, in whichever
+	// segment: the one membership test below, not one per drop.
+	var live map[core.Seq][]core.SegmentID
+	for i := range scans {
+		if !kept(scans[i].ID) {
+			continue
+		}
+		for _, rec := range scans[i].Records {
+			if live == nil {
+				live = map[core.Seq][]core.SegmentID{}
+			}
+			live[rec.Numbers.Seq] = append(live[rec.Numbers.Seq], scans[i].ID)
+		}
+	}
+	if live == nil {
+		return tl.Corrupt
+	}
+	out := tl.Corrupt[:0]
+	for _, c := range tl.Corrupt {
+		for _, s := range live[c.Drop.Header.Seq] {
+			if s != c.Segment {
+				// A bad copy does not mask the good one that replaced it.
+				goto subtract
+			}
+		}
+		out = append(out, c)
+	subtract:
+	}
+	return out
+}
+
+// repointCopies is the copy preference the deliverable spells out, run after
+// the cuts over the finished index: for every sequence number fed with two or
+// more copies, the rebuild's collapse keeps the one at the greatest
+// (segment, offset); where that keeps a copy in a segment the open ends or
+// saw fail while another fed copy sits in a segment the open keeps, the piece
+// moves to the greatest kept copy — a read then names a segment the open
+// holds open. Copies the repoint leaves note like today: the collapse's word
+// stands.
+func (ks *kindState) repointCopies(ix *index.Index, tl tails) {
+	if len(ks.copies) == 0 {
+		return
+	}
+	fates := make(map[core.SegmentID]fateKind, len(tl.Fates))
+	for _, f := range tl.Fates {
+		fates[f.ID] = f.Kind
+	}
+	kept := func(id core.SegmentID) bool {
+		k, judged := fates[id]
+		return !judged || (k != fateTornTail && k != fateEnded)
+	}
+	greatest := func(cps []index.RecordAt) int {
+		best := 0
+		for i := 1; i < len(cps); i++ {
+			if cps[i].Segment > cps[best].Segment ||
+				(cps[i].Segment == cps[best].Segment && cps[i].Offset > cps[best].Offset) {
+				best = i
+			}
+		}
+		return best
+	}
+	for _, k := range sortedCopyKeys(ks.copies) {
+		cps := ks.copies[k]
+		if len(cps) < 2 {
+			continue
+		}
+		keep := greatest(cps)
+		if kept(cps[keep].Segment) {
+			continue // the collapse's word stands: nothing to move
+		}
+		// The greatest copy among the kept segments' own.
+		best := -1
+		for i, at := range cps {
+			if !kept(at.Segment) {
+				continue
+			}
+			if best < 0 || at.Segment > cps[best].Segment ||
+				(at.Segment == cps[best].Segment && at.Offset > cps[best].Offset) {
+				best = i
+			}
+		}
+		if best < 0 {
+			continue
+		}
+		_, _, _ = ix.RepointRecord(k.file, cps[keep], cps[best])
+	}
+}
+
+// sortedCopyKeys orders the fed-copy keys, by seq then file, so the repoint
+// pass runs one deterministic order over the copies on disk.
+func sortedCopyKeys(m map[copyKey][]index.RecordAt) []copyKey {
+	keys := slices.Collect(maps.Keys(m))
+	slices.SortFunc(keys, func(a, b copyKey) int {
+		x, y := a.file.Bytes(), b.file.Bytes()
+		return cmp.Or(cmp.Compare(a.seq, b.seq), bytes.Compare(x[:], y[:]))
+	})
+	return keys
 }
 
 // verifyContentBody reads one buffered content record's header and whole body
