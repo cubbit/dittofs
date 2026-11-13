@@ -455,21 +455,35 @@ func (m *Memory) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 }
 
 // Copy copies xs in order, all at once: Memory has no chunk to fail part-way
-// and no deadline to meet. An extent whose source ends past the source's size
-// stops it, as the engine's does: ErrInvalid if it is the first, else the
-// bytes of the extents before it.
+// and no deadline to meet. Once both shares answer, it runs ctx's admitted
+// hook (engine.WithAdmitted), holding none of its locks, as the engine does
+// once its admission passed. An extent whose source ends past the source's
+// size stops it, as the engine's does: ErrInvalid if it is the first, else
+// the bytes of the extents before it.
 func (m *Memory) Copy(ctx context.Context, srcShare entity.ShareID, src entity.FileID, dstShare entity.ShareID, dst entity.FileID, xs []vfs.Extent) (int64, error) {
 	for _, x := range xs {
 		if invalid(x, src == dst) {
 			return 0, vfs.ErrInvalid
 		}
 	}
+	bound := func() (*journal, error) {
+		if _, err := m.bound(srcShare, src); err != nil {
+			return nil, err
+		}
+		return m.bound(dstShare, dst)
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, err := m.bound(srcShare, src); err != nil {
+	_, err := bound()
+	m.mu.Unlock()
+	if err == nil {
+		err = engine.Admitted(ctx)
+	}
+	if err != nil {
 		return 0, err
 	}
-	j, err := m.bound(dstShare, dst)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, err := bound()
 	if err != nil {
 		return 0, err
 	}

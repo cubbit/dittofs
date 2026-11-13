@@ -39,10 +39,11 @@ func (r *reg) delay() error {
 // delayClone is the answer to a call behind a running clone.
 //
 // decision: a call behind a clone answers at once and the engine never waits
-// inside it, since the filesystem service holds the file's admission and
-// accept locks across the call and holds it behind the clone itself (RFC 17
-// §5.9), and a call held behind a clone holds no entry mutex (RFC 14 §11).
-// Withdraw it if RFC 17 moves that hold into the engine.
+// inside it: RFC 17 §5.9 puts the held wait, bounded by the call's WithHold,
+// in the filesystem service, which holds none of the file's locks across a
+// clone past its admission (WithAdmitted), and a call held behind a clone
+// holds no entry mutex (RFC 14 §11). Withdraw it if RFC 17 moves that hold
+// into the engine.
 func delayClone() error { return &vfserr.Delay{Cause: vfserr.DelayClone} }
 
 // refuseWrite answers delayClone() if x of the file overlaps an extent a
@@ -176,11 +177,12 @@ func (fe *fileEntry) drop(r *reg) {
 // (ErrInvalid), two write namespaces (ErrCross with CrossNamespace), and an
 // extent a running clone holds (DelayClone). A call naming the source,
 // destination, offsets and length of a clone running into the destination
-// joins it (RFC 8 §9.1), starting no second clone; one naming another spec
-// meets the running clone's registrations, answering DelayClone. One naming
-// a done clone's spec, neither extent changed since, answers nil at once
-// (doneBefore). Otherwise it
-// registers the source extent and the destination extent, then runs step 1
+// joins it (RFC 8 §9.1), starting no second clone, once ctx's admitted hook
+// (WithAdmitted) has run; one naming another spec meets the running clone's
+// registrations, answering DelayClone. One naming a done clone's spec,
+// neither extent changed since, answers nil at once (doneBefore). Otherwise
+// it registers the source extent and the destination extent, runs ctx's
+// admitted hook, whose error undoes both registrations, then runs step 1
 // on the call (prepare), whose refusal undoes both registrations and changes
 // nothing, then from the journal step on its own goroutine (runClone) and the
 // removal loop (clonePhase2), where it fails only if the loop ends first,
@@ -243,6 +245,9 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	// DelayClone behind clones that were not slow.
 	req := cloneRequest{srcShare: srcShare, dstShare: dstShare, src: src, dst: dst, ext: x}
 	if c := e.joinable(req); c != nil {
+		if err := Admitted(ctx); err != nil {
+			return err
+		}
 		return c.wait(ctx)
 	}
 	if e.doneBefore(req) {
@@ -272,6 +277,10 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		e.unregister(src, rs)
 		return errRemoved
 	}
+	if err := Admitted(ctx); err != nil {
+		e.endClone(c, err)
+		return err
+	}
 	if err := e.prepare(ctx, c, x); err != nil {
 		e.endClone(c, err)
 		return err
@@ -287,6 +296,31 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	}()
 
 	return c.wait(ctx)
+}
+
+// admittedKey is the context key of a Clone call's admitted hook.
+type admittedKey struct{}
+
+// WithAdmitted returns ctx carrying admitted, which Clone, each of Copy's
+// chunks included, calls once the call has passed every refusal its admission
+// answers and holds its registrations, or has found the running clone it
+// joins, and before anything changes the destination. Its error refuses the
+// call, changing nothing. The filesystem service clears setuid and setgid
+// there, so a clone the engine refuses leaves the mode alone, and releases
+// the files' locks, since from there the registrations order every call
+// meeting the clone's extents (RFC 17 §5.9). The engine calls it with none of
+// its own locks held; it may be called more than once.
+func WithAdmitted(ctx context.Context, admitted func() error) context.Context {
+	return context.WithValue(ctx, admittedKey{}, admitted)
+}
+
+// Admitted runs the admitted hook ctx carries, if any, and answers its
+// error: what Clone calls, and what another Content calls at the same point.
+func Admitted(ctx context.Context) error {
+	if h, ok := ctx.Value(admittedKey{}).(func() error); ok {
+		return h()
+	}
+	return nil
 }
 
 // wait answers c's outcome once it is done, or DelayClone at ctx's end,
