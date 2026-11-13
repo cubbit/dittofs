@@ -40,13 +40,30 @@ func TestASealFinishingUnderARollingWaitsRefOnce(t *testing.T) {
 	// seal needs. The seal runs while the roll sits there, parked at its own
 	// storage sync, so the segment the roll is leaving answers sealing by
 	// the time the roll reads it.
+	// Two pause points, staged in order: the roll takes its successor and
+	// sits after the take with the append lock free — the staging the seal
+	// needs to start mid-roll — and once let through, it parks on the
+	// drain's cond over the sealing segment the seal is mid-write of. The
+	// wait-entry hook confirms the park, and the sync is released only
+	// after the confirmation, so the seal's sealed tail runs only once the
+	// roll is on the drain: the release-and-link order below is forced,
+	// never raced — 20 of its 20 runs read one handle, one release,
+	// whatever the scheduler interleaves outside the parked state.
 	taken := make(chan struct{})
 	letThrough := make(chan struct{})
-	segment.SetRollTakeHook(func() {
+	rolledToWait := make(chan struct{})
+	e.s.SetRollTakeHook(func() {
 		close(taken)
 		<-letThrough
 	})
-	t.Cleanup(func() { segment.SetRollTakeHook(nil) })
+	t.Cleanup(func() { e.s.SetRollTakeHook(nil) })
+	e.s.SetRollWaitHook(func() {
+		select {
+		case rolledToWait <- struct{}{}:
+		default:
+		}
+	})
+	t.Cleanup(func() { e.s.SetRollWaitHook(nil) })
 	appendDone := make(chan error, 1)
 	go func() {
 		h, b := streamWriteHeader(fid, 32<<10, make([]byte, 60<<10), 1, core.Version{Counter: 2})
@@ -71,12 +88,20 @@ func TestASealFinishingUnderARollingWaitsRefOnce(t *testing.T) {
 		t.Fatal("the seal's storage sync never reached the seam's hold")
 	}
 
-	// The roll reads the segment now: it parks on the seal's settle, the
-	// seal — once its parked sync goes free — that runs on seals the
-	// predecessor, releases the write reference under its own tail and
-	// wakes the roll to carry on. One release by the seal, none by the
-	// roll, whatever the locks order.
+	// The roll takes the lock it parked without, reads the sealing state
+	// twice over — the wait's entry hooks the first — and only when it is
+	// ON the drain does the sync go free: the seal's remaining steps
+	// finish, the sealed tail takes the lock the roll gave up at the wait
+	// and releases the write reference, and the woken roll carries on
+	// over a segment already sealed. Should the seal's tail finish
+	// anywhere else — before the roll's park, after its snapshot — the
+	// row loses its forced order, and the handle count shows it.
 	close(letThrough)
+	select {
+	case <-rolledToWait:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the roll never parked on the drain over the sealing segment")
+	}
 	syncHold.Release()
 	for name, ch := range map[string]chan error{"the seal": sealDone, "the rolling append": appendDone} {
 		select {

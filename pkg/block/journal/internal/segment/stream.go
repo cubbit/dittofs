@@ -268,6 +268,18 @@ type Stream struct {
 	// by NewStream and never changes, so it needs no lock domain.
 	sink Sink
 
+	// rollTakeHook and rollWaitHook are the instance's test pause hooks,
+	// set per stream through the package's test exports and never in
+	// production: rollTakeHook pauses the roll after its spare take,
+	// before the append lock it reads the old segment under — the staging
+	// a racing seal needs; rollWaitHook fires where the roll has just
+	// read a sealing state and is about to park on the drain — the row
+	// that holds a finishing seal open releases its sync only once it
+	// sees the hook, so the roll is on the drain when the seal's sealed
+	// tail runs. Neither may block: both run holding appendMu.
+	rollTakeHook func()
+	rollWaitHook func()
+
 	// decision: every field below is guarded by appendMu, the segment append
 	// domain of RFC 1 §8.2 — next, count, entries, the tracker, the active
 	// segment and its ref, the roll's single-flight gate, the closed flag,
@@ -1027,14 +1039,6 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 	}
 }
 
-// rollTakeHook is the test hook between the roll's spare take and the append
-// lock it reads the old segment under: the one pause point at which a roll
-// that has already taken its successor can sit beside a seal of the segment
-// it is leaving, holding no lock — the staging a racing seal needs to still
-// be in flight when the roll reads the state. A test that sets it must nil
-// it before it returns.
-var rollTakeHook func()
-
 // roll moves the stream onto its next segment: it takes the spare the roll
 // options name, seals the full segment the stream leaves — a full seal, for
 // the segment is closed because the next record did not fit — and writes the
@@ -1058,8 +1062,8 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	if err != nil {
 		return err
 	}
-	if rollTakeHook != nil {
-		rollTakeHook()
+	if s.rollTakeHook != nil {
+		s.rollTakeHook()
 	}
 
 	// The predecessor: the segment the stream leaves, sealed here when it
@@ -1077,18 +1081,23 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	// seal's settled state the moment the seal returned.
 	//
 	// decision: this wait is defense in depth over the loop's own park on
-	// a sealing state, and no test can force it. The window it closes is
-	// the length of the pool's take, between the roll's caller releasing
-	// appendMu and this read, and it holds no seam call a hold could park;
-	// every seal the loop can see is parked there, so a seal this read
-	// still finds must have started inside those microseconds, and this
-	// wait alone keeps the predecessor off a footer still being written.
-	// Withdrawn only by a hold the roll can be parked on, which the seam
-	// would have to grow.
+	// a sealing state, and it is load-bearing rather than decorative: the
+	// write reference read below the wait is correct only because the
+	// wait covers the window between the roll's caller releasing appendMu
+	// and this read, in which a racing seal can start and reach its own
+	// sealed tail — the tail that releases the segment's write reference
+	// — before the roll reads it. The row that forces it stages the
+	// crossing with the instance's rollTakeHook and confirms the park with
+	// rollWaitHook, so the seal's tail runs only once the roll is on the
+	// drain; a seal this read still finds is a seal still mid-flight, and
+	// this wait keeps the predecessor off a footer still being written.
 	s.appendMu.Lock()
 	old := s.id
 	state := s.sealState
 	for state == sealSealing {
+		if s.rollWaitHook != nil {
+			s.rollWaitHook()
+		}
 		s.drained.Wait()
 		state = s.sealState
 	}

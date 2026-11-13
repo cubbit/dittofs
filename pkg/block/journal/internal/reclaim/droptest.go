@@ -271,16 +271,19 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 // removal record whose retention counted the segment answers not droppable
 // until the unlink that retired it is durable — a drop that preceded the
 // unlink's durability would have a crash bring the retired segment back
-// without the removal record that covered it. The retirer runs the retired
-// hook — this call — after the segment has left the set but before the
-// directory sync; a recycle's own sync has already returned by then, so
-// its pending entry lives only the microseconds between the two hooks.
-// files, when empty, is filled from the tracker's own registry of
-// the segment's files; a caller carrying its own list must name every file
-// the segment held, or a file its list misses keeps its registry entries
-// for a segment no re-test will drop again. Every record registered live of
-// the retired segment is taken whatever the files list names — a forget
-// record's zero file is one such, and a caller's list never names it. The
+// without the removal record that covered it. Only the unlink's own path
+// runs its hooks before the retiral's durability: its directory sync is the
+// step the durable signal waits on, while a recycle's steps have already
+// made the removal durable before its hooks run, so a recycle's pending
+// entry lives only between its hooks and the durable signal that follows.
+// The lists the union is drawn from — the caller's and the tracker's own
+// registry of the segment's files — are joined, so the union names every
+// file either source knows, whichever files each misses. A caller's list
+// carries no burden of completeness: the index it is drawn from covers the
+// content files no registration names, and the registry covers the carried
+// records it holds whose index notes never landed. Every record registered
+// live of the retired segment is taken whatever the files list names — a
+// forget record's zero file is one such, and a files list never names it. The
 // holds citing seg as their copies are released with the retirement — the
 // segment is gone, and a still-held record of the segment it held ended
 // was carried to a copy durable before the hand-over — through the same
@@ -297,9 +300,10 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 // and the RemovalDurable call that consumes the park that first call
 // made, in the same delivery:
 //
-// decision: the retirer's retired hook and the set's retire observer fire
-// once the segment has left the set but before the directory sync that
-// would make the unlink or recycle durable, and a crash that undoes the
+// decision: the set's retire observer — and the retirer's retired hook on
+// the unlink's own path — fires once the segment has left the set but
+// before the directory sync that would make the unlink durable (a recycle
+// has made its removal durable before its hooks run), and a crash that undoes the
 // retirement must find the tracker's registrations intact — the surviving
 // file rebuilds its records, and what a rebuild is owed cannot have been
 // released on an unlink nothing made durable. A drop that preceded the
@@ -313,7 +317,7 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 // prune the ones naming the segment, O(forgets outstanding) beside a
 // records walk that visits every registered record of every file,
 // O(all registered records) — all of it under rm, and the call runs in
-// the retirer's retired-hook delivery, so a stream roll can wait behind
+// the retirer's durable-signal delivery, so a stream roll can wait behind
 // one retirement's whole walk. Upgrade to a walk scoped
 // to the retiring segment's own files, from the state's files table, and
 // an index of forget records by snapshot segment, when a retirement of a
@@ -327,10 +331,17 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 	st := t.stateOf(seg)
 	if st != nil {
 		st.mu.Lock()
-		if len(files) == 0 {
-			for f := range st.files {
-				files = append(files, f)
-			}
+		// The caller's list and the tracker's own registry are unioned
+		// rather than the registry consulted only over an empty one: the
+		// caller's source — the index — and the tracker's disagree by
+		// design, each knowing files the other cannot (a content-only
+		// file the index notes but nothing registers; a carried record
+		// registered whose index note never landed), and the union makes
+		// no caller's list carry the burden of completeness. A file named
+		// twice is harmless: SegmentGone is idempotent and the re-test
+		// keeps one entry per file.
+		for f := range st.files {
+			files = append(files, f)
 		}
 		st.mu.Unlock()
 	}
@@ -406,11 +417,10 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 		if t.pendingGone == nil {
 			t.pendingGone = make(map[core.SegmentID][]core.FileID)
 		}
-		// Accumulated per relay, never replaced: the journal's own retirement
-		// relays SegmentRetired beside the retirer's hook, so a second list
-		// must not strand the first's files. A file named twice is harmless —
-		// RemovalDurable's SegmentGone is idempotent and its re-test keeps
-		// one entry per file.
+		// Accumulated per relay, never replaced: a second relay naming the
+		// segment must not strand a first list's files. A file named twice
+		// is harmless — RemovalDurable's SegmentGone is idempotent and
+		// its re-test keeps one entry per file.
 		t.pendingGone[seg] = append(t.pendingGone[seg], files...)
 	}
 	t.rm.Unlock()

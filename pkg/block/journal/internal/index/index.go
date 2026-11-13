@@ -301,9 +301,10 @@ func (ix *Index) FilesOfSegment(seg core.SegmentID) []core.FileID {
 // nothing: a file the index has no entry for is left alone rather than
 // given one to drop nothing from. Call it only once the unlink or recycle
 // is durable, once per file its records named: the tracker's RemovalDurable
-// — the retirer's durable signal — relays it for each file its own registry
-// knows the segment named, the journal's own retirement carrying it where it
-// knows the segment's bytes through RetiredBytes instead.
+// — the retirer's durable signal — relays it for each file the union of its
+// caller's list and its own registry names, and the journal's wiring feeds
+// it this index's own files-of-segment, so every file the index knows the
+// segment held reaches the call beside every one the registry registered.
 func (ix *Index) SegmentGone(id core.FileID, seg core.SegmentID) {
 	if !ix.fs.view(id, func(*file) {}) {
 		return

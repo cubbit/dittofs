@@ -544,9 +544,6 @@ func TestARecycledRetirementKeepsTheOldID(t *testing.T) {
 	if got := c.set.Counters().DoubleRetires; got != 0 {
 		t.Fatalf("DoubleRetires = %d, want 0", got)
 	}
-	if got := c.set.Counters().DoubleRetires; got != 0 {
-		t.Fatalf("DoubleRetires = %d, want 0", got)
-	}
 	hold.Release()
 }
 
@@ -1341,7 +1338,7 @@ func TestASealedSegmentHoldingOnlyATruncateRecordStays(t *testing.T) {
 		return !inSet(c, holder)
 	})
 	if !c.liveness.Held(holder) {
-		t.Fatal("the truncate record's answer to Held was released while its record remained, want the registration to hold its segment for the process's life")
+		t.Fatal("the truncate record's answer to Held was released while its record remained, want the registration to hold its segment for as long as its marker is unsettled")
 	}
 	if got := c.set.Counters().DoubleRetires; got != 0 {
 		t.Fatalf("DoubleRetires = %d, want 0", got)
