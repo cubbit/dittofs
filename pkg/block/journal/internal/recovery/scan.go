@@ -15,12 +15,16 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/readretry"
 )
 
-// asideRecord is the header of one record the rebuild does not feed — a
-// loss, hold, unhold, stamp or forget record — kept for the phases that
-// apply those kinds' own rules and read their bodies there. The header
-// verified; its body was not read here.
+// asideRecord is one record the rebuild does not feed — a loss, hold,
+// unhold, stamp or forget record — kept for the phase that applies those
+// kinds' own rules, with the header the walk verified and the body the
+// same read decoded: a loss's flags, a hold's, unhold's or stamp's cut.
+// A record whose body did not verify never becomes one — the read that
+// fails confines it as a corrupt drop — and a forget has no body, its
+// facts headerborne alone.
 type asideRecord struct {
 	Header format.RecordHeader
+	Body   format.RecordBody
 }
 
 // segmentScan is what one own segment's walk found: the index records its
@@ -181,13 +185,16 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 			// a forget has no body. A drop carries no Synced: the classing
 			// proves it, torn or corrupt.
 			if h.Kind != format.KindForget {
-				if verr := asideBodyErr(rd, identity, h); verr != nil {
+				vb, verr := asideBody(rd, identity, h)
+				if verr != nil {
 					if !errors.Is(verr, core.ErrCorrupt) {
 						return sc, verr
 					}
 					sc.Dropped = append(sc.Dropped, droppedRecord{Header: h, Err: verr})
 					continue
 				}
+				sc.Aside = append(sc.Aside, asideRecord{Header: h, Body: vb})
+				continue
 			}
 			sc.Aside = append(sc.Aside, asideRecord{Header: h})
 		default: // the reconcile kinds, 15 and 16
@@ -280,21 +287,26 @@ func contentRecord(rd *reader, identity core.JournalID, h format.RecordHeader) (
 	return r, nil
 }
 
-// asideBodyErr reads a loss, hold, unhold or stamp record's fixed body at the
-// record's own offset through the bound and verifies it whole: nil when it
-// verifies, an error wrapping core.ErrCorrupt naming the segment and offset
-// when it does not or the file ends inside it, a read the bound did not clear
-// as itself.
-func asideBodyErr(rd *reader, identity core.JournalID, h format.RecordHeader) error {
+// asideBody reads a loss, hold, unhold or stamp record's fixed body at the
+// record's own offset through the bound, verifies it whole and decodes it:
+// the body when it verifies — a loss record's flags, a hold's, unhold's or
+// stamp's cut — an error wrapping core.ErrCorrupt naming the segment and
+// offset when it does not or the file ends inside it, a read the bound did
+// not clear as itself. It is the one read of an aside body the open makes:
+// the header walk and the catalogue both take it, and the phase that
+// applies the aside kinds' own rules consumes the body it read, so a loss
+// record's body is read once whatever its segment's source.
+func asideBody(rd *reader, identity core.JournalID, h format.RecordHeader) (format.RecordBody, error) {
 	body := make([]byte, h.BodySize())
 	n, rerr := rd.ReadAt(format.SegmentName(h.Segment), body, h.Offset+format.RecordHeaderSize)
 	if rerr != nil && !errors.Is(rerr, io.EOF) {
-		return rerr
+		return format.RecordBody{}, rerr
 	}
-	if _, verr := format.VerifyRecordBody(body[:n], identity, h); verr != nil {
-		return fmt.Errorf("%w: segment %d: the %s at %d: %v", core.ErrCorrupt, h.Segment, h.Kind, h.Offset, verr)
+	vb, verr := format.VerifyRecordBody(body[:n], identity, h)
+	if verr != nil {
+		return format.RecordBody{}, fmt.Errorf("%w: segment %d: the %s at %d: %v", core.ErrCorrupt, h.Segment, h.Kind, h.Offset, verr)
 	}
-	return nil
+	return vb, nil
 }
 
 // cloneSpec reads a clone target record's 56-byte body at the record's own
