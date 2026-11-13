@@ -33,15 +33,20 @@ func benchB5Append(b *testing.B) {
 	c := composeBench(b, benchWriters, benchExistenceAge)
 	ctx := b.Context()
 	data := make([]byte, mib)
+
 	var fsyncs []time.Duration
+
 	most := 0
+
 	b.ResetTimer()
 
 	for i := range b.N {
 		for k := range b5Bursts {
 			off := int64(i*b5Bursts+k) * mib
 			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
-				_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(c.files[w]), off, data, vfs.Unstable)
+				ref := vfs.Anonymous(c.files[w])
+				_, err := c.fs.Write(ctx, c.admin, ref, off, data, vfs.Unstable)
+
 				return err
 			}); err != nil {
 				b.Fatalf("burst %d of run %d: a write refused: %v", k+1, i+1, err)
@@ -49,16 +54,20 @@ func benchB5Append(b *testing.B) {
 
 			before := c.committedSizes(b)
 			c.counts.TakeUpdates()
+
 			took := make([]time.Duration, benchWriters)
 			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 				start := time.Now()
 				_, err := c.fs.Commit(ctx, c.admin, vfs.Anonymous(c.files[w]), 0, 0)
 				took[w] = time.Since(start)
+
 				return err
 			}); err != nil {
 				b.Fatalf("burst %d of run %d: an fsync failed: %v", k+1, i+1, err)
 			}
+
 			updates := c.counts.TakeUpdates().Updates
+
 			fsyncs = append(fsyncs, took...)
 
 			// decision: a group commit of earlier bursts' existence may come
@@ -69,6 +78,7 @@ func benchB5Append(b *testing.B) {
 			if !slices.Equal(before, c.committedSizes(b)) {
 				allowed++
 			}
+
 			if updates > allowed {
 				b.Fatalf(
 					"burst %d of run %d: %d store transactions across %d fsyncs, want at most %d: "+
@@ -80,19 +90,23 @@ func benchB5Append(b *testing.B) {
 					allowed,
 				)
 			}
+
 			most = max(most, updates)
 		}
 
 		// The window starts once the burst's last fsync has returned, so no
 		// fsync's transaction is counted in it.
 		start := time.Now()
+
 		c.counts.TakeUpdates()
 		c.awaitSizes(b, int64((i+1)*b5Bursts)*mib, 30*time.Second+10*benchExistenceAge)
 		commits := c.counts.TakeUpdates().Updates
+
 		intervals := int(math.Ceil(float64(time.Since(start)) / float64(benchExistenceAge)))
 		if commits > intervals {
 			b.Fatalf(
-				"run %d: %d existence transactions in %d existence intervals with no fsync, want at most "+
+				"run %d: %d existence transactions in %d existence intervals with no fsync, "+
+					"want at most "+
 					"one per journal per interval",
 				i+1,
 				commits,
@@ -112,40 +126,54 @@ func benchB5Overwrite(b *testing.B) {
 	c := composeBench(b, benchWriters, benchExistenceAge)
 	ctx := b.Context()
 	data := make([]byte, mib)
+
 	for k := range b5Bursts {
 		if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
-			_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(c.files[w]), int64(k)*mib, data, vfs.Unstable)
+			ref := vfs.Anonymous(c.files[w])
+			_, err := c.fs.Write(ctx, c.admin, ref, int64(k)*mib, data, vfs.Unstable)
+
 			return err
 		}); err != nil {
 			b.Fatalf("the content to overwrite: a write refused: %v", err)
 		}
 	}
+
 	c.awaitSizes(b, b5Bursts*mib, 30*time.Second+10*benchExistenceAge)
+
 	var fsyncs []time.Duration
+
 	most := 0
+
 	b.ResetTimer()
 
 	for i := range b.N {
 		for k := range b5Bursts {
 			written := time.Now()
+
 			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
-				_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(c.files[w]), int64(k)*mib, data, vfs.Unstable)
+				ref := vfs.Anonymous(c.files[w])
+				_, err := c.fs.Write(ctx, c.admin, ref, int64(k)*mib, data, vfs.Unstable)
+
 				return err
 			}); err != nil {
 				b.Fatalf("burst %d of run %d: a write refused: %v", k+1, i+1, err)
 			}
 
 			c.counts.TakeUpdates()
+
 			took := make([]time.Duration, benchWriters)
 			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 				start := time.Now()
 				_, err := c.fs.Commit(ctx, c.admin, vfs.Anonymous(c.files[w]), 0, 0)
 				took[w] = time.Since(start)
+
 				return err
 			}); err != nil {
 				b.Fatalf("burst %d of run %d: an fsync failed: %v", k+1, i+1, err)
 			}
+
 			updates := c.counts.TakeUpdates().Updates
+
 			fsyncs = append(fsyncs, took...)
 
 			// decision: the burst's writes come due for a group commit of
@@ -156,9 +184,11 @@ func benchB5Overwrite(b *testing.B) {
 			if time.Since(written) >= benchExistenceAge {
 				allowed++
 			}
+
 			if updates > allowed {
 				b.Fatalf(
-					"burst %d of run %d: %d store transactions across %d fsyncs of overwrites, want at "+
+					"burst %d of run %d: %d store transactions across %d fsyncs of overwrites, "+
+						"want at "+
 						"most %d: one per journal, never one per file",
 					k+1,
 					i+1,
@@ -167,6 +197,7 @@ func benchB5Overwrite(b *testing.B) {
 					allowed,
 				)
 			}
+
 			most = max(most, updates)
 		}
 	}

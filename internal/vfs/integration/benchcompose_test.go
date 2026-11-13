@@ -78,10 +78,12 @@ func composeBench(b *testing.B, n int, age time.Duration) *bench {
 	prof.Watch(b, prof.Options{})
 
 	base := benchBase(b)
+
 	jdir := filepath.Join(base, "journal")
 	if err := os.Mkdir(jdir, 0o700); err != nil {
 		b.Fatalf("bench: journal directory: %v", err)
 	}
+
 	clock := newWallClock()
 	ctx := b.Context()
 
@@ -96,6 +98,7 @@ func composeBench(b *testing.B, n int, age time.Duration) *bench {
 		if err != nil {
 			tb.Fatalf("bench: store: %v", err)
 		}
+
 		tb.Cleanup(func() {
 			_ = db.Close()
 		})
@@ -125,6 +128,7 @@ func composeBench(b *testing.B, n int, age time.Duration) *bench {
 		)
 		c.files = append(c.files, h)
 	}
+
 	printBox(b, jdir)
 
 	return c
@@ -139,11 +143,17 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 	meta := c.store.Store
 
 	opens, err := openstate.New(
-		openstate.Deps{Records: meta, Clock: clock, Rand: rand.Reader, Logger: logger},
+		openstate.Deps{
+			Records: meta,
+			Clock:   clock,
+			Rand:    rand.Reader,
+			Logger:  logger,
+		},
 	)
 	if err != nil {
 		b.Fatalf("bench: open state: %v", err)
 	}
+
 	e, err := engine.New(engine.Deps{
 		Node:      benchNode,
 		Devices:   []string{c.dir},
@@ -159,6 +169,7 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 	if err != nil {
 		b.Fatalf("bench: engine: %v", err)
 	}
+
 	c.fs, err = filesystem.New(filesystem.Deps{Meta: meta, Open: opens, Engine: e, Logger: logger})
 	if err != nil {
 		b.Fatalf("bench: filesystem: %v", err)
@@ -167,7 +178,9 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 	if err := opens.Start(ctx, c.fs, c.fs.Admission); err != nil {
 		b.Fatalf("bench: open state start: %v", err)
 	}
+
 	b.Cleanup(opens.Stop)
+
 	settings := engine.Settings{
 		ExistenceAge:        age,
 		GroupCommitMaxFiles: benchMaxFiles,
@@ -176,25 +189,32 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 	if err := e.Apply(settings); err != nil {
 		b.Fatalf("bench: engine settings: %v", err)
 	}
+
 	if err := e.Start(ctx, []engine.Share{c.share}); err != nil {
 		b.Fatalf("bench: engine start: %v", err)
 	}
+
 	b.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
+
 		if err := e.Close(ctx); err != nil {
 			b.Errorf("bench: engine close: %v", err)
 		}
 	})
+
 	if err := c.fs.Start(ctx); err != nil {
 		b.Fatalf("bench: filesystem start: %v", err)
 	}
+
 	b.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), benchBurstDeadline)
 		defer cancel()
+
 		if err := c.fs.Drain(ctx); err != nil {
 			b.Errorf("bench: filesystem drain: %v", err)
 		}
+
 		if err := c.fs.Stop(); err != nil {
 			b.Errorf("bench: filesystem stop: %v", err)
 		}
@@ -205,8 +225,10 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 // signs in as itself rather than as the share's anonymous principal.
 func (c *bench) signIn(b *testing.B) {
 	b.Helper()
+
 	cp := c.store.Store.ControlPlane()
 	p := c.store.Admin.Principal
+
 	u := entity.User{
 		Principal: p,
 		Name:      "admin",
@@ -215,15 +237,23 @@ func (c *bench) signIn(b *testing.B) {
 	if err := cp.PutUser(b.Context(), u); err != nil {
 		b.Fatalf("bench: admin user: %v", err)
 	}
-	if err := cp.SetGrant(b.Context(), entity.ShareGrant{Share: c.share.ID, Principal: p, Access: entity.AccessAdmin}); err != nil {
+
+	grant := entity.ShareGrant{
+		Share:     c.share.ID,
+		Principal: p,
+		Access:    entity.AccessAdmin,
+	}
+	if err := cp.SetGrant(b.Context(), grant); err != nil {
 		b.Fatalf("bench: admin grant: %v", err)
 	}
+
 	c.admin = signedIn(p)
 }
 
 // committedSize is file i's size as the store has committed it.
 func (c *bench) committedSize(b *testing.B, i int) int64 {
 	b.Helper()
+
 	f, err := c.store.Store.Files().Get(b.Context(), c.store.Admin, c.files[i])
 	if err != nil {
 		b.Fatalf("bench: read file %d's record: %v", i, err)
@@ -236,6 +266,7 @@ func (c *bench) committedSize(b *testing.B, i int) int64 {
 // benchWriters files.
 func (c *bench) committedSizes(b *testing.B) []int64 {
 	b.Helper()
+
 	sizes := make([]int64, min(len(c.files), benchWriters))
 	for i := range sizes {
 		sizes[i] = c.committedSize(b, i)
@@ -248,8 +279,10 @@ func (c *bench) committedSizes(b *testing.B) []int64 {
 // store, and fails at the deadline.
 func (c *bench) awaitSizes(b *testing.B, want int64, deadline time.Duration) {
 	b.Helper()
+
 	ctx, cancel := context.WithTimeout(b.Context(), deadline)
 	defer cancel()
+
 	for {
 		differ := func(s int64) bool {
 			return s != want
@@ -257,6 +290,7 @@ func (c *bench) awaitSizes(b *testing.B, want int64, deadline time.Duration) {
 		if !slices.ContainsFunc(c.committedSizes(b), differ) {
 			return
 		}
+
 		select {
 		case <-ctx.Done():
 			b.Fatalf(
@@ -275,12 +309,18 @@ func (c *bench) awaitSizes(b *testing.B, want int64, deadline time.Duration) {
 func openJournal(
 	clock journal.Clock,
 ) func(context.Context, string, journal.Version, journal.JournalID) (engine.Journal, error) {
-	return func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
+	return func(
+		ctx context.Context,
+		dir string,
+		floor journal.Version,
+		expect journal.JournalID,
+	) (engine.Journal, error) {
 		j, err := journal.Open(ctx, dir, floor, expect, nil, journal.WithClock(clock),
 			journal.WithSettings(benchJournalSettings))
 		if err != nil {
 			return nil, err
 		}
+
 		if err := awaitJournalSpares(ctx, j); err != nil {
 			_ = j.Close()
 			return nil, err
@@ -307,6 +347,7 @@ var benchJournalSettings = journal.Settings{SpareTarget: benchSpares}
 func awaitJournalSpares(ctx context.Context, j *journal.Journal) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
+
 	want := benchSpares
 	for j.Stats().Spares < want {
 		select {
@@ -403,6 +444,7 @@ func (c *wallClock) Elapsed() time.Duration {
 
 func (c *wallClock) After(d time.Duration) <-chan struct{} {
 	ch := make(chan struct{})
+
 	time.AfterFunc(d, func() {
 		close(ch)
 	})
@@ -414,14 +456,17 @@ func (c *wallClock) After(d time.Duration) <-chan struct{} {
 // ends, or the benchmark's temporary directory.
 func benchBase(b *testing.B) string {
 	b.Helper()
+
 	root := os.Getenv(benchDirEnv)
 	if root == "" {
 		return b.TempDir()
 	}
+
 	dir, err := os.MkdirTemp(root, "engine-bench-")
 	if err != nil {
 		b.Fatalf("bench: directory under %s: %v", benchDirEnv, err)
 	}
+
 	b.Cleanup(func() {
 		_ = os.RemoveAll(dir)
 	})
@@ -442,6 +487,7 @@ func printBox(b *testing.B, dir string) {
 	b.Helper()
 	boxOnce.Do(func() {
 		source, fstype, options := mountOf(dir)
+
 		fmt.Printf("commit: %s\n", gitCommit())
 		fmt.Printf("memory: %s\n", memTotal())
 		fmt.Printf("device: %s\n", source)
@@ -456,24 +502,32 @@ func printBox(b *testing.B, dir string) {
 // writes of 4 KiB each followed by an fsync, on a file in dir.
 func fsyncProbe(b *testing.B, dir string) string {
 	b.Helper()
+
 	f, err := os.CreateTemp(dir, "fsync-probe-")
 	if err != nil {
 		b.Fatalf("bench: fsync probe: %v", err)
 	}
+
 	defer func() {
 		_ = f.Close()
 		_ = os.Remove(f.Name())
 	}()
+
 	buf := make([]byte, 4096)
+
 	var took []time.Duration
+
 	for range 64 {
 		start := time.Now()
+
 		if _, err := f.Write(buf); err != nil {
 			b.Fatalf("bench: fsync probe write: %v", err)
 		}
+
 		if err := f.Sync(); err != nil {
 			b.Fatalf("bench: fsync probe sync: %v", err)
 		}
+
 		took = append(took, time.Since(start))
 	}
 
@@ -488,19 +542,25 @@ func mountOf(dir string) (source, fstype, options string) {
 	if err != nil {
 		return "unknown", "unknown", "unknown"
 	}
+
 	data, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
 		return "unknown", "unknown", "unknown"
 	}
+
 	best := ""
 	source, fstype, options = "unknown", "unknown", "unknown"
+
 	for line := range strings.Lines(string(data)) {
 		pre, post, ok := strings.Cut(line, " - ")
+
 		fields, tail := strings.Fields(pre), strings.Fields(post)
 		if !ok || len(fields) < 6 || len(tail) < 2 {
 			continue
 		}
+
 		point := fields[4]
+
 		inside := abs == point || strings.HasPrefix(abs, strings.TrimSuffix(point, "/")+"/")
 		if inside && len(point) > len(best) {
 			best, source, fstype, options = point, tail[1], tail[0], fields[5]
@@ -526,6 +586,7 @@ func memTotal() string {
 	if err != nil {
 		return "unknown"
 	}
+
 	for line := range strings.Lines(string(data)) {
 		if v, ok := strings.CutPrefix(line, "MemTotal:"); ok {
 			return strings.Join(strings.Fields(v), " ")
@@ -550,6 +611,7 @@ func percentile(took []time.Duration, p int) time.Duration {
 	if len(took) == 0 {
 		return 0
 	}
+
 	s := slices.Clone(took)
 	slices.Sort(s)
 	rank := (p*len(s) + 99) / 100
@@ -575,23 +637,32 @@ const benchBurstDeadline = time.Minute
 func together(ctx context.Context, n int, fn func(ctx context.Context, i int) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
 	errs := make([]error, n)
 	running := make([]bool, n)
+
 	var mu sync.Mutex
+
 	done := make(chan struct{})
+
 	var wg sync.WaitGroup
+
 	for i := range n {
 		running[i] = true
+
 		wg.Go(func() {
 			err := fn(ctx, i)
+
 			mu.Lock()
 			errs[i], running[i] = err, false
 			mu.Unlock()
+
 			if err != nil {
 				cancel()
 			}
 		})
 	}
+
 	go func() {
 		wg.Wait()
 		close(done)
@@ -602,12 +673,15 @@ func together(ctx context.Context, n int, fn func(ctx context.Context, i int) er
 	case <-time.After(benchBurstDeadline):
 		mu.Lock()
 		defer mu.Unlock()
+
 		var stuck []int
+
 		for i, r := range running {
 			if r {
 				stuck = append(stuck, i)
 			}
 		}
+
 		for i, err := range errs {
 			if err != nil {
 				return fmt.Errorf(
@@ -622,6 +696,7 @@ func together(ctx context.Context, n int, fn func(ctx context.Context, i int) er
 
 		return fmt.Errorf("writers %v still running after %v", stuck, benchBurstDeadline)
 	}
+
 	for i, err := range errs {
 		if err != nil {
 			return fmt.Errorf("writer %d: %w", i, err)
