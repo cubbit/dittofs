@@ -24,12 +24,15 @@ const socketTimeout = 3 * time.Second
 const versionWindow uint64 = 1 << 32
 
 // demoSettings keep the journal small on a laptop: two streams, one spare,
-// a small headroom, and a bounded footprint.
+// a small headroom, and a bounded footprint. The maximum sits above the
+// spare pool's targets by a wide margin — the open resolves the pool's
+// targets and reserves them against the maximum, and one below the targets
+// leaves the pool permanently short, refusing every write.
 var demoSettings = journal.Settings{
 	Streams:         2,
 	SpareTarget:     1,
 	HeadroomRecords: 1024,
-	MaxBytes:        1 << 30,
+	MaxBytes:        4 << 30,
 }
 
 // demoInstallID is the fixed installation ID every jdemo-initiated journal
@@ -118,6 +121,13 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = j.Close()
 		return fmt.Errorf("jdemo: setting version limit: %w", err)
 	}
+	// The pool makes its spares asynchronously once the open returns, and a
+	// write racing it answers "refused by the spare limit"; the demo's
+	// first command is at the talk, so Start waits them out.
+	if err := awaitSpares(ctx, j); err != nil {
+		_ = j.Close()
+		return fmt.Errorf("jdemo: %w", err)
+	}
 	if err := saveState(statePath(dir), stateFile{ID: id, Limit: limit.Counter}); err != nil {
 		_ = j.Close()
 		return err
@@ -130,6 +140,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
+	s.mountRoutes(mux)
 
 	s.mu.Lock()
 	s.j = j
@@ -204,4 +215,29 @@ func dirEmpty(dir string) (bool, error) {
 		return false, err
 	}
 	return len(entries) == 0, nil
+}
+
+// sparesDeadline bounds how long Start waits for the pool's first spare; a
+// generous backstop over a condition polled on, not slept through.
+const sparesDeadline = 30 * time.Second
+
+// awaitSpares waits until the journal's spare pool holds its first content
+// spare. The pool's ready hook takes a type only the journal's tree can name,
+// so Stats is the wait's eye on it — a poll of the real condition, and the
+// deadline only the backstop.
+func awaitSpares(ctx context.Context, j *journal.Journal) error {
+	deadline := time.Now().Add(sparesDeadline)
+	for {
+		if st := j.Stats(); st.Spares >= 1 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("spare pool not ready after %s (Spares=%d)", sparesDeadline, j.Stats().Spares)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
