@@ -256,6 +256,11 @@ func ReadFooter(r io.ReaderAt, size int64, identity core.JournalID, segment core
 		if derr != nil {
 			return Footer{}, derr
 		}
+		// decision: entries must tile the segment, so a footer written over
+		// a counted range, which can name only the records that verify, is
+		// always a demotion to a scan, never an error. The layout lets no
+		// footer be written over a counted range today; when footer backfill
+		// writes one, lift this for the footer that marks its range.
 		if e.RecordOffset != end {
 			return Footer{}, noFooter("recordOffset %d, want %d where the record before it ends: entries tile the segment's records", e.RecordOffset, end)
 		}

@@ -53,9 +53,11 @@ type segmentScan struct {
 	// Size is the segment file's own size, as its storage reported.
 	Size int64
 
-	// Dropped holds the catalogued entries the tail's classing will judge:
-	// the catalogue read fills it for each record it confines, the walk
-	// leaves it empty, and what it carries is the tail's to own.
+	// Dropped holds the catalogued entries the tail's classing will judge.
+	// Nothing fills it yet: the catalogue read refuses a record that does
+	// not verify rather than drop one no phase reads — the confine arm's
+	// decision — and the day the classing exists the catalogue's confine
+	// flips and fills it. The walk leaves it empty regardless.
 	Dropped []droppedRecord
 }
 

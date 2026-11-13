@@ -231,6 +231,24 @@ func TestReadFooterNoFooter(t *testing.T) {
 	f, err = ReadFooter(bytes.NewReader(segment[:31]), 31, testIdentity, testSegment)
 	assertNoFooter(t, "a file of 31 bytes", f, err, "31 bytes, shorter than the 32 a trailer takes")
 
+	// A footer that skips a middle entry: three records tile the segment and
+	// the middle one's entry is dropped, so the two the footer names still
+	// checksum honestly — entry C's record ending where the seal marker
+	// sits — and only the entries' tiling against the records catches it. A
+	// footer that slipped it would answer an index without the skipped
+	// record, an index the scan of the same bytes never builds.
+	{
+		third := testEntryB
+		third.RecordOffset = 240 // just past entry B's record, which ends at 240
+		seg := sealedSegment(t, []CatalogEntry{testEntryA, testEntryB, third}, 0)
+		fo := binary.LittleEndian.Uint64(seg[len(seg)-TrailerSize+8 : len(seg)-TrailerSize+16])
+		seg = slices.Concat(seg[:fo+72], seg[fo+144:]) // entry B's 72 bytes out
+		seg[len(seg)-TrailerSize+16] = 2               // entryCount, honestly re-checksummed
+		rechecksumFooter(seg)
+		f, err := ReadFooter(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
+		assertNoFooter(t, "a footer that skips a middle entry", f, err, "recordOffset 240, want 144 where the record before it ends")
+	}
+
 	// A footer with no entry whose marker sits past the first record slot:
 	// the records end at 48 and the marker names 56, so the extent check
 	// refuses — a segment cannot hold a marker its own records have already

@@ -12,15 +12,22 @@ import (
 // droppedRecord is one catalogue entry the tail's proof will judge: the
 // entry the footer named, the header this rebuild read for it — the record's
 // decoded header where one verified, zero where none did — the error its
-// read failed with, and whether the record it names was synced. The
-// catalogue's own read fills it for every record it confines, and the
-// tail's classing owns what it carries.
+// read failed with, and whether the record it names was synced. Nothing
+// fills it yet — the catalogue refuses a record that does not verify rather
+// than drop one no phase reads — and the tail's classing owns both what
+// fills it and what it carries.
 type droppedRecord struct {
 	Entry  format.CatalogEntry
 	Header format.RecordHeader
 	Err    error
 	Synced bool
 }
+
+// dropUnverifiedRecords is false while no phase reads Dropped: the catalogue
+// refuses the open on a record that does not verify instead, as the confine
+// arm's decision records. It flips when the tail's classing that consumes
+// the drops exists.
+const dropUnverifiedRecords = false
 
 // headerFromEntry is the header a catalogue entry claims for its record:
 // every column the entry carries, the header's own offset the entry says the
@@ -55,8 +62,11 @@ func headerFromEntry(segID core.SegmentID, e format.CatalogEntry) format.RecordH
 //
 // A record that does not verify — a header that decodes nowhere the entry
 // names, a claim the record contradicts, a body its checksum refuses —
-// confines to itself: it drops into the scan's Dropped, carried for the
-// tail's classing, and every neighbour the footer names still attaches.
+// refuses the open naming the segment and the record's own offset:
+// the confinement rule still knows the record's boundaries, but nothing
+// consumes Dropped yet, so dropping one would open on a record the phases
+// quietly do not see. The confine arm's decision owns this, and it flips to
+// a drop when the tail's classing that consumes the drops exists.
 // The refusals that stay the whole open's are the scan's own: a read the
 // bound did not clear, a counter or sequence number this journal never
 // issues, a format this binary does not read, and the reconcile kinds
@@ -117,24 +127,24 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 		// confine answers one record that did not verify: the corruption
 		// its own bytes showed — a header that decodes nowhere the entry
 		// names, a claim the record contradicts, a body its checksum
-		// refuses — drops that record and carries it for the tail's
-		// classing while the read goes on, and returns true. Anything
-		// else is the open's own refusal and returns false.
+		// refuses — returning true when the record drops into Dropped,
+		// carried for the tail's classing while the read goes on, and
+		// false when it refuses the open as its own. Anything else — an
+		// error that is not the record's own corruption — returns false
+		// whichever way the decision below answers.
 		//
-		// decision: confinement, where the scan over the same bytes
-		// refuses the open, is deliberate. The entry names the record's
-		// own offset, so its boundaries are known independently of its
-		// bytes and a read that does not verify refuses that record
-		// alone, never the open. The identical-index rule the two
-		// sources are held to covers a segment whose records verify;
-		// a segment holding one that does not is the tail's to judge,
-		// not two indexes that must agree. What Dropped carries is the
-		// tail's classing's to consume, and no phase reads it yet: until
-		// that classing exists a dropped record goes unreported — the
-		// open succeeds, and the phases quietly do not see the record.
+		// decision: refusing the open rather than dropping such a record
+		// is deliberate and temporary. The confinement rule still holds —
+		// the entry names the record's own offset, so its boundaries are
+		// known independently of its bytes — but nothing consumes Dropped
+		// yet, and a dropped record would go unreported: the open would
+		// succeed while the phases quietly do not see the record, where
+		// the scan over the same bytes refuses the open. The closure
+		// flips — and this marker is withdrawn — when the tail's classing
+		// that consumes the drops exists.
 		confine := func(h format.RecordHeader, err error) bool {
-			if !errors.Is(err, core.ErrCorrupt) {
-				return false
+			if !errors.Is(err, core.ErrCorrupt) || !dropUnverifiedRecords {
+				return false // until the tail's classing consumes Dropped
 			}
 			sc.drop(e, h, err)
 			return true
@@ -145,9 +155,9 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 			// for: its 56-byte spec is the record's own body, and the
 			// spec's checksum must be verified whole before anything feeds
 			// it. The header is read and decoded at the entry's offset and
-			// held to the entry's word; a spec that does not verify
-			// confines to this record alone, never the open and never the
-			// segment.
+			// held to the entry's word; a spec that does not verify is
+			// answered by confine — today a refusal naming this record's
+			// own offset, never another's.
 			h, herr := recordHeaderFor(rd, identity, info.ID, e)
 			if herr != nil {
 				if confine(h, herr) {
@@ -195,9 +205,12 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 			// target's AsOf can, and that body the arm above reads — so
 			// every refusal here is the record's own damage.
 			if _, verr := format.VerifyRecordBody(body[:n], identity, h); verr != nil {
-				sc.drop(e, h, fmt.Errorf("%w: segment %d: the %s at %d: %v",
-					core.ErrCorrupt, info.ID, e.Kind, e.RecordOffset, verr))
-				continue
+				derr := fmt.Errorf("%w: segment %d: the %s at %d: %v",
+					core.ErrCorrupt, info.ID, e.Kind, e.RecordOffset, verr)
+				if confine(h, derr) {
+					continue
+				}
+				return sc, false, derr
 			}
 			sc.Aside = append(sc.Aside, asideRecord{Header: h})
 		case e.Kind == format.KindForget:
