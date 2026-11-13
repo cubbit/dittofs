@@ -48,6 +48,7 @@ func newRoot() *cobra.Command {
 		newHoldCmd(), newUnholdCmd(), newHeldCmd(), newStampCmd(),
 		newSinceCmd(), newSettleCmd(),
 		newExtentsCmd(), newFilesCmd(), newDirtyFilesCmd(),
+		newIndexCmd(), newSegmentsCmd(), newStatsCmd(), newVerifyCmd(),
 	} {
 		root.AddCommand(c)
 	}
