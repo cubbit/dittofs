@@ -15,7 +15,7 @@ import (
 // fs is one share in a fresh store, with an administrator who may do
 // anything and a handle on the share's root.
 type fs struct {
-	t     *testing.T
+	t     testing.TB
 	s     *kvstore.Store
 	c     *kv.Counting
 	share entity.Share
@@ -23,7 +23,7 @@ type fs struct {
 	root  entity.Handle
 }
 
-func newFS(t *testing.T, kvo Opener, fold entity.FoldRule) *fs {
+func newFS(t testing.TB, kvo Opener, fold entity.FoldRule) *fs {
 	s, c := newStore(t, kvo)
 	return setupFS(t, s, c, fold)
 }
@@ -35,7 +35,7 @@ func newHeldFS(t *testing.T, b backend, fold entity.FoldRule) (*fs, *holding) {
 	return setupFS(t, s, nil, fold), h
 }
 
-func setupFS(t *testing.T, s *kvstore.Store, c *kv.Counting, fold entity.FoldRule) *fs {
+func setupFS(t testing.TB, s *kvstore.Store, c *kv.Counting, fold entity.FoldRule) *fs {
 	cp := s.ControlPlane()
 	sh := share("data", "/data")
 	sh.Fold = fold
