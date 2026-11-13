@@ -128,12 +128,44 @@ func TestHandleSync_ASealedSegmentsRecordProvesNoMark(t *testing.T) {
 	if len(marks) != 1 {
 		t.Fatalf("Sync returned %d marks, want one: the sealed record's stream alone filtered, and a wiring that answered unsealed for everything would hand a mark for the sealed record too -- %+v", len(marks), marks)
 	}
-	if marks[0].Segment != otherAt.segment {
-		t.Errorf("the mark names segment %d, want the other file's record's segment %d", marks[0].Segment, otherAt.segment)
+	// The surviving mark comes through the real latestRecord wiring -- the
+	// other file's record is synced, so the fallback names it -- and is
+	// asserted whole, so that the wiring's own reading of the record (its
+	// stream association, its length, its sequence number) is guarded, not
+	// only the segment the rig's copy would find.
+	m := marks[0]
+	if m.Stream != otherAt.stream {
+		t.Errorf("mark.Stream = %d, want the stream the record's segment names, %d", m.Stream, otherAt.stream)
 	}
-	if marks[0].Segment == seg {
+	if m.Segment != otherAt.segment {
+		t.Errorf("the mark names segment %d, want the other file's record's segment %d", m.Segment, otherAt.segment)
+	}
+	if m.Segment == seg {
 		t.Errorf("the mark names the sealed segment %d", seg)
 	}
+	if want := otherAt.off + otherAt.size; m.Offset != want {
+		t.Errorf("mark.Offset = %d, want the record's end %d", m.Offset, want)
+	}
+	if m.Sequence != otherAt.seq {
+		t.Errorf("mark.Sequence = %d, want the record's %d", m.Sequence, otherAt.seq)
+	}
+	if m.Through < m.Offset {
+		t.Errorf("mark.Through = %d, want at least the record's end %d", m.Through, m.Offset)
+	}
+	if dur := durableLen(t, seam, otherAt.segment); m.Through > dur {
+		t.Errorf("mark.Through = %d, want at most the segment's durable length %d: a synced-through offset proves only durable bytes", m.Through, dur)
+	}
+}
+
+// durableLen returns the length of the segment's durable image, the most any
+// honest synced-through offset of it can claim.
+func durableLen(t *testing.T, seam *kit.Seam, seg uint64) int64 {
+	t.Helper()
+	raw, err := seam.Durable(format.SegmentName(core.SegmentID(seg)))
+	if err != nil {
+		t.Fatalf("reading the durable bytes of segment %d: %v", seg, err)
+	}
+	return int64(len(raw))
 }
 
 // placedRecord is the durable write record placedWrite reports: its place

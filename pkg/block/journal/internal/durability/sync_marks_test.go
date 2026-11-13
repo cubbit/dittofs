@@ -573,11 +573,11 @@ func TestSyncReturnsNoMarkForARecordCorruptDropsMidWait(t *testing.T) {
 }
 
 // TestSyncReturnsNoMarkWhenTheIndexFallbacksCoveringOffsetWasSwept covers the
-// belt on the index fallback's Through source: the worker's completion sweep
-// deletes a segment's synced-through offset once no live record remains and
-// the segment is not the active one, and a fallback record whose covering
+// unreachable-today half of the fallback's gate: the worker's completion
+// sweep deletes a segment's synced-through offset once no live record remains
+// and the segment is not the active one, and a fallback record whose covering
 // value is gone would name a live segment proofless, {Through: 0, Offset:
-// end} -- the shape finding 1 closed for registry-gone segments. Such a
+// end} -- the same shape a registry-gone segment is filtered for. Such a
 // candidate is skipped instead. The deletion here is made by hand: production
 // cannot reach the state, because every roll seals the segment it leaves, so
 // the unsealed segments are the active one, whose offset the sweep spares --
@@ -610,4 +610,79 @@ func TestSyncReturnsNoMarkWhenTheIndexFallbacksCoveringOffsetWasSwept(t *testing
 	if len(marks) != 0 {
 		t.Errorf("the second Sync returned marks %+v, want none: the fallback record's covering synced-through offset is gone, so no honest mark can name it", marks)
 	}
+}
+
+// TestSyncDropsAFallbackRecordAConcurrentWriterAppendedPastTheCover covers the
+// reachable half of the fallback's gate: a concurrent writer appends a newer
+// record of a named file after the call's targets were taken and before its
+// Latest answered -- the targets name only what the call began with, so the
+// call does not wait for it -- and the record the fallback names is one no
+// sync covered, its segment's synced-through offset below the record's end.
+// No mark may name it: it would name a record no sync reached on a live
+// segment, the shape a registry-gone segment is filtered for. The append is
+// staged through the Latest wrapper itself, on the Sync caller's goroutine,
+// which reproduces the interleaving exactly, and the worker is parked so the
+// record stays uncovered while the marks are built; a later Sync that waits
+// for the record marks it honestly once a sync covered it.
+func TestSyncDropsAFallbackRecordAConcurrentWriterAppendedPastTheCover(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	r := newRigConfigured(t, 1, func(*Config) {})
+	r.setLatest()
+	hook, reached, release := gate(t)
+	var armed atomic.Bool
+	r.d.afterHolds = func() {
+		if armed.CompareAndSwap(true, false) {
+			hook()
+		}
+	}
+	r.d.Start(r.streams)
+	// Registered after the rig's cleanups, so a failing test reports before
+	// the layer's Stop tries to join the parked worker.
+	t.Cleanup(release)
+
+	f := file(1)
+	r.publish(t, f, 0, "ffff")
+	if marks, err := r.d.Sync(context.Background(), f); err != nil || len(marks) != 1 {
+		t.Fatalf("the first Sync = %v, %d marks, want nil error and one", err, len(marks))
+	}
+
+	// Park the worker: it is the only thing that could cover the record the
+	// wrapper is about to append, and the marks below are built while it is
+	// parked, so the uncovered cover is guaranteed rather than raced for.
+	armed.Store(true)
+	r.d.made[0].wake()
+	awaitGate(t, "the worker's pause", reached)
+
+	var late segment.Location
+	var once sync.Once
+	inner := r.d.latest
+	r.d.latest = func(id core.FileID) (segment.Location, core.Seq, bool) {
+		once.Do(func() { late, _ = r.publish(t, id, 4, "late") })
+		return inner(id)
+	}
+
+	marks, err := r.d.Sync(context.Background(), f)
+	if err != nil {
+		t.Fatalf("the second Sync = %v, want nil: the appended record is no target of the call, so the call waits for nothing", err)
+	}
+	lateSeq := core.Seq(r.lastSeq.Load())
+	if len(marks) != 0 {
+		m := marks[0]
+		if m.Segment == uint64(late.Segment) && m.Offset == late.Off+late.Len && m.Sequence == uint64(lateSeq) {
+			t.Fatalf("the second Sync returned the proofless mark %+v: it names the record the concurrent writer appended, which no sync covered, whose segment's synced-through offset %d lies below the record's end %d", m, m.Through, m.Offset)
+		}
+		t.Fatalf("the second Sync returned marks %+v, want none: the only record the fallback can name is the concurrent writer's, which no sync covered", marks)
+	}
+
+	// The appended record is marked honestly once a Sync waits for it and a
+	// sync covers it: the drop was for the uncovered cover, not the record.
+	release()
+	marks, err = r.d.Sync(context.Background(), f)
+	if err != nil {
+		t.Fatalf("the third Sync = %v, want nil", err)
+	}
+	if len(marks) != 1 {
+		t.Fatalf("the third Sync returned %d marks, want the appended record's: %+v", len(marks), marks)
+	}
+	r.wantMark(t, "the mark of the appended record, honestly covered", marks[0], late)
 }

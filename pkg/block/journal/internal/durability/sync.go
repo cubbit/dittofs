@@ -1124,12 +1124,15 @@ func (d *Durability) Sync(ctx context.Context, ids ...core.FileID) ([]core.SyncM
 	// the file. The record completed before the call began -- no target means
 	// every record the file had was completed -- but that bounds only what
 	// was there: a concurrent writer may append a newer record of the file
-	// between this call's targets and its Latest, and the call then waits
-	// for that record and may even answer its failure, as any Sync of the
-	// file would. The fallback narrows what the marks name, never what the
-	// call waits for, and resolveCandsLocked reads the record's covering
-	// synced-through offset like a target's. Nil Latest keeps the behaviour
-	// the layer had before the fallback existed.
+	// after this call's targets and before its Latest, and the call then
+	// names that record but does not wait for it, the targets naming only
+	// what the call began with. Its failure still reaches the call through
+	// the marks a failed window leaves on the file, keyed as they are by the
+	// named ids. The fallback narrows what the marks name, never what the
+	// call waits for, and a fallback record whose cover no sync proved
+	// reaches its end is dropped, so no mark names a record a sync did not
+	// cover (resolveCandsLocked). Nil Latest keeps the behaviour the layer
+	// had before the fallback existed.
 	if d.latest != nil {
 		streams := d.streams.Load()
 		for _, id := range ids {
@@ -1209,20 +1212,19 @@ func (st *stream) resolveCandsLocked(cs []cand) {
 			c.along = th
 		}
 		if c.fromIndex && c.along < c.final.Off+c.final.Len {
-			// Belt: a fallback record whose covering synced-through offset was
-			// never captured has none left to capture -- the worker's
-			// completion sweep deletes a segment's offset once no live record
-			// remains and the segment is not the active one -- and a candidate
-			// without it would name a live segment proofless, {Through: 0,
-			// Offset: the record's end}, the shape a registry-gone segment is
-			// filtered for. It is skipped instead. Today's ordering keeps this
-			// unreachable: every roll seals the segment it leaves, so a
-			// fallback record's unsealed segment is the active one, whose
-			// offset the sweep spares; the reachability note at marksOf names
-			// the paths that could overturn it.
-			if _, have := st.synced[c.final.Segment]; !have {
-				c.dropped = true
-			}
+			// A fallback record is one a sync already covered: one its
+			// synced-through offset does not reach was appended after the
+			// call's targets (a concurrent writer) or its offset was swept,
+			// and either way no mark can name it. The concurrent-writer shape
+			// is reachable today and this is its live gate; the swept shape
+			// today's ordering keeps unreachable -- every roll seals the
+			// segment it leaves, so a fallback record's unsealed segment is
+			// the active one, whose offset the sweep spares, and the
+			// reachability note at marksOf names the paths that could
+			// overturn it. A reachable-gate regression or not, the caller
+			// keeps each stream's latest mark, and a mark naming a record no
+			// sync reached would replace the stream's real proof.
+			c.dropped = true
 		}
 	}
 }
