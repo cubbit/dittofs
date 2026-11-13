@@ -2442,7 +2442,7 @@ it.
 > RPC `PROG_MISMATCH`'s low and high versions: NFS's `HeaderCodec.Encode`
 > writes them from its own tables, which hold the versions each program
 > serves. A non-waiting reserve for `Park`: `Reserve` under a context already
-> past its deadline tries once, taking the charge when it fits and no waiter
+> past its deadline or cancelled tries once, taking the charge when it fits and no waiter
 > is ahead of it, and otherwise fails at once
 > ([RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)).
 > A guard against a `Reservation` released twice through a copy: `Release`

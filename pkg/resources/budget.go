@@ -64,6 +64,12 @@ func (c *count) lowerLocked(n int64) (past, first bool) {
 	return true, first
 }
 
+// negative refuses a charge below zero, which would lower the count with no
+// trace.
+func negative(c *count, n int64) error {
+	return fmt.Errorf("resources: reserve %d bytes from %s: a charge cannot be negative", n, c.name)
+}
+
 // reportPastZero is called with the mutex released, so the budget stays usable
 // after the panic.
 func (c *count) reportPastZero(first bool) {
@@ -97,8 +103,11 @@ func NewBudget(name string, ceiling int64) *Budget {
 // from the count alone and never waits.
 func (b *Budget) Reserve(n int64) (Reservation, error) {
 	c := &b.c
+	if n < 0 {
+		return Reservation{}, negative(c, n)
+	}
 	c.mu.Lock()
-	if n < 0 || n > c.ceiling-c.reserved {
+	if n > c.ceiling-c.reserved {
 		reserved := c.reserved
 		c.mu.Unlock()
 		return Reservation{}, fmt.Errorf("resources: reserve %d bytes from %s: %d of %d reserved", n, c.name, reserved, c.ceiling)
@@ -165,7 +174,10 @@ func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Rese
 	// it would hold every waiter behind it, and the caller must read it as a
 	// fault of configuration, not as a delay to retry. Withdraw it if a caller
 	// is found that must queue a charge larger than its budget.
-	if n < 0 || n > c.ceiling {
+	if n < 0 {
+		return Reservation{}, negative(c, n)
+	}
+	if n > c.ceiling {
 		return Reservation{}, fmt.Errorf("resources: reserve %d bytes from %s: its ceiling is %d", n, c.name, c.ceiling)
 	}
 
@@ -240,8 +252,8 @@ func (b *WaitBudget) release(n int64) {
 }
 
 // Reservation is bytes charged to one budget of either kind, for one key on
-// a WaitBudget. It is a value, moved and never copied, so taking one
-// allocates nothing.
+// a WaitBudget. It is a value, moved and never copied, so a Reserve that
+// does not wait allocates nothing.
 type Reservation struct {
 	b *Budget
 	w *WaitBudget
