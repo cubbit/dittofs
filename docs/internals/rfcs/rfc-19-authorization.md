@@ -551,17 +551,12 @@ an empty `want` succeeds whatever `G` is.
 A **maximal request** — an open asking "whatever I may have", such as SMB's
 `MAXIMUM_ALLOWED` — is granted `G`, and **MUST** be refused `ErrAccess` when `G`
 is empty or when a right it also asked for by name is outside `G`, as Windows'
-access check decides. The adapter resolves it to `G` before the call, so an
-empty `G` arrives as an empty `want`, which `Authorize` admits: the adapter
-**MUST** refuse a maximal request whose resolved mask is empty itself
-([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)), and `Authorize`
-refuses a named right outside `G`. An open asking backup or restore intent is
-the exception: a resolution before the call would lack the open's privilege
-(§3.5), so the maximal request reaches the open unresolved
-(`OpenRequest.Maximal`, [RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), and the service
-resolves it there to `G` computed with the open's privilege, refusing it
-`ErrAccess` itself when that `G` is empty or a right asked for by name lies
-outside it.
+access check decides. The maximal request reaches the open unresolved
+(`MaximumAllowed` in its access, [RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)),
+and the service resolves it there to `G`, computed with the open's privilege
+when it asks backup or restore intent (§3.5), refusing it `ErrAccess` itself
+when that `G` is empty or a right asked for by name lies outside it
+([RFC 22 §11](rfc-22-smb.md#11.%20Security%20descriptors)).
 
 **What an open holds.** The grant stored with an open
 ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)) is its mapped request — or `G`,
@@ -1077,7 +1072,7 @@ inherits modify from the unchanged inherit-only copy.
 | Z1 | A stored entry names its principal by ID, holds only the fourteen entry rights, and is one of four kinds. |
 | Z2 | A set either stores every entry it carried, in its order — entries naming deleted principals aside (§5.2) — or stores nothing. |
 | Z3 | The same request by the same caller of the same file is granted the same set, whatever protocol carried it. |
-| Z4 | `Authorize(want)` succeeds exactly when `Granted(want)` is `want`, an empty `want` included; `Granted(want)` is within `want` and the share ceiling; a maximal request whose resolved mask is empty is refused by the adapter, or by the service for a backup-intent open. |
+| Z4 | `Authorize(want)` succeeds exactly when `Granted(want)` is `want`, an empty `want` included; `Granted(want)` is within `want` and the share ceiling; a maximal request whose `G` is empty is refused by the service. |
 | Z5 | No file ACL widens a share ceiling, and no share ceiling is written into a file's ACL, stored or shown. |
 | Z6 | The ACL a client is shown is the ACL the walk reads, `ACLFromMode` of the mode where none is stored. |
 | Z7 | `ACLFromMode(m, d).Mode(o) == m`; `a.WithMode(a.Mode(o), o, d)` grants what `a` grants on a file owned by `o`, for every `a` §4.2 names; and no `chmod` raises an existing allow or places a new one before any other entry. |

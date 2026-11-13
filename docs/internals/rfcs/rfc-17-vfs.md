@@ -666,12 +666,12 @@ holds.
 | `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)). `Open` is always an open of the file the change acts on — for a name change, the named entry's file, as an SMB rename or delete through its `FileId` sends — never an open of the directory in `H`; it is the `via` RFC 14's `CheckChange` takes, which refuses an open of any other file ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)) |
 | `Cursor` | where a listing resumes: the 63-bit digest of the last entry returned ([RFC 7 §3.5](rfc-7-namespace-metadata.md#3.5%20A%20cookie%20survives%20concurrent%20mutation)), zero to start |
 | `DirEntry`, `Page`, `EntryFields` | one listed entry — name, handle, its digest as cursor, and its `File` when asked; a page `{Entries []DirEntry; Next Cursor; EOF bool}`; which fields a listing fills |
-| `OpenRequest`, `OpenResult` | disposition, access, deny, the caching grant wanted, durability, delete on close, `Backup` (the open asks for backup or restore intent: it is marked privileged when the caller is privileged, [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved), and otherwise opens unprivileged), `Maximal` (a backup-intent `MAXIMUM_ALLOWED` the adapter leaves unresolved, which the service resolves to `G` with the open's privilege, [RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)), create GUID and app instance, reclaim, the owner of opens and its sequence, a reconnect's match, a snapshot token, the parent and name it resolves through, `CreateArgs` for a create / the `OpenRef`, the `File`, `MaximalAccess`, the grant given, `Confirm` (the owner must confirm first, [RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)), `Created`, and the parent's `WCC` when it created |
+| `OpenRequest`, `OpenResult` | disposition, access, deny, the caching grant wanted, durability, delete on close, `Backup` (the open asks for backup or restore intent: it is marked privileged when the caller is privileged, [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved), and otherwise opens unprivileged), `MaximumAllowed` in its access (SMB's `MAXIMUM_ALLOWED`, which the service resolves to `G`, with the open's privilege on a backup intent, [RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)), create GUID and app instance, reclaim, the owner of opens and its sequence, a reconnect's match, a snapshot token, the parent and name it resolves through, `CreateArgs` for a create / the `OpenRef`, the `File`, `MaximalAccess`, the grant given, `Confirm` (the owner must confirm first, [RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)), `Created`, and the parent's `WCC` when it created |
 | `AttrChange` | `metadata.Attrs` plus `Guard *time.Time` (a ctime guard, [RFC 20 §2.4](rfc-20-adapters.md#2.4%20Protocol%20details%20that%20stay%20in%20the%20adapter)), `DeleteOnClose *bool` and `Suspend`, `Resume` time masks — the last two only through an open |
-| `Access` | an access mask in RFC 7's terms ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)) |
+| `Access` | an access mask in RFC 7's terms ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)), plus `MaximumAllowed` (`0x02000000`, SMB's `MAXIMUM_ALLOWED`), which only `OpenRequest.Access` carries and §5.3 resolves to `G` before any check |
 | `WCC` | `{Before *File; After File}`: one object's attributes either side of a mutation, from one hold of its accept lock; when `Before` is nil is [§5.7](#5.7%20GetAttr)'s |
 | `CreateResult`, `UnlinkResult`, `RenameResult` | `{Handle; File; Dir WCC}`; `{Dir WCC}`; `{From, To WCC; Moved *WCC}` — `Moved` when the moved file's own attributes changed |
-| `ShareRef`, `ShareInfo` | a share named as the client sent it — an NFS path or an SMB name; the zero value is the pseudo-root / a share's name, `Flavors []AuthFlavor`, comment, `Hidden`, the root's `MaximalAccess`, and the share policy's SMB flags (`ExportPolicy.SMB`: encrypt, continuously available, [RFC 16](rfc-16-metadata-store.md)) |
+| `ShareRef`, `ShareInfo` | a share named as the client sent it, an NFS path or an SMB name; the zero value is the pseudo-root / a share's name, `Flavors []AuthFlavor`, comment, `Hidden`, the root's `MaximalAccess`, computed for `c.ForOpen(false)` as an open's is ([§5.3](#5.3%20Open%20and%20close)), so over SMB it leaves out what only privilege grants, and the share policy's SMB flags (`ExportPolicy.SMB`: encrypt, continuously available, [RFC 16](rfc-16-metadata-store.md)) |
 | `Change`, `Op` | one change a watch reports; the operation an event or metric names |
 | `ClientInfo`, `ClientStatus`, `ClientRecord` | what `Propose` and `Connect` register — protocol, name, boot, whether state protection is on, the adapter's own bytes, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1); RFC 14's `Client`, aliased, as `Record` and `AddSession` return it |
 
@@ -815,7 +815,7 @@ and verifying a handshake is
 [RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)'s;
 the service exposes both as `Principals`, so an adapter imports `pkg/vfs` and
 nothing else of the core. The resolver that maps an `Identity` per share stays
-internal to the filesystem. `SignInStep`, `SignInResult`, `Scheme` and `Spelling`
+internal to the filesystem. `SignInStep`, `SignInResult`, `Keys`, `Scheme` and `Spelling`
 alias RFC 18's types; `SignInResult` carries the session keys beside the
 `Identity`, never inside it.
 
@@ -842,10 +842,13 @@ client record or lease — and a handler may make any number of them:
 `Xattrs`, `Streams`, `Access`, `Read`, `Seek`, `TestLock`, `Root`, `SecInfo`,
 `ListShares`, `StatFS`, `Quota`, `Snapshots`, `MoveTarget` and `Spell`. Every other method may change
 state, and RFC 20 §4.3 allows a handler one. `vfs.Mutates(op Op) bool` answers
-it, so the adapters' one-call check reads it from one place.
+it, so the adapters' one-call check reads it from one place; the calls
+RFC 20 §4.3 leaves outside the rule are true for it, and the check exempts
+them by the request's context.
 `Propose` is on the list because its record is volatile and nothing reads it
-but the confirm. SMB's first `SESSION_SETUP` on a node makes `Connect` its one
-mutating call, and no other `SESSION_SETUP` makes one. `Spell` is on it because an NFSv4 `GETATTR` asking `owner`
+but the confirm. The calls SMB's `SESSION_SETUP` makes outside the one-call rule are
+those RFC 20 §4.3 lists: the `Principals` calls and session setup's client-record
+calls. `Spell` is on it because an NFSv4 `GETATTR` asking `owner`
 and `owner_group` makes two `Spell` calls and no mutation; `Find` is not,
 since it may mint a directory principal. `Read` is on it although the store may advance access time;
 that is a side effect of serving the read, never a second call.
@@ -1943,12 +1946,12 @@ func (s *Filesystem) openLocked(ctx context.Context, c Caller, r OpenRequest, se
 		f, dir = cr.File, &cr.Dir
 	}
 	cp := c.ForOpen(r.Backup) // privileged only for a backup-intent open of a privileged caller (RFC 19 §3.5)
-	if r.Maximal { // RFC 19 §3.4: a backup-intent MAXIMUM_ALLOWED, resolved here to G with the open's privilege, unlike MaximalAccess below
+	if r.Access&MaximumAllowed != 0 { // RFC 19 §3.4: SMB's MAXIMUM_ALLOWED, resolved here to G, with the open's privilege on a backup intent, unlike MaximalAccess below
 		g, _ := s.authz.Rights(ctx, cp, f.Handle, r.Parent, allRights)
 		if g == 0 {
 			return OpenResult{}, false, ErrAccess
 		}
-		r.Access |= g // Check refuses a right named beside it that lies outside G
+		r.Access = r.Access&^MaximumAllowed | g // Check refuses a right named beside it that lies outside G
 	}
 	if err := s.authz.Check(ctx, cp, f.Handle, r.Parent, r.Access); err != nil { // §4.6: via the parent, so DELETE comes from delete-child
 		return OpenResult{}, false, err
@@ -2112,6 +2115,12 @@ exists, for the target:
 
 ```go
 func (s *Filesystem) renameAt(ctx context.Context, c Caller, from Target, fromName []byte, to Handle, toName []byte, noReplace bool) (RenameResult, error) {
+	if from.Open != nil && isStream(from.Open) { // before either name is looked up, so the answer shows neither the target nor the base's name
+		if err := s.authz.Grant(ctx, c, from.Open, Delete); err != nil { // the open's grant, as authz.Rename checks it (§4.6): ErrAccess without DELETE
+			return RenameResult{}, err
+		}
+		return RenameResult{}, ErrInvalid // open state's refusal (RFC 14 §9.4), answered here: a stream has no entry, so nothing is renamed
+	}
 	src, err := s.lookup(ctx, c, from.H, fromName) // ErrNotFound
 	if err != nil {
 		return RenameResult{}, err
@@ -2175,6 +2184,19 @@ func (s *Filesystem) renameAt(ctx context.Context, c Caller, from Target, fromNa
 	return r, err
 }
 ```
+
+**A named stream is neither renamed nor deleted on its own.** A `Rename` whose
+`from.Open` is a named stream's open, and a `SetAttr` setting or clearing
+`DeleteOnClose` through one, are refused `ErrAccess` when the open's grant
+holds no `DELETE`, as on any file, and otherwise `ErrInvalid` by open state,
+changing nothing
+([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)): a stream has
+no entry
+([RFC 7 §2.7](rfc-7-namespace-metadata.md#2.7%20Extended%20attributes%20and%20named%20streams)).
+`renameAt` refuses such a rename first, before it looks up either name, so
+neither answer depends on whether the target exists or the base file's name
+is still there. The service decides it, never the adapter
+([RFC 22 §12.1](rfc-22-smb.md#12.1%20Streams)).
 
 **A delete-pending directory takes no new entries.** Before it applies a create
 — an `Open` that creates included —, a link or a rename, the service **MUST** check the open state of the destination

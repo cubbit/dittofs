@@ -115,8 +115,8 @@ With this RFC:
 - Every adapter has the same lifecycle, the same request pipeline and the same
   drain on stop, so a fix to one stage is a fix for both protocols.
 - An adapter holds no filesystem logic, and the build proves it: its imports
-  are checked, its handlers make at most one mutating service call, and every
-  service error has a row in its error table.
+  are checked, its handlers make at most one mutating service call but for
+  the few §4.3 lists, and every service error has a row in its error table.
 - A slow or silent client costs its own connection, never a worker another
   client needs.
 - An adapter's tests test translation; the service's tests test semantics; and a
@@ -191,7 +191,8 @@ Windows user hits it.
   methods on per-version handler sets that hold the service. A protocol version
   is an operation table, chosen from the request's header, never a branch in a
   handler.
-- A handler makes at most one mutating service call. A compound is a sequence
+- A handler makes at most one mutating service call, beside the few §4.3
+  places outside that rule. A compound is a sequence
   of handlers, run by the adapter's compound runner, never one handler doing
   several things.
 - Codecs are pure, bounded and fuzzed, and anchored by golden vectors taken from
@@ -609,7 +610,7 @@ Every adapter runs through the same four states, driven by the node
   own; until [RFC 15](rfc-15-topology.md)'s topology exists it answers none. A table maps `ErrMoved` to the protocol's move signal where
   the operation can carry one (`NFS4ERR_MOVED` with `fs_locations`,
   [RFC 21 §7.4](rfc-21-nfs.md#7.4%20Pseudo-filesystem%2C%20SECINFO%20and%20locations);
-  Witness `CLIENT_MOVE` first, [RFC 22 §14](rfc-22-smb.md#14.%20Witness)), and
+  Witness `CLIENT_MOVE` first, **(cluster)**, [RFC 22 §14](rfc-22-smb.md#14.%20Witness)), and
   both errors, everywhere else (NFSv3, MOUNT, NLM, SMB), to no reply: the
   client replays the request once it reconnects, elsewhere or to the node
   restarted, and on a continuously available share the application sees no
@@ -1385,7 +1386,19 @@ type Handler[Req, Rep any] func(ctx context.Context, r *core.Request, req *Req) 
   ([RFC 22 §7](rfc-22-smb.md#7.%20Byte-range%20locks)). A handler whose
   `Park` is refused withdraws the waiter its call registered (`CancelLock`,
   `Unwatch`, §4.7): that undoes its own call and changes no file, so it is not
-  a second call.
+  a second call. In a protocol with no operation that frees a reference
+  (NFSv4.0, SMB), a handler whose call returns `ErrState` (`Revoked`) then
+  calls `FreeState` once for that reference
+  ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)):
+  that frees state the service already ended and changes no file, so it is not
+  a second call either. Calls in the
+  `Principals` area (`SignIn`, `Find`) are outside the one-call rule. So are
+  session setup's client-record calls (`Connect`, `AddSession`, the
+  `Disconnect` a `PreviousSessionId` runs as the session registry's cleanup,
+  and the `Disconnect` with `Last` a `Connect`'s decision sends, §3.2), and a
+  `Disconnect` with `Last` repeated at the newer `Gen` the previous one
+  returned, in any handler. §7.2's test exempts every call this item places
+  outside the rule by the request's context, not by its operation.
 - It **MAY** make further read-only calls only to fill fields the reply
   carries, and only where the service's mutating call does not already return
   them. Every mutating call returns the `WCC` of each object it changed —
@@ -1516,11 +1529,11 @@ type Mechanism interface {
 	Context() *Context // once done
 }
 
-// Context is what a finished exchange leaves: what it proved, the session key,
+// Context is what a finished exchange leaves: what it proved, the keys,
 // and the per-message operations the mechanism defines.
 type Context struct {
 	Evidence vfs.Evidence // RFC 18 §3.1 through RFC 17 §3.0's alias: principal, SIDs, expiry
-	Key     []byte          // for SMB's key derivation; never in an Identity
+	Keys    vfs.Keys        // RFC 18 §3.1's Session, Subkey and APRep; never in an Identity. Session is RFC 4121 §2's context key: the acceptor's subkey if the AP-REP sends one, else the authenticator's, else the ticket's session key
 	MIC     func(msg []byte) ([]byte, error)            // RFC 4121: krb5i, the RPCSEC_GSS verifier
 	Wrap    func(msg []byte) ([]byte, error)            // RFC 4121: krb5p
 	Unwrap  func(tok []byte) ([]byte, error)
@@ -1545,7 +1558,7 @@ func Identity(c *Context, sys *SysCred, proto vfs.Protocol, addr netip.Addr) (vf
 | NTLM mechanism: challenge, then `Service.SignIn` | `gss` | — | inside SPNEGO | wire format, no secret |
 | SPNEGO, which composes the two | `gss` | — | `SESSION_SETUP` | wire format, no secret |
 | `Exchanges`: multi-leg state, deadline, cleanup | `gss` | keyed by GSS context handle | keyed by session ID | one exchange machine for both |
-| RFC 4121 per-message tokens (MIC and wrap) | `gss.Context`, called from NFS's `Security` stage (§5.5) | `krb5i`, `krb5p` and the verifier | — (SMB derives its own keys from `Key`) | RFC 4121, the Kerberos mechanism's |
+| RFC 4121 per-message tokens (MIC and wrap) | `gss.Context`, called from NFS's `Security` stage (§5.5) | `krb5i`, `krb5p` and the verifier | `MIC`, inside SPNEGO for the mechanism-list MIC over Kerberos; its own keys from `Keys.Session` | RFC 4121, the Kerberos mechanism's |
 | `Identity`, expiry | `gss` | the RPC `Router` stage | the SMB `Router` stage | the one place either protocol builds one |
 | failure handling: every error a logon failure, never guest | `gss` | GSS `CREDPROBLEM` | `STATUS_LOGON_FAILURE` | decided once for both |
 | NTLMv2 verification — local NT hash, or pass-through to a domain controller over NETLOGON | the server's authenticator behind `SignIn` ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)) | — | through the NTLM mechanism | needs the NT hash or the machine account's secure channel |
@@ -1559,7 +1572,7 @@ func Identity(c *Context, sys *SysCred, proto vfs.Protocol, addr netip.Addr) (vf
 What stays in each protocol is only what its wire makes it: NFS routes the
 `RPCSEC_GSS` control procedures to `Exchanges.Step` and keeps the context table
 and sequence window; SMB carries SPNEGO in `SESSION_SETUP`, derives signing and
-encryption keys from `Context.Key`, and binds a session to a channel.
+encryption keys from `Context.Keys.Session`, and binds a session to a channel.
 
 **Where it runs is the pipeline, as for any other cross-cutting work.** The
 exchange is not a middleware, since it spans several requests; what runs on
@@ -3107,7 +3120,7 @@ the ones above it cannot, and none stands in for another:
 | codec | bytes ↔ fields, as the specification and the reference server have them | golden vectors, round trips, fuzzing (§5.4) | per change |
 | stages | each protocol stage alone (§4.7): header codecs and security on golden and specification vectors; flow control and replay caches as state machines; routers on a table of versions | unit tests, no socket | per change |
 | `core` | lifecycle, drain, reconfigure, connection limit, flow control, writer order, slow-client isolation, panic recovery, cancellation, no buffer leaked | `adaptertest`'s test-only protocol over loopback against the **in-memory service** (§7.2), its delays given by the fault wrapper, driven over a plain connection; it has a handshake, session levels, kept state, held and parked requests, a cancel and chained messages, so every type of §4.7 is exercised | per change |
-| handler | translation: the request reaches the service with the right arguments, and the right reply for each answer; one mutating call | the in-memory service, with faults injected (§7.2) | per change |
+| handler | translation: the request reaches the service with the right arguments, and the right reply for each answer; one mutating call (§4.3) | the in-memory service, with faults injected (§7.2) | per change |
 | boundary | imports, error-table totality | §7.1, §7.3 | per change |
 | in-process | an adapter on the real service and in-memory stores, driven by §8.2's scripted client over loopback; no root, no kernel client | Go tests | per change |
 | conformance | the protocol as third-party clients see it: pynfs, cthon04, nfstest, smbtorture, WPTS, pjdfstest | [RFC 21 §13](rfc-21-nfs.md#13.%20Conformance), [RFC 22 §18](rfc-22-smb.md#18.%20Conformance), run by [RFC 29](rfc-29-test-harness.md#4.3%20Tiers) | per change on the production profile, after merge on every profile |
@@ -3195,7 +3208,17 @@ call and passes it through, never answering in its place, the kind
 [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles) allows when the call
 reaching a dependency is itself the requirement. A handler test
 fails when a request leaves more than one, so the operation table needs no
-column for it. A handler that answers from adapter state where it should have
+column for it. The record keeps the calls §4.3 places outside the rule too,
+each with its reference and its answer, and the test exempts each by the
+request it came in, never by its operation alone, since `FreeState`,
+`Connect`, `AddSession` and `Disconnect` are each some handler's one call: a
+`CancelLock` or `Unwatch` after that request's `Park` was refused, a
+`FreeState` of the reference that request's call was answered `ErrState`
+(`Revoked`) for, a `Disconnect` with `Last` at the `Gen` that request's
+previous `Disconnect` returned, session setup's client-record calls in the
+leg that completes the setup, and the `Principals` calls. So a `FreeState`
+with no revoked answer before it, or a `Connect` on every leg, still fails
+the test. A handler that answers from adapter state where it should have
 called the service is caught by the same record: the missing call shows as a
 missing entry (§4.3). Read-only calls are not asserted, so a handler free to
 fetch attributes once rather than twice does not break its test. The service
@@ -3387,7 +3410,7 @@ end-to-end benchmark.
 | A2 | Nothing an adapter holds is written to the metadata store or replicated; everything a client can present back after its connection ends is held below the service. |
 | A3 | An adapter caches nothing the service returned beyond the request that read it. |
 | A4 | Every request passes the pipeline's stages in §4.1's order, through one implementation shared by every adapter. |
-| A5 | A handler makes at most one service call that changes state, and decides nothing on a file's attributes, mode or ACL. |
+| A5 | A handler makes at most one service call that changes state, beside the calls §4.3 places outside that rule, and decides nothing on a file's attributes, mode or ACL. |
 | A6 | A compound runs as a sequence of handlers, each admitted separately, with no lock held across them. |
 | A7 | Every service error has a row in every adapter's error table; an error with no row is answered server fault and logged at error. |
 | A8 | Decoders allocate nothing a length field claims before checking it against the bytes remaining and the protocol's cap. |
