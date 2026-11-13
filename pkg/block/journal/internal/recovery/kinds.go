@@ -71,9 +71,11 @@ type kindResults struct {
 	// the feed that withholds them.
 	ReadOnlyDrops []ReadOnlyDrop
 
-	// Withheld is the highest numbers of the records the feed withholds, so
-	// the counters open above numbers the disk still holds; zero until the
-	// feed computes it over the same scans.
+	// Withheld is the numbers of the records the feed withholds, folded by
+	// their two axes — the highest sequence number and the highest version
+	// among them independently — so the counters open above every number
+	// the disk still holds on both axes; zero until the feed computes it
+	// over the same scans.
 	Withheld index.Numbers
 }
 
@@ -787,8 +789,16 @@ func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
 		}
 	}
 	if withheld {
-		if rec.Numbers.Compare(ks.Withheld) > 0 {
-			ks.Withheld = rec.Numbers
+		// The withheld numbers fold by their two axes, the highest sequence
+		// number and the highest version among the withheld independently:
+		// no one record need carry both, and the counters a later pass
+		// raises must open above every number the feed never saw on both
+		// axes, so the pair the fold answers with may be one no record held.
+		if rec.Numbers.Seq > ks.Withheld.Seq {
+			ks.Withheld.Seq = rec.Numbers.Seq
+		}
+		if rec.Numbers.Version.Compare(ks.Withheld.Version) > 0 {
+			ks.Withheld.Version = rec.Numbers.Version
 		}
 		return nil
 	}
