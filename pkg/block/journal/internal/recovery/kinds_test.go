@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -650,6 +654,255 @@ func TestRunWithheldNumbersCarryTheGreatestPairWithheld(t *testing.T) {
 	}
 }
 
+// everyReadFS wraps one FS and counts every ReadAt each of its files served,
+// whatever the answer — a zero-byte probe past a file's end, the attach
+// pass's header read at 0 — so the count is the same one a fault schedule's
+// From keys on, 1:1 over the calls the seam sees. It is a pass-through
+// wrapper in the recording lineage of readsOf that records all of them
+// rather than the reads that returned bytes: a check that arms a fault at
+// an ordinal needs the count, not the payload acceptance's bytes.
+type everyReadFS struct {
+	storage.FS
+
+	mu    sync.Mutex
+	calls []oneRead
+}
+
+func newEveryReadFS(fs storage.FS) *everyReadFS { return &everyReadFS{FS: fs} }
+
+// Open returns the seam's own file wrapped to record every read of it.
+func (e *everyReadFS) Open(name string) (storage.File, error) {
+	f, err := e.FS.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return everyReadFile{File: f, name: name, of: e}, nil
+}
+
+// saw returns every recorded read, in the order the calls were made.
+func (e *everyReadFS) saw() []oneRead {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.calls)
+}
+
+// everyReadFile is one opened file whose reads its FS records whole.
+type everyReadFile struct {
+	storage.File
+	name string
+	of   *everyReadFS
+}
+
+// ReadAt forwards to the file the seam served and records the call, whatever
+// it answers: the count a fault schedule keys on counts the attempt itself.
+func (f everyReadFile) ReadAt(p []byte, off int64) (int, error) {
+	n, err := f.File.ReadAt(p, off)
+	f.of.mu.Lock()
+	f.of.calls = append(f.of.calls, oneRead{name: f.name, off: off, n: int64(len(p))})
+	f.of.mu.Unlock()
+	return n, err
+}
+
+// TestRunRefusesAReadTheRemainderVerifyCannotComplete holds the I/O leg of
+// the partly-superseded check: the verify reads its named record's header
+// and body through the open's bound, and a read no bounded attempt cleared
+// refuses the open on the range the reader collected — never a corrupt
+// verdict, for the kept runs confine only on bytes the bound did return. The
+// fault is armed at the verify read's own ordinal, measured over the same
+// directory first: the reads of one segment file are sequential and
+// deterministic across the phases (the attach header, the scan walk, the
+// aside body, then the verify's own header and body read), so the count the
+// un-faulted run made names the call the fault answers, and the verify's
+// header read is the last read of the record's whole first header the run
+// makes.
+func TestRunRefusesAReadTheRemainderVerifyCannotComplete(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	id := core.SegmentID(5)
+	name := format.SegmentName(id)
+	r.plantSeg(id, buildSeg(id,
+		writeRec(60, 5, 0, 128), // the payload is intact: only the fault can fail the verify
+		plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8),
+	))
+
+	// Measure: the same open over the recorder, unfaulted, names the verify
+	// header read's ordinal among the segment's reads.
+	measured := newEveryReadFS(r.seam.FS())
+	d := r.runDeps()
+	d.FS = measured
+	if _, err := Run(context.Background(), d, core.Version{}, journalID, nil); err != nil {
+		t.Fatalf("Run unfaulted: %v", err)
+	}
+	total, verify := 0, 0
+	for _, one := range measured.saw() {
+		if one.name != name {
+			continue
+		}
+		total++
+		if one.off == format.SegmentHeaderSize && one.n == format.RecordHeaderSize {
+			verify = total // the last read of the record's whole first header: the verify's own
+		}
+	}
+	if verify == 0 {
+		t.Fatalf("the unfaulted run made no read of the record's whole first header, want the verify's header read among them")
+	}
+	if err := r.seam.Schedule(kit.FailingFrom(kit.OpRead, name, verify, 0, syscall.EIO)); err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	var ure *core.UnreadableRangesError
+	if !errors.As(err, &ure) {
+		t.Fatalf("Run over the read the verify could not complete got err %v, want an UnreadableRangesError naming the range no bound cleared", err)
+	}
+	if errors.Is(err, core.ErrCorrupt) {
+		t.Errorf("the refusal %v matches ErrCorrupt, want ErrUnreadable alone: a read the bound never cleared earns no verdict on bytes it never returned", err)
+	}
+	want := []core.SegmentRange{{Segment: id, Off: format.SegmentHeaderSize, Len: format.RecordHeaderSize}}
+	if !slices.Equal(ure.Ranges, want) {
+		t.Errorf("the refusal's ranges got %+v, want exactly the verify's own header read %+v", ure.Ranges, want)
+	}
+}
+
+// TestRunSkipsTheRemainderVerifyOfARecordAnotherRuleDropsWhole holds the one
+// whole-withhold answer over both phases: a record the failed list, a whole
+// loss name or a forget of its tag above its seq withholds whole, so no run
+// of it ever feeds and the verify reads none of it — a rotten record
+// another rule already holds whole confines nowhere, its corrupt drop would
+// name a record the feed serves nothing of, and every open would confine it
+// fresh again, for its kept runs never feed and so never meet the read that
+// would catch them.
+func TestRunSkipsTheRemainderVerifyOfARecordAnotherRuleDropsWhole(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	id := core.SegmentID(1)
+	seg := buildSeg(id,
+		writeRec(60, 5, 0, 128),
+		plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8), // synced, superseded: the kept run is [64,128)
+		plantLossRec(file, 60, 62, 10, 0, 128, 1<<8), // unsynced, corrupt: the record drops whole
+	)
+	// One payload byte rotted: the kept run verifies as badly as the rest.
+	seg[format.SegmentHeaderSize+format.RecordHeaderSize+8+70] ^= 0xff
+	r.plantSeg(id, seg)
+
+	st := kindsRun(t, r)
+
+	if got := st.Tails.Corrupt; len(got) != 0 {
+		t.Fatalf("Tails.Corrupt got %+v over a record another rule withholds whole, want none: the verify reads no run of it", got)
+	}
+	if len(st.Tails.Damaged) != 0 {
+		t.Errorf("Tails.Damaged got %v, want none: nothing confined on the segment", st.Tails.Damaged)
+	}
+	for _, off := range []int64{0, 64} {
+		if _, ok := st.Rebuilt.Index.Lookup(file, off); ok {
+			t.Errorf("Lookup at %d hit, want a miss: the record withholds whole under the unsynced loss", off)
+		}
+	}
+	if len(st.Kinds.Losses) != 2 {
+		t.Errorf("State.Kinds.Losses holds %d losses, want the two: the superseded name and the whole name of the same record", len(st.Kinds.Losses))
+	}
+}
+
+// TestRunKeepsAConfinedTwinFromSubtractingItsEqualDrop holds the live set a
+// subtracted drop must answer to: the copy the open itself found rotten is
+// not live — it confined, it fed nothing — so two rotten copies of one
+// seq in two segments the open keeps subtract nothing: each drop would
+// otherwise subtract the other's, both would vanish with no loss record
+// ever written for them, and the sync that cut the kept run away would
+// leave bytes the open never re-verifies serving in its place.
+func TestRunKeepsAConfinedTwinFromSubtractingItsEqualDrop(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	for _, id := range []core.SegmentID{1, 2} {
+		var seg []byte
+		if id == 1 {
+			seg = buildSeg(id, writeRec(60, 5, 0, 128), plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8))
+		} else {
+			seg = buildSeg(id, writeRec(60, 5, 0, 128))
+		}
+		// One byte of the payload rotted after its writer built it.
+		seg[format.SegmentHeaderSize+format.RecordHeaderSize+8+70] ^= 0xff
+		r.plantSeg(id, seg)
+	}
+
+	st := kindsRun(t, r)
+
+	if len(st.Tails.Corrupt) != 2 {
+		t.Fatalf("Tails.Corrupt got %+v over two rotten twins, want the drop of each: a confined copy is not a live one", st.Tails.Corrupt)
+	}
+	if got := st.Tails.Corrupt[0].Segment; got != 1 {
+		t.Errorf("the first corrupt drop got segment %d, want 1", got)
+	}
+	if got := st.Tails.Corrupt[1].Segment; got != 2 {
+		t.Errorf("the second corrupt drop got segment %d, want 2", got)
+	}
+	if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1, 2}) {
+		t.Errorf("Tails.Damaged got %v, want [1 2]: the classing judged both", st.Tails.Damaged)
+	}
+	for _, off := range []int64{0, 64} {
+		if _, ok := st.Rebuilt.Index.Lookup(file, off); ok {
+			t.Errorf("Lookup at %d hit, want a miss: both rotten copies withhold by location", off)
+		}
+	}
+}
+
+// TestRunDoesNotLetACoveredForgetCoverAnything holds the uniform no-effect
+// of rule 6 over the forgets: a forget the failed list covers covers
+// nothing itself, so a loss of its tag below its seq keeps its whole
+// withhold — the named record withholds by the loss — and a hold of the
+// tag below the forget refuses the open again, for no rule covers it. With
+// the covered forget covered by a whole loss name the answer is the same
+// round: the forget loses its cover of the loss somewhere else, and the
+// loss finds its own effect again.
+func TestRunDoesNotLetACoveredForgetCoverAnything(t *testing.T) {
+	t.Run("the named record withholds by the loss", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		file := kindsFile(1)
+		r.plantSeg(1, buildSeg(1,
+			writeRec(20, 3, 0, 16),                     // the record the loss names
+			forgetRec(7, 10),                           // the forget the failed list covers
+			plantLossRec(file, 20, 5, 21, 0, 16, 1<<8), // the loss of the tag below the forget
+		))
+
+		sink := &lossSink{failed: []core.Seq{10}}
+		st, err := r.asideRun(sink)
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+
+		if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+			t.Errorf("Lookup over the loss's extent hit, want a miss: the covered forget covers nothing, so the loss withholds the record")
+		}
+		if len(st.Kinds.Losses) != 1 || st.Kinds.Losses[0].Dropped != 20 {
+			t.Errorf("State.Kinds.Losses got %+v, want the one loss naming the record: the covered forget does not cover it", st.Kinds.Losses)
+		}
+		if got := st.Kinds.Forgets; len(got) != 0 {
+			t.Errorf("State.Kinds.Forgets got %+v, want none: a covered forget holds no effect anywhere", got)
+		}
+	})
+	t.Run("a hold of the tag refuses the open again", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, buildSeg(1,
+			rec(11, func(rc *raw.Record) { // the hold below the covered forget
+				rc.Seq = 7
+				rc.Offset, rc.Length = 0, 0
+				rc.Cut = &raw.CutBody{Cut: 3}
+			}),
+			forgetRec(7, 10),
+		))
+
+		sink := &lossSink{failed: []core.Seq{10}}
+		if _, err := r.asideRun(sink); !errors.Is(err, core.ErrNotImplemented) {
+			t.Fatalf("Run over a hold below a covered forget got err %v, want ErrNotImplemented: the covered forget covers nothing, so no rule covers the hold", err)
+		}
+	})
+}
+
+// TestRunConfinesARottenSupersededRemainderAsCorrupt holds the open's check
 // of a partly-superseded record: its kept runs are bytes no serving read
 // would ever verify again — the loss stopped naming them — so the open reads
 // the record's whole payload and, when it fails, confines the kept runs as
