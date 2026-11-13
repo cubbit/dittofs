@@ -212,16 +212,16 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 // i-th adoption takes the i-th class: the lowest ids land in the headroom.
 //
 // decision: the counting starts at the headroom, not at the reconcile spare
-// a re-adopted spare is "counted first toward … while the journal has none"
-// (RFC 28 §3.1) — the reconcile spare is E7b's, not built, so a count toward
-// it is a count no reader ever pays out. Counting re-adoptions toward the
-// reconcile spare first is withdrawn when E7b lands and brings one.
+// a re-adopted spare is counted first toward while the journal has none —
+// the reconcile spare is not built, so a count toward it is a count no
+// reader ever pays out. Counting re-adoptions toward the reconcile spare
+// first is withdrawn when the reconcile work lands and brings one.
 //
 // decision: a spare past every target still takes the content class, neither
 // held behind an age-gate nor unlinked as an extra: an extra spare is one
 // the pool keeps ready as content — exactly a spare its own worker would
 // have made — and dropping or ageing one out is the orphaning no spare may
-// take (R55). Withdraw only if re-adopted extras ever show up as a cost that
+// take. Withdraw only if re-adopted extras ever show up as a cost that
 // outweighs keeping them ready.
 func classesFor(ts segment.Targets, n int) []segment.Class {
 	classes := make([]segment.Class, n)
