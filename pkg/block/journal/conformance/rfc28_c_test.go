@@ -4,11 +4,13 @@ package conformance
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -2536,6 +2538,45 @@ func TestRFC28C_KindValuesRefused(t *testing.T) {
 	wantBytes(t, g.Share(0), a.id, 0, a.p)
 }
 
+// lossRecordsOver counts the loss records the journal's segments hold that
+// name the dropped record of seq over the extent: the on-disk answer a
+// reopen must find already there, where the ring the journal shares
+// in-process would answer the same whether or not the first open appended
+// one. The count walks every segment's bytes at the 8-byte stride a
+// record's offset keeps, matching a loss record's own extent and named seq
+// in its header and body — a rotted record's bytes never match both, so
+// only a whole loss record counts, exactly the append the leg asks of the
+// open.
+func lossRecordsOver(t *testing.T, f *journaltest.Fixture, seq uint64, ext journal.Extent) int {
+	t.Helper()
+
+	names, err := f.Seam.List()
+	if err != nil {
+		t.Fatalf("list the journal's directory: %v", err)
+	}
+	n := 0
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".seg") {
+			continue
+		}
+		b := liveBytes(t, f, name)
+		for off := 0; off+raw.RecordHeaderSize+16 <= len(b); off += 8 {
+			if string(b[off:off+4]) != "DJR1" || b[off+4] != 10 {
+				continue // a slot no record begins, or another kind
+			}
+			if binary.LittleEndian.Uint64(b[off+32:off+40]) != uint64(ext.Off) ||
+				binary.LittleEndian.Uint64(b[off+40:off+48]) != uint64(ext.Len) {
+				continue // a loss record over another extent of the file
+			}
+			if binary.LittleEndian.Uint64(b[off+raw.RecordHeaderSize:off+raw.RecordHeaderSize+8]) != seq {
+				continue // a loss record naming another record
+			}
+			n++
+		}
+	}
+	return n
+}
+
 // TestRFC28C_APartlySupersededRecordIsStillChecked checks that a superseded
 // loss record takes only its own extent of the record it names: the rest of
 // the record is still held, so the open verifies it whole, and a rotten rest
@@ -2632,9 +2673,19 @@ func TestRFC28C_APartlySupersededRecordIsStillChecked(t *testing.T) {
 	// older write served in the dropped record's place.
 	wantExtentMissing(t, f.Share(0), id, kept)
 
+	// The first open left its loss record for the kept run on disk: the
+	// count is over the directory's own bytes, not the ring the journal
+	// shares in-process, which would answer the same whether or not the
+	// open appended one.
+	if got := lossRecordsOver(t, f, 2, kept); got != 1 {
+		t.Fatalf("the directory holds %d loss records for R over the kept run, want the one the open appended for its corrupt drop", got)
+	}
+
 	// A second reopen appends no other loss record for R: the record the
-	// first open appended answers for the drop, so the second reports the
-	// same events, and the generation a loss of held content raises stays.
+	// first open appended answers for the drop, the second finds it — a
+	// loss record on disk that names R, whole — and reports nothing new,
+	// R withholds whole under it and the rotten rest confines nowhere on
+	// either reopen. The count stays over the directory's bytes.
 	seqs := map[uint64]bool{}
 	generation := s.LossGeneration
 	for _, ev := range s.Losses {
@@ -2642,6 +2693,9 @@ func TestRFC28C_APartlySupersededRecordIsStillChecked(t *testing.T) {
 	}
 	f.Reopen()
 	after := f.J.Stats()
+	if got := lossRecordsOver(t, f, 2, kept); got != 1 {
+		t.Fatalf("a second reopen left %d loss records for R over the kept run, want the one the directory already held", got)
+	}
 	if after.LossGeneration != generation {
 		t.Fatalf("a second reopen raised the loss generation from %d to %d, appending another loss record for R", generation, after.LossGeneration)
 	}
