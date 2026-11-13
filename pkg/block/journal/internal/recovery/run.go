@@ -27,6 +27,13 @@ type Deps struct {
 	// still builds: the bound refuses later writes, never the open.
 	ExtentLimit int64
 
+	// SegmentCap is the size a re-adopted spare's file must hold exactly:
+	// the spares phase unlinks every candidate whose size differs — under
+	// or over — and leaves its id for the pool to make again. Zero, the
+	// cap no spare can be right-sized under, unlinks every candidate; the
+	// open fills the field from the journal's own configured cap.
+	SegmentCap int64
+
 	// rebuildOrder reorders the segments the rebuild dispatches before it
 	// starts a reader; nil keeps the listing's order, the one the open runs
 	// in. It is unexported and set only by tests that need an order the

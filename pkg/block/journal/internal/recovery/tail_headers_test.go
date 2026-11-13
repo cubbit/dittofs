@@ -69,7 +69,7 @@ func TestAZeroHeaderSegmentsRecordsAreScannedAndItIsClassed(t *testing.T) {
 func TestAnAllZeroSegmentScansEmpty(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
-	r.plantSeg(1, make([]byte, 4096))
+	r.plantSeg(1, make([]byte, testCap))
 	st := runUnchanged(t, r, 1)
 	if got := planted(st); got != 0 {
 		t.Errorf("the index holds %d entries, want 0", got)

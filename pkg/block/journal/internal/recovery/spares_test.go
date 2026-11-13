@@ -19,6 +19,17 @@ import (
 // cap-sized file, and every segment file here is exactly that long.
 const testCap = 8 << 10
 
+// plantTake plants segment id's record-less take at the cap: a header naming
+// pred and nothing after it, the whole-cap file a take on a spare leaves —
+// the shape the spares phase re-adopts under its size check, where a
+// header-only file would be a short spare the phase unlinks instead.
+func plantTake(r *rig, id, pred core.SegmentID) {
+	r.t.Helper()
+	b := raw.SegmentHeader{Identity: journalID, ID: uint64(id), Predecessor: uint64(pred)}.Bytes()
+	b = append(b, make([]byte, testCap-int64(len(b)))...)
+	r.plantSeg(id, b)
+}
+
 // runCandidates runs the open's recovery over the rig's directory and returns
 // its state, the answer every spare-candidate check reads.
 func (r *rig) runCandidates() State {
@@ -254,6 +265,134 @@ func plantInterruptedRecycle(r *rig, x, y core.SegmentID) {
 	}
 	if err := r.seam.SyncDir(); err != nil {
 		r.t.Fatalf("fixture: sync dir: %v", err)
+	}
+}
+
+// TestSparesPhaseUnlinksAShortSpare plants two record-less spares under the
+// cap — a half cap file and an empty one, the crash-shapes a half made
+// spare and a crash's leftover — beside one whole spare, and runs the open:
+// a spare the pool could take must hold exactly the cap, so each short one
+// is unlinked and left for the pool to make again — never zeroed, no byte of
+// a file about to be removed is written — while the whole one beside them is
+// adopted. The unlinks are recorded ascending by id.
+func TestSparesPhaseUnlinksAShortSpare(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	empty, half, whole := core.SegmentID(9), core.SegmentID(4), core.SegmentID(6)
+	r.write(format.SegmentName(empty), nil)
+	r.write(format.SegmentName(half), make([]byte, testCap/2))
+	r.write(format.SegmentName(whole), make([]byte, testCap))
+	emptyWrites := r.seam.CallsFor(kit.OpWrite, format.SegmentName(empty))
+	halfWrites := r.seam.CallsFor(kit.OpWrite, format.SegmentName(half))
+
+	st := r.runCandidates()
+	if got, want := st.Spares.Unlinked, []core.SegmentID{half, empty}; !slices.Equal(got, want) {
+		t.Errorf("spares: the short spares' unlinking got %v, want %v, ascending by id", got, want)
+	}
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: whole}}; !slices.Equal(got, want) {
+		t.Errorf("spares: the whole spare beside the short ones got adoptions %v, want %v", got, want)
+	}
+	for _, id := range []core.SegmentID{empty, half} {
+		if slices.Contains(r.listing(), format.SegmentName(id)) {
+			t.Errorf("spares: the short spare %s is still in the directory %v, want it unlinked", format.SegmentName(id), r.listing())
+		}
+	}
+	if got := r.seam.CallsFor(kit.OpWrite, format.SegmentName(empty)); got != emptyWrites {
+		t.Errorf("spares: the empty spare was written to, got %d writes, want %d, the count before the run: a file about to be removed is never zeroed", got, emptyWrites)
+	}
+	if got := r.seam.CallsFor(kit.OpWrite, format.SegmentName(half)); got != halfWrites {
+		t.Errorf("spares: the half-cap spare was written to, got %d writes, want %d, the count before the run: a file about to be removed is never zeroed", got, halfWrites)
+	}
+}
+
+// TestSparesPhaseUnlinksAnOverCapSpare plants a record-less .seg over the
+// cap beside one whole spare for each size: a file over the cap answers the
+// size check the same way one under it does — the pool takes whole
+// cap-sized segments only — so it is unlinked, recorded, never zeroed and
+// never adopted, and the file is gone from the directory.
+func TestSparesPhaseUnlinksAnOverCapSpare(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		size int64
+	}{
+		{"one byte over the cap", testCap + 1},
+		{"half a cap over", testCap + testCap/2},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			over, whole := core.SegmentID(5), core.SegmentID(6)
+			r.write(format.SegmentName(over), make([]byte, row.size))
+			r.write(format.SegmentName(whole), make([]byte, testCap))
+			overWrites := r.seam.CallsFor(kit.OpWrite, format.SegmentName(over))
+
+			st := r.runCandidates()
+			if got, want := st.Spares.Unlinked, []core.SegmentID{over}; !slices.Equal(got, want) {
+				t.Errorf("spares: the over-cap spare's unlinking got %v, want %v", got, want)
+			}
+			if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: whole}}; !slices.Equal(got, want) {
+				t.Errorf("spares: the whole spare beside the over-cap one got adoptions %v, want %v", got, want)
+			}
+			if slices.Contains(r.listing(), format.SegmentName(over)) {
+				t.Errorf("spares: the over-cap spare %s is still in the directory %v, want it unlinked", format.SegmentName(over), r.listing())
+			}
+			if got := r.seam.CallsFor(kit.OpWrite, format.SegmentName(over)); got != overWrites {
+				t.Errorf("spares: the over-cap spare was written to, got %d writes, want %d, the count before the run: a file about to be removed is never zeroed", got, overWrites)
+			}
+		})
+	}
+}
+
+// TestSparesPhaseSyncsItsUnlinkWhenNothingIsAdopted plants a single short
+// spare, so the phase adopts nothing and removes exactly it: the removal is
+// the open's own change, so the phase's one directory sync still runs,
+// making the unlink durable — a short spare's name its sync never proved
+// could come back after a power cut — exactly once, the same once an open
+// that adopted something spends.
+func TestSparesPhaseSyncsItsUnlinkWhenNothingIsAdopted(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	short := core.SegmentID(4)
+	r.write(format.SegmentName(short), make([]byte, testCap/2))
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+
+	st := r.runCandidates()
+	if got, want := st.Spares.Unlinked, []core.SegmentID{short}; !slices.Equal(got, want) {
+		t.Errorf("spares: the single short spare's unlinking got %v, want %v", got, want)
+	}
+	if len(st.Spares.Adopted) != 0 {
+		t.Errorf("spares: an unlink-only open adopted %v, want nothing", st.Spares.Adopted)
+	}
+	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs+1; got != want {
+		t.Errorf("spares: the unlink-only open spent %d directory syncs, want exactly %d: the phase's one sync beside the fixture's %d, making the short spare's removal durable", got, want, dirSyncs)
+	}
+}
+
+// TestSparesPhaseFailsTheOpenWhenAnUnlinkFails plants a short spare beside a
+// whole one and fails the short one's Remove once: the size check unlinks,
+// and a removal the device refused fails the open with its own error — the
+// open adopted nothing and removed nothing else, both files still in the
+// directory, for a phase whose unlink failed may not carry on taking spares
+// over a device that did not answer.
+func TestSparesPhaseFailsTheOpenWhenAnUnlinkFails(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	half, whole := core.SegmentID(4), core.SegmentID(6)
+	r.write(format.SegmentName(half), make([]byte, testCap/2))
+	r.write(format.SegmentName(whole), make([]byte, testCap))
+	if err := r.seam.Schedule(kit.Failing(kit.OpRemove, format.SegmentName(half), 1, syscall.EIO)); err != nil {
+		t.Fatalf("fixture: schedule the failed remove: %v", err)
+	}
+
+	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("spares: the failed unlink answered err %v, want %v, the removal's own error", err, syscall.EIO)
+	}
+	for _, id := range []core.SegmentID{half, whole} {
+		if !slices.Contains(r.listing(), format.SegmentName(id)) {
+			t.Errorf("spares: the failed unlink removed %s anyway; the directory holds %v", format.SegmentName(id), r.listing())
+		}
 	}
 }
 

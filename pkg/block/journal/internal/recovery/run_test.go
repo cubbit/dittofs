@@ -18,10 +18,12 @@ import (
 )
 
 // runDeps is the deps Run takes over the rig's seam, with nil tracer and
-// logger, the defaults an Open without options gives them.
+// logger, the defaults an Open without options gives them, and the segment
+// cap every fixture plants at: testCap-sized files pass the spares phase's
+// size check, and a fixture shortening or growing one asks for its unlink.
 func (r *rig) runDeps() Deps {
 	r.t.Helper()
-	return Deps{FS: r.seam.FS(), Clock: r.clk}
+	return Deps{FS: r.seam.FS(), Clock: r.clk, SegmentCap: testCap}
 }
 
 // runDepsWithTracer is the rig's deps with a tracer recorded.
@@ -383,7 +385,7 @@ func TestRun_CancelledContextAnswersTheContextsError(t *testing.T) {
 func TestRun_CancelledBetweenPhasesKeepsOnlySpareUnlinks(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
-	r.writeSeg(3, journalID)
+	plantTake(r, 3, 0)
 	r.write("notes.txt", []byte("bytes of a file the journal did not write"))
 	keep := []string{format.SegmentName(3), "notes.txt", format.FormatFileName}
 

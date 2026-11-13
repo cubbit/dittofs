@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -90,6 +91,8 @@ type AdoptedSpare struct {
 // The adoptions are recorded only after the one directory sync the open
 // spends has made the spares' entries durable; its failure is the open's —
 // no spare is taken and nothing is unlinked over a name no sync proved.
+// The same one sync covers an open that only unlinked: a removal its sync
+// never proved could come back after a power cut.
 //
 // The phase is the open's first writing one, so it refuses first, before
 // any candidate is touched; each slot is read through the open's reader, so
@@ -97,9 +100,10 @@ type AdoptedSpare struct {
 // adoption takes the segment's tail fate with it: a re-adopted spare's tail
 // is nobody's to cut, and the phases that cut find no fate for it.
 //
-// The unlinking of a re-adopted id the pool's sizes refuse and the class each
-// adoption takes under are the later steps of this open's own list, not this
-// phase's.
+// A candidate whose file does not hold exactly the segment cap is unlinked
+// rather than adopted — the pool takes whole cap-sized segments only — and
+// its id is left for the pool to make again; the class each adoption takes
+// under is a later step of this open's own list, not this phase's.
 func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.JournalID, _ core.Version) error {
 	// decision: this phase is the open's first writing one, so the refusal
 	// runs before any candidate work rather than at the run's end: zeroing
@@ -120,13 +124,34 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 		sizes[sc.ID] = sc.Size
 	}
 	adopted := make([]AdoptedSpare, 0, len(cand))
+	var unlinked []core.SegmentID
 	for _, id := range cand {
+		// The size is the scan's own answer, read through the open's retry
+		// bound: a spare the pool could take must hold exactly the cap, so
+		// a candidate whose file does not — a crash's empty leftover, a
+		// recycle interrupted short, a file grown past the cap — is
+		// unlinked and made again, never zeroed: no byte of a file about
+		// to be removed is read into a slot or written. decision: a zero
+		// SegmentCap unlinks every candidate rather than skipping the
+		// check — under no cap no spare can be right-sized; the open
+		// fills the field from the journal's own cap, so no open that can
+		// adopt a spare passes zero.
+		if sizes[id] != deps.SegmentCap {
+			if err := deps.FS.Remove(format.SegmentName(id)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				// A name already gone is the unlink done; anything else
+				// the device said of the removal fails the open, which
+				// takes no spare over a name it could not clear.
+				return err
+			}
+			unlinked = append(unlinked, id) // candidates ascend, so unlinked does too
+			continue
+		}
 		if err := zeroSpareSlots(deps, rd, id, sizes[id]); err != nil {
 			return err
 		}
 		adopted = append(adopted, AdoptedSpare{ID: id})
 	}
-	if len(adopted) > 0 {
+	if len(adopted) > 0 || len(unlinked) > 0 {
 		// A process that died may have left a spare's directory entry without
 		// the sync its own rename was owed: a spare taken before this sync
 		// could lose its name — and the records a later open re-appends into
@@ -137,6 +162,7 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 		}
 	}
 	st.Spares.Adopted = adopted
+	st.Spares.Unlinked = unlinked
 
 	reAdopted := make(map[core.SegmentID]bool, len(adopted))
 	for _, a := range adopted {
