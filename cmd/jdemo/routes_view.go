@@ -6,8 +6,10 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
-// indexEntryJSON is one index entry on the wire.
+// indexEntryJSON is one index entry on the wire, with the file it belongs
+// to so All's several files stay distinguishable.
 type indexEntryJSON struct {
+	File      string      `json:"file"`
 	Kind      string      `json:"kind"`
 	Off       int64       `json:"off"`
 	Len       int64       `json:"len"`
@@ -18,8 +20,9 @@ type indexEntryJSON struct {
 	Offloaded bool        `json:"offloaded"`
 }
 
-func indexEntryToJSON(e journal.IndexEntry) indexEntryJSON {
+func indexEntryToJSON(file string, e journal.IndexEntry) indexEntryJSON {
 	return indexEntryJSON{
+		File:      file,
 		Kind:      entryKindName(e.Kind),
 		Off:       e.Extent.Off,
 		Len:       e.Extent.Len,
@@ -71,18 +74,28 @@ func (s *Server) viewIndex(w http.ResponseWriter, r *http.Request) {
 		}
 		out := make([]indexEntryJSON, 0, len(es))
 		for _, e := range es {
-			out = append(out, indexEntryToJSON(e))
+			out = append(out, indexEntryToJSON(shortFileHex(f), e))
 		}
 		respond(w, map[string]any{"entries": out}, nil)
 		return
 	}
 	out := []indexEntryJSON{}
-	for _, es := range in.All() {
+	for id, es := range in.All() {
+		file := shortFileHex(hexOf(id))
 		for _, e := range es {
-			out = append(out, indexEntryToJSON(e))
+			out = append(out, indexEntryToJSON(file, e))
 		}
 	}
 	respond(w, map[string]any{"entries": out}, nil)
+}
+
+// shortFileHex renders a file id's first 8 hex chars, wide enough to tell
+// files apart in a pane.
+func shortFileHex(fullHex string) string {
+	if len(fullHex) >= 8 {
+		return fullHex[:8]
+	}
+	return fullHex
 }
 
 func (s *Server) viewSegments(w http.ResponseWriter, r *http.Request) {
