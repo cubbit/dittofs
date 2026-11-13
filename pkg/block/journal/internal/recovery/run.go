@@ -113,20 +113,26 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 	// The unverified-header segments' records verify by identity, segment
 	// and offset whatever their header slot says, so they scan too: a
 	// record a later sync proved synced is never lost to a slot nobody
-	// wrote. A zero-header segment does not: no proof of a record exists
-	// without its header durable first, and scanning an all-zero spare
-	// would read the whole file for nothing.
+	// wrote. A zero-header segment scans only when a successor names it: the
+	// successor proves it was sealed, so its records may be whole behind the
+	// zeroed slot. An unnamed one is a spare, and no proof of a record exists
+	// without its header durable first, so it is never read.
+	named := successorSet(st.Attached.Own)
 	segs := slices.Clone(st.Attached.Own)
 	for _, id := range st.Attached.Unverified {
 		segs = append(segs, SegmentInfo{ID: id, Unverified: true})
 	}
-	named := successorSet(st.Attached.Own)
+	for _, id := range st.Attached.ZeroHeader {
+		if named[id] {
+			segs = append(segs, SegmentInfo{ID: id, Unverified: true})
+		}
+	}
 	out, err := rebuildIndex(ctx, rd, expect, segs, named, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan)
 	if err != nil {
 		return err
 	}
 	st.Rebuilt = out
-	st.Tails, err = classifyTails(rd, expect, named, unverifiedSet(st.Attached), st.Attached.ZeroHeader, out.Scans)
+	st.Tails, err = classifyTails(rd, expect, named, unverifiedSet(st.Attached), out.Scans)
 	return err
 }
 

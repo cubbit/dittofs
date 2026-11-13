@@ -166,7 +166,7 @@ func TestClassifyTailsVisitsTheScansByAscendingID(t *testing.T) {
 		named.Own = append(named.Own, SegmentInfo{ID: core.SegmentID(20 + i),
 			Header: format.SegmentHeader{Predecessor: pred}})
 	}
-	_, err := classifyTails(nil, journalID, successorSet(named.Own), nil, nil, []segmentScan{scan(9), scan(4), scan(7)})
+	_, err := classifyTails(nil, journalID, successorSet(named.Own), nil, []segmentScan{scan(9), scan(4), scan(7)})
 	if !errors.Is(err, core.ErrNotImplemented) {
 		t.Fatalf("classifyTails got err %v, want one wrapping core.ErrNotImplemented", err)
 	}
@@ -215,7 +215,7 @@ func TestTwoCorruptCloneTargetDropsComeInAscendingRecordOffset(t *testing.T) {
 		t.Fatalf("the scan holds %d drops, want 2", len(sc.Dropped))
 	}
 	slices.Reverse(sc.Dropped)
-	got, err := classifyTails(nil, journalID, nil, nil, nil, []segmentScan{sc})
+	got, err := classifyTails(nil, journalID, nil, nil, []segmentScan{sc})
 	if err != nil {
 		t.Fatalf("classifyTails: %v", err)
 	}

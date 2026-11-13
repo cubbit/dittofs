@@ -96,12 +96,12 @@ func successorSet(own []SegmentInfo) map[core.SegmentID]bool {
 	return named
 }
 
-// unverifiedSet is the id of every segment whose header slot did not verify
-// and whose records the rebuild scanned. A zero-header segment is not in it:
-// the rebuild scans none.
+// unverifiedSet is the id of every segment whose header slot did not verify,
+// the zero-header ones included. Only a scanned one is visited by the classing:
+// an unnamed zero-header segment has no scan and takes no fate.
 func unverifiedSet(att Attached) map[core.SegmentID]bool {
-	unverified := make(map[core.SegmentID]bool, len(att.Unverified))
-	for _, id := range att.Unverified {
+	unverified := make(map[core.SegmentID]bool, len(att.Unverified)+len(att.ZeroHeader))
+	for _, id := range slices.Concat(att.Unverified, att.ZeroHeader) {
 		unverified[id] = true
 	}
 	return unverified
@@ -113,27 +113,12 @@ func unverifiedSet(att Attached) map[core.SegmentID]bool {
 // the open's reader for the probes it makes, and fails the open when a range
 // names no record it can class: see refuseRange and refuseMissingEnd.
 //
-// A zero-header segment is never scanned: its header is written before any
-// record, so every proof a record can carry needs a header durable first and
-// a zeroed one hides no synced record. A named one still refuses as a
-// missing end, whatever its length; an unnamed one takes no fate and no
-// damage here, the spare phase owning it.
-func classifyTails(rd *reader, identity core.JournalID, named, unverified map[core.SegmentID]bool, zeroHeader []core.SegmentID, scans []segmentScan) (tails, error) {
+// An unnamed zero-header segment is never scanned and takes no fate or damage
+// here: the spare phase owns it.
+func classifyTails(rd *reader, identity core.JournalID, named, unverified map[core.SegmentID]bool, scans []segmentScan) (tails, error) {
 	// The refusal is the first one met, so the visit order is the segment
 	// id's, never the listing order the rebuild answered in.
 	scans = slices.Clone(scans)
-	zero := map[core.SegmentID]bool{}
-	for _, id := range zeroHeader {
-		if !named[id] {
-			continue
-		}
-		size, err := segSize(rd, id)
-		if err != nil {
-			return tails{}, err
-		}
-		zero[id] = true
-		scans = append(scans, segmentScan{ID: id, Size: size})
-	}
 	slices.SortStableFunc(scans, func(a, b segmentScan) int { return cmp.Compare(a.ID, b.ID) })
 
 	var out tails
@@ -206,14 +191,9 @@ func classifyTails(rd *reader, identity core.JournalID, named, unverified map[co
 		// its seal marker must verify. One that does not is a missing end
 		// the open refuses, unless the marker alone rotted.
 		if named[id] && !sc.Sealed {
-			// A zero-header segment holds no verifying trailer: under its
-			// header's size none can, so the exemption is always absent.
-			exempt := false
-			if !zero[id] {
-				var err error
-				if exempt, err = markerAloneRotted(rd, sc); err != nil {
-					return tails{}, err
-				}
+			exempt, err := markerAloneRotted(rd, sc)
+			if err != nil {
+				return tails{}, err
 			}
 			if !exempt {
 				return tails{}, refuseMissingEnd(sc)

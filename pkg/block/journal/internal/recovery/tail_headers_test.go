@@ -63,10 +63,10 @@ func TestAZeroHeaderSegmentIsNeverScanned(t *testing.T) {
 	})
 }
 
-// A named predecessor whose header slot reads zero holds no verifying seal
-// whatever its length, so it refuses as a missing end over the whole file,
-// though nothing of it is scanned.
-func TestANamedZeroHeaderPredecessorRefusesWithoutAScan(t *testing.T) {
+// A named predecessor whose header slot reads zero is scanned: the successor
+// proves it was sealed, so a cut one refuses as a missing end and a whole one
+// attaches its records on their own checksums, damaged for the lost header.
+func TestANamedZeroHeaderPredecessorIsScanned(t *testing.T) {
 	sealed, _ := buildSealed(1, tailRec(200, 0x4100), tailRec(201, 0x8100))
 	for _, row := range []struct {
 		name string
@@ -74,9 +74,8 @@ func TestANamedZeroHeaderPredecessorRefusesWithoutAScan(t *testing.T) {
 	}{
 		{"cut to nothing", nil},
 		{"cut to 20 bytes", make([]byte, 20)},
-		{"a whole sealed file", zeroHeader(slices.Clone(sealed))},
 	} {
-		t.Run(row.name, func(t *testing.T) {
+		t.Run(row.name+" refuses", func(t *testing.T) {
 			r := newRig(t)
 			r.writeFormat()
 			r.plantSeg(1, row.seg)
@@ -84,6 +83,18 @@ func TestANamedZeroHeaderPredecessorRefusesWithoutAScan(t *testing.T) {
 			wantRefused(t, r, 1, 0, int64(len(row.seg)))
 		})
 	}
+	t.Run("a whole sealed life behind the zeroed slot", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, zeroHeader(slices.Clone(sealed)))
+		r.plantSeg(2, namingSeg(2, 1))
+		st := runTails(t, r)
+		if got := planted(st); got != 2 {
+			t.Errorf("the index holds %d entries, want 2: the records attach on their own checksums", got)
+		}
+		wantFate(t, st, 1, fateSealed, 0)
+		wantDamaged(t, st, 1)
+	})
 }
 
 // A named predecessor with a header that does not verify, cut at or below its
