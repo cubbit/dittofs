@@ -78,12 +78,13 @@ type bench struct {
 
 // composeBench builds the benchmark composition, with existence age age, and
 // creates n files in the share's root, all before the benchmark's timer
-// starts.
-func composeBench(b *testing.B, n int, age time.Duration) *bench {
+// starts. heapSlack is the live heap growth the profiler allows; zero is its
+// default.
+func composeBench(b *testing.B, n int, age time.Duration, heapSlack uint64) *bench {
 	b.Helper()
 
 	// Registered first, so its checks run after every other cleanup.
-	prof.Watch(b, prof.Options{})
+	prof.Watch(b, prof.Options{HeapSlack: heapSlack})
 
 	base := benchBase(b)
 

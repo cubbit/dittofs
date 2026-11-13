@@ -30,7 +30,7 @@ func BenchmarkB5(b *testing.B) {
 // existence commits that follow are at most one per journal per existence
 // interval.
 func benchB5Append(b *testing.B) {
-	c := composeBench(b, benchWriters, benchExistenceAge)
+	c := composeBench(b, benchWriters, benchExistenceAge, 0)
 	ctx := b.Context()
 	data := make([]byte, mib)
 
@@ -123,7 +123,7 @@ func benchB5Append(b *testing.B) {
 // benchB5Overwrite overwrites committed content: each burst's fsyncs cost at
 // most one transaction per journal, never one per file.
 func benchB5Overwrite(b *testing.B) {
-	c := composeBench(b, benchWriters, benchExistenceAge)
+	c := composeBench(b, benchWriters, benchExistenceAge, 0)
 	ctx := b.Context()
 	data := make([]byte, mib)
 

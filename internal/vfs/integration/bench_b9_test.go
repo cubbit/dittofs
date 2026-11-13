@@ -44,7 +44,7 @@ func BenchmarkB9(b *testing.B) {
 // benchB9 runs B9's workload with writes of stability s; an unstable run
 // flushes every file once per b9Flush.
 func benchB9(b *testing.B, s vfs.Stability) {
-	c := composeBench(b, benchWriters, benchExistenceAge)
+	c := composeBench(b, benchWriters, benchExistenceAge, 0)
 	ctx := b.Context()
 	data := make([]byte, b9Write)
 	fill := make([]byte, b9Size)

@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,10 +24,23 @@ const (
 	b7Rate  = 1000
 	b7Log2G = 6 // log₂ of benchMaxFiles
 
-	// b7MaxK is the most conflicting files a burst may have and still be
-	// evaluated: above it 1 + k × 6 passes the 65 transactions of a batch
-	// committed file by file, and the bound cannot tell the two apart.
+	// b7MinK and b7MaxK are the fewest and the most conflicting files a burst
+	// may have and still be evaluated: below 2 the bound is under the batches a
+	// burst starts with no conflict at all, and above 10 1 + k × 6 passes the 65
+	// transactions of a batch committed file by file.
+	b7MinK = 2
 	b7MaxK = 10
+
+	// b7WantK is the expected k the storm's pool is sized for, before each
+	// burst, from the length of the burst before it.
+	b7WantK = 4
+
+	// b7HeapPerFile is the live heap one file of the pool holds: prof.LiveHeap
+	// read 90 745 912 bytes before the 100 000 files were made and 111 444 976
+	// after, 207 a file rounded up. b7HeapSlack is the growth the profiler
+	// allows B7: its default plus the pool's.
+	b7HeapPerFile = 207
+	b7HeapSlack   = 16<<20 + b7Files*b7HeapPerFile
 
 	// b7ExistenceAge is long enough that no group commit comes due by its
 	// timer during a run, so each burst's transactions are its fsyncs'
@@ -49,20 +63,29 @@ const (
 // engine's, one that wrote both kinds counts once for the engine and is
 // reported as mixed, and the storm's are left out. The conflicting files of a
 // burst, k, are the writers' files a storm chmod ran on during it, from the
-// storm's own record, and the burst is bounded at 1 + k × 6. Only bursts with
-// 1 ≤ k ≤ 10 are evaluated. At k = 0 the bound would be 1, which the engine
-// does not meet today: the stability points of one burst start several batches
-// (each the files due when the last one returned), 3 to 5 of them, not
-// because of a conflict. Above 10 the bound passes the 65 transactions of a
-// batch committed file by file, so it cannot fail. B7 fails when fewer than
-// half of its bursts are evaluated. The pool of 100 000 files keeps most
-// bursts in range at the RFC's rate: with 50 000 the measured k ran from 0 to
-// 12, 6.1 on average, and doubling the pool halves it. The files take seconds
-// to create against a setup of minutes. Overturned when the engine gathers a
-// burst into one batch (then k = 0 is evaluated at 1), when the key layout
-// changes (the classifier must follow it), or when bursts grow long enough
-// that most of them fall above 10 even at this pool, which the
-// evaluated-bursts floor shows.
+// storm's own record, and the burst is bounded at 1 + k × 6.
+//
+// Only bursts with 2 ≤ k ≤ 10 are evaluated. Below 2 the bound is under what
+// the engine does with no conflict at all: the stability points of one burst
+// start several batches (each the files due when the last one returned), 3 to
+// 7 of them, and a burst with k = 1 measured 7 transactions against its bound
+// of 7. The lower limit goes back to 1, and 0 is evaluated at 1, once the
+// group commit gathers a burst into one batch. Above 10 the bound passes the
+// 65 transactions of a batch committed file by file, so it cannot fail. B7
+// fails when fewer than half of its bursts are evaluated.
+//
+// The storm draws from the first N of the pool's 100 000 files, the writers'
+// 64 among them, all files of the same journal. N is set before each burst so
+// that the expected k is 4: a burst of length D meets about b7Rate × D chmods,
+// each on a writer's file with chance 64 / N, so N = 64 × b7Rate × D / 4,
+// within [64, 100 000], with D the last burst's length and a warm-up burst,
+// not evaluated, to measure the first. Overturned if the measured k drifts far
+// from 4 while D is steady (chmods outlasting a burst would push it up), or
+// when the key layout changes (the classifier must follow it).
+//
+// The profiler's heap slack for B7 is its default plus the pool's own
+// footprint (b7HeapSlack), since the pool is held until the composition
+// closes: growth above that is a leak, not the pool.
 func BenchmarkB7(b *testing.B) {
 	b.Run("overwrite/writers=64/chmod=1000ps", benchB7)
 }
@@ -78,6 +101,7 @@ type stormChmod struct {
 // It is open-loop: each tick starts its chmod at once, whatever the earlier
 // ones are still waiting on, so a slow chmod does not lower the rate.
 type storm struct {
+	pool     atomic.Int64 // the storm draws from the first pool files
 	mu       sync.Mutex
 	chmods   []stormChmod
 	failed   error
@@ -92,6 +116,8 @@ func startStorm(ctx context.Context, c *bench) *storm {
 		stop:  make(chan struct{}),
 		ended: make(chan struct{}),
 	}
+	s.pool.Store(int64(len(c.files)))
+
 	r := rand.New(rand.NewPCG(7, 7))
 
 	go func() {
@@ -110,7 +136,7 @@ func startStorm(ctx context.Context, c *bench) *storm {
 			case <-tick.C:
 			}
 
-			i := r.IntN(len(c.files))
+			i := r.IntN(int(s.pool.Load()))
 			mode ^= 0o040
 			ch := vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(mode)}
 
@@ -187,7 +213,7 @@ func (s *storm) touched(from, to time.Time) int {
 }
 
 func benchB7(b *testing.B) {
-	c := composeBench(b, b7Files, b7ExistenceAge)
+	c := composeBench(b, b7Files, b7ExistenceAge, b7HeapSlack)
 	ctx := b.Context()
 	data := make([]byte, mib)
 	c.fill(b, b5Bursts*mib)
@@ -209,8 +235,16 @@ func benchB7(b *testing.B) {
 
 		stormFrom := time.Now()
 
-		for k := range b5Bursts {
-			off := int64(k) * mib
+		var last time.Duration
+
+		// Burst -1 is the warm-up: it measures the first burst's length, and
+		// is not evaluated.
+		for k := -1; k < b5Bursts; k++ {
+			if k >= 0 {
+				s.pool.Store(stormPool(last))
+			}
+
+			off := int64(max(k, 0)) * mib
 			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 				ref := vfs.Anonymous(c.files[w])
 				_, err := c.fs.Write(ctx, c.admin, ref, off, data, vfs.Unstable)
@@ -236,21 +270,25 @@ func benchB7(b *testing.B) {
 			}
 
 			engine, mixed := c.txns.take()
+			last = time.Since(from)
 			touched := s.touched(from, time.Now())
 
-			fsyncs = append(fsyncs, took...)
-			mixedAll += mixed
+			if k >= 0 {
+				fsyncs = append(fsyncs, took...)
+				mixedAll += mixed
+			}
 
 			b.Logf(
-				"burst %d of run %d: k %d, engine transactions %d, mixed %d",
+				"burst %d of run %d: N %d, k %d, engine transactions %d, mixed %d",
 				k+1,
 				i+1,
+				s.pool.Load(),
 				touched,
 				engine,
 				mixed,
 			)
 
-			if touched == 0 || touched > b7MaxK {
+			if k < 0 || touched < b7MinK || touched > b7MaxK {
 				continue
 			}
 
@@ -290,8 +328,22 @@ func benchB7(b *testing.B) {
 	b.ReportMetric(float64(stormTotal)/stormed.Seconds(), "chmods/s")
 
 	if bursts := b.N * b5Bursts; 2*evaluated < bursts {
-		b.Fatalf("%d of %d bursts evaluated, want at least half: the storm touched none or more "+
-			"than %d of the writers' files during the rest, so the bound went unchecked",
-			evaluated, bursts, b7MaxK)
+		b.Fatalf(
+			"%d of %d bursts evaluated, want at least half: the storm touched fewer than %d or "+
+				"more than %d of the writers' files during the rest, so the bound went unchecked",
+			evaluated,
+			bursts,
+			b7MinK,
+			b7MaxK,
+		)
 	}
+}
+
+// stormPool is how many of the pool's files the storm draws from for a burst
+// expected to last as long as last did: enough that about b7WantK of the
+// writers' files are touched.
+func stormPool(last time.Duration) int64 {
+	n := int64(float64(benchWriters*b7Rate) * last.Seconds() / b7WantK)
+
+	return min(max(n, benchWriters), b7Files)
 }
