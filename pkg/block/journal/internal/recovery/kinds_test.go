@@ -959,6 +959,46 @@ func TestRunConfinesARottenSupersededRemainderAsCorrupt(t *testing.T) {
 	}
 }
 
+// TestRunKeepsTheVictimOfACoveredCovererWithItsOwnCover holds the chain
+// cover: a rule covered by another covers nothing itself, so the records it
+// would have covered keep their own covers. Three whole losses name one
+// another in a chain — Z at seq 500 names Y at 400, Y names X at 300, X
+// names R at 100: Z, covered by nothing, withholds Y's effect; Y, covered
+// by Z, has none of its own over X; X, judged after Y lost its own cover,
+// keeps its effect — so R, the victim twice removed of a cover that a cover
+// cancelled, withholds whole. A round that locks the chain's first links
+// out together would leave X covered too, and R would feed.
+func TestRunKeepsTheVictimOfACoveredCovererWithItsOwnCover(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	r.plantSeg(1, buildSeg(1,
+		writeRec(100, 3, 0, 16),                   // R, the record X names
+		lossRec(file, 100, 300, 300, 0, 16, 1<<8), // X at 300 names R
+		lossRec(file, 300, 400, 300, 0, 16, 1<<8), // Y at 400 names X
+		lossRec(file, 400, 500, 300, 0, 16, 1<<8), // Z at 500 names Y
+	))
+
+	st := kindsRun(t, r)
+
+	if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+		t.Errorf("Lookup over R's extent hit, want a miss: X keeps its effect, so the loss naming R withholds it")
+	}
+	if len(st.Kinds.Losses) != 2 {
+		t.Fatalf("State.Kinds.Losses got %d entries (%+v), want the two: X and the Z that covers Y, which covers nothing itself", len(st.Kinds.Losses), st.Kinds.Losses)
+	}
+	named := map[core.Seq]bool{}
+	for _, lo := range st.Kinds.Losses {
+		named[lo.Dropped] = true
+	}
+	if !named[100] || !named[400] {
+		t.Errorf("the delivered losses name the dropped records %v, want X's (100) and Z's (400): Y delivers nothing", named)
+	}
+	if got, want := st.Kinds.Withheld, (index.Numbers{Version: core.Version{Counter: 3}, Seq: 100}); got != want {
+		t.Errorf("Withheld got %+v, want %+v: R's own numbers, withheld by X", got, want)
+	}
+}
+
 // TestRunWithholdsARecordTwoRulesNameTogether holds the overlap row: a
 // record both a forget and an unsynced loss name — whichever drops it, no
 // other path re-holds it — withholds whole, while a record of the same tag

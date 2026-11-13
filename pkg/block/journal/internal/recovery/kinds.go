@@ -227,23 +227,33 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 	// nothing of its own covers nothing either. A record that another rule
 	// drops is covered only by that record, never by its own name.
 	effLoss, effForget := ks.effectiveAsides(dl, df)
-	for _, d := range effForget {
-		if f, ok := ks.forget[d.h.Tag]; !ok || d.h.Seq > f {
-			ks.forget[d.h.Tag] = d.h.Seq
+	for i := range df {
+		if !effForget[i] {
+			continue
+		}
+		if f, ok := ks.forget[df[i].h.Tag]; !ok || df[i].h.Seq > f {
+			ks.forget[df[i].h.Tag] = df[i].h.Seq
 		}
 	}
-	for _, d := range effLoss {
-		if d.l.Synced && d.l.Reason == format.LossSuperseded {
-			sup := ks.superseded[d.l.Dropped]
-			sup.extents = append(sup.extents, d.h.Extent)
+	for i := range dl {
+		if !effLoss[i] {
+			continue
+		}
+		if dl[i].l.Synced && dl[i].l.Reason == format.LossSuperseded {
+			sup := ks.superseded[dl[i].l.Dropped]
+			sup.extents = append(sup.extents, dl[i].h.Extent)
 			sup.synced = true
-			ks.superseded[d.l.Dropped] = sup
+			ks.superseded[dl[i].l.Dropped] = sup
 		} else {
-			ks.whole[d.l.Dropped] = true
+			ks.whole[dl[i].l.Dropped] = true
 		}
 	}
 
-	for _, d := range effLoss {
+	for i := range dl {
+		if !effLoss[i] {
+			continue
+		}
+		d := dl[i]
 		piece := lossPiece{seq: d.l.Dropped, ext: d.h.Extent}
 		if ks.pieces[piece] {
 			continue // the piece is delivered: a carried-forward copy reports once
@@ -266,9 +276,12 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 	}
 
 	highest := map[core.ShareTag]core.Seq{}
-	for _, d := range effForget {
-		if f, ok := highest[d.h.Tag]; !ok || d.h.Seq > f {
-			highest[d.h.Tag] = d.h.Seq
+	for i := range df {
+		if !effForget[i] {
+			continue
+		}
+		if f, ok := highest[df[i].h.Tag]; !ok || df[i].h.Seq > f {
+			highest[df[i].h.Tag] = df[i].h.Seq
 		}
 	}
 	for _, tag := range slices.Sorted(maps.Keys(highest)) {
@@ -319,109 +332,70 @@ type decoded struct {
 // forgets build from the answer here, and a rule that withholds nothing of
 // its own covers nothing either.
 //
-// Coverage resolves round about — a loss may be covered by a forget whose
-// own seq the failed list or a loss name covers — so the effective set
-// grows over rounds, locking each move as it passes: a record joins when no
-// effective name, no failed seq and no effective forget of its tag above it
-// covers it, its own name excluded (a record never covers itself), and a
-// later round's cover leaves it, never to return. Each record moves at most
-// once in and once out, so the rounds settle; a pair of records that cover
-// one another leaves both out, the lock keeping the paradox from cycling:
-// damage no writer writes.
-func (ks *kindState) effectiveAsides(dl, df []decoded) (losses, forgets []decoded) {
-	var (
-		inLoss, inForget      = make([]bool, len(dl)), make([]bool, len(df))
-		lockedLoss, lockedFor = make([]bool, len(dl)), make([]bool, len(df))
-	)
-	// covers answers for one record, judged against the maps the working
-	// set builds; the name maps carry the contributing records, and a
-	// record's own name never covers itself. A forget contributes to a tag
-	// max it is never below, so no forget covers itself and no exclusion is
-	// needed there.
-	covers := func(names, sups map[core.Seq][]int, forgot map[core.ShareTag]core.Seq, seq core.Seq, tag core.ShareTag, self int) bool {
-		if ks.failed[seq] {
+// Every cover runs from a higher sequence number to a lower one: a loss
+// names a record the journal appended before itself, a forget covers seqs
+// below its own, and the failed list names the records of a read-only
+// window earlier than the open. One pass over the asides merged by seq
+// descending therefore judges each record before the cover it could carry of
+// others exists, against the names and the forget maxima the effective
+// records of higher seq already built — so a rule another rule covers
+// covers nothing: its own name is cancelled before the records it would
+// name are judged, and they keep their covers. No record is ever judged
+// against its own name, which enters the maps only after it. A loss naming
+// a record of a higher seq is damage the journal never appends, and it
+// covers nothing under this pass either; an equal seq between two asides is
+// damage too — the journal issues one number once — and the pass keeps its
+// own order among them, losses before forgets, so the answer stays
+// deterministic whatever the damage.
+func (ks *kindState) effectiveAsides(dl, df []decoded) (effLoss, effForget []bool) {
+	effLoss, effForget = make([]bool, len(dl)), make([]bool, len(df))
+	// named holds every seq an effective loss record names, whole or
+	// superseded — covered answers by presence alone — and forgot each
+	// tag's greatest effective forget seq. Both grow as the pass descends.
+	named := map[core.Seq]bool{}
+	forgot := map[core.ShareTag]core.Seq{}
+	covered := func(seq core.Seq, tag core.ShareTag) bool {
+		if ks.failed[seq] || named[seq] {
 			return true
-		}
-		for _, by := range names[seq] {
-			if by != self {
-				return true
-			}
-		}
-		for _, by := range sups[seq] {
-			if by != self {
-				return true
-			}
 		}
 		if f, ok := forgot[tag]; ok && seq < f {
 			return true
 		}
 		return false
 	}
-	for changed := true; changed; {
-		changed = false
-		// The maps of the round: the names and the forget maxima the
-		// records working at its start carry.
-		names, sups := map[core.Seq][]int{}, map[core.Seq][]int{}
-		forgot := map[core.ShareTag]core.Seq{}
-		for i := range dl {
-			if !inLoss[i] {
-				continue
-			}
-			if dl[i].l.Synced && dl[i].l.Reason == format.LossSuperseded {
-				sups[dl[i].l.Dropped] = append(sups[dl[i].l.Dropped], i)
-			} else {
-				names[dl[i].l.Dropped] = append(names[dl[i].l.Dropped], i)
-			}
-		}
-		for i := range df {
-			if !inForget[i] {
-				continue
-			}
-			if f, ok := forgot[df[i].h.Tag]; !ok || df[i].h.Seq > f {
-				forgot[df[i].h.Tag] = df[i].h.Seq
-			}
-		}
-		// A working record the round's cover catches leaves, locked out; a
-		// record not working and not locked that the round's cover misses
-		// joins. Records judged with this round's maps settle at its end,
-		// and the loop runs one round more whenever a round changed
-		// anything.
-		for i := range dl {
-			covered := covers(names, sups, forgot, dl[i].h.Seq, dl[i].h.Tag, i)
-			if !inLoss[i] {
-				if !lockedLoss[i] && !covered {
-					inLoss[i], changed = true, true
-				}
-				continue
-			}
-			if covered {
-				inLoss[i], lockedLoss[i], changed = false, true, true
-			}
-		}
-		for i := range df {
-			covered := covers(names, sups, forgot, df[i].h.Seq, df[i].h.Tag, -1)
-			if !inForget[i] {
-				if !lockedFor[i] && !covered {
-					inForget[i], changed = true, true
-				}
-				continue
-			}
-			if covered {
-				inForget[i], lockedFor[i], changed = false, true, true
-			}
-		}
+	// order walks every aside once, highest seq first, keeping its own
+	// index so the answer stays in the pass's decode order; the loss
+	// records precede the forget records at an equal seq, the pass's tie.
+	type asideAt struct {
+		d      decoded
+		forget bool
+		i      int
 	}
-	for i := range dl {
-		if inLoss[i] {
-			losses = append(losses, dl[i])
-		}
+	order := make([]asideAt, 0, len(dl)+len(df))
+	for i, d := range dl {
+		order = append(order, asideAt{d: d, i: i})
 	}
-	for i := range df {
-		if inForget[i] {
-			forgets = append(forgets, df[i])
-		}
+	for i, d := range df {
+		order = append(order, asideAt{d: d, forget: true, i: i})
 	}
-	return losses, forgets
+	slices.SortStableFunc(order, func(a, b asideAt) int {
+		return cmp.Compare(b.d.h.Seq, a.d.h.Seq)
+	})
+	for _, a := range order {
+		if covered(a.d.h.Seq, a.d.h.Tag) {
+			continue // another effective rule drops this record whole
+		}
+		if a.forget {
+			if f, ok := forgot[a.d.h.Tag]; !ok || a.d.h.Seq > f {
+				forgot[a.d.h.Tag] = a.d.h.Seq
+			}
+			effForget[a.i] = true
+			continue
+		}
+		named[a.d.l.Dropped] = true
+		effLoss[a.i] = true
+	}
+	return effLoss, effForget
 }
 
 // withheldWhole reports whether a rule drops rec whole, whatever a
