@@ -17,7 +17,7 @@ version limit's headroom and the deadline rule; [RFC 17](../rfcs/rfc-17-vfs.md) 
 delay causes; [RFC 25](../rfcs/rfc-25-observability.md) §3.9 and §8.2, for the condition
 registry and the health source.
 **Track:** C, with T7.1a and T7.1b on track A.
-**Epic 7 estimate: 5 subtasks, 18 man-days.**
+**Epic 7 estimate: 5 subtasks, 18.5 man-days.**
 **Depends on:** sync point **S2, red suite in CI**: E1's surface (`Engine`, `Deps`, `Journal`,
 `Handle`, `Stats`) and E2's fixture, in-memory journal and fault-injecting `kv.KV` (T2.3). T7.1a
 needs epic 3's `Write` and `Draw` (T3.2, T3.3), whose interim answer to a `NoSpaceError` it
@@ -29,8 +29,9 @@ call the wrapped views directly, and its §15.2 rows wait red for the write tran
 epic 4's group commit (T4.3), epic 5's removal loop (T5.3) and epic 6's raises (T6.2, T6.7).
 T7.3 needs the conditions epics 4, 5 and 6 raise, epic 8's T8.3, which raises epic 5's
 `removal_stalled` for a clone, T7.1b, whose refusals raise `journal_full`, and epic 4's
-T4.5, whose drain of the loss events `journal_sync_failed` reads. T7.4 needs T6.7, T7.1a
-and T7.2. Each subtask also waits on the RFC text its decisions follow (§9).
+T4.5, whose drain of the loss events `journal_sync_failed` reads, and the engine's handling
+of a read-only journal (#3885), which drains a read-only journal's loss events too. T7.4
+needs T6.7, T7.1a and T7.2. Each subtask also waits on the RFC text its decisions follow (§9).
 **Blocks:** the integration epic, through S3: the filesystem service cannot answer a full
 journal or a stalled store before this epic maps them.
 
@@ -86,9 +87,10 @@ part can pass, and §15.2's §11.1 rows for `journal_full` and `journal_sync_fai
   `ErrDelay`): epic 4's, which answers stability points. This epic adds only the fence of
   the row below it.
 - A read-only journal (§11.2's journal-sync row, `ErrReadOnly`, `journal_read_only`, the
-  reopen), and with it the half of `journal_sync_failed` raised when the journal turns
-  read-only (D10): both need RFC 1 §5.4's read-only state, which `journal` does not have
-  (§9 point 1).
+  reopen): RFC 1 §5.4's read-only state is in `journal` (epic 6 of the journal plan, T6.6),
+  the engine's refusal of writes and syncs and `journal_read_only` came with #3885, and the
+  reopen is epic 6's open point 8. The half of `journal_sync_failed` raised when the journal
+  turns read-only is this epic's (D10).
 - `stranded_export_failed` (§11.1) and its §15.2 row: the second part, with the salvage
   export of a stranded tag, which epic 6 leaves there (epic 6's out of scope).
 - A node started from a copied image (§11.2's last row, `Fenced` bindings, `copied_image`):
@@ -264,7 +266,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R31 | A condition clears when its cause does, with no operator step, but `journal_lost`, which waits for the operator | invariant | §11.1, RFC 0 §10.2, RFC 25 §3.9 | T7.3 |
 | R32 | `Stats` is a read: it takes no lock a content call takes and does no I/O beyond the journals' own `Stats`; the free-space read of D9 is made by the journal's group commit loop and `Stats` returns the figure it kept | invariant | RFC 25 §2.8, for what the root exports from it (rule 3) | T7.3 |
 | R33 | §11.1 `journal_full` at the maximum and `journal_full` on a full device: raised by a refusal of the journal's own capacity or a full device, kept while writes into allocated segments are accepted, cleared only once the limit that refused has room again since the latest refusal, by at least what it lacked, and after a headroom refusal by the next content write accepted outside a reservation (D9) | test row | §11.1, §15.2 | T7.1b, T7.3 |
-| R34 | §11.1 `journal_sync_failed` (adapted: not the read-only half, §9 point 1): raised from a failed window's loss event in the last hour, never for a window re-appended nor for a loss found at open, cleared an hour after the latest (D10) | test row | §11.1, §15.2 | T7.3 |
+| R34 | §11.1 `journal_sync_failed`: raised from a failed window's loss event in the last hour, a journal turning read-only with an unsynced record publishing such events too, never for a window re-appended nor for a loss found at open, cleared an hour after the latest (D10) | test row | §11.1, §15.2 | T7.3 |
 
 ## 4. Decisions this epic takes
 
@@ -403,8 +405,10 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
     after a headroom refusal, since that happens on the write path; T7.3 clears it on room,
     when it reads the figures above.
 - **D10, `journal_sync_failed`.** RFC 8 §11.1 states when it is raised and when it clears;
-  this document follows it, for the half raised from a failed window's loss event (the
-  read-only half: §9 point 1). What §11.1 leaves open is where the hour is counted from. The
+  this document follows it, for both halves: the loss events of a failed window, and those
+  a journal turning read-only publishes as it fails every unsynced record as a failed
+  window, with no loss record appended (RFC 1 §5.4). Both reach the same drain, so one
+  figure serves both. What §11.1 leaves open is where the hour is counted from. The
   engine drains the journal's loss events in epic 4's T4.5, in `loss.go`, which learns of
   a failed window there; T4.5 does not record when. T7.3 adds to that drain one figure per
   journal, the engine's clock at the latest drained event of a failed window (not a window
@@ -439,7 +443,8 @@ pkg/block/engine/
   export_test.go     T7.2   the fence's clock; T7.3 a file's state lock held
   ../journal/journaltest/
     seam.go          T7.3   the free-bytes budget: an allocation past it fails with ENOSPC, and
-                            Deps.FreeSpace reads it (D9)
+                            Deps.FreeSpace reads it (D9); a hook that turns the real journal
+                            read-only (D10)
   enginetest/
     fake.go          T7.1a  NoSpaceError per limit, a full device
                      T7.1b  Repack over a scope, the seal, D4's unreclaimed figure in Stats
@@ -635,17 +640,20 @@ would split one condition's cause from its raise.
 
 ### T7.3 `Stats` and the conditions
 
-**Subtask T7.3 estimate: 5.5 man-days.**
+**Subtask T7.3 estimate: 6 man-days.**
 
 Above 5 because epics 4 and 5 merged `existence_commit_failing` and `removal_stalled` as log
 lines only, so this subtask also records them into the condition set at the sites that log
 them (half a day, with their raise and clear tests), beside the free-space timer in the
-group commit's loop (D9); the rest is the 5 days the conditions, the figures and the rows
-already took.
+group commit's loop (D9), and adds the fixture hook that turns the real journal read-only
+through its storage seam, for `journal_sync_failed`'s read-only half (half a day, D10); the
+rest is the 5 days the conditions, the figures and the rows already took.
 
 - **Track:** C. **Depends on:** T7.2; epic 4's T4.4, epic 5's T5.3, epic 6's T6.3 and
   T6.10, epic 8's T8.3, whose conditions it reports; T7.1b, whose refusals raise
-  `journal_full`; epic 4's T4.5, whose drain of the loss events `journal_sync_failed` reads.
+  `journal_full`; epic 4's T4.5, whose drain of the loss events `journal_sync_failed` reads;
+  the engine's handling of a read-only journal (#3885), whose drain reads the read-only
+  journal's events.
 - **Covers:** R29 to R32, R33 (the clear on room), R34.
 - **Deliverables:** the rest of `Stats`' fields (D8), around the condition set T6.3
   created; `existence_commit_failing` (`groupcommit.go`) and `removal_stalled`
@@ -658,7 +666,8 @@ already took.
   (D10), from the latest failed window's time per journal in `loss.go`, cleared an hour
   after it on the engine's clock;
   the counters epics 3 to 8 keep unexported (epic 3's D9) moved into `Stats`; the
-  `export_test.go` readers they used replaced.
+  `export_test.go` readers they used replaced; a fixture hook in the journal's storage seam
+  that turns the real journal read-only, for R34's read-only half.
 - **Acceptance criteria:**
   - Every condition and counter named in this part's epics has a `Stats` field or an entry
     of the condition set.
@@ -692,8 +701,9 @@ already took.
   - "`journal_sync_failed`": a failed window with loss records, the journal still writable,
     raises it, and it clears an hour after the latest failed window on the test clock with
     no operator step; a window re-appended raises none; a restart over a loss record on
-    disk raises none for the loss found at open; the row's read-only assertion is not
-    written (§9 point 1) (D10, R34).
+    disk raises none for the loss found at open; the journal turned read-only with an
+    unsynced write in its window raises it, turned read-only by this subtask's fixture hook
+    in the storage seam (D10, R34, §9 point 1).
 
 ### T7.4 The version limit under sustained load and a burst
 
@@ -753,7 +763,7 @@ retry-later and no space as §10.2's table says.
 | 1 | T7.2 | 2.5 | S2; T2.3; #3654 | the fence and its recorder, which every later write transaction goes through; its tests call the wrapped views directly, and its §15.2 rows wait red in `known.yaml` for T4.3, T5.3, T6.2 and T6.7 |
 | 2 | T7.1a | 2.5 | T3.2, T3.3, T6.7; the RFC 8 text for D1 | the refusal table on the write path, replacing epic 3's interim answer |
 | 3 | T7.1b | 5.5 | PR 2; T4.6; #3665, #3653 | repack and the last step, its fixture rows red until the journal seals |
-| 4 | T7.3, T7.4 | 7.5 | PR 1, PR 2, PR 3; T4.4, T4.5, T5.3, T6.3, T6.7, T6.10, T8.3 | what an operator sees, and the version limit's checks against the fence |
+| 4 | T7.3, T7.4 | 8 | PR 1, PR 2, PR 3; T4.4, T4.5, T5.3, T6.3, T6.7, T6.10, T8.3 | what an operator sees, and the version limit's checks against the fence |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -765,8 +775,13 @@ A suggestion only: one pull request per subtask works as well.
    `journal_sync_failed` (D10); `stranded_export_failed` goes to the second part with the
    salvage export (§1.2). The half of `journal_sync_failed` raised when the journal turns
    read-only, and its §15.2 assertion, are T7.3's (#3898): RFC 8 §11.1 raises it from
-   the same loss events as the failed-window half, so it waits for no reopen; every
-   other mention in this document points here.
+   the same loss events as the failed-window half, so it waits for no reopen. On
+   `feat/storage-v2` the drain in `loss.go` raises the condition from every failed-window
+   event not found at open, and a read-only journal publishes its failed records as such
+   events, so this half needs no code of its own. What it still owes is its assertion:
+   `TestRFC8B_JournalSyncFailed` (#3940) covers the failed-window half only, and the
+   fixture has no way yet to turn the real journal read-only. T7.3 adds that hook in the
+   storage seam and the assertion, under #3590.
 2. **The fence's clock** (D6). RFC 8 §11.2 now records the `Clock.Elapsed` of the last
    commit (#3656). RFC 8 §11.2 and RFC 0 §1.4 still read either way on when the 30 s start;
    this document starts them when a transaction becomes outstanding or failing on a node
@@ -816,12 +831,13 @@ A suggestion only: one pull request per subtask works as well.
    §3.6, RFC 13's index excess row and RFC 24 §2.3 and §7.1 still answer a removal's or the
    index's refusal retry-later, where R6, R7 and D3 can answer `ErrNoSpace`. Pending #3665,
    which closes #3660 and #3662.
-10. **The estimate.** 18 man-days against the 12.5 of the original four subtasks: the split
+10. **The estimate.** 18.5 man-days against the 12.5 of the original four subtasks: the split
     of T7.1 into T7.1a and T7.1b added 2 (14.5), since the race, the seal and the failed
     window each need their own fixture rows and in-memory journal support; RFC 8 §11.1's rules for
     `journal_full` and `journal_sync_failed` add 1 day to T7.1b and 2 to T7.3 (D9, D10); and
     recording `existence_commit_failing` and `removal_stalled`, which epics 4 and 5 only
-    log, with the free-space timer adds half a day to T7.3.
+    log, with the free-space timer adds half a day to T7.3, and the fixture hook that turns
+    the real journal read-only for `journal_sync_failed`'s read-only half another half day.
 11. **How and when the engine reads the journal directory's free space** (D9). RFC 8 §11.1
     says the engine reads it itself, not how or when; RFC 8 §2.6's `Deps` has no member for
     it, and `Deps` is frozen at S1; RFC 25 §2.8 has an export read only what components keep

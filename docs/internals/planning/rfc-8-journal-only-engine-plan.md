@@ -222,8 +222,8 @@ with a known file.
   batches keep failing raises `removal_stalled` and wedges no other file; the undecodable
   ref is the second part's, since this part writes none); §10.3 scoped repack; §11.1
   `journal_full` at the maximum, `journal_full` on a full device, `journal_sync_failed`
-  (adapted: not the journal turned read-only, which waits for RFC 1 §5.4's read-only state,
-  epic 7's §9 point 1); §11.2 self-fence threshold, self-fence on an erroring store. §11.1
+  (both halves, the failed window and the journal turned read-only, whose state `journal`
+  has had since its T6.6; T7.3, epic 7's §9 point 1); §11.2 self-fence threshold, self-fence on an erroring store. §11.1
   `stranded_export_failed` is the second part's, with the salvage export.
 - **RFC 8 §15.3, Group C** (3 rows): §2.1 declared interfaces, §2.2 no assertions, §2.4
   settings.
@@ -398,13 +398,13 @@ harness (`journaltest/prof`) wired to the fixture.
 | 4 | **Commit, group commit and losses** ⛔ | the verifier, `Commit`, the group commit and its split, the loss sequence, failed windows, `Done` exactly once | 7 | 23 | B | 5, 6, 7, 8 |
 | 5 | **Removals** ⛔ | `Truncate`, `Deallocate`, `Delete`, phase 1, the removal loop, a release behind open state's `Releasing` | 5 | 15.5 | B | 6, 8 |
 | 6 | **Start, bindings and recovery** ⛔ | the store's `Lifecycle` view, the share table, start steps 1 to 5, the version limit, stop, `Unbind`, `Drop` | 12 | 40.25 | C | 7, 8 |
-| 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 5 | 18 | C | 9 |
+| 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 5 | 18.5 | C | 9 |
 | 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.75 | A | 5, 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over the in-memory `Content` and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
 | 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 5 | 12.5 | team | the second part |
-| | **Total** | | **66** | **191** | | |
+| | **Total** | | **66** | **191.5** | | |
 
-**Plan estimate: 66 subtasks, 191 man-days.**
+**Plan estimate: 66 subtasks, 191.5 man-days.**
 
 RFC 8 is 3,627 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
@@ -880,7 +880,7 @@ and stop, §2.7. Counters: none new; conditions named by `Stats` for a refused s
 
 ### Epic 7 — Capacity, self-fence and health
 
-**Epic 7 estimate: 5 subtasks, 18 man-days.**
+**Epic 7 estimate: 5 subtasks, 18.5 man-days.**
 
 The breakdown, `rfc-8-engine-epic7.md`, restates this epic and its estimate; the subtask list
 below is the plan's, kept for the history of the split.
@@ -1239,8 +1239,7 @@ What this part knowingly does not build. Each row indexes the section that defer
 | Removal phase 2 and its prune on the shared work scheduler (epic 5's `ponytail:`; §6 point 5) | one loop per journal stands in | RFC 8 second part plan | offload adds the first work that needs fairness between shares |
 | Offload health, put and get health, `stranded_export_failed` with the salvage export of stranded tags, `PreWarm`, `WaitOffloaded` (§1.1, §1.4, §6 point 7) | need offload | RFC 8 second part plan | offload |
 | Scenario rows, or parts of rows, needing offload, eviction, fills, pacing, the scheduler, snapshots, a cluster or RFC 26; the operator's acknowledgement that serves a journal-gone share again (§1.4) | this part cannot pass them | RFC 8 second part plan; RFC 12, the cluster stage, RFC 26 | with each owner |
-| RFC 1 §5.4's read-only journal state (§1.4) | the journal has no read-only state | journal plan, its E6 | that epic builds it |
-| The engine's side of the read-only journal: `journal_sync_failed`'s read-only half, §11.2's journal-sync row, `ErrReadOnly`, `journal_read_only`, the reopen, and the test of C11's undo of a pending `Delete` (§1.4, epics 5 and 7) | needs RFC 1 §5.4's state; epic 7 leaves it out (its §1.2) | unowned | the journal's read-only state lands |
+| The read-only journal's reopen in place, with §15.2's read-only row, and the test of C11's undo of a pending `Delete` (§1.4, epics 5 and 6) | no epic of this part schedules them: the reopen is epic 6's §9 point 8, and the undo test, which epic 5's §9 point 2 left for the read-only state, has no subtask now that the state is built | unowned | an epic, of this part or the second, takes up the reopen |
 | §1.1's remaining second-part items: §4.1's `Dirty` event, §2.3's flow, key scope and budgets | need offload | RFC 8 second part plan (budgets with RFC 24) | offload |
 | GC, RFC 8 §10.5 (§7) | out | RFC 9 | GC is built |
 | §12.2 retried mutation, the route envelope (§1.1, §7) | single node | RFC 15 §4.3, the cluster stage | the cluster stage |
