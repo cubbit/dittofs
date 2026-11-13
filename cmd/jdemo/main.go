@@ -43,6 +43,8 @@ func newRoot() *cobra.Command {
 		newWriteAtCmd(), newReadAtCmd(), newSyncCmd(),
 		newTruncateCmd(), newDeallocateCmd(), newDeleteCmd(), newCloneTargetCmd(),
 		newReserveCmd(), newReserveWriteCmd(), newReserveCloseCmd(), newFillCmd(),
+		newOffloadCmd(), newMarkOffloadedCmd(), newUnmarkCmd(), newReleaseCmd(),
+		newRepackCmd(),
 	} {
 		root.AddCommand(c)
 	}
