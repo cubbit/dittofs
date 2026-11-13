@@ -86,16 +86,7 @@ type tails struct {
 // probe it makes, and fails the open when a range names no record it can
 // class: see refuseRange and refuseMissingEnd.
 func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []segmentScan) (tails, error) {
-	// A segment a verified header names as predecessor was sealed before
-	// its successor was made; a segment no header names could have been
-	// open at a crash. An id naming itself names nothing, and a name with
-	// no segment on disk is ignored.
-	named := map[core.SegmentID]bool{}
-	for _, s := range att.Own {
-		if p := s.Header.Predecessor; p != 0 && p != s.ID {
-			named[p] = true
-		}
-	}
+	named := namedBySuccessor(att)
 	unverified := map[core.SegmentID]bool{}
 	for _, id := range slices.Concat(att.Unverified, att.ZeroHeader) {
 		unverified[id] = true
@@ -256,6 +247,21 @@ func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []se
 		return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.at(), b.at()))
 	})
 	return out, nil
+}
+
+// namedBySuccessor returns the set of segments a verified own header names as
+// predecessor: a segment named there was sealed before the successor that
+// names it was made; a segment no header names could have been open at a
+// crash. An id naming itself names nothing, and a name with no segment on disk
+// is ignored.
+func namedBySuccessor(att Attached) map[core.SegmentID]bool {
+	named := map[core.SegmentID]bool{}
+	for _, s := range att.Own {
+		if p := s.Header.Predecessor; p != 0 && p != s.ID {
+			named[p] = true
+		}
+	}
+	return named
 }
 
 // refuseRange is the open's refusal of a range inside a segment whose
