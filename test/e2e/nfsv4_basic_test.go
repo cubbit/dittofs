@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -724,6 +725,11 @@ func TestNFSv4StaleHandle(t *testing.T) {
 	// Stop first server
 	sp1.ForceKill()
 
+	// The second server binds the same NFS port. The kernel can still hold it
+	// for a moment after the first process exits, so wait until the port can
+	// be bound again rather than racing the release.
+	waitPortBindable(t, nfsPort, 10*time.Second)
+
 	// Start a new server on the same port (fresh memory state)
 	sp2 := helpers.StartServerProcess(t, "")
 	t.Cleanup(sp2.ForceKill)
@@ -892,4 +898,26 @@ func TestBackwardCompatNFSv3Full(t *testing.T) {
 	})
 
 	t.Log("Backward compat NFSv3 full: PASSED")
+}
+
+// waitPortBindable polls until a listener can bind port on every interface, as
+// the NFS adapter does, failing the test once timeout has passed.
+func waitPortBindable(t *testing.T, port int, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+
+	for {
+		l, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		if err == nil {
+			_ = l.Close()
+			return
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatalf("port %d still not bindable after %v: %v", port, timeout, err)
+		}
+
+		time.Sleep(50 * time.Millisecond)
+	}
 }
