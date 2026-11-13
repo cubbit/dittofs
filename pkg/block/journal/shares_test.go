@@ -127,6 +127,24 @@ func TestJournalShare_RefusesWhatTheCoreRefuses(t *testing.T) {
 	}
 }
 
+// TestJournalShare_RefusedOffTheClosedFlag pins Share's closed-flag check
+// under handlesMu: Close raises the flag before it takes the lock to snapshot
+// the handles, so a Share that entered the lock first — the one window the
+// snapshot cannot collect — must be refused by the flag alone. Without the
+// check the attach would register a handle the snapshot already holds no
+// trace of, one whose Close answers ErrClosed on a fence it never drains and
+// whose reservations nothing would release. The flag is raised by hand so the
+// refusal is the check's own: the core under it stays open for the cleanup's
+// close.
+func TestJournalShare_RefusedOffTheClosedFlag(t *testing.T) {
+	j := newTestJournal(t)
+	j.closed.Store(true)
+
+	if _, err := j.Share(1, 0, Version{}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Share with the close's flag raised before the lock = %v, want ErrClosed", err)
+	}
+}
+
 func TestJournalShare_SameTagSameHandle(t *testing.T) {
 	j := newTestJournal(t)
 	a, err := j.Share(1, 10, Version{})

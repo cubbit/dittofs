@@ -27,6 +27,12 @@ import (
 // IOPS rather than the last minute's, when a deployment reaches the burst
 // check's refusal rate.
 func (c *Core) Draw() (core.Version, error) {
+	// Once the core's Close began, Draw is refused before the counters are
+	// consulted, so a change that would have taken a version and stored it
+	// elsewhere never runs under a close.
+	if c.closed() {
+		return core.Version{}, core.ErrClosed
+	}
 	return c.cap.DrawVersion(context.Background())
 }
 
@@ -36,5 +42,10 @@ func (c *Core) Draw() (core.Version, error) {
 // once. A mark with a non-zero epoch half is refused with core.ErrUnknownFormat
 // and the limit it found still binds.
 func (c *Core) SetVersionLimit(mark core.Version) error {
+	// Once the core's Close began, no limit is set: the limit the counters
+	// already hold stays binding for the calls the fence admitted.
+	if c.closed() {
+		return core.ErrClosed
+	}
 	return c.counters.SetVersionLimit(mark)
 }

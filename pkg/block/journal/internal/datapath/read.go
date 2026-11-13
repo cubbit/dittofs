@@ -47,10 +47,7 @@ import (
 // held, in offset order, still describe what was copied into p before it, and
 // missing is nil.
 func (c *Core) ReadAt(ctx context.Context, s *Share, id core.FileID, off int64, p []byte) (n int, missing []core.Extent, held []core.Held, asOf core.Version, err error) {
-	if err = ctx.Err(); err != nil {
-		return 0, nil, nil, core.Version{}, err
-	}
-	exit, err := s.enter()
+	exit, err := beginCall(ctx, s)
 	if err != nil {
 		return 0, nil, nil, core.Version{}, err
 	}

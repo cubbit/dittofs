@@ -2,7 +2,6 @@ package datapath
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -112,6 +111,16 @@ type coreOptions struct {
 	// takeHook is installed on the admission's decision section before any
 	// goroutine of the core starts; nil in production.
 	takeHook func()
+	// stopProbe is registered as a stop right before the pool's, so Close
+	// runs it in the reverse order once the pool has stopped and before the
+	// idle sealer and the retirer have; the stop it returns is what Close
+	// runs and is given the retirer so it can check it has not stopped yet.
+	// Nil in production.
+	stopProbe func(*segment.Pool, *segment.Retirer) func()
+	// shareHook runs in Share between the first closed check and the
+	// registry's lock, so a test can fence the core in the window the
+	// re-check under registryMu refuses. Nil in production.
+	shareHook func()
 	// extentLimit overrides the index's entry bound a test core builds with,
 	// keeping Deps at the figure the production wiring passes.
 	extentLimit int64
@@ -242,6 +251,12 @@ type Core struct {
 	// for the same reason afterAppend is.
 	afterRetarget func()
 
+	// shareHook is a test seam that runs in Share between the first closed
+	// check and the registry's lock, so a test can fence the core in the
+	// window the re-check under registryMu refuses. It is nil outside tests,
+	// for the same reason afterAppend is.
+	shareHook func()
+
 	// registry is the open handles, replaced whole under registryMu and read
 	// through the pointer alone. See shares.go.
 	registry atomic.Pointer[[]*Share]
@@ -263,7 +278,22 @@ type Core struct {
 	// context can refuse at once; the work itself runs under closeOnce.
 	closedFlag atomic.Bool
 	closeOnce  sync.Once
-	closeErr   error
+	// drain counts one goroutine per share the close fenced, each waiting on
+	// its share's idle channel; Close waits the group before it stops the
+	// core's workers. See close.go.
+	drain sync.WaitGroup
+	// decision: stopsMu is a leaf. It guards the stops slice alone, and no
+	// stop and no close step runs with it held, so a stop that takes a
+	// worker's own locks never nests it. See close.go.
+	stopsMu sync.Mutex
+	// stops are the stop functions of the workers the core started, in the
+	// order they registered — in reverse of which Close stops them. See
+	// close.go.
+	stops []func()
+	// group is the segment set the core runs, closed by Close once every
+	// registered worker has stopped. Nil on a Core no constructor returned.
+	group    *segment.Group
+	closeErr error
 }
 
 // unboundedBytes is the Maker's byte ceiling: none that a journal could
@@ -308,7 +338,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, rec: o.recorder}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, shareHook: o.shareHook, rec: o.recorder}
 	tbl := newFileLocks()
 	if c.rec != nil {
 		tbl.SetRecorder(c.rec)
@@ -475,14 +505,47 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		Retired:  func(id core.SegmentID) { c.retiredSegment(id) },
 		Log:      deps.Log,
 	})
+	// The workers register their stops as they start, in the order their
+	// pieces were built: the retirer, then the idle sealer, then the pool,
+	// then the durability layer. Close stops them in the reverse of this
+	// order — the durability layer, whose Stop wakes every durability waiter,
+	// first, then the pool, then the idle sealer, then the retirer — so the
+	// pool is stopped before the retirer, the order the segment package's
+	// group close documents for the same parts it owns: the wake the retirer's
+	// queue drop sends must reach a pool that makes nothing, and a retirement
+	// still in flight must unlink its segment rather than reserve a slot in a
+	// live pool. Stopping the pool before the idle sealer is safe not
+	// because of the drain — the sealer is a background worker, not a
+	// data-path call — but because an idle seal never takes from the pool:
+	// it never rolls, and a roll in the seal's window belongs to the
+	// stream's appends, not the sealer, so a stopped pool cannot starve or
+	// deadlock a sealer in flight.
 	c.retirer.Start()
+	c.addStop(c.retirer.Stop)
 
 	if deps.IdleSealBytes > 0 {
 		c.sealer = segment.NewIdleSealer(c.streams, deps.Clock, deps.IdleSealBytes, d.Admit, deps.Log)
 		c.sealer.Start()
+		c.addStop(c.sealer.Stop)
+	}
+	if o.stopProbe != nil {
+		c.addStop(o.stopProbe(c.pool, c.retirer))
 	}
 	c.pool.Start()
+	c.addStop(c.pool.Stop)
 	d.Start(c.streams)
+	c.addStop(d.Stop)
+
+	// The group closes the segment set once every registered worker has
+	// stopped: the streams, the idle sealer, the pool, the retirer and the
+	// descriptor cache, in the order the segment package documents.
+	c.group = segment.NewGroup(segment.GroupConfig{
+		Streams: c.streams,
+		Idle:    c.sealer,
+		Pool:    c.pool,
+		Retirer: c.retirer,
+		Cache:   c.cache,
+	})
 	return c, nil
 }
 
@@ -547,8 +610,9 @@ func (c *Core) PoolCounters() segment.PoolCounters { return c.pool.Counters() }
 func (c *Core) Retired(tag core.ShareTag) { c.cap.Retired(tag) }
 
 // Retirer returns the retirement executor the core runs. Nothing above the
-// core reaches it through this accessor today — the core's own Close uses
-// the field — so it is a test seam: the one a test retires through, driving
+// core reaches it through this accessor today — the core's own close stops
+// it through the registry registered at its Start, not through the field —
+// so it is a test seam: the one a test retires through, driving
 // the executor's gates and retired-segment hook exactly as the assembled
 // journal's own retirement path does. A later reclamation caller above the
 // core, which none exists yet, would take it from here.
@@ -590,26 +654,5 @@ func (c *Core) retiredSegment(id core.SegmentID) {
 // refill and never by time.
 func (c *Core) WaitSpares(ctx context.Context) error { return c.pool.WaitSpares(ctx) }
 
-// Close stops the durability layer, then closes the streams, then stops the
-// idle sealer, the pool and the retirer — every background worker joined
-// before the segments it touches are closed, the pool before the retirer, as
-// the segment package's group close documents — and last shuts the descriptor
-// cache, whose Shutdown waits for every reader's reference and then closes
-// every descriptor. It is safe to call twice.
-func (c *Core) Close() error {
-	c.closedFlag.Store(true)
-	c.closeOnce.Do(func() {
-		c.dur.Stop()
-		serr := c.streams.Close()
-		if c.sealer != nil {
-			c.sealer.Stop()
-		}
-		c.pool.Stop()
-		if c.retirer != nil {
-			c.retirer.Stop()
-		}
-		cerr := c.cache.Shutdown()
-		c.closeErr = errors.Join(serr, cerr)
-	})
-	return c.closeErr
-}
+// Close stops the core: it fences (BeginClose), drains every call the fence
+// found in flight, and stops the workers. See close.go.

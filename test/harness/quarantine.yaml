@@ -9,3 +9,4 @@
 
 - { suite: engine-conformance, test: TestRFC8B_NoCrossShareSlowdown, issue: "#4169", expires: 2026-12-12 }
 - { suite: engine-conformance, test: TestRFC8A_JournalAuthority, issue: "#4188", expires: 2026-12-12 }
+- { suite: unit, test: TestTake_FitsRoomTakesNoSpare, issue: "#4160", expires: 2027-02-10 }

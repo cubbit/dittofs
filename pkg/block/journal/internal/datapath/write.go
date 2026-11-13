@@ -64,10 +64,7 @@ import (
 // pieces it already published held; the error says the write as a whole did
 // not complete, and the grant's unused bytes and spares return with it.
 func (c *Core) WriteAt(ctx context.Context, s *Share, id core.FileID, off int64, p []byte, mtime int64) (core.Version, error) {
-	if err := ctx.Err(); err != nil {
-		return core.Version{}, err
-	}
-	exit, err := s.enter()
+	exit, err := beginCall(ctx, s)
 	if err != nil {
 		return core.Version{}, err
 	}

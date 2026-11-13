@@ -50,11 +50,7 @@ import (
 // second copy after the first drop.
 func (c *Core) Since(ctx context.Context, s *Share, id core.FileID, from core.Version) iter.Seq2[core.Change, error] {
 	return func(yield func(core.Change, error) bool) {
-		if err := ctx.Err(); err != nil {
-			yield(core.Change{}, err)
-			return
-		}
-		exit, err := s.enter()
+		exit, err := beginCall(ctx, s)
 		if err != nil {
 			yield(core.Change{}, err)
 			return

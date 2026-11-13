@@ -172,7 +172,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs repack, Close joining background work before closing segments, and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs repack and recovery; the close joins its background work before it closes every segment.'
   issue: '#3379'
   message: 'stub: Sync'
 
@@ -392,12 +392,29 @@
   issue: '#3378'
   message: 'stub: Inspect.File'
 
-- test: TestRFC1C_CancelledCallChangesNothingOrCompletes
+- test: TestRFC1C_CancelledCallChangesNothingOrCompletes/done_context_appends_nothing
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check''s legs fail each on the call or refusal still missing. Needs the data path checking the context before appending, a call held at the seam completing after its record is written, and failed syncs still reported after a cancelled one.'
+  reason: 'The journal opens; the leg stops on the offload stub it makes before the refused calls. Needs offload, so the WriteAt, Release and Forget the done context must refuse have the records the leg reads back.'
   issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_CancelledCallChangesNothingOrCompletes/a_cancelled_sync_still_reports_the_failure
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the leg stops on the Inspect stub before its cancelled Sync. Needs the Inspect API and the failed window a Sync after a cancelled one still reports.'
+  issue: '#3379'
+  message: 'stub: Inspect.File'
+
+- test: TestRFC1C_CancelledCallChangesNothingOrCompletes/a_done-context_sync_still_reports_a_later_failure
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the background sync of the bound reports its planted failure, and the leg advances to the journal''s own Sync, still unwritten. Needs the sync call, so the done context''s Sync answers the context and a later one still reports the window.'
+  issue: '#3379'
+  message: 'stub: Sync'
 
 - test: TestRFC1C_CloneTargetSurvivesCrash
   status: fail

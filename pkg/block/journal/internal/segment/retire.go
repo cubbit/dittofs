@@ -543,6 +543,30 @@ func (r *Retirer) stoppedLocked() bool {
 	}
 }
 
+// Stopped reports whether Stop has closed done: the worker's loop has ended,
+// or ends before its next turn. It reads the closed channel alone, so it is
+// safe from any goroutine; a Stop running concurrently may flip it after the
+// read, which is the probe's own race to tolerate. Unlike stoppedLocked it
+// takes no mutex, because done closes under r.mu inside Stop's once — a
+// caller holding r.mu would block Stop's close path and invert what it
+// observes.
+//
+// decision: Stopped has no production caller; the close-order test in the
+// data path needs to see the retirer still running between the pool's stop
+// and its own, and the worker's state is otherwise unobservable outside
+// this package (Enqueue drops silently, Counters answers both ways). Hold
+// the signature with a conformance test of the retirer's own if one ever
+// lands, or drop the method with the test when the close reports its steps
+// to the seam.
+func (r *Retirer) Stopped() bool {
+	select {
+	case <-r.done:
+		return true
+	default:
+		return false
+	}
+}
+
 // kickWorker wakes the worker, coalescing.
 func (r *Retirer) kickWorker() {
 	select {
