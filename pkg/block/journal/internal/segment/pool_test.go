@@ -2129,6 +2129,52 @@ func TestPoolWaitSparesQueuedKickIsNotAShortage(t *testing.T) {
 	p.Stop()
 }
 
+// TestPoolWaitSparesCountsAnOpenHoldsSparesBesideTheTarget: a wait beside an
+// open Hold reads the content class at the refill's held-aware goal, so it
+// parks while the pass fills the goal the hold raised and answers with the
+// pool holding it — never with the bare target while the fill is mid-make.
+// A wait that read the target alone answered nil here, unparked, with the
+// pool short of the goal the hold demanded.
+func TestPoolWaitSparesCountsAnOpenHoldsSparesBesideTheTarget(t *testing.T) {
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+
+	p.Start()
+	if err := waitSpares(t, p); err != nil {
+		t.Fatalf("WaitSpares over the settled pool: %v", err)
+	}
+	if got := p.Counters().Spares; got != 2 {
+		t.Fatalf("WaitSpares answered at %d ready spares, want the target 2", got)
+	}
+
+	// The pass the hold's own kick queues is parked at its first create, so
+	// the wait below can only answer short of the goal or park for it.
+	holdMake := seam.HoldFirst(t, kit.OpCreate, "*")
+	holdSpares, err := p.Hold(1)
+	if err != nil {
+		t.Fatalf("Hold(1) over the two ready spares: %v", err)
+	}
+
+	answered := make(chan error, 1)
+	go func() { answered <- p.WaitSpares(t.Context()) }()
+	awaitParked(t, p, 1)
+	holdMake.Release()
+
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatalf("WaitSpares beside an open hold: got %v, want the pool at its goal", err)
+		}
+	case <-t.Context().Done():
+		t.Fatalf("WaitSpares was still blocked when the test ended: %v", t.Context().Err())
+	}
+	if got := p.Counters().Spares; got != 3 {
+		t.Fatalf("WaitSpares answered at %d ready spares, want the goal 3 the open hold raised", got)
+	}
+
+	holdSpares.Close()
+	p.Stop()
+}
+
 // TestPoolWaitSparesRefusedWhenNeverStarted: a pool that has never started
 // never settles, so its wait refuses at once, naming the spare limit as a
 // take does.

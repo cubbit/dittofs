@@ -622,17 +622,25 @@ func (p *Pool) Counters() PoolCounters {
 	}
 }
 
-// WaitSpares blocks until every class holds the spares its target names,
-// ready to take — or the pool reports it cannot reach its targets: no pass
-// is running, none is queued, and a class still holds fewer ready spares
-// than its target — or the pool has stopped. It returns nil once no class is
+// WaitSpares blocks until every class holds the spares its refill's goal
+// names, ready to take — the content class at the goal its own passes fill
+// to, every open hold's spares beside the target and any ask a refused Hold
+// still owes — or the pool reports it cannot reach that goal: no pass is
+// running, none is queued, and a class still holds fewer ready spares than
+// it — or the pool has stopped. It returns nil once no class is
 // ready-short, core.ErrClosed once the pool has stopped, the context's error
 // once it is done — checked before every other answer — and the spare
-// refusal naming LimitSpare when the pool stands idle and short. Held and
-// pending spares ride above the targets and the wait does not count them,
-// and neither does it count a recycle reserved but not landed: its failure
+// refusal naming LimitSpare when the pool stands idle and short. The wait
+// counts no recycle reserved but not landed: its failure
 // leaves the class short with no wake, so the wait reads only what a roll
 // can take.
+//
+// decision: the content class is read at the refill's held-aware goal rather
+// than the bare target, because that is where the pool's own passes settle, and
+// a wait that read the target alone answered nil while a pass was still
+// making toward the goal an open hold had raised — short of exactly the count
+// a caller waiting beside a reservation waits for. The wait is test-facing
+// only, so its reading may follow what its waiters prove.
 //
 // decision: the wait is event-driven, woken by settle alone. The mechanism is
 // a condition under the pool's own mutex, broadcast by every refill pass on
@@ -643,13 +651,13 @@ func (p *Pool) Counters() PoolCounters {
 // returns without parking at all, and no polling measures anything.
 //
 // decision: the wait guarantees one thing only — that every class holds its
-// target of ready spares, and that the pool is not mid-fill when it says so.
+// goal of ready spares, and that the pool is not mid-fill when it says so.
 // It is not a promise the caller's next roll lands: a hold that claimed all
 // the ready spares makes an unreserved take refuse with the pool at its
-// targets, and a recycle reserved in flight can leave a class short again
-// the moment its settles — the wait reads ready counts, not reservations, so
-// it can answer nil while a waiter's roll is refused either way. Neither
-// deadlock nor hang comes of it: a refusal is the caller's retry, and the
+// goals, and a recycle reserved in flight can leave a class short again
+// the moment its settles — the wait reads ready counts, not what a recycle
+// claims, so it can answer nil while a waiter's roll is refused either way.
+// Neither deadlock nor hang comes of it: a refusal is the caller's retry, and the
 // next settle answers the move. Overturned only by a caller that needs the
 // wait to promise the roll: then the predicate must count what holds and
 // recycles claim, and the recycle paths must settle.
@@ -734,8 +742,11 @@ func (p *Pool) WaitSpares(ctx context.Context) error {
 }
 
 // readyShortLocked reports whether the pool holds, ready to take, fewer
-// spares than every class's target — the count a wait answers by, which the
-// refill's own shortness does not: a recycle reserved in flight fills a class
+// spares than a wait waits for — the headroom and reserve classes at their
+// targets, the content class at the refill's held-aware goal, every open
+// hold's spares beside the target and any ask a refused Hold still owes.
+// The count a wait answers by is what the refill itself fills to, which its
+// own shortness does not: a recycle reserved in flight fills a class
 // without holding it, and its failure leaves the class short again with no
 // settle to wake a waiter that had read the reservation as a spare. A wait
 // reads the spares a roll can take now, and the next settle — the failed
@@ -746,7 +757,7 @@ func (p *Pool) readyShortLocked() bool {
 		return true
 	case len(p.ready[Reserve]) < p.t.Reserve:
 		return true
-	case len(p.ready[Content]) < p.t.Content:
+	case len(p.ready[Content]) < p.contentGoalLocked():
 		return true
 	}
 	return false
@@ -762,7 +773,7 @@ func (p *Pool) shortAtLocked() int64 {
 	if d := p.t.Reserve - len(p.ready[Reserve]); d > 0 {
 		missing += int64(d)
 	}
-	if d := p.t.Content - len(p.ready[Content]); d > 0 {
+	if d := p.contentGoalLocked() - len(p.ready[Content]); d > 0 {
 		missing += int64(d)
 	}
 	return missing
