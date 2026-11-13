@@ -301,3 +301,43 @@ func TestADoneCloneWithinOneFileIsRememberedOnce(t *testing.T) {
 		})
 	}
 }
+
+// Close after a done clone or copy answers nil within its bound. The
+// destination's write outside the extent, left to the group commit, is
+// committed by the clone's phase 1 instead, so the destination stays on the
+// due set with nothing pending: only the done clone keeps its entry (catches
+// a remembered done clone taken for pending existence, which the last group
+// commit waits for until the stop bound).
+func TestCloseAfterADoneCloneOrCopyIsPrompt(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(t *testing.T, u *unit, src, dst entity.FileID)
+	}{
+		{"clone", func(t *testing.T, u *unit, src, dst entity.FileID) {
+			u.clone(t, src, dst, vfserr.Extent{Len: mib})
+		}},
+		{"copy", func(t *testing.T, u *unit, src, dst entity.FileID) {
+			if n, err := u.copy(t.Context(), src, dst, vfserr.Extent{Len: mib}); err != nil || n != mib {
+				t.Fatalf("Copy: %d, %v; want %d, nil", n, err, mib)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := clonedUnit(t)
+			src := u.committedFile(t, "src", fill(mib, 's'))
+			dst := u.create(t, "dst")
+			u.write(t, dst, 2*mib, fill(4096, 'd'))
+			tc.run(t, u, src, dst)
+			if !u.e.Due(u.rec, dst) || len(u.e.Pending(dst)) != 0 || u.e.DoneIn(dst) == 0 {
+				t.Fatalf("after the %s the destination is due %v with %d pending and %d done clones, want due, none pending, one remembered",
+					tc.name, u.e.Due(u.rec, dst), len(u.e.Pending(dst)), u.e.DoneIn(dst))
+			}
+
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			if err := u.e.Close(ctx); err != nil {
+				t.Errorf("Close after a done %s = %v, want nil", tc.name, err)
+			}
+		})
+	}
+}

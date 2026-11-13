@@ -63,7 +63,13 @@ type fileEntry struct {
 
 // empty reports the entry holds nothing. The caller holds mu.
 func (fe *fileEntry) empty() bool {
-	return len(fe.ops) == 0 && !fe.inBatch && len(fe.writing) == 0 && len(fe.regs) == 0 && len(fe.done) == 0 && fe.guardDone == nil
+	return fe.idle() && len(fe.done) == 0
+}
+
+// idle reports the entry holds nothing but done clones, which are a memory
+// and no work: nothing of the file is pending or running. The caller holds mu.
+func (fe *fileEntry) idle() bool {
+	return len(fe.ops) == 0 && !fe.inBatch && len(fe.writing) == 0 && len(fe.regs) == 0 && fe.guardDone == nil
 }
 
 // awaitWrites waits until busy, a test of the writes admitted to the file,

@@ -812,7 +812,9 @@ func (e *Engine) capture(b *binding, f entity.FileID) (c captured, ok, held bool
 	}
 	n := claimable(fe.ops)
 	if n == 0 {
-		return captured{}, false, true
+		// An entry kept alive only by done clones holds nothing to wait for:
+		// held, it would go back on the due set at every batch.
+		return captured{}, false, !fe.idle()
 	}
 	for i := range n {
 		fe.ops[i].claimed = true
