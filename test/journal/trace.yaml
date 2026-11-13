@@ -506,5 +506,6 @@ rfc28 / 4.2 / C / "a lost synced tail":
   owner: epic 7
   reason: 'sync marks and the open''s use of them are not built yet'
 rfc28 / 4.2 / C / "a partly superseded record is still checked":
+  tests: [TestRFC28C_APartlySupersededRecordIsStillChecked]
   owner: epic 7
   reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'

@@ -2536,6 +2536,122 @@ func TestRFC28C_KindValuesRefused(t *testing.T) {
 	wantBytes(t, g.Share(0), a.id, 0, a.p)
 }
 
+// TestRFC28C_APartlySupersededRecordIsStillChecked checks that a superseded
+// loss record takes only its own extent of the record it names: the rest of
+// the record is still held, so the open verifies it whole, and a rotten rest
+// is dropped with a loss record of its own over the run the superseded extent
+// leaves — reported, cut at the dropped record's version so the older write
+// beneath never serves in its place, and the next open, finding the loss
+// record the first one appended, appends no other for the same record.
+//
+// decision: the row's `DropOlder`, which drops older synced content under a
+// version and has no public call yet, is planted through the seam: the older
+// write, the newer one over it and the superseded loss record the drop of the
+// newer one's first piece appended are built as the bytes of one segment
+// planted with the journal shut. The planted segment carries no catalog and
+// no successor names it, so the open reads it by scan whatever the catalog
+// rules become, and the loss record keeps the extent its own alone.
+func TestRFC28C_APartlySupersededRecordIsStillChecked(t *testing.T) {
+	const (
+		kindWrite = 1
+		kindLoss  = 10
+
+		// The flag word of a loss record's body: bit 0 the dropped record's
+		// synced bit, bits 8-15 its reason, superseded among them.
+		lossSynced     = 1 << 0
+		lossSuperseded = 4 << 8
+	)
+
+	f := journaltest.New(t)
+	f.Shutdown()
+
+	identity := journalIdentity(t, f)
+	seg := newestID(t, f) + 1
+	id := journaltest.File(5)
+
+	// Q, v3, over [0, 128K), then R, v5, over the same extent, then the loss
+	// record the drop of R's first piece appended: reason superseded, of a
+	// record synced when it was dropped, naming that piece over [0, 64K).
+	q := raw.Record{
+		Kind: kindWrite, FileID: id.Bytes(), Offset: 0, Length: 128 << 10,
+		Seq: 1, Version: raw.Version{Counter: 3}, Tag: uint32(journaltest.Tag(0)),
+		Write: &raw.WriteBody{Payload: pattern("q", 128<<10)},
+	}
+	r := raw.Record{
+		Kind: kindWrite, FileID: id.Bytes(), Offset: 0, Length: 128 << 10,
+		Seq: 2, Version: raw.Version{Counter: 5}, Tag: uint32(journaltest.Tag(0)),
+		Write: &raw.WriteBody{Payload: pattern("r", 128<<10)},
+	}
+	loss := raw.Record{
+		Kind: kindLoss, FileID: id.Bytes(), Offset: 0, Length: 64 << 10,
+		Seq: 3, Version: raw.Version{Counter: 5}, Tag: uint32(journaltest.Tag(0)),
+		Loss: &raw.LossBody{Dropped: 2, Flags: lossSynced | lossSuperseded},
+	}
+
+	// Every record's place in the segment once, for the sync point a later
+	// sync left through the last of them — the proof that leaves each of the
+	// three durable, written into every header.
+	b := raw.SegmentHeader{Identity: identity, ID: uint64(seg)}.Bytes()
+	for _, rec := range []*raw.Record{&q, &r, &loss} {
+		rec.Identity, rec.Segment, rec.RecordOffset = identity, uint64(seg), uint32(len(b))
+		b = append(b, rec.Bytes()...)
+	}
+	proof := uint64(len(b))
+
+	b = raw.SegmentHeader{Identity: identity, ID: uint64(seg)}.Bytes()
+	for _, rec := range []*raw.Record{&q, &r, &loss} {
+		rec.SyncedThrough, rec.RecordOffset = proof, uint32(len(b))
+		b = append(b, rec.Bytes()...)
+	}
+	plant(t, f, segmentName(seg), b)
+
+	// R's payload rots inside the run the loss record leaves held: the middle
+	// byte of the payload is the run's first.
+	corruptRecord(t, f, journal.RecordRef{Segment: seg, Offset: int64(r.RecordOffset)}, r.Write.Payload)
+
+	f.Reopen()
+
+	// A corrupt loss record names R over the kept run: the open verified the
+	// rest of R whole, found it rotten and dropped it at R's own version — so
+	// the event naming Q's version instead is the design that skipped R.
+	s := f.J.Stats()
+	kept := journal.Extent{Off: 64 << 10, Len: 64 << 10}
+	var corrupt []journal.LossEvent
+	for _, ev := range s.Losses {
+		if ev.File == id && ev.Reason == journal.LossCorrupt {
+			corrupt = append(corrupt, ev)
+		}
+	}
+	if len(corrupt) != 1 || corrupt[0].Extent != kept ||
+		corrupt[0].Version != (journal.Version{Counter: 5}) || !corrupt[0].AtOpen {
+		t.Fatalf("%d corrupt loss events for the file, want exactly one over %+v at R's version 5, found at open: %+v", len(corrupt), kept, s.Losses)
+	}
+
+	// The kept run reads Lost and never Q's bytes: the read reports exactly
+	// the run missing and leaves its buffer untouched, so no byte of the
+	// older write served in the dropped record's place.
+	wantExtentMissing(t, f.Share(0), id, kept)
+
+	// A second reopen appends no other loss record for R: the record the
+	// first open appended answers for the drop, so the second reports the
+	// same events, and the generation a loss of held content raises stays.
+	seqs := map[uint64]bool{}
+	generation := s.LossGeneration
+	for _, ev := range s.Losses {
+		seqs[ev.SeqNum] = true
+	}
+	f.Reopen()
+	after := f.J.Stats()
+	if after.LossGeneration != generation {
+		t.Fatalf("a second reopen raised the loss generation from %d to %d, appending another loss record for R", generation, after.LossGeneration)
+	}
+	for _, ev := range after.Losses {
+		if !seqs[ev.SeqNum] {
+			t.Fatalf("a second reopen reported the loss %+v as new; the first open's loss record for R answers for it", ev)
+		}
+	}
+}
+
 // TestRFC28C_FormatFile checks that a format file of the wrong length, with
 // a checksum that does not verify, or of a version the journal does not know
 // fails the open, with nothing written to it; and that a crash inside a

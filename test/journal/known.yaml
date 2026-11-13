@@ -631,6 +631,14 @@
   issue: '#3815'
   message: 'stub: Sync'
 
+- test: TestRFC28C_APartlySupersededRecordIsStillChecked
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check plants the two writes and the superseded loss record through the seam, and needs the open of a directory holding segments: the corrupt loss record it appends over the kept run with the cut that drops the older write beneath, and the emptying that makes a second open read that record back rather than append another for R.'
+  issue: '#4033'
+  message: 'holds segments; recovering them is not built'
+
 - test: TestRFC28C_BadCopyDoesNotMaskAGoodOne
   status: fail
   fix: planned
