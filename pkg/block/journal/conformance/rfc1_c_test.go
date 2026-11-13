@@ -144,7 +144,9 @@ func TestRFC1C_ReleaseRecordLost(t *testing.T) {
 
 	hold := f.Seam.HoldFirst(t, kit.OpSync, "*.seg")
 	done := make(chan error, 1)
-	go func() { done <- h.Sync(t.Context(), id) }()
+	go func() {
+		done <- func() error { _, err := h.Sync(t.Context(), id); return err }()
+	}()
 	<-hold.Reached()
 	crashHeld(t, f, hold)
 	synced := <-done
@@ -743,7 +745,7 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		hold := f.Seam.HoldFirst(t, kit.OpSync, name)
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
-		go func() { done <- h.Sync(ctx, id) }()
+		go func() { done <- func() error { _, err := h.Sync(ctx, id); return err }() }()
 		<-hold.Reached()
 		cancel()
 		hold.Release()
@@ -754,7 +756,7 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 			t.Fatalf("the cancelled Sync returned %v, want the context's error", err)
 		}
 		f.Seam.SetFault(nil)
-		err = h.Sync(t.Context(), id)
+		_, err = h.Sync(t.Context(), id)
 		stub(t, "Sync", err)
 		if !errors.Is(err, journal.ErrSyncFailed) {
 			t.Fatalf("the Sync after the cancelled one returned %v, want the failure it raced", err)
@@ -780,12 +782,12 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		err := h.Sync(ctx, id)
+		_, err := h.Sync(ctx, id)
 		stub(t, "Sync", err)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Sync with a done context returned %v, want the context's error", err)
 		}
-		err = h.Sync(t.Context(), id)
+		_, err = h.Sync(t.Context(), id)
 		stub(t, "Sync", err)
 		if !errors.Is(err, journal.ErrSyncFailed) {
 			t.Fatalf("the Sync after the refused one returned %v, want the failure to still report", err)
@@ -1447,7 +1449,7 @@ func TestRFC1C_HeaderOnlyRecordsReappended(t *testing.T) {
 	if err != nil {
 		t.Fatalf("truncate A's file: %v", err)
 	}
-	err = h.Sync(t.Context(), aid, bid)
+	_, err = h.Sync(t.Context(), aid, bid)
 	f.Seam.SetFault(nil)
 	stub(t, "Sync", err)
 

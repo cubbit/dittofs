@@ -314,7 +314,7 @@ func wantExtentMissing(t *testing.T, h *journal.Handle, id journal.FileID, e jou
 func syncFiles(t *testing.T, h *journal.Handle, ids ...journal.FileID) {
 	t.Helper()
 
-	err := h.Sync(t.Context(), ids...)
+	_, err := h.Sync(t.Context(), ids...)
 	stub(t, "Sync", err)
 	if err != nil {
 		t.Fatalf("sync: %v", err)

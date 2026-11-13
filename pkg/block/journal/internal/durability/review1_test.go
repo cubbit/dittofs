@@ -354,7 +354,7 @@ func TestASyncOfARecordASyncAlreadyCoveredWaitsForTheLift(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 	r.publish(t, f, 0, "aaaa")
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync of v1: %v", err)
 	}
 	r.publish(t, f, 0, "bbbb")
@@ -460,7 +460,7 @@ func TestASyncWaitsForAFailureInFlightWhileAHeaderOnlyRecordIsCarriedForward(t *
 	// read-only (RFC 1 section 5.4) and fail every record in one pass.
 	h := file(3)
 	locH, _ := r.publish(t, h, 0, "hhhh")
-	if err := r.d.Sync(context.Background(), h); err != nil {
+	if _, err := r.d.Sync(context.Background(), h); err != nil {
 		t.Fatalf("Sync of h in the spare: %v", err)
 	}
 	locG, _ := r.publish(t, g, 4, "gggg")

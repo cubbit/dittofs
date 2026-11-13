@@ -260,7 +260,7 @@ func TestRFC28C_BadCopyDoesNotMaskAGoodOne(t *testing.T) {
 	}
 
 	f.FailNext(kit.OpSync, name, 1)
-	err := h.Sync(t.Context(), id)
+	_, err := h.Sync(t.Context(), id)
 	stub(t, "Sync", err)
 	// decision: a journal may resolve a failed window by failing it, and this
 	// row then has nothing to check: the bug it exists for needs a good copy
@@ -1654,7 +1654,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	a = writeRec(t, n, 0, 0, 0, size)
 	seg = entryAt(t, n, a.id, 0).Location.Segment
 	n.FailNext(kit.OpSync, segmentName(seg), 1)
-	err := n.Share(0).Sync(t.Context(), a.id)
+	_, err := n.Share(0).Sync(t.Context(), a.id)
 	stub(t, "Sync", err)
 	var se *journal.SyncError
 	if err != nil && !errors.As(err, &se) {
@@ -1939,7 +1939,7 @@ func TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead(t *testing.T) {
 			t.Fatalf("close a reservation: %v", err)
 		}
 	}
-	err = hh.Sync(t.Context(), id)
+	_, err = hh.Sync(t.Context(), id)
 	stub(t, "Sync", err)
 	var se *journal.SyncError
 	switch {

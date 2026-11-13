@@ -141,7 +141,10 @@ func (h *syncWhileHeld) syncNow(fail bool) {
 	}
 	h.done = make(chan error, 1)
 	done := h.done
-	go func() { done <- h.c.Durability().Sync(context.Background(), h.f) }()
+	go func() {
+		_, err := h.c.Durability().Sync(context.Background(), h.f)
+		done <- err
+	}()
 	// The sync runs on the stream's worker, which needs no lock this
 	// goroutine holds; the deadline only bounds a failure.
 	for deadline := time.Now().Add(5 * time.Second); ; runtime.Gosched() {
@@ -443,7 +446,10 @@ func TestWriteAt_EveryPieceReachesTheLedger(t *testing.T) {
 	}
 
 	synced := make(chan error, 1)
-	go func() { synced <- c.Durability().Sync(context.Background(), f) }()
+	go func() {
+		_, err := c.Durability().Sync(context.Background(), f)
+		synced <- err
+	}()
 	eventually(t, "the sync of the last segment to wait", func() bool { return h3.Waiting() > 0 })
 	select {
 	case err := <-synced:

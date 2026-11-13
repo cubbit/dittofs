@@ -209,7 +209,7 @@ func TestRFC28A_AZeroSlotIsNotTheEnd(t *testing.T) {
 	synced := make(chan error, 1)
 
 	go func() {
-		synced <- h.Sync(t.Context(), journaltest.File(3))
+		synced <- func() error { _, err := h.Sync(t.Context(), journaltest.File(3)); return err }()
 	}()
 
 	// A Sync that returned while the middle write is held proves the third
@@ -547,7 +547,9 @@ func TestRFC28A_UnprovenTailVerifiedAtOpen(t *testing.T) {
 	k.FailNext(kit.OpSync, u.name, 1)
 	held := k.Seam.Hold(t, kit.OpWrite, "*.seg")
 	synced := make(chan error, 1)
-	go func() { synced <- k.Share(0).Sync(t.Context(), u.a.id) }()
+	go func() {
+		synced <- func() error { _, err := k.Share(0).Sync(t.Context(), u.a.id); return err }()
+	}()
 	select {
 	case <-held.Reached():
 	case err := <-synced:

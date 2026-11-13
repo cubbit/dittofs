@@ -178,7 +178,7 @@ func TestCorruptUsesVerifyingCopy(t *testing.T) {
 			r := cr.reappend(t, f, 0, "aaaa")
 			cr.d.RegisterCopy(r.c.Seq, r.orig, r.kept)
 			if synced {
-				if err := cr.d.Sync(context.Background(), f); err != nil {
+				if _, err := cr.d.Sync(context.Background(), f); err != nil {
 					t.Fatalf("Sync: %v", err)
 				}
 				// The worker completes the synced entries on its own pass.
@@ -239,7 +239,7 @@ func TestCorruptCopyVerifyingInReadOnly(t *testing.T) {
 	// Registering the copy is in memory only; what matters is that the record
 	// it serves for is synced before the journal enters read-only, because
 	// the read-only pass fails every unsynced record and leaves a synced one.
-	if err := cr.d.Sync(context.Background(), f); err != nil {
+	if _, err := cr.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	eventually(t, "the synced entry to complete", func() bool { return cr.ledgerLen(0) == 0 })
@@ -429,7 +429,7 @@ func TestCorruptCopyOverwrittenBeforeRepointReleasesHold(t *testing.T) {
 	cr.d.readCopyAt = func(seg core.SegmentID, p []byte, off int64) (int, error) {
 		n, err := cr.streams.For(f).ReadAt(seg, p, off)
 		cr.publish(t, f, 0, "bbbb")
-		if err := cr.d.Sync(context.Background(), f); err != nil {
+		if _, err := cr.d.Sync(context.Background(), f); err != nil {
 			t.Errorf("Sync of the overwrite: %v", err)
 		}
 		eventually(t, "the overwritten record to leave the index", func() bool { return len(cr.ix.Retained(f)) == 0 })

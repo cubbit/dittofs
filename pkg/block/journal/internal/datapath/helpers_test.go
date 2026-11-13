@@ -200,7 +200,7 @@ func mustShare(t *testing.T, c *Core, tag core.ShareTag) *Share {
 
 func syncFiles(t *testing.T, c *Core, ids ...core.FileID) {
 	t.Helper()
-	if err := c.Durability().Sync(context.Background(), ids...); err != nil {
+	if _, err := c.Durability().Sync(context.Background(), ids...); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 }

@@ -946,7 +946,7 @@ func TestCarryDeferredLossOnReserve(t *testing.T) {
 	// held piece keeps the segment.
 	recW, seqW, _ := f.plant(t, copyTag, file, payload, 0)
 	sa := recW.Segment
-	if err := dur.Sync(ctx, file); err != nil {
+	if _, err := dur.Sync(ctx, file); err != nil {
 		t.Fatalf("Sync of the planted write: %v", err)
 	}
 	f.sealSource(t, file)
@@ -1192,10 +1192,10 @@ func TestCarryDeferredLossSkipsAForgottenTag(t *testing.T) {
 		t.Fatalf("the writes landed in segments %d and %d, want one shared source segment", recA.Segment, recB.Segment)
 	}
 	sa := recA.Segment
-	if err := dur.Sync(ctx, fileA); err != nil {
+	if _, err := dur.Sync(ctx, fileA); err != nil {
 		t.Fatalf("Sync of the first write: %v", err)
 	}
-	if err := dur.Sync(ctx, fileB); err != nil {
+	if _, err := dur.Sync(ctx, fileB); err != nil {
 		t.Fatalf("Sync of the second write: %v", err)
 	}
 	f.sealSource(t, fileA)

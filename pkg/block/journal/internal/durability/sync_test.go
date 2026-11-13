@@ -20,10 +20,14 @@ func (r *rig) syncsOf(seg core.SegmentID) int {
 	return r.seam.CallsFor(kit.OpSync, format.SegmentName(seg))
 }
 
-// syncAsync runs Sync in a goroutine and returns the channel its error lands on.
+// syncAsync runs Sync in a goroutine and returns the channel its error lands
+// on, dropping the marks these callers do not assert on.
 func (r *rig) syncAsync(ctx context.Context, ids ...core.FileID) <-chan error {
 	ch := make(chan error, 1)
-	go func() { ch <- r.d.Sync(ctx, ids...) }()
+	go func() {
+		_, err := r.d.Sync(ctx, ids...)
+		ch <- err
+	}()
 	return ch
 }
 
@@ -55,7 +59,7 @@ func TestGroupCommitSharesSyncsAcrossWaiters(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	r := newRig(t, 1)
 	first := r.appendWrite(t, file(100), 0, "seed")
-	if err := r.d.Sync(context.Background(), file(100)); err != nil {
+	if _, err := r.d.Sync(context.Background(), file(100)); err != nil {
 		t.Fatalf("seed Sync: %v", err)
 	}
 	seg := format.SegmentName(first.Segment)
@@ -90,7 +94,7 @@ func TestGroupCommitSharesSyncsAcrossWaiters(t *testing.T) {
 				appended[i].Done()
 				appended[i].Wait()
 				waiting.Add(1)
-				if err := r.d.Sync(context.Background(), f); err != nil {
+				if _, err := r.d.Sync(context.Background(), f); err != nil {
 					t.Errorf("Sync: %v", err)
 				}
 				waiting.Add(-1)
@@ -137,10 +141,10 @@ func TestSyncReturnsAfterTheCoveringSync(t *testing.T) {
 	}
 
 	before := r.syncsOf(a.Segment)
-	if err := r.d.Sync(context.Background(), f, file(99)); err != nil {
+	if _, err := r.d.Sync(context.Background(), f, file(99)); err != nil {
 		t.Fatalf("Sync of nothing unsynced: %v", err)
 	}
-	if err := r.d.Sync(context.Background()); err != nil {
+	if _, err := r.d.Sync(context.Background()); err != nil {
 		t.Fatalf("Sync naming no file: %v", err)
 	}
 	if got := r.syncsOf(a.Segment); got != before {
@@ -248,7 +252,7 @@ func TestSyncNeverSyncsADirectory(t *testing.T) {
 	r := newRig(t, 1)
 	f := file(1)
 	r.appendWrite(t, f, 0, "a")
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatal(err)
 	}
 	r.settlePool(t)
@@ -256,7 +260,7 @@ func TestSyncNeverSyncsADirectory(t *testing.T) {
 	seg := r.d.made[0].ledgerSegForTest()
 	for i := range 5 {
 		r.appendWrite(t, f, int64(8*(i+1)), "b")
-		if err := r.d.Sync(context.Background(), f); err != nil {
+		if _, err := r.d.Sync(context.Background(), f); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -305,7 +309,7 @@ func TestCancelledSyncLeavesTheSyncRunning(t *testing.T) {
 	r.appendWrite(t, f, 8, "b")
 	done, cancelDone := context.WithCancel(context.Background())
 	cancelDone()
-	if err := r.d.Sync(done, f); !errors.Is(err, context.Canceled) {
+	if _, err := r.d.Sync(done, f); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Sync with a done context = %v", err)
 	}
 	if got := r.syncsOf(a.Segment); got != 1 {
@@ -353,7 +357,7 @@ func TestFailedSyncFailsEveryWaiterAndIsNotRetried(t *testing.T) {
 	// Both files were told: a later Sync finds nothing owed and nothing
 	// unsynced, and issues no sync of the failed segment.
 	before := r.syncsOf(a.Segment)
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatalf("a later Sync of the reported file = %v, want nil", err)
 	}
 	if got := r.syncsOf(a.Segment); got != before {
@@ -391,7 +395,7 @@ func TestSyncAfterStopIsClosed(t *testing.T) {
 	f := file(1)
 	r.appendWrite(t, f, 0, "a")
 	r.d.Stop()
-	if err := r.d.Sync(context.Background(), f); !errors.Is(err, core.ErrClosed) {
+	if _, err := r.d.Sync(context.Background(), f); !errors.Is(err, core.ErrClosed) {
 		t.Fatalf("Sync after Stop = %v, want ErrClosed", err)
 	}
 }
@@ -403,7 +407,7 @@ func TestStatsCountEachSync(t *testing.T) {
 	f := file(1)
 	for i := range 3 {
 		r.appendWrite(t, f, int64(i*8), "x")
-		if err := r.d.Sync(context.Background(), f); err != nil {
+		if _, err := r.d.Sync(context.Background(), f); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -448,7 +452,7 @@ func TestEachIssuedSyncHasOneSpanEndedWithItsError(t *testing.T) {
 	r := newRigStarted(t, 1, tracer)
 	f := file(1)
 	a := r.appendWrite(t, f, 0, "a")
-	if err := r.d.Sync(context.Background(), f); err != nil {
+	if _, err := r.d.Sync(context.Background(), f); err != nil {
 		t.Fatal(err)
 	}
 	boom := errors.New("boom")
@@ -456,7 +460,7 @@ func TestEachIssuedSyncHasOneSpanEndedWithItsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.appendWrite(t, f, 8, "b")
-	if err := r.d.Sync(context.Background(), f); err == nil {
+	if _, err := r.d.Sync(context.Background(), f); err == nil {
 		t.Fatal("the failing sync returned nil")
 	}
 	eventually(t, "both spans to end", func() bool {

@@ -370,7 +370,10 @@ func TestFillRegisteredInLedger(t *testing.T) {
 		t.Fatalf("the fill record %+v is durable while its segment's sync is held", loc)
 	}
 	synced := make(chan error, 1)
-	go func() { synced <- c.Durability().Sync(context.Background(), f) }()
+	go func() {
+		_, err := c.Durability().Sync(context.Background(), f)
+		synced <- err
+	}()
 	eventually(t, "the sync to wait on the fill's segment", func() bool { return h.Waiting() > 0 })
 	select {
 	case err := <-synced:

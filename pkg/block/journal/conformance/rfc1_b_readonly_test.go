@@ -52,7 +52,7 @@ func TestRFC1B_ReadOnlyStopsTheDrain(t *testing.T) {
 	write(t, h, id, 4096, pattern("b", 4096))
 
 	schedule(t, f, readOnlyRules(syscall.EROFS)...)
-	err := h.Sync(t.Context(), id)
+	_, err := h.Sync(t.Context(), id)
 	stub(t, "Sync", err)
 	if !errors.Is(err, journal.ErrJournalReadOnly) {
 		t.Fatalf("a Sync whose sync failed with EROFS returned %v, want ErrJournalReadOnly", err)
@@ -68,7 +68,7 @@ func TestRFC1B_ReadOnlyStopsTheDrain(t *testing.T) {
 	if err := h.Release(t.Context(), id, []journal.Extent{{Off: 0, Len: 4096}}); !errors.Is(err, journal.ErrJournalReadOnly) {
 		t.Fatalf("a Release on a read-only journal returned %v, want ErrJournalReadOnly", err)
 	}
-	if err := h.Sync(t.Context(), id); !errors.Is(err, journal.ErrJournalReadOnly) {
+	if _, err := h.Sync(t.Context(), id); !errors.Is(err, journal.ErrJournalReadOnly) {
 		t.Fatalf("a Sync of the failed write returned %v, want ErrJournalReadOnly at once", err)
 	}
 	wantBytes(t, h, id, 0, pa, "A after the journal turned read-only")
@@ -100,7 +100,7 @@ func TestRFC1B_ReadOnlyProbe(t *testing.T) {
 	write(t, h, id, 4096, pattern("b", 4096))
 
 	schedule(t, f, readOnlyRules(syscall.EROFS)...)
-	err := h.Sync(t.Context(), id)
+	_, err := h.Sync(t.Context(), id)
 	stub(t, "Sync", err)
 	eventually(t, "the journal to turn read-only", func() bool { return f.J.Stats().ReadOnly.ReadOnly })
 

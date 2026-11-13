@@ -814,7 +814,7 @@ func TestRFC1A_CopyLosesToNewerWrite(t *testing.T) {
 			}
 		}
 		failWindow(t, f, seg2)
-		syncErr := h.Sync(t.Context(), id)
+		_, syncErr := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", syncErr)
 		failed := errors.Is(syncErr, journal.ErrSyncFailed)
@@ -978,7 +978,7 @@ func TestRFC1A_LossRaisesLossGeneration(t *testing.T) {
 		before = f.J.Stats().LossGeneration
 		reappended := f.J.Stats().Counters.SyncReappendedBytes
 		failWindow(t, f, seg)
-		syncErr := h.Sync(t.Context(), windowID)
+		_, syncErr := h.Sync(t.Context(), windowID)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", syncErr)
 		if err := syncErr; err != nil {
@@ -1004,7 +1004,7 @@ func TestRFC1A_LossRaisesLossGeneration(t *testing.T) {
 		f.FailNext(kit.OpSync, segmentName(rseg), 1)
 		before = f.J.Stats().LossGeneration
 		reappended = f.J.Stats().Counters.SyncReappendedBytes
-		err = h.Sync(t.Context(), reappID)
+		_, err = h.Sync(t.Context(), reappID)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
 		if err != nil {
@@ -1241,7 +1241,7 @@ func TestRFC1A_RecycledSegmentKeepsNewRecords(t *testing.T) {
 		// resolution makes the segment a candidate: a pass then carries B and
 		// A forward and retires it, unlinked rather than recycled.
 		h = f.Share(k)
-		err := h.Sync(t.Context(), id)
+		_, err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
 		if err != nil && !errors.Is(err, journal.ErrSyncFailed) {
@@ -1304,7 +1304,7 @@ func TestRFC1A_FailedSyncWindow(t *testing.T) {
 			t.Fatalf("share %d: the second write of the window sits in segment %d, want the first's %d", k, at, seg)
 		}
 		failWindow(t, f, seg)
-		err := h.Sync(t.Context(), id)
+		_, err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
 		failed := errors.Is(err, journal.ErrSyncFailed)
@@ -1315,7 +1315,7 @@ func TestRFC1A_FailedSyncWindow(t *testing.T) {
 		// A later sync of the segment, or of whatever now holds the writes,
 		// succeeds: the failed window does not poison the stream.
 		write(t, h, id, 128<<10, distinct(30+k, 64<<10))
-		if err := h.Sync(t.Context(), id); err != nil {
+		if _, err := h.Sync(t.Context(), id); err != nil {
 			stub(t, "Sync", err)
 			t.Fatalf("share %d: the Sync after the failed window: %v; the stream is wedged", k, err)
 		}
@@ -1771,7 +1771,7 @@ func TestRFC1A_ReappendTrustsNoPageCache(t *testing.T) {
 		writes := f.Seam.CallsFor(kit.OpWrite, name)
 		f.FailNext(kit.OpSync, name, 1)
 		f.Seam.StaleReads(name)
-		err := h.Sync(t.Context(), id)
+		_, err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
 		failed := errors.Is(err, journal.ErrSyncFailed)
@@ -1866,7 +1866,7 @@ func TestRFC1A_LossByExactRecord(t *testing.T) {
 		eventually(t, fmt.Sprintf("share %d: the write the timer was to sync never gained a failed sync of segment %d", k, seg), func() bool {
 			return f.J.Stats().Counters.SyncFailures > failures
 		})
-		err := h.Sync(t.Context(), id)
+		_, err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
 		failed := errors.Is(err, journal.ErrSyncFailed)
@@ -1988,12 +1988,12 @@ func TestRFC1A_FailedWindowReportedOnce(t *testing.T) {
 		// failure and the file's first Sync, and between the file's two, so
 		// whatever the window's report reaches, it does not reach a file the
 		// window holds nothing of.
-		if err := gh.Sync(t.Context(), gID); err != nil {
+		if _, err := gh.Sync(t.Context(), gID); err != nil {
 			stub(t, "Sync", err)
 			t.Fatalf("share %d: the Sync of a file with no write in the failed window, before the file's own, returned %v", 1-k, err)
 		}
 
-		err := h.Sync(t.Context(), id)
+		_, err := h.Sync(t.Context(), id)
 		stub(t, "Sync", err)
 		failed := errors.Is(err, journal.ErrSyncFailed)
 		if err != nil && !failed {
@@ -2005,16 +2005,16 @@ func TestRFC1A_FailedWindowReportedOnce(t *testing.T) {
 			}
 		}
 
-		if err := gh.Sync(t.Context(), gID); err != nil {
+		if _, err := gh.Sync(t.Context(), gID); err != nil {
 			stub(t, "Sync", err)
 			t.Fatalf("share %d: the Sync of a file with no write in the failed window, between the file's two, returned %v", 1-k, err)
 		}
-		err = h.Sync(t.Context(), id)
+		_, err = h.Sync(t.Context(), id)
 		stub(t, "Sync", err)
 		if err != nil {
 			t.Fatalf("share %d: the second Sync of the file returned %v, want the window reported once and the file writing on", k, err)
 		}
-		err = gh.Sync(t.Context(), gID)
+		_, err = gh.Sync(t.Context(), gID)
 		stub(t, "Sync", err)
 		if err != nil {
 			t.Fatalf("share %d: the Sync of a file with no write in the failed window returned %v", 1-k, err)
@@ -2068,7 +2068,7 @@ func TestRFC1A_ReappendKeepsItsNumbers(t *testing.T) {
 
 		before := f.J.Stats().Counters.SyncReappendedBytes
 		f.FailNext(kit.OpSync, segmentName(seg), 1)
-		err := h.Sync(t.Context(), id)
+		_, err := h.Sync(t.Context(), id)
 		f.Seam.SetFault(nil)
 		stub(t, "Sync", err)
 		if err != nil {

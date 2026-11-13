@@ -226,13 +226,16 @@ func (h playedHandle) WriteAt(_ context.Context, id journal.FileID, off int64, b
 	return v, err
 }
 
-func (h playedHandle) Sync(_ context.Context, ids ...journal.FileID) error {
+func (h playedHandle) Sync(_ context.Context, ids ...journal.FileID) ([]journal.SyncMark, error) {
 	var err error
 	for _, id := range ids {
 		err = cmp.Or(err, h.p.refuse(id, h.tag))
 	}
 	h.p.must(h.p.j.Sync(h.tag, ids, err))
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
 }
 
 func (h playedHandle) ReadAt(ctx context.Context, id journal.FileID, off int64, b []byte) (int, []journal.Extent, []journal.Held, journal.Version, error) {

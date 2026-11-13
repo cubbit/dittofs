@@ -38,10 +38,10 @@ func (h stubHandle) WriteAt(ctx context.Context, id journal.FileID, off int64, p
 	return v, err
 }
 
-func (h stubHandle) Sync(ctx context.Context, ids ...journal.FileID) error {
-	err := h.Handle.Sync(ctx, ids...)
+func (h stubHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]journal.SyncMark, error) {
+	marks, err := h.Handle.Sync(ctx, ids...)
 	h.s.seen("Sync", err)
-	return err
+	return marks, err
 }
 
 func (h stubHandle) ReadAt(ctx context.Context, id journal.FileID, off int64, p []byte) (int, []journal.Extent, []journal.Held, journal.Version, error) {

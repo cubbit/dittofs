@@ -53,7 +53,7 @@ func FuzzCorruptEveryByte(f *testing.F) {
 		if w.loc.Segment != nb.loc.Segment {
 			t.Fatal("the two records landed in different segments")
 		}
-		if err := cr.d.Sync(context.Background(), f); err != nil {
+		if _, err := cr.d.Sync(context.Background(), f); err != nil {
 			t.Fatalf("Sync: %v", err)
 		}
 		raw, err := cr.seam.Durable(format.SegmentName(w.loc.Segment))

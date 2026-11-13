@@ -115,7 +115,7 @@ func TestFireWithNothingUnsyncedIssuesNoSync(t *testing.T) {
 	before := r.clock.Pending()
 	a := r.appendWrite(t, file(1), 0, "a")
 	r.armed(t, before)
-	if err := r.d.Sync(context.Background(), file(1)); err != nil {
+	if _, err := r.d.Sync(context.Background(), file(1)); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	base := r.syncsOf(a.Segment)

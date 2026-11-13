@@ -156,7 +156,7 @@ func driveStats(t *testing.T) []statsScenario {
 		if err := seam.Schedule(kit.Failing(kit.OpSync, seg, 1, errors.New("sync boom"))); err != nil {
 			t.Fatal(err)
 		}
-		_ = c.Durability().Sync(ctx, f)
+		_, _ = c.Durability().Sync(ctx, f)
 		waitIn(t, 5*time.Second, "the failure to be counted", func() bool { return c.Durability().Stats().SyncFailures > 0 })
 		out = append(out, statsScenario{"sync failure", c.Stats()})
 	}

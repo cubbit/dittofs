@@ -16,7 +16,7 @@ import (
 // *journal.Handle the model-based test drives.
 type Handle interface {
 	WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error)
-	Sync(ctx context.Context, ids ...journal.FileID) error
+	Sync(ctx context.Context, ids ...journal.FileID) ([]journal.SyncMark, error)
 	ReadAt(ctx context.Context, id journal.FileID, off int64, p []byte) (n int, missing []journal.Extent, held []journal.Held, asOf journal.Version, err error)
 	Fill(ctx context.Context, id journal.FileID, off int64, p []byte, asOf journal.Version, v journal.Version) error
 	Offload(ctx context.Context, id journal.FileID, through journal.Version, limit, widen int64, fn func(ctx context.Context, o journal.Offer, report func(offloaded []journal.Extent) error) error) error
@@ -223,7 +223,8 @@ func (r *runner) step(s Step) error {
 		return m.WriteAt(tag, id, s.Off, p, int64(s.Byte), v, err)
 
 	case OpSync:
-		return m.Sync(tag, []journal.FileID{id}, h.Sync(ctx, id))
+		_, err := h.Sync(ctx, id)
+		return m.Sync(tag, []journal.FileID{id}, err)
 
 	case OpRead:
 		_, _, _, asOf, err := h.ReadAt(ctx, id, s.Off, make([]byte, max(s.Len, 1)))
@@ -496,7 +497,8 @@ func (r *runner) restart(s Step) error {
 			continue
 		}
 		i := int(f.tag) - 1
-		if err := m.Sync(f.tag, []journal.FileID{id}, r.share(i).Sync(ctx, id)); err != nil {
+		_, err := r.share(i).Sync(ctx, id)
+		if err := m.Sync(f.tag, []journal.FileID{id}, err); err != nil {
 			return err
 		}
 		if uncertainAt(f) > crashSearchable {
