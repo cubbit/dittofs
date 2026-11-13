@@ -94,7 +94,9 @@ func TestSpareCandidatesHasAnInterruptedRecycleSpared(t *testing.T) {
 // all-zero segment at the cap, then a take's header written into its slot
 // without a sync, and crashes: the crash puts the file back to its all-zero
 // durable image, so the take never happened and the segment is a candidate
-// again — an untaken spare, its zero-header slot proving it.
+// again — an untaken spare, its zero-header slot proving it. The open pays
+// nothing for the re-adoption: no file is created and no byte is allocated,
+// for the spare the crash left whole is the pool's already.
 func TestSpareCandidatesHasAZeroHeaderTakeACrashNeverSynced(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
@@ -121,6 +123,9 @@ func TestSpareCandidatesHasAZeroHeaderTakeACrashNeverSynced(t *testing.T) {
 	if b := r.fileBytes(format.SegmentName(id)); !slices.Equal(b, make([]byte, testCap)) {
 		t.Errorf("fixture: the unsynced take's header survived the crash: got %x, want the all-zero image", b[:raw.SegmentHeaderSize])
 	}
+	// The headroom and the repack reserve stay whole with no new allocation:
+	// what the run spent making files.
+	made := r.seam.Calls(kit.OpCreate) + r.seam.Calls(kit.OpAllocate)
 	st := r.runCandidates()
 
 	if want := []core.SegmentID{id}; !slices.Equal(st.Attached.ZeroHeader, want) {
@@ -128,6 +133,9 @@ func TestSpareCandidatesHasAZeroHeaderTakeACrashNeverSynced(t *testing.T) {
 	}
 	if got, want := candidates(st), []core.SegmentID{id}; !slices.Equal(got, want) {
 		t.Errorf("spareCandidates: a take the crash never made durable got candidates %v, want %v", got, want)
+	}
+	if got := r.seam.Calls(kit.OpCreate) + r.seam.Calls(kit.OpAllocate); got != made {
+		t.Errorf("spares: the re-open made something, got %d creates and allocations, want %d, the count before the run: the spare the crash left whole is the pool's already", got, made)
 	}
 }
 
