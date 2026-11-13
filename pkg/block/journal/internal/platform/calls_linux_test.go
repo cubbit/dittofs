@@ -18,7 +18,9 @@ import (
 // TestSyscallTableIsReal pins every entry of the table NewOS uses to the
 // golang.org/x/sys function the RFC's call goes through, by function pointer:
 // a wrapper, or an entry pointing at another function, fails it. So does an
-// entry added to the table without a pin here.
+// entry added to the table without a pin here. fiemap is the one exception:
+// golang.org/x/sys v0.49.0 ships no FIEMAP call to pin to, so the entry is
+// the package's own one-ioctl body, pinned to itself.
 func TestSyscallTableIsReal(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -40,6 +42,7 @@ func TestSyscallTableIsReal(t *testing.T) {
 		{"statx", "unix.Statx", got.statx, unix.Statx},
 		{"ioctlGetUint32", "unix.IoctlGetUint32", got.ioctlGetUint32, unix.IoctlGetUint32},
 		{"getdents", "unix.Getdents", got.getdents, unix.Getdents},
+		{"fiemap", "fiemapIoctl", got.fiemap, fiemapIoctl},
 	}
 
 	if n := reflect.TypeOf(calls{}).NumField(); n != len(pins) {
@@ -74,6 +77,7 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"EINTR":                    true,
 		"EINVAL":                   true,
 		"EOPNOTSUPP":               true,
+		"ENOTTY":                   true,
 		"FALLOC_FL_ALLOCATE_RANGE": true,
 		"F_FULLFSYNC":              true,
 		"F_NOCACHE":                true,
