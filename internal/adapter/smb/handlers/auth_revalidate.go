@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/cubbit/dittofs/internal/adapter/smb/session"
+	"github.com/cubbit/dittofs/internal/adapter/smb/types"
 	"github.com/cubbit/dittofs/internal/logger"
 	"github.com/cubbit/dittofs/pkg/controlplane/models"
 )
@@ -231,6 +232,16 @@ func (h *Handler) revalidateTrees(ctx context.Context, userStore models.UserStor
 		}
 		sess, ok := h.GetSession(tree.SessionID)
 		if !ok {
+			return true
+		}
+		// decision: IPC$ is virtual: TREE_CONNECT answers it without the
+		// registry and grants it from the session alone, so it has no share to
+		// re-resolve and a lookup would miss it as if it were removed. The
+		// session pass above governs it, and a revoked session loses it there.
+		// This holds while no pipe reaches share data: srvsvc re-admits each
+		// share through admitTreeConnect per call and lsarpc only maps SIDs
+		// and names. Re-check pipe trees here if a pipe ever serves data.
+		if tree.ShareType == types.SMB2ShareTypePipe {
 			return true
 		}
 		share, err := h.Registry.GetShare(tree.ShareName)
