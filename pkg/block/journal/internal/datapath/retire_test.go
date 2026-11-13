@@ -1005,7 +1005,7 @@ func TestAnUndurableCandidateDoesNotWedgeTheWorker(t *testing.T) {
 // TestSteadyWritesOnAnotherStreamDoNotStarveRetirement: a retirement whose
 // emptiness is owed to a durable record must not wait on records that have
 // nothing to do with it. The writer below keeps another stream churning —
-// appending and syncing one record after another, so the stream almost
+// appending one unsynced record after another, so the stream almost
 // always holds an unsynced record at any given tick — while the row parks
 // the truncation's own sync, so the candidate's passes spread over several
 // ticks, sampling the writer's traffic again and again. Once that sync is
@@ -1032,7 +1032,7 @@ func TestSteadyWritesOnAnotherStreamDoNotStarveRetirement(t *testing.T) {
 	seg := recordOf(t, c, f, 0).Record.Segment
 	active := recordOf(t, c, f, 3*testSegmentCap/2-1).Record.Segment
 
-	// The writer: one unsynced record after another on g's own stream, each
+	// The writer: one unsynced record after another, each
 	// at a fresh offset so it supersedes nothing, never calling a sync of its
 	// own — exactly the shape the re-sample starves under: the stream's
 	// records drain only at the rolls that seal its full segments, a pass
@@ -1361,9 +1361,12 @@ func TestTheDurableRetirementSignalWaitsForTheDirectorySync(t *testing.T) {
 	mustWrite(t, c, s, g, 0, make([]byte, payload))
 	syncFiles(t, c, g)
 	gone(t, c, "the segment whose retirement's directory sync succeeded", segB)
-	if !c.liveness.Droppable(recB) {
-		t.Fatal("the witness of the durably retired segment stayed held, want the tracker to hear the durable-retirement signal")
-	}
+	// The signal the witness waits on rides on the retire executor's own
+	// directory sync, which runs after the segment has already left the
+	// set — so a read right after gone races it.
+	waitIn(t, 8*time.Second, "the durably retired segment's witness to be released", func() bool {
+		return c.liveness.Droppable(recB)
+	})
 	if c.liveness.Droppable(rec) {
 		t.Fatal("the failed-sync witness was released by the second retirement, want each retirement's signal to name only its own segment")
 	}
@@ -1404,15 +1407,15 @@ func witnessOn(t *testing.T, c *Core, s *Share, home core.FileID, seg core.Segme
 	return rec
 }
 
-// TestACrashUndoesARetirementsUnsyncedUnlink: an unlink's durability rides
-// on the directory sync after it, and the crash seam's model is exact about
-// that: a crash between the retirement's unlink and its directory sync puts
-// the directory back where its last sync left it — the retired segment's
-// file returns, its content restored — while the overwrite record that
-// emptied it survives in the stream's next segment. Nothing the journal
-// owed is lost: the crossing is durable on the surviving side, and the
-// unlink that was not durable is undone with it.
-func TestACrashUndoesARetirementsUnsyncedUnlink(t *testing.T) {
+// TestACrashSparesASegmentWhoseEmptierWasUnsynced: a retirement that would
+// run ahead of its emptier's sync loses acknowledged content at a crash —
+// the unlink is durable, the record that emptied the segment is not, and
+// the rebuild holds nothing over the file the retirement removed. The row
+// parks the emptier's own sync at the seam, so the barrier is the only
+// thing holding the retirement back, and crashes inside that window: the
+// durable image keeps the emptied segment's file and its synced content,
+// because no unlink was allowed to reach the directory at all.
+func TestACrashSparesASegmentWhoseEmptierWasUnsynced(t *testing.T) {
 	c, seam := newTestCore(t)
 	s := mustShare(t, c, 1)
 	f := testFile(1)
@@ -1425,51 +1428,38 @@ func TestACrashUndoesARetirementsUnsyncedUnlink(t *testing.T) {
 	}
 	seg := recordOf(t, c, f, 0).Record.Segment
 
-	// The directory syncs park here: the retirement's unlink runs, the sync
-	// that would make it durable never does.
-	dirHold := seam.Hold(t, kit.OpSyncDir, "*")
+	// The emptier's sync parks here: the overwrite publishes and reports
+	// the emptied segment, but no sync of its own record can complete —
+	// not a caller's, not the sync bound's, not a roll's.
+	hold := seam.Hold(t, kit.OpSync, "*.seg")
+	t.Cleanup(hold.Release)
 
-	v1 := mustWrite(t, c, s, f, 0, make([]byte, payload))
-	syncFiles(t, c, f)
+	mustWrite(t, c, s, f, 0, make([]byte, payload))
 
-	// The unlink happened: the segment file left the live directory, with
-	// the directory sync still parked behind it.
-	waitIn(t, 8*time.Second, "the retirement's unlink to run", func() bool {
+	// The retirement cannot cross the window whatever the interleaving: a
+	// hand-over would unlink the segment while the record that emptied it
+	// is unsynced, and the crash below would find the file gone.
+	notWithin(t, 2*time.Second, "a retirement of the segment whose emptier was unsynced", func() bool {
 		return !segmentFilePresent(t, seam, seg)
 	})
-	if dirHold.Waiting() == 0 {
-		t.Fatal("no directory sync stood parked after the unlink, want the retirement held between its unlink and its sync")
-	}
 
-	// The crash: the unsynced unlink is undone, the segment file restored
-	// with its old content; the overwrite record survives where it synced.
 	if err := seam.Crash(); err != nil {
 		t.Fatalf("the crash: %v", err)
 	}
 	crashedSeams.Store(seam, true)
 
 	if !segmentFilePresent(t, seam, seg) {
-		t.Fatal("the retired segment's file stayed unlinked in the crash's durable image, want the unsynced unlink undone")
+		t.Fatal("the emptied segment's file was unlinked in the crash's durable image, want no retirement to have reached the directory while its emptier was unsynced")
 	}
-	var old, newRec bool
+	var old bool
 	for _, r := range readRecords(t, seam) {
-		if r.Header.File != f {
-			continue
-		}
-		if r.Header.Version == v0 {
+		if r.Header.File == f && r.Header.Version == v0 {
 			old = true
-		}
-		if r.Header.Version == v1 {
-			newRec = true
 		}
 	}
 	if !old {
-		t.Fatal("the unlinked-and-restored segment's old content was lost in the crash's image, want the undo whole")
+		t.Fatal("the synced content of the spared segment was lost in the crash's durable image, want the record the retirement would have orphaned")
 	}
-	if !newRec {
-		t.Fatal("the overwrite record that emptied the segment was lost in the crash's image, want it durable in a surviving segment")
-	}
-	dirHold.Release()
 }
 
 // segmentFilePresent reports whether seg's file name is in the seam's

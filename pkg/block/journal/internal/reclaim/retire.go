@@ -315,6 +315,34 @@ func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.T
 		return
 	}
 
+	var reason segment.Reason
+	switch st, err := w.segs.State(id); {
+	case err != nil:
+		// The segment left the set since the offer: someone else retired
+		// it, and there is nothing to hand over.
+		w.segs.Release(id)
+		w.drop(id)
+		return
+	case st == segment.Sealed:
+		reason = segment.NotHeld
+	case st == segment.Ended:
+		reason = segment.ReasonEnded
+		if w.gate != nil && (w.gate.WindowOpen(id) || w.gate.ReclaimBlocked(id)) {
+			// The claim held across the re-read is what serialises this
+			// against the copy hold that flips the window.
+			w.segs.Release(id)
+			w.requeue(id)
+			return
+		}
+	default:
+		// Neither of the two states a retirement serves: the offer named
+		// a segment a stream still appends to, and the entry is wrong to
+		// carry it further.
+		w.segs.Release(id)
+		w.drop(id)
+		return
+	}
+
 	if w.gate != nil {
 		// The pending tail joins the offer's recorded locations as a
 		// barrier: another mover's unsynced cut can have emptied the
@@ -325,14 +353,16 @@ func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.T
 		// cut's record could still be lost.
 		//
 		// decision: the tail is frozen once, at the entry's first
-		// not-held pass, not re-sampled on every pass. A re-sampled tail
+		// not-held pass over a candidate the state switch above proved
+		// Sealed or Ended, not re-sampled on every pass. A re-sampled tail
 		// waits for a moment where no stream holds an unsynced record,
 		// which steady writers on an unrelated stream never grant, and a
 		// retirement whose segment has nothing to do with them would
 		// starve behind their traffic for as long as it runs. The frozen
 		// sample is exact the same way the once-under-the-claim sample
-		// was: a candidate is Sealed or Ended, records appended after the
-		// freeze cannot touch its content, and every record appended
+		// was: the switch proved the candidate Sealed or Ended, records
+		// appended after the freeze cannot touch its content, and every
+		// record appended
 		// before it — resident in a ledger or held by a pending window —
 		// is in the sample. Durable follows a record through the
 		// re-appends and window moves it may make, so a frozen location
@@ -397,34 +427,6 @@ func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.T
 			w.requeue(id)
 			return
 		}
-	}
-
-	var reason segment.Reason
-	switch st, err := w.segs.State(id); {
-	case err != nil:
-		// The segment left the set since the offer: someone else retired
-		// it, and there is nothing to hand over.
-		w.segs.Release(id)
-		w.drop(id)
-		return
-	case st == segment.Sealed:
-		reason = segment.NotHeld
-	case st == segment.Ended:
-		reason = segment.ReasonEnded
-		if w.gate != nil && (w.gate.WindowOpen(id) || w.gate.ReclaimBlocked(id)) {
-			// The claim held across the re-read is what serialises this
-			// against the copy hold that flips the window.
-			w.segs.Release(id)
-			w.requeue(id)
-			return
-		}
-	default:
-		// Neither of the two states a retirement serves: the offer named
-		// a segment a stream still appends to, and the entry is wrong to
-		// carry it further.
-		w.segs.Release(id)
-		w.drop(id)
-		return
 	}
 
 	if len(locs) == 0 && time.Since(first) < w.tickEvery {
