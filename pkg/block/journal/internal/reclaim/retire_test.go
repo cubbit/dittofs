@@ -309,7 +309,6 @@ func TestANotYetDurableRecordRequeuesUntilItsSyncCoversIt(t *testing.T) {
 
 	var passes atomic.Int32
 	w.afterClaim = func(core.SegmentID) { passes.Add(1) }
-	w.Start()
 
 	loc := f.appendRecord(t, fid(3), ver(1))
 	hold := f.seam.Hold(t, kit.OpSync, format.SegmentName(loc.Segment))
@@ -324,6 +323,10 @@ func TestANotYetDurableRecordRequeuesUntilItsSyncCoversIt(t *testing.T) {
 		t.Fatal("the ledger answered the record durable while its fsync stood parked at the seam, want not durable")
 	}
 
+	// The worker starts only now: the segment is sealed and empty from the
+	// start, so a tick scan running earlier would offer it prompt-only,
+	// freeze a pending tail without the parked record and retire it.
+	w.Start()
 	w.Emptied(seg, loc)
 	waitCond(t, 5*time.Second, "two passes over the refused candidate", func() bool {
 		return passes.Load() >= 2
@@ -383,7 +386,6 @@ func TestTheHandOverWaitsOnARecordAnotherMoverLeftUnsynced(t *testing.T) {
 	w := NewWorker(f.set, f.tr, d, exec)
 	w.tickEvery = 10 * time.Millisecond
 	t.Cleanup(w.Stop)
-	w.Start()
 
 	// The first mover's record, appended and made durable by its own sync:
 	// the record its offer is gated on.
@@ -412,6 +414,11 @@ func TestTheHandOverWaitsOnARecordAnotherMoverLeftUnsynced(t *testing.T) {
 	if d.Durable(second) {
 		t.Fatal("the second record answered durable while its fsync stood parked at the seam, want not durable")
 	}
+
+	// The worker starts only now: the segment is sealed and empty from the
+	// start, so a tick scan running earlier would offer it prompt-only,
+	// freeze a pending tail without the parked record and retire it.
+	w.Start()
 
 	// The offer names the durable record alone. Bounding window, not a
 	// truth: full scan passes run inside it, and each must be held back by
