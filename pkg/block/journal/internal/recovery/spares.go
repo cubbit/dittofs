@@ -71,19 +71,26 @@ func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID
 type allocProber interface{ Allocated() (bool, error) }
 
 // Spares is what the spares phase did with the candidates it re-adopted:
-// each adoption, naming the id the allocator owns again, and each id the
-// phase unlinked. Both lists are ascending by id.
+// each adoption, naming the id the allocator owns again and the class of the
+// pool's thirds a take draws it from, and each id the phase unlinked. Both
+// lists are ascending by id.
+//
+// This state is what the pool gets: the open's own later step hands each
+// adoption to the pool — id and class together — and starts the pool after
+// them, standing on the one directory sync Run spent inside the phase
+// before any adoption was recorded, the sync whose proof the pool's gate on
+// adoption and start holds every re-adopted spare to.
 type Spares struct {
-	// Adopted holds one entry per re-adopted spare, ascending by id.
+	// Adopted holds one entry per re-adopted spare, ascending by id, each
+	// with the class the pool's targets' fill order gave its id.
 	Adopted []AdoptedSpare
 	// Unlinked holds each id the phase unlinked, ascending by id.
 	Unlinked []core.SegmentID
 }
 
 // AdoptedSpare is one re-adopted spare: the id the allocator may take again,
-// and the class of the pool's thirds a take draws it from. The class is the
-// classing step's to fill; an adoption not yet classed carries the zero
-// class, which no class of the pool is.
+// and the class of the pool's thirds a take draws it from, recorded by the
+// spares phase from the pool's own targets.
 type AdoptedSpare struct {
 	ID    core.SegmentID
 	Class segment.Class // segment.Content | segment.Headroom | segment.Reserve
@@ -113,8 +120,8 @@ type AdoptedSpare struct {
 // the allocation of its files — is unlinked rather than adopted: the pool
 // takes whole cap-sized segments only, and a hole no byte of its size can
 // name would take the writes of a whole segment and lose a crash's worth of
-// them. Each is left for the pool to make again; the class each adoption
-// takes under is a later step of this open's own list, not this phase's.
+// them. Each is left for the pool to make again; every adoption is recorded
+// with the class the pool's own targets' fill order gives its id.
 func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.JournalID, _ core.Version) error {
 	// decision: this phase is the open's first writing one, so the refusal
 	// runs before any candidate work rather than at the run's end: zeroing
@@ -181,6 +188,10 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 			return err
 		}
 	}
+	classes := classesFor(deps.SpareTargets, len(adopted))
+	for i := range adopted {
+		adopted[i].Class = classes[i] // candidates ascend, so the i-th class is the i-th id's
+	}
 	st.Spares.Adopted = adopted
 	st.Spares.Unlinked = unlinked
 
@@ -192,6 +203,39 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 		return reAdopted[f.ID]
 	})
 	return nil
+}
+
+// classesFor returns the classes the next n adoptions take under the pool's
+// targets ts: the fill order fills the headroom first, then the repack
+// reserve, then the content class, and every spare past every target takes
+// the content class. The candidates the phase adopts ascend by id, so the
+// i-th adoption takes the i-th class: the lowest ids land in the headroom.
+//
+// decision: the counting starts at the headroom, not at the reconcile spare
+// a re-adopted spare is "counted first toward … while the journal has none"
+// (RFC 28 §3.1) — the reconcile spare is E7b's, not built, so a count toward
+// it is a count no reader ever pays out. Counting re-adoptions toward the
+// reconcile spare first is withdrawn when E7b lands and brings one.
+//
+// decision: a spare past every target still takes the content class, neither
+// held behind an age-gate nor unlinked as an extra: an extra spare is one
+// the pool keeps ready as content — exactly a spare its own worker would
+// have made — and dropping or ageing one out is the orphaning no spare may
+// take (R55). Withdraw only if re-adopted extras ever show up as a cost that
+// outweighs keeping them ready.
+func classesFor(ts segment.Targets, n int) []segment.Class {
+	classes := make([]segment.Class, n)
+	i := 0
+	for ; i < n && i < ts.Headroom; i++ {
+		classes[i] = segment.Headroom
+	}
+	for r := 0; i < n && r < ts.Reserve; i, r = i+1, r+1 {
+		classes[i] = segment.Reserve
+	}
+	for ; i < n; i++ {
+		classes[i] = segment.Content
+	}
+	return classes
 }
 
 // unlinkSpare removes the candidate id's segment file, answering the error a

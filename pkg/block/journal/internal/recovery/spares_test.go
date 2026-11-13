@@ -11,6 +11,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
@@ -289,7 +290,7 @@ func TestSparesPhaseUnlinksAShortSpare(t *testing.T) {
 	if got, want := st.Spares.Unlinked, []core.SegmentID{half, empty}; !slices.Equal(got, want) {
 		t.Errorf("spares: the short spares' unlinking got %v, want %v, ascending by id", got, want)
 	}
-	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: whole}}; !slices.Equal(got, want) {
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: whole, Class: segment.Content}}; !slices.Equal(got, want) {
 		t.Errorf("spares: the whole spare beside the short ones got adoptions %v, want %v", got, want)
 	}
 	for _, id := range []core.SegmentID{empty, half} {
@@ -359,7 +360,7 @@ func TestSparesPhaseUnlinksAnOverCapSpare(t *testing.T) {
 			if got, want := st.Spares.Unlinked, []core.SegmentID{over}; !slices.Equal(got, want) {
 				t.Errorf("spares: the over-cap spare's unlinking got %v, want %v", got, want)
 			}
-			if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: whole}}; !slices.Equal(got, want) {
+			if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: whole, Class: segment.Content}}; !slices.Equal(got, want) {
 				t.Errorf("spares: the whole spare beside the over-cap one got adoptions %v, want %v", got, want)
 			}
 			if slices.Contains(r.listing(), format.SegmentName(over)) {
@@ -522,7 +523,7 @@ func TestSparesPhaseZeroesBothSlotsOfAnInterruptedRecycle(t *testing.T) {
 	if got, want := st.Rebuilt.Index.SegmentBytes(y), (index.SegmentBytes{}); got != want {
 		t.Errorf("spares: the rebuilt index holds bytes of the candidate %d, got %+v, want none: its old life verifies nowhere under the new id", y, got)
 	}
-	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: y}}; !slices.Equal(got, want) {
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: y, Class: segment.Content}}; !slices.Equal(got, want) {
 		t.Errorf("spares: the re-adopted spares got %v, want %v", got, want)
 	}
 }
@@ -549,7 +550,7 @@ func TestSparesPhaseLeavesCleanSlotsUnwritten(t *testing.T) {
 	if got := r.seam.CallsFor(kit.OpSync, name); got != syncs {
 		t.Errorf("spares: a clean spare was synced, got %d syncs, want %d, the count before the run", got, syncs)
 	}
-	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: id}}; !slices.Equal(got, want) {
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: id, Class: segment.Content}}; !slices.Equal(got, want) {
 		t.Errorf("spares: the all-zero spare was not adopted, got %v, want %v", got, want)
 	}
 	for _, f := range st.Tails.Fates {
@@ -606,7 +607,7 @@ func TestSparesPhaseFailsTheOpenWhenTheDirectorySyncFails(t *testing.T) {
 	// The fault is spent: the run takes the spares under a passing sync.
 	st := r.runCandidates()
 
-	want := []AdoptedSpare{{ID: ids[0]}, {ID: ids[1]}, {ID: ids[2]}}
+	want := []AdoptedSpare{{ID: ids[0], Class: segment.Content}, {ID: ids[1], Class: segment.Content}, {ID: ids[2], Class: segment.Content}}
 	if got := st.Spares.Adopted; !slices.Equal(got, want) {
 		t.Errorf("spares: the re-run's adoptions got %v, want %v, every candidate under a passing sync", got, want)
 	}
@@ -643,5 +644,87 @@ func TestSparesPhaseDropsTheAdoptedSegmentsFate(t *testing.T) {
 	if st.Attached.Rejected != 0 || len(st.Attached.Unrecognised) != 0 {
 		t.Errorf("spares: the adoption reported a rejected or an unrecognised segment, got rejected %d, unrecognised %v, want none",
 			st.Attached.Rejected, st.Attached.Unrecognised)
+	}
+}
+
+// TestSparesPhaseClassesAdoptedSparesIntoTheThreeClasses plants whole
+// record-less spares and runs the open under the pool's own targets — the
+// content class keeping two spares, the headroom one, the repack reserve one
+// — with a segment its successor names standing among them, never a
+// candidate: the adoptions ascend by id and class into the targets' fill
+// order, the headroom first, then the reserve, then the content class, and
+// every spare past every target still takes the content class — adopted, not
+// orphaned, never unlinked.
+func TestSparesPhaseClassesAdoptedSparesIntoTheThreeClasses(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		ids   []core.SegmentID
+		named bool
+	}{
+		{"four candidates fill the pool's three classes", []core.SegmentID{5, 7, 9, 11}, true},
+		{"extras past every target take the content class", []core.SegmentID{20, 21, 22, 23, 24, 25, 26}, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			if row.named {
+				// Z: record-less, its trailer naming a footer just past the
+				// marker slot at the first record slot's end, so the open
+				// reads its missing marker as the marker alone rotted.
+				z, w := core.SegmentID(2), core.SegmentID(12)
+				b := raw.SegmentHeader{Identity: journalID, ID: uint64(z)}.Bytes()
+				b = append(b, make([]byte, testCap-raw.TrailerSize-int64(len(b)))...)
+				b = append(b, raw.Trailer(1, uint64(format.SegmentHeaderSize+format.SealMarkerSize))...)
+				r.plantSeg(z, b)
+
+				// W: the successor whose header names Z, holding one
+				// verifying record so it is no spare itself.
+				s := raw.SegmentHeader{Identity: journalID, ID: uint64(w), Predecessor: uint64(z)}.Bytes()
+				rr := rec(1, func(r *raw.Record) {
+					r.Write = &raw.WriteBody{MTime: 1, Payload: bytes16()}
+				})
+				rr.Identity = journalID
+				rr.Segment = uint64(w)
+				rr.RecordOffset = uint32(len(s))
+				s = append(s, rr.Bytes()...)
+				s = append(s, make([]byte, testCap-int64(len(s)))...)
+				r.plantSeg(w, s)
+			}
+			for _, id := range row.ids {
+				r.write(format.SegmentName(id), make([]byte, testCap))
+			}
+
+			deps := r.runDeps()
+			deps.SpareTargets = segment.Targets{Content: 2, Headroom: 1, Reserve: 1}
+			st, err := Run(context.Background(), deps, core.Version{}, journalID, nil)
+			if err != nil {
+				t.Fatalf("spares: the classing open: %v", err)
+			}
+
+			// The fill order: the lowest id fills the headroom, the next the
+			// reserve, and every one after takes the content class — the
+			// content target's two and every extra beside.
+			want := make([]AdoptedSpare, len(row.ids))
+			if len(row.ids) > 0 {
+				want[0] = AdoptedSpare{ID: row.ids[0], Class: segment.Headroom}
+			}
+			if len(row.ids) > 1 {
+				want[1] = AdoptedSpare{ID: row.ids[1], Class: segment.Reserve}
+			}
+			for i := 2; i < len(row.ids); i++ {
+				want[i] = AdoptedSpare{ID: row.ids[i], Class: segment.Content}
+			}
+			if got := st.Spares.Adopted; !slices.Equal(got, want) {
+				t.Errorf("spares: the adoptions' classes got %v, want %v, the fill order headroom, reserve, content over ids ascending", got, want)
+			}
+			if len(st.Spares.Unlinked) != 0 {
+				t.Errorf("spares: the classing open unlinked %v, want nothing: no spare is ever orphaned", st.Spares.Unlinked)
+			}
+			for _, id := range row.ids {
+				if !slices.Contains(r.listing(), format.SegmentName(id)) {
+					t.Errorf("spares: the adopted spare %s is gone from the directory %v, want it kept", format.SegmentName(id), r.listing())
+				}
+			}
+		})
 	}
 }
