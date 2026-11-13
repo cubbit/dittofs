@@ -392,13 +392,29 @@
   issue: '#3378'
   message: 'stub: Inspect.File'
 
-- test: TestRFC1C_CancelledCallChangesNothingOrCompletes
+- test: TestRFC1C_CancelledCallChangesNothingOrCompletes/done_context_appends_nothing
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check stops on the offload stub its first leg makes before the refused calls. Needs offload, release and forget, and failed syncs still reported after a cancelled one; the context checked before every refusal and a held call completing after its record are in.'
+  reason: 'The journal opens; the leg stops on the offload stub it makes before the refused calls. Needs offload, so the WriteAt, Release and Forget the done context must refuse have the records the leg reads back.'
   issue: '#3379'
   message: 'stub: Offload'
+
+- test: TestRFC1C_CancelledCallChangesNothingOrCompletes/a_cancelled_sync_still_reports_the_failure
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the leg stops on the Inspect stub before its cancelled Sync. Needs the Inspect API and the failed window a Sync after a cancelled one still reports.'
+  issue: '#3379'
+  message: 'stub: Inspect.File'
+
+- test: TestRFC1C_CancelledCallChangesNothingOrCompletes/a_done-context_sync_still_reports_a_later_failure
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the background sync of the sync bound never reports its planted failure. Needs the background sync of the bound reporting and counting a failed window, so a later Sync still reports it.'
+  issue: '#3379'
+  message: 'the background sync of the sync bound hits the failing one within 2s'
 
 - test: TestRFC1C_CloneTargetSurvivesCrash
   status: fail

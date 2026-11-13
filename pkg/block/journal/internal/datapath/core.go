@@ -114,8 +114,13 @@ type coreOptions struct {
 	// stopProbe is registered as a stop right before the pool's, so Close
 	// runs it in the reverse order once the pool has stopped and before the
 	// idle sealer and the retirer have; the stop it returns is what Close
-	// runs. Nil in production.
-	stopProbe func(*segment.Pool) func()
+	// runs and is given the retirer so it can check it has not stopped yet.
+	// Nil in production.
+	stopProbe func(*segment.Pool, *segment.Retirer) func()
+	// shareHook runs in Share between the first closed check and the
+	// registry's lock, so a test can fence the core in the window the
+	// re-check under registryMu refuses. Nil in production.
+	shareHook func()
 	// extentLimit overrides the index's entry bound a test core builds with,
 	// keeping Deps at the figure the production wiring passes.
 	extentLimit int64
@@ -246,6 +251,12 @@ type Core struct {
 	// for the same reason afterAppend is.
 	afterRetarget func()
 
+	// shareHook is a test seam that runs in Share between the first closed
+	// check and the registry's lock, so a test can fence the core in the
+	// window the re-check under registryMu refuses. It is nil outside tests,
+	// for the same reason afterAppend is.
+	shareHook func()
+
 	// registry is the open handles, replaced whole under registryMu and read
 	// through the pointer alone. See shares.go.
 	registry atomic.Pointer[[]*Share]
@@ -327,7 +338,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, rec: o.recorder}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, shareHook: o.shareHook, rec: o.recorder}
 	tbl := newFileLocks()
 	if c.rec != nil {
 		tbl.SetRecorder(c.rec)
@@ -518,7 +529,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		c.addStop(c.sealer.Stop)
 	}
 	if o.stopProbe != nil {
-		c.addStop(o.stopProbe(c.pool))
+		c.addStop(o.stopProbe(c.pool, c.retirer))
 	}
 	c.pool.Start()
 	c.addStop(c.pool.Stop)

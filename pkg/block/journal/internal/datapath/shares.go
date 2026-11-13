@@ -115,6 +115,9 @@ func (c *Core) Share(tag core.ShareTag, limit int64, floor core.Version) (*Share
 	if c.closed() {
 		return nil, core.ErrClosed
 	}
+	if c.shareHook != nil {
+		c.shareHook()
+	}
 	if err := c.counters.RaiseFloor(floor); err != nil {
 		return nil, err
 	}
