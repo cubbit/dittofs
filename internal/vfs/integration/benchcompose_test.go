@@ -68,9 +68,10 @@ type bench struct {
 	counts *kv.Counting
 }
 
-// composeBench builds the benchmark composition and creates n files in the
-// share's root, all before the benchmark's timer starts.
-func composeBench(b *testing.B, n int) *bench {
+// composeBench builds the benchmark composition, with existence age age, and
+// creates n files in the share's root, all before the benchmark's timer
+// starts.
+func composeBench(b *testing.B, n int, age time.Duration) *bench {
 	b.Helper()
 
 	// Registered first, so its checks run after every other cleanup.
@@ -111,7 +112,7 @@ func composeBench(b *testing.B, n int) *bench {
 		dir:    jdir,
 		counts: store.Counts,
 	}
-	c.start(b, clock)
+	c.start(b, clock, age)
 	c.signIn(b)
 
 	for i := range n {
@@ -131,7 +132,7 @@ func composeBench(b *testing.B, n int) *bench {
 
 // start builds the open-state table, the engine and the filesystem, starts
 // them in that order, and stops them in reverse when the benchmark ends.
-func (c *bench) start(b *testing.B, clock *wallClock) {
+func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 	b.Helper()
 	ctx := b.Context()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -168,7 +169,7 @@ func (c *bench) start(b *testing.B, clock *wallClock) {
 	}
 	b.Cleanup(opens.Stop)
 	settings := engine.Settings{
-		ExistenceAge:        benchExistenceAge,
+		ExistenceAge:        age,
 		GroupCommitMaxFiles: benchMaxFiles,
 		CloneMaxLen:         1 << 30,
 	}

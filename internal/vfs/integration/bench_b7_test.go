@@ -24,6 +24,14 @@ const (
 	b7Rate      = 1000
 	b7Calibrate = 500 * time.Millisecond
 	b7Log2G     = 6 // log₂ of benchMaxFiles
+
+	// decision: B7's existence age is long enough that no group commit comes
+	// due by its timer during a run's bursts, so every burst's transactions are
+	// its fsyncs' stability points and the bound is checked on each, not only on
+	// the bursts a timer commit missed. B5's appending run keeps the short age,
+	// since it needs timer commits during the run. Overturned if a run's bursts
+	// ever last longer than this age, which the evaluated-bursts floor shows.
+	b7ExistenceAge = 10 * time.Minute
 )
 
 // BenchmarkB7 is RFC 8 §15.4's B7, the group commit under a chmod storm: B5's
@@ -135,11 +143,11 @@ func (s *storm) since(from int) (chmods, writersTouched int) {
 }
 
 func benchB7(b *testing.B) {
-	c := composeBench(b, b7Files)
+	c := composeBench(b, b7Files, b7ExistenceAge)
 	ctx := b.Context()
 	data := make([]byte, mib)
 	var fsyncs []time.Duration
-	most, graded := 0, 0
+	most, evaluated := 0, 0
 	b.ResetTimer()
 
 	for i := range b.N {
@@ -184,7 +192,7 @@ func benchB7(b *testing.B) {
 
 			// A group commit of earlier bursts that came due during this one,
 			// off the fsyncs' path, may split on the storm's conflicts as well:
-			// such a burst is not graded, as the bound counts one group commit.
+			// such a burst is not evaluated, as the bound counts one group commit.
 			if !slices.Equal(before, c.committedSizes(b)) {
 				continue
 			}
@@ -205,22 +213,24 @@ func benchB7(b *testing.B) {
 					bound,
 				)
 			}
-			most, graded = max(most, engine), graded+1
+			most, evaluated = max(most, engine), evaluated+1
 		}
 
 		if err := s.end(); err != nil {
 			b.Fatalf("run %d: a chmod of the storm failed: %v", i+1, err)
 		}
-		c.awaitSizes(b, int64((i+1)*b5Bursts)*mib, 30*time.Second+10*benchExistenceAge)
 	}
 
 	b.StopTimer()
-	if graded == 0 {
-		b.Fatalf(
-			"no burst was graded: a group commit came due during every one; lengthen the existence age",
-		)
-	}
 	b.ReportMetric(microseconds(percentile(fsyncs, 99)), "fsync-p99-µs")
 	b.ReportMetric(float64(most), "txn/stability-point")
-	b.ReportMetric(float64(graded), "graded-bursts")
+	b.ReportMetric(float64(evaluated), "evaluated-bursts")
+	if bursts := b.N * b5Bursts; 2*evaluated < bursts {
+		b.Fatalf(
+			"%d of %d bursts evaluated, want at least half: a group commit came due by its timer "+
+				"during the rest, so the bound went unchecked",
+			evaluated,
+			bursts,
+		)
+	}
 }
