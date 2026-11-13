@@ -317,6 +317,137 @@ func TestRunWithholdsARecordTheFailedListNamesAsAReadOnlyDrop(t *testing.T) {
 	}
 }
 
+// TestRunFeedsTheRemainderASyncedSupersededLossNames holds the clip rule over
+// content: a superseded loss reaches the record it names only over the loss's
+// own extent, so the record's runs outside the union of the extents naming
+// it feed clipped under its own numbers, the runs inside it hold nothing,
+// a removal the same loss names feeds whole — its own marker runs to the end
+// of the file — and a record the loss extents cover whole feeds nothing at
+// all, folding its numbers into Withheld for the counters that open above
+// what the feed saw.
+func TestRunFeedsTheRemainderASyncedSupersededLossNames(t *testing.T) {
+	t.Run("the kept runs of an intact record", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		file := kindsFile(1)
+		r.plantSeg(2, buildSeg(2,
+			writeRec(60, 5, 0, 128),
+			lossRec(file, 60, 61, 9, 0, 64, 1|4<<8), // synced, superseded
+		))
+
+		st := kindsRun(t, r)
+
+		if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+			t.Errorf("Lookup at 0 hit, want a miss: the loss's extent covers the record's first half")
+		}
+		p, ok := st.Rebuilt.Index.Lookup(file, 64)
+		if !ok {
+			t.Fatalf("Lookup at 64 missed, want the kept run [64,128) to feed clipped")
+		}
+		if p.Extent != (core.Extent{Off: 64, Len: 64}) || p.Seq != 60 {
+			t.Errorf("the kept run got %+v of seq %d, want the clipped extent [64,128) under the record's own seq 60", p.Extent, p.Seq)
+		}
+		if got := st.Kinds.Losses[0].Segments; !slices.Equal(got, []core.SegmentID{2}) {
+			t.Errorf("the loss names segments %v, want [2]: superseded or whole, the record it names is its liveness", got)
+		}
+	})
+	t.Run("a removal the loss names feeds whole", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		file := kindsFile(4)
+		r.plantSeg(1, buildSeg(1,
+			rec(4, func(rc *raw.Record) { // a truncate: Off is the new size
+				rc.Seq, rc.Version = 62, raw.Version{Counter: 62}
+				rc.Offset, rc.Length = 0x100, 0
+			}),
+			lossRec(file, 62, 63, 9, 0x40, 16, 1|4<<8),
+		))
+
+		st := kindsRun(t, r)
+
+		var truncate int
+		for _, ch := range st.Rebuilt.Index.Since(file, core.Version{}) {
+			if ch.Kind == core.ChangeTruncate {
+				truncate++
+			}
+		}
+		if truncate != 1 {
+			t.Errorf("Since yielded %d truncate markers, want the one the removal record left: a superseded loss naming a removal clips nothing", truncate)
+		}
+	})
+	t.Run("a record the loss extents cover whole", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		file := kindsFile(1)
+		r.plantSeg(2, buildSeg(2,
+			writeRec(60, 5, 0, 64),
+			lossRec(file, 60, 61, 9, 0, 64, 1|4<<8),
+		))
+
+		st := kindsRun(t, r)
+
+		if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+			t.Errorf("Lookup at 0 hit, want a miss: the loss extent covers the record whole, so no run feeds")
+		}
+		if got, want := st.Kinds.Withheld, (index.Numbers{Version: core.Version{Counter: 5}, Seq: 60}); got != want {
+			t.Errorf("Withheld got %+v, want %+v: the numbers of the whole record no run fed", got, want)
+		}
+	})
+}
+
+// TestRunConfinesARottenSupersededRemainderAsCorrupt holds the open's check
+// of a partly-superseded record: its kept runs are bytes no serving read
+// would ever verify again — the loss stopped naming them — so the open reads
+// the record's whole payload and, when it fails, confines the kept runs as
+// one corrupt drop on their own scan, judged like any other dropped record:
+// corrupt and damaged, the drop's synced bit the loss payload carried, its
+// extent the kept run rather than the loss's. The record withholds whole,
+// held by nothing.
+func TestRunConfinesARottenSupersededRemainderAsCorrupt(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	id := core.SegmentID(1)
+	seg := buildSeg(id,
+		writeRec(60, 5, 0, 128),
+		lossRec(file, 60, 61, 9, 0, 64, 1|4<<8), // the kept run is [64,128)
+	)
+	// One payload byte of the record rotted after its writer built it.
+	seg[format.SegmentHeaderSize+format.RecordHeaderSize+8+70] ^= 0xff
+	r.plantSeg(id, seg)
+
+	st := kindsRun(t, r)
+
+	if len(st.Tails.Corrupt) != 1 {
+		t.Fatalf("Tails.Corrupt got %+v over a rotten kept run, want the one corrupt drop of it", st.Tails.Corrupt)
+	}
+	c := st.Tails.Corrupt[0]
+	if c.Segment != 1 {
+		t.Errorf("the corrupt drop got segment %d, want 1, the record's own", c.Segment)
+	}
+	if !c.Drop.Synced {
+		t.Errorf("the corrupt drop got Synced false, want true: the synced bit the superseded loss payload carried")
+	}
+	if c.Drop.Header.Extent != (core.Extent{Off: 64, Len: 64}) {
+		t.Errorf("the corrupt drop's extent got %+v, want the kept run [64,128): the append a later open makes names the run, not the loss's own extent", c.Drop.Header.Extent)
+	}
+	if c.at() != format.SegmentHeaderSize {
+		t.Errorf("the corrupt drop names offset %d, want %d, where the withheld record sits", c.at(), format.SegmentHeaderSize)
+	}
+	if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+		t.Errorf("Tails.Damaged got %v, want [1]: the classing stays as it judged", st.Tails.Damaged)
+	}
+	if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+		t.Errorf("Lookup at 0 hit, want a miss: the rotten record withholds whole")
+	}
+	if _, ok := st.Rebuilt.Index.Lookup(file, 64); ok {
+		t.Errorf("Lookup at 64 hit, want a miss: the kept run confined as corrupt holds nothing")
+	}
+	if got, want := st.Kinds.Withheld, (index.Numbers{Version: core.Version{Counter: 5}, Seq: 60}); got != want {
+		t.Errorf("Withheld got %+v, want %+v: the numbers of the confined record", got, want)
+	}
+}
+
 // TestRunWithholdsARecordTwoRulesNameTogether holds the overlap row: a
 // record both a forget and an unsynced loss name — whichever drops it, no
 // other path re-holds it — withholds whole, while a record of the same tag

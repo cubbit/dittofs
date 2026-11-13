@@ -389,6 +389,114 @@ func keptRuns(e core.Extent, cuts []core.Extent) []core.Extent {
 	return out
 }
 
+// verifyRemainders is the open's check of a partly-superseded record, run
+// over the buffered records between the decode pass and the tail's classing:
+// every write and fill a synced superseded loss names keeps a run outside
+// the union of the loss extents only by feeding clipped, so its whole
+// payload is read through the open's reader and verified here — the one
+// content payload an open checks, for a record whose kept bytes would never
+// meet a serving read that verifies them.
+//
+// The record that fails confines its kept runs as corrupt drops on its own
+// scan — one per run, each carrying the run's extent over the record's own
+// header, with the synced bit the loss payload named — so the tail's classing
+// judges them like any other dropped record, and the filter withholds that
+// exact copy by location, never the seq it shares with a healthy twin
+// elsewhere. A read no bounded attempt cleared refuses the open on the
+// ranges the reader collected, never as a corrupt verdict.
+//
+// decision: a record the loss extents cover whole is verified not at all —
+// no byte it holds would ever feed, so no read of it would serve — and a
+// removal, release or mark the loss names is left to its own kind's rules,
+// the clip being a content cut. The whole-payload verify is the ceiling this
+// pays for keeping the format's one checksum; overturned by a ruled checksum
+// per payload piece, which a partly-superseded record could yet verify by.
+func (ks *kindState) verifyRemainders(rd *reader, identity core.JournalID, scs []segmentScan) error {
+	for i := range scs {
+		sc := &scs[i]
+		for _, rec := range sc.Records {
+			sup, named := ks.superseded[rec.Numbers.Seq]
+			if !named || (rec.Kind != index.RecWrite && rec.Kind != index.RecFill) {
+				continue
+			}
+			kept := keptRuns(core.Extent{Off: rec.Off, Len: rec.Len}, sup.extents)
+			if len(kept) == 0 {
+				continue
+			}
+			verified, err := verifyContentBody(rd, identity, rec)
+			if err != nil {
+				return err
+			}
+			if verified {
+				continue
+			}
+			at := index.RecordAt{Segment: rec.Segment, Offset: rec.At}
+			ks.confined[at] = true
+			for _, run := range kept {
+				kind := format.KindWrite
+				if rec.Kind == index.RecFill {
+					kind = format.KindFill
+				}
+				// The drop's header is the record's own columns with the
+				// run's extent, so the classing judges the drop where the
+				// record sits and the loss record a later open appends for
+				// it names the run, not the extent the loss superseded.
+				sc.Dropped = append(sc.Dropped, droppedRecord{
+					Header: format.RecordHeader{
+						Kind: kind, Segment: rec.Segment, File: rec.File, Extent: run,
+						Seq: rec.Numbers.Seq, Version: rec.Numbers.Version, Tag: rec.Tag,
+						Offset: int64(rec.At),
+					},
+					Synced: sup.synced,
+					Err: fmt.Errorf("%w: segment %d: the %s at %d fails its own verification over the run its loss did not supersede",
+						core.ErrCorrupt, rec.Segment, kind, rec.At),
+				})
+			}
+		}
+	}
+	return nil
+}
+
+// verifyContentBody reads one buffered content record's header and whole body
+// through the open's bound and verifies both, the only read of a content
+// payload an open makes. It answers whether the record verified; a read the
+// bound did not clear returns as its own error and never as a verdict.
+func verifyContentBody(rd *reader, identity core.JournalID, rec index.Record) (bool, error) {
+	name := format.SegmentName(rec.Segment)
+	hb := make([]byte, format.RecordHeaderSize)
+	n, rerr := rd.ReadAt(name, hb, int64(rec.At))
+	if rerr != nil && !errors.Is(rerr, io.EOF) {
+		return false, refusedRead(rd, rerr)
+	}
+	h, derr := format.DecodeRecordHeader(hb[:n], identity, rec.Segment, int64(rec.At))
+	if derr != nil {
+		return false, nil // the bytes changed under the open: verification fails
+	}
+	body := make([]byte, h.BodySize())
+	bn, berr := rd.ReadAt(name, body, h.Offset+format.RecordHeaderSize)
+	if berr != nil && !errors.Is(berr, io.EOF) {
+		return false, refusedRead(rd, berr)
+	}
+	if _, verr := format.VerifyRecordBody(body[:bn], identity, h); verr != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+// refusedRead answers a read no bounded attempt cleared: as itself when the
+// reader collected no range — a cancellation the open itself caused — and as
+// the collected ranges otherwise, so the open's refusal names every range the
+// device did not answer, never a verdict on bytes the bound never returned.
+func refusedRead(rd *reader, err error) error {
+	if isContextErr(err) {
+		return err
+	}
+	if ranges := rd.Unreadable(); len(ranges) > 0 {
+		return &core.UnreadableRangesError{Ranges: ranges}
+	}
+	return err
+}
+
 // feedFilter is the serial feed's per-record decision, built once over the
 // kinds the decode pass collected before a single record is fed. Each
 // buffered record meets every on-disk aside rule in the fixed order below —

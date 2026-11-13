@@ -546,6 +546,12 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	if kerr != nil {
 		return rebuilt{}, kindResults{}, tails{}, kerr
 	}
+	// The partly-superseded remainders verify before the classing, over the
+	// buffered records and through the same reader, so a rotten kept run
+	// reaches the classing as the corrupt drop it is.
+	if verr := ks.verifyRemainders(rd, identity, scans); verr != nil {
+		return rebuilt{}, kindResults{}, tails{}, verr
+	}
 	// The classing reads the scans only after the kinds pass has confined
 	// every unread aside body onto them, so a lost loss record reaches the
 	// classing as the corrupt drop it is.
