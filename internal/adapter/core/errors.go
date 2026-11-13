@@ -44,7 +44,7 @@ type ErrorRow struct {
 // NewErrorTable builds a table answering an error no row matches with fault,
 // the protocol's server-fault status. It refuses two rows equal in rank that
 // can match one error, operation and version, and a table with no row
-// mapping ErrDecode for every operation and version.
+// answering ErrDecode for every operation and version.
 //
 // decision: a table that fails its check panics, naming the rows, since a
 // table is program text and NewErrorTable returns no error; the first
@@ -67,18 +67,21 @@ func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable {
 	// A decode error is mapped with no operation, and outside any version a
 	// row names, so only a row naming neither maps it everywhere. Without
 	// one a client's garbage reaches the fault status, which §10.1 alerts on
-	// as a bug.
+	// as a bug; a row that holds, sends no reply or answers the fault status
+	// itself would hide it the same way.
 	if !t.mapsEverywhere(ErrDecode) {
-		panic("core: error table: no row maps ErrDecode for every operation and version")
+		panic("core: error table: no row answers ErrDecode for every operation and version")
 	}
 	return t
 }
 
-// mapsEverywhere reports whether a row maps err for every operation and
-// version: one that err matches, naming neither Ops nor Versions.
+// mapsEverywhere reports whether a row answers err for every operation and
+// version: one that err matches, naming neither Ops nor Versions, that
+// replies at once with a status other than the fault.
 func (t *ErrorTable) mapsEverywhere(err error) bool {
 	return slices.ContainsFunc(t.rows, func(r ErrorRow) bool {
-		return r.Ops == nil && r.Versions == nil && errors.Is(err, r.Err)
+		return r.Ops == nil && r.Versions == nil && !r.NoReply && r.Hold == nil &&
+			r.Status != t.fault && errors.Is(err, r.Err)
 	})
 }
 

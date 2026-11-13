@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -197,10 +198,11 @@ func TestNewErrorTableRefusesRowsThatOverlap(t *testing.T) {
 	}
 }
 
-// Every table maps ErrDecode for every operation and version: a table with
-// no row for it, or whose only row for it names operations or versions, is
-// refused at build, naming it, since a header's decode error has no
-// operation; and a wrapped ErrDecode maps to its row.
+// Every table answers ErrDecode for every operation and version: a table with
+// no row for it, or whose only row for it names operations or versions, holds,
+// sends no reply or answers the fault status, is refused at build, naming it,
+// since a header's decode error has no operation and must not pass for a
+// fault; and a wrapped ErrDecode maps to its row.
 func TestNewErrorTableDemandsAnErrDecodeRowForEveryOperation(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -210,6 +212,9 @@ func TestNewErrorTableDemandsAnErrDecodeRowForEveryOperation(t *testing.T) {
 		{"no row", []core.ErrorRow{{Err: vfs.ErrNotFound, Status: neither}}, true},
 		{"a row naming an operation", []core.ErrorRow{{Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: garbage}}, true},
 		{"a row naming versions", []core.ErrorRow{{Err: core.ErrDecode, Versions: versions(1, 2), Status: garbage}}, true},
+		{"a row that sends no reply", []core.ErrorRow{{Err: core.ErrDecode, NoReply: true}}, true},
+		{"a row that holds", []core.ErrorRow{{Err: core.ErrDecode, Hold: func(error, time.Time) time.Time { return time.Time{} }, Status: garbage}}, true},
+		{"a row answering the fault status", []core.ErrorRow{{Err: core.ErrDecode, Status: fault}}, true},
 		{"a row naming neither", []core.ErrorRow{decodeRow}, false},
 		{"one naming neither beside one naming an operation", []core.ErrorRow{decodeRow, {Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: opOnly}}, false},
 	} {
