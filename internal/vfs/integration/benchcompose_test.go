@@ -25,6 +25,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
@@ -41,6 +42,10 @@ const (
 	benchExistenceAge = time.Second
 	benchMaxFiles     = 64 // the group commit's batch bound, G
 )
+
+// benchCreators is how many goroutines create a composition's files, so a
+// large pool is made in seconds rather than one transaction after another.
+const benchCreators = 32
 
 // benchDirEnv names a directory on the device under test. Without it the
 // benchmarks run in the test's temporary directory, which measures whatever
@@ -60,12 +65,15 @@ var benchNode = entity.NodeID{'b', 'e', 'n', 'c', 'h'}
 // store's kv.Counting: every Update the store committed or failed.
 type bench struct {
 	fs     *filesystem.Filesystem
+	e      *engine.Engine
 	store  *kvstoretest.FS
 	share  engine.Share
 	admin  vfs.Call
 	files  []entity.Handle
+	ids    []entity.FileID // each file's ID, in the order of files
 	dir    string
 	counts *kv.Counting
+	txns   *txnRecord // the committed transactions, classified by the keys they wrote
 }
 
 // composeBench builds the benchmark composition, with existence age age, and
@@ -93,6 +101,8 @@ func composeBench(b *testing.B, n int, age time.Duration) *bench {
 		b.Fatalf("bench: journal init: %v", err)
 	}
 
+	rec := &txnRecord{}
+
 	store := kvstoretest.NewFS(b, func(tb testing.TB) kv.KV {
 		db, err := badgerkv.Open(badgerkv.Options{Dir: filepath.Join(base, "store")})
 		if err != nil {
@@ -103,7 +113,9 @@ func composeBench(b *testing.B, n int, age time.Duration) *bench {
 			_ = db.Close()
 		})
 
-		return db
+		rec.KV = db
+
+		return rec
 	})
 	if err := store.Store.RecordJournal(ctx, id, benchNode, entity.JournalDir(jdir)); err != nil {
 		b.Fatalf("bench: record the journal: %v", err)
@@ -114,22 +126,32 @@ func composeBench(b *testing.B, n int, age time.Duration) *bench {
 		share:  enginetest.ShareOf(b, store.Store, store.Share.ID, benchShareLimit),
 		dir:    jdir,
 		counts: store.Counts,
+		txns:   rec,
 	}
 	c.start(b, clock, age)
 	c.signIn(b)
 
-	for i := range n {
-		h, _ := store.Create(
-			b,
-			store.Admin,
-			store.Root,
-			fmt.Sprintf("f%02d", i),
-			kvstore.Regular(0o644),
-		)
-		c.files = append(c.files, h)
+	c.files, c.ids = make([]entity.Handle, n), make([]entity.FileID, n)
+
+	if err := together(ctx, benchCreators, func(ctx context.Context, w int) error {
+		for i := w; i < n; i += benchCreators {
+			name := []byte(fmt.Sprintf("f%05d", i))
+			ns := store.Store.Namespace()
+
+			h, f, err := ns.Create(ctx, store.Admin, store.Root, name, kvstore.Regular(0o644))
+			if err != nil {
+				return fmt.Errorf("create file %d: %w", i, err)
+			}
+
+			c.files[i], c.ids[i] = h, f.ID
+		}
+
+		return nil
+	}); err != nil {
+		b.Fatalf("bench: files: %v", err)
 	}
 
-	printBox(b, jdir)
+	printBox(b, base)
 
 	return c
 }
@@ -170,7 +192,14 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 		b.Fatalf("bench: engine: %v", err)
 	}
 
-	c.fs, err = filesystem.New(filesystem.Deps{Meta: meta, Open: opens, Engine: e, Logger: logger})
+	c.e = e
+
+	c.fs, err = filesystem.New(filesystem.Deps{
+		Meta:   meta,
+		Open:   opens,
+		Engine: e,
+		Logger: logger,
+	})
 	if err != nil {
 		b.Fatalf("bench: filesystem: %v", err)
 	}
@@ -248,6 +277,29 @@ func (c *bench) signIn(b *testing.B) {
 	}
 
 	c.admin = signedIn(p)
+}
+
+// fill writes size bytes to each writer's file and commits their existence
+// through the engine at once, so the content is committed without waiting out
+// the existence age.
+func (c *bench) fill(b *testing.B, size int64) {
+	b.Helper()
+
+	ctx := b.Context()
+	data := make([]byte, size)
+
+	if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
+		ref := vfs.Anonymous(c.files[w])
+		if _, err := c.fs.Write(ctx, c.admin, ref, 0, data, vfs.Unstable); err != nil {
+			return err
+		}
+
+		return c.e.CommitExistence(ctx, c.share.ID, c.ids[w])
+	}); err != nil {
+		b.Fatalf("bench: the content to overwrite: %v", err)
+	}
+
+	c.awaitSizes(b, size, benchBurstDeadline)
 }
 
 // committedSize is file i's size as the store has committed it.
@@ -704,4 +756,100 @@ func together(ctx context.Context, n int, fn func(ctx context.Context, i int) er
 	}
 
 	return nil
+}
+
+// txnRecord passes every call through to the store's kv.KV and records, for
+// each Update that committed, whether its final attempt wrote an existence key
+// (an overwrite record, F‖share‖file‖ov), only other keys, or both. Earlier
+// attempts the backend retried count for nothing. It answers nothing in the
+// store's place: it is the pass-through record a test may assert on, beside
+// kv.Counting.
+//
+// decision: a transaction is classified by its keys' prefixes, from the key
+// layout of pkg/metadata/kv/keys; a change of that layout must change
+// existenceKey, or every transaction reads as the storm's. Only the overwrite
+// record marks an existence commit: a chmod writes the share's version floor
+// (S‖share‖vf) too, so that key would count every chmod as the engine's.
+type txnRecord struct {
+	kv.KV
+
+	mu            sync.Mutex
+	engine, mixed int
+}
+
+// recordTxn notes the keys one attempt of a transaction writes.
+type recordTxn struct {
+	kv.Txn
+
+	existence, other *bool
+}
+
+func (t recordTxn) Set(key, value []byte) error {
+	t.note(key)
+
+	return t.Txn.Set(key, value)
+}
+
+func (t recordTxn) Delete(key []byte) error {
+	t.note(key)
+
+	return t.Txn.Delete(key)
+}
+
+func (t recordTxn) note(key []byte) {
+	if existenceKey(key) {
+		*t.existence = true
+	} else {
+		*t.other = true
+	}
+}
+
+func (r *txnRecord) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	var existence, other bool
+
+	err := r.KV.Update(ctx, func(t kv.Txn) error {
+		existence, other = false, false
+
+		return fn(recordTxn{
+			Txn:       t,
+			existence: &existence,
+			other:     &other,
+		})
+	})
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	switch {
+	case existence && other:
+		r.engine, r.mixed = r.engine+1, r.mixed+1
+	case existence:
+		r.engine++
+	}
+
+	return nil
+}
+
+// take returns the committed transactions since the last take, those that
+// wrote an existence key (mixed ones included) and those among them that also
+// wrote other keys, and resets the counts.
+func (r *txnRecord) take() (engine, mixed int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	engine, mixed = r.engine, r.mixed
+	r.engine, r.mixed = 0, 0
+
+	return engine, mixed
+}
+
+// existenceKey reports whether key is an overwrite record, which only an
+// existence commit of an overwrite writes.
+func existenceKey(key []byte) bool {
+	const sub = 1 + 2*keys.IDLen
+
+	return len(key) > sub && key[0] == keys.KindF && key[sub] == keys.FOv
 }

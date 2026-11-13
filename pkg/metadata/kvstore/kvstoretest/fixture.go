@@ -53,13 +53,7 @@ func (h Held) Race(outer, inner func() error) (outerErr, innerErr error) {
 }
 
 // Create makes name in dir as id, failing the test on an error.
-func (f *FS) Create(
-	t testing.TB,
-	id entity.Identity,
-	dir entity.Handle,
-	name string,
-	nf kvstore.NewFile,
-) (entity.Handle, entity.File) {
+func (f *FS) Create(t *testing.T, id entity.Identity, dir entity.Handle, name string, nf kvstore.NewFile) (entity.Handle, entity.File) {
 	t.Helper()
 	h, file, err := f.Store.Namespace().Create(ctx, id, dir, []byte(name), nf)
 	must(t, err)
