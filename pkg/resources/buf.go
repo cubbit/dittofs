@@ -11,6 +11,13 @@ import (
 // classes are the buffer sizes a pool hands out, smallest first: small,
 // directory, transfer and large. A request draws the smallest class that holds
 // it.
+//
+// ponytail: past the small class the steps are 16 times, and a request is
+// charged its class's capacity, so one just past a class pays for the next: a
+// 69,633-byte record reserves 1 MiB and 12 KiB, about 14 times its size, and
+// the receive budget admits that many fewer at once. Add a class between the
+// directory and the transfer one, with RFC 24 §3.1, when the receive budget
+// is shown queuing behind requests between 64 KiB and 1 MiB.
 var classes = [...]int{4 << 10, 64 << 10, 1 << 20, 8 << 20}
 
 // headerRoom is what a class that carries a payload holds past its size, so a
@@ -82,7 +89,8 @@ type Buf struct {
 	// panic, in tests and in production. That holds only while the buffer
 	// sits released: once the pool hands it out again, a stale Retain or
 	// Release cannot be told from the new holder's. Under the race detector
-	// a stale holder that reads sees the poison; a stale Release is not
+	// a stale holder that reads sees the poison until the next Get, and past
+	// the new holder's length after it; a stale Release is not
 	// caught where it happens: it returns the new holder's bytes and
 	// reservation, and the next Get can hand the same bytes to a second
 	// request. The panic falls on whichever holder releases last, unless a
@@ -96,11 +104,15 @@ type Buf struct {
 // allocator.
 //
 // ponytail: a sync.Pool per class behind the reservation counter, so
-// collection scans and frees idle pooled buffers, and until it does a free
-// list keeps bytes no budget counts: resident memory can pass the ceiling by
-// about each class's recent peak. Replace it with a fixed-size slab per
-// class, allocated once at start, when a profile shows collection time from
-// transfer-class buffers limiting throughput.
+// collection frees idle pooled buffers, and until it does a free list keeps
+// bytes no budget counts: resident memory can pass the ceiling by each
+// class's recent peak, at worst about three times the ceiling across the
+// directory, transfer and large classes, kept one more cycle by sync.Pool's
+// victim cache. A []byte holds no pointers, so collection does not scan it;
+// a dropped buffer costs the next Get a fresh allocation and its zeroing.
+// Replace it with a fixed-size slab per class, allocated once at start, when
+// a profile shows that allocation from transfer-class buffers limiting
+// throughput.
 type BufPool struct {
 	budget *WaitBudget
 	free   [len(classes)]sync.Pool // of *Buf

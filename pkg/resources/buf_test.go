@@ -167,6 +167,59 @@ func TestGetHandsOutZeroedBytes(t *testing.T) {
 	}
 }
 
+// A stale Release racing the Get that hands its buffer out again reads the
+// buffer only once Get has set it: were the count to leave -1 before res and
+// B are written, the race detector would see the stale Release read them.
+func TestStaleReleaseSeesAReusedBufferOnlyOnceReady(t *testing.T) {
+	if !prof.RaceEnabled {
+		t.Skip("the race detector is what sees the order")
+	}
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	// Put fills the current P's private slot, which a Get on another P cannot reach.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	p := NewBufPool(NewWaitBudget("reply", mib))
+	reused := 0
+	for range 100 {
+		stale := mustGet(t, p, 3)
+		stale.Release()
+		refused := make(chan bool)
+		go func() {
+			defer func() { refused <- recover() != nil }()
+			stale.Release()
+		}()
+		again := mustGet(t, p, 3)
+		if <-refused {
+			again.Release()
+		}
+		if again == stale {
+			reused++
+		}
+	}
+	if reused == 0 {
+		t.Fatal("no released buffer was handed out again, so the test saw no reuse")
+	}
+}
+
+// Holders retaining and releasing one buffer at once leave its count, and its
+// budget, where the last Release alone would.
+func TestConcurrentRetainAndReleaseKeepTheCount(t *testing.T) {
+	budget := NewWaitBudget("reply", mib)
+	b := mustGet(t, NewBufPool(budget), 3)
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			for range 100 {
+				b.Retain().Release()
+			}
+		})
+	}
+	wg.Wait()
+	b.Release()
+	if got := budget.Reserved(); got != 0 {
+		t.Errorf("after the holders and the last Release %d reserved, want 0", got)
+	}
+}
+
 // A retained buffer keeps its bytes and its reservation until its last
 // borrower releases it.
 func TestBufReturnsAtItsLastRelease(t *testing.T) {
