@@ -61,8 +61,14 @@ start and names the record that replaced it.
 - output path: `docs/internals/planning/rfc-13-config-plan.md`;
 - dashboards: none.
 
-**RFC amendments.** None in this pull request. The ones this plan relies on land with the plans that
-need them:
+**RFC amendments in this pull request.** The user agreed to it:
+- **A1. A change to `identity.directory`'s domain controller address or DNS server is written by
+  `admin` only** (RFC 13 Appendix B's `identity.directory` row). An `operator` may otherwise keep
+  the existing, correctly owned bind-credential reference and point the address at their own host,
+  which then receives the credential. The row's text is the RFC 18 plan's pull request's, word for
+  word, which carries this clause too, so the two merge cleanly in either order.
+
+The amendments this plan relies on land with the plans that need them:
 - the adapter `port` row and the `node-id` files, in #4050;
 - a settings delete with `expect`, on `ControlPlane` and `ControlPlaneTx`, and the `Secret` view
   with its kind and owner (D10), in RFC 16 §3, in #4050, which edits that block;
@@ -262,14 +268,14 @@ Out of scope, each named in O1:
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 4 | 6 | team | every epic |
-| E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate | 7 | 13 | A | E5; RFC 23's epics 3 and 5 (its X1) |
+| E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 8 | 14 | A | E5; RFC 23's epics 3 and 5 (its X1) |
 | E3 | Settings | a delete and a cross-scope read, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 8 | 17 | B | E5 |
 | E4 | Secrets | `keyprovider` moved, `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, deletion | 6 | 13 | C | E5; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
 | E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, Appendix B's check | 4 | 11 | team | E6 |
-| E6 | E2E green | initialise-if-empty; the launchers on `dfs init`; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
-| | **Total** | | **34** | **70** | | |
+| E6 | E2E green | initialise-if-empty; Compose and `docker/` on `dfs init`; RFC 13 §9's single-node rows through the API | 5 | 9.5 | team | — |
+| | **Total** | | **35** | **70.5** | | |
 
-**Plan estimate: 34 subtasks, 70 man-days.**
+**Plan estimate: 35 subtasks, 70.5 man-days.**
 
 The skill's estimate for RFC 13's 1,177 lines is 3 middle epics (`round(1177 / 400)`), and this plan
 has 3.
@@ -306,6 +312,7 @@ flowchart TD
   E2 -. "X1 in RFC 23's plan: dfs start, dfs init" .-> R35(["RFC 23's epics 3 and 5"]):::sync
   E4 -. "X1: dfs init's first password" .-> R5(["RFC 23's epic 5"]):::sync
   S4(["S4 RFC 23's dfs init exists"]):::sync --> E6["E6 E2E green"]
+  S4 -. "partly: dfsbench on dfs init" .-> E2
   E5 -. "X3 in RFC 23's plan" .-> R7(["RFC 23's integration epic"]):::sync
   E5 --> E6
   classDef blocker stroke:#c0392b,stroke-width:3px
@@ -331,7 +338,9 @@ flowchart TD
   slot for `Check`, exist. Unblocks epic 5, which fills both slots; RFC 23's plan calls that X3, and
   its integration epic waits for it. Neither of RFC 23's epics 3 and 4 calls this plan's epic 3, so
   no edge runs from it to them.
-- **S4, outside this plan.** RFC 23's plan's `dfs init` exists (its epic 5). Unblocks epic 6.
+- **S4, outside this plan.** RFC 23's plan's `dfs init` exists (its epic 5). Unblocks epic 6, and
+  epic 2's last piece, `dfsbench` on `dfs init`; the rest of epic 2 is RFC 23's X1, which `dfs init`
+  itself waits on.
 
 ### 3.3 Blockers
 
@@ -346,7 +355,7 @@ flowchart TD
 | E2 | RFC 23's epics 3 and 5 (its X1), partly | `dfs start` reads `pkg/bootstrap` and the node identity, and `dfs init` writes the identity; the rest of both epics starts before. |
 | E4 | RFC 23's epic 5 (its X1), partly | `dfs init`'s first password and the API's signing key are sealed `Secret` records. |
 | E5 | RFC 23's integration epic (its X3) | RFC 23's §12 rows write and reconcile settings through the wired path. |
-| RFC 23's epic 5 (outside, S4) | E6 | The initialisation and upgrade rows run `dfs init`. |
+| RFC 23's epic 5 (outside, S4) | E6; E2, partly | The initialisation and upgrade rows run `dfs init`, and so does `dfsbench`'s backend, epic 2's last piece. |
 
 ### 3.4 Splitting the work
 
@@ -466,9 +475,10 @@ operator is its own module, outside the test; it still sets v1's `DITTOFS_DATABA
 `DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET` (`dittoserver_controller.go`), which now refuse the
 start, and moving it is RFC 23's plan's O4.
 
-Epic 6 starts each launcher through `dfs init` once it exists (S4). Dropping the first-password name
-opens no window of its own: from RFC 23's plan's epic 1 until epic 6 the launchers start no server
-(RFC 23's plan's D6). This is the user's decision; RFC 23's plan's D6 points here.
+`dfsbench` comes back first, so v2 is measured against v1 as early as it can be: epic 2 ends by
+starting its backend through `dfs init` and `dfs start`, once RFC 23's plan has `dfs init` (S4).
+Epic 6 starts `docker-compose.yml` and `docker/` the same way. Dropping the first-password name opens
+no window of its own: until each is moved, the launchers start no server (RFC 23's plan's D6). This is the user's decision; RFC 23's plan's D6 points here.
 - **Prior art (from memory).** etcd and PostgreSQL keep a host file of the same scope.
 - **Applied by** epic 2.
 
@@ -868,7 +878,7 @@ the three packages and the views compile with stub bodies.
 
 ### Epic 2 — Bootstrap, node identity and versions
 
-**Epic 2 estimate: 7 subtasks, 13 man-days.**
+**Epic 2 estimate: 8 subtasks, 14 man-days.**
 
 A host's file loads, refuses what is not bootstrap, and gives the node its identity. A node starts
 only where its versions overlap the installation's.
@@ -910,6 +920,9 @@ value; D7's drift test passes.
 - The version gate (§4.3 above), over the installation's active versions, the store format's
   active version in `\x00format` (RFC 13 §5.5) and each namespace's block format version, with
   `format_active_version` and `format_supported_range`.
+- Last, once RFC 23's plan has `dfs init` (S4): `dfsbench`'s backend initialises the installation,
+  with its first password, through `dfs init`, and starts it with `dfs start` (D7), so v2 is
+  measured against v1 from here on (RFC 23's plan's D6).
 
 ### Epic 3 — Settings
 
@@ -927,8 +940,10 @@ of `Check`, each on a section or key declared in the test: the §5.1 bound refus
 for a delete; D9's refusal of a store location's change, its credential reference repointed at a
 freshly sealed `remote credential` among them, and an initial put that passes; D10's
 refusal of a reference swapped to a secret of another kind or owner; the §5.4 format-version
-refusal; a required key left unset; and each role's write to an admin-only section and to a default
-one, only an `admin`'s passing the first and an `operator`'s passing the second.
+refusal; a required key left unset; each role's write to an admin-only section and to a default
+one, only an `admin`'s passing the first and an `operator`'s passing the second; and, with the same
+rank check, an `operator`'s change to `identity.directory`'s domain controller address or DNS server
+refused and an `admin`'s passing, while an `operator`'s change to its other fields passes (A1).
 
 **Expected content:**
 - The kvstore settings view: a delete, raising `CFGGEN` in its transaction as `PutSetting` does; a
@@ -939,6 +954,8 @@ one, only an `admin`'s passing the first and an `operator`'s passing the second.
   `Validate` (D2); its required keys, the ones with no default (RFC 13 §4.2), since a strict decode
   over a full `def T` cannot tell an omitted field from its zero value; its write role, `admin`
   for the sections RFC 13 Appendix B writes by `admin` only (`identity.oidc`, `api.oidc_role_map`),
+  and per key where a row says so (`identity.directory`'s domain controller address and DNS server,
+  A1),
   compared by an explicit rank, since `UserRole` is a string; its `Per` thing for Appendix B's
   "per journal" rows; its `SecretRef` fields with their kinds (D10); and `Of` refusing a class,
   `Required` or `SecretRef` name that is not a field of `T`.
@@ -1031,7 +1048,7 @@ reported refused and the second applied; a next-write change is read by the comp
 
 ### Epic 6 — E2E green
 
-**Epic 6 estimate: 5 subtasks, 10 man-days.**
+**Epic 6 estimate: 5 subtasks, 9.5 man-days.**
 
 RFC 13 §9's single-node rows run against a server `node.New` builds, through the API.
 
@@ -1061,8 +1078,9 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
   node-identity clauses by epic 2's `NodeID`, `InitNodeID` and `WriteMissingNodeIDs`, run here end
   to end. Its last clause, a new identity recorded by a recovery import, waits for RFC 26 (O1).
 - Propagation and the single-node upgrade rows, with RFC 23's plan's `dfs init`.
-- The launchers on `dfs init`: `docker-compose.yml`, `docker/bootstrap.sh` and `dfsbench`'s backend
-  initialise the installation, with its first password, through `dfs init` before `dfs start` (D7).
+- The launchers on `dfs init`: `docker-compose.yml` and `docker/bootstrap.sh` initialise the
+  installation, with its first password, through `dfs init` before `dfs start`, as epic 2 did for
+  `dfsbench` (D7).
 
 ## 6. Risks and open points
 
