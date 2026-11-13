@@ -3147,7 +3147,12 @@ metadata alone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20
   requires a clone to be atomic, and a source written between two batches would
   leave the destination holding a state the source never had. Registration
   waits for writes already admitted to the extent to stage before `asOf` is
-  read. Offers, offload commits, fills and eviction never consult the
+  read, and for a removal still in flight over the extent to end its phase 1.
+  A call carrying an admitted hook ([§12.1](#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service))
+  answers such a removal `ErrDelay` (`DelayConflict`) at once instead: its
+  caller holds the files' admission locks until the hook runs, and a removal
+  its loop retries may hold its guard for as long as the store refuses its
+  phase 1. Offers, offload commits, fills and eviction never consult the
   registration, so offload and eviction of the source continue: an extent held
   at `asOf` and released since is covered by a ref at or above its version,
   which the adoption takes — the same bytes. A same-file clone registers its
@@ -3736,6 +3741,7 @@ removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)
 | `Read(share, file, off, dst)` | [§7](#7.%20Read) |
 | `Truncate(share, file, size)`, `Deallocate(share, file, off, n)`, `Delete(share, file)` | [§8](#8.%20Truncate%2C%20deallocate%20and%20release) |
 | `Clone(srcShare, src, dstShare, dst, x)`, `Copy(srcShare, src, dstShare, dst, xs)` | [§9](#9.%20Clone) |
+| `WithAdmitted(ctx, hook)`, `Admitted(ctx)` | the hook `Clone`, and each chunk of `Copy`, calls on the calling goroutine with none of the engine's locks held: on a new clone once its admission's refusals have passed and it holds its registrations, before step 1; on a join once it has found the running clone, which may already have changed the destination. A retry of a done clone answers without calling it. Its error refuses the call, changing nothing; on a copy's later chunk it ends the copy short. `Admitted` runs it, for another `Content` to call at the same point. [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) |
 | `Overlay(share, file)` | size, times and version of the journal's uncommitted operations of the file, replayed in version order, and whether any is pending ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) |
 | `Allocation(share, file, off)` | [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) |
 | `PrepareCut(shard)`, `CommitCut(shard)` | the snapshot cut, [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
@@ -3826,6 +3832,13 @@ func (e *Engine) Clone(ctx context.Context, srcShare ShareID, src FileID, dstSha
 func (e *Engine) Copy(ctx context.Context, srcShare ShareID, src FileID, dstShare ShareID, dst FileID, xs []Extent) (int64, error) // in order, as bounded clones; short count at the deadline; the shares as for Clone
 func (e *Engine) Overlay(ctx context.Context, s ShareID, f FileID) (o Overlay, pending bool, err error) // journal only; no metadata read; pending false: the File record alone answers
 func (e *Engine) Allocation(ctx context.Context, s ShareID, f FileID, off int64) (Span, error)      // RFC 6 §2's Span, the journal's uncommitted operations applied (§7.6)
+
+// WithAdmitted returns ctx carrying admitted, which Clone and each of Copy's
+// chunks call once admitted and before step 1, or once joined, with no engine
+// lock held; its error refuses the call. admitted must not be nil.
+func WithAdmitted(ctx context.Context, admitted func() error) context.Context
+// Admitted runs the hook ctx carries, if any, and answers its error.
+func Admitted(ctx context.Context) error
 
 // Control: node-local.
 func (e *Engine) PrepareCut(ctx context.Context, shard ShardID) error              // RFC 12 §2.3 prepare, gate open
