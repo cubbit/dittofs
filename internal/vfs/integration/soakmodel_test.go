@@ -1,3 +1,5 @@
+//go:build engine_conformance && engine_soak
+
 package integration
 
 import (
