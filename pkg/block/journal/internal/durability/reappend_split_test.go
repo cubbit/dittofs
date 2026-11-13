@@ -112,7 +112,17 @@ func TestTwoFailedWindowsReappendedIntoOneNearFullSegmentEachLandWhole(t *testin
 	r.d.BindStreams(r.streams)
 	f, g, h := file(1), file(2), file(3)
 
+	// Each publish below rolls past a sealed segment and takes a spare, four
+	// takes from a pool of two: the append waits the pool's settle so it
+	// never races the refill into the spare limit.
+	waitSpares := func() {
+		t.Helper()
+		if err := r.pool.WaitSpares(t.Context()); err != nil {
+			t.Fatalf("WaitSpares before a rolling append: got %v, want the pool refilled", err)
+		}
+	}
 	failSeal := func(fid core.FileID, payload string, ends int) {
+		waitSpares()
 		loc, _ := r.publish(t, fid, 0, payload)
 		r.keptPages.Store(loc.Segment, struct{}{})
 		if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(loc.Segment), 1, errors.New("seal boom"))); err != nil {
@@ -137,6 +147,7 @@ func TestTwoFailedWindowsReappendedIntoOneNearFullSegmentEachLandWhole(t *testin
 	}
 	failSeal(g, wantG, 2)
 	// The stream's current segment is now part full.
+	waitSpares()
 	r.publish(t, h, 0, strings.Repeat("c", 40000))
 
 	r.d.takeWindows(st)
