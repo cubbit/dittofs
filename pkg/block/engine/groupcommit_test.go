@@ -16,6 +16,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -645,6 +646,43 @@ func TestAConflictTheStoreKeepsRetryingHoldsNoBatch(t *testing.T) {
 	}
 }
 
+// A batch the store keeps retrying on one file's conflict splits at the batch
+// bound, not the conflict bound: the file beside the conflicting one commits
+// while the conflict bound is an hour off.
+func TestABatchConflictSplitsBeforeTheConflictBound(t *testing.T) {
+	var x entity.FileID
+	// A commit holding x meets a conflict that never clears: the store
+	// retries it until the call's context ends, as it does under a steady
+	// stream of chmods on x.
+	u := newUnit(t, onCommit(func(ctx context.Context, next engine.Existence, p []kvstore.PendingExistence, marks *kvstore.MarksWrite) (map[entity.FileID]error, error) {
+		if slices.ContainsFunc(p, func(pe kvstore.PendingExistence) bool { return pe.File == x }) {
+			<-ctx.Done()
+			return nil, errors.Join(kvstore.ErrConflict, ctx.Err())
+		}
+		return next.Commit(ctx, p, marks)
+	}))
+	u.e.SetConflictBound(time.Hour)
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	a := u.create(t, "a")
+	x = u.create(t, "x")
+	// x is staged first, so the batch sorts it first and its split tries x
+	// alone before a: a leaf held to the conflict bound would hold a too.
+	u.write(t, x, 0, []byte("x"))
+	u.clock.Advance(time.Millisecond)
+	u.write(t, a, 0, []byte("a"))
+	eventually(t, "the group commit's timer is set", func() bool { return u.clock.Pending() > 0 })
+	u.clock.Advance(time.Second) // a and x are both due now, so one batch takes both
+	// The bound is a wall-clock context deadline the injected clock does not
+	// drive, so eventually's bounded wait is the assertion. Nothing asks for a
+	// now, which would sort it ahead of x.
+	eventually(t, "the file beside a conflicting one commits before the conflict bound", func() bool { return !u.e.HasEntry(a) })
+	if n := u.e.Stats().GroupCommitSplits; n == 0 {
+		t.Errorf("engine_group_commit_splits_total %d, want the batch split", n)
+	}
+}
+
 // A file a split left failing alone has already failed alone: it backs off
 // at once, with no further solo try, and existence_commit_failing names it.
 func TestASplitLeafBacksOffAtOnce(t *testing.T) {
@@ -1189,4 +1227,35 @@ func TestACoveredCallerKeepsALaterAskForTheSameFile(t *testing.T) {
 			t.Logf("the later caller, ended by its context: %v", err)
 		}
 	}
+}
+
+// lateArmClock is the unit's clock moving by step between the group commit
+// reading it and arming its timer: its first After of wait advances the clock
+// before it arms, as a test's Advance racing the group commit can.
+type lateArmClock struct {
+	*sim.TestClock
+	wait, step time.Duration
+	once       sync.Once
+}
+
+func (c *lateArmClock) After(d time.Duration) <-chan struct{} {
+	if d == c.wait {
+		c.once.Do(func() { c.Advance(c.step) })
+	}
+	return c.TestClock.After(d)
+}
+
+// A clock that reaches a file's age while the group commit arms its timer
+// commits the file, rather than waiting a whole existence_age more.
+func TestAClockPastTheAgeWhileTheTimerIsArmedCommits(t *testing.T) {
+	u := newUnit(t, func(d *engine.Deps) {
+		d.Clock = &lateArmClock{TestClock: d.Clock.(*sim.TestClock), wait: time.Second, step: 2 * time.Second}
+	})
+	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	f := u.create(t, "a")
+	u.write(t, f, 0, []byte("abc"))
+	// The clock never moves again, so the bound is the assertion.
+	eventually(t, "the write is committed without another advance", func() bool { return !u.e.HasEntry(f) })
 }

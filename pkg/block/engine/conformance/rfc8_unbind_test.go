@@ -11,18 +11,20 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// awaitShut returns once a Write on the fixture's share answers ErrStale, which
-// it does only once the Unbind has shut the share, and fails the test if that
-// does not happen. The check after it can miss a regression, but it never fails
-// a correct engine: a correct Unbind is still waiting for the held batch.
+// awaitShut returns once a Write on the fixture's share answers
+// vfserr.ErrStale, the engine's answer once the Unbind has shut the share, and
+// fails the test if that does not happen. The check after it can miss a
+// regression, but it never fails a correct engine: a correct Unbind is still
+// waiting for the held batch.
 func awaitShut(t *testing.T, f *enginetest.Fixture, file entity.FileID) {
 	t.Helper()
 
 	for range 10000 {
 		_, err := f.E.Write(t.Context(), f.Share.ID, file, 0, []byte("x"), engine.WriteOpts{})
-		if errors.Is(err, entity.ErrStale) {
+		if errors.Is(err, vfserr.ErrStale) {
 			return
 		}
 

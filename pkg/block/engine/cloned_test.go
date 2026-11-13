@@ -217,7 +217,7 @@ func TestACloneOfASourcePastItsEndIsRefused(t *testing.T) {
 
 // The reservation is sized from the source's held runs at asOf, and every
 // copy goes through it above the clone's version: three held runs and two
-// holes reserve the runs' bytes. Phase 1 commits the copies
+// holes reserve the runs' record bytes. Phase 1 commits the copies
 // through Copied: the destination's applied is at or above the newest copy,
 // and the copied runs read the source.
 func TestACloneReservesItsCopiesAndWritesThemAboveItsVersion(t *testing.T) {
@@ -231,8 +231,8 @@ func TestACloneReservesItsCopiesAndWritesThemAboveItsVersion(t *testing.T) {
 	h.cloneTarget.set(func() { reserved.Store(u.j.Stats().ReservedBytes) })
 	u.clone(t, src, dst, vfserr.Extent{Len: 4*mib + mib/2})
 
-	if n := reserved.Load(); n != 2*mib+mib/2 {
-		t.Errorf("reserved %d bytes at the journal step, want %d", n, 2*mib+mib/2)
+	if n, want := reserved.Load(), 2*engine.RecordBytes(mib)+engine.RecordBytes(mib/2); n != want {
+		t.Errorf("reserved %d bytes at the journal step, want %d", n, want)
 	}
 	if n := u.j.Stats().ReservedBytes; n != 0 {
 		t.Errorf("%d bytes still reserved after the clone, want none", n)

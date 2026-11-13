@@ -41,10 +41,7 @@ type groupCommit struct {
 	// both zero once a batch commits.
 	wideBackoff time.Duration
 	wideCap     int
-	// unbuilt is the journal's not-implemented answer to the last batch's
-	// sync, until a batch commits: a commit waiting on f answers it.
-	unbuilt error
-	marks   marks
+	marks       marks
 
 	wake   chan struct{} // a file became due sooner than the timer, or now
 	stop   chan struct{}
@@ -452,6 +449,7 @@ func (g *groupCommit) run() {
 		if h := g.e.beforeTake.Load(); h != nil {
 			(*h)()
 		}
+		start := g.e.d.Clock.Now()
 		batch, last, wait := g.take()
 		if h := g.e.hooks.taken.Load(); h != nil && len(batch) > 0 {
 			(*h)()
@@ -473,6 +471,12 @@ func (g *groupCommit) run() {
 		var timer <-chan struct{}
 		if wait >= 0 {
 			timer = g.e.d.Clock.After(wait)
+			// The timer counts wait from when it is armed: a clock that
+			// reached the deadline since take read it would leave it a
+			// whole wait late, so take looks again.
+			if !g.e.d.Clock.Now().Before(start.Add(wait)) {
+				continue
+			}
 		}
 		select {
 		case <-g.wake:
@@ -623,28 +627,10 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 			timedOut = timedOut || (ctx.Err() == nil && !errors.Is(err, kvstore.ErrClosed))
 		}
 	}
-	// decision: a sync the journal answers journal.ErrNotImplemented ends the
-	// waiting commits with that error and keeps no backoff, nor leaves the
-	// files due: the journal documents the answer as never retried, and no
-	// retry can make an unbuilt sync succeed. It costs a stubbed journal a
-	// failed commit where it used to answer retry-shortly for good. It holds
-	// while the journal's whole Sync is a stub. Withdraw it before Sync
-	// answers ErrNotImplemented for one unread file (core/errors.go,
-	// ErrUnreadable): g.unbuilt is journal-wide, so one file's answer would
-	// fail every commit on the journal and drop the batch's other files from
-	// the due set.
-	// Repack keeps its own interim retry-later answer for the same error
-	// because it has a figure to refuse by; a commit has none.
-	unbuilt := errors.Is(syncErr, journal.ErrNotImplemented)
 	var shared time.Time
-	switch {
-	case unbuilt:
-		g.mu.Lock()
-		g.unbuilt = syncErr
-		g.mu.Unlock()
-	case wide != nil:
+	if wide != nil {
 		shared = g.widen(wide, len(batch), timedOut)
-	case len(batch) > 0:
+	} else if len(batch) > 0 {
 		g.narrowed()
 	}
 	var dones []func()
@@ -654,7 +640,7 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 		if err == nil || (syncErr == nil && !storeWide(err)) {
 			retry = g.outcome(c.b, c.f, err, len(batch) == 1 || alone[c.f])
 		}
-		dones = append(dones, g.e.settle(g, c, err == nil, retry, unbuilt)...)
+		dones = append(dones, g.e.settle(g, c, err == nil, retry)...)
 	}
 	// The Dones run before the waiters wake, so a commitNow this batch
 	// answers returns with its writes' reservations released, not still
@@ -715,7 +701,6 @@ func (g *groupCommit) widen(err error, files int, timedOut bool) time.Time {
 func (g *groupCommit) narrowed() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.unbuilt = nil
 	if g.wideBackoff != 0 {
 		g.e.d.Logger.Warn("existence_commit_failing cleared")
 		g.e.conds.clear(condKey{conditionExistenceCommitFailing, g})
@@ -1025,11 +1010,22 @@ func (g *groupCommit) awaitMarks(ctx context.Context, read uint64) error {
 // if the store's failure shapes grow beyond a file in the map and a whole
 // call.
 func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExistence, mw *kvstore.MarksWrite, failed map[entity.FileID]error, alone map[entity.FileID]bool) (recorded bool, err error) {
-	cctx, cancel := e.bounded(ctx)
+	bound := time.Duration(e.conflictBound.Load())
+	if len(pending) > 1 {
+		bound = min(bound, batchConflictBound)
+	}
+	return e.splitUnder(ctx, bound, pending, mw, failed, alone)
+}
+
+// splitUnder is commitSplit with each store call cut at bound, the batch's
+// own for every call of its split, the leaves' included, so a leaf that keeps
+// conflicting holds the half after it no longer than any other call.
+func (e *Engine) splitUnder(ctx context.Context, bound time.Duration, pending []kvstore.PendingExistence, mw *kvstore.MarksWrite, failed map[entity.FileID]error, alone map[entity.FileID]bool) (recorded bool, err error) {
+	cctx, cancel := context.WithTimeoutCause(ctx, bound, errBoundCut)
 	m, err := e.d.Existence.Commit(cctx, pending, mw)
 	cancel()
 	if mw != nil && (errors.Is(err, kvstore.ErrOpenGenMoved) || errors.Is(err, kvstore.ErrSyncMarks)) {
-		_, _ = e.commitSplit(ctx, pending, nil, failed, alone) // no marks: it reports through failed
+		_, _ = e.splitUnder(ctx, bound, pending, nil, failed, alone) // no marks: it reports through failed
 		return false, err
 	}
 	if err == nil {
@@ -1047,7 +1043,7 @@ func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExist
 		// without them, so none is backed off without having been tried
 		// without the marks (RFC 8 §5.2).
 		merr := e.commitMarksAlone(ctx, mw)
-		_, _ = e.commitSplit(ctx, pending, nil, failed, alone) // no marks: it reports through failed
+		_, _ = e.splitUnder(ctx, bound, pending, nil, failed, alone) // no marks: it reports through failed
 		return merr == nil, merr
 	}
 	if len(pending) == 1 || ctx.Err() != nil || storeWide(err) {
@@ -1065,8 +1061,8 @@ func (e *Engine) commitSplit(ctx context.Context, pending []kvstore.PendingExist
 	}
 	e.splits.Add(1)
 	mid := len(pending) / 2
-	recorded, err = e.commitSplit(ctx, pending[:mid], mw, failed, alone)
-	_, _ = e.commitSplit(ctx, pending[mid:], nil, failed, alone) // no marks: it reports through failed
+	recorded, err = e.splitUnder(ctx, bound, pending[:mid], mw, failed, alone)
+	_, _ = e.splitUnder(ctx, bound, pending[mid:], nil, failed, alone) // no marks: it reports through failed
 	return recorded, err
 }
 
@@ -1164,18 +1160,38 @@ func (e *Engine) bounded(ctx context.Context) (context.Context, context.CancelFu
 	return context.WithTimeoutCause(ctx, time.Duration(e.conflictBound.Load()), errBoundCut)
 }
 
+// batchConflictBound bounds an existence commit of more than one file, so a
+// batch the store keeps retrying on a conflict splits after about one attempt
+// rather than after the whole conflict bound: under a steady stream of
+// namespace writes every level of the split conflicts again, and at a second
+// a level the files beside the conflicting one waited seconds, not the few
+// extra transactions the split promises (RFC 8 §5.2). Every call of such a
+// batch's split takes it, a leaf's included, so a leaf that keeps conflicting
+// holds the half after it no longer; a batch of one file keeps the conflict
+// bound, since nothing waits behind it.
+//
+// ponytail: a fixed 50 ms. The bound only stops the store's retries on a
+// backend whose attempt ignores its context, but a backend that cuts an
+// attempt at it reads a healthy batch slower than 50 ms as a store-wide
+// failure and backs the batch off. Upgrade to a one-attempt update for the
+// group commit, a change to kv's Update and Existence.Commit that answers a
+// conflict after a single attempt, when a batch is seen to take near the
+// bound or a backend cuts attempts at their context.
+const batchConflictBound = 50 * time.Millisecond
+
 // errBoundCut is the cause of a store call's context the conflict bound cut,
-// which tells the self-fence that cut from the caller's own (callerEnded).
+// or a batch's batchConflictBound, which tells the self-fence that cut from
+// the caller's own (callerEnded).
 var errBoundCut = errors.New("engine: the conflict bound cut the store call")
 
 // settle ends c's part in its batch under its entry's lock: a committed file
 // loses the operations the batch claimed, whose Dones it returns, is settled
 // in the journal through the newest of them, and is put back on the due set
 // if it holds others; a failed one has its claim released, keeps them and is
-// retried at retry, unless unbuilt, which leaves it off the due set. A claimed write a failed window dropped leaves either way,
+// retried at retry. A claimed write a failed window dropped leaves either way,
 // its Done having run when it was dropped. The in-batch mark is cleared and
 // its waiters woken; the entry is dropped once it holds nothing.
-func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time, unbuilt bool) (dones []func()) {
+func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time) (dones []func()) {
 	fe := c.fe
 	e.files.lock(fe)
 	var through journal.Version
@@ -1204,11 +1220,7 @@ func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time, un
 	fe.inBatch = false
 	close(fe.batchDone)
 	fe.batchDone = nil
-	if len(fe.ops) > 0 && unbuilt && !ok {
-		g.mu.Lock()
-		delete(g.due, c.f)
-		g.mu.Unlock()
-	} else if len(fe.ops) > 0 {
+	if len(fe.ops) > 0 {
 		g.mu.Lock()
 		d := g.due[c.f]
 		if d == nil {
@@ -1280,12 +1292,6 @@ func (e *Engine) commitThrough(ctx context.Context, b *binding, f entity.FileID,
 		}
 		if lost {
 			return errLost
-		}
-		g.mu.Lock()
-		unbuilt := g.unbuilt
-		g.mu.Unlock()
-		if unbuilt != nil {
-			return fmt.Errorf("engine: %w: %w", unbuilt, vfserr.ErrUnavailable)
 		}
 		if ro := b.j.Stats().ReadOnly; ro.ReadOnly {
 			return e.journalErr(readOnly(ro))

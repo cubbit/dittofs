@@ -2,61 +2,33 @@
 # naming the epic expected to turn it green. A test that starts to pass fails the run: remove
 # its entry in the change that turned it green, a journal change included. Each entry's
 # message is the failure it is known by: a test failing for any other reason is unexpected.
-- test: TestRFC8A_Deallocate
-  message: 'vfs: retry shortly: commit'
+- test: TestRFC8A_JournalAuthority
+  message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 5: a deallocate larger than the journal''s free capacity reads as zeros; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at removal phase 1, which retries the unbuilt Sync of the journal (retry-later with DelayCommit, the guard kept) until the engine''s removal path surfaces the unbuilt Sync as the commit path does, or the journal has Sync.'
-  issue: '#3588'
-- test: TestRFC8A_FailedWindow
-  message: 'Commit over a failed window: verifier 0000000000000000, sequence 0, engine: journal: not implemented'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 4: a failed sync window reaches the next Commit as a new verifier and a raised loss sequence; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#3587'
-- test: TestRFC8A_GroupCommit
-  message: 'every file''s first write commits: not within 10s'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 4: a group commit conflict delays only the conflicting files; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a wait for the group commit to reach the store: the journal''s Sync is not built, so the commit fails with journal: not implemented and never commits, until the journal has Sync.'
-  issue: '#3587'
-- test: TestRFC8A_OverwriteWaitsForExistence
-  message: 'the first write''s existence commits: not within 10s'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 4: Commit waits for an overwrite''s existence; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a wait for the group commit to reach the store: the journal''s Sync is not built, so the commit fails with journal: not implemented and never commits, until the journal has Sync.'
-  issue: '#3587'
-- test: TestRFC8A_StableWriteLazyExistence
-  message: 'Commit: engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 6: recovery serves size and mtime at start; also Commit and the group commit (epic 4). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
+  reason: 'Epic 6: recovery commits a durable write whose existence was uncommitted at the crash. The row gets past its write and the sync bound, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#3589'
-- test: TestRFC8A_StalledStore
-  message: 'the first write''s existence commits: not within 10s'
+- test: TestRFC8A_StableWriteLazyExistence
+  message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: Commit under a store that commits nothing; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a wait for the group commit to reach the store: the journal''s Sync is not built, so the commit fails with journal: not implemented and never commits, until the journal has Sync.'
-  issue: '#3587'
+  reason: 'Epic 6: recovery serves size and mtime at start; also Commit and the group commit (epic 4). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#3589'
 - test: TestRFC8A_SyncBeforeExistence
-  message: 'the group commit commits the write''s size: not within 10s'
+  message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 4: the group commit syncs before it commits existence; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a wait for the group commit to reach the store: the journal''s Sync is not built, so the commit fails with journal: not implemented and never commits, until the journal has Sync.'
+  reason: 'Epic 4: the group commit syncs before it commits existence; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#3587'
 - test: TestRFC8A_TruncateSyncBeforeExistence
-  message: 'vfs: retry shortly: commit'
+  message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 5: a truncate''s phase 1 size is backed by synced records across a crash; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at removal phase 1, which retries the unbuilt Sync of the journal (retry-later with DelayCommit, the guard kept) until the engine''s removal path surfaces the unbuilt Sync as the commit path does, or the journal has Sync.'
+  reason: 'Epic 5: a truncate''s phase 1 size is backed by synced records across a crash; also the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#3588'
 - test: TestRFC8A_TruncateUpSurvivesACrash
   message: 'holds segments; recovering them is not built'
@@ -93,33 +65,19 @@
   category: feature
   reason: 'Epic 6: a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the fixture''s journal re-initialisation, whose rename of the format file fails, until the journal''s Init and re-initialisation match what the row needs.'
   issue: '#3589'
-- test: TestRFC8A_Clone
-  message: 'Clone answered engine: journal: not implemented: vfs: unavailable before its phase 1'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 8: a clone keeps the writes outside its extent, never waits, and a refused reservation leaves the destination (§9.1). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at Clone, which answers unavailable until the clone''s journal calls are built.'
-  issue: '#3591'
-- test: TestRFC8A_RemovalsOfACloningDestination
-  message: 'Clone: engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 8: the source''s clone-kind open is gone once the clone is answered (§9.1); the removals held behind the clone are the rest of the row. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#3591'
 - test: TestRFC8A_RecoveryThroughSince
-  message: 'Commit: engine: journal: not implemented: vfs: unavailable'
+  message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a truncate cut off before its removal record is applied at start, before the file is served, and settled. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
+  reason: 'Epic 6: a truncate cut off before its removal record is applied at start, before the file is served, and settled. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#3589'
 - test: TestRFC8A_CleanCloseThenRestartReappliesNothing
-  message: 'Commit: engine: journal: not implemented: vfs: unavailable'
+  message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a clean stop commits every pending existence and forgets no tag, so the restart finds nothing above applied and the write reads back. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
+  reason: 'Epic 6: a clean stop commits every pending existence and forgets no tag, so the restart finds nothing above applied and the write reads back. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#3589'
 - test: TestRFC8A_RecoveryReappliesInVersionOrder
   message: 'holds segments; recovering them is not built'
@@ -129,11 +87,11 @@
   reason: 'Epic 6: a write, a truncate and a write replay in version order at start. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
   issue: '#3589'
 - test: TestRFC8A_SyncedLossReadsLost
-  message: 'Sync: journal: not implemented'
+  message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a synced loss is committed as lost at start and reads as lost. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
+  reason: 'Epic 6: a synced loss is committed as lost at start and reads as lost. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#3589'
 - test: TestRFC8A_AbortedReleaseAtStart
   message: 'holds segments; recovering them is not built'
@@ -177,34 +135,6 @@
   category: feature
   reason: 'Epic 6: the raise halves of the version limit row, at a block of 16 the conformance package cannot set. Init and Open work; the fixture now attaches the share; the row stops at its own check: the raise halves need a block of 16, which this package cannot set yet. Then back to the row''s own need: until the journal has Share, Draw and SetVersionLimit, then at the missing knob until an issue gives the package one.'
   issue: '#3589'
-- test: TestRFC8B_SelfFenceThreshold
-  message: 'after 5 s: the existence commit reaches the store'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 7: the store stalled 31s fences writes and stability points, serves reads, raises node_fenced, and the next commit clears it under the same verifier; also the group commit (epic 4). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a wait for the group commit to reach the store: the journal''s Sync is not built, so the commit fails with journal: not implemented and never commits, until the journal has Sync.'
-  issue: '#3590'
-- test: TestRFC8B_SelfFenceFailing
-  message: 'after 5 s: the existence commit reaches the store'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 7: every write transaction failing at once fences after 30s and clears once one commits; also the group commit (epic 4). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a wait for the group commit to reach the store: the journal''s Sync is not built, so the commit fails with journal: not implemented and never commits, until the journal has Sync.'
-  issue: '#3590'
-- test: TestRFC8B_SelfFencePerFileErrors
-  message: 'after 5 s: the existence commit reaches the store'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 7: a file failing alone in every commit for 31s does not fence; also the group commit (epic 4). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a wait for the group commit to reach the store: the journal''s Sync is not built, so the commit fails with journal: not implemented and never commits, until the journal has Sync.'
-  issue: '#3590'
-- test: TestRFC8B_SelfFenceHeldAfterIdle
-  message: 'after 5 s: the existence commit reaches the store'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Epic 7: after an idle minute, an existence commit held 1s starts a fresh 30s; also the group commit (epic 4). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a wait for the group commit to reach the store: the journal''s Sync is not built, so the commit fails with journal: not implemented and never commits, until the journal has Sync.'
-  issue: '#3590'
 - test: TestRFC8_SelfFenceVersionLimitRaise
   message: 'the failing raise fences the node'
   status: fail
@@ -213,11 +143,11 @@
   reason: 'Epic 7: the version limit''s raise failing for 31s fences the node and its commit clears it. The engine side is done: the raise loop runs as a retrying owner. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at its own assertion, that the failing raise fences the node, until the journal has what it needs.'
   issue: '#3590'
 - test: TestRFC8A_RemovalCrashedBetweenBatchesResumes
-  message: 'Commit: engine: journal: not implemented: vfs: unavailable'
+  message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: a removal crashed between two batches resumes at the restart, the extent reads removed before the loop runs and after, and the record is pruned. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
+  reason: 'Epic 6: a removal crashed between two batches resumes at the restart, the extent reads removed before the loop runs and after, and the record is pruned. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#3700'
 - test: TestRFC8A_RemovalDoneNotPrunedIsPrunedAtRestart
   message: 'holds segments; recovering them is not built'
@@ -227,81 +157,25 @@
   reason: 'Epic 6: a release whose last batch committed and whose prune did not is pruned at the restart, and its index entry goes. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the reopen of a journal that holds segments, which the journal refuses (recovering them is not built), or the close of the crashed engine before it; the row waits on recovery at open until the journal has it.'
   issue: '#3700'
 - test: TestRFC8B_JournalSyncFailed
-  message: 'Commit over a re-appended window: engine: journal: not implemented: vfs: unavailable'
+  message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: a failed window with loss records raises journal_sync_failed, which clears an hour later on the test clock, while a failed sync whose window is re-appended raises none, and neither does a restart over the loss record; also the failed window (epic 4) and the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
+  reason: 'Epic 7: a failed window with loss records raises journal_sync_failed, which clears an hour later on the test clock, while a failed sync whose window is re-appended raises none, and neither does a restart over the loss record; also the failed window (epic 4) and the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#3590'
-- test: TestAPendingTruncateIsTheSize
-  message: 'engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration: GetAttr answers a pending truncate''s size while its phase 1 is held at the store. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestAChownChargesStagedBytesToTheOldOwnerFirst
-  message: 'engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration: a chown commits the file''s pending existence first, so the staged write charges the old owner and moves to the new one once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestAFileFailingItsCommitDelaysOnlyItself
-  message: 'engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration: a store refusing one file''s records leaves only that file''s stable overwrite unanswered, another''s committing. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
 - test: TestACommittedWriteSurvivesACrash
-  message: 'engine: journal: not implemented: vfs: unavailable'
+  message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Engine integration: a write committed through the filesystem, its existence still pending, reads back through the composition rebuilt after a crash, the store holding the size the start''s re-application of existence wrote. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestAStableWriteSyncsUnderTheCallersSpan
-  message: 'the stable write: engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration: a stable write through the filesystem records engine.sync as a child of the caller''s span. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestAStableOverwriteRecordsItsExistenceCommit
-  message: 'engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration: a stable overwrite through the filesystem ends an engine.existence_commit span before its reply. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestAFailingCommitIsAConditionUntilItLands
-  message: 'engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration: a store refusing one file''s records raises existence_commit_failing in Stats for the file''s share, cleared once its existence commit lands. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
+  reason: 'Engine integration: a write committed through the filesystem, its existence still pending, reads back through the composition rebuilt after a crash, the store holding the size the start''s re-application of existence wrote. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#4052'
 - test: TestV19/journal/an_unstable_write_on_a_persistent_open_survives_a_crash
-  message: 'the first write: engine: journal: not implemented: vfs: unavailable'
+  message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Engine integration, RFC 17 V19: an unstable write through a persistent open on a continuously available share is synced before its reply and reads back after a crash. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestV19/journal/a_stable_append_waits_for_no_metadata_transaction
-  message: 'the first write: engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V19: a stable append through the filesystem is answered with no store transaction. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestV19/journal/a_stable_overwrite_stalled_with_the_store_is_a_delay
-  message: 'engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V19: a stable overwrite whose existence commit the store holds answers ErrDelay at its deadline. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
+  reason: 'Engine integration, RFC 17 V19: an unstable write through a persistent open on a continuously available share is synced before its reply and reads back after a crash. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#4052'
 - test: TestV20/journal/a_refusal_repack_can_answer_is_a_delay_until_it_frees
   message: 'the write past the limit answered vfs: retry shortly: capacity before its repack reached the journal'
@@ -317,54 +191,12 @@
   category: feature
   reason: 'Engine integration, RFC 17 V20: a write refused at the share''s journal limit with nothing superseded answers ErrNoSpace at once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
   issue: '#4052'
-- test: TestV22/journal/a_truncate_by_bob
-  message: 'a truncate by bob: vfs: retry shortly: commit'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V22: an unprivileged truncate clears setuid and setgid in a committed change. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at removal phase 1, which retries the unbuilt Sync of the journal (retry-later with DelayCommit, the guard kept) until the engine''s removal path surfaces the unbuilt Sync as the commit path does, or the journal has Sync.'
-  issue: '#4052'
-- test: TestV22/journal/a_deallocate_by_bob
-  message: 'a deallocate by bob: vfs: retry shortly: commit'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V22: an unprivileged deallocate clears setuid and setgid in a committed change. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at removal phase 1, which retries the unbuilt Sync of the journal (retry-later with DelayCommit, the guard kept) until the engine''s removal path surfaces the unbuilt Sync as the commit path does, or the journal has Sync.'
-  issue: '#4052'
-- test: TestV25/journal/a_commit_over_a_failed_window_answers_another_verifier
-  message: 'the commit over a failed window: verifier 0000000000000000, engine: journal: not implemented: vfs: unavailable; want success, other than the write'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V25: a commit whose sync window fails answers a verifier other than the write''s. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestV25/journal/a_stable_write_over_a_failed_window_is_a_delay
-  message: 'the first write: engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V25: a stable write answers its own verifier, and ErrDelay (DelayCommit) when its sync window fails. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestV25/journal/an_unstable_write_dropped_as_lost_changes_the_verifier
-  message: 'after 10s the group commit has not dropped the write'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V25: an unstable write the group commit''s failed sync drops changes the next write''s verifier in the same process. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a wait for the group commit to reach the store: the journal''s Sync is not built, so the commit fails with journal: not implemented and never commits, until the journal has Sync.'
-  issue: '#4052'
-- test: TestV25/journal/an_SMB_flush_through_each_open_fails_once_across_a_loss
-  message: 'pc: the first flush across the loss: engine: journal: not implemented: vfs: unavailable, want ErrLost'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V25: an SMB flush through each of two opens of a file fails once with ErrLost across a failed window, then succeeds. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
 - test: TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag
-  message: 'vfs: retry shortly: commit'
+  message: 'forget the tag: engine: journal: not implemented: vfs: unavailable'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 6: an Unbind returns once the removal batch in flight has, and after a Drop the journal names no entry for the share and every accepted write had one Done (§2.3). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at removal phase 1, which retries the unbuilt Sync of the journal (retry-later with DelayCommit, the guard kept) until the engine''s removal path surfaces the unbuilt Sync as the commit path does, or the journal has Sync.'
+  reason: 'Epic 6: an Unbind returns once the removal batch in flight has, and after a Drop the journal names no entry for the share and every accepted write had one Done (§2.3). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes, the Unbind and the held removal batch, and stops at Drop, whose forget of the tag answers journal: not implemented, until the journal''s Forget is built.'
   issue: '#3589'
 - test: TestRFC8A_UnsuitableJournalAtStart
   message: 'the retry''s timer is set: not within 10s'
@@ -443,96 +275,12 @@
   category: feature
   reason: 'Epic 7: repack draws on the reserve, so a third share is served. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
   issue: '#3590'
-- test: TestV22CopyAndClone/journal/a_copy_by_bob
-  message: 'a copy by bob into alice''s setuid file: engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V22: an unprivileged copy into a setuid and setgid file clears the bits in a committed change, read back through GetAttr before any existence commit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestV22CopyAndClone/journal/a_clone_by_bob
-  message: 'a clone by bob into alice''s setuid file: engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V22: an unprivileged clone into a setuid and setgid file clears the bits in a committed change, read back through GetAttr before any existence commit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestV26/journal/a_copy_past_its_deadline_is_short_and_its_running_chunk_completes
-  message: 'the copy answered 0, engine: journal: not implemented: vfs: unavailable before its first chunk reached the store'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, RFC 17 V26: a 200 MiB copy whose deadline passes in its second chunk answers 64 MiB, the destination holding exactly those bytes, and the second chunk completes past the count before the copy continues from it. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
 - test: TestV26/journal/a_clone_of_a_lost_run_reads_lost_there
-  message: 'engine: journal: not implemented: vfs: unavailable'
+  message: 'holds segments; recovering them is not built'
   status: fail
   fix: planned
   category: feature
-  reason: 'Engine integration, RFC 17 V26: a clone of a source whose synced run the journal lost reads ErrLost there at the destination and the source''s bytes elsewhere. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestContentSuiteOverTheJournal/DoneIsCalledOnceByTheExistenceCommit
-  message: 'engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, the Content suite over the real journal: a write''s Done is called once, by the existence commit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestContentSuiteOverTheJournal/TruncateReadsBackAsEndOfFileOrZeros
-  message: 'vfs: retry shortly: commit'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, the Content suite over the real journal: what a truncate cuts reads as end of file, a grow after it as zeros. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at removal phase 1, which retries the unbuilt Sync of the journal (retry-later with DelayCommit, the guard kept) until the engine''s removal path surfaces the unbuilt Sync as the commit path does, or the journal has Sync.'
-  issue: '#4052'
-- test: TestContentSuiteOverTheJournal/DeallocateReadsBackAsZeros
-  message: 'vfs: retry shortly: commit'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, the Content suite over the real journal: a deallocated extent reads as zeros and is a hole. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at removal phase 1, which retries the unbuilt Sync of the journal (retry-later with DelayCommit, the guard kept) until the engine''s removal path surfaces the unbuilt Sync as the commit path does, or the journal has Sync.'
-  issue: '#4052'
-- test: TestContentSuiteOverTheJournal/DeleteLeavesNothing
-  message: 'the pending release did not finish within 10s'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, the Content suite over the real journal: a release leaves nothing to read or pending and calls each pending write''s Done. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a wait for the group commit to reach the store: the journal''s Sync is not built, so the commit fails with journal: not implemented and never commits, until the journal has Sync.'
-  issue: '#4052'
-- test: TestContentSuiteOverTheJournal/CloneCopiesTheExtentHolesIncluded
-  message: 'Clone: engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, the Content suite over the real journal: a clone makes the destination extent the source''s, holes included. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestContentSuiteOverTheJournal/CopyCopiesItsExtentsInOrder
-  message: 'Copy = 0, engine: journal: not implemented: vfs: unavailable; want 10, nil'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, the Content suite over the real journal: a copy runs its extents in order and answers the bytes it copied. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestContentSuiteOverTheJournal/ARefusedCopyChangesNothing
-  message: 'a clone ending past the source''s size = engine: journal: not implemented: vfs: unavailable, want ErrInvalid'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, the Content suite over the real journal: a copy or clone with an invalid extent, or a source extent past the source''s size, changes nothing. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestContentSuiteOverTheJournal/TheAdmittedHookRunsBeforeTheChange
-  message: 'a clone whose hook admits it = engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, the Content suite over the real journal: a clone or copy runs its admitted hook once admitted and before the destination changes, none on a refusal at admission, and the hook''s error leaves the destination unchanged. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and its refusals and stops at the admitted clone: the journal''s Sync is not built, so the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
-  issue: '#4052'
-- test: TestContentSuiteOverTheJournal/TheVerifierIsStableWhileNothingIsLost
-  message: 'Commit: engine: journal: not implemented: vfs: unavailable'
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'Engine integration, the Content suite over the real journal: with nothing lost every Write and Commit answers one verifier. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the journal''s Sync is not built: the commit answers journal: not implemented, which the engine surfaces without retrying it, until the journal has Sync.'
+  reason: 'Engine integration, RFC 17 V26: a clone of a source whose synced run the journal lost reads ErrLost there at the destination and the source''s bytes elsewhere. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#4052'
 - test: TestContentSuiteOverTheJournal/ALossChangesTheVerifierAndRaisesTheLossSequence
   message: 'the Content under test cannot be made to lose a write'

@@ -7,4 +7,3 @@
 #
 #   - { suite: integration, test: TestName, issue: "#1234", expires: 2026-12-31 }
 
-- { suite: engine-conformance, test: TestRFC8A_JournalAuthority, issue: "#4188", expires: 2026-12-12 }
