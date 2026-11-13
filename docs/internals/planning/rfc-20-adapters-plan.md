@@ -358,7 +358,7 @@ flowchart TD
   E4 & E5 --> S3(["S3 core serves testproto end to end"]):::sync
   S3 -. "New on the real runner" .-> E6
   S4(["S4 internal/node exists, RFC 23"]):::sync --> E7["E7 Integration with the node 🔀"]:::sync
-  E5 -. "WithHold, read by the clone wait" .-> P11(["RFC 17 plan piece 11"]):::sync
+  E5 -. "WithHold, read by the clone wait" .-> P11(["RFC 17 plan, the clone wait"]):::sync
   P12(["RFC 17 plan piece 12"]):::sync -. "memory.New, Faults" .-> E2
   E6 --> E8["E8 E2E green"]
   E7 -. "node-level wiring" .-> E8
@@ -392,7 +392,7 @@ flowchart TD
 | ⛔ E2 | E3–E6 | `core` is proven only on `testproto`; the import test must run from the first package |
 | RFC 17 plan piece 12 | E2, so E3–E6 | E2's import test needs `memory.New`, and `testproto`'s holds `Faults`' releasable hold |
 | E3 | E4, E5, partly | the reader reserves receive bytes before a body; the pipeline reserves the reply. Both start on E1's stubs and finish on E3 |
-| E4 | E5, partly | the pipeline's tests that need a socket (the end-to-end specification, a slow client, a callback's order against a queued reply) run on the real `Conn` over loopback; the rest run at the pipeline's seam, on a recorder that passes the writer's own suite |
+| E4 | E5, partly | the pipeline's tests that need a socket (the end-to-end specification, a connection not read at the cap, a slow client, a callback's order against a queued reply) run on the real `Conn` over loopback; the rest run at the pipeline's seam, on a recorder that passes the writer's own suite |
 | E4, E5 | E6's `New`, via S3 | a scaffold is done only when "not supported" goes through the real pipeline; `protocol/` is built before, against the frozen surface |
 | 🔀 S4 | E7 | no node to wire into |
 | E6 | E8 | `unit/adapter-allocs` runs every gate, the scaffolds' included |
@@ -753,7 +753,7 @@ is read from `memory.New`'s record of mutating calls, §7.2), §4.5, §4.6, §4.
   amendment): interim timer and `HoldCodec.Interim` (`after` 0 on every hold), the final reply under
   `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
   `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, asserted on what reaches the service; the test at its reader, the in-memory service's clone wait
-  (RFC 17 plan piece 11's, V30), is a ledger row (§6.2),
+  (RFC 17's V30, which piece 11 merged without), is a ledger row (§6.2),
   the per-connection
   floor and the hold pool, the credits on `testproto`'s balance for each case §4.6 and
   `HoldCodec` name (past the ceiling; past the floor with the hold pool full; cancelled; a chain
@@ -777,7 +777,7 @@ is read from `memory.New`'s record of mutating calls, §7.2), §4.5, §4.6, §4.
   helper each protocol's table will call for it, are a ledger row (§6.2).
 - T5.8 Request context: the 30 s deadline; cancellation on close and drain.
 - T5.9 RFC 20 §10's metrics, spans and logs, all in `core`, but the connection, close and
-  byte series, which E4 counts (§6.2); series resolved once per table, through the
+  byte series, which E4 counts (§6.2); series resolved once per server and table, through the
   resolve-once call `metrics.Registry` gains here, its first consumer.
 - T5.10 The pipeline micro-benchmark on `testproto` over `vfstest.Null`, its allocation ceiling
   checked in and registered in `unit/adapter-allocs`.
@@ -947,7 +947,7 @@ decision to drop it (its issue closed as not planned).
 | the packages deleted in T1.1 for having no importer: `pkg/discovery/mdns` and `wsd`; `pkg/auth`, `pkg/auth/kerberos`, `pkg/identity/kerberos`, `internal/auth/kerberos`; `internal/mfsymlink` | nothing imports them once v1 is gone | discovery: cutover; Kerberos and `pkg/auth`: RFC 18's plan (#4058); `mfsymlink`: RFC 22 plan | each lifted from develop's history by its consumer |
 | `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | RFC 23's plan (#4050): its epic 1 deletes `pkg/apiclient`'s v1 bodies, these included, since its rule 7 does not keep them, and fixes or removes the e2e code that calls them; its epic 6 rewrites `pkg/apiclient` on `pkg/node/apiv1` | its epic 1, which overrides D5 of `rfc-20-adapters-epic1.md` for these methods; its epic 6 |
 | `metrics.Registry` an alias of `pkg/metrics`' `Metrics` (T1.6), not RFC 25 §8.2's registry; T5.9 adds §8.2's `Spec`, `Counter`, `Gauge` and `Histogram` to it, unchecked | the rest of the registry (the checks of RFC 25 §2 on a `Spec`, `Collect`, the rename) is not built | RFC 25 | when the registry is built |
-| the test of `vfs.WithHold` at its reader: RFC 17's V30, a write into a cloning extent held under `WithHold(10s)` until the clone ends and answered `DelayClone` at once under `WithHold(0)`, which piece 11 lists among what it must pass | the clone wait is not on the branch; E5's T5.5b asserts on what reaches the service | RFC 17 plan, piece 11 | with the clone wait |
+| the test of `vfs.WithHold` at its reader: RFC 17's V30, a write into a cloning extent held under `WithHold(10s)` until the clone ends and answered `DelayClone` at once under `WithHold(0)`, which piece 11 lists among what it must pass | the clone wait is not on the branch: piece 11 merged (#4157) answering `DelayClone` at once, with no held wait; E5's T5.5b asserts on what reaches the service | RFC 17 plan, no piece of it yet: the held wait in the filesystem service | the filesystem service's clone wait |
 | `vfs.Grace{Until}`, the typed `ErrGrace` carrying the shard's grace end, which an `ErrorRow.Hold` reads to bound a hold (RFC 17 §4.3) | named in RFC 17 by T1.9; not yet in `pkg/vfs`, and no piece of the RFC 17 plan builds it | RFC 17 plan, no piece of it yet: the type in `pkg/vfs`, returned by `*vfs.Filesystem` | RFC 22's first row that bounds a hold by a grace's end; E5's T5.5b hands the error to `ErrorRow.Hold` and reads no field of it |
 | `vfs.Shares.MoveTarget`, which says whether a draining request's share has a gateway to move to (`ErrMoved`) or none (`ErrDraining`), asked per request (RFC 20 §3.1) | named in RFC 17 by T1.9; not yet in `pkg/vfs`, and no piece of the RFC 17 plan builds it | RFC 17 plan, no piece of it yet: the method in `pkg/vfs`, `*vfs.Filesystem` (so `memory.New`) and `vfstest.Null`, answering none | E4's T4.5 starts, which calls it; a real target once RFC 15's topology exists |
 
