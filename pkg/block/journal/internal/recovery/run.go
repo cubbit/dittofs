@@ -11,6 +11,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
@@ -26,6 +27,22 @@ type Deps struct {
 	// the journal's later writes. Zero is no bound. A rebuild over the bound
 	// still builds: the bound refuses later writes, never the open.
 	ExtentLimit int64
+
+	// SegmentCap is the size a re-adopted spare's file must hold exactly:
+	// the spares phase unlinks every candidate whose size differs — under
+	// or over — and leaves its id for the pool to make again. Zero, the
+	// cap no spare can be right-sized under, unlinks every candidate; the
+	// open fills the field from the journal's own configured cap.
+	SegmentCap int64
+
+	// SpareTargets is how many spares each of the pool's classes keeps, in
+	// segments: it decides the class each adopted spare is recorded under,
+	// in the fill order — the headroom first, then the repack reserve, then
+	// the content class, with every spare past every target taking the
+	// content class, for none is ever orphaned. The open fills it with the
+	// pool's own targets, so a re-adopted spare lands in the class the pool
+	// would have made it in.
+	SpareTargets segment.Targets
 
 	// rebuildOrder reorders the segments the rebuild dispatches before it
 	// starts a reader; nil keeps the listing's order, the one the open runs
@@ -61,6 +78,11 @@ type State struct {
 	// Tails is the torn-or-corrupt classing of every own and unverified
 	// segment: each one's fate, the damaged set and the corrupt drops.
 	Tails tails
+
+	// Spares is what the spares phase did with the segments it re-adopted:
+	// each adoption, with the id the allocator owns again, and each id the
+	// phase unlinked.
+	Spares Spares
 }
 
 // phase is one step of the open's recovery: the span it runs under, and
@@ -69,7 +91,7 @@ type State struct {
 // built runs as a no-op whose span still opens.
 type phase struct {
 	span core.SpanOp
-	run  func(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version) error
+	run  func(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, marks []core.SyncMark) error
 }
 
 // String names the phase by its span.
@@ -86,7 +108,7 @@ var phases = [...]phase{
 	{span: core.SpanOpenMarksRaise},
 	{span: core.SpanOpenTailProof},
 	{span: core.SpanOpenMarksLostTail},
-	{span: core.SpanOpenSpares},
+	{span: core.SpanOpenSpares, run: runSpares},
 	{span: core.SpanOpenReappend},
 	{span: core.SpanOpenAssembly},
 	{span: core.SpanOpenSeal},
@@ -95,7 +117,7 @@ var phases = [...]phase{
 
 // runAttach is the attach pass as a phase of the run: over the reader the
 // run built, so its collected ranges reach the open's refusal below.
-func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, _ core.Version) error {
+func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, _ core.Version, _ []core.SyncMark) error {
 	att, err := attach(ctx, deps.FS, rd, expect, deps.Log)
 	st.Attached = att
 	return err
@@ -105,7 +127,7 @@ func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 // attached, through the same reader the open refuses on. The index carries
 // deps.ExtentLimit, no bound when it is unset; the builder never consults the
 // bound while rebuilding, so a directory past it still opens.
-func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version) error {
+func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, _ []core.SyncMark) error {
 	limit := deps.ExtentLimit
 	if limit < 1 {
 		limit = math.MaxInt64
@@ -138,13 +160,16 @@ func rebuildReaders(deps Deps) int {
 // Run rebuilds the journal's state from its directory, running the open's
 // recovery phases in order under one open span, checking ctx before each,
 // and running each phase under the context its parent span returned, so
-// every phase span is the open span's child. Only the attach pass is
-// built; the phases after it are named, span-covered steps that change
-// nothing, each checked for the context, so a cancelled open is answered
-// at the boundary the cancellation reached and the directory is left for
-// a later open. floor and marks are carried for the phases that consume
-// them — the rebuild, the marks and the tail's proof — and are unread
-// until one exists.
+// every phase span is the open span's child. The attach pass, the rebuild
+// and the spares phase — the open's first writing one, which re-adopts the
+// spare candidates and zeroes their dirty slots after refusing on every
+// range no bounded read completed — are built; the phases around them are
+// named, span-covered steps that change nothing, each checked for the
+// context, so a cancelled open is answered at the boundary the
+// cancellation reached and the directory is left for a later open. floor
+// and marks are carried for the phases that consume them — floor for the
+// rebuild, and marks for the spares phase, which withholds every candidate
+// a mark names, and for the marks and tail-proof phases not yet built.
 func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {
 	if err := ctx.Err(); err != nil {
 		return State{}, err
@@ -160,7 +185,7 @@ func Run(ctx context.Context, deps Deps, floor core.Version, expect core.Journal
 		phCtx, end := startSpan(ctx, deps, ph.span)
 		perr := error(nil)
 		if ph.run != nil {
-			perr = ph.run(phCtx, deps, rd, &st, expect, floor)
+			perr = ph.run(phCtx, deps, rd, &st, expect, floor, marks)
 		}
 		// decision: a phase not yet built changes nothing. Its step is a
 		// named, traced no-op, and the phases around it keep this list,

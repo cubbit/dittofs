@@ -299,28 +299,37 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 	}
 	s := resolveDefaults(cfg.Settings)
 	if hasSegment {
-		// The attach pass runs over the directory: its bounded reads, the
-		// .spare.tmp unlinks and the classes it sorts the segments into. A
-		// read the device never completed refuses the open on its ranges;
-		// a pass that ran answers ErrNotImplemented below.
+		// The recovery runs over the directory: the attach pass's bounded
+		// reads and .spare.tmp unlinks, the rebuild, and the spares phase's
+		// refusals, zeroings, unlinks and re-adoptions. A read the device
+		// never completed refuses the open on its ranges; the phases after
+		// the spares one answer ErrNotImplemented below.
 		if _, err := recovery.Run(ctx, recovery.Deps{
-			FS:          cfg.Storage,
-			Clock:       cfg.Clock,
-			Tracer:      cfg.Tracer,
-			Log:         cfg.Logger,
-			ExtentLimit: s.ExtentLimit,
+			FS:           cfg.Storage,
+			Clock:        cfg.Clock,
+			Tracer:       cfg.Tracer,
+			Log:          cfg.Logger,
+			ExtentLimit:  s.ExtentLimit,
+			SegmentCap:   core.SegmentCapOf(s),
+			SpareTargets: buildTargets(s),
 		}, floor, expect, marks); err != nil {
 			return nil, err
 		}
 		// decision: a directory holding a segment is refused with
-		// ErrNotImplemented, not recovered: the attach pass and the rebuild
-		// above have run, and the recovery after them — the marks, the
-		// tail's proof, the spares and the emptying — is not built. Every
-		// reopen of a journal that has run meets this, because the spare
-		// pool leaves its finished spares as segment files, so no journal
-		// that has served can be opened again here. The refusal keeps the
-		// directory as the attach and rebuild passes left it, so the
-		// recovery that exists later takes it whole.
+		// ErrNotImplemented, not recovered: the attach pass, the rebuild
+		// and the spares phase above have run — refusing on unreadable
+		// ranges, zeroing the dirty slots of each re-adopted spare,
+		// unlinking the wrongly-sized ones, syncing the directory once
+		// before the re-adoptions are recorded with their classes — and
+		// the recovery after them — the marks, the tail's proof, the
+		// re-append, the assembly and the emptying — is not built, which
+		// is the refusal's reason, not the directory's shape: the spares
+		// phase may have moved the directory by its own rules, and every
+		// change it made is one a later open re-reads and re-decides, so
+		// the recovery that exists later takes the directory as it
+		// stands. Every reopen of a journal that has run meets this,
+		// because the spare pool leaves its finished spares as segment
+		// files, so no journal that has served can be opened again here.
 		return nil, fmt.Errorf("%w: %s holds segments; recovering them is not built", ErrNotImplemented, dir)
 	}
 

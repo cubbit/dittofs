@@ -8,6 +8,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -244,18 +245,22 @@ func TestTailsClassifyEverySegmentFate(t *testing.T) {
 	named, _ := buildSealed(1, tailRec(200, 0x4100))
 	unnamed, _ := buildSealed(3, tailRec(201, 0x8100))
 	r.plantSeg(1, named)
-	r.plantSeg(2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
+	plantTake(r, 2, 1)
 	r.plantSeg(3, unnamed)
 	st := runTails(t, r)
 
 	wantFate(t, st, 1, fateSealed, 0)
-	wantFate(t, st, 2, fateIntact, 0)
 	wantFate(t, st, 3, fateSealToProve, 0)
 	if sc, _ := scanOf(st, 2); sc.RecordsEnd != format.SegmentHeaderSize {
 		t.Errorf("the empty segment's RecordsEnd got %d, want %d", sc.RecordsEnd, format.SegmentHeaderSize)
 	}
-	if len(st.Tails.Fates) != 3 || len(st.Tails.Damaged) != 0 {
-		t.Errorf("Tails got %+v, want three fates and nothing damaged", st.Tails)
+	// Segment 2 is a record-less take, so the spares phase re-adopted it:
+	// its fate is nobody's to hold, and only the two sealed lives keep one.
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Errorf("the re-adopted spares got %v, want %v", got, want)
+	}
+	if len(st.Tails.Fates) != 2 || len(st.Tails.Damaged) != 0 {
+		t.Errorf("Tails got %+v, want two fates and nothing damaged", st.Tails)
 	}
 }
 
@@ -263,11 +268,16 @@ func TestTheTopologyIgnoresNamesOfSegmentsNotOnDisk(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
 	r.plantSeg(5, buildSeg(5, tailRec(200, 0x4100)))
-	r.plantSeg(6, raw.SegmentHeader{Identity: journalID, ID: 6, Predecessor: 99}.Bytes())
+	plantTake(r, 6, 99)
 	st := runTails(t, r)
 
 	wantFate(t, st, 5, fateIntact, 0)
-	wantFate(t, st, 6, fateIntact, 0)
+	// Segment 6's claim of a predecessor no directory holds seals nothing,
+	// and its record-less take is the spares phase's: re-adopted, so it
+	// keeps no fate.
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 6, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Errorf("the re-adopted spares got %v, want %v", got, want)
+	}
 }
 
 func TestTwoSuccessorsMayNameOnePredecessor(t *testing.T) {
@@ -275,13 +285,16 @@ func TestTwoSuccessorsMayNameOnePredecessor(t *testing.T) {
 	r.writeFormat()
 	sealed, _ := buildSealed(1, tailRec(200, 0x4100))
 	r.plantSeg(1, sealed)
-	r.plantSeg(2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
-	r.plantSeg(3, raw.SegmentHeader{Identity: journalID, ID: 3, Predecessor: 1}.Bytes())
+	plantTake(r, 2, 1)
+	plantTake(r, 3, 1)
 	st := runTails(t, r)
 
 	wantFate(t, st, 1, fateSealed, 0)
-	wantFate(t, st, 2, fateIntact, 0)
-	wantFate(t, st, 3, fateIntact, 0)
+	// Both successors are record-less takes, so the spares phase re-adopted
+	// both: the predecessor's fate stays the one their headers named.
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}, {ID: 3, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Errorf("the re-adopted spares got %v, want %v", got, want)
+	}
 }
 
 func TestAZeroSlotAProofCoversRefusesTheOpen(t *testing.T) {

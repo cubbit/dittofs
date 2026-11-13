@@ -143,3 +143,112 @@ func (f *file) allocate(fd int, off, n int64) (string, error) {
 
 	return "", nil
 }
+
+// fiemapOp names FIEMAP's calls in the errors Allocated answers with.
+const fiemapOp = "fiemap"
+
+// Allocated reports whether every byte of the file lies in an extent the
+// filesystem holds allocated and written. FIEMAP is asked over [0, size); a
+// hole between extents or FIEMAP_EXTENT_UNWRITTEN answers false. The
+// descriptor is reached through the file's own reference, as Allocate and
+// Sync reach theirs, so a concurrent Close cannot release it during the
+// calls, and a closed file fails before any system call, with the size read
+// first.
+//
+// decision: a filesystem that answers ENOTTY or EOPNOTSUPP has no extent
+// report to give, not a fault to report: the query cannot be asked there, so
+// the file answers whole rather than failing the open over a device that
+// never refused one. That makes the answer fail open exactly where nothing
+// distinguishes a holed spare from a made one; withdraw it when a filesystem
+// the directory check passes is found to answer ENOTTY or EOPNOTSUPP for a
+// file it does report holes of, which would make the size alone a stronger
+// answer than a false one.
+func (f *file) Allocated() (bool, error) {
+	size, err := f.Size()
+	if err != nil {
+		return false, err
+	}
+	if size == 0 {
+		// Nothing to cover: an empty file is whole by the size alone.
+		return true, nil
+	}
+
+	rc, rerr := f.f.SyscallConn()
+	if rerr != nil {
+		return false, &fs.PathError{Op: fiemapOp, Path: f.f.Name(), Err: rerr}
+	}
+
+	var whole bool
+	var aerr error
+	if err := rc.Control(func(fd uintptr) {
+		whole, aerr = f.allocated(int(fd), size)
+	}); err != nil {
+		return false, &fs.PathError{Op: fiemapOp, Path: f.f.Name(), Err: fs.ErrClosed}
+	}
+	if aerr != nil {
+		return false, &fs.PathError{Op: fiemapOp, Path: f.f.Name(), Err: aerr}
+	}
+	return whole, nil
+}
+
+// allocated makes Allocated's FIEMAP calls on fd and walks what they answer
+// over [0, size): the file is whole iff every byte lies in an extent that is
+// neither a hole — a gap between the extents a window returns — nor
+// unwritten, the state a fallocate no write reached leaves, which reads as
+// zeros until its first write. A window holds what remains of the range and
+// nothing is asked past size, so a file whose whole body one window covers
+// costs one call. A call interrupted by a signal is made again, as Allocate
+// remakes its own: both give the same answer over the same range.
+func (f *file) allocated(fd int, size int64) (bool, error) {
+	covered := int64(0)
+	for covered < size {
+		fm := fiemap{start: uint64(covered), length: uint64(size - covered), count: fiemapWindow}
+
+		err := f.calls.fiemap(fd, &fm)
+		for errors.Is(err, unix.EINTR) {
+			err = f.calls.fiemap(fd, &fm)
+		}
+		if errors.Is(err, unix.ENOTTY) || errors.Is(err, unix.EOPNOTSUPP) {
+			return true, nil // no extent report exists to read, see Allocated
+		}
+		if err != nil {
+			return false, err
+		}
+		if fm.mapped == 0 {
+			return false, nil // a hole where the window begins
+		}
+
+		was := covered
+		for i := range fm.extents[:min(fm.mapped, fiemapWindow)] {
+			e := &fm.extents[i]
+			if e.flags&fiemapExtentUnwritten != 0 {
+				return false, nil
+			}
+			// The extents a window returns cover from where it was asked in
+			// ascending file order, so one starting past what the ones
+			// before it covered is the hole between them.
+			if e.logical > uint64(covered) {
+				return false, nil
+			}
+			end := e.logical + e.length
+			if end < e.logical {
+				return false, io.ErrUnexpectedEOF // a length no file can hold
+			}
+			if end > math.MaxInt64 {
+				// covered is an int64 offset: an extent whose end runs past
+				// the largest one would wrap it negative and end the walk
+				// over bytes nothing covered.
+				return false, io.ErrUnexpectedEOF // an end no offset can name
+			}
+			if end > uint64(covered) {
+				covered = int64(end)
+			}
+		}
+		if covered == was {
+			// A window that advanced nothing would repeat for ever; the
+			// lengths it answered are not ones the file holds.
+			return false, io.ErrUnexpectedEOF
+		}
+	}
+	return true, nil
+}

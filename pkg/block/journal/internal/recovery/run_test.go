@@ -18,10 +18,12 @@ import (
 )
 
 // runDeps is the deps Run takes over the rig's seam, with nil tracer and
-// logger, the defaults an Open without options gives them.
+// logger, the defaults an Open without options gives them, and the segment
+// cap every fixture plants at: testCap-sized files pass the spares phase's
+// size check, and a fixture shortening or growing one asks for its unlink.
 func (r *rig) runDeps() Deps {
 	r.t.Helper()
-	return Deps{FS: r.seam.FS(), Clock: r.clk}
+	return Deps{FS: r.seam.FS(), Clock: r.clk, SegmentCap: testCap}
 }
 
 // runDepsWithTracer is the rig's deps with a tracer recorded.
@@ -276,11 +278,12 @@ func TestRun_ThePhasesAndTheirSpans(t *testing.T) {
 }
 
 // TestRun_TheSpansEndWithTheirErrors pins that a refusal ends the open
-// span with the error that failed the open — the attach pass itself ends
-// nil, for it classed every name it read and the collected range is the
-// refusal the whole run answers — and that a run cancelled as the open
-// span starts ends that span with the context's error, never a span ended
-// nil over failed work.
+// span with the error that failed the open — the spares phase, the open's
+// first writing one, is the phase that answers the collected range, so it
+// ends its own span with the refusal and no phase after it opens, while the
+// attach and rebuild spans end nil, for they classed and scanned everything
+// they read — and that a run cancelled as the open span starts ends that
+// span with the context's error, never a span ended nil over failed work.
 func TestRun_TheSpansEndWithTheirErrors(t *testing.T) {
 	var mu sync.Mutex
 	tracer, spansOf := recordingTracer(&mu)
@@ -296,10 +299,14 @@ func TestRun_TheSpansEndWithTheirErrors(t *testing.T) {
 		t.Fatalf("Run: a header read that never completed got err %v, want an UnreadableRangesError", err)
 	}
 	got := spansOf()
+	if last := got[len(got)-1].op; last != core.SpanOpenSpares {
+		t.Errorf("Run: spans opened past the refusal, last %s, want the spares phase's own", last)
+	}
 	for _, sp := range got {
 		wantErr := error(nil)
-		if sp.op == core.SpanOpen {
-			wantErr = err // the refusal the whole run answers
+		switch sp.op {
+		case core.SpanOpen, core.SpanOpenSpares:
+			wantErr = err // the refusal the spares phase answered, and the whole run's
 		}
 		if sp.err != wantErr {
 			t.Errorf("Run: the %s span ended with %v, want %v", sp.op, sp.err, wantErr)
@@ -378,7 +385,7 @@ func TestRun_CancelledContextAnswersTheContextsError(t *testing.T) {
 func TestRun_CancelledBetweenPhasesKeepsOnlySpareUnlinks(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
-	r.writeSeg(3, journalID)
+	plantTake(r, 3, 0)
 	r.write("notes.txt", []byte("bytes of a file the journal did not write"))
 	keep := []string{format.SegmentName(3), "notes.txt", format.FormatFileName}
 
