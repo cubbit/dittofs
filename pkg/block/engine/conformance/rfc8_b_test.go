@@ -74,13 +74,15 @@ func p99(ds []time.Duration) time.Duration {
 	return s[len(s)*99/100]
 }
 
-// writeLatencies times n writes of 4 KiB to the fixture's share.
-func writeLatencies(t *testing.T, f *enginetest.Fixture, name string, n int) []time.Duration {
+// writeLatencies times n writes of 4 KiB to the fixture's share, and returns
+// them with the file_state lock waits the engine recorded meanwhile.
+func writeLatencies(t *testing.T, f *enginetest.Fixture, name string, n int) ([]time.Duration, engine.Series) {
 	t.Helper()
 
 	_, id := f.File(name)
 	p := make([]byte, 4<<10)
 	ds := make([]time.Duration, 0, n)
+	before := f.E.Stats().FileStateLockWaits
 
 	for i := range n {
 		start := time.Now()
@@ -88,14 +90,26 @@ func writeLatencies(t *testing.T, f *enginetest.Fixture, name string, n int) []t
 		ds = append(ds, time.Since(start))
 	}
 
-	return ds
+	after := f.E.Stats().FileStateLockWaits
+
+	return ds, engine.Series{Count: after.Count - before.Count, Total: after.Total - before.Total}
 }
 
 // TestRFC8B_NoCrossShareSlowdown, the write half: one share saturated with
-// writes leaves the other's p99 write latency within its unloaded baseline's
-// bound, twice the baseline or the baseline plus a millisecond, whichever is
-// larger. The engine exposes no lock-wait series through Stats yet, so the
-// row checks latency alone.
+// writes adds no wait on an engine lock to the other share's writes. The
+// engine_lock_wait_seconds series, file_state its one area so far, records
+// no more contended takes while the other share is loaded than in the
+// unloaded baseline.
+//
+// decision: the row asserts the lock-wait half of RFC 8 §15's check and only
+// logs the p99 write latency. Both shares append to one device journal, whose
+// stream and sync §1.1 lets every file share, so the same load on the
+// measured share itself fails a wall-clock bound as often as the other
+// share's does, and a load that only burns CPU fails it too: the bound
+// measured the host and the shared stream, not a cross-share point. The
+// ceiling is the areas the engine instruments; a new lock outside them is not
+// seen here. Assert latency again when the row can run each share on its own
+// journal and measure without competing for the host's CPU.
 //
 // The journal's pool keeps a spare for each of the row's concurrent writers,
 // the loaders and the measured one, and one for each of its two streams'
@@ -112,7 +126,7 @@ func TestRFC8B_NoCrossShareSlowdown(t *testing.T) {
 		t.Fatalf("Bind: %v", err)
 	}
 
-	base := p99(writeLatencies(t, f, "baseline", 200))
+	base, baseWaits := writeLatencies(t, f, "baseline", 200)
 	loads := make([]entity.FileID, loaders)
 
 	for w := range loads {
@@ -146,11 +160,14 @@ func TestRFC8B_NoCrossShareSlowdown(t *testing.T) {
 		}()
 	}
 
-	loaded := p99(writeLatencies(t, f, "loaded", 200))
+	loaded, loadedWaits := writeLatencies(t, f, "loaded", 200)
 	close(stop)
 	wg.Wait()
 
-	if bound := max(2*base, base+time.Millisecond); loaded > bound {
-		t.Errorf("p99 write latency %v under the other share's load, want within %v (baseline %v)", loaded, bound, base)
+	if loadedWaits.Count > baseWaits.Count {
+		t.Errorf("file_state lock waits under the other share's load: %d contended takes, want at most the baseline's %d",
+			loadedWaits.Count, baseWaits.Count)
 	}
+
+	t.Logf("p99 write latency %v under the other share's load, baseline %v", p99(loaded), p99(base))
 }

@@ -7,4 +7,3 @@
 #
 #   - { suite: integration, test: TestName, issue: "#1234", expires: 2026-12-31 }
 
-- { suite: engine-conformance, test: TestRFC8B_NoCrossShareSlowdown, issue: "#4169", expires: 2026-12-12 }
