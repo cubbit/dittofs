@@ -391,7 +391,9 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
     S3 (#3546), not all of stage 3: against the in-memory `Content`, `Copy` is a memcpy whose
     tests can only pass. Stage 2's clone path calls `Clone` and takes no open: the engine takes the clone-kind
     open through `Deps.Holds`, a `CloneHold` the root adapts from open state (#3546 §6 point 13).
-    Done when: V22, V26, V29, V30, V31 pass.
+    Done when: V22 and V26 pass, and V29 and V31 pass but for their clone and copy cases. V30, V29's
+    clone case (the held wait behind a running clone) and V31's copy and clone case (the WCC read
+    in two holds) are §6.1 ledger rows.
 12. **Test doubles (open, a stage-2 follow-up):** pieces 1 and 2 merged with `vfstest.Record`,
     `vfstest.RecordingCallbacks` and `internal/vfs/content_test.go`'s `fakeContent`, whose
     `truncErr` is a canned answer [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)
