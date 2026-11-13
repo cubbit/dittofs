@@ -13,14 +13,13 @@ type shareHeld struct{ Held, Dirty, Retained int64 }
 // shareLedger keeps shareHeld per share tag, from the same deltas the core's
 // counters follow.
 //
-// decision: one leaf mutex guards the map and the figures, held only for a map
-// lookup and three additions: never across I/O, a file's append domain apart
-// from the caller already holding it, or any other lock. A reader therefore
-// takes a share's three figures as one step, and takes no lock a write holds
-// across its append. Keyed by the delta's tag, not its file, because the
-// unmarked loss path is not ordered by the file's append domain. Overturned if
-// Stats is read often enough for this mutex to show in a profile; the upgrade
-// is a copy-on-write map of atomics.
+// decision: mu is a leaf. It guards the map and the figures, held only for a
+// map lookup and three additions — never across I/O or any other lock. A
+// reader therefore takes a share's three figures as one step, and takes no
+// lock a write holds across its append. Keyed by the delta's tag, not its
+// file, because the unmarked loss path is not ordered by the file's append
+// domain. Overturned if Stats is read often enough for this mutex to show in
+// a profile; the upgrade is a copy-on-write map of atomics.
 type shareLedger struct {
 	mu sync.Mutex
 	m  map[core.ShareTag]*shareHeld
