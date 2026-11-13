@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io/fs"
 	"os"
@@ -740,13 +741,22 @@ func TestOpen_ConcurrentCalls_IndependentJournalEach(t *testing.T) {
 				return
 			}
 			// The spare pool readies its spares off the open path, so the
-			// first write may find none yet: retry the refused one, as the
-			// caller of a retry-later refusal does.
+			// first write may find none yet: wait the pool's settle event on
+			// the refused one, as the caller of a retry-later refusal does,
+			// so a first fill slower than any fixed window still answers it.
+			// The minute is a backstop, not the wait: a settle is the only
+			// other end it has.
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute) // backstop only; the wait is the settle
+			defer cancel()
 			var v Version
-			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
-				v, err = h.WriteAt(context.Background(), fileOf(1), 0, []byte("each its own"), 1)
+			for {
+				v, err = h.WriteAt(ctx, fileOf(1), 0, []byte("each its own"), 1)
 				var ns *NoSpaceError
-				if errors.As(err, &ns) && ns.Limit == LimitSpare && time.Now().Before(deadline) {
+				if errors.As(err, &ns) && ns.Limit == LimitSpare {
+					if werr := j.core.WaitSpares(ctx); werr != nil {
+						errs[i] = fmt.Errorf("WaitSpares after a write refused at the spare limit: got %v, want the pool readied", werr)
+						return
+					}
 					continue
 				}
 				break

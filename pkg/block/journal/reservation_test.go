@@ -3,7 +3,6 @@ package journal
 import (
 	"context"
 	"errors"
-	"runtime"
 	"testing"
 	"time"
 
@@ -11,24 +10,28 @@ import (
 )
 
 // reserveAhead calls Reserve until a spare the pool makes off the write path
-// is ready, and fails the test on any other refusal. The wait is a bounded
-// count of yields, never a sleep.
+// is ready, and fails the test on any other refusal. The wait for a refused
+// ask parks on the pool's settle event — the refill makes up every ask
+// beside the open holds — never against a deadline: the minute below is a
+// backstop over a settle that never comes.
 func reserveAhead(t *testing.T, h *Handle, n int64, writes int) *Reservation {
 	t.Helper()
-
-	for range 1 << 22 {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute) // backstop only; the wait is the settle
+	defer cancel()
+	for {
 		r, err := h.Reserve(n, writes)
 		var ns *NoSpaceError
-		if !errors.As(err, &ns) || ns.Limit != LimitSpare {
-			if err != nil {
-				t.Fatalf("Reserve(%d, %d): %v", n, writes, err)
+		if errors.As(err, &ns) && ns.Limit == LimitSpare {
+			if werr := h.j.core.WaitSpares(ctx); werr != nil {
+				t.Fatalf("WaitSpares after a reserve refused at the spare limit: got %v, want the pool ready", werr)
 			}
-			return r
+			continue
 		}
-		runtime.Gosched()
+		if err != nil {
+			t.Fatalf("Reserve(%d, %d): %v", n, writes, err)
+		}
+		return r
 	}
-	t.Fatalf("Reserve(%d, %d) was refused for want of a spare 2^22 times: the journal never made one", n, writes)
-	return nil
 }
 
 // TestHandleReserve_RefusesACallerBug checks that an ask of no bytes or no
@@ -222,15 +225,19 @@ func TestJournalClose_DrainsAReservedWriteBeforeReleasing(t *testing.T) {
 	}
 	const payload = 96 << 10 // past one 64 KiB segment, so the write rolls
 	r := reserveAhead(t, h, 2*payload, 1)
-	// The pool makes spares beside the hold off the write path; the hold below
-	// waits until it has, so the first write it stops is the reserved one's.
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
-		if c := j.core.PoolCounters(); c.Spares >= 4+c.Held {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the pool never made up its target beside the hold: %+v", j.core.PoolCounters())
-		}
+	// The refill fills to the held-aware goal — every open hold's spares
+	// beside the target — and the wait parks until its settle, so the pool is
+	// full and idle when it answers: the first write the hold below stops is
+	// the reserved one's, never the maker's next. The minute is a backstop
+	// over a settle that never comes; the count is read once, asserted, not
+	// polled for.
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute) // backstop only; the wait is the settle
+	defer cancel()
+	if err := j.core.WaitSpares(ctx); err != nil {
+		t.Fatalf("WaitSpares before the hold: got %v, want the pool filled beside the reservation", err)
+	}
+	if c := j.core.PoolCounters(); c.Spares < 4+c.Held {
+		t.Fatalf("the pool settled at %+v, want %d spares ready beside the %d the reservation holds", c, 4+c.Held, c.Held)
 	}
 
 	hold := seam.HoldFirst(t, kit.OpWrite, "*")
