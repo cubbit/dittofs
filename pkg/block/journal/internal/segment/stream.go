@@ -1718,7 +1718,7 @@ func (s *Stream) sealLocked(early bool) (SealResult, error) {
 		return SealResult{}, err
 	}
 	s.sealState = sealSealed
-	s.ref = Ref{}         // the sealed segment is appended to never again
+	s.ref = Ref{}
 	s.drained.Broadcast() // the Syncs parked on the seal leave with the seal
 	s.appendMu.Unlock()
 	// The stream's write reference goes here, at the seal that made the

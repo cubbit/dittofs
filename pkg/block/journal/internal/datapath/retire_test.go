@@ -1573,7 +1573,7 @@ func TestTheSettleReTestsThePinnedRemovalSegment(t *testing.T) {
 	if c.liveness.Held(home) {
 		t.Fatal("Held of the removal record's segment after the settle = true, want false: the settle's re-test releases the record's registration")
 	}
-	gone(t, c, "the removal record's segment to retire once the settle released it", home)
+	retiredTo(t, c, "the removal record's segment to retire once the settle released it", uint64(size+homeSize), home)
 	if got, want := c.Retirer().Counters().FreedBytes, uint64(size+homeSize); got != want {
 		t.Fatalf("FreedBytes after both retirements = %d, want %d (the content segment's %d and the removal record's %d)", got, want, size, homeSize)
 	}

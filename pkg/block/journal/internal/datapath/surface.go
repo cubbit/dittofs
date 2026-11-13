@@ -19,10 +19,9 @@ func (c *Core) Settle(s *Share, id core.FileID, v core.Version) {
 	}
 	defer exit()
 	c.index.SettleFor(s.Tag, id, v)
-	// The settle's relay to the liveness tracker: the re-test event a
-	// registered removal or loss record of the file waits to be released
-	// by. The drop tests read the index alone, so the event changes no
-	// answer — it only runs the ones the settle just created.
+	// The settle's relay to the liveness tracker, fired only after the
+	// index settle ran: the re-test event a registered removal or loss
+	// record of the file waits to be released by.
 	c.liveness.Retest(id)
 }
 
