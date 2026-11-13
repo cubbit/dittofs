@@ -429,15 +429,18 @@ func TestRunAppliesASyncedLossRecordAsItsCut(t *testing.T) {
 			if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
 				t.Errorf("Lookup over the loss's extent hit, want the cut to drop every record below the loss's version there")
 			}
-			for _, ch := range st.Rebuilt.Index.Since(file, core.Version{}) {
-				if ch.Kind != core.ChangeLoss {
-					t.Fatalf("Since yielded %+v, want only the loss's own marker: the cut dropped every held record", ch)
-				}
+			changes := st.Rebuilt.Index.Since(file, core.Version{})
+			if !row.yields && len(changes) != 0 {
+				t.Fatalf("Since yielded %+v after a superseded cut, want nothing: the cut drops every record below its version and leaves no marker for itself", changes)
 			}
 			if !row.yields {
 				return
 			}
-			changes := st.Rebuilt.Index.Since(file, core.Version{})
+			for _, ch := range changes {
+				if ch.Kind != core.ChangeLoss {
+					t.Fatalf("Since got %+v among the loss's markers, want only the loss's own: the cut dropped every held record", ch)
+				}
+			}
 			if len(changes) != 1 || changes[0].Version.Counter != 9 || changes[0].Extent != (core.Extent{Off: 0, Len: 64}) {
 				t.Fatalf("the loss markers got %+v, want the single one at v9 over [0,64), unsettled", changes)
 			}
@@ -620,29 +623,30 @@ func TestRunRepointsAPieceOutOfASegmentTheOpenEnds(t *testing.T) {
 	}
 }
 
-// TestRunWithheldNumbersCarryTheGreatestPairWithheld holds the counters' net:
-// a withheld record's numbers fold into Withheld as the pair they are, the
-// greatest pair among the withheld — a number pair greater than every fed
-// record's own, so the counters a later pass raises open above what the feed
-// saw even where no fed record reaches either half.
-func TestRunWithheldNumbersCarryTheGreatestPairWithheld(t *testing.T) {
+// TestRunWithheldNumbersFoldBothAxesIndependently holds the counters' net:
+// the withheld numbers fold by their two axes, the highest sequence number
+// and the highest version among the withheld independently of each other —
+// no one record need carry both, and the pair the fold answers with is one
+// no record ever held, for the counters a later pass raises must open above
+// every number on both axes the feed never saw.
+func TestRunWithheldNumbersFoldBothAxesIndependently(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
 	file := kindsFile(1)
 	r.plantSeg(1, buildSeg(1,
-		writeRec(1000, 900, 0, 16), // the withheld record holding the disk's greatest seq
+		writeRec(1000, 10, 0, 16), // withheld: the greatest seq, a low version
 		plantLossRec(file, 1000, 12, 201, 0, 16, 1<<8),
-		writeRec(500, 100, 0x4100, 16), // feeding, past every rule
+		writeRec(500, 4, 0x4100, 16), // feeding, past every rule
 	))
 	r.plantSeg(2, buildSeg(2,
-		writeRec(100, 10, 0x100, 16), // withheld too, by a loss of its own
+		writeRec(100, 900, 0x100, 16), // withheld: a low seq, the greatest version
 		plantLossRec(file, 100, 13, 202, 0x100, 16, 1<<8),
 	))
 
 	st := kindsRun(t, r)
 
 	if got, want := st.Kinds.Withheld, (index.Numbers{Version: core.Version{Counter: 900}, Seq: 1000}); got != want {
-		t.Errorf("Withheld got %+v, want %+v: the greatest pair a withheld record carried, not a fed record's numbers", got, want)
+		t.Errorf("Withheld got %+v, want %+v: the greatest seq of one withheld record with the greatest version of another, folded independently", got, want)
 	}
 	if p, ok := st.Rebuilt.Index.Lookup(file, 0x4100); !ok {
 		t.Errorf("Lookup at 0x4100 missed, want the record no rule names to feed")
