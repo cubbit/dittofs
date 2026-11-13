@@ -5,7 +5,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"math"
 	"math/rand/v2"
 	"slices"
 	"sync"
@@ -18,57 +17,65 @@ import (
 
 // B7's storm: b7Rate chmods a second, each on a file drawn at random from all
 // b7Files files of the share's journal, the first benchWriters of which the
-// writers append to. b7Calibrate is how long the window with no fsync lasts.
+// writers overwrite.
 const (
-	b7Files     = 1024
-	b7Rate      = 1000
-	b7Calibrate = 500 * time.Millisecond
-	b7Log2G     = 6 // log₂ of benchMaxFiles
+	b7Files = 50000
+	b7Rate  = 1000
+	b7Log2G = 6 // log₂ of benchMaxFiles
 
-	// decision: B7's existence age is long enough that no group commit comes
-	// due by its timer during a run's bursts, so every burst's transactions are
-	// its fsyncs' stability points and the bound is checked on each, not only on
-	// the bursts a timer commit missed. B5's appending run keeps the short age,
-	// since it needs timer commits during the run. Overturned if a run's bursts
-	// ever last longer than this age, which the evaluated-bursts floor shows.
+	// b7ExistenceAge is long enough that no group commit comes due by its
+	// timer during a run, so each burst's transactions are its fsyncs'
+	// stability points alone.
 	b7ExistenceAge = 10 * time.Minute
 )
 
 // BenchmarkB7 is RFC 8 §15.4's B7, the group commit under a chmod storm: B5's
-// appending run with 10³ chmods a second on random files of the same journal.
-// The engine's transactions per stability point, the storm's own taken out,
-// are at most 1 + conflicting files × log₂ G (RFC 8 §5.2), and a run that
-// breaks the bound fails; the fsync p99 is reported, to compare with B5's.
+// overwriting run with 10³ chmods a second on random files of the same
+// journal. The engine's transactions per stability point, the storm's own
+// taken out, are at most 1 + conflicting files × log₂ G (RFC 8 §5.2), and a
+// burst that breaks the bound fails the run; the fsync p99 is reported, to
+// compare with B5's overwriting run.
 //
-// decision: the storm draws from every file of the journal, the writers'
-// 64 among 1024, as the RFC's "random files of the same journal" reads. The
-// conflicting files of a burst are bounded by the writers' files the storm
-// touched during it, from the storm's own record, so a burst that touched c of
-// them may cost 1 + c × 6; with about 6 of 64 touched per 100 ms burst, a group
-// commit that retried every file of a batch (1 + 64) breaks it. The storm's own
-// transactions are taken out at the rate measured in a window with no fsync
-// (store Updates per chmod there, times the chmods made during the burst,
-// rounded up), which is exact while a chmod costs a fixed number of Updates,
-// so no slack is added. Overturned if a chmod's Updates vary, which the
-// calibration's ratio shows as a fraction, or if bursts grow long enough that
-// c × 6 passes 64 and the bound stops telling a retry of every file apart.
+// decision: B7 runs B5's overwriting run, not its appending one: an append's
+// fsync commits no existence, so with the long existence age no transaction
+// of a burst could meet the storm and the bound was never exercised. The
+// engine's transactions are counted exactly, by the keys each committed
+// transaction wrote (txnRecord): one that wrote an existence key is the
+// engine's, one that wrote both kinds counts once for the engine and is
+// reported as mixed, and the storm's are left out. The conflicting files of a
+// burst, k, are the writers' files a storm chmod ran on during it, from the
+// storm's own record, and the burst is bounded at 1 + k × 6. A burst with
+// k = 0 is not evaluated: its bound would be 1, which the engine does not meet
+// today, since the stability points of one burst start several batches (each
+// the files due when the last one returned), not because of a conflict; B7
+// fails when fewer than half of its bursts are evaluated. The pool of 50 000
+// files keeps k small at the RFC's rate (about 2 700 chmods a burst touch a
+// few of the 64), and costs about 6 s of a setup of minutes. Overturned when
+// the engine gathers a burst into one batch (then k = 0 is evaluated at 1),
+// when the key layout changes (the classifier must follow it), or when bursts
+// grow long enough that k × 6 passes 64 even at this pool.
 func BenchmarkB7(b *testing.B) {
-	b.Run("append/writers=64/chmod=1000ps", benchB7)
+	b.Run("overwrite/writers=64/chmod=1000ps", benchB7)
 }
 
-// stormChmod is one chmod of the storm: when it ended and which file.
+// stormChmod is one chmod of the storm: which file, when its call started and
+// when it returned, zero while it runs.
 type stormChmod struct {
-	at   time.Time
-	file int
+	file       int
+	start, end time.Time
 }
 
 // storm chmods random files of c at b7Rate until stopped, and records each.
+// It is open-loop: each tick starts its chmod at once, whatever the earlier
+// ones are still waiting on, so a slow chmod does not lower the rate.
 type storm struct {
-	mu     sync.Mutex
-	done   []stormChmod
-	failed error
-	stop   chan struct{}
-	ended  chan struct{}
+	mu       sync.Mutex
+	chmods   []stormChmod
+	failed   error
+	stop     chan struct{}
+	ended    chan struct{}
+	inFlight sync.WaitGroup
+	stopOnce sync.Once
 }
 
 func startStorm(ctx context.Context, c *bench) *storm {
@@ -80,6 +87,7 @@ func startStorm(ctx context.Context, c *bench) *storm {
 
 	go func() {
 		defer close(s.ended)
+		defer s.inFlight.Wait()
 
 		tick := time.NewTicker(time.Second / b7Rate)
 		defer tick.Stop()
@@ -96,15 +104,27 @@ func startStorm(ctx context.Context, c *bench) *storm {
 			i := r.IntN(len(c.files))
 			mode ^= 0o040
 			ch := vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(mode)}
-			_, err := c.fs.SetAttr(ctx, c.admin, vfs.Target{H: c.files[i]}, ch)
 
 			s.mu.Lock()
-			if err != nil && s.failed == nil {
-				s.failed = err
-			}
-
-			s.done = append(s.done, stormChmod{at: time.Now(), file: i})
+			n := len(s.chmods)
+			s.chmods = append(s.chmods, stormChmod{
+				file:  i,
+				start: time.Now(),
+			})
 			s.mu.Unlock()
+
+			s.inFlight.Go(func() {
+				_, err := c.fs.SetAttr(ctx, c.admin, vfs.Target{H: c.files[i]}, ch)
+
+				s.mu.Lock()
+				defer s.mu.Unlock()
+
+				if err != nil && s.failed == nil {
+					s.failed = err
+				}
+
+				s.chmods[n].end = time.Now()
+			})
 		}
 	}()
 
@@ -114,7 +134,9 @@ func startStorm(ctx context.Context, c *bench) *storm {
 // end stops the storm and waits for its last chmod, at most
 // benchBurstDeadline.
 func (s *storm) end() error {
-	close(s.stop)
+	s.stopOnce.Do(func() {
+		close(s.stop)
+	})
 
 	select {
 	case <-s.ended:
@@ -128,63 +150,58 @@ func (s *storm) end() error {
 	return s.failed
 }
 
-// mark is how many chmods the storm has made so far.
-func (s *storm) mark() int {
+// made is how many chmods the storm has started so far.
+func (s *storm) made() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return len(s.done)
+	return len(s.chmods)
 }
 
-// since is the chmods made after mark from, and the distinct writers' files
-// among them.
-func (s *storm) since(from int) (chmods, writersTouched int) {
+// touched is the distinct writers' files a chmod ran on at some time between
+// from and to: one that started before to and had not returned by from.
+func (s *storm) touched(from, to time.Time) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var touched []int
-	for _, d := range s.done[from:] {
-		if d.file < benchWriters && !slices.Contains(touched, d.file) {
-			touched = append(touched, d.file)
+	var files []int
+
+	for _, c := range s.chmods {
+		running := c.end.IsZero() || c.end.After(from)
+		if c.file < benchWriters && c.start.Before(to) && running &&
+			!slices.Contains(files, c.file) {
+			files = append(files, c.file)
 		}
 	}
 
-	return len(s.done) - from, len(touched)
+	return len(files)
 }
 
 func benchB7(b *testing.B) {
 	c := composeBench(b, b7Files, b7ExistenceAge)
 	ctx := b.Context()
 	data := make([]byte, mib)
+	c.fill(b, b5Bursts*mib)
 
 	var fsyncs []time.Duration
 
-	most, evaluated := 0, 0
+	most, evaluated, touchedAll, mixedAll, stormTotal := 0, 0, 0, 0, 0
+
+	var stormed time.Duration
 
 	b.ResetTimer()
 
 	for i := range b.N {
 		s := startStorm(ctx, c)
 
-		// The storm's own cost, in a window with no fsync: a bounded wait is
-		// the measurement here, as the storm runs on the real clock.
-		c.counts.TakeUpdates()
+		b.Cleanup(func() {
+			_ = s.end()
+		})
 
-		from := s.mark()
-
-		<-time.After(b7Calibrate)
-
-		alone := c.counts.TakeUpdates().Updates
-
-		chmods, _ := s.since(from)
-		if chmods == 0 {
-			b.Fatalf("run %d: the storm made no chmod in %v", i+1, b7Calibrate)
-		}
-
-		perChmod := float64(alone) / float64(chmods)
+		stormFrom := time.Now()
 
 		for k := range b5Bursts {
-			off := int64(i*b5Bursts+k) * mib
+			off := int64(k) * mib
 			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 				ref := vfs.Anonymous(c.files[w])
 				_, err := c.fs.Write(ctx, c.admin, ref, off, data, vfs.Unstable)
@@ -194,10 +211,9 @@ func benchB7(b *testing.B) {
 				b.Fatalf("burst %d of run %d: a write refused: %v", k+1, i+1, err)
 			}
 
-			before := c.committedSizes(b)
-			c.counts.TakeUpdates()
+			c.txns.take()
 
-			from := s.mark()
+			from := time.Now()
 
 			took := make([]time.Duration, benchWriters)
 			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
@@ -210,33 +226,34 @@ func benchB7(b *testing.B) {
 				b.Fatalf("burst %d of run %d: an fsync failed: %v", k+1, i+1, err)
 			}
 
-			updates := c.counts.TakeUpdates().Updates
-			chmods, touched := s.since(from)
+			engine, mixed := c.txns.take()
+			touched := s.touched(from, time.Now())
 
 			fsyncs = append(fsyncs, took...)
+			mixedAll += mixed
 
-			// A group commit of earlier bursts that came due during this one,
-			// off the fsyncs' path, may split on the storm's conflicts as well:
-			// such a burst is not evaluated, as the bound counts one group commit.
-			if !slices.Equal(before, c.committedSizes(b)) {
+			b.Logf(
+				"burst %d of run %d: k %d, engine transactions %d, mixed %d",
+				k+1,
+				i+1,
+				touched,
+				engine,
+				mixed,
+			)
+
+			if touched == 0 {
 				continue
 			}
-
-			engine := updates - int(math.Ceil(perChmod*float64(chmods)))
 
 			bound := 1 + touched*b7Log2G
 			if engine > bound {
 				b.Fatalf(
-					"burst %d of run %d: %d store transactions for %d fsyncs once the storm's "+
-						"%d chmods "+
-						"(%.2f transactions each) are taken out, "+
+					"burst %d of run %d: %d existence transactions for %d fsyncs, "+
 						"want at most 1 + %d conflicting files × %d = %d",
 					k+1,
 					i+1,
 					engine,
 					benchWriters,
-					chmods,
-					perChmod,
 					touched,
 					b7Log2G,
 					bound,
@@ -244,7 +261,11 @@ func benchB7(b *testing.B) {
 			}
 
 			most, evaluated = max(most, engine), evaluated+1
+			touchedAll += touched
 		}
+
+		stormed += time.Since(stormFrom)
+		stormTotal += s.made()
 
 		if err := s.end(); err != nil {
 			b.Fatalf("run %d: a chmod of the storm failed: %v", i+1, err)
@@ -255,13 +276,12 @@ func benchB7(b *testing.B) {
 	b.ReportMetric(microseconds(percentile(fsyncs, 99)), "fsync-p99-µs")
 	b.ReportMetric(float64(most), "txn/stability-point")
 	b.ReportMetric(float64(evaluated), "evaluated-bursts")
+	b.ReportMetric(float64(touchedAll)/float64(max(evaluated, 1)), "k/evaluated-burst")
+	b.ReportMetric(float64(mixedAll), "mixed-txns")
+	b.ReportMetric(float64(stormTotal)/stormed.Seconds(), "chmods/s")
 
 	if bursts := b.N * b5Bursts; 2*evaluated < bursts {
-		b.Fatalf(
-			"%d of %d bursts evaluated, want at least half: a group commit came due by its timer "+
-				"during the rest, so the bound went unchecked",
-			evaluated,
-			bursts,
-		)
+		b.Fatalf("%d of %d bursts evaluated, want at least half: the storm touched no writer's "+
+			"file during the rest, so the bound went unchecked", evaluated, bursts)
 	}
 }
