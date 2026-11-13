@@ -45,6 +45,8 @@ const (
 	FsctlSetSparse              uint32 = 0x000900C4 // [MS-FSCC] 2.3.83 (FSCTL_SET_SPARSE Request) - Set sparse attribute
 	FsctlQueryAllocatedRanges   uint32 = 0x000940CF // [MS-FSCC] 2.3.51 (FSCTL_QUERY_ALLOCATED_RANGES Request) - Query allocated byte ranges
 	FsctlSetZeroData            uint32 = 0x000980C8 // [MS-FSCC] 2.3.85 (FSCTL_SET_ZERO_DATA Request) - Zero a byte range
+	FsctlDfsGetReferrals        uint32 = 0x00060194 // [MS-SMB2] 2.2.31 - DFS referral request
+	FsctlDfsGetReferralsEx      uint32 = 0x000601B0 // [MS-SMB2] 2.2.31 - DFS referral request, extended
 
 	// FSCTL_SMBTORTURE_* are Samba's private torture control codes (see
 	// libcli/smb/smb_constants.h in samba). They have no MS-FSCC analog; the

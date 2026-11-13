@@ -48,6 +48,8 @@ func init() {
 		FsctlSetSparse:              (*Handler).handleSetSparse,
 		FsctlQueryAllocatedRanges:   (*Handler).handleQueryAllocatedRanges,
 		FsctlSetZeroData:            (*Handler).handleSetZeroData,
+		FsctlDfsGetReferrals:        (*Handler).handleDfsGetReferrals,
+		FsctlDfsGetReferralsEx:      (*Handler).handleDfsGetReferrals,
 
 		// Samba-private torture FSCTLs. Accepted as no-ops so that smbtorture
 		// fixtures (notably the multichannel.leases.test{2,3} pair) don't get
@@ -123,6 +125,8 @@ func ioctlNoHandleFSCTL(ctlCode uint32) bool {
 	case FsctlValidateNegotiateInfo,
 		FsctlPipeTransceive,
 		FsctlQueryNetworkInterfInfo,
+		FsctlDfsGetReferrals,
+		FsctlDfsGetReferralsEx,
 		FsctlSmbtortureForceUnackedTimeout:
 		return true
 	default:
@@ -271,4 +275,12 @@ func (h *Handler) handleEnumerateSnapshots(ctx *SMBHandlerContext, body []byte) 
 	output := make([]byte, 12)
 	resp := buildIoctlResponse(FsctlSrvEnumerateSnapshots, fileID, output)
 	return NewResult(types.StatusSuccess, resp), nil
+}
+
+// handleDfsGetReferrals answers both DFS referral requests. DittoFS has no
+// DFS, so the server is not DFS capable and MUST answer
+// STATUS_FS_DRIVER_REQUIRED [MS-SMB2] 3.3.5.15.2; a client then resolves the
+// path as an ordinary share.
+func (h *Handler) handleDfsGetReferrals(_ *SMBHandlerContext, _ []byte) (*HandlerResult, error) {
+	return NewErrorResult(types.StatusFsDriverRequired), nil
 }

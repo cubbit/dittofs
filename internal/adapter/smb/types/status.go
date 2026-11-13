@@ -190,6 +190,10 @@ const (
 	// StatusPathNotCovered indicates a DFS path is not covered.
 	StatusPathNotCovered Status = 0xC0000257
 
+	// StatusFsDriverRequired answers a DFS referral request on a server
+	// with no DFS [MS-SMB2] 3.3.5.15.2.
+	StatusFsDriverRequired Status = 0xC000019C
+
 	// StatusNetworkSessionExpired indicates the session expired.
 	StatusNetworkSessionExpired Status = 0xC000035C
 
@@ -365,6 +369,8 @@ func (s Status) String() string {
 		return "STATUS_LOGON_FAILURE"
 	case StatusPathNotCovered:
 		return "STATUS_PATH_NOT_COVERED"
+	case StatusFsDriverRequired:
+		return "STATUS_FS_DRIVER_REQUIRED"
 	case StatusNetworkNameDeleted:
 		return "STATUS_NETWORK_NAME_DELETED"
 	case StatusInvalidInfoClass:
