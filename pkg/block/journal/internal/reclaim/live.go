@@ -134,7 +134,11 @@ type Tracker struct {
 	// — the retirer's durable signal — consumes it, relaying each file's
 	// index drop of the segment's ranges. Between the two, no removal the
 	// segment's records kept answers droppable, so a removal record never
-	// leaves the journal before the unlink it counted on is durable.
+	// leaves the journal before the unlink it counted on is durable. A
+	// segment's relay may fire twice — the journal's own retirement beside
+	// the retirer's hook — so the lists accumulate per segment, and a file
+	// named twice reaches RemovalDurable twice, which SegmentGone and the
+	// re-test both tolerate as the repeat it is.
 	//
 	// decision: an entry whose retirement's directory sync failed is never
 	// consumed in this process — a failed sync is never re-reported durable

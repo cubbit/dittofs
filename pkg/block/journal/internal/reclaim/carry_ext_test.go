@@ -279,6 +279,22 @@ func TestCarryDropsDecidedAfterCopies(t *testing.T) {
 	if p, ok := f.ix.Lookup(file, 45); !ok || p.Version != vW {
 		t.Fatalf("Lookup at 45 below the truncation = %+v %v, want the old write's held bytes at %v", p, ok, vW)
 	}
+
+	// A reopen over the whole directory reads what the pass actually placed:
+	// the truncated extent still reads missing through the rebuilt index —
+	// the original removal and its carried copy both cut the old content
+	// below the truncate's pair — and the ten retained bytes read held,
+	// resolving to the copy the pass appended wherever the numbers place it.
+	f.shutdown(t)
+	_, ix2, _ := f.reopen(t)
+	for _, off := range []int64{55, 60, 1 << 16} {
+		if p, ok := ix2.Lookup(file, off); ok {
+			t.Fatalf("Lookup at %d over the truncated extent after the reopen = %+v, want missing: the rebuilt index reads the removal the pass carried", off, p)
+		}
+	}
+	if p, ok := ix2.Lookup(file, 45); !ok || p.Version != vW || p.Record != res.Copies[0].To {
+		t.Fatalf("Lookup at 45 below the truncation after the reopen = %+v %v, want the pass's copy at %v carrying the old write's version %v", p, ok, res.Copies[0].To, vW)
+	}
 }
 
 // TestCarryDropsSettledDeleteAfterDurableRetire is the delete-alone-selected
@@ -526,6 +542,25 @@ func TestCarryKeepsBothNumbers(t *testing.T) {
 	if !found {
 		t.Fatalf("Since above the write's version %v yields no truncate's change, want the marker at %v", vW, vT)
 	}
+
+	// A reopen over the whole directory — the consumer of what the carry
+	// placed, not the live index a carry cannot break: the rebuild reads the
+	// original and the copy both off the disk. The truncate reads as ONE
+	// record: the copy keeps both numbers the source carried, and the
+	// rebuild collapses records that share a pair wherever they sit, so the
+	// rebuilt file yields exactly the one truncate change over the extent,
+	// never one per copy.
+	f.shutdown(t)
+	_, ix2, _ := f.reopen(t)
+	var truncs int
+	for _, ch := range ix2.Since(file, core.Version{}) {
+		if ch.Kind == core.ChangeTruncate && ch.Version == vT && ch.Extent.Off == size.Off {
+			truncs++
+		}
+	}
+	if truncs != 1 {
+		t.Fatalf("Since of the rebuilt file yields %d truncate changes at version %v over [%d,end), want 1: the original and its carried copy share both numbers, so the rebuild reads them as one record", truncs, vT, size.Off)
+	}
 }
 
 // TestCarryUnsettledTruncateAlways carries a truncate whose marker was never
@@ -565,6 +600,23 @@ func TestCarryUnsettledTruncateAlways(t *testing.T) {
 	if !found {
 		t.Fatalf("Since from the bottom yields no truncate's change, want the marker at %v still answering", vT)
 	}
+
+	// The marker still answers after a reopen too: neither record leaves a
+	// settle behind, so the rebuild makes the marker again from whichever
+	// record the scan finds — the original and its carried copy, one record
+	// at the pair they share — and the rebuilt file yields the unsettled
+	// truncate exactly once.
+	f.shutdown(t)
+	_, ix2, _ := f.reopen(t)
+	var truncs int
+	for _, ch := range ix2.Since(file, core.Version{}) {
+		if ch.Kind == core.ChangeTruncate && ch.Version == vT {
+			truncs++
+		}
+	}
+	if truncs != 1 {
+		t.Fatalf("Since of the rebuilt file yields %d truncate changes at version %v, want the one marker the unsettled removal still leaves after a reopen", truncs, vT)
+	}
 }
 
 // TestCarrySkipsForgottenTag carries a segment holding records of two tags
@@ -599,6 +651,57 @@ func TestCarrySkipsForgottenTag(t *testing.T) {
 	cr := carry.Carried[0]
 	if cr.Rec.File != fileB || cr.Rec.Tag != otherTag || cr.Rec.Seq != seqB {
 		t.Fatalf("the carried record = %+v, want the other tag's truncate of fileB at the source's own numbers", cr.Rec)
+	}
+}
+
+// TestCarryNotedCopyKeepsALaterRemoval pins the note a carried header-only
+// record's placement leaves: the copy is never on disk unnoted, so a later
+// removal of the same file that outranks the copy's pair stays live on the
+// range the note keeps, read through the drop test the note serves. The
+// carried record is a loss, whose original left a marker and no range
+// anywhere — the loss path's marker holds no record of a segment — so the
+// copy's note is the only range below the probe, and the probe's extent
+// keeps clear of the claiming write's own range beside it.
+func TestCarryNotedCopyKeepsALaterRemoval(t *testing.T) {
+	f := newCopyFixture(t)
+	file := copyFile(11)
+	// The claim and the segment's content: a small write far below the
+	// loss's extent, so its own noted range never overlaps the probe's.
+	recW, seqW, _ := f.plant(t, copyTag, file, []byte("the write claiming the file"), 0)
+	e := core.Extent{Off: 1 << 10, Len: 512}
+	lrec, _, seqL, _ := f.plantLoss(t, copyTag, file, seqW, format.LossStale, e, false)
+	if lrec.Seg != recW.Segment {
+		t.Fatalf("the loss landed in segment %d, want the write's own %d", lrec.Seg, recW.Segment)
+	}
+	if f.tracker.Droppable(lrec) {
+		t.Fatal("Droppable of the loss before its carry = true, want false: its marker never settled")
+	}
+	f.sealSource(t, file)
+	f.waitSpares(t)
+
+	carry, err := f.copier().Carry(context.Background(), lrec.Seg, reclaim.Result{})
+	if err != nil {
+		t.Fatalf("Carry of the loss's segment: %v", err)
+	}
+	if len(carry.Carried) != 1 {
+		t.Fatalf("Carry carried %d records (%+v), want the loss record alone", len(carry.Carried), carry.Carried)
+	}
+	cr := carry.Carried[0]
+	if cr.Rec.Kind != format.KindLoss || cr.Rec.File != file || cr.Rec.Seq != seqL {
+		t.Fatalf("the carried record = %+v, want the loss of the file at its source's own seq %d", cr.Rec, seqL)
+	}
+
+	// The stream's active segment is the one the carried copy made of its
+	// reserve spare; sealing it rolls the probe below onto a segment of its
+	// own, where its own range cannot hide the note this half asks about.
+	f.sealSource(t, file)
+	f.waitSpares(t)
+	drec, _, _, _ := f.plantRemoval(t, copyTag, file, format.KindDeallocate, core.ChangeDeallocate, e, e, true)
+	if drec.Seg == cr.To.Segment {
+		t.Fatalf("the deallocate landed in the carried copy's segment %d, want a segment of its own", cr.To.Segment)
+	}
+	if f.tracker.Droppable(drec) {
+		t.Fatal("Droppable of the settled deallocate above the carried copy = true, want false: the carried loss's placement, noted over the copy's extent, is the only range below it")
 	}
 }
 
@@ -826,11 +929,11 @@ func TestCarryCarriesForgetRecord(t *testing.T) {
 // from the registry entry on the repack-reserve admission — the one class
 // the headroom never refuses, checked over a real headroom held at its
 // limit — and the deferral ends only once the target is durable, which the
-// carry never does itself: a crash while the target's directory sync is
-// held still finds the dropped record's bytes on disk in the source, so the
-// next open re-derives the loss there, and the end the durable-waiting
-// caller plays leaves the source crossing to not held, the hand-over the
-// pass waits for.
+// carry never does itself: the end the durable-waiting caller plays leaves
+// the source crossing to not held, the hand-over the pass waits for. The
+// record the unit places is never on disk unnoted: once the source's own
+// ranges have left with its retirement, a later removal of the file stays
+// live on the range the record's placement noted alone.
 func TestCarryDeferredLossOnReserve(t *testing.T) {
 	f := newCopyFixture(t)
 	dur := f.core.Durability()
@@ -939,10 +1042,7 @@ func TestCarryDeferredLossOnReserve(t *testing.T) {
 	f.drawn = hr.Drawn
 
 	// The unit: no content copies — the only content left the index at the
-	// loss — and the deferred loss record written beside them, the target's
-	// directory sync held at the seam so no retirement of the source could
-	// turn durable under the unit's feet.
-	hold := f.seam.Hold(t, kit.OpSyncDir, "*")
+	// loss — and the deferred loss record written beside them.
 	c := f.copier()
 	res, err := c.Copy(ctx, sa)
 	if err != nil {
@@ -1009,24 +1109,52 @@ func TestCarryDeferredLossOnReserve(t *testing.T) {
 		t.Fatal("Held of the source after the carry = false, want true: the deferral ends only once the target is durable")
 	}
 
-	// A crash at the seam while the target's sync is held must leave the
-	// source's dropped record on disk: the deferral had not ended and the
-	// source was never retired, so the only thing a crash can take is the
-	// unsynced target.
-	f.crashed = true
-	if err := f.seam.Crash(); err != nil {
-		t.Fatalf("the crash: %v", err)
+	// The record's placement is noted through the index, and the note is the
+	// range that answers a later removal: the dropped write's own range is
+	// what kept a removal live until now, so the source retires first —
+	// through the real retirer — and its ranges leave with the durable
+	// signal. The write reached the index but never the tracker's registry,
+	// so the retired hook hands the file list the write's plant never
+	// registered, or no SegmentGone would name the file's ranges.
+	m := segment.NewMaker(f.seam.FS(), f.set, math.MaxInt64, 0, nil)
+	cache := segment.NewDescriptors(f.seam.FS(), format.SegmentName, core.NewDescriptorBudget(64))
+	r := segment.NewRetirer(segment.RetirerConfig{
+		Set:   f.set,
+		Cache: cache,
+		Maker: m,
+		FS:    f.seam.FS(),
+		Retired: func(id core.SegmentID) {
+			f.tracker.SegmentRetired(id, []core.FileID{file})
+		},
+		Durable: func(ret segment.Retirement) {
+			f.tracker.RemovalDurable(ret.ID)
+		},
+	})
+	if _, err := r.Retire(sa, segment.NotHeld); err != nil {
+		t.Fatalf("Retire of the source: %v", err)
 	}
-	hW, bW := f.readBack(t, recW)
-	if hW.Kind != format.KindWrite || !bytes.Equal(bW.Payload, payload) {
-		t.Fatalf("the dropped record on disk in the source after the crash = kind %s with %d payload bytes, want the write's whole %d: the source may not be retired before the target is durable", hW.Kind, len(bW.Payload), len(payload))
+	// A removal of the file whose pair outranks the deferred copy's own,
+	// settled at once: it stays live on the copy's note alone, carrying
+	// nothing else below it — the file's only older range left with the
+	// source. The stream's active segment is the one the deferred record
+	// made of its reserve spare, so it is sealed here: the probe rolls onto
+	// a segment of its own, where its own range cannot be the exclusion that
+	// hides the note this half asks about.
+	f.sealSource(t, file)
+	f.waitSpares(t)
+	drec, _, _, _ := f.plantRemoval(t, copyTag, file, format.KindDelete, core.ChangeDelete,
+		core.Extent{}, core.Extent{Len: math.MaxInt64}, true)
+	if drec.Seg == dc.Loc.Segment {
+		t.Fatalf("the delete landed in the deferred record's segment %d, want a segment of its own", dc.Loc.Segment)
+	}
+	if f.tracker.Droppable(drec) {
+		t.Fatal("Droppable of the delete after the deferred copy is placed = true, want false: the loss record's placement, noted in the copy's segment, is the only range below the delete now the source retired")
 	}
 
 	// The end the durable-waiting caller plays once the target is synced:
 	// the registry gives its entry up, idempotently, and the source crosses
 	// to not held — the hand-over condition the pass waits for before it
 	// retires the source.
-	hold.Release()
 	if !dur.EndDeferral(sa, losses[0]) {
 		t.Fatal("EndDeferral of the entry the registry still holds = false, want true: the deferral ends")
 	}
@@ -1039,5 +1167,101 @@ func TestCarryDeferredLossOnReserve(t *testing.T) {
 	f.tracker.SetDeferred(sa, false)
 	if f.tracker.Held(sa) {
 		t.Fatal("Held of the source after the deferral ended = true, want false: the crossing the durable-waiting caller's hand-over turns on")
+	}
+}
+
+// TestCarryDeferredLossSkipsAForgottenTag: a deferred entry whose share the
+// forgetting mark names is owed no record — the walk's own skip, taken under
+// the entry's file domain — while an unmarked second share's entry is written
+// the one record its deferral promised; the registry keeps both entries
+// standing, the forget's own path clearing what it clears.
+func TestCarryDeferredLossSkipsAForgottenTag(t *testing.T) {
+	f := newCopyFixture(t)
+	dur := f.core.Durability()
+	ctx := context.Background()
+	const otherTag = core.ShareTag(2)
+
+	// Two shares' writes in the one source segment, so their deferred losses
+	// ride one carry.
+	fileA := copyFile(1)
+	fileB := sameStreamFile(t, f, fileA)
+	payA, payB := []byte("the forgotten share's write"), []byte("the other share's write")
+	recA, seqA, _ := f.plant(t, copyTag, fileA, payA, 0)
+	recB, seqB, _ := f.plant(t, otherTag, fileB, payB, 0)
+	if recA.Segment != recB.Segment {
+		t.Fatalf("the writes landed in segments %d and %d, want one shared source segment", recA.Segment, recB.Segment)
+	}
+	sa := recA.Segment
+	if err := dur.Sync(ctx, fileA); err != nil {
+		t.Fatalf("Sync of the first write: %v", err)
+	}
+	if err := dur.Sync(ctx, fileB); err != nil {
+		t.Fatalf("Sync of the second write: %v", err)
+	}
+	f.sealSource(t, fileA)
+	f.waitSpares(t)
+
+	// The deferrals of both shares against the one source.
+	xA, xB := core.Extent{Len: int64(len(payA))}, core.Extent{Len: int64(len(payB))}
+	vA, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw of the first loss's version: %v", err)
+	}
+	if _, err := dur.Lose(ctx, durability.Loss{
+		Share: copyTag, File: fileA, Extent: xA, Version: vA,
+		Seq: seqA, Reason: core.LossStale, Synced: true, Deferred: true, Seg: sa,
+	}); err != nil {
+		t.Fatalf("Lose of the first deferred loss: %v", err)
+	}
+	vB, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw of the second loss's version: %v", err)
+	}
+	if _, err := dur.Lose(ctx, durability.Loss{
+		Share: otherTag, File: fileB, Extent: xB, Version: vB,
+		Seq: seqB, Reason: core.LossStale, Synced: true, Deferred: true, Seg: sa,
+	}); err != nil {
+		t.Fatalf("Lose of the second deferred loss: %v", err)
+	}
+	if got := dur.DeferredAgainst(sa); len(got) != 2 {
+		t.Fatalf("DeferredAgainst of the source = %+v, want the two shares' entries", got)
+	}
+
+	// The wirings the pass would make, the mark among them: the first
+	// share's tag answers forgotten before the unit runs.
+	f.deferred = func(seg core.SegmentID) []reclaim.DeferredLoss {
+		var out []reclaim.DeferredLoss
+		for _, l := range dur.DeferredAgainst(seg) {
+			out = append(out, reclaim.DeferredLoss{
+				Share: l.Share, File: l.File, Extent: l.Extent, Version: l.Version,
+				Seq: l.Seq, Reason: l.Reason, Offloaded: l.Offloaded, Synced: l.Synced,
+			})
+		}
+		return out
+	}
+	hr := capacity.NewHeadroom(capacity.HeadroomConfig{
+		Records:    copyHeadroomRecords,
+		Footprint:  func() int64 { return 0 },
+		MaxBytes:   math.MaxInt64,
+		SegmentCap: copySegCap,
+		Admit:      func() error { return nil },
+	})
+	f.admit = hr.Admit
+	f.drawn = hr.Drawn
+	f.forgetting = func(tag core.ShareTag) bool { return tag == copyTag }
+
+	carry, err := f.copier().Carry(ctx, sa, reclaim.Result{})
+	if err != nil {
+		t.Fatalf("Carry of the source: %v", err)
+	}
+	if len(carry.Deferred) != 1 {
+		t.Fatalf("Carry wrote %d deferred loss records (%+v), want the unmarked share's one alone: the forgotten tag's entry is owed no record under a fresh number above the forget record's", len(carry.Deferred), carry.Deferred)
+	}
+	dc := carry.Deferred[0]
+	if dc.Loss.Share != otherTag || dc.Loss.File != fileB || dc.Loss.Extent != xB {
+		t.Fatalf("the deferred copy's entry = %+v, want the unmarked share's loss of the second file over %v", dc.Loss, xB)
+	}
+	if still := dur.DeferredAgainst(sa); len(still) != 2 {
+		t.Fatalf("DeferredAgainst of the source after the carry = %+v, want both entries standing: the skip records nothing and ends nothing, the forget's own path clearing the marked share's", still)
 	}
 }

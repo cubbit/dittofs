@@ -180,6 +180,68 @@ func TestDroppable_SettledTruncate(t *testing.T) {
 	}
 }
 
+// TestSegmentRetired_TwoRelaysKeepBothFiles: a second SegmentRetired for
+// one segment — the journal's own relay beside the retirer's hook — must
+// accumulate its file list with the first's: replacing it would strand the
+// first relay's files, whose drop ranges would then stay in the index after
+// RemovalDurable, keeping every removal that counted on the segment live
+// forever. Two files whose removals count on the one retired segment, each
+// named by one of the two relays, both leave at the durable signal.
+func TestSegmentRetired_TwoRelaysKeepBothFiles(t *testing.T) {
+	f := newFixture(t)
+	idA, idB := fid(45), fid(46)
+	over := f.seg
+	p := newPlant(f)
+	p.write(t, idA, over, core.Extent{Off: 0, Len: 4096}, 0, 3, 1)
+	p.write(t, idB, over, core.Extent{Off: 0, Len: 4096}, 4096, 3, 2)
+	p.finish(t)
+	tr := New(f.ix, nil)
+
+	// Each file's removal record, in a segment of its own, settled: its
+	// answer hinges on the retired segment's ranges alone.
+	delA := Rec{
+		Kind: format.KindDelete, File: idA, Seg: over + 1,
+		Pair: index.Numbers{Version: ver(5), Seq: 6}, Seq: 6,
+	}
+	delB := Rec{
+		Kind: format.KindDelete, File: idB, Seg: over + 2,
+		Pair: index.Numbers{Version: ver(5), Seq: 7}, Seq: 7,
+	}
+	if got := tr.Droppable(delA); got {
+		t.Fatalf("Droppable of the delete beside the record it counts on = %v, want false", got)
+	}
+	if got := tr.Droppable(delB); got {
+		t.Fatalf("Droppable of the second delete beside the record it counts on = %v, want false", got)
+	}
+
+	// Two relays of the one retirement, each naming one file.
+	tr.SegmentRetired(over, []core.FileID{idA})
+	tr.SegmentRetired(over, []core.FileID{idB})
+	for _, look := range []struct {
+		name string
+		rec  Rec
+	}{
+		{"the first relay's delete", delA},
+		{"the second relay's delete", delB},
+	} {
+		if got := tr.Droppable(look.rec); got {
+			t.Fatalf("Droppable of %s after the retirement, before the unlink is durable = %v, want false: the retired segment's ranges answer still", look.name, got)
+		}
+	}
+	tr.RemovalDurable(over)
+	for _, look := range []struct {
+		name string
+		rec  Rec
+	}{
+		{"the first relay's delete", delA},
+		{"the second relay's delete", delB},
+	} {
+		if got := tr.Droppable(look.rec); !got {
+			t.Fatalf("Droppable of %s after the durable signal = %v, want true: a second relay's file list must not strand the first's in the index", look.name, got)
+		}
+	}
+}
+
 // TestDroppable_TruncateUnsettled: a truncate whose marker waits for a
 // settle — its file holds another marker below the truncate's version — is
 // never droppable, whatever it outranks, and drops only at the settle that

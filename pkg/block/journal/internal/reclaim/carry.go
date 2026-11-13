@@ -200,6 +200,16 @@ func (c *Copier) carryDeferredLoss(ctx context.Context, seg core.SegmentID, entr
 	}
 	unlock := c.dom.Lock(entry.File)
 	defer unlock()
+	if c.forgetting != nil && c.forgetting(entry.Share) {
+		// The walk skips a forgotten tag's file whole, and the deferral's
+		// record answers the same skip: a record written now would carry a
+		// fresh sequence number above the forget record's, outside its
+		// snapshot, and would replay a loss for content the forget drops.
+		// Nothing is appended or registered for it — the tag's drop subsumes
+		// its loss — and the deferral stays standing in the registry, for
+		// the forget's own path to clear as it clears the tag.
+		return nil
+	}
 	// No failure from here owes a Refund: a refusal moved no headroom
 	// counter, and the RepackCopy admission this draw took drew nothing on
 	// the headroom ledger, so a failed append refunds nothing.

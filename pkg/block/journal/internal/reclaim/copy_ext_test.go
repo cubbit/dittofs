@@ -1662,11 +1662,12 @@ func (f *copyFixture) shutdown(t *testing.T) {
 // reopen reads the fixture's directory the way an open of it does: the
 // attach pass runs over the seam, and every record the format's real scan
 // attaches is fed to a fresh rebuild. The feed stands in for the open's own
-// record walk until that exists, and carries only the content kinds a
-// journal's copies are — a write or a fill: any other kind the scan
-// attached, or any record whose bytes it refused, fails the test rather than
-// being skipped in the feed. It returns the run's state, the rebuilt index
-// and the records the scan attached.
+// record walk until that exists, and carries only the kinds a journal's
+// copies and carried records are — a write or a fill of content, a truncate
+// or a delete of a removal, the kinds a carry places fresh records of: any
+// other kind the scan attached, or any record whose bytes it refused, fails
+// the test rather than being skipped in the feed. It returns the run's
+// state, the rebuilt index and the records the scan attached.
 func (f *copyFixture) reopen(t *testing.T) (recovery.State, *index.Index, []format.RecordHeader) {
 	t.Helper()
 	st, err := recovery.Run(context.Background(), recovery.Deps{
@@ -1708,8 +1709,12 @@ func (f *copyFixture) reopen(t *testing.T) (recovery.State, *index.Index, []form
 				k = index.RecWrite
 			case format.KindFill:
 				k = index.RecFill
+			case format.KindTruncate:
+				k = index.RecTruncate
+			case format.KindDelete:
+				k = index.RecDelete
 			default:
-				t.Fatalf("the scan attached a %s record of file %v in segment %d, want only a write or a fill", r.Header.Kind, r.Header.File, si.ID)
+				t.Fatalf("the scan attached a %s record of file %v in segment %d, want only a write, a fill, a truncate or a delete", r.Header.Kind, r.Header.File, si.ID)
 			}
 			if err := b.Feed(index.Record{
 				Kind:    k,

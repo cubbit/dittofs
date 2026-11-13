@@ -392,7 +392,12 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 		if t.pendingGone == nil {
 			t.pendingGone = make(map[core.SegmentID][]core.FileID)
 		}
-		t.pendingGone[seg] = append([]core.FileID(nil), files...)
+		// Accumulated per relay, never replaced: the journal's own retirement
+		// relays SegmentRetired beside the retirer's hook, so a second list
+		// must not strand the first's files. A file named twice is harmless —
+		// RemovalDurable's SegmentGone is idempotent and its re-test keeps
+		// one entry per file.
+		t.pendingGone[seg] = append(t.pendingGone[seg], files...)
 	}
 	t.rm.Unlock()
 	t.retireHolds(seg)
