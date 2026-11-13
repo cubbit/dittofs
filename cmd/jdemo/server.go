@@ -266,7 +266,9 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	id := s.id
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"id":%q,"filesys":"ok"}`, hex.EncodeToString(id[:]))
+	// A response whose client hangs up half-written has nowhere better to
+	// be reported than a swallowed write error.
+	panePrint(w, `{"id":%q,"filesys":"ok"}`, hex.EncodeToString(id[:]))
 }
 
 // dirEmpty answers whether dir holds no entry, existing or not: a directory
