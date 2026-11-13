@@ -616,7 +616,7 @@ func expectFIEMAPAnswers(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	const n = 1 << 16
 	if _, err := f.Write(bytes.Repeat([]byte{0xa5}, n)); err != nil {
@@ -658,7 +658,7 @@ func punchMiddle(t *testing.T, path string, n int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if err := unix.Fallocate(
 		int(f.Fd()),

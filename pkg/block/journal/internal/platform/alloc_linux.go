@@ -234,6 +234,12 @@ func (f *file) allocated(fd int, size int64) (bool, error) {
 			if end < e.logical {
 				return false, io.ErrUnexpectedEOF // a length no file can hold
 			}
+			if end > math.MaxInt64 {
+				// covered is an int64 offset: an extent whose end runs past
+				// the largest one would wrap it negative and end the walk
+				// over bytes nothing covered.
+				return false, io.ErrUnexpectedEOF // an end no offset can name
+			}
 			if end > uint64(covered) {
 				covered = int64(end)
 			}
