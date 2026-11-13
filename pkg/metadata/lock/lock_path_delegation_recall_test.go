@@ -71,8 +71,13 @@ func TestLock_DelegationIsRecalledNotDenied(t *testing.T) {
 	// lock's exclusivity alone instead of from the conflict predicate would make
 	// this recall a write delegation and park on it for the whole timeout.
 	t.Run("a zero-byte lock neither recalls nor waits", func(t *testing.T) {
+		// The recall budget is far past the wait below, and the callbacks never
+		// return the delegation: a lock that parked on a recall could only come
+		// back after the minute, so returning within the bounded wait is the
+		// assertion that it did not wait.
 		defer func(d time.Duration) { delegationIOWaitTimeout = d }(delegationIOWaitTimeout)
-		delegationIOWaitTimeout = 300 * time.Millisecond
+
+		delegationIOWaitTimeout = time.Minute
 
 		lm := NewManager()
 		recalls := &recordingBreakCallbacks{}
@@ -82,17 +87,39 @@ func TestLock_DelegationIsRecalledNotDenied(t *testing.T) {
 		}
 
 		zb := FileLock{OpenID: "smb:open-1", SessionID: 7, Offset: 0, Length: 0, Exclusive: true, IsZeroByte: true}
-		start := time.Now()
-		if err := lm.Lock(handle, zb); err != nil {
+		if err := lockWithin(t, lm, handle, zb, 10*time.Second); err != nil {
 			t.Fatalf("a zero-byte lock must be granted, got %v", err)
-		}
-		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
-			t.Fatalf("a zero-byte lock must not wait on a recall, took %v", elapsed)
 		}
 		if got := len(recalls.getDelegationRecalls()); got != 0 {
 			t.Fatalf("a zero-byte lock must not recall a delegation, got %d recalls", got)
 		}
 	})
+}
+
+// lockWithin runs lm.Lock and returns its error, failing the test when the call
+// has not returned within bound. Callers set the recall budget well past bound,
+// so a Lock that waits on a recall fails here rather than hanging the package.
+func lockWithin(
+	t *testing.T,
+	lm *Manager,
+	handle string,
+	lock FileLock,
+	bound time.Duration,
+) error {
+	t.Helper()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- lm.Lock(handle, lock)
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(bound):
+		t.Fatalf("Lock did not return within %v, so it waited on a recall budget", bound)
+		return nil
+	}
 }
 
 // TestLock_DelegationArrivingDuringAcquireIsRecalledNotDenied covers the window
@@ -348,26 +375,43 @@ func TestLock_WaitIsScopedToTheSelectedDelegations(t *testing.T) {
 func TestLock_RetriesShareOneRecallBudget(t *testing.T) {
 	const handle = xHandle
 
+	// The budget is far past the wait below, and the recall is dated one whole
+	// budget back, as if an earlier attempt had already waited it out. A retry
+	// that shares the budget denies at once; one that starts a fresh budget waits
+	// a minute, so returning within the bounded wait is the assertion.
 	defer func(d time.Duration) { delegationIOWaitTimeout = d }(delegationIOWaitTimeout)
-	delegationIOWaitTimeout = 400 * time.Millisecond
+
+	delegationIOWaitTimeout = time.Minute
 
 	lm := NewManagerWithTTL(-1)
-	lm.RegisterBreakCallbacks(&recordingBreakCallbacks{})
-	if err := lm.GrantDelegation(handle, NewDelegation(DelegTypeWrite, "nfs4:c1", "share-a", false)); err != nil {
+	recalls := &recordingBreakCallbacks{}
+	lm.RegisterBreakCallbacks(recalls)
+
+	deleg := NewDelegation(DelegTypeWrite, "nfs4:c1", "share-a", false)
+	if err := lm.GrantDelegation(handle, deleg); err != nil {
 		t.Fatalf("GrantDelegation: %v", err)
 	}
 
-	// The client never answers, so every attempt times out. Ten attempts must
-	// cost about one budget in total, not ten.
-	start := time.Now()
-	for i := 0; i < 10; i++ {
-		if err := lm.Lock(handle, smbExclusive("smb:open-1", 0, 0)); err == nil {
-			t.Fatal("an unanswered recall must deny the lock")
+	// BreakStarted anchors the wait budget, so a recall in flight sets it, as
+	// breakDelegations does.
+	lm.mu.Lock()
+	for _, ul := range lm.unifiedLocks[handle] {
+		if ul.IsDelegation() && ul.Delegation.DelegationID == deleg.DelegationID {
+			ul.Delegation.Breaking = true
+			ul.Delegation.BreakStarted = time.Now().Add(-delegationIOWaitTimeout)
 		}
 	}
-	elapsed := time.Since(start)
-	if elapsed > 3*delegationIOWaitTimeout {
-		t.Fatalf("ten attempts waited %v, so each started a fresh %v budget", elapsed, delegationIOWaitTimeout)
+	lm.mu.Unlock()
+
+	// The client never answers, so every attempt is denied, and none may wait.
+	retry := smbExclusive("smb:open-1", 0, 0)
+	for i := 0; i < 10; i++ {
+		if err := lockWithin(t, lm, handle, retry, 10*time.Second); err == nil {
+			t.Fatalf("attempt %d: an unanswered recall must deny the lock", i)
+		}
 	}
-	t.Logf("ten attempts bounded to %v (one budget %v)", elapsed, delegationIOWaitTimeout)
+
+	if got := len(recalls.getDelegationRecalls()); got != 0 {
+		t.Fatalf("the retries dispatched %d new recalls, want none for a recall in flight", got)
+	}
 }

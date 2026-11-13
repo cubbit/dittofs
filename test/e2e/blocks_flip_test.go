@@ -28,6 +28,7 @@
 package e2e
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -102,7 +103,17 @@ func TestBlocksFlipLifecycle_NFS(t *testing.T) {
 		write: func(name string, data []byte) error {
 			return os.WriteFile(mount.FilePath(name), data, 0o644)
 		},
-		read:   func(name string) ([]byte, error) { return os.ReadFile(mount.FilePath(name)) },
+		read: func(name string) ([]byte, error) {
+			// The kernel client keeps the pages it wrote, and an evict on the
+			// server does not reach them, so a read the steps mean as cold
+			// would be served from this host's page cache. Drop it first so
+			// the read goes over the wire to the share.
+			if err := os.WriteFile("/proc/sys/vm/drop_caches", []byte("3"), 0); err != nil {
+				return nil, fmt.Errorf("drop the page cache, which needs root: %w", err)
+			}
+
+			return os.ReadFile(mount.FilePath(name))
+		},
 		remove: func(name string) error { return os.Remove(mount.FilePath(name)) },
 	}
 
