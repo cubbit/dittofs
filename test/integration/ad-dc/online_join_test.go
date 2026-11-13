@@ -131,10 +131,11 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 		t.Logf("AD computer list after join:\n%s", out)
 	}
 
-	// Give the DC a moment to settle the freshly-set machine credential before
-	// driving a NETLOGON SamLogon through it (Samba caches credentials briefly
-	// after a password change).
-	time.Sleep(5 * time.Second)
+	// Samba may refuse the freshly set machine password for a short while
+	// after the join. Wait for the real condition, a secure channel the DC
+	// accepts for DITTOJOIN$, rather than a fixed pause: Probe connects the
+	// channel with the joined credential and drops it again.
+	waitForSecureChannel(t, ctx, auth, time.Minute)
 
 	// Now prove a member logon through the freshly-joined account: validate
 	// alice's NTLMv2 response over the NETLOGON secure channel authenticated with
@@ -165,21 +166,13 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 		t.Fatalf("compute alice NTLMv2 response: %v", cerr)
 	}
 
-	var res *netlogon.LogonResult
-	for attempt := 1; attempt <= 10; attempt++ {
-		res, err = auth.NetworkLogon(ctx, netlogon.NetworkLogonRequest{
-			Username:        adUserAlice,
-			Domain:          adDomain,
-			ServerChallenge: serverChallenge,
-			NTResponse:      resp.NT,
-			LMResponse:      resp.LM,
-		})
-		if err == nil {
-			break
-		}
-		t.Logf("NetworkLogon attempt %d/10 via online-joined account: %v", attempt, err)
-		time.Sleep(3 * time.Second)
-	}
+	res, err := auth.NetworkLogon(ctx, netlogon.NetworkLogonRequest{
+		Username:        adUserAlice,
+		Domain:          adDomain,
+		ServerChallenge: serverChallenge,
+		NTResponse:      resp.NT,
+		LMResponse:      resp.LM,
+	})
 	if err != nil {
 		dumpADLogs(t)
 		t.Fatalf("member logon via online-joined account failed: %v", err)
@@ -192,5 +185,34 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 	}
 	if len(res.GroupSIDs) == 0 {
 		t.Error("expected at least one GroupSID from DC")
+	}
+}
+
+// waitForSecureChannel polls Probe until the DC accepts a secure channel for
+// the provider's machine account, failing the test with the last error once
+// timeout has passed.
+func waitForSecureChannel(
+	t *testing.T,
+	ctx context.Context,
+	auth *netlogon.Authenticator,
+	timeout time.Duration,
+) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+
+	for {
+		err := auth.Probe(ctx)
+		if err == nil {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			dumpADLogs(t)
+			t.Fatalf("the DC did not accept a secure channel for the joined account within %v: %v",
+				timeout, err)
+		}
+
+		time.Sleep(250 * time.Millisecond)
 	}
 }
