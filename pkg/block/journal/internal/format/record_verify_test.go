@@ -209,6 +209,80 @@ func TestRecordPaddingIsIgnored(t *testing.T) {
 	}
 }
 
+// TestDecodeLossBody pins the loss body's own decoder on the 16 body bytes
+// alone, apart from any header or checksum: every reason the kinds table
+// defines round-trips through AppendRecord's encoding with and without both
+// flag bits, and every body a writer of this format could not have produced —
+// a reason outside 1-5, a flag word holding bits outside 0, 1 and 8-15, an
+// input short of the body — is refused as damage with the zero Loss.
+func TestDecodeLossBody(t *testing.T) {
+	// The golden encode→decode round-trip: every reason, with each of the
+	// four flag-bit combinations, comes back as the Loss that encoded it.
+	h := wantRecordAt(t, "loss").h
+	for _, c := range []struct {
+		synced    bool
+		offloaded bool
+		reason    LossReason
+	}{
+		{false, false, LossCorrupt},
+		{false, false, LossStale},
+		{false, false, LossFailedSync},
+		{false, false, LossSuperseded},
+		{false, false, LossAcknowledged},
+		{true, false, LossCorrupt},
+		{false, true, LossStale},
+		{true, true, LossFailedSync},
+		{true, true, LossSuperseded},
+		{true, false, LossAcknowledged},
+	} {
+		want := Loss{Dropped: testLoss.Dropped, Synced: c.synced, Offloaded: c.offloaded, Reason: c.reason}
+		b := AppendRecord(nil, testIdentity, h, RecordBody{Loss: want})
+		got, err := DecodeLossBody(b[RecordHeaderSize : RecordHeaderSize+16])
+		if err != nil {
+			t.Errorf("flags %v/%v reason %d: DecodeLossBody = %v, want no error", c.synced, c.offloaded, c.reason, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("flags %v/%v reason %d: DecodeLossBody = %+v, want %+v", c.synced, c.offloaded, c.reason, got, want)
+		}
+	}
+
+	// A body a writer of this format could not have produced: a reason
+	// outside 1-5 — 0, the zeroed slot's, 6, the first past the table, and
+	// 255, the last byte — a flag word holding a bit outside 0, 1 and 8-15 —
+	// bit 2 and a bit of the high word, above the reason's byte — and a
+	// short input. Each is built from the writer's own layout, so only its
+	// rule can refuse it.
+	for _, c := range []struct {
+		name  string
+		flags uint64
+	}{
+		{"a zeroed body", 0},
+		{"reason 6", 6 << 8},
+		{"reason 255", 255 << 8},
+		{"reserved bit 2 set", 1<<2 | uint64(LossSuperseded)<<8},
+		{"a non-zero high flag word", 1<<32 | uint64(LossSuperseded)<<8 | 0x3},
+	} {
+		b := make([]byte, 16)
+		binary.LittleEndian.PutUint64(b[8:16], c.flags)
+		got, err := DecodeLossBody(b)
+		if !errors.Is(err, ErrDamaged) {
+			t.Errorf("%s: DecodeLossBody = %v, want an error matching ErrDamaged", c.name, err)
+		}
+		if got != (Loss{}) {
+			t.Errorf("%s: decoded %+v on refusal, want the zero Loss", c.name, got)
+		}
+	}
+
+	got, err := DecodeLossBody(make([]byte, 15))
+	if !errors.Is(err, ErrDamaged) {
+		t.Errorf("a 15-byte body: DecodeLossBody = %v, want an error matching ErrDamaged", err)
+	}
+	if got != (Loss{}) {
+		t.Errorf("a 15-byte body: decoded %+v on refusal, want the zero Loss", got)
+	}
+}
+
 // TestLossReasonAcknowledgedRoundTrips checks that a loss record naming reason
 // 5, an operator's acknowledgement that a record is unreadable, encodes and
 // decodes to the same body. A codec that refused reason 5 would drop the
