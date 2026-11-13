@@ -90,18 +90,18 @@ func TestIndexUnderRecorder(t *testing.T) {
 				t.Errorf("Fill: %v", err)
 				return
 			}
-			if _, err := ix.Lose(recordedIDs[(i+1)%len(recordedIDs)], e, core.Version{Counter: v + 4}); err != nil && !errors.Is(err, core.ErrZeroLength) {
+			if _, _, err := ix.Lose(recordedIDs[(i+1)%len(recordedIDs)], e, core.Version{Counter: v + 4}); err != nil && !errors.Is(err, core.ErrZeroLength) {
 				t.Errorf("Lose: %v", err)
 				return
 			}
-			if _, err := ix.ApplyRemoval(tag, recordedIDs[(i+2)%len(recordedIDs)], core.ChangeDeallocate, e, core.Version{Counter: v + 4}, core.Seq(v+4), r, nil); err != nil && !errors.Is(err, core.ErrZeroLength) {
+			if _, _, err := ix.ApplyRemoval(tag, recordedIDs[(i+2)%len(recordedIDs)], core.ChangeDeallocate, e, core.Version{Counter: v + 4}, core.Seq(v+4), r, nil); err != nil && !errors.Is(err, core.ErrZeroLength) {
 				t.Errorf("ApplyRemoval: %v", err)
 				return
 			}
 			// The gone path: the loss leaves only a marker, and the settle
 			// drops it and with it the entry.
 			gone := goneIDs[i%len(goneIDs)]
-			if _, err := ix.Lose(gone, e, core.Version{Counter: v + 4}); err != nil && !errors.Is(err, core.ErrZeroLength) {
+			if _, _, err := ix.Lose(gone, e, core.Version{Counter: v + 4}); err != nil && !errors.Is(err, core.ErrZeroLength) {
 				t.Errorf("Lose on the gone path: %v", err)
 				return
 			}

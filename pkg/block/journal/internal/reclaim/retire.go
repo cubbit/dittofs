@@ -62,9 +62,9 @@ type Worker struct {
 	gate Gate
 	exec Executor
 
-	// mu guards the queue below. It is the one lock Emptied and Prompt
-	// take, and it is never held across a Set, Tracker, Gate or Executor
-	// call.
+	// decision: mu is a leaf: it guards the queue below. It is the one lock
+	// Emptied and Prompt take, and it is never held across a Set, Tracker,
+	// Gate or Executor call.
 	mu      sync.Mutex
 	entries map[core.SegmentID]*offer
 	order   []core.SegmentID
