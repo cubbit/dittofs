@@ -97,7 +97,7 @@ func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []se
 		}
 	}
 	unverified := map[core.SegmentID]bool{}
-	for _, id := range att.Unverified {
+	for _, id := range slices.Concat(att.Unverified, att.ZeroHeader) {
 		unverified[id] = true
 	}
 
@@ -169,17 +169,7 @@ func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []se
 		// A named predecessor was sealed before its successor was made, so
 		// its seal marker must verify. One that does not is a missing end
 		// the open refuses, unless the marker alone rotted.
-		//
-		// decision: a named segment shorter than the first record slot opens
-		// with its damage reported and is never refused as a missing end: the
-		// missing end runs from the last verifying record to the segment's
-		// length, and under the first record slot that range inverts, so the
-		// refusal would name an empty one. The ceiling is an open that serves
-		// content the truncated records superseded, since nothing readable
-		// names them now. Overturned when the reconcile work gives the open a
-		// verdict for content nothing names, or when the format rules bounds
-		// for a truncation below the first record slot.
-		if named[id] && !sc.Sealed && sc.Size >= format.SegmentHeaderSize {
+		if named[id] && !sc.Sealed {
 			exempt, err := markerAloneRotted(rd, sc)
 			if err != nil {
 				return tails{}, err
@@ -220,6 +210,13 @@ func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []se
 				tornSlot = true
 			}
 		}
+		// decision: a record whose header verifies and whose payload rots is
+		// reported by no open phase, here included: the open never reads a
+		// content payload, so the scan indexes the record and the read that
+		// serves its extent catches the rot, through the corrupt path that
+		// raises the loss event and drops it. The ceiling is a rotted payload
+		// that stays unreported until something reads it. Overturned only if
+		// the open is ever ruled to verify live payloads at rebuild.
 		if damaged {
 			out.Damaged = append(out.Damaged, id)
 		}
@@ -278,10 +275,12 @@ func refuseRange(id core.SegmentID, r format.ScanRange) error {
 
 // refuseMissingEnd is the same refusal for a named predecessor that ends
 // without its seal marker: the bytes from the last verifying record to the
-// file's end. It carries refuseRange's decision.
+// file's end. It carries refuseRange's decision. A segment cut below the first
+// record slot has its start clamped to its size, so the range is empty, never
+// inverted.
 func refuseMissingEnd(sc segmentScan) error {
 	return fmt.Errorf("%w: segment %d: a named predecessor's missing end at [%d,%d) that names no record",
-		core.ErrNotImplemented, sc.ID, sc.RecordsEnd, sc.Size)
+		core.ErrNotImplemented, sc.ID, min(sc.RecordsEnd, sc.Size), sc.Size)
 }
 
 // markerAloneRotted reports whether a named predecessor's missing seal marker

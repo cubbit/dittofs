@@ -206,23 +206,36 @@ func TestATornSegmentHeaderIsDamageWhenASealMarkerFollowsIt(t *testing.T) {
 }
 
 func TestATornSegmentHeaderEndsItsSegment(t *testing.T) {
-	seg := buildSeg(1, tailRec(200, 0x4100))
-	seg = append(seg, make([]byte, 16)...)
-	rr := tailRec(201, 0x8100)
-	rr.Identity, rr.Segment, rr.RecordOffset = journalID, 1, uint32(len(seg))
-	seg = append(seg, rr.Bytes()...)
-	r := newRig(t)
-	r.writeFormat()
-	r.plantSeg(1, damageHeader(seg))
-	st := runTails(t, r)
+	t.Run("the header alone", func(t *testing.T) {
+		seg := buildSeg(1, tailRec(200, 0x4100), tailRec(201, 0x8100))
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, damageHeader(seg))
+		st := runTails(t, r)
 
-	if got := planted(st); got != 2 {
-		t.Errorf("the index holds %d entries, want 2: the record after the slot attaches", got)
-	}
-	wantFate(t, st, 1, fateEnded, 0)
-	if len(st.Tails.Damaged) != 0 {
-		t.Errorf("Damaged got %v, want none: nothing proves the header slot", st.Tails.Damaged)
-	}
+		if got := planted(st); got != 2 {
+			t.Errorf("the index holds %d entries, want 2", got)
+		}
+		wantFate(t, st, 1, fateEnded, 0)
+		wantDamaged(t, st)
+	})
+	t.Run("before a torn slot", func(t *testing.T) {
+		seg := buildSeg(1, tailRec(200, 0x4100))
+		seg = append(seg, make([]byte, 16)...)
+		rr := tailRec(201, 0x8100)
+		rr.Identity, rr.Segment, rr.RecordOffset = journalID, 1, uint32(len(seg))
+		seg = append(seg, rr.Bytes()...)
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, damageHeader(seg))
+		st := runTails(t, r)
+
+		if got := planted(st); got != 2 {
+			t.Errorf("the index holds %d entries, want 2: the record after the slot attaches", got)
+		}
+		wantFate(t, st, 1, fateEnded, 0)
+		wantDamaged(t, st)
+	})
 }
 
 func TestTailsClassifyEverySegmentFate(t *testing.T) {

@@ -110,11 +110,12 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 	if limit < 1 {
 		limit = math.MaxInt64
 	}
-	// The unverified-header segments' records verify by identity, segment
-	// and offset whatever their header slot says, so they scan too; the
-	// zero-header ones are not scanned here.
+	// The unverified-header and zero-header segments' records verify by
+	// identity, segment and offset whatever their header slot says, so they
+	// scan too: a record a later sync proved synced is never lost to a slot
+	// nobody wrote.
 	segs := slices.Clone(st.Attached.Own)
-	for _, id := range st.Attached.Unverified {
+	for _, id := range slices.Concat(st.Attached.Unverified, st.Attached.ZeroHeader) {
 		segs = append(segs, SegmentInfo{ID: id, Unverified: true})
 	}
 	out, err := rebuildIndex(ctx, rd, expect, segs, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan)

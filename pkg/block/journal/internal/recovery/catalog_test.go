@@ -323,8 +323,8 @@ func TestCatalogAndScanBuildTheSameIndex(t *testing.T) {
 // trailer checksummed, a trailer of a layout this format does not read or
 // carrying flags none define, the seal marker the footer needs wiped, a
 // trailer naming more entries than fit before it, one naming fewer than the
-// segment holds, one naming none over records the segment does hold, and a
-// file too short to be a segment at all — and holds, per row, that the open
+// segment holds and one naming none over records the segment does hold — and
+// holds, per row, that the open
 // still succeeds, the segment is built by no catalogue, and the index the
 // demoted rebuild built is the one a forced scan of the same directory
 // builds: a footer that does not verify loses the open speed and nothing
@@ -414,12 +414,6 @@ func TestCatalogDemotesEveryNoFooterToAScan(t *testing.T) {
 			replaceTrailer(b, raw.Trailer(1, uint64(footerOffset(b, ents))))
 			return b
 		}},
-		{"short file", func(b []byte, id core.SegmentID, ents []format.CatalogEntry) []byte {
-			// 20 bytes hold neither a whole segment header nor a trailer: the
-			// attach pass classes the segment unverified and the rebuild never
-			// reaches it, let alone its catalogue.
-			return b[:20]
-		}},
 	}
 
 	// open plants the chained workload on a fresh rig, rewrites the
@@ -451,10 +445,9 @@ func TestCatalogDemotesEveryNoFooterToAScan(t *testing.T) {
 			victim := segs[0]
 			// Intact, the plant catalogues every sealed segment a successor
 			// names: all but the newest. The broken one must not count —
-			// most rows demote it to the scan; the short file is refused at
-			// attach before the rebuild reaches it at all.
+			// each row demotes it to the scan.
 			if got, want := st.Rebuilt.ByCatalog, len(segs)-2; got != want {
-				t.Fatalf("Run rebuilt %d segments by catalog, want %d: the broken footer's segment was not kept out of the catalogues — neither demoted to the scan nor refused at attach", got, want)
+				t.Fatalf("Run rebuilt %d segments by catalog, want %d: the broken footer's segment was not kept out of the catalogues — not demoted to the scan", got, want)
 			}
 			if sc, ok := scanOf(st, victim); ok && sc.SealedByCatalog {
 				t.Errorf("Run: segment %d was rebuilt by catalog, want the scan: a footer that does not verify never feeds", victim)
