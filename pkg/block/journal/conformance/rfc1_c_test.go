@@ -357,7 +357,7 @@ func TestRFC1C_EpochHalfIsZero(t *testing.T) {
 		payloadTag string
 	}{
 		{name: "epoch half", kind: 1, version: raw.Version{Epoch: 1, Counter: 1 << 40}, payloadTag: "e"},
-		{name: "unknown kind", kind: 15, version: raw.Version{Counter: 1 << 40}, payloadTag: "k"},
+		{name: "unknown kind", kind: 17, version: raw.Version{Counter: 1 << 40}, payloadTag: "k"},
 	} {
 		t.Run(leg.name, func(t *testing.T) {
 			// The first leg is watched; the second runs unwatched, the

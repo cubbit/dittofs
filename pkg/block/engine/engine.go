@@ -7,6 +7,7 @@
 package engine
 
 import (
+	"container/list"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -65,6 +66,12 @@ type Engine struct {
 	opened   atomic.Uint64 // the bindings made so far, which Close undoes in reverse
 	cloning  sync.WaitGroup
 
+	// doneMu is held for a change of done only, never with an entry's lock
+	// held, nor taken while it is held.
+	doneMu  sync.Mutex
+	done    *list.List // the done clones remembered (doneClone), oldest first
+	doneCap int        // how many done holds at most: doneClones, a test's seam lowers it
+
 	gcMu            sync.Mutex
 	gcs             map[Journal]*groupCommit                        // each journal's group commit
 	gcsClosed       bool                                            // the group commits were closed: none starts again
@@ -75,8 +82,7 @@ type Engine struct {
 	readOnlyLogged  atomic.Bool                                     // the journal's turn read-only was logged: see noteReadOnly
 	hooks           struct{ taken, drained atomic.Pointer[func()] } // a test's seams: after a batch's take and a drain's read of the ring
 	beforeTake      atomic.Pointer[func()]                          // a test's seam: run before each take of a group commit's loop
-	afterRegister   func()                                          // a test's hook: run once a clone's registrations are installed, the clone then stopping
-	fakeCloneDone   atomic.Bool                                     // a test's stand-in for the joins of a running clone: set, a clone runs past its registrations
+	afterRegister   func() error                                    // a test's hook: run once a clone's registrations are installed; an error stops the clone there
 
 	// cloneMarker, a test's stand-in for the clone's rebuild, is called by
 	// start step 3 for each clone marker the journal yields above a file's
@@ -155,6 +161,8 @@ func New(d Deps) (*Engine, error) {
 		fence:    f,
 		d:        d,
 		files:    newFiles(d.Clock),
+		done:     list.New(),
+		doneCap:  doneClones,
 		instance: instanceID(),
 		busy:     map[entity.ShareID]struct{}{},
 		raised:   map[entity.ShardID]struct{}{},

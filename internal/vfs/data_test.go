@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -952,5 +953,29 @@ func TestOnlyAnSMBOpenFlushesAndALockStateWritesStable(t *testing.T) {
 	}
 	if got := *commits; len(got) != 1 || got[0] != (entity.Extent{Offset: 0, Length: 3}) {
 		t.Errorf("an unstable write through a lock state on a continuously available share: committed %v, want its extent", got)
+	}
+}
+
+// badExtent refuses an extent no clone moves, an end past the largest offset
+// included, however its offset and length sum.
+func TestBadExtent(t *testing.T) {
+	for _, c := range []struct {
+		x       vfs.Extent
+		oneFile bool
+		want    bool
+	}{
+		{vfs.Extent{SrcOff: 0, DstOff: 0, Len: 4}, false, false},
+		{vfs.Extent{SrcOff: 0, DstOff: 0, Len: 0}, false, true},
+		{vfs.Extent{SrcOff: -1, DstOff: 0, Len: 4}, false, true},
+		{vfs.Extent{SrcOff: 0, DstOff: -1, Len: 4}, false, true},
+		{vfs.Extent{SrcOff: 1, DstOff: 0, Len: math.MaxInt64}, false, true},
+		{vfs.Extent{SrcOff: 0, DstOff: 1, Len: math.MaxInt64}, false, true},
+		{vfs.Extent{SrcOff: 0, DstOff: 4, Len: 4}, true, false},
+		{vfs.Extent{SrcOff: 0, DstOff: 3, Len: 4}, true, true},
+		{vfs.Extent{SrcOff: 3, DstOff: 0, Len: 4}, true, true},
+	} {
+		if got := badExtent(c.x, c.oneFile); got != c.want {
+			t.Errorf("badExtent(%+v, oneFile %v) = %v, want %v", c.x, c.oneFile, got, c.want)
+		}
 	}
 }

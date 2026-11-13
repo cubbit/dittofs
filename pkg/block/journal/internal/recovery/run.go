@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
+	"runtime"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -18,16 +20,37 @@ type Deps struct {
 	Clock  core.Clock
 	Tracer core.Tracer
 	Log    *slog.Logger
+
+	// ExtentLimit is the index entry bound the rebuilt index carries into
+	// the journal's later writes. Zero is no bound. A rebuild over the bound
+	// still builds: the bound refuses later writes, never the open.
+	ExtentLimit int64
+
+	// rebuildOrder reorders the segments the rebuild dispatches before it
+	// starts a reader; nil keeps the listing's order, the one the open runs
+	// in. It is unexported and set only by tests that need an order the
+	// directory would not hand over.
+	rebuildOrder func(own []SegmentInfo)
+
+	// rebuildReaders bounds the segment readers the rebuild runs at once; 0
+	// means GOMAXPROCS, what the open runs with. It is unexported and set
+	// only by tests that need a bound the machine would not give.
+	rebuildReaders int
 }
 
-// State is what recovery rebuilt of the journal's state. Today it carries
-// the attach pass's answer, Attached — the id high-water mark and the
-// rejected count included there; every field a later phase would fill is
-// attached's to grow with its phase, and nothing outside reads a copy of a
-// field attached already holds.
+// State is what recovery rebuilt of the journal's state: the attach pass's
+// answer, Attached — the id high-water mark and the rejected count included
+// there — and the rebuild phase's, Rebuilt, the index the records on disk
+// rebuilt into with its counters and scans. Every field a later phase would
+// fill is its own phase's to grow with, and nothing outside reads a copy of
+// a field attached already holds.
 type State struct {
 	// Attached is what the attach pass found in the directory.
 	Attached Attached
+
+	// Rebuilt is what the rebuild phase built: the index, its counters,
+	// every own segment's scan and the resync count.
+	Rebuilt rebuilt
 }
 
 // phase is one step of the open's recovery: the span it runs under, and
@@ -36,7 +59,7 @@ type State struct {
 // built runs as a no-op whose span still opens.
 type phase struct {
 	span core.SpanOp
-	run  func(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID) error
+	run  func(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version) error
 }
 
 // String names the phase by its span.
@@ -49,7 +72,7 @@ func (p phase) String() string { return string(p.span) }
 // than the span, so two phases may share one.
 var phases = [...]phase{
 	{span: core.SpanOpenAttach, run: runAttach},
-	{span: core.SpanOpenRebuild},
+	{span: core.SpanOpenRebuild, run: runRebuild},
 	{span: core.SpanOpenMarksRaise},
 	{span: core.SpanOpenTailProof},
 	{span: core.SpanOpenMarksLostTail},
@@ -62,10 +85,35 @@ var phases = [...]phase{
 
 // runAttach is the attach pass as a phase of the run: over the reader the
 // run built, so its collected ranges reach the open's refusal below.
-func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID) error {
+func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, _ core.Version) error {
 	att, err := attach(ctx, deps.FS, rd, expect, deps.Log)
 	st.Attached = att
 	return err
+}
+
+// runRebuild is the rebuild phase: it scans the segments the attach pass
+// attached, through the same reader the open refuses on. The index carries
+// deps.ExtentLimit, no bound when it is unset; the builder never consults the
+// bound while rebuilding, so a directory past it still opens.
+func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version) error {
+	limit := deps.ExtentLimit
+	if limit < 1 {
+		limit = math.MaxInt64
+	}
+	out, err := rebuildIndex(ctx, rd, expect, st.Attached.Own, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil)
+	if err != nil {
+		return err
+	}
+	st.Rebuilt = out
+	return nil
+}
+
+// rebuildReaders is the reader bound the rebuild runs under.
+func rebuildReaders(deps Deps) int {
+	if deps.rebuildReaders > 0 {
+		return deps.rebuildReaders
+	}
+	return runtime.GOMAXPROCS(0)
 }
 
 // Run rebuilds the journal's state from its directory, running the open's
@@ -93,7 +141,7 @@ func Run(ctx context.Context, deps Deps, floor core.Version, expect core.Journal
 		phCtx, end := startSpan(ctx, deps, ph.span)
 		perr := error(nil)
 		if ph.run != nil {
-			perr = ph.run(phCtx, deps, rd, &st, expect)
+			perr = ph.run(phCtx, deps, rd, &st, expect, floor)
 		}
 		// decision: a phase not yet built changes nothing. Its step is a
 		// named, traced no-op, and the phases around it keep this list,

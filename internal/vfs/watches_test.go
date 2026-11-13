@@ -333,6 +333,26 @@ func TestEveryChangeThroughAnOpenIsReported(t *testing.T) {
 	}
 }
 
+// A copy into a file through an open is reported to a watch of its
+// directory, as a write through one is.
+func TestACopyThroughAnOpenIsReported(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	alice, cb := s.connected(t, signedIn(s.alice.Principal, 1), smb("alice-pc", 1))
+	src := s.touch(t, s.fs.Root, "src")
+	_, err := s.Write(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Anonymous(src), 0, []byte("xyz"), vfs.Unstable)
+	s.must(t, err)
+	s.touch(t, s.fs.Root, "f")
+	_, err = s.Watch(ctx, alice, vfs.WatchSpec{Dir: s.fs.Root, Filter: ^openstate.ChangeMask(0)})
+	s.must(t, err)
+	o := s.opener(t, alice, "f", entity.ReadData|entity.WriteData)
+	_, err = s.Copy(ctx, alice, vfs.CopyArgs{Src: vfs.Anonymous(src), Dst: o, Extents: []vfs.Extent{{Len: 3}}})
+	s.must(t, err)
+	if what := heard(t, s, cb, "f")["f"]; what&openstate.ChangeTimes == 0 {
+		t.Errorf("the copy's changes were %b, want the times among them", what)
+	}
+}
+
 // A rename across directories is reported as a removal from the one and an
 // addition to the other.
 func TestARenameAcrossDirectoriesIsReportedInBoth(t *testing.T) {

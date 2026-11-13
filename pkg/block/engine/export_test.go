@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"runtime"
 	"slices"
@@ -368,10 +369,15 @@ func (e *Engine) SetConflictBound(d time.Duration) { e.conflictBound.Store(int64
 // RetryingOwner reports whether ctx carries the retrying-owner mark.
 func RetryingOwner(ctx context.Context) bool { return ownerOf(ctx) != nil }
 
+// ErrStopped is what a test's SetAfterRegister hook returns to stop a clone
+// once registered: a test of admission alone.
+var ErrStopped = errors.New("engine test: the clone stopped once registered")
+
 // SetAfterRegister makes h run once each clone's registrations are
-// installed; the clone then stops, its registrations undone, answering
-// ErrUnbuilt: a test of admission alone.
-func (e *Engine) SetAfterRegister(h func()) { e.afterRegister = h }
+// installed, before it enters its shares' gates. An error from h stops the
+// clone there, its registrations undone, and the clone answers it; nil lets
+// it run on. A nil h removes the hook.
+func (e *Engine) SetAfterRegister(h func() error) { e.afterRegister = h }
 
 // SetCloneMarkerHook makes h run for each clone marker start step 3 finds,
 // standing in for the clone's rebuild.
@@ -384,10 +390,6 @@ func (e *Engine) SetCloneMarkerHook(h cloneMarkerFunc) {
 func (e *Engine) SetCloneRemovalHook(h cloneRemovalFunc) {
 	e.cloneRemoval = h
 }
-
-// FakeCloneDone lets a clone run past its registrations to its done signal,
-// standing in for the joins a served engine does not have yet.
-func (e *Engine) FakeCloneDone() { e.fakeCloneDone.Store(true) }
 
 // LoopSteps is the count of items the share's journal's removal loop ran.
 func (e *Engine) LoopSteps(s entity.ShareID) int64 {
@@ -882,4 +884,29 @@ func (e *Engine) AcceptedWriteForTest(s entity.ShareID) {
 // share s's journal named the headroom, so the next accepted write clears it.
 func (e *Engine) HeadroomNamedForTest(s entity.ShareID) bool {
 	return e.table()[s].gc.cap.headroom.Load()
+}
+
+// SetDoneClones lowers how many done clones the node remembers, so a test
+// evicts one without running doneClones clones.
+func (e *Engine) SetDoneClones(n int) {
+	e.doneMu.Lock()
+	e.doneCap = n
+	e.doneMu.Unlock()
+}
+
+// DoneIn is the count of done clones f's entry holds, 0 with no entry.
+func (e *Engine) DoneIn(f entity.FileID) int {
+	fe := e.files.lockOf(f)
+	if fe == nil {
+		return 0
+	}
+	defer e.files.unlock(f, fe)
+	return len(fe.done)
+}
+
+// DoneClones is the count of done clones the node remembers.
+func (e *Engine) DoneClones() int {
+	e.doneMu.Lock()
+	defer e.doneMu.Unlock()
+	return e.done.Len()
 }

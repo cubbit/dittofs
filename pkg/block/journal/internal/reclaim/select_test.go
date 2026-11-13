@@ -22,7 +22,7 @@ func (f *selFixture) sealedSeg(t *testing.T, tags map[core.ShareTag]int64) core.
 	t.Helper()
 	seg := f.takeIn(t)
 	for tg, n := range tags {
-		if err := f.set.AddRecord(seg, tg, n); err != nil {
+		if err := f.set.AddRecord(seg, tg, n, 0); err != nil {
 			t.Fatalf("AddRecord: %v", err)
 		}
 	}

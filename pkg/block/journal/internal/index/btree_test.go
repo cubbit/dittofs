@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
-	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -477,6 +476,8 @@ func leafFill(tr *btree[int]) float64 {
 // already held: a replace then restructures the tree, allocates three times
 // and leaves two half-empty leaves where one full one was. Narrowing an extent
 // and marking it offloaded are both replaces, so they would pay for it.
+// The allocation count is averaged over many runs, for the counter is
+// process-wide and the runtime can allocate in a run's window.
 func TestReplaceKeepsTheShape(t *testing.T) {
 	var tr btree[int]
 	for i := range uint64(maxItems) {
@@ -488,19 +489,21 @@ func TestReplaceKeepsTheShape(t *testing.T) {
 	}
 
 	k := uint64(maxItems / 2 * 2)
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
 	old, replaced := tr.set(k, 1)
-	runtime.ReadMemStats(&after)
-
 	if !replaced || old != 0 {
 		t.Fatalf("set(%d) = (%d, %v), want a replace of 0", k, old, replaced)
 	}
 	if tr.root != root || root.children != nil || root.count != maxItems {
 		t.Errorf("replace restructured the tree: root %p was %p, holds %d keys", tr.root, root, tr.root.count)
 	}
-	if !raceEnabled && after.Mallocs != before.Mallocs {
-		t.Errorf("replace allocated %d times, want 0", after.Mallocs-before.Mallocs)
+	// The allocation counter is process-wide, so the runtime's or the
+	// testing package's background work can add to the one run a replace
+	// sits in. Averaged over many runs, the replace's own regression — the
+	// three allocations a split makes — stands a whole unit above the
+	// bound, while stray background allocations stay under it.
+	allocs := testing.AllocsPerRun(100, func() { tr.set(k, 1) })
+	if !raceEnabled && allocs >= 1 {
+		t.Errorf("replace allocated %v per run, want 0; one or more names a split, not background noise", allocs)
 	}
 	checkInvariants(t, &tr)
 }

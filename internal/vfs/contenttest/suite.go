@@ -2,6 +2,7 @@ package contenttest
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"math"
 	"sync"
@@ -65,6 +66,7 @@ func Run(t *testing.T, newSubject func(t *testing.T) Subject) {
 		{"CloneCopiesTheExtentHolesIncluded", cloneCopiesTheExtent},
 		{"CopyCopiesItsExtentsInOrder", copyCopiesInOrder},
 		{"ARefusedCopyChangesNothing", aRefusedCopyChangesNothing},
+		{"TheAdmittedHookRunsBeforeTheChange", theAdmittedHookRunsBeforeTheChange},
 		{"TheVerifierIsStableWhileNothingIsLost", theVerifierIsStable},
 		{"ALossChangesTheVerifierAndRaisesTheLossSequence", aLossChangesTheVerifier},
 		{"AnUnboundShareIsFrozen", anUnboundShareIsFrozen},
@@ -262,7 +264,7 @@ func doneIsCalledOnceByTheExistenceCommit(t *testing.T, s Subject) {
 	var calls atomic.Int32
 	opts := engine.WriteOpts{Done: func() { calls.Add(1) }}
 	if _, err := s.Content.Write(t.Context(), s.Share, f, 0, []byte("abcd"), opts); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Write(0, \"abcd\") with a Done: %v", err)
 	}
 	if _, pending := s.overlay(t, f); pending && calls.Load() != 0 {
 		t.Errorf("Done called %d times while its write is pending", calls.Load())
@@ -354,7 +356,7 @@ func deleteLeavesNothing(t *testing.T, s Subject) {
 	f := s.File(t)
 	var calls atomic.Int32
 	if _, err := s.Content.Write(t.Context(), s.Share, f, 0, []byte("abcd"), engine.WriteOpts{Done: func() { calls.Add(1) }}); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Write(0, \"abcd\") with a Done: %v", err)
 	}
 	retry, err := s.Content.Delete(t.Context(), s.Share, f)
 	if err != nil {
@@ -443,6 +445,40 @@ func aRefusedCopyChangesNothing(t *testing.T, s Subject) {
 		t.Errorf("a copy ending past the source's size = %d, %v; want 0, ErrInvalid", n, err)
 	}
 	s.wantRead(t, dst, 0, 8, "")
+}
+
+// A clone or copy runs its context's admitted hook (engine.WithAdmitted)
+// once admitted and before the destination changes: a refusal at admission
+// runs none, the hook's error refuses the call with the destination
+// unchanged, and a call it admits lands.
+func theAdmittedHookRunsBeforeTheChange(t *testing.T, s Subject) {
+	src, dst := s.File(t), s.File(t)
+	s.write(t, src, 0, "abcd")
+	s.write(t, dst, 0, "XXXX")
+	ran := 0
+	hook := func(err error) context.Context {
+		return engine.WithAdmitted(t.Context(), func() error { ran++; return err })
+	}
+	if err := s.Content.Clone(hook(nil), s.Share, dst, s.Share, dst, vfs.Extent{SrcOff: 0, DstOff: 1, Len: 2}); !errors.Is(err, vfs.ErrInvalid) || ran != 0 {
+		t.Errorf("a clone overlapping itself = %v, hook ran %d times; want ErrInvalid, none", err, ran)
+	}
+	refused := errors.New("refused by the hook")
+	if err := s.Content.Clone(hook(refused), s.Share, src, s.Share, dst, vfs.Extent{Len: 4}); !errors.Is(err, refused) || ran != 1 {
+		t.Errorf("a clone whose hook refuses = %v, hook ran %d times; want the hook's error, once", err, ran)
+	}
+	if n, err := s.Content.Copy(hook(refused), s.Share, src, s.Share, dst, []vfs.Extent{{Len: 4}}); n != 0 || !errors.Is(err, refused) {
+		t.Errorf("a copy whose hook refuses = %d, %v; want 0 and the hook's error", n, err)
+	}
+	s.wantRead(t, dst, 0, 8, "XXXX")
+	ran = 0
+	if err := s.Content.Clone(hook(nil), s.Share, src, s.Share, dst, vfs.Extent{Len: 4}); err != nil || ran == 0 {
+		t.Errorf("a clone whose hook admits it = %v, hook ran %d times; want nil, at least once", err, ran)
+	}
+	s.wantRead(t, dst, 0, 8, "abcd")
+	// A write over the done clone's extent drops the engine's memory of it,
+	// which otherwise holds the engine's Close for its whole stop bound.
+	// Drop it once Close no longer waits on a remembered clone.
+	s.write(t, dst, 0, "abcd")
 }
 
 // With nothing lost, every Write and Commit of the share answers one

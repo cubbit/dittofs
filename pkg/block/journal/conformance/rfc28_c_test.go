@@ -2505,7 +2505,7 @@ func plantKind(t *testing.T, f *journaltest.Fixture, kind uint8) {
 // package's record layout test, and their decoding is the journal's own
 // code's to test; this is the row's refusal half.
 func TestRFC28C_KindValuesRefused(t *testing.T) {
-	for i, kind := range []uint8{15, 128} {
+	for i, kind := range []uint8{17, 128} {
 		// The first pass is watched; the profiler allows one watched
 		// fixture a test, so the second runs unwatched.
 		var f *journaltest.Fixture

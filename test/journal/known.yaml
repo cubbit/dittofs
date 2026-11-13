@@ -188,9 +188,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs segments, the descriptor budget, reopens counted in Stats and the data path.'
+  reason: 'Stats serves the descriptor budget; the check now stops on a stub call after it reads it. Needs the data path, segments and reopens counted in Stats.'
   issue: '#3378'
-  message: 'DescriptorLimit = 0 under a budget of 16, want the budget'
+  message: 'stub: Sync'
 
 - test: TestRFC1B_FailedWindowDoesNotWedge
   status: fail
@@ -220,9 +220,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs the index entry bound refusing writes and splitting removals, MarkOffloaded, release and repack.'
+  reason: 'Stats serves ExtentLimit; the check now stops on a stub call after it reads it. Needs the index entry bound refusing writes and splitting removals, MarkOffloaded, release and repack.'
   issue: '#3379'
-  message: 'ExtentLimit = 0, want the 10000 it was set to'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1B_NamedRefusal
   status: fail
@@ -252,9 +252,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs the headroom half rule, offload, holds, stamps and recovery of offloaded bits.'
+  reason: 'Stats serves HeadroomBytes; the check now stops on a stub call after it reads it. Needs the data path, the headroom half rule, offload, holds, stamps and recovery of offloaded bits.'
   issue: '#3379'
-  message: 'HeadroomBytes = 0, want the headroom allocated'
+  message: 'stub: Sync'
 
 - test: TestRFC1B_PinnedSegmentsBounded
   status: fail
@@ -352,45 +352,21 @@
   issue: '#3379'
   message: 'stub: Inspect.File'
 
-- test: TestRFC1B_Reservation
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs Stats to report the maximum and the use of each share.'
-  issue: '#3378'
-  message: 'shares use 0, the journal 0: want each at most MaxBytes 0'
-
-- test: TestRFC1B_ReserveAhead/AtTheShareLimit
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens, and the leg''s reservation, its writes, its Close and its refusals pass. It stops at Stats, which is a stub: needs the share''s ReservedBytes gauge Stats serves.'
-  issue: '#3378'
-  message: 'the share''s ReservedBytes = 0 with half a reservation unused, want it counted'
-
 - test: TestRFC1B_ReserveAhead/DroppedByARestart
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, and the leg''s reservation is taken. It stops at Stats, which is a stub: needs the journal''s ReservedBytes gauge Stats serves.'
+  reason: 'The journal opens and the leg''s reservation is taken; Stats now serves the reserved figure. The check stops at the restart, which is not built: needs recovery of the segments a closed journal left.'
   issue: '#3378'
-  message: 'ReservedBytes = 0 with a reservation open, want it counted'
-
-- test: TestRFC1B_ReserveAhead/BelowHalfTheHeadroom
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens, and the leg''s reservation is taken. It stops at Stats, which is a stub: needs HeadroomBytes as allocated.'
-  issue: '#3378'
-  message: 'HeadroomBytes = 0, want the headroom allocated'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC1B_SegmentAndRecordAccounting
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs segments, their accounting, per-share record accounting and idle sealing.'
+  reason: 'Stats serves per-share UsedBytes; the check now stops on a stub call after it reads it. Needs the data path, segments, their accounting, per-share record accounting and idle sealing.'
   issue: '#3378'
-  message: 'share 0 write 1: the share''s UsedBytes rose by 0 for a 4096-byte write, want its record''s 4200 bytes'
+  message: 'stub: Sync'
 
 - test: TestRFC1B_ShareLimit
   status: fail
@@ -555,25 +531,17 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs segments, their accounting and the data path.'
+  reason: 'Stats serves UsedBytes; the check now stops on a stub call after it reads it. Needs segments, their accounting and the data path.'
   issue: '#3378'
-  message: 'more than UsedBytes 0'
+  message: 'stub: Inspect.File'
 
 - test: TestRFC1D_BacklogAge
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs the data path and MarkOffloaded.'
+  reason: 'Stats serves OldestDirty; the check now stops on a stub call after it reads it. Needs the data path and MarkOffloaded.'
   issue: '#3379'
-  message: 'OldestDirty = 0001-01-01 00:00:00 +0000 UTC with the first write still dirty, want its write time 2026-01-01 00:00:00 +0000 UTC'
-
-- test: TestRFC1D_CleanBytesCountAsOccupancy
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens and its fills are refused at the maximum; the check fails because Stats reports every figure as zero. Needs Stats.'
-  issue: '#3378'
-  message: 'HeldBytes is zero with the journal full of filled content'
+  message: 'stub: MarkOffloaded'
 
 - test: TestRFC1D_GenerationNeverRepeats
   status: fail
@@ -595,9 +563,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, and the refused reservation counts. The leg stops at Stats, which is a stub: needs the counters and failed syncs, corrupt reads, torn tails and foreign segments served through it.'
+  reason: 'Stats serves the counters; the leg now stops on a stub call before it reads them. Needs the data path, failed syncs, corrupt reads, torn tails and foreign segments.'
   issue: '#3378'
-  message: 'ReservationRefused is zero after a refused reservation'
+  message: 'stub: Sync'
 
 - test: TestRFC1D_NamedInequalitiesHold
   status: fail
@@ -619,7 +587,7 @@
   status: skip
   fix: planned
   category: env
-  reason: 'Counts allocations, which the race detector changes, so it skips in the race leg. Runs once a leg without the race detector does.'
+  reason: 'Counts allocations, which the race detector changes, so it skips in the race leg. A norace leg now runs; what unblocks it is the heap slack the flat-Stats run needs (#4150).'
   issue: '#3395'
   message: 'the race detector changes allocation counts'
 
@@ -631,19 +599,11 @@
   issue: '#3378'
   message: 'stub: Sync'
 
-- test: TestRFC1D_WedgeIsVisibleDirty
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs Stats per share.'
-  issue: '#3378'
-  message: 'DirtyBytes = 0, HeldBytes = 0 with nothing offloaded'
-
 - test: TestRFC1D_WedgeIsVisibleUnreclaimed
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs MarkOffloaded and release.'
+  reason: 'The check stops on a stub call. Needs MarkOffloaded and release; Stats serves UnreclaimedBytes already.'
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
@@ -1859,9 +1819,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a counter the public Stats does not yet carry. Needs Stats to report FillRefused.'
+  reason: 'Stats serves FillRefused; the check now stops on a stub call after it reads it. Needs the data path.'
   issue: '#3378'
-  message: 'FillRefused rose by 0 over one stale fill, want 1'
+  message: 'stub: Sync'
 
 - test: TestEdge_DeallocateInsideAndAcross
   status: fail
@@ -1878,14 +1838,6 @@
   reason: 'The journal opens; the check fails on a stub call. Needs Reservations against a share''s limit.'
   issue: '#3378'
   message: 'stub: Inspect.File'
-
-- test: TestEdge_ReservationExactFitJournal
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens, and a reservation is refused as a caller bug at the maximum the check reads. The check stops at Stats, which is a stub: needs MaxBytes served through it for the ask to be sized.'
-  issue: '#3378'
-  message: 'returned journal: invalid extent, want a NoSpaceError naming journal'
 
 - test: TestEdge_FilesystemENOSPCIsNotErrNoSpace
   status: fail
@@ -1990,6 +1942,22 @@
   reason: 'The journal opens; the check fails on a stub call. Needs retirement by eviction and by repack.'
   issue: '#3379'
   message: 'stub: Sync'
+
+- test: TestCounted_AllocationsPerCall
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'Counts allocations, which -race changes; runs in unit/journal-conformance-norace instead.'
+  issue: '#3764'
+  message: 'the race detector changes allocation counts'
+
+- test: TestCounted_AllocationsPerCallFailsWithOneAdded
+  status: skip
+  fix: wontfix
+  category: env
+  reason: 'Counts allocations, which -race changes; runs in unit/journal-conformance-norace instead.'
+  issue: '#3764'
+  message: 'the race detector changes allocation counts'
 
 - test: TestCounted_MixedDurability
   status: fail

@@ -290,7 +290,6 @@ func newRemovalCrash(t *testing.T, served bool) *removalCrash {
 	r.serve(t)
 	r.begin(t)
 	r.run()
-	r.e.FakeCloneDone()
 	m := &removalCrash{rig: r, src: r.newFile2(t, "src"), dst: r.newFile2(t, "dst"),
 		want: fill(runLen, 's')}
 	ctx := t.Context()

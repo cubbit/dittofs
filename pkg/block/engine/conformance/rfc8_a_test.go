@@ -94,7 +94,12 @@ func TestRFC8A_JournalAuthority(t *testing.T) {
 
 	// The sync bound is shorter than the existence age, so the write is made
 	// durable and its existence is still uncommitted when the crash comes:
-	// only recovery can commit it.
+	// only recovery can commit it. The journal's worker arms the bound's timer
+	// some time after the write answers, and an advance that lands first fires
+	// nothing. The open-state sweep and the idle sealer are pending from the
+	// start and the group commit arms one for the write, so the count names
+	// the sync's timer only at four.
+	eventually(t, "the sync bound's timer is set", func() bool { return f.Clock.Pending() == 4 })
 	f.Clock.Advance(journal.SyncBound)
 	eventually(t, "the write is durable within the sync bound", func() bool { return durable(f, p) })
 	f.Crash()

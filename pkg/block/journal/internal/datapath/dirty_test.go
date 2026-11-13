@@ -67,7 +67,20 @@ func TestDirtyFilesListsRetainedAndDrops(t *testing.T) {
 	f := testFile(3)
 	t0 := clk.Now()
 	mustWrite(t, c, s, f, 0, make([]byte, 4096))
+	// The advance below separates the writes' clock times, and it also fires
+	// the sync-bound timer the first write armed. The bound sync must have
+	// covered the first write before the second goes on: one that lags past
+	// the second write covers its record too, and the coverage legitimately
+	// lifts what it superseded before the setup reads it. Pending counts the
+	// driven clock's armed After channels, and the worker's sync-bound timer
+	// is the only one a fresh core asks for; a test that arms another After
+	// of its own must wait on the bound timer's event some other way.
+	eventually(t, "the first write's sync-bound timer to arm", func() bool { return clk.Pending() > 0 })
+	syncs := c.Durability().Stats().Syncs
 	clk.Advance(time.Minute)
+	eventually(t, "the bound sync to cover the first write", func() bool {
+		return c.Durability().Stats().Syncs > syncs
+	})
 	t1 := clk.Now()
 	mustWrite(t, c, s, f, 0, make([]byte, 4096)) // supersedes all of the first
 	if r := retainedBytes(c, f); r != 4096 {

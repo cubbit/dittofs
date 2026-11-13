@@ -146,17 +146,17 @@ func truncate(n int64) func(ctx context.Context, s *memory.Service, f entity.Fil
 }
 
 // cloneInto clones n bytes from the start of a new file, which fill has
-// written, into the file at off, through the share's Content: the filesystem
-// does not serve a clone yet.
+// written, into the file at off, as the administrator.
 func cloneInto(fill func(ctx context.Context, s *memory.Service, src vfs.Handle) error, off, n int64) func(ctx context.Context, s *memory.Service, f entity.File, h vfs.Handle) error {
-	return func(ctx context.Context, s *memory.Service, f entity.File, _ vfs.Handle) error {
-		h, src, err := s.Store.Store.Namespace().Create(ctx, s.Store.Admin, s.Store.Root, []byte("src"), kvstore.Regular(0o644))
+	return func(ctx context.Context, s *memory.Service, _ entity.File, dst vfs.Handle) error {
+		h, _, err := s.Store.Store.Namespace().Create(ctx, s.Store.Admin, s.Store.Root, []byte("src"), kvstore.Regular(0o644))
 		if err != nil {
 			return err
 		}
 		if err := fill(ctx, s, h); err != nil {
 			return err
 		}
-		return s.Content.Clone(ctx, src.Share, src.ID, f.Share, f.ID, vfs.Extent{SrcOff: 0, DstOff: off, Len: n})
+		_, err = s.Clone(ctx, s.Admin(), vfs.CopyArgs{Src: vfs.Anonymous(h), Dst: vfs.Anonymous(dst), Extents: []vfs.Extent{{SrcOff: 0, DstOff: off, Len: n}}})
+		return err
 	}
 }

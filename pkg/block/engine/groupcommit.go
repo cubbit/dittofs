@@ -8,7 +8,6 @@ import (
 	"maps"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -42,7 +41,10 @@ type groupCommit struct {
 	// both zero once a batch commits.
 	wideBackoff time.Duration
 	wideCap     int
-	marks       marks
+	// unbuilt is the journal's not-implemented answer to the last batch's
+	// sync, until a batch commits: a commit waiting on f answers it.
+	unbuilt error
+	marks   marks
 
 	wake   chan struct{} // a file became due sooner than the timer, or now
 	stop   chan struct{}
@@ -325,6 +327,18 @@ func (g *groupCommit) takeDue(ctx context.Context, s entity.ShareID) ([]entity.F
 // the flag is stale and commitAll reports true over a batch that halt then
 // cuts.
 func (g *groupCommit) commitAll(b *stopBound) bool {
+	cleared := make(map[entity.FileID]bool)
+	// decision: the closing engine overrides a file's retry backoff once per
+	// Close: a backoff earned before the Close began must not hold the last
+	// group commit off — take() still honours notBefore for a file marked
+	// due now, and a backoffMax backoff is the stop bound's equal, so
+	// honouring it never commits and reports the close as stuck. A backoff
+	// earned by a batch this Close asked for is kept: the store is failing
+	// under this Close too, and retrying it every synchronisation round for
+	// the whole bound turns a quiet wait into a hot loop on a failing store.
+	// It is once per Close call, not once per engine: a Close after a stuck
+	// one re-runs the steps and overrides the backoff again. Overturned if a
+	// cooler schedule is measured to land commits the immediate retry misses.
 	for {
 		if ro := g.j.Stats().ReadOnly; ro.ReadOnly {
 			g.e.d.Logger.Warn("close left a read-only journal's pending existence to the next start",
@@ -349,6 +363,10 @@ func (g *groupCommit) commitAll(b *stopBound) bool {
 
 			if d := g.due[f]; d != nil {
 				d.now, asked = true, true
+				if !cleared[f] {
+					cleared[f] = true
+					d.notBefore = time.Time{}
+				}
 			}
 
 			g.mu.Unlock()
@@ -605,10 +623,28 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 			timedOut = timedOut || (ctx.Err() == nil && !errors.Is(err, kvstore.ErrClosed))
 		}
 	}
+	// decision: a sync the journal answers journal.ErrNotImplemented ends the
+	// waiting commits with that error and keeps no backoff, nor leaves the
+	// files due: the journal documents the answer as never retried, and no
+	// retry can make an unbuilt sync succeed. It costs a stubbed journal a
+	// failed commit where it used to answer retry-shortly for good. It holds
+	// while the journal's whole Sync is a stub. Withdraw it before Sync
+	// answers ErrNotImplemented for one unread file (core/errors.go,
+	// ErrUnreadable): g.unbuilt is journal-wide, so one file's answer would
+	// fail every commit on the journal and drop the batch's other files from
+	// the due set.
+	// Repack keeps its own interim retry-later answer for the same error
+	// because it has a figure to refuse by; a commit has none.
+	unbuilt := errors.Is(syncErr, journal.ErrNotImplemented)
 	var shared time.Time
-	if wide != nil {
+	switch {
+	case unbuilt:
+		g.mu.Lock()
+		g.unbuilt = syncErr
+		g.mu.Unlock()
+	case wide != nil:
 		shared = g.widen(wide, len(batch), timedOut)
-	} else if len(batch) > 0 {
+	case len(batch) > 0:
 		g.narrowed()
 	}
 	var dones []func()
@@ -618,7 +654,7 @@ func (g *groupCommit) commit(ctx context.Context, files []taken, last bool) {
 		if err == nil || (syncErr == nil && !storeWide(err)) {
 			retry = g.outcome(c.b, c.f, err, len(batch) == 1 || alone[c.f])
 		}
-		dones = append(dones, g.e.settle(g, c, err == nil, retry)...)
+		dones = append(dones, g.e.settle(g, c, err == nil, retry, unbuilt)...)
 	}
 	// The Dones run before the waiters wake, so a commitNow this batch
 	// answers returns with its writes' reservations released, not still
@@ -679,6 +715,7 @@ func (g *groupCommit) widen(err error, files int, timedOut bool) time.Time {
 func (g *groupCommit) narrowed() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.unbuilt = nil
 	if g.wideBackoff != 0 {
 		g.e.d.Logger.Warn("existence_commit_failing cleared")
 		g.e.conds.clear(condKey{conditionExistenceCommitFailing, g})
@@ -725,7 +762,9 @@ func (g *groupCommit) outcome(b *binding, f entity.FileID, err error, alone bool
 	return g.e.d.Clock.Now().Add(fl.backoff)
 }
 
-// clearFailing forgets f's failure, clearing existence_commit_failing.
+// clearFailing forgets f's failure, clearing existence_commit_failing, and
+// its failure at the store in the self-fence: the group commit calls it
+// wherever it stops retrying f.
 func (g *groupCommit) clearFailing(f entity.FileID) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -734,6 +773,7 @@ func (g *groupCommit) clearFailing(f entity.FileID) {
 
 // clearFailingLocked is clearFailing; the caller holds g.mu.
 func (g *groupCommit) clearFailingLocked(f entity.FileID) {
+	g.e.fence.forget(ownerOf(g.ctx), f)
 	if fl := g.failing[f]; fl != nil {
 		delete(g.failing, f)
 		if fl.raised {
@@ -842,7 +882,8 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 		mw, read = g.readMarks()
 	}
 	ctx, end := e.d.Tracer(ctx, "engine.existence_commit", slog.Int("files", len(batch)))
-	switch recorded, err := e.commitSplit(ctx, pending, mw, failed, alone); {
+	recorded, err := e.commitSplit(ctx, pending, mw, failed, alone)
+	switch {
 	case recorded:
 		g.recorded(mw, read)
 	case mw != nil:
@@ -1047,8 +1088,49 @@ func (e *Engine) commitMarksAlone(ctx context.Context, mw *kvstore.MarksWrite) e
 type retryingOwner struct{}
 
 // ownerState is one retrying owner's part of the self-fence: whether its
-// latest attempt failed at the store.
-type ownerState struct{ failing atomic.Bool }
+// latest attempt failed at the store, and the items whose latest attempt
+// failed at the store since the owner last committed (fence.end). One lock
+// holds both, so an item forgotten off the owner's goroutine cannot end the
+// failing of an attempt that just marked another.
+type ownerState struct {
+	mu      sync.Mutex
+	failing bool
+	stored  map[any]bool
+}
+
+// fail marks o failing and items failing at the store, and reports that o
+// was not failing before.
+func (o *ownerState) fail(items []any) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.stored == nil {
+		o.stored = map[any]bool{}
+	}
+	for _, it := range items {
+		o.stored[it] = true
+	}
+	was := o.failing
+	o.failing = true
+	return !was
+}
+
+// settle clears items, every item when items is nil, and ends o's failing
+// once none is left failing at the store, reporting that it did.
+func (o *ownerState) settle(items []any) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if items == nil {
+		clear(o.stored)
+	}
+	for _, it := range items {
+		delete(o.stored, it)
+	}
+	if !o.failing || len(o.stored) > 0 {
+		return false
+	}
+	o.failing = false
+	return true
+}
 
 // withRetryingOwner is ctx marked as a new retrying owner's.
 func withRetryingOwner(ctx context.Context) context.Context {
@@ -1079,17 +1161,21 @@ func storeWide(err error) bool {
 // Make it a setting, or derive it from the store's transaction limits, when a
 // healthy commit is seen to take near it.
 func (e *Engine) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, time.Duration(e.conflictBound.Load()))
+	return context.WithTimeoutCause(ctx, time.Duration(e.conflictBound.Load()), errBoundCut)
 }
+
+// errBoundCut is the cause of a store call's context the conflict bound cut,
+// which tells the self-fence that cut from the caller's own (callerEnded).
+var errBoundCut = errors.New("engine: the conflict bound cut the store call")
 
 // settle ends c's part in its batch under its entry's lock: a committed file
 // loses the operations the batch claimed, whose Dones it returns, is settled
 // in the journal through the newest of them, and is put back on the due set
 // if it holds others; a failed one has its claim released, keeps them and is
-// retried at retry. A claimed write a failed window dropped leaves either way,
+// retried at retry, unless unbuilt, which leaves it off the due set. A claimed write a failed window dropped leaves either way,
 // its Done having run when it was dropped. The in-batch mark is cleared and
 // its waiters woken; the entry is dropped once it holds nothing.
-func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time) (dones []func()) {
+func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time, unbuilt bool) (dones []func()) {
 	fe := c.fe
 	e.files.lock(fe)
 	var through journal.Version
@@ -1118,7 +1204,11 @@ func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time) (d
 	fe.inBatch = false
 	close(fe.batchDone)
 	fe.batchDone = nil
-	if len(fe.ops) > 0 {
+	if len(fe.ops) > 0 && unbuilt && !ok {
+		g.mu.Lock()
+		delete(g.due, c.f)
+		g.mu.Unlock()
+	} else if len(fe.ops) > 0 {
 		g.mu.Lock()
 		d := g.due[c.f]
 		if d == nil {
@@ -1131,6 +1221,9 @@ func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time) (d
 			d.now, d.notBefore = true, retry
 		}
 		g.mu.Unlock()
+	} else if !ok {
+		// Its writes left the batch dropped, so nothing of it is retried.
+		g.clearFailing(c.f)
 	}
 	e.files.unlock(c.f, fe)
 	if ok && through != (journal.Version{}) {
@@ -1187,6 +1280,12 @@ func (e *Engine) commitThrough(ctx context.Context, b *binding, f entity.FileID,
 		}
 		if lost {
 			return errLost
+		}
+		g.mu.Lock()
+		unbuilt := g.unbuilt
+		g.mu.Unlock()
+		if unbuilt != nil {
+			return fmt.Errorf("engine: %w: %w", unbuilt, vfserr.ErrUnavailable)
 		}
 		if ro := b.j.Stats().ReadOnly; ro.ReadOnly {
 			return e.journalErr(readOnly(ro))

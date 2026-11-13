@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -16,10 +17,13 @@ import (
 
 // reg is one running clone's registration on a file: the extent it holds,
 // whether the file is the clone's destination or its source, and whether
-// the clone waits for journal space.
+// the clone waits for journal space. A destination registration names its
+// clone, which a retry of it finds there (joinable) for as long as the
+// registration is installed.
 type reg struct {
 	entity.Extent
 	dst   bool
+	run   *cloneRun   // the clone, on a destination registration
 	space atomic.Bool // the clone waits for journal space to copy: a call behind it carries DelayCapacity
 }
 
@@ -35,10 +39,11 @@ func (r *reg) delay() error {
 // delayClone is the answer to a call behind a running clone.
 //
 // decision: a call behind a clone answers at once and the engine never waits
-// inside it, since the filesystem service holds the file's admission and
-// accept locks across the call and holds it behind the clone itself (RFC 17
-// §5.9), and a call held behind a clone holds no entry mutex (RFC 14 §11).
-// Withdraw it if RFC 17 moves that hold into the engine.
+// inside it: RFC 17 §5.9 puts the held wait, bounded by the call's WithHold,
+// in the filesystem service, which holds none of the file's locks across a
+// clone past its admission (WithAdmitted), and a call held behind a clone
+// holds no entry mutex (RFC 14 §11). Withdraw it if RFC 17 moves that hold
+// into the engine.
 func delayClone() error { return &vfserr.Delay{Cause: vfserr.DelayClone} }
 
 // refuseWrite answers delayClone() if x of the file overlaps an extent a
@@ -74,6 +79,18 @@ func (fe *fileEntry) refuseChange(x entity.Extent) error {
 	for _, r := range fe.regs {
 		if r.dst || r.Overlaps(x) {
 			return r.delay()
+		}
+	}
+	return nil
+}
+
+// running is the clone registered into the file, nil when none is: a file
+// takes one clone into it at a time (refuseChange). The caller holds the
+// entry's lock.
+func (fe *fileEntry) running() *cloneRun {
+	for _, r := range fe.regs {
+		if r.dst {
+			return r.run
 		}
 	}
 	return nil
@@ -158,18 +175,22 @@ func (fe *fileEntry) drop(r *reg) {
 // binding on either side (DelayFrozen), a zero or negative length or offset,
 // overlapping extents of one file and a length over clone_max_len
 // (ErrInvalid), two write namespaces (ErrCross with CrossNamespace), and an
-// extent a running clone holds (DelayClone). It then registers the source
-// extent and the destination extent. Close joins a running clone's goroutine
-// and cancels its context, and Unbind of either share joins it, but nothing
-// joins a running clone across a retry yet, so it then undoes both and
-// answers errUnbuilt; with a test's stand-in it runs on: step 1 on the call
-// (prepare), whose refusal undoes both registrations and changes nothing,
-// then from the journal step on its own goroutine (runClone) and the removal
-// loop (clonePhase2), where it fails only if the loop ends first, answering
-// ErrUnavailable, until its phase 2 is done; the call waits for it within its
-// own context, whose end, a deadline or a cancel, answers DelayClone and
-// leaves the clone running, as the clone may already have changed the
-// destination and only a call that changed nothing answers refused.
+// extent a running clone holds (DelayClone). A call naming the source,
+// destination, offsets and length of a clone running into the destination
+// joins it (RFC 8 §9.1), starting no second clone, once ctx's admitted hook
+// (WithAdmitted) has run; one naming another spec meets the running clone's
+// registrations, answering DelayClone. One naming a done clone's spec,
+// neither extent changed since, answers nil at once (doneBefore). Otherwise
+// it registers the source extent and the destination extent, runs ctx's
+// admitted hook, whose error undoes both registrations, then runs step 1
+// on the call (prepare), whose refusal undoes both registrations and changes
+// nothing, then from the journal step on its own goroutine (runClone) and the
+// removal loop (clonePhase2), where it fails only if the loop ends first,
+// answering ErrUnavailable, until its phase 2 is done. The call, and every
+// one that joins the clone, waits for it within its own context, whose end, a
+// deadline or a cancel, answers DelayClone and leaves the clone running, as
+// the clone may already have changed the destination and only a call that
+// changed nothing answers refused.
 //
 // decision: a clone between two shares on one node is admitted, as both
 // shards are this node's and no failover or handover can split them while
@@ -214,8 +235,29 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 	if sb.share.Namespace != db.share.Namespace {
 		return &vfserr.CrossError{Kind: vfserr.CrossNamespace}
 	}
+	// decision: a clone is joined only once its step 1 is done (preparing): a
+	// retry meeting it in step 1, where the first call's own context still
+	// governs and its end refuses the clone, meets its registrations and
+	// answers DelayClone, and the client retries again. The window grows with
+	// the clone: step 1 commits the source, reads CloneFree and reserves over
+	// the whole extent, up to clone_max_len, so a long clone's retries answer
+	// DelayClone for longer. Join it there too if retries are seen answered
+	// DelayClone behind clones that were not slow.
+	req := cloneRequest{srcShare: srcShare, dstShare: dstShare, src: src, dst: dst, ext: x}
+	if c := e.joinable(req); c != nil {
+		if err := Admitted(ctx); err != nil {
+			return err
+		}
+		return c.wait(ctx)
+	}
+	if e.doneBefore(req) {
+		return nil
+	}
+	c := &cloneRun{sb: sb, db: db, src: src, dst: dst, req: req, done: make(chan struct{})}
+	c.preparing.Store(true)
 	rs := &reg{Extent: entity.Extent{Offset: x.SrcOff, Length: x.Len}}
-	rd := &reg{Extent: entity.Extent{Offset: x.DstOff, Length: x.Len}, dst: true}
+	rd := &reg{Extent: entity.Extent{Offset: x.DstOff, Length: x.Len}, dst: true, run: c}
+	c.rs, c.rd = rs, rd
 	if err := e.register(ctx, src, rs); err != nil {
 		return err
 	}
@@ -223,36 +265,28 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		e.unregister(src, rs)
 		return err
 	}
-	if !e.fakeCloneDone.Load() {
-		// A clone stops once registered while no retry joins a running one:
-		// a test of admission alone runs its hook first, and a test's
-		// stand-in lets it run on.
-		//
-		// decision: everything past this gate, step 1, the journal step, the
-		// copies, phase 1, the hold on the source, phase 2, the release and
-		// the done signal, runs only under the test's stand-in, never in a
-		// served engine: Close joins the clone's goroutine (e.cloning) and
-		// Unbind joins the clone (enterShares), but a retry with the same
-		// spec starts a second clone rather than joining the first. Withdraw
-		// it when the running clones are kept where a retry joins them.
-		if h := e.afterRegister; h != nil {
-			h()
+	if h := e.afterRegister; h != nil {
+		if err := h(); err != nil { // a test of admission alone stops the clone here
+			e.unregister(dst, rd)
+			e.unregister(src, rs)
+			return err
 		}
-		e.unregister(dst, rd)
-		e.unregister(src, rs)
-		return errUnbuilt
 	}
-	c := &cloneRun{sb: sb, db: db, src: src, dst: dst, rs: rs, rd: rd, done: make(chan struct{})}
 	if !c.enterShares() { // an Unbind began since the call entered: nothing changed
 		e.unregister(dst, rd)
 		e.unregister(src, rs)
 		return errRemoved
+	}
+	if err := Admitted(ctx); err != nil {
+		e.endClone(c, err)
+		return err
 	}
 	if err := e.prepare(ctx, c, x); err != nil {
 		e.endClone(c, err)
 		return err
 	}
 
+	c.preparing.Store(false) // a retry joins it from here
 	e.cloning.Add(1)
 
 	go func() {
@@ -261,12 +295,71 @@ func (e *Engine) Clone(ctx context.Context, srcShare entity.ShareID, src entity.
 		e.runClone(c)
 	}()
 
+	return c.wait(ctx)
+}
+
+// admittedKey is the context key of a Clone call's admitted hook.
+type admittedKey struct{}
+
+// WithAdmitted returns ctx carrying admitted, which Clone, each of Copy's
+// chunks included, calls once the call has passed every refusal its admission
+// answers and holds its registrations, or has found the running clone it
+// joins, and before anything changes the destination. Its error refuses the
+// call, changing nothing. The filesystem service clears setuid and setgid
+// there, so a clone the engine refuses leaves the mode alone, and releases
+// the files' locks, since from there the registrations order every call
+// meeting the clone's extents (RFC 17 §5.9). The engine calls it with none of
+// its own locks held; it may be called more than once.
+func WithAdmitted(ctx context.Context, admitted func() error) context.Context {
+	return context.WithValue(ctx, admittedKey{}, admitted)
+}
+
+// Admitted runs the admitted hook ctx carries, if any, and answers its
+// error: what Clone calls, and what another Content calls at the same point.
+func Admitted(ctx context.Context) error {
+	if h, ok := ctx.Value(admittedKey{}).(func() error); ok {
+		return h()
+	}
+	return nil
+}
+
+// wait answers c's outcome once it is done, or DelayClone at ctx's end,
+// leaving it running: it may have changed the destination, so it is never
+// answered as refused.
+func (c *cloneRun) wait(ctx context.Context) error {
 	select {
 	case <-c.done:
 		return c.err
 	case <-ctx.Done():
-		return delayClone() // it may have changed the destination: never answered as refused
+		return delayClone()
 	}
+}
+
+// cloneRequest is a Clone call's request as a retry of it repeats it (RFC 8
+// §9.1): the shares and files on each side and the extent. A clone keeps the
+// one it was made from (cloneRun.req), compared whole by joinable.
+type cloneRequest struct {
+	srcShare, dstShare entity.ShareID
+	src, dst           entity.FileID
+	ext                vfserr.Extent
+}
+
+// joinable is the clone running into req's destination when it was made
+// from req, past its step 1; nil otherwise. The running clone is the one its
+// destination registration names, so a clone is found from the moment that
+// registration is installed until it is dropped, however it was made.
+// A retry of a clone done is answered by doneBefore.
+func (e *Engine) joinable(req cloneRequest) *cloneRun {
+	fe := e.files.lockOf(req.dst)
+	if fe == nil {
+		return nil
+	}
+	c := fe.running()
+	e.files.unlock(req.dst, fe)
+	if c == nil || c.preparing.Load() || c.req != req {
+		return nil
+	}
+	return c
 }
 
 // invalid reports whether x is refused ErrInvalid whatever its length: a
@@ -350,18 +443,20 @@ func (e *Engine) Copy(ctx context.Context, srcShare entity.ShareID, src entity.F
 // holds copies of, the reservation taken for them, and once its copies are
 // synced, the newest copy's version.
 type cloneRun struct {
-	sb, db   *binding
-	src, dst entity.FileID
-	rs, rd   *reg
-	spec     journal.CloneSpec
-	runs     []journal.Held
-	kept     []journal.Extent // source offsets: copies are not made again for them
-	res      Reservation      // nil when none is held
-	copied   bool             // the copies are written and synced
-	newest   journal.Version
-	done     chan struct{}
-	err      error
-	leave    func() // withdraws the clone from both shares' gates (enterShares), once
+	sb, db    *binding
+	src, dst  entity.FileID
+	req       cloneRequest // the request it was made from, which a retry of it repeats (joinable)
+	preparing atomic.Bool  // in its step 1, on its call: not joined until it is done
+	rs, rd    *reg
+	spec      journal.CloneSpec
+	runs      []journal.Held
+	kept      []journal.Extent // source offsets: copies are not made again for them
+	res       Reservation      // nil when none is held
+	copied    bool             // the copies are written and synced
+	newest    journal.Version
+	done      chan struct{}
+	err       error
+	leave     func() // withdraws the clone from both shares' gates (enterShares), once
 }
 
 // enterShares counts c as work of both its shares until it ends (endClone,
@@ -492,11 +587,6 @@ func (e *Engine) size(ctx context.Context, c *cloneRun, client bool) (journal.Ve
 // entry, then what attempt runs. A failure before CloneTarget changes nothing
 // and fails the clone; from CloneTarget on it never fails: what attempt
 // cannot finish, the loop retries, the guard held.
-//
-// ponytail: Close joins the goroutine (e.cloning) and Unbind the clone
-// (enterShares), but nothing keeps it where a retry with the same spec could
-// find it; the engine's map of running clones, which retries join, replaces
-// it.
 func (e *Engine) runClone(c *cloneRun) {
 	ctx := c.db.gc.removals.ctx
 	r, err := e.begin(ctx, c.db, c.dst, entity.RemoveClone, c.rd.Extent)
@@ -785,7 +875,9 @@ func (e *Engine) endClone(c *cloneRun, err error) {
 }
 
 // settleClone is endClone short of leaving the gates: its reservation, when
-// one is held, is given back, both registrations go, which a release answered
+// one is held, is given back, both registrations go, the destination's
+// taking it out of the running clones, a done clone's spec taking their
+// place (remember), which a release answered
 // pending behind them sees at its next look, and its done signal is raised. A
 // clone settles with a nil err once its phase 2 is done, before its hold on
 // the source is released, and leaves the gates after that release
@@ -795,8 +887,147 @@ func (e *Engine) settleClone(c *cloneRun, err error) {
 		_ = c.res.Close()
 		c.res = nil
 	}
-	e.unregister(c.dst, c.rd)
-	e.unregister(c.src, c.rs)
+	if err == nil {
+		e.remember(c)
+	} else {
+		e.unregister(c.dst, c.rd)
+		e.unregister(c.src, c.rs)
+	}
 	c.err = err
 	close(c.done)
+}
+
+// doneClones is how many done clones the node remembers at most (D7's FIFO).
+const doneClones = 1024
+
+// doneClone is a done clone's spec, remembered in both its files' entries,
+// which it keeps alive, and in the node's done list, until a write or
+// removal overlapping either extent, an Unbind of either share, or the list's
+// eviction of the oldest past doneCap drops it.
+type doneClone struct {
+	cloneRequest               // the request the clone was made from, which a retry of it repeats
+	gone         atomic.Bool   // dropped: whoever set it removes it from the entries and the list
+	el           *list.Element // its place in the done list, under doneMu; nil when not in it
+}
+
+// on reports whether the clone's extent on file f, as source or destination
+// or both, overlaps x.
+func (d *doneClone) on(f entity.FileID, x entity.Extent) bool {
+	return d.src == f && x.Overlaps(entity.Extent{Offset: d.ext.SrcOff, Length: d.ext.Len}) ||
+		d.dst == f && x.Overlaps(entity.Extent{Offset: d.ext.DstOff, Length: d.ext.Len})
+}
+
+// doneBefore reports whether a clone made from req is done and neither of
+// its extents changed since: a retry of it (RFC 8 §9.1), answered success at
+// once with no journal call. The destination's entry holds every remembered
+// clone into it.
+//
+// ponytail: the memory is lost at restart and after doneClones later clones,
+// so a retry then runs the clone again, which leaves the same content.
+// Persist it in the clone's Removal record, kept done until pruned, if
+// retries after a restart show in logs.
+func (e *Engine) doneBefore(req cloneRequest) bool {
+	fe := e.files.lockOf(req.dst)
+	if fe == nil {
+		return false
+	}
+	defer e.files.unlock(req.dst, fe)
+	return slices.ContainsFunc(fe.done, func(d *doneClone) bool {
+		return !d.gone.Load() && d.cloneRequest == req
+	})
+}
+
+// remember puts c's spec in both its files' entries in place of its
+// registrations, each swap under one lock so no write meets the extent
+// between them, nor a retry the clone neither running (joinable) nor done
+// (doneBefore), then at the back of the done list, dropping the oldest past
+// doneCap. A clone within one file puts it in that file's entry once. A spec
+// dropped before it reaches an entry or the list is not put there.
+func (e *Engine) remember(c *cloneRun) {
+	d := &doneClone{cloneRequest: c.req}
+	for i, s := range []struct {
+		f entity.FileID
+		r *reg
+	}{{c.dst, c.rd}, {c.src, c.rs}} {
+		fe := e.files.lockFor(s.f)
+		fe.drop(s.r)
+		if !d.gone.Load() && (i == 0 || c.src != c.dst) {
+			fe.done = append(fe.done, d)
+		}
+		e.files.unlock(s.f, fe)
+	}
+	var old *doneClone
+	e.doneMu.Lock()
+	if !d.gone.Load() {
+		d.el = e.done.PushBack(d)
+		if e.done.Len() > e.doneCap {
+			old = e.done.Remove(e.done.Front()).(*doneClone)
+			old.el = nil
+		}
+	}
+	e.doneMu.Unlock()
+	if old != nil && old.gone.CompareAndSwap(false, true) {
+		e.unremember(old)
+	}
+}
+
+// forgetOver drops, from f's entry, every remembered clone whose extent on f
+// overlaps x, which a write or removal is about to change, and answers them
+// for unremember once the entry's lock is released. The caller holds it.
+func (fe *fileEntry) forgetOver(f entity.FileID, x entity.Extent) []*doneClone {
+	if len(fe.done) == 0 {
+		return nil
+	}
+	var gone []*doneClone
+	fe.done = slices.DeleteFunc(fe.done, func(d *doneClone) bool {
+		if !d.on(f, x) || !d.gone.CompareAndSwap(false, true) {
+			return d.gone.Load()
+		}
+		gone = append(gone, d)
+		return true
+	})
+	return gone
+}
+
+// unremember takes each of ds, already marked gone, out of both its files'
+// entries, releasing what it kept alive, then out of the done list: each
+// entry's lock is taken once, and doneMu once after them. The caller holds no
+// entry's lock.
+func (e *Engine) unremember(ds ...*doneClone) {
+	if len(ds) == 0 {
+		return
+	}
+	gone := make(map[*doneClone]bool, len(ds))
+	files := make(map[entity.FileID]bool)
+	for _, d := range ds {
+		gone[d], files[d.src], files[d.dst] = true, true, true
+	}
+	for f := range files {
+		if fe := e.files.lockOf(f); fe != nil {
+			fe.done = slices.DeleteFunc(fe.done, func(o *doneClone) bool { return gone[o] })
+			e.files.unlock(f, fe)
+		}
+	}
+	e.doneMu.Lock()
+	for _, d := range ds {
+		if d.el != nil {
+			e.done.Remove(d.el)
+			d.el = nil
+		}
+	}
+	e.doneMu.Unlock()
+}
+
+// forgetShare drops every remembered clone with share s on either side: once
+// unbound, its files may change where this node does not see it.
+func (e *Engine) forgetShare(s entity.ShareID) {
+	var gone []*doneClone
+	e.doneMu.Lock()
+	for el := e.done.Front(); el != nil; el = el.Next() {
+		if d := el.Value.(*doneClone); (d.srcShare == s || d.dstShare == s) && d.gone.CompareAndSwap(false, true) {
+			gone = append(gone, d)
+		}
+	}
+	e.doneMu.Unlock()
+	e.unremember(gone...)
 }

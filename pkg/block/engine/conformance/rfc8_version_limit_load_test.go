@@ -17,9 +17,15 @@ const (
 	// set another.
 	versionBlock = 1 << 24
 
+	// existenceAge is RFC 13's proposed existence_age, the one RFC 8 §2.7's
+	// 32 s margin is counted with. The fixture runs a longer one for other
+	// rows, so each load row applies this one before its first draw.
+	existenceAge = time.Second
+
 	// versionMargin is the trigger's margin in seconds: the fence's 30 s, the
-	// existence age and the trigger's sampling second.
-	versionMargin = 32
+	// existence age and the trigger's sampling second. It is counted from
+	// existenceAge, so the row's trigger and the engine's stay the same.
+	versionMargin = fenceSeconds + uint64(existenceAge/time.Second) + 1
 
 	// fenceSeconds is the self-fence's bound.
 	fenceSeconds = 30
@@ -107,9 +113,21 @@ func (r *loadRun) headroom(t *testing.T) uint64 {
 func (r *loadRun) stallAtTheRaise(t *testing.T, rate, trigger uint64, d time.Duration) uint64 {
 	t.Helper()
 
+	settings := enginetest.Settings
+	settings.ExistenceAge = existenceAge
+
+	if err := r.f.E.Apply(settings); err != nil {
+		t.Fatalf("apply the existence age: %v", err)
+	}
+
 	if err := r.draw(); err != nil {
 		t.Fatalf("the first version: %v", err)
 	}
+
+	// The first draw lands in the loop's rate bucket unless isolated: a peak
+	// of rate+1 sits the engine's trigger 32 above the row's and wakes the
+	// raise one draw before the hold.
+	r.f.Clock.Advance(time.Second)
 
 	// The store is read once a clock second: between two reads every draw
 	// takes exactly one version off what is left.
@@ -125,13 +143,33 @@ func (r *loadRun) stallAtTheRaise(t *testing.T, rate, trigger uint64, d time.Dur
 		if n%rate == 0 {
 			r.f.Clock.Advance(time.Second)
 
-			left = r.headroom(t)
+			// More versions left than the draws left means the engine raised
+			// the limit before the row's trigger: the loop would never end.
+			next := r.headroom(t)
+			if next > left {
+				t.Fatalf(
+					"the engine raised the limit with %d versions left, above the row's trigger %d",
+					left,
+					trigger,
+				)
+			}
+
+			left = next
 		}
 	}
 
 	r.f.Clock.Advance(time.Second)
 
 	entered := r.f.HoldWrites(d)
+
+	// A store write in the hold waits d on the fixture's clock, and the
+	// fixture closes the engine over a clock it never moves. When the row
+	// ends, before the fixture's own cleanup runs, it lifts the hold, so a
+	// write that Close sends is not held again, and moves the clock past it.
+	t.Cleanup(func() {
+		r.f.Heal()
+		r.f.Clock.Advance(d)
+	})
 
 	if err := r.draw(); err != nil {
 		t.Fatalf("the draw at which the raise falls due: %v", err)

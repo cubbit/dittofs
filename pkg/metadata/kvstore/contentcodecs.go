@@ -36,7 +36,7 @@ func encodeRef(c entity.ChunkRef) []byte {
 func decodeRef(file entity.FileID, offset int64, b []byte) (entity.ChunkRef, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.ChunkRef{}, err
+		return entity.ChunkRef{}, fileRecord(err)
 	}
 	c := entity.ChunkRef{File: file, Offset: offset}
 	copy(c.Chunk[:], r.Fixed(32))
@@ -44,7 +44,7 @@ func decodeRef(file entity.FileID, offset int64, b []byte) (entity.ChunkRef, err
 	c.Skip, c.Length = int64(r.Uint64()), int64(r.Uint64())
 	c.Oldest, c.Newest = readVersion(r), readVersion(r)
 	c.Born = entity.SnapshotCut(r.Uint64())
-	return c, checkEpochs(r, c.Oldest, c.Newest)
+	return c, fileRecord(checkEpochs(r, c.Oldest, c.Newest))
 }
 
 // hole is one extent below size never written, or deallocated, the version
@@ -65,12 +65,12 @@ func encodeHole(h hole) []byte {
 func decodeHole(start int64, b []byte) (hole, error) {
 	r, err := open(b)
 	if err != nil {
-		return hole{}, err
+		return hole{}, fileRecord(err)
 	}
 	h := hole{Extent: entity.ExtentOf(start, int64(r.Uint64()))}
 	h.Version = readVersion(r)
 	h.Born = entity.SnapshotCut(r.Uint64())
-	return h, checkEpochs(r, h.Version)
+	return h, fileRecord(checkEpochs(r, h.Version))
 }
 
 // overwrite is one extent a committed write replaced committed content over,
@@ -88,12 +88,12 @@ func encodeOverwrite(o overwrite) []byte {
 func decodeOverwrite(start int64, b []byte) (overwrite, error) {
 	r, err := open(b)
 	if err != nil {
-		return overwrite{}, err
+		return overwrite{}, fileRecord(err)
 	}
 	o := overwrite{Extent: entity.ExtentOf(start, int64(r.Uint64()))}
 	o.Version = readVersion(r)
 	o.Born = entity.SnapshotCut(r.Uint64())
-	return o, checkEpochs(r, o.Version)
+	return o, fileRecord(checkEpochs(r, o.Version))
 }
 
 // A removal's value; its version is in its key.
@@ -113,7 +113,7 @@ func encodeRemoval(m entity.Removal) []byte {
 func decodeRemoval(version entity.JournalVersion, b []byte) (entity.Removal, error) {
 	r, err := open(b)
 	if err != nil {
-		return entity.Removal{}, err
+		return entity.Removal{}, fileRecord(err)
 	}
 	m := entity.Removal{Version: version}
 	start, end := int64(r.Uint64()), int64(r.Uint64())
@@ -134,9 +134,9 @@ func decodeRemoval(version entity.JournalVersion, b []byte) (entity.Removal, err
 		c.SrcOff, c.DstOff, c.Len = int64(r.Uint64()), int64(r.Uint64()), int64(r.Uint64())
 		c.AsOf = readVersion(r)
 		m.Clone = c
-		return m, checkEpochs(r, version, c.AsOf)
+		return m, fileRecord(checkEpochs(r, version, c.AsOf))
 	}
-	return m, checkEpochs(r, version, m.FileVersion)
+	return m, fileRecord(checkEpochs(r, version, m.FileVersion))
 }
 
 // fence is the (shard, epoch) a file's commits on one path must carry.

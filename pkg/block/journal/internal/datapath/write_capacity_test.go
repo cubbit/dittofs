@@ -107,6 +107,29 @@ func waitIn(t *testing.T, d time.Duration, what string, cond func() bool) {
 	}
 }
 
+// waitPoolIdle waits until the pool's refill holds no pass and none is
+// queued — the pool's own word for its idle state, which the ready counters
+// cannot say, for a spare being made is invisible to them (a take's kick
+// leaves a make attempt in flight that the counters read as settled). A
+// make attempt pending over a test that then takes the journal off its
+// limit wins the freed cap and puts the footprint back at the maximum, so
+// a test about that off-the-limit state waits here before it changes the
+// ledger: the retirement it then runs is the one thing that moves the
+// footprint until its write has read the state.
+func waitPoolIdle(t *testing.T, c *Core) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := c.pool.WaitSpares(ctx)
+	if err == nil {
+		return // every class at its target: nothing short, nothing to fill
+	}
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) || ns.Limit != core.LimitSpare {
+		t.Fatalf("the pool did not answer its idle state: %v", err)
+	}
+}
+
 // headroomFixture is the headroom a content-throttle core reserves, in
 // records without bytes: eight, whose open reserve is half — four — so its
 // drawing side is four records and half falls at two drawn. Three
@@ -1476,6 +1499,7 @@ func TestWriteAdmittedBelowHalfHeadroomOffTheLimit(t *testing.T) {
 		pc := c.pool.Counters()
 		return pc.Spares == 2 && pc.Held == 0
 	})
+	waitPoolIdle(t, c)
 	drawHeadroom(t, c, 3)
 	// The gate holds over the drawn figure: below half at the limit, its
 	// own admission class is refused.

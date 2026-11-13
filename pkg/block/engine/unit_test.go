@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
 	"reflect"
 	"slices"
 	"sync"
@@ -13,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -27,9 +24,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// unit is the engine composed for a unit test: over the fake journal, the
-// real store on an in-memory kv.KV and a test clock, with one share bound
-// through Bind unless the test asks for none.
+// unit is enginetest's unit composition as the engine's tests read it, its
+// journal seen through recJournal, which records each Share and Close.
 type unit struct {
 	e     *engine.Engine
 	j     *enginetest.FakeJournal
@@ -40,8 +36,9 @@ type unit struct {
 	limit uint64 // the fake journal's version limit once the unit was built
 	share engine.Share
 	h     engine.Handle    // the share's handle on the fake journal, as its Share returned it
-	tb    *openstate.Table // the open-state table withOpenState composed, if it ran
+	tb    *openstate.Table // the open-state table, the engine's CloneHold, if openState asked for it
 	sink  *enginetest.Sink // tb's sink
+	x     *enginetest.Unit // the composition the fields above are read from
 }
 
 // unitLimit is a version above every one the fake journal issues in a unit
@@ -55,6 +52,7 @@ type unitConfig struct {
 	unstarted  bool                              // leaves the engine unstarted, and so the share unbound
 	wrap       func(engine.Handle) engine.Handle // hands the engine every handle the fake journal opens through it
 	kv         func(kv.KV) kv.KV                 // wraps the store's kv.KV
+	openState  bool                              // holds clones in the real open-state table; otherwise noHolds
 	storeClock func() time.Time                  // the store's clock; nil is time.Now
 }
 
@@ -76,101 +74,54 @@ func newUnitOver(t *testing.T, wrap func(kv.KV) kv.KV, deps ...func(*engine.Deps
 // newUnitWith is the unit as c asks.
 func newUnitWith(t *testing.T, c unitConfig) *unit {
 	t.Helper()
-	prof.Watch(t, prof.Options{})
 
-	u := &unit{
-		j:     enginetest.NewFakeJournal(),
-		clock: sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+	u := &unit{ev: &events{}}
+	deps := c.deps
+	if !c.openState {
+		deps = append([]func(*engine.Deps){func(d *engine.Deps) { d.Holds = noHolds{} }}, deps...)
 	}
-	u.rec = &recJournal{
-		FakeJournal: u.j,
-		wrap:        c.wrap,
-	}
-	u.ev = &events{}
-	u.rec.ev = u.ev
-	u.fs = kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
-		db := memKVAt(tb, c.storeClock)
-		if c.kv != nil {
-			return c.kv(db)
-		}
-		return db
+	x := enginetest.NewUnit(t, enginetest.UnitOptions{
+		Deps: deps,
+		Journal: func(j *enginetest.FakeJournal) engine.Journal {
+			u.rec = &recJournal{FakeJournal: j, wrap: c.wrap, ev: u.ev}
+			return u.rec
+		},
+		KV:         c.kv,
+		Unbound:    c.unbound,
+		Unstarted:  c.unstarted,
+		OpenState:  c.openState,
+		StoreClock: c.storeClock,
+		Stop:       (*engine.Engine).CloseGroupCommits,
 	})
-
-	d := engine.Deps{
-		Node:    entity.NodeID{1},
-		Devices: []string{"unit"},
-		Open: func(context.Context, string, journal.Version, journal.JournalID) (engine.Journal, error) {
-			return u.rec, nil
-		},
-		Existence: u.fs.Store.Existence(),
-		Content:   u.fs.Store.Content(),
-		Lifecycle: u.fs.Store.Lifecycle(),
-		Holds:     noHolds{},
-		Clock:     u.clock,
-		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
-			return ctx, func(error) {}
-		},
-	}
-
-	for _, f := range c.deps {
-		f(&d)
-	}
-
-	e, err := engine.New(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// An existence age no test reaches unless it applies its own.
-	if err := e.Apply(engine.Settings{ExistenceAge: 24 * time.Hour, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
-		t.Fatal(err)
-	}
-	// The cleanup drops its reference once run, so the profiler's heap check,
-	// which runs last, does not count what the engine still held.
-	held := e
-	t.Cleanup(func() { held.CloseGroupCommits(); held = nil })
-
-	if err := e.Apply(enginetest.Settings); err != nil {
-		t.Fatal(err)
-	}
-
-	u.e = e
+	u.x, u.e, u.j, u.fs, u.clock, u.share, u.tb, u.sink = x, x.E, x.J, x.FS, x.Clock, x.Share, x.Opens, x.Sink
 
 	if c.unstarted {
-		u.share = enginetest.ShareOf(t, u.fs.Store, u.fs.Share.ID, 1<<30)
 		return u
 	}
 
-	if err := e.Start(t.Context(), nil); err != nil {
-		t.Fatal(err)
+	if !c.unbound {
+		u.h = u.rec.raw(0)
 	}
-
-	u.limit = u.j.Stats().VersionLimit.Counter
-	u.share = enginetest.ShareOf(t, u.fs.Store, u.fs.Share.ID, 1<<30)
-
-	if c.unbound {
-		return u
-	}
-
-	if err := e.Bind(t.Context(), u.share); err != nil {
-		t.Fatal(err)
-	}
-
-	u.h = u.rec.raw(0)
 	u.limit = u.j.Stats().VersionLimit.Counter
 
 	return u
 }
 
-// memKV is a fresh in-memory kv.KV, closed when the test ends.
-func memKV(tb testing.TB) kv.KV {
-	return memKVAt(tb, nil)
+// create creates an empty file in the unit's share.
+func (u *unit) create(t *testing.T, name string) entity.FileID {
+	t.Helper()
+	return u.x.Create(t, name)
 }
 
-// memKVAt is memKV with the store's clock, which stamps its versions; nil is
-// time.Now.
-func memKVAt(tb testing.TB, clock func() time.Time) kv.KV {
-	db, err := badgerkv.Open(badgerkv.Options{Clock: clock})
+// bindShare binds another share on the unit's journal, in namespace ns.
+func (u *unit) bindShare(t *testing.T, name string, ns entity.NamespaceID) entity.ShareID {
+	t.Helper()
+	return u.x.BindShare(t, name, ns)
+}
+
+// memKV is a fresh in-memory kv.KV, closed when the test ends.
+func memKV(tb testing.TB) kv.KV {
+	db, err := badgerkv.Open(badgerkv.Options{})
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -193,9 +144,20 @@ type recJournal struct {
 
 	failForgets int // the next Forget calls that fail, guarded by mu
 
+	// noMarks reports no sync marks, as the real journal does, so a marks
+	// write sets no key.
+	noMarks atomic.Bool
+
 	mu      sync.Mutex
 	floors  []journal.Version
 	handles []*recHandle
+}
+
+func (j *recJournal) SyncMarks() []entity.SyncMark {
+	if j.noMarks.Load() {
+		return nil
+	}
+	return j.FakeJournal.SyncMarks()
 }
 
 func (j *recJournal) Share(

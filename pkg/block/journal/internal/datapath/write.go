@@ -230,6 +230,9 @@ func (c *Core) appendAndPublish(ctx context.Context, s *Share, id core.FileID, o
 		// is what the reservation held for it, and this hands it over,
 		// so ReservedBytes never covers a record the share already
 		// counts and never misses one still landing.
+		if c.beforeWrote != nil {
+			c.beforeWrote()
+		}
 		grant.Wrote(pl.Loc.Len)
 		// A reserved write's roll is the reservation's to replace while its
 		// hold has fallen behind what its remaining bytes need: the roll took

@@ -74,8 +74,8 @@ var testSealMarker = SealMarker{Segment: testSegment, Offset: testOffset}
 // that can: they never meet in one record, and neither is ever compared with
 // the other.
 var (
-	// testRecordFile is the FileID every record golden but the unhold
-	// and forget ones carries.
+	// testRecordFile is the FileID every record golden but the unhold,
+	// forget, reconcile and reconciled ones carries.
 	testRecordFile = core.NewFileID([16]byte{
 		0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
 		0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
@@ -100,7 +100,9 @@ var (
 	// with the epoch half zero as this format version requires.
 	testRecordVersion = core.Version{Epoch: 0, Counter: 0x6766656463626160}
 
-	// testRecordTag is the share tag every record golden carries.
+	// testRecordTag is the share tag every record golden but the
+	// reconcile and reconciled ones carries; those two are the journal's
+	// own, with tag zero.
 	testRecordTag = core.ShareTag(0x73727170)
 
 	// testRecordSyncedThrough is the synced-through offset every record
@@ -149,6 +151,15 @@ var (
 
 	// testCut is the cut number of the hold, unhold and stamp goldens.
 	testCut = core.SnapshotCut(0xefeeedecebeae9e8)
+
+	// testReconciled is the counted range of the reconciled golden: a
+	// segment of its own and a start and end in it, in byte ranges no
+	// other field of that record uses.
+	testReconciled = Reconciled{
+		Segment: core.SegmentID(0x8988878685848382),
+		Start:   0x8d8c8b8a,
+		End:     0x91908f8e,
+	}
 
 	// The footer's test values, entry B's own byte patterns: entry A's
 	// fields reuse the record ones above, so both entries' bytes stay in
