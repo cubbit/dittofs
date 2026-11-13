@@ -14,6 +14,16 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
+// LossSink is where the loss state an open recovers reaches the journal:
+// Failed names the sequence numbers an earlier journal on the same directory
+// could not write the loss record for, and Place publishes one loss record
+// the open found on disk. Recovery depends on the behaviour only, never the
+// layer that implements it.
+type LossSink interface {
+	Failed() []core.Seq
+	Place(ev core.LossEvent, dropped core.Seq)
+}
+
 // Deps is what recovery reaches the directory with. The open fills it from
 // its own config; nothing here resolves options or defaults.
 type Deps struct {
@@ -21,6 +31,16 @@ type Deps struct {
 	Clock  core.Clock
 	Tracer core.Tracer
 	Log    *slog.Logger
+
+	// Losses is where the kinds pass delivers the loss records it found on
+	// disk and reads the failed list it withholds by.
+	//
+	// decision: a nil Losses means no failed list and no placement. Run
+	// never requires one non-nil, and every run before the journal's
+	// assembly opens — the tests included — takes it nil; the journal's own
+	// wiring point is the assembly step of its open, which builds the
+	// durability layer and hands it here.
+	Losses LossSink
 
 	// ExtentLimit is the index entry bound the rebuilt index carries into
 	// the journal's later writes. Zero is no bound. A rebuild over the bound
@@ -57,6 +77,11 @@ type State struct {
 	// Rebuilt is what the rebuild phase built: the index, its counters,
 	// every own segment's scan and the resync count.
 	Rebuilt rebuilt
+
+	// Kinds is the decoded state of the aside records the rebuild set
+	// aside: the loss and forget records it collected and the read-only
+	// drops the feed will find. The kinds pass fills it.
+	Kinds kindResults
 
 	// Tails is the torn-or-corrupt classing of every own and unverified
 	// segment: each one's fate, the damaged set and the corrupt drops.
@@ -123,6 +148,17 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 		return err
 	}
 	st.Rebuilt = out
+	// The kinds pass reads the bodies the rebuild set aside — every loss,
+	// hold, unhold, stamp and forget record the scans carry — and decides
+	// them against their own rules, before the tail's classing judges the
+	// corrupt drops it confines onto the same scans. The maps it builds are
+	// the feed filter's; the losses it collects and the records it refuses
+	// are this phase's.
+	ks, kerr := decodeAsides(rd, expect, deps.Losses, out.Scans)
+	if kerr != nil {
+		return kerr
+	}
+	st.Kinds = ks.kindResults
 	st.Tails, err = classifyTails(rd, expect, st.Attached, out.Scans)
 	return err
 }
