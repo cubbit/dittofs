@@ -395,6 +395,123 @@ func TestRunFeedsTheRemainderASyncedSupersededLossNames(t *testing.T) {
 	})
 }
 
+// TestRunAppliesASyncedLossRecordAsItsCut holds the cut each synced loss
+// record applies over the index the rebuild finished: its extent and version
+// come from the record's own header, dropping every record below the loss's
+// version inside its extent — the older write Q under the withheld R — and
+// the reason decides what the cut leaves: every reason but superseded leaves
+// an unsettled loss marker that settling at the loss's version stops, while
+// a superseded one cuts the same extent leaving nothing that settling would
+// answer for.
+func TestRunAppliesASyncedLossRecordAsItsCut(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		flags  uint64
+		yields bool
+	}{
+		{"a corrupt loss leaves its marker unsettled", 1 | 1<<8, true},
+		{"a superseded loss cuts leaving no marker", 1 | 4<<8, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			file := kindsFile(1)
+			r.plantSeg(2, buildSeg(2,
+				writeRec(10, 3, 0, 64), // Q at v3, below the loss's version
+				writeRec(11, 5, 0, 64), // R at v5, withheld by the feed
+				lossRec(file, 11, 12, 9, 0, 64, row.flags),
+			))
+
+			st := kindsRun(t, r)
+
+			if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+				t.Errorf("Lookup over the loss's extent hit, want the cut to drop every record below the loss's version there")
+			}
+			for _, ch := range st.Rebuilt.Index.Since(file, core.Version{}) {
+				if ch.Kind != core.ChangeLoss {
+					t.Fatalf("Since yielded %+v, want only the loss's own marker: the cut dropped every held record", ch)
+				}
+			}
+			if !row.yields {
+				return
+			}
+			changes := st.Rebuilt.Index.Since(file, core.Version{})
+			if len(changes) != 1 || changes[0].Version.Counter != 9 || changes[0].Extent != (core.Extent{Off: 0, Len: 64}) {
+				t.Fatalf("the loss markers got %+v, want the single one at v9 over [0,64), unsettled", changes)
+			}
+			st.Rebuilt.Index.SettleFor(7, file, core.Version{Counter: 9})
+			if changes := st.Rebuilt.Index.Since(file, core.Version{}); len(changes) != 0 {
+				t.Errorf("Since yielded %+v after settling at the loss's version, want the marker settled and nothing held behind it", changes)
+			}
+		})
+	}
+}
+
+// TestRunCutsTwoSyncedLossesIntoAVersionOrderedMarkerSet holds the cuts'
+// determinism: two synced loss records read in the order opposite their
+// versions — the higher-version one first — cut the same rebuilt file into
+// the same marker set, and Since answers with both markers in version order,
+// whatever order the decode delivered them in.
+func TestRunCutsTwoSyncedLossesIntoAVersionOrderedMarkerSet(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	r.plantSeg(1, buildSeg(1, writeRec(10, 3, 0, 128)))
+	r.plantSeg(2, buildSeg(2, lossRec(file, 10, 12, 11, 0, 64, 1|1<<8))) // v11, read first
+	r.plantSeg(3, buildSeg(3, lossRec(file, 10, 13, 9, 64, 64, 1|1<<8))) // v9, read second
+
+	st := kindsRun(t, r)
+
+	var markers []index.Change
+	for _, ch := range st.Rebuilt.Index.Since(file, core.Version{}) {
+		if ch.Kind == core.ChangeLoss {
+			markers = append(markers, ch)
+		}
+	}
+	if len(markers) != 2 {
+		t.Fatalf("Since yielded %d loss markers, want the two the records name: %+v", len(markers), markers)
+	}
+	if markers[0].Version.Counter != 9 || markers[0].Extent != (core.Extent{Off: 64, Len: 64}) {
+		t.Errorf("the first marker got v%d over %+v, want the lower version 9 over [64,128)", markers[0].Version.Counter, markers[0].Extent)
+	}
+	if markers[1].Version.Counter != 11 || markers[1].Extent != (core.Extent{Off: 0, Len: 64}) {
+		t.Errorf("the second marker got v%d over %+v, want the higher version 11 over [0,64)", markers[1].Version.Counter, markers[1].Extent)
+	}
+	for _, off := range []int64{0, 64} {
+		if _, ok := st.Rebuilt.Index.Lookup(file, off); ok {
+			t.Errorf("Lookup at %d hit, want the cuts to drop the whole extent the two losses cover", off)
+		}
+	}
+}
+
+// TestRunDeliversALossForASeqNoSegmentHolds holds the retired-record row: a
+// loss record may name a sequence number no segment holds — the record it
+// dropped retired with a repack — and the open neither crashes nor refuses:
+// the event still places and, when the loss is synced, its cut still applies,
+// for the unsettled marker is the thing Since answers for the loss with.
+func TestRunDeliversALossForASeqNoSegmentHolds(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(10)                                                          // no record of the loss's own file is planted
+	r.plantSeg(1, buildSeg(1, lossRec(file, 424242, 12, 201, 0x4100, 16, 1|1<<8))) // synced, corrupt
+
+	sink := &lossSink{}
+	st, err := r.asideRun(sink)
+	if err != nil {
+		t.Fatalf("Run over a loss naming a seq no segment holds: %v, want the open to succeed", err)
+	}
+	if len(sink.placed) != 1 {
+		t.Fatalf("the sink was handed %d loss events, want the one the record names", len(sink.placed))
+	}
+	changes := st.Rebuilt.Index.Since(file, core.Version{})
+	if len(changes) != 1 || changes[0].Kind != core.ChangeLoss {
+		t.Fatalf("Since yielded %+v over the loss's file, want its single unsettled loss marker", changes)
+	}
+	if c := changes[0]; c.Version.Counter != 201 || c.Extent != (core.Extent{Off: 0x4100, Len: 16}) {
+		t.Errorf("the loss marker got v%d over %+v, want 201 over [0x4100,16)", c.Version.Counter, c.Extent)
+	}
+}
+
 // TestRunConfinesARottenSupersededRemainderAsCorrupt holds the open's check
 // of a partly-superseded record: its kept runs are bytes no serving read
 // would ever verify again — the loss stopped naming them — so the open reads

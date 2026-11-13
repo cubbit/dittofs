@@ -94,6 +94,37 @@ func TestSupersededLossCutsItsExtentWithNoMarker(t *testing.T) {
 	}
 }
 
+// TestSupersededLossRaisesTheChangeVersion checks the half of the superseded
+// cut that holds the file's later calls to it: cutting below its version
+// raises the file's change version, as a markered loss does, so a fill
+// resolved against a read taken before the loss is refused stale instead of
+// re-holding, at the fill's version, the very bytes the cut dropped. Without
+// the raise, the fill carries no marker to be masked by — the cut leaves
+// none — and wins the file back.
+func TestSupersededLossRaisesTheChangeVersion(t *testing.T) {
+	ix := New(1 << 20)
+	id := fid(1)
+	a := rec(1, 0)
+	change(t, &ix.fs, id, func(f *file) error {
+		f.write(write(0, 12, a, 3))
+		return nil
+	})
+	if _, err := ix.LoseSuperseded(id, ext(4, 4), ver(9)); err != nil {
+		t.Fatalf("LoseSuperseded = %v, want no error", err)
+	}
+	if _, err := ix.Fill(7, id, write(4, 4, rec(2, 0), 6), 30, ver(4)); !errors.Is(err, core.ErrStaleFill) {
+		t.Fatalf("Fill resolved before a superseded loss = %v, want ErrStaleFill: the cut raised the change version the staleness check reads", err)
+	}
+	// The refused fill re-held nothing: the extent the cut dropped stays unheld.
+	want := []Piece{
+		{Extent: ext(0, 4), Record: a, Version: ver(3)},
+		{Extent: ext(8, 4), Record: a, Skip: 8, Version: ver(3)},
+	}
+	if got := heldPieces(&ix.fs, id); !slices.Equal(got, want) {
+		t.Fatalf("held after the refused fill:\n got  %+v\n want the pre-loss write split around the cut extent", got)
+	}
+}
+
 // TestSupersededLossRefusesAZeroLengthExtent checks that a superseded loss of
 // a zero-length extent is refused with ErrZeroLength and changes nothing, as
 // every synced loss is.

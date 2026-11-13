@@ -610,6 +610,13 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	if err := b.Finish(floor); err != nil {
 		return rebuilt{}, kindResults{}, tails{}, err
 	}
+	// The cuts the synced loss records carry apply over the finished index,
+	// where their extent-marker discipline and the version raise below it
+	// hold; the withheld records never reached it, so the cut is what drops
+	// the older content the open still sees beneath a reported loss.
+	if cerr := ks.applyCuts(ix); cerr != nil {
+		return rebuilt{}, kindResults{}, tails{}, cerr
+	}
 	out := rebuilt{Index: ix, Counters: ctr, Scans: scans}
 	resyncs := 0
 	byCatalog := 0

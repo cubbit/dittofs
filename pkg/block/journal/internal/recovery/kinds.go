@@ -457,6 +457,37 @@ func (ks *kindState) verifyRemainders(rd *reader, identity core.JournalID, scs [
 	return nil
 }
 
+// applyCuts is each synced loss record's release into the index the rebuild
+// finished: the extent and the version it cuts over come from the loss
+// record's own header — the version of the record the journal dropped — and
+// the cut drops every record below it inside its extent. A superseded one
+// cuts with no unsettled marker, as its own rule decides; every other reason
+// leaves one, unsettled until the caller settles at or above its version.
+// The cuts apply in the decode's read order, and markers insert by version,
+// so the order the cuts apply in decides nothing the rebuilt state shows.
+//
+// decision: an unsynced loss record applies no cut — the record it names was
+// never proven whole, and a cut would drop, as lost, content the journal
+// that crashed before the sync may still write again over the same extent.
+// Overturned by a rule that makes the sync's proof depend on nothing later.
+func (ks *kindState) applyCuts(ix *index.Index) error {
+	for _, lo := range ks.Losses {
+		if !lo.Ev.Synced {
+			continue
+		}
+		var err error
+		if lo.Ev.Reason == core.LossSuperseded {
+			_, err = ix.LoseSuperseded(lo.Ev.File, lo.Ev.Extent, lo.Ev.Version)
+		} else {
+			_, err = ix.Lose(lo.Ev.File, lo.Ev.Extent, lo.Ev.Version)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // verifyContentBody reads one buffered content record's header and whole body
 // through the open's bound and verifies both, the only read of a content
 // payload an open makes. It answers whether the record verified; a read the
