@@ -150,6 +150,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /health", s.health)
 	s.mountRoutes(mux)
 	s.mountRemovalRoutes(mux)
+	s.mountOffloadRoutes(mux)
 
 	s.mu.Lock()
 	s.j = j
