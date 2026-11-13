@@ -55,6 +55,24 @@ func (r *rig) failDirect(name string, count int) {
 	r.scheduleFaults()
 }
 
+// failSyncs schedules the file's syncs failing count times with EIO then
+// passing, or every sync when count is zero, keeping the rules the rig's
+// fault helpers scheduled before it.
+func (r *rig) failSyncs(name string, count int) {
+	r.t.Helper()
+	r.faults = append(r.faults, kit.Failing(kit.OpSync, name, count, syscall.EIO))
+	r.scheduleFaults()
+}
+
+// failReadsFrom schedules reads of name failing with EIO from the from'th
+// matching call on — every call from it, so the bound's own attempts each
+// fail — keeping the rules the rig's fault helpers scheduled before it.
+func (r *rig) failReadsFrom(name string, from int) {
+	r.t.Helper()
+	r.faults = append(r.faults, kit.FailingFrom(kit.OpRead, name, from, 0, syscall.EIO))
+	r.scheduleFaults()
+}
+
 // scheduleFaults schedules every rule the rig's fault helpers collected as
 // the seam's one fault: each rule fires on its own op, and a leg that both
 // drops a file's syncs and fails its direct reads needs both in the one
@@ -195,7 +213,8 @@ func TestASealMarkerDirectReadRefusedRefusesTheOpen(t *testing.T) {
 // once and the open still succeeds — the segment keeps the torn tail the
 // classing gives an unsealed one, which the tail flow then deepens by the
 // same failed window — and the failed segment's id is kept for the phases
-// that re-prove its window.
+// that re-prove its window. The sync is made once and once only: a later
+// success stands in for nothing, so the tail flow attempts no second one.
 func TestAMarkerWhoseSyncFailsIsTreatedAsAbsent(t *testing.T) {
 	seg, markerOff, name := proveSeg()
 	marker := slices.Clone(seg[markerOff:])
@@ -205,26 +224,64 @@ func TestAMarkerWhoseSyncFailsIsTreatedAsAbsent(t *testing.T) {
 	r.writeFormat()
 	r.plantSeg(2, rotted)
 	r.writeLiveOnly(name, markerOff, marker)
-	if err := r.seam.Schedule(kit.Failing(kit.OpSync, name, 0, syscall.EIO)); err != nil {
-		t.Fatalf("fixture: schedule: %v", err)
-	}
+	synced := r.seam.CallsFor(kit.OpSync, name)
+	r.failSyncs(name, 0) // every sync fails
 
 	st := runTails(t, r) // the failed sync is the marker's absence, never the open's failure
 
+	if calls := r.seam.CallsFor(kit.OpSync, name) - synced; calls != 1 {
+		t.Errorf("the open's syncs of the segment got %d, want 1: the marker flow's sync is the segment's one sync, its failure leaving none for the tail flow to make", calls)
+	}
 	if calls := r.seam.CallsFor(kit.OpReadDirect, name); calls != 0 {
 		t.Errorf("direct reads of the marker got %d, want 0: the marker is never re-read after a failed sync, and neither are the records whose window failed", calls)
 	}
 	// The segment's records name no sync point either, so the tail flow
 	// joined the marker's failed window: both records verified at their
-	// first reads and the sync failed again, so both are handed to the
-	// re-append from their first copies and the segment ends at the first
-	// of them — the unseal's torn tail deepened, never cleared.
+	// first reads, so both are handed to the re-append from their first
+	// copies — the cut keeps the extent of each, handed to the re-append
+	// as it is — the unseal's torn tail deepened, never cleared, and the
+	// segment ends past the last record it handed over.
 	wantReappends(t, st,
 		reappendOf(t, 2, format.SegmentHeaderSize, seg[format.SegmentHeaderSize:markerOff-tailLen]),
 		reappendOf(t, 2, markerOff-tailLen, seg[markerOff-tailLen:markerOff]))
-	wantFate(t, st, 2, fateEnded, format.SegmentHeaderSize)
 	if !slices.Equal(st.Proof.FailedWindows, []core.SegmentID{2}) {
 		t.Errorf("FailedWindows got %v, want [2]: the marker flow and the tail flow name one window, not two", st.Proof.FailedWindows)
+	}
+	wantFate(t, st, 2, fateEnded, markerOff)
+}
+
+// TestAMarkerWhoseSyncFailsOnceNeverSyncsAgain is the leg the other one
+// cannot hold: the first sync fails and every one after it would succeed,
+// so only refusing to sync again tells the two apart. The tail flow re-reads
+// nothing on the device — the window is the one that failed — and both
+// records join the re-append from their first copies, the segment ended past
+// them: one sync made in the whole open.
+func TestAMarkerWhoseSyncFailsOnceNeverSyncsAgain(t *testing.T) {
+	seg, markerOff, name := proveSeg()
+	marker := slices.Clone(seg[markerOff:])
+	rotted := slices.Clone(seg)
+	rotted[markerOff+format.SealMarkerSize-1] ^= 0xff // the marker's checksum
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, rotted)
+	r.writeLiveOnly(name, markerOff, marker)
+	synced := r.seam.CallsFor(kit.OpSync, name)
+	r.failSyncs(name, 1) // the first sync fails, every one after it passes
+
+	st := runTails(t, r)
+
+	if calls := r.seam.CallsFor(kit.OpSync, name) - synced; calls != 1 {
+		t.Errorf("the open's syncs of the segment got %d, want 1: a sync that succeeded after the failed one would stand in for nothing, and the flow makes none", calls)
+	}
+	if calls := r.seam.CallsFor(kit.OpReadDirect, name); calls != 0 {
+		t.Errorf("direct reads of the segment got %d, want 0: a window whose sync failed is never asked of the device", calls)
+	}
+	wantReappends(t, st,
+		reappendOf(t, 2, format.SegmentHeaderSize, seg[format.SegmentHeaderSize:markerOff-tailLen]),
+		reappendOf(t, 2, markerOff-tailLen, seg[markerOff-tailLen:markerOff]))
+	wantFate(t, st, 2, fateEnded, markerOff)
+	if !slices.Equal(st.Proof.FailedWindows, []core.SegmentID{2}) {
+		t.Errorf("FailedWindows got %v, want [2]: the one failed sync names the one window", st.Proof.FailedWindows)
 	}
 }
 
@@ -356,8 +413,10 @@ func TestABoundaryRecordStraddlingTheSyncPointIsVerified(t *testing.T) {
 // the same rotted bytes — does not verify at the first read and is torn.
 // Torn is neither a refusal of the open nor damage the open reports, and
 // the record has no copy a re-append could keep its numbers from, so it is
-// handed to none: the segment ends at the record's start, and A, whose sync
-// proved it whole, stays indexed.
+// handed to none — and, treated as never written, it keeps no index entry
+// either: the journal never claims to hold a byte the device never took. A,
+// whose sync proved it whole, stays indexed, and the segment ends at B's
+// own start — the end of the last record that held — never below it.
 func TestATornTailRecordIsTornNotReportedAndNotReappended(t *testing.T) {
 	a, b, bAt := tailSeg()
 	seg := buildSeg(2, a, b)
@@ -375,12 +434,9 @@ func TestATornTailRecordIsTornNotReportedAndNotReappended(t *testing.T) {
 	if len(st.Tails.Damaged) != 0 {
 		t.Errorf("Damaged got %v, want none: a record the proof finds torn is never damage", st.Tails.Damaged)
 	}
-	// The segment ends at B's own start — never below the synced-through A's
-	// record named, which is that same offset: the cut takes B and nothing
-	// A's sync proved whole.
 	wantFate(t, st, 2, fateEnded, bAt)
-	if got := planted(st); got != 2 {
-		t.Errorf("the index holds %d entries, want 2: A stays indexed, and the torn B stays for the read that serves it to catch", got)
+	if got := planted(st); got != 1 {
+		t.Errorf("the index holds %d entries, want 1: A stays indexed and the torn B — treated as never written — is dropped, so no hold claims B's extent", got)
 	}
 }
 
@@ -389,12 +445,15 @@ func TestATornTailRecordIsTornNotReportedAndNotReappended(t *testing.T) {
 // it reached, or written nowhere at all — is lost by the device. The re-read
 // that shows it is never a refusal, for the record below it already verified
 // at its first read and its copy is kept: the re-append writes the record
-// back, so the open succeeds and nothing is dropped.
+// back, so the open succeeds and nothing is dropped — and the cut keeps the
+// record's own extent, which the re-append claims, rather than ending the
+// segment at the record's start.
 func TestARecordWholeOnlyInTheCacheIsLostByTheDevice(t *testing.T) {
 	a, b, bAt := tailSeg()
 	full := buildSeg(2, a, b)
 	name := format.SegmentName(2)
 	good := full[bAt:]
+	endB := int64(len(full)) // where the lost record ends: the cut stays above it
 
 	t.Run("damaged where it reached", func(t *testing.T) {
 		damaged := slices.Clone(full)
@@ -411,7 +470,7 @@ func TestARecordWholeOnlyInTheCacheIsLostByTheDevice(t *testing.T) {
 		if len(st.Proof.FailedWindows) != 0 {
 			t.Errorf("FailedWindows got %v, want none: a sync that reports success made no window fail", st.Proof.FailedWindows)
 		}
-		wantFate(t, st, 2, fateEnded, bAt)
+		wantFate(t, st, 2, fateEnded, endB)
 	})
 	t.Run("past the device's end", func(t *testing.T) {
 		r := newRig(t)
@@ -426,16 +485,18 @@ func TestARecordWholeOnlyInTheCacheIsLostByTheDevice(t *testing.T) {
 		if len(st.Proof.FailedWindows) != 0 {
 			t.Errorf("FailedWindows got %v, want none: a sync that reports success made no window fail", st.Proof.FailedWindows)
 		}
-		wantFate(t, st, 2, fateEnded, bAt)
+		wantFate(t, st, 2, fateEnded, endB)
 	})
 }
 
 // TestASealMarkerThatFailsProofWithUnprovenRecords holds the two halves
 // joined on one segment: a marker the cache holds whole over a rotted slot,
 // with an unproven record below it, leaves the sealed states — the marker is
-// absent — and its tail is proven as an unsealed segment's is, so the record
-// the device does not hold joins the re-append beside the marker the device
-// never showed. One segment, one fate, both flows.
+// absent — and its tail is proven as an unsealed segment's is, on the sync
+// the marker flow already made — its one success spent, the flow makes no
+// second — so the record the device does not hold joins the re-append beside
+// the marker the device never showed, and the segment ends past the record
+// the re-append claims. One segment, one fate, both flows.
 func TestASealMarkerThatFailsProofWithUnprovenRecords(t *testing.T) {
 	a, b, bAt := tailSeg()
 	base := buildSeg(2, a, b)
@@ -451,6 +512,7 @@ func TestASealMarkerThatFailsProofWithUnprovenRecords(t *testing.T) {
 	r.plantSeg(2, durable)
 	r.writeLiveOnly(name, bAt, full[bAt:markerOff]) // the good B, cache only
 	r.writeLiveOnly(name, markerOff, marker)        // the good marker, cache only
+	synced := r.seam.CallsFor(kit.OpSync, name)
 	r.dropSyncs(name)
 
 	st := runTails(t, r)
@@ -459,11 +521,14 @@ func TestASealMarkerThatFailsProofWithUnprovenRecords(t *testing.T) {
 	if f.Kind == fateSealToProve || f.Kind == fateSealed {
 		t.Errorf("segment 2's fate got %v, want it past the seal: the marker the device holds does not verify", f.Kind)
 	}
+	if calls := r.seam.CallsFor(kit.OpSync, name) - synced; calls != 1 {
+		t.Errorf("the open's syncs of the segment got %d, want 1: the marker flow's sync is the segment's sync, spent there", calls)
+	}
 	// The tail flow took the unsealed queue in hand: B is lost by the
 	// device, handed over from the copy the first read verified, and the
-	// segment ends at B's own start.
+	// segment ends past B's own extent, which the re-append claims.
 	wantReappends(t, st, reappendOf(t, 2, bAt, full[bAt:markerOff]))
-	wantFate(t, st, 2, fateEnded, bAt)
+	wantFate(t, st, 2, fateEnded, markerOff)
 	if len(st.Tails.Damaged) != 0 {
 		t.Errorf("Damaged got %v, want none: a marker treated as absent and a record handed to the re-append are never damage", st.Tails.Damaged)
 	}
@@ -483,9 +548,7 @@ func TestATailWhoseSyncFailsIsAFailedWindow(t *testing.T) {
 	r.writeFormat()
 	r.plantSeg(2, full[:bAt])
 	r.writeLiveOnly(name, bAt, full[bAt:])
-	if err := r.seam.Schedule(kit.Failing(kit.OpSync, name, 1, syscall.EIO)); err != nil {
-		t.Fatalf("fixture: schedule: %v", err)
-	}
+	r.failSyncs(name, 1)
 
 	st := runTails(t, r) // a failed window is resolved by the re-append, never by refusing
 
@@ -496,6 +559,7 @@ func TestATailWhoseSyncFailsIsAFailedWindow(t *testing.T) {
 	if calls := r.seam.CallsFor(kit.OpReadDirect, name); calls != 0 {
 		t.Errorf("direct reads of the segment got %d, want 0: the records are handed over from their first copies alone", calls)
 	}
+	wantFate(t, st, 2, fateEnded, int64(len(full)))
 }
 
 // TestEveryDirectReadRefusedHandsTheTailOverAndRefusesAnUnnamedMarker holds
@@ -561,4 +625,198 @@ func TestEveryDirectReadRefusedHandsTheTailOverAndRefusesAnUnnamedMarker(t *test
 			t.Errorf("FailedWindows got %v, want none: a device that refuses reads can still take the sync", st.Proof.FailedWindows)
 		}
 	})
+}
+
+// tailTriSeg is the three-record tail the cut rules build on: A names the
+// point its own sync completed at — A's own end — and B and C, each ending
+// past the point, are the two records the proof owns, C following the B the
+// leg puts at fault.
+func tailTriSeg() (a, b, c raw.Record, bAt, endC int64) {
+	endA := endAfter(tailRec(200, 0x4100))
+	a = syncedRec(200, 0x4100, endA)
+	b = syncedRec(201, 0x8100, endA)
+	c = syncedRec(202, 0xc100, endA)
+	return a, b, c, endA, endA + 2*tailLen
+}
+
+// TestALostRecordSteppedBackwardFromDoesNotCutTheHoldingRecords holds the
+// cut's own rule: a segment the flow ends is ended at the END of the last
+// record that held, not at the start of the first one that did not — a lost
+// record is re-appended and so its extent is claimed, and the records after
+// it that verify on the device prove past it, so cutting at the lost
+// record's start would discard records the journal keeps. The cut names C's
+// end here, never below it, whatever order the flow found B's loss in.
+func TestALostRecordSteppedBackwardFromDoesNotCutTheHoldingRecords(t *testing.T) {
+	a, b, c, bAt, endC := tailTriSeg()
+	full := buildSeg(2, a, b, c)
+	name := format.SegmentName(2)
+	rotted := slices.Clone(full)
+	rotted[bAt+format.RecordHeaderSize+8+2] ^= 0xff // B's payload: garbage on the device alone
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, rotted)                             // A and C durable whole, B rotted there
+	r.writeLiveOnly(name, bAt, full[bAt:bAt+tailLen]) // the good B, whole in the cache alone
+	r.dropSyncs(name)                                 // the open's sync makes nothing durable
+
+	st := runTails(t, r)
+
+	// B is lost by the device and handed to the re-append; C proves whole on
+	// the device, and A its sync proved: three held records, one of them
+	// re-appended, and the cut is C's end.
+	wantReappends(t, st, reappendOf(t, 2, bAt, full[bAt:bAt+tailLen]))
+	if f := fateOf(t, st, 2); f.Kind != fateEnded || f.Offset < endC {
+		t.Errorf("segment 2's fate got %v at %d, want ended not below %d: the cut is the end of the last record that held", f.Kind, f.Offset, endC)
+	}
+}
+
+// TestATornRecordBeforeAHoldingRecordIsSteppedOver holds the torn half of
+// the same rule: a torn record — never written, dropped from the index — is
+// stepped over exactly as a torn slot is, so a holding record after it
+// proves past it and the cut keeps the holding record's extent. B keeps no
+// index entry, so nothing claims its bytes, and A and C keep theirs.
+func TestATornRecordBeforeAHoldingRecordIsSteppedOver(t *testing.T) {
+	a, b, c, bAt, endC := tailTriSeg()
+	full := buildSeg(2, a, b, c)
+	full[bAt+format.RecordHeaderSize+8+2] ^= 0xff // B's payload, in the cache and on the device both
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, full)
+
+	st := runTails(t, r)
+
+	if len(st.Proof.Reappends) != 0 {
+		t.Errorf("Reappends got %+v, want none: the torn B is never written and holds no copy, C its own device holds", st.Proof.Reappends)
+	}
+	if got := planted(st); got != 2 {
+		t.Errorf("the index holds %d entries, want 2: A and C alone, the torn B dropped as never written", got)
+	}
+	got := []uint64{}
+	for _, e := range st.Rebuilt.Index.FileEntries(tailFile()) {
+		got = append(got, e.Version.Counter)
+	}
+	slices.Sort(got)
+	if !slices.Equal(got, []uint64{200, 202}) {
+		t.Errorf("the index entries' versions got %v, want A's 200 and C's 202, B's 201 dropped", got)
+	}
+	if f := fateOf(t, st, 2); f.Kind != fateEnded || f.Offset < endC {
+		t.Errorf("segment 2's fate got %v at %d, want ended not below %d: the cut steps over the torn B to C's end", f.Kind, f.Offset, endC)
+	}
+}
+
+// lossRec is a loss record of its own version, an aside record the walk set
+// aside, at a file offset the kind's rules leave alone.
+func lossRec(counter uint64) raw.Record {
+	return rec(10, func(r *raw.Record) {
+		r.Version = raw.Version{Counter: counter}
+		r.Loss = &raw.LossBody{Dropped: 99, Flags: 1 | 1<<8}
+	})
+}
+
+// TestAnUnprovenAsideRecordIsProvenLikeAContentRecord holds the kinds rule:
+// the tail gives aside records the same proof it gives content ones — the
+// re-append's copier copies records whole and kind-blind, so a kind the flow
+// excepts would leave its bytes unproven and its loss unreported. Lost by
+// the device, the aside joins the re-append with the whole first-read copy.
+func TestAnUnprovenAsideRecordIsProvenLikeAContentRecord(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	l := lossRec(201)
+	a := syncedRec(200, 0x4100, endA)
+	full := buildSeg(2, a, l)
+	lAt := endA
+	name := format.SegmentName(2)
+	durable := slices.Clone(full)
+	durable[lAt+format.RecordHeaderSize+3] ^= 0xff // the loss record's body, rotted on the device alone
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, durable)
+	r.writeLiveOnly(name, lAt, full[lAt:]) // the good loss record, whole in the cache alone
+	r.dropSyncs(name)
+
+	st := runTails(t, r)
+
+	// The aside is lost by the device and handed over whole: its first copy
+	// is the record's own bytes, header and body both, and its fate's cut
+	// keeps it, as a lost content record's does.
+	wantReappends(t, st, reappendOf(t, 2, lAt, full[lAt:]))
+	if len(st.Proof.FailedWindows) != 0 {
+		t.Errorf("FailedWindows got %v, want none: a sync that reports success made no window fail", st.Proof.FailedWindows)
+	}
+	wantFate(t, st, 2, fateEnded, int64(len(full)))
+}
+
+// TestATornAsideRecordIsDroppedFromTheScansAsideList holds the torn half:
+// an aside record whose bytes read and do not verify is treated as never
+// written, so nothing of it survives the open — the scan's aside list, the
+// only place the rebuilt state holds it, drops it, for the same reason the
+// index drops a torn content record: the journal never claims a record the
+// device never took.
+func TestATornAsideRecordIsDroppedFromTheScansAsideList(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	l := lossRec(201)
+	a := syncedRec(200, 0x4100, endA)
+	full := buildSeg(2, a, l)
+	full[endA+format.RecordHeaderSize+3] ^= 0xff // the loss record's body, in the cache and on the device both
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, full)
+
+	st := runTails(t, r)
+
+	if len(st.Proof.Reappends) != 0 {
+		t.Errorf("Reappends got %+v, want none: a torn aside record has no copy to re-append", st.Proof.Reappends)
+	}
+	sc, ok := scanOf(st, 2)
+	if !ok {
+		t.Fatalf("Rebuilt.Scans holds no scan of segment 2, want one")
+	}
+	if len(sc.Aside) != 0 {
+		t.Errorf("the scan's aside list holds %+v, want it empty: the torn loss record is never written, and no later phase answers for it", sc.Aside)
+	}
+	wantFate(t, st, 2, fateEnded, endA)
+}
+
+// TestAnUnprovenTailRecordsFirstReadRefusedRefusesTheOpen holds the one
+// refusal of the tail's own reads, D15: a candidate whose FIRST read — the
+// one through the reader, payload included — no bounded attempt completes
+// refuses the open on the record's body range, the bytes the read was asked
+// for. Never a torn verdict, never a dropped record: a read that fails says
+// nothing about the bytes it never returned, and the open writes nothing it
+// refuses to rebuild. The fault arms at the body's read alone: reads one to
+// ten — the attach header, the rebuild walk's four window slices, the
+// proof's own four, and the record's header — all pass, so the bound spends
+// its three attempts on the body and the refusal names it and nothing else.
+// The from is the count of those reads over this fixture's two records,
+// not a measured number anywhere else.
+func TestAnUnprovenTailRecordsFirstReadRefusedRefusesTheOpen(t *testing.T) {
+	a, b, bAt := tailSeg()
+	full := buildSeg(2, a, b)
+	name := format.SegmentName(2)
+	bodyOff, bodyLen := bAt+format.RecordHeaderSize, int64(len(full))-bAt-format.RecordHeaderSize
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, full)
+	before := r.fileBytes(name)
+	r.failReadsFrom(name, 11)
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+
+	var ure *core.UnreadableRangesError
+	if !errors.As(err, &ure) {
+		t.Fatalf("Run over a body read no attempt completed got err %v, want an UnreadableRangesError", err)
+	}
+	want := []core.SegmentRange{{Segment: 2, Off: bodyOff, Len: bodyLen}}
+	if !slices.Equal(ure.Ranges, want) {
+		t.Errorf("the refusal names ranges %v, want the one body range %v: the refused read names the record's body alone", ure.Ranges, want)
+	}
+	if calls := r.seam.CallsFor(kit.OpRead, name); calls != 13 {
+		t.Errorf("reads of the segment got %d, want 13: ten passed, and the bound spent three on the refused body", calls)
+	}
+	if after := r.fileBytes(name); !slices.Equal(before, after) {
+		t.Errorf("the refused open changed the segment: got %x, want the bytes it held, %x", after, before)
+	}
+	if !reflect.DeepEqual(st, State{}) {
+		t.Errorf("the refused open returned state %+v, want the zero State: a refusal rebuilds nothing", st)
+	}
 }

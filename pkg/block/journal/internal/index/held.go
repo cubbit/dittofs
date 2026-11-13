@@ -541,6 +541,31 @@ func (s *heldSet) put(p Piece) {
 	s.coalesce(p.Extent.Off)
 }
 
+// unplace drops the pieces inside e whose placement is rec itself, and every
+// other piece there keeps its extent: a later record's content overlapped by
+// e stays held, as does a copy of the record's placed elsewhere by pieces the
+// rebuild kept. This is the removal of a placement, never the restore of what
+// the placement replaced — content the record superseded was cut when it was
+// replayed, and nothing holds a copy of it to put back.
+func (s *heldSet) unplace(rec RecordAt, e core.Extent) {
+	if e.Len <= 0 {
+		return
+	}
+	// The matches are collected into s.work, not s.scratch, for cut below
+	// refills s.scratch as it drops each piece — the loop must not range
+	// over what cut rewrites under it.
+	s.work = s.work[:0]
+	s.visit(e, func(p Piece) bool {
+		if p.Record == rec {
+			s.work = append(s.work, p)
+		}
+		return true
+	})
+	for _, p := range s.work {
+		s.cut(p.Extent)
+	}
+}
+
 // cutBelow stops holding the parts inside e of every piece whose version is
 // below v, whatever its offloaded bit, and keeps the rest: a removal marker's
 // rule. At run time a removal's version is above everything held, so it cuts
