@@ -482,7 +482,7 @@ const (
 	StatusNoSession                  // core.ErrNoSession (E5 T5.2b)
 	StatusNoTree                     // core.ErrNoTree (E5 T5.2b)
 	StatusNoFH                       // core.ErrNoFH (E5 T5.2b)
-	StatusTooLong                    // core.ErrTooLong: a compound past its cap (E5 T5.4a)
+	StatusTooLong                    // core.ErrTooLong: a compound past its cap (E5 T5.4)
 	StatusExpired                    // core.ErrExpired (E5 T5.2b)
 	StatusNotLast                    // core.ErrNotLast (E5 T5.5c, T5.11)
 	StatusTooManyPending             // core.ErrTooManyPending (E5 T5.11)
@@ -692,10 +692,10 @@ func (c *Client) Balance() int
   | a message sent ahead of a named reply | `Notify` | E4 T4.4 |
   | session and tree levels; `Versions` | `Session`, `Tree`, D3's tables | E5 T5.2b |
   | drain decided per request; the expired-credential gate | `Echo`'s role, `PutFH`'s handle, `Session`'s expiry, `Logoff` | E5 T5.1a, T5.2b; E4 T4.5 |
-  | chains: a related member's state, a bad checksum, a pending last member, a member before the last pending or answered `ErrNotLast`, a `NoReply` stop whose interim grants the later members' credits, replies wrapped once | version 2, `Msg.Related`, `Msg.Pend`, the stages, `Client.Balance` | E5 T5.4b, T5.5b, T5.5c |
-  | a single-reply compound judged whole while draining; the slot's sequence kept; a compound past its cap | the compound row, `PutFH`'s handle, `Echo`'s role, `ReplayCache` | E5 T5.4a, T5.4b |
+  | chains: a related member's state, a bad checksum, a pending last member, a member before the last pending or answered `ErrNotLast`, a `NoReply` stop whose interim grants the later members' credits, replies wrapped once | version 2, `Msg.Related`, `Msg.Pend`, the stages, `Client.Balance` | E5 T5.4, T5.5b, T5.5c |
+  | a single-reply compound judged whole while draining; the slot's sequence kept; a compound past its cap | the compound row, `PutFH`'s handle, `Echo`'s role, `ReplayCache` | E5 T5.4 |
   | holds past the ceiling and the floor, a cancel before and after its target | `Create` held by `Faults`, `OpCancel`, `HoldCodec` | E5 T5.5b |
-  | parks refused before the last, past `MaxPending`, with the reply pool full; cancelled by the client and by a drain; racing a grant; already past an interim; a connection closed on a scripted violation | `Park` over a `Faults` hold, `Violate` | E5 T5.11 |
+  | parks refused before the last, past `MaxPending`, with the reply pool full; cancelled by the client and by a drain; racing a grant; already past an interim; a connection closed on a scripted violation | `Park` over a `Faults` hold, `Violate` | E5 T5.11, T5.1c |
   | panic recovery | `Panic` | E5 T5.6 |
 
 - **Acceptance criteria:**
