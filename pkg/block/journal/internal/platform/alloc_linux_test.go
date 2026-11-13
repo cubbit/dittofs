@@ -12,7 +12,6 @@ import (
 	"slices"
 	"syscall"
 	"testing"
-	"unsafe"
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"golang.org/x/sys/unix"
@@ -600,51 +599,80 @@ func TestAllocateCloseDuringAllocate(t *testing.T) {
 	}
 }
 
-// expectFIEMAPAnswers fails t unless dir's filesystem answers FIEMAP: the
-// not-supported refusals (ENOTTY, EOPNOTSUPP) say the filesystem has no
-// extent report to give, and over such a one Allocated answers whole whatever
-// the file's body holds, so no row that means to catch a hole can hold there —
-// a journal's directory can sit on no filesystem that does not answer, so the
-// row fails naming it, never skips, as TestReadAtDirectReadsPastTheCache does
-// its own missing precondition. The probe asks over a fully written scratch
-// file, so the query it asks about is the query the rows themselves ask with.
-func expectFIEMAPAnswers(t *testing.T, dir string) {
+// probeSize is the fully written size of a probe's scratch file.
+const probeSize = 1 << 16
+
+// writtenProbe creates and fully writes the probe's scratch file in dir: the
+// shape every allocation query the probes ask is asked over.
+func writtenProbe(t *testing.T, dir string) *os.File {
 	t.Helper()
 
-	path := filepath.Join(dir, "fiemap probe")
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(filepath.Join(dir, "allocation probe"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = f.Close() }()
-
-	const n = 1 << 16
-	if _, err := f.Write(bytes.Repeat([]byte{0xa5}, n)); err != nil {
+	if _, err := f.Write(bytes.Repeat([]byte{0xa5}, probeSize)); err != nil {
+		_ = f.Close()
 		t.Fatal(err)
 	}
+	return f
+}
 
-	var refused unix.Errno
+// expectAllocationAnswers fails t unless dir's filesystem answers the
+// allocation query one way or the other: a FIEMAP extent report, or — where
+// the ioctl is refused with ENOTTY or EOPNOTSUPP, the refusal that says no
+// extent report exists — the hole seek Allocated falls back to. Over a
+// filesystem that answers neither, Allocated answers whole whatever the
+// file's body holds, so no row that means to catch a hole can hold there: it
+// fails naming the filesystem, never skips. The FIEMAP probe asks
+// fiemapIoctl itself, the table's own entry, over a fully written scratch
+// file, so the query it asks about is the query the rows ask with.
+func expectAllocationAnswers(t *testing.T, dir string) {
+	t.Helper()
+
+	f := writtenProbe(t, dir)
+	defer func() { _ = f.Close() }()
+
+	var refusedErr error
 	rc, err := f.SyscallConn()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := rc.Control(func(fd uintptr) {
-		fm := fiemap{start: 0, length: n, count: 1}
-		_, _, refused = unix.Syscall(
-			unix.SYS_IOCTL,
-			uintptr(fd),
-			uintptr(fiemapIOC),
-			uintptr(unsafe.Pointer(&fm)),
-		)
+		refusedErr = fiemapIoctl(int(fd), &fiemap{start: 0, length: probeSize, count: 1})
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	if refused == unix.ENOTTY || refused == unix.EOPNOTSUPP || refused != 0 {
+	if refusedErr == nil {
+		return // the filesystem answers extents
+	}
+	if !errors.Is(refusedErr, unix.ENOTTY) && !errors.Is(refusedErr, unix.EOPNOTSUPP) {
 		t.Fatalf(
-			"%s answers FIEMAP's query with %v, so no extent report exists for Allocated to read",
+			"%s answers FIEMAP's query with %v, which is neither an extent report nor the refusal that says none exists",
 			dir,
-			refused,
+			refusedErr,
+		)
+	}
+
+	// No extent report: the hole seek is the query Allocated falls back to,
+	// and the row holds only where it answers. A fully written file's first
+	// hole sits at its end, so the probe asks the fallback's own question.
+	off, serr := unix.Seek(int(f.Fd()), 0, unix.SEEK_HOLE)
+	if serr != nil {
+		t.Fatalf(
+			"%s answers neither FIEMAP's extents (%v) nor SEEK_HOLE's holes (%v), so no allocation report exists for Allocated to read",
+			dir,
+			refusedErr,
+			serr,
+		)
+	}
+	if off < probeSize {
+		t.Fatalf(
+			"%s answers SEEK_HOLE with a hole at %d inside a fully written file of %d bytes, so its answer is not one the rows can ask with",
+			dir,
+			off,
+			probeSize,
 		)
 	}
 }
@@ -670,13 +698,18 @@ func punchMiddle(t *testing.T, path string, n int64) {
 	}
 }
 
-// TestAllocatedOnDisk checks Allocated over the operating system's own extent
-// map: a file every byte of which a write reached answers whole, and an empty
-// one does too, for no byte of it is missing; a punch through the middle
-// answers not whole; and so does a whole-range fallocate no write ever
-// reached, for a filesystem the directory check passes marks its unwritten
-// extents — one that does not answers whole over them, and the row fails
-// naming it, never skips, holding nothing it could assert.
+// TestAllocatedOnDisk checks Allocated over the operating system's own
+// allocation map, whichever query the filesystem answers — FIEMAP extents or,
+// where none exists, the hole seek: a file every byte of which a write
+// reached answers whole, and an empty one does too, for no byte of it is
+// missing; a punch through the middle answers not whole, and so does a file
+// truncated to its size that no write ever reached, whose first hole is at
+// its birth; and so does a whole-range fallocate no write ever reached, for a
+// filesystem the directory check passes marks its unwritten extents — one
+// that does not answers whole over them, and the row fails on its assertion,
+// naming the answer's own regression. A filesystem that can answer neither
+// query makes the not-whole rows fail naming it, never skip, for this
+// package's tests hold what they assert.
 func TestAllocatedOnDisk(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -685,7 +718,7 @@ func TestAllocatedOnDisk(t *testing.T) {
 
 	t.Run("fully written", func(t *testing.T) {
 		dir := t.TempDir()
-		expectFIEMAPAnswers(t, dir)
+		expectAllocationAnswers(t, dir)
 		f := openOn(t, NewOS(dir), "whole")
 		writeBytes(t, f, body, 0)
 
@@ -712,7 +745,7 @@ func TestAllocatedOnDisk(t *testing.T) {
 
 	t.Run("a punched hole in the middle", func(t *testing.T) {
 		dir := t.TempDir()
-		expectFIEMAPAnswers(t, dir)
+		expectAllocationAnswers(t, dir)
 		path := filepath.Join(dir, "punched")
 		f := openOn(t, NewOS(dir), "punched")
 		writeBytes(t, f, body, 0)
@@ -727,9 +760,32 @@ func TestAllocatedOnDisk(t *testing.T) {
 		}
 	})
 
-	t.Run("unwritten prealloc", func(t *testing.T) {
+	t.Run("sparse from birth", func(t *testing.T) {
 		dir := t.TempDir()
-		expectFIEMAPAnswers(t, dir)
+		expectAllocationAnswers(t, dir)
+		f := openOn(t, NewOS(dir), "sparse")
+
+		// Truncate alone: the file reaches its size with no write, so its
+		// first hole starts at offset 0 — the simplest holed spare there is.
+		if err := f.Truncate(n); err != nil {
+			t.Fatal(err)
+		}
+
+		whole, err := f.Allocated()
+		if err != nil {
+			t.Fatalf("Allocated over a never-written file: %v", err)
+		}
+		if whole {
+			t.Errorf("Allocated over a file truncated and never written answered true, want false: its first hole is at offset 0")
+		}
+	})
+
+	t.Run("unwritten prealloc", func(t *testing.T) {
+		// The row reaches the same not-whole answer through either query: an
+		// unwritten extent is flagged where extents are reported, and the
+		// hole seek answers the allocated-not-written range a hole too —
+		// so the row holds over a filesystem that answers either one.
+		dir := t.TempDir()
 		path := filepath.Join(dir, "prealloc")
 		f := openOn(t, NewOS(dir), "prealloc")
 		pf, err := os.OpenFile(path, os.O_RDWR, 0)
@@ -749,57 +805,99 @@ func TestAllocatedOnDisk(t *testing.T) {
 			t.Fatalf("Allocated over an unwritten prealloc: %v", err)
 		}
 		if whole {
-			t.Fatalf("%s allocates without marking the range unwritten, so Allocated answers whole over a prealloc the row cannot hold to false", path)
+			t.Errorf("Allocated over an unwritten prealloc answered true, want false: FIEMAP_EXTENT_UNWRITTEN reads as zeros a crash would lose writes into")
 		}
 	})
 }
 
-// TestAllocatedCalls checks the calls Allocated makes: FIEMAP windows on the
-// file's own descriptor, repeated while interrupted by a signal; a window
-// refused with an error the device reports passes through once, as an
-// *fs.PathError naming the file — but ENOTTY and EOPNOTSUPP are a filesystem
-// with no extent report to give, not a fault, so the file answers whole
-// rather than failing the query.
+// TestAllocatedCalls checks the calls Allocated makes, every answer injected
+// through the recorder's table so no leg needs a filesystem of one kind:
+// FIEMAP windows on the file's own descriptor, repeated while interrupted by
+// a signal; a window refused with an error the device reports passes through
+// once, as an *fs.PathError naming the file — but ENOTTY and EOPNOTSUPP say
+// no extent report exists, not a fault, so the hole seek answers instead:
+// with no hole below the size the file is whole, over a never-written file
+// it is not, interrupted it is made again, a failure it reports passes
+// through under lseek's own name, and a seek refused with EINVAL, ENOSYS,
+// ENOTTY or EOPNOTSUPP is the one refusal that leaves the file whole, for
+// the filesystem answers neither extents nor holes.
 func TestAllocatedCalls(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	type leg struct {
-		name  string
-		fail  []error
-		whole bool
-		errno syscall.Errno // wrapped in the answer, 0 when none
-		calls int
-	}
-
 	const n int64 = 1 << 16
 	body := bytes.Repeat([]byte{0xa5}, int(n))
+	truncated := func(t *testing.T, f *file) {
+		t.Helper()
+		if err := f.Truncate(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	written := func(t *testing.T, f *file) {
+		t.Helper()
+		writeBytes(t, f, body, 0)
+	}
 
-	for _, l := range []leg{
-		{"a filesystem without the ioctl", []error{syscall.ENOTTY}, true, 0, 1},
-		{"a filesystem without extent support", []error{syscall.EOPNOTSUPP}, true, 0, 1},
-		{"a window interrupted twice", []error{syscall.EINTR, syscall.EINTR}, true, 0, 3},
-		{"a refused query", []error{syscall.EIO}, false, syscall.EIO, 1},
+	for _, l := range []struct {
+		name      string
+		fiemapErr []error // queued for the FIEMAP calls
+		lseekErr  []error // queued for the hole seek's calls
+		whole     bool
+		errno     syscall.Errno // wrapped in the answer, 0 when none
+		errOp     string        // the PathError's op naming the call that failed
+		prepare   func(*testing.T, *file)
+		ops       []string // the calls, in order
+		tail      []string // calls that may follow ops: the fallback over a filesystem the leg's own host serves none to
+	}{
+		{"a filesystem without the ioctl", []error{syscall.ENOTTY}, nil, true, 0, "", written,
+			[]string{"fiemap", "lseek"}, nil},
+		{"a filesystem without extent support", []error{syscall.EOPNOTSUPP}, nil, true, 0, "", written,
+			[]string{"fiemap", "lseek"}, nil},
+		{"a filesystem without extents over a never-written file", []error{syscall.ENOTTY}, nil, false, 0, "", truncated,
+			[]string{"fiemap", "lseek"}, nil},
+		{"a filesystem that answers neither", []error{syscall.EOPNOTSUPP}, []error{syscall.EINVAL}, true, 0, "", written,
+			[]string{"fiemap", "lseek"}, nil},
+		{"a window interrupted twice", []error{syscall.EINTR, syscall.EINTR}, nil, true, 0, "", written,
+			[]string{"fiemap", "fiemap", "fiemap"}, []string{"lseek"}},
+		{"a refused query", []error{syscall.EIO}, nil, false, syscall.EIO, "fiemap", written,
+			[]string{"fiemap"}, nil},
+		{"a refused hole seek", []error{syscall.ENOTTY}, []error{syscall.EIO}, false, syscall.EIO, "lseek", written,
+			[]string{"fiemap", "lseek"}, nil},
+		{"an interrupted hole seek", []error{syscall.EOPNOTSUPP}, []error{syscall.EINTR, syscall.EINTR}, true, 0, "", written,
+			[]string{"fiemap", "lseek", "lseek", "lseek"}, nil},
 	} {
 		t.Run(l.name, func(t *testing.T) {
 			dir := t.TempDir()
-			expectFIEMAPAnswers(t, dir)
 			r := &recorder{}
 			f := openOn(t, newOS(dir, r.table()), "a")
-			writeBytes(t, f, body, 0)
+			if l.prepare != nil {
+				l.prepare(t, f)
+			}
 			path := filepath.Join(dir, "a")
 
-			r.failNext("fiemap", l.fail...)
+			if len(l.fiemapErr) > 0 {
+				r.failNext("fiemap", l.fiemapErr...)
+			}
+			if len(l.lseekErr) > 0 {
+				r.failNext("lseek", l.lseekErr...)
+			}
 
 			whole, err := f.Allocated()
 			log := r.take()
 
-			if slices.ContainsFunc(log, func(c call) bool { return c.op != "fiemap" }) || len(log) != l.calls {
-				t.Fatalf("want %d FIEMAP call(s) on %s, got %v", l.calls, path, log)
+			got := make([]string, len(log))
+			for i, c := range log {
+				got[i] = c.op
+			}
+			if !slices.Equal(got, l.ops) && !slices.Equal(got, append(slices.Clone(l.ops), l.tail...)) {
+				t.Fatalf("want calls %v on %s, got %v", l.ops, path, log)
 			}
 			expectOnFile(t, log, path)
 
 			if l.errno != 0 {
 				expectPathError(t, err, l.errno, path)
+				if pe := err.(*fs.PathError); pe.Op != l.errOp {
+					t.Fatalf("%v: op %q, want %s, the call that failed", err, pe.Op, l.errOp)
+				}
 			} else if err != nil {
 				t.Fatalf("Allocated with %s: %v, want nil", l.name, err)
 			}

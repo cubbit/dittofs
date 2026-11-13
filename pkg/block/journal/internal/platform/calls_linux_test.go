@@ -43,6 +43,7 @@ func TestSyscallTableIsReal(t *testing.T) {
 		{"ioctlGetUint32", "unix.IoctlGetUint32", got.ioctlGetUint32, unix.IoctlGetUint32},
 		{"getdents", "unix.Getdents", got.getdents, unix.Getdents},
 		{"fiemap", "fiemapIoctl", got.fiemap, fiemapIoctl},
+		{"lseek", "unix.Seek", got.lseek, unix.Seek},
 	}
 
 	if n := reflect.TypeOf(calls{}).NumField(); n != len(pins) {
@@ -94,6 +95,7 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"Statfs_t":                 true,
 		"Statx_t":                  true,
 		"ENOSYS":                   true,
+		"SEEK_HOLE":                true,
 		"DT_REG":                   true,
 		"DT_DIR":                   true,
 		"DT_LNK":                   true,
