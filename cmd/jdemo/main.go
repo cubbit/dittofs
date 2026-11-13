@@ -41,6 +41,8 @@ func newRoot() *cobra.Command {
 		newShareCmd(), newForgetCmd(), newStrandCmd(),
 		newDrawCmd(), newSetVersionLimitCmd(),
 		newWriteAtCmd(), newReadAtCmd(), newSyncCmd(),
+		newTruncateCmd(), newDeallocateCmd(), newDeleteCmd(), newCloneTargetCmd(),
+		newReserveCmd(), newReserveWriteCmd(), newReserveCloseCmd(), newFillCmd(),
 	} {
 		root.AddCommand(c)
 	}

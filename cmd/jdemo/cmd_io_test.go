@@ -79,7 +79,7 @@ func TestReadAtParse(t *testing.T) {
 
 func TestWriteReadRoundTrip(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "journal")
-	socket := filepath.Join(t.TempDir(), "s.sock")
+	socket := tmpSocket(t)
 	srv := &Server{Dir: dir, SocketPath: socket}
 	if err := srv.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)

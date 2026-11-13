@@ -1,14 +1,57 @@
 package main
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 )
+
+// spareRetryBound is how long a route waits out the one refusal the journal
+// documents as clearing on its own: a NoSpaceError naming LimitSpare, while
+// the spare pool refills asynchronously. Every other answer — success, a
+// real limit's refusal, any error — passes through at once.
+//
+// decision: the pool's refill is asynchronous by contract ("the retry finds
+// it served"), and a demo presents one command at a time, so the daemon waits
+// the refill out rather than making the presenter retype. Withdraw the wait
+// if a demo beat ever wants the refusal story shown.
+const spareRetryBound = 10 * time.Second
+
+// awaitSpare runs op, retrying while it answers a LimitSpare refusal and the
+// bound has not passed.
+func awaitSpare(ctx context.Context, op func() error) error {
+	deadline := time.Now().Add(spareRetryBound)
+	for {
+		err := op()
+		if err == nil || !isLimitSpare(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// isLimitSpare answers whether err is a NoSpaceError naming the spare limit.
+func isLimitSpare(err error) bool {
+	var ns *journal.NoSpaceError
+	if errors.As(err, &ns) {
+		return ns.Limit == journal.LimitSpare
+	}
+	return false
+}
 
 // respond writes the one envelope every route answers with; err's text goes
 // to the terminal verbatim, whatever it is.
@@ -212,7 +255,12 @@ func (s *Server) writeAt(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
-	v, err := h.WriteAt(r.Context(), id, req.Off, data, req.Mtime)
+	var v journal.Version
+	err = awaitSpare(r.Context(), func() error {
+		var werr error
+		v, werr = h.WriteAt(r.Context(), id, req.Off, data, req.Mtime)
+		return werr
+	})
 	if err != nil {
 		respond(w, nil, err)
 		return
