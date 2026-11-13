@@ -77,25 +77,32 @@ func startStorm(ctx context.Context, c *bench) *storm {
 		ended: make(chan struct{}),
 	}
 	r := rand.New(rand.NewPCG(7, 7))
+
 	go func() {
 		defer close(s.ended)
+
 		tick := time.NewTicker(time.Second / b7Rate)
 		defer tick.Stop()
+
 		mode := uint32(0o600)
+
 		for {
 			select {
 			case <-s.stop:
 				return
 			case <-tick.C:
 			}
+
 			i := r.IntN(len(c.files))
 			mode ^= 0o040
 			ch := vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(mode)}
 			_, err := c.fs.SetAttr(ctx, c.admin, vfs.Target{H: c.files[i]}, ch)
+
 			s.mu.Lock()
 			if err != nil && s.failed == nil {
 				s.failed = err
 			}
+
 			s.done = append(s.done, stormChmod{at: time.Now(), file: i})
 			s.mu.Unlock()
 		}
@@ -108,11 +115,13 @@ func startStorm(ctx context.Context, c *bench) *storm {
 // benchBurstDeadline.
 func (s *storm) end() error {
 	close(s.stop)
+
 	select {
 	case <-s.ended:
 	case <-time.After(benchBurstDeadline):
 		return fmt.Errorf("the storm's last chmod still running after %v", benchBurstDeadline)
 	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -132,6 +141,7 @@ func (s *storm) mark() int {
 func (s *storm) since(from int) (chmods, writersTouched int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	var touched []int
 	for _, d := range s.done[from:] {
 		if d.file < benchWriters && !slices.Contains(touched, d.file) {
@@ -146,8 +156,11 @@ func benchB7(b *testing.B) {
 	c := composeBench(b, b7Files, b7ExistenceAge)
 	ctx := b.Context()
 	data := make([]byte, mib)
+
 	var fsyncs []time.Duration
+
 	most, evaluated := 0, 0
+
 	b.ResetTimer()
 
 	for i := range b.N {
@@ -156,19 +169,26 @@ func benchB7(b *testing.B) {
 		// The storm's own cost, in a window with no fsync: a bounded wait is
 		// the measurement here, as the storm runs on the real clock.
 		c.counts.TakeUpdates()
+
 		from := s.mark()
+
 		<-time.After(b7Calibrate)
+
 		alone := c.counts.TakeUpdates().Updates
+
 		chmods, _ := s.since(from)
 		if chmods == 0 {
 			b.Fatalf("run %d: the storm made no chmod in %v", i+1, b7Calibrate)
 		}
+
 		perChmod := float64(alone) / float64(chmods)
 
 		for k := range b5Bursts {
 			off := int64(i*b5Bursts+k) * mib
 			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
-				_, err := c.fs.Write(ctx, c.admin, vfs.Anonymous(c.files[w]), off, data, vfs.Unstable)
+				ref := vfs.Anonymous(c.files[w])
+				_, err := c.fs.Write(ctx, c.admin, ref, off, data, vfs.Unstable)
+
 				return err
 			}); err != nil {
 				b.Fatalf("burst %d of run %d: a write refused: %v", k+1, i+1, err)
@@ -176,18 +196,23 @@ func benchB7(b *testing.B) {
 
 			before := c.committedSizes(b)
 			c.counts.TakeUpdates()
+
 			from := s.mark()
+
 			took := make([]time.Duration, benchWriters)
 			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
 				start := time.Now()
 				_, err := c.fs.Commit(ctx, c.admin, vfs.Anonymous(c.files[w]), 0, 0)
 				took[w] = time.Since(start)
+
 				return err
 			}); err != nil {
 				b.Fatalf("burst %d of run %d: an fsync failed: %v", k+1, i+1, err)
 			}
+
 			updates := c.counts.TakeUpdates().Updates
 			chmods, touched := s.since(from)
+
 			fsyncs = append(fsyncs, took...)
 
 			// A group commit of earlier bursts that came due during this one,
@@ -196,12 +221,16 @@ func benchB7(b *testing.B) {
 			if !slices.Equal(before, c.committedSizes(b)) {
 				continue
 			}
+
 			engine := updates - int(math.Ceil(perChmod*float64(chmods)))
+
 			bound := 1 + touched*b7Log2G
 			if engine > bound {
 				b.Fatalf(
-					"burst %d of run %d: %d store transactions for %d fsyncs once the storm's %d chmods "+
-						"(%.2f transactions each) are taken out, want at most 1 + %d conflicting files × %d = %d",
+					"burst %d of run %d: %d store transactions for %d fsyncs once the storm's "+
+						"%d chmods "+
+						"(%.2f transactions each) are taken out, "+
+						"want at most 1 + %d conflicting files × %d = %d",
 					k+1,
 					i+1,
 					engine,
@@ -213,6 +242,7 @@ func benchB7(b *testing.B) {
 					bound,
 				)
 			}
+
 			most, evaluated = max(most, engine), evaluated+1
 		}
 
@@ -225,6 +255,7 @@ func benchB7(b *testing.B) {
 	b.ReportMetric(microseconds(percentile(fsyncs, 99)), "fsync-p99-µs")
 	b.ReportMetric(float64(most), "txn/stability-point")
 	b.ReportMetric(float64(evaluated), "evaluated-bursts")
+
 	if bursts := b.N * b5Bursts; 2*evaluated < bursts {
 		b.Fatalf(
 			"%d of %d bursts evaluated, want at least half: a group commit came due by its timer "+
