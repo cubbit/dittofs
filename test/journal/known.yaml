@@ -585,9 +585,9 @@
 
 - test: TestRFC1D_StatsCostIsFlat
   status: skip
-  fix: planned
+  fix: wontfix
   category: env
-  reason: 'Counts allocations, which the race detector changes, so it skips in the race leg. A norace leg now runs; what unblocks it is the heap slack the flat-Stats run needs (#4150).'
+  reason: 'Counts allocations, which -race changes; runs in unit/journal-conformance-norace instead.'
   issue: '#3395'
   message: 'the race detector changes allocation counts'
 
