@@ -148,7 +148,8 @@ type lossPiece struct {
 // the scans the rebuild answered in — confined drops land on the same scans
 // the tail's classing reads — and through the same bound reader every open
 // read takes. loss deliveries reach the sink when one is given, and none is
-// required: a nil one means no failed list and no placement.
+// required: a nil one means no placement; the failed list the pass
+// withholds by is plain data the caller hands over, empty for none.
 //
 // A loss record whose header names a zero-length extent, or one that names
 // no file, refuses the open naming its segment and its offset. A loss body
@@ -157,7 +158,7 @@ type lossPiece struct {
 // own record as a corrupt drop, exactly as the catalogue's read of the same
 // kinds confines one, and the pass reads on: a lost loss record errs toward
 // fetching the extent again.
-func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []segmentScan) (kindState, error) {
+func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, failed []core.Seq, scs []segmentScan) (kindState, error) {
 	ks := kindState{
 		whole:      map[core.Seq]bool{},
 		superseded: map[core.Seq]supersededLoss{},
@@ -167,10 +168,8 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 		confined:   map[index.RecordAt]bool{},
 		copies:     map[copyKey][]index.RecordAt{},
 	}
-	if losses != nil {
-		for _, seq := range losses.Failed() {
-			ks.failed[seq] = true
-		}
+	for _, seq := range failed {
+		ks.failed[seq] = true
 	}
 
 	// decoded keeps what the first pass read — each aside's record and the
@@ -461,13 +460,15 @@ func fromFormat(r format.LossReason) core.LossReason {
 // decodes it. A body that does not verify — the checksum its bytes fail, or
 // content this format version does not define — confines to its own record
 // as a corrupt drop on its scan, carried for the tail's classing, and the
-// bare core.ErrCorrupt answers alone; any other read error returns as itself
-// and is the open's refusal.
+// bare core.ErrCorrupt answers alone; any other read error returns as the
+// phase's own refusal — the collected ranges' error when the reader
+// collected any, otherwise as itself — never a verdict on bytes the bound
+// never returned.
 func verifyAsideBody(rd *reader, identity core.JournalID, sc *segmentScan, h format.RecordHeader) (format.RecordBody, error) {
 	body := make([]byte, h.BodySize())
 	n, rerr := rd.ReadAt(format.SegmentName(h.Segment), body, h.Offset+format.RecordHeaderSize)
 	if rerr != nil && !errors.Is(rerr, io.EOF) {
-		return format.RecordBody{}, rerr
+		return format.RecordBody{}, refusedRead(rd, rerr)
 	}
 	vb, verr := format.VerifyRecordBody(body[:n], identity, h)
 	if verr != nil {

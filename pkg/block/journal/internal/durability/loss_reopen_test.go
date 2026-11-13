@@ -39,7 +39,7 @@ func TestTheLossRingAndItsDedupLivePerDirectoryAcrossReopens(t *testing.T) {
 		t.Fatalf("the reopen's ring = %+v, want the same two events a later reader could poll from either: the second one is the new piece, numbered 2", got)
 	}
 
-	// A piece Loosen through the first instance publishes nothing through the
+	// A piece Lost through the first instance publishes nothing through the
 	// reopen: one loss record, one event beyond the two placed, one raise.
 	if _, err := e.d.Lose(ctx, loss(11)); err != nil {
 		t.Fatalf("Lose through the first instance: %v", err)

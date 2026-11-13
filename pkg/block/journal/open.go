@@ -21,10 +21,11 @@ import (
 
 // The durability layer is the loss sink the journal's assembly wires into
 // recovery's Deps.Losses: it publishes the loss records an open finds on
-// disk and names the records a read-only journal failed earlier in this
-// process. The assertion pins the interface that wiring needs; it lives
-// here — not in recovery — so the recovery package keeps clear of the layer
-// it is handed.
+// disk. The records a read-only journal failed earlier in this process
+// reach the open the other way round, as the data Deps.Failed carries —
+// Durability.Failed() answers it at the same wiring point. The assertion
+// pins the interface that wiring needs; it lives here — not in recovery —
+// so the recovery package keeps clear of the layer it is handed.
 var _ recovery.LossSink = (*durability.Durability)(nil)
 
 // resolveConfig resolves the options Init or Open was called with, over

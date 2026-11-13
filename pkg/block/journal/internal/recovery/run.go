@@ -14,13 +14,13 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
-// LossSink is where the loss state an open recovers reaches the journal:
-// Failed names the sequence numbers an earlier journal on the same directory
-// could not write the loss record for, and Place publishes one loss record
-// the open found on disk. Recovery depends on the behaviour only, never the
-// layer that implements it.
+// LossSink is where the loss events an open recovers reach the journal:
+// Place publishes one loss record the open found on disk. It is an output
+// the open hands over; the records a read-only journal failed earlier in
+// this process reach the open the other way round, as the data Deps.Failed
+// carries. Recovery depends on the behaviour only, never the layer that
+// implements it.
 type LossSink interface {
-	Failed() []core.Seq
 	Place(ev core.LossEvent, dropped core.Seq)
 }
 
@@ -32,14 +32,22 @@ type Deps struct {
 	Tracer core.Tracer
 	Log    *slog.Logger
 
-	// Losses is where the kinds pass delivers the loss records it found on
-	// disk and reads the failed list it withholds by.
+	// Failed is the directory's failed list at open: the sequence numbers an
+	// earlier read-only journal on the same directory could not write the
+	// loss record for. It is data from the layer that tracks the list — the
+	// durability layer's Failed() answers it at the journal's assembly —
+	// not a call the rebuild makes back into that layer; nil is no failed
+	// list.
+	Failed []core.Seq
+
+	// Losses is where the kinds pass delivers the loss records it finds on
+	// disk.
 	//
-	// decision: a nil Losses means no failed list and no placement. Run
-	// never requires one non-nil, and every run before the journal's
-	// assembly opens — the tests included — takes it nil; the journal's own
-	// wiring point is the assembly step of its open, which builds the
-	// durability layer and hands it here.
+	// decision: a nil Losses means no placement. Run never requires one
+	// non-nil, and every run before the journal's assembly opens — the
+	// tests included — takes it nil; the journal's own wiring point is the
+	// assembly step of its open, which builds the durability layer and
+	// hands it here.
 	Losses LossSink
 
 	// ExtentLimit is the index entry bound the rebuilt index carries into
@@ -147,7 +155,7 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 	for _, id := range slices.Concat(st.Attached.Unverified, st.Attached.ZeroHeader) {
 		segs = append(segs, SegmentInfo{ID: id, Unverified: true})
 	}
-	out, kinds, tl, err := rebuildIndex(ctx, rd, expect, segs, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan, deps.Losses, st.Attached)
+	out, kinds, tl, err := rebuildIndex(ctx, rd, expect, segs, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan, deps.Losses, deps.Failed, st.Attached)
 	if err != nil {
 		return err
 	}
