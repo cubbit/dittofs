@@ -161,10 +161,11 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 			}
 		}
 	}
-	// A cancel ends a hold or a park of any operation in any version (§6.5),
-	// so a table that holds maps ErrCancelled with a row naming neither.
+	// A cancel ends a hold or a park of any operation in any version, and is
+	// answered (§6.5), so a table that holds maps ErrCancelled with a row
+	// naming neither that replies at once with a status other than the fault.
 	if holds && !errs.mapsEverywhere(ErrCancelled) {
-		panic("core: op table: it holds, and no row of its error table maps ErrCancelled for every operation and version")
+		panic("core: op table: it holds, and no row of its error table answers ErrCancelled for every operation and version")
 	}
 	return t
 }

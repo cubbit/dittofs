@@ -2031,9 +2031,10 @@ func Bind[Req, Rep any](
 ) func([]byte, Version) (Invocation, int, error)
 
 // NewOpTable builds a table and checks it: codes unique, ranges well formed,
-// no ErrorRow.Hold unless holds, and, where it holds, a row mapping
+// no ErrorRow.Hold unless holds, and, where it holds, a row answering
 // ErrCancelled for every operation and version (one naming neither Ops nor
-// Versions), since a cancel ends a hold or a park of any operation (§6.5).
+// Versions that replies at once with a status other than the fault), since a
+// cancel ends a hold or a park of any operation and is answered (§6.5).
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
 
 // Version is a protocol's version, minor version or dialect; Range a closed
@@ -2062,10 +2063,10 @@ type Status uint32
 // value before one whose Err is a sentinel; then, among those, a row naming
 // Ops and Versions, Ops alone, Versions alone, neither. NewErrorTable refuses
 // two rows equal in that order that can match the same error, operation and
-// version, and a table with no row mapping ErrDecode for every operation and
-// version (one naming neither Ops nor Versions): a header's decode error has
-// no operation, and a client's garbage must not reach the fault status
-// (§10.1).
+// version, and a table with no row answering ErrDecode for every operation
+// and version (one naming neither Ops nor Versions that replies at once with
+// a status other than the fault): a header's decode error has no operation,
+// and a client's garbage must not reach the fault status (§10.1).
 type ErrorTable struct{ /* unexported */ }
 type ErrorRow struct {
 	Err      error    // matched with errors.Is: a sentinel matches its whole class, a typed value its own kind only (RFC 17 §4.3)
