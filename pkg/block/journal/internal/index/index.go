@@ -164,6 +164,26 @@ func (ix *Index) LoseSuperseded(id core.FileID, e core.Extent, v core.Version, d
 	return ix.fs.loseSuperseded(id, e, v, dropped)
 }
 
+// Unplace drops the pieces of id that the record at rec — segment and offset
+// where it sits — placed inside e, so a record the open judged never written
+// leaves no held extent behind: the journal would otherwise claim to hold a
+// byte the device never took. A kind that places no content (a release, a
+// truncate, a delete, a mark) holds no piece to lose, and a zero-length e
+// reaches nothing, so both answer trivially. Every other note the record
+// raised — its drop-range note, the counters it moved — stays: neither says a
+// byte of the record is held, and a later phase that wants the record
+// unnoted says so itself. It takes the file's lock, creates no entry and
+// drops the file's entry when the drop empties it, exactly as a cut does.
+func (ix *Index) Unplace(id core.FileID, rec RecordAt, e core.Extent) {
+	if !ix.fs.view(id, func(*file) {}) {
+		return
+	}
+	_, _ = ix.fs.update(id, func(f *file) error {
+		f.held.unplace(rec, e)
+		return nil
+	})
+}
+
 // ApplyRemoval applies the removal of kind k that a record already in its
 // segment carries, exactly as Truncate, Deallocate, Delete and CloneTarget
 // apply theirs, but without asking the removal allowance: it notes the
