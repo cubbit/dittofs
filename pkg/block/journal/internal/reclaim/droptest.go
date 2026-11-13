@@ -290,23 +290,24 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 // The segment's state leaves the tracker with the segment, so a scan of
 // the states never visits a retired one and Held of a retired segment
 // answers from the index's counters alone, which the relay has emptied.
-// The journal's own wiring hands the retirer's retired hook the call with
-// the index's files of the segment — the list that covers content-only
-// files the tracker's registry never held, which a nil files list fills
-// from the registry and so misses — and hands the durable signal the
-// RemovalDurable call that consumes what the retirement parked:
+// The journal's own wiring hands the durable-retirement signal both halves
+// of the gate: the call itself, carrying the index's files of the segment
+// — the list that covers content-only files the tracker's registry never
+// held, which a nil files list fills from the registry and so misses —
+// and the RemovalDurable call that consumes the park that first call
+// made, in the same delivery:
 //
-// decision: the retired hook — like the set's retire observer before it —
-// fires once the segment has left the set but before the directory sync
-// that would make the unlink or recycle durable, so the drop ranges the
-// file list names wait behind the park for RemovalDurable rather than
-// leaving with the retirement itself: a drop that preceded the unlink's
-// durability would have a crash bring the retired segment back without
-// the removal record that covered it, and a failed directory sync never
-// reaches the parked list's consumer at all. A caller wiring the set's
-// retire observer instead hands the same shape a durability order it
-// neither observes nor controls — safe only where that caller has made
-// removal durable before the Retire the observer rides.
+// decision: the retirer's retired hook and the set's retire observer fire
+// once the segment has left the set but before the directory sync that
+// would make the unlink or recycle durable, and a crash that undoes the
+// retirement must find the tracker's registrations intact — the surviving
+// file rebuilds its records, and what a rebuild is owed cannot have been
+// released on an unlink nothing made durable. A drop that preceded the
+// unlink's durability would bring the retired segment back without the
+// removal record that covered it, and a failed directory sync reaches
+// neither half. A caller wiring either earlier hook instead owns a
+// durability order the observer neither observes nor controls — safe only
+// where that caller has made removal durable before the Retire it rides.
 //
 // ponytail: the retirement walks the whole registry of forget records to
 // prune the ones naming the segment, O(forgets outstanding) beside a
