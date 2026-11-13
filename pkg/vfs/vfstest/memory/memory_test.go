@@ -8,12 +8,19 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest/suite"
 )
 
 func TestRunPassesMemory(t *testing.T) {
 	suite.Run(t, func(t *testing.T) vfs.Service { return memory.New(t) })
+}
+
+// Faults with nothing armed passes every call through unchanged, so the
+// filesystem behind it still passes the suite.
+func TestRunPassesFaultsOverMemory(t *testing.T) {
+	suite.Run(t, func(t *testing.T) vfs.Service { return vfstest.Faults(memory.New(t)) })
 }
 
 // A chown commits the file's pending existence, after which the file's size

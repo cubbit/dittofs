@@ -8,7 +8,7 @@ owner and the plan may change it.
 ## Intent
 
 Programme #3119, stage 5 ("adapters"). The filesystem service of RFC 17 (`pkg/vfs`,
-`internal/vfs.Filesystem`, `vfstest.Record` and `vfstest.Null`) exists on `feat/storage-v2` and no
+`internal/vfs.Filesystem`, `vfstest.RecordMutations` and `vfstest.Null`) exists on `feat/storage-v2` and no
 adapter calls it. Today's adapters reach the stores through `pkg/controlplane/runtime`, written
 twice, with the drift Appendix B lists. Stage 5 replaces them with RFC 20's shape: one shared
 `core`, thin per-protocol parts, a boundary the build proves.

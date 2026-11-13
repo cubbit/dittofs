@@ -1,3 +1,13 @@
+// Package vfstest holds the doubles an adapter is tested against: Faults, a
+// wrapper around any Service that fails or holds a call on cue; Null, a
+// Service that answers every call at once with zero values; Mutations, a
+// wrapper around any Service recording the calls that may change state as
+// it passes them through; and Callbacks and CallbackFaults, the client side
+// of the callbacks and its fault wrapper. Each implements every method
+// explicitly, so a method added to the interface fails to compile here until
+// it is handled. The filesystem over memory, the Service a handler is tested
+// against, is in package memory below, as this package is one the
+// filesystem's own tests import.
 package vfstest
 
 import (

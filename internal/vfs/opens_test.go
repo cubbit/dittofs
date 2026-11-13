@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/vfs/contenttest"
+
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
@@ -33,21 +35,37 @@ func byName(dir vfs.Handle, name string, d vfs.Disposition, access vfs.Access) v
 	}
 }
 
-// held reports whether the fake engine holds content for f.
-func (f *fixture) held(id entity.FileID) bool {
-	f.engine.mu.Lock()
-	defer f.engine.mu.Unlock()
-	_, ok := f.engine.files[id]
-	return ok
+// held reports whether the engine holds content for id, a file of the
+// fixture's share.
+func (f *fixture) held(t *testing.T, id entity.FileID) bool {
+	t.Helper()
+	return f.heldIn(t, f.fs.Share.ID, id)
 }
 
-// stored gives f content in the fake engine, in the fixture's share.
+// heldIn reports whether the engine holds content for id, a file of share:
+// whether a byte of it reads back. A released file reads stale or empty;
+// any other error, a file named through a share not its own among them,
+// fails the test rather than reading as released.
+func (f *fixture) heldIn(t *testing.T, share entity.ShareID, id entity.FileID) bool {
+	t.Helper()
+	n, err := f.content.Read(context.Background(), share, id, 0, make([]byte, 1))
+	switch {
+	case err == nil:
+		return n > 0
+	case errors.Is(err, vfs.ErrStale):
+		return false
+	}
+	t.Fatalf("reading %v in share %v: %v, want its bytes or stale", id, share, err)
+	return false
+}
+
+// stored gives f content in the engine, in the fixture's share.
 func (f *fixture) stored(t *testing.T, id entity.FileID) {
 	t.Helper()
 	f.storedIn(t, f.fs.Share.ID, id)
 }
 
-// storedIn gives f content in the fake engine, in share.
+// storedIn gives f content in the engine, in share.
 func (f *fixture) storedIn(t *testing.T, share entity.ShareID, id entity.FileID) {
 	t.Helper()
 	if _, err := f.engine.Write(t.Context(), share, id, 0, []byte("content"), WriteOpts{}); err != nil {
@@ -55,11 +73,20 @@ func (f *fixture) storedIn(t *testing.T, share entity.ShareID, id entity.FileID)
 	}
 }
 
-// released waits for the fake engine to drop f's content, advancing the
-// clock a sweep at a time, and reports whether it did within a few seconds.
-func (f *fixture) released(id entity.FileID, step time.Duration) bool {
+// released waits for the engine to drop f's content, a file of the
+// fixture's share, as releasedIn does.
+func (f *fixture) released(t *testing.T, id entity.FileID, step time.Duration) bool {
+	t.Helper()
+	return f.releasedIn(t, f.fs.Share.ID, id, step)
+}
+
+// releasedIn waits for the engine to drop the content of id, a file of
+// share, advancing the clock a sweep at a time, and reports whether it did
+// within a few seconds.
+func (f *fixture) releasedIn(t *testing.T, share entity.ShareID, id entity.FileID, step time.Duration) bool {
+	t.Helper()
 	for range 200 {
-		if !f.held(id) {
+		if !f.heldIn(t, share, id) {
 			return true
 		}
 		if step > 0 {
@@ -95,7 +122,7 @@ func (f *fixture) restart(t *testing.T) *fixture {
 		_ = s.Stop()
 		tab.Stop()
 	})
-	return &fixture{Filesystem: s, tab: tab, fs: f.fs, clock: clock, engine: f.engine}
+	return &fixture{Filesystem: s, tab: tab, fs: f.fs, clock: clock, content: f.content, engine: f.engine}
 }
 
 // nfs41 connects an NFSv4 client named name, claimed as uid, on session
@@ -107,7 +134,7 @@ func (s *shares) nfs41(t *testing.T, name string, uid uint32, sess uint64) vfs.C
 	p, err := s.Propose(t.Context(), c, info)
 	s.must(t, err)
 	info.Proposal = &p
-	id, _, err := s.Connect(t.Context(), c, info, &vfstest.RecordingCallbacks{})
+	id, _, err := s.Connect(t.Context(), c, info, &vfstest.Callbacks{})
 	s.must(t, err)
 	c.Protocol, c.Client, c.Session = entity.ProtocolNFSv4, id, vfs.SessionRef{ID: sess}
 	return c
@@ -193,13 +220,13 @@ func TestALastCloseReleasesAnUnlinkedFile(t *testing.T) {
 	if _, err := n.Unlink(ctx, n.admin, vfs.Target{H: home}, []byte("f")); err != nil {
 		t.Fatal(err)
 	}
-	if !n.held(r.File.ID) {
+	if !n.held(t, r.File.ID) {
 		t.Fatal("an unlinked file's content is released while an open holds it")
 	}
 	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
 		t.Fatal(err)
 	}
-	if !n.released(r.File.ID, 0) {
+	if !n.released(t, r.File.ID, 0) {
 		t.Error("an unlinked file's content is held after its last close")
 	}
 }
@@ -217,10 +244,10 @@ func TestAPendingReleaseRunsAfterARestart(t *testing.T) {
 	g := f.restart(t)
 	g.must(t, g.Start(t.Context()))
 	g.sending.Wait() // every release the start began has run
-	if !g.held(file.ID) {
+	if !g.held(t, file.ID) {
 		t.Fatal("a pending release ran as the restart began")
 	}
-	if !g.released(file.ID, 11*time.Second) {
+	if !g.released(t, file.ID, 11*time.Second) {
 		t.Error("a pending release written before the restart never ran")
 	}
 }
@@ -267,10 +294,10 @@ func TestPendingReleasesWaitOutGrace(t *testing.T) {
 		g.clock.Advance(11 * time.Second)
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !g.held(file.ID) {
+	if !g.held(t, file.ID) {
 		t.Fatal("a pending release ran inside the grace")
 	}
-	if !g.released(file.ID, 11*time.Second) {
+	if !g.released(t, file.ID, 11*time.Second) {
 		t.Error("a pending release never ran once the grace ended")
 	}
 	// A client connected now, as other's lease ran out with the clock.
@@ -289,7 +316,7 @@ func TestADenyModeUnderAHandleLeaseIsBrokenFirst(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
 	alice := n.user(t, "alice", "1000", n.share, entity.AccessReadWrite)
-	alicePC := &vfstest.RecordingCallbacks{}
+	alicePC := &vfstest.Callbacks{}
 	asAlice := signedIn(alice.Principal, 1)
 	id, _, err := n.Connect(ctx, asAlice, smb("alice-pc", 1), alicePC)
 	n.must(t, err)
@@ -459,7 +486,7 @@ func TestDeleteOnCloseRunsAtTheLastClose(t *testing.T) {
 	if _, _, err := n.Lookup(ctx, n.admin, n.fs.Root, []byte("f")); !errors.Is(err, vfs.ErrNotFound) {
 		t.Errorf("f after its last close: %v, want gone", err)
 	}
-	if n.held(r.File.ID) {
+	if n.held(t, r.File.ID) {
 		t.Error("f's content is held once its delete on close removed its last name")
 	}
 }
@@ -479,7 +506,7 @@ func TestALogoffRunsADeleteOnClose(t *testing.T) {
 	if _, err := n.Disconnect(ctx, c, c.Client, c.Session, vfs.SessionEnd{Logoff: true}); err != nil {
 		t.Fatal(err)
 	}
-	if !n.released(r.File.ID, 0) {
+	if !n.released(t, r.File.ID, 0) {
 		t.Error("f's content is held after its delete-on-close open's session logged off")
 	}
 	if _, _, err := n.Lookup(ctx, n.admin, n.fs.Root, []byte("f")); !errors.Is(err, vfs.ErrNotFound) {
@@ -504,7 +531,7 @@ func TestADisconnectReleasesAnOrphan(t *testing.T) {
 	if _, err := n.Disconnect(ctx, c, c.Client, c.Session, vfs.SessionEnd{}); err != nil {
 		t.Fatal(err)
 	}
-	if !n.released(r.File.ID, 0) {
+	if !n.released(t, r.File.ID, 0) {
 		t.Error("an unlinked file's content is held after its last open's session ended")
 	}
 }
@@ -571,6 +598,14 @@ func TestABackupDeleteOnCloseAndItsRefusal(t *testing.T) {
 func TestADeleteOnCloseTakesTheDirectoryAfterTheFile(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
+	// The engine is the in-memory Content alone, not over the store: each
+	// release over the store costs more for every one before it, as the
+	// store's Resume walks back past the earlier removals, and the row's
+	// 10⁴ releases then take minutes. The row asserts the names' lock order,
+	// which no store commit of the content takes part in.
+	content := contenttest.New(wallClock{})
+	content.Bind(n.fs.Share.ID)
+	n.setEngine(content)
 	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
 	// The row's 10⁴ runs take about 20s; under -race, about 30 times that,
 	// so the race detector sees 300, and -short 50.
@@ -647,7 +682,7 @@ func TestAShareMarkedBeforeARestartIsDroppedAtStart(t *testing.T) {
 	n.must(t, n.cp.DeleteShare(ctx, n.share, entity.SnapshotsRefuse))
 
 	g := n.restart(t)
-	cb := &vfstest.RecordingCallbacks{}
+	cb := &vfstest.Callbacks{}
 	g.reg.register(pc.Client, "", cb)
 	g.must(t, g.Start(ctx))
 	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Protocol: entity.ProtocolSMB, Sessioned: true}
@@ -700,7 +735,7 @@ func TestStartServesEveryShare(t *testing.T) {
 	}
 
 	g := n.restart(t)
-	g.reg.register(pc.Client, "", &vfstest.RecordingCallbacks{})
+	g.reg.register(pc.Client, "", &vfstest.Callbacks{})
 	g.must(t, g.Start(ctx))
 	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Protocol: entity.ProtocolSMB, Sessioned: true}
 	for _, o := range opens {
@@ -754,10 +789,10 @@ func TestAReleaseIsMarkedFirst(t *testing.T) {
 		_, err := n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("f"))
 		n.must(t, err)
 		switch {
-		case held && (!n.held(f.ID) || len(m.got) != 0):
-			t.Errorf("a release the mark found held: content held %v, marks ended %v", n.held(f.ID), m.got)
-		case !held && (n.held(f.ID) || len(m.got) != 1 || !m.got[0]):
-			t.Errorf("a release marked: content held %v, marks ended %v; want deleted and one ended as released", n.held(f.ID), m.got)
+		case held && (!n.held(t, f.ID) || len(m.got) != 0):
+			t.Errorf("a release the mark found held: content held %v, marks ended %v", n.held(t, f.ID), m.got)
+		case !held && (n.held(t, f.ID) || len(m.got) != 1 || !m.got[0]):
+			t.Errorf("a release marked: content held %v, marks ended %v; want deleted and one ended as released", n.held(t, f.ID), m.got)
 		}
 	}
 }
@@ -774,7 +809,7 @@ func TestAReleaseOfAnOpenFileFindsItHeld(t *testing.T) {
 	_, err := n.Open(ctx, c, byName(n.fs.Root, "f", vfs.OpenExisting, entity.ReadData))
 	n.must(t, err)
 	n.must(t, n.releaseAlone(ctx, f.Share, f.ID))
-	if !n.held(f.ID) {
+	if !n.held(t, f.ID) {
 		t.Error("a release of a file open in the table deleted its content")
 	}
 }
@@ -916,7 +951,7 @@ func TestAFailedOverwriteOfAnUnlinkedFileReleasesIt(t *testing.T) {
 	n.stored(t, file.ID)
 	_, err := n.fs.Store.Namespace().Unlink(ctx, n.fs.Admin, n.fs.Root, []byte("f"))
 	n.must(t, err)
-	n.engine.truncErr = errors.New("disk gone")
+	n.fail(contenttest.OpTruncate, errors.New("disk gone"))
 	// The client drops as the undo's release begins: the release lands all
 	// the same.
 	call, cancel := context.WithCancel(ctx)
@@ -926,7 +961,7 @@ func TestAFailedOverwriteOfAnUnlinkedFileReleasesIt(t *testing.T) {
 	if _, err := n.Open(call, c, vfs.OpenRequest{H: h, Disposition: vfs.Overwrite, Access: entity.ReadData}); err == nil {
 		t.Fatal("an overwrite whose truncate fails was granted")
 	}
-	if n.held(file.ID) {
+	if n.held(t, file.ID) {
 		t.Error("the unlinked file's content is held once its failed overwrite was undone")
 	}
 }
@@ -987,8 +1022,9 @@ func TestEachFailedStartStepLeavesItBuilt(t *testing.T) {
 			fx := kvstoretest.NewFS(t, func(tb testing.TB) kv.KV { db.KV = memKV(tb); return db })
 			cp := fx.Store.ControlPlane()
 			live := entity.Share{ID: entity.NewShareID(), Name: "b", Path: "/b", Root: entity.NewFileID()}
-			tab, err := openstate.New(openstate.Deps{Records: fx.Store, Clock: sim.NewTestClock(time.Unix(0, 0)), Rand: rand.Reader})
-			s, err2 := New(Deps{Meta: fx.Store, Open: tab, Engine: newFakeContent()})
+			clock := sim.NewTestClock(time.Unix(0, 0))
+			tab, err := openstate.New(openstate.Deps{Records: fx.Store, Clock: clock, Rand: rand.Reader})
+			s, err2 := New(Deps{Meta: fx.Store, Open: tab, Engine: contentOver(clock, fx.Store, live.ID)})
 			if err := errors.Join(err, err2, cp.PutShare(ctx, live), cp.DeleteShare(ctx, fx.Share.ID, entity.SnapshotsRefuse)); err != nil {
 				t.Fatal(err)
 			}
@@ -1150,12 +1186,12 @@ func TestAnOpenWhoseAnswerFailsIsClosed(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
 	h, _ := n.fs.Create(t, n.fs.Admin, n.fs.Root, "f", kvstore.Regular(0o666))
-	n.engine.overlayErr = errors.New("overlay lost")
+	n.fail(contenttest.OpOverlay, errors.New("overlay lost"))
 	req := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData, Deny: entity.ReadData | entity.WriteData | entity.Delete}
 	if _, err := n.Open(ctx, n.smbClient(t, "pc", n.fs.Admin.Principal), req); err == nil {
 		t.Fatal("an open whose file cannot be read was answered")
 	}
-	n.engine.overlayErr = nil
+	n.fail(contenttest.OpOverlay, nil)
 	other := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}
 	if _, err := n.Open(ctx, n.smbClient(t, "build01", n.fs.Admin.Principal), other); err != nil {
 		t.Errorf("another client's open after the failed one: %v, want granted", err)
@@ -1179,12 +1215,12 @@ func TestAFailedOpenOfANumberingOwnerIsClosed(t *testing.T) {
 	n.must(t, err)
 	_, err = n.ConfirmOpen(ctx, c, r.Ref, seq(2))
 	n.must(t, err)
-	n.engine.overlayErr = errors.New("overlay lost")
+	n.fail(contenttest.OpOverlay, errors.New("overlay lost"))
 	deny := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData, Deny: entity.ReadData | entity.WriteData, Owner: owner, Seqs: seq(3)}
 	if _, err := n.Open(ctx, c, deny); err == nil {
 		t.Fatal("an open whose file cannot be read was answered")
 	}
-	n.engine.overlayErr = nil
+	n.fail(contenttest.OpOverlay, nil)
 	if _, err := n.Open(ctx, n.smbClient(t, "build01", n.fs.Admin.Principal), vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}); err != nil {
 		t.Errorf("another client's open after the failed one: %v, want granted", err)
 	}
@@ -1208,11 +1244,11 @@ func TestAFailedReconnectIsClosed(t *testing.T) {
 	_, err = n.Disconnect(ctx, pc, pc.Client, pc.Session, vfs.SessionEnd{})
 	n.must(t, err)
 	pc.Session = vfs.SessionRef{ID: 2}
-	n.engine.overlayErr = errors.New("journal read failed")
+	n.fail(contenttest.OpOverlay, errors.New("journal read failed"))
 	if _, err := n.Open(ctx, pc, vfs.OpenRequest{H: h, Reconnect: &r.Ref, CreateID: [16]byte{1}}); err == nil {
 		t.Fatal("a reconnect whose file cannot be read was answered")
 	}
-	n.engine.overlayErr = nil
+	n.fail(contenttest.OpOverlay, nil)
 	other := vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}
 	if _, err := n.Open(ctx, pc, other); err != nil {
 		t.Errorf("the client's fresh open after its failed reconnect: %v, want granted", err)
@@ -1443,7 +1479,7 @@ func TestAnNFSOpenIsDecidedWithThePrivilege(t *testing.T) {
 	pr, err := n.Propose(ctx, c, info)
 	n.must(t, err)
 	info.Proposal = &pr
-	id, _, err := n.Connect(ctx, c, info, &vfstest.RecordingCallbacks{})
+	id, _, err := n.Connect(ctx, c, info, &vfstest.Callbacks{})
 	n.must(t, err)
 	c.Protocol, c.Client, c.Session = entity.ProtocolNFSv4, id, vfs.SessionRef{ID: 1}
 	if _, err := n.Open(ctx, c, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}); err != nil {
@@ -1486,7 +1522,7 @@ func TestALastClosesReleaseOutlivesItsCall(t *testing.T) {
 	if _, err := n.Close(call, c, r.Ref, vfs.Seqs{}); err != nil {
 		t.Fatal(err)
 	}
-	if !n.released(r.File.ID, 0) {
+	if !n.released(t, r.File.ID, 0) {
 		t.Error("an unlinked file whose last close's client dropped mid-release is still held")
 	}
 }
@@ -1523,7 +1559,7 @@ func TestALastCloseAnswersOnceItsReleaseRan(t *testing.T) {
 	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
 		t.Fatal(err)
 	}
-	if n.held(r.File.ID) {
+	if n.held(t, r.File.ID) {
 		t.Error("a last close answered before its release ran")
 	}
 }
@@ -1546,7 +1582,7 @@ func TestADeleteOnClosesReleaseOutlivesItsCall(t *testing.T) {
 	if _, err := n.Close(call, c, r.Ref, vfs.Seqs{}); err != nil {
 		t.Fatal(err)
 	}
-	if n.held(f.ID) {
+	if n.held(t, f.ID) {
 		t.Error("a file deleted on close whose client dropped mid-release is still held")
 	}
 }
@@ -1563,7 +1599,7 @@ func TestAnUnlinksReleaseOutlivesItsCall(t *testing.T) {
 	if _, err := n.Unlink(call, n.admin, vfs.Target{H: n.fs.Root}, []byte("f")); err != nil {
 		t.Errorf("an unlink whose client dropped as its release began: %v, want nil", err)
 	}
-	if n.held(f.ID) {
+	if n.held(t, f.ID) {
 		t.Error("an unlinked file whose client dropped mid-release is still held")
 	}
 }
@@ -1677,7 +1713,7 @@ func TestATimedOutDurableOpenReleasesItsUnlinkedFile(t *testing.T) {
 	n.stored(t, x.ID)
 	_, err = n.fs.Store.Namespace().Unlink(ctx, n.fs.Admin, n.fs.Root, []byte("x"))
 	n.must(t, err)
-	if !n.released(x.ID, 11*time.Second) {
+	if !n.released(t, x.ID, 11*time.Second) {
 		t.Fatal("the shard's grace never ended")
 	}
 	if _, err := n.Unlink(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("disk")); err != nil {
@@ -1687,10 +1723,10 @@ func TestATimedOutDurableOpenReleasesItsUnlinkedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	n.sending.Wait() // a close the disconnect made has run its release
-	if !n.held(f.ID) {
+	if !n.held(t, f.ID) {
 		t.Fatal("released while its durable open waits for a reconnect")
 	}
-	if !n.released(f.ID, 11*time.Second) {
+	if !n.released(t, f.ID, 11*time.Second) {
 		t.Error("an unlinked file whose durable open timed out is still held")
 	}
 }
@@ -1727,7 +1763,7 @@ func TestAnOverwritingOpenAsksWriteData(t *testing.T) {
 	alice := n.user(t, "alice", "", n.share, entity.AccessReadWrite)
 	n.fs.Create(t, n.fs.Admin, n.fs.Root, "f", kvstore.Regular(0o644))
 	truncated := false
-	n.engine.truncating = func(entity.FileID) { truncated = true }
+	n.on(contenttest.OpTruncate, func(entity.FileID) { truncated = true })
 	c := n.smbClient(t, "pc", alice.Principal)
 	if _, err := n.Open(ctx, c, byName(n.fs.Root, "f", vfs.Overwrite, entity.ReadData)); !errors.Is(err, vfs.ErrAccess) || truncated {
 		t.Errorf("an overwriting open by a caller who may only read: %v, truncated %v; want ErrAccess and nothing truncated", err, truncated)
@@ -1840,7 +1876,7 @@ func TestARenameOverAFileReleasesIt(t *testing.T) {
 	if _, err := n.Rename(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("a"), n.fs.Root, []byte("b"), false); err != nil {
 		t.Fatal(err)
 	}
-	if n.held(dst.ID) {
+	if n.held(t, dst.ID) {
 		t.Error("the file a rename replaced is held, with no name and no open")
 	}
 }
@@ -1927,7 +1963,7 @@ func TestAPendingReleaseInASecondShareRunsAfterARestart(t *testing.T) {
 	}
 	g := n.restart(t)
 	g.must(t, g.Start(ctx))
-	if !g.released(f.ID, 11*time.Second) {
+	if !g.releasedIn(t, h.Share(), f.ID, 11*time.Second) {
 		t.Error("a pending release in the second share's shard never ran")
 	}
 }
@@ -2004,31 +2040,6 @@ func TestARetryUnderWayAtStopIsRefused(t *testing.T) {
 	}
 }
 
-// phaseOne is the fake engine whose Delete also runs the store's release
-// phase 1, as the engine's does, counting each file's Deletes; the first
-// waits for open to close.
-type phaseOne struct {
-	*fakeContent
-	st      *kvstore.Store
-	share   entity.ShareID
-	mu      sync.Mutex
-	n       map[entity.FileID]int
-	open    chan struct{}
-	entered chan struct{}
-	once    sync.Once
-}
-
-func (d *phaseOne) Delete(ctx context.Context, s entity.ShareID, f entity.FileID) (<-chan error, error) {
-	d.once.Do(func() { close(d.entered); <-d.open })
-	d.mu.Lock()
-	d.n[f]++
-	d.mu.Unlock()
-	if _, err := d.fakeContent.Delete(ctx, s, f); err != nil {
-		return nil, err
-	}
-	return nil, d.st.Existence().Remove(ctx, d.share, f, 0, kvstore.RemoveOp{Version: entity.VersionOf(1 << 40), Kind: entity.RemoveRelease}, nil)
-}
-
 // Two releases of one unlinked file at once delete it once: the second
 // reads the file under its admission lock, after the first removed it.
 func TestTwoReleasesOfOneFileDeleteItOnce(t *testing.T) {
@@ -2036,19 +2047,33 @@ func TestTwoReleasesOfOneFileDeleteItOnce(t *testing.T) {
 	ctx := t.Context()
 	_, f := n.fs.Create(t, n.fs.Admin, n.fs.Root, "f", kvstore.Regular(0o644))
 	n.stored(t, f.ID)
-	d := &phaseOne{fakeContent: n.engine, st: n.fs.Store, share: n.fs.Share.ID, n: map[entity.FileID]int{},
-		open: make(chan struct{}), entered: make(chan struct{})}
-	n.Filesystem.engine = d
+	// The first Delete waits for open to close; each is counted as it
+	// passes through to the engine, whose release reaches the store.
+	var (
+		mu            sync.Mutex
+		deletes       int
+		once          sync.Once
+		open, entered = make(chan struct{}), make(chan struct{})
+	)
+	n.engine.On(contenttest.OpDelete, func(_ context.Context, c contenttest.Call) error {
+		once.Do(func() { close(entered); <-open })
+		mu.Lock()
+		defer mu.Unlock()
+		if c.File == f.ID {
+			deletes++
+		}
+		return nil
+	})
 	_, err := n.fs.Store.Namespace().Unlink(ctx, n.fs.Admin, n.fs.Root, []byte("f"))
 	n.must(t, err)
 	var wg sync.WaitGroup
 	wg.Go(func() { _ = n.releaseAlone(ctx, n.fs.Share.ID, f.ID) })
-	<-d.entered
+	awaited(t, "the first release's Delete", entered)
 	wg.Go(func() { _ = n.releaseAlone(ctx, n.fs.Share.ID, f.ID) })
 	time.Sleep(50 * time.Millisecond) // the second is waiting
-	close(d.open)
+	close(open)
 	wg.Wait()
-	if got := d.n[f.ID]; got != 1 {
+	if got := deletes; got != 1 {
 		t.Errorf("Deletes of one file released twice at once: %d, want 1", got)
 	}
 }

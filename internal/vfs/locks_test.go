@@ -24,9 +24,9 @@ func span(off, n uint64, exclusive bool) []vfs.LockRange {
 
 // connected connects client info as c, with a recording path, and answers
 // the call from it and the path.
-func (s *shares) connected(t *testing.T, c vfs.Call, info vfs.ClientInfo) (vfs.Call, *vfstest.RecordingCallbacks) {
+func (s *shares) connected(t *testing.T, c vfs.Call, info vfs.ClientInfo) (vfs.Call, *vfstest.Callbacks) {
 	t.Helper()
-	cb := &vfstest.RecordingCallbacks{}
+	cb := &vfstest.Callbacks{}
 	id, _, err := s.Connect(t.Context(), c, info, cb)
 	s.must(t, err)
 	c.Protocol, c.Client = info.Protocol, id
@@ -35,9 +35,9 @@ func (s *shares) connected(t *testing.T, c vfs.Call, info vfs.ClientInfo) (vfs.C
 
 // waitOvers is each LockWaitOver cb saw: its waiter's owner name and
 // whether it was granted.
-func waitOvers(cb *vfstest.RecordingCallbacks) map[string]bool {
+func waitOvers(cb *vfstest.Callbacks) map[string]bool {
 	got := map[string]bool{}
-	for _, c := range cb.Calls() {
+	for _, c := range cb.Delivered() {
 		if c.Method == "LockWaitOver" {
 			got[string(c.Args[0].(vfs.LockWaiter).Owner.Name)] = c.Args[1].(bool)
 		}
@@ -84,7 +84,7 @@ func TestABlockedLockHoldsNoWorker(t *testing.T) {
 	if n := filesystemGoroutines(); n != idle {
 		t.Errorf("two waiting locks hold %d goroutines, want none", n-idle)
 	}
-	if len(smbCB.Calls())+len(nlmCB.Calls()) != 0 {
+	if len(smbCB.Delivered())+len(nlmCB.Delivered()) != 0 {
 		t.Fatal("a waiter was answered before the range freed")
 	}
 	if _, err := s.Unlock(ctx, holder, held, holds, []vfs.ByteRange{{Offset: 0, Length: 10}}, vfs.Seqs{}, nil); err != nil {
@@ -93,10 +93,10 @@ func TestABlockedLockHoldsNoWorker(t *testing.T) {
 	calls(t, smbCB, 1)
 	calls(t, nlmCB, 1)
 	if got := waitOvers(smbCB); !got["smb"] {
-		t.Errorf("the SMB waiter saw %v, want its grant", smbCB.Calls())
+		t.Errorf("the SMB waiter saw %v, want its grant", smbCB.Delivered())
 	}
 	if got := waitOvers(nlmCB); !got["nlm"] {
-		t.Errorf("the NLM waiter saw %v, want its grant", nlmCB.Calls())
+		t.Errorf("the NLM waiter saw %v, want its grant", nlmCB.Delivered())
 	}
 	tester := owner(holder, "tester", true)
 	if l, err := s.TestLock(ctx, holder, held, tester, vfs.ByteRange{Offset: 6, Length: 1}, false); err != nil || l == nil || string(l.Owner.Name) != "nlm" {
@@ -250,7 +250,7 @@ func TestAMissedRecallRevokesTheGrant(t *testing.T) {
 	s.pass(t, 100*time.Second, holder)
 	revoked := false
 	for range 100 {
-		for _, c := range cb.Calls() {
+		for _, c := range cb.Delivered() {
 			if c.Method == "Revoked" {
 				rv := c.Args[0].(vfs.Revocation)
 				revoked = revoked || rv.Reason == openstate.RevokedGrant && rv.Grant == r.Grant.ID
@@ -262,7 +262,7 @@ func TestAMissedRecallRevokesTheGrant(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if !revoked {
-		t.Errorf("the holder saw %v, want RevokedGrant naming the delegation", cb.Calls())
+		t.Errorf("the holder saw %v, want RevokedGrant naming the delegation", cb.Delivered())
 	}
 	if st, err := s.Renew(ctx, holder, holder.Client); err != nil || !st.RecallableRevoked {
 		t.Errorf("the holder's renewal: %+v, %v; want RecallableRevoked", st, err)
@@ -297,7 +297,7 @@ func TestDrainLeavesAPendingBreak(t *testing.T) {
 	to := calls(t, cb, 1)[0].Args[3].(vfs.GrantKind)
 	s.must(t, s.Drain(ctx))
 	time.Sleep(50 * time.Millisecond)
-	if got := cb.Calls(); len(got) != 1 {
+	if got := cb.Delivered(); len(got) != 1 {
 		t.Errorf("the holder saw %v after Drain, want the break alone", got)
 	}
 	opens, err := s.grants.Openers(ctx, r.Grant.ID)
@@ -469,7 +469,7 @@ func TestARevokedCallerStillReleasesItsLocks(t *testing.T) {
 	}
 	time.Sleep(20 * time.Millisecond)
 	if got := waitOvers(hostCB); got["waits"] {
-		t.Errorf("the cancelled waiter was granted: %v", hostCB.Calls())
+		t.Errorf("the cancelled waiter was granted: %v", hostCB.Delivered())
 	}
 }
 

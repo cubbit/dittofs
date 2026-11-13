@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/vfs/contenttest"
+
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -76,7 +78,6 @@ func TestAWriteHoldsItsReservationUntilDone(t *testing.T) {
 	h := s.file(t, "f", s.alice.Principal, 0o666)
 	alice := proven(s.alice.Principal, inLab)
 	s.limit(t, kvstore.QuotaTarget{Principal: s.alice.Principal}, entity.Limit{Bytes: 10})
-	s.engine.hold = true
 	_, err := s.Write(ctx, alice, vfs.Anonymous(h), 0, []byte("0123456789"), vfs.Unstable)
 	s.must(t, err)
 	if _, err := s.Write(ctx, alice, vfs.Anonymous(h), 0, []byte("abcdefghij"), vfs.Unstable); err != nil {
@@ -85,9 +86,11 @@ func TestAWriteHoldsItsReservationUntilDone(t *testing.T) {
 	if _, err := s.Write(ctx, alice, vfs.Anonymous(h), 10, []byte("x"), vfs.Unstable); quotaScope(err) != vfs.QuotaUser {
 		t.Fatalf("a byte past 10 reserved under a limit of 10: %v, want ErrQuota (QuotaUser)", err)
 	}
-	for _, done := range s.engine.dones {
-		done()
-	}
+	// The engine's existence commit charges the ten bytes and calls the
+	// writes' Dones: room for one byte more is then room for the byte, the
+	// reservations no longer counted beside the charge.
+	s.must(t, s.engine.CommitExistence(ctx, h.Share(), fileOf(h)))
+	s.limit(t, kvstore.QuotaTarget{Principal: s.alice.Principal}, entity.Limit{Bytes: 11})
 	if _, err := s.Write(ctx, alice, vfs.Anonymous(h), 10, []byte("x"), vfs.Unstable); err != nil {
 		t.Errorf("the byte once the reservations were released by Done: %v", err)
 	}
@@ -111,7 +114,6 @@ func TestARefusedWriteHoldsNoReservation(t *testing.T) {
 		Want: openstate.GrantRead | openstate.GrantWrite, Lease: openstate.LeaseKey{1}})
 	s.must(t, err)
 	s.limit(t, kvstore.QuotaTarget{Principal: s.alice.Principal}, entity.Limit{Bytes: 5})
-	s.engine.hold = true
 	bob, alice := proven(s.bob.Principal, inLab), proven(s.alice.Principal, inLab)
 	if _, err := s.Write(ctx, bob, vfs.Anonymous(leased), 0, []byte("12345"), vfs.Unstable); !errors.Is(err, vfs.ErrDelay) {
 		t.Fatalf("a write under another client's lease: %v, want ErrDelay", err)
@@ -153,7 +155,7 @@ func TestAWriteIsRefusedByEachScopeInTurn(t *testing.T) {
 		s.limit(t, sc.target, entity.Limit{Bytes: 4})
 	}
 	bob := proven(s.bob.Principal, inLab)
-	s.engine.writing = func(entity.FileID) { t.Error("a write past a quota was staged") }
+	s.on(contenttest.OpWrite, func(entity.FileID) { t.Error("a write past a quota was staged") })
 	for _, sc := range scopes {
 		_, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("12345"), vfs.Unstable)
 		if quotaScope(err) != sc.scope || errors.Is(err, vfs.ErrDelay) || errors.Is(err, vfs.ErrNoSpace) {
@@ -167,7 +169,7 @@ func TestAWriteIsRefusedByEachScopeInTurn(t *testing.T) {
 		}
 		s.limit(t, sc.target, entity.Limit{})
 	}
-	s.engine.writing = nil
+	s.on(contenttest.OpWrite, nil)
 	if _, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("12345"), vfs.Unstable); err != nil {
 		t.Errorf("the write with every quota deleted: %v", err)
 	}
@@ -281,7 +283,14 @@ func TestAWriteReservesTheHolesItFills(t *testing.T) {
 	s.must(t, err)
 	_, err = s.Deallocate(ctx, alice, vfs.Anonymous(d), 0, 1000)
 	s.must(t, err)
-	s.limit(t, ut, entity.Limit{Bytes: 10})
+	// Each limit below is room for its bytes past what alice is charged
+	// once the engine has committed her writes, their reservations then
+	// released.
+	room := func(n int64) entity.Limit {
+		s.must(t, s.engine.CommitExistence(ctx, d.Share(), fileOf(d)))
+		return entity.Limit{Bytes: s.usage(t, s.alice.Principal).Bytes + n}
+	}
+	s.limit(t, ut, room(10))
 	if _, err := s.Write(ctx, alice, vfs.Anonymous(d), 0, data, vfs.Unstable); quotaScope(err) != vfs.QuotaUser {
 		t.Errorf("1000 bytes rewritten over a deallocated range, under a limit of 10: %v, want ErrQuota (QuotaUser)", err)
 	}
@@ -289,7 +298,7 @@ func TestAWriteReservesTheHolesItFills(t *testing.T) {
 		t.Errorf("10 bytes into the hole, under a limit of 10: %v", err)
 	}
 
-	s.limit(t, ut, entity.Limit{Bytes: 1})
+	s.limit(t, ut, room(1))
 	g := s.file(t, "gap", s.alice.Principal, 0o666)
 	if _, err := s.Write(ctx, alice, vfs.Anonymous(g), 1000, data[:1], vfs.Unstable); err != nil {
 		t.Errorf("1 byte at 1000, under a limit of 1: %v", err)
@@ -479,13 +488,6 @@ func TestAChownCommitsStagedBytesBeforeItReserves(t *testing.T) {
 	if _, err := s.Write(ctx, proven(s.alice.Principal, inLab), vfs.Anonymous(h), 0, data, vfs.Unstable); err != nil {
 		t.Fatal(err)
 	}
-	f := s.record(t, h)
-	s.engine.existence = func(id entity.FileID) error {
-		_, err := s.fs.Store.Existence().Commit(ctx, []kvstore.PendingExistence{{Share: f.Share, File: id, Ops: []kvstore.PendingOp{
-			{Version: entity.VersionOf(f.Applied.Epoch() + 1), Kind: kvstore.OpWrite, Extent: entity.Extent{Length: int64(len(data))}, Mtime: f.Modify, Ctime: f.Modify},
-		}}}, nil)
-		return err
-	}
 	bobs := s.usage(t, s.bob.Principal)
 	s.limit(t, kvstore.QuotaTarget{Principal: s.bob.Principal}, entity.Limit{Bytes: bobs.Bytes + int64(len(data)) - 1})
 	chown := vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.bob.Principal)}
@@ -503,14 +505,15 @@ func TestAChownCommitsStagedBytesBeforeItReserves(t *testing.T) {
 // committed charge alone, and not for the write, is refused.
 func TestAWriteStagedAfterAChownsCommitCountsAgainstTheNewOwner(t *testing.T) {
 	s, _ := newQuotas(t)
-	s.engine.hold = true
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o666)
 	bobs := s.usage(t, s.bob.Principal)
 	s.limit(t, kvstore.QuotaTarget{Principal: s.bob.Principal}, entity.Limit{Bytes: bobs.Bytes + 9})
 	data := []byte("0123456789")
 	wrote := make(chan error, 1)
-	s.engine.existence = func(entity.FileID) error {
+	// The write is staged once the commit has taken the file's pending
+	// operations, so it stays pending past it.
+	s.engine.After(contenttest.OpCommitExistence, func(context.Context, contenttest.Call) {
 		go func() {
 			_, err := s.Write(ctx, proven(s.alice.Principal, inLab), vfs.Anonymous(h), 0, data, vfs.Unstable)
 			wrote <- err
@@ -520,8 +523,7 @@ func TestAWriteStagedAfterAChownsCommitCountsAgainstTheNewOwner(t *testing.T) {
 			wrote <- err
 		case <-time.After(time.Second):
 		}
-		return nil
-	}
+	})
 	chown := vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.bob.Principal)}
 	if _, err := s.SetAttr(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Target{H: h}, chown); quotaScope(err) != vfs.QuotaUser {
 		t.Errorf("a chown to bob, 9 bytes under his limit, of a file with %d bytes staged during its commit: %v, want ErrQuota (QuotaUser)", len(data), err)
@@ -541,7 +543,6 @@ func TestAWriteStagedAfterAChownsCommitCountsAgainstTheNewOwner(t *testing.T) {
 // refused.
 func TestAHoleFillStagedBeforeAChownCountsAgainstTheNewOwner(t *testing.T) {
 	s, _ := newQuotas(t)
-	s.engine.hold = true
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o666)
 	const hole = 10
@@ -551,11 +552,10 @@ func TestAHoleFillStagedBeforeAChownCountsAgainstTheNewOwner(t *testing.T) {
 	bobs := s.usage(t, s.bob.Principal)
 	s.limit(t, kvstore.QuotaTarget{Principal: s.bob.Principal}, entity.Limit{Bytes: bobs.Bytes + hole - 1})
 	wrote := make(chan error, 1)
-	s.engine.existence = func(entity.FileID) error {
+	s.engine.After(contenttest.OpCommitExistence, func(context.Context, contenttest.Call) {
 		_, err := s.Write(ctx, proven(s.alice.Principal, inLab), vfs.Anonymous(h), 0, []byte("0123456789"), vfs.Unstable)
 		wrote <- err
-		return nil
-	}
+	})
 	chown := vfs.AttrChange{Attrs: entity.Attrs{}.WithOwner(s.bob.Principal)}
 	if _, err := s.SetAttr(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Target{H: h}, chown); quotaScope(err) != vfs.QuotaUser {
 		t.Errorf("a chown to bob, %d bytes under his limit, of a file whose %d-byte hole a staged write fills: %v, want ErrQuota (QuotaUser)", hole-1, hole, err)
@@ -576,10 +576,7 @@ func TestOnlyAnAdmittedChownCommitsExistence(t *testing.T) {
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o666)
 	commits := 0
-	s.engine.existence = func(entity.FileID) error {
-		commits++
-		return nil
-	}
+	s.on(contenttest.OpCommitExistence, func(entity.FileID) { commits++ })
 	admin := proven(s.fs.Admin.Principal, inLab)
 	if _, err := s.SetAttr(ctx, admin, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o600)}); err != nil {
 		t.Fatal(err)

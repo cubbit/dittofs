@@ -7,31 +7,36 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/cubbit/dittofs/internal/vfs/contenttest"
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// fixture is a built filesystem over an in-memory store, a fake engine and an
-// open-state table the test started as the node does: with the filesystem as
-// its Sink and Admission as its Order.
+// fixture is a built filesystem over an in-memory store, the in-memory
+// Content over that store behind its fault wrapper, and an open-state table
+// the test started as the node does: with the filesystem as its Sink and
+// Admission as its Order.
 type fixture struct {
 	*Filesystem
-	tab    *openstate.Table
-	fs     *kvstoretest.FS
-	clock  *sim.TestClock
-	engine *fakeContent
+	tab     *openstate.Table
+	fs      *kvstoretest.FS
+	clock   *sim.TestClock
+	content *contenttest.Memory       // the fixture's share bound
+	engine  *contenttest.FaultContent // content, as the filesystem calls it
 }
 
 func memKV(tb testing.TB) kv.KV {
@@ -67,7 +72,10 @@ func newFixtureOver(t *testing.T, d Deps, fs *kvstoretest.FS) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := newFakeContent()
+	// The content reads the wall clock, as the store stamps its records by
+	// it, so what a write stages is newer than the record it lands on.
+	content := contentOver(wallClock{}, fs.Store, fs.Share.ID)
+	engine := contenttest.Faults(content)
 	d.Meta, d.Open, d.Engine = fs.Store, tab, engine
 	s, err := New(d)
 	if err != nil {
@@ -77,7 +85,7 @@ func newFixtureOver(t *testing.T, d Deps, fs *kvstoretest.FS) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(tab.Stop)
-	return &fixture{Filesystem: s, tab: tab, fs: fs, clock: clock, engine: engine}
+	return &fixture{Filesystem: s, tab: tab, fs: fs, clock: clock, content: content, engine: engine}
 }
 
 // newFilesystem is a serving filesystem, drained and stopped when the test
@@ -432,3 +440,72 @@ func TestAdmissionHoldsTheFilesAdmissionLock(t *testing.T) {
 	}
 	release()
 }
+
+// setEngine makes m the content the filesystem calls, behind a fault
+// wrapper, so the fixture's helpers and a restart over it reach m too.
+func (f *fixture) setEngine(m *contenttest.Memory) {
+	f.content = m
+	f.engine = contenttest.Faults(m)
+	f.Filesystem.engine = f.engine
+}
+
+// on runs fn with the file each call of op names as the call reaches the
+// engine, then passes it through; nil clears what was set on op.
+func (f *fixture) on(op contenttest.Op, fn func(entity.FileID)) {
+	if fn == nil {
+		f.engine.On(op, nil)
+		return
+	}
+	f.engine.On(op, func(_ context.Context, c contenttest.Call) error {
+		fn(c.File)
+		return nil
+	})
+}
+
+// fail makes every call of op answer err without reaching the engine; nil
+// clears what was set on op.
+func (f *fixture) fail(op contenttest.Op, err error) {
+	if err == nil {
+		f.engine.On(op, nil)
+		return
+	}
+	f.engine.On(op, func(context.Context, contenttest.Call) error { return err })
+}
+
+// synced records the extent of each Commit reaching the engine from now on,
+// passing it through, until another fault is set on Commit. Every Commit it
+// records runs on the test's goroutine.
+func (f *fixture) synced() *[]entity.Extent {
+	var xs []entity.Extent
+	f.engine.On(contenttest.OpCommit, func(_ context.Context, c contenttest.Call) error {
+		xs = append(xs, c.Extent)
+		return nil
+	})
+	return &xs
+}
+
+// deletes counts the Deletes reaching the engine from now on, passing each
+// through, until another fault is set on Delete.
+func (f *fixture) deletes() *atomic.Int64 {
+	var n atomic.Int64
+	f.engine.On(contenttest.OpDelete, func(context.Context, contenttest.Call) error {
+		n.Add(1)
+		return nil
+	})
+	return &n
+}
+
+// contentOver is the in-memory Content over st, reading clock, with shares
+// bound.
+func contentOver(clock contenttest.Clock, st *kvstore.Store, shares ...entity.ShareID) *contenttest.Memory {
+	c := contenttest.NewOver(clock, st)
+	for _, s := range shares {
+		c.Bind(s)
+	}
+	return c
+}
+
+// wallClock is the time now.
+type wallClock struct{}
+
+func (wallClock) Now() time.Time { return time.Now() }

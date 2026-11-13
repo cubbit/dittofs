@@ -49,11 +49,12 @@ func FuzzHandles(f *testing.F) {
 			f.Fatal(err)
 		}
 	}
-	tab, err := openstate.New(openstate.Deps{Records: st, Clock: sim.NewTestClock(time.Unix(0, 0)), Rand: rand.Reader})
+	clock := sim.NewTestClock(time.Unix(0, 0))
+	tab, err := openstate.New(openstate.Deps{Records: st, Clock: clock, Rand: rand.Reader})
 	if err != nil {
 		f.Fatal(err)
 	}
-	s, err := New(Deps{Meta: st, Open: tab, Engine: newFakeContent()})
+	s, err := New(Deps{Meta: st, Open: tab, Engine: contentOver(clock, st, open.ID, closed.ID)})
 	if err != nil {
 		f.Fatal(err)
 	}

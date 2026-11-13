@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/vfs/contenttest"
+
 	"github.com/cubbit/dittofs/internal/vfs/lockorder"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -68,7 +70,7 @@ func TestAWriteRefusedByOpenStateChangesNothing(t *testing.T) {
 	if r.Grant == nil || r.Grant.Kind&openstate.GrantWrite == 0 {
 		t.Fatalf("open state offered no write lease to recall: %+v", r.Grant)
 	}
-	s.engine.writing = func(entity.FileID) { t.Error("a refused write was staged") }
+	s.on(contenttest.OpWrite, func(entity.FileID) { t.Error("a refused write was staged") })
 	_, err = s.Write(ctx, proven(s.bob.Principal, inLab), vfs.Anonymous(h), 0, []byte("x"), vfs.Unstable)
 	var delay *vfs.Delay
 	if !errors.As(err, &delay) || delay.Cause != vfs.DelayRecall {
@@ -101,10 +103,14 @@ func TestAnEmptyWriteOrReadChangesNothingAndRecallsNothing(t *testing.T) {
 	}
 	before, err := s.GetAttr(ctx, admin, h)
 	s.must(t, err)
-	s.engine.writing = func(entity.FileID) { t.Error("a write of no byte called the engine") }
-	s.engine.reading = func(entity.FileID) { t.Error("a read of no byte called the engine") }
-	s.engine.dealloc = func(entity.FileID) { t.Error("a deallocate of no byte called the engine") }
-	defer func() { s.engine.writing, s.engine.reading, s.engine.dealloc = nil, nil, nil }()
+	s.on(contenttest.OpWrite, func(entity.FileID) { t.Error("a write of no byte called the engine") })
+	s.on(contenttest.OpRead, func(entity.FileID) { t.Error("a read of no byte called the engine") })
+	s.on(contenttest.OpDeallocate, func(entity.FileID) { t.Error("a deallocate of no byte called the engine") })
+	defer func() {
+		s.on(contenttest.OpWrite, nil)
+		s.on(contenttest.OpRead, nil)
+		s.on(contenttest.OpDeallocate, nil)
+	}()
 	bob := proven(s.bob.Principal, inLab)
 	wantWCC := func(what string, off int64, w vfs.WCC) {
 		t.Helper()
@@ -158,7 +164,7 @@ func TestALockIsOrderedWhollyBeforeOrAfterAWrite(t *testing.T) {
 	// write to stage them, and is granted then.
 	var locked chan error
 	var staged atomic.Bool
-	s.engine.writing = func(entity.FileID) {
+	s.on(contenttest.OpWrite, func(entity.FileID) {
 		locked = make(chan error, 1)
 		go func() {
 			err := lock("after")
@@ -169,12 +175,12 @@ func TestALockIsOrderedWhollyBeforeOrAfterAWrite(t *testing.T) {
 		}()
 		time.Sleep(20 * time.Millisecond)
 		staged.Store(true)
-	}
+	})
 	_, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("x"), vfs.Unstable)
 	if err != nil {
 		t.Fatalf("the write before the lock: %v", err)
 	}
-	s.engine.writing = nil
+	s.on(contenttest.OpWrite, nil)
 	if err := <-locked; err != nil {
 		t.Fatalf("the lock asked during the write: %v", err)
 	}
@@ -194,7 +200,7 @@ func TestALockIsOrderedWhollyBeforeOrAfterAWrite(t *testing.T) {
 	}
 
 	// Before: the lock held, the write meets it and stages nothing.
-	s.engine.writing = func(entity.FileID) { t.Error("a write under a mandatory lock was staged") }
+	s.on(contenttest.OpWrite, func(entity.FileID) { t.Error("a write under a mandatory lock was staged") })
 	if _, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("y"), vfs.Unstable); !errors.Is(err, vfs.ErrLocked) {
 		t.Errorf("a write under another's exclusive lock: %v, want ErrLocked", err)
 	}
@@ -232,7 +238,8 @@ func TestAReadAndADeallocateHoldTheAdmissionLock(t *testing.T) {
 			}
 		}
 	}
-	s.engine.reading, s.engine.dealloc = probe("read"), probe("deallocate")
+	s.on(contenttest.OpRead, probe("read"))
+	s.on(contenttest.OpDeallocate, probe("deallocate"))
 	if _, _, err := s.Read(ctx, alice, vfs.Anonymous(h), 0, make([]byte, 5)); err != nil {
 		t.Errorf("Read: %v", err)
 	}
@@ -280,12 +287,12 @@ func TestAnOpenWritesOnlyForItsOpener(t *testing.T) {
 	for _, name := range []string{"hers", "both"} {
 		ref := s.opener(t, a, name, entity.ReadData|entity.WriteData)
 		for how, bob := range map[string]vfs.Call{"on alice's client": onHers, "on his own": b} {
-			s.engine.writing = func(entity.FileID) { t.Errorf("%s: bob's write through alice's open was staged", name) }
+			s.on(contenttest.OpWrite, func(entity.FileID) { t.Errorf("%s: bob's write through alice's open was staged", name) })
 			if _, err := s.Write(ctx, bob, ref, 0, []byte("bob"), vfs.Unstable); !notYours(err) {
 				t.Errorf("%s: bob %s writing through alice's open: %v, want NotYours", name, how, err)
 			}
 		}
-		s.engine.writing = nil
+		s.on(contenttest.OpWrite, nil)
 		if _, err := s.Write(ctx, a, ref, 0, []byte("alice"), vfs.Unstable); err != nil {
 			t.Errorf("%s: alice's write through her open after bob's: %v", name, err)
 		}
@@ -304,10 +311,10 @@ func TestAWriteOnAContinuouslyAvailableShareIsStable(t *testing.T) {
 	ref := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
 	write := func(ref vfs.OpenRef, off int64, st vfs.Stability) []entity.Extent {
 		t.Helper()
-		s.engine.commits = nil
+		commits := s.synced()
 		_, err := s.Write(ctx, pc, ref, off, []byte("abc"), st)
 		s.must(t, err)
-		return s.engine.commits
+		return *commits
 	}
 	if got := write(ref, 0, vfs.Unstable); len(got) != 0 {
 		t.Errorf("an unstable write through an open: committed %v", got)
@@ -335,7 +342,8 @@ func TestACapacityRefusalIsADelay(t *testing.T) {
 	h := s.file(t, "f", s.alice.Principal, 0o666)
 	alice := proven(s.alice.Principal, inLab)
 	full := &vfs.Delay{Cause: vfs.DelayCapacity}
-	s.engine.writeErr, s.engine.commitErr = full, full
+	s.fail(contenttest.OpWrite, full)
+	s.fail(contenttest.OpCommit, full)
 	_, werr := s.Write(ctx, alice, vfs.Anonymous(h), 0, []byte("x"), vfs.Unstable)
 	_, cerr := s.Commit(ctx, alice, vfs.Anonymous(h), 0, 0)
 	for name, err := range map[string]error{"Write": werr, "Commit": cerr} {
@@ -357,18 +365,27 @@ func TestTheVerifierAndAFlushAcrossALoss(t *testing.T) {
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o666)
 	alice := proven(s.alice.Principal, inLab)
-	s.engine.verifier, s.engine.synced = vfs.Verifier{2}, vfs.Verifier{2}
+	share, f := s.fs.Share.ID, fileOf(h)
+	lose := func(id entity.FileID) { s.content.Lose(share, id) }
+	before, _, err := s.engine.Commit(ctx, share, f, 0, 0)
+	s.must(t, err)
 	w, err := s.Write(ctx, alice, vfs.Anonymous(h), 0, []byte("x"), vfs.FileSync)
-	if err != nil || w.Verifier != (vfs.Verifier{2}) {
-		t.Errorf("a stable write's verifier: %v, %v; want the one sampled before staging", w.Verifier, err)
+	if err != nil || w.Verifier != before {
+		t.Errorf("a stable write's verifier: %v, %v; want %v, the one sampled before staging", w.Verifier, err, before)
 	}
-	s.engine.verifier = vfs.Verifier{1}
+	// A loss during the write's own sync changes the verifier its Commit
+	// answers.
+	s.on(contenttest.OpCommit, lose)
 	_, err = s.Write(ctx, alice, vfs.Anonymous(h), 0, []byte("x"), vfs.FileSync)
 	if delay := (*vfs.Delay)(nil); !errors.As(err, &delay) || delay.Cause != vfs.DelayCommit {
 		t.Errorf("a stable write whose Commit answered another verifier: %v, want ErrDelay DelayCommit", err)
 	}
-	if v, err := s.Commit(ctx, alice, vfs.Anonymous(h), 0, 0); err != nil || v != (vfs.Verifier{2}) {
-		t.Errorf("Commit's verifier: %v, %v; want the one sampled after its sync", v, err)
+	v, err := s.Commit(ctx, alice, vfs.Anonymous(h), 0, 0)
+	s.on(contenttest.OpCommit, nil)
+	now, _, nerr := s.engine.Commit(ctx, share, f, 0, 0)
+	s.must(t, nerr)
+	if err != nil || v != now || v == before {
+		t.Errorf("Commit's verifier: %v, %v; want %v, the one sampled after its sync", v, err, now)
 	}
 	pc, laptop := s.smb(t, "pc", s.alice.Principal), s.smb(t, "laptop", s.alice.Principal)
 	refs := map[string]struct {
@@ -380,11 +397,12 @@ func TestTheVerifierAndAFlushAcrossALoss(t *testing.T) {
 	}
 	// The loss happens during the first flush's own sync, so a flush that
 	// read the loss sequence before syncing would miss it.
-	s.engine.committing = func(entity.FileID) {
-		s.engine.mu.Lock()
-		s.engine.loss = 1
-		s.engine.mu.Unlock()
-	}
+	var lost atomic.Bool
+	s.on(contenttest.OpCommit, func(id entity.FileID) {
+		if lost.CompareAndSwap(false, true) {
+			lose(id)
+		}
+	})
 	for name, o := range refs {
 		if _, err := s.Commit(ctx, o.c, o.ref, 0, 0); !errors.Is(err, vfs.ErrLost) {
 			t.Errorf("%s: the first flush across a loss: %v, want ErrLost", name, err)
@@ -405,18 +423,16 @@ func TestTheVerifierAndAFlushAcrossALoss(t *testing.T) {
 func TestAFailedFlushRecordsTheLoss(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
-	s.file(t, "f", s.alice.Principal, 0o666)
+	h := s.file(t, "f", s.alice.Principal, 0o666)
 	pc := s.smb(t, "pc", s.alice.Principal)
 	ref := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
-	s.engine.mu.Lock()
-	s.engine.loss = 1
-	s.engine.mu.Unlock()
+	s.content.Lose(s.fs.Share.ID, fileOf(h))
 	failed := errors.New("sync failed")
-	s.engine.commitErr = failed
+	s.fail(contenttest.OpCommit, failed)
 	if _, err := s.Commit(ctx, pc, ref, 0, 0); err == nil || errors.Is(err, vfs.ErrLost) {
 		t.Errorf("a flush whose sync fails: %v, want the sync's failure", err)
 	}
-	s.engine.commitErr = nil
+	s.fail(contenttest.OpCommit, nil)
 	if _, err := s.Commit(ctx, pc, ref, 0, 0); err != nil {
 		t.Errorf("the flush after a failed one across the same loss: %v", err)
 	}
@@ -424,31 +440,28 @@ func TestAFailedFlushRecordsTheLoss(t *testing.T) {
 	// A flush answered a retry is told nothing, so it records nothing: its
 	// retry still answers ErrLost for the loss it was open across.
 	other := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
-	s.engine.mu.Lock()
-	s.engine.loss = 2
-	s.engine.mu.Unlock()
-	s.engine.commitErr = entity.ErrDelay
+	s.content.Lose(s.fs.Share.ID, fileOf(h))
+	s.fail(contenttest.OpCommit, entity.ErrDelay)
 	if _, err := s.Commit(ctx, pc, other, 0, 0); !errors.Is(err, vfs.ErrDelay) {
 		t.Errorf("a flush whose sync answers a retry: %v, want ErrDelay", err)
 	}
-	s.engine.commitErr = nil
+	s.fail(contenttest.OpCommit, nil)
 	if _, err := s.Commit(ctx, pc, other, 0, 0); !errors.Is(err, vfs.ErrLost) {
 		t.Errorf("the retried flush across the loss: %v, want ErrLost", err)
 	}
 
 	// A flush cancelled during its sync records nothing either.
 	third := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
-	s.engine.mu.Lock()
-	s.engine.loss = 3
-	s.engine.mu.Unlock()
+	s.content.Lose(s.fs.Share.ID, fileOf(h))
 	cctx, cancel := context.WithCancel(ctx)
-	s.engine.committing = func(entity.FileID) { cancel() }
-	s.engine.commitErr = context.Canceled
+	s.engine.On(contenttest.OpCommit, func(context.Context, contenttest.Call) error {
+		cancel()
+		return context.Canceled
+	})
 	if _, err := s.Commit(cctx, pc, third, 0, 0); err == nil || errors.Is(err, vfs.ErrLost) {
 		t.Errorf("a flush cancelled during its sync: %v, want the cancellation", err)
 	}
-	s.engine.committing = nil
-	s.engine.commitErr = nil
+	s.on(contenttest.OpCommit, nil)
 	if _, err := s.Commit(ctx, pc, third, 0, 0); !errors.Is(err, vfs.ErrLost) {
 		t.Errorf("the flush after a cancelled one across the loss: %v, want ErrLost", err)
 	}
@@ -477,14 +490,14 @@ func TestAWriteClearsSetIDBeforeItIsStaged(t *testing.T) {
 		h := s.file(t, c.name, s.alice.Principal, 0o6777)
 		staged := -1
 		stage := func(entity.FileID) { staged = int(s.record(t, h).Mode) }
-		s.engine.writing = stage
+		s.on(contenttest.OpWrite, stage)
 		var err error
 		var w vfs.WCC
 		if c.dea {
-			s.engine.writing = nil
+			s.on(contenttest.OpWrite, nil)
 			_, err = s.engine.Write(ctx, h.Share(), fileOf(h), 0, []byte("data"), WriteOpts{})
 			s.must(t, err)
-			s.engine.dealloc = stage
+			s.on(contenttest.OpDeallocate, stage)
 			w, err = s.Deallocate(ctx, proven(c.who, inLab), vfs.Anonymous(h), 0, 2)
 		} else {
 			var wr vfs.WriteResult
@@ -502,7 +515,8 @@ func TestAWriteClearsSetIDBeforeItIsStaged(t *testing.T) {
 			t.Errorf("%s: GetAttr mode %o, %v; want %o", c.name, got.Mode, err, c.want)
 		}
 	}
-	s.engine.writing, s.engine.dealloc = nil, nil
+	s.on(contenttest.OpWrite, nil)
+	s.on(contenttest.OpDeallocate, nil)
 
 	h := s.file(t, "log", s.alice.Principal, 0o666)
 	_, err := s.Write(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Anonymous(h), 0, []byte("old"), vfs.Unstable)
@@ -530,11 +544,11 @@ func TestAWriteClearsSetIDBeforeItIsStaged(t *testing.T) {
 		}
 	}
 	// A deallocate never appends, so one from the size is refused too.
-	s.engine.dealloc = func(entity.FileID) { t.Error("a deallocate of an append-only file was staged") }
+	s.on(contenttest.OpDeallocate, func(entity.FileID) { t.Error("a deallocate of an append-only file was staged") })
 	if _, err := s.Deallocate(ctx, bob, rw, 3, 100); !errors.Is(err, vfs.ErrPerm) {
 		t.Errorf("a deallocate from an append-only file's size: %v, want ErrPerm", err)
 	}
-	s.engine.dealloc = nil
+	s.on(contenttest.OpDeallocate, nil)
 	if m := s.record(t, h).Mode; m != 0o4666 {
 		t.Errorf("the refused deallocate left mode %o", m)
 	}
@@ -570,9 +584,10 @@ func TestADataChangesWCCIsReadInOneHold(t *testing.T) {
 		// Once anything is staged, every overlay read, the After's
 		// included, finds the accept lock held.
 		var staged atomic.Bool
-		s.engine.writing = func(entity.FileID) { staged.Store(true) }
-		s.engine.dealloc = s.engine.writing
-		s.engine.overlaying = func(entity.FileID) {
+		stage := func(entity.FileID) { staged.Store(true) }
+		s.on(contenttest.OpWrite, stage)
+		s.on(contenttest.OpDeallocate, stage)
+		s.on(contenttest.OpOverlay, func(entity.FileID) {
 			if !staged.Load() {
 				return
 			}
@@ -580,7 +595,7 @@ func TestADataChangesWCCIsReadInOneHold(t *testing.T) {
 				unlock()
 				t.Errorf("%s: the accept lock was free as the WCC was read", name)
 			}
-		}
+		})
 		unlock, err := s.locks.Take(ctx, lockorder.Set{Accept: []lockorder.Key{lockorder.Key(id)}})
 		s.must(t, err)
 		var w vfs.WCC
@@ -593,7 +608,9 @@ func TestADataChangesWCCIsReadInOneHold(t *testing.T) {
 		_, _ = s.engine.Write(ctx, h.Share(), id, 0, []byte("staged while held"), WriteOpts{})
 		unlock()
 		<-answered
-		s.engine.writing, s.engine.dealloc, s.engine.overlaying = nil, nil, nil
+		s.on(contenttest.OpWrite, nil)
+		s.on(contenttest.OpDeallocate, nil)
+		s.on(contenttest.OpOverlay, nil)
 		s.must(t, err)
 		if w.Before == nil || w.Before.Size != 17 || w.After.Size < 17 {
 			t.Errorf("%s: WCC %+v, want a Before and an After both after the held write", name, w)
@@ -612,11 +629,16 @@ func TestSeekFindsDataAndHoles(t *testing.T) {
 	ctx := t.Context()
 	h := s.file(t, "sparse", s.alice.Principal, 0o644)
 	alice := proven(s.alice.Principal, inLab)
+	// Data at 0 and 8, a hole between, and a tail of hole past "ab".
 	content := append(append([]byte("abc"), make([]byte, 5)...), "de"...)
-	_, err := s.Write(ctx, alice, vfs.Anonymous(h), 0, content, vfs.Unstable)
+	_, err := s.Write(ctx, alice, vfs.Anonymous(h), 0, content[:3], vfs.Unstable)
+	s.must(t, err)
+	_, err = s.Write(ctx, alice, vfs.Anonymous(h), 8, content[8:], vfs.Unstable)
 	s.must(t, err)
 	tail := s.file(t, "tail", s.alice.Principal, 0o644)
-	_, err = s.Write(ctx, alice, vfs.Anonymous(tail), 0, append([]byte("ab"), make([]byte, 3)...), vfs.Unstable)
+	_, err = s.Write(ctx, alice, vfs.Anonymous(tail), 0, []byte("ab"), vfs.Unstable)
+	s.must(t, err)
+	_, err = s.SetAttr(ctx, alice, vfs.Target{H: tail}, size(5))
 	s.must(t, err)
 	for _, c := range []struct {
 		h    vfs.Handle
@@ -708,11 +730,11 @@ func TestAnAnonymousAppendAsksAppendData(t *testing.T) {
 		if _, err := s.Write(ctx, bob, vfs.Anonymous(h), 5, []byte("!"), vfs.Unstable); err != nil {
 			t.Errorf("%s: an anonymous append by a caller holding append data alone: %v", c.name, err)
 		}
-		s.engine.writing = func(entity.FileID) { t.Errorf("%s: a refused write below the size was staged", c.name) }
+		s.on(contenttest.OpWrite, func(entity.FileID) { t.Errorf("%s: a refused write below the size was staged", c.name) })
 		if _, err := s.Write(ctx, bob, vfs.Anonymous(h), 0, []byte("H"), vfs.Unstable); !errors.Is(err, c.below) {
 			t.Errorf("%s: an anonymous write below the size by a caller holding append data alone: %v, want %v", c.name, err, c.below)
 		}
-		s.engine.writing = nil
+		s.on(contenttest.OpWrite, nil)
 	}
 }
 
@@ -728,8 +750,8 @@ func TestAReadOnlyShareRefusesWritesThroughAnOpen(t *testing.T) {
 	s.must(t, err)
 	p.ReadOnly = true
 	s.must(t, s.cp.PutExportPolicy(ctx, p))
-	s.engine.writing = func(entity.FileID) { t.Error("a write on a read-only share was staged") }
-	s.engine.dealloc = func(entity.FileID) { t.Error("a deallocate on a read-only share was staged") }
+	s.on(contenttest.OpWrite, func(entity.FileID) { t.Error("a write on a read-only share was staged") })
+	s.on(contenttest.OpDeallocate, func(entity.FileID) { t.Error("a deallocate on a read-only share was staged") })
 	if _, err := s.Write(ctx, pc, ref, 0, []byte("x"), vfs.Unstable); !errors.Is(err, vfs.ErrReadOnly) {
 		t.Errorf("a write through an open on a share turned read-only: %v, want ErrReadOnly", err)
 	}
@@ -755,10 +777,10 @@ func TestASyncBlocksNoOpenOrClose(t *testing.T) {
 		},
 	} {
 		entered, unblock := make(chan struct{}), make(chan struct{})
-		s.engine.committing = func(entity.FileID) {
+		s.on(contenttest.OpCommit, func(entity.FileID) {
 			close(entered)
 			<-unblock
-		}
+		})
 		done := make(chan error, 1)
 		go func() { done <- sync() }()
 		<-entered
@@ -775,7 +797,7 @@ func TestASyncBlocksNoOpenOrClose(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
-		s.engine.committing = nil
+		s.on(contenttest.OpCommit, nil)
 	}
 }
 
@@ -816,7 +838,7 @@ func TestAnImmutableFileRefusesAWriteThroughAnOpen(t *testing.T) {
 	ref := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
 	_, err := s.fs.Store.Files().SetAttrs(ctx, s.fs.Admin, h, entity.Attrs{}.WithFlags(entity.FlagImmutable))
 	s.must(t, err)
-	s.engine.writing = func(entity.FileID) { t.Error("a write to an immutable file was staged") }
+	s.on(contenttest.OpWrite, func(entity.FileID) { t.Error("a write to an immutable file was staged") })
 	if _, err := s.Write(ctx, pc, ref, 0, []byte("x"), vfs.Unstable); !errors.Is(err, vfs.ErrPerm) {
 		t.Errorf("a write through an open to an immutable file: %v, want ErrPerm", err)
 	}
@@ -858,7 +880,7 @@ func TestANegativeOffsetOrLengthIsInvalid(t *testing.T) {
 	}
 	commit := func(off, n int64) error { _, err := s.Commit(ctx, alice, vfs.Anonymous(h), off, n); return err }
 	dealloc := func() error { _, err := s.Deallocate(ctx, alice, vfs.Anonymous(h), 0, -1); return err }
-	s.engine.commits = nil
+	commits := s.synced()
 	for name, err := range map[string]error{
 		"Read's offset": read(), "Write's offset": write(), "Commit's offset": commit(-1, 0),
 		"Commit's length": commit(0, -1), "Deallocate's length": dealloc(),
@@ -867,8 +889,8 @@ func TestANegativeOffsetOrLengthIsInvalid(t *testing.T) {
 			t.Errorf("%s negative: %v, want ErrInvalid", name, err)
 		}
 	}
-	if len(s.engine.commits) != 0 {
-		t.Errorf("a negative commit synced %v", s.engine.commits)
+	if len(*commits) != 0 {
+		t.Errorf("a negative commit synced %v", *commits)
 	}
 }
 
@@ -881,7 +903,7 @@ func TestAFailedReadAnswersItsBytesAndNoEnd(t *testing.T) {
 	alice := proven(s.alice.Principal, inLab)
 	_, err := s.Write(ctx, alice, vfs.Anonymous(h), 0, []byte("hello"), vfs.Unstable)
 	s.must(t, err)
-	s.engine.readErr = vfs.ErrLost
+	s.fail(contenttest.OpRead, vfs.ErrLost)
 	buf := make([]byte, 5)
 	if n, eof, err := s.Read(ctx, alice, vfs.Anonymous(h), 0, buf); n != 5 || eof || !errors.Is(err, vfs.ErrLost) {
 		t.Errorf("a read failing after its bytes: %d %v %v; want 5, no end, ErrLost", n, eof, err)
@@ -911,9 +933,7 @@ func TestOnlyAnSMBOpenFlushesAndALockStateWritesStable(t *testing.T) {
 	s.must(t, err)
 	lref := vfs.OpenRef{Kind: openstate.RefLocked, State: res.Ref, Handle: h}
 
-	s.engine.mu.Lock()
-	s.engine.loss = 1
-	s.engine.mu.Unlock()
+	s.content.Lose(s.fs.Share.ID, fileOf(h))
 	for name, o := range map[string]struct {
 		c   vfs.Call
 		ref vfs.OpenRef
@@ -927,11 +947,11 @@ func TestOnlyAnSMBOpenFlushesAndALockStateWritesStable(t *testing.T) {
 	s.must(t, err)
 	p.SMB |= entity.SMBContinuouslyAvailable
 	s.must(t, s.cp.PutExportPolicy(ctx, p))
-	s.engine.commits = nil
+	commits := s.synced()
 	if _, err := s.Write(ctx, pc, lref, 0, []byte("abc"), vfs.Unstable); err != nil {
 		t.Fatalf("a write through the lock state: %v", err)
 	}
-	if got := s.engine.commits; len(got) != 1 || got[0] != (entity.Extent{Offset: 0, Length: 3}) {
+	if got := *commits; len(got) != 1 || got[0] != (entity.Extent{Offset: 0, Length: 3}) {
 		t.Errorf("an unstable write through a lock state on a continuously available share: committed %v, want its extent", got)
 	}
 }

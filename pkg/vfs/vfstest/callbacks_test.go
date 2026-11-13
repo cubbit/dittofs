@@ -11,28 +11,75 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 )
 
-func TestRecordingCallbacksAnswerAsSet(t *testing.T) {
+// CallbackFaults passes every callback to Inner, which keeps it as sent
+// and picks its session, and then answers in Inner's place what Fail
+// answers, and a lock grant refused when Refuse is set.
+func TestCallbackFaultsFailOnCue(t *testing.T) {
 	ctx := context.Background()
 	failed := errors.New("no answer")
-	cb := &vfstest.RecordingCallbacks{
-		Answer: func(_ context.Context, c vfstest.Callback) error {
-			if c.Method == "RecallAny" {
+	alice := entity.NewUser()
+	gone := vfs.SessionRef{ID: 9}
+	var inner vfstest.Callbacks
+	inner.SignIn(vfs.SessionRef{ID: 3}, alice)
+	cb := &vfstest.CallbackFaults{
+		Inner: &inner,
+		Fail: func(_ context.Context, c vfstest.Callback) error {
+			if c.Method == "RecallAny" || c.Method == "RecallGrant" && c.Args[0] == gone {
 				return failed
 			}
 			return nil
 		},
 		Refuse: true,
 	}
+	g := vfs.CachingGrant{}
 	w := vfs.LockWaiter{Wait: vfs.WaitCallback}
 	if refused, err := cb.LockWaitOver(ctx, w, true); !refused || err != nil {
-		t.Fatalf("LockWaitOver = %v, %v; want refused, nil", refused, err)
+		t.Errorf("LockWaitOver = %v, %v; want refused, nil", refused, err)
 	}
 	if err := cb.RecallAny(ctx, 2); err != failed {
-		t.Fatalf("RecallAny = %v, want %v", err, failed)
+		t.Errorf("RecallAny = %v, want %v", err, failed)
 	}
-	want := []vfstest.Callback{{Method: "LockWaitOver", Args: []any{w, true}}, {Method: "RecallAny", Args: []any{2}}}
-	if got := cb.Calls(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("Calls = %v, want %v", got, want)
+	if sent, err := cb.RecallGrant(ctx, gone, nil, g, vfs.GrantNone); sent || err != failed {
+		t.Errorf("a recall on the failing session = %v, %v; want unsent, %v", sent, err, failed)
+	}
+	if sent, err := cb.RecallGrant(ctx, vfs.SessionRef{}, []vfs.Principal{alice}, g, vfs.GrantNone); !sent || err != nil {
+		t.Errorf("a recall to alice's sessions = %v, %v; want sent, nil", sent, err)
+	}
+	if err := cb.Notify(ctx, vfs.WatchID{}, nil); err != nil {
+		t.Errorf("Notify = %v, want nil", err)
+	}
+	want := []vfstest.Callback{
+		{Method: "LockWaitOver", Args: []any{w, true}},
+		{Method: "RecallAny", Args: []any{2}},
+		{Method: "RecallGrant", Args: []any{gone, []vfs.Principal(nil), g, vfs.GrantNone}, Session: gone},
+		{Method: "RecallGrant", Args: []any{vfs.SessionRef{}, []vfs.Principal{alice}, g, vfs.GrantNone}, Session: vfs.SessionRef{ID: 3}},
+		{Method: "Notify", Args: []any{vfs.WatchID{}, []vfs.Change(nil)}},
+	}
+	if got := inner.Delivered(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Inner kept\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// CallbackFaults hands Fail a recall naming openers with the session Inner
+// picked for it, so a fault keyed on that session fires.
+func TestCallbackFaultsFailOnThePickedSession(t *testing.T) {
+	ctx := context.Background()
+	failed := errors.New("no answer")
+	alice := entity.NewUser()
+	picked := vfs.SessionRef{ID: 3}
+	var inner vfstest.Callbacks
+	inner.SignIn(picked, alice)
+	cb := &vfstest.CallbackFaults{
+		Inner: &inner,
+		Fail: func(_ context.Context, c vfstest.Callback) error {
+			if c.Method == "RecallGrant" && c.Session == picked {
+				return failed
+			}
+			return nil
+		},
+	}
+	if sent, err := cb.RecallGrant(ctx, vfs.SessionRef{}, []vfs.Principal{alice}, vfs.CachingGrant{}, vfs.GrantNone); sent || err != failed {
+		t.Errorf("a recall to alice's sessions, failed on session %v = %v, %v; want unsent, %v", picked, sent, err, failed)
 	}
 }
 
