@@ -320,9 +320,15 @@ func writePayload(str, hexp *string, size *int64) ([]byte, error) {
 			return nil, fmt.Errorf("write-at: size %d exceeds the %d-byte cap", *size, opCapBytes)
 		}
 		// A cycling pattern so every read of a filled range is visibly
-		// alive without carrying real content over the socket. min() is the
-		// allocation-size clamp the scanner can see; the cap check above
-		// means it never bites.
+		// alive without carrying real content over the socket.
+		//
+		// The cap check above refused anything over opCapBytes, so this
+		// allocation is bounded at 1 GiB regardless of the wire's value;
+		// min() restates that bound where the allocation happens. The
+		// scanner does not model min as a sanitizer, so the suppression is
+		// explicit, and TestUnboundedSizesRefused pins the ceiling the
+		// scanner cannot see.
+		// codeql[go/uncontrolled-allocation-size]
 		pattern := []byte("0123456789abcdef")
 		out := make([]byte, min(*size, opCapBytes))
 		for i := range out {
@@ -362,6 +368,9 @@ func (s *Server) readAt(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
+	// Bounded at opCapBytes by the check above; see writePayload's note for
+	// why the suppression is explicit.
+	// codeql[go/uncontrolled-allocation-size]
 	p := make([]byte, min(req.Len, opCapBytes))
 	n, missing, held, asOf, err := h.ReadAt(r.Context(), id, req.Off, p)
 	if err != nil {
