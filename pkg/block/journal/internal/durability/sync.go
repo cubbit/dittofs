@@ -230,22 +230,18 @@ type Durability struct {
 	// with no lock held before it takes each queued end event's window.
 	beforeTakeWindow func()
 
-	// lmu guards the loss ring, the counters and pieces, and the generation
-	// read and raise that go with them.
+	// lmu guards the reason counters, and the generation raise and the event
+	// publish of a Lose made with them.
 	//
-	// decision: lmu is a leaf mutex over the ring, the counters, the pieces
-	// set and the generation read and raise made with them, so a snapshot
-	// pairs a generation with exactly the events that raised it. The
-	// directory registry's own mutex is taken inside it and calls nothing
-	// back. It is never held across an Append, a Sync or a MarkLoss, which
-	// take locks of other domains, so it adds no edge to the journal's lock
-	// order. A window raise (RaiseWindow) takes the registry alone and raises
-	// with no event, so a snapshot may show it ahead of the events.
+	// decision: lmu holds the raise, the counters and the publish of a Lose as
+	// one section, so a snapshot pairs a generation with exactly the events
+	// that raised it. The ring, its event count and the piece set live in the
+	// directory's state; the registry's own mutex is taken inside lmu and
+	// calls nothing back, so lmu stays a leaf on the journal's lock order and
+	// is never held across an Append, a Sync or a MarkLoss, which take locks
+	// of other domains. A window raise (RaiseWindow) takes the registry alone
+	// and raises with no event, so a snapshot may show it ahead of the events.
 	lmu               sync.Mutex
-	ring              [core.LossRingSize]core.LossEvent
-	head              int // index of the oldest event
-	count             int
-	nextEvent         uint64
 	corruptDataLoss   uint64
 	corruptRepairable uint64
 	stale             uint64
@@ -297,18 +293,6 @@ type Durability struct {
 	// afterHolds is a test hook, nil in production: the worker runs it with
 	// no lock held after each pass's step over the held segments.
 	afterHolds func()
-
-	// pieces holds every (dropped seq, extent) a Lose or a Place has taken,
-	// so one piece of a dropped record is reported once, while another piece
-	// of the same record, which a reconcile can drop alone, is reported on
-	// its own.
-	//
-	// ponytail: it grows by one entry per piece lost for the life of the
-	// Durability and is never pruned, so it follows the number of loss
-	// records the journal holds, not the ring. Upgrade to dropping an entry
-	// once no copy of its dropped record remains to be reported again, when
-	// a journal with a long loss history shows up in a heap profile.
-	pieces map[piece]struct{}
 
 	// resolved is Config.Resolved: the announcement of a resolved window.
 	resolved func(stream uint32, seg core.SegmentID)
@@ -415,7 +399,6 @@ func New(cfg Config) (*Durability, error) {
 		counters: cfg.Counters,
 		markLoss: cfg.MarkLoss,
 		account:  cfg.Account,
-		pieces:   map[piece]struct{}{},
 	}
 	d.refuse = d.Admit
 	d.readOnly = d.Enter
@@ -803,18 +786,14 @@ func (d *Durability) Stats() Part {
 	}
 
 	d.lmu.Lock()
-	p.Losses = make([]core.LossEvent, d.count)
-	for i := range p.Losses {
-		p.Losses[i] = d.ring[(d.head+i)%core.LossRingSize]
-	}
+	// The ring and the generation are read in one section, and lmu holds the
+	// raise and the publish of a Lose together, so the snapshot never holds
+	// the raise without its event, nor an event without its raise.
+	p.Losses, p.LossGeneration = d.dir.losses()
 	p.CorruptDataLoss = d.corruptDataLoss
 	p.CorruptRepairable = d.corruptRepairable
 	p.StaleExtents = d.stale
 	p.SupersededExtents = d.superseded
-	// The generation is read in the same section as the ring: Lose raises it
-	// and publishes in one section, so the snapshot never holds the raise
-	// without its event, nor an event without its raise.
-	p.LossGeneration = d.dir.load()
 	d.lmu.Unlock()
 	p.DamagedSegments, p.Segments = d.damagedReport()
 	return p
