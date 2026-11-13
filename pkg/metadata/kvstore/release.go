@@ -230,7 +230,7 @@ func releasedKeys(r kv.Reader, share entity.ShareID, file entity.FileID, v entit
 		if bytes.HasPrefix(row.Key, rms) {
 			v, _, err := keys.ReadVersion(row.Key[len(rms):])
 			if err != nil {
-				return nil, err
+				return nil, fileRecord(err)
 			}
 			m, err := decodeRemoval(v, row.Value)
 			if err != nil {

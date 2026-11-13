@@ -625,17 +625,17 @@ func TestEndAddRecordServesAnEndedSegment(t *testing.T) {
 
 	const tag = core.ShareTag(7)
 	// Active is served, as it always was.
-	if err := s.AddRecord(active, tag, 100); err != nil {
+	if err := s.AddRecord(active, tag, 100, 0); err != nil {
 		t.Fatalf("AddRecord of an Active segment: %v", err)
 	}
 	// Ended is served: an append that completes after the failure that
 	// ended its segment wrote bytes the segment already covers.
-	if err := s.AddRecord(ended, tag, 100); err != nil {
+	if err := s.AddRecord(ended, tag, 100, 0); err != nil {
 		t.Fatalf("AddRecord of an Ended segment = %v, want the record charged: an append failure ends its segment with appends still in flight, and their bytes belong to the share", err)
 	}
 	// Sealed is refused: a seal drains every append before it seals, so no
 	// charge can arrive past a sealed segment.
-	if err := s.AddRecord(sealed, tag, 100); !errors.Is(err, segment.ErrWrongState) {
+	if err := s.AddRecord(sealed, tag, 100, 0); !errors.Is(err, segment.ErrWrongState) {
 		t.Fatalf("AddRecord of a Sealed segment = %v, want ErrWrongState", err)
 	}
 

@@ -455,6 +455,7 @@ func (e *Engine) lostWhole(j Journal) {
 		g.clearFailingLocked(f)
 	}
 	g.mu.Unlock()
+	e.fence.forget(ownerOf(g.ctx)) // a lost journal's group commit retries nothing, its marks included
 	var dones []func()
 	for _, f := range fs {
 		fe := e.files.lockOf(f)

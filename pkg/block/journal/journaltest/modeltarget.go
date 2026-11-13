@@ -20,17 +20,43 @@ import (
 // header and footer.
 const ModelSegmentCap = 2 << 10
 
-// Reach is what the sequences a ModelTargets opened reached of the journal,
-// which the journal chooses and the test can only observe.
+// Reach is what the sequences a ModelTargets or a DataPathTargets journal
+// opened reached of the journal, which the journal chooses and the test can
+// only observe.
 type Reach struct {
 	// Streams is the most append streams the records of any one sequence
 	// were on when it ended.
 	Streams int
+	// Files is the distinct files the sequences' calls named.
+	Files int
+	// Shares is the distinct shares the sequences' calls went through.
+	Shares int
 	// Sealed is the most sealed segments one journal had, before a repack or
 	// when its sequence ended.
 	Sealed int
 	// Freed is the bytes every repack freed, over all the sequences.
 	Freed int64
+}
+
+// recorder counts what the calls through the handles reached — the distinct
+// files named, the distinct shares served — into Reach. The handles' wrapper
+// consults it on each call; nothing but the counts depends on it.
+type recorder struct {
+	files  map[journal.FileID]bool
+	shares map[int]bool
+	reach  *Reach
+}
+
+// saw counts one call naming file id through share i.
+func (r *recorder) saw(i int, id journal.FileID) {
+	if !r.shares[i] {
+		r.shares[i] = true
+		r.reach.Shares++
+	}
+	if !r.files[id] {
+		r.files[id] = true
+		r.reach.Files++
+	}
 }
 
 // ModelTargets returns open, the function that opens a fresh fixture
@@ -42,10 +68,30 @@ type Reach struct {
 // before calling it.
 //
 // It also returns reached, which reports what the sequences that ended
-// reached of the journal.
+// reached of the journal, the distinct files and shares their calls named
+// included.
 func ModelTargets(t testing.TB) (open func() (model.Target, func(), error), reached func() Reach) {
+	return targets(t, true)
+}
+
+// DataPathTargets returns open, which opens a fresh fixture journal exactly
+// as ModelTargets does — segments of ModelSegmentCap bytes, shares 0 and 1
+// attached — except its views hide the journal's index, so Compare reads only
+// the answers the journal's handles give today. The sequences over it drive
+// no offload, so they run through model.CheckDataPath, whose fills carry
+// their own steps' bytes. It also returns reached, which reports what the
+// sequences that ended reached of the journal.
+func DataPathTargets(t testing.TB) (open func() (model.Target, func(), error), reached func() Reach) {
+	return targets(t, false)
+}
+
+// targets is what ModelTargets and DataPathTargets return: open opens, for
+// each sequence the model-based test runs, a fresh journal with shares 0 and
+// 1 attached, indexed telling whether its views carry the journal's index.
+func targets(t testing.TB, indexed bool) (open func() (model.Target, func(), error), reached func() Reach) {
 	parent := t.TempDir()
 	var reach Reach
+	rec := &recorder{files: map[journal.FileID]bool{}, shares: map[int]bool{}, reach: &reach}
 	reached = func() Reach { return reach }
 	open = func() (model.Target, func(), error) {
 		tb := &attemptTB{TB: t, parent: parent}
@@ -54,7 +100,7 @@ func ModelTargets(t testing.TB) (open func() (model.Target, func(), error), reac
 			f := newFixture(tb, nil, false, ModelSegmentCap, nil)
 			f.Share(0)
 			f.Share(1)
-			tgt = &fixtureTarget{f: f, tb: tb, reach: &reach}
+			tgt = &fixtureTarget{f: f, tb: tb, reach: &reach, rec: rec, indexed: indexed}
 		})
 		if err != nil {
 			tb.finish()
@@ -157,12 +203,19 @@ type fixtureTarget struct {
 	f     *Fixture
 	tb    *attemptTB
 	reach *Reach
+	rec   *recorder
+	// indexed is whether the target's views carry the journal's index.
+	indexed bool
 }
 
-func (x *fixtureTarget) Share(i int) model.Handle { return spareRetry{x.f.Share(i)} }
+func (x *fixtureTarget) Share(i int) model.Handle { return spareRetry{x.f.Share(i), i, x.rec} }
 
 func (x *fixtureTarget) View(i int) model.View {
-	return model.HandleView{Handle: x.f.Share(i), Journal: x.f.J}
+	v := model.HandleView{Handle: x.f.Share(i), Journal: x.f.J}
+	if !x.indexed {
+		return noIndex{v}
+	}
+	return v
 }
 
 func (x *fixtureTarget) Repack(ctx context.Context) error {
@@ -246,34 +299,79 @@ func (x *fixtureTarget) streams() int {
 	return len(used)
 }
 
+// noIndex is a view seen through model.View alone: embedding the interface
+// hides the index HandleView also carries, so Compare skips the index's
+// answers rather than reaching a journal whose inspection does not answer.
+type noIndex struct{ model.View }
+
 // spareRetry retries every appending call refused for want of a spare
-// segment, as its caller would, so that refusal never reaches the model.
-type spareRetry struct{ *journal.Handle }
+// segment, as its caller would, so that refusal never reaches the model. It
+// also counts each call it carries in rec — the file it named, through which
+// share — passing the call through unchanged.
+type spareRetry struct {
+	*journal.Handle
+	share int
+	rec   *recorder
+}
+
+// saw counts the calls naming id, through the handle's share, before they
+// pass through.
+func (h spareRetry) saw(id ...journal.FileID) {
+	for _, id := range id {
+		h.rec.saw(h.share, id)
+	}
+}
 
 func (h spareRetry) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (v journal.Version, err error) {
+	h.saw(id)
 	err = RetrySpare(func() error { v, err = h.Handle.WriteAt(ctx, id, off, p, mtime); return err })
 	return v, err
 }
 
+func (h spareRetry) Sync(ctx context.Context, ids ...journal.FileID) error {
+	h.saw(ids...)
+	return h.Handle.Sync(ctx, ids...)
+}
+
+func (h spareRetry) ReadAt(ctx context.Context, id journal.FileID, off int64, p []byte) (int, []journal.Extent, []journal.Held, journal.Version, error) {
+	h.saw(id)
+	return h.Handle.ReadAt(ctx, id, off, p)
+}
+
 func (h spareRetry) Fill(ctx context.Context, id journal.FileID, off int64, p []byte, asOf, v journal.Version) error {
+	h.saw(id)
 	return RetrySpare(func() error { return h.Handle.Fill(ctx, id, off, p, asOf, v) })
 }
 
+func (h spareRetry) Offload(ctx context.Context, id journal.FileID, through journal.Version, limit, widen int64, fn func(ctx context.Context, o journal.Offer, report func(offloaded []journal.Extent) error) error) error {
+	h.saw(id)
+	return h.Handle.Offload(ctx, id, through, limit, widen, fn)
+}
+
 func (h spareRetry) Release(ctx context.Context, id journal.FileID, extents []journal.Extent) error {
+	h.saw(id)
 	return RetrySpare(func() error { return h.Handle.Release(ctx, id, extents) })
 }
 
 func (h spareRetry) Truncate(ctx context.Context, id journal.FileID, size int64) (v journal.Version, err error) {
+	h.saw(id)
 	err = RetrySpare(func() error { v, err = h.Handle.Truncate(ctx, id, size); return err })
 	return v, err
 }
 
 func (h spareRetry) Deallocate(ctx context.Context, id journal.FileID, e journal.Extent) (v journal.Version, err error) {
+	h.saw(id)
 	err = RetrySpare(func() error { v, err = h.Handle.Deallocate(ctx, id, e); return err })
 	return v, err
 }
 
 func (h spareRetry) Delete(ctx context.Context, id journal.FileID) (v journal.Version, err error) {
+	h.saw(id)
 	err = RetrySpare(func() error { v, err = h.Handle.Delete(ctx, id); return err })
 	return v, err
+}
+
+func (h spareRetry) Settle(id journal.FileID, v journal.Version) {
+	h.saw(id)
+	h.Handle.Settle(id, v)
 }

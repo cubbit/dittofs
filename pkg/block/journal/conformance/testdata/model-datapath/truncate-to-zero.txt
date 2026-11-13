@@ -1,0 +1,7 @@
+# A file truncated to zero and written again holds only the new bytes, and
+# the truncate's marker spans the whole old file. Over the data path, which
+# drives no offload, nothing ever fills the old bytes back.
+write len=32 b=65
+truncate
+write len=8 b=97
+read len=32

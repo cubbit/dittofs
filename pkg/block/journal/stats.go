@@ -14,10 +14,10 @@ import (
 //
 // decision: fields whose source belongs to a later step (the offload, release
 // and repack counters, PinnedSegments, Recovery, RejectedSegments, TornTails,
-// ScanResyncs) read zero, and so does UnreclaimedBytes, journal-wide and per
-// share: the index has no per-record backing hook to keep it without a walk.
-// A zero reads as nothing offered, nothing recovered, nothing unreclaimed; no
-// caller may rely on those until the sources land.
+// ScanResyncs) read zero. A zero reads as nothing offered, nothing recovered;
+// no caller may rely on those until the sources land. UnreclaimedBytes is
+// served, from the set's record bytes and overhead and the index's held and
+// retained bytes, clamped at zero and off by at most one operation in flight.
 func (j *Journal) Stats() Stats {
 	// closed is read first: a Close racing this call leaves the core's
 	// statistics readable, or this returns the zero Stats, and never both
@@ -132,6 +132,12 @@ type Stats struct {
 
 	// UnreclaimedBytes is the storage in segments not yet unlinked that backs
 	// no held or retained extent and no live record: what repack can recover.
+	// It is the sum of the shares' figures, and a share's own is the bytes of
+	// its records in those segments less its held and retained payload and its
+	// records' non-payload bytes, never below zero. A release raises it by
+	// the bytes released, and a journal of clean held content reads zero. It
+	// leaves out segment headers, trailers and footers, and a dead record's
+	// header and padding count as backed until its segment is unlinked.
 	// Kind: gauge.
 	UnreclaimedBytes int64
 
@@ -232,7 +238,7 @@ type ShareStats struct {
 	DirtyBytes    int64
 
 	// UnreclaimedBytes is the unreclaimed storage counted to the share: that
-	// of its records.
+	// of its records, as the journal's UnreclaimedBytes defines it.
 	UnreclaimedBytes int64
 
 	// UnreclaimedEndedBytes is the part of UnreclaimedBytes in segments that
