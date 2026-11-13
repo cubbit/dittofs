@@ -550,20 +550,27 @@ func TestSetClosesAfterLastStopReturns(t *testing.T) {
 // in flight unlinks its segment rather than reserving a slot in a live pool.
 // The probe registers between the pool's and the retirer's stop, so reverse
 // order runs it after the pool stopped and before the retirer stops, and it
-// reads the state the pool's Stop doc names: Take on a stopped pool answers
-// core.ErrClosed. A registry that left the pool to the group's close runs
-// the probe while the pool still serves takes, and the take nothing refused
-// fails the probe's assertion.
+// reads the state the two Stop docs name: Take on a stopped pool answers
+// core.ErrClosed, and the retirer that has not stopped reports it. A registry
+// that left the pool to the group's close runs the probe while the pool still
+// serves takes, failing the take assertion; one that registered the retirer's
+// stop after the pool's stops the retirer first, failing the stopped
+// assertion.
 func TestPoolStopsBeforeRetirer(t *testing.T) {
-	probeDone := make(chan error, 1)
+	type probeState struct {
+		take           error
+		retirerStopped bool
+	}
+	probeDone := make(chan probeState, 1)
 	c, _ := newTestCore(t, func(o *coreOptions) {
-		o.stopProbe = func(p *segment.Pool) func() {
+		o.stopProbe = func(p *segment.Pool, r *segment.Retirer) func() {
 			return func() {
 				// Take is the stopped state the pool's Stop doc names; a
 				// stopped pool refuses it changing nothing, and a live one
-				// answers a real spare.
+				// answers a real spare. Stopped is the state the retirer's
+				// Stop doc names, read off the closed channel alone.
 				_, err := p.Take(segment.Content)
-				probeDone <- err
+				probeDone <- probeState{take: err, retirerStopped: r.Stopped()}
 			}
 		}
 	})
@@ -585,8 +592,11 @@ func TestPoolStopsBeforeRetirer(t *testing.T) {
 		t.Fatalf("Close did not return within %s: the group closed before the workers it owns stopped", watchdog)
 	}
 	got := within(t, probeDone, "the probe's stop, between the pool's and the retirer's")
-	if !errors.Is(got, core.ErrClosed) {
-		t.Fatalf("when the probe's stop ran, the pool still served a take: Take = %v, want ErrClosed", got)
+	if !errors.Is(got.take, core.ErrClosed) {
+		t.Fatalf("when the probe's stop ran, the pool still served a take: Take = %v, want ErrClosed", got.take)
+	}
+	if got.retirerStopped {
+		t.Fatalf("when the probe's stop ran, the retirer had stopped too: Stopped = true, want the retirer still running")
 	}
 }
 
