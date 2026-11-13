@@ -320,9 +320,11 @@ func writePayload(str, hexp *string, size *int64) ([]byte, error) {
 			return nil, fmt.Errorf("write-at: size %d exceeds the %d-byte cap", *size, opCapBytes)
 		}
 		// A cycling pattern so every read of a filled range is visibly
-		// alive without carrying real content over the socket.
+		// alive without carrying real content over the socket. min() is the
+		// allocation-size clamp the scanner can see; the cap check above
+		// means it never bites.
 		pattern := []byte("0123456789abcdef")
-		out := make([]byte, *size)
+		out := make([]byte, min(*size, opCapBytes))
 		for i := range out {
 			out[i] = pattern[i%len(pattern)]
 		}
@@ -360,7 +362,7 @@ func (s *Server) readAt(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
-	p := make([]byte, req.Len)
+	p := make([]byte, min(req.Len, opCapBytes))
 	n, missing, held, asOf, err := h.ReadAt(r.Context(), id, req.Off, p)
 	if err != nil {
 		respond(w, nil, err)
