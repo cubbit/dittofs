@@ -70,6 +70,17 @@ func (s *Share) exit() {
 // also waits for the calls in flight and then returns core.ErrClosed, so
 // whichever Close returns, the handle's calls have ended.
 //
+// decision: a Close that finds the handle already fenced by the core's own
+// close waits like any other and answers nil rather than core.ErrClosed,
+// because a caller that closes its handles after the core's Close — a cleanup
+// whose fixture shut the core down first — answered nil before the fence
+// existed and cannot read ErrClosed as anything but its handle's end, which
+// it was. A double Close while the core lives still answers ErrClosed;
+// holders that must answer by who claimed the handle sit above the core, in
+// the journal's Handle, on its own flags. Overturned by a caller that needs
+// ErrClosed to survive the core's close, which would need the fence to leave
+// the answer to the handle's own claim instead.
+//
 // decision: Close waits for the calls in flight without a bound and without a
 // context, because it takes none by design, so a Close issued from inside a
 // call made through the same handle never returns, and neither does a second
@@ -188,7 +199,12 @@ func (s *Share) fence() bool {
 func (c *Core) closeShare(s *Share) error {
 	if !s.fence() {
 		<-s.idle
-		return core.ErrClosed
+		if !c.closed() {
+			return core.ErrClosed
+		}
+		// The core's fence claimed the handle in its own close; answer nil,
+		// as this Close did when no fence existed.
+		return nil
 	}
 	<-s.idle
 	return nil
