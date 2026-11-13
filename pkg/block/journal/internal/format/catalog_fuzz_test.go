@@ -15,8 +15,8 @@ import (
 // a bytes.Reader within bounds never errors, so any other error fails here;
 // and whatever reads holds exactly the bytes' fields: re-encoding the
 // entries, the seal marker and the trailer it names reproduces the input's
-// own bytes, the entries strictly ascend, and the last record ends at the
-// seal marker.
+// own bytes, the entries tile the segment's records contiguously from the
+// first record slot, and the last record ends at the seal marker.
 func FuzzFooter(f *testing.F) {
 	golden := sealedSegment(f, []CatalogEntry{testEntryA, testEntryB}, 0)
 
@@ -69,14 +69,17 @@ func FuzzFooter(f *testing.F) {
 			t.Fatalf("the input's seal marker by hand =\n% x\nwant the input's own\n% x", marker, in[footer.Offset-SealMarkerSize:footer.Offset])
 		}
 
+		// The tiling the reader holds, seen to hold: each entry's record
+		// begins where the one before it ends, from the first record
+		// slot, so the entries re-encode to the input's own bytes while
+		// their records' ends run to the seal marker.
 		entries := []byte{}
-		for i, e := range footer.Entries {
-			if e.RecordOffset%8 != 0 {
-				t.Fatalf("decoded a record offset %d that is not a multiple of 8", e.RecordOffset)
+		end := int64(SegmentHeaderSize)
+		for _, e := range footer.Entries {
+			if e.RecordOffset != end {
+				t.Fatalf("the entry at recordOffset %d does not begin where the record before it ends, %d", e.RecordOffset, end)
 			}
-			if i > 0 && e.RecordOffset <= footer.Entries[i-1].RecordOffset {
-				t.Fatalf("entries do not ascend: %d after %d", e.RecordOffset, footer.Entries[i-1].RecordOffset)
-			}
+			end = e.RecordOffset + RecordHeader{Kind: e.Kind, Extent: core.Extent{Len: e.Extent.Len}}.Size()
 			entries = AppendCatalogEntry(entries, e)
 		}
 		if !slices.Equal(entries, in[footer.Offset:footer.Offset+int64(len(footer.Entries))*CatalogEntrySize]) {
@@ -90,11 +93,6 @@ func FuzzFooter(f *testing.F) {
 
 		// The extent check the reader holds, seen to hold: the last
 		// record ends exactly at the seal marker.
-		end := int64(SegmentHeaderSize)
-		if len(footer.Entries) > 0 {
-			last := footer.Entries[len(footer.Entries)-1]
-			end = last.RecordOffset + RecordHeader{Kind: last.Kind, Extent: core.Extent{Len: last.Extent.Len}}.Size()
-		}
 		if end != footer.Offset-SealMarkerSize {
 			t.Fatalf("the records end at %d, want the seal marker's %d", end, footer.Offset-SealMarkerSize)
 		}
