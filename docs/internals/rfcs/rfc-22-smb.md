@@ -2434,7 +2434,7 @@ another version refuses what it cannot read rather than misreading it, and
 RFC 14 never reads them. Today no SMB record's carry anything.
 
 **Topology on the wire.** Clients of a continuously available share learn where
-to move through Witness (§14); a by-reference copy across shards is §16.5's
+to move through Witness, **(cluster)** (§14); a by-reference copy across shards is §16.5's
 `OtherShard` row.
 
 **What crosses between nodes** is
