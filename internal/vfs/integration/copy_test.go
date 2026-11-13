@@ -87,7 +87,6 @@ func v22CopyAndClone(t *testing.T, opts ...enginetest.Option) {
 			if got, err := c.readAt(t, dst, 0, 4); err != nil || !bytes.Equal(got, []byte("copy")) {
 				t.Errorf("the destination after %s reads %q, %v; want %q", tc.name, got, err, "copy")
 			}
-			c.forgetClones(t, dst, 0)
 		})
 	}
 }
@@ -265,7 +264,6 @@ func v26(t *testing.T, opts ...enginetest.Option) {
 		if !holds(size, size) {
 			t.Error("after the continuing copy the destination does not hold the source")
 		}
-		c.forgetClones(t, dst, 0, copyChunk, 2*copyChunk, 3*copyChunk)
 	})
 
 	if len(opts) > 0 {
@@ -511,26 +509,6 @@ func TestARunningCloneHoldsNoLockOfItsFiles(t *testing.T) {
 	if got, err := c.readAt(t, dst, 0, 8); err != nil || !bytes.Equal(got, []byte("abcdwxyz")) {
 		t.Errorf("the destination after the clone reads %q, %v; want %q", got, err, "abcdwxyz")
 	}
-	c.forgetClones(t, dst, 0)
-}
-
-// forgetClones writes back the byte the file h names holds at each of offs,
-// each inside the destination extent of a clone done there: a write over a
-// done clone's extent drops the engine's memory of it, which otherwise keeps
-// the file's entry live and holds the engine's Close, at the fixture's stop,
-// for its whole stop bound. Drop it once Close no longer waits on a
-// remembered clone.
-func (c *composition) forgetClones(t *testing.T, h vfs.Handle, offs ...int64) {
-	t.Helper()
-	for _, off := range offs {
-		b, err := c.readAt(t, h, off, 1)
-		if err != nil || len(b) != 1 {
-			t.Fatalf("read the byte at %d to write back: %q, %v", off, b, err)
-		}
-		if _, err := c.fs.Write(t.Context(), c.admin, vfs.Anonymous(h), off, b, vfs.Unstable); err != nil {
-			t.Fatalf("write back the byte at %d: %v", off, err)
-		}
-	}
 }
 
 // beforeCopy is the engine with run called before each Copy reaches it: a
@@ -584,7 +562,6 @@ func TestACopyHoldsTheSourceUntilTheEngineRegisters(t *testing.T) {
 	if got, err := c.readAt(t, dst, 0, 4); err != nil || !bytes.Equal(got, []byte("copy")) {
 		t.Errorf("the destination after the copy reads %q, %v; want %q", got, err, "copy")
 	}
-	c.forgetClones(t, dst, 0)
 }
 
 // A clone meeting a removal its loop retries answers DelayConflict at once
@@ -673,5 +650,4 @@ func TestACloneInItsStep1HoldsNoLockOfItsFiles(t *testing.T) {
 	if got, err := c.readAt(t, dst, 0, 8); err != nil || !bytes.Equal(got, []byte("abcdwxyz")) {
 		t.Errorf("the destination after the clone reads %q, %v; want %q", got, err, "abcdwxyz")
 	}
-	c.forgetClones(t, dst, 0)
 }
