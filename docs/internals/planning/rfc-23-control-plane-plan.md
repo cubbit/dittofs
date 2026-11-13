@@ -989,7 +989,8 @@ stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 
 **Expected content:**
 - The bootstrap and the node identity read through the RFC 13 plan's `pkg/bootstrap` (D6), and a
-  v1 database file in the data directory refused at start.
+  v1 database file in the data directory refused at start; `Start`'s step 1, once `New` has opened
+  the store, calls that plan's `WriteMissingNodeIDs` with RFC 16's `JournalID`, its one caller (A2).
 - `node.New`: the node-level services of RFC 23 §2.1's table the journal-only engine uses (the
   metadata store, the journals, open state, the engine, identity and `*vfs.Filesystem`), each built
   empty from its own `Deps` (D11); the syncer, the remote clients and GC are not composed (§6.1).
