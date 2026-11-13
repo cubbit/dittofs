@@ -8,7 +8,6 @@ import (
 	"maps"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -748,7 +747,9 @@ func (g *groupCommit) outcome(b *binding, f entity.FileID, err error, alone bool
 	return g.e.d.Clock.Now().Add(fl.backoff)
 }
 
-// clearFailing forgets f's failure, clearing existence_commit_failing.
+// clearFailing forgets f's failure, clearing existence_commit_failing, and
+// its failure at the store in the self-fence: the group commit calls it
+// wherever it stops retrying f.
 func (g *groupCommit) clearFailing(f entity.FileID) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -757,6 +758,7 @@ func (g *groupCommit) clearFailing(f entity.FileID) {
 
 // clearFailingLocked is clearFailing; the caller holds g.mu.
 func (g *groupCommit) clearFailingLocked(f entity.FileID) {
+	g.e.fence.forget(ownerOf(g.ctx), f)
 	if fl := g.failing[f]; fl != nil {
 		delete(g.failing, f)
 		if fl.raised {
@@ -865,7 +867,8 @@ func (e *Engine) syncAndCommit(ctx context.Context, g *groupCommit, batch []capt
 		mw, read = g.readMarks()
 	}
 	ctx, end := e.d.Tracer(ctx, "engine.existence_commit", slog.Int("files", len(batch)))
-	switch recorded, err := e.commitSplit(ctx, pending, mw, failed, alone); {
+	recorded, err := e.commitSplit(ctx, pending, mw, failed, alone)
+	switch {
 	case recorded:
 		g.recorded(mw, read)
 	case mw != nil:
@@ -1070,8 +1073,49 @@ func (e *Engine) commitMarksAlone(ctx context.Context, mw *kvstore.MarksWrite) e
 type retryingOwner struct{}
 
 // ownerState is one retrying owner's part of the self-fence: whether its
-// latest attempt failed at the store.
-type ownerState struct{ failing atomic.Bool }
+// latest attempt failed at the store, and the items whose latest attempt
+// failed at the store since the owner last committed (fence.end). One lock
+// holds both, so an item forgotten off the owner's goroutine cannot end the
+// failing of an attempt that just marked another.
+type ownerState struct {
+	mu      sync.Mutex
+	failing bool
+	stored  map[any]bool
+}
+
+// fail marks o failing and items failing at the store, and reports that o
+// was not failing before.
+func (o *ownerState) fail(items []any) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.stored == nil {
+		o.stored = map[any]bool{}
+	}
+	for _, it := range items {
+		o.stored[it] = true
+	}
+	was := o.failing
+	o.failing = true
+	return !was
+}
+
+// settle clears items, every item when items is nil, and ends o's failing
+// once none is left failing at the store, reporting that it did.
+func (o *ownerState) settle(items []any) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if items == nil {
+		clear(o.stored)
+	}
+	for _, it := range items {
+		delete(o.stored, it)
+	}
+	if !o.failing || len(o.stored) > 0 {
+		return false
+	}
+	o.failing = false
+	return true
+}
 
 // withRetryingOwner is ctx marked as a new retrying owner's.
 func withRetryingOwner(ctx context.Context) context.Context {
@@ -1102,8 +1146,12 @@ func storeWide(err error) bool {
 // Make it a setting, or derive it from the store's transaction limits, when a
 // healthy commit is seen to take near it.
 func (e *Engine) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, time.Duration(e.conflictBound.Load()))
+	return context.WithTimeoutCause(ctx, time.Duration(e.conflictBound.Load()), errBoundCut)
 }
+
+// errBoundCut is the cause of a store call's context the conflict bound cut,
+// which tells the self-fence that cut from the caller's own (callerEnded).
+var errBoundCut = errors.New("engine: the conflict bound cut the store call")
 
 // settle ends c's part in its batch under its entry's lock: a committed file
 // loses the operations the batch claimed, whose Dones it returns, is settled
@@ -1154,6 +1202,9 @@ func (e *Engine) settle(g *groupCommit, c captured, ok bool, retry time.Time) (d
 			d.now, d.notBefore = true, retry
 		}
 		g.mu.Unlock()
+	} else if !ok {
+		// Its writes left the batch dropped, so nothing of it is retried.
+		g.clearFailing(c.f)
 	}
 	e.files.unlock(c.f, fe)
 	if ok && through != (journal.Version{}) {

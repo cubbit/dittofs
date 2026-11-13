@@ -95,6 +95,10 @@ type runner struct {
 	m   *Model
 	s   stubs
 
+	// dataPath fills from the step's own bytes instead of content an offload
+	// reported: the sequences of the data path drive no offload.
+	dataPath bool
+
 	// asOf is, per file, the change versions of its last two reads, the last
 	// first: what a fill and a stale fill are made as of.
 	asOf [numFiles][2]journal.Version
@@ -138,7 +142,30 @@ type idle struct {
 
 // runCounting is runSteps that also counts the steps that did nothing.
 func runCounting(ctx context.Context, tgt Target, steps []Step) (ran int, n idle, err error) {
-	r := &runner{ctx: ctx, tgt: tgt, m: New()}
+	return runMode(ctx, tgt, steps, false)
+}
+
+// runDataPath is runCounting in the data-path mode: each fill carries what
+// its own step drew rather than what an offload reported, so a sequence with
+// no offload in it still fills. Its target's views carry no index, or the
+// comparison asks their journal for answers it does not give.
+func runDataPath(ctx context.Context, tgt Target, steps []Step) (ran int, n idle, err error) {
+	return runMode(ctx, tgt, steps, true)
+}
+
+// RunDataPath runs steps against tgt, as CheckDataPath does, and returns the
+// run's error: nothing is shrunk, reported or written. A sweep asking only
+// whether some bounded set of sequences holds one that diverges costs one run
+// each, the divergence included, where the check would also shrink and re-run
+// every sequence that fails; the caller that finds one runs CheckDataPath on
+// it when it wants the shrunk sequence.
+func RunDataPath(ctx context.Context, tgt Target, steps []Step) error {
+	_, _, err := runDataPath(ctx, tgt, steps)
+	return err
+}
+
+func runMode(ctx context.Context, tgt Target, steps []Step, dataPath bool) (ran int, n idle, err error) {
+	r := &runner{ctx: ctx, tgt: tgt, m: New(), dataPath: dataPath}
 	defer func() { n = r.idle }()
 	for i, s := range steps {
 		if why := s.valid(); why != "" {
@@ -169,7 +196,7 @@ func fmtStep(s Step) string {
 
 func (r *runner) compare() error {
 	for i := range numShares {
-		if err := r.m.Compare(r.ctx, tagOf(i), stubView{r.tgt.View(i), &r.s}); err != nil {
+		if err := r.m.Compare(r.ctx, tagOf(i), wrapView(r.tgt.View(i), &r.s)); err != nil {
 			return err
 		}
 	}
@@ -210,6 +237,9 @@ func (r *runner) step(s Step) error {
 		return nil
 
 	case OpFill, OpStaleFill:
+		if r.dataPath {
+			return r.dataPathFill(s)
+		}
 		file, ok := r.fillFile(s)
 		if !ok {
 			r.idle.fills++
@@ -280,6 +310,50 @@ func (r *runner) step(s Step) error {
 		return r.restart(s)
 	}
 	return fmt.Errorf("model: no operation %v: %w", s.Op, ErrMisuse)
+}
+
+// dataPathFill fills what its own step draws: the extent [s.Off, s.Off+s.Len)
+// of its step's file, the bytes payload(s) makes, as of the change version
+// the last read of the file reported — the read before it, for a stale fill
+// — at a version the step's pick scales down from the highest one already
+// issued, standing in for the version of the ref the bytes were fetched
+// from, as the caller of the data path makes a fill from the bytes it
+// fetched. No offload reports content back, so the step's own extent and
+// bytes are all a fill has to go on, and it idles only when the version it
+// drew falls below a release or a settled removal over the extent, which
+// the model does not decide.
+//
+// decision: a data-path fill carries an already-issued version, standing in
+// for the ref's version a real caller fetches: a fill carries the version of
+// the ref it was fetched from, never a freshly-minted one, and the journal's
+// version counter rightly does not advance past a fill's record — the two
+// would collide, the counter issuing again a version already on disk. The
+// pick scales that version down, so a fill also runs below a later write or
+// removal, where equal-or-older-version precedence shows — including the
+// zero version before any write, which the journal accepts. A fill below a
+// release or settled removal over its bytes stays out: the model does not
+// decide it. A fill above every issued version is out of the run too;
+// overturn this if the journal ever refuses or counts a fabricated fill
+// version.
+func (r *runner) dataPathFill(s Step) error {
+	ctx, m := r.ctx, r.m
+	h, tag, id := r.share(s.Share), tagOf(s.Share), fileOf(s.File)
+	asOf := r.asOf[s.File][0]
+	if s.Op == OpStaleFill {
+		asOf = r.asOf[s.File][1]
+	}
+	v := m.maxSeen
+	hi, lo := bits.Mul64(v.Counter, uint64(s.Pick))
+	v.Counter, _ = bits.Div64(hi, lo, 255)
+	p := payload(s)
+	if droppableAbove(m.files[id], extent{Off: s.Off, Len: int64(len(p))}, v) != nil {
+		// A caller never fills content older than what it released or
+		// settled the removal of, so the model does not decide it.
+		r.idle.fills++
+		return nil
+	}
+	err := h.Fill(ctx, id, s.Off, p, asOf, v)
+	return m.Fill(tag, id, s.Off, p, asOf, v, err)
 }
 
 // fillFile returns the file a fill step fills: its own, or, when nothing

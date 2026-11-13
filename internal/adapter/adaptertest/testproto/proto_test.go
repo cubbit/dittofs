@@ -43,6 +43,24 @@ func request(v core.Version) (*core.Request, *state) {
 	return &core.Request{Version: v, State: s}, s
 }
 
+// Both versions' tables build through core's checks: version 1's with its
+// compound row over the members' table, version 2's holding, with the hold
+// row core refuses in a table that does not hold.
+func TestTablesBuild(t *testing.T) {
+	tables := New(adapter.Deps{}).tables()
+	v1, v2 := tables[0], tables[1]
+	if v1.Holds || !v2.Holds {
+		t.Errorf("version 1 holds %v, version 2 %v; want only version 2", v1.Holds, v2.Holds)
+	}
+	c := v1.Ops[OpCompound]
+	if c == nil || c.Members == nil || c.Members.ReadOp == nil || v2.Ops[OpCompound] != nil {
+		t.Fatalf("the compound row is %+v in version 1 and %+v in version 2; want it in version 1 alone, with its members' table", c, v2.Ops[OpCompound])
+	}
+	if got, reply := v2.Errors.Map(vfs.ErrDelay, v2.Ops[OpCreate], 2); got != StatusDelay || !reply {
+		t.Errorf("version 2 maps ErrDelay to %d, reply %v; want %d", got, reply, StatusDelay)
+	}
+}
+
 func TestEchoAnswersItsPayloadUnderItsOwnRole(t *testing.T) {
 	_, inv := row(t, 1, OpEcho, "\x03hello")
 	if inv.Role == nil {

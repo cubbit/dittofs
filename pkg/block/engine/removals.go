@@ -231,6 +231,7 @@ func (l *removalLoop) step(it *loopItem) {
 	switch a {
 	case itemDone:
 		l.unstall(it)
+		l.forget(it)
 		return
 	case itemAdvanced:
 		l.unstall(it)
@@ -257,6 +258,7 @@ func (l *removalLoop) step(it *loopItem) {
 	l.mu.Unlock()
 	if ended {
 		l.unstall(it)
+		l.forget(it)
 		if it.end != nil {
 			it.end()
 		}
@@ -272,6 +274,17 @@ func (l *removalLoop) unstall(it *loopItem) {
 	it.stalled = false
 	l.e.d.Logger.Warn("removal_stalled cleared", "file", it.f, "kind", it.kind)
 	l.e.conds.clear(condKey{conditionRemovalStalled, it})
+}
+
+// forget ends the self-fence's store failure of the item's file once it left the
+// loop, unless another item of the loop holds that file and retries it.
+func (l *removalLoop) forget(it *loopItem) {
+	l.mu.Lock()
+	held := slices.ContainsFunc(l.items, func(o *loopItem) bool { return o.f == it.f })
+	l.mu.Unlock()
+	if !held {
+		l.e.fence.forget(ownerOf(l.ctx), it.f)
+	}
 }
 
 // halt stops the loop, joins its goroutine within the bound b and ends every
@@ -373,6 +386,7 @@ func (l *removalLoop) dropShare(s entity.ShareID) (files []entity.FileID) {
 		files = append(files, it.f)
 
 		l.unstall(it)
+		l.forget(it)
 
 		if it.end != nil {
 			it.end()

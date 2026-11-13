@@ -144,9 +144,20 @@ type recJournal struct {
 
 	failForgets int // the next Forget calls that fail, guarded by mu
 
+	// noMarks reports no sync marks, as the real journal does, so a marks
+	// write sets no key.
+	noMarks atomic.Bool
+
 	mu      sync.Mutex
 	floors  []journal.Version
 	handles []*recHandle
+}
+
+func (j *recJournal) SyncMarks() []entity.SyncMark {
+	if j.noMarks.Load() {
+		return nil
+	}
+	return j.FakeJournal.SyncMarks()
 }
 
 func (j *recJournal) Share(

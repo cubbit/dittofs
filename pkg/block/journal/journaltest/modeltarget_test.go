@@ -64,6 +64,18 @@ func TestAttemptCleanupsRunWhenTheSequenceEnds(t *testing.T) {
 	}
 }
 
+// A generated data-path sequence runs over a DataPathTargets journal, and the
+// sequence reaches several files through both shares, which Reach counts.
+func TestDataPathReached(t *testing.T) {
+	open, reached := DataPathTargets(t)
+	steps := model.GenerateWithin(model.DefaultSeed, model.DefaultSteps, model.DataPathOps)
+	model.CheckDataPath(t, fmt.Sprintf("data-path-seed-%d.txt", model.DefaultSeed), steps, open,
+		fmt.Sprintf("drawn from seed %d, %d steps", model.DefaultSeed, model.DefaultSteps))
+	if r := reached(); r.Files < 2 || r.Shares < 2 {
+		t.Fatalf("the sequence reached %d file(s) through %d share(s), want at least 2 of each", r.Files, r.Shares)
+	}
+}
+
 // A journal that does not open after a crash is the journal's failure, which
 // the model reports as a divergence; a crash that could not be made is not.
 func TestAFailedOpenIsAReopenError(t *testing.T) {

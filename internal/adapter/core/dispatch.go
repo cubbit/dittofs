@@ -138,8 +138,29 @@ func Bind[Req, Rep any](
 
 // NewOpTable builds a table and checks it: codes unique, ranges well formed,
 // and no ErrorRow.Hold unless holds.
+//
+// decision: a table that fails a check panics, naming the row, as
+// NewErrorTable does: a table is program text and NewOpTable returns no
+// error. Overturned if a table is ever built from configuration.
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
-	panic("not implemented")
+	t := &OpTable{Ops: make(map[uint32]*Op, len(ops)), Errors: errs, Holds: holds}
+	for _, op := range ops {
+		if prev, dup := t.Ops[op.Code]; dup {
+			panic(fmt.Sprintf("core: op table: %s and %s share code %d", prev.Name, op.Name, op.Code))
+		}
+		if op.Versions.First > op.Versions.Last {
+			panic(fmt.Sprintf("core: op table: %s serves versions %d to %d, first past last", op.Name, op.Versions.First, op.Versions.Last))
+		}
+		t.Ops[op.Code] = op
+	}
+	if !holds {
+		for _, r := range errs.rows {
+			if r.Hold != nil {
+				panic(fmt.Sprintf("core: op table: error row %s holds, in a table that does not", describe(r)))
+			}
+		}
+	}
+	return t
 }
 
 // Version is a protocol's version, minor version or dialect; Range a closed
