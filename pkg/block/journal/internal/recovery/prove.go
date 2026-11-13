@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -79,9 +80,10 @@ const (
 // read does not verify is torn — never written, so it is re-appended
 // nowhere, reported nowhere, and the rebuilt state drops its hold entirely,
 // the index entry for a content record and the aside entry for an aside
-// one. A sync that fails hands every record that verified to the re-append
-// the same way, as a failed window, and the open still succeeds: the
-// re-append resolves it.
+// one — and re-places what its replay displaced, so the index ends as it
+// would had the rebuild never been fed the record at all. A sync that
+// fails hands every record that verified to the re-append the same way, as
+// a failed window, and the open still succeeds: the re-append resolves it.
 //
 // The records the flow reads are every kind the walk attached — the content
 // kinds the index was fed among them, and the aside kinds a later phase
@@ -94,15 +96,20 @@ const (
 // it is handed to the re-append, or lying below the synced-through a sync
 // proved whole — never at the first record that did not: a bad record
 // before a later holding one is stepped over, exactly as a torn slot is,
-// and a segment whose every bad record is its last still cuts past it. The
-// synced-through raises the cut only where it names no record's interior —
-// a point a stamping writer may leave inside the very record it follows,
-// which is the one place the classing's floor would cut a record in half.
-// The classing's own offset is never crossed, so a cut never breaks one of
-// its floor rules, and a segment where nothing went wrong keeps the fate
-// the classing wrote. Nothing is appended here: the phase's only reach into
-// storage is the sync before each direct read, and the cut its fates name
-// is a later phase's.
+// and a segment whose every bad record is its last still cuts past it; a
+// lost record, a failed sync or a torn record below a holding one is what
+// ends a segment. A segment whose every bad verdict is torn, with nothing
+// holding past the first torn record, is cut at that record's own start
+// and sealed instead — the torn tail's own rule, that a crash tearing a
+// stream's last write costs a seal and never a segment's content. The
+// synced-through raises either cut only where it names no record's
+// interior — a point a stamping writer may leave inside the very record it
+// follows, which is the one place the classing's floor would cut a record
+// in half. The classing's own offset is never crossed, so a cut never
+// breaks one of its floor rules, and a segment where nothing went wrong
+// keeps the fate the classing wrote. Nothing is appended here: the phase's
+// only reach into storage is the sync before each direct read, and the cut
+// its fates name is a later phase's.
 func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, _ core.Version) error {
 	// One scan per own segment, by id: every fate the loop proves owns one,
 	// the classing having answered a fate per scan it was handed. Each is a
@@ -245,6 +252,12 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 	}
 	slices.Sort(pending)
 
+	// The numbers of the records this run has judged torn, one added at each
+	// drop: a later repair is fed no record an earlier or its own verdict
+	// drops, so the set the repairs re-apply is exactly the set a rebuild
+	// without the torn records would have been fed.
+	tornSoFar := make(map[index.Numbers]bool)
+
 	for _, id := range pending {
 		sc, ok := scans[id]
 		if !ok {
@@ -252,7 +265,7 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 			// scan names a segment whose tail nothing may speak for.
 			return fmt.Errorf("%w: segment %d holds a fate no scan answers", core.ErrCorrupt, id)
 		}
-		if err := proveTail(ctx, deps.FS, rd, st, expect, sc, fateByID[id], markerSyncOf[id]); err != nil {
+		if err := proveTail(ctx, deps.FS, rd, st, expect, sc, fateByID[id], markerSyncOf[id], tornSoFar); err != nil {
 			return err
 		}
 	}
@@ -268,11 +281,11 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 }
 
 // proveTail proves on the device every record of one segment the classing
-// left unproven, and ends the segment's fate where a record did not prove,
-// at the end of the last record that held. Nothing is appended: the flow's
-// only reaches into storage are its reads and, where the marker flow made
-// none, the one sync between the two of them.
-func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect core.JournalID, sc *segmentScan, fate *segmentFate, marker markerSync) error {
+// left unproven, and settles the segment's fate where a record did not
+// prove. Nothing is appended: the flow's only reaches into storage are its
+// reads and, where the marker flow made none, the one sync between the two
+// of them.
+func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect core.JournalID, sc *segmentScan, fate *segmentFate, marker markerSync, tornSoFar map[index.Numbers]bool) error {
 	if marker != markerSyncFailed && (sc.SyncedThrough >= sc.RecordsEnd || sc.RecordsEnd <= format.SegmentHeaderSize) {
 		// No record can end past the synced-through the segment's own records
 		// name when the point reaches the last record's end, and a segment
@@ -295,12 +308,12 @@ func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect
 	// held wherever the flow lands — the device holds it, or the re-append
 	// writes it back from the copy kept here — and a torn one never does:
 	// treated as never written, it is dropped from everything the rebuilt
-	// state holds of it.
+	// state holds of it, its displacement repaired at once.
 	name := format.SegmentName(sc.ID)
 	var verified []tailRecord
 	verifiedAt := make(map[int64]bool, len(cands))
 	heldEnd := heldBelow
-	torn := false
+	torn, tornAt := false, int64(0)
 	for _, h := range cands {
 		rec, ok, err := tailFirst(rd, expect, sc.ID, name, h.Offset)
 		if err != nil {
@@ -311,9 +324,14 @@ func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect
 			// re-appended, never reported, never damage, and held nowhere
 			// — the index entry for a content record, the aside entry for
 			// an aside one, both dropped, so the journal never claims to
-			// hold a byte the device never took.
-			if derr := dropTornRecord(rd, st, sc, expect, h); derr != nil {
+			// hold a byte the device never took — and the record's
+			// displacement repaired: what it overwrote or cut holds its
+			// extent again.
+			if derr := dropTornRecord(rd, st, expect, sc, h, tornSoFar); derr != nil {
 				return derr
+			}
+			if !torn || h.Offset < tornAt {
+				tornAt = h.Offset
 			}
 			torn = true
 			continue
@@ -323,7 +341,8 @@ func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect
 		heldEnd = max(heldEnd, h.Offset+h.Size())
 	}
 
-	bad := torn
+	lost := false
+	windowFailed := false
 	switch marker {
 	case markerSyncFailed:
 		// The window failed — at the marker flow, or at a sync whose failure
@@ -341,7 +360,7 @@ func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect
 			st.Proof.FailedWindows = append(st.Proof.FailedWindows, sc.ID)
 		}
 		st.Proof.Reappends = append(st.Proof.Reappends, verified...)
-		bad = true
+		windowFailed = true
 	default:
 		if len(cands) == 0 {
 			// A segment with no proof records takes no second sync: the
@@ -386,7 +405,7 @@ func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect
 				st.Proof.FailedWindows = append(st.Proof.FailedWindows, sc.ID)
 			}
 			st.Proof.Reappends = append(st.Proof.Reappends, verified...)
-			bad = true
+			windowFailed = true
 		} else {
 			// The sync carried the tail's bytes to the device: each record
 			// that verified at the first read is re-read there and checked
@@ -402,38 +421,62 @@ func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect
 					// back from the copy its first read verified, and the
 					// cut keeps its extent, for the re-append claims it.
 					st.Proof.Reappends = append(st.Proof.Reappends, rec)
-					bad = true
+					lost = true
 				}
 			}
 			_ = f.Close()
 		}
 	}
 
-	if !bad {
+	if !torn && !lost && !windowFailed {
 		// Everything proved whole, the sync carried: zero changes — the
 		// fate the classing wrote stands.
 		return nil
 	}
 
-	// The fate, once per segment after the flow: the cut is the END of the
-	// last record that held, floored at the segment's first record slot when
-	// none did. The synced-through the segment's records named raises the
-	// cut only where it names no record's interior — every record containing
-	// the point is one of the candidates, so a point inside a record the
-	// flow did not hold would leave half a record below the cut, and the
-	// last held record's end is taken instead, clamped below the point in
-	// the one case that reaches it. The classing's own non-zero offset is
-	// never crossed, so neither of its floor rules is broken, and Damaged
-	// gains nothing either way.
-	off := heldEnd
+	// The fate, once per segment after the flow. A segment with nothing
+	// holding past its first torn record — no record lost, no window failed,
+	// every bad verdict torn and no record held below a torn one — keeps
+	// the torn tail's own rule: the cut is the FIRST torn record's start and
+	// the segment is cut there and sealed, never emptied, for a crash that
+	// tore a stream's last write costs a seal, not a segment's whole content.
+	// Any lost record, any failed sync, and a torn record below one that
+	// held — torn-slot rule, what held past it would be discarded by a cut
+	// at the torn one's start — end the segment instead: a lost record is
+	// re-appended and its extent claimed, and a failed sync leaves bytes the
+	// device may never have taken, so a seal would prove nothing on it.
+	//
+	// The ended cut is the END of the last record that held, floored at the
+	// segment's first record slot when none did, and the torn-tail cut keeps
+	// the same floors and clamps: the synced-through the segment's records
+	// named raises the cut only where it names no record's interior — every
+	// record containing the point is one of the candidates, so a point inside
+	// a record the flow did not hold would leave half a record below the cut,
+	// and the cut stays at the record the straddler's rule names instead.
+	// The cut never passes the file's size, and the classing's own non-zero
+	// offset is never crossed, so neither of its floor rules is broken.
+	kind, off := fateEnded, heldEnd
+	if !lost && !windowFailed && torn && heldEnd <= tornAt {
+		kind, off = fateTornTail, tornAt
+	}
 	if sc.SyncedThrough > off && !unheldStraddles(cands, verifiedAt, sc.SyncedThrough) {
 		off = sc.SyncedThrough
 	}
 	off = min(off, sc.Size)
+	// decision: the classing's own non-zero offset is minned in although no
+	// segment the classing and this flow read from one scan can ever name a
+	// cut above it: every candidate ends at or below the VerifiedEnd and
+	// RecordsEnd those offsets floor at, the synced-through a raise names is
+	// minned the same way at the classing's side, and a torn record's start
+	// lies below its own end, so the min holds the value it would hold
+	// without it. It is kept for the day a classing rule floors a cut below
+	// a candidate's end — a cut this flow answers may cross no floor it does
+	// not know the reason for — and it is withdrawn the day such a rule is
+	// shown, rather than tested around.
 	if fate.Offset != 0 {
 		off = min(off, fate.Offset)
 	}
-	fate.Kind, fate.Offset = fateEnded, off
+	fate.Kind, fate.Offset = kind, off
 	return nil
 }
 
@@ -454,10 +497,15 @@ func unheldStraddles(cands []format.RecordHeader, verifiedAt map[int64]bool, poi
 // dropTornRecord drops one record the flow found torn — verified at neither
 // of its reads — from everything the rebuilt state holds of it: the index
 // entry the walk fed for a content record, the aside entry it set for an
-// aside one. Torn is never written, so nothing of the record survives the
-// open: no re-append carries it, no hold claims its extent, no aside phase
-// ever answers for it.
-func dropTornRecord(rd *reader, st *State, sc *segmentScan, expect core.JournalID, h format.RecordHeader) error {
+// aside one, and, for a content record, the placement of everything its
+// replay displaced, re-placed from the records that remain. Torn is never
+// written, so nothing of the record survives the open: no re-append carries
+// it, no hold claims its extent, no aside phase ever answers for it — and
+// what it overwrote or cut holds its extent again, as it did before the
+// record's replay took it. tornSoFar holds the numbers the flow has judged
+// torn already, this one joining it, so a repair is fed no record a torn
+// verdict later in the run drops of its own.
+func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentScan, h format.RecordHeader, tornSoFar map[index.Numbers]bool) error {
 	if h.Kind > format.KindUnmark {
 		// decision: an aside record is held only in the scan's aside list,
 		// which no built phase reads yet — the kinds' rules are the later
@@ -477,9 +525,87 @@ func dropTornRecord(rd *reader, st *State, sc *segmentScan, expect core.JournalI
 	if cerr != nil {
 		return refusedRead(rd, cerr)
 	}
+	tornSoFar[r.Numbers] = true
 	st.Rebuilt.Index.Unplace(r.File, index.RecordAt{Segment: r.Segment, Offset: r.At},
 		core.Extent{Off: r.Off, Len: r.Len})
+	return repairTornPlacement(rd, st, expect, r, tornSoFar)
+}
+
+// repairTornPlacement restores what the torn record's replay displaced: the
+// index comes out exactly as the rebuild would have produced it had the
+// record never been fed, over the span the record's replay reached — its
+// extent, or the removal to the end a truncate's and a delete's reach names.
+// The records to re-apply are every record of the file that reaches the span,
+// from any attached segment — the one the torn record sits in and the named
+// and unverified ones beside it, cross-segment overwrites included — minus
+// the records the run has judged torn so far, and the index folds them over
+// the span in the precedence the rebuild applies them in, so the answer does
+// not depend on the order the segments were fed or walked.
+//
+// ponytail: the records to re-apply are re-scanned from disk, one walk of
+// every attached segment per torn record — the scans the rebuild kept drop
+// their converted records so a journal of millions of records does not hold
+// them twice, and a torn record is a rare verdict of a damaged open. Keep a
+// per-open record index keyed on file and extent, shared by every repair the
+// run makes, when an open that finds many torn records shows these re-walks
+// in a profile.
+func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn index.Record, tornSoFar map[index.Numbers]bool) error {
+	window := tornReach(torn)
+	if window.Len <= 0 {
+		// A record whose replay reached nothing — a marks kind over no
+		// extent, a truncate past every offset — placed and cut nothing the
+		// index holds.
+		return nil
+	}
+	var recs []index.Record
+	collect := func(id core.SegmentID) error {
+		// A read the bound does not clear refuses the open, as the open's
+		// other reads do; the scans the rebuild made of these bytes already
+		// succeeded, so this only refuses where the device stopped answering.
+		sc, err := scanSegment(rd, expect, SegmentInfo{ID: id})
+		if err != nil {
+			return refusedRead(rd, err)
+		}
+		for _, r := range sc.Records {
+			if r.File != torn.File || tornSoFar[r.Numbers] || !reachesOverlap(tornReach(r), window) {
+				continue
+			}
+			recs = append(recs, r)
+		}
+		return nil
+	}
+	for _, info := range st.Attached.Own {
+		if err := collect(info.ID); err != nil {
+			return err
+		}
+	}
+	for _, id := range slices.Concat(st.Attached.Unverified, st.Attached.ZeroHeader) {
+		if err := collect(id); err != nil {
+			return err
+		}
+	}
+	st.Rebuilt.Index.ReplayWindow(torn.File, window, torn.Numbers.Version, recs)
 	return nil
+}
+
+// tornReach is the span of the file a record's replay reached: the extent
+// its kind names, or the removal to the end a truncate's and a delete's
+// reach amounts to — the same reach the rebuild's drop ranges note the
+// record by.
+func tornReach(r index.Record) core.Extent {
+	switch r.Kind {
+	case index.RecTruncate:
+		return core.Extent{Off: r.Off, Len: math.MaxInt64 - r.Off}
+	case index.RecDelete:
+		return core.Extent{Off: 0, Len: math.MaxInt64}
+	default:
+		return core.Extent{Off: r.Off, Len: r.Len}
+	}
+}
+
+// reachesOverlap reports whether two reaches cover a byte in common.
+func reachesOverlap(a, b core.Extent) bool {
+	return a.Off < b.Off+b.Len && b.Off < a.Off+a.Len
 }
 
 // tailCandidates walks the segment's record headers again and returns the

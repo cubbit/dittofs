@@ -723,7 +723,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs recovery that verifies the unproven tail on the device and re-appends from the reserve.'
+  reason: 'The journal opens and the tail proof this check looks for is landed; the check still fails on a stub call. The row waits on the public open over a directory holding segments, the checkpoint after T7.12, and the re-append that hands the lost records over.'
   issue: '#3814'
   message: 'stub: Sync'
 

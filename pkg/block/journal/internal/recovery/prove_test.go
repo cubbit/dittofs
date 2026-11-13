@@ -285,6 +285,103 @@ func TestAMarkerWhoseSyncFailsOnceNeverSyncsAgain(t *testing.T) {
 	}
 }
 
+// TestASyncedPointInsideTheTornTailRecordLeavesTheCutAtItsStart holds the
+// raise guard: a synced-through a verifying header names raises the cut only
+// where it names no record's interior, and the one record straddling the point
+// — starting below it, ending past it — is exactly the shape a stamping
+// writer leaves. The straddling record is the one record the proof owns and
+// its first read finds it torn, so the point cannot be proven either; the cut
+// stays at the torn record's own start, never inside the record.
+func TestASyncedPointInsideTheTornTailRecordLeavesTheCutAtItsStart(t *testing.T) {
+	bAt := endAfter(tailRec(200, 0x4100))
+	insideB := bAt + 8 // a sync that stopped inside B itself
+	a := syncedRec(200, 0x4100, insideB)
+	b := syncedRec(201, 0x8100, insideB)
+	seg := buildSeg(2, a, b)
+	seg[bAt+format.RecordHeaderSize+8+2] ^= 0xff // B's payload, rotted where the cache reads the same bytes
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, seg)
+
+	st := runTails(t, r) // a torn record never refuses the open
+
+	// A straddling torn record with nothing holding after it is a torn tail,
+	// cut at its own start: raising the cut to the point inside it would cut
+	// half a record into the file the seal leaves behind.
+	wantFate(t, st, 2, fateTornTail, bAt)
+	if len(st.Proof.Reappends) != 0 {
+		t.Errorf("Reappends got %+v, want none: the torn B has no copy to re-append", st.Proof.Reappends)
+	}
+	if got := planted(st); got != 1 {
+		t.Errorf("the index holds %d entries, want 1: A stays indexed and the torn B is dropped as never written", got)
+	}
+}
+
+// TestAMarkerWhoseSyncFailedWithNoProofCandidatesStillEndsItsSegment holds the
+// failed-window half of the entry guard: a segment whose marker flow's sync
+// failed has no proof candidates left — every record lies at or below the
+// synced-through some verifying record names — yet the segment must still
+// end, for a failed sync made it a failed window whose bytes may never have
+// reached the device; keeping the torn tail the unseal wrote would let a later
+// seal pretend a sync that failed had happened.
+func TestAMarkerWhoseSyncFailedWithNoProofCandidatesStillEndsItsSegment(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	through := endA + format.SealMarkerSize // the whole sealed segment, marker included
+	seg := buildSeg(2, syncedRec(200, 0x4100, through))
+	markerOff := int64(len(seg))
+	seg = append(seg, raw.SealMarker{Identity: journalID, Segment: 2, Offset: uint64(markerOff)}.Bytes()...)
+	name := format.SegmentName(2)
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, seg)
+	synced := r.seam.CallsFor(kit.OpSync, name)
+	r.failSyncs(name, 0) // every sync fails
+
+	st := runTails(t, r) // the failed sync is the marker's absence, never the open's failure
+
+	wantFate(t, st, 2, fateEnded, through)
+	if !slices.Equal(st.Proof.FailedWindows, []core.SegmentID{2}) {
+		t.Errorf("FailedWindows got %v, want [2]: the marker flow's failed sync names the one window", st.Proof.FailedWindows)
+	}
+	if len(st.Proof.Reappends) != 0 {
+		t.Errorf("Reappends got %+v, want none: the segment's only record lies at or below the synced-through it names", st.Proof.Reappends)
+	}
+	if calls := r.seam.CallsFor(kit.OpSync, name) - synced; calls != 1 {
+		t.Errorf("the open's syncs of the segment got %d, want 1: the marker flow's failed sync is the segment's one sync", calls)
+	}
+	if calls := r.seam.CallsFor(kit.OpReadDirect, name); calls != 0 {
+		t.Errorf("direct reads of the segment got %d, want 0: a window whose sync failed is never asked of the device", calls)
+	}
+}
+
+// TestAFailedWindowAlwaysEnds guards the same rule where the verdicts inside
+// the failed window are mixed: a torn record in a window whose sync failed
+// ends the segment all the same, for the failed sync leaves bytes the device
+// may never have taken — a torn-tail seal would claim a sync that failed. B
+// alone is the window's record and it is torn, so nothing is handed over; the
+// end is the window's, whatever the verdict inside it.
+func TestAFailedWindowAlwaysEnds(t *testing.T) {
+	a, b, bAt := tailSeg()
+	full := buildSeg(2, a, b)
+	full[bAt+format.RecordHeaderSize+8+2] ^= 0xff // B's payload, torn in the cache as well
+	name := format.SegmentName(2)
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, full)
+	r.failSyncs(name, 1) // the tail's own sync fails, every one after it would pass
+
+	st := runTails(t, r)
+
+	if len(st.Proof.Reappends) != 0 {
+		t.Errorf("Reappends got %+v, want none: the window's one record is torn and holds no copy to re-append", st.Proof.Reappends)
+	}
+	if !slices.Equal(st.Proof.FailedWindows, []core.SegmentID{2}) {
+		t.Errorf("FailedWindows got %v, want [2]: the tail's own sync failed", st.Proof.FailedWindows)
+	}
+	wantFate(t, st, 2, fateEnded, bAt)
+}
+
 // tailLen is the whole size of one tailRec, the record a tail fixture holds
 // past the segment header.
 var tailLen = endAfter(tailRec(200, 0x4100)) - format.SegmentHeaderSize
@@ -415,8 +512,8 @@ func TestABoundaryRecordStraddlingTheSyncPointIsVerified(t *testing.T) {
 // the record has no copy a re-append could keep its numbers from, so it is
 // handed to none — and, treated as never written, it keeps no index entry
 // either: the journal never claims to hold a byte the device never took. A,
-// whose sync proved it whole, stays indexed, and the segment ends at B's
-// own start — the end of the last record that held — never below it.
+// whose sync proved it whole, stays indexed, and the segment seals at B's
+// own start — a torn tail, nothing holding after it, never an ended segment.
 func TestATornTailRecordIsTornNotReportedAndNotReappended(t *testing.T) {
 	a, b, bAt := tailSeg()
 	seg := buildSeg(2, a, b)
@@ -434,7 +531,9 @@ func TestATornTailRecordIsTornNotReportedAndNotReappended(t *testing.T) {
 	if len(st.Tails.Damaged) != 0 {
 		t.Errorf("Damaged got %v, want none: a record the proof finds torn is never damage", st.Tails.Damaged)
 	}
-	wantFate(t, st, 2, fateEnded, bAt)
+	// Nothing holds past the torn record, so its verdict is a torn tail: the
+	// segment is cut there and sealed, not truncated and emptied.
+	wantFate(t, st, 2, fateTornTail, bAt)
 	if got := planted(st); got != 1 {
 		t.Errorf("the index holds %d entries, want 1: A stays indexed and the torn B — treated as never written — is dropped, so no hold claims B's extent", got)
 	}
@@ -774,7 +873,9 @@ func TestATornAsideRecordIsDroppedFromTheScansAsideList(t *testing.T) {
 	if len(sc.Aside) != 0 {
 		t.Errorf("the scan's aside list holds %+v, want it empty: the torn loss record is never written, and no later phase answers for it", sc.Aside)
 	}
-	wantFate(t, st, 2, fateEnded, endA)
+	// The torn aside record is the segment's last, nothing holding after it,
+	// so the verdict is a torn tail like any torn record's is.
+	wantFate(t, st, 2, fateTornTail, endA)
 }
 
 // TestAnUnprovenTailRecordsFirstReadRefusedRefusesTheOpen holds the one
