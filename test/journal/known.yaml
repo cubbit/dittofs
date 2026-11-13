@@ -384,12 +384,29 @@
   issue: '#3378'
   message: 'stub: Inspect.File'
 
-- test: TestRFC1C_CancelledCallChangesNothingOrCompletes
+- test: TestRFC1C_CancelledCallChangesNothingOrCompletes/done_context_appends_nothing
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check''s legs fail each on the call or refusal still missing. Needs the data path checking the context before appending, a call held at the seam completing after its record is written, and failed syncs still reported after a cancelled one.'
+  reason: 'The journal opens and the leg''s write runs; the leg stops at the offload, still a stub, before it can take the append away from the done context.'
   issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_CancelledCallChangesNothingOrCompletes/a_cancelled_sync_still_reports_the_failure
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and the leg''s cancelled sync answers the context''s error; the leg stops at Inspect.File, still a stub, before it can check what the cancelled call left and what the failed one still reports.'
+  issue: '#3379'
+  message: 'stub: Inspect.File'
+
+- test: TestRFC1C_CancelledCallChangesNothingOrCompletes/a_done-context_sync_still_reports_a_later_failure
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The background sync of the bound hits the failing one and the cancelled sync answers the context''s error; the leg stops at Sync, still a stub, which owes it the failure the cancelled call must still report.'
+  issue: '#3379'
+  message: 'stub: Sync'
 
 - test: TestRFC1C_CloneTargetSurvivesCrash
   status: fail
