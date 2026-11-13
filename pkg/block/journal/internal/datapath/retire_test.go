@@ -475,6 +475,18 @@ func TestARecycledRetirementKeepsTheOldID(t *testing.T) {
 	if sparesBefore >= int64(c.contentTarget) {
 		t.Fatalf("the pool holds %d spares, want it below its target %d", sparesBefore, c.contentTarget)
 	}
+	// The maker's reservation enters the set's accounting before the create
+	// it holds parks: the spare's cap is already counted the moment the
+	// hold stands. The baseline the row takes below must include that cap,
+	// so the row waits for the parked create before it reads — a read that
+	// races the reservation takes a baseline one cap low, and the convergence
+	// wait after the recycles then waits for a figure the set can never
+	// reach, for the parked spare's cap has joined its accounting.
+	select {
+	case <-hold.Reached():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pool, below its target, issued no spare create")
+	}
 
 	// The witness: a forget record whose snapshot names the sealed segments
 	// answers undroppable while the snapshot names a segment of the set, and
@@ -503,11 +515,12 @@ func TestARecycledRetirementKeepsTheOldID(t *testing.T) {
 
 	// A recycle's hooks: the footprint does not fall (the cap moved into the
 	// spare pool, it did not return to the filesystem), the pool is one
-	// spare richer per recycle, the retired ids are gone from the set, and
-	// the witness released — the tracker heard the retirement under the old
-	// ids. The two live gauges are waited to their settled values first:
-	// the retirer's completion kicks the pool's counters mid-flight, so a
-	// point-in-time read races the rebalancing rather than the recycle.
+	// spare richer per recycle, and the retired ids are gone from the set.
+	// The two live gauges settle a few steps past the segments' leaving of
+	// the set — a recycle counts its spare into the pool as its own
+	// completed step runs, on the retirer's goroutine — so they are waited
+	// to the figures the recycles must reach, never sampled at a point in
+	// time that the retiring batch has yet to move past.
 	waitIn(t, 5*time.Second, "the recycled cap to settle in the set and the pool", func() bool {
 		return c.set.Counters().UsedBytes == used &&
 			c.pool.Counters().Spares == sparesBefore+int64(len(sealed))
@@ -521,8 +534,15 @@ func TestARecycledRetirementKeepsTheOldID(t *testing.T) {
 	if got, want := c.Retirer().Counters().FreedBytes, uint64(len(sealed))*uint64(testSegmentCap); got != want {
 		t.Fatalf("FreedBytes after %d recycles = %d, want %d (each at the cap %d)", len(sealed), got, want, testSegmentCap)
 	}
-	if !c.liveness.Droppable(rec) {
-		t.Fatal("the forget's snapshot survived the retirement: the registry was not pruned of the old ids, want the record released when the tracker heard the retirement")
+	// The witness released — the tracker heard the retirement under the old
+	// ids — a release that runs still later: the snapshot's pruning rides the
+	// retirement's durable signal, a few steps past the freed bytes the
+	// checks above covered, so the release is awaited, never sampled.
+	waitIn(t, 5*time.Second, "the recycled retirements' witness to be released by their durable signals", func() bool {
+		return c.liveness.Droppable(rec)
+	})
+	if got := c.set.Counters().DoubleRetires; got != 0 {
+		t.Fatalf("DoubleRetires = %d, want 0", got)
 	}
 	if got := c.set.Counters().DoubleRetires; got != 0 {
 		t.Fatalf("DoubleRetires = %d, want 0", got)
