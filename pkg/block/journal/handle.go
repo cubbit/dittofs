@@ -211,8 +211,14 @@ func (h *Handle) WriteAt(ctx context.Context, id FileID, off int64, p []byte, mt
 // the call is durable. A failed sync window returns a SyncError naming the
 // files whose writes it lost; a later successful sync never stands in for
 // them. Sync holds no lock across the sync itself.
+//
+// A done ctx is refused first with its error, and a file of another share
+// with an OtherShareError; either refusal syncs nothing and clears no file's
+// report. A Sync cancelled while it waits returns ctx's error and leaves the
+// sync running for the other writes it covers, and its outcome to the next
+// Sync of the file.
 func (h *Handle) Sync(ctx context.Context, ids ...FileID) error {
-	return ErrNotImplemented
+	return h.j.core.Sync(ctx, h.s, ids...)
 }
 
 // ReadAt fills p from the extents of file id the journal holds, starting at

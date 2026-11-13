@@ -152,8 +152,12 @@ type batchHold struct {
 }
 
 // Stall makes the store commit no existence from now on: each commit waits
-// until its context ends.
-func (f *Fixture) Stall() { f.stalled.Store(true) }
+// until its context ends. The test's cleanup lifts it before the fixture's
+// close, whose last group commit would otherwise wait out its bound.
+func (f *Fixture) Stall() {
+	f.stalled.Store(true)
+	f.t.Cleanup(func() { f.stalled.Store(false) })
+}
 
 // HoldNextClone holds the next clone's phase 1 at the store, with both of
 // its files registered, until release is called; entered is closed once it
@@ -1169,9 +1173,12 @@ func (f *Fixture) Heal() { f.faults.SetFault(nil) }
 
 // fault replaces the store's faults with rules, delays on the fixture's
 // clock, and answers a channel closed once the store first runs a write
-// transaction under them.
+// transaction under them. The test's cleanup heals them before the fixture's
+// close, whose last group commit would otherwise wait out its bound on a file
+// they keep failing.
 func (f *Fixture) fault(rules ...sim.Rule) <-chan struct{} {
 	f.t.Helper()
+	f.t.Cleanup(f.Heal)
 	s, err := sim.NewSchedule(1, f.Clock, rules...)
 	if err != nil {
 		f.t.Fatalf("fixture: fault schedule: %v", err)

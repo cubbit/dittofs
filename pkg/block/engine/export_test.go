@@ -13,7 +13,11 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
+
+// RecordBytes is what one copy of n payload bytes reserves in the journal.
+var RecordBytes = recordBytes
 
 // ErrNotStarted is the answer of a Bind while no journal is open.
 var ErrNotStarted = errNotStarted
@@ -732,6 +736,19 @@ func WithRetryingOwner(ctx context.Context) context.Context { return withRetryin
 // self-fence.
 func (e *Engine) StoreViews() (Existence, Content, Lifecycle) {
 	return e.d.Existence, e.d.Content, e.d.Lifecycle
+}
+
+// CommitSplit is the group commit's split of one batch committing files of
+// share s, with no operations, under a retrying owner of its own; it answers
+// how many files the split failed.
+func (e *Engine) CommitSplit(ctx context.Context, s entity.ShareID, files ...entity.FileID) int {
+	pending := make([]kvstore.PendingExistence, len(files))
+	for i, f := range files {
+		pending[i] = kvstore.PendingExistence{Share: s, File: f}
+	}
+	failed := map[entity.FileID]error{}
+	_, _ = e.commitSplit(withRetryingOwner(ctx), pending, nil, failed, map[entity.FileID]bool{})
+	return len(failed)
 }
 
 // FenceBusy is the self-fence's count of write transactions outstanding and

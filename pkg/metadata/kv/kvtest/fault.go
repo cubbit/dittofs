@@ -28,6 +28,12 @@ const (
 	OpGuardRange = "guard_range"
 )
 
+// ErrUnanswered, as a rule's Err on update, makes the call a store that
+// answers nothing: it waits until its context ends and returns the context's
+// error, never running fn. On any other op it panics, as those take no
+// context to wait on.
+var ErrUnanswered = errors.New("kvtest: the store answers nothing")
+
 // FaultKV is a kv.KV over another that consults a sim.Fault before each
 // operation, so a test can stall the store, fail its calls, or fail one
 // file's existence commit, from a seeded schedule read from a test clock.
@@ -86,7 +92,8 @@ func NewFaultKV(inner kv.KV) *FaultKV {
 //     nothing itself. It does not watch ctx meanwhile. f is called without
 //     the wrapper's lock held, so a delay stalls only its own call.
 //   - err on update or view: returns err at once; fn never runs and nothing
-//     is committed.
+//     is committed. ErrUnanswered on update instead waits for ctx to end and
+//     returns its error.
 //   - err on any other op: that op returns err and the inner op is not
 //     called. A kv.ErrConflict on an op inside an Update is returned as is,
 //     so the backend's retry runs fn again.
@@ -153,6 +160,10 @@ func (f *FaultKV) consult(op string, key []byte, bareConflict bool) error {
 	// retry is what turns it into a new attempt. Overturn this only for a
 	// backend whose contract lets a conflict reach the caller of a View or of
 	// an Update.
+	if op != OpUpdate && errors.Is(err, ErrUnanswered) {
+		panic(fmt.Sprintf("kvtest: an unanswered %s is not supported: only update waits on its context", op))
+	}
+
 	if !bareConflict && errors.Is(err, kv.ErrConflict) {
 		panic(fmt.Sprintf("kvtest: a conflict on %s is not supported: it is never returned", op))
 	}
@@ -161,7 +172,11 @@ func (f *FaultKV) consult(op string, key []byte, bareConflict bool) error {
 }
 
 func (f *FaultKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
-	if err := f.consult(OpUpdate, nil, false); err != nil {
+	if err := f.consult(OpUpdate, nil, false); errors.Is(err, ErrUnanswered) {
+		<-ctx.Done()
+
+		return ctx.Err()
+	} else if err != nil {
 		return err
 	}
 

@@ -1293,3 +1293,46 @@ func TestSelfFenceNotOnAFileWhoseWritesTheBatchDropped(t *testing.T) {
 		t.Errorf("node_fenced %v a quiet minute after the file's writes were dropped, want none", c)
 	}
 }
+
+// The group commit's split over a store that answers nothing: a cut by the
+// bound, the conflict bound's for one file or batchConflictBound's for a
+// batch, fails the owner at the store, and the caller's own cancel of a held
+// batch fails nothing. A split cutting its calls with no errBoundCut cause
+// reads either cut as the caller's and fails nothing.
+func TestSelfFenceGroupCommitSplitCut(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		files   int
+		bound   time.Duration // the conflict bound
+		cancel  bool          // the caller cancels once the call is held
+		failing bool
+	}{
+		{"one file cut by the conflict bound", 1, 5 * time.Millisecond, false, true},
+		{"a batch cut by batchConflictBound", 2, time.Hour, false, true},
+		{"a batch its caller cancelled", 2, time.Hour, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newFenceUnit(t)
+			u.e.SetConflictBound(tc.bound)
+			files := make([]entity.FileID, tc.files)
+			for i := range files {
+				files[i] = u.create(t, fmt.Sprint("f", i))
+			}
+			u.fault(t, everyUpdate(sim.FaultAction{Err: kvtest.ErrUnanswered}))
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			failed := make(chan int, 1)
+			go func() { failed <- u.e.CommitSplit(ctx, u.share.ID, files...) }()
+			if tc.cancel {
+				u.outstanding(t)
+				cancel()
+			}
+			if n := <-failed; n != tc.files {
+				t.Errorf("%d files failed, want all %d", n, tc.files)
+			}
+			if _, got := u.e.FenceBusy(); got != tc.failing {
+				t.Errorf("owner failing after %s: %v, want %v", tc.name, got, tc.failing)
+			}
+		})
+	}
+}

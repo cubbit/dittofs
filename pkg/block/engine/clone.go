@@ -560,10 +560,20 @@ func (e *Engine) prepare(ctx context.Context, c *cloneRun, x vfserr.Extent) erro
 	return nil
 }
 
+// recordBytes is what one copy of n payload bytes appends to the journal, the
+// record bytes Reserve's n counts (RFC 1 §6): a write record's 96-byte header,
+// its 8-byte modification time and the payload, padded to 8 bytes (RFC 28
+// §2.3). A copy is at most copyBuf, far below a segment's cap, so its record is
+// never split at one.
+//
+// ponytail: the engine restates the journal's record layout. Take the figure
+// from the journal instead if it ever exports one, or if the layout changes.
+func recordBytes(n int64) int64 { return (96 + 8 + n + 7) &^ 7 }
+
 // size resolves the source extent in windows of copyBuf, keeping its held
 // runs but where the destination already holds their copies (kept), and
-// reserves on the destination's handle every byte and write the copies
-// need, so no copy is refused part-way. It answers the newest version the
+// reserves on the destination's handle every record byte and write the
+// copies need, so no copy is refused part-way. It answers the newest version the
 // source was read at.
 //
 // The reservation is answered by the refusal table. With client set, a clone
@@ -591,7 +601,7 @@ func (e *Engine) size(ctx context.Context, c *cloneRun, client bool) (journal.Ve
 	}
 	c.runs = uncovered(c.runs, c.kept)
 	for _, h := range c.runs {
-		n += h.Extent.Len
+		n += recordBytes(h.Extent.Len)
 	}
 	if len(c.runs) > 0 {
 		reserve := func() (Reservation, error) {

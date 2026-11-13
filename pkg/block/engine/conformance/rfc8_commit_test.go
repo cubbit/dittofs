@@ -7,8 +7,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/bits"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -80,9 +82,14 @@ func TestRFC8A_StalledStore(t *testing.T) {
 	}
 }
 
-// 64 writers flushing while chmod writes random files' records: every flush
-// is answered, none waiting past its deadline on another file's conflict.
+// 64 writers flushing while chmod rewrites random files' records at 10³/s,
+// B7's storm: every flush is answered within its deadline, none waiting past
+// it on another file's conflict, and the split costs at most log₂ G extra
+// transactions for each file a chmod made conflict.
 func TestRFC8A_GroupCommit(t *testing.T) {
+	// The writers flush until the storm has split batches often enough to
+	// show the split's cost, at most rounds times each.
+	const rounds, splitsWanted, deadline = 200, 32, 2 * time.Second
 	f := enginetest.New(t)
 	type file struct {
 		h  entity.Handle
@@ -96,20 +103,29 @@ func TestRFC8A_GroupCommit(t *testing.T) {
 	}
 	f.Clock.Advance(enginetest.Settings.ExistenceAge)
 	eventually(t, "every file's first write commits", func() bool { return f.Committed(files[63].h).Size == 9 })
+	before := f.E.Stats().GroupCommitSplits
 
 	stop := make(chan struct{})
-	var chmods sync.WaitGroup
-	chmods.Add(1)
+	var chmods atomic.Int64
+	var storm sync.WaitGroup
+	storm.Add(1)
 	go func() {
-		defer chmods.Done()
+		defer storm.Done()
+		tick := time.NewTicker(time.Millisecond) // paces the load at B7's rate
+		defer tick.Stop()
 		for i := 0; ; i++ {
 			select {
 			case <-stop:
 				return
-			default:
+			case <-tick.C:
 			}
+			// The injected clock keeps pace, so a file the split left failing
+			// alone is retried once its backoff runs out.
+			f.Clock.Advance(time.Millisecond)
 			h := files[rand.IntN(len(files))].h
-			_, _ = f.FS.Store.Files().SetAttrs(context.Background(), f.FS.Admin, h, entity.Attrs{}.WithMode(uint32(0o600+i%2)))
+			if _, err := f.FS.Store.Files().SetAttrs(context.Background(), f.FS.Admin, h, entity.Attrs{}.WithMode(uint32(0o600+i%2))); err == nil {
+				chmods.Add(1)
+			}
 		}
 	}()
 	var flushes sync.WaitGroup
@@ -117,9 +133,9 @@ func TestRFC8A_GroupCommit(t *testing.T) {
 		flushes.Add(1)
 		go func() {
 			defer flushes.Done()
-			for n := range 4 {
-				write(t, f, fl.id, 0, []byte(fmt.Sprintf("overwrite%d", n)))
-				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			for n := 0; n < rounds && f.E.Stats().GroupCommitSplits-before < splitsWanted; n++ {
+				write(t, f, fl.id, 0, []byte(fmt.Sprintf("overwrite%d", n%10)))
+				ctx, cancel := context.WithTimeout(t.Context(), deadline)
 				_, _, err := f.E.Commit(ctx, f.Share.ID, fl.id, 0, 10)
 				cancel()
 				if err != nil {
@@ -131,7 +147,18 @@ func TestRFC8A_GroupCommit(t *testing.T) {
 	}
 	flushes.Wait()
 	close(stop)
-	chmods.Wait()
+	storm.Wait()
+
+	splits, n := f.E.Stats().GroupCommitSplits-before, chmods.Load()
+	if splits < splitsWanted {
+		t.Errorf("%d batch splits beside %d chmods, want %d: too few flushes met a conflict for the row to check the split", splits, n, splitsWanted)
+	}
+	// A chmod makes at most one file conflict, and each conflicting file
+	// costs at most log₂ G splits.
+	lg := int64(bits.Len(uint(enginetest.Settings.GroupCommitMaxFiles - 1)))
+	if splits > n*lg {
+		t.Errorf("%d splits beside %d chmods, want at most %d: log₂ G = %d a conflicting file", splits, n, n*lg, lg)
+	}
 }
 
 // A sync window the journal fails is reported to the file's next Commit as a

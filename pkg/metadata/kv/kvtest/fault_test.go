@@ -1006,6 +1006,20 @@ func TestFaultRefusesWhatItCannotApply(t *testing.T) {
 		})
 	}
 
+	// Only update takes a context to wait on.
+	for _, c := range slices.Concat(txnCalls, viewCalls, callCalls) {
+		if c.op == kvtest.OpUpdate {
+			continue
+		}
+
+		cases = append(cases, refused{
+			name:   c.name + "/unanswered",
+			call:   c,
+			kind:   "unanswered",
+			action: sim.FaultAction{Err: kvtest.ErrUnanswered},
+		})
+	}
+
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f := kvtest.NewFaultKV(withPrefixData(t))
@@ -1028,6 +1042,63 @@ func TestFaultRefusesWhatItCannotApply(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+// doneWatch is a context that closes asked when the call it is handed first
+// waits on it, so the test ends it only once the call is held.
+type doneWatch struct {
+	context.Context
+	asked chan struct{}
+	once  sync.Once
+}
+
+func (w *doneWatch) Done() <-chan struct{} {
+	w.once.Do(func() { close(w.asked) })
+
+	return w.Context.Done()
+}
+
+// ErrUnanswered on update holds the call until its context ends, then
+// returns the context's error with its cause, fn never running and nothing
+// committed; the next call passes.
+func TestFaultUnansweredUpdateWaitsForItsContext(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	inner := memStore(t)
+	f := kvtest.NewFaultKV(inner)
+	f.SetFault(schedule(t, nil, sim.Rule{
+		Op:     kvtest.OpUpdate,
+		Key:    "*",
+		Count:  1,
+		Action: sim.FaultAction{Err: kvtest.ErrUnanswered},
+	}))
+
+	cut := errors.New("cut")
+	parent, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
+	ctx := &doneWatch{Context: parent, asked: make(chan struct{})}
+	go func() {
+		<-ctx.asked
+		cancel(cut)
+	}()
+
+	ran := 0
+	err := f.Update(ctx, func(tx kv.Txn) error {
+		ran++
+
+		return tx.Set(inside, []byte("v"))
+	})
+	if !errors.Is(err, context.Canceled) || !errors.Is(context.Cause(ctx), cut) {
+		t.Fatalf("an unanswered Update returned %v (cause %v), want context.Canceled with the caller's cause", err, context.Cause(ctx))
+	}
+
+	if ran != 0 || stored(t, inner, inside) {
+		t.Errorf("an unanswered Update ran fn %d times, stored %v, want 0 and nothing", ran, stored(t, inner, inside))
+	}
+
+	if err := put(t.Context(), f, inside); err != nil {
+		t.Errorf("the Update after the unanswered one: %v, want committed", err)
 	}
 }
 
