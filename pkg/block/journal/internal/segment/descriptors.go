@@ -65,12 +65,10 @@ type Descriptors struct {
 	budget     *core.DescriptorBudget
 	unregister func()
 
-	// rec is the lock-order recorder a reference's guard holds report to:
-	// each storage guard hold is recorded with the entry it holds, on the
-	// acquisition the reference is built by and the release that returns
-	// it, and Close's drain wait with the one exclusive hold it takes. The
-	// zero value records nothing; the reference and the drain work as they
-	// always did.
+	// rec is the lock-order recorder the cache's guard holds report to:
+	// every Acquire reports its requested reference, granted or refused, and
+	// Close's drain wait the one exclusive hold it takes. The zero value
+	// records nothing; the reference and the drain work as they always did.
 	rec atomic.Pointer[lockorder.Recorder]
 
 	// decision: mu is a leaf — never held across a storage call or a wait,
@@ -207,18 +205,6 @@ func (c *Descriptors) SetRecorder(rec *lockorder.Recorder) {
 	c.rec.Store(rec)
 }
 
-// guardAcquire checks the storage guard rules for a reference to e that was
-// just granted: the segment's descriptor is held open and its bytes cannot
-// be freed or moved until the matching release. A reference never waits on
-// a lock once granted, and is on no goroutine's books, since the stream
-// keeps one across rolls and a reader may release on another goroutine; the
-// acquire that builds it can itself wait, on an in-flight open of the same
-// segment and on the descriptor budget's reclaim, so the rules are checked
-// after the grant. Nil-safe: a cache with no recorder records nothing.
-func (c *Descriptors) guardAcquire(e *descEntry) {
-	c.rec.Load().AcquireRef(e)
-}
-
 // drainAcquire records the exclusive storage guard hold Close's drain wait
 // takes: the one guard form that waits for holders, so the one checked
 // against every lock the goroutine holds; a reference is not one of them.
@@ -236,12 +222,19 @@ func (c *Descriptors) drainRelease(e *descEntry) {
 // concurrent Acquire of the same segment waits on the open rather than
 // issuing its own.
 //
+// The storage guard rules are checked at the entry, before anything the call
+// reaches runs: a reference must not be requested while holding the file
+// index or the file map, granted or refused, and a refusal — or a wait on an
+// in-flight open — can follow work that already ran under the caller's
+// locks, so the request itself is what the recorder sees.
+//
 // It returns ErrSegmentGone when the segment's Close has started or its file
 // no longer exists, ErrCacheClosed after Shutdown, and ErrNoDescriptor when
 // the budget's slots are all held by references or pinned by dirty
 // descriptors and none of the process's caches can close one for this
 // acquire. The refusal performs no I/O and waits for nothing.
 func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
+	c.rec.Load().AcquireRef(id)
 	c.mu.Lock()
 	if c.shut {
 		c.mu.Unlock()
@@ -260,7 +253,6 @@ func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
 		e.refs++
 		c.totalRefs++
 		c.mu.Unlock()
-		c.guardAcquire(e)
 		return Ref{c: c, e: e}, nil
 	}
 
@@ -352,7 +344,6 @@ func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
 	}
 	c.mu.Unlock()
 	close(op.done)
-	c.guardAcquire(e)
 	return Ref{c: c, e: e}, nil
 }
 
@@ -388,7 +379,6 @@ func (c *Descriptors) refAfterOpen(e *descEntry, op *openCall) (Ref, error) {
 	// is caught above — the reclaim cannot, because it takes only a
 	// descriptor no reference holds, and this waiter's has been held since
 	// before the wait.
-	c.guardAcquire(e)
 	return Ref{c: c, e: e}, nil
 }
 

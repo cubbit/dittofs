@@ -172,15 +172,17 @@ func (r *Recorder) acquire(rank Rank, id any, leaf bool) {
 }
 
 // AcquireRef checks the rules at the moment a storage guard reference is
-// granted and records nothing on the goroutine's books. A reference is a
-// pin that never waits on a lock once granted: the stream keeps its active
-// segment's reference from one roll to the next and whichever goroutine
-// rolls next releases it, readers hold theirs across their copy, so no
-// goroutine owns one. Acquire itself can wait, on an in-flight open of the
-// same segment and on the descriptor budget's reclaim, which is why the
-// call comes after the grant. Taken under the file index or the file map
-// the reference is reported like any other acquisition; the id names the
-// entry and is not kept.
+// requested — at the entry of the cache's Acquire, granted or refused — and
+// records nothing on the goroutine's books. A reference is a pin that never
+// waits on a lock once granted: the stream keeps its active segment's
+// reference from one roll to the next and whichever goroutine rolls next
+// releases it, readers hold theirs across their copy, so no goroutine owns
+// one. The requesting Acquire can itself wait, on an in-flight open of the
+// same segment and on the descriptor budget's reclaim, and can be refused,
+// either of which can follow work that already ran under the caller's
+// locks, which is why the check runs on the request rather than the grant.
+// Requested under the file index or the file map the reference is reported
+// like any other acquisition; the id names the segment and is not kept.
 func (r *Recorder) AcquireRef(id any) {
 	if r == nil {
 		return
@@ -200,12 +202,14 @@ func (r *Recorder) AcquireRef(id any) {
 // wait's wait-under-lock; out of order.
 //
 // decision: a reference is not on any goroutine's books, so the drain wait
-// is checked against the plain locks the goroutine holds and nothing else.
-// What this gives up is the two-segment cycle, one goroutine pinning S1
-// while it drains S2 and another the mirror, and a drain wait made while
-// holding a pin of its own segment. Production retirers hold no pins, so
-// the recorder never needs to see one. Withdraw it if a retirer ever holds
-// a reference across a drain.
+// is checked against the plain locks the goroutine holds and nothing else:
+// the drain must also hold no guard reference, and a reference is invisible
+// to this check, so a drain entered while its own goroutine holds a pin of
+// another segment is unreported. What this gives up is the two-segment
+// cycle, one goroutine pinning S1 while it drains S2 and another the
+// mirror, and a drain wait made while holding a pin of its own segment.
+// Production retirers hold no pins, so the recorder never needs to see
+// one. Withdraw it if a retirer ever holds a reference across a drain.
 func (r *Recorder) recordAcquisition(heldNow []heldLock, rank Rank, isRef bool) {
 	var kind Kind
 	for _, h := range heldNow {

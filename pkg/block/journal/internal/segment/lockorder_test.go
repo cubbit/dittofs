@@ -1,6 +1,7 @@
 package segment_test
 
 import (
+	"errors"
 	"runtime"
 	"slices"
 	"sync"
@@ -464,10 +465,11 @@ type errNoSegment struct{}
 func (errNoSegment) Error() string { return "the append landed in no segment" }
 
 // TestGuardRecorded checks the descriptor reference is the segment's storage
-// guard under the recorder: an Acquire checks the rules as the reference is
-// granted and leaves the caller's books empty, and Close's drain wait takes
-// the guard for the length of its wait — which a probe holding the file index
-// makes report, so the check cannot pass over an unrecorded guard.
+// guard under the recorder: an Acquire checks the rules at the reference's
+// request — granted or refused — and leaves the caller's books empty, and
+// Close's drain wait takes the guard for the length of its wait — which a
+// probe holding the file index makes report, so the check cannot pass over
+// an unrecorded guard.
 func TestGuardRecorded(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -628,6 +630,56 @@ func TestGuardRecorded(t *testing.T) {
 	}
 	if held := probe2.Held(); len(held) != 0 {
 		t.Fatalf("the waiting goroutine holds ranks %v after its grant, want none", held)
+	}
+
+	// A refused request reports the same rule as a granted one, under the
+	// probe's file index: a reference must not be requested while it is held,
+	// whether the acquire is granted or turned away. Two refusals for
+	// different reasons — one by a shut cache, one of a segment whose Close
+	// started — each report exactly once, on a recorder of their own.
+	shutCache := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(4))
+	goneCache := segment.NewDescriptors(seam.FS(), format.SegmentName, core.NewDescriptorBudget(4))
+	shutRegister(t, shutCache)
+	shutRegister(t, goneCache)
+	if err := shutCache.Shutdown(); err != nil {
+		t.Fatalf("the shut cache's Shutdown: %v", err)
+	}
+	shutID, err := m.Make()
+	if err != nil {
+		t.Fatalf("Make of the shut cache's segment: %v", err)
+	}
+	goneID, err := m.Make()
+	if err != nil {
+		t.Fatalf("Make of the gone cache's segment: %v", err)
+	}
+	if err := goneCache.Close(goneID); err != nil {
+		t.Fatalf("Close of the gone cache's segment %d: %v", goneID, err)
+	}
+	refused := []struct {
+		name string
+		c    *segment.Descriptors
+		id   core.SegmentID
+		want error
+	}{
+		{"after Shutdown", shutCache, shutID, segment.ErrCacheClosed},
+		{"of a gone segment", goneCache, goneID, segment.ErrSegmentGone},
+	}
+	for _, tc := range refused {
+		rp := lockorder.NewRecorder()
+		tc.c.SetRecorder(rp)
+		rp.Acquire(lockorder.FileIndex, "probe")
+		_, err := tc.c.Acquire(tc.id)
+		rp.Release("probe")
+		if !errors.Is(err, tc.want) {
+			t.Fatalf("the refused acquire %s: got %v, want %v", tc.name, err, tc.want)
+		}
+		vsr := rp.Violations()
+		if len(vsr) != 1 || vsr[0].Kind != lockorder.GuardUnderIndex || vsr[0].Rank != lockorder.StorageGuard {
+			t.Fatalf("the refused request %s recorded %+v, want exactly one guard under index of storage guard", tc.name, vsr)
+		}
+		if held := rp.Held(); len(held) != 0 {
+			t.Fatalf("the test goroutine holds ranks %v after the refused request %s, want none", held, tc.name)
+		}
 	}
 }
 
