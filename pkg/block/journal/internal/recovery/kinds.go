@@ -176,11 +176,6 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 	// decoded keeps what the first pass read — each aside's record and the
 	// scan it sits on — so the second pass decides the records against the
 	// complete maps without reading again.
-	type decoded struct {
-		sc *segmentScan
-		h  format.RecordHeader
-		l  format.Loss
-	}
 	var (
 		dl []decoded // the loss records that decoded
 		df []decoded // the forget records, headerborne facts alone
@@ -222,26 +217,22 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 
 	// The cover maps are built from every fact the pass decoded, before any
 	// aside's own effect is decided, so whether an aside is covered never
-	// depends on the order its segment was scanned in. The loss names are
-	// gated on covered like every effect a loss carries is: a covered loss
-	// record holds no effect anywhere, its withhold and its clip together or
-	// neither — a name that acted alone would leave a hole in the feed with
-	// no event, cut or marker explaining it, and a clip with no cut is a
-	// state no rule of the disk can produce. The forget map completes before
-	// the gate, so a forget covering a loss needs no scan order; a loss named
-	// only by another loss gains its name only if that one was decoded
-	// first and uncovered — a chain of mutually-naming losses is damage no
-	// writer writes. A record that another rule also drops is covered only
-	// by that record, never by its own name.
-	for _, d := range df {
+	// depends on the order its segment was scanned in. Which of the decoded
+	// loss and forget records hold an effect at all is decided first, by
+	// effectiveAsides below, and every map the pass builds — the names the
+	// feed withholds by, the forget cover both covered() and the feed read,
+	// and the collected open losses and forgets — builds from the effective
+	// alone: a covered record holds no effect anywhere, its withhold and its
+	// cover of another aside together or neither, so a rule that withholds
+	// nothing of its own covers nothing either. A record that another rule
+	// drops is covered only by that record, never by its own name.
+	effLoss, effForget := ks.effectiveAsides(dl, df)
+	for _, d := range effForget {
 		if f, ok := ks.forget[d.h.Tag]; !ok || d.h.Seq > f {
 			ks.forget[d.h.Tag] = d.h.Seq
 		}
 	}
-	for _, d := range dl {
-		if ks.covered(d.h.Seq, d.h.Tag) {
-			continue // another rule already drops this loss record
-		}
+	for _, d := range effLoss {
 		if d.l.Synced && d.l.Reason == format.LossSuperseded {
 			sup := ks.superseded[d.l.Dropped]
 			sup.extents = append(sup.extents, d.h.Extent)
@@ -252,10 +243,7 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 		}
 	}
 
-	for _, d := range dl {
-		if ks.covered(d.h.Seq, d.h.Tag) {
-			continue // another rule already drops this loss record
-		}
+	for _, d := range effLoss {
 		piece := lossPiece{seq: d.l.Dropped, ext: d.h.Extent}
 		if ks.pieces[piece] {
 			continue // the piece is delivered: a carried-forward copy reports once
@@ -278,19 +266,12 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 	}
 
 	highest := map[core.ShareTag]core.Seq{}
-	for _, d := range df {
-		if ks.covered(d.h.Seq, d.h.Tag) {
-			continue // another rule already drops this forget record
-		}
+	for _, d := range effForget {
 		if f, ok := highest[d.h.Tag]; !ok || d.h.Seq > f {
 			highest[d.h.Tag] = d.h.Seq
 		}
 	}
 	for _, tag := range slices.Sorted(maps.Keys(highest)) {
-		// A covered forget reaches the cover map above but never this
-		// slice: the record that covers its seq drops it whole, so withholds
-		// below its seq are still the truth of the feed, while a collected
-		// forget would name a tag whose seq the feed dropped another way.
 		ks.Forgets = append(ks.Forgets, OpenForget{Tag: tag, Seq: highest[tag]})
 	}
 
@@ -319,6 +300,149 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 			core.ErrNotImplemented, d.h.Kind, d.h.Segment, d.h.Offset)
 	}
 	return ks, nil
+}
+
+// decoded is one aside record the first pass read: its header, the scan it
+// sits on — nil for a forget, whose facts are headerborne alone — and, for a
+// loss, the body it decoded.
+type decoded struct {
+	sc *segmentScan
+	h  format.RecordHeader
+	l  format.Loss
+}
+
+// effectiveAsides decides which of the decoded loss and forget records hold
+// an effect at all — the ones no effective rule drops. Rule 6 is uniform: a
+// covered record has no effect anywhere, its name, its cover of another
+// aside and its hold on the feed together or neither, so the maps the feed
+// withholds by, the forget map covered() reads and the collected open
+// forgets build from the answer here, and a rule that withholds nothing of
+// its own covers nothing either.
+//
+// Coverage resolves round about — a loss may be covered by a forget whose
+// own seq the failed list or a loss name covers — so the effective set
+// grows over rounds, locking each move as it passes: a record joins when no
+// effective name, no failed seq and no effective forget of its tag above it
+// covers it, its own name excluded (a record never covers itself), and a
+// later round's cover leaves it, never to return. Each record moves at most
+// once in and once out, so the rounds settle; a pair of records that cover
+// one another leaves both out, the lock keeping the paradox from cycling:
+// damage no writer writes.
+func (ks *kindState) effectiveAsides(dl, df []decoded) (losses, forgets []decoded) {
+	var (
+		inLoss, inForget      = make([]bool, len(dl)), make([]bool, len(df))
+		lockedLoss, lockedFor = make([]bool, len(dl)), make([]bool, len(df))
+	)
+	// covers answers for one record, judged against the maps the working
+	// set builds; the name maps carry the contributing records, and a
+	// record's own name never covers itself. A forget contributes to a tag
+	// max it is never below, so no forget covers itself and no exclusion is
+	// needed there.
+	covers := func(names, sups map[core.Seq][]int, forgot map[core.ShareTag]core.Seq, seq core.Seq, tag core.ShareTag, self int) bool {
+		if ks.failed[seq] {
+			return true
+		}
+		for _, by := range names[seq] {
+			if by != self {
+				return true
+			}
+		}
+		for _, by := range sups[seq] {
+			if by != self {
+				return true
+			}
+		}
+		if f, ok := forgot[tag]; ok && seq < f {
+			return true
+		}
+		return false
+	}
+	for changed := true; changed; {
+		changed = false
+		// The maps of the round: the names and the forget maxima the
+		// records working at its start carry.
+		names, sups := map[core.Seq][]int{}, map[core.Seq][]int{}
+		forgot := map[core.ShareTag]core.Seq{}
+		for i := range dl {
+			if !inLoss[i] {
+				continue
+			}
+			if dl[i].l.Synced && dl[i].l.Reason == format.LossSuperseded {
+				sups[dl[i].l.Dropped] = append(sups[dl[i].l.Dropped], i)
+			} else {
+				names[dl[i].l.Dropped] = append(names[dl[i].l.Dropped], i)
+			}
+		}
+		for i := range df {
+			if !inForget[i] {
+				continue
+			}
+			if f, ok := forgot[df[i].h.Tag]; !ok || df[i].h.Seq > f {
+				forgot[df[i].h.Tag] = df[i].h.Seq
+			}
+		}
+		// A working record the round's cover catches leaves, locked out; a
+		// record not working and not locked that the round's cover misses
+		// joins. Records judged with this round's maps settle at its end,
+		// and the loop runs one round more whenever a round changed
+		// anything.
+		for i := range dl {
+			covered := covers(names, sups, forgot, dl[i].h.Seq, dl[i].h.Tag, i)
+			if !inLoss[i] {
+				if !lockedLoss[i] && !covered {
+					inLoss[i], changed = true, true
+				}
+				continue
+			}
+			if covered {
+				inLoss[i], lockedLoss[i], changed = false, true, true
+			}
+		}
+		for i := range df {
+			covered := covers(names, sups, forgot, df[i].h.Seq, df[i].h.Tag, -1)
+			if !inForget[i] {
+				if !lockedFor[i] && !covered {
+					inForget[i], changed = true, true
+				}
+				continue
+			}
+			if covered {
+				inForget[i], lockedFor[i], changed = false, true, true
+			}
+		}
+	}
+	for i := range dl {
+		if inLoss[i] {
+			losses = append(losses, dl[i])
+		}
+	}
+	for i := range df {
+		if inForget[i] {
+			forgets = append(forgets, df[i])
+		}
+	}
+	return losses, forgets
+}
+
+// withheldWhole reports whether a rule drops rec whole, whatever a
+// superseded loss names over an extent beside it: a seq on the failed
+// list, a whole loss name, or a forget of the record's tag above its seq.
+// The feed's whole-withhold and the remainder pass's skip read this one
+// answer, so a record one rule drops whole is never read back at open — its
+// kept runs confine nowhere while it withholds anyway, and a rotten record
+// another rule already holds whole would otherwise confine fresh at every
+// open, its corrupt drop naming a record the feed serves nothing of.
+func (ks *kindState) withheldWhole(rec index.Record) bool {
+	seq := rec.Numbers.Seq
+	if ks.failed[seq] || ks.whole[seq] {
+		return true
+	}
+	for i := range ks.Forgets {
+		if ks.Forgets[i].Tag == rec.Tag && seq < ks.Forgets[i].Seq {
+			return true
+		}
+	}
+	return false
 }
 
 // covered reports whether another rule the pass decoded already drops the
@@ -419,12 +543,15 @@ func keptRuns(e core.Extent, cuts []core.Extent) []core.Extent {
 // elsewhere. A read no bounded attempt cleared refuses the open on the
 // ranges the reader collected, never as a corrupt verdict.
 //
-// decision: a record the loss extents cover whole is verified not at all —
-// no byte it holds would ever feed, so no read of it would serve — and a
-// removal, release or mark the loss names is left to its own kind's rules,
-// the clip being a content cut. The whole-payload verify is the ceiling this
-// pays for keeping the format's one checksum; overturned by a ruled checksum
-// per payload piece, which a partly-superseded record could yet verify by.
+// decision: a record the loss extents cover whole, one another rule already
+// withholds whole (wholeWithheld) or a removal, release or mark the loss
+// names, is verified not at all — no byte it holds would ever feed, so no
+// read of it would serve, and a record another rule withholds whole never
+// meets the read that would catch it, so confining it would re-drop, every
+// open, a record the feed serves nothing of. The whole-payload verify is
+// the ceiling this pays for keeping the format's one checksum; overturned
+// by a ruled checksum per payload piece, which a partly-superseded record
+// could yet verify by.
 func (ks *kindState) verifyRemainders(rd *reader, identity core.JournalID, scs []segmentScan) error {
 	for i := range scs {
 		sc := &scs[i]
@@ -432,6 +559,9 @@ func (ks *kindState) verifyRemainders(rd *reader, identity core.JournalID, scs [
 			sup, named := ks.superseded[rec.Numbers.Seq]
 			if !named || (rec.Kind != index.RecWrite && rec.Kind != index.RecFill) {
 				continue
+			}
+			if ks.withheldWhole(rec) {
+				continue // another rule drops the record whole: no run of it feeds
 			}
 			kept := keptRuns(core.Extent{Off: rec.Off, Len: rec.Len}, sup.extents)
 			if len(kept) == 0 {
@@ -502,14 +632,6 @@ func (ks *kindState) applyCuts(ix *index.Index) error {
 	return nil
 }
 
-// subtractCopies is the bad-copy half of the copies rule, run once the tail's
-// classing has judged every drop: a corrupt drop an equal-sequence record
-// another scan holds in a kept-fate segment — kept by keptFate's one policy
-// — is removed from Corrupt, for the live copy serves what the drop guarded
-// and the loss record a later open would append for it would drop a record
-// a twin contradicts. Damaged is not touched: the classing's verdict on the
-// segment stands whatever serves in its place, and the tail phases cut and
-// report by it.
 // keptFate is the open's fate policy as one predicate: whether the open
 // keeps a segment — every fate the classing names except torn-tail and
 // ended, and a segment no fate names keeps, for only the classing names an
@@ -527,16 +649,32 @@ func keptFate(tl tails) func(core.SegmentID) bool {
 	}
 }
 
+// subtractCopies is the bad-copy half of the copies rule, run once the tail's
+// classing has judged every drop: a corrupt drop an equal-sequence record
+// another scan holds in a kept-fate segment — kept by keptFate's one policy
+// — is removed from Corrupt, for the live copy serves what the drop guarded
+// and the loss record a later open would append for it would drop a record
+// a twin contradicts. Damaged is not touched: the classing's verdict on the
+// segment stands whatever serves in its place, and the tail phases cut and
+// report by it.
 func (ks *kindState) subtractCopies(scans []segmentScan, tl tails) []corruptRecord {
 	kept := keptFate(tl)
-	// live is every seq a kept-fate segment holds a record of, in whichever
-	// segment: the one membership test below, not one per drop.
+	// live is every seq a kept-fate segment holds a FED record of, in
+	// whichever segment: the one membership test below, not one per drop.
+	// A location the remainder pass confined never joins, for the open
+	// itself found that copy rotten: two rotten twins would each count the
+	// other live, both would subtract and neither drop would ever reach the
+	// loss record a later open appends for it — the very copy the open
+	// found dead counts only against itself.
 	var live map[core.Seq][]core.SegmentID
 	for i := range scans {
 		if !kept(scans[i].ID) {
 			continue
 		}
 		for _, rec := range scans[i].Records {
+			if ks.confined[index.RecordAt{Segment: rec.Segment, Offset: rec.At}] {
+				continue // the open confined this copy: it fed nothing
+			}
 			if live == nil {
 				live = map[core.Seq][]core.SegmentID{}
 			}
@@ -768,16 +906,19 @@ func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
 		}
 	}
 
-	withheld := ks.failed[seq] || ks.whole[seq] ||
+	withheld := ks.withheldWhole(rec) ||
 		ks.confined[index.RecordAt{Segment: rec.Segment, Offset: rec.At}]
-	for _, i := range f.forgets[rec.Tag] {
-		if seq < ks.Forgets[i].Seq {
-			withheld = true
-		}
-	}
 	if !withheld {
 		if sup, named := ks.superseded[seq]; named &&
 			(rec.Kind == index.RecWrite || rec.Kind == index.RecFill) {
+			// decision: the clip a superseded loss record carries applies to
+			// the content records it names — its write and fill alone. A
+			// removal it names feeds whole: the loss's own cut is a content
+			// cut below the loss's version, while a removal's marker runs
+			// from its offset to the end of the file, so clipping the removal
+			// to the loss's extent would leave the bytes past the extent
+			// held by the removal's unclipped half. Overturned by a loss
+			// reason that ever names removal records.
 			kept := keptRuns(core.Extent{Off: rec.Off, Len: rec.Len}, sup.extents)
 			if len(kept) > 0 {
 				for _, run := range kept {
@@ -807,13 +948,6 @@ func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
 		}
 		return nil
 	}
-	// decision: the clip a superseded loss record carries applies to the
-	// content records it names — its write and fill alone. A removal it names
-	// feeds whole: the loss's own cut is a content cut below the loss's
-	// version, while a removal's marker runs from its offset to the end of
-	// the file, so clipping the removal to the loss's extent would leave the
-	// bytes past the extent held by the removal's unclipped half. Overturned
-	// by a loss reason that ever names removal records.
 	if err := do(rec); err != nil {
 		return err
 	}
