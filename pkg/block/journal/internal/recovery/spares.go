@@ -131,12 +131,13 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 		// a candidate whose file does not — a crash's empty leftover, a
 		// recycle interrupted short, a file grown past the cap — is
 		// unlinked and made again, never zeroed: no byte of a file about
-		// to be removed is read into a slot or written. decision: a zero
-		// SegmentCap unlinks every candidate rather than skipping the
-		// check — under no cap no spare can be right-sized; the open
-		// fills the field from the journal's own cap, so no open that can
-		// adopt a spare passes zero.
-		if sizes[id] != deps.SegmentCap {
+		// to be removed is read into a slot or written. decision: a
+		// SegmentCap of zero or less unlinks every candidate rather than
+		// skipping the check — under no cap no spare can be
+		// right-sized, and not an empty one by its size 0 equaling the
+		// cap; the open fills the field from the journal's own cap, so no
+		// open that can adopt a spare passes zero.
+		if deps.SegmentCap <= 0 || sizes[id] != deps.SegmentCap {
 			if err := deps.FS.Remove(format.SegmentName(id)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 				// A name already gone is the unlink done; anything else
 				// the device said of the removal fails the open, which
