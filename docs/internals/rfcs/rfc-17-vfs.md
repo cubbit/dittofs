@@ -842,7 +842,9 @@ client record or lease — and a handler may make any number of them:
 `Xattrs`, `Streams`, `Access`, `Read`, `Seek`, `TestLock`, `Root`, `SecInfo`,
 `ListShares`, `StatFS`, `Quota`, `Snapshots`, `MoveTarget` and `Spell`. Every other method may change
 state, and RFC 20 §4.3 allows a handler one. `vfs.Mutates(op Op) bool` answers
-it, so the adapters' one-call check reads it from one place.
+it, so the adapters' one-call check reads it from one place; the calls
+RFC 20 §4.3 leaves outside the rule are true for it, and the check exempts
+them by the request's context.
 `Propose` is on the list because its record is volatile and nothing reads it
 but the confirm. The calls SMB's `SESSION_SETUP` makes outside the one-call rule are
 those RFC 20 §4.3 lists: the `Principals` calls and session setup's client-record
