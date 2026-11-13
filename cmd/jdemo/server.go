@@ -29,8 +29,10 @@ const versionWindow uint64 = 1 << 32
 // targets and reserves them against the maximum, and one below the targets
 // leaves the pool permanently short, refusing every write.
 var demoSettings = journal.Settings{
-	Streams:         2,
-	SpareTarget:     1,
+	Streams: 2,
+	// SpareTarget 2: a reservation takes spares for the rolls its writes
+	// may make, so a pool of one refuses a two-write reserve at once.
+	SpareTarget:     2,
 	HeadroomRecords: 1024,
 	MaxBytes:        4 << 30,
 }
@@ -56,6 +58,12 @@ type Server struct {
 	j       *journal.Journal
 	id      journal.JournalID
 	handles map[journal.ShareTag]*journal.Handle
+
+	// reservations are the open Reserve answers, keyed by rid; nextRes hands
+	// the next one its number. The registry dies with the journal: its own
+	// Close releases every reservation still open.
+	reservations map[uint32]*journal.Reservation
+	nextRes      uint32
 
 	srv http.Server
 	ln  net.Listener
@@ -141,11 +149,13 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	s.mountRoutes(mux)
+	s.mountRemovalRoutes(mux)
 
 	s.mu.Lock()
 	s.j = j
 	s.id = id
 	s.handles = make(map[journal.ShareTag]*journal.Handle)
+	s.reservations = make(map[uint32]*journal.Reservation)
 	s.ln = ln
 	s.srv = http.Server{Handler: mux, ReadHeaderTimeout: socketTimeout}
 	s.mu.Unlock()
@@ -228,7 +238,7 @@ const sparesDeadline = 30 * time.Second
 func awaitSpares(ctx context.Context, j *journal.Journal) error {
 	deadline := time.Now().Add(sparesDeadline)
 	for {
-		if st := j.Stats(); st.Spares >= 1 {
+		if st := j.Stats(); st.Spares >= demoSettings.SpareTarget {
 			return nil
 		}
 		if time.Now().After(deadline) {

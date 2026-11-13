@@ -20,6 +20,19 @@ type health struct {
 	Filesys string `json:"filesys"`
 }
 
+// tmpSocket returns a socket path under a short temp directory, because a
+// unix domain socket's name is capped (104 bytes on macOS) and t.TempDir()'s
+// path is longer than the cap for long test names.
+func tmpSocket(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "jdemo")
+	if err != nil {
+		t.Fatalf("temp socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
+}
+
 // unixClient returns an HTTP client that dials the daemon's unix socket.
 func unixClient(t *testing.T, socket string) *http.Client {
 	t.Helper()
@@ -52,7 +65,7 @@ func getHealth(t *testing.T, socket string) health {
 
 func TestServerStartStop(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "journal")
-	socket := filepath.Join(t.TempDir(), "s.sock")
+	socket := tmpSocket(t)
 	srv := &Server{Dir: dir, SocketPath: socket}
 
 	if err := srv.Start(context.Background()); err != nil {
@@ -81,7 +94,7 @@ func TestServerStartStop(t *testing.T) {
 
 func TestServerRestart(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "journal")
-	socket := filepath.Join(t.TempDir(), "s.sock")
+	socket := tmpSocket(t)
 
 	first := &Server{Dir: dir, SocketPath: socket}
 	if err := first.Start(context.Background()); err != nil {
@@ -131,7 +144,7 @@ func TestServerRefusesWithoutState(t *testing.T) {
 		t.Fatalf("list dir: %v", err)
 	}
 
-	srv := &Server{Dir: dir, SocketPath: filepath.Join(t.TempDir(), "s.sock")}
+	srv := &Server{Dir: dir, SocketPath: tmpSocket(t)}
 	err = srv.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "state file") {
 		t.Fatalf("start without state file: got err %v, want an error naming the state file", err)
@@ -153,7 +166,7 @@ func TestServerRefusesCorruptState(t *testing.T) {
 	if err := os.WriteFile(statePath(dir), []byte("{{junk"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	srv := &Server{Dir: dir, SocketPath: filepath.Join(t.TempDir(), "s.sock")}
+	srv := &Server{Dir: dir, SocketPath: tmpSocket(t)}
 	err := srv.Start(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "state file") {
 		t.Fatalf("start on corrupt state file: got err %v, want an error naming the state file", err)

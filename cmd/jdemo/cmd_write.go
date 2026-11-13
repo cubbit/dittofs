@@ -26,7 +26,7 @@ func newWriteAtCmd() *cobra.Command {
 	cmd.Flags().StringVar(&str, "str", "", "write this ascii string")
 	cmd.Flags().StringVar(&hexp, "hex", "", "write these hex bytes")
 	cmd.Flags().Int64Var(&size, "size", 0, "write N bytes of a cycling pattern (big writes generated daemon-side)")
-	cmd.Flags().Int64Var(&mtime, "mtime", 0, "the write's modification time, unix seconds")
+	cmd.Flags().Int64Var(&mtime, "mtime", 0, "the write's modification time, nanoseconds since the Unix epoch")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		id, err := parseFileID(args[0])
 		if err != nil {
