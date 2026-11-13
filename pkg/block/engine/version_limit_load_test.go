@@ -17,8 +17,10 @@ import (
 )
 
 const (
-	// loadBlock is RFC 8 §2.7's block, 2^24 versions.
-	loadBlock = 1 << 24
+	// loadBlock is RFC 8 §2.7's block of 2^24 versions scaled by 2^-8, as is
+	// every rate of the rows: each ratio they check holds, and they issue 256
+	// times fewer versions. The conformance rows run the RFC's own numbers.
+	loadBlock = 1 << 16
 
 	// loadMargin is the trigger's margin in seconds: the self-fence's 30 s, the
 	// existence age of one second and the trigger's own sampling second.
@@ -74,13 +76,6 @@ func (l *loadEntered) At(op string, key []byte) (time.Duration, int, error) {
 func newLoadUnit(t *testing.T, block uint64) *loadUnit {
 	t.Helper()
 
-	// ponytail: the five rows take 5 to 9 minutes under -race, so -short skips them and a
-	// full run keeps them. Upgrade to a copy scaled by 2^-8 that -short can run, once the
-	// exact counts are recomputed.
-	if testing.Short() {
-		t.Skip("version limit load rows take minutes under -race; run without -short")
-	}
-
 	lu := &loadUnit{
 		payload: make([]byte, 4096),
 	}
@@ -95,10 +90,7 @@ func newLoadUnit(t *testing.T, block uint64) *loadUnit {
 	})
 	lu.file = lu.create(t, "a")
 
-	// The shipped block is loadBlock's: only a row of another block sets one.
-	if block != loadBlock {
-		lu.e.SetBlockForTest(block)
-	}
+	lu.e.SetBlockForTest(block)
 	lu.e.TrackRaisesForTest()
 	lu.e.SetConflictBound(time.Hour)
 
@@ -442,33 +434,36 @@ func sustained(t *testing.T, block, rate uint64) {
 	}
 }
 
-// The journal serves its peak rate with a block of 2^24 and the store stalls
-// as a raise falls due: every write is acknowledged, the first 10 s and until
-// the self-fence trips 30 s on, none refused by the version limit first. The
-// raise must fall due with exactly the trigger's 9 600 000 versions left,
-// which pins the margin at 32 s: a shorter one raises later and fails there.
+// The journal serves its peak rate, the RFC's 300 000 versions a second
+// scaled to 1 172, and the store stalls as a raise falls due: every write is
+// acknowledged, the first 10 s and until the self-fence trips 30 s on, none
+// refused by the version limit first. The raise must fall due with exactly
+// the trigger's 37 504 versions left, which pins the margin at 32 s: a
+// shorter one raises later and fails there.
 func TestSustainedLoadIsNotRefusedBeforeTheFence(t *testing.T) {
-	sustained(t, loadBlock, 300_000)
+	sustained(t, loadBlock, 1_172)
 }
 
-// At a block of 2^20 the rate term alone keeps 280 000 versions a second
-// acknowledged until the fence. A design that raises only below half a block,
-// with no rate term, refuses them about 2 s after the stall and fails here
+// At the RFC's block of 2^20 and 280 000 versions a second, scaled to 2^12
+// and 1 094, the rate term alone keeps every write acknowledged until the
+// fence. A design that raises only below half a block, with no rate term,
+// never keeps the trigger's versions left, so it fails before the stall
 // (RFC 8 §15.2's negative case).
 func TestSustainedLoadAtABlockOf2To20(t *testing.T) {
-	sustained(t, 1<<20, 280_000)
+	sustained(t, loadBlock>>4, 1_094)
 }
 
 // A rate that steps up inside a second makes the raise due on the very draw
 // where the versions left fall below the margin at the new rate, with the
-// clock unmoved: no timer decides it. With 9 000 000 versions left after the
-// last draw below the step, draw n leaves 9 000 000-n, the second's count n is
-// the peak, and 9 000 000-n is below 32n from n = 272 728.
+// clock unmoved: no timer decides it. The RFC's 100 000 a second and 9 000 000
+// versions left are scaled to 391 and 35 156: draw n of the step leaves
+// 35 156-n, the second's count n is the peak, and 35 156-n is below 32n, and
+// above half a block, from n = 1 066.
 func TestARateStepIsDueOnTheNextDraw(t *testing.T) {
 	const (
-		rate = 100_000
-		left = 9_000_000
-		due  = 272_728
+		rate = 391
+		left = 35_156
+		due  = 1_066
 	)
 
 	lu := newLoadUnit(t, loadBlock)
@@ -529,12 +524,13 @@ func TestARateStepIsDueOnTheNextDraw(t *testing.T) {
 	}
 }
 
-// burst stalls the store as a raise falls due after rate0 versions a second
-// for more than a minute, then steps to rate in one go.
+// burst stalls the store as a raise falls due after rate0 versions a second,
+// the RFC's 100 000 scaled to 391, for more than a minute, then steps to rate
+// in one go.
 func burst(t *testing.T, rate, stallFor uint64) (*loadUnit, uint64, loadEvent) {
 	t.Helper()
 
-	const rate0 = 100_000
+	const rate0 = 391
 
 	lu := newLoadUnit(t, loadBlock)
 
@@ -545,11 +541,11 @@ func burst(t *testing.T, rate, stallFor uint64) (*loadUnit, uint64, loadEvent) {
 	return lu, v0, lu.run(t, v0, rate, fenceSeconds)
 }
 
-// A burst to 250 000 versions a second after a minute at 100 000: the left
-// 8 388 607 versions last 33 s, longer than the fence, so no write is refused
-// by the version limit before the self-fence trips.
+// A burst to the RFC's 250 000 versions a second, scaled to 977, after a
+// minute at 391: the 32 767 versions left last 33 s, longer than the fence,
+// so no write is refused by the version limit before the self-fence trips.
 func TestBurstTo250000IsNotRefusedBeforeTheFence(t *testing.T) {
-	lu, _, ev := burst(t, 250_000, 2*fenceSeconds)
+	lu, _, ev := burst(t, 977, 2*fenceSeconds)
 
 	if ev.sec != fenceSeconds || !ev.probe || !fenced(ev.err) {
 		t.Fatalf(
@@ -564,17 +560,19 @@ func TestBurstTo250000IsNotRefusedBeforeTheFence(t *testing.T) {
 	}
 }
 
-// A burst to 500 000 a second: the 8 388 607 versions left run out in second
-// 16, 14 s before the fence, and the refusals are retry-later (ErrDelay with
-// DelayCommit), never ErrNoSpace, and no sooner than the margin's 13 s. Once
-// the store returns and the raise commits, writes are acknowledged again.
+// A burst to the RFC's 500 000 a second, scaled to 1 953: the 32 767 versions
+// left run out in second 16, 14 s before the fence, and the refusals are
+// retry-later (ErrDelay with DelayCommit), never ErrNoSpace, and no sooner
+// than the margin's 13 s. Once the store returns and the raise commits,
+// writes are acknowledged again.
 func TestBurstTo500000IsDelayedBeforeTheFence(t *testing.T) {
 	const (
 		left   = loadBlock/2 - 1
 		second = 16
+		stall  = 20 // the store's stall, in clock seconds from the raise
 	)
 
-	lu, _, ev := burst(t, 500_000, 20)
+	lu, _, ev := burst(t, 1_953, stall)
 
 	if ev.sec != second || ev.probe || ev.m != left || !fenced(ev.err) {
 		t.Fatalf(
@@ -606,7 +604,8 @@ func TestBurstTo500000IsDelayedBeforeTheFence(t *testing.T) {
 
 	changed := lu.e.VersionLimitWatch(lu.share.ID)
 
-	for range 4 {
+	// The run moved the clock second times since the raise reached the store.
+	for range stall - second {
 		lu.clock.Advance(time.Second)
 	}
 
