@@ -303,21 +303,6 @@ func classifyTails(rd *reader, identity core.JournalID, named, unverified map[co
 	return out, nil
 }
 
-// namedBySuccessor returns the set of segments a verified own header names as
-// predecessor: a segment named there was sealed before the successor that
-// names it was made; a segment no header names could have been open at a
-// crash. An id naming itself names nothing, and a name with no segment on disk
-// is ignored.
-func namedBySuccessor(att Attached) map[core.SegmentID]bool {
-	named := map[core.SegmentID]bool{}
-	for _, s := range att.Own {
-		if p := s.Header.Predecessor; p != 0 && p != s.ID {
-			named[p] = true
-		}
-	}
-	return named
-}
-
 // refuseRange is the open's refusal of a range inside a segment whose
 // catalog was not verified that names no record: bytes a crash cannot have
 // torn, since a seal, a successor or a sync proves them whole.

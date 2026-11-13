@@ -35,13 +35,16 @@ type Deps struct {
 	// still builds: the bound refuses later writes, never the open.
 	ExtentLimit int64
 
-	// SegmentCap is the accounted size a segment of the directory is
-	// created at, the figure the assembly seeds the rebuilt segment ledger
-	// at — the cap an active or ended segment is accounted under, and the
-	// post-seal size of a sealed one measured against. The caller fills it
-	// from the journal's settings; a cap that is not positive names no
-	// storage and the seed the assembly makes refuses it by panic, the
-	// set's own maker's answer to a caller bug.
+	// SegmentCap is the size the journal's own segments are made and
+	// accounted at, the one figure two phases read: the spares phase sizes
+	// a re-adopted candidate against it — a file not holding exactly the
+	// cap is unlinked and left for the pool to make again — and the
+	// assembly seeds the rebuilt segment ledger at it, the cap an active
+	// or ended segment is accounted under and the post-seal size of a
+	// sealed one measured against. The caller fills it from the journal's
+	// settings; a cap that is not positive names no storage — the spares
+	// phase refuses it naming it, and the seed the assembly makes refuses
+	// it by panic, the set's own maker's answer to a caller bug.
 	SegmentCap int64
 
 	// rebuildOrder reorders the segments the rebuild dispatches before it

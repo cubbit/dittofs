@@ -65,14 +65,16 @@ func TestAnUnnamedZeroHeaderSegmentWithNoProofIsEndedNotSkipped(t *testing.T) {
 }
 
 // An all-zero spare at the segment cap scans empty: it holds no record, so it
-// takes no fate and no damage, and the open changes nothing.
+// takes no fate and no damage, and the open changes nothing. The spares phase
+// re-adopts each where it stands, so a fixture planted cap-sized keeps them
+// on disk as this row reads them; the phase unlinks one short or over the cap.
 func TestAnAllZeroSpareScansEmptyAndTakesNoFate(t *testing.T) {
 	const spares = 6
 	r := newRig(t)
 	r.writeFormat()
 	r.plantSeg(1, buildSeg(1, tailRec(200, 0x4100)))
 	for id := core.SegmentID(2); id < 2+spares; id++ {
-		r.plantSeg(id, make([]byte, 1<<16))
+		r.plantSeg(id, make([]byte, testCap))
 	}
 	before := r.snapshot()
 	st := runTails(t, r)

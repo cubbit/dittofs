@@ -244,7 +244,7 @@ func TestTailsClassifyEverySegmentFate(t *testing.T) {
 	named, _ := buildSealed(1, tailRec(200, 0x4100))
 	unnamed, _ := buildSealed(3, tailRec(201, 0x8100))
 	r.plantSeg(1, named)
-	r.plantSeg(2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
+	plantTake(r, 2, 1)
 	r.plantSeg(3, unnamed)
 	st := runTails(t, r)
 
@@ -267,7 +267,7 @@ func TestTheTopologyIgnoresNamesOfSegmentsNotOnDisk(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
 	r.plantSeg(5, buildSeg(5, tailRec(200, 0x4100)))
-	r.plantSeg(6, raw.SegmentHeader{Identity: journalID, ID: 6, Predecessor: 99}.Bytes())
+	plantTake(r, 6, 99)
 	st := runTails(t, r)
 
 	wantFate(t, st, 5, fateIntact, 0)
@@ -284,8 +284,8 @@ func TestTwoSuccessorsMayNameOnePredecessor(t *testing.T) {
 	r.writeFormat()
 	sealed, _ := buildSealed(1, tailRec(200, 0x4100))
 	r.plantSeg(1, sealed)
-	r.plantSeg(2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
-	r.plantSeg(3, raw.SegmentHeader{Identity: journalID, ID: 3, Predecessor: 1}.Bytes())
+	plantTake(r, 2, 1)
+	plantTake(r, 3, 1)
 	st := runTails(t, r)
 
 	wantFate(t, st, 1, fateSealed, 0)
