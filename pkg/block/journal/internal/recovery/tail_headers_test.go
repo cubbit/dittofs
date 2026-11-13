@@ -111,6 +111,16 @@ func TestANamedPredecessorCutBelowTheFirstRecordSlotRefuses(t *testing.T) {
 			wantRefused(t, r, 1, 0, int64(size))
 		})
 	}
+	// A long named file no record survives in has the whole file as its
+	// missing end too — the range starts at 0, never at the first record
+	// slot, for no surviving record names an end to start from.
+	t.Run("4096 bytes of zeros", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, make([]byte, 4096))
+		r.plantSeg(2, namingSeg(2, 1))
+		wantRefused(t, r, 1, 0, 4096)
+	})
 }
 
 // A seal marker rotted alone leaves its named segment sealed; a clone target

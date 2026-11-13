@@ -314,7 +314,12 @@ func refuseRange(id core.SegmentID, r format.ScanRange) error {
 // verdict for content nothing names, which withdraws this marker.
 func refuseMissingEnd(sc segmentScan) error {
 	start := min(sc.RecordsEnd, sc.Size)
-	if sc.Size <= format.SegmentHeaderSize {
+	// A segment no record slot survived in — a file cut below its first
+	// record slot, or a whole long one holding no record that verifies —
+	// names no surviving record, so the missing end is everything on disk.
+	// Both show it the same way: no record means the scan's record end was
+	// never advanced past the first record slot.
+	if sc.Size <= format.SegmentHeaderSize || sc.RecordsEnd <= format.SegmentHeaderSize {
 		start = 0
 	}
 	return fmt.Errorf("%w: segment %d: a named predecessor's missing end at [%d,%d) that names no record",
