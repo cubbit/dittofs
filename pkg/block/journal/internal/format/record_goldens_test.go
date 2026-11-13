@@ -8,7 +8,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
-// wantRecord is one of the 14 record goldens: the kinds table's literal
+// wantRecord is one of the 16 record goldens: the kinds table's literal
 // number, the header its hex file decodes to — every field at the value the
 // file writes, both checksums read from its bytes — and the body its payload
 // checksum covers. The encoder, the hex file and raw must agree byte for
@@ -89,6 +89,14 @@ func cutBodyBytes(cut core.SnapshotCut) []byte {
 	return binary.LittleEndian.AppendUint64(nil, uint64(cut))
 }
 
+// reconciledBodyBytes is the 16 bytes a reconciled record's body takes, so a
+// test can checksum them without the codec's help.
+func reconciledBodyBytes(r Reconciled) []byte {
+	b := binary.LittleEndian.AppendUint64(nil, uint64(r.Segment))
+	b = binary.LittleEndian.AppendUint32(b, r.Start)
+	return binary.LittleEndian.AppendUint32(b, r.End)
+}
+
 // writeBodyBytes is the bytes a write's body takes: the modification time
 // then the payload.
 func writeBodyBytes(b RecordBody) []byte {
@@ -110,6 +118,8 @@ func (w wantRecord) bodyBytes() []byte {
 		return cloneBodyBytes(w.body.Clone)
 	case KindHold, KindUnhold, KindStamp:
 		return cutBodyBytes(w.body.Cut)
+	case KindReconciled:
+		return reconciledBodyBytes(w.body.Reconciled)
 	}
 	return nil
 }
@@ -142,11 +152,14 @@ func (w wantRecord) rawOf() raw.Record {
 		r.Clone = &raw.CloneBody{Share: clone.Share, File: clone.File.Bytes(), Off: uint64(clone.Off), AsOf: raw.Version{Epoch: clone.AsOf.Epoch, Counter: clone.AsOf.Counter}}
 	case KindHold, KindUnhold, KindStamp:
 		r.Cut = &raw.CutBody{Cut: uint64(w.body.Cut)}
+	case KindReconciled:
+		rec := w.body.Reconciled
+		r.Reconciled = &raw.ReconciledBody{Segment: uint64(rec.Segment), Start: rec.Start, End: rec.End}
 	}
 	return r
 }
 
-// recordGoldens returns the 14 records the golden files hold, one per kind,
+// recordGoldens returns the 16 records the golden files hold, one per kind,
 // keyed by the hex file's name.
 func recordGoldens(t testing.TB) map[string]wantRecord {
 	t.Helper()
@@ -164,6 +177,13 @@ func recordGoldens(t testing.TB) map[string]wantRecord {
 	cloneTarget := withExtent(KindCloneTarget, testRecordFileOffset, testRecordLength)
 	cloneTargetBody := RecordBody{Clone: testClone}
 
+	// The journal's own two kinds carry tag zero, which no share is given,
+	// on top of the zero file and version bare gives them.
+	reconcile := bare(KindReconcile, true)
+	reconcile.Tag = 0
+	reconciled := bare(KindReconciled, true)
+	reconciled.Tag = 0
+
 	goldens := map[string]wantRecord{
 		"write":        {1, write, writeBody},
 		"fill":         {2, fill, fillBody},
@@ -179,6 +199,8 @@ func recordGoldens(t testing.TB) map[string]wantRecord {
 		"unhold":       {12, bare(KindUnhold, true), RecordBody{Cut: testCut}},
 		"stamp":        {13, bare(KindStamp, false), RecordBody{Cut: testCut}},
 		"forget":       {14, bare(KindForget, true), RecordBody{}},
+		"reconcile":    {15, reconcile, RecordBody{}},
+		"reconciled":   {16, reconciled, RecordBody{Reconciled: testReconciled}},
 	}
 	for name, g := range goldens {
 		if uint8(g.h.Kind) != g.n {

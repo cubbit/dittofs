@@ -64,7 +64,7 @@ func noFooterCases() []noFooterCase {
 		{"entry non-zero epoch", func(seg, tr []byte) {
 			binary.LittleEndian.PutUint64(seg[testFooterOffset+44:testFooterOffset+52], 1)
 		}, "epoch"},
-		{"entry of an unknown kind", func(seg, tr []byte) { seg[testFooterOffset+60] = 15 }, "unknown kind"},
+		{"entry of an unknown kind", func(seg, tr []byte) { seg[testFooterOffset+60] = 17 }, "unknown kind"},
 		{"entry recordOffset below the first record slot", func(seg, tr []byte) {
 			binary.LittleEndian.PutUint32(seg[testFooterOffset+24:testFooterOffset+28], 8)
 		}, "recordOffset 8 is below the first record slot 48"},
@@ -300,12 +300,19 @@ func TestReadFooterEntryKinds(t *testing.T) {
 		{"unhold of length 0", KindUnhold, 0, 152},
 		{"stamp of length 0", KindStamp, 0, 152},
 		{"forget of length 0", KindForget, 0, 144},
+		{"reconcile of length 0", KindReconcile, 0, 144},
+		{"reconciled of length 0", KindReconciled, 0, 160},
 	}
 
 	for _, c := range cases {
 		e := testEntryA
 		e.Kind = c.kind
 		e.Extent = core.Extent{Off: testRecordFileOffset, Len: c.len}
+		if c.kind == KindReconcile || c.kind == KindReconciled {
+			// The journal's own kinds name no file, version or share.
+			e.Extent = core.Extent{}
+			e.File, e.Version, e.Tag = core.FileID{}, core.Version{}, 0
+		}
 
 		seg := sealedSegment(t, []CatalogEntry{e}, 0)
 		f, err := ReadFooter(bytes.NewReader(seg), int64(len(seg)), testIdentity, testSegment)
@@ -343,10 +350,10 @@ func TestReadFooterRefusesEveryEntryOfEveryUnknownKindInAnyPlace(t *testing.T) {
 		entry int
 	}{
 		{"the last entry of kind 0", 0, 1},
-		{"the last entry of kind 15", 15, 1},
+		{"the last entry of kind 17", 17, 1},
 		{"the last entry of kind 128", 128, 1},
 		{"the last entry of kind 255", 255, 1},
-		{"a middle entry of kind 15", 15, 0},
+		{"a middle entry of kind 17", 17, 0},
 	} {
 		seg := sealedSegment(t, []CatalogEntry{testEntryA, testEntryB}, 0)
 		seg[testFooterOffset+int64(c.entry)*CatalogEntrySize+60] = c.kind
@@ -526,7 +533,7 @@ func TestAppendCatalogEntryPanics(t *testing.T) {
 	}{
 		{"an unknown kind", func() CatalogEntry {
 			e := testEntryA
-			e.Kind = Kind(15)
+			e.Kind = Kind(17)
 			return e
 		}(), "unknown kind"},
 		{"kind 0", func() CatalogEntry {

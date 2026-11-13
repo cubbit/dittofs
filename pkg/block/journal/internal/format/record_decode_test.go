@@ -71,9 +71,9 @@ func TestDecodeRecordHeaderClasses(t *testing.T) {
 	}
 
 	// A kind this format version does not define, rechecksummed so only
-	// the kind rule can refuse it. 0 is never a kind, 15 the first value
+	// the kind rule can refuse it. 0 is never a kind, 17 the first value
 	// reserved for later core kinds, 128 the first extension's.
-	for _, kind := range []uint8{0, 15, 128} {
+	for _, kind := range []uint8{0, 17, 128} {
 		b := slices.Clone(readGolden(t, "record_release"))
 		b[4] = kind
 		rechecksumRecord(b, testIdentity)
@@ -110,7 +110,7 @@ func TestDecodeRecordHeaderClasses(t *testing.T) {
 	// A verifying unknown kind and a non-zero epoch are refused after the
 	// place, so a record at another offset naming either is still at the
 	// wrong place first: no reader of an unknown record judges its bytes.
-	for _, kind := range []uint8{0, 15} {
+	for _, kind := range []uint8{0, 17} {
 		b := slices.Clone(readGolden(t, "record_release"))
 		b[4] = uint8(kind)
 		rechecksumRecord(b, testIdentity)
@@ -136,7 +136,7 @@ func TestDecodeRecordHeaderClasses(t *testing.T) {
 }
 
 // TestUnknownKindIsNeverSteppedOver pins that every kind value outside the
-// kinds table — 0, which a zero slot never reads as, and each of 15-255 —
+// kinds table — 0, which a zero slot never reads as, and each of 17-255 —
 // decodes to ErrUnknownKind with the zero header, so no length ever reaches
 // a caller that could step over a record it cannot name; and that Size and
 // BodySize panic on such a kind instead of inventing one.
@@ -239,12 +239,12 @@ func TestDecodeRecordHeaderRefusesFields(t *testing.T) {
 		ref{"a zero-length deallocate", func(b []byte) { binary.LittleEndian.PutUint64(b[40:48], 0) }, ErrDamaged, "length 0, want more"})
 	perGolden["clone_target"] = append(perGolden["clone_target"],
 		ref{"a zero-length clone target", func(b []byte) { binary.LittleEndian.PutUint64(b[40:48], 0) }, ErrDamaged, "length 0, want more"})
-	for _, kind := range []string{"delete", "hold", "stamp", "unhold", "forget"} {
+	for _, kind := range []string{"delete", "hold", "stamp", "unhold", "forget", "reconcile", "reconciled"} {
 		perGolden[kind] = append(perGolden[kind],
 			ref{"a non-zero file offset", func(b []byte) { binary.LittleEndian.PutUint64(b[32:40], 1) }, ErrDamaged, "file offset 1, want 0"},
 			ref{"a non-zero length", func(b []byte) { binary.LittleEndian.PutUint64(b[40:48], 1) }, ErrDamaged, "length 1, want 0"})
 	}
-	for _, kind := range []string{"unhold", "forget"} {
+	for _, kind := range []string{"unhold", "forget", "reconcile", "reconciled"} {
 		fid := testRecordFile.Bytes()
 		perGolden[kind] = append(perGolden[kind],
 			ref{"a non-zero FileID", func(b []byte) {
@@ -255,9 +255,17 @@ func TestDecodeRecordHeaderRefusesFields(t *testing.T) {
 			}, ErrDamaged, "names version"})
 	}
 
+	// The journal's own two kinds carry tag zero, which no share is given,
+	// so one naming a share could not have been written.
+	for _, kind := range []string{"reconcile", "reconciled"} {
+		perGolden[kind] = append(perGolden[kind],
+			ref{"a non-zero share tag", func(b []byte) { binary.LittleEndian.PutUint32(b[72:76], 1) }, ErrDamaged, "names the share tag 1, want 0"})
+	}
+
 	// Every kind that names a file refuses one with no FileID at all: all
-	// twelve but unhold and forget, looped so a later edit that narrows the
-	// rule in kinds.go to a few kinds fails here on the kinds it dropped.
+	// twelve but unhold, forget, reconcile and reconciled, looped so a later
+	// edit that narrows the rule in kinds.go to a few kinds fails here on
+	// the kinds it dropped.
 	for _, kind := range []string{
 		"write", "fill", "release", "truncate", "deallocate", "delete",
 		"clone_target", "offloaded", "unmark", "loss", "hold", "stamp",
@@ -300,9 +308,9 @@ func TestDecodeRecordHeaderRefusesFields(t *testing.T) {
 }
 
 // TestDecodeRecordHeaderRefusesAPayloadChecksumOnAHeaderOnlyKind pins that a
-// kind with no body — release, truncate, deallocate, delete, offloaded, unmark
-// and forget — carries the seeded checksum of no bytes at [84,88), and that a
-// header holding anything else there is refused as damage before its body is
+// kind with no body — release, truncate, deallocate, delete, offloaded, unmark,
+// forget and reconcile — carries the seeded checksum of no bytes at [84,88), and
+// that a header holding anything else there is refused as damage before its body is
 // ever asked for. A scanner that attaches a record without calling the body
 // verify — a reasonable thing to do for one with no body — would otherwise
 // accept a header no writer of this format produces. The golden's own checksum
@@ -310,7 +318,7 @@ func TestDecodeRecordHeaderRefusesFields(t *testing.T) {
 // reason of its own.
 func TestDecodeRecordHeaderRefusesAPayloadChecksumOnAHeaderOnlyKind(t *testing.T) {
 	for _, kind := range []string{
-		"release", "truncate", "deallocate", "delete", "offloaded", "unmark", "forget",
+		"release", "truncate", "deallocate", "delete", "offloaded", "unmark", "forget", "reconcile",
 	} {
 		want := wantRecordAt(t, kind)
 		b := slices.Clone(readGolden(t, "record_"+kind))

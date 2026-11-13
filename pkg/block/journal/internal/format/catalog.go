@@ -338,7 +338,7 @@ func decodeCatalogEntry(b []byte) (CatalogEntry, error) {
 	//
 	// The kind itself must still be one this format version defines:
 	if !e.Kind.known() {
-		return CatalogEntry{}, noFooter("entry of unknown kind %d, want one of 1-14", uint8(e.Kind))
+		return CatalogEntry{}, noFooter("entry of unknown kind %d, want one of 1-16", uint8(e.Kind))
 	}
 
 	// decision: a non-zero epoch in an entry is read as no footer, not an

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -62,6 +63,12 @@ func (r *reader) warnUnreadable(name string, err error) {
 // the file as the format's, a segment's bytes as their range — and returned,
 // except when the open's own context ended the retries: that says nothing
 // about the device, so it is only returned.
+//
+// ponytail: every attempt opens the file and closes it again, so a scan's
+// per-record header reads each pay an open and a close. Upgrade to one
+// handle per segment per scan, kept open across its reads and reopened by
+// the bound only after a failure, when a profile of the open shows the
+// per-read opens.
 func (r *reader) ReadAt(name string, buf []byte, off int64) (n int, err error) {
 	// decision: an I/O error suspends, a bad checksum discards. A failed
 	// read returned no bytes, so the device may return them later or after
@@ -117,7 +124,15 @@ func (r *reader) ReadAt(name string, buf []byte, off int64) (n int, err error) {
 	// The format file is read by ReadFormat, which answers its own failure;
 	// every name here is a segment the open reaches through the pass.
 	_, id := format.ClassifyName(name)
-	r.unread = append(r.unread, core.SegmentRange{Segment: id, Off: off, Len: int64(len(buf))})
+	// A range an earlier failed read already collected contains is not named
+	// twice: a scan that narrows a failed read to fewer bytes of the same
+	// place fails the same bytes again, and the open names them once.
+	sr := core.SegmentRange{Segment: id, Off: off, Len: int64(len(buf))}
+	if !slices.ContainsFunc(r.unread, func(o core.SegmentRange) bool {
+		return o.Segment == sr.Segment && o.Off <= sr.Off && sr.Off+sr.Len <= o.Off+o.Len
+	}) {
+		r.unread = append(r.unread, sr)
+	}
 	return n, err
 }
 

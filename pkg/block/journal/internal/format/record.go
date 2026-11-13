@@ -64,7 +64,8 @@ func (h RecordHeader) Size() int64 {
 // the payload; a fill its payload; a loss the dropped sequence number then
 // the flag word of its synced bit, its offloaded bit and its reason; a clone
 // target the source share, the source file, the source offset and AsOf; a
-// hold, unhold or stamp the cut number. The payload checksum at [84,88)
+// hold, unhold or stamp the cut number; a reconciled the counted range's
+// segment, then its start and end in it. The payload checksum at [84,88)
 // covers the body alone and the header checksum at [92,96) every other
 // header byte, the payload checksum included.
 //
@@ -200,6 +201,10 @@ func AppendRecord(dst []byte, identity core.JournalID, h RecordHeader, body Reco
 		dst = binary.LittleEndian.AppendUint64(dst, body.Clone.AsOf.Counter)
 	case KindHold, KindUnhold, KindStamp:
 		dst = binary.LittleEndian.AppendUint64(dst, uint64(body.Cut))
+	case KindReconciled:
+		dst = binary.LittleEndian.AppendUint64(dst, uint64(body.Reconciled.Segment))
+		dst = binary.LittleEndian.AppendUint32(dst, body.Reconciled.Start)
+		dst = binary.LittleEndian.AppendUint32(dst, body.Reconciled.End)
 	}
 
 	// The checksum slots redone, so the whole record is covered. Both are
@@ -235,7 +240,7 @@ const payloadCRCOff = 84
 // fields are unvalidated and nothing it could report is needed by a scan, so
 // the zero header comes back. An error matching ErrUnknownKind means the
 // header verifies at its place but names a kind this format version does not
-// define — 0 or 15 and above — and it too comes back zero, so no length
+// define — 0 or 17 and above — and it too comes back zero, so no length
 // reaches the caller and the record can never be stepped over by one. An
 // error matching ErrNonZeroEpoch means the record verifies but a version in
 // it carries a non-zero epoch half, which this format version forbids.
@@ -270,7 +275,7 @@ func DecodeRecordHeader(b []byte, identity core.JournalID, segment core.SegmentI
 
 	kind := Kind(b[4])
 	if !kind.known() {
-		return RecordHeader{}, fmt.Errorf("%w: kind %d, want one of 1-14", ErrUnknownKind, uint8(kind))
+		return RecordHeader{}, fmt.Errorf("%w: kind %d, want one of 1-16", ErrUnknownKind, uint8(kind))
 	}
 
 	epoch := binary.LittleEndian.Uint64(b[56:64])
@@ -402,6 +407,12 @@ func VerifyRecordBody(body []byte, identity core.JournalID, h RecordHeader) (Rec
 		}
 	case KindHold, KindUnhold, KindStamp:
 		out.Cut = core.SnapshotCut(binary.LittleEndian.Uint64(body[0:8]))
+	case KindReconciled:
+		out.Reconciled = Reconciled{
+			Segment: core.SegmentID(binary.LittleEndian.Uint64(body[0:8])),
+			Start:   binary.LittleEndian.Uint32(body[8:12]),
+			End:     binary.LittleEndian.Uint32(body[12:16]),
+		}
 	}
 	return out, nil
 }

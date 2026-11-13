@@ -180,3 +180,47 @@ func TestTwoBodiesSetPanics(t *testing.T) {
 	r.Cut = &CutBody{Cut: 1}
 	r.Bytes()
 }
+
+// testReconciled is a record with a reconciled body: the counted range's
+// segment, start and end, each in its own byte range.
+var testReconciled = reconciledRecord()
+
+func reconciledRecord() Record {
+	r := testFullRecord
+	r.Write = nil
+	r.Kind = 16
+	r.Reconciled = &ReconciledBody{
+		Segment: 0x8988878685848382,
+		Start:   0x8d8c8b8a,
+		End:     0x91908f8e,
+	}
+	return r
+}
+
+// TestReconciledBodyIsSegmentThenRange pins that a reconciled's 16-byte body
+// is the segment at [96,104) then the range's start at [104,108) and end at
+// [108,112), all little-endian, and that the payload checksum covers all 16
+// bytes and nothing else.
+func TestReconciledBodyIsSegmentThenRange(t *testing.T) {
+	b := testReconciled.Bytes()
+
+	if len(b) != 96+16 {
+		t.Fatalf("a reconciled record is %d bytes, want 112", len(b))
+	}
+	if got := le64(b[96:104]); got != testReconciled.Reconciled.Segment {
+		t.Errorf("segment at [96,104) is %#x, want %#x", got, testReconciled.Reconciled.Segment)
+	}
+	if got := le32(b[104:108]); got != testReconciled.Reconciled.Start {
+		t.Errorf("range start at [104,108) is %#x, want %#x", got, testReconciled.Reconciled.Start)
+	}
+	if got := le32(b[108:112]); got != testReconciled.Reconciled.End {
+		t.Errorf("range end at [108,112) is %#x, want %#x", got, testReconciled.Reconciled.End)
+	}
+
+	body := binary.LittleEndian.AppendUint64(nil, testReconciled.Reconciled.Segment)
+	body = binary.LittleEndian.AppendUint32(body, testReconciled.Reconciled.Start)
+	body = binary.LittleEndian.AppendUint32(body, testReconciled.Reconciled.End)
+	if got, want := le32(b[84:88]), wantSeededCRC(testIdentity, body); got != want {
+		t.Errorf("payload checksum at [84,88) is 0x%08x, want the CRC32C of the identity then the 16 body bytes: 0x%08x", got, want)
+	}
+}

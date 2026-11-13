@@ -19,7 +19,7 @@ const WriteMTimeOffset = RecordHeaderSize
 
 // Record is one record: its 96-byte header, its body and the zero padding
 // that brings it to a multiple of 8 bytes. Both checksums are seeded with
-// Identity, which is not written. The body is whichever one of the four body
+// Identity, which is not written. The body is whichever one of the six body
 // fields is set, and it is written whatever Kind says, so a check can plant a
 // record whose body does not match its kind.
 type Record struct {
@@ -42,11 +42,12 @@ type Record struct {
 	// of it anywhere else is not a record.
 	RecordOffset uint32
 
-	Write *WriteBody
-	Fill  *FillBody
-	Loss  *LossBody
-	Clone *CloneBody
-	Cut   *CutBody
+	Write      *WriteBody
+	Fill       *FillBody
+	Loss       *LossBody
+	Clone      *CloneBody
+	Cut        *CutBody
+	Reconciled *ReconciledBody
 }
 
 // WriteBody is a write record's body: the modification time, then the
@@ -75,6 +76,15 @@ type CloneBody struct {
 // CutBody is the 8-byte body of a hold, unhold or stamp record: the cut
 // number.
 type CutBody struct{ Cut uint64 }
+
+// ReconciledBody is a reconciled record's 16-byte body: the segment the range
+// it marks counted lies in, then the range's start and end in it, 4 bytes
+// each, all in one little-endian layout.
+type ReconciledBody struct {
+	Segment uint64
+	Start   uint32
+	End     uint32
+}
 
 // writeBody returns the record's body, of whichever kind it holds, or nil for
 // none. More than one body set is a caller's bug.
@@ -106,6 +116,12 @@ func (r Record) writeBody() []byte {
 	if r.Cut != nil {
 		set++
 		b = binary.LittleEndian.AppendUint64(b, r.Cut.Cut)
+	}
+	if r.Reconciled != nil {
+		set++
+		b = binary.LittleEndian.AppendUint64(b, r.Reconciled.Segment)
+		b = binary.LittleEndian.AppendUint32(b, r.Reconciled.Start)
+		b = binary.LittleEndian.AppendUint32(b, r.Reconciled.End)
 	}
 	if set > 1 {
 		panic(fmt.Sprintf("raw: %d bodies set, want one at most", set))

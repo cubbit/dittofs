@@ -28,7 +28,7 @@ import (
 //     own slot.
 //
 // In raw mode the mutation bytes are the segment whole. In planted mode
-// plan derives a segment — records of the kinds 1–14 with zero gaps among
+// plan derives a segment — records of the kinds 1–16 with zero gaps among
 // them, an optional seal marker, an old life's bytes in the tail, trailing
 // zeros — and mutate names the bytes to flip; the planted scan is held to
 // the rules its planting makes too: an untouched planted record attaches at
@@ -54,7 +54,7 @@ func FuzzScan(f *testing.F) {
 	// old-life letters are the grammar's own, not record kinds — a seed
 	// spelling them with kind letters plants nothing it claims to.
 	for _, plan := range [][]byte{
-		{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14},
+		{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 		{1, 0, 3},
 		{1, 2, fuzzMarkerLetter},
 		{1, 0, fuzzMarkerLetter, 2},
@@ -81,6 +81,7 @@ func fuzzScan(t *testing.T, plan, mutate []byte) {
 
 	raw, rawErr := scanWhole(mutate, identity, segment)
 	fuzzAssertInvariants(t, "raw", mutate, raw, rawErr, identity, segment)
+	fuzzAssertHeaders(t, "raw", mutate, identity, segment)
 
 	pl, ok := fuzzPlant(plan)
 	if !ok {
@@ -90,6 +91,78 @@ func fuzzScan(t *testing.T, plan, mutate []byte) {
 	scan, err := scanWhole(seg, identity, segment)
 	fuzzAssertInvariants(t, "planted", seg, scan, err, identity, segment)
 	fuzzAssertPlanted(t, seg, before, scan, err, pl)
+	fuzzAssertHeaders(t, "planted", seg, identity, segment)
+}
+
+// fuzzAssertHeaders holds the header-only walk to the stubs of its own: on
+// the same bytes, every record it attaches comes with the zero body, nothing
+// is refused — a record whose header verifies is never refused — and every
+// attached header re-decodes at its own offset. Its unwritten half is the
+// equivalence with the verifying walk, which fuzzAssertInvariants cannot
+// check for it: a corrupt body makes the two walks' ranges and ends diverge
+// by design.
+func fuzzAssertHeaders(t *testing.T, mode string, seg []byte, identity core.JournalID, segment core.SegmentID) {
+	t.Helper()
+	size := int64(len(seg))
+
+	hdrs, err := ScanSegmentHeaders(bytes.NewReader(seg), size, identity, segment)
+	if size < SegmentHeaderSize {
+		if !errors.Is(err, ErrDamaged) {
+			t.Errorf("%s headers: error %v on a short segment, want ErrDamaged", mode, err)
+		}
+		return
+	}
+	if err != nil && !errors.Is(err, ErrUnknownKind) && !errors.Is(err, ErrNonZeroEpoch) {
+		t.Errorf("%s headers: error %v matches no rule the format stops for", mode, err)
+	}
+	if len(hdrs.Refused) != 0 {
+		t.Errorf("%s headers: refused = %+v, want none: a walk that reads no body refuses nothing", mode, hdrs.Refused)
+	}
+	for i, r := range hdrs.Records {
+		if !recordBodiesEqual(r.Body, RecordBody{}) {
+			t.Errorf("%s headers: record %d at %d carries body %+v, want the zero body, for no body byte was read", mode, i, r.Header.Offset, r.Body)
+		}
+		if i > 0 && hdrs.Records[i-1].Header.Offset >= r.Header.Offset {
+			t.Errorf("%s headers: records at %d then %d, want them ascending by offset", mode, hdrs.Records[i-1].Header.Offset, r.Header.Offset)
+		}
+		if r.Header.Offset+int64(RecordHeaderSize) > size {
+			t.Fatalf("%s headers: record %d at %d holds a header past the size %d", mode, i, r.Header.Offset, size)
+		}
+		if r.Header.Offset+r.Header.Size() > size {
+			t.Fatalf("%s headers: record %d at %d runs to %d, past the size %d", mode, i, r.Header.Offset, r.Header.Offset+r.Header.Size(), size)
+		}
+		decoded, decErr := DecodeRecordHeader(seg[r.Header.Offset:r.Header.Offset+int64(RecordHeaderSize)], identity, segment, r.Header.Offset)
+		if decErr != nil {
+			t.Fatalf("%s headers: record %d at %d does not re-decode: %v", mode, i, r.Header.Offset, decErr)
+		}
+		if decoded != r.Header {
+			t.Errorf("%s headers: record %d at %d attached as %+v, want its own decoded header %+v", mode, i, r.Header.Offset, r.Header, decoded)
+		}
+	}
+
+	// The two walks agree where both ran to an end: a record the verifying
+	// walk attaches has a header that verified, so the header walk attaches
+	// it with an equal header, and a seal marker the verifying walk stopped
+	// at stops the header walk too.
+	full, ferr := ScanSegment(bytes.NewReader(seg), size, identity, segment)
+	if ferr != nil || err != nil {
+		return
+	}
+	byOff := make(map[int64]RecordHeader, len(hdrs.Records))
+	for _, r := range hdrs.Records {
+		byOff[r.Header.Offset] = r.Header
+	}
+	for _, r := range full.Records {
+		got, ok := byOff[r.Header.Offset]
+		if !ok {
+			t.Errorf("%s: ScanSegment attached the record at %d and ScanSegmentHeaders did not", mode, r.Header.Offset)
+		} else if got != r.Header {
+			t.Errorf("%s: record at %d header = %+v, want ScanSegment's %+v", mode, r.Header.Offset, got, r.Header)
+		}
+	}
+	if full.Sealed && !hdrs.Sealed {
+		t.Errorf("%s: ScanSegment sealed at %d and ScanSegmentHeaders did not", mode, full.End)
+	}
 }
 
 // scanWhole reads seg as a segment of exactly its own length.
@@ -98,12 +171,12 @@ func scanWhole(seg []byte, identity core.JournalID, segment core.SegmentID) (Sca
 }
 
 // The planting grammar's own letters. A plan's byte is a letter: 0 a zero
-// gap of one record's width, 1–14 a record of that kind, fuzzMarkerLetter
+// gap of one record's width, 1–16 a record of that kind, fuzzMarkerLetter
 // a seal marker pasted at the next slot, and fuzzOldLifeLetter an old
 // life's whole bytes in the tail. Anything else ends the plan's letters.
 const (
 	fuzzFirstKind     = 1
-	fuzzLastKind      = 14
+	fuzzLastKind      = 16
 	fuzzMarkerLetter  = 253
 	fuzzOldLifeLetter = 252
 	fuzzMaxPayload    = 96
@@ -240,6 +313,17 @@ func fuzzKindBody(kind Kind, off int64) (RecordHeader, RecordBody) {
 		h.Version = core.Version{}
 		h.Extent = core.Extent{}
 		body = RecordBody{}
+
+	// The kinds table gives the journal's own two kinds a zero file,
+	// version, extent and tag, so a planted one carries them zeroed.
+	case KindReconcile, KindReconciled:
+		h.File = core.FileID{}
+		h.Version = core.Version{}
+		h.Extent = core.Extent{}
+		h.Tag = 0
+		if kind == KindReconciled {
+			body = RecordBody{Reconciled: testReconciled}
+		}
 	case KindTruncate:
 		h.Extent = core.Extent{Off: testRecordFileOffset, Len: 0}
 	case KindDeallocate, KindRelease, KindOffloaded, KindUnmark:

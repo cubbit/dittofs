@@ -220,8 +220,9 @@ func checkSeal(set *Set, id core.SegmentID, marker int64, entries []format.Catal
 		if e.RecordOffset > math.MaxUint32 {
 			return fmt.Errorf("%w: entry %d's record offset %d is above MaxUint32", ErrBadCatalog, i, e.RecordOffset)
 		}
-		// The kinds table's own range, read from the constants it
-		// defines: the encoder refuses anything outside it.
+		// The kinds this journal writes into a catalog, 1 through forget:
+		// the reconcile kinds 15 and 16 are ones it only reads, so the
+		// encoder refuses them and anything above forget.
 		if e.Kind < format.KindWrite || e.Kind > format.KindForget {
 			return fmt.Errorf("%w: entry %d's kind %d is not one this format encodes", ErrBadCatalog, i, uint8(e.Kind))
 		}
