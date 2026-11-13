@@ -485,7 +485,7 @@ const (
 	StatusTooLong                    // core.ErrTooLong: a compound past its cap (E5 T5.4)
 	StatusExpired                    // core.ErrExpired (E5 T5.2b)
 	StatusNotLast                    // core.ErrNotLast (E5 T5.5c, T5.11)
-	StatusTooManyPending             // core.ErrTooManyPending (E5 T5.11)
+	StatusTooManyPending             // core.ErrTooManyPending (E5 T5.5b, T5.11)
 	StatusDelay                      // vfs.ErrDelay: at once in version 1, once its hold passes in version 2 (E5 T5.5b)
 	StatusCancelled                  // a parked or held request its client cancelled (E5 T5.5b, T5.11)
 )
@@ -620,9 +620,9 @@ func (c *Client) Balance() int
     reason naming E5's tables and pipeline and E4's server).
 - **Consumers:** E4's accept, reader, writer and sidecar-runner tests (T4.1–T4.4, T4.9: `Echo`,
   `Client`, `Bare` as the second listener, `Addrs` for the bound port and the `Serving` report),
-  and its `Reconfigure` test (T4.6: `MaxVersion` read from each connection's snapshot); E5's T5.1a (nil stages over `Bare`, `Echo`'s role),
-  T5.2b (`Versions`, `Needs`), T5.3 (the cap of 64 over `Bare`), T5.5b (`Create` held), T5.6
-  (`Panic`), T5.10 (the benchmark over `Echo`).
+  and its `Reconfigure` test (T4.6: `MaxVersion` read from each connection's snapshot); E5's T5.1a (nil stages over `Bare`, `Echo`'s role,
+  the cap of 64 over `Bare`, `Panic`), T5.2b (`Versions`, `Needs`), T5.5b (`Create` held), T5.1c
+  (the cap of 64 over `Bare` on a socket), T5.10 (the benchmark over `Echo`).
 - **Acceptance criteria:**
   - Each vector of the package doc decodes to the fields it was written from, and each field
     set encodes to its vector's bytes.
@@ -696,7 +696,7 @@ func (c *Client) Balance() int
   | a single-reply compound judged whole while draining; the slot's sequence kept; a compound past its cap | the compound row, `PutFH`'s handle, `Echo`'s role, `ReplayCache` | E5 T5.4 |
   | holds past the ceiling and the floor, a cancel before and after its target | `Create` held by `Faults`, `OpCancel`, `HoldCodec` | E5 T5.5b |
   | parks refused before the last, past `MaxPending`, with the reply pool full; cancelled by the client and by a drain; racing a grant; already past an interim; a connection closed on a scripted violation | `Park` over a `Faults` hold, `Violate` | E5 T5.11, T5.1c |
-  | panic recovery | `Panic` | E5 T5.6 |
+  | panic recovery | `Panic` | E5 T5.1a |
 
 - **Acceptance criteria:**
   - Every exported identifier of `core` is referenced as `core.<Name>` in `testproto`'s non-test
