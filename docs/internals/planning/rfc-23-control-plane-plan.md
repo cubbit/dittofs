@@ -74,9 +74,10 @@ database or configuration refuses and names it. No migration tool.
   `node-id` file in each journal directory, after the journal's `Init` and before the store records
   it; a bootstrap key may name it, a copy that differs from the key or from another copy, or does
   not parse, refuses the start rather than being rewritten, and a start with no copy and no key
-  refuses. A start writes a missing copy only beside a journal the store records for this node; a
+  refuses. A start writes a missing copy only into a directory whose `format` names the journal the
+  store records at `JD‖node‖device` for this node and device; a
   directory whose journal is not yet recorded, a replaced device's, gets its copy only from
-  `dfs init` or a recovery import. This touches RFC 13 §2.2 and §9, RFC 28 §2.1 and §4.2, RFC 8
+  `dfs init` or a recovery import. This touches RFC 13 §2.2 and §9, RFC 28 §2.1, RFC 8
   §2.6's `Deps.Node`, and RFC 23 §2.1 and §5.4.
 - **A3. RFC 16's `ControlPlane` gains one transactional entry point.** It takes the audit and
   idempotency metadata and runs a function over a transaction that carries the view's writes; a
@@ -348,7 +349,7 @@ registers no suite and no group, and changes no `lint-go` tag.
 | E4 | The management API | server, route table, write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5) | 13 | 30 | B | E5 (partly), E6 (partly), E7 |
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention | 8 | 18 | C | E6 (partly), E7 |
 | E6 | The CLI | the client on the wire types, the rebuilt `dfsctl`, generated reference | 6 | 13 | A | E7 |
-| E7 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 5 | 13.5 | team | E8 |
+| E7 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 5 | 13.5 | team | E8 (partly) |
 | E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
 | | **Total** | | **61** | **134.5** | | |
 
@@ -357,7 +358,7 @@ registers no suite and no group, and changes no `lint-go` tag.
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
 
-The skill's estimate for RFC 23's 1,841 lines is 5 middle epics (`round(1841 / 400)`), and this plan
+The skill's estimate for RFC 23's 1,882 lines, as amended, is 5 middle epics (`round(1882 / 400)`), and this plan
 has 5.
 
 **Legend.** ⛔ is a blocker; 🔀 waits on a synchronisation point, in part for E3 and E5 (X1, X2, X3). "team" is an epic that belongs to
@@ -395,7 +396,7 @@ flowchart TD
   X1(["X1 the RFC 13 plan's bootstrap and secrets, outside this plan"]):::sync -. "dfs start, dfs init" .-> E3 & E5
   X2(["X2 the RFC 18 plan's sign-in interface, outside this plan"]):::sync -. "sign-in, hashes" .-> E5
   S3(["S3 adapters serve through the node, outside this plan"]):::sync --> E8["E8 E2E green 🔀"]:::sync
-  E7 --> E8
+  E7 -. "server fixture" .-> E8
   classDef blocker stroke:#c0392b,stroke-width:3px
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
@@ -440,7 +441,7 @@ flowchart TD
 | E4 | E5 (partly), E6 (partly), E7 | Epic 5's sign-in routes go in the route table; the CLI is built against `pkg/node/apiv1` from S1, and tested against the routes. |
 | E5 | E6 (partly), E7 | The CLI's `login` calls sign-in; every integration row runs as a signed-in caller. |
 | E6 | E7 | Integration's "§7 CLI" row runs the CLI's whole suite. |
-| E7 | E8 | E2E green runs the server that integration finishes. |
+| E7 | E8 (partly) | E2E green runs the server through the harness's server fixture on `dfs init` and `dfs start`; it waits for that fixture and S3, not for the rest of integration (the guides, the CLI's suite, the throttling and audit rows), so the data-path cells D9 filters come back as soon as both are in. |
 
 ### 3.4 Splitting the work
 
@@ -634,6 +635,12 @@ Each of these will carry a `ponytail:` marker at the code site:
   - *Upgrade path:* none planned; the throttle exists to bound that rate. Measure it in epic 5's
     benchmark first.
   - *Epic:* 5.
+- **Every MVP share names the in-memory remote store** (#4053), so RFC 8 §2.1's refusal passes
+  while nothing offloads.
+  - *Ceiling:* offload composed: a share bound to it loses what it released at restart.
+  - *Upgrade path:* the registry refuses the in-memory kind outside tests when RFC 8's second part
+    lands.
+  - *Epic:* 3.
 - **The health registry holds only the conditions this plan raises,** and the watchdog covers only
   the loops the node starts.
   - *Ceiling:* RFC 25's full registry.
@@ -670,10 +677,12 @@ func start(ctx context.Context, path string) error {
 }
 
 // dfs init (epic 5), resumable: a rerun skips each step already done and refuses only a
-// finished installation (§1.4). In this order: kvstore.Init; each journal's Init, then its
+// finished installation (§1.4). In this order (O12): kvstore.Init; each journal's Init, then its
 // node-id through bootstrap.InitNodeID (temporary file, fsync, rename; A2), which adopts a copy
-// already in any journal directory before it generates one, then RecordJournal under that ID;
-// the administrator, its password stored through identity.NewHashes (X2).
+// already in a journal directory whose format carries the store's installation ID before it
+// generates one, refusing as a start does a copy that does not parse or two that differ;
+// then RecordJournal under that ID; the administrator, its password stored through
+// identity.NewHashes (X2).
 
 func New(cfg Config) (*Node, error) {
 	n := &Node{cfg: cfg, md: metadata.Open(cfg.KV /* ... */)}
@@ -706,8 +715,14 @@ func (n *Node) reconcileLoop(ctx context.Context) {
 			n.apply(ctx, c)
 		}
 		n.seen, full = c, false
-		if st := n.status(); st != n.written { // RFC 23 §2.4: only when a value changed
-			n.writeStatus(ctx, st) // node_reconciled_position, config_generation_lag_seconds
+		// RFC 23 §2.4: only when a value changed. NodeStatus holds slices, so the guard
+		// compares its canonical bytes, which carry no per-tick timestamp (Conditions
+		// included), and n.written moves only after a committed write, so a failed one
+		// is retried on the next tick.
+		if b := n.status().Canonical(); !bytes.Equal(b, n.written) {
+			if n.writeStatus(ctx, b) == nil { // node_reconciled_position, config_generation_lag_seconds
+				n.written = b
+			}
 		}
 	}
 }
@@ -785,7 +800,7 @@ identity's step (A5, D8, epic 3):
 func (r *runner) drive(ctx context.Context, op metadata.Operation, version uint64) {
 	step := r.steps[op.Kind] // resolve-principal: identity's, the RFC 18 plan's epic 7
 	for {
-		next, done, err := step(ctx, op.Step) // resumes from the last durable step
+		next, done, err := step(ctx, op) // its Params and last durable Step: resumes from there
 		was := op.State
 		op.Step, op.Updated, op.State = next, r.clock.Now(), stateOf(done, err)
 		meta := metadata.WriteMeta{}
@@ -1058,7 +1073,7 @@ error to a status.
   status. An offline join writes its password as a new version of the machine password's `Secret`
   through `pkg/secrets`' `Seal`, with the kind and owner its first version recorded (D10), in its own `Write` audited as a `set` of the reference, committed before
   the operation, and keeps no idempotency record (RFC 23 §3.5, §4.5). The runner's steps for them
-  are identity's, built by the RFC 18 plan's epic 7, and epic 2 for the NT hashes' deletion.
+  are identity's, built by the RFC 18 plan's epic 7, and its epic 2 for the NT hashes' deletion.
 - Operations (read, `?wait=`), nodes and their connections, and the audit read.
 
 ### Epic 5 — Accounts and sign-in
@@ -1082,7 +1097,8 @@ call against their current record.
   before the waits start, and one from many sources no more than 100 before the account's own wait
   (RFC 23 §5.3);
 - `dfs init`, killed after each of its steps, between two journals' `node-id` copies included, and
-  run again, finishes with one identity, and `dfs start` then serves;
+  run again, finishes with one identity, and `dfs start` then serves; run again beside a leftover
+  journal directory of another installation holding a `node-id`, it adopts nothing from it;
 - the §1.4 scenarios assigned to epic 5 pass.
 
 **Expected content:**
@@ -1091,8 +1107,10 @@ call against their current record.
   - the installation, through `kvstore.Init`;
   - each journal's `Init`, then the node identity written beside it through the RFC 13 plan's
     `pkg/bootstrap` (A2), then the journal recorded under that identity; a rerun reads a copy
-    already written in any journal directory and adopts it before generating one, so a crash
-    between two directories' copies leaves one identity;
+    already written in a journal directory whose `format` carries the store's installation ID and
+    adopts it before generating one, so a crash between two directories' copies leaves one
+    identity; as a start does (RFC 13 §2.2), it refuses a copy that does not parse or two copies
+    that differ, and adopts nothing from a directory of another installation;
   - the bootstrap administrator with its first password (RFC 23 §5.4).
 - `dfs reset-admin`, the break-glass reset (RFC 23 §5.4), which also clears the account's
   `SignInFailures`, so an attacker spread over enough sources to reach the account-wide count cannot
@@ -1190,8 +1208,9 @@ The §1.4 scenarios assigned to epic 7 pass too.
 
 **Epic 8 estimate: planned after S3.**
 
-This epic waits for adapters that serve through the node (S3). It then rebuilds the e2e helpers,
-removes the #3714 filter's entries and runs RFC 23's e2e rows.
+This epic waits for adapters that serve through the node (S3) and for epic 7's server fixture,
+not for the rest of epic 7. It then rebuilds the e2e helpers, removes the #3714 filter's entries and
+runs RFC 23's e2e rows.
 
 **Owns:** RFC 23 §12's e2e rows, and "§2.2 order"'s adapter clause.
 
@@ -1205,7 +1224,8 @@ removes the #3714 filter's entries and runs RFC 23's e2e rows.
 - The e2e helpers rebuilt on epic 6's client, and the tests epic 1 deleted brought back from
   history onto them.
 - The setup D9 names rebuilt on the new CLI, and the filter's entries D9 gives this epic removed,
-  the cells running against the new server.
+  the cells running against the new server. RFC 20's plan's ledger lists the same removal at its
+  cutover (`rfc-20-adapters-plan.md`, "cutover"); both wait for S3, and this epic does it.
 - RFC 23 §12's mount rows in `e2e`, and their Kerberos flavours in `e2e/kerberos`.
 
 ## 6. Risks and open points
@@ -1273,6 +1293,12 @@ removes the #3714 filter's entries and runs RFC 23's e2e rows.
   is the RFC 13 plan's: `pkg/bootstrap` with the refused keys and the node identity, `pkg/settings`
   with its write check, classes and series, and `pkg/secrets`. Epics 1 to 5 keep only the strip of
   `pkg/config`, the node, the API's routes and `dfs init`, and consume the rest.
+- **O12. `dfs init`'s order disagrees with the RFC 1 plan's epic 10.** That epic runs `journal.Init`
+  before `kvstore.Init`, says nothing of `node-id`, and lets a rerun wipe and re-initialise a device
+  whose `format` names an installation with no store. This plan runs `kvstore.Init` first, so no
+  device ever names an installation without a store, the wipe has nothing to act on, and no
+  `node-id` copy a rerun adopts can be wiped. Epic 5 follows this order; the RFC 1 plan's epic 10
+  aligns with it when it is broken down, its journal side (`Init` and the start check) unchanged.
 
 ### 6.1 Deferral ledger
 

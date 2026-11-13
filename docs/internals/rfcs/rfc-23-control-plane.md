@@ -648,7 +648,7 @@ The node holds two pictures: the **desired** one, read from records, and the
 | a sidecar enabled or disabled | `Sync` with the serving adapters, or with none ([RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars)) |
 | a node-scoped or installation-scoped restart-class setting other than an adapter's (row above) | nothing until the process next starts; the node reports the record as restart-pending (§2.4) |
 | a principal | `apply`, handing identity the new principals generation, which is in the identity cache's key ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) |
-| a grant or export policy | nothing: it raises no counter, and admission reads the share's grant-list version and `ExportPolicy.Version` on every call, which are in the admission cache's key (RFC 18 §7.2) |
+| a grant or export policy | nothing: it raises no counter, and admission reads the share's grant-list version and `ExportPolicy.Version` on every call, which are in the admission cache's key ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) |
 | a shard record | nothing: the gateway's `Router` reads shard records itself, and [RFC 11](rfc-11-ownership.md)'s epochs keep its routing correct |
 
 Every row is one of reconcile's three calls (§2.1): a share created or removed
@@ -977,7 +977,9 @@ them and decides nothing about identity:
   audited version no join uses, which the next join or rotation supersedes. The call keeps no idempotency record
   (§4.5);
   `rotate-machine-password` seals the machine password's next `Secret` version
-  first, then sets that password at the domain controller, in
+  first, then, once every node reports that version applied, sets that password
+  at the domain controller, and starts only once every node reports the
+  previous one applied, in
   [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)'s order
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). Leaving the domain has
   no action until RFC 18 defines it. `test-directory` checks that every node reaches the
@@ -1408,7 +1410,14 @@ second store.
   session's or its own creation time, so a refresh cannot mint a token past it.
   So disabling an account, changing its role, changing its password or signing
   it out everywhere takes effect on every node within a second, not at token
-  expiry.
+  expiry. An issue or creation time is the store time of the write that issued
+  the token or created the session, never a node's clock, raised to the
+  account's not-before when that is later, since that write read the account
+  after any raise it follows; times compare in whole seconds, and a raise sets
+  not-before to the whole second after its commit, so a token issued before the
+  raise is before it and one issued after is not. A password change, a
+  must-change first password included, answers a new session created in its
+  own write; the session that made the change refreshes no more.
 - **The refresh token** is opaque and random, stored only as its hash in a
   session record with an expiry of `api.session_lifetime` (installation, live;
   proposed: 12 h, a working day of one sign-in). Each use returns a

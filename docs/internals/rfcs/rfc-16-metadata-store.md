@@ -690,8 +690,18 @@ type Secret struct {
 	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, remote credential, key, node credential (RFC 15 §4.4)
 	Version uint64   // raised by every rotation; the previous version stays resolvable until every node reports this one (RFC 13 §7)
 	KeyID string     // which wrapping key sealed it: one per role or secret kind
-	Owner SecretOwner // the record or setting key whose field names it; a new version keeps both Kind and Owner, and a reference from another owner, or a read expecting another kind, is refused, so a reference cannot be pointed at another holder's secret (RFC 23 §5.2)
+	Owner SecretOwner // the record or setting key whose field names it; a new version keeps both Kind and Owner, which PutSecret enforces, and pkg/secrets refuses a read whose reference comes from another owner or expects another kind, so a reference cannot be pointed at another holder's secret (RFC 23 §5.2)
 	Value []byte     // sealed
+}
+
+// SecretOwner is the one holder a secret belongs to: a record's field (a
+// user's Password or NTHash) or a setting's key (a keytab, the machine
+// password, the directory's bind credential). Encoded with the version, as
+// the Secret's other fields are, and compared whole.
+type SecretOwner struct {
+	Record ResourceRef  // the record's kind and ID; zero for a setting
+	Scope  SettingScope // the setting's scope; zero for a record
+	Key    string       // the record's field name, or the setting's key
 }
 ```
 
@@ -712,6 +722,7 @@ type Operation struct { // RFC 23 §4.6
 	State    OpState     // pending, running, succeeded, failed, cancelling, cancelled
 	Claim    OpClaim     // for work the runner drives: node, node epoch, expiry; zero otherwise
 	Step     []byte      // the runner's last durable step; owner-driven work keeps its cursor in its own records
+	Params   []byte      // the request's parameters its kind reads, encoded by that kind (an online join's takeover, ou and DNS host name); never a credential
 	Started, Updated time.Time
 	Error    []byte      // the problem body, when failed
 	Result   []byte      // when succeeded
@@ -1271,7 +1282,7 @@ type ControlPlane interface {
 	PutSetting(ctx context.Context, s Setting, expect uint64) error
 	DeleteSetting(ctx context.Context, scope SettingScope, key string, expect uint64) error // removes an override, so the wider scope's value is effective; raises the settings generation as a put does (RFC 13 §3)
 	Secret(ctx context.Context, id SecretRef, version uint64) (Secret, error) // one version, still sealed; version 0 reads the current one; ErrNotFound once pruned
-	PutSecret(ctx context.Context, s Secret, expect uint64) error             // a new version, expect naming the current one (0 for the first), raising the settings generation so every node resolves it (RFC 13 §7)
+	PutSecret(ctx context.Context, s Secret, expect uint64) error             // a new version, expect naming the current one (0 for the first), raising the settings generation so every node resolves it (RFC 13 §7); ErrInvalid if its Kind or Owner differs from the current one's
 	PruneSecret(ctx context.Context, id SecretRef, below uint64) error        // deletes every version below the one the caller names, never the current one; when is the rotation's owner's to decide (RFC 13 §7)
 
 	// The management API's own records (§2.3) — Operation, IdempotencyRecord,
