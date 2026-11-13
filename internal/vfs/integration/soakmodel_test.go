@@ -32,9 +32,15 @@ type soakOp struct {
 	proc     int          // the process the call ran in
 	done     bool         // the call answered success
 	verifier vfs.Verifier // an unstable write's verifier, which a Commit must match to acknowledge it
+	// grow marks a truncate that sets the size at or above the one the file's
+	// operations leave. The engine answers it before any sync, and its group
+	// commit commits it lazily (pkg/block/engine/remove.go, Truncate), so it
+	// is acknowledged by a later Commit, as an unstable write is.
+	grow bool
 	// acked is set once the client was told the op is durable: a stable
-	// write, a truncate or a deallocate answered success, or an unstable
-	// write a later Commit of the same process answered with its verifier.
+	// write, a shrinking truncate or a deallocate answered success, or an
+	// unstable write or a growing truncate a later Commit of the same process
+	// answered.
 	acked bool
 	// faulted is set when the schedule lost the op's journal record: in the
 	// op's own call, or credited to it as written since its file's last sync.
@@ -66,6 +72,19 @@ func (o *soakOp) size(size int64) int64 {
 		return max(size, o.off+int64(len(o.data)))
 	case opTruncate:
 		return o.off
+	}
+
+	return size
+}
+
+// leaves is the size f has once every op whose call answered success applies:
+// the size the engine's own operations leave, which decides a truncate's grow.
+func (f *fileModel) leaves() int64 {
+	var size int64
+	for _, o := range f.ops {
+		if o.done {
+			size = o.size(size)
+		}
 	}
 
 	return size
@@ -120,9 +139,9 @@ func (m *soakModel) file(name string, created time.Time) *fileModel {
 }
 
 // add records op on f, acknowledged at once when the call answered a stable
-// write, a truncate or a deallocate with success.
+// write, a shrinking truncate or a deallocate with success.
 func (f *fileModel) add(op *soakOp, stable bool) *soakOp {
-	op.acked = op.done && (stable || op.kind != opWrite)
+	op.acked = op.done && (stable || op.kind == opDeallocate || op.kind == opTruncate && !op.grow)
 	f.ops = append(f.ops, op)
 
 	return op
@@ -131,7 +150,7 @@ func (f *fileModel) add(op *soakOp, stable bool) *soakOp {
 // commit records a Commit of [off, off+length) of f in process proc, length
 // 0 meaning to the end of the file. A Commit answered success acknowledges
 // every unstable write of the same process in its range that carries the
-// verifier it answered. A Commit that failed, or answered another verifier,
+// verifier it answered, and every growing truncate of the same process. A Commit that failed, or answered another verifier,
 // reported a loss and acknowledges nothing.
 func (f *fileModel) commit(proc int, off, length int64, v vfs.Verifier, err error) {
 	if err != nil {
@@ -139,6 +158,10 @@ func (f *fileModel) commit(proc int, off, length int64, v vfs.Verifier, err erro
 	}
 
 	for _, o := range f.ops {
+		if o.kind == opTruncate && o.grow && o.done && o.proc == proc {
+			o.acked = true
+		}
+
 		end := o.off + int64(len(o.data))
 		inRange := end > off && (length == 0 || o.off < off+length)
 		if o.kind == opWrite && o.done && !o.acked && o.proc == proc && o.verifier == v && inRange {
@@ -266,11 +289,14 @@ func (m *soakModel) observe(proc int, v vfs.Verifier) error {
 // candidates is what a read of f at offset at may answer: the bytes, and
 // whether Lost is one of them.
 //
-// decision: Lost is accepted only where the newest op the client was told is
-// durable is a write whose journal record the schedule lost. RFC 8 §5.1 has
-// such a synced record read Lost, never zeros or the superseded chunk, and an
-// unsynced write that was dropped read as the file did before it, which is
-// the bytes of that same newest acknowledged op, or zero where there is none.
+// decision: Lost is accepted only where a write whose journal record the
+// schedule lost covers the offset, and it is the newest acknowledged op there
+// or comes after it. RFC 8 §5.1 has such a synced record read Lost, never
+// zeros or the superseded chunk. A write no client Commit acknowledged may
+// still have been synced by the timer's group commit, since the soak moves
+// the clock, so it may read Lost too. An unsynced write that was dropped
+// reads as the file did before it, which is the bytes of the newest
+// acknowledged op, or zero where there is none.
 // It holds because RFC 8 §15.1's "sync before existence" says a committed
 // size is never lost to a host crash. A journal that loses a synced record no
 // fault touched would overturn it, and this oracle reports that as a failure.
@@ -288,7 +314,12 @@ func (f *fileModel) candidates(at int64) (vals []byte, lost bool, floor int) {
 	if floor >= 0 {
 		v, _ := f.ops[floor].covers(at)
 		vals = []byte{v}
-		lost = f.ops[floor].kind == opWrite && f.ops[floor].faulted
+	}
+
+	for _, o := range f.ops[max(floor, 0):] {
+		if _, ok := o.covers(at); ok && o.kind == opWrite && o.faulted {
+			lost = true
+		}
 	}
 
 	// Every op after the newest acknowledged one may or may not have landed,
@@ -367,14 +398,16 @@ func (m *soakModel) unattributedNote() string {
 }
 
 // sizes is every size f may have after a restart: each acknowledged op
-// applied, and each other op applied or not.
+// applied, and each other op applied or not. A write whose record the
+// schedule lost is still applied: RFC 8 §5.1 commits an acknowledged append's
+// existence from its loss record, so it keeps its size and reads Lost.
 func (f *fileModel) sizes() []int64 {
 	sizes := []int64{0}
 	for _, o := range f.ops {
 		next := make([]int64, 0, 2*len(sizes))
 		for _, s := range sizes {
 			next = append(next, o.size(s))
-			if !o.acked || o.faulted {
+			if !o.acked {
 				next = append(next, s)
 			}
 		}
@@ -682,6 +715,60 @@ func TestOracle(t *testing.T) {
 			)
 			return f.stat(8, t0.Add(time.Second))
 		}, ""},
+		{
+			"O34 an acknowledged, faulted extending write served at the old size",
+			func(m *soakModel, f *fileModel) error {
+				write(f, 0, 'a', 4, true)
+				write(f, 4, 'b', 4, true).faulted = true
+				return f.stat(4, t0.Add(2*time.Second))
+			},
+			"served size 4",
+		},
+		{
+			"O35 a faulted write no Commit acknowledged reads Lost",
+			func(m *soakModel, f *fileModel) error {
+				write(f, 0, 'a', 4, true)
+				write(f, 0, 'b', 4, false).faulted = true
+				return read(m, f, 0, bytesOf('b', 4), true)
+			},
+			"",
+		},
+		{
+			"O36 a write no fault touched and no Commit acknowledged reads Lost",
+			func(m *soakModel, f *fileModel) error {
+				write(f, 0, 'a', 4, true)
+				write(f, 0, 'b', 4, false)
+				return read(m, f, 0, bytesOf('b', 4), true)
+			},
+			"Lost with no fault",
+		},
+		{
+			"O37 a growing truncate no Commit acknowledged may be dropped",
+			func(m *soakModel, f *fileModel) error {
+				write(f, 0, 'a', 8, true)
+				grow := f.add(
+					&soakOp{kind: opTruncate, off: 16, proc: 1, done: true, grow: true},
+					false,
+				)
+				grow.mtime = t0.Add(time.Minute)
+				return f.stat(8, t0.Add(time.Second))
+			},
+			"",
+		},
+		{
+			"O38 a growing truncate a Commit acknowledged is kept",
+			func(m *soakModel, f *fileModel) error {
+				write(f, 0, 'a', 8, true)
+				grow := f.add(
+					&soakOp{kind: opTruncate, off: 16, proc: 1, done: true, grow: true},
+					false,
+				)
+				grow.mtime = t0.Add(time.Minute)
+				f.commit(1, 0, 0, vA, nil)
+				return f.stat(8, grow.mtime)
+			},
+			"served size 8",
+		},
 		{
 			"O28 a loss found after an SMB open, flushed without ErrLost",
 			func(m *soakModel, f *fileModel) error {

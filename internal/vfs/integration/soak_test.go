@@ -22,10 +22,15 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
+// decision: a seed fixes the sequence of client calls and the crash variants,
+// not when each fault fires. The engine's goroutines consult the schedules
+// concurrently, so each rule's stream is drawn in whatever order they enter
+// it, and one seed can fire its faults in a different call on each run. A
+// known entry keyed by a seed may therefore change its message.
 var soakSeed = flag.Uint64(
 	"soak.seed",
 	0,
-	"replay this one seed of the soak instead of the fixed list",
+	"run only this seed of the soak instead of the fixed list (its calls repeat, its faults may not)",
 )
 
 // soakSeeds are the seeds every run of the soak replays.
@@ -44,6 +49,7 @@ const (
 	soakSpan      = 64 << 10         // the offsets the calls reach in a file
 	soakMaxWrite  = 4 << 10          // the largest write
 	soakCallBound = 10 * time.Second // a real-time backstop on one call, so a wedge fails instead of hanging
+	soakSlowCall  = 2 * time.Second  // a call this slow was parked, whatever it answered
 )
 
 var errInjected = errors.New("soak: an injected fault")
@@ -109,18 +115,19 @@ type loggedFault struct {
 }
 
 func (l loggedFault) At(op string, key []byte) (time.Duration, int, error) {
+	// One lock covers the pause, the draw and the record, so a fault drawn
+	// while paused is never logged, and one drawn while running is logged
+	// with the call in flight when it was drawn.
 	l.log.mu.Lock()
-	paused := l.log.paused
-	l.log.mu.Unlock()
+	defer l.log.mu.Unlock()
 
 	// A fault while the fixture restarts fails the fixture, not the engine.
-	if paused {
+	if l.log.paused {
 		return 0, 0, nil
 	}
 
 	d, tear, err := l.inner.At(op, key)
 	if tear != 0 || err != nil {
-		l.log.mu.Lock()
 		l.log.fired = append(l.log.fired, firedFault{
 			side: l.side,
 			op:   op,
@@ -130,7 +137,6 @@ func (l loggedFault) At(op string, key []byte) (time.Duration, int, error) {
 			call: l.log.call,
 			desc: l.log.desc,
 		})
-		l.log.mu.Unlock()
 	}
 
 	return d, tear, err
@@ -212,7 +218,7 @@ func runSoak(t *testing.T, seed uint64) {
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf(
-				"seed %d failed; replay it with -soak.seed=%d. Faults that fired, in order:\n%s",
+				"seed %d failed; rerun it with -soak.seed=%d, which repeats its calls but not always when its faults fire. Faults that fired, in order:\n%s",
 				seed,
 				seed,
 				r.log,
@@ -225,7 +231,9 @@ func runSoak(t *testing.T, seed uint64) {
 	for i := range soakFiles {
 		name := fmt.Sprintf("f%d", i)
 		h, _ := r.c.File(name)
-		attr, err := r.c.fs.GetAttr(r.bounded(), r.c.admin, h)
+		ctx, cancel := r.bounded()
+		attr, err := r.c.fs.GetAttr(ctx, r.c.admin, h)
+		cancel()
 		if err != nil {
 			t.Fatalf("seed %d: GetAttr of the new %s: %v", seed, name, err)
 		}
@@ -302,10 +310,12 @@ func (r *soakRun) startProcess() {
 				r.c.Clock.Advance(2 * time.Minute)
 			}
 
-			res, err = r.c.fs.Open(r.bounded(), r.smb, vfs.OpenRequest{
+			ctx, cancel := r.bounded()
+			res, err = r.c.fs.Open(ctx, r.smb, vfs.OpenRequest{
 				Dir: r.c.FS.Root, Name: []byte(name), Disposition: vfs.OpenExisting,
 				Access: entity.ReadData | entity.WriteData, Timeout: time.Minute,
 			})
+			cancel()
 		}
 
 		if err != nil {
@@ -344,7 +354,7 @@ func (r *soakRun) step() {
 	f, h := r.m.files[i], r.files[i]
 	r.calls++
 
-	ctx, cancel := context.WithTimeout(r.t.Context(), soakCallBound)
+	ctx, cancel := r.bounded()
 	defer cancel()
 
 	var (
@@ -352,7 +362,12 @@ func (r *soakRun) step() {
 		desc   string
 		err    error
 		commit bool
+		// record puts a Commit's answer in the oracle. It runs after the
+		// call's faults are attributed: a record lost inside the Commit must
+		// credit the writes it has not yet acknowledged, as check does.
+		record func()
 	)
+	start := time.Now()
 
 	switch k := r.rng.IntN(100); {
 	case k < 50:
@@ -393,9 +408,11 @@ func (r *soakRun) step() {
 		r.log.set(r.calls, desc, false)
 		var v vfs.Verifier
 		v, err = r.c.fs.Commit(ctx, r.c.admin, vfs.Anonymous(h), 0, 0)
-		f.commit(r.proc, 0, 0, v, err)
-		if err == nil {
-			r.observe(v)
+		record = func() {
+			f.commit(r.proc, 0, 0, v, err)
+			if err == nil {
+				r.observe(v)
+			}
 		}
 	case k < 74:
 		commit = true
@@ -403,24 +420,30 @@ func (r *soakRun) step() {
 		r.log.set(r.calls, desc, false)
 		var v vfs.Verifier
 		v, err = r.c.fs.Commit(ctx, r.smb, r.refs[i], 0, 0)
-		if ferr := r.m.flush(r.opens[i], v, err); ferr != nil {
-			r.fail("call %d, %s: %v", r.calls, desc, ferr)
-		}
+		record = func() {
+			if ferr := r.m.flush(r.opens[i], v, err); ferr != nil {
+				r.fail("call %d, %s: %v", r.calls, desc, ferr)
+			}
 
-		if err == nil {
-			r.observe(v)
+			if err == nil {
+				r.observe(v)
+			}
 		}
 	case k < 87:
 		size := r.rng.Int64N(soakSpan)
 		desc = fmt.Sprintf("truncate %s to %d", f.name, size)
 		r.log.set(r.calls, desc, false)
+		grow := size >= f.leaves()
 		_, err = r.c.fs.SetAttr(
 			ctx,
 			r.c.admin,
 			vfs.Target{H: h},
 			vfs.AttrChange{Attrs: entity.Attrs{}.WithSize(size)},
 		)
-		op = f.add(&soakOp{kind: opTruncate, off: size, proc: r.proc, done: err == nil}, false)
+		op = f.add(
+			&soakOp{kind: opTruncate, off: size, proc: r.proc, done: err == nil, grow: grow},
+			false,
+		)
 	default:
 		off, n := r.rng.Int64N(soakSpan), 1+r.rng.Int64N(soakMaxWrite)
 		desc = fmt.Sprintf("deallocate %s [%d, %d)", f.name, off, off+n)
@@ -433,7 +456,12 @@ func (r *soakRun) step() {
 	}
 
 	r.log.set(0, "", false)
+	r.slow(desc, start)
 	faulted := r.attribute(op)
+	if record != nil {
+		record()
+	}
+
 	// A failed sync window, or a loss a restart found, may fail the file's
 	// next Commit once, through an SMB open as ErrLost; the one after owes
 	// nothing.
@@ -443,7 +471,9 @@ func (r *soakRun) step() {
 	}
 
 	if op != nil {
-		attr, aerr := r.c.fs.GetAttr(r.bounded(), r.c.admin, h)
+		gctx, gcancel := r.bounded()
+		attr, aerr := r.c.fs.GetAttr(gctx, r.c.admin, h)
+		gcancel()
 		if aerr != nil {
 			r.fail("GetAttr of %s after call %d: %v", f.name, r.calls, aerr)
 		}
@@ -502,12 +532,19 @@ func (r *soakRun) excused(err error, faulted bool) bool {
 }
 
 // bounded is a context cut off after soakCallBound, for one call of the
-// soak's own.
-func (r *soakRun) bounded() context.Context {
-	ctx, cancel := context.WithTimeout(r.t.Context(), soakCallBound)
-	r.t.Cleanup(cancel)
+// soak's own; the caller cancels it when the call returns.
+func (r *soakRun) bounded() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.t.Context(), soakCallBound)
+}
 
-	return ctx
+// slow fails a call that took soakSlowCall or longer from start. The clock
+// moves only between calls, so a call parked on it comes back only at the
+// backstop, and with a sync fault pending it comes back with the owed
+// failure, which excused() would take for a fault's answer.
+func (r *soakRun) slow(desc string, start time.Time) {
+	if d := time.Since(start); d >= soakSlowCall {
+		r.fail("%s took %v, parked until it was cut off", desc, d)
+	}
 }
 
 // check reads every file back after a restart: its size and modify time
@@ -516,12 +553,11 @@ func (r *soakRun) bounded() context.Context {
 // taken, so the file's open must report it on its next flush. Last, the
 // verifier the new process answers must differ from every earlier one's.
 func (r *soakRun) check() {
-	ctx, cancel := context.WithTimeout(r.t.Context(), soakCallBound)
-	defer cancel()
-
 	for i, h := range r.files {
 		f := r.m.files[i]
+		ctx, cancel := r.bounded()
 		attr, err := r.c.fs.GetAttr(ctx, r.c.admin, h)
+		cancel()
 		if err != nil {
 			r.fail("process %d: GetAttr of %s: %v", r.proc, f.name, err)
 		}
@@ -533,7 +569,9 @@ func (r *soakRun) check() {
 		found := false
 		for _, p := range f.pieces(attr.Size) {
 			buf := make([]byte, p[1]-p[0])
-			n, _, err := r.c.fs.Read(ctx, r.c.admin, vfs.Anonymous(h), p[0], buf)
+			rctx, rcancel := r.bounded()
+			n, _, err := r.c.fs.Read(rctx, r.c.admin, vfs.Anonymous(h), p[0], buf)
+			rcancel()
 			corrupt := errors.Is(err, vfs.ErrCorrupt)
 			lost := corrupt || errors.Is(err, vfs.ErrLost)
 			// A loss a restart found may raise the loss sequence at the next
@@ -563,18 +601,29 @@ func (r *soakRun) check() {
 		}
 
 		if found {
-			v, err := r.c.fs.Commit(ctx, r.smb, r.refs[i], 0, 0)
+			cctx, ccancel := r.bounded()
+			start := time.Now()
+			v, err := r.c.fs.Commit(cctx, r.smb, r.refs[i], 0, 0)
+			ccancel()
+			r.slow("the flush of "+f.name+" after its loss", start)
+			// Attribute first, so a record lost in this Commit credits the
+			// writes it has not acknowledged yet.
+			faulted, owed := r.attribute(), f.owed()
 			if ferr := r.m.flush(r.opens[i], v, err); ferr != nil {
 				r.fail("process %d: %v", r.proc, ferr)
 			}
 
-			if !r.excused(err, r.attribute() || f.owed()) {
+			if !r.excused(err, faulted || owed) {
 				r.fail("process %d: the flush of %s after its loss: %v", r.proc, f.name, err)
 			}
 		}
 	}
 
-	v, err := r.c.fs.Commit(ctx, r.c.admin, vfs.Anonymous(r.files[0]), 0, 0)
+	vctx, vcancel := r.bounded()
+	start := time.Now()
+	v, err := r.c.fs.Commit(vctx, r.c.admin, vfs.Anonymous(r.files[0]), 0, 0)
+	vcancel()
+	r.slow("the verifier's Commit", start)
 	faulted := r.attribute()
 	owed := r.m.files[0].owed()
 	if err != nil {

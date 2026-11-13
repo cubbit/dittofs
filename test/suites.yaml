@@ -14,7 +14,7 @@ groups:              # `dt run GROUP` runs every suite in it
   conformance: [pjdfstest, pynfs, wpts, smbtorture]
   perf: [fio-verify, bench-smoke, perf-night]
   journal: [journal-conformance]
-  engine: [engine-conformance]
+  engine: [engine-conformance, engine-soak]
   adapters: [adapter-conformance]
 
 suites:
@@ -131,7 +131,8 @@ suites:
     tier: pr
   # The crash-and-restart soak over the composed engine, a short fixed list of seeds. Its run
   # over the real journal is red until the journal can sync and recover. No -race: the race
-  # detector changes the timing a soak explores, and engine-conformance covers the races.
+  # detector changes the timing a soak explores. engine-conformance covers the engine's races, but
+  # no suite runs the soak's own fault log under -race.
   engine-soak:
     format: go-json
     cmd: go test -tags=engine_conformance,engine_soak -run ^TestSoak -timeout=20m ./internal/vfs/integration/...
