@@ -162,6 +162,10 @@ that needs it.
   - §10 gains "ticket addresses", for §3.3's client-address MUST, and clauses in "logon throttle",
     "replay", "pass-through" and "machine account health";
   - `State` holds both secrets' versions in one shape, #4059's `secrets.Version`.
+- **A11. One sign-in mints in one batch** (RFC 18 §2.6 and §4.1's mint, §10's new "mint burst" row;
+  RFC 16 §3's `Minter`, whose `CreateUser` and `CreateGroup` become one batched `Create`): every
+  principal a sign-in, lookup or resolution needs is minted in one transaction with one principals-
+  generation raise, and `ErrExist` refuses the whole batch. This is the user's decision.
 
 ## 1. Introduction
 
@@ -390,19 +394,19 @@ proof"; the NFS halves of "disable takes effect" and "no file spelling"; and `Fu
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | The contract and the server's surface | `pkg/identity` with the value types moved from `pkg/vfs`, the errors, the interfaces; `internal/identity`'s surface; `vfs.Deps`' three fields | 6 | 6 | team | every epic |
-| E2 | Principals and accounts | the `Minter` on the store's ID counters, well-known principals with root's fixed ID, the `Machine` kind, the domain SID, names, `Spell` and `Find`, `NewHashes` with two secrets, `APISignIn`, NT-hash deletion | 7 | 10.5 | C | E6; partly E3, E4, E5; RFC 23's plan's E5 |
-| E3 | Resolution | `admit`'s resolver moved into identity and completed: map, squash, groups, grant, flags; the `State`; the proof key and admission's caller cache | 7 | 11 | A | E7, E8; partly E5 |
+| E2 | Principals and accounts | the `Minter` on the store's ID counters, well-known principals with root's fixed ID, the `Machine` kind, the domain SID, names, `Spell` and `Find`, `NewHashes` with two secrets, `APISignIn`, NT-hash deletion | 7 | 11 | C | E6; partly E3, E4, E5; RFC 23's plan's E5 |
+| E3 | Resolution | `admit`'s resolver moved into identity and completed: map, squash, groups, grant, flags; the `State`; the proof key and admission's caller cache | 7 | 11.5 | A | E7, E8; partly E5, E6 |
 | E4 | Local NTLMv2 sign-in | `SignIn` for NTLMv2 against a local NT hash, the MIC, key exchange, the throttle, anonymous sessions, re-authentication | 6 | 9 | B | E5; partly E7 |
 | E5 | Kerberos and the PAC | imported keytab through `Apply`, AES only, AP-REQ, the replay cache, PAC verification and binding, test PACs, machine principals | 8 | 16.5 | B | E8; partly E7 |
-| E6 | The directory | the LDAP provider lifted, paging, `tokenGroups`, the directory cache with stale grace, directory mints, the domain SID, the in-memory directory and its suite | 7 | 16.5 | C | E8; partly E7 |
+| E6 | The directory | the LDAP provider lifted, paging, `tokenGroups`, the directory cache with stale grace, directory mints, the domain SID, the in-memory directory and its suite | 7 | 18 | C | E8; partly E7 |
 | E7 | NETLOGON and the machine account | the secure channel moved and hardened, pass-through, online and offline join, the derived keytab, rotation, identity's runner kinds, status, the in-memory domain controller | 11 | 25 | A | E8 |
 | E8 | Integration | identity composed into the node, its `State` from reconcile, `identity.*` validators, the rows several epics meet in | 5 | 10 | team | E9 |
 | E9 🔀 | E2E green | Tier 2 rows through SMB, `e2e/kerberos` | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **57** | **104.5** | | |
+| | **Total** | | **57** | **107** | | |
 
-**Plan estimate: 57 subtasks, 104.5 man-days, not counting epic 9.**
+**Plan estimate: 57 subtasks, 107 man-days, not counting epic 9.**
 
-The skill's estimate for RFC 18's 2,261 lines, with A1 to A10, is 6 middle epics (`round(2261 / 400)`),
+The skill's estimate for RFC 18's 2,266 lines, with A1 to A11, is 6 middle epics (`round(2266 / 400)`),
 as this plan has. Active Directory's two halves, the directory and NETLOGON, share no state beyond
 the in-memory AD they are tested against, and splitting them keeps Track A busy after resolution.
 
@@ -436,6 +440,7 @@ flowchart TD
   E2 -. "well-known principals" .-> E3
   E2 -. "Minter, Machine kind" .-> E5
   E3 -. "Resolver, State" .-> E5
+  E3 -. "Resolver, for mint burst" .-> E6
   E4 -. "NTLM routing" .-> E7
   E5 -. "keytab handling" .-> E7
   E6 -. "in-memory AD" .-> E7
@@ -480,7 +485,7 @@ flowchart TD
 | RFC 23's plan's epic 3 | E7; partly E2 | The joins and the rotation are runner kinds (D8). E2's NT-hash deletion is one too; the rest of E2 does not wait. |
 | #4059's S2 | E2 | E2 is the first epic that seals a `Secret`. |
 | E2 | E6; partly E3, E4, E5; RFC 23's plan's E5 | The directory mints through E2's `Minter`. E5 mints machine principals through E2's `Minter` and `Machine` kind, and starts on the keytab and AP-REQ before they land. E4 verifies against E2's NT hashes, and starts on its throttle and MIC before they land. E3 starts on squash, groups and grants before the well-known principals land. RFC 23's plan's epic 5 builds its accounts directly on `APISignIn` and `NewHashes`, after this external synchronisation point. |
-| E3 | E7, E8; partly E5 | Pass-through maps by its verified user SID into a resolved caller. E5 binds a PAC to a record, and its deny-only SIDs reach E3's groups. |
+| E3 | E7, E8; partly E5, E6 | Pass-through maps by its verified user SID into a resolved caller. E5 binds a PAC to a record, and its deny-only SIDs reach E3's groups. E6's "mint burst" row resolves through E3's `Resolver`; the rest of E6 does not wait. |
 | E4 | E5; partly E7 | Kerberos joins the `SignIn` E4 builds. Pass-through is a route of E4's NTLM domain table. |
 | E5 | E8; partly E7 | The derived keytab is loaded through E5's keytab handling. |
 | E6 | E8; partly E7 | NETLOGON's domain controller and the directory are one AD in the test fixture. |
@@ -490,7 +495,7 @@ flowchart TD
 
 ### 3.4 Splitting the work
 
-- **Track A** takes epic 3 at S1, and is the plan's long pole: 36 man-days across epics 3 and 7. Squash, groups, grants and flags need only E1's types and the
+- **Track A** takes epic 3 at S1, and is the plan's long pole: 36.5 man-days across epics 3 and 7. Squash, groups, grants and flags need only E1's types and the
   resolver it moves; the map step joins once epic 2's well-known principals land, and the `State`
   once RFC 23's plan's epic 2 lands the principals generation. Then it takes epic 7, which needs
   real AD in `integration/ad-dc` and the in-memory domain controller.
@@ -800,7 +805,7 @@ func (s *Server) Find(ctx context.Context, sp Spelling, o FindOpts) (metadata.Pr
 	if err != nil || !o.Mint {
 		return metadata.Principal{}, orUnknown(err)
 	}
-	return s.mint.Directory(ctx, e) // minted once, in its own transaction (§5.1, E6)
+	return s.mint.Directory(ctx, e) // minted once, in this call's one batch with one raise (§4.1, A11, E6)
 }
 
 // Runner kinds (D8, E7): one step function each, called by RFC 23's runner
@@ -893,7 +898,7 @@ This epic freezes the identity contract and the server every later epic fills in
 
 ### Epic 2 — Principals and accounts
 
-**Epic 2 estimate: 7 subtasks, 10.5 man-days.**
+**Epic 2 estimate: 7 subtasks, 11 man-days.**
 
 The store mints principals and allocates their IDs once. Spellings map both ways. An account's
 password and NT hash are derived, sealed and checked.
@@ -914,8 +919,9 @@ password and NT hash are derived, sealed and checked.
 - RFC 16's suite covers the `Minter`'s allocation.
 
 **Expected content:**
-- The `Minter` on the `IDS‖` uid, gid and RID counters, drawn from `identity.id_range` inside its
-  transaction (D9, RFC 18 §2.3).
+- The `Minter`'s batched `Create` (RFC 16 §3, A11): every record of one batch in one transaction, on
+  the `IDS‖` uid, gid and RID counters, drawn from `identity.id_range` inside it (D9, RFC 18 §2.3),
+  with one `PGEN` raise per batch and the whole batch refused on `ErrExist`.
 - Root and anonymous among the well-known principals (RFC 18 §2.1): root's fixed ID added to
   `entity`'s, whose `WellKnown()` accepts only `0x01` to `0x0C` today.
 - The `Machine` principal kind, which `entity.PrincipalKind` lacks today, and its record, for epic
@@ -938,7 +944,7 @@ password and NT hash are derived, sealed and checked.
 
 ### Epic 3 — Resolution
 
-**Epic 3 estimate: 7 subtasks, 11 man-days.**
+**Epic 3 estimate: 7 subtasks, 11.5 man-days.**
 
 Admission resolves every call through identity's `Resolver`, and its caller cache keys on the whole
 proof.
@@ -968,8 +974,9 @@ proof.
 - The `State` and its generation, applied under `Apply` (RFC 18 §2.6, §7.2).
 - `Identity.Key()` and admission's caller cache keyed as RFC 18 §7.1 says, with single-flight misses
   run on a context detached from the first caller's and bounded by RFC 18 §5.1's 20 s, each waiter
-  keeping its own deadline (`DoChan`), so one client's disconnect fails no other; a resolution whose
-  own mint made it stale re-resolves once (O8).
+  keeping its own deadline (`DoChan`), so one client's disconnect fails no other; a resolution made
+  stale by a raise re-resolves while it is stale, within RFC 18 §5.1's 20 s bound, a re-run
+  minting nothing, so a burst converges once its sign-ins have each raised once (O8, A11).
 - `vfs`'s `Spell` and `Find` routed to `Names`.
 
 ### Epic 4 — Local NTLMv2 sign-in
@@ -1042,7 +1049,7 @@ half for Kerberos, §3.8's expiry, and §4.2 steps 1, 2 and 4.
 
 ### Epic 6 — The directory
 
-**Epic 6 estimate: 7 subtasks, 16.5 man-days.**
+**Epic 6 estimate: 7 subtasks, 18 man-days.**
 
 Identity reads users and groups from Active Directory over verified TLS. It caches the answers with a
 stale grace, and mints each directory principal once.
@@ -1052,8 +1059,9 @@ stale grace, and mints each directory principal once.
 **Done when:**
 - RFC 18 ID4 and ID9 hold;
 - RFC 18 §10's rows "stale grace", "directory TLS", "one query per key" (through
-  `identity_directory_lookups_total`), "exact queries", "SID-less directory" and "NetBIOS name and
-  domain" pass;
+  `identity_directory_lookups_total`), "exact queries", "SID-less directory", "NetBIOS name and
+  domain" and "mint burst" pass, the last in `unit` on the injected clock, through epic 3's
+  `Resolver`;
 - RFC 18 §10's row "root" passes its directory clause;
 - the directory's suite passes against the in-memory directory in `unit` and against real AD in
   `integration/ad-dc`.
@@ -1062,7 +1070,9 @@ stale grace, and mints each directory principal once.
 - v1's LDAP provider lifted into `internal/identity/directory`, and extended as D6 says.
 - The directory cache: TTLs, single flight, the stale grace, errors never cached as "not found".
 - Minting directory users and groups from the first answer, with renames and disables following the
-  entry.
+  entry; every principal one sign-in, lookup or resolution needs collected and minted as one batch,
+  with one raise, and on `ErrExist` the lookups re-run once and the rest minted in a second batch
+  (RFC 18 §4.1, A11).
 - Kerberos names resolved through the directory (RFC 18 §4.2 step 3), and a SID of the directory's
   domain asked of the directory first, minted only with `FindOpts.Mint` (RFC 18 §4.4).
 - The directory's domain SID read from its domain object by each new client (RFC 18 §5.1, A8).
@@ -1251,21 +1261,14 @@ This epic waits for an SMB adapter serving through the node (S3).
 - **O7. Estimates least certain.** Epic 7 depends on how much of v1's secure channel survives the
   hardening, and on the Kerberos client its named pipe needs. Epic 6 depends on real AD's group
   nesting.
-- **O8. A cold sign-in's cost.** A directory user's first sign-in mints each of its groups in its
-  own transaction (RFC 18 §5.1's mint), and each raises `PGEN` (§7.2): a user in 300 groups costs
-  about 300 directory queries and 300 raises, each of which empties every node's caller cache.
-  Epic 6 benchmarks a cold resolution of such a user through a delaying fault wrapper, asserting no
-  `ErrUnavailable`; if that assertion fails, the fix is an RFC 18 amendment
-  minting one resolution's records in one transaction with one raise, and looking groups up in
-  batches. The same raise leaves the resolution's own `Caller.Built` stale, which §7.2 neither
-  stores nor serves: epic 3 re-resolves once, the re-run mints nothing and raises nothing, and a
-  re-run that is stale again fails `ErrUnavailable`, retryable. Two more costs on the same path,
-  measured by the same benchmark: a PAC's SIDs are looked up one query each, up to 1 024, where
-  one store read and paged directory queries would do; and a directory error is never cached, where
-  v1 kept one for 10 s. Two costs a single-user benchmark cannot show, so epic 6 plans for them:
-  a burst of first sign-ins, whose mints raise `PGEN` and can make each other's resolutions stale
-  twice and fail, which the concurrent benchmark measures; and an outage, which RFC 18 §5.1's
-  20-second bound per resolution (A7) caps, tested with a delaying fault wrapper.
+- **O8. A cold sign-in's cost.** Settled by A11: a sign-in mints all its new principals in one
+  batch with one `PGEN` raise, so a user in 300 groups costs one raise, not 300, and 50 concurrent
+  first sign-ins cost 50. A resolution made stale by those raises re-resolves while stale, within
+  the 20 s bound, and a re-run mints nothing, so a burst converges. Epic 6's "mint burst" row tests
+  it in `unit`, green when epic 6 lands; its benchmarks measure latency only. A PAC's SIDs are looked
+  up in pages (epic 6), and a directory error is never cached, where v1 kept one for 10 s; an
+  outage is capped by RFC 18 §5.1's 20-second bound per resolution (A7) and the per-node in-flight
+  cap, tested with a delaying fault wrapper.
 
 - **O9. What this plan needs from #4059's `pkg/secrets`**, frozen at its S1, which this plan's S0
   names. #4059 provides each:

@@ -1169,14 +1169,15 @@ type ShareIndex interface {
 }
 
 // Minter is identity's only write path: the records a first sign-in or lookup
-// mints (RFC 18 §2.4, §5.1). It never overwrites. Each write is one transaction,
-// draws the IDs a names from their counters inside it, and fails with ErrExist
-// when another principal holds a row it would write. Every Minter write, like
-// every other User or Group record change, raises the principals generation
-// (PGEN, §4.2) in the same transaction (RFC 18 §7.2).
+// mints (RFC 18 §2.4, §4.1, §5.1). It never overwrites. Create writes one
+// batch, every record one sign-in, lookup or resolution needs, in one
+// transaction: it draws each record's IDs its Alloc names from their counters
+// inside it, raises the principals generation (PGEN, §4.2) once whatever the
+// batch holds (RFC 18 §7.2), and fails whole with ErrExist, writing nothing,
+// when another principal holds a row any record would write. Rename and SetEmail,
+// like every other User or Group record change, raise it in their transaction.
 type Minter interface {
-	CreateUser(ctx context.Context, u User, a Alloc) error
-	CreateGroup(ctx context.Context, g Group, a Alloc) error
+	Create(ctx context.Context, b MintBatch) error
 	Rename(ctx context.Context, p Principal, name string) error    // the record's Name and its name index only
 	SetEmail(ctx context.Context, p Principal, email string) error // the record's Email only, from the directory (RFC 18 §5.1)
 }
@@ -1186,6 +1187,12 @@ type Minter interface {
 // record holds it, and a zero one is refused ErrInvalid: zero never means
 // "allocate".
 type Alloc struct{ UID, GID, RID bool }
+
+// MintBatch is one Create: each record with the IDs to allocate for it.
+type MintBatch struct {
+	Users  []struct{ User User; Alloc Alloc }
+	Groups []struct{ Group Group; Alloc Alloc }
+}
 
 // Lifecycle is the engine's store access outside block metadata's views and
 // Inspect.Refs (RFC 8 §2.1, §2.5, §2.7), over JD‖node‖device, the share records'

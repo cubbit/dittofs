@@ -507,9 +507,10 @@ type State struct {
 ```
 
 `Records` and `Minter` are RFC 16's views, defined there once. A `Minter` write
-never overwrites a record, allocates the IDs it is told to inside its
-transaction, and fails with `ErrExist` when another principal holds a row it
-would write (§2.2).
+is one batch of new records (§4.1's mint): it never overwrites a record,
+allocates the IDs it is told to inside its one transaction, raises the
+principals generation once, and fails whole with `ErrExist` when another
+principal holds a row it would write (§2.2).
 
 **Start and stop.** No settings reach `New`. The node reads the records at
 start and hands identity its first `State` through `Apply`, before `Start`. It
@@ -1119,11 +1120,14 @@ type Spelling struct{ Scheme Scheme; Num uint32; SID SID; Text string }
 ```
 
 Sign-in, `Find` and resolution (§4.3) share one internal mint, so every record
-identity writes goes through one path, under one rule: it never overwrites, it
-allocates what the record lacks in its own transaction, and on `ErrExist` it
-re-runs the lookup that led to it once. If the lookup now finds a principal, the
-mint binds to it; otherwise it fails `ErrUnavailable`, writes nothing and logs
-both `PrincipalID`s. Two nodes minting alice find alice by name or SID on the
+identity writes goes through one path, under one rule: it never overwrites, and
+**one sign-in, lookup or resolution mints every principal it needs in one
+batch**: one transaction, which allocates what each record lacks, with one
+principals-generation raise (§7.2), however many groups the batch holds. On
+`ErrExist` the whole batch writes nothing and the lookups that led to it are
+re-run once: a principal they now find is bound, and the rest are minted in a
+second batch. If that one also meets `ErrExist`, the call fails
+`ErrUnavailable`, writes nothing and logs both `PrincipalID`s. Two nodes minting alice find alice by name or SID on the
 re-run; bob claiming alice's `uidNumber` finds no bob, and fails.
 
 - An adapter **MUST** encode and decode every principal through these calls,
@@ -2101,6 +2105,7 @@ RFC 16's conformance suite's, not repeated here.
 | pass-through | 1 | A directory user with no `krb` row signs in by NTLM pass-through: the caller is the principal holding its verified user SID; a wrong password raises the domain controller's bad-password count by one. An AUTHENTICATE whose `NtChallengeResponse` is 24 bytes: `ErrLogonFailure`, and nothing sent to the domain controller. | no mapping path; amplified lockouts; an NTLMv1 response forwarded |
 | no file spelling | 2 | On a share whose only grant is authenticated users read, a machine principal reads a file: refused, not `authenticated`. A second machine's state operation on the first's `SP4_MACH_CRED` client record: refused. A grant naming a machine or an API-only account: refused. | a machine treated as an authenticated file caller |
 | `none` is stored | 2 | Grant `Finance` read-write and alice `none`: alice refused. Remove alice's grant: alice granted through `Finance`. | `none` stored as no grant |
+| mint burst | 1 | On the injected clock, 50 concurrent first sign-ins of distinct directory users, each in the same 300 directory groups, none minted before: every sign-in succeeds, none `ErrUnavailable`; each group is minted once; and the principals generation rises once per sign-in that minted, never once per group. | a burst of first sign-ins failing on each other's generation raises |
 | directory deadline | 1 | Resolve bob over NTLM; remove bob from a directory group. Keep the session open past the TTL: his next call drops the group, with no generation change. On the injected clock, with every directory query answering after 4 seconds, a cold sign-in of a user in 300 groups fails `ErrUnavailable` at 20 seconds. | a cached caller outliving the directory answer |
 | SID-less directory | 1 | An RFC 2307 entry with no SID: the minted principal holds a local SID from the RID counter, unchanged when the directory later adds one. | a directory principal with no SID |
 | logon throttle | 1 | 10 wrong passwords for alice from one address, then the right one: refused, outcome `throttled`, and the domain controller's bad-password count is 10, not 11, a count the domain controller's suite holds to the real one, its reset on a success included. | a throttle that still checks the credential |
