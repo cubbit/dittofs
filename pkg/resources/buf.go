@@ -111,7 +111,7 @@ type Buf struct {
 // victim cache. A []byte holds no pointers, so collection does not scan it;
 // a dropped buffer costs the next Get a fresh allocation and its zeroing.
 // Replace it with a fixed-size slab per class, allocated once at start, when
-// a profile shows that allocation from transfer-class buffers limiting
+// a profile shows that allocation from transfer-class buffers limits
 // throughput.
 type BufPool struct {
 	budget *WaitBudget
