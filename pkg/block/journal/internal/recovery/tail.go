@@ -15,7 +15,7 @@ type fateKind uint8
 
 const (
 	fateIntact      fateKind = iota // could have been open at a crash; whole; the tail's proof owns it
-	fateSealed                      // sealed, the seal proven: a successor names it
+	fateSealed                      // sealed, the seal proven: a successor names it, or a marker no successor names was proven on the device at this open
 	fateSealToProve                 // sealed by a marker no successor names; re-proven on the device later
 	fateTornTail                    // a torn tail from Offset; truncated there and sealed
 	fateEnded                       // ended at Offset; truncated there and then emptied
@@ -86,16 +86,7 @@ type tails struct {
 // probe it makes, and fails the open when a range names no record it can
 // class: see refuseRange and refuseMissingEnd.
 func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []segmentScan) (tails, error) {
-	// A segment a verified header names as predecessor was sealed before
-	// its successor was made; a segment no header names could have been
-	// open at a crash. An id naming itself names nothing, and a name with
-	// no segment on disk is ignored.
-	named := map[core.SegmentID]bool{}
-	for _, s := range att.Own {
-		if p := s.Header.Predecessor; p != 0 && p != s.ID {
-			named[p] = true
-		}
-	}
+	named := namedPredecessors(att)
 	unverified := map[core.SegmentID]bool{}
 	for _, id := range slices.Concat(att.Unverified, att.ZeroHeader) {
 		unverified[id] = true
@@ -256,6 +247,20 @@ func classifyTails(rd *reader, identity core.JournalID, att Attached, scans []se
 		return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.at(), b.at()))
 	})
 	return out, nil
+}
+
+// namedPredecessors is the set every segment a verified own header names as
+// its predecessor: such a segment was sealed before its successor was made,
+// while a segment no header names could have been open at a crash. An id
+// naming itself names nothing, and a name with no segment on disk is ignored.
+func namedPredecessors(att Attached) map[core.SegmentID]bool {
+	named := map[core.SegmentID]bool{}
+	for _, s := range att.Own {
+		if p := s.Header.Predecessor; p != 0 && p != s.ID {
+			named[p] = true
+		}
+	}
+	return named
 }
 
 // refuseRange is the open's refusal of a range inside a segment whose

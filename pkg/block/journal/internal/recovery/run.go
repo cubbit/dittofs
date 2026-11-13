@@ -61,6 +61,11 @@ type State struct {
 	// Tails is the torn-or-corrupt classing of every own and unverified
 	// segment: each one's fate, the damaged set and the corrupt drops.
 	Tails tails
+
+	// Proof is the tail proof's answer, the records the re-append phase
+	// takes and the segments whose proof sync failed; the marks phase
+	// reads Reappends for its lost-tail check.
+	Proof proof
 }
 
 // phase is one step of the open's recovery: the span it runs under, and
@@ -84,7 +89,7 @@ var phases = [...]phase{
 	{span: core.SpanOpenAttach, run: runAttach},
 	{span: core.SpanOpenRebuild, run: runRebuild},
 	{span: core.SpanOpenMarksRaise},
-	{span: core.SpanOpenTailProof},
+	{span: core.SpanOpenTailProof, run: runTailProof},
 	{span: core.SpanOpenMarksLostTail},
 	{span: core.SpanOpenSpares},
 	{span: core.SpanOpenReappend},

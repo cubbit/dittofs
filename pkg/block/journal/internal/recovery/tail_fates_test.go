@@ -184,7 +184,8 @@ func TestATornSegmentHeaderIsDamageWhenASealMarkerFollowsIt(t *testing.T) {
 		if got := planted(st); got != 2 {
 			t.Errorf("the index holds %d entries, want 2", got)
 		}
-		wantFate(t, st, 1, fateSealToProve, 0)
+		// Its marker is durable, so the proof sealed it at this open.
+		wantFate(t, st, 1, fateSealed, 0)
 		if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
 			t.Errorf("Damaged got %v, want [1]", st.Tails.Damaged)
 		}
@@ -250,7 +251,9 @@ func TestTailsClassifyEverySegmentFate(t *testing.T) {
 
 	wantFate(t, st, 1, fateSealed, 0)
 	wantFate(t, st, 2, fateIntact, 0)
-	wantFate(t, st, 3, fateSealToProve, 0)
+	// No successor names segment 3, but its marker is durable on the
+	// device, so the tail's proof sealed it at this open.
+	wantFate(t, st, 3, fateSealed, 0)
 	if sc, _ := scanOf(st, 2); sc.RecordsEnd != format.SegmentHeaderSize {
 		t.Errorf("the empty segment's RecordsEnd got %d, want %d", sc.RecordsEnd, format.SegmentHeaderSize)
 	}

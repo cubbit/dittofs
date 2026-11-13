@@ -246,6 +246,9 @@ rfc28 / 4.2 / C / "reseed by version":
   tests: [TestRFC28C_ReseedByVersion]
 rfc28 / 4.2 / C / "trailer torn":
   tests: [TestRFC28C_TrailerTorn]
+rfc28 / 4.2 / C / "a seal marker only the cache holds":
+  tests: [TestRFC28C_ASealMarkerOnlyTheCacheHolds]
+  reason: 'the test asserts the reopen-in-place half; the killed-process half, its cache kept, is asserted once the open of a directory holding segments is built'
 rfc28 / 4.2 / C / "truncated sealed segment":
   tests: [TestRFC28C_TruncatedSealedSegment]
 rfc28 / 4.2 / C / "foreign segment":
@@ -475,9 +478,6 @@ rfc1 / 9.4 / A / "read-only fails every stream's unsynced records":
 rfc1 / 9.4 / C / "`Share` twice on one tag":
   owner: epic 8
   reason: 'Share of an open tag is built (T8.3); the row''s Fill waits for T8.7, and the fixture for epic 7''s Init and Open'
-rfc28 / 4.2 / C / "a seal marker only the cache holds":
-  owner: epic 7
-  reason: 'the open proving seal markers on the device is not built yet'
 rfc28 / 4.2 / C / "a range that names no record":
   owner: epic 7
   reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'

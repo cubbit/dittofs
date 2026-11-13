@@ -1154,15 +1154,16 @@ func (f readRec) Size() (int64, error)                          { return f.f.Siz
 func (f readRec) Close() error                                  { return f.f.Close() }
 func (f readRec) Name() string                                  { return f.name }
 
-// TestRunRebuildReadsNoPayloadOfAnyNewestOrOlderSegment holds the no-payload-read
-// half of the scan rule through the whole open: no recorded read overlaps a write or fill
-// record's payload range, in any segment, newest or older alike. The
-// rule covers the segments that are not the newest of
-// a stream — the header-only walk reads no write's or fill's body anywhere,
-// so every segment of the plant is asserted the same way; a clone target's
-// 56-byte spec is the one body the scan reads back whole, by design, and
-// the newest segment's tail proof arrives with the phase that owns it.
-func TestRunRebuildReadsNoPayloadOfAnyNewestOrOlderSegment(t *testing.T) {
+// TestTheRebuildReadsNoPayloadOfAnyNewestOrOlderSegment holds the no-payload-read
+// half of the scan rule: no recorded read of the open's walking phases —
+// the attach pass and the rebuild — overlaps a write or fill record's
+// payload range, in any segment, newest or older alike, for the header-only
+// walk reads no write's or fill's body anywhere, and a clone target's
+// 56-byte spec is the one body the scan reads back whole, by design. The
+// tail proof's phase is outside this rule by its own: it reads the
+// unproven tail's records whole, payload included, as the proof's tests
+// pin, so it is not run over the plant here.
+func TestTheRebuildReadsNoPayloadOfAnyNewestOrOlderSegment(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
 	payloads := r.plantStepsPayloads(seededSteps(3), stepsPerSegment)
@@ -1170,12 +1171,21 @@ func TestRunRebuildReadsNoPayloadOfAnyNewestOrOlderSegment(t *testing.T) {
 		t.Fatalf("fixture: the workload planted no write, fill or clone-target record")
 	}
 
+	// The phases that walk and feed, alone; the tail proof's reads answer
+	// to their own rule, not the scan's.
 	rec := newReadsOf(r.seam.FS())
-	if _, err := Run(context.Background(), Deps{FS: rec, Clock: r.clk}, core.Version{}, journalID, nil); err != nil {
-		t.Fatalf("Run: %v", err)
+	deps := Deps{FS: rec, Clock: r.clk}
+	ctx := context.Background()
+	rd := newReader(ctx, rec, r.clk, nil)
+	var st State
+	if err := runAttach(ctx, deps, rd, &st, journalID, core.Version{}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if err := runRebuild(ctx, deps, rd, &st, journalID, core.Version{}); err != nil {
+		t.Fatalf("rebuild: %v", err)
 	}
 
-	// No read the open made overlaps a payload range of the segment it read.
+	// No read the phases made overlaps a payload range of the segment it read.
 	sawAny := false
 	for _, read := range rec.saw() {
 		kind, id := format.ClassifyName(read.name)

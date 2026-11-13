@@ -743,6 +743,14 @@
   issue: '#3596'
   message: 'stub: Inspect.File'
 
+- test: TestRFC28C_ASealMarkerOnlyTheCacheHolds
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs Sync, the idle seal and the read-only state; the tail proof this check verifies (open.tail) is landed, and the row waits on the public Open over a directory holding segments, the checkpoint after T7.12.'
+  issue: '#4032'
+  message: 'stub: Sync'
+
 - test: TestRFC28A_FooterIsNotAuthoritative
   status: fail
   fix: planned
