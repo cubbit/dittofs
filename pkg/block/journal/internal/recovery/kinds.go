@@ -149,13 +149,14 @@ type lossPiece struct {
 // drop on its own scan whatever its segment's source, and never reaches
 // this pass — and each aside carries the body that read decoded, which the
 // pass consumes. loss deliveries reach the sink when one is given, and none
-// is required: a nil one means no failed list and no placement.
+// is required: a nil one means no placement; the failed list the pass
+// withholds by is plain data the caller hands over, empty for none.
 //
 // A loss record whose header names a zero-length extent, or one that names
 // no file, refuses the open naming its segment and its offset. A body that
 // fails its checksum never reached the pass: a lost loss record errs toward
 // fetching the extent again.
-func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []segmentScan) (kindState, error) {
+func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, failed []core.Seq, scs []segmentScan) (kindState, error) {
 	ks := kindState{
 		whole:      map[core.Seq]bool{},
 		superseded: map[core.Seq]supersededLoss{},
@@ -165,10 +166,8 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 		confined:   map[index.RecordAt]bool{},
 		copies:     map[copyKey][]index.RecordAt{},
 	}
-	if losses != nil {
-		for _, seq := range losses.Failed() {
-			ks.failed[seq] = true
-		}
+	for _, seq := range failed {
+		ks.failed[seq] = true
 	}
 
 	var (
