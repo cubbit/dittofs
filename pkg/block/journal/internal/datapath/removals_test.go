@@ -568,9 +568,13 @@ func TestRemovalsAreInTheLedger(t *testing.T) {
 			c, seam := newTestCore(t)
 			s := mustShare(t, c, 1)
 			f := testFile(1)
-			// Every sync is held, so the removal's own record cannot be
-			// completed by a sync the hold did not stop.
-			hold := seam.Hold(t, kit.OpSync, "*")
+			// Every segment's sync is held, so the removal's own record
+			// cannot be completed by a sync the hold did not stop. A spare's
+			// sync, which the pool's refill runs under the spare's own name,
+			// is left to pass: it is not the removal's, so it must not end
+			// the wait below, and a sync covering the record starts only
+			// after the record is written and in the ledger.
+			hold := seam.Hold(t, kit.OpSync, "*.seg")
 			done := make(chan struct {
 				v   core.Version
 				err error
