@@ -737,6 +737,61 @@ func TestRunWithholdsARecordTwoRulesNameTogether(t *testing.T) {
 	}
 }
 
+// TestRunGivesACoveredLossRecordNoEffectAnywhere holds the covered aside's
+// no-effect at the map the filter withholds by: a loss record another rule
+// drops — a forget of its own tag above its own seq — feeds nothing to the
+// filter, so the record it names neither withholds nor clips anywhere, for
+// with no delivered event and no cut a name acting alone would leave a hole
+// in the feed nothing explains. The named record and the forgetting tag are
+// cross-tag on purpose: with both of one tag every writer-reachable geometry
+// is forget-dominated — the forget of the tag withholds every record the loss
+// would name below it — so the covered loss's own leg shows only where its
+// tag differs from the tag of the record it names, a geometry the writer has
+// but no single rule dominates.
+func TestRunGivesACoveredLossRecordNoEffectAnywhere(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	r.plantSeg(2, buildSeg(2,
+		writeRec(10, 3, 0, 64), // of tag 7, another tag than the loss's
+		forgetRec(9, 6),        // forgets the loss's own tag, above the loss's own seq
+		rec(10, func(rc *raw.Record) { // the covered loss: tag 9, seq 5
+			rc.Tag = 9
+			rc.FileID = file.Bytes()
+			rc.Seq, rc.Version = 5, raw.Version{Counter: 9}
+			rc.Offset, rc.Length = 0, 64
+			rc.Loss = &raw.LossBody{Dropped: 10, Flags: 1 | 4<<8} // synced, superseded
+		}),
+	))
+
+	st := kindsRun(t, r)
+
+	p, ok := st.Rebuilt.Index.Lookup(file, 0)
+	if !ok {
+		t.Fatalf("Lookup over the covered loss's extent missed, want the named record feeding whole: the covered loss clips nothing")
+	}
+	if p.Extent != (core.Extent{Off: 0, Len: 64}) || p.Seq != 10 || p.Version.Counter != 3 {
+		t.Errorf("the named record got seq %d at v%d over %+v, want seq 10 at v3 over [0,64): neither withheld nor clipped by the covered loss", p.Seq, p.Version.Counter, p.Extent)
+	}
+	for _, ch := range st.Rebuilt.Index.Since(file, core.Version{}) {
+		if ch.Kind != core.ChangeWrite {
+			t.Errorf("Since yielded %+v, want the held write alone: the covered loss cuts nothing and marks nothing", ch)
+		}
+	}
+	if got := st.Kinds.Withheld; got != (index.Numbers{}) {
+		t.Errorf("Withheld got %+v, want the zero pair: the covered loss withholds nothing", got)
+	}
+	if len(st.Kinds.Losses) != 0 {
+		t.Errorf("State.Kinds.Losses holds %d losses, want none: the covered loss is collected nowhere", len(st.Kinds.Losses))
+	}
+	if len(st.Tails.Corrupt) != 0 {
+		t.Errorf("Tails.Corrupt got %+v, want none: the named record verified and confined nothing", st.Tails.Corrupt)
+	}
+	if len(st.Kinds.Forgets) != 1 || st.Kinds.Forgets[0].Tag != 9 || st.Kinds.Forgets[0].Seq != 6 {
+		t.Errorf("State.Kinds.Forgets got %+v, want the one forget of tag 9 at seq 6, itself uncovered", st.Kinds.Forgets)
+	}
+}
+
 // TestRunDecodesASyncedSupersededLossWithItsExtent holds the superseded
 // half's own facts: a synced loss record whose reason is superseded decodes
 // over the extent its header names — [0,64K) of a record holding [0,128K) —

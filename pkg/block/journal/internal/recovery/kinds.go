@@ -220,10 +220,26 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 
 	// The cover maps are built from every fact the pass decoded, before any
 	// aside's own effect is decided, so whether an aside is covered never
-	// depends on the order its segment was scanned in. Loss withholding is
-	// the feed filter's, and a loss record naming a record that another rule
-	// also drops is covered only by that record, never by its own name.
+	// depends on the order its segment was scanned in. The loss names are
+	// gated on covered like every effect a loss carries is: a covered loss
+	// record holds no effect anywhere, its withhold and its clip together or
+	// neither — a name that acted alone would leave a hole in the feed with
+	// no event, cut or marker explaining it, and a clip with no cut is a
+	// state no rule of the disk can produce. The forget map completes before
+	// the gate, so a forget covering a loss needs no scan order; a loss named
+	// only by another loss gains its name only if that one was decoded
+	// first and uncovered — a chain of mutually-naming losses is damage no
+	// writer writes. A record that another rule also drops is covered only
+	// by that record, never by its own name.
+	for _, d := range df {
+		if f, ok := ks.forget[d.h.Tag]; !ok || d.h.Seq > f {
+			ks.forget[d.h.Tag] = d.h.Seq
+		}
+	}
 	for _, d := range dl {
+		if ks.covered(d.h.Seq, d.h.Tag) {
+			continue // another rule already drops this loss record
+		}
 		if d.l.Synced && d.l.Reason == format.LossSuperseded {
 			sup := ks.superseded[d.l.Dropped]
 			sup.extents = append(sup.extents, d.h.Extent)
@@ -231,11 +247,6 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, scs []se
 			ks.superseded[d.l.Dropped] = sup
 		} else {
 			ks.whole[d.l.Dropped] = true
-		}
-	}
-	for _, d := range df {
-		if f, ok := ks.forget[d.h.Tag]; !ok || d.h.Seq > f {
-			ks.forget[d.h.Tag] = d.h.Seq
 		}
 	}
 
