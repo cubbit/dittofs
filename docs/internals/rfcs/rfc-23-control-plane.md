@@ -1064,7 +1064,9 @@ An operation's `Kind` is an `OpKind`, a closed set read from this table and
 §4.6's list: one value per action above that is an operation, one per
 create or delete §4.6 makes one, and `identity.nt-hash-delete`, the deletion
 of every stored NT hash that setting `identity.ntlm` off starts, in that
-setting's write ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)). So `api_operations{kind}` is a closed set
+setting's write ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)); while it runs, a write turning
+`identity.ntlm` on is refused `409` `operation_running`, naming it, and is retried once it has
+finished (RFC 18 §3.5). So `api_operations{kind}` is a closed set
 ([RFC 25 §2.4](rfc-25-observability.md#2.4%20Labels)), and `operation_running`
 keys on the same value.
 

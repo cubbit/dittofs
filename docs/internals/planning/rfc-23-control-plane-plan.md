@@ -136,9 +136,10 @@ v1 is about 45,000 lines of non-test Go. The code that imports it outside the de
 removes each, as its expected content says. `k8s/dittofs-operator` imports nothing of this module: it mirrors v1's wire shapes by
 hand (§6 O4).
 
-**Dependency limits.** The node composes components that exist on `feat/storage-v2`: the metadata
-store, the remote stores, the syncer, open state, the engine, GC, identity and `*vfs.Filesystem`. It
-specifies none of them. The adapters it starts are RFC 20's: RFC 20's epic 7 wires them into this
+**Dependency limits.** The node composes the components the journal-only engine runs on, which
+exist on `feat/storage-v2`: the metadata store, the journals, open state, the engine, identity and
+`*vfs.Filesystem`, plus the in-memory remote store RFC 8 §2.1's refusal needs. The syncer, the remote
+clients and GC wait for RFC 8's second part (§6.1). It specifies none of them. The adapters it starts are RFC 20's: RFC 20's epic 7 wires them into this
 plan's node once S2 is reached, and this plan builds none of that wiring (D12). RFC 21's and RFC 22's handlers must be on the new filesystem service
 before a share can be mounted, and that wait is S3.
 
@@ -345,20 +346,20 @@ registers no suite and no group, and changes no `lint-go` tag.
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | Delete v1, declare the surface | v1 deleted with the tests that drive it, harness fixed; the node's, wire types', client's and kvstore's surfaces; the new `cmd/dfs` skeleton; architecture tests | 11 | 15.5 | team | every epic; the RFC 13 plan (#4059) and the RFC 18 plan (#4058) |
 | E2 | Store records | the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry | 8 | 20.5 | C | E5; partly E3, E4 |
-| E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition with RFC 8's root duties, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven, RFC 23's own settings section, the harness | 10 | 24 | A | E5 (partly), E6 (partly), E7 |
+| E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition with RFC 8's root duties, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven, RFC 23's own settings section, the harness | 10 | 23 | A | E5 (partly), E6 (partly), E7 |
 | E4 | The management API | server, route table, write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5) | 13 | 30 | B | E5 (partly), E6 (partly), E7 |
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention | 8 | 18 | C | E6 (partly), E7 |
 | E6 | The CLI | the client on the wire types, the rebuilt `dfsctl`, generated reference | 6 | 13 | A | E7 |
 | E7 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 5 | 13.5 | team | E8 (partly) |
 | E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **61** | **134.5** | | |
+| | **Total** | | **61** | **133.5** | | |
 
-**Plan estimate: 61 subtasks, 134.5 man-days, not counting epic 8.**
+**Plan estimate: 61 subtasks, 133.5 man-days, not counting epic 8.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
 
-The skill's estimate for RFC 23's 1,882 lines, as amended, is 5 middle epics (`round(1882 / 400)`), and this plan
+The skill's estimate for RFC 23's 1,884 lines, as amended, is 5 middle epics (`round(1884 / 400)`), and this plan
 has 5.
 
 **Legend.** ⛔ is a blocker; 🔀 waits on a synchronisation point, in part for E3 and E5 (X1, X2, X3). "team" is an epic that belongs to
@@ -521,8 +522,10 @@ and resource commands carry only their spec's fields.
 `--config` and `DITTOFS_CONFIG`, the refused v1 keys and the node identity's `node-id` files, in
 `pkg/bootstrap`. This plan's epics read it through that package. The launchers are that plan's
 too: `docker-compose.yml`, `docker/` and `dfsbench` stop working from this plan's epic 1, which
-deletes the v1 server they start, until the RFC 13 plan's epic 6 starts each through `dfs init`.
-This is the user's decision.
+deletes the v1 server they start. `dfsbench` comes back first, so v2 is measured against v1 as early
+as it can be: the RFC 13 plan's epic 2 ends by starting it through `dfs init` and `dfs start`, once
+this plan's epic 5 has `dfs init` (that plan's S4, reached partway through its epic 2);
+`docker-compose.yml` and `docker/` follow in that plan's epic 6. This is the user's decision.
 - **Prior art (from memory).** etcd and PostgreSQL keep a host file of the same scope.
 - **Applied by** epics 3 and 5, as consumers.
 
@@ -563,8 +566,8 @@ whose field names it, and every `Resolve` the kind and role it expects, never th
 
 **D11. `New` builds the node-level services; reconcile builds every per-record instance**, as RFC 23
 §2.1 and §2.3 say. This is the user's reading of them, recorded so the epics keep to it: a remote
-client exists only while a storage binding needs it, a share is an engine binding, a namespace is
-added to GC, and an adapter exists only while its record enables it; a node with no enabled adapter
+client exists only while a storage binding needs it, a share is an engine binding, and an adapter
+exists only while its record enables it (a namespace joins GC once GC is composed, §6.1); a node with no enabled adapter
 serves only the API. The adapter and sidecar rows are RFC 20's plan's epic 7 (D12).
 - **Prior art (from memory).** Kubernetes' kubelet builds its managers once and its pods by
   reconcile.
@@ -687,7 +690,8 @@ func start(ctx context.Context, path string) error {
 func New(cfg Config) (*Node, error) {
 	n := &Node{cfg: cfg, md: metadata.Open(cfg.KV /* ... */)}
 	// D11: each service built empty from its own Deps; no store client, share or adapter yet
-	n.engine, n.gc, n.identity, n.fs = engine.New(/* ... */), gc.New(/* ... */), identity.New(/* ... */), vfs.New(/* ... */)
+	// journal-only: no syncer, remote client or GC until RFC 8's second part (§6.1)
+	n.engine, n.identity, n.fs = engine.New(/* ... */), identity.New(/* ... */), vfs.New(/* ... */)
 	n.health = health.NewRegistry(cfg.Clock) // §4.3 above: only the conditions this plan raises
 	n.runner = newRunner(n.md.ControlPlane(), cfg.Clock) // D8
 	n.api = api.New(api.Deps{Store: n.md.ControlPlane(), SignIn: n.identity, Settings: n.table, Health: n.health /* ... */})
@@ -732,7 +736,7 @@ func (n *Node) apply(ctx context.Context, c Counters) error {
 	next := n.table.Snapshot(ctx, n.records)            // the RFC 13 plan's snapshot
 	n.restartPending(settings.Diff(n.applied, next))    // node_restart_pending
 	n.identity.Apply(settings.Get[identity.Settings](next, n.nodeID))
-	// ... *vfs.Filesystem, the engine and GC, each with its own section
+	// ... *vfs.Filesystem and the engine, each with its own section
 	n.applySMB(ctx, settings.Get[adaptersettings.SMB](next, n.nodeID)) // D12
 	n.applied = next
 	return nil
@@ -962,7 +966,7 @@ API write commits in, and a share's removal steps past the mark.
 
 ### Epic 3 — The node
 
-**Epic 3 estimate: 10 subtasks, 24 man-days.**
+**Epic 3 estimate: 10 subtasks, 23 man-days.**
 
 `node.New` composes every component that exists, and the node starts, reconciles, reports and
 stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
@@ -986,12 +990,13 @@ stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 **Expected content:**
 - The bootstrap and the node identity read through the RFC 13 plan's `pkg/bootstrap` (D6), and a
   v1 database file in the data directory refused at start.
-- `node.New`: every node-level service of RFC 23 §2.1's table that exists on `feat/storage-v2`, each
-  built empty from its own `Deps` (D11).
+- `node.New`: the node-level services of RFC 23 §2.1's table the journal-only engine uses (the
+  metadata store, the journals, open state, the engine, identity and `*vfs.Filesystem`), each built
+  empty from its own `Deps` (D11); the syncer, the remote clients and GC are not composed (§6.1).
 - The remote registry and the adapter factories that reconcile acquires instances through (D11).
-  The registry builds the in-memory remote store for a binding that names it: the MVP's shares
-  name it as their remote while nothing offloads (#4053), since the next bullet refuses a share
-  with none.
+  The registry builds only the in-memory remote store, for a binding that names it: the MVP's
+  shares name it as their remote while nothing offloads (#4053), since the next bullet refuses a
+  share with none.
 - RFC 8's root duties: `addShare` refuses a share whose namespace names no remote block store
   (RFC 8 §2.1), reported refused (RFC 23 §2.4); and the engine's `Stats` adapted into RFC 25's
   registry as conditions and series.
@@ -1069,7 +1074,8 @@ error to a status.
 - The domain's routes (A5): a user's `krb` spelling (a Kerberos-name link), and the actions
   `resolve-principal`, `test-directory`, `join-domain` (online and offline) and
   `rotate-machine-password` as operation kinds, and `identity.nt-hash-delete`, started in the
-  write that sets `identity.ntlm` off, with the join's state on the installation's
+  write that sets `identity.ntlm` off, a write turning it back on refused `409`
+  `operation_running` while it runs (RFC 18 §3.5, as the RFC 18 plan amends it), with the join's state on the installation's
   status. An offline join writes its password as a new version of the machine password's `Secret`
   through `pkg/secrets`' `Seal`, with the kind and owner its first version recorded (D10), in its own `Write` audited as a `set` of the reference, committed before
   the operation, and keeps no idempotency record (RFC 23 §3.5, §4.5). The runner's steps for them
@@ -1254,7 +1260,7 @@ runs RFC 23's e2e rows.
     `Node` record and its last status, so a prune that waits for "every node" never runs once the
     cluster rows land. On one node a prune waits only for this node (§4.3), so nothing stalls yet.
 - **O3. Components the node composes but whose lifecycle is unspecified.** RFC 23 §13 item 4
-  lists identity's directory connections, the pools and the event sink; GC adds its v1 shape. Epic 3 composes
+  lists identity's directory connections, the pools and the event sink. Epic 3 composes
   what exists and records each gap in its own document.
 - **O4. The Kubernetes operator.** It imports nothing of this module and mirrors v1's wire shapes
   by hand, so it builds after epic 1 but stops working against the new server. Moving it onto the
@@ -1285,7 +1291,7 @@ runs RFC 23's e2e rows.
   (RFC 23 §4.2). Until an RFC adds one, an operator disables the account (RFC 23 §3.5).
 - **O10. Estimates least certain.**
   - Epic 4 depends on how many of the domain's actions identity's runner steps make long (A5).
-  - Epic 3 depends on how far today's GC and identity fit RFC 23 §2.1's table.
+  - Epic 3 depends on how far today's identity fits RFC 23 §2.1's table.
   - Epic 2 depends on how much of RFC 16 §2.3.2's removal the engine's existing calls already
     cover.
 - **O11. Two pieces are other plans'.** RFC 18 §8.1 (`APISignIn`, `NewHashes`, the two secret
@@ -1307,6 +1313,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | Deferred | Why | Owner | Trigger | Issue |
 | --- | --- | --- | --- | --- |
 | The cluster rows: RFC 23 §4.6's claim takeover, §8's **(cluster)** rules, §9's schema gate, CP15, §12's multi-node tier, the two-node half of "§5.3 revocation" (header, O2, §1.4) | single node only | RFC 15 | RFC 15 leaves `deferred` | — |
+| The syncer, the remote clients and GC in the node's composition, and a namespace added to GC (header's dependency limits, D11, epic 3) | the journal-only engine composes none of them | unowned | RFC 8's second part lands | — |
 | The runner's claim and its lapse-takeover (§4.3's `ponytail:`) | one node resumes every unended operation | RFC 15, with the cluster rows | a second node | — |
 | A rotation's wait for every node to hold the new version (§4.3's `ponytail:`) | "every node" is this node | RFC 15, with the cluster rows | a second node | — |
 | A faster sign-in path than two commits per attempt (§4.3's `ponytail:`) | the throttle bounds the rate anyway | unowned | epic 5's benchmark shows the commits | — |
@@ -1342,7 +1349,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | --- | --- |
 | RFC 23 Start here, In short | — (explanatory) |
 | RFC 23 §1, §1.1 | — (scope) |
-| RFC 23 §2, §2.1, §2.2, §2.3 | E1 (surface), E3; E7 (rows); E8 ("§2.2 order"'s adapter clause) |
+| RFC 23 §2, §2.1, §2.2, §2.3 | E1 (surface), E3; E7 (rows); E8 ("§2.2 order"'s adapter clause); §2.1's syncer, remote clients and GC §6.1 |
 | RFC 23 §2.4 | E2 (records), E3 (writer), E4 (`applied`); E7 (row) |
 | RFC 23 §2.5 | E3; E7 (row) |
 | RFC 23 §3.1 | E1 (types), E2 (records) |
