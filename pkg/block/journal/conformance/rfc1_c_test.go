@@ -761,7 +761,7 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		_, err = h.Sync(t.Context(), id)
 		stub(t, "Sync", err)
 		if err == nil && f.J.Stats().Counters.SyncReappendedBytes > reappended {
-			return // the window was re-appended from a kept copy: nothing to report
+			t.Skip("the journal re-appended the window from a copy kept in memory, so no failure is owed and the leg's rule goes unexercised")
 		}
 		if !errors.Is(err, journal.ErrSyncFailed) {
 			t.Fatalf("the Sync after the cancelled one returned %v, want the failure it raced", err)
@@ -783,9 +783,9 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		// sync alone leaves that path open, and the Sync after then rightly
 		// returns nil. Every read of the segment fails too, so the window can
 		// be re-appended only from a copy the journal kept in memory; a
-		// journal that keeps one reports nothing, and the leg then asserts the
-		// re-append instead, leaving the done context's rule unexercised on
-		// it. Overturned if the journal's resolution becomes settable.
+		// journal that keeps one reports nothing, and the leg then skips,
+		// leaving the done context's rule unexercised on it. Overturned if
+		// the journal's resolution becomes settable.
 		write(t, h, id, 0, distinct(0, size))
 		failWindowOf(t, f, "*.seg")
 		before := f.J.Stats().Counters.SyncFailures
@@ -813,7 +813,7 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		_, err = h.Sync(t.Context(), id)
 		stub(t, "Sync", err)
 		if err == nil && f.J.Stats().Counters.SyncReappendedBytes > reappended {
-			return // the window was re-appended from a kept copy: nothing to report
+			t.Skip("the journal re-appended the window from a copy kept in memory, so no failure is owed and the leg's rule goes unexercised")
 		}
 		if !errors.Is(err, journal.ErrSyncFailed) {
 			t.Fatalf("the Sync after the refused one returned %v, want the failure to still report", err)
