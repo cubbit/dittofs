@@ -399,7 +399,7 @@ func New(cfg Config) (*Node, error) {
 	n.syncer = syncer.New(syncer.Deps{Remote: n.remote, ...})
 	n.open   = openstate.New(openstate.Deps{Records: n.meta.OpenRecords(), ...}) // built before the engine, which holds it through an adapter; its Sink, the filesystem, is handed to its Start (§2.2 step 5)
 	n.engine = engine.New(engine.Deps{
-		Node: cfg.Bootstrap.Node /* the host's file, else the identity the initialisation step wrote */, Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
+		Node: cfg.Bootstrap.Node /* what bootstrap.NodeID read: the node-id copies, agreeing with the host's key if one is set, else the start refused (RFC 13 §2.2) */, Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
 		Existence: n.meta.Existence(), Content: n.meta.Content(), Lifecycle: n.meta.Lifecycle(),
 		Holds: cloneHolds{n.open}, ...}) // the root's adapter: engine.CloneHold onto CloneOpen, CloneClose and Recovery.Served, their errors mapped as RFC 8 §2.6 says, so the engine imports no open state
 	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock, n.wd.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
@@ -510,6 +510,9 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    installation ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)). `New` has already refused both: the first
    before it opens the metadata store, the second as `metadata.Open` reads the
    format record ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)). A start creates no installation.
+   Once the store is open, the node writes a missing `node-id` copy into each
+   journal directory whose `format` names the journal the store records for
+   this node and device, and into no other ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap), [RFC 28 §2.1](rfc-28-journal-format.md#2.1%20Layout)).
 2. **Open the listeners.** From here the node's health endpoints answer
    (§2.5): live, not ready. The node's API address and the metrics listener
    open here. Until step 7, every `/api/v1` route but `/api/v1/health` answers
@@ -652,8 +655,8 @@ The node holds two pictures: the **desired** one, read from records, and the
 | a shard record | nothing: the gateway's `Router` reads shard records itself, and [RFC 11](rfc-11-ownership.md)'s epochs keep its routing correct |
 
 Every row is one of reconcile's three calls (§2.1): a share created or removed
-is `addShare` or `removeShare`, a change of its backends is both, and every
-other row is `apply`, which hands each component — identity, `*vfs.Filesystem`, the
+is `addShare` or `removeShare`, a change of its backends is both, the grant,
+export-policy and shard rows call nothing, and every other row is `apply`, which hands each component — identity, `*vfs.Filesystem`, the
 engine, GC, the adapters and the sidecars — the values it reads.
 
 The node learns of changes the way RFC 13 and RFC 18 already require — by
@@ -1066,7 +1069,9 @@ create or delete §4.6 makes one, and `identity.nt-hash-delete`, the deletion
 of every stored NT hash that setting `identity.ntlm` off starts, in that
 setting's write ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)); while it runs, a write turning
 `identity.ntlm` on is refused `409` `operation_running`, naming it, and is retried once it has
-finished (RFC 18 §3.5). So `api_operations{kind}` is a closed set
+finished (RFC 18 §3.5). The write turning it off answers as a call that starts
+an operation does (§4.6), `202` with the operation's `Location`, and the
+operation's target is the installation. So `api_operations{kind}` is a closed set
 ([RFC 25 §2.4](rfc-25-observability.md#2.4%20Labels)), and `operation_running`
 keys on the same value.
 
@@ -1192,8 +1197,11 @@ the answer it gave, written in the request's own transaction:
   operation ID for long work;
 - the same key with a **different** digest is refused `422`
   `idempotency_mismatch`;
-- a request refused before its transaction — validation, a precondition —
-  records nothing, so a corrected retry with the same key is a new request;
+- a request refused — validation, a precondition — records nothing, so a
+  corrected retry with the same key is a new request; the key is checked
+  before validation and preconditions run in the same transaction
+  ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)'s `Write`), so a recorded key with a different digest
+  answers `422` even when the request would also fail validation;
 - records are kept 24 h, then deleted.
 
 **A call that carries or issues a credential keeps no idempotency record.**
@@ -1285,8 +1293,9 @@ type Progress struct {
   ([RFC 27 §3.1](rfc-27-namespace-migration.md#3.1%20Interfaces)). Every other kind answers `409` `not_cancellable`: a
   share's removal is one-way, and a re-home has no cancel, only a rate of 0.
 - **One per target and kind.** A second request for the same work on the same
-  target while one runs is refused `409` `operation_running`, naming it,
-  except an acknowledgement of unreadable ranges, which joins the running one
+  target while one runs is refused `409` `operation_running`, naming it, as
+  is a write §4.1 refuses while an operation of a named kind runs (`identity.ntlm`
+  turned on during `identity.nt-hash-delete`), except an acknowledgement of unreadable ranges, which joins the running one
   ([§3.3](#3.3%20Stores%20and%20namespaces)).
 - **Ends.** A finished operation is kept 7 days, then deleted; its audit records
   stay for the audit's own retention (§6).
@@ -1375,7 +1384,10 @@ second store.
 - **An operator cannot raise privilege.** Giving an account a role, or editing
   a user that holds one, is `admin`'s; so an operator cannot make itself admin by
   editing its own record, nor write `identity.oidc` or `api.oidc_role_map`,
-  which map an issuer's claim to a role (§5.5).
+  which map an issuer's claim to a role (§5.5), nor `audit.retention`,
+  `api.session_lifetime` or `api.token_max_lifetime`, so it cannot erase the
+  audit it cannot read or outlast a revocation it cannot see
+  ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)).
 - **A secret is written as its owner is.** A write of a `Secret` is authorized
   as a write of the resource that names it — a remote store's credential as the
   store, a backup location's as the location — and no route writes a secret by
@@ -1419,7 +1431,9 @@ second store.
   not-before to the whole second after its commit, so a token issued before the
   raise is before it and one issued after is not. A password change, a
   must-change first password included, answers a new session created in its
-  own write; the session that made the change refreshes no more.
+  own write, whose creation time is the not-before that write sets, so the new
+  session is not refused by its own raise; the session that made the change
+  refreshes no more.
 - **The refresh token** is opaque and random, stored only as its hash in a
   session record with an expiry of `api.session_lifetime` (installation, live;
   proposed: 12 h, a working day of one sign-in). Each use returns a
@@ -1457,10 +1471,20 @@ second store.
   source's counts, never the account's, since it tried no password, and its
   password is never checked. A
   success resets the account's count and its pair's, and takes back its own
-  raise of the source's; a failure is audited (§6). An account is keyed by its
-  principal, so spellings of one name share it, and a name that resolves to no
-  account counts against its source only. A pair's and a source's counts are
-  forgotten 24 h after their last counted attempt.
+  raise of the source's; a failure is audited (§6). An account is keyed by the
+  principal its name resolves to (`APISignIn.Lookup`, [RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)), and the
+  password checked is that principal's, so every spelling of one name —
+  `alice`, `ALICE`, `CORP\alice`, `alice@CORP.EXAMPLE` — shares one count, and a
+  name that resolves to no account counts against its source only. A source
+  is the connection's peer address, an IPv4-mapped IPv6 address read as its
+  IPv4 address and any other IPv6 address by its /64; no forwarding header is
+  read, so behind a proxy every client is the proxy's source. A pair's and a
+  source's counts are forgotten 24 h after their last counted attempt; an
+  account's is reset by a success, by `:set-password` and by the break-glass
+  reset (§5.4), and deleted with the account. `POST /auth/password`'s check of
+  the current password is an attempt too, counted, waited on and settled as a
+  sign-in's is, for its account and the caller's source, so a stolen access
+  token cannot guess the password it would replace.
 
   > decision: the fast wait is keyed by account and source together, as
   > identity providers' smart lockout separates familiar and unfamiliar
@@ -1702,7 +1726,7 @@ These rules bind from the single node on, where most of them cost nothing
 | --- | --- |
 | CP1 | `node.New` builds every component; after start, only the node changes which components run, and only from records. |
 | CP2 | The API changes nothing but records; it never calls a component to change it, and a write answers success only after its transaction commits. |
-| CP3 | Every node applies records by their binding class, in counter order, and reports the position it has reconciled through per kind, the records it refused and those awaiting a restart; a record of a reconciled kind is applied on a node only when that position reaches the record's own and it is in neither set; a record of any other kind is applied from its commit (§2.4). |
+| CP3 | Every node applies records by their binding class, in counter order, and reports the position it has reconciled through per kind, the records it refused and those awaiting a restart; a record of a reconciled kind is applied on a node only when that position reaches the record's own and it is in neither set; a grant, an export policy, a netgroup or a quota is applied from its commit, and a secret version once the node reports holding it (§2.4). |
 | CP4 | Stop is the reverse of start; the API outlives the adapters and the store outlives everything. |
 | CP5 | Every `PUT`, `PATCH` and `DELETE` carries `If-Match` — or, for a `PUT` that creates, `If-None-Match: *` — checked inside the write's transaction; a write never commits over a tag, or over a record, its author did not read. |
 | CP6 | A request with a recorded idempotency key is answered from the record and applied at most once. |
@@ -1785,7 +1809,8 @@ builds a node any other way, and an architecture test fails on a caller of
 | §5.1 roles grant nothing | With the bootstrap admin and every role, mount every share over every flavour: assert every mount refused. Read the admin's record: no uid, gid, SID, Kerberos name or grant. | an API role leaking into file access ([RFC 18 §10](rfc-18-identity.md#10.%20Conformance)) |
 | §5.2 roles | Read the route list from the router and compare it with §4.1's resources and Actions table; a route in neither fails the check. For every route, call it as `viewer`, `operator` and `admin`; assert the table of §5.2, `404` where the caller may not read. As an operator, give yourself `admin`: refused. As an operator, write the password secret of an admin account, and the signing key, through every secret-bearing route: refused, and neither changed. Demote the last admin: `409` `last_admin`. | a route missing its check; privileged credentials replaced through a secret write |
 | §5.3 revocation | Sign in on two nodes; disable the account; assert every call on both is refused within 1 s, with the access token unexpired. Reuse an already-rotated refresh token: assert the session is revoked. Change an account's password, then refresh a session signed in before it and call with an API token created before it: assert both refused. Run the break-glass reset: assert a session signed in before it is refused. | a token outliving its account |
-| §5.3 throttling | Fail 5 sign-ins for one account from one address: assert the sixth from it answers `429`, a sign-in for that account from a second address is checked, and 5 concurrent attempts past the bound pass no more than the counts allow. Fail 100 across 25 addresses: assert the next from a new address waits. Sign in correctly: assert the account's and the pair's counts reset. | one count per account, so a guesser on one address locks out the owner on another |
+| §5.3 throttling | Fail 5 sign-ins for one account from one address: assert the sixth from it answers `429`, a sign-in for that account from a second address is checked, and 5 concurrent attempts past the bound pass no more than the counts allow. Fail 100 across 25 addresses: assert the next from a new address waits. Sign in correctly: assert the account's and the pair's counts reset. Fail 5 sign-ins for five different accounts from one address: assert the sixth from it, for any account, answers `429`. Fail sign-ins for a name with no account: assert only its source's count rises. Fail 4 as `alice` and 1 as `ALICE`: assert the next for `CORP\alice` from that address answers `429`. Advance the clock 24 h past a pair's last failure: assert its count is forgotten. Fail 3 current-password checks on `POST /auth/password`, then 2 sign-ins, from one address: assert the next of either answers `429`. Run 200 concurrent attempts against one account from 200 addresses: assert no more than 100 are checked before the account's wait. | one count per account, so a guesser on one address locks out the owner on another |
+
 | §5.5 OpenID Connect | Against a test issuer, run `login --oidc` with no browser: assert a session whose tokens are the API's, and no ID token stored. Map a claim value to `operator` for an account whose own role is `viewer`: assert `operator` rights, and `viewer` only in a session whose token lacks the value. Set `api.password_sign_in` to `viewer`: assert an `operator`'s password sign-in refused `403`, and the last unlinked `admin` still signs in by password. As `operator`, write `api.oidc_role_map`: refused. | an ID token used as the session; a role carried in a token; an operator raising its own role |
 | §5.4 first password | Initialise without a password; assert it is printed by the step and appears in no log. Sign in: every call but the password change is `403`. Change it without the current password: refused. | a first-login token setting a password alone |
 | §6 audit | Run every mutating route once, applied and refused. Assert one audit record each, with generations before and after, and no secret value; fault the commit of one change and assert neither the change nor its record exists. | a change with no record |

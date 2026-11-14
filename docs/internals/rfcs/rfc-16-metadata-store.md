@@ -414,7 +414,8 @@ type User struct {
 	// own; an OpenID Connect sign-in may still give its session one from the
 	// issuer's role claim (RFC 23 §5.5), so no Role does not mean no API access.
 	Role       APIRole     // none, viewer, operator, admin
-	NotBefore  time.Time   // store time: an access token issued, a session signed in or an API token created before it is refused; raised by a disable, a role or password change, or a sign-out everywhere
+	NotBefore  time.Time   // store time, in whole seconds, set to the second after the raising write's commit: an access token issued, a session signed in or an API token created before it is refused; raised by a disable, a role or password change, or a sign-out everywhere (RFC 23 §5.3)
+
 	MustChange bool        // set with a generated password: until it changes, a sign-in permits only the password change and sign-out
 	Generation uint64      // raised by every PutUser; the management API's entity tag (RFC 23 §4.4)
 }
@@ -695,9 +696,12 @@ type Secret struct {
 }
 
 // SecretOwner is the one holder a secret belongs to: a record's field (a
-// user's Password or NTHash) or a setting's key (a keytab, the machine
-// password, the directory's bind credential). Encoded with the version, as
-// the Secret's other fields are, and compared whole.
+// user's secret reference; the installation's signing key and machine
+// password, owned by the installation record, kind installation and its
+// ID, under the keys "signing_key" and "machine_password") or a setting's key
+// (a keytab, the directory's bind credential, an OpenID Connect client's
+// secret). Encoded with the version, as the Secret's other fields are, and
+// compared whole.
 type SecretOwner struct {
 	Record ResourceRef  // the record's kind and ID; zero for a setting
 	Scope  SettingScope // the setting's scope; zero for a record
@@ -722,7 +726,7 @@ type Operation struct { // RFC 23 §4.6
 	State    OpState     // pending, running, succeeded, failed, cancelling, cancelled
 	Claim    OpClaim     // for work the runner drives: node, node epoch, expiry; zero otherwise
 	Step     []byte      // the runner's last durable step; owner-driven work keeps its cursor in its own records
-	Params   []byte      // the request's parameters its kind reads, encoded by that kind (an online join's takeover, ou and DNS host name); never a credential
+	Params   []byte      // the request's parameters its kind reads, encoded by that kind (a join's mode, online or offline; an online join's takeover, ou and DNS host name; an offline join's machine-password Secret reference and the version its own Write sealed); never a credential
 	Started, Updated time.Time
 	Error    []byte      // the problem body, when failed
 	Result   []byte      // when succeeded
@@ -741,7 +745,7 @@ type Session struct { // RFC 23 §5.3
 	ID        [16]byte
 	Account   Principal
 	Refresh   [32]byte  // hash of the current refresh token; never the token. It and every hash it replaced are keys under SS‖session‖h (§4.2)
-	Created   time.Time // store time of the sign-in; a refresh is refused once the account's NotBefore is past it
+	Created   time.Time // store time of the write that created it, a sign-in or a password change, raised to the account's NotBefore when that is later (RFC 23 §5.3); a refresh is refused once the account's NotBefore is past it
 	Expires   time.Time // api.session_lifetime after sign-in
 	Revoked   bool
 }
@@ -750,7 +754,7 @@ type APIToken struct { // RFC 23 §5.3
 	ID      [16]byte
 	Account Principal
 	Hash    [32]byte  // of the token; never the token
-	Created time.Time // store time of creation; every call is refused once the account's NotBefore is past it
+	Created time.Time // store time of creation, raised to the account's NotBefore when that is later (RFC 23 §5.3); every call is refused once the account's NotBefore is past it
 	Expires time.Time // no later than api.token_max_lifetime after creation
 }
 
@@ -758,6 +762,14 @@ type SignInFailures struct { // RFC 23 §5.3: one per account and source address
 	Count uint32    // attempts counted since the last success, each before its password is checked; a 429 raises the pair's and the source's, never the account's; a success resets the account's and the pair's and takes back its own raise of the source's
 	Last  time.Time // store time of the last counted attempt; the next wait, and a source's and a pair's 24 h expiry, count from it
 }
+
+// SignInKey names one of an attempt's three counts (§4.2's SF tags): the
+// account alone, the source alone, or the two together.
+type SignInKey struct {
+	Account Principal    // zero for a source's count
+	Source  netip.Prefix // the source as RFC 23 §5.3 normalises it; zero for an account's count
+}
+
 
 type AuditRecord struct { // RFC 23 §6: append-only; deleted only past audit.retention
 	ID      [16]byte
@@ -1338,6 +1350,7 @@ type ControlPlaneTx interface {
 	Setting(scope SettingScope, key string) (Setting, bool, error) // tracked read
 	User(p Principal) (User, bool, error)                           // tracked read
 	Share(id ShareID) (Share, bool, error)                          // tracked read
+	SignInFailures(key SignInKey) (SignInFailures, bool, error)     // tracked read: a sign-in's count reads and raises its three in one transaction (RFC 23 §5.3)
 	DeleteUser(p Principal, expect uint64) error                    // the mark
 	DeleteGroup(p Principal, expect uint64) error                   // the mark
 	DeleteShare(share ShareID, snapshots SnapshotDisposition, expect uint64) error // the mark
@@ -1353,6 +1366,7 @@ type ControlPlaneTx interface {
 	DeleteNetgroup(name string, expect uint64) error
 	PutSetting(s Setting, expect uint64) error
 	PutOperation(op Operation, expect uint64) error
+	PutSignInFailures(key SignInKey, f SignInFailures) error // its count's row, and its XP row where the count expires
 	// and the view's other writes, the same way
 }
 ```
@@ -1853,7 +1867,8 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `IK‖account‖key` | IdempotencyRecord (§2.3), written in the request's own transaction (RFC 23 §4.5) |
 | | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`), session (0x03, session ID), source's sign-in failures (0x04, address), API token (0x05, token ID) and an account-and-source pair's sign-in failures (0x06, principal then address), written and deleted with it, so the sweep is one ordered scan |
 | | `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash` | Session (§2.3); refresh-token index: a refresh token's hash → session ID, the current one and every one it replaced, until the session expires, so presenting an invalidated token finds the session it must revoke (RFC 23 §5.3); and its reverse, one empty key per hash the session has retained, written with its `SSH` row, so the expiry sweep (`XP`, tag 0x03) deletes the session's `SSH` rows by one range of its own, never a scan of `SSH` |
-| | `SF‖tagged` | SignInFailures (§2.3), keyed by the account (tag 0x01, principal; a name that resolves to no account has none), the source address (0x02), or the two together (0x03, principal then address), read and raised in the attempt's own transaction before its password is checked (RFC 23 §5.3); a source's and a pair's are deleted by the expiry sweep 24 h after their last counted attempt (`XP`, tags 0x04 and 0x06) |
+| | `SF‖tagged` | SignInFailures (§2.3), keyed by the account (tag 0x01, principal; a name that resolves to no account has none), the source address (0x02), or the two together (0x03, principal then address), read and raised in the attempt's own transaction before its password is checked (RFC 23 §5.3, which says how a source address is normalised); a source's and a pair's are deleted by the expiry sweep 24 h after their last counted attempt (`XP`, tags 0x04 and 0x06); an account's is deleted by a success, `:set-password`, the break-glass reset and the account's deletion |
+
 | | `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID` | APIToken (§2.3); token index: the hash → token ID; per-account index, for listing and for deleting an account's tokens with it; all three deleted by the expiry sweep once the token expires (`XP`, tag 0x05) |
 | | `AU‖time‖auditID` | AuditRecord (§2.3), in store-time order, so a time-range read and the retention sweep are one range; never rewritten (RFC 23 §6) |
 | | `AUX‖tagged‖time‖auditID` | audit index: one empty key per record for each of its actor (tag 0x01, principal), target (0x02, resource kind and ID) and taking node (0x03, `NodeID`), so the reads RFC 23 §6 filters by and the per-node export RFC 25 §4.3 reads are ranges |

@@ -2473,7 +2473,11 @@ func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
 		NLM:   nlm.Table(&nlm.Handlers{VFS: d.VFS}),
 		NSM:   nsm.Table(&nsm.Handlers{VFS: d.VFS}),
 	}
-	return core.NewServer(d, s, core.Listener{Network: "tcp", Port: s.Port, Protocol: protocol.New(t)}) // 12049 unless set (RFC 13 Appendix B)
+	// nfs, mount, nlm and nsm over TCP, and nlm and nsm over UDP (§3.1), all on s.Port: 12049 unless set (RFC 13 Appendix B)
+	return core.NewServer(d, s,
+		core.Listener{Network: "tcp", Port: s.Port, Protocol: protocol.New(t)},
+		core.Listener{Network: "udp", Port: s.Port, Protocol: protocol.New(protocol.Tables{NLM: t.NLM, NSM: t.NSM})})
+
 }
 
 // ops/v3/table.go: the row list, one line per operation; each row is built in its operation's own file
