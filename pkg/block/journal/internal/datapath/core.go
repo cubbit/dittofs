@@ -12,6 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
@@ -109,6 +110,9 @@ type coreOptions struct {
 	// afterRetarget runs in Since after a record whose segment was retired was
 	// sent to the record the index now names, before that record is read.
 	afterRetarget func()
+	// takeHook is installed on the admission's decision section before any
+	// goroutine of the core starts; nil in production.
+	takeHook func()
 	// extentLimit overrides the index's entry bound a test core builds with,
 	// keeping Deps at the figure the production wiring passes.
 	extentLimit int64
@@ -135,6 +139,16 @@ type coreOptions struct {
 	// clock replaces the helper's stopwatch clock, so a test can advance the
 	// sync bound's timer.
 	clock core.Clock
+	// recorder is the lock-order recorder newCore installs on every lock the
+	// core wires: the index's, the set's, the pool's, the streams', the
+	// descriptor cache's, the admission's, the headroom's and the file
+	// append table's. Nil, the production value, installs none and changes
+	// no behaviour.
+	recorder *lockorder.Recorder
+	// wrapFS replaces the filesystem a test core is built over, wrapping
+	// the real one: the wrapper must pass every call through and never
+	// answer in the real filesystem's place.
+	wrapFS func(storage.FS) storage.FS
 }
 
 // Core is the journal's assembled write and read paths: the placement index,
@@ -189,6 +203,11 @@ type Core struct {
 	// decision: it is nil outside tests, for the same reason stepSpy is.
 	betweenHeldReads func()
 
+	// rec is the recorder the core's locks report to, the one removals'
+	// wait assertion consults. Nil in production, where every consult
+	// returns at once.
+	rec *lockorder.Recorder
+
 	// afterAppend is a test seam that holds a write in the gap between its
 	// append and its publish.
 	//
@@ -229,15 +248,19 @@ type Core struct {
 
 	// registry is the open handles, replaced whole under registryMu and read
 	// through the pointer alone. See shares.go.
-	registry   atomic.Pointer[[]*Share]
+	registry atomic.Pointer[[]*Share]
+	// decision: registryMu is a leaf. It covers only swapping and reading the
+	// registry pointer, and holds nothing else across it. It stays a plain
+	// mutex: a recorded order it cannot break is not its to police.
 	registryMu sync.Mutex
 
 	// stranded is the set of stranded tags, replaced whole under strandMu
 	// and read through the pointer alone. See strand.go.
 	stranded atomic.Pointer[[]core.ShareTag]
-	// strandMu guards stranded's replacement; registryMu's own contract names
-	// only Share and Close as its takers, so this is a mutex of the strand
-	// set's own.
+	// decision: strandMu is a leaf. It guards stranded's replacement alone,
+	// holding nothing across it and taking nothing under it; registryMu's
+	// own contract names only Share and Close as its takers, so this is a
+	// mutex of the strand set's own.
 	strandMu sync.Mutex
 
 	// closedFlag is set the moment Close begins, so a call that takes no
@@ -293,8 +316,12 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), identity: deps.Identity, tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget}
-	var domains durability.Domains = newFileLocks()
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), identity: deps.Identity, tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, rec: o.recorder}
+	tbl := newFileLocks()
+	if c.rec != nil {
+		tbl.SetRecorder(c.rec)
+	}
+	var domains durability.Domains = tbl
 	if o.wrapDomains != nil {
 		domains = o.wrapDomains(domains)
 	}
@@ -306,6 +333,17 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// once a data path does, which is never before d.Start; assigning tr
 	// early keeps the wiring's order readable while the closures stay safe.
 	var tr *reclaim.Tracker
+	// The recorder is installed before anything is started: the pool's
+	// refill worker, the retirer, the sealer and the durability layer all
+	// reach these locks in the background, and a lock Init'ed after its
+	// first use keeps no account of it. The set is told here rather than
+	// left to the later blocks because a State that carries it was shared
+	// by the caller, so this is the last place the wiring can reach it
+	// before its own use.
+	if c.rec != nil {
+		c.index.SetRecorder(c.rec)
+		state.Set.SetRecorder(c.rec)
+	}
 
 	// The durability layer is built first of the storage-touching pieces,
 	// because its Observe wrap is the storage every later part must reach
@@ -419,6 +457,10 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	c.contentTarget = targets.Content
 	c.pool = segment.NewPool(maker, targets, d.Admit, deps.Log)
 	c.cache = segment.NewDescriptors(fs, format.SegmentName, budget)
+	if c.rec != nil {
+		c.pool.SetRecorder(c.rec)
+		c.cache.SetRecorder(c.rec)
+	}
 
 	// The admission every appending call asks once: its injected facts are
 	// the plain reads and takes of the layers it consults, and its counters
@@ -463,6 +505,19 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		SegmentCap:     state.Set.Cap(),
 	})
 	c.streams = segment.NewStreams(deps.Streams, deps.Identity, state.Set, c.pool, c.cache, d.Sink)
+	if c.rec != nil {
+		// With the streams built and nothing started, the admission and its
+		// headroom table can be told now too: every injected fact they read
+		// is a snapshot that takes its lock before the section runs, and a
+		// same-domain nesting between them would be the recorded finding it
+		// is, not one to paper over by init order.
+		c.streams.SetRecorder(c.rec)
+		c.headroom.SetRecorder(c.rec)
+		c.cap.SetRecorder(c.rec)
+	}
+	if o.takeHook != nil {
+		c.cap.SetTakeHook(o.takeHook)
+	}
 
 	// The retirement executor over the pieces the core owns, gated on Admit
 	// like every other writer, and told of each retirement once the segment

@@ -85,6 +85,11 @@ type Tracker struct {
 	// rm guards the re-test registry below. It is taken by the events, by
 	// Droppable and by the registrations and releases that touch the
 	// registry, never by a Held.
+	//
+	// decision: rm is unranked and not a leaf: a forget's re-check calls
+	// the member callback while it is held, so that callback must not reach
+	// back into the tracker's registry. The lock-order recorder never sees
+	// it. Withdraw this once a ranked domain holds the registry.
 	rm sync.Mutex
 	// recs is one entry per file that holds registered records, every record
 	// registered live under the file, keyed by the whole Rec and counted: a
@@ -153,6 +158,8 @@ type Tracker struct {
 
 	// mu serialises creating states: a leaf lock, held only while the state
 	// table is copied, never across the index or a candidate call.
+	//
+	// decision: mu is a leaf.
 	mu sync.Mutex
 	// m is the table of the states, one per segment a record was registered
 	// in. A segment's retirement removes its entry, so the table tracks the
@@ -173,6 +180,8 @@ type Tracker struct {
 	// back into the tracker — so it joins no cycle and sits beside the
 	// processing of the states, whose locks the releases take only after
 	// hm is back down.
+	//
+	// decision: hm is a leaf: every critical section is map work.
 	hm sync.Mutex
 	// holds is the ended holds registered on each copies' segment, one
 	// entry per HoldEnded that names it: a hold ends at the proof its
@@ -857,6 +866,11 @@ func (t *Tracker) entry(seg core.SegmentID) *segState {
 type segState struct {
 	// mu serialises the record count, the files table and the release
 	// decision. Held reads none of it, only the atomics.
+	//
+	// decision: mu is unranked and not a leaf: the release decision reads
+	// the index's segment counters while it is held. The lock-order
+	// recorder never sees it. Withdraw this once a ranked domain holds the
+	// tracker's per-segment state.
 	mu sync.Mutex
 	// live counts the records registered and not yet released.
 	live atomic.Int64

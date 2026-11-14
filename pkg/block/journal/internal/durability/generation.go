@@ -18,6 +18,8 @@ import (
 // that sees the verifier change across a restart already treats it as a
 // reboot.
 var registry = struct {
+	// decision: mu is a leaf mutex over dirs, held for one map lookup or
+	// insert and never across I/O; it is outside the six lock domains.
 	mu   sync.Mutex
 	dirs map[string]*dirState
 }{dirs: map[string]*dirState{}}
@@ -30,6 +32,9 @@ var registry = struct {
 // is ever freed. Upgrade to freeing it when a directory is forgotten if a
 // process ever opens thousands.
 type dirState struct {
+	// decision: mu is a leaf mutex over gen and failed, held for a counter
+	// step or a list update and never across I/O; it is outside the six lock
+	// domains.
 	mu     sync.Mutex
 	gen    uint64
 	failed []core.Seq

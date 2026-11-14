@@ -40,6 +40,12 @@ type Durability interface {
 // Pins is the set of segments something outside the selector holds back. A
 // nil *Pins pins nothing. It is safe for concurrent use.
 type Pins struct {
+	// decision: mu is unranked: a Pin asks, with mu held, whether the
+	// selector already claimed the segment, and the answer walks the
+	// selector's own mutex and the capacity lock that Selected reads
+	// under — so two locks are taken under this one. The order holds
+	// because neither of them asks the pins back. Withdraw the unranking
+	// if a selector path ever pins with its own lock held.
 	mu   sync.Mutex
 	segs map[core.SegmentID]struct{}
 	// selected asks the selector this set was given to whether a segment is
@@ -96,9 +102,13 @@ type Selector struct {
 	dur  Durability
 	pins *Pins
 
-	// mine is the segments this selector claimed and has not been Done with.
-	// The set's own claim flag cannot say it: a retirement's claim shows there
-	// too.
+	// mu guards mine, the segments this selector claimed and has not been
+	// Done with. The set's own claim flag cannot say it: a retirement's
+	// claim shows there too.
+	//
+	// decision: mu is a leaf: it guards the claim book's map work alone and
+	// takes nothing while held, so the set is asked only after it is
+	// released.
 	mu   sync.Mutex
 	mine map[core.SegmentID]struct{}
 

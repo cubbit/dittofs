@@ -74,8 +74,12 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 	if clock == nil {
 		clock = kit.NewStopwatchClock()
 	}
+	fs := seam.FS()
+	if o.wrapFS != nil {
+		fs = o.wrapFS(fs)
+	}
 	c, err := newCore(Deps{
-		FS:          seam.FS(),
+		FS:          fs,
 		Clock:       clock,
 		Dir:         dir,
 		Identity:    testIdentity,
@@ -90,6 +94,14 @@ func buildCore(t *testing.T, o coreOptions) (*Core, *kit.Seam) {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() {
+		// A core a recorded run abandoned is left unclosed: its cleanup
+		// would wait on the very blocked call the run's watchdog already
+		// failed the test for, hanging the binary until the suite's
+		// timeout, the same reason the public concurrency test abandons
+		// its journal rather than closing it.
+		if _, abandoned := abandonedCores.Load(c); abandoned {
+			return
+		}
 		err := c.Close()
 		// Only a seam that was crashed closed every descriptor under the core,
 		// so only then may a close error be fs.ErrClosed; any other error
@@ -132,6 +144,11 @@ func awaitSpares(t *testing.T, c *Core, maxBytes int64) {
 
 // crashedSeams holds the seams a test crashed.
 var crashedSeams sync.Map
+
+// abandonedCores holds the cores a recorded run abandoned on its watchdog: a
+// core in it is left unclosed by the cleanup, for its Close would wait on
+// the blocked call the run already failed the test on.
+var abandonedCores sync.Map
 
 // withoutErrClosed returns the leaves of err that are not fs.ErrClosed, joined,
 // or nil when there are none.

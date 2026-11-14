@@ -68,7 +68,7 @@ func retainedOps(t *testing.T, data []byte) {
 	var kept []rbyte
 	// The file's sets feed the per-segment table, so every step can compare
 	// the counters against the pieces both sides hold.
-	f = *newFile(new(segments))
+	f = *newFile(new(segments), &files{})
 	next, version := uint32(0), uint64(100)
 	fresh := func() RecordAt { next++; return rec(core.SegmentID(next), next%4*1024) }
 	take := func() byte {

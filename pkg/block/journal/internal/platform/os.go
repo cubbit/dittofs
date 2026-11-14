@@ -71,6 +71,15 @@ type file struct {
 	// holds the descriptor's lazy opening, the read itself and Close's closing
 	// of it, so a Close cannot release the descriptor under a read, and a
 	// read cannot open one over a Close in flight.
+	//
+	// decision: directMu is unranked and outside the six lock domains, so the
+	// lock-order recorder never sees it. It is not a leaf in the sense of
+	// holding nothing else: it is held across I/O —
+	// the descriptor's lazy open, the direct read itself and Close's closing
+	// of the file — so a caller holding a ranked lock across a direct read or
+	// a Close also holds this one over that I/O. Withdraw the exemption if a
+	// direct read is ever made while a ranked lock is held that another path
+	// takes while waiting for this one.
 	directMu sync.Mutex
 	// directFD is the descriptor the platform's direct read reads through,
 	// where it needs one of its own; directUnopened before it is opened,

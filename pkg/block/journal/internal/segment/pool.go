@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 )
 
 // The pool's own refusals, beside the NoSpaceError the shared limits return.
@@ -107,7 +108,7 @@ type Pool struct {
 	// means writable.
 	readOnly func() error
 
-	mu         sync.Mutex
+	mu         lockorder.Mutex
 	ready      [Reserve + 1][]core.SegmentID // the ready spares per class, FIFO; guarded by mu
 	held       int                           // spares owed to open holds; guarded by mu
 	pending    int                           // the largest ask of a refused Hold the refill has not yet made up, a level not a sum; guarded by mu
@@ -172,6 +173,16 @@ func NewPool(m *Maker, t Targets, readOnly func() error, log *slog.Logger) *Pool
 	// takes no second lock of the capacity domain.
 	p.settled = sync.NewCond(&p.mu)
 	return p
+}
+
+// SetRecorder installs the lock-order recorder the pool's mutex reports to,
+// with its capacity rank; the settle condition hangs off the same mutex and
+// keeps working over the ranked one, for the ranked type satisfies
+// sync.Locker. It runs before the pool is shared — before Start launches
+// the worker the mutex is used concurrently by — and a nil recorder leaves
+// the mutex a plain one.
+func (p *Pool) SetRecorder(rec *lockorder.Recorder) {
+	p.mu.Init(lockorder.Capacity, rec)
 }
 
 // Adopt accounts a spare found at open into class c: the pool calls the

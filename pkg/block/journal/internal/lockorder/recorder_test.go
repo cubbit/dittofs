@@ -1,0 +1,885 @@
+package lockorder_test
+
+import (
+	"reflect"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
+)
+
+// kinds returns the violation kinds in order, nil when there are none, so a
+// want of nil compares equal.
+func kinds(vs []lockorder.Violation) []lockorder.Kind {
+	if len(vs) == 0 {
+		return nil
+	}
+	out := make([]lockorder.Kind, len(vs))
+	for i, v := range vs {
+		out[i] = v.Kind
+	}
+	return out
+}
+
+// The exclusive-lock checks wait for events that must happen; the backstop
+// constant is declared in lockorder_test.go.
+
+func TestRanks_Order(t *testing.T) {
+	order := []lockorder.Rank{
+		lockorder.FileAppend,
+		lockorder.Capacity,
+		lockorder.FileIndex,
+		lockorder.FileMap,
+		lockorder.SegmentAppend,
+		lockorder.StorageGuard,
+	}
+	for i := 1; i < len(order); i++ {
+		if order[i-1] >= order[i] {
+			t.Errorf("rank %s (%d) does not come before %s (%d) in the total order",
+				order[i-1], order[i-1], order[i], order[i])
+		}
+	}
+	if got, want := lockorder.Rank(0).String(), "unranked"; got != want {
+		t.Errorf("Rank(0).String() = %q, want %q", got, want)
+	}
+	names := map[lockorder.Rank]string{
+		lockorder.FileAppend:    "file append",
+		lockorder.Capacity:      "capacity",
+		lockorder.FileIndex:     "file index",
+		lockorder.FileMap:       "file map",
+		lockorder.SegmentAppend: "segment append",
+		lockorder.StorageGuard:  "storage guard",
+	}
+	for rank, want := range names {
+		if got := rank.String(); got != want {
+			t.Errorf("Rank(%d).String() = %q, want %q", rank, got, want)
+		}
+	}
+}
+
+func TestRecorder_Reports(t *testing.T) {
+	tests := []struct {
+		name      string
+		drive     func(t *testing.T, rec *lockorder.Recorder)
+		wantKinds []lockorder.Kind
+		wantRank  lockorder.Rank
+	}{
+		{
+			// Nesting all six is in order, so no out-of-order and no
+			// same-domain violation — but the file map permits nothing
+			// acquired under it and the file index must be gone before
+			// the storage guard, so the full nest still reports the
+			// segment append taken under the map and the storage guard
+			// taken under the index.
+			name: "all six in order, released in reverse",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var mus [6]lockorder.Mutex
+				for i, rank := range []lockorder.Rank{
+					lockorder.FileAppend,
+					lockorder.Capacity,
+					lockorder.FileIndex,
+					lockorder.FileMap,
+					lockorder.SegmentAppend,
+					lockorder.StorageGuard,
+				} {
+					mus[i].Init(rank, rec)
+					mus[i].Lock()
+				}
+				for i := len(mus) - 1; i >= 0; i-- {
+					mus[i].Unlock()
+				}
+				if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() after the releases = %v, want none", got)
+				}
+			},
+			wantKinds: []lockorder.Kind{lockorder.AcquireUnderMap, lockorder.GuardUnderIndex},
+		},
+		{
+			// A successful TryLock is an acquisition: the order rules bind
+			// it, and its Unlock releases the caller's own hold.
+			name: "try-lock of file append under capacity",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var capMu, faMu lockorder.Mutex
+				capMu.Init(lockorder.Capacity, rec)
+				faMu.Init(lockorder.FileAppend, rec)
+				capMu.Lock()
+				if !faMu.TryLock() {
+					t.Fatal("TryLock of a free mutex = false, want true")
+				}
+				if got, want := rec.Held(), []lockorder.Rank{lockorder.Capacity, lockorder.FileAppend}; !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() after the successful TryLock = %v, want %v", got, want)
+				}
+				faMu.Unlock()
+				if got, want := rec.Held(), []lockorder.Rank{lockorder.Capacity}; !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() after the Unlock = %v, want %v", got, want)
+				}
+			},
+			wantKinds: []lockorder.Kind{lockorder.OutOfOrder},
+			wantRank:  lockorder.FileAppend,
+		},
+		{
+			// A failed TryLock takes no lock: it records no same-domain
+			// violation and adds nothing to the books.
+			name: "failed try-lock records nothing",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(lockorder.FileAppend, rec)
+				m.Lock()
+				if m.TryLock() {
+					t.Fatal("TryLock of a held mutex = true, want false")
+				}
+				if got, want := rec.Held(), []lockorder.Rank{lockorder.FileAppend}; !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() after the failed TryLock = %v, want %v", got, want)
+				}
+			},
+		},
+		{
+			name: "capacity then file append",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var capMu, faMu lockorder.Mutex
+				capMu.Init(lockorder.Capacity, rec)
+				faMu.Init(lockorder.FileAppend, rec)
+				capMu.Lock()
+				faMu.Lock()
+			},
+			wantKinds: []lockorder.Kind{lockorder.OutOfOrder},
+			wantRank:  lockorder.FileAppend,
+		},
+		{
+			name: "two file-append mutexes",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var first, second lockorder.Mutex
+				first.Init(lockorder.FileAppend, rec)
+				second.Init(lockorder.FileAppend, rec)
+				first.Lock()
+				second.Lock()
+			},
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.FileAppend,
+		},
+		{
+			name: "two file-index read locks",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var first, second lockorder.RWMutex
+				first.Init(lockorder.FileIndex, rec)
+				second.Init(lockorder.FileIndex, rec)
+				first.RLock()
+				second.RLock()
+			},
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.FileIndex,
+		},
+		{
+			name: "one mutex locked twice by one goroutine",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(lockorder.FileAppend, rec)
+				m.Lock()
+				// The second Lock self-deadlocks once its attempt is
+				// recorded, which is why the attempt is recorded
+				// before the wait. Drive the recorder side of that
+				// attempt — the same call Lock makes before it
+				// blocks, on the identity it holds — and the release
+				// the deadlocked lock never reaches.
+				rec.Acquire(lockorder.FileAppend, &m)
+			},
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.FileAppend,
+		},
+		{
+			name: "read lock then write lock on one rw mutex",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var rw lockorder.RWMutex
+				rw.Init(lockorder.StorageGuard, rec)
+				rw.RLock()
+				// A reader taking its own guard exclusively
+				// self-deadlocks once the write attempt is recorded.
+				// Drive the recorder side of that attempt — the same
+				// call Lock makes before it blocks, on the identity
+				// the write hold records itself under.
+				rec.Acquire(lockorder.StorageGuard, &rw)
+			},
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			// A second RLock under the first deadlocks against a writer
+			// waiting between the two, so it is reported, and one release
+			// still balances one hold.
+			name: "nested read locks of one rw mutex",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var rw lockorder.RWMutex
+				rw.Init(lockorder.FileIndex, rec)
+				rw.RLock()
+				rw.RLock()
+				if got, want := rec.Held(), []lockorder.Rank{lockorder.FileIndex, lockorder.FileIndex}; !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() while both read holds are nested = %v, want %v: one release must balance one hold", got, want)
+				}
+				rw.RUnlock()
+				rw.RUnlock()
+				if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() after both read holds are released = %v, want none", got)
+				}
+			},
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.FileIndex,
+		},
+		{
+			name: "rank zero is never recorded",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(0, rec)
+				m.Lock()
+				var rw lockorder.RWMutex
+				rw.Init(0, rec)
+				rw.RLock()
+				if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() while two rank-zero locks are held = %v, want none: an unranked lock is never recorded", got)
+				}
+				rw.RUnlock()
+				m.Unlock()
+			},
+		},
+		{
+			name: "storage guard under file index",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				idx, guard := new(int), new(int)
+				rec.Acquire(lockorder.FileIndex, idx)
+				rec.Acquire(lockorder.StorageGuard, guard)
+			},
+			wantKinds: []lockorder.Kind{lockorder.GuardUnderIndex},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "segment append under file map",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var mapMu, segMu lockorder.Mutex
+				mapMu.Init(lockorder.FileMap, rec)
+				segMu.Init(lockorder.SegmentAppend, rec)
+				mapMu.Lock()
+				segMu.Lock()
+			},
+			wantKinds: []lockorder.Kind{lockorder.AcquireUnderMap},
+			wantRank:  lockorder.SegmentAppend,
+		},
+		{
+			name: "io under file index",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(lockorder.FileIndex, rec)
+				m.Lock()
+				rec.IO("read")
+			},
+			wantKinds: []lockorder.Kind{lockorder.IOUnderIndex},
+			wantRank:  lockorder.FileIndex,
+		},
+		{
+			name: "io under file map",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(lockorder.FileMap, rec)
+				m.Lock()
+				rec.IO("read")
+			},
+			wantKinds: []lockorder.Kind{lockorder.IOUnderMap},
+			wantRank:  lockorder.FileMap,
+		},
+		{
+			name: "io under file append alone",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(lockorder.FileAppend, rec)
+				m.Lock()
+				rec.IO("read")
+			},
+		},
+		{
+			name: "io under segment append",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(lockorder.SegmentAppend, rec)
+				m.Lock()
+				rec.IO("read")
+			},
+		},
+		{
+			name: "assert none held with capacity held",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(lockorder.Capacity, rec)
+				m.Lock()
+				rec.AssertNoneHeld("offload")
+			},
+			wantKinds: []lockorder.Kind{lockorder.HeldAtCallback},
+			wantRank:  lockorder.Capacity,
+		},
+		{
+			name: "assert none held with nothing held",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.AssertNoneHeld("offload")
+			},
+		},
+		{
+			name: "assert not held with it held",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(lockorder.FileAppend, rec)
+				m.Lock()
+				rec.AssertNotHeld(lockorder.FileAppend, "removal wait")
+			},
+			wantKinds: []lockorder.Kind{lockorder.HeldAtWait},
+			wantRank:  lockorder.FileAppend,
+		},
+		{
+			name: "assert not held after release",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var m lockorder.Mutex
+				m.Init(lockorder.FileAppend, rec)
+				m.Lock()
+				rec.IO("read") // the hold does real work before its release
+				m.Unlock()
+				rec.AssertNotHeld(lockorder.FileAppend, "removal wait")
+			},
+		},
+		{
+			name: "release in non-lifo order",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				a, b, c := new(int), new(int), new(int)
+				rec.Acquire(lockorder.FileAppend, a)
+				rec.Acquire(lockorder.Capacity, b)
+				rec.Acquire(lockorder.FileIndex, c)
+				rec.Release(b)
+				rec.Release(c)
+				rec.Release(a)
+				if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() after non-LIFO releases = %v, want none", got)
+				}
+			},
+		},
+		{
+			// A leaf-Init'ed lock reports any acquisition made while it is
+			// held, in order or not: the segment append rank sits above
+			// capacity, so the rank rules report nothing for this shape,
+			// and without the leaf flag a caller taking a higher lock
+			// under the flagged one deadlocks green — the three-lock cycle
+			// a sink, a worker and one method under the leaf make.
+			name: "segment append acquired under a leaf-Init'ed capacity lock",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				var leaf, seg lockorder.Mutex
+				leaf.InitLeaf(lockorder.Capacity, rec)
+				seg.Init(lockorder.SegmentAppend, rec)
+				leaf.Lock()
+				seg.Lock()
+			},
+			wantKinds: []lockorder.Kind{lockorder.AcquiredUnderLeaf},
+			wantRank:  lockorder.SegmentAppend,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := lockorder.NewRecorder()
+			tc.drive(t, rec)
+			vs := rec.Violations()
+			if got, want := kinds(vs), tc.wantKinds; !reflect.DeepEqual(got, want) {
+				t.Errorf("violation kinds = %v, want %v", got, want)
+			} else if len(tc.wantKinds) == 1 {
+				if got, want := vs[0].Stack, ""; got == want {
+					t.Errorf("violation Stack is empty: it must name the acquisition that broke the rule")
+				}
+				if got, want := vs[0].Rank, tc.wantRank; got != want {
+					t.Errorf("first violation Rank = %v, want %v", got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestLeafInitReportsAnyAcquisitionUnderIt runs the shape the leaf flag
+// exists for: the capacity lock the callers come at from every direction,
+// Init'ed as a leaf, held, then the segment append lock taken under it — a
+// higher rank, so every rank rule is silent and the deadlock the same take
+// implies would stay green without the leaf report. Once the holds are
+// released, each lock on its own records nothing more: the rule binds the
+// take under the leaf, not either lock alone.
+func TestLeafInitReportsAnyAcquisitionUnderIt(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	var capacity, appendLock lockorder.Mutex
+	capacity.InitLeaf(lockorder.Capacity, rec)
+	appendLock.Init(lockorder.SegmentAppend, rec)
+
+	capacity.Lock()
+	appendLock.Lock()
+	vs := rec.Violations()
+	appendLock.Unlock()
+	capacity.Unlock()
+	if len(vs) != 1 || vs[0].Kind != lockorder.AcquiredUnderLeaf || vs[0].Rank != lockorder.SegmentAppend {
+		t.Fatalf("an under-the-leaf acquisition recorded %+v, want one acquired-under-leaf of segment append", vs)
+	}
+	if got := rec.Held(); len(got) != 0 {
+		t.Errorf("Held() after both unlocks = %v, want none: the leaf hold released like any other", got)
+	}
+	capacity.Lock()
+	if got := rec.Held(); len(got) != 1 {
+		t.Errorf("Held() while the leaf lock alone is held = %v, want its one rank", got)
+	}
+	capacity.Unlock()
+	appendLock.Lock()
+	if got, want := len(rec.Violations()), 1; got != want {
+		t.Errorf("violations with the append lock alone held = %d, want %d: neither lock on its own breaks a rule", got, want)
+	}
+	appendLock.Unlock()
+}
+
+func TestRecorder_PerGoroutine(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	var capMu, faMu, fiMu lockorder.Mutex
+	capMu.Init(lockorder.Capacity, rec)
+	faMu.Init(lockorder.FileAppend, rec)
+	fiMu.Init(lockorder.FileIndex, rec)
+
+	capHeld := make(chan struct{})
+	bDone := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		capMu.Lock()
+		close(capHeld)
+		<-bDone
+		if got, want := rec.Held(), []lockorder.Rank{lockorder.Capacity}; !reflect.DeepEqual(got, want) {
+			t.Errorf("goroutine A Held() = %v, want %v", got, want)
+		}
+		capMu.Unlock()
+	}()
+	go func() {
+		defer wg.Done()
+		<-capHeld
+		faMu.Lock()
+		fiMu.Lock()
+		want := []lockorder.Rank{lockorder.FileAppend, lockorder.FileIndex}
+		if got := rec.Held(); !reflect.DeepEqual(got, want) {
+			t.Errorf("goroutine B Held() = %v, want %v", got, want)
+		}
+		fiMu.Unlock()
+		faMu.Unlock()
+		close(bDone)
+	}()
+	wg.Wait()
+	if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("main goroutine Held() after both = %v, want none", got)
+	}
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none", got)
+	}
+}
+
+func TestRecorder_UnlockOnOtherGoroutine(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	var m lockorder.Mutex
+	m.Init(lockorder.FileAppend, rec)
+
+	locked := make(chan struct{})
+	unlocked := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		m.Lock()
+		close(locked)
+		<-unlocked
+		if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+			t.Errorf("goroutine A Held() after B's unlock = %v, want none", got)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-locked
+		m.Unlock()
+		close(unlocked)
+	}()
+	wg.Wait()
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none", got)
+	}
+}
+
+func TestRecorder_InstalledLate(t *testing.T) {
+	var m lockorder.Mutex
+	m.Init(lockorder.FileAppend, nil)
+	m.Lock()
+
+	rec := lockorder.NewRecorder()
+	m.Init(lockorder.FileAppend, rec)
+	m.Unlock()
+
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none: the recorder never saw the held lock, so the release names a hold it cannot find", got)
+	}
+	if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("Held() after unlock = %v, want none", got)
+	}
+}
+
+// TestRecorder_ContendedMutex walks a contended handover of one Mutex from
+// goroutine A to goroutine B: B's attempt is recorded while A still holds,
+// then B acquires, and each releases in turn. The books must end empty
+// whichever side of the handover crossed whose.
+func TestRecorder_ContendedMutex(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	var m lockorder.Mutex
+	m.Init(lockorder.FileAppend, rec)
+
+	bHeld := make(chan []lockorder.Rank)
+	bDone := make(chan struct{})
+	bRelease := make(chan struct{})
+	m.Lock()    // A holds first, so B's attempt is recorded under A's hold
+	go func() { // B: contends with A for the lock
+		defer close(bDone)
+		defer m.Unlock()
+		m.Lock() // records its attempt, waits out A, then acquires
+		bHeld <- rec.Held()
+		<-bRelease
+	}()
+	m.Unlock() // the handover: A releases under B's recorded attempt
+	gotB := <-bHeld
+	if want := []lockorder.Rank{lockorder.FileAppend}; !reflect.DeepEqual(gotB, want) {
+		t.Errorf("B's Held() while it holds the lock = %v, want %v: the handover lost B's hold", gotB, want)
+	}
+	if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("A's Held() after its own release = %v, want none: the handover left A's hold behind", got)
+	}
+	close(bRelease)
+	<-bDone
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none: contended hands-over of one mutex break no rule", got)
+	}
+}
+
+// TestRecorder_ContendedAttemptUnderHold pins the bookkeeping crossing a
+// contended handover makes, deterministically: a mutex gives no window to
+// observe that the attempt is recorded and B still waits, so the low-level
+// pair — the exact calls Lock and Unlock make, on the identity the mutex
+// records itself under — drives the crossing in a fixed order. B's attempt
+// is on the books while A holds; A releases; B releases.
+func TestRecorder_ContendedAttemptUnderHold(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	m := new(int) // stands in for the lock identity the mutex passes
+
+	aHeld := make(chan struct{})
+	aRelease := make(chan struct{})
+	bAttempted := make(chan struct{})
+	aHeldAfter, bHeldAfter := make(chan []lockorder.Rank, 1), make(chan []lockorder.Rank, 1)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { // A: holds, then releases under B's recorded attempt
+		defer wg.Done()
+		rec.Acquire(lockorder.FileAppend, m)
+		close(aHeld)
+		<-aRelease
+		rec.Release(m)
+		aHeldAfter <- rec.Held()
+	}()
+	go func() { // B: attempt recorded while A holds, then released
+		defer wg.Done()
+		<-aHeld
+		rec.Acquire(lockorder.FileAppend, m)
+		close(bAttempted)
+		rec.Release(m)
+		bHeldAfter <- rec.Held()
+	}()
+
+	<-aHeld
+	<-bAttempted // the crossing exists on the books now
+	close(aRelease)
+	wg.Wait()
+	if got, want := <-aHeldAfter, ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("A's Held() after its release = %v, want none: B's attempt must not make A's hold stick", got)
+	}
+	if got, want := <-bHeldAfter, ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("B's Held() after its release = %v, want none", got)
+	}
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none: an attempt that waits out another holder breaks no rule", got)
+	}
+}
+
+// TestRecorder_SharedReadLocks walks two goroutines holding one RWMutex as
+// readers at the same time — the sharing the guard exists for — with each
+// releasing in turn. One reader's release must not remove the other's hold,
+// and a third goroutine's callback assertion must find nothing held once
+// both are out.
+func TestRecorder_SharedReadLocks(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	var rw lockorder.RWMutex
+	rw.Init(lockorder.StorageGuard, rec)
+
+	// The rendezvous completes only with both readers inside the guard
+	// together, which is sharing itself. Each reader answers a request
+	// for its Held() with a send, so every step of the test waits on an
+	// event rather than an ordering.
+	r1In, r2In := make(chan struct{}), make(chan struct{})
+	held := func() (chan []lockorder.Rank, chan struct{}) {
+		return make(chan []lockorder.Rank), make(chan struct{})
+	}
+	r1Held, r1Leave := held()
+	r2Held, r2Leave := held()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		rw.RLock()
+		close(r1In)
+		r1Held <- rec.Held()
+		<-r1Leave
+		rw.RUnlock()
+		r1Held <- rec.Held()
+	}()
+	go func() {
+		defer wg.Done()
+		rw.RLock()
+		close(r2In)
+		r2Held <- rec.Held()
+		r2Held <- rec.Held() // still holding while reader one is gone
+		<-r2Leave
+		rw.RUnlock()
+	}()
+
+	for i, in := range []<-chan struct{}{r1In, r2In} {
+		select {
+		case <-in:
+		case <-time.After(backstop):
+			t.Fatalf("reader %d never entered the guard within the backstop: the guard does not share between readers", i+1)
+		}
+	}
+
+	guard := []lockorder.Rank{lockorder.StorageGuard}
+	if got := <-r1Held; !reflect.DeepEqual(got, guard) {
+		t.Errorf("reader one's Held() while it shares the guard = %v, want %v", got, guard)
+	}
+	if got := <-r2Held; !reflect.DeepEqual(got, guard) {
+		t.Errorf("reader two's Held() while it shares the guard = %v, want %v", got, guard)
+	}
+
+	// Reader one leaves and reports empty; reader two, still inside,
+	// must keep its own hold.
+	close(r1Leave)
+	if got, want := <-r1Held, ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("reader one's Held() after its release = %v, want none", got)
+	}
+	if got := <-r2Held; !reflect.DeepEqual(got, guard) {
+		t.Errorf("reader two's Held() after reader one left = %v, want %v: one reader's release must not drop the other's hold", got, guard)
+	}
+
+	// Reader two leaves; the books must end empty and a goroutine that
+	// holds nothing passes the callback assertion.
+	close(r2Leave)
+	wg.Wait()
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none: readers sharing one guard break no rule", got)
+	}
+	third := make(chan struct{})
+	go func() { // a goroutine that holds nothing runs the offload assertion
+		rec.AssertNoneHeld("offload")
+		close(third)
+	}()
+	select {
+	case <-third:
+	case <-time.After(backstop):
+		t.Fatal("the third goroutine's assertion never ran within the backstop")
+	}
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none: nothing was held at the assertion from the third goroutine", got)
+	}
+	if got, want := rec.Checks("offload"), 1; got != want {
+		t.Errorf("Checks(%q) = %d, want %d", "offload", got, want)
+	}
+}
+
+func TestChecks_CountsByLabel(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	rec.AssertNoneHeld("a")
+	rec.AssertNotHeld(lockorder.FileAppend, "a")
+	rec.AssertNoneHeld("b")
+	if got, want := rec.Checks("a"), 2; got != want {
+		t.Errorf("Checks(%q) = %d, want %d", "a", got, want)
+	}
+	if got, want := rec.Checks("b"), 1; got != want {
+		t.Errorf("Checks(%q) = %d, want %d", "b", got, want)
+	}
+	if got, want := rec.Checks("c"), 0; got != want {
+		t.Errorf("Checks(%q) = %d, want %d", "c", got, want)
+	}
+}
+
+// TestRecorder_GuardRefs records the rules a storage guard reference breaks
+// when it is granted. A reference is a pin that is on no goroutine's books,
+// so the rules bind only its own acquisition: under the file index or the
+// file map it is reported, and nothing it leaves behind orders what the
+// goroutine takes later.
+func TestRecorder_GuardRefs(t *testing.T) {
+	tests := []struct {
+		name      string
+		drive     func(t *testing.T, rec *lockorder.Recorder)
+		wantKinds []lockorder.Kind
+		wantRank  lockorder.Rank
+	}{
+		{
+			name: "ref under file index",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.Acquire(lockorder.FileIndex, new(int))
+				rec.AcquireRef(new(int))
+			},
+			wantKinds: []lockorder.Kind{lockorder.GuardUnderIndex},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "ref under file map",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.Acquire(lockorder.FileMap, new(int))
+				rec.AcquireRef(new(int))
+			},
+			wantKinds: []lockorder.Kind{lockorder.AcquireUnderMap},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "two refs under file index",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.Acquire(lockorder.FileIndex, new(int))
+				rec.AcquireRef(new(int))
+				rec.AcquireRef(new(int))
+			},
+			wantKinds: []lockorder.Kind{lockorder.GuardUnderIndex, lockorder.GuardUnderIndex},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "a granted ref leaves the books empty",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.AcquireRef(new(int))
+				rec.AcquireRef(new(int))
+				if got, want := rec.Held(), ([]lockorder.Rank)(nil); !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() with two refs granted = %v, want none: a reference is on no goroutine's books", got)
+				}
+			},
+		},
+		{
+			name: "a callback after refs were granted",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.AcquireRef(new(int))
+				rec.AssertNoneHeld("offload callback")
+			},
+		},
+		{
+			name: "a ref beside ranked locks orders nothing",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.AcquireRef(new(int))
+				for _, rank := range []lockorder.Rank{lockorder.FileAppend, lockorder.Capacity, lockorder.FileIndex} {
+					rec.Acquire(rank, new(int))
+				}
+				if got, want := rec.Held(), []lockorder.Rank{lockorder.FileAppend, lockorder.Capacity, lockorder.FileIndex}; !reflect.DeepEqual(got, want) {
+					t.Errorf("Held() = %v, want %v: only the locks sit on the books", got, want)
+				}
+			},
+		},
+		{
+			name: "a real out-of-order acquisition after a ref",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.AcquireRef(new(int))
+				rec.Acquire(lockorder.SegmentAppend, new(int))
+				rec.Acquire(lockorder.Capacity, new(int))
+			},
+			wantKinds: []lockorder.Kind{lockorder.OutOfOrder},
+			wantRank:  lockorder.Capacity,
+		},
+		{
+			name: "the drain wait over a ref of its own segment",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				seg := new(int)
+				rec.AcquireRef(seg)
+				rec.Acquire(lockorder.StorageGuard, seg)
+			},
+		},
+		{
+			name: "the drain wait holding a ranked lock",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.Acquire(lockorder.Capacity, new(int))
+				rec.Acquire(lockorder.StorageGuard, new(int))
+			},
+			wantKinds: []lockorder.Kind{lockorder.GuardWaitUnderLock},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "a ref granted while a drain wait is held",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.Acquire(lockorder.StorageGuard, new(int))
+				rec.AcquireRef(new(int))
+			},
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.StorageGuard,
+		},
+		{
+			name: "two drain waits",
+			drive: func(t *testing.T, rec *lockorder.Recorder) {
+				rec.Acquire(lockorder.StorageGuard, new(int))
+				rec.Acquire(lockorder.StorageGuard, new(int))
+			},
+			wantKinds: []lockorder.Kind{lockorder.SameDomain},
+			wantRank:  lockorder.StorageGuard,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := lockorder.NewRecorder()
+			tc.drive(t, rec)
+			vs := rec.Violations()
+			if got, want := kinds(vs), tc.wantKinds; !reflect.DeepEqual(got, want) {
+				t.Errorf("violation kinds = %v, want %v", got, want)
+			} else if len(tc.wantKinds) >= 1 {
+				if vs[0].Stack == "" {
+					t.Errorf("violation Stack is empty: it must name the acquisition that broke the rule")
+				}
+				if got, want := vs[0].Rank, tc.wantRank; got != want {
+					t.Errorf("first violation Rank = %v, want %v", got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestRecorder_GuardRefsCrossSegmentCycle pins the decision at the drain
+// rule: goroutine A pins segment 1 and drains segment 2 while goroutine B
+// pins segment 2 and drains segment 1, a real deadlock the recorder cannot
+// see, since a pin is on no goroutine's books. Production retirers hold no
+// pins; the test fails when a recorder starts reporting it, which is the
+// moment the marker's ceiling has moved.
+func TestRecorder_GuardRefsCrossSegmentCycle(t *testing.T) {
+	rec := lockorder.NewRecorder()
+	s1, s2 := new(int), new(int)
+
+	aPinned, bPinned := make(chan struct{}), make(chan struct{})
+	aDone, bDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(aDone)
+		rec.AcquireRef(s1)
+		close(aPinned)
+		<-bPinned
+		rec.Acquire(lockorder.StorageGuard, s2)
+	}()
+	go func() {
+		defer close(bDone)
+		rec.AcquireRef(s2)
+		close(bPinned)
+		<-aPinned
+		rec.Acquire(lockorder.StorageGuard, s1)
+	}()
+	for _, ch := range []chan struct{}{aDone, bDone} {
+		select {
+		case <-ch:
+		case <-time.After(backstop):
+			t.Fatal("a goroutine never finished within the backstop")
+		}
+	}
+	if got, want := kinds(rec.Violations()), ([]lockorder.Kind)(nil); !reflect.DeepEqual(got, want) {
+		t.Errorf("violation kinds = %v, want none: a pin is on no goroutine's books", got)
+	}
+}

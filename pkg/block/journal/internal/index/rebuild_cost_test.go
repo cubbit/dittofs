@@ -17,7 +17,7 @@ import (
 // entry is the one the replay then fills.
 func rebuildCounting(t *testing.T, fs *files, id core.FileID) *atomic.Uint64 {
 	t.Helper()
-	f := newFile(&fs.segs)
+	f := newFile(&fs.segs, fs)
 	f.held.tree.cmps = new(atomic.Uint64)
 	s := fs.shard(id)
 	s.mu.Lock()

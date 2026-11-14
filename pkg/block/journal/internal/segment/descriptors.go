@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
@@ -64,6 +65,15 @@ type Descriptors struct {
 	budget     *core.DescriptorBudget
 	unregister func()
 
+	// rec is the lock-order recorder the cache's guard holds report to:
+	// every Acquire reports its requested reference, granted or refused, and
+	// Close's drain wait the one exclusive hold it takes. The zero value
+	// records nothing; the reference and the drain work as they always did.
+	rec atomic.Pointer[lockorder.Recorder]
+
+	// decision: mu is a leaf — never held across a storage call or a wait,
+	// never while another lock is; the reference drain above stands for the
+	// storage guard domain.
 	mu      sync.Mutex
 	entries map[core.SegmentID]*descEntry
 	idle    list.List // LRU of idle descriptors: front is the most recently used
@@ -188,10 +198,35 @@ func NewDescriptors(fs storage.FS, name func(core.SegmentID) string, budget *cor
 	return c
 }
 
+// SetRecorder installs the lock-order recorder the cache's guard holds report
+// to. It runs before the cache is shared — before any acquire can race a
+// release — and a nil recorder leaves the cache recording nothing.
+func (c *Descriptors) SetRecorder(rec *lockorder.Recorder) {
+	c.rec.Store(rec)
+}
+
+// drainAcquire records the exclusive storage guard hold Close's drain wait
+// takes: the one guard form that waits for holders, so the one checked
+// against every lock the goroutine holds; a reference is not one of them.
+func (c *Descriptors) drainAcquire(e *descEntry) {
+	c.rec.Load().Acquire(lockorder.StorageGuard, e)
+}
+
+// drainRelease ends the hold drainAcquire recorded.
+func (c *Descriptors) drainRelease(e *descEntry) {
+	c.rec.Load().Release(e)
+}
+
 // Acquire returns a reference to segment id's open descriptor, opening the
 // file on a miss. The descriptor is opened outside the cache's mutex, and a
 // concurrent Acquire of the same segment waits on the open rather than
 // issuing its own.
+//
+// The storage guard rules are checked at the entry, before anything the call
+// reaches runs: a reference must not be requested while holding the file
+// index or the file map, granted or refused, and a refusal — or a wait on an
+// in-flight open — can follow work that already ran under the caller's
+// locks, so the request itself is what the recorder sees.
 //
 // It returns ErrSegmentGone when the segment's Close has started or its file
 // no longer exists, ErrCacheClosed after Shutdown, and ErrNoDescriptor when
@@ -199,6 +234,7 @@ func NewDescriptors(fs storage.FS, name func(core.SegmentID) string, budget *cor
 // descriptors and none of the process's caches can close one for this
 // acquire. The refusal performs no I/O and waits for nothing.
 func (c *Descriptors) Acquire(id core.SegmentID) (Ref, error) {
+	c.rec.Load().AcquireRef(id)
 	c.mu.Lock()
 	if c.shut {
 		c.mu.Unlock()
@@ -634,6 +670,8 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 		// its descriptor and read storage about to be freed.
 		e = &descEntry{id: id, gone: true}
 		c.entries[id] = e
+		c.drainAcquire(e)
+		c.drainRelease(e)
 		c.mu.Unlock()
 		return nil
 	}
@@ -648,12 +686,21 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 	// close, and returning without waiting would free storage while the last
 	// reader's call, or an open still in flight, holds the descriptor.
 	//
+	// The drain is the one exclusive storage guard hold: it is recorded
+	// under this same hold of the mutex that set gone, so a reader's
+	// release cannot land between the two and leave the wait unrecorded,
+	// and it ends with the wait. It is recorded whether or not a reader
+	// holds the segment, so a retirer that calls Close while holding a
+	// ranked lock is reported on every run, not only on the runs where a
+	// reader happens to be in the way.
+	//
 	// The wait loops: the last Release wakes every waiter, and whichever
 	// locks first detaches the file and holds a reference across its close.
 	// A waiter that locks after it finds that reference and waits again, so
 	// no Close returns while another holder is still closing the segment's
 	// file. The loop is bounded: the entry is gone, so no reader can take a
 	// new reference, and the references it can still wait on are closes.
+	c.drainAcquire(e)
 	for e.refs > 0 {
 		if e.drained == nil {
 			e.drained = make(chan struct{})
@@ -663,6 +710,7 @@ func (c *Descriptors) Close(id core.SegmentID) error {
 		<-drained
 		c.mu.Lock()
 	}
+	c.drainRelease(e)
 
 	// The descriptor, if the cache still holds it, is closed outside the
 	// mutex, and its slot returned.
@@ -769,7 +817,9 @@ func (c *Descriptors) Shutdown() error {
 
 	// References remain: wait for them with no mutex held, signalled by the
 	// Release that brings the cache's total to zero. None is held: the wait
-	// ends at once.
+	// ends at once. The wait is deliberately unrecorded by the lock-order
+	// recorder: it takes no reference itself and holds no lock while it
+	// parks, so it is not the drain wait Close(id) records.
 	//
 	// The wait loops rather than answering one signal, because a signal
 	// does not mean the total stays zero: a reclaim the budget makes while

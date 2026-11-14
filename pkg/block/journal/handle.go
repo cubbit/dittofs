@@ -39,8 +39,12 @@ type Handle struct {
 	reported atomic.Bool
 
 	// resMu guards res, the handle's open reservations, so Close returns what
-	// each still holds. It is a leaf, taken with no lock domain held and never
+	// each still holds. It is taken with no lock domain held and never held
 	// across one.
+	//
+	// decision: resMu is a leaf: only the reservations map's work and the
+	// closing flag's read run under it, and each reservation's release
+	// happens after it is let go.
 	resMu sync.Mutex
 	res   map[*Reservation]struct{}
 }

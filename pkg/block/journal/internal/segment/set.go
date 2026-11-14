@@ -37,6 +37,7 @@ import (
 	"sync"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/lockorder"
 )
 
 // State is where a segment of the set stands. Spares are not in the set:
@@ -127,9 +128,23 @@ type Counters struct {
 // mutex, nothing acquired while holding it, and never held across anything
 // but map and counter work. Overturning this splits the counting by domain,
 // not the ledger itself, and fails only if the lock recorder of record ever
-// finds a leaf held above it.
+// finds a plain lock held above it.
 type Set struct {
-	mu     sync.Mutex
+	// decision: mu is the capacity domain and is Init'ed as a leaf: nothing
+	// is acquired while it is held, in order or out, and the recorder
+	// reports the first acquisition made under it — which the rank rules
+	// alone could not, for an in-order take under it names no violation.
+	// That is what makes the order the callers imply deadlock-free: the
+	// durability worker paths take this lock under a stream's leaf mutex,
+	// the sinks take that mutex under the segment append lock, so a
+	// capacity-under-append acquisition is in order by rank and turns into
+	// the cycle the leaf flag exists to catch only once some Set method
+	// takes another lock under mu. What the flag still cannot see is an
+	// unranked lock taken under mu, or a path no recorded run exercises:
+	// it reports what the recorder ranks, nothing more. Overturned the day
+	// mu must hold across anything — a callback, a callback's locks, or a
+	// second mutex — and the leaf marker goes with it.
+	mu     lockorder.Mutex
 	cap    int64
 	log    *slog.Logger
 	segs   map[core.SegmentID]*entry
@@ -165,9 +180,13 @@ type Set struct {
 	// that segment's seal callback has returned — the retire blocks until
 	// the seal's delivery is whole, state change and callback alike — and
 	// each callback sees the state change it names complete, every
-	// mutator's mu held nowhere across a callback. It is otherwise a leaf
-	// lock: no call takes it but the two fire sites and the two
-	// registrations, so it joins no cycle.
+	// mutator's mu held nowhere across a callback. No call takes it but the
+	// two fire sites and the two registrations, so it joins no cycle.
+	//
+	// decision: obs is unranked and not a leaf: it is held across mu and
+	// across the observers' callbacks. The lock-order recorder never sees
+	// it. Withdraw this if a callback ever calls a set mutator that
+	// delivers, which would wait on the delivery its own call holds.
 	obs sync.Mutex
 }
 
@@ -279,6 +298,17 @@ func (s *Set) retireSeen(id core.SegmentID) {
 		return
 	}
 	s.onRetire(id)
+}
+
+// SetRecorder installs the lock-order recorder the ledger's mutex reports to,
+// with its capacity rank and its leaf promise: the pool's mutex and the
+// capacity admission's are of the same domain, so no two of them are ever
+// held at once, and the ledger's callers come at it from every direction —
+// so its own marker, not a rank, is what keeps nothing under it. It runs
+// before the set is shared — before any call the mutex serialises races
+// another — and a nil recorder leaves the mutex a plain one.
+func (s *Set) SetRecorder(rec *lockorder.Recorder) {
+	s.mu.InitLeaf(lockorder.Capacity, rec)
 }
 
 // ownsLocked reports whether the id is already in the set or among the

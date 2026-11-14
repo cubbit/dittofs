@@ -78,7 +78,8 @@ type segCount struct {
 // lock and allocates nothing. Upgrade to a sharded map when segment counts make
 // that copy show in a profile.
 type segments struct {
-	// mu is a leaf lock, exempt from the rule that no lock spans the store:
+	// decision: mu is a leaf lock outside the six lock domains, exempt from
+	// the rule that no lock spans the store:
 	// it is taken about once per segment created or retired, never held
 	// across I/O or a file's lock, and nothing is acquired after it — the
 	// O(S) map copy is its only work, and the hot path takes it not at all.

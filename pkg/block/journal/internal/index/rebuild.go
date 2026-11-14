@@ -92,6 +92,9 @@ type keepBuf struct {
 // files, behind one mutex held only to look up or append. Two shards never
 // touch the same file, so their buffers replay independently.
 type rebuildShard struct {
+	// decision: mu is a leaf mutex outside the six lock domains, held for a
+	// buffer append, a drained mark or the swap that takes the buffers, and
+	// never across I/O or another lock.
 	mu sync.Mutex
 	// drained marks the shard Finish has taken the buffers of, under mu. A
 	// feeder arriving after that would append to a buffer nobody replays,

@@ -20,10 +20,10 @@ type DirtyFile struct {
 // dirtyList is the core's list of dirty files. Account keeps it current from
 // the index's deltas, so a read of it touches neither the index nor a record.
 //
-// decision: one mutex guards the map and nothing else is taken while it is
-// held: not a file's append domain, the index, a segment or any I/O. Account
-// runs under a file's domain and from the loss path, so a lock that waited on
-// either would invert the order; a leaf cannot. Overturned if a caller ever
+// decision: mu is a leaf: one mutex guards the map and nothing else is taken
+// while it is held: not a file's append domain, the index, a segment or any
+// I/O. Account runs under a file's domain and from the loss path, so a lock
+// that waited on either would invert the order; a leaf cannot. Overturned if a caller ever
 // needs the list and a file's state read as one step.
 //
 // ponytail: DirtyFiles copies the share's entries under the mutex on every
