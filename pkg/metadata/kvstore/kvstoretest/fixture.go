@@ -21,10 +21,12 @@ type FS struct {
 
 // NewFS makes an FS over a fresh store from open, with names compared as
 // given.
-func NewFS(t *testing.T, open Opener) *FS { return NewFoldFS(t, open, entity.FoldIdentity) }
+func NewFS(t testing.TB, open Opener) *FS {
+	return NewFoldFS(t, open, entity.FoldIdentity)
+}
 
 // NewFoldFS is NewFS with the share's names compared under fold.
-func NewFoldFS(t *testing.T, open Opener, fold entity.FoldRule) *FS {
+func NewFoldFS(t testing.TB, open Opener, fold entity.FoldRule) *FS {
 	return newFS(t, open, fold).export()
 }
 

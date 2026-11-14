@@ -30,7 +30,7 @@ suites:
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
       # going red. None of these tags excludes another.
-      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,engine_conformance,adapter_conformance ./...
+      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,engine_conformance,engine_bench,adapter_conformance ./...
       # The adapters run on every platform a node does, and their socket code differs by
       # platform, so they are vetted for Windows and macOS beside the host's own.
       - { sh: 'for os in windows darwin; do GOOS=$os go vet ./pkg/adapter/... ./pkg/resources/... ./internal/adapter/... || exit 1; done' }
@@ -129,6 +129,20 @@ suites:
     cmd: go test -race -tags=engine_conformance -timeout=30m ./pkg/block/engine/conformance/... ./internal/vfs/integration/...
     known: test/engine/known.yaml
     tier: pr
+  # The engine's benchmarks, RFC 8 §15.4's B5, B7 and B9, over a composition on a real directory
+  # with an on-disk store and the real clock; run by hand on the dedicated host, gating nothing.
+  # Each iteration is one run of a workload, so -benchtime=1x -count=10 gives benchstat its
+  # samples, written to {out}/bench.txt; ENGINE_BENCH_COUNT=1 in the environment takes one.
+  # No -race: it changes the latency they measure, and engine-conformance covers the races.
+  # No -timeout either: go test applies none to benchmarks, so the cell's limit is the guard.
+  # decision: format exit, not go-json: go test -json sends no pass event for a passing
+  # benchmark, which a go-json cell grades as failed. A count a benchmark breaks fails the cell,
+  # which then names the command rather than the benchmark; its b.Fatalf line is in bench.txt.
+  engine-bench:
+    cmd:
+      - { sh: 'n=10; test -z "$ENGINE_BENCH_COUNT" || n=$ENGINE_BENCH_COUNT; go test -count=$n -benchtime=1x -tags=engine_conformance,engine_bench -run ^$ -bench . ./internal/vfs/integration/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 300m, cell: 310m }
   # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
   # epic that fills its stub, and each failure is a known one.
   adapter-conformance:

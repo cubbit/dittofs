@@ -22,7 +22,7 @@ var ctx = context.Background()
 
 // newStore initialises and opens a store over a fresh KV from o, behind a
 // counting wrapper so a case can assert an operation's cost.
-func newStore(t *testing.T, kvo Opener) (*kvstore.Store, *kv.Counting) {
+func newStore(t testing.TB, kvo Opener) (*kvstore.Store, *kv.Counting) {
 	t.Helper()
 	c := &kv.Counting{KV: kvo(t)}
 	if err := kvstore.Init(ctx, c, uuid.New()); err != nil {
@@ -36,14 +36,14 @@ func newStore(t *testing.T, kvo Opener) (*kvstore.Store, *kv.Counting) {
 	return s, c
 }
 
-func must(t *testing.T, err error) {
+func must(t testing.TB, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
 	}
 }
 
-func all[T any](t *testing.T, seq iter.Seq2[T, error]) []T {
+func all[T any](t testing.TB, seq iter.Seq2[T, error]) []T {
 	t.Helper()
 	var out []T
 	for v, err := range seq {
