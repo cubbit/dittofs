@@ -362,10 +362,21 @@ type fencedContent struct {
 }
 
 // Resume's batches that committed are a commit even when a later one failed.
+//
+// decision: a Resume that committed no batch and failed nothing found no
+// removal left, and wrote nothing, so it is neither a commit nor a failure.
+// Counted as a commit, the removal loop's retry of a file whose removal ran
+// and whose prune keeps failing would restart the fence's clock and clear the
+// owner every second, on a store that refuses every write. Count it again if
+// such a Resume is ever seen to write.
 func (c fencedContent) Resume(ctx context.Context, share entity.ShareID, file entity.FileID) (bool, error) {
 	c.f.begin()
 	advanced, err := c.Content.Resume(ctx, share, file)
-	if advanced && err != nil {
+	switch {
+	case !advanced && err == nil:
+		c.f.outstanding.Add(-1)
+		return advanced, err
+	case advanced && err != nil:
 		c.f.committed()
 	}
 	c.f.end(ctx, err, file)
