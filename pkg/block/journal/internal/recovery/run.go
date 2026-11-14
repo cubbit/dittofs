@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"runtime"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -56,6 +57,10 @@ type State struct {
 	// Rebuilt is what the rebuild phase built: the index, its counters,
 	// every own segment's scan and the resync count.
 	Rebuilt rebuilt
+
+	// Tails is the torn-or-corrupt classing of every own and unverified
+	// segment: each one's fate, the damaged set and the corrupt drops.
+	Tails tails
 }
 
 // phase is one step of the open's recovery: the span it runs under, and
@@ -105,12 +110,30 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 	if limit < 1 {
 		limit = math.MaxInt64
 	}
-	out, err := rebuildIndex(ctx, rd, expect, st.Attached.Own, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan)
+	// The unverified-header segments' records verify by identity, segment
+	// and offset whatever their header slot says, so they scan too: a
+	// record a later sync proved synced is never lost to a slot nobody
+	// wrote. A zero-header segment scans only when a successor names it: the
+	// successor proves it was sealed, so its records may be whole behind the
+	// zeroed slot. An unnamed one is a spare, and no proof of a record exists
+	// without its header durable first, so it is never read.
+	named := successorSet(st.Attached.Own)
+	segs := slices.Clone(st.Attached.Own)
+	for _, id := range st.Attached.Unverified {
+		segs = append(segs, SegmentInfo{ID: id, Unverified: true})
+	}
+	for _, id := range st.Attached.ZeroHeader {
+		if named[id] {
+			segs = append(segs, SegmentInfo{ID: id, Unverified: true})
+		}
+	}
+	out, err := rebuildIndex(ctx, rd, expect, segs, named, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan)
 	if err != nil {
 		return err
 	}
 	st.Rebuilt = out
-	return nil
+	st.Tails, err = classifyTails(rd, expect, named, unverifiedSet(st.Attached), out.Scans)
+	return err
 }
 
 // rebuildReaders is the reader bound the rebuild runs under.

@@ -50,14 +50,28 @@ type segmentScan struct {
 	// End is where the walk stopped: the seal marker's offset, the failing
 	// slot's offset, or the file's size.
 	End int64
+	// RecordsEnd is where the last verifying record ends:
+	// format.SegmentHeaderSize when the segment holds none, End for a sealed
+	// or catalogued scan, whose last record ends at the seal marker.
+	RecordsEnd int64
+	// Ranges holds the byte ranges the walk attached nothing from, as the
+	// walk reported them, ascending; a catalogued scan has none.
+	Ranges []format.ScanRange
 	// Size is the segment file's own size, as its storage reported.
 	Size int64
 
-	// Dropped holds the catalogued entries the tail's classing will judge.
-	// Nothing fills it yet: the catalogue read refuses a record that does
-	// not verify rather than drop one no phase reads — the confine arm's
-	// decision — and the day the classing exists the catalogue's confine
-	// flips and fills it. The walk leaves it empty regardless.
+	// VerifiedEnd is where the last record whose header verified ends, a clone
+	// target whose body failed excluded: format.SegmentHeaderSize when none
+	// did. The walk never reads a content payload, so a record whose payload
+	// is torn still counts here; it is not proof of a payload. It is the line
+	// the classing draws between a torn drop at the tail and one a later
+	// record follows.
+	VerifiedEnd int64
+
+	// Dropped holds the entries the tail's classing will judge: the catalogue
+	// read fills it for each record it confines, with Synced set, and the walk
+	// fills it for each clone target whose body did not verify, with Entry
+	// zero and Synced unset. What it carries is the tail's to own.
 	Dropped []droppedRecord
 }
 
@@ -114,12 +128,25 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 		return segmentScan{ID: info.ID}, err
 	}
 
-	sc := segmentScan{ID: info.ID, Size: size}
+	sc := segmentScan{ID: info.ID, Size: size, End: size, RecordsEnd: format.SegmentHeaderSize,
+		VerifiedEnd: format.SegmentHeaderSize}
+	if size < format.SegmentHeaderSize {
+		// Only an unverified-header segment can be this short: no record
+		// slot exists, so the scan is empty and the tail phases judge it.
+		return sc, nil
+	}
 	walk, werr := format.ScanSegmentHeaders(readerAt{rd: rd, name: format.SegmentName(info.ID)},
 		size, identity, info.ID)
 	sc.End = walk.End
 	sc.Sealed = walk.Sealed
 	sc.Resynced = walk.Resynced
+	sc.Ranges = walk.Ranges
+	if walk.Sealed {
+		sc.RecordsEnd = walk.End
+	} else if n := len(walk.Records); n > 0 {
+		last := walk.Records[n-1].Header
+		sc.RecordsEnd = last.Offset + last.Size()
+	}
 
 	for _, rec := range walk.Records {
 		h := rec.Header
@@ -135,6 +162,13 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 		switch {
 		case h.Kind <= format.KindUnmark: // the content kinds, 1–9
 			r, cerr := contentRecord(rd, identity, h)
+			if errors.Is(cerr, core.ErrCorrupt) {
+				// Only a clone target's body can fail this way: the
+				// record's header names it, so the tail's classing
+				// decides it, torn or corrupt.
+				sc.Dropped = append(sc.Dropped, droppedRecord{Header: h, Err: cerr})
+				continue
+			}
 			if cerr != nil {
 				return sc, cerr
 			}
@@ -144,6 +178,7 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 		default: // the reconcile kinds, 15 and 16
 			return sc, fmt.Errorf("%w: a %s record in segment %d", core.ErrNotImplemented, h.Kind, info.ID)
 		}
+		sc.VerifiedEnd = h.Offset + h.Size()
 	}
 	if werr != nil {
 		// The walk's stop: an unknown kind or a non-zero epoch — the
@@ -232,25 +267,12 @@ func contentRecord(rd *reader, identity core.JournalID, h format.RecordHeader) (
 
 // cloneSpec reads a clone target record's 56-byte body at the record's own
 // offset through the bound and verifies it whole, so no part of a record
-// that does not verify is used. A body that does not verify fails the open
-// naming the segment and the record's offset — never silently dropped, for
-// the destination's extent would then read as zeros.
+// that does not verify is used. A body that does not verify returns an error
+// wrapping core.ErrCorrupt naming the segment and the record's offset.
 //
-// decision: a clone target whose body is torn or does not verify refuses
-// the open, and keeps refusing on every retry, because the open cannot
-// recover what it cannot read: dropping the record would read the
-// destination as zeros and keeping it would serve a spec nobody verified.
-// The ceiling is a journal that stays closed over a clone target torn at
-// the tail of the newest segment, where a crash leaves one and no later
-// record shows it is not damage; the refusal is withdrawn when the tail's
-// own classing is built, which must drop a torn record at the newest tail
-// as a torn tail and tell it apart from damage mid-segment, so that such a
-// tail no longer refuses every open. The refusal is a scanned segment's
-// shape: the walk knows no record boundaries but the ones it decodes
-// itself, so a record it cannot verify is indistinguishable from damage
-// anywhere in the segment and nothing may be dropped blind — a catalogued
-// segment, whose entries name each record's place, confines the refusal
-// to the records that do not verify instead.
+// A clone target whose body does not verify is confined to that record:
+// the caller records it as dropped and the tail's classing decides whether
+// it is a crash's tear or damage.
 func cloneSpec(rd *reader, identity core.JournalID, h format.RecordHeader) (*core.CloneSpec, error) {
 	body := make([]byte, h.BodySize())
 	n, rerr := rd.ReadAt(format.SegmentName(h.Segment), body, h.Offset+format.RecordHeaderSize)
@@ -346,7 +368,8 @@ type rebuilt struct {
 // Each segment is read from one of two sources: the catalogue its trailer
 // names, offered to a segment only when another own segment's verified
 // header names it as predecessor, or the header walk, which every other
-// segment takes. A named segment whose trailer holds no verifying footer is
+// segment takes. A named segment whose trailer holds no verifying footer, or
+// whose footer an entry of which its own record contradicts, is
 // demoted to the walk, and the two sources must give the same answer — the
 // catalogue is an accelerator, not a second opinion. forceScan turns the
 // catalogue off, the test-only switch that makes every segment take the
@@ -376,7 +399,7 @@ type rebuilt struct {
 // catalogued offsets — walking the two halves of one segment on two
 // readers, merging the scans — when a start-up profile of a journal with
 // huge segments shows the rebuild bound by one.
-func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool) (rebuilt, error) {
+func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, named map[core.SegmentID]bool, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool) (rebuilt, error) {
 	ix := index.New(extentLimit)
 	ctr := &index.Counters{}
 	b := ix.Rebuilder(ctr)
@@ -390,10 +413,10 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 		own = shuffled
 	}
 
-	// named is the successor set: every own segment another own segment
-	// names as its predecessor. The catalogue a named segment's trailer may
-	// hold is the only thing this buys — a segment nobody names takes the
-	// walk, its trailer never read.
+	// named is the successor set the run built once (successorSet), the
+	// same one the tail's classing reads. The catalogue a named segment's
+	// trailer may hold is the only thing this buys — a segment nobody names
+	// takes the walk, its trailer never read.
 	//
 	// decision: only a verified own header's claim counts. The attach pass
 	// read and verified every own header before this dispatch, so the
@@ -406,14 +429,6 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	// stays beside it — the footer's seal marker is seeded with the
 	// journal's identity and the segment's own id, so no other segment's
 	// footer verifies as a named segment's.
-	named := make(map[core.SegmentID]bool, len(own))
-	for _, seg := range own {
-		// A segment naming itself as its own predecessor is damaged, and
-		// nothing is offered a catalogue off its own claim.
-		if seg.Header.Predecessor != 0 && seg.Header.Predecessor != seg.ID {
-			named[seg.Header.Predecessor] = true
-		}
-	}
 
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -448,7 +463,7 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 			srd := newReader(wctx, rd.fs, rd.clk, rd.log)
 			workers[i] = srd
 			switch {
-			case forceScan || !named[own[i].ID]:
+			case forceScan || own[i].Unverified || !named[own[i].ID]:
 				scans[i], errs[i] = scanSegment(srd, identity, own[i])
 			default:
 				got, byCatalog, cerr := catalogSegment(srd, identity, own[i])

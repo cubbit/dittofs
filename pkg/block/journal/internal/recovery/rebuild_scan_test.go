@@ -738,7 +738,7 @@ func TestRebuildIndexTwoSegmentsFailingAtOnceAnswerWithTheLowestSegmentID(t *tes
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 2, nil, nil, false)
+		_, err := rebuildIndex(ctx, rd, journalID, own, successorSet(own), core.Version{}, math.MaxInt64, 2, nil, nil, false)
 		done <- err
 	}()
 	for rec.inFlightSegReads() < 2 {
@@ -789,7 +789,7 @@ func TestRebuildIndexAFailedSegmentStopsTheDispatch(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil, onStart, false)
+		_, err := rebuildIndex(ctx, rd, journalID, own, successorSet(own), core.Version{}, math.MaxInt64, 1, nil, onStart, false)
 		done <- err
 	}()
 	// Segment 1's walk is parked in its first read. Polling the condition
@@ -838,7 +838,7 @@ func TestRebuildIndexCancelledMidFeedChangesNothing(t *testing.T) {
 	done := make(chan rebuiltOrErr, 1)
 	rd := newReader(ctx, r.seam.FS(), r.clk, nil)
 	go func() {
-		out, err := rebuildIndex(ctx, rd, journalID, own, core.Version{}, math.MaxInt64, 1, nil, nil, false)
+		out, err := rebuildIndex(ctx, rd, journalID, own, successorSet(own), core.Version{}, math.MaxInt64, 1, nil, nil, false)
 		done <- rebuiltOrErr{out, err}
 	}()
 
