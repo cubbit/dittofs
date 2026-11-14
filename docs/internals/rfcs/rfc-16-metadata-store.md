@@ -408,7 +408,8 @@ type User struct {
 	Email      string      // optional, never defaulted, never a spelling: no PX‖ row, no lookup by it (RFC 18 §2.2)
 	Primary    Principal   // the group a new file gets (RFC 7 §2.4, RFC 18); zero, or a group deleted or being deleted: none, and a new file's group is then its creator's own principal
 	Disabled   bool
-	Secret     SecretRef   // by reference, never the credential itself (RFC 13)
+	Password   SecretRef   // the password hash, sealed under the storage wrapping key; zero for an account with no password (RFC 13 §7, RFC 18 §8.1)
+	NTHash     SecretRef   // the NT hash, sealed under the protocol wrapping key; zero while identity.ntlm is off, for a directory principal and for an API-only account (RFC 18 §3.5)
 	// Role, NotBefore and MustChange are the management API's (RFC 23 §5):
 	// they grant nothing on files. A user with no Role has no API role of its
 	// own; an OpenID Connect sign-in may still give its session one from the
@@ -428,7 +429,7 @@ type Group struct {
 
 // A machine principal (RFC 18 §2.4) is held as a User record whose Principal
 // has kind Machine: no Name, so no NX‖ row; one spelling, its krb row; no
-// Primary and no Secret. It is minted by the first Kerberos authentication of
+// Primary, no Password and no NTHash. It is minted by the first Kerberos authentication of
 // its name, in one transaction with that PX‖krb row.
 
 // Membership is one member of one group, its own record in both directions:
@@ -687,10 +688,12 @@ type Setting struct {
 // (RFC 13 §7); every node holds both keys.
 type Secret struct {
 	ID    SecretRef
-	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, remote credential, key, node credential (RFC 15 §4.4)
-	Version uint64   // raised by every rotation; the previous version stays resolvable until every node reports this one (RFC 13 §7)
+	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, machine password (RFC 18 §3.5), remote credential, key, node credential (RFC 15 §4.4)
+	Version uint64   // raised by every rotation; the previous version stays resolvable until every node reports this one, a keytab's and a machine password's for RFC 18 §3.3's retention, the API signing key's until its last token expires (RFC 13 §7)
 	KeyID string     // which wrapping key sealed it: one per role or secret kind
 	Value []byte     // sealed
+	KeyVersion uint32 // a machine password's key version number, set when sealed and never changed; zero for every other kind (RFC 18 §3.3, §3.5)
+	HandedOver bool   // a machine password an offline join was handed: derives no Kerberos key and backs no previous-version fallback (RFC 18 §3.5); written with the version, bound into its sealed value's additional data, never changed
 }
 ```
 
@@ -1166,14 +1169,15 @@ type ShareIndex interface {
 }
 
 // Minter is identity's only write path: the records a first sign-in or lookup
-// mints (RFC 18 §2.4, §5.1). It never overwrites. Each write is one transaction,
-// draws the IDs a names from their counters inside it, and fails with ErrExist
-// when another principal holds a row it would write. Every Minter write, like
-// every other User or Group record change, raises the principals generation
-// (PGEN, §4.2) in the same transaction (RFC 18 §7.2).
+// mints (RFC 18 §2.4, §4.1, §5.1). It never overwrites. Create writes one
+// batch, every record one sign-in, lookup or resolution needs, in one
+// transaction: it draws each record's IDs its Alloc names from their counters
+// inside it, raises the principals generation (PGEN, §4.2) once whatever the
+// batch holds (RFC 18 §7.2), and fails whole with ErrExist, writing nothing,
+// when another principal holds a row any record would write. Rename and SetEmail,
+// like every other User or Group record change, raise it in their transaction.
 type Minter interface {
-	CreateUser(ctx context.Context, u User, a Alloc) error
-	CreateGroup(ctx context.Context, g Group, a Alloc) error
+	Create(ctx context.Context, b MintBatch) error
 	Rename(ctx context.Context, p Principal, name string) error    // the record's Name and its name index only
 	SetEmail(ctx context.Context, p Principal, email string) error // the record's Email only, from the directory (RFC 18 §5.1)
 }
@@ -1183,6 +1187,12 @@ type Minter interface {
 // record holds it, and a zero one is refused ErrInvalid: zero never means
 // "allocate".
 type Alloc struct{ UID, GID, RID bool }
+
+// MintBatch is one Create: each record with the IDs to allocate for it.
+type MintBatch struct {
+	Users  []struct{ User User; Alloc Alloc }
+	Groups []struct{ Group Group; Alloc Alloc }
+}
 
 // Lifecycle is the engine's store access outside block metadata's views and
 // Inspect.Refs (RFC 8 §2.1, §2.5, §2.7), over JD‖node‖device, the share records'
@@ -1759,7 +1769,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `SLOT` | (cluster) slot table: the fixed slot count and each slot's ordered nodes, primary first, in distinct failure domains, weighted by node capacity; one per installation, changed only by compare-and-swap ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)) |
 | | `CFG‖scope‖key` | Setting. A backup location's record ([RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record)) is one, and carries two system fields the control plane writes when it creates the record: the put-integrity outcome, and the **location health object's identity** — the version of `<location>control/health` at an immutable location, the nonce written in it at a mutable one ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)) |
 | | `CFGGEN` | settings generation: one installation-wide counter, raised in the transaction of every `Setting` or `Secret` change; every node point-reads it each second and re-reads the records when it moved ([RFC 13 §5](rfc-13-configuration.md#5.%20Binding%20classes)) |
-| | `SEC‖id‖version` | Secret (§2.3), one key per version, the previous one kept only until every node reports the current one: envelope-encrypted, never dumped or exported |
+| | `SEC‖id‖version` | Secret (§2.3), one key per version, the previous one kept only until every node reports the current one, for a keytab or a machine password until RFC 18 §3.3's retention has passed, or for the management API's signing key until the last access token it signed has expired (RFC 13 §7): envelope-encrypted, never dumped or exported |
 | | `CL‖clientID`, `CL‖clientID‖sh‖shard` | durable Client record. Its fields are **exactly** these, and the store **MUST** write no other: protocol, name, boot, owner principal (zero when the client names a machine or host, or its principal maps to the anonymous one), whether state protection is on (`Protect`), recovery kind (`Recovery`), the `Adapter` bytes — opaque, at most 4 KiB, version first, never read by the store, written in the transaction of the change they belong to ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) — and (cluster) lease owner node, back-channel node, back-channel-down flag, session holders and the ended mark ([RFC 14 §8](rfc-14-open-state.md#8.%20What%20is%20durable)). `Client.Expires` **MUST NOT** be written: it is volatile, held by the lease owner, so a renewal writes nothing; written, it would make 10⁵ clients cost 10⁵ writes per lease period. A pending confirmation is never written. The record is rewritten only when one of its fields changes. One key per shard the client holds state in (`Client.Shards`), checked on reclaim, whose value is `Done`: the grace instance the client last finished reclaiming in there, or the shard's instance when it joined, so a client owes a reclaim while it is below the shard's `GraceInstance` and a failover writes no client record ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)). An administrator's revoke deletes every such key in its transaction, so a reclaim after a restart finds none ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)). (cluster) An expired record is kept, marked ended, until every shard it names has released the client's state ([RFC 14 §4.3](rfc-14-open-state.md#4.3%20An%20expired%20lease%20releases%20everything%20it%20held%2C%20everywhere)). A client that recovers by notice keeps where its notice goes in its `Adapter` bytes, so these records are the restart-notice monitor list ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)) |
 | | `CLO‖protocol‖name` | client name index: the client's own stable name → `ClientID`, unique, so a client naming itself finds its record after any restart ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) |
 | | `IDS‖kind` | ID allocator, one per kind (client, open, lock, shard): the next unreserved ID, reserved in ranges by the process that issues them, so an ID is never issued twice and issuing one writes nothing; a range left unused when the process stops is abandoned. A `ClientID` and an `OpenID` are unique across the installation ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); an `OpenID` is issued only to an SMB, durable or clone source open, never to every NFS open, and below 2⁴⁰: `IDS‖open` refuses to issue past it ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)); a `lockID` need only differ from every other lock under its open and offset, which a server-wide counter more than meets. A shard number is read and raised in the transaction that creates the shard, which writes `S‖id‖shs‖shard` and `SH‖shard` — a share's own at the share's creation ([§2.3.1](#2.3.1%20Share%20names%2C%20paths%20and%20state)), a per-child one at its directory's ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)) —, never reserved in ranges and never reused, so a stateid naming a removed shard never resolves against another share's; `IDS‖shard` refuses with `ErrNoSpace` at 2²⁴, the most shards an installation numbers ([RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)). Three more kinds, uid, gid and RID, are the allocation counters of principals' spellings (RFC 18 §2.3): each only rises, and is read and raised in the transaction that creates the `User` or `Group` it numbers, as `S‖id‖pjn` is, never reserved in ranges; a uid or gid is drawn from `identity.id_range` and one any principal holds is skipped, which its `PX‖` row shows, so no allocated uid, gid or RID is given twice, even after its principal is deleted |

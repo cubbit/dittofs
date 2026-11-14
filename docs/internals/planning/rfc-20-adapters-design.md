@@ -190,7 +190,7 @@ pkg/
     deps.go                 Deps
     config/                 Adapter, NFS, SMB settings, live vs restart-only marks (leaf)
     nfs/  smb/              New: the public constructors
-  identity/                 (exists) RFC 18's contract: Evidence, SignInStep, SID…; adapters see it only as pkg/vfs aliases
+  identity/                 RFC 18's contract: Evidence, SignInStep, SID…; adapters see it only as pkg/vfs aliases. RFC 18's plan's epic 1 makes it, once RFC 23's plan's epic 1 deletes v1's
 internal/
   identity/                 RFC 18's authenticator, behind vfs.Service.SignIn; built by RFC 18's plan, not this one
     (kerberos)              AP-REQ acceptance, keytab and its rotation, PAC verification   ← today internal/auth/kerberos, pkg/auth/kerberos
@@ -247,8 +247,10 @@ speaks the security messages; the authenticator holds every secret and talks to 
 
 No adapter package imports `pkg/identity` or `internal/identity` (§7.1). Today's
 `internal/auth/{kerberos,netlogon}`, `pkg/auth/kerberos` and `pkg/identity/{kerberos,ldap}` are not
-adapter code: this plan leaves them where they are, and RFC 18's plan moves them into
-`internal/identity`. Their message-handling halves — SPNEGO, NTLM messages, GSS per-message code —
+adapter code: this plan leaves them where they are. RFC 18's plan moves `internal/auth/netlogon`
+into `internal/identity/netlogon` (its D5); RFC 23's plan's epic 1 deletes `pkg/identity` with its
+LDAP provider, which RFC 18's plan lifts from history into `internal/identity/directory` (its D6),
+as it lifts the Kerberos code already gone from the branch. Their message-handling halves — SPNEGO, NTLM messages, GSS per-message code —
 are lifted from develop's adapters into `gss` when it is built.
 
 Gone: today's `pkg/adapter/` (replaced by the public surface above), today's

@@ -90,5 +90,5 @@
   <path d="M62,718 L358,718" class="lt"/>
   <text x="66" y="712" class="q">PATCH /users/{id}, If-Match</text>
   <text x="372" y="722" class="q">link an OIDC subject: the oidc spelling allocates nothing and gives no file access</text>
-  <text x="16" y="742" class="q">Identity's own mints (a directory user at first lookup, a machine at first sign-in) go through Minter.CreateUser, never the API.</text>
+  <text x="16" y="742" class="q">Identity's own mints (a directory user at first lookup, a machine at first sign-in) go through Minter.Create, never the API.</text>
 </svg>

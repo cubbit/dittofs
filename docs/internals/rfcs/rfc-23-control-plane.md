@@ -402,7 +402,7 @@ func New(cfg Config) (*Node, error) {
 		Existence: n.meta.Existence(), Content: n.meta.Content(), Lifecycle: n.meta.Lifecycle(),
 		Holds: cloneHolds{n.open}, ...}) // the root's adapter: engine.CloneHold onto CloneOpen, CloneClose and Recovery.Served, their errors mapped as RFC 8 §2.6 says, so the engine imports no open state
 	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock, n.wd.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
-	n.ident  = identity.New(identity.Deps{Principals: n.meta.Principals(), ...}) // no settings: the first Apply brings them
+	n.ident  = identity.New(identity.Deps{Store: n.meta, ...}) // no settings: the first Apply brings them
 	n.fs     = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine,
 		Identity: n.ident, Auth: n.ident, Names: n.ident, ...})                // the one identity, behind three narrow fields
 
@@ -839,10 +839,12 @@ encrypts — fixed at creation. The API applies RFC 13's classes and nothing els
   field ([RFC 13 §5.1](rfc-13-configuration.md#5.1%20A%20bound%20setting%20refuses%20change));
 - a new endpoint or credential is proven before it is written
   ([RFC 13 §5.2](rfc-13-configuration.md#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change));
-- **rotating a credential is an operation**: it writes the new version, waits
-  until every node using it reports that version, then deletes the old one
+- **rotating a credential is an operation**: it writes the new version and waits
+  until every node using it reports that version
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). The operation reports the nodes still holding the
-  old version, and succeeds only when the old version is gone;
+  old version, and succeeds once every node reports the new one; the old one is
+  then deleted, or kept for the retention RFC 13 §7 names for a keytab, a
+  machine password or the signing key, and deleted when it passes;
 - a remote store is deleted only when no namespace names it; a namespace only
   when no share names it, after which GC drains it — collecting a held namespace, forgetting any other ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) and the
   namespace's status shows the drain.
