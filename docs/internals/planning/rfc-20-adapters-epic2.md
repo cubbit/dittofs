@@ -65,7 +65,7 @@ files to `memory.New`.
 - `memory.New` and `vfstest.Faults`, and the fault that holds a call until the test releases
   it: RFC 17's (§9). `testproto`'s service calls reach whatever `Deps.VFS` holds; their first run
   on `Memory` and `Faults` is E4's, and `Create`'s one-call rule is read there from `Memory`'s
-  record (E5's T5.5).
+  record (E5's T5.5b).
 - The import test's entry-method call sites (§4.10) and 800-line allowlist (§2.5), and its rule
   for `translate`: RFC 21's and RFC 22's, with their first handlers (§9).
 - `adaptertest/golden/` and the scripted client of RFC 20 §8.2: their first consumers are E6's
@@ -263,10 +263,11 @@ names the epic that owns the rest.
   which must stay the same until the epic that removes the entry, or a new panic or error would
   be graded new. The end-to-end specification is the one whose path crosses two epics, so it
   runs its stages in order in the test goroutine: first `testproto`'s tables, built through a
-  first `Route` and recovered there (`testproto: tables: not implemented` until E5's T5.2 and
+  first `Route` and recovered there (`testproto: tables: not implemented` until E5's T5.2a and
   T5.7 give `NewOpTable` and `NewErrorTable` their bodies), then `NewServer` and `Start` (`core:
   new server` until E4), then the reply. Whichever of E4 and E5 moves the first failure updates
-  the entry's `message` in that change; E4's and E5's descriptions say so. A panicking stub is
+  the entry's `message` in that change: E4's description says so, and E5's move landed with
+  #4194 (the entry now reads `core: new server`). A panicking stub is
   never reached from a server goroutine, where it would stop the binary, because the tables are
   built before the server starts. No red specification registers a cleanup or `defer` that
   reaches a panicking stub (`Reserved`, `Reservation.Release`, `Buf.Release`) before the step
@@ -476,21 +477,21 @@ const (
 const (
 	StatusOK             core.Status = iota
 	StatusFault                      // unmapped error (E5 T5.7)
-	StatusNotSupported               // core.ErrNotSupported (E5 T5.2)
-	StatusVersion                    // core.ErrVersion (E5 T5.2)
-	StatusNotNegotiated              // core.ErrNotNegotiated (E5 T5.2)
-	StatusNoSession                  // core.ErrNoSession (E5 T5.2)
-	StatusNoTree                     // core.ErrNoTree (E5 T5.2)
-	StatusNoFH                       // core.ErrNoFH (E5 T5.2)
+	StatusNotSupported               // core.ErrNotSupported (E5 T5.2b)
+	StatusVersion                    // core.ErrVersion (E5 T5.2b)
+	StatusNotNegotiated              // core.ErrNotNegotiated (E5 T5.2b)
+	StatusNoSession                  // core.ErrNoSession (E5 T5.2b)
+	StatusNoTree                     // core.ErrNoTree (E5 T5.2b)
+	StatusNoFH                       // core.ErrNoFH (E5 T5.2b)
 	StatusTooLong                    // core.ErrTooLong: a compound past its cap (E5 T5.4)
-	StatusExpired                    // core.ErrExpired (E5 T5.2)
-	StatusNotLast                    // core.ErrNotLast (E5 T5.4, T5.11)
-	StatusTooManyPending             // core.ErrTooManyPending (E5 T5.11)
-	StatusDelay                      // vfs.ErrDelay: at once in version 1, once its hold passes in version 2 (E5 T5.5)
-	StatusCancelled                  // a parked or held request its client cancelled (E5 T5.5, T5.11)
+	StatusExpired                    // core.ErrExpired (E5 T5.2b)
+	StatusNotLast                    // core.ErrNotLast (E5 T5.5c, T5.11)
+	StatusTooManyPending             // core.ErrTooManyPending (E5 T5.5b, T5.11)
+	StatusDelay                      // vfs.ErrDelay: at once in version 1, once its hold passes in version 2 (E5 T5.5b)
+	StatusCancelled                  // a parked or held request its client cancelled (E5 T5.5b, T5.11)
 )
 
-// HoldFor is how long version 2 holds a request the service answered ErrDelay (E5 T5.5).
+// HoldFor is how long version 2 holds a request the service answered ErrDelay (E5 T5.5b).
 const HoldFor = 10 * time.Second
 
 type Msg struct {
@@ -616,13 +617,14 @@ func (c *Client) Balance() int
     that entry is missing or empty, the connection given one backstop deadline so a server that
     binds but never replies fails `Recv` with an error rather than hanging the suite,
     one `Echo` sent by the client and its reply read, `CheckLeaks` clean after `Stop`; its
-    `known.yaml` entry (`message: 'testproto: tables: not implemented'`, `issue: "#3966"`, its
+    `known.yaml` entry (`message: 'core: new server'` since #4194 built the tables, `issue: "#3966"`, its
     reason naming E5's tables and pipeline and E4's server).
 - **Consumers:** E4's accept, reader, writer and sidecar-runner tests (T4.1–T4.4, T4.9: `Echo`,
   `Client`, `Bare` as the second listener, `Addrs` for the bound port and the `Serving` report),
-  and its `Reconfigure` test (T4.6: `MaxVersion` read from each connection's snapshot); E5's T5.1 (nil stages over `Bare`, `Echo`'s role),
-  T5.2 (`Versions`, `Needs`), T5.3 (the cap of 64 over `Bare`), T5.5 (`Create` held), T5.6
-  (`Panic`), T5.10 (the benchmark over `Echo`).
+  and its `Reconfigure` test (T4.6: `MaxVersion` read from each connection's snapshot); E5's T5.1a (nil stages over `Bare`, `Echo`'s role,
+  the cap of 64 over `Bare`, `Panic`), T5.2b (`Versions`, `Needs`), T5.5b (`Create` held), T5.1c
+  (the cap of 64 over `Bare` on a socket), T5.10 (the benchmark over `Echo` and a version 1
+  `PutFH` and `Create` compound).
 - **Acceptance criteria:**
   - Each vector of the package doc decodes to the fields it was written from, and each field
     set encodes to its vector's bytes.
@@ -690,13 +692,13 @@ func (c *Client) Balance() int
   | handshake deadline; kept state past the idle timeout | `Session` (`Established`, `Keep`), `Logoff` | E4 T4.7 |
   | `OnClose` on close | the registry | E4 T4.5 |
   | a message sent ahead of a named reply | `Notify` | E4 T4.4 |
-  | session and tree levels; `Versions` | `Session`, `Tree`, D3's tables | E5 T5.2 |
-  | drain decided per request; the expired-credential gate | `Echo`'s role, `PutFH`'s handle, `Session`'s expiry, `Logoff` | E5 T5.1, T5.2; E4 T4.5 |
-  | chains: a related member's state, a bad checksum, a pending last member, a member before the last pending or answered `ErrNotLast`, a `NoReply` stop whose interim grants the later members' credits, replies wrapped once | version 2, `Msg.Related`, `Msg.Pend`, the stages, `Client.Balance` | E5 T5.4, T5.5 |
+  | session and tree levels; `Versions` | `Session`, `Tree`, D3's tables | E5 T5.2b |
+  | drain decided per request; the expired-credential gate | `Echo`'s role, `PutFH`'s handle, `Session`'s expiry, `Logoff` | E5 T5.1a, T5.2b; E4 T4.5 |
+  | chains: a related member's state, a bad checksum, a pending last member, a member before the last pending or answered `ErrNotLast`, a `NoReply` stop whose interim grants the later members' credits, replies wrapped once | version 2, `Msg.Related`, `Msg.Pend`, the stages, `Client.Balance` | E5 T5.4, T5.5b, T5.5c |
   | a single-reply compound judged whole while draining; the slot's sequence kept; a compound past its cap | the compound row, `PutFH`'s handle, `Echo`'s role, `ReplayCache` | E5 T5.4 |
-  | holds past the ceiling and the floor, a cancel before and after its target | `Create` held by `Faults`, `OpCancel`, `HoldCodec` | E5 T5.5 |
-  | parks refused before the last, past `MaxPending`, with the reply pool full; cancelled by the client and by a drain; racing a grant; already past an interim; a connection closed on a scripted violation | `Park` over a `Faults` hold, `Violate` | E5 T5.11 |
-  | panic recovery | `Panic` | E5 T5.6 |
+  | holds past the ceiling and the floor, a cancel before and after its target | `Create` held by `Faults`, `OpCancel`, `HoldCodec` | E5 T5.5b |
+  | parks refused before the last, past `MaxPending`, with the reply pool full; cancelled by the client and by a drain; racing a grant; already past an interim; a connection closed on a scripted violation | `Park` over a `Faults` hold, `Violate` | E5 T5.11, T5.1c |
+  | panic recovery | `Panic` | E5 T5.1a |
 
 - **Acceptance criteria:**
   - Every exported identifier of `core` is referenced as `core.<Name>` in `testproto`'s non-test
