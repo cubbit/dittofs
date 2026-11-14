@@ -29,7 +29,7 @@ RFC 23's and RFC 18's plans consume it. Related RFCs, with how far each is in sc
 - **Out:**
   - the provisioning file (RFC 13 §2.4) and the backup location's record (RFC 13 §2.5, with
     RFC 26);
-  - the scratch paths of RFC 13 §2.2, which no v1 component reads;
+  - the scratch paths of RFC 13 §2.2, whose readers are not built yet;
   - the namespace key table (RFC 13 §7's material bullets, RFC 5's);
   - a change of a store's endpoint or credential, refused until it can be proven (D9);
   - the call that raises an active version (RFC 13 §5.5), while each format has one version;
@@ -61,20 +61,27 @@ start and names the record that replaced it.
 - output path: `docs/internals/planning/rfc-13-config-plan.md`;
 - dashboards: none.
 
-**RFC amendments in this pull request.** The user agreed to it:
-- **A1. A change to `identity.directory`'s address, trust roots, domain controller address or DNS
-  server is written by `admin` only** (RFC 13 Appendix B's `identity.directory` row). An `operator`
+**RFC amendments in this pull request.** The user agreed to A1:
+- **A1. Every write of `identity.directory`'s address, trust roots, domain controller address or DNS
+  server, its first value included, is by `admin` only** (RFC 13 Appendix B's `identity.directory`
+  row). An `operator`
   may otherwise keep the existing, correctly owned bind-credential reference, point the address at
   their own host and the trust roots at their own CA, and receive the credential; TLS does not help
   when they supplied the roots. The row's text is the RFC 18 plan's pull request's, word for
   word, which carries this clause too, so the two merge cleanly in either order.
+- **A2. RFC 13 §7 names the provider's full surface**: beside the interface #4050 amends, `Seal`'s
+  `Meta`, `Versions` and `Prune`, so the surface the RFC 18 plan's O9 freezes lives in the RFC
+  rather than only here.
 
 The amendments this plan relies on land with the plans that need them:
 - the adapter `port` row and the `node-id` files, in #4050;
 - a settings delete with `expect`, on `ControlPlane` and `ControlPlaneTx`, and the `Secret` view
   with its kind and owner (D10), in RFC 16 §3, in #4050, which edits that block;
-- `identity.netbios_name`, the directory fields and the two secret references on a user, in the
-  RFC 18 plan's pull request.
+- `identity.netbios_name` and its refusal of the directory's NetBIOS domain, the directory record's
+  fields (its domain controller address and DNS server among them), the two secret references on
+  a user, and `Secret`'s `KeyVersion` and `HandedOver` (RFC 16 §2.3), in the RFC 18 plan's pull
+  request (#4058), which merges after this one (O7): until it does, this plan names them ahead of
+  the RFC, and A1's row is carried by both.
 
 ## 1. Introduction
 
@@ -129,7 +136,7 @@ green with the epic that makes it pass.
   - the write-path check, its `Put` and `Delete` writes, and its errors. Whether the scope holds
     content is an input to the check, which its caller reads in the write's transaction, so
     `pkg/settings` declares no store interface.
-- **`pkg/secrets`' provider:** RFC 13 §7's `SecretProvider`: `Seal` with its kind, role, owner and
+- **`pkg/secrets`' provider:** RFC 13 §7's `SecretProvider`, as A2 completes it: `Seal` with its kind, role, owner and
   `Meta` (a machine password's `KeyVersion` and `HandedOver`), `Resolve` with the kind, role and
   owner its caller expects, `Versions`, which opens every version still held as a `Version` with its
   number and `Meta`, `Prune` and `Delete`, and the package's own errors. These are what the RFC 18
@@ -273,15 +280,15 @@ Out of scope, each named in O1:
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 4 | 6 | team | every epic |
 | E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 8 | 14.5 | A | E5; RFC 23's epics 3 and 5 (its X1) |
-| E3 | Settings | a delete and a cross-scope read, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 8 | 18 | B | E5 |
-| E4 | Secrets | `keyprovider` moved, `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, deletion | 6 | 14 | C | E5; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
-| E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, Appendix B's check | 4 | 11.5 | team | E6 |
+| E3 | Settings | a delete and a cross-scope read, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 8 | 18.5 | B | E5; partly RFC 18's plan's epics 2 and 6 |
+| E4 | Secrets | `keyprovider` moved, `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, deletion | 6 | 14 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
+| E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check | 4 | 12 | team | E6; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty; Compose and `docker/` on `dfs init`; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
-| | **Total** | | **35** | **74** | | |
+| | **Total** | | **35** | **75** | | |
 
-**Plan estimate: 35 subtasks, 74 man-days.**
+**Plan estimate: 35 subtasks, 75 man-days.**
 
-The skill's estimate for RFC 13's 1,177 lines is 3 middle epics (`round(1177 / 400)`), and this plan
+The skill's estimate for RFC 13's 1,199 lines is 3 middle epics (`round(1199 / 400)`), and this plan
 has 3.
 
 **Legend.** ⛔ is a blocker. "team" is an epic that belongs to no track. "Partly" means the dependent
@@ -309,6 +316,8 @@ flowchart TD
   R2 -. "Node record, for its ranges" .-> E2
   R2 -. "versions nodes hold" .-> E4
   E4 -. "the move, the record, sealing" .-> S2(["S2 secrets sealed, for RFC 18"]):::sync
+  E4 -. "sealed secrets, for two Check tests" .-> E3
+  E3 -. "write check, tracked reads" .-> R18(["RFC 18's epics 2 and 6"]):::sync
   S3(["S3 RFC 23's node reconciles and its write path exists: its epics 3 and 4"]):::sync
   R2 --> S3
   E2 & E3 & E4 --> E5["E5 Integration"]
@@ -332,8 +341,8 @@ flowchart TD
   `WriteMissingNodeIDs`; `Of` and its options, `Read`, `Get`, `Diff`, `Keep`, `Check` with `Put` and
   `Delete`; `Seal` with its kind, role, owner and `Meta`, `Resolve` with the expected kind, role and
   owner, `Versions`, `Prune` and `Delete`; the kvstore views'
-  delete, cross-scope read and secrets. Unblocks epics 2, 3 and 4, and the RFC 18 plan's S0, whose
-  epic 1 names `pkg/secrets` in identity's `Deps`.
+  delete, cross-scope read and secrets. Unblocks epics 2, 3 and 4; with S2, the RFC 18 plan's epic 2, which
+  adds `pkg/secrets` to identity's `Deps`.
 - **S2, secrets sealed.** A `Secret` seals, resolves and versions under each role's key. It is
   reached partway through epic 4, once the move, the record and sealing are in; rotation's `Prune`,
   which waits partly on RFC 23's epic 2, does not hold it back. It unblocks the RFC 18 plan's epic 2,
@@ -353,8 +362,10 @@ flowchart TD
 | --- | --- | --- |
 | E1 ⛔ | every epic | Every epic builds on the frozen surface. |
 | E2, E3, E4 | E5 | Integration wires all three into the node and the API. |
-| E1 | RFC 18's plan's epic 1 (S1) | Identity's `Deps` name the frozen `pkg/secrets` surface. |
+| E1 | RFC 18's plan's epic 2 (S1) | Identity's `Deps` gain the frozen `pkg/secrets` surface there. |
 | E4 | RFC 18's plan's epic 2 (S2) | Identity seals and resolves its secrets here. |
+| E3 | RFC 18's plan's epics 2 and 6, partly | `identity.ntlm`'s validator and the NetBIOS cross-check are tracked reads through `Check`; the rest of both does not wait. |
+| E4 | E3, partly | Two of `Check`'s tests, D9's credential reference repointed at a freshly sealed `remote credential` and D10's reference to a secret of another kind or owner, need sealed secrets; the rest of E3 does not wait. |
 | E5 | E6 | E2E green runs the wired server. |
 | RFC 23's epic 2 (outside) | E2 and E4, partly | The version gate adds a node's ranges to RFC 23's `Node` record, `WriteMissingNodeIDs` reads RFC 16's `JournalID`, and `Prune` reads the versions a node holds from its `NodeStatus`. Everything else in both epics starts at S1. |
 | RFC 23's epics 2, 3 and 4 (outside, S3) | E5, partly | Integration wires this library into RFC 23's reconcile and write path, in the slots those epics leave; the table and D3's check start before (§3.4). |
@@ -464,13 +475,19 @@ and ignores the rest. The variables read outside viper are allowed, by name or b
 
 Kubernetes' service links are allowed by shape, since the scan of the repository cannot see them:
 a pod in a namespace holding a Service named `dittofs-*`, such as the operator's `<cr>-api`, gets
-`<SVC>_SERVICE_HOST`, `<SVC>_SERVICE_PORT*` and `<SVC>_PORT*`. A bootstrap key wins over an allowed prefix: a future key under `DITTOFS_TEST_*` is read as the key,
+`<SVC>_SERVICE_HOST`, `<SVC>_SERVICE_PORT*` and `<SVC>_PORT*`. A refused v1 name is checked first
+and wins over the shape: `DITTOFS_CONTROLPLANE_PORT`, `DITTOFS_METRICS_PORT` and
+`DITTOFS_ADAPTERS_NFS_PORT` match `<SVC>_PORT*` by name alone, and are refused naming their
+replacement, never ignored as a service link. A bootstrap key wins over an allowed prefix: a future key under `DITTOFS_TEST_*` is read as the key,
 never ignored as a launcher's. `DITTOFS_LOGGING_LEVEL`, which `dfsbench` sets, is the bootstrap's log
 level (RFC 13 §2.2), so it stays a bootstrap key.
 
 The list cannot drift. An epic 2 test scans the repository by content, not by extension, every file
 outside `_test.go` that holds a `DITTOFS_` name (Go, shell with or without a `.sh`, Compose,
-`docker/`), and fails on a name that is neither a bootstrap key nor allowed. It exempts a bare
+`docker/`, and Markdown but `docs/internals/` and `CHANGELOG.md`, which name v1's variables on
+purpose), and fails on a name that is neither a bootstrap key nor allowed, so a guide such as
+`README.md` or `docs/guide/` that still tells a user to set a refused variable fails it and epic 2
+corrects it. It exempts a bare
 `DITTOFS_` prefix literal (its own, `checkEnviron`'s, the fixture's) and `renamed_keys.go`'s
 refusal table, which names the refused forms on purpose. The rule for launchers is the same scan:
 **every launcher in the repository drops, in epic 2, each name the scan refuses**, whichever file
@@ -546,6 +563,17 @@ admin-only, as D9 fails closed on a store's location.
   whatever path a request names.
 - **Applied by** epics 3 (`Check`) and 4 (`Resolve`, the owner).
 
+**D11. A field added, removed or renamed in a section raises its `Schema`, and a release writes the
+new `Schema` only once the installation's active version allows it.** A strict decode refuses an
+unknown field and a newer `Schema` (RFC 13 §2.3), so an older binary would hold a component a newer
+one's row names: a rollback is safe only while no such row exists. Until the operator raises the
+active version (RFC 13 §5.5), a newer binary keeps writing the older `Schema`, without the field,
+which keeps RFC 13 §1's promise that a rollback is safe up to the raise. No format has a second
+version yet, so the rule costs nothing now: a `decision:` note at `Check` states it, and the raise
+call that enforces it is the ledger's (§6.1).
+- **Prior art (from memory).** CockroachDB gates a new setting's use on its cluster version.
+- **Applied by** epic 3, as the note; the enforcement with the raise call.
+
 ### 4.3 Knowingly simple implementations
 
 Each carries a `ponytail:` marker at the code site:
@@ -598,19 +626,19 @@ Each carries a `ponytail:` marker at the code site:
   - *Ceiling:* a second node: a node that is down keeps its last report, and holds the prune back.
   - *Upgrade path:* RFC 15's membership decides which nodes count.
   - *Epic:* 4.
-- **`Resolve` caches nothing.** Each call reads the record and unwraps its data key, so with KMIP
-  each authentication that resolves a secret costs a network unwrap.
-  - *Ceiling:* KMIP's unwrap latency on a per-authentication path; the trigger is RFC 23's plan's
-    epic 5 sign-in benchmark, whose password check resolves a `Secret`, or the RFC 18 plan's NTLM
-    and Kerberos sign-ins, which resolve an NT hash or a keytab, run against KMIP, with the unwrap's
-    share past a tenth of their time.
-  - *Upgrade path:* a cache of unwrapped data keys keyed by reference and version, an entry evicted
-    when its version is pruned or deleted, so password churn elsewhere leaves it warm.
+- **`Resolve` caches nothing.** Each call reads the `Secret` record, a store round trip (one on
+  FoundationDB), and unwraps its data key locally: `keyprovider` fetches a KMIP key once at start,
+  so no unwrap reaches the network.
+  - *Ceiling:* that record read on a per-authentication path; the trigger is RFC 23's plan's epic 5
+    sign-in benchmark, whose password check resolves a `Secret`, or the RFC 18 plan's NTLM sign-in,
+    which resolves an NT hash, with the read's share past a tenth of their time.
+  - *Upgrade path:* a cache of opened values keyed by reference and version, an entry evicted when
+    its version is pruned or deleted, so password churn elsewhere leaves it warm.
   - *Epic:* 4.
 - **One `CFGGEN` key for every setting and secret write.** Each write raises it in its
   transaction, so writes contend on one key, and each costs every node one reconcile scan.
-  - *Ceiling:* the commit rate on one key, about a few hundred writes a second on Badger, which bulk
-    provisioning of users reaches first.
+  - *Ceiling:* unmeasured: commits contend on one key, while reconcile, polling once a second,
+    folds every write of that second into one scan. Bulk provisioning of users reaches it first.
   - *Upgrade path:* a generation per section, or secrets off `CFGGEN` with their own counter, when a
     provisioning run is shown to be bounded by it.
   - *Epic:* 3.
@@ -645,11 +673,16 @@ func start(ctx context.Context, configFlag string) error {
 	}
 	// Node.Start writes a missing copy once New has opened the store, beside a journal the store
 	// records at JD‖node‖device: epic 2's WriteMissingNodeIDs, called by RFC 23's plan's start (X1).
-	n, err := node.New(ctx, b, id) // RFC 23's plan; refuses outside the active versions (epic 2, §4.3)
+	b.Node = id
+	n, err := node.New(node.Config{Bootstrap: *b, ...}) // RFC 23 §2.1, #4050's shape; refuses outside the active versions (epic 2, §4.3)
 	if err != nil {
 		return err
 	}
-	return n.Serve(ctx)
+	if err := n.Start(ctx); err != nil { // RFC 23 §2.2's start, then reconcile until Stop
+		return err
+	}
+	<-ctx.Done()
+	return n.Stop(context.WithoutCancel(ctx))
 }
 
 // pkg/bootstrap, the renamed pkg/config.Load (epic 2).
@@ -738,12 +771,12 @@ func (t Table) Check(tx metadata.ControlPlaneTx, caller auth.Role, w Write, hold
 	if rank(caller) < rank(sec.writeRole) { // an explicit rank, never the names; an empty or unknown role ranks lowest, and Of panics on an unknown WriteRole
 		return ErrForbidden // admin-only sections (RFC 13 Appendix B)
 	}
-	if rank(caller) < rank(sec.keyRole(key)) && sec.isChange(tx, w) { // admin-only keys of a shared section:
-		return ErrForbidden // identity.directory's address, trust roots, DC address and DNS server (A1)
+	if rank(caller) < rank(sec.keyRole(key)) { // any write to an admin-only key, its first value included (A1)
+		return ErrForbidden // identity.directory's address, trust roots, DC address and DNS server
 	}
 	s, err := sec.effectiveAfter(tx, w) // a put's row, or what a delete leaves
 	if err != nil {
-		return err // strict decode over the defaults and the wider row, required keys, then Validate
+		return err // strict decode, keys matched exactly as declared, over the defaults and the wider row, required keys, then Validate
 	}
 	if sec.class(key) == Bound && sec.isChange(tx, w) { // a put rewriting the same value is no change (RFC 13 §5.1)
 		if has, err := holds(tx, s.Scope); err != nil || has {
@@ -758,6 +791,8 @@ func (t Table) Check(tx metadata.ControlPlaneTx, caller auth.Role, w Write, hold
 		// (RFC 13 §5.2); withdraw when both are built.
 		return ErrUnproven
 	}
+	// decision: D11. A section's newer Schema is written only once the active version allows it,
+	// so a rollback before the raise meets no row it cannot decode (RFC 13 §1).
 	return t.checkFormatVersion(s) // a namespace's block format past this node's range (RFC 13 §5.4)
 }
 ```
@@ -770,24 +805,25 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 	if err != nil {
 		return err // the scan itself failed; nothing is decoded yet
 	}
+	prev := n.settings.Load() // *settings.Snapshot; nil before the first reconcile
 	for section, err := range bad { // decoded per section: an undecodable or newer-schema row stops only its own
 		n.refused(section, err)
 		if !n.started(section) { // the first reconcile has no snapshot to keep: never start on defaults
 			n.hold(section) // its component does not start, so an auth or share policy cannot open on a default
 			continue
 		}
-		cur = cur.Keep(section, n.settings.Load())
+		cur = cur.Keep(section, prev) // prev is non-nil once the section has started
 	}
 	for section, err := range n.resolveSecrets(ctx, cur) { // before any section applies: a moved or deleted
 		n.refused(section, err) // secret resolved again; one that fails (wrong kind, unwrap, a retired key gone)
 		cur = n.holdOrKeep(section, cur) // fails closed: held at start, else keeps its last snapshot
 	}
-	for _, ch := range settings.Diff(n.settings.Load(), cur) {
+	for _, ch := range settings.Diff(prev, cur) { // a nil prev: every key is a change
 		switch ch.Class {
 		case settings.Live, settings.Bound: // a bound change got here only past Check's refusal
 			if err := n.reconfigure(ch.Section, cur); err != nil {
 				n.refused(ch.Section, err) // stops only that section, reported refused (RFC 13 §6, RFC 23 §2.4)
-				cur = cur.Keep(ch.Section, n.settings.Load()) // the section keeps the snapshot it last ran
+				cur = cur.Keep(ch.Section, prev) // the section keeps the snapshot it last ran
 			}
 		case settings.Restart:
 			if !n.rebuild(ch.Section, cur) { // an adapter's port: a new adapter (settings.SMB's note)
@@ -796,14 +832,14 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 		case settings.NextWrite: // nothing to apply: each write loads n.settings, tested at a consumer (epic 5)
 		}
 	}
-	n.settings.Store(&cur) // atomic.Pointer[settings.Snapshot]: each section decoded once above, read with no decode
+	n.settings.Store(&cur) // atomic.Pointer[settings.Snapshot]: Read decoded and validated each value once; Get only looks one up
 	return n.reportGeneration(ctx, cur.Generation) // NodeStatus.Settings (RFC 16 §2.4)
 }
 
 func (n *Node) reconfigure(section string, cur settings.Snapshot) error {
 	switch section {
 	case "adapters.smb":
-		smb, err := settings.Get[adaptersettings.SMB](cur, section, n.id) // installation row, then the override
+		smb, err := settings.Get[adaptersettings.SMB](cur, section, n.id) // a lookup: Read merged the override and validated it
 		if err != nil {
 			return err
 		}
@@ -854,6 +890,9 @@ func (p *Provider) Seal(ctx context.Context, role Role, kind entity.SecretKind, 
 
 // Resolve takes the kind, role and owner its caller expects (D10); the record never supplies them.
 func (p *Provider) Resolve(ctx context.Context, role Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]byte, error) {
+	if role != roleOf(kind) {
+		return nil, ErrWrongRole // as Seal: no unknown role reaches p.keys
+	}
 	s, err := p.cp.Secret(ctx, ref, 0) // ponytail: no cache, one unwrap per call (§4.3)
 	if err != nil {
 		return nil, err
@@ -941,18 +980,23 @@ value; D7's drift test passes.
   (D7).
 - D7's drift test, scanning by content, and every launcher off the names it refuses (D7).
 - `dfs config show`, `validate` and `schema` on the bootstrap, refusing what `Load` refuses where
-  they warned before; `docs/guide/configuration.md` rewritten for the bootstrap, and
+  they warned before; `docs/guide/configuration.md` rewritten for the bootstrap, this epic being
+  the guide's one owner, to which each later plan adds its own section (O8); and
   `docs/guide/cli.md` regenerated.
 - The roles flag on `Bootstrap`, and `Load` refusing a value other than both roles (RFC 13 §2.2,
   RFC 15 §2.2); and `Load` refusing a bootstrap whose two wrapping keys are not both present, or
-  name the same key file or KMIP object, since RFC 13 §7's role split would collapse.
+  whose key IDs, as `keyprovider` reports them once loaded, are the same, since RFC 13 §7's role
+  split would collapse; a copied key file or a symbolic link to one is the same key.
 - Kubernetes' service links allowed by shape, a bootstrap key still winning: `<SVC>_SERVICE_HOST`,
   `<SVC>_SERVICE_PORT*` and `<SVC>_PORT*` for a Service named `dittofs-*`, which the operator's
   `<cr>-api` and `<cr>-headless` Services yield, with a test feeding `checkEnviron` a pod's
-  variable set (D7).
+  variable set (D7); a refused v1 name checked before the shape, with a test that
+  `DITTOFS_CONTROLPLANE_PORT=8080` refuses and names its replacement.
 - The node identity, by RFC 13 §2.2's node-identity row and RFC 28 §2.1's `node-id` file as
-  #4050 amends them (its A2): `InitNodeID` writes a copy for `dfs init` and a recovery import,
-  keeping one already there that agrees, so an interrupted init reruns; `NodeID` reads every copy
+  #4050 amends them (its A2): `InitNodeID` writes a copy for `dfs init` and a recovery import; a
+  rerun after an interrupted init adopts a copy already there only as #4050's epic 5 says, from a
+  journal directory whose `format` carries the store's installation ID, refusing one that does not
+  parse or two that differ; `NodeID` reads every copy
   at start and refuses on what the row names, a copy differing from the host file's key among them,
   and ignores a leftover `node-id.tmp`; it only reads and compares, before the store is open.
   `WriteMissingNodeIDs`, which RFC 23's plan's start step 1 calls once the store is open, writes a
@@ -971,7 +1015,7 @@ value; D7's drift test passes.
 
 ### Epic 3 — Settings
 
-**Epic 3 estimate: 8 subtasks, 18 man-days.**
+**Epic 3 estimate: 8 subtasks, 18.5 man-days.**
 
 Settings are rows at their scope. A component's effective value is read through one call. A write is
 checked by the component's own rules, and a change is classified for reconcile.
@@ -983,13 +1027,15 @@ refusal to advance, on one node.
 validator" pass at the library's layer, on a section declared in the test. So do one test per gate
 of `Check`, each on a section or key declared in the test: the §5.1 bound refusal, for a put and
 for a delete; D9's refusal of a store location's change, its credential reference repointed at a
-freshly sealed `remote credential` among them, and an initial put that passes; D10's
-refusal of a reference swapped to a secret of another kind or owner; the §5.4 format-version
+freshly sealed `remote credential` among them once epic 4 seals (§3.3), and an initial put that
+passes; D10's refusal of a reference swapped to a secret of another kind or owner, also once
+epic 4 seals; the §5.4 format-version
 refusal; a required key left unset; each role's write to an admin-only section and to a default
 one, only an `admin`'s passing the first and an `operator`'s passing the second; and, with the same
-rank check, an `operator`'s change to `identity.directory`'s address, trust roots, domain
-controller address or DNS server refused and an `admin`'s passing, while an `operator`'s change to
-its other fields passes (A1); and an `operator`'s write to `identity.oidc.*` refused, the longest
+rank check, an `operator`'s first put and later change of an admin-only key refused and an
+`admin`'s passing, while an `operator`'s write to the section's other keys passes (A1), on a
+section declared in the test (the RFC 18 plan's epic 6 runs it on `identity.directory`);
+a key spelled in another case than declared (`adapters.smb.Port`) refused; and an `operator`'s write to `identity.oidc.*` refused, the longest
 section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
 
 **Expected content:**
@@ -1007,10 +1053,13 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   compared by an explicit rank, since `UserRole` is a string; its `Per` thing for Appendix B's
   "per journal" rows; its `SecretRef` fields with their kinds (D10); and `Of` refusing a class,
   `Required` or `SecretRef` name that is not a field of `T`.
-- The snapshot, `Read` and `Get`: `Read` decodes each section on its own and returns the sections
-  it could not decode as refused, so one bad row stops only its section; `Get` takes the
-  installation value, then the narrower override, per thing where the scope is per thing, decoded
-  strictly over the defaults, then the required keys, then `Validate`; the value's fuzz target. A
+- The snapshot, `Read` and `Get`: `Read` decodes each section on its own, takes the installation
+  value, then the narrower override, per thing where the scope is per thing, decoded strictly over
+  the defaults with keys matched exactly as declared (Go's JSON decode matches field names
+  case-insensitively, so the decode checks the key itself), then the required keys, then
+  `Validate`, and returns the sections it could not decode as refused, so one bad row stops only
+  its section; `Get` is a lookup of a value `Read` decoded, with no decode; the value's fuzz
+  target. A
   duration is a string (`"30s"`) and a size a string or an integer of bytes; a bare integer for a
   duration is refused, since strict JSON reads `30` as 30 ns, and the fuzz target seeds that case.
 - `Of` requiring a class on every field, panicking on one left unclassified, so a forgotten restart
@@ -1023,6 +1072,7 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   namespace's block format version past this node's range (RFC 13 §5.4), on the key
   RFC 4's plan declares; until then a unit test declares the key and asserts the refusal.
 - `Diff`, `Keep` and the classes: live, restart, next write, bound.
+- D11's `decision:` note at `Check`.
 - `config_refused_total`, `config_bound_refusals_total` and `config_generation_lag_seconds`.
 
 ### Epic 4 — Secrets
@@ -1037,9 +1087,7 @@ is pruned, and every version goes with the record that names it.
 
 **Done when:** RFC 13 §9's rows "§7 role keys" and "§7 user secrets" pass, the second with a
 `Secret` written through the kvstore view and removed by kvstore's `DeleteUser`, so it needs no
-RFC 18 piece, and without its restart clause, which runs with RFC 23's plan's resumable deletion
-(its epic 3); "§7 rotation" (its credential half, on one node, rotating an `nt-hash` under the
-`protocol` role) passes; and library-layer tests pass: D9's refusal at `Seal` of a second version
+RFC 18 piece, and without its restart clause, a deferral (§6.1); and library-layer tests pass: D9's refusal at `Seal` of a second version
 of a `remote credential`, of a reseal under another kind, and of delete-then-seal through
 `Delete`'s refusal; D10's `Resolve` refusing a reference whose record is another kind; `Prune`
 keeping a version the node's status still holds; `Seal` refusing a kind under the other role; and,
@@ -1055,7 +1103,8 @@ reference, version, role, kind or owner, or with its `HandedOver` flipped, faili
   refused; D9's refusal on the stored kind.
 - Envelope sealing (D4) and `Resolve` under each role's key, given the kind its caller expects
   (D10).
-- The secrets view: every `Secret` write and delete raises `CFGGEN` in its transaction (RFC 13 §5).
+- The secrets view: every `Secret` write and delete raises `CFGGEN` in its transaction (RFC 13 §5),
+  but `Prune`, which drops only versions nothing resolves (§4.3 above).
 - Versions: a rotation writes a new version, and `Prune`, called by the rotation's owner, drops the
   versions below the lowest one any node's `NodeStatus.Secrets` holds (§4.3 above), counted by
   `config_secrets_behind`.
@@ -1069,14 +1118,16 @@ reference, version, role, kind or owner, or with its `HandedOver` flipped, faili
 
 ### Epic 5 — Integration
 
-**Epic 5 estimate: 4 subtasks, 11.5 man-days.**
+**Epic 5 estimate: 4 subtasks, 12 man-days.**
 
 RFC 23's node reads its settings through this library, its API writes through it, and the first
 sections are declared.
 
 **Owns:** RFC 13 §8 as a whole; RFC 13 Appendix B's check (D3).
 
-**Done when:** RFC 13 §9's row "§3 scope forms" passes; the §1.4 scenarios assigned to epic 5 pass;
+**Done when:** RFC 13 §9's rows "§3 scope forms" and "§7 rotation" (its credential half, on one
+node, rotating a bind credential, a kind a node keeps resolved and reports in
+`NodeStatus.Secrets`, which this epic writes) pass; the §1.4 scenarios assigned to epic 5 pass;
 a bad row in one section and a live change in another, reconciled together, leave the first
 reported refused and the second applied; a next-write change is read by the component's next write.
 
@@ -1168,19 +1219,33 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
     asserts, and runs it.
 - **O2. RFC 23's plan consumes this one.** Its D6 and D10 point here, and its epics 1 to 5 keep only
   their own pieces: the strip of `pkg/config`, the node, the API's routes and `dfs init`.
-- **O3. The RFC 18 plan's S0 is this plan's S1, and its epic 2 waits for this plan's S2.** Identity
-  names the frozen `pkg/secrets` surface from its epic 1; its NT hashes, keytab and machine password
-  wait for epic 4.
-- **O7. Merge order.** This plan merges after #4050, whose RFC 13, RFC 16 and RFC 28 text it relies
-  on: the `node-id` clauses, `DeleteSetting` with `expect`, `PruneSecret` and `Secret.Owner`. The
-  RFC 18 plan (#4058) merges after this one.
+- **O3. The RFC 18 plan's epic 2 waits for this plan's S1 and S2.** Identity adds the frozen
+  `pkg/secrets` surface to its `Deps` in that epic, not its first, and seals its NT hashes there;
+  its keytab and machine password wait for epic 4 too. Its epic 2's `identity.ntlm` validator and
+  its epic 6's NetBIOS cross-check are tracked reads through epic 3's write check.
 - **O4. The components' sections.** Each component's settings package and its Appendix B rows are
   its own plan's. Epic 5 wires the sections declared by then; D3 reports every other Appendix B
   section until its plan declares it.
-- **O5. `pkg/adapter/settings`** (D8) is merged (#4000), and is the sketch's `adaptersettings`.
+- **O5. `pkg/adapter/settings`** (D8) is merged on `feat/storage-v2` (#4000), not on `develop`,
+  and is the sketch's `adaptersettings`.
 - **O6. Estimates least certain.** Epic 3's write check, where the newer-schema refusal and the
   delete meet the existing settings view's transaction, and the transaction RFC 23's plan builds;
   epic 5's reconcile, whose size depends on how many sections are declared by then.
+- **O7. Merge order.** This plan merges after #4050, whose RFC 13, RFC 16 and RFC 28 text it relies
+  on: the `node-id` clauses, `DeleteSetting` with `expect`, `PruneSecret` and `Secret.Owner`. The
+  RFC 18 plan (#4058) merges after this one, though this plan names its `Secret.KeyVersion` and
+  `HandedOver` and its `identity.directory` fields ahead of it (header); A1's row is
+  byte-identical in both.
+- **O8. `docs/guide/configuration.md` has one owner,** this plan's epic 2, which rewrites it for
+  the bootstrap. #4050's epic 7 and the RFC 18 plan's epic 7 each add their own section rather than
+  rewriting it; #4050's plan still says its epic 7 rewrites it, pending that thread.
+- **O9. Whether A1's field set is wide enough** (RFC 13 Appendix B's `identity.directory`). With no
+  domain controller address set, the record's realm chooses the controllers through DNS service
+  records, so an `operator` who changes it redirects the bind as a new address would; the base and
+  the name attributes change which entry a name maps to. The options: add the realm to A1's list;
+  make the whole record `admin`-only, as `identity.oidc` is, which drops per-key write roles; or
+  keep A1 as it is with a `decision:` note naming the ceiling. Pending the user's answer on this
+  pull request.
 
 ### 6.1 Deferral ledger
 
@@ -1190,11 +1255,12 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | --- | --- | --- | --- |
 | The provisioning file (RFC 13 §2.4) and its series (header, O1, §1.4) | no plan takes it; RFC 23's plan defers it too | unowned | a plan takes RFC 13 §2.4 |
 | The backup location's record (RFC 13 §2.5); "§5.2 backup location credential" (header, O1, §1.4) | it needs backups | RFC 26 | RFC 26's plan |
-| The scratch paths of RFC 13 §2.2; "§2.2 scratch paths" (header, O1, §1.4) | no v1 component reads them | RFC 26, RFC 1 and RFC 25 plans | the first reader: backups' spill, salvage export or the event spool |
+| The scratch paths of RFC 13 §2.2; "§2.2 scratch paths" (header, O1, §1.4) | their readers are not built yet | RFC 26, RFC 1 and RFC 25 plans | the first reader: backups' spill, salvage export or the event spool |
 | A remote store's endpoint or credential change, refused; "§5.2 same content" (D9, O1, §1.4) | needs the capability check (RFC 4 §4.11) and the claim (RFC 27 §2.1) | RFC 4 and RFC 27; RFC 23 plan (#4050) for its credential rotation and proven endpoint | both pieces built |
 | "§2.2 explicit initialisation"'s clause recording a new identity by a recovery import (O1, §1.4) | needs RFC 26's recovery import | RFC 26 plan | RFC 26's plan builds the import |
-| The call that raises an active version, `raise-format` (RFC 13 §5.5) (header, §4.3's `ponytail:`, O1) | each format has one version | unowned | a format gains a second version |
-| "§7 rotation"'s wrapping-key half and its reseal pass (§4.3's `ponytail:`, O1, §1.4) | a retired role key keeps every secret open | unowned | an operator must remove a role key |
+| The call that raises an active version, `raise-format` (RFC 13 §5.5), and with it D11's write of a section's newer `Schema` (header, §4.3's `ponytail:`, D11, O1) | each format has one version | unowned | a format gains a second version |
+| "§7 rotation"'s wrapping-key half and its reseal pass (§4.3's `ponytail:`, O1, §1.4) | a retired role key keeps every secret open | unowned | an operator must remove a role key, or a role key is compromised |
+| "§7 user secrets"'s restart clause (epic 4's **Done when:**) | it runs with the resumable user deletion | RFC 23 plan, epic 3 | its resumable deletion lands |
 | The namespace key table; "§5.1 encryption bound", "§7 namespace keys", "§7 chunk-ID key", "§7 key table" (header, O1, §1.4) | RFC 13 §7's material bullets are RFC 5's | RFC 5 plan | RFC 5's plan |
 | "§5.3 recorded" and "§6 block target range" (O1, §1.4) | the engine's and the remote tier's validator rows, through this plan's table | RFC 8 plan; RFC 4 plan | their epics declare the keys |
 | The cluster rules: §5's two-step restart value, §5.4 and §5.5 across nodes, the two-node §9 rows; a lagging node refusing the raise (header, §4.3's `ponytail:`, O1, §1.4) | single node only | RFC 15 | a second node |

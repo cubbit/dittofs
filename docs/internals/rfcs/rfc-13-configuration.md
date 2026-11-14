@@ -741,6 +741,28 @@ type SecretProvider interface {
 }
 ```
 
+The built-in provider adds three things a rotating holder needs:
+
+```go
+// Meta is written with a version: a machine password's KeyVersion, set once
+// and never changed, and HandedOver, which Seal binds into the sealed value's
+// additional data with the role, kind, owner, reference and version (RFC 16
+// §2.3), so a flipped mark fails to open. Seal takes it as its last argument.
+type Meta struct {
+	KeyVersion uint32
+	HandedOver bool
+}
+
+// Versions opens every version still held, current first, each with its
+// number and Meta, checked against the caller's kind and owner as Resolve
+// checks the current one, for a holder that needs them all at once.
+Versions(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef) ([]Version, error)
+// Prune drops the versions below the lowest one any node reports holding
+// (§8), never the current one; the rotation's owner calls it once its
+// retention ends.
+Prune(ctx context.Context, ref SecretRef) error
+```
+
 - **Read never returns a secret.** No API, export, log line or metric carries
   one. An export that must travel with its secrets, a backup that must be
   restorable ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)), carries references, and says which secrets the
@@ -1129,7 +1151,7 @@ supplies one before the setting is built.
 | `identity.id_range`: the range uids and gids are allocated from when a principal has none | RFC 18 §2.3 | installation | live: a change applies to later allocations; an allocated ID never changes | 1 000 000 to 1 999 999 999 |
 | `identity.ntlm`: whether NTLMv2 is accepted; off deletes every stored NT hash | RFC 18 §3.5 | installation | live | on: workgroup deployments have no KDC (RFC 18 §3.5's decision) |
 | `identity.nfs4_domain`: the domain of NFSv4 owner strings | RFC 18 §4.5 | installation | live | the keytab's first realm in lower case, or `localdomain` with none |
-| `identity.directory`: the one directory — its schema, `ad` or `rfc2307`, address, base, bind credential reference, trust roots, realm, NetBIOS domain, the attributes holding a user's and a group's name, and optionally a domain controller address and a DNS server used instead of the domain's DNS service records | RFC 18 §5.1 | installation | live; a record asking for plain LDAP or for skipping certificate verification is refused, and so is one whose NetBIOS domain is `identity.netbios_name`, compared with ASCII letters folded (RFC 18 §3.5); a change to its address, trust roots, domain controller address or DNS server is written by admin only, since it redirects where the bind and machine credentials are sent | none: no directory; name attribute `sAMAccountName` |
+| `identity.directory`: the one directory — its schema, `ad` or `rfc2307`, address, base, bind credential reference, trust roots, realm, NetBIOS domain, the attributes holding a user's and a group's name, and optionally a domain controller address and a DNS server used instead of the domain's DNS service records | RFC 18 §5.1 | installation | live; a record asking for plain LDAP or for skipping certificate verification is refused, and so is one whose NetBIOS domain is `identity.netbios_name`, compared with ASCII letters folded (RFC 18 §3.5); every write of its address, trust roots, domain controller address or DNS server, its first value included, is by admin only, since each chooses where the bind and machine credentials are sent | none: no directory; name attribute `sAMAccountName` |
 | `identity.directory_stale_grace`: how long past the TTL a directory entry may be served while the directory fails | RFC 18 §5.3 | installation | live | 15 min; a policy, not a measurement: the window an operator accepts a disabled directory account keeping access through an outage, 0 where it must stop within the TTL |
 | `identity.oidc`: the OpenID Connect issuers the management API accepts — each one's issuer URL, client ID, audience, allowed signing algorithms (asymmetric only), role-claim name, and a confidential client's secret reference (a `Secret`, RFC 13 §7) | RFC 18 §8.2, RFC 23 §5.5 | installation | live; written by `admin` only | none: password sign-in only; `audience` the client ID |
 | export policy defaults (fields of RFC 16's `ExportPolicy` record, written by `PutExportPolicy`, not `Setting` rows): `Squash`, `Anonymous`, `ManageGIDs`, `ReadOnly`, the SMB flag for access-based enumeration, and the SMB flag for guest access — who is squashed, the principal a squashed or anonymous caller acts as, whether an `AUTH_SYS` caller's gids are replaced by its store memberships, whether every caller is narrowed to read-only, whether SMB listings omit what the caller cannot read, and whether a guest session may connect to a share that does not encrypt; its other fields default empty | RFC 18 §6.2, §3.2; [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees); [RFC 19 §3.7](rfc-19-authorization.md#3.7%20Listings%20hide%20what%20the%20caller%20cannot%20read); [RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in) | share | live: the policy's version is in every resolved caller's key | `root`; the well-known anonymous principal; off; off; off; off |
