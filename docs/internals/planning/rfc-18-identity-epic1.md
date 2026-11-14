@@ -153,17 +153,16 @@ held by the compiler: E1's interface assertions (T1.4, T1.6) and the consumers E
   the settings and the NTLM revision (E2), the keytab's versions (E5), the machine password's
   (E7), the logon sink (E4), the tracer (E4, for `identity.authenticate`). A field added to a
   struct only `internal/node` and tests build costs no migration. This departs from RFC 18
-  §2.6's `Deps` and from the plan's S0, so it is **pending the user's answer** (Q4). Prior
+  §2.6's `Deps` and from the plan's S0, so it needs the plan's S0 amended on #4058 (Q4, decided 2026-11-14). Prior
   art: RFC 17 §2.3's `vfs.Deps` grew its fields the same way on `feat/storage-v2`.
 - **D5, the store reaches identity as one `*kvstore.Store`.** RFC 18 §2.6 names RFC 16 §3's
   views `metadata.Principals`, `Records` and `Minter`; on `feat/storage-v2` no package
   declares them, and the store's views are concrete (`kvstore.Principals`). `Deps.Meta` takes
   `*kvstore.Store`, as `vfs.Deps.Meta` does under RFC 17 §2.3's rule (a concrete type where
-  there is one implementation). **Pending the user's answer** (Q1). Prior art: RFC 17 §2.3.
+  there is one implementation). Decided 2026-11-14 (Q1); RFC 18 §2.6's `Deps` is amended to match. Prior art: RFC 17 §2.3.
 - **D6, `SharePolicy` is declared in `entity` as RFC 16 §3 states it.** `Resolver.Resolve`
   takes it, so the type must exist at S1; the read that fills it is E3's. RFC 18's `metadata.`
-  prefix is `entity` on this branch, where the store's value types live. **Pending the user's
-  answer** (Q2). Prior art: RFC 16 §3.
+  prefix is `entity` on this branch, where the store's value types live. Decided 2026-11-14 (Q2). Prior art: RFC 16 §3.
 - **D7, the stubs answer `ErrUnavailable`.** Every stubbed method of `*Server`, and
   `NewHashes`, returns `ErrUnavailable`: one of the three errors RFC 18 §3.1 allows `SignIn`,
   never "unknown principal" (§4.1) and never a session, so a premature wiring fails closed.
@@ -173,8 +172,7 @@ held by the compiler: E1's interface assertions (T1.4, T1.6) and the consumers E
 - **D8, `NewHashes`'s types.** RFC 18 §8.1 names `PasswordHashes` and `NTLMSetting` without
   shapes. Epic 1 declares `PasswordHashes{Password, NTHash []byte}`, `NTHash` nil when none is
   owed, and `NTLMSetting{On bool; Revision uint64}`, the revision the API's conditional write
-  compares (§8.1's comment). E2 and RFC 23's plan's epic 5 pin both. **Pending the user's
-  answer** (Q3). Prior art: none found.
+  compares (§8.1's comment). E2 and RFC 23's plan's epic 5 pin both. Decided 2026-11-14 (Q3); RFC 18 §8.1 is amended to name these shapes. Prior art: none found.
 
 ## 5. Target tree
 
@@ -364,7 +362,7 @@ Pull request #4058, which holds the plan and RFC 18's amendments, is open with c
 requested. This document cites its version; a change there that touches §2.6, §2.7, §3.1,
 §4.1, §6.1 or §8.1 needs this document revised. The plan's link in §2 resolves once it merges.
 
-**Pending the user's answer** (each written in place as recommended):
+**Decided on 2026-11-14** (each as recommended; Q1, Q3 and Q4 need the amendments below on #4058):
 
 - **Q1, `Deps`' store field** (D5). (a) `Meta *kvstore.Store`, as `vfs.Deps` does
   (recommended: one implementation, RFC 17 §2.3's rule, and it compiles today); (b)
