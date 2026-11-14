@@ -64,8 +64,8 @@ files to `memory.New`.
   writes the body; T2.2's table names which.
 - `memory.New` and `vfstest.Faults`, and the fault that holds a call until the test releases
   it: RFC 17's (§9). `testproto`'s service calls reach whatever `Deps.VFS` holds; their first run
-  on `Memory` and `Faults` is E4's, and `Create`'s one-call rule is read there from `Memory`'s
-  record (E5's T5.5b).
+  on `Memory` and `Faults` is E5's T5.4 (and T5.5b, T5.11); `Create`'s one-call read is T5.4's,
+  from `Memory`'s record.
 - The import test's entry-method call sites (§4.10) and 800-line allowlist (§2.5), and its rule
   for `translate`: RFC 21's and RFC 22's, with their first handlers (§9).
 - `adaptertest/golden/` and the scripted client of RFC 20 §8.2: their first consumers are E6's
@@ -264,7 +264,7 @@ names the epic that owns the rest.
   be graded new. The end-to-end specification is the one whose path crosses two epics, so it
   runs its stages in order in the test goroutine: first `testproto`'s tables, built through a
   first `Route` and recovered there (`testproto: tables: not implemented` until E5's T5.2a and
-  T5.7 give `NewOpTable` and `NewErrorTable` their bodies), then `NewServer` and `Start` (`core:
+  T5.7 gave `NewOpTable` and `NewErrorTable` their bodies, in #4194), then `NewServer` and `Start` (`core:
   new server` until E4), then the reply. Whichever of E4 and E5 moves the first failure updates
   the entry's `message` in that change: E4's description says so, and E5's move landed with
   #4194 (the entry now reads `core: new server`). A panicking stub is
