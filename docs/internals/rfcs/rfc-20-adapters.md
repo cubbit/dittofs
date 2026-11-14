@@ -2477,7 +2477,6 @@ func New(d adapter.Deps, s config.NFS) (adapter.Adapter, error) {
 	return core.NewServer(d, s,
 		core.Listener{Network: "tcp", Port: s.Port, Protocol: protocol.New(t)},
 		core.Listener{Network: "udp", Port: s.Port, Protocol: protocol.New(protocol.Tables{NLM: t.NLM, NSM: t.NSM})})
-
 }
 
 // ops/v3/table.go: the row list, one line per operation; each row is built in its operation's own file

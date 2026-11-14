@@ -1740,9 +1740,8 @@ func NewHashes(u metadata.User, password []byte, ntlm NTLMSetting) (PasswordHash
 ```
 
 - `VerifyPassword` compares in constant time, and the zero principal, an
-  unknown name's, does the same work as a wrong password
- — a hash verification against a fixed dummy — so
-  timing does not tell the two apart.
+  unknown name's, does the same work as a wrong password — a hash
+  verification against a fixed dummy — so timing does not tell the two apart.
 - Tokens, sessions, roles, the not-before time and the API's sign-in throttle
   stay RFC 23's: `Account` returns the record and the API reads its role and
   `NotBefore` itself.

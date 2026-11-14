@@ -68,7 +68,6 @@ database or configuration refuses and names it. No migration tool.
 
 **RFC amendments in this pull request.** The user agreed to seven, all on draft RFCs:
 
-
 - **A1. An adapter's port becomes an adapter setting**, `adapters.<protocol>.port`, at installation
   scope with a node override, restart-class. The listen addresses stay the host's bootstrap facts,
   which the node hands the adapter in `settings.Adapter.Addrs`, as RFC 20 §3.6 and its plan's
@@ -460,11 +459,9 @@ flowchart TD
 | --- | --- | --- |
 | E1 ⛔ | every epic; the RFC 13 plan (#4059) and the RFC 18 plan (#4058) | Each epic builds on the frozen surface, and v1's trees would otherwise collide with v2's names (`cmd/dfs`, `pkg/apiclient`, `pkg/health`, `pkg/config`). Both other plans start at their S0, this epic's merge: #4059 on the stripped `pkg/config`, #4058 on v1's identity deleted. Only the deletion half unblocks them, but it cannot land alone, since the module must build with v2's names in place of v1's. |
 | E2 | E5; partly E3 and E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059); the RFC 18 plan's epic 3 (#4058) | E5's accounts, tokens and sessions are E2's records. E4 builds its server, route table, problem table and reads before E2 lands, and its write path once A3's entry point is in. E3 builds its composition and start and stop before E2 lands, and its node status, the sweeper's start and the removal's driving once E2's records and steps are in. E2's sweeper takes each retention as an input, so it needs no setting. The RFC 13 plan's version gate writes a node's ranges into the `Node` record, its `WriteMissingNodeIDs` reads `JournalID` and its `Prune` reads `NodeStatus`, and its S3 waits for these records; the RFC 18 plan's epic 3 reads the principals generation. |
-
 | E3 | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059); the RFC 18 plan's epics 2 and 7 (#4058) | Epic 5's signed-in callers extend the harness, and its sessions and tokens read RFC 23's own section; the CLI's tests run against the node the harness builds; integration runs every row on it. The RFC 13 plan's epic 5 fills the `apply` slot; the RFC 18 plan's epics 2 and 7 put their steps on the runner. |
 | E4 | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059) | Epic 5's sign-in routes go in the route table; the CLI is built against `pkg/node/apiv1` from S1, and tested against the routes. The RFC 13 plan's epic 5 fills the write path's `Check` slot. |
 | E5 | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059) | The CLI's `login` calls sign-in; every integration row runs as a signed-in caller; `dfs init` ends the RFC 13 plan's epic 2, which its epic 5 (X3) waits on (D6), and starts its epic 6. |
-
 | E6 | E7 | Integration's "§7 CLI" row runs the CLI's whole suite. |
 | E7 | E8 (partly) | E2E green runs the server through the harness's server fixture on `dfs init` and `dfs start`; it waits for that fixture and S3, not for the rest of integration (the guides, the CLI's suite, the throttling and audit rows), so the data-path cells D9 filters come back as soon as both are in. |
 
@@ -626,9 +623,9 @@ Client eviction is O9.
 **D13. `dfs` keeps three of v1's other commands, and every caller of the rest moves.** RFC 23 §2's
 `run` serves in the foreground until a termination signal, so v1's daemon mode and the commands
 built on its pid and log files go:
-- `config`, `version` and `completion` stay as they are: `config` reads only the stripped
-  `pkg/config`, which the RFC 13 plan's epic 2 moves onto `pkg/bootstrap` with them, and the other
-  two import nothing of this module;
+- `config`, `version` and `completion` stay as they are: of v1, `config` imports only `pkg/config`,
+  which epic 1 strips and the RFC 13 plan's epic 2 moves onto `pkg/bootstrap` with it, and the
+  other two import nothing of this module;
 - `start --foreground` becomes `start`; epic 1 drops the flag from `packaging/dfs.service` and the
   `Dockerfile`'s `CMD`. The image's first run through `dfs init` is the RFC 13 plan's epic 6
   (initialise-if-empty), and its `HEALTHCHECK` follows epic 3's health route;
@@ -645,7 +642,6 @@ Epic 7 rewrites the `docs/guide` pages that document the removed ones (`install.
 - **Prior art (from memory).** etcd runs in the foreground and leaves supervision to systemd or a
   container runtime.
 - **Applied by** epics 1, 7 and 8.
-
 
 ### 4.3 Knowingly simple implementations
 
@@ -699,7 +695,6 @@ Each of these will carry a `ponytail:` marker at the code site:
   - *Ceiling:* the second host to start on a copy; on one node, a restored or cloned VM.
   - *Upgrade path:* the node lease of the cluster rows, which refuses a second holder (§6.1).
   - *Epic:* 3.
-
 - **The health registry holds only the conditions this plan raises,** and the watchdog covers only
   the loops the node starts.
   - *Ceiling:* RFC 25's full registry.
@@ -921,7 +916,6 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 	sess := h.newSession(r.Context(), acct) // its Write resets the account's count and takes back the source's raise
 	key := h.signingKey()                   // Resolve(ctx, storage role, kind key, the installation's signing_key owner, ref) (D10)
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims(acct, sess))
-
 	tok.Header["kid"] = key.Version // D3: rotation verifies older tokens by version
 	h.writeTokens(w, tok, key, sess)
 }
@@ -996,7 +990,6 @@ declarations; RFC 23 §4.1, §4.6 and §4.7's shapes and codes, as declarations;
   commands D13 keeps; drop `--foreground` from `packaging/dfs.service` and the `Dockerfile` (D13);
   regenerate `docs/guide/cli.md`. Both rebuilt trees keep their `commands` packages,
   `cmd/dfs/commands` and `cmd/dfsctl/commands`, which `cmd/gendocs` imports.
-
 - Add a one-line note to `CLAUDE.md`'s architecture invariants that they describe v1 until epic 7
   rewrites them.
 - Write the architecture tests (§1.3).
@@ -1096,7 +1089,6 @@ and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
   `node_` series (RFC 23 §2.4, §11).
 - The health and readiness endpoints and the metrics listener, with RFC 25's registry and watchdog
   (RFC 23 §2.5); the `Dockerfile`'s `HEALTHCHECK` on the health route (D13).
-
 - The operation runner on one node (D8, §4.3 above), with a slot per in-scope `OpKind` for its
   owner's step function, the domain's and `identity.nt-hash-delete` among them (A5).
 - A user's and a group's deletion driven past the mark, their batches resumed at start (RFC 23
@@ -1222,9 +1214,8 @@ call against their current record.
   pruned at once, since nothing needs it (the RFC 13 plan's §4.3 rule: its rotation's owner
   prunes).
 - The signing key as an installation `Secret`, sealed and resolved with its kind and the
-  installation's `signing_key` owner (RFC 16 §3's `SecretOwner`, D10), and its rotation steps
- for the runner, the last
-  pruning the old key once an access token's lifetime has passed (§4.3 above). RFC 13 §7's and RFC
+  installation's `signing_key` owner (RFC 16 §3's `SecretOwner`, D10), and its rotation steps for
+  the runner, the last pruning the old key once an access token's lifetime has passed (§4.3 above). RFC 13 §7's and RFC
   16's `SEC` row's exception to "pruned once every node reports the new version" names the signing
   key; #4058 makes that edit to both lines.
 
@@ -1362,7 +1353,6 @@ runs RFC 23's e2e rows.
 - **O6. The cost of a full reconcile** (RFC 23 §13 item 5) is unmeasured. Epic 3 reconciles as the
   RFC says, and benchmarks it at 10⁴ shares, a cold pass and steady share churn, against RFC 23
   §2.3's bound on applying a change.
-
 - **O7. A1 reached into RFC 20's code and plans.** `pkg/adapter/settings.Adapter` has `Port`, which
   RFC 20's epic 2 added in #4000 (its D20) with the package's rename from `pkg/adapter/config`, on
   `feat/storage-v2`. Each protocol's `New` configures on it the listeners it would put on its

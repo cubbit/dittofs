@@ -1168,7 +1168,6 @@ supplies one before the setting is built.
 | management API paging and waits: page size; `?wait` cap | RFC 23 §4.2, §4.6 | — | fixed | 100 by default, at most 1 000; 60 s |
 | API calls one node runs at once, the next answered `503` | RFC 23 §4.3 | — | fixed | 64 |
 | sign-in throttle: attempts counted before waits begin, per account and source address together, per source address, and per account across all sources; the wait; how long a pair's and a source's counts are kept after their last attempt | RFC 23 §5.3 | — | fixed | 5; 5; 100; 1 s, doubling to 5 min; 24 h |
-
 | generated first password | RFC 23 §5.4 | — | fixed | 24 random bytes |
 | `metrics.top_shares`: shares exported with a `share` label per per-share gauge, the worst by it | RFC 25 §2.5 | installation | live | 20 |
 | `events.retention`, `events.max_bytes`: the event spool's age and size bounds, past which the oldest file is deleted | RFC 25 §4.6 | node | live | proposed: 7 days; 4 GiB |

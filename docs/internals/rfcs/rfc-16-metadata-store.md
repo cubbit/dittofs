@@ -415,7 +415,6 @@ type User struct {
 	// issuer's role claim (RFC 23 §5.5), so no Role does not mean no API access.
 	Role       APIRole     // none, viewer, operator, admin
 	NotBefore  time.Time   // store time, in whole seconds, set to the second after the raising write's commit: an access token issued, a session signed in or an API token created before it is refused; raised by a disable, a role or password change, or a sign-out everywhere (RFC 23 §5.3)
-
 	MustChange bool        // set with a generated password: until it changes, a sign-in permits only the password change and sign-out
 	Generation uint64      // raised by every PutUser; the management API's entity tag (RFC 23 §4.4)
 }
@@ -769,7 +768,6 @@ type SignInKey struct {
 	Account Principal    // zero for a source's count
 	Source  netip.Prefix // the source as RFC 23 §5.3 normalises it; zero for an account's count
 }
-
 
 type AuditRecord struct { // RFC 23 §6: append-only; deleted only past audit.retention
 	ID      [16]byte
@@ -1868,7 +1866,6 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`), session (0x03, session ID), source's sign-in failures (0x04, address), API token (0x05, token ID) and an account-and-source pair's sign-in failures (0x06, principal then address), written and deleted with it, so the sweep is one ordered scan |
 | | `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash` | Session (§2.3); refresh-token index: a refresh token's hash → session ID, the current one and every one it replaced, until the session expires, so presenting an invalidated token finds the session it must revoke (RFC 23 §5.3); and its reverse, one empty key per hash the session has retained, written with its `SSH` row, so the expiry sweep (`XP`, tag 0x03) deletes the session's `SSH` rows by one range of its own, never a scan of `SSH` |
 | | `SF‖tagged` | SignInFailures (§2.3), keyed by the account (tag 0x01, principal; a name that resolves to no account has none), the source address (0x02), or the two together (0x03, principal then address), read and raised in the attempt's own transaction before its password is checked (RFC 23 §5.3, which says how a source address is normalised); a source's and a pair's are deleted by the expiry sweep 24 h after their last counted attempt (`XP`, tags 0x04 and 0x06); an account's is deleted by a success, `:set-password`, the break-glass reset and the account's deletion |
-
 | | `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID` | APIToken (§2.3); token index: the hash → token ID; per-account index, for listing and for deleting an account's tokens with it; all three deleted by the expiry sweep once the token expires (`XP`, tag 0x05) |
 | | `AU‖time‖auditID` | AuditRecord (§2.3), in store-time order, so a time-range read and the retention sweep are one range; never rewritten (RFC 23 §6) |
 | | `AUX‖tagged‖time‖auditID` | audit index: one empty key per record for each of its actor (tag 0x01, principal), target (0x02, resource kind and ID) and taking node (0x03, `NodeID`), so the reads RFC 23 §6 filters by and the per-node export RFC 25 §4.3 reads are ranges |
