@@ -1179,26 +1179,40 @@ func (f *Fixture) Heal() { f.faults.SetFault(nil) }
 func (f *Fixture) fault(rules ...sim.Rule) <-chan struct{} {
 	f.t.Helper()
 	f.t.Cleanup(f.Heal)
-	s, err := sim.NewSchedule(1, f.Clock, rules...)
+	e := &entered{clock: f.Clock, ch: make(chan struct{})}
+	s, err := sim.NewSchedule(1, e, rules...)
 	if err != nil {
 		f.t.Fatalf("fixture: fault schedule: %v", err)
 	}
-	e := &entered{Schedule: s, ch: make(chan struct{})}
+	e.Schedule = s
 	f.faults.SetFault(e)
 	return e.ch
 }
 
 // entered is a schedule that closes its channel when the store first runs a
-// write transaction under it.
+// write transaction under it: once the transaction's hold is armed on the
+// clock, or once its fault is decided when it has no hold. Closed before the
+// hold is armed, a test advancing the clock on it would move the clock past
+// a hold not yet counting, which then waits from the later time.
 type entered struct {
 	*sim.Schedule
-	once sync.Once
-	ch   chan struct{}
+	clock sim.Waiter
+	once  sync.Once
+	ch    chan struct{}
 }
 
 func (e *entered) At(op string, key []byte) (time.Duration, int, error) {
+	d, tear, err := e.Schedule.At(op, key)
 	if op == kvtest.OpUpdate {
 		e.once.Do(func() { close(e.ch) })
 	}
-	return e.Schedule.At(op, key)
+	return d, tear, err
+}
+
+// After is the schedule's clock: it arms a hold, then closes the channel.
+// Only a write transaction is held by the fixture's faults.
+func (e *entered) After(d time.Duration) <-chan struct{} {
+	ch := e.clock.After(d)
+	e.once.Do(func() { close(e.ch) })
+	return ch
 }

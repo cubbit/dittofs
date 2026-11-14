@@ -1067,6 +1067,33 @@ func TestSelfFenceOnARemovalFailingAtTheStoreBesideAnUndecodableRecord(t *testin
 	}
 }
 
+// A truncate whose phase 2 Resume finishes and whose prune then fails at the
+// store, its removal record's delete refused, at every retry: the node fences
+// 31 s on. Each retry's Resume finds no removal left and writes nothing;
+// counting it as a commit restarts the fence's clock every second and never
+// fences.
+func TestSelfFenceOnARemovalWhosePruneFailsAtTheStore(t *testing.T) {
+	u := newFenceUnit(t)
+	x, b := u.create(t, "x"), u.create(t, "b")
+	u.write(t, x, 0, fill(16, 'a'))
+	if err := u.e.CommitExistence(t.Context(), u.share.ID, x); err != nil {
+		t.Fatal(err)
+	}
+	u.fault(t, sim.Rule{Op: kvtest.OpDelete, Key: "F‖*‖rm‖*", Action: sim.FaultAction{Err: syscall.ENOSPC}})
+	if err := u.e.Truncate(t.Context(), u.share.ID, x, 0); err != nil {
+		t.Fatalf("the truncate's phase 1: %v", err)
+	}
+	u.until(t, "the phase 2 removal_stalled", func() bool { return u.e.RemovalStalled(x) })
+
+	u.advanceInSteps(31 * time.Second)
+	if _, err := u.tryWrite(b); !fenced(err) {
+		t.Errorf("a write 31s into the prune's failures: %v, want ErrDelay(DelayCommit)", err)
+	}
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("node_fenced not raised 31s into the prune's failures")
+	}
+}
+
 // One store error on a call carrying a file whose hole record does not
 // decode, then only that file's retries, each failing on its own record,
 // its marks empty: the node is not fenced 31 s on, nor two minutes later,
