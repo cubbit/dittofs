@@ -348,7 +348,7 @@ flowchart TD
   E4 & E5 --> S3(["S3 core serves testproto end to end"]):::sync
   S3 -. "New on the real runner" .-> E6
   S4(["S4 internal/node exists, RFC 23"]):::sync --> E7["E7 Integration with the node 🔀"]:::sync
-  E5 -. "WithHold, read by the clone wait" .-> P11(["RFC 17 plan piece 11"]):::sync
+  E5 -. "WithHold, read by the clone wait" .-> P13(["RFC 17 plan piece 13"]):::sync
   E6 --> E8["E8 E2E green"]
   E7 -. "node-level wiring" .-> E8
   classDef blocker stroke:#c0392b,stroke-width:3px
@@ -707,7 +707,7 @@ is read from `vfstest.Memory`'s record of mutating calls, §7.2), §4.5, §4.6, 
   amendment): interim timer and `HoldCodec.Interim` (`after` 0 on every hold), the final reply under
   `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
   `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, asserted where it
-  is read, by the in-memory service's clone wait (RFC 17 plan piece 11's, V30),
+  is read, by the in-memory service's clone wait (RFC 17 plan piece 13's, V30),
   the per-connection
   floor and the hold pool, the credits on `testproto`'s balance for each case §4.6 and
   `HoldCodec` name (past the ceiling; past the floor with the hold pool full; cancelled; a chain
