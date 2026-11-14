@@ -72,7 +72,7 @@
   <text x="684" y="458" class="s">no record: the</text><text x="684" y="478" class="s">directory, cached</text>
 
   <path d="M465,494 L671,494" class="ln"/>
-  <text x="472" y="488" class="m">7 Minter.CreateUser</text><text x="472" y="508" class="s">a machine or directory one</text>
+  <text x="472" y="488" class="m">7 Minter.Create</text><text x="472" y="508" class="s">a machine or directory one</text>
 
   <path d="M463,516 L463,530" class="ex"/>
   <text x="472" y="530" class="e">wrong credential, unknown user,</text>
