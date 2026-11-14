@@ -445,13 +445,13 @@ proof"; the NFS halves of "disable takes effect" and "no file spelling"; and `Fu
 | E3 | Resolution | `admit`'s resolver moved into identity and completed: map, squash, groups, grant, flags; the `State`; the proof key and admission's caller cache | 7 | 12.5 | A | E7, E8; partly E5, E6 |
 | E4 | Local NTLMv2 sign-in | `SignIn` for NTLMv2 against a local NT hash, the MIC, key exchange, the throttle, anonymous sessions, re-authentication | 6 | 8 | B | E5; partly E7 |
 | E5 | Kerberos and the PAC | imported keytab through `Apply`, AES only, AP-REQ, the replay cache, PAC verification and binding, test and captured PACs, a Samba-issued ticket, machine principals | 9 | 19 | B | E8; partly E7 |
-| E6 | The directory | the LDAP provider lifted, paging, `tokenGroups`, the directory cache with stale grace, directory mints, the directory's domain SID, the in-memory directory and its suite | 8 | 21 | C | E8; partly E7 |
+| E6 | The directory | the LDAP provider lifted, paging, `tokenGroups`, the directory cache with stale grace, directory mints, the directory's domain SID, the `identity.directory` section, the in-memory directory and its suite | 8 | 21.5 | C | E8; partly E7 |
 | E7 | NETLOGON and the machine account | the secure channel moved and hardened, pass-through, online and offline join, the derived keytab, rotation, identity's runner kinds, status, the in-memory domain controller | 13 | 31 | A | E8 |
 | E8 | Integration | identity composed into the node, its `State` from reconcile, `identity.*` validators, the rows several epics meet in | 5 | 10.5 | team | E9 |
 | E9 🔀 | E2E green | Tier 2 rows through SMB, `e2e/kerberos` | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **62** | **121** | | |
+| | **Total** | | **62** | **121.5** | | |
 
-**Plan estimate: 62 subtasks, 121 man-days, not counting epic 9.**
+**Plan estimate: 62 subtasks, 121.5 man-days, not counting epic 9.**
 
 The skill's estimate for RFC 18's 2,361 lines, with A1 to A12, is 6 middle epics (`round(2361 / 400)`),
 as this plan has. Active Directory's two halves, the directory and NETLOGON, share no state: NETLOGON
@@ -572,7 +572,7 @@ pkg/identity/identitytest/      in-memory directory and domain controller, with 
 pkg/vfs/                        aliases pkg/identity's value types                                     E1
 pkg/vfs/vfserr/                 + ErrLogonFailure, ErrUnknownPrincipal                                 E1
 pkg/auth/sid/                   SID codec and well-known SIDs                                          —
-internal/identity/              Server: SignIn, Spell, Find, Resolve, VerifyPassword, Account,         E1, E2–E5
+internal/identity/              Server: SignIn, Spell, Find, Resolve, Lookup, VerifyPassword, Account, E1, E2–E5
                                 Apply; ntlm, kerberos, pac, replay, throttle
 internal/identity/directory/    the LDAP provider (only it imports go-ldap)                            E6
 internal/identity/netlogon/     secure channel, pass-through, join, rotation (git mv)                  E7
@@ -950,8 +950,9 @@ func (s *Server) joinDomain(ctx context.Context, op metadata.Operation) (next []
 writes both references in one record write (A5, D3).
 
 ```go
-p, err := ids.VerifyPassword(ctx, name, password) // ErrLogonFailure alike for every refusal
-u, err := ids.Account(ctx, p)                     // per call, under the generation (§7.2)
+p, err := ids.Lookup(ctx, name)           // the principal the API counts before checking (#4050's A7)
+err = ids.VerifyPassword(ctx, p, password) // that principal's password; ErrLogonFailure alike for every refusal
+u, err := ids.Account(ctx, p)             // per call, under the generation (§7.2)
 
 // A password set (RFC 23 §3.5).
 h, err := identity.NewHashes(u, password, ntlm) // ntlm: NTLMSetting{On, Revision} as read; pure: NT hash only while on
@@ -1040,7 +1041,8 @@ password and NT hash are derived, sealed and checked.
 - `Spell` and `Find` over the stored schemes and the qualified name, with `FindOpts.Mint` set only
   for a proof of `Secret` or above (RFC 18 §4.1, §4.6).
 - `NewHashes`, `PasswordHashes` and `NTLMSetting`, and the two sealed secrets (D3, A5).
-- `VerifyPassword` and `Account` (RFC 18 §8.1), with D10's parameters and bound.
+- `Lookup`, `VerifyPassword` and `Account` (RFC 18 §8.1, `Lookup` from #4050's A7), so the principal the API
+  counts is the one whose password is checked, with D10's parameters and bound.
 - `Deps.Secrets` and the settings in `State`, the first epic that reads them (§1.3).
 - NTLM-off's deletion of every NT hash, as the `identity.nt-hash-delete` runner kind (D8), scanning
   `Secret`s of kind nt-hash rather than users' references; a password set whose conditional write is
@@ -1167,7 +1169,7 @@ half for Kerberos, §3.8's expiry, and §4.2 steps 1, 2 and 4.
 
 ### Epic 6 — The directory
 
-**Epic 6 estimate: 8 subtasks, 21 man-days.**
+**Epic 6 estimate: 8 subtasks, 21.5 man-days.**
 
 Identity reads users and groups from Active Directory over verified TLS. It caches the answers with a
 stale grace, and mints each directory principal once.
@@ -1193,6 +1195,11 @@ that `identity.netbios_name` and the directory's NetBIOS domain differ; §7.3's 
 - Kerberos names resolved through the directory (RFC 18 §4.2 step 3), and a SID of the directory's
   domain asked of the directory first, minted only with `FindOpts.Mint` (RFC 18 §4.4).
 - The directory's domain SID read from its domain object by each new client (RFC 18 §5.1, A8).
+- `identity.directory` declared as a section of its own through #4059's `pkg/settings`, each field
+  of the record a key, with `admin` as the write role of its address, trust roots, domain
+  controller address and DNS server (RFC 13 Appendix B, #4059's A1), and a test on this real
+  section that an `operator`'s first put and later change of each is refused and an `admin`'s
+  passes.
 - The `identity.directory` validator, refusing a NetBIOS domain equal to `identity.netbios_name`,
   and `identity.netbios_name`'s refusing the record's, each a tracked read of the other (RFC 13 §6,
   A8).
@@ -1304,8 +1311,8 @@ Identity runs inside the node, and the rows that need several middle epics toget
 - The `identity.*` section listed in the node's settings table; each setting is declared through
   #4059's `pkg/settings`, with its default and validator, by the first epic that reads it:
   `identity.id_range`, `identity.ntlm` and `identity.netbios_name` in epic 2,
-  `identity.directory` and `identity.directory_stale_grace` in epic 6, and the directory record's
-  domain controller address and DNS server in epic 7.
+  `identity.directory`, its domain controller address and DNS server among its fields, and
+  `identity.directory_stale_grace` in epic 6.
 - The cross-epic rows above, on the in-memory directory and domain controller.
 - The `machine_account_unhealthy` alert rule (RFC 25 §3.9, §7).
 - An SMB sign-in by a user created through the API, run in-process.
