@@ -775,7 +775,8 @@ and SMB rows, §5.1, §5.2, §5.4 for the headers, §6.10's codec gate for the h
 
 Waits for RFC 23's `internal/node`. Then: `node.New` builds each enabled adapter through
 `pkg/adapter/nfs.New` and `smb.New` from its `Deps`, starts them last, applies a settings
-generation by `Reconfigure` or by stop, `New` and start, drives the sidecar runner, reports
+generation by `Reconfigure` or by `New`, then the old adapter's stop and the new one's start
+(RFC 23 §2.3), drives the sidecar runner, reports
 `Health` and `Connections()` to the control plane's client list, and checks every budget at zero
 after the adapters stop. It also builds what needs a node: `core`'s conditions in
 RFC 25 §3.9's registry and the alert rules for `adapter_unmapped_errors_total` and

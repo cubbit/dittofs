@@ -320,7 +320,7 @@ behaviour beyond pure methods (§2.4), and each renders as JSON for debugging
 | `Share`, `ShareGrant`, `Snapshot` | a share, who may reach it, its snapshots | §2.3 |
 | `Node`, `Shard`, `SlotTable` | cluster membership and shard placement ([RFC 11](rfc-11-ownership.md)) | §2.3 |
 | `Setting`, `Secret` | configuration values and sealed credentials ([RFC 13](rfc-13-configuration.md)) | §2.3 |
-| `Operation`, `IdempotencyRecord`, `Session`, `APIToken`, `AuditRecord`, `AuditCursor`, `NodeStatus` | the management API's records (RFC 23) | §2.3 |
+| `Operation`, `IdempotencyRecord`, `Session`, `APIToken`, `SignInFailures`, `AuditRecord`, `AuditCursor`, `NodeStatus` | the management API's records (RFC 23) | §2.3 |
 
 Holes, removals, fences, cuts, put intents, the GC index keys and
 the chunk change stamp are [RFC 6](rfc-6-block-metadata.md)'s bookkeeping for its guarantees. They are
@@ -394,7 +394,7 @@ what moves with a share:
 | Scope | Entities | Moves with a share export ([RFC 26](rfc-26-catalog-backups.md)) |
 | --- | --- | --- |
 | Per share | Share, ShareGrant, ExportPolicy, Snapshot | yes |
-| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, NodeStatus, Shard, Setting, ShareList, ClaimGeneration, and the management API's Operation, IdempotencyRecord, Session, APIToken, AuditRecord and AuditCursor | no — an export carries the principals its files, grants and export policy reference — the policy's `Anonymous` among them (§5, decision 8) — and every netgroup its policy references, with its members, so an import can refuse one that collides ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)) |
+| Server-wide | Installation, User, Group, Membership, Netgroup, Node, NodeLease, NodeStatus, Shard, Setting, ShareList, ClaimGeneration, and the management API's Operation, IdempotencyRecord, Session, APIToken, SignInFailures, AuditRecord and AuditCursor | no — an export carries the principals its files, grants and export policy reference — the policy's `Anonymous` among them (§5, decision 8) — and every netgroup its policy references, with its members, so an import can refuse one that collides ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)) |
 
 ```go
 // User and Group are principals with a name. A file refers to them only by
@@ -414,7 +414,7 @@ type User struct {
 	// own; an OpenID Connect sign-in may still give its session one from the
 	// issuer's role claim (RFC 23 §5.5), so no Role does not mean no API access.
 	Role       APIRole     // none, viewer, operator, admin
-	NotBefore  time.Time   // store time: an access or API token issued before it is refused; raised by a disable, a role or password change, or a sign-out everywhere
+	NotBefore  time.Time   // store time, in whole seconds, set to the second after the raising write's commit: an access token issued, a session signed in or an API token created before it is refused; raised by a disable, a role or password change, or a sign-out everywhere (RFC 23 §5.3)
 	MustChange bool        // set with a generated password: until it changes, a sign-in permits only the password change and sign-out
 	Generation uint64      // raised by every PutUser; the management API's entity tag (RFC 23 §4.4)
 }
@@ -690,7 +690,21 @@ type Secret struct {
 	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, remote credential, key, node credential (RFC 15 §4.4)
 	Version uint64   // raised by every rotation; the previous version stays resolvable until every node reports this one (RFC 13 §7)
 	KeyID string     // which wrapping key sealed it: one per role or secret kind
+	Owner SecretOwner // the record or setting key whose field names it; a new version keeps both Kind and Owner, which PutSecret enforces, and pkg/secrets refuses a read whose reference comes from another owner or expects another kind, so a reference cannot be pointed at another holder's secret (RFC 23 §5.2)
 	Value []byte     // sealed
+}
+
+// SecretOwner is the one holder a secret belongs to: a record's field (a
+// user's secret reference; the installation's signing key and machine
+// password, owned by the installation record, kind installation and its
+// ID, under the keys "signing_key" and "machine_password") or a setting's key
+// (a keytab, the directory's bind credential, an OpenID Connect client's
+// secret). Encoded with the version, as the Secret's other fields are, and
+// compared whole.
+type SecretOwner struct {
+	Record ResourceRef  // the record's kind and ID; zero for a setting
+	Scope  SettingScope // the setting's scope; zero for a record
+	Key    string       // the record's field name, or the setting's key
 }
 ```
 
@@ -711,6 +725,7 @@ type Operation struct { // RFC 23 §4.6
 	State    OpState     // pending, running, succeeded, failed, cancelling, cancelled
 	Claim    OpClaim     // for work the runner drives: node, node epoch, expiry; zero otherwise
 	Step     []byte      // the runner's last durable step; owner-driven work keeps its cursor in its own records
+	Params   []byte      // the request's parameters its kind reads, encoded by that kind (a join's mode, online or offline; an online join's takeover, ou and DNS host name; an offline join's machine-password Secret reference and the version its own Write sealed); never a credential
 	Started, Updated time.Time
 	Error    []byte      // the problem body, when failed
 	Result   []byte      // when succeeded
@@ -729,6 +744,7 @@ type Session struct { // RFC 23 §5.3
 	ID        [16]byte
 	Account   Principal
 	Refresh   [32]byte  // hash of the current refresh token; never the token. It and every hash it replaced are keys under SS‖session‖h (§4.2)
+	Created   time.Time // store time of the write that created it, a sign-in or a password change, raised to the account's NotBefore when that is later (RFC 23 §5.3); a refresh is refused once the account's NotBefore is past it
 	Expires   time.Time // api.session_lifetime after sign-in
 	Revoked   bool
 }
@@ -737,7 +753,20 @@ type APIToken struct { // RFC 23 §5.3
 	ID      [16]byte
 	Account Principal
 	Hash    [32]byte  // of the token; never the token
+	Created time.Time // store time of creation, raised to the account's NotBefore when that is later (RFC 23 §5.3); every call is refused once the account's NotBefore is past it
 	Expires time.Time // no later than api.token_max_lifetime after creation
+}
+
+type SignInFailures struct { // RFC 23 §5.3: one per account and source address, one per source, one per account
+	Count uint32    // attempts counted since the last success, each before its password is checked; a 429 raises the pair's and the source's, never the account's; a success resets the account's and the pair's and takes back its own raise of the source's
+	Last  time.Time // store time of the last counted attempt; the next wait, and a source's and a pair's 24 h expiry, count from it
+}
+
+// SignInKey names one of an attempt's three counts (§4.2's SF tags): the
+// account alone, the source alone, or the two together.
+type SignInKey struct {
+	Account Principal    // zero for a source's count
+	Source  netip.Prefix // the source as RFC 23 §5.3 normalises it; zero for an account's count
 }
 
 type AuditRecord struct { // RFC 23 §6: append-only; deleted only past audit.retention
@@ -1261,15 +1290,82 @@ type ControlPlane interface {
 	Snapshots(ctx context.Context, share ShareID) iter.Seq2[Snapshot, error]
 	Settings(ctx context.Context, scope SettingScope) iter.Seq2[Setting, error]
 	PutSetting(ctx context.Context, s Setting, expect uint64) error
+	DeleteSetting(ctx context.Context, scope SettingScope, key string, expect uint64) error // removes an override, so the wider scope's value is effective; raises the settings generation as a put does (RFC 13 §3)
+	Secret(ctx context.Context, id SecretRef, version uint64) (Secret, error) // one version, still sealed; version 0 reads the current one; ErrNotFound once pruned
+	PutSecret(ctx context.Context, s Secret, expect uint64) error             // a new version, expect naming the current one (0 for the first), raising the settings generation so every node resolves it (RFC 13 §7); ErrInvalid if its Kind or Owner differs from the current one's
+	PruneSecret(ctx context.Context, id SecretRef, below uint64) error        // deletes every version below the one the caller names, never the current one; when is the rotation's owner's to decide (RFC 13 §7)
 
 	// The management API's own records (§2.3) — Operation, IdempotencyRecord,
-	// Session, APIToken, AuditRecord, AuditCursor — are reached here too,
+	// Session, APIToken, SignInFailures, AuditRecord, AuditCursor — are reached here too,
 	// indicatively one read and one conditional write each, written in the
 	// transaction of the request it records. An AuditRecord is append-only;
 	// a cursor's write names the holder it read. NodeStatus is not here: every
 	// node writes its own through the Node view.
 	PutOperation(ctx context.Context, op Operation, expect uint64) error
 	AdvanceCursor(ctx context.Context, c AuditCursor, holder NodeID, holderEpoch uint64) error
+
+	// Write is the management API's one transaction (RFC 23 §4.3): fn makes
+	// the request's writes through tx, which carries this view's Put*, Set*
+	// and Delete* without their ctx, each checking its expect as above; Write
+	// then writes meta's AuditRecord and, when meta names a key, its
+	// IdempotencyRecord, and commits all of them or none. fn may complete
+	// what only its writes decide through meta's pointers — the audit
+	// record's After and Outcome, the idempotency record's Answer — since
+	// Write records them after fn returns. Before fn, Write reads
+	// that key's record with conflict tracking: one with the same digest returns
+	// ErrIdempotentReplay carrying the recorded answer, and fn does not run; one
+	// with another digest returns ErrIdempotencyMismatch. Two requests that both
+	// miss the record conflict on its key, so the one that retries finds it. A
+	// transaction conflict retries the whole transaction, the key's read
+	// included, bounded by the call's deadline with randomised backoff (RFC 0
+	// §9.2), so fn holds no state between calls; an expect that does not
+	// match returns ErrGenerationMismatch through fn, commits nothing and is
+	// not retried. A refusal RFC 23 §6 audits is recorded by a second Write
+	// whose meta carries the refusal's audit and no idempotency record, since
+	// a refused request records nothing (RFC 23 §4.5). A sign-in's attempt is
+	// counted before its password is checked, by a Write with neither, whose fn
+	// reads and raises SignInFailures (RFC 23 §5.3). The methods above
+	// stay, each one Write with no audit, for the callers RFC 23 §6 does not
+	// audit: the audit cursor's advance, and a deletion's batches after its
+	// audited mark. Every operation's state change, a deletion's end
+	// included, goes through Write with its audit.
+	Write(ctx context.Context, meta WriteMeta, fn func(tx ControlPlaneTx) error) error
+}
+
+// WriteMeta is what Write records beside the change: the audit record's
+// fields RFC 23 §6 lists, and the request's idempotency key and digest, if any.
+type WriteMeta struct {
+	Audit       *AuditRecord       // nil only for a caller that is not the API, and for a sign-in's count
+	Idempotency *IdempotencyRecord // nil for a call RFC 23 §4.5 exempts
+}
+
+// ControlPlaneTx carries ControlPlane's writes, each without its ctx,
+// inside Write's transaction, and tracked reads, so a write validated
+// against a related setting (RFC 13 §6) conflicts with a concurrent change
+// of it. A deletion's tx form is its first transaction, the mark; its
+// batches run after, as the method above says.
+type ControlPlaneTx interface {
+	Setting(scope SettingScope, key string) (Setting, bool, error) // tracked read
+	User(p Principal) (User, bool, error)                           // tracked read
+	Share(id ShareID) (Share, bool, error)                          // tracked read
+	SignInFailures(key SignInKey) (SignInFailures, bool, error)     // tracked read: a sign-in's count reads and raises its three in one transaction (RFC 23 §5.3)
+	DeleteUser(p Principal, expect uint64) error                    // the mark
+	DeleteGroup(p Principal, expect uint64) error                   // the mark
+	DeleteShare(share ShareID, snapshots SnapshotDisposition, expect uint64) error // the mark
+	PutUser(u User, expect uint64, a Alloc) error
+	PutGroup(g Group, expect uint64, a Alloc) error
+	PutShare(s Share, expect uint64) error
+	SetShareState(share ShareID, from, to ShareState) error
+	SetGrant(g ShareGrant, expect uint64) error
+	DeleteGrant(share ShareID, p Principal, expect uint64) error
+	PutExportPolicy(p ExportPolicy, expect uint64) error
+	SetQuota(share ShareID, q Quota, expect uint64) error
+	PutNetgroup(n Netgroup, expect uint64) error
+	DeleteNetgroup(name string, expect uint64) error
+	PutSetting(s Setting, expect uint64) error
+	PutOperation(op Operation, expect uint64) error
+	PutSignInFailures(key SignInKey, f SignInFailures) error // its count's row, and its XP row where the count expires
+	// and the view's other writes, the same way
 }
 ```
 
@@ -1767,9 +1863,10 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `OP‖opID` | Operation (§2.3), deleted 7 days after it ends (RFC 23 §4.6) |
 | | `OPR‖kind‖target` | running-operation index: one per target and operation kind → `opID`, written when the operation starts and deleted when it ends, so a second request for the same work finds it in one read and is refused (RFC 23 §4.6); `kind` the operation's kind as a string, `target` tagged |
 | | `IK‖account‖key` | IdempotencyRecord (§2.3), written in the request's own transaction (RFC 23 §4.5) |
-| | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`) and session (0x03, session ID), written and deleted with it, so the sweep is one ordered scan |
+| | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`), session (0x03, session ID), source's sign-in failures (0x04, address), API token (0x05, token ID) and an account-and-source pair's sign-in failures (0x06, principal then address), written and deleted with it, so the sweep is one ordered scan |
 | | `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash` | Session (§2.3); refresh-token index: a refresh token's hash → session ID, the current one and every one it replaced, until the session expires, so presenting an invalidated token finds the session it must revoke (RFC 23 §5.3); and its reverse, one empty key per hash the session has retained, written with its `SSH` row, so the expiry sweep (`XP`, tag 0x03) deletes the session's `SSH` rows by one range of its own, never a scan of `SSH` |
-| | `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID` | APIToken (§2.3); token index: the hash → token ID; per-account index, for listing and for deleting an account's tokens with it |
+| | `SF‖tagged` | SignInFailures (§2.3), keyed by the account (tag 0x01, principal; a name that resolves to no account has none), the source address (0x02), or the two together (0x03, principal then address), read and raised in the attempt's own transaction before its password is checked (RFC 23 §5.3, which says how a source address is normalised); a source's and a pair's are deleted by the expiry sweep 24 h after their last counted attempt (`XP`, tags 0x04 and 0x06); an account's is deleted by a success, `:set-password`, the break-glass reset and the account's deletion |
+| | `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID` | APIToken (§2.3); token index: the hash → token ID; per-account index, for listing and for deleting an account's tokens with it; all three deleted by the expiry sweep once the token expires (`XP`, tag 0x05) |
 | | `AU‖time‖auditID` | AuditRecord (§2.3), in store-time order, so a time-range read and the retention sweep are one range; never rewritten (RFC 23 §6) |
 | | `AUX‖tagged‖time‖auditID` | audit index: one empty key per record for each of its actor (tag 0x01, principal), target (0x02, resource kind and ID) and taking node (0x03, `NodeID`), so the reads RFC 23 §6 filters by and the per-node export RFC 25 §4.3 reads are ranges |
 | | `AUC‖node` | AuditCursor (§2.3): one per node that takes requests, written first by that node's first export and changed only by conditional writes naming the holder it read; it outlives the node's lease, and is deleted with the node's record once its last audit record within `audit.retention` is exported (RFC 25 §4.3) |
@@ -1914,7 +2011,7 @@ are the prefix's. No separator byte is written.
 | Store | `\x00` 0x00, followed by the bytes `format`; nothing else is under 0x00 |
 | Per file, per share | `F` 0x01, `S` 0x02 |
 | Per namespace | `C` 0x10, `CR` 0x11, `B` 0x12, `BR` 0x13, `BD` 0x14, `BC` 0x15, `I` 0x16, `NS` 0x17 |
-| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38, `IDS` 0x3A, `PGEN` 0x3B, `OP` 0x3C, `OPR` 0x3D, `IK` 0x3E, `XP` 0x3F, `SS` 0x40, `SSH` 0x41, `AT` 0x42, `ATH` 0x43, `ATA` 0x44, `AU` 0x45, `AUX` 0x46, `AUC` 0x47, `JD` 0x48; 0x39 retired |
+| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38, `IDS` 0x3A, `PGEN` 0x3B, `OP` 0x3C, `OPR` 0x3D, `IK` 0x3E, `XP` 0x3F, `SS` 0x40, `SSH` 0x41, `AT` 0x42, `ATH` 0x43, `ATA` 0x44, `AU` 0x45, `AUX` 0x46, `AUC` 0x47, `JD` 0x48, `SF` 0x49; 0x39 retired |
 
 | Under | Sub-kind codes |
 | --- | --- |
@@ -1926,7 +2023,7 @@ are the prefix's. No separator byte is written.
 | `NS‖ns‖gc‖cursor` | walk: audit 0x01, block walk 0x02, index rebuild 0x03 |
 | `CLO` | `protocol.Kind`'s byte, one per protocol ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): NFSv3 0x01, which holds no client record, NFSv4 0x02, its minor versions one kind, NLM 0x03, SMB 0x04 |
 | `IDS` | kind: client 0x01, open 0x02, lock 0x03, uid 0x04, gid 0x05, RID 0x06, shard 0x07 |
-| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04, `oidc` 0x05; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03, default 0x04, its kind user 0x01 or group 0x02; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `XP` tag: idempotency 0x01, operation 0x02, session 0x03; `AUX` tag: actor 0x01, target 0x02, node 0x03; resource `target` (`OPR`, `AUX`): the resource kind as a string, then its ID as a byte string; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
+| enumerated components | `NX` kind: user 0x01, group 0x02, share 0x03; `PX` scheme: `uid` 0x01, `gid` 0x02, `sid` 0x03, `krb` 0x04, `oidc` 0x05; `NS‖ns‖key` kind: `chunk-id-key` 0x01, `chunking-key` 0x02, `export-key` 0x04, `data-key` 0x05 (0x03 unassigned); quota `target` tag: principal 0x01, project 0x02, share 0x03, default 0x04, its kind user 0x01 or group 0x02; forwarding `ref` tag: stateid 0x01, `OpenID` 0x02; `XP` tag: idempotency 0x01, operation 0x02, session 0x03, source's sign-in failures 0x04, API token 0x05, pair's sign-in failures 0x06; `SF` tag: account 0x01, source 0x02, account and source 0x03; `AUX` tag: actor 0x01, target 0x02, node 0x03; resource `target` (`OPR`, `AUX`): the resource kind as a string, then its ID as a byte string; `CFG` scope tag: installation 0x01, node 0x02, namespace 0x03, remote store 0x04, share 0x05 |
 
 This encoding, both tables and every fold rule are part of the store format
 (§4.6): changing any of them is a format bump, and a code once assigned is never
