@@ -3584,13 +3584,13 @@ lookup and no allocation (§6.9). A request's in-flight count moves from its
 connection's label to its table's at `Route`. An NFS connection's
 `Stages.Protocol` is `nfs3`, as NFS's auxiliary services are, since a header
 that fails to decode names no version; an NFSv4 request's replay hit or
-`Unwrap` refusal counts under `nfs3` with it.
+`Unwrap` refusal counts under `nfs3` with it. `protocol` is one of `nfs3`,
+`nfs4`, `smb`, with NFS's auxiliary services under `nfs3`
+([RFC 25 §2.4](rfc-25-observability.md#2.4%20Labels)).
 
 > ponytail: one label per connection before `Route`. Read it from the decoded
 > header's version when an NFSv4 replay hit or `Unwrap` refusal must be told
-> from an NFSv3 one. `protocol` is one of `nfs3`, `nfs4`,
-`smb`, with NFS's auxiliary services under `nfs3`
-([RFC 25 §2.4](rfc-25-observability.md#2.4%20Labels)).
+> from an NFSv3 one.
 
 ### 10.2 Spans
 
