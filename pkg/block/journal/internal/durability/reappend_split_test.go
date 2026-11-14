@@ -114,7 +114,8 @@ func TestTwoFailedWindowsReappendedIntoOneNearFullSegmentEachLandWhole(t *testin
 
 	// Each publish below rolls past a sealed segment and takes a spare, four
 	// takes from a pool of two: the append waits the pool's settle so it
-	// never races the refill into the spare limit.
+	// never races the refill into the spare limit. The healthy publish needs
+	// no wait: it is the second take after the settle failSeal(f) waited for.
 	waitSpares := func() {
 		t.Helper()
 		if err := r.pool.WaitSpares(t.Context()); err != nil {

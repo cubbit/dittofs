@@ -69,9 +69,17 @@ func (cb *Callbacks) keep(c Callback) {
 // RecallGrant keeps the recall with the session it goes on: s, or with s
 // zero and openers given, the one picked, none leaving it unsent.
 func (cb *Callbacks) RecallGrant(_ context.Context, s vfs.SessionRef, openers []vfs.Principal, g vfs.CachingGrant, to vfs.GrantKind) (bool, error) {
+	_, sent := cb.recall(s, openers, g, to)
+	return sent, nil
+}
+
+// recall keeps a RecallGrant on the session it goes on, picked once, and
+// returns the callback kept and whether it was sent.
+func (cb *Callbacks) recall(s vfs.SessionRef, openers []vfs.Principal, g vfs.CachingGrant, to vfs.GrantKind) (Callback, bool) {
 	on, picks := cb.on(s, openers)
-	cb.keep(Callback{Method: "RecallGrant", Args: []any{s, openers, g, to}, Session: on})
-	return !picks || on != (vfs.SessionRef{}), nil
+	c := Callback{Method: "RecallGrant", Args: []any{s, openers, g, to}, Session: on}
+	cb.keep(c)
+	return c, !picks || on != (vfs.SessionRef{})
 }
 
 // on is the session a recall naming s and openers goes on: s, or with s
@@ -141,12 +149,20 @@ func (f *CallbackFaults) fail(ctx context.Context, c Callback) error {
 
 // RecallGrant answers unsent when the fault fails it.
 func (f *CallbackFaults) RecallGrant(ctx context.Context, s vfs.SessionRef, openers []vfs.Principal, g vfs.CachingGrant, to vfs.GrantKind) (bool, error) {
-	sent, err := f.Inner.RecallGrant(ctx, s, openers, g, to)
-	on := s
+	// A *Callbacks picks the session once, so Fail sees the one it kept even
+	// when a sign-in lands during the call.
+	var (
+		c    Callback
+		sent bool
+		err  error
+	)
 	if cb, ok := f.Inner.(*Callbacks); ok {
-		on, _ = cb.on(s, openers)
+		c, sent = cb.recall(s, openers, g, to)
+	} else {
+		sent, err = f.Inner.RecallGrant(ctx, s, openers, g, to)
+		c = Callback{Method: "RecallGrant", Args: []any{s, openers, g, to}, Session: s}
 	}
-	if ferr := f.fail(ctx, Callback{Method: "RecallGrant", Args: []any{s, openers, g, to}, Session: on}); ferr != nil {
+	if ferr := f.fail(ctx, c); ferr != nil {
 		return false, ferr
 	}
 	return sent, err
