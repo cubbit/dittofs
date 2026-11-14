@@ -1171,6 +1171,17 @@ func (f *Fixture) FailFile(id entity.FileID) <-chan struct{} {
 // Heal lifts every fault: the store serves every call from now on.
 func (f *Fixture) Heal() { f.faults.SetFault(nil) }
 
+// FaultStore makes the store consult s before every call, as kvtest.FaultKV
+// applies it, replacing any fault set before, HoldNextWrite's, HoldWrites'
+// and FailFile's included; Heal lifts it. Crash leaves it in place, so one
+// schedule spans a run's crashes. The test's cleanup heals it before the
+// fixture's close, whose last group commit would otherwise meet it.
+func (f *Fixture) FaultStore(s sim.Fault) {
+	f.t.Helper()
+	f.t.Cleanup(f.Heal)
+	f.faults.SetFault(s)
+}
+
 // fault replaces the store's faults with rules, delays on the fixture's
 // clock, and answers a channel closed once the store first runs a write
 // transaction under them. The test's cleanup heals them before the fixture's

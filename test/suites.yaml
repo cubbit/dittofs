@@ -14,7 +14,7 @@ groups:              # `dt run GROUP` runs every suite in it
   conformance: [pjdfstest, pynfs, wpts, smbtorture]
   perf: [fio-verify, bench-smoke, perf-night]
   journal: [journal-conformance]
-  engine: [engine-conformance]
+  engine: [engine-conformance, engine-soak]
   adapters: [adapter-conformance]
 
 suites:
@@ -30,7 +30,7 @@ suites:
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
       # going red. None of these tags excludes another.
-      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,engine_conformance,adapter_conformance ./...
+      - go vet -tags=e2e,integration,ad_dc,portmap_system,stress,journal_conformance,journal_plant_split,engine_conformance,engine_soak,adapter_conformance ./...
       # The adapters run on every platform a node does, and their socket code differs by
       # platform, so they are vetted for Windows and macOS beside the host's own.
       - { sh: 'for os in windows darwin; do GOOS=$os go vet ./pkg/adapter/... ./pkg/resources/... ./internal/adapter/... || exit 1; done' }
@@ -128,6 +128,15 @@ suites:
     format: go-json
     cmd: go test -race -tags=engine_conformance -timeout=30m ./pkg/block/engine/conformance/... ./internal/vfs/integration/...
     known: test/engine/known.yaml
+    tier: pr
+  # The crash-and-restart soak over the composed engine, a short fixed list of seeds. Its run
+  # over the real journal is red until the journal can sync and recover. No -race: the race
+  # detector changes the timing a soak explores. engine-conformance covers the engine's races, but
+  # no suite runs the soak's own fault log under -race.
+  engine-soak:
+    format: go-json
+    cmd: go test -tags=engine_conformance,engine_soak -run ^TestSoak -timeout=20m ./internal/vfs/integration/...
+    known: test/engine/soak-known.yaml
     tier: pr
   # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
   # epic that fills its stub, and each failure is a known one.
