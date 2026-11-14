@@ -137,7 +137,8 @@ func Bind[Req, Rep any](
 }
 
 // NewOpTable builds a table and checks it: codes unique, ranges well formed,
-// and no ErrorRow.Hold unless holds.
+// no ErrorRow.Hold unless holds, and, where it holds, a row mapping
+// ErrCancelled for every operation and version.
 //
 // decision: a table that fails a check panics, naming the row, as
 // NewErrorTable does: a table is program text and NewOpTable returns no
@@ -159,6 +160,12 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 				panic(fmt.Sprintf("core: op table: error row %s holds, in a table that does not", describe(r)))
 			}
 		}
+	}
+	// A cancel ends a hold or a park of any operation in any version, and is
+	// answered (§6.5), so a table that holds maps ErrCancelled with a row
+	// naming neither that replies at once with a status other than the fault.
+	if holds && !errs.mapsEverywhere(ErrCancelled) {
+		panic("core: op table: it holds, and no row of its error table answers ErrCancelled for every operation and version")
 	}
 	return t
 }

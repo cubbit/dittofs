@@ -30,7 +30,8 @@ const (
 	StatusNotLast                    // core.ErrNotLast
 	StatusTooManyPending             // core.ErrTooManyPending
 	StatusDelay                      // vfs.ErrDelay: at once in version 1, once its hold passes in version 2
-	StatusCancelled                  // a parked or held request its client cancelled
+	StatusCancelled                  // core.ErrCancelled: a parked or held request its client cancelled
+	StatusDecode                     // core.ErrDecode: a record or arguments it cannot decode
 )
 
 // HoldFor is how long version 2 holds a request the service answered
@@ -260,7 +261,8 @@ func errorRows(holds bool) []core.ErrorRow {
 		{Err: core.ErrNotLast, Status: StatusNotLast},
 		{Err: core.ErrTooManyPending, Status: StatusTooManyPending},
 		delay,
-		{Err: context.Canceled, Status: StatusCancelled},
+		{Err: core.ErrDecode, Status: StatusDecode},
+		{Err: core.ErrCancelled, Status: StatusCancelled},
 		{Err: core.ErrDraining, NoReply: true},
 		{Err: core.ErrMoved, NoReply: true},
 	}
