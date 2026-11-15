@@ -319,13 +319,13 @@ its entries come and go; the skipped suites come back through the ledger); a rea
 | E2 ⛔ | Test foundations | `testproto` and its stateful half, the import test, the leak checks, the red suite | 4 | 10.5 | team | E3–E6 |
 | E3 | Budgets and buffers | `pkg/resources`: `Budget`, `Reservation`, `Buf`, `BufPool` | 3 | 5.5 | A | E4, E5 (partly) |
 | E4 | Connections and lifecycle | `Server` states, accept, limits, `Conn` reader and writer, drain, `Reconfigure`, health, TCP; the sidecar runner | 9 | 20 | B | E5 (partly), E6 via 🔀 S3 |
-| E5 | Dispatch | pipeline, tables, compound runner and chains, held and parked requests, middleware, error tables, request context, §10, benchmark | 17 | 31.25 | A | E6 via 🔀 S3 |
+| E5 | Dispatch | pipeline, tables, compound runner and chains, held and parked requests, middleware, error tables, request context, §10, benchmark | 17 | 31 | A | E6 via 🔀 S3 |
 | E6 | Protocol scaffolds | `wire/`, `protocol/` and `New` for SMB and NFS; not supported end to end | 4 | 11.5 | C | E8 |
 | E7 🔀 | Integration with the node | `internal/node` builds, starts, reconciles and stops adapters and sidecars | — | planned after S4 | team | E8 (partly) |
 | E8 | E2E green | the allocation cell checked, the ledger handed over | 2 | 1.5 | team | — |
-| | **Total** | | **48** | **95.75** | | |
+| | **Total** | | **48** | **95.5** | | |
 
-**Plan estimate: 48 subtasks, 95.75 man-days, not counting epic 7.**
+**Plan estimate: 48 subtasks, 95.5 man-days, not counting epic 7.**
 
 The total leaves out the epic 4 seam work of §5, which epic 4's breakdown prices.
 
@@ -717,7 +717,7 @@ rows, A10, A11, A14, A19, A20.
 
 ### Epic 5 — Dispatch
 
-**Epic 5 estimate: 17 subtasks, 31.25 man-days.**
+**Epic 5 estimate: 17 subtasks, 31 man-days.**
 
 The request path in `core`: §4.1's stages in order with their defaults and refusals, the drain
 filter, operation tables and their precondition columns, the reply reservation, the compound
@@ -753,8 +753,8 @@ is read from `memory.New`'s record of mutating calls, §7.2), §4.5, §4.6, §4.
   internals alone.
 - T5.5 Held requests (moving a held request's receive charge to the hold pool, RFC 24 §4.3,
   while its decoded arguments stay in the retained receive `Buf`, needs a method added to `*Buf`,
-  `Recharge(to *Budget) error`: additive after S1, brought by this subtask with an RFC 24
-  amendment): interim timer and `HoldCodec.Interim` (`after` 0 on every hold), the final reply under
+  `Recharge(to *Budget) error`: additive after S1, brought by this subtask; RFC 24 §4.3
+  states it): interim timer and `HoldCodec.Interim` (`after` 0 on every hold), the final reply under
   `HoldCodec.Final`, re-drive from `Resolve` with a fresh attempt deadline inside the hold bound,
   `vfs.WithHold` added to `pkg/vfs` (RFC 17 §5.9) and passed on every call, asserted on what reaches the service; the test at its reader, the in-memory service's clone wait
   (RFC 17's V30 and V29's clone case, RFC 17 plan piece 13's), is a ledger row (§6.2),
