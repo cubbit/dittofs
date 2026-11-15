@@ -495,13 +495,17 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
     of the members before it are joined and wrapped once (R43) and go out first; its refusal
     goes out after them in a record of its own, with the replies of the related members after
     it, each answered its status with no call (R42); the next unrelated member starts a new
-    record, joined and wrapped once with those after it, and the chain runs on. An `Unwrap`
+    record, joined and wrapped once with those after it, and the chain runs on when the
+    refused header's `next` is a valid step; a bad one ends the chain, and nothing past it is
+    read (R93; the architect, on #4184). An `Unwrap`
     refusal's record is wrapped once under its own header as RFC 20 §5.5 says; the record of
     a header that failed `Decode` is not passed to `Wrap`, so the carve-out holds per record
     (the architect, on #4184). No inner header of an encrypted SMB record fails `Decode`
-    with an answer: SMB checks them at unwrap, where the transform has proved them (RFC 20
-    §5.5), and `testproto` has no such transform.
-    Every member is answered, so its credits are granted and no
+    with an answer: in a record `Unwrap` has proved whole, a header that can address a reply
+    decodes with no error, and `Unwrap` refuses it with `ErrDecode`, so its record is wrapped
+    (RFC 20 §4.7's `Decode`, §5.5). `testproto` has no record-wide transform, so T5.4 stands
+    for SMB's check with a `Security` declared in the test.
+    Every member the walk reaches is answered, so its credits are granted and no
     message ID waits out the client's timeout (RFC 22 §4.1). MS-SMB2 3.3.5.2.7.1 has each
     unrelated member handled on its own and lets their replies go out separately;
     3.3.5.2.7.2 compounds a related chain's replies as a SHOULD. A single `Wrap` of a joined
@@ -1428,6 +1432,10 @@ registry. Nothing else is exported.
     records, counted `decode`: the first holds the first member's reply alone, sealed under A,
     its checksum verifying, and the second the refusal, its checksum 0 and its arguments
     clear.
+  - A chain of a member under session A and a second under A that a `Security` declared in
+    the test refuses with `ErrDecode`, after `testproto`'s own check, sends two records,
+    counted `unwrap`: the first the first member's reply, and the second the refusal,
+    answered `ErrDecode`'s status, sealed under A, its checksum verifying.
   - A chain's replies arrive as one record whose checksum verifies.
   - A chain of 65 `Echo` on `Bare` is answered whole.
   - On a server whose reply budget the test sets to the charge of three `Echo` replies (each
@@ -1443,7 +1451,10 @@ registry. Nothing else is exported.
     member; a member `Unwrap` refuses is counted `unwrap`.
   - A chain member whose `Next` points at its own header, behind it or past the record, and
     a compound member whose code takes no byte or whose arguments claim more bytes than are
-    left, are answered `ErrDecode`'s status, and nothing past them is read.
+    left, are answered `ErrDecode`'s status, and nothing past them is read. A chain of three
+    whose second member's `next` points at its own header sends two records, counted
+    `decode`: the first member's reply, then the second's refusal; the third member's header
+    is never read.
   - While draining, a chain whose second of four members is refused answers the first, sends
     one interim that grants the credits of the last three, and the client's balance says so.
   - Two chains on one connection, the first's `Create` held in the service, are answered
@@ -1488,7 +1499,11 @@ registry. Nothing else is exported.
   (catch `Unwrap` handed no `prev`, which then closes the connection, and a related member
   run after the refusal). The bad `next` after a valid member, read from the records' bytes
   (catches the refusal of an undecoded header joined into the first record, where the one
-  `Wrap` seals it under the session it only names). The joined record (catches `Wrap` per
+  `Wrap` seals it under the session it only names). The member the test's `Security`
+  refuses with `ErrDecode`, wrapping `testproto`'s and standing for SMB's check of an
+  encrypted record's inner headers, not a double (catches the carve-out keyed on `ErrDecode`
+  rather than on the stage that refused, which sends a refusal of a header `Unwrap` proved
+  unsealed, and counts it `decode`). The joined record (catches `Wrap` per
   member, which breaks the
   record's checksum). The 65-member chain on `Bare`, in a `synctest` bubble (catches admissions
   released at the join, which leaves the 65th waiting on its own chain until the bubble
@@ -1502,7 +1517,11 @@ registry. Nothing else is exported.
   counted, or counted under another reason). The walk's bad steps, through a header codec and a members table declared in the
   test that take each `Next` and each count as the bytes give them, inputs that stand for a lax
   protocol and not doubles (catch a `Next` that loops on its own header, appending replies for
-  ever, and a slice past the record, which panics outside the recovery middleware).
+  ever, and a slice past the record, which panics outside the recovery middleware). The
+  chain of three whose second `next` points at its own header, through `testproto`'s
+  `Decode` wrapped by a pass-through that records the offsets it reads (catches a runner
+  that runs on past a refused member whose `next` is a bad step, which loops on that header
+  or reads the third).
   `FuzzRecordWalk`, over arbitrary records through the same codec and table: no panic, the walk
   ends, every offset it reads lies inside the record and past the one before, and a step that
   does not is `ErrDecode` (catches any bound R93 leaves out). The balance after a refused
@@ -1940,7 +1959,9 @@ A suggestion only: one pull request per subtask works as well.
   RFC 21 §11.5's rows for it; how a refusal at unwrap is signed and sealed, the two facts
   `Unwrap`'s header carries, and that the refusal of a header that failed decode is not
   passed to `Wrap`, alone or in a chain, but an encrypted SMB record's inner headers are
-  checked at unwrap, stated once in §5.5, which §4.1 and §4.7 point at (D6); and
+  checked at unwrap, `Decode` leaving a malformed one to `Unwrap`'s `ErrDecode`, stated once
+  in §5.5, which §4.1, §4.7 and RFC 22 §4.1 point at (D6); a chain ending at a refused
+  member whose `next` is a bad step (§4.7; D6, R93); and
   `NewOpTable`'s refusal of a holding table with a row for `ErrCancelled`, or for
   `&vfs.Delay{Cause: vfs.DelayResources}` whatever its `Ops` or `Versions`, with a `Hold`
   (§4.7, §6.3; D17).
