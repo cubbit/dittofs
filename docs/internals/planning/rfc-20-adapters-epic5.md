@@ -79,11 +79,17 @@ Eleven changes to `testproto`, each made by the subtask whose tests need it:
    tables, with the `decision:` on `errorRows` saying so (T5.2a, D17).
 9. `Unwrap` returning its header with its error on a bad checksum, so the refusal is answered
    and the connection kept (a related member with none before it still returns none, which
-   closes the connection), with RFC 20 §5.5's verdict in that header's session: the session
-   it resolved, so the reply is sealed under that session as any reply is, or 0 for a message
-   flagged clear (16, which `Msg.Clear` sets) under a session, which it refuses as a bad
-   checksum, so its refusal goes out unsealed: `testproto`'s stand-in for an SMB2 request
-   neither signed nor encrypted where signing is required (T5.1a, D6).
+   closes the connection), with RFC 20 §5.5's verdict in that header: its session, the key to
+   sign the answer under, or 0 for none, and a flag (32) for an answer signed but not sealed,
+   which `Encode` copies to the reply and under which `Wrap` checksums the reply under its
+   session and leaves its arguments clear. A bad checksum keeps the session it resolved and
+   sets the flag, since the check that failed is the seal's: `testproto`'s stand-in for
+   RPCSEC_GSS's failed privacy check, answered `GARBAGE_ARGS` signed under its context and not
+   sealed. A message flagged clear (16, which `Msg.Clear` sets) under a session, which it
+   refuses as a bad checksum, gets 0, so its refusal goes out neither signed nor sealed: the
+   stand-in for an SMB2 request neither signed nor encrypted where signing is required. The
+   client checks a reply flagged 32 by its checksum alone, and `Reply` carries the session and
+   the flag it came under (T5.1a, D6).
 10. A router built by `NewConn(nil)`, as `testproto`'s own tests build it, negotiating up to
     version 2 without calling `Conn.Settings`, whose body is E4's: the seam has no `Conn`
     (T5.1a, D2).
@@ -471,14 +477,20 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
     second amendment of §4.1, whose refusal table already says which `Unwrap` refusals close.
   - **`Route` is never called after an earlier stage refused**, so no unverified header
     reaches it.
-  - **An `Unwrap` refusal, and the refusal of a header that failed `Decode`, is passed to
-    `Wrap` under the header returned with it, and RFC 20 §5.5 says whether it is signed.**
-    The rule is stated there once, `Unwrap` returning its verdict in that header, and RFC 20
-    §4.1 and §4.7 point at it (the architect, on #4184). RFC 20 §4.7 gives `Wrap` "sign or
-    encrypt, in place" under `h`, and §5.5 keys each transform by the session or context;
-    neither said what `h` is for a refusal, so this is an addition to both, listed in §9. A
-    refusal after `Unwrap` succeeded (`Admit`, `Lookup`, `Route`) is wrapped under the header
-    `Unwrap` returned.
+  - **An `Unwrap` refusal is passed to `Wrap` under the header `Unwrap` returned with it;
+    the refusal of a header that failed `Decode` is not passed to `Wrap`.** Nothing proved
+    the session a header that failed `Decode` names, so signing its refusal under that
+    session would hand a peer a valid checksum under a key it does not hold (the architect,
+    on #4184). The header `Unwrap` returns carries RFC 20 §5.5's verdict, two facts: the key
+    to sign the answer under, or none, and whether the answer may be sealed, since a failed
+    privacy check forbids sealing while its context's key still signs the answer
+    (RPCSEC_GSS's `GARBAGE_ARGS`). Both are the protocol's, in its own header, which its own
+    `Wrap` reads: RFC 20 §4.7's `Header` names no session or key, so `core` gains no type for
+    them. §5.5 states the rule once, and RFC 20 §4.1 and §4.7 point at it. RFC 20 §4.7 gives
+    `Wrap` "sign or encrypt, in place" under `h`, and §5.5 keys each transform by the session
+    or context; neither said what `h` is for a refusal, so this is an addition to both, listed
+    in §9. A refusal after `Unwrap` succeeded (`Admit`, `Lookup`, `Route`) is wrapped under
+    the header `Unwrap` returned.
   - **In a chain, a member that fails `Unwrap` splits its replies.** The replies of the
     members before it are joined and wrapped once (R43) and go out first; its refusal goes out
     after them in a record of its own, wrapped once under its own header as RFC 20 §5.5 says, with the
@@ -494,10 +506,11 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
 
   RFC 20 §4.7 (the `Stages` struct, the comments on `Decode`, `Unwrap`, `Route` and `Wrap`,
   the pipeline sketch, and the chain's split), §4.1 (its refusal table, and the stages' own
-  table) and §5.5 (the one statement of when a refusal at `Decode` or `Unwrap` is signed,
-  and `Unwrap`'s nil header closing the connection) say so, as this pull request amends them, and `core.golden` takes `Stages.Errors` with
-  T5.1a. `decision:` in `serve`,
-  and in the runner for the chain. No prior art sought: the gap is in this surface's own
+  table) and §5.5 (the one statement of how a refusal at `Unwrap` is signed and sealed and
+  that the refusal of a header that failed `Decode` is not passed to `Wrap`, and `Unwrap`'s
+  nil header closing the connection) say so, as this pull request amends them, and
+  `core.golden` takes `Stages.Errors` with T5.1a. `decision:` in `serve`, and in the runner
+  for the chain. No prior art sought: the gap is in this surface's own
   order of stages.
 - **D7, a decode error is wrapped in `ErrDecode`, and every table must map it.** RFC 20 §4.1
   answers it "the protocol's garbage-args or invalid-parameter answer", and a row nothing
@@ -691,14 +704,19 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   (RFC 20 §6.3): a typed row for it with no `Hold` wins over a holding `ErrDelay` row (R26), so
   neither this refusal, nor R24's, nor `Park`'s (R70) starts a hold, and `testproto` gains
   that row (§1.1's change 8). **`NewOpTable` refuses a table that holds whose error table has no
-  such row naming neither `Ops` nor `Versions`, or has any such row with a `Hold`** (D3): a row
-  a protocol can forget, as D7 says of `ErrDecode`, and without it the hold pool's refusal
-  would start a hold while the totality test, which sees the error mapped, passes; a row with a
-  `Hold` naming an operation or versions would win over it there (R26) and start one. A hold or a park ended by its client's cancel is
+  such row naming neither `Ops` nor `Versions`, or has a row for
+  `&vfs.Delay{Cause: vfs.DelayResources}`, whatever its `Ops` or `Versions`, with a
+  `Hold`** (D3): a row a protocol can forget, as D7 says of `ErrDecode`, and without it the
+  hold pool's refusal would start a hold while the totality test, which sees the error
+  mapped, passes; a row with a `Hold` naming an operation or versions would win over it there
+  (R26) and start one. A hold or a park ended by its client's cancel is
   answered **`ErrCancelled`, a new member of `Errors()`**, which RFC 20 §6.5's cancelled
   status maps from; **`NewOpTable` refuses a table that holds whose error table has no row
-  for it naming neither `Ops` nor `Versions`** (D3), for the reasons D7 gives: a cancel ends a
-  hold of any operation and version. It lives in `core`'s `errors.go`, with `core`'s other
+  for it naming neither `Ops` nor `Versions`, or has a row for it with a `Hold`** (D3), for the
+  reasons D7 gives: a cancel ends a hold of any operation and version, and the request whose
+  hold it ended is answered at once, where a row with a `Hold` would hold it again until its
+  bound, as RFC 20 §4.6 holds a request for as long as its row's `Hold` says (the architect,
+  on #4184). It lives in `core`'s `errors.go`, with `core`'s other
   refusals; `ErrParked` stays in `hold.go`. RFC 20 §4.7 (`Errors()`, `NewOpTable`'s two checks,
   `Park`), §4.6 and §6.3 say so, as this pull request amends them, and `core.golden` takes
   `ErrCancelled` with T5.2a. `decision:` at each. No prior art sought: both are choices among
@@ -904,9 +922,11 @@ registry. Nothing else is exported.
 - **Deliverables:** in `dispatch.go`, `NewOpTable`'s body: the map built, and a duplicate
   code, a range whose `First` is past its `Last`, and a row of `errs` with a `Hold` in a
   table that does not hold, each a panic naming the row (D3); a table that holds whose
-  `errs` has no row for `ErrCancelled` naming neither `Ops` nor `Versions` refused the same
-  way, and so is one with no typed row for `&vfs.Delay{Cause: vfs.DelayResources}` with no
-  `Hold` naming neither `Ops` nor `Versions`, or with any such row that has a `Hold` (D17). `testproto`'s typed `DelayResources` row
+  `errs` has no row for `ErrCancelled` naming neither `Ops` nor `Versions`, or has a row for
+  it with a `Hold`, refused the same way, and so is one with no typed row for
+  `&vfs.Delay{Cause: vfs.DelayResources}` with no `Hold` naming neither `Ops` nor `Versions`,
+  or with a row for `&vfs.Delay{Cause: vfs.DelayResources}`, whatever its `Ops` or
+  `Versions`, with a `Hold` (D17). `testproto`'s typed `DelayResources` row
   of §1.1's change 8, so
   its holding table builds, with `TestErrorRows` rewritten for it: each error checked against
   the first row that matches it in `NewErrorTable`'s order, the typed row with no `Hold` in
@@ -920,22 +940,26 @@ registry. Nothing else is exported.
 - **Landed in part:** #4194 gave `NewOpTable` its body and its first three checks, and moved
   the end-to-end entry's message in `test/adapter/known.yaml` to `core: new server`, where the
   specification now stops, with `TestNewOpTableChecksItsRows` and `testproto`'s
-  `TestTablesBuild`. `ErrCancelled`, its check, its row and its golden line, and the
+  `TestTablesBuild`. `ErrCancelled`, its two checks, its row and its golden line, and the
   `DelayResources` check and row, are what this subtask still adds.
 - **Consumers:** T5.9, T5.4, T5.1a; T5.5b and T5.11, which answer `ErrCancelled`;
   `testproto`, whose tables build from here on.
 - **Acceptance criteria:** each of the five faults panics with the row's name, a holding
-  table whose only `ErrCancelled` row names an operation or versions included, and one whose
-  only `DelayResources` row has a `Hold`, names an operation or names a range of versions,
-  or that has the row naming neither beside an operation's own `DelayResources` row with a
-  `Hold`;
+  table whose only `ErrCancelled` row names an operation or versions, or has a `Hold`, or that
+  has the row naming neither beside an operation's own `ErrCancelled` row with a `Hold`
+  included, and one whose only `DelayResources` row has a `Hold`, names an operation or names
+  a range of versions, or that has the row naming neither beside an operation's own
+  `DelayResources` row with a `Hold`;
   `testproto`'s
   two tables and its members' table build; a `Hold` row in a holding table is accepted;
   `ErrCancelled` is in `Errors()`.
 - **Tests:** in `dispatch_test.go`. One case per fault (catch a check dropped: two rows under
   one code would otherwise shadow each other silently), and the `ErrCancelled` rows that name
   an operation or a range of versions (catch a check that any row satisfies, which leaves a
-  cancel of another operation or version to the fault status). The holding table with no
+  cancel of another operation or version to the fault status). The holding tables whose only
+  `ErrCancelled` row has a `Hold`, and whose row naming neither sits beside an operation's own
+  `ErrCancelled` row with a `Hold` (catch a cancelled request held again until its bound, the
+  narrower row outranking the other in the second, R26). The holding table with no
   typed `DelayResources` row, and the ones whose only such row has a `Hold`, names an
   operation or names a range of versions (catch a table that lets the hold pool's refusal
   start a hold, for any operation or version). The holding table with that row and an
@@ -1152,9 +1176,10 @@ registry. Nothing else is exported.
   recorder that passes it, which E4's tests reach through `hooks_test.go` to run the suite on
   E4's writer. Then, in `pipeline.go`, `link`, `shared`, `pipeline` and D1's functions:
   `withDefaults` (R6, D6, D25), `serve` as D8 splits it, one request from `Route` to `out` in
-  RFC 20 §4.7's order, D6's paths (an error before a table, a refusal at `Decode` or `Unwrap` wrapped under the
-  header returned with it as RFC 20 §5.5 says, `Unwrap`'s
-  nil header closing the connection), decode errors wrapped in `ErrDecode` (D7), a table's
+  RFC 20 §4.7's order, D6's paths (an error before a table, an `Unwrap` refusal wrapped under
+  the header it returned and that of a header that failed `Decode` not passed to `Wrap`, as
+  RFC 20 §5.5 says, `Unwrap`'s nil header closing the connection), decode errors wrapped in
+  `ErrDecode` (D7), a table's
   series resolved at its first `Route` and an empty `Protocol` closing the connection (D18),
   the role asked only while draining or expired, the drain filter for a request outside a
   compound with D23's `drainErr`, `mapped`'s status sent (D21), the `NoReply` branch with its
@@ -1175,14 +1200,15 @@ registry. Nothing else is exported.
   - A message with a bad checksum, one that overdraws its credits and a version the router
     refuses are each answered a status on their own message ID, the connection kept. A record
     too short for a header closes the connection.
-  - Each refusal at `Decode` or `Unwrap` goes out as RFC 20 §5.5's verdict says, one case per
-    branch: a bad checksum under session A is answered sealed under A, the key held; a message
-    sent clear under A is answered unsealed, the connection kept, since the answer's form
-    carries no seal (`testproto`'s stand-in for an SMB2 request neither signed nor encrypted
-    where signing is required; RPCSEC_GSS's denied reply to a failed verifier, and a refusal
-    under a context whose privacy check failed, reach the pipeline as the same verdict); a
-    header whose `next` is bad under A is answered sealed under A; and one under no session is
-    answered unsealed.
+  - Each refusal goes out as RFC 20 §5.5 says, one case per distinct verdict: a bad checksum
+    under session A is answered signed under A and not sealed, since the check that failed is
+    the seal's (`testproto`'s stand-in for RPCSEC_GSS's failed privacy check); a message sent
+    clear under A is answered neither signed nor sealed, the connection kept (the stand-in for
+    an SMB2 request neither signed nor encrypted where signing is required, and for RPCSEC_GSS's
+    denied reply to a failed verifier); a message under A that overdraws its credits, refused
+    after `Unwrap` succeeded, is answered signed and sealed under A, as any reply is; and a
+    header whose `next` is bad under A is answered with its checksum 0 and its arguments clear,
+    since the refusal of a header that failed `Decode` is not passed to `Wrap`.
   - A message whose `Unwrap` returns no header with its error closes the connection with that
     error, and nothing reaches `out`.
   - Stages without `Errors`, and stages without `Protocol`, are refused by `withDefaults`, with
@@ -1212,14 +1238,14 @@ registry. Nothing else is exported.
   (catches two stages swapped). The two decode errors (catch a garbage request answered as a
   fault, the unmapped counter raised by a client, and a header with its error dropped
   unanswered). The three other refusals and the short record (catch a refusal that closes, and a record
-  with no header answered). The four verdicts, each read on the reply's session and opened by
-  the client (catch a refusal left unsealed though the server holds the key, and a bad
-  `next`'s reply never passed to `Wrap`, both of which the client refuses; a refusal sealed by
-  the session its header names against the verdict `Unwrap` returned; and one under no session
-  sealed under the session the connection used before it). `testproto`'s
-  `TestUnwrapRefusesAChangedByte` also reads the header returned with the refusal, and the
-  session 0 in the one returned for a message sent clear (catches a bad checksum that closes
-  the connection, as D6's nil header does, and a verdict lost). `Unwrap`'s nil header, through a protocol declared in the test that returns
+  with no header answered). The four cases, each read on the reply's session, flag and checksum
+  (catch a refusal left unsigned though the server holds the key; a bad checksum's refusal
+  sealed, or a clear message's signed, against the verdict `Unwrap` returned; a refusal after
+  `Unwrap` left unsealed; and a bad `next`'s reply passed to `Wrap`, which signs it under a
+  session nothing proved). `testproto`'s `TestUnwrapRefusesAChangedByte` also reads the header
+  returned with the refusal, its session and its flag 32, and the session 0 in the one
+  returned for a message sent clear (catches a bad checksum that closes the connection, as
+  D6's nil header does, and a verdict lost). `Unwrap`'s nil header, through a protocol declared in the test that returns
   `testproto`'s stages with an `Unwrap` that answers none, an input and not a double (catches
   a refusal answered that the protocol must not answer, as SMB's failed decryption, and a
   connection kept after it). The stages without `Errors`, through that test protocol (catches
@@ -1386,10 +1412,10 @@ registry. Nothing else is exported.
     status and makes none.
   - A chain of a member under session A, an unrelated member naming session B whose checksum
     fails, and an unrelated third member under A sends three records: the first's reply
-    sealed under A, the second's refusal sealed under B, and the third's reply sealed under A; the
-    client's balance then holds every member's credits. A related member whose checksum fails
-    is refused the same way, and a related member after it is answered that status, with no
-    call, in the refusal's record.
+    sealed under A, the second's refusal signed under B and not sealed (§1.1's change 9), and
+    the third's reply sealed under A; the client's balance then holds every member's credits.
+    A related member whose checksum fails is refused the same way, and a related member after
+    it is answered that status, with no call, in the refusal's record.
   - A chain's replies arrive as one record whose checksum verifies.
   - A chain of 65 `Echo` on `Bare` is answered whole.
   - On a server whose reply budget the test sets to the charge of three `Echo` replies (each
@@ -1445,7 +1471,7 @@ registry. Nothing else is exported.
   (catches a related member routed without `prev`, one that calls after a failure, and one
   answered by its own row in place of the failed member's status). The member naming session
   B, the client's balance read after the third record (catches a refusal joined into the
-  first member's record, one left unsealed, a later member left unanswered, and its
+  first member's record, one left unsigned, a later member left unanswered, and its
   credits not granted); the related member's bad checksum and the related member after it
   (catch `Unwrap` handed no `prev`, which then closes the connection, and a related member
   run after the refusal). The joined record (catches `Wrap` per member, which breaks the
@@ -1895,9 +1921,12 @@ A suggestion only: one pull request per subtask works as well.
   wait, `Park` keeping a small reservation), §3.5's small-request row and §4.2 (D8, D9,
   D11). RFC 20 §4.1's admit row, which a protocol's `Flow` may refuse (D6); `NewOpTable`'s
   demand for an `ErrReplyTooBig` row in a table with a compound row (§4.7, §4.3; D11), with
-  RFC 21 §11.5's rows for it; when a refusal at decode or unwrap is signed, stated once in
-  §5.5, which §4.1 and §4.7 point at (D6); and `NewOpTable`'s refusal of a holding table with
-  any `DelayResources` row that has a `Hold` (§4.7, §6.3; D17).
+  RFC 21 §11.5's rows for it; how a refusal at unwrap is signed and sealed, the two facts
+  `Unwrap`'s header carries, and that the refusal of a header that failed decode is not
+  passed to `Wrap`, stated once in §5.5, which §4.1 and §4.7 point at (D6); and
+  `NewOpTable`'s refusal of a holding table with a row for `ErrCancelled`, or for
+  `&vfs.Delay{Cause: vfs.DelayResources}` whatever its `Ops` or `Versions`, with a `Hold`
+  (§4.7, §6.3; D17).
 - **Rules the earlier revisions settled, also written into the RFCs in this pull request**,
   rather than with their subtasks' code: RFC 20 §4.7's `Stages.Errors`, `Route` returning
   its table with its error, `Decode` and `Unwrap` returning a header with the error they can
