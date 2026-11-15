@@ -128,7 +128,7 @@ func (cb *Callbacks) RecallAny(_ context.Context, keep int) error {
 // it as sent; Fail, when set, then answers in Inner's place, as a client that
 // got the callback and failed it, stalled until ctx ended, or whose answer
 // was lost. Fail sees a RecallGrant with the session it went on: the one
-// named, or with Inner a *Callbacks, the one Inner picks by the same rule.
+// named, or with Inner a *Callbacks, the one Inner picked and kept.
 // Refuse is LockWaitOver's answer that the client refused a grant. Both are
 // set before the path is registered.
 type CallbackFaults struct {

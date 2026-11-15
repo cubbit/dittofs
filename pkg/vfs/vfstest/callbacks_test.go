@@ -138,3 +138,46 @@ func TestCallbacksKeepsWhatWasDelivered(t *testing.T) {
 		t.Errorf("Delivered =\n%+v\nwant\n%+v", got, want)
 	}
 }
+
+// CallbackFaults hands Fail a recall's session as Inner kept it, even while
+// a sign-in changes which session a second pick would find.
+func TestCallbackFaultsFailSeesTheSessionInnerKept(t *testing.T) {
+	ctx := context.Background()
+	alice := entity.NewUser()
+	var inner vfstest.Callbacks
+	inner.SignIn(vfs.SessionRef{ID: 3}, alice)
+	other := 0
+	cb := &vfstest.CallbackFaults{
+		Inner: &inner,
+		Fail: func(_ context.Context, c vfstest.Callback) error {
+			if d := inner.Delivered(); d[len(d)-1].Session != c.Session {
+				other++
+			}
+			return nil
+		},
+	}
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				inner.SignIn(vfs.SessionRef{ID: 1}, alice)
+				inner.SignOff(vfs.SessionRef{ID: 1})
+			}
+		}
+	}()
+	const recalls = 4000
+	for range recalls {
+		if _, err := cb.RecallGrant(ctx, vfs.SessionRef{}, []vfs.Principal{alice}, vfs.CachingGrant{}, vfs.GrantNone); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	<-done
+	if other > 0 {
+		t.Errorf("Fail saw another session than the one Inner kept on %d of %d recalls", other, recalls)
+	}
+}
