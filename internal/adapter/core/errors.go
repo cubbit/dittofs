@@ -44,7 +44,10 @@ type ErrorRow struct {
 // NewErrorTable builds a table answering an error no row matches with fault,
 // the protocol's server-fault status. It refuses two rows equal in rank that
 // can match one error, operation and version, and a table with no row
-// answering ErrDecode for every operation and version.
+// answering ErrDecode for every operation and version (one naming neither Ops
+// nor Versions that replies at once with a status other than the fault), or
+// with a row for it, whatever its Ops or Versions, that holds, sends no reply
+// or answers the fault.
 //
 // decision: a table that fails its check panics, naming the rows, since a
 // table is program text and NewErrorTable returns no error; the first
@@ -68,21 +71,37 @@ func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable {
 	// row names, so only a row naming neither maps it everywhere. Without
 	// one a client's garbage reaches the fault status, which §10.1 alerts on
 	// as a bug; a row that holds, sends no reply or answers the fault status
-	// itself would hide it the same way.
+	// would hide it the same way, whatever it names, since Map takes a
+	// narrower row first.
+	if r, ok := t.badRow(ErrDecode); ok {
+		panic(fmt.Sprintf("core: error table: row %s matches ErrDecode but holds, sends no reply or answers the fault", describe(r)))
+	}
 	if !t.mapsEverywhere(ErrDecode) {
 		panic("core: error table: no row answers ErrDecode for every operation and version")
 	}
 	return t
 }
 
-// mapsEverywhere reports whether a row answers err for every operation and
-// version: one that err matches, naming neither Ops nor Versions, that
-// replies at once with a status other than the fault.
+// mapsEverywhere reports whether a row err matches names neither Ops nor
+// Versions, so some row maps err for every operation and version.
 func (t *ErrorTable) mapsEverywhere(err error) bool {
 	return slices.ContainsFunc(t.rows, func(r ErrorRow) bool {
-		return r.Ops == nil && r.Versions == nil && !r.NoReply && r.Hold == nil &&
-			r.Status != t.fault && errors.Is(err, r.Err)
+		return r.Ops == nil && r.Versions == nil && errors.Is(err, r.Err)
 	})
+}
+
+// badRow returns a row err matches that holds, sends no reply or answers the
+// fault: Map answers err by it for every operation and version it names, so
+// err is not answered at once there. err is the bare sentinel, which a
+// protocol's typed row never matches, so that row still wins for its own
+// value (§4.5).
+func (t *ErrorTable) badRow(err error) (ErrorRow, bool) {
+	for _, r := range t.rows {
+		if errors.Is(err, r.Err) && (r.NoReply || r.Hold != nil || r.Status == t.fault) {
+			return r, true
+		}
+	}
+	return ErrorRow{}, false
 }
 
 // Map is err's status for op at v; reply false is a NoReply row.

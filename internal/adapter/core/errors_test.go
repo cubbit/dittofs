@@ -198,33 +198,48 @@ func TestNewErrorTableRefusesRowsThatOverlap(t *testing.T) {
 	}
 }
 
+// protoDecode is a protocol's own decode error, matching ErrDecode as the
+// service's typed values match their sentinels.
+type protoDecode struct{}
+
+func (protoDecode) Error() string        { return "proto: cannot decode" }
+func (protoDecode) Is(target error) bool { return target == core.ErrDecode }
+
 // Every table answers ErrDecode for every operation and version: a table with
-// no row for it, or whose only row for it names operations or versions, holds,
-// sends no reply or answers the fault status, is refused at build, naming it,
-// since a header's decode error has no operation and must not pass for a
-// fault; and a wrapped ErrDecode maps to its row.
+// no row for it naming neither operations nor versions is refused at build,
+// and so is one with a row for it, whatever it names, that holds, sends no
+// reply or answers the fault status, the panic naming that row, since a
+// header's decode error has no operation and must not pass for a fault. A
+// protocol's typed row for its own value is not such a row, and a wrapped
+// ErrDecode maps to its row.
 func TestNewErrorTableDemandsAnErrDecodeRowForEveryOperation(t *testing.T) {
+	missing := "no row answers ErrDecode"
+	bad := func(ops string) string {
+		return fmt.Sprintf("row {%v%s} matches ErrDecode", core.ErrDecode, ops)
+	}
 	for _, c := range []struct {
 		name string
 		rows []core.ErrorRow
-		bad  bool
+		want string // a substring of the panic; "" for none
 	}{
-		{"no row", []core.ErrorRow{{Err: vfs.ErrNotFound, Status: neither}}, true},
-		{"a row naming an operation", []core.ErrorRow{{Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: garbage}}, true},
-		{"a row naming versions", []core.ErrorRow{{Err: core.ErrDecode, Versions: versions(1, 2), Status: garbage}}, true},
-		{"a row that sends no reply", []core.ErrorRow{{Err: core.ErrDecode, NoReply: true}}, true},
-		{"a row that holds", []core.ErrorRow{{Err: core.ErrDecode, Hold: func(error, time.Time) time.Time { return time.Time{} }, Status: garbage}}, true},
-		{"a row answering the fault status", []core.ErrorRow{{Err: core.ErrDecode, Status: fault}}, true},
-		{"a row naming neither", []core.ErrorRow{decodeRow}, false},
-		{"one naming neither beside one naming an operation", []core.ErrorRow{decodeRow, {Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: opOnly}}, false},
+		{"no row", []core.ErrorRow{{Err: vfs.ErrNotFound, Status: neither}}, missing},
+		{"a row naming an operation", []core.ErrorRow{{Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: garbage}}, missing},
+		{"a row naming versions", []core.ErrorRow{{Err: core.ErrDecode, Versions: versions(1, 2), Status: garbage}}, missing},
+		{"a row that sends no reply", []core.ErrorRow{{Err: core.ErrDecode, NoReply: true}}, bad("")},
+		{"a row that holds", []core.ErrorRow{{Err: core.ErrDecode, Hold: func(error, time.Time) time.Time { return time.Time{} }, Status: garbage}}, bad("")},
+		{"a row answering the fault status", []core.ErrorRow{{Err: core.ErrDecode, Status: fault}}, bad("")},
+		{"a row naming an operation that answers the fault status, beside one naming neither", []core.ErrorRow{decodeRow, {Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: fault}}, bad(" ops [1]")},
+		{"a row naming neither", []core.ErrorRow{decodeRow}, ""},
+		{"one naming neither beside one naming an operation", []core.ErrorRow{decodeRow, {Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: opOnly}}, ""},
+		{"a protocol's typed row that sends no reply, beside one naming neither", []core.ErrorRow{decodeRow, {Err: protoDecode{}, NoReply: true}}, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p := bareBuildPanic(c.rows...)
 			switch {
-			case !c.bad && p != nil:
+			case c.want == "" && p != nil:
 				t.Fatalf("NewErrorTable refused a table that maps ErrDecode everywhere: %v", p)
-			case c.bad && (p == nil || !strings.Contains(fmt.Sprint(p), "ErrDecode")):
-				t.Errorf("NewErrorTable panicked with %v, want a panic naming ErrDecode", p)
+			case c.want != "" && (p == nil || !strings.Contains(fmt.Sprint(p), c.want)):
+				t.Errorf("NewErrorTable panicked with %v, want a panic with %q", p, c.want)
 			}
 		})
 	}
