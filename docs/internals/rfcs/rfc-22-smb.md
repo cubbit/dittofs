@@ -2055,9 +2055,9 @@ cases 2 and 3's mapping is not applied: such a name, like any holding the
 private-use code points U+F001–U+F07F, is stored and shown with the code points
 themselves, as a Windows server stores them, so a Mac saving
 `Q3: draft.docx` creates `Q3` U+F022 ` draft.docx` and sees it again; no stored
-name there can hold a reserved character to map. A device name made over NFS is
-listed and openable over SMB, since refusing it there would hide a file
-another protocol made under a valid name.
+name there can hold a reserved character to map. On a `posix` share a device
+name made over NFS is listed and openable over SMB, since refusing it there
+would hide a file another protocol made under a valid name.
 
 Example, on a `posix` share: build01 creates `a:b` over NFS; alice-pc sees it with the colon shown
 as U+F022 and can open it. A name in a legacy 8-bit encoding is not shown on
