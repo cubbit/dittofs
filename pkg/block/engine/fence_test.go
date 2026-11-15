@@ -1123,7 +1123,7 @@ func TestSelfFenceOnARemovalWhosePruneFailsAtTheStore(t *testing.T) {
 	}
 
 	u.faults.SetFault(nil)
-	u.until(t, "the prune commits", func() bool { return !u.e.RemovalStalled(x) })
+	u.until(t, "the prune commits", func() bool { return u.e.Stats().RemovalRuns["done"] == 1 })
 	eventually(t, "the removal loop idle", func() bool { return u.e.LoopParked(u.share.ID) })
 	if n, failing := u.e.FenceBusy(); n != 0 || failing {
 		t.Errorf("once the removal finished: %d outstanding, failing %v; want 0 and false", n, failing)

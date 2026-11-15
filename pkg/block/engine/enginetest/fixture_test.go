@@ -46,13 +46,19 @@ func TestACrashedProcessChangesNothingInTheStore(t *testing.T) {
 // held one is still arming its hold does not close the channel: only the
 // held write does, once its hold is armed on the clock.
 func TestOnlyTheHeldWriteClosesHoldNextWritesChannel(t *testing.T) {
-	clock := &armGate{Waiter: sim.NewTestClock(time.Unix(0, 0)), arming: make(chan struct{}), release: make(chan struct{})}
+	tc := sim.NewTestClock(time.Unix(0, 0))
+	t.Cleanup(func() { tc.Advance(time.Second) }) // the held write returns
+	clock := &armGate{Waiter: tc, arming: make(chan struct{}), release: make(chan struct{})}
 	e, err := newEntered(clock, []sim.Rule{{Op: kvtest.OpUpdate, Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Second}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	go func() { _, _, _ = e.At(kvtest.OpUpdate, []byte("a")) }()
-	<-clock.arming
+	select {
+	case <-clock.arming:
+	case <-time.After(5 * time.Second):
+		t.Fatal("after 5 s: the held write's hold not armed")
+	}
 	if d, _, _ := e.At(kvtest.OpUpdate, []byte("b")); d != 0 {
 		t.Fatalf("the second write was held %v, want 0: the rule holds one", d)
 	}
