@@ -69,9 +69,10 @@ start and names the record that replaced it.
   their own host and the trust roots at their own CA, and receive the credential; TLS does not help
   when they supplied the roots. The row's text is the RFC 18 plan's pull request's, word for
   word, which carries this clause too, so the two merge cleanly in either order.
-- **A2. RFC 13 §7 names the provider's full surface**: beside the interface #4050 amends, `Seal`'s
-  `Meta`, `Versions` and `Prune`, so the surface the RFC 18 plan's O9 freezes lives in the RFC
-  rather than only here.
+- **A2. RFC 13 §7 names the provider's full surface**: below the interface #4050 amends, which
+  this plan leaves as #4050 writes it, one block declares every method with its kind, owner and
+  `Seal`'s `Meta`, with `Meta` and `Version`, so the surface the RFC 18 plan's O9 freezes lives in
+  the RFC rather than only here.
 
 The amendments this plan relies on land with the plans that need them:
 - the adapter `port` row and the `node-id` files, in #4050;
@@ -288,7 +289,7 @@ Out of scope, each named in O1:
 
 **Plan estimate: 35 subtasks, 75 man-days.**
 
-The skill's estimate for RFC 13's 1,199 lines is 3 middle epics (`round(1199 / 400)`), and this plan
+The skill's estimate for RFC 13's 1,213 lines is 3 middle epics (`round(1213 / 400)`), and this plan
 has 3.
 
 **Legend.** ⛔ is a blocker. "team" is an epic that belongs to no track. "Partly" means the dependent
@@ -674,11 +675,11 @@ func start(ctx context.Context, configFlag string) error {
 	// Node.Start writes a missing copy once New has opened the store, beside a journal the store
 	// records at JD‖node‖device: epic 2's WriteMissingNodeIDs, called by RFC 23's plan's start (X1).
 	b.Node = id
-	n, err := node.New(node.Config{Bootstrap: *b, ...}) // RFC 23 §2.1, #4050's shape; refuses outside the active versions (epic 2, §4.3)
+	n, err := node.New(node.Config{Bootstrap: *b, ...}) // RFC 23 §2.1, #4050's shape
 	if err != nil {
 		return err
 	}
-	if err := n.Start(ctx); err != nil { // RFC 23 §2.2's start, then reconcile until Stop
+	if err := n.Start(ctx); err != nil { // RFC 23 §2.2's start, then reconcile until Stop; refuses outside the active versions (epic 2, §4.3)
 		return err
 	}
 	<-ctx.Done()
@@ -823,7 +824,7 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 		case settings.Live, settings.Bound: // a bound change got here only past Check's refusal
 			if err := n.reconfigure(ch.Section, cur); err != nil {
 				n.refused(ch.Section, err) // stops only that section, reported refused (RFC 13 §6, RFC 23 §2.4)
-				cur = cur.Keep(ch.Section, prev) // the section keeps the snapshot it last ran
+				cur = n.holdOrKeep(ch.Section, cur) // held at start, else keeps the snapshot it last ran
 			}
 		case settings.Restart:
 			if !n.rebuild(ch.Section, cur) { // an adapter's port: a new adapter (settings.SMB's note)
@@ -994,9 +995,7 @@ value; D7's drift test passes.
   `DITTOFS_CONTROLPLANE_PORT=8080` refuses and names its replacement.
 - The node identity, by RFC 13 §2.2's node-identity row and RFC 28 §2.1's `node-id` file as
   #4050 amends them (its A2): `InitNodeID` writes a copy for `dfs init` and a recovery import; a
-  rerun after an interrupted init adopts a copy already there only as #4050's epic 5 says, from a
-  journal directory whose `format` carries the store's installation ID, refusing one that does not
-  parse or two that differ; `NodeID` reads every copy
+  rerun after an interrupted init adopts a copy already there only as that row says; `NodeID` reads every copy
   at start and refuses on what the row names, a copy differing from the host file's key among them,
   and ignores a leftover `node-id.tmp`; it only reads and compares, before the store is open.
   `WriteMissingNodeIDs`, which RFC 23's plan's start step 1 calls once the store is open, writes a

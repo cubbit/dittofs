@@ -741,26 +741,40 @@ type SecretProvider interface {
 }
 ```
 
-The built-in provider adds three things a rotating holder needs:
+The built-in provider's full surface, with the kind and owner `Resolve` and
+`Seal` check, and the three things a rotating holder needs — `Meta`, `Versions`
+and `Prune`:
 
 ```go
+type SecretProvider interface {
+	Resolve(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef) ([]byte, error)
+	Seal(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef, value []byte, m Meta) (SecretRef, error)
+	// Versions opens every version still held, current first, checked
+	// against the caller's kind and owner as Resolve checks the current one,
+	// for a holder that needs them all at once.
+	Versions(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef) ([]Version, error)
+	// Prune drops the versions below the lowest one any node reports holding
+	// (§8), never the current one; the rotation's owner calls it once its
+	// retention ends.
+	Prune(ctx context.Context, ref SecretRef) error
+	Delete(ctx context.Context, ref SecretRef) error
+}
+
 // Meta is written with a version: a machine password's KeyVersion, set once
 // and never changed, and HandedOver, which Seal binds into the sealed value's
 // additional data with the role, kind, owner, reference and version (RFC 16
-// §2.3), so a flipped mark fails to open. Seal takes it as its last argument.
+// §2.3), so a flipped mark fails to open.
 type Meta struct {
 	KeyVersion uint32
 	HandedOver bool
 }
 
-// Versions opens every version still held, current first, each with its
-// number and Meta, checked against the caller's kind and owner as Resolve
-// checks the current one, for a holder that needs them all at once.
-Versions(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef) ([]Version, error)
-// Prune drops the versions below the lowest one any node reports holding
-// (§8), never the current one; the rotation's owner calls it once its
-// retention ends.
-Prune(ctx context.Context, ref SecretRef) error
+// Version is one opened version of a secret.
+type Version struct {
+	Number uint64
+	Value  []byte
+	Meta   Meta
+}
 ```
 
 - **Read never returns a secret.** No API, export, log line or metric carries
