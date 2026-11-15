@@ -2048,8 +2048,9 @@ open such a name through their own path parsing, so one made over SMB would
 be a file its own creator cannot reach. A name holding the private-use code
 points of Appendix B is not refused. **On a `posix` share** it is case 2's
 spelling of a reserved character, and is stored with that character. **On a
-`windows` share**, whose rule refuses the reserved characters for every
-protocol ([RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)),
+`windows` share**, whose rule stores a reserved character arriving over NFS in
+this spelling and refuses it from any other protocol
+([RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)),
 cases 2 and 3's mapping is not applied: such a name, like any holding the
 private-use code points U+F001–U+F07F, is stored and shown with the code points
 themselves, as a Windows server stores them, so a Mac saving
@@ -2060,7 +2061,8 @@ another protocol made under a valid name.
 
 Example, on a `posix` share: build01 creates `a:b` over NFS; alice-pc sees it with the colon shown
 as U+F022 and can open it. A name in a legacy 8-bit encoding is not shown on
-alice-pc at all.
+alice-pc at all. On a `windows` share the same create stores `a` U+F022 `b`,
+which build01 then lists too.
 
 > decision: hide rather than escape. Any escape of arbitrary bytes into UTF-16
 > loses bytes or collides with a name someone could type, and RFC 7 forbids

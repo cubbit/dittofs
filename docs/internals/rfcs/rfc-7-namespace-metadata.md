@@ -985,6 +985,10 @@ was given: the name stored in the entry and returned by a listing is the one
 that went in. A name that comes back different is a name the client cannot use,
 and the client has no way to discover the rule that changed it. Folding the
 *key* on a case-insensitive share ([§3.3](#3.3%20Case)) is not a rewrite of the name.
+The one exception is the `windows` rule's private-use spelling of a reserved
+character in a name an NFS call gives
+([§3.8](#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)): that client
+then lists the spelling, and finds the entry by either.
 
 Validation happens here, not in the adapters, because there is more than one
 adapter and a rule enforced in one of them is a rule the other does not have.
@@ -1144,18 +1148,28 @@ enforces it for every protocol, at the boundary of [§3.2](#3.2%20A%20name%20is%
   still refuses a name that is not valid UTF-8, because the fold maps UTF-16
   code units and such a name has none.
 - **`windows`**, the default on a case-insensitive share: additionally refuses a
-  name that is not valid UTF-8; a name containing a **reserved character** —
-  `"`, `*`, `:`, `<`, `>`, `?`, `\`, `|` and the controls 0x01–0x1F;
-  a name ending in a space or a dot; and a **reserved device name** — `CON`, `PRN`,
-  `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`, in any case, alone or followed by a
-  dot and anything, as `con.txt`. Such a create fails `ErrInvalid` through every
-  adapter, so no client makes a name the share's other clients cannot open. The
-  private-use code points U+F001–U+F07F are ordinary characters under this
-  rule: they are stored and listed as themselves, never translated to the
-  reserved character some clients use them for, so a client saving
-  `Q3: draft.docx` under that substitution succeeds and sees its own name. An
-  adapter's translation of them ([RFC 22 §12.3](rfc-22-smb.md#12.3%20Names%20SMB%20cannot%20carry)) applies on `posix` shares
-  only.
+  name that is not valid UTF-8 and a **reserved device name** (`CON`, `PRN`,
+  `AUX`, `NUL`, `COM0` to `COM9`, `LPT0` to `LPT9`, in any case, alone or followed
+  by a dot and anything, as `con.txt`), and keeps out of every stored name a
+  **reserved character** (`"`, `*`, `:`, `<`, `>`, `?`, `\`, `|` and the
+  controls 0x01 to 0x1F) and a trailing space or dot. In a name a call over NFS
+  gives (its `vfs.Call`'s `Protocol`), each such character is stored as its
+  private-use code point ([RFC 22 Appendix B](rfc-22-smb.md#Appendix%20B%20%E2%80%94%20private-use%20mapping)):
+  `:` as U+F022, a trailing space as U+F028, a trailing dot as U+F029. The
+  spelling is applied before the name is keyed, wherever such a name is looked
+  up or stored: a create, a link, a rename's target and every lookup. From any
+  other protocol such a create fails `ErrInvalid`, as a device name does from
+  every protocol, so no client makes a name the share's other clients cannot
+  open. So an NFS client that creates `a:b` lists `a` U+F022 `b`; a lookup of
+  either spelling finds that one entry, and a create of either while the other
+  exists fails as existing (`ErrExist`), as a create of `readme` beside
+  `README` does ([§3.3](#3.3%20Case)). The private-use code points U+F001 to U+F07F
+  are ordinary characters under this rule: they are stored and listed as
+  themselves, never translated back to the reserved character some clients use
+  them for, so a client saving `Q3: draft.docx` under that substitution succeeds
+  and sees its own name. An adapter's translation of them ([RFC 22 §12.3](rfc-22-smb.md#12.3%20Names%20SMB%20cannot%20carry))
+  applies on `posix` shares only, which make no promise across protocols for
+  these names.
 
 > decision: the `windows` rule is enforced here, for every protocol, rather than
 > by the adapter whose clients need it, because a name another protocol creates
@@ -1163,8 +1177,18 @@ enforces it for every protocol, at the boundary of [§3.2](#3.2%20A%20name%20is%
 > it. Overturned if a share's clients of the other protocols are shown to need
 > such names; the `posix` rule then serves them.
 
+> decision: a reserved character in a name an NFS call gives is stored in its
+> private-use spelling rather than refused, so the name exists once, in the
+> spelling SMB shows. No mapping in an adapter could do this: an NFS client can
+> write both `A` U+F028 and `A ` (A and a space), which an SMB client would see
+> as one name. The cost is that the NFS client lists a spelling other than the
+> one it gave. Overturned if NFS clients
+> on such shares are found to need the bytes they wrote; the `posix` rule then
+> serves them.
+
 **Neither names nor keys are normalised.** A stored name is the bytes given
-([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)). On a case-insensitive share the name's
+([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)),
+the `windows` rule's private-use spelling aside. On a case-insensitive share the name's
 UTF-16 code units are each mapped through a 16-bit **upcase table**, one unit for
 one, with no normalisation, and the table is recorded by ID with the rule
 ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format), which names the first table and pins it by its hash). It is not

@@ -110,6 +110,14 @@ and E5 to E8, for sign-in (§3.2).
   `renameAt` refuses a stream's open before it looks up either name; RFC 22 §12.1 parses a rename target as a `CREATE` path, `$DATA` without
   case, and §18's §12.1 row adds an existing target, an unlinked base name and the target's
   parse. T2.4 (the service's half), T8.4, T8.5; plan gaps 6 and 25.
+- **A7. RFC 7 §3.2 and §3.8, RFC 22 §12.3: on a `windows` share a reserved character from NFS is
+  stored in its private-use spelling.** Simone's answer to plan gap 27, with the user's choices:
+  in a name a call over NFS gives, RFC 7's reserved characters and a trailing space or dot are
+  stored as RFC 22 Appendix B's code points, at a create, a link, a rename's target and every
+  lookup, so an NFS client lists that spelling, finds the entry by either and gets `ErrExist`
+  creating one beside the other; a device name stays refused, and from any other protocol a
+  reserved character stays refused. A `posix` share is unchanged and makes no promise across
+  protocols. T2.4 (the service's half), T8.1; plan gaps 27 and 28.
 
 ## 1. Introduction
 
@@ -350,7 +358,7 @@ rows of RFC 20's deferral ledger.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | SMB surface | `smb/protocol`'s request state; `smb/ops`' handler set, table and `ioctl/` table; the callbacks value | 3 | 3 | team | all |
-| E2 ⛔ | Test foundations | the SMB handler harness on `memory.New` and `vfstest.Faults`; golden files cut from Samba captures; the import test's call-site and file-size rules; the service's halves of A3, A6 and plan gaps 23 and 25 | 4 | 10.5 | team; T2.4 in B | E3 to E14, but T2.4, beside E3, only T6.1, T8.5 and the rows of plan gaps 23 and 25 |
+| E2 ⛔ | Test foundations | the SMB handler harness on `memory.New` and `vfstest.Faults`; golden files cut from Samba captures; the import test's call-site and file-size rules; the service's halves of A3, A6, A7 and plan gaps 23 and 25 | 4 | 11 | team; T2.4 in B | E3 to E14, but T2.4, beside E3, only T6.1, T8.5 and the rows of plan gaps 23 and 25 |
 | E3 | Negotiation and the connection's stages | `NEGOTIATE`, `Caps`, signing, encryption, preauthentication, credits, the message-ID window, `HoldCodec`, the error table and its totality test, `ECHO`, `CANCEL` | 9 | 24 | A | E5; S4 |
 | E4 | Authentication mechanisms | `gss`: `Exchanges`, NTLM, Kerberos, SPNEGO, `Identity`, `gsstest` | 6 | 17.5 | B | E5; S4 |
 | E5 🔀 | Sessions | `SESSION_SETUP`, `LOGOFF`, the session registry, the client record, re-authentication, expiry, multichannel, `PreviousSessionId`, the scripted client | 8 | 15 | A | E9; E14 (partly); S4 |
@@ -365,9 +373,9 @@ rows of RFC 20's deferral ledger.
 | E14 🔀 | Wire tests against Samba | the differential runner, SMB scripts per area, the divergence list | 4 | 13 | B | E16 |
 | E15 🔀 | Integration with the node | settings, the SMB suites turned on | none | planned after S7 | team | E16 (partly) |
 | E16 🔀 | E2E green | in-process rows, suites burned down, e2e, Windows and system rows, cross-protocol rows, benchmarks, pins | 7 | 22.5 | team | none |
-| | **Total** | | **87** | **233.5** | | |
+| | **Total** | | **87** | **234** | | |
 
-**Plan estimate: 87 subtasks, 233.5 man-days, not counting epic 15.**
+**Plan estimate: 87 subtasks, 234 man-days, not counting epic 15.**
 
 Nor T16.3, the SMB suites' burn-down, which is planned after E15 as E15 is (§6.2, point 12), nor
 the two rows parked in §6.5's deferral ledger: T13.4's Previous Versions and T16.1's remote outage
@@ -522,10 +530,10 @@ holds its S4 and its epic 7.
 - **Track B: E4, E2's T2.4, E6, E12, E14.** Authentication, then trees and the RPC services, then
   security descriptors, then the wire tests. E4 comes first because E5 needs it, and within E4, NTLM
   and SPNEGO come before T4.3, whose rows wait for S6b anyway. T2.4 follows E4, beside E3, and gates
-  only T6.1, T8.5 and the rows of plan gaps 23 and 25; E4 and T2.4, 21.5 man-days, still end inside
+  only T6.1, T8.5 and the rows of plan gaps 23 and 25; E4 and T2.4, 22 man-days, still end inside
   E3. In E6, `TREE_CONNECT` comes first because every file request needs a tree. E14's runner and
-  scripts are built against Samba alone and its DittoFS side waits for S5. At 65.5 man-days the
-  track ends about 4.5 man-days before track A; it then takes E16's in-process rows (T16.1,
+  scripts are built against Samba alone and its DittoFS side waits for S5. At 66 man-days the
+  track ends about 4 man-days before track A; it then takes E16's in-process rows (T16.1,
   T16.2) as S5 and their epics allow.
 - **Track C: E7, E8, E13, E11.** The data path, then file information and names, then control codes,
   then locks and notification, all on the open E7 resolves. E13 goes before E11 because E11 waits
@@ -535,7 +543,7 @@ holds its S4 and its epic 7.
   and streams. At 66 man-days.
 - **The team.** E1 and E2 but T2.4 before the tracks, which start at S2 without it; E15 at S7;
   E16 after the tracks. E1, E2 but T2.4, and E16, 32 man-days, are the difference between the
-  tracks' 201.5 and the plan's 233.5.
+  tracks' 202 and the plan's 234.
 - **The FSLogix workload.** One VHDX of 10 to 30 GB per user, held open through one handle all
   session, overwritten at random in 64 KiB pieces, and truncated at sign-out. It can first run at
   three points, each as early as the dependencies allow:
@@ -562,9 +570,9 @@ user, comes before AD:
   25, so the first mount ships the service's refusal of a stream's rename with no test that can
   fail until then; T16.4's `mount.cifs` and `smbclient` rows signed in with NTLM, but RFC 20 §7.5's
   reconnect, cancel and order rows, which need E10, E11 and E9; sign-in at #4058's S2 and E8
-  (S6a), and S7. About 118 man-days: the figures of E1 to E8 named, less about 13.5 for T4.3,
+  (S6a), and S7. About 118.5 man-days: the figures of E1 to E8 named, less about 13.5 for T4.3,
   T6.5, T8.7 and T8.8, and not counting T16.4's rows or E15, planned after S7. The critical path
-  is E1 → E2 but T2.4 → E3 → E5, 48.5 man-days in series, then S7; T2.4's 4 run beside E3, on
+  is E1 → E2 but T2.4 → E3 → E5, 48.5 man-days in series, then S7; T2.4's 4.5 run beside E3, on
   track B.
 - **Then Kerberos and AD:** T4.3, and T16.4's Kerberos and AD row once S6b holds (#4058's E5 to
   E7).
@@ -677,7 +685,7 @@ RFC sections: RFC 20 §4.7's `Request.State`, §4.8 (one table for every dialect
 
 ### Epic 2 - Test foundations ⛔
 
-**Epic 2 estimate: 4 subtasks, 10.5 man-days.**
+**Epic 2 estimate: 4 subtasks, 11 man-days.**
 
 What every SMB test stands on (§1.4), and, beside E3, what the service owes this pull request's
 amendments and plan gaps 23 and 25 before T6.1, T8.5 and those gaps' rows rely on it (T2.4). No
@@ -704,8 +712,13 @@ sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`).
 - T2.3 The import test: entry methods (`Root`, `SecInfo`, `ListShares`) called only from RFC 20
   §4.10's entry files, and adapter files over 800 lines against an allowlist that may only shrink,
   each with a seeded violation it must report.
-- T2.4 The service's halves of amendments A3 and A6, on `feat/storage-v2`, beside E3 and before
-  T6.1 and T8.5 rely on them: `Root`'s `MaximalAccess` computed for `ForOpen(false)` (RFC 17 §3.0);
+- T2.4 The service's halves of amendments A3, A6 and A7, on `feat/storage-v2`, beside E3 and
+  before T6.1, T8.1 and T8.5 rely on them: RFC 7 §3.8's private-use spelling of a reserved
+  character, or a trailing space or dot, in a name an NFS call gives on a `windows` share, at
+  every name it looks up or stores (A7), tested on `memory.New`: the listing shows the spelling,
+  both spellings find the one entry, a create of one beside the other is `ErrExist`, and the same
+  name created by an SMB call is `ErrInvalid`; `Root`'s `MaximalAccess` computed for
+  `ForOpen(false)` (RFC 17 §3.0);
   `Rename` through a named stream's open refused before either name is looked up (RFC 17 §5.4),
   and open state's `CheckChange` refusing it (RFC 14 §9.4). The service's changes of plan gaps 23
   and 25, as their RFC pull requests settle them, before T9.2's directory row and T7.5's stream
@@ -959,7 +972,8 @@ Appendix F's reparse codes; RFC 20 §4.9's `Fit`, §6.10's `QUERY_INFO` gate.
 
 - T8.1 The name mapping of §12.3 and Appendix B (plan gap 27): its three cases on `posix` and
   `windows` shares, hidden names, unpaired surrogates, forbidden characters and device names
-  refused on create and rename.
+  refused on create and rename; on `memory.New`, a name with a reserved character that a call over
+  NFS made on a `windows` share shown over SMB in its private-use spelling (A7).
 - T8.2 Information-class codecs (Appendix E), with the `QUERY_INFO` 0-allocation gate.
 - T8.3 `QUERY_INFO`, file and file-system classes: §16.3's attribute bits and times, allocation from
   `Charged`, derived file IDs never the `FileID`, the volume serial, `NTFS` and Appendix E.2's
@@ -1235,7 +1249,8 @@ SMB rows.
 
 Each is a finding for an RFC, raised on [#3615](https://github.com/cubbit/dittofs/issues/3615)
 for a pull request to the RFC named. The exceptions are the amendments in this pull request: A1
-settles gap 3's first-release half and gap 8's wording, A2 settles gap 14. A gap the RFCs have since
+settles gap 3's first-release half and gap 8's wording, A2 settles gap 14, A7 settles gap 27 and
+gap 28's half on a `windows` share. A gap the RFCs have since
 settled keeps its number, with what settled it.
 
 1. **How `core` learns what SMB holds, and for how long** (RFC 20 §4.6, §4.7; RFC 22 §16.5).
@@ -1401,14 +1416,18 @@ settled keeps its number, with what settled it.
     Simone offers for it. For the RFC pull request: Appendix G's row says so. Epic 8 (T8.6).
 27. **A mid-name private-use space or dot** (RFC 22 §12.3, Appendix B). On a `posix` share a
     mid-name U+F028 or U+F029 is stored as the space or dot, and only a trailing one maps back, so
-    `a` U+F028 `b` lists as `a b`, a name another client's file may hold. Proposed for the RFC pull
-    request: the mapping keeps `display(store(n)) == n`, or such a name is refused; T8.1 tests the
-    property. Epic 8.
+    `a` U+F028 `b` lists as `a b`, a name another client's file may hold. Settled by A7 (Simone,
+    13 Nov, with the user's choices): on a `windows` share the name exists once, in its private-use
+    spelling (RFC 7 §3.8); on a `posix` share the ambiguity is accepted, §12.3's mapping staying as
+    it is, with no promise across protocols. T2.4 builds the service's half, T8.1 tests what SMB
+    shows. Epics 2 and 8.
 28. **The stream split and the unmapping** (RFC 22 §12.1, §12.3). §12.1 names no order between
     splitting a path at a stream's `:` and unmapping the private-use characters, so NFS's `a:b`,
     shown as `a` U+F022 `b`, could open stream `b` of `a`; and it leaves `name:`, `name:stream:` and
-    `a:s\b` open. Proposed for the RFC pull request: split at the literal `:` first, and answer each
-    of those forms. Epics 7 and 8.
+    `a:s\b` open. On a `windows` share A7 settles the order: no stored name holds a literal `:`, so
+    SMB splits a stream at `:` with nothing to unmap. On a `posix` share §12.3 still unmaps, so the
+    order stays open there. Proposed for the RFC pull request: on a `posix` share split at the
+    literal `:` first, and on either answer `name:`, `name:stream:` and `a:s\b`. Epics 7 and 8.
 29. **A change notification's buffer** (RFC 22 §8, §3.3). §8 buffers changes per open up to the
     request's `OutputBufferLength`, while §3.3 keeps a parked notification to a small-class reply,
     and neither caps the adapter's memory per client. Settled in review (Simone, 13 Nov): one
