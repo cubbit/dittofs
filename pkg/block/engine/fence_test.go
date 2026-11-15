@@ -1071,7 +1071,8 @@ func TestSelfFenceOnARemovalFailingAtTheStoreBesideAnUndecodableRecord(t *testin
 // store, its removal record's delete refused, at every retry: the node fences
 // 31 s on. Each retry's Resume finds no removal left and writes nothing;
 // counting it as a commit restarts the fence's clock every second and never
-// fences.
+// fences. Once the store heals and the prune commits, nothing is outstanding
+// or failing, and a quiet node acknowledges a write 31 s later.
 func TestSelfFenceOnARemovalWhosePruneFailsAtTheStore(t *testing.T) {
 	u := newFenceUnit(t)
 	x, b := u.create(t, "x"), u.create(t, "b")
@@ -1091,6 +1092,48 @@ func TestSelfFenceOnARemovalWhosePruneFailsAtTheStore(t *testing.T) {
 	}
 	if _, ok := u.nodeFenced(); !ok {
 		t.Error("node_fenced not raised 31s into the prune's failures")
+	}
+
+	u.faults.SetFault(nil)
+	u.until(t, "the prune commits", func() bool { return !u.e.RemovalStalled(x) })
+	eventually(t, "the removal loop idle", func() bool { return u.e.LoopParked(u.share.ID) })
+	if n, failing := u.e.FenceBusy(); n != 0 || failing {
+		t.Errorf("once the removal finished: %d outstanding, failing %v; want 0 and false", n, failing)
+	}
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Errorf("a write 31s after the removal finished on a quiet node: %v, want acknowledged", err)
+	}
+}
+
+// A phase 2 run whose Resume commits every batch is a commit, though its prune
+// then fails at the store: the bound restarts from the Resume.
+func TestSelfFenceCountsAPhase2ThatCommitsEveryBatchAsACommit(t *testing.T) {
+	u := newCutUnit(t)
+	runs := func() map[string]int64 { return u.e.Stats().RemovalRuns }
+	f := u.create(t, "f")
+	u.holed(t, f, 3)
+	u.fault(t, removalSet(2, 0, errInjected)) // every batch fails, so no run advances
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a failed phase 2 run", func() bool { return runs()["error"] > 0 })
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(20 * time.Second)
+	eventually(t, "a second failed phase 2 run", func() bool { return runs()["error"] > 1 })
+	// The next run, a second on, commits every batch; its prune fails at the store.
+	u.fault(t, sim.Rule{Op: kvtest.OpDelete, Key: "F‖*‖rm‖*", Action: sim.FaultAction{Err: syscall.ENOSPC}})
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(time.Second)
+	eventually(t, "an advanced phase 2 run", func() bool { return runs()["advanced"] == 1 })
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(29 * time.Second)
+	if c, ok := u.nodeFenced(); ok {
+		t.Fatalf("fenced 29 s after a Resume committed every batch, 50 s after the truncate: %v", c)
+	}
+	u.clock.Advance(2 * time.Second)
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("not fenced 31 s after the Resume committed every batch, its prune failing since")
 	}
 }
 
