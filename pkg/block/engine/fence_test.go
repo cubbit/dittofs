@@ -57,14 +57,42 @@ func newFenceUnit(t *testing.T) *fenceUnit {
 }
 
 // fault replaces the store's fault schedule with rules, delays on the test
-// clock.
-func (u *fenceUnit) fault(t *testing.T, rules ...sim.Rule) {
+// clock, and answers a channel closed once one of them holds a call: its
+// hold is armed, so a test advancing the clock after it moves a hold that
+// already counts.
+func (u *fenceUnit) fault(t *testing.T, rules ...sim.Rule) <-chan struct{} {
 	t.Helper()
-	s, err := sim.NewSchedule(1, u.clock, rules...)
+	c := &holdClock{TestClock: u.clock, armed: make(chan struct{})}
+	s, err := sim.NewSchedule(1, c, rules...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	u.faults.SetFault(s)
+	return c.armed
+}
+
+// holdClock is a schedule's clock that closes armed once a hold is armed.
+type holdClock struct {
+	*sim.TestClock
+	once  sync.Once
+	armed chan struct{}
+}
+
+func (c *holdClock) After(d time.Duration) <-chan struct{} {
+	ch := c.TestClock.After(d)
+	c.once.Do(func() { close(c.armed) })
+	return ch
+}
+
+// held waits until the fault's hold is armed, failing the test after five
+// seconds as eventually does.
+func held(t *testing.T, armed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-armed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("after 5 s: a write transaction held on the clock")
+	}
 }
 
 // everyUpdate is a rule acting on every write transaction the store runs.
@@ -166,9 +194,9 @@ func TestSelfFenceThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u.fault(t, nextUpdate(sim.FaultAction{Delay: 40 * time.Second}))
+	armed := u.fault(t, nextUpdate(sim.FaultAction{Delay: 40 * time.Second}))
 	done := u.commitInBackground(t, a)
-	u.outstanding(t)
+	held(t, armed)
 
 	u.clock.Advance(10 * time.Second)
 	if _, err := u.tryWrite(b); err != nil {
@@ -278,9 +306,9 @@ func TestSelfFenceTimesAFirstTransactionFromItsStart(t *testing.T) {
 	if _, err := u.tryWrite(a); err != nil {
 		t.Fatal(err)
 	}
-	u.fault(t, nextUpdate(sim.FaultAction{Delay: time.Second}))
+	armed := u.fault(t, nextUpdate(sim.FaultAction{Delay: time.Second}))
 	done := u.commitInBackground(t, a)
-	u.outstanding(t)
+	held(t, armed)
 	if _, err := u.tryWrite(b); err != nil {
 		t.Errorf("a second write while the first's commit is held: %v, want acknowledged", err)
 	}
@@ -323,11 +351,11 @@ func TestSelfFenceLiftsWhenAOneShotEnds(t *testing.T) {
 	u := newFenceUnit(t)
 	a := u.create(t, "a")
 	second := enginetest.AddShare(t, u.fs.Store, "second", 1<<30)
-	u.fault(t, nextUpdate(sim.FaultAction{Delay: 40 * time.Second, Err: context.DeadlineExceeded}))
+	armed := u.fault(t, nextUpdate(sim.FaultAction{Delay: 40 * time.Second, Err: context.DeadlineExceeded}))
 	ctx := &endingCtx{Context: context.Background(), done: make(chan struct{})}
 	bound := make(chan error, 1)
 	go func() { bound <- u.e.Bind(ctx, second) }()
-	u.outstanding(t)
+	held(t, armed)
 
 	u.clock.Advance(31 * time.Second)
 	if _, err := u.tryWrite(a); !fenced(err) {
@@ -663,10 +691,10 @@ func TestSelfFenceGateUnderRace(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := enginetest.AddShare(t, u.fs.Store, "second", 1<<30)
-	u.fault(t, nextUpdate(sim.FaultAction{Delay: time.Hour}))
+	armed := u.fault(t, nextUpdate(sim.FaultAction{Delay: time.Hour}))
 	bound := make(chan error, 1)
 	go func() { bound <- u.e.Bind(context.Background(), second) }()
-	u.outstanding(t)
+	held(t, armed)
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
