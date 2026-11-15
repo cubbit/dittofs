@@ -1179,31 +1179,46 @@ func (f *Fixture) Heal() { f.faults.SetFault(nil) }
 func (f *Fixture) fault(rules ...sim.Rule) <-chan struct{} {
 	f.t.Helper()
 	f.t.Cleanup(f.Heal)
-	e := &entered{clock: f.Clock, ch: make(chan struct{})}
-	s, err := sim.NewSchedule(1, e, rules...)
+	e, err := newEntered(f.Clock, rules)
 	if err != nil {
 		f.t.Fatalf("fixture: fault schedule: %v", err)
 	}
-	e.Schedule = s
 	f.faults.SetFault(e)
 	return e.ch
 }
 
+// newEntered is the schedule of rules, delays on clock, its channel open.
+func newEntered(clock sim.Waiter, rules []sim.Rule) (*entered, error) {
+	e := &entered{
+		clock: clock,
+		holds: slices.ContainsFunc(rules, func(r sim.Rule) bool { return r.Action.Delay > 0 }),
+		ch:    make(chan struct{}),
+	}
+	s, err := sim.NewSchedule(1, e, rules...)
+	if err != nil {
+		return nil, err
+	}
+	e.Schedule = s
+	return e, nil
+}
+
 // entered is a schedule that closes its channel when the store first runs a
 // write transaction under it: once the transaction's hold is armed on the
-// clock, or once its fault is decided when it has no hold. Closed before the
-// hold is armed, a test advancing the clock on it would move the clock past
-// a hold not yet counting, which then waits from the later time.
+// clock, or, under faults that hold nothing, once a write transaction's fault
+// is decided. Closed before the hold is armed, a test advancing the clock on
+// it would move the clock past a hold not yet counting, which then waits from
+// the later time.
 type entered struct {
 	*sim.Schedule
 	clock sim.Waiter
+	holds bool // a rule holds: only an armed hold closes ch
 	once  sync.Once
 	ch    chan struct{}
 }
 
 func (e *entered) At(op string, key []byte) (time.Duration, int, error) {
 	d, tear, err := e.Schedule.At(op, key)
-	if op == kvtest.OpUpdate {
+	if op == kvtest.OpUpdate && !e.holds {
 		e.once.Do(func() { close(e.ch) })
 	}
 	return d, tear, err
