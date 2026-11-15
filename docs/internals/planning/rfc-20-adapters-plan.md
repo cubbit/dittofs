@@ -740,12 +740,17 @@ is read from `memory.New`'s record of mutating calls, §7.2), §4.5, §4.6, §4.
   `known.yaml` entry it removes once CI shows the test passing (S3).
 - T5.2 `OpTable`, `Bind`, `Invocation` (§4.7); the checks of §4.2 (`Needs`, `Versions`, an
   absent or switched-off operation) and §4.4's expired-credential gate, in §4.7's pipeline order.
-- T5.3 Admission: the per-connection cap of 64 where `Flow` is nil; the reply-bound reservation
-  before the call, its refusal as `ErrDelay` with `DelayResources`.
-- T5.4 The compound runner: stop at the first failure, a cap refused before any operation, the
-  reply of each operation reserved before it runs (a session's own reply budget: §6.2); chains from one record, each member's header
-  decoded, unwrapped, admitted and looked up on its own, the related-request rule, the replies
-  joined with `HeaderCodec.Chain`, a related member routed from the one before it; the drain
+- T5.3 Admission: the per-connection cap of 64 where `Flow` is nil; the reply reservation before
+  the call, its refusal as `ErrDelay` with `DelayResources`, and one past the reply pool's
+  ceiling as `ErrReplyTooBig`; a status's buffer waited for at most 30 s, keeping its record;
+  `BufPool.TryGet` and `BufPool.Ceiling` added to `pkg/resources` (RFC 24 §2.5).
+- T5.4 The compound runner: stop at the first failure, a cap refused before any operation, one
+  reservation of the members' summed bounds refused past a quarter of the reply pool's ceiling
+  (`ErrReplyTooBig`; a session's own reply budget: §6.2); chains from one record, each member's
+  header decoded, unwrapped, admitted and looked up on its own, the related-request rule, the
+  replies joined with `HeaderCodec.Chain`, a chain sending the replies it holds before a member
+  that does not fit at once or would take it past that quarter, a related member routed from
+  the one before it; the drain
   decision per request through `Invocation.Role`, and a member the drain refuses stopping the
   chain, the members before it answered in a chain with the refused member's interim, and a single-reply compound
   judged whole before any member runs, by each member's operation and own arguments, never the current stateid or filehandle, with the drain read once and no per-member check: one with a refused member runs nothing, answers and caches nothing, and keeps its
