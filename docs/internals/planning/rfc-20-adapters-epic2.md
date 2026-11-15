@@ -489,6 +489,8 @@ const (
 	StatusTooManyPending             // core.ErrTooManyPending (E5 T5.5b, T5.11)
 	StatusDelay                      // vfs.ErrDelay: at once in version 1, once its hold passes in version 2 (E5 T5.5b)
 	StatusCancelled                  // a parked or held request its client cancelled (E5 T5.5b, T5.11)
+	StatusDecode                     // core.ErrDecode (E5 T5.7)
+	StatusReplyTooBig                // core.ErrReplyTooBig (E5 T5.4)
 )
 
 // HoldFor is how long version 2 holds a request the service answered ErrDelay (E5 T5.5b).
