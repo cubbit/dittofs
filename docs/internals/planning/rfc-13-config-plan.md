@@ -596,7 +596,8 @@ Each carries a `ponytail:` marker at the code site:
     a registered node lags, with RFC 15.
   - *Epic:* 2.
 - **The cross-component rule is not built.** RFC 13 §6's example relates `adapters.smb.pending_timeout`
-  to `migration.freeze_timeout`, which does not exist yet.
+  to `migration.freeze_timeout`, which does not exist yet. RFC 13 §6's port rule is the exception,
+  built in epic 5.
   - *Ceiling:* none until the second setting exists.
   - *Upgrade path:* a rule field on a section naming the settings it relates.
   - *Epic:* 3, as a marker only.
@@ -1128,7 +1129,10 @@ sections are declared.
 node, rotating a bind credential, a kind a node keeps resolved and reports in
 `NodeStatus.Secrets`, which this epic writes) pass; the §1.4 scenarios assigned to epic 5 pass;
 a bad row in one section and a live change in another, reconciled together, leave the first
-reported refused and the second applied; a next-write change is read by the component's next write.
+reported refused and the second applied; a next-write change is read by the component's next write;
+an adapter or port-mapper port set to the API's or the metrics listener's port refuses that adapter
+or the port mapper on that node, reported refused, while 0 never clashes (RFC 23's plan's §6.1 row
+on RFC 13 §6's port rule).
 
 **Expected content:**
 - `internal/node/settings.go`, the one table, with the adapters' section and every other section
@@ -1154,6 +1158,11 @@ reported refused and the second applied; a next-write change is read by the comp
   as its owner is" requires.
 - RFC 23's own section (its plan's epic 3) named in the table.
 - D3's Appendix B test.
+- RFC 13 §6's port rule, as #4050 amends it, checked on every node a write reaches: the effective
+  `adapters.nfs.port`, `adapters.smb.port` and `sidecars.portmap.port` differ unless 0, and one
+  equal to the bootstrap's API or metrics port refuses that adapter or the port mapper on that
+  node, as a port conflict does. RFC 23's plan hands this check here in its §6.1 ledger (its O7),
+  beside the cross-component check (§4.3).
 
 ### Epic 6 — E2E green
 
@@ -1173,7 +1182,9 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
 - "§7 no secret out";
 - "§2.2 explicit initialisation";
 - "§5.5 dead node" (single-node part);
-- "§5 propagation" (single-node part).
+- "§5 propagation" (single-node part);
+- the image's `HEALTHCHECK` on `https://localhost:8080/health/ready` passes on its first run, with
+  the certificate and key it starts with (RFC 23's plan's D13 and its §6.1 row naming this epic).
 
 **Expected content:**
 - Initialise-if-empty, a development and test option, off by default (RFC 13 §2.2), landing with its
@@ -1193,6 +1204,10 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
   `scripts/setup-dittofs-demo.sh` and `test/e2e/testdata/nlm/nlm_axis_interop.sh` initialise the
   installation, with its first password, through `dfs init` before `dfs start`, as epic 2 did for
   `dfsbench` (D7).
+- The certificate and key the image and the launchers start with, host bootstrap facts (RFC 13
+  §2.2) supplied on their first run, so the API, bound on a non-loopback address, serves over TLS
+  (RFC 23 §5.3) and the image's `HEALTHCHECK` answers. RFC 23's plan hands this here in its §6.1
+  ledger (its D13).
 
 ## 6. Risks and open points
 
