@@ -1370,8 +1370,8 @@ How each stage refuses:
 
 A refusal before **route** has chosen a table (at decode header, unwrap, admit
 or the replay check, or by a router that chose none) is mapped by the
-stages' own table, §4.7's `Stages.Errors`. §5.5 says when a refusal at decode
-header or unwrap is signed.
+stages' own table, §4.7's `Stages.Errors`. §5.5 says how a refusal at unwrap
+is wrapped, and that one at decode header is not passed to `Wrap`.
 
 The pipeline is one implementation, parameterised per protocol by its framer,
 header codec, flow control, replay check and error table. Two adapters **MUST
@@ -1937,15 +1937,17 @@ type Security interface {
 	// before the check, so the check never runs against an unresolved ID.
 	// A refusal that can be answered comes back with the header (a bad
 	// signature, an unsigned request where signing is required, a failed GSS
-	// verifier, integrity or privacy check), which carries §5.5's verdict on
-	// whether its answer is signed: it is answered, wrapped under that header,
-	// and the connection kept. A nil Header with its error
+	// verifier, integrity or privacy check), which carries §5.5's verdict: the
+	// key its answer is signed under, or none, and whether it may be sealed.
+	// It is answered, wrapped under that header, and the connection kept. A
+	// nil Header with its error
 	// says close: nothing is answered, and the pipeline closes the connection
 	// through Conn.Close with that error (a message that fails decryption).
 	Unwrap(h Header, rec *Buf, prev Header) (Header, error)
-	// Wrap signs or encrypts in place, a chain once per record (§4.7). A
-	// refusal at Decode or Unwrap is wrapped under the header returned with
-	// it, signed or not as §5.5 says.
+	// Wrap signs or encrypts in place, a chain once per record (§4.7). The
+	// refusal of a header that failed Decode is not passed to it; a refusal
+	// at Unwrap is, under the header Unwrap returned with it, whose verdict
+	// §5.5 states.
 	Wrap(h Header, reply *Buf) error
 }
 type FlowControl interface {
@@ -2093,11 +2095,13 @@ func Bind[Req, Rep any](
 // no ErrorRow.Hold unless holds, and, where a row has Members, a MaxMembers on
 // it and a row of errs for ErrReplyTooBig naming neither Ops nor Versions,
 // since the runner refuses a compound with it (§4.3). Where holds, it also
-// demands a row of errs for ErrCancelled naming neither Ops nor Versions,
-// since a cancel ends a hold of any operation and version, and a typed row for
+// demands a row of errs for ErrCancelled naming neither Ops nor Versions, and
+// no row for it with a Hold, since a cancel ends a hold of any operation and
+// version and is answered at once; and a typed row for
 // &vfs.Delay{Cause: vfs.DelayResources} with no Hold, naming neither Ops nor
-// Versions, and no such row with a Hold, so no refusal of a node pool starts a
-// hold (§6.3).
+// Versions, and no row for &vfs.Delay{Cause: vfs.DelayResources}, whatever its
+// Ops or Versions, with a Hold, so no refusal of a node pool starts a hold
+// (§6.3).
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
 
 // Version is a protocol's version, minor version or dialect; Range a closed
@@ -2188,9 +2192,9 @@ conn.write(reply) // the writer's queue (§6.2)
 ```
 
 Until `Route` returns a table, an `err` is mapped by `Stages.Errors`, and by
-the table after. A refusal at `Decode` or `Unwrap` is wrapped under the header
-returned with it, signed or not as §5.5 says, and a nil header closes the
-connection.
+the table after. The refusal of a header that failed `Decode` is not passed to
+`Wrap`, one at `Unwrap` is wrapped under the header it returned (§5.5), and a
+nil header closes the connection.
 
 For NFSv4 the RPC procedure is `COMPOUND`, a compound row: its `Members` is
 the minor version's operation table. Its `Decode` decodes the compound's own
@@ -2872,18 +2876,23 @@ encrypted SMB message, the inner one. A connection with no transform has no
   the protocol RFCs and checked in unwrap, against the requirement the tree
   connected with (§3.6); a plain message where one is required is refused there, with the protocol's status, before the replay
   check.
-- **A refusal is signed whenever the server holds the key.** The refusal of a
-  header that failed decode, and of a message `Unwrap` refused, is signed under
-  the session or context its header names whenever the server holds that key.
-  It is answered unwrapped when the server holds no such key, or when the
-  protocol's form of that answer carries no signature or verifier: an RPC
-  denied reply has none (RFC 5531 §9), and `RPCSEC_GSS_CREDPROBLEM`, the answer
-  to a failed header verifier, is one (RFC 2203 §5.3.3.3); SMB's response to a
-  request the client did not sign carries a zero signature (MS-SMB2 3.3.4.1.1).
-  It is never sealed under a context whose privacy check failed. `Unwrap`
-  returns this verdict in the header it returns with its refusal; for a header
-  that failed decode, which `Unwrap` never saw, `Wrap` reaches it from the
-  header alone. So:
+- **The refusal of a header that failed decode is not passed to `Wrap`; one at
+  unwrap is signed whenever the server holds the key.** A header that failed decode never
+  reached `Unwrap`, so nothing proved the session or context it names: its
+  refusal goes out as encoded, and a client whose session requires signing
+  discards it, which only a client that sent a malformed header meets. A
+  message `Unwrap` refused is answered under the header `Unwrap` returns with
+  its refusal, which carries two facts for `Wrap`: the key to sign the answer
+  under, or none, and whether the answer may be sealed. Both are the
+  protocol's, in its own header, which its own `Wrap` reads. The key is that of
+  the session or context the header names whenever the server holds it. There
+  is none when the server holds no such key, or when the protocol's form of
+  that answer carries no signature or verifier: an RPC denied reply has none
+  (RFC 5531 §9), and `RPCSEC_GSS_CREDPROBLEM`, the answer to a failed header
+  verifier, is one (RFC 2203 §5.3.3.3); SMB's response to a request the client
+  did not sign carries a zero signature (MS-SMB2 3.3.4.1.1). The answer is
+  sealed as any reply under that key is, but never under a context whose
+  privacy check failed. So:
   - SMB's bad signature is answered `STATUS_ACCESS_DENIED` (MS-SMB2 3.3.5.2.4)
     signed under the session the header names, as MS-SMB2 3.3.4.1.1 signs the
     response to a signed request: a client whose session requires signing
@@ -2897,7 +2906,8 @@ encrypted SMB message, the inner one. A connection with no transform has no
   - `RPCSEC_GSS`'s failed integrity or privacy check is `GARBAGE_ARGS`, an
     accepted reply whose verifier is the checksum of the request's sequence
     number under the context its header verifier proved (RFC 2203 §5.3.3.2),
-    with no results to checksum or seal.
+    with no results to checksum or seal: signed under that context, and not
+    sealed.
 
   A refusal after unwrap succeeded is wrapped under the header `Unwrap`
   returned, as any reply is. When `Unwrap` returns no header with its error,
@@ -3045,8 +3055,9 @@ floor with the hold pool full, is the adapter's own refusal, the same
 (§4.6). The error table answers both at once and holds neither: in a table
 that Holds, a typed row for that cause with no `Hold` wins over a holding
 `ErrDelay` row (§4.7's `ErrorTable`), and `NewOpTable` refuses a table that
-Holds without that row naming neither `Ops` nor `Versions`, or with any such
-row that has a `Hold` (§4.7), so neither refusal, nor `Park`'s, starts a hold;
+Holds without that row naming neither `Ops` nor `Versions`, or with a row for
+`&vfs.Delay{Cause: vfs.DelayResources}`, whatever its `Ops` or `Versions`, with
+a `Hold` (§4.7), so neither refusal, nor `Park`'s, starts a hold;
 the statuses are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
 [RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)).
 
