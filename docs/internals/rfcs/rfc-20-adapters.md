@@ -2210,7 +2210,7 @@ encoded, and that one's admission is released first, so a chain holds one place
 under flow control at a time, however long it is. Each member's reply
 reservation is held until the joined record goes out
 ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)). It is first
-tried without waiting (`TryReserve`,
+tried without waiting (`BufPool.TryGet`,
 [RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)). When it does not
 fit at once while the chain holds reply reservations, or when its reservation
 would take the chain's held reservations past a quarter of the reply pool's
@@ -2530,20 +2530,21 @@ it.
 > protocol's (an XDR `argop` for NFSv4) and no stage reads inside a body.
 > Revisit if a protocol's compound cannot state its count before its members.
 
-> decision: four additions proposed from prior servers add no surface, since
+> decision: three additions proposed from prior servers add no surface, since
 > each need is met inside a body. A release hook on `Invocation`: a held
 > request keeps its receive `Buf` retained until it ends, so decoded arguments
 > that point into it stay valid across every re-drive (§6.8). A carrier for
 > RPC `PROG_MISMATCH`'s low and high versions: NFS's `HeaderCodec.Encode`
 > writes them from its own tables, which hold the versions each program
-> serves. A non-waiting reserve for `Park`: `Reserve` under a context already
-> past its deadline or cancelled tries once, taking the charge when it fits
-> and no waiter is ahead of it, and otherwise fails at once
+> serves. A guard against a `Reservation` released twice through a copy:
+> `Release` zeroes the `Reservation` it is called on, and a `Reservation` is
+> moved, never copied
 > ([RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)).
-> A guard against a `Reservation` released twice through a copy: `Release`
-> zeroes the `Reservation` it is called on, and a `Reservation` is moved,
-> never copied (RFC 24 §2.5). Add the surface when a body is found that
-> cannot meet its need this way.
+> Add the surface when a body is found that cannot meet its need this way. A
+> fourth, a non-waiting take for `Park`, is surface: `BufPool.TryGet` (RFC 24
+> §2.5), which a chain's member and a status's buffer also try. Each needs a
+> `Buf`, which a `Reservation` cannot become, and a `Get` under a context
+> already past its deadline builds an error on every refusal.
 
 **One request, end to end.** An NFSv3 `WRITE`:
 
@@ -3179,6 +3180,8 @@ type Buf struct {
 
 func NewBufPool(b *WaitBudget) *BufPool                         // RFC 24 §2.5: every buffer it hands out is reserved from b, the receive or reply budget
 func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) // one reservation for key of n's class's capacity plus RFC 24 §3.1's per-request overhead (8 KiB), released with the buffer; then a buffer: refs = 1
+func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)    // RFC 24 §2.5: Get's charge taken only when it fits with no waiter ahead; otherwise false at once
+func (p *BufPool) Ceiling() int64                               // its budget's ceiling, what one charge is bounded by (§4.3)
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
 func (b *Buf) Recharge(to *Budget) error                     // RFC 24 §4.3: the whole charge moved to a reservation from to; refused, nothing changes

@@ -400,13 +400,9 @@ type WaitBudget struct{ /* name, ceiling, reserved, per-key DRR queues */ }
 func NewWaitBudget(name string, ceiling int64) *WaitBudget
 // Reserve charges n bytes for key, waiting within ctx. Under a ctx already past
 // its deadline or cancelled it tries once: it takes the charge when it fits and
-// no waiter is ahead of it, and otherwise refuses at once, as Park needs.
+// no waiter is ahead of it, and otherwise refuses at once.
 func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Reservation, error)
-// TryReserve is that one try with no context: it takes the charge only when it
-// fits and no waiter is ahead of it, and allocates nothing either way.
-func (b *WaitBudget) TryReserve(key netip.Addr, n int64) (Reservation, bool)
 func (b *WaitBudget) Reserved() int64
-func (b *WaitBudget) Ceiling() int64 // what one charge is bounded by (RFC 20 §4.3)
 
 // Reservation is a value from either, so taking one allocates nothing; it is moved,
 // never copied. Release returns its bytes to its budget, and to its key's count on a
@@ -421,6 +417,13 @@ type Budgets struct {
 }
 
 func NewBufPool(b *WaitBudget) *BufPool // RFC 20 §6.8's buffers in §3.1's classes, each reserved from b, its Get keyed as Reserve is
+// TryGet is Get's one try with no context: it takes Get's charge for key, n's
+// class plus the per-request overhead, only when it fits and no waiter is
+// ahead of it, and otherwise returns at once, allocating nothing. The try is
+// on the pool, not the budget, because every caller needs a *Buf, which a
+// Reservation cannot become.
+func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)
+func (p *BufPool) Ceiling() int64 // its budget's ceiling, what one charge is bounded by (RFC 20 §4.3)
 ```
 
 - Whether a pool waits or refuses is fixed by its row (§2.3), so it is a type:
@@ -695,7 +698,8 @@ request — a waiting lock, a change notification — keeps a reply reservation
 of the small class while it waits, and no more, so its reply is never encoded
 outside the budget. `Park` keeps the request's own reply reservation when it is
 of the small class, and otherwise takes one from the reply pool without waiting
-before it releases the request's; it releases the receive reservation. A
+(`BufPool.TryGet`, §2.5) before it releases the request's; it releases the
+receive reservation. A
 connection's parks therefore hold at most its pending ceiling of small-class
 reply reservations, each with its overhead: for SMB, 511 of them. Where the
 reply pool cannot take one, `Park` refuses the request with `ErrDelay` of
