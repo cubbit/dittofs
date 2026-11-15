@@ -1361,12 +1361,17 @@ How each stage refuses:
 | Stage | Refused as |
 | --- | --- |
 | frame | length past the cap: connection closed. No room in the receive pool: not refused — the record is not read until room frees |
-| decode header, decode args | the protocol's garbage-args or invalid-parameter answer |
+| decode header, decode args | the protocol's garbage-args or invalid-parameter answer, from the table's row for `ErrDecode` (§4.7). A header that did not decode far enough to address a reply: connection closed |
 | unwrap | SMB: `STATUS_ACCESS_DENIED` on the request's message ID, connection kept; a message that fails decryption closes it (`Conn.Close`, MS-SMB2 3.3.5.2.1.1) ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). `RPCSEC_GSS`: a failed verifier `RPCSEC_GSS_CREDPROBLEM`; a sequence number below the window, or already seen, dropped unanswered; one above it advances the window ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
 | admit | not refused — the connection is not read until a request completes |
 | replay check | the cached reply, or the protocol's sequence error; past the deadline, the reply reservation's `ErrDelay` with `DelayResources` (§4.7's `ReplayCache`) |
 | resolve IDs | a table ID not in its table: the protocol's bad-ID answer. A client-held name is never refused here |
 | send | connection closed |
+
+A refusal before **route** has chosen a table (at decode header, unwrap, admit
+or the replay check, or by a router that chose none) is mapped by the
+stages' own table, §4.7's `Stages.Errors`. The reply to a header that failed
+decode header or unwrap goes out unwrapped (§5.5).
 
 The pipeline is one implementation, parameterised per protocol by its framer,
 header codec, flow control, replay check and error table. Two adapters **MUST
@@ -1474,7 +1479,8 @@ service calls, admitted separately
 ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
 
 - A compound longer than the protocol's operation cap is refused before any of
-  its operations runs; the cap is the protocol RFC's.
+  its operations runs; the cap is the protocol RFC's, set on the compound row as
+  `Op.MaxMembers` (§4.7).
 - **The reply budget is checked before each operation, not after.** In an
   NFSv4.1 compound the runner compares the operation's reply bound (§4.2) with
   what is left of the session's `ca_maxresponsesize`, and refuses an operation
@@ -1746,10 +1752,11 @@ mechanism in `core/hold.go`, not handler code, and the adapter alone counts what
 it holds — the service counts nothing about holds:
 
 - a held request holds no worker between attempts; it is a timer and the
-  decoded request. Only a request whose arguments carry write data keeps its
-  receive buffer (§5.3); any other copies its decoded arguments out and
-  releases its receive reservation when it goes async, so a waiting lock or
-  change notification holds no receive bytes;
+  decoded request. A request held between attempts keeps its record's `Buf`
+  until its final answer, write data or not, since `core` cannot tell which
+  decoded arguments point into the record (§4.7 adds no release hook); a
+  parked request releases it in `Park`, whose handler has copied out what it
+  needs, so a waiting lock or change notification holds no receive bytes;
 - **every call carries `vfs.WithHold`**, the most it may wait inside the service
   behind a running clone ([RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone)):
   the request's remaining deadline for NFSv3, NFSv4.0 and NLM; for NFSv4.1, the
@@ -1766,9 +1773,10 @@ it holds — the service counts nothing about holds:
   the node's hold pool
   ([RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go));
   a request neither can take, when its hold starts on an error the service
-  returned, is answered `STATUS_INSUFFICIENT_RESOURCES` at once, holds nothing
-  and is counted (§10.1). A call still in the service when its interim goes out
-  is counted and never refused, as below. The count lives and dies with the
+  returned, is answered `ErrDelay` of `DelayResources` at once (SMB's
+  `STATUS_INSUFFICIENT_RESOURCES`, §6.3), holds nothing and is counted
+  (§10.1). A call still in the service when its interim goes out is counted
+  and never refused, as below. The count lives and dies with the
   connection, so it needs no key across processes;
 - **the interim response is the adapter's timer.** An SMB request still
   unanswered a short interval after it reached the service — a call waiting
@@ -1797,6 +1805,9 @@ it holds — the service counts nothing about holds:
   `WithHold`;
 - a client `CANCEL` or a closed connection ends the hold, and for a waiting lock
   calls `CancelLock` before answering ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks));
+  a hold or a park its client's cancel ends is answered `ErrCancelled` (§4.7),
+  which the table maps to the protocol's cancel status, unless the call took
+  effect (§6.5);
 - every request pending on a connection, held past its interim or parked,
   counts toward one ceiling, `Stages.MaxPending` (SMB: 511, RFC 22 §3.3). It is
   checked when a hold starts on an error the service returned, and in
@@ -1859,7 +1870,8 @@ shows the whole.
 **A protocol is a framer and its stages, one job each.** `core` runs §4.1's
 pipeline and calls a protocol's implementation of each stage in order. A stage
 a protocol does not need is left nil and takes its default, so the auxiliary
-services supply only the two that are required:
+services supply only the two stages that are required, with the stages' error
+table and label:
 
 ```go
 package core
@@ -1881,11 +1893,13 @@ type Framer interface {
 }
 
 // Stages are a protocol's implementations of §4.1's stages for one
-// connection. core fills each nil stage with its default at accept, so the
+// connection. core fills each nil stage with its default at accept, and
+// refuses stages without a required field before the connection reads, so the
 // pipeline never checks for nil.
 type Stages struct {
 	Header   HeaderCodec // required: decode the request header, encode the reply's
 	Router   Router      // required: the version's table and the Request (§4.4, §4.8)
+	Errors   *ErrorTable // required: maps, with no operation, a refusal before Route returns a table: Unwrap's, Admit's, Lookup's, a header's (§4.1)
 	Security Security    // §5.5; nil: messages pass unchanged
 	Flow     FlowControl // §6.3; nil: the fixed cap of 64
 	Replay   ReplayCache // nil: no replay check
@@ -1896,20 +1910,37 @@ type Stages struct {
 }
 
 type HeaderCodec interface {
-	Decode(rec *Buf, off int) (Header, error)  // the header at off in the record: 0, then each member's Next
+	// Decode reads the header at off in the record: 0, then each member's Next.
+	// A header that does not decode comes back with its error when enough
+	// decoded to address a reply, which Stages.Errors maps; with a nil Header
+	// nothing can be answered, and the connection closes. Either error is
+	// wrapped in ErrDecode.
+	Decode(rec *Buf, off int) (Header, error)
 	Encode(h Header, s Status, out *Buf) error
 	Chain(out *Buf, prev int) error            // points the reply at prev to the one appended after it (SMB2's NextCommand, padded to 8); nil-op where nothing chains
 }
 type Router interface {
-	Route(h Header, prev *Request) (*OpTable, *Request, error) // prev: the member before a related one, else nil
+	// Route returns the version's table and the Request; prev is the member
+	// before a related one, else nil. A refusal comes back with its table
+	// whenever Route has chosen one, and is mapped by that table with no
+	// operation; with no table, by Stages.Errors. Route is never called after
+	// an earlier stage refused, so no unverified header reaches it.
+	Route(h Header, prev *Request) (*OpTable, *Request, error)
 }
 type Security interface {
 	// Unwrap decrypts or verifies; an encrypted SMB message yields its inner
 	// header. prev is the member before a related one, else nil: the IDs a
 	// related member inherits (SMB's all-ones SessionId) are taken from it
 	// before the check, so the check never runs against an unresolved ID.
+	// A refusal that can be answered comes back with the header (a bad
+	// signature, a failed GSS verifier, integrity or privacy check): it is
+	// answered unwrapped and the connection kept. A nil Header with its error
+	// says close: nothing is answered, and the pipeline closes the connection
+	// through Conn.Close with that error (a message that fails decryption).
 	Unwrap(h Header, rec *Buf, prev Header) (Header, error)
-	Wrap(h Header, reply *Buf) error // sign or encrypt, in place; a chain once, joined (§4.7)
+	// Wrap signs or encrypts in place, a chain once per record (§4.7). The
+	// reply to a header that failed Decode or Unwrap is never wrapped (§5.5).
+	Wrap(h Header, reply *Buf) error
 }
 type FlowControl interface {
 	Admit(ctx context.Context, h Header) (release func(), err error) // slot, credit or cap; the reader waits here
@@ -1919,8 +1950,8 @@ type ReplayCache interface {
 	// reservation of its size (RFC 24 §3.3) that waits under ctx, as the
 	// pipeline's own reservation does; the pipeline wraps the copy in place
 	// and sends it. Or a sequence error, or the reservation's ErrDelay of
-	// DelayResources past ctx's deadline, either mapped by the table; or nil,
-	// nil to run.
+	// DelayResources past ctx's deadline, either mapped by Stages.Errors; or
+	// nil, nil to run.
 	Lookup(ctx context.Context, h Header) (*Buf, error)
 	// Store keeps its own clear copy of a cacheable row's encoded reply, taken
 	// before Wrap; the caller's reply is then wrapped in place.
@@ -1989,6 +2020,10 @@ type Op struct {
 	Expired   bool  // runs on an expired credential: re-authentication, logoff (§4.4; RFC 18 §3.8)
 	Decode    func(body []byte, v Version) (inv Invocation, n int, err error) // n: the bytes of body it consumed
 	Members   *OpTable // non-nil on a compound row (NFSv4's COMPOUND): its members' table, which the runner decodes from after n (below)
+	// MaxMembers is a compound row's cap (§4.3): the runner refuses an
+	// Invocation.Count past it with ErrTooLong before it decodes any member.
+	// NewOpTable refuses a row with Members and no MaxMembers.
+	MaxMembers int
 }
 
 // Invocation is one decoded operation: closures over the decoded request and
@@ -2049,12 +2084,9 @@ func Bind[Req, Rep any](
 ) func([]byte, Version) (Invocation, int, error)
 
 // NewOpTable builds a table and checks it: codes unique, ranges well formed,
-// no ErrorRow.Hold unless holds, and, where it holds, a row answering
-// ErrCancelled for every operation and version (one naming neither Ops nor
-// Versions that replies at once with a status other than the fault or
-// success) and no row for it, whatever its Ops or Versions, that holds, sends
-// no reply or answers the fault or success, since a cancel ends a hold or a
-// park of any operation and is answered (§6.5).
+// no ErrorRow.Hold unless holds, a MaxMembers on every row with Members, and,
+// where holds, a row of errs for ErrCancelled naming neither Ops nor Versions,
+// since a cancel ends a hold of any operation and version.
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
 
 // Version is a protocol's version, minor version or dialect; Range a closed
@@ -2083,13 +2115,9 @@ type Status uint32
 // value before one whose Err is a sentinel; then, among those, a row naming
 // Ops and Versions, Ops alone, Versions alone, neither. NewErrorTable refuses
 // two rows equal in that order that can match the same error, operation and
-// version, and a table with no row answering ErrDecode for every operation
-// and version (one naming neither Ops nor Versions that replies at once with
-// a status other than the fault or success), or with a row for it, whatever
-// its Ops or Versions, that holds, sends no reply or answers the fault or
-// success: a header's decode error has no operation, and a client's garbage
-// must reach neither the fault status (§10.1) nor success. A zero Status is
-// success in every protocol here.
+// version, and a table with no row for ErrDecode naming neither Ops nor
+// Versions: a header's decode error is mapped with no operation, which a row
+// naming Ops never matches, and a row naming Versions misses outside its range.
 type ErrorTable struct{ /* unexported */ }
 type ErrorRow struct {
 	Err      error    // matched with errors.Is: a sentinel matches its whole class, a typed value its own kind only (RFC 17 §4.3)
@@ -2124,15 +2152,15 @@ func (h *Handlers) OpTable() *core.OpTable {
 elided — each `err` is answered as §4.1's table says:
 
 ```go
-h, err := stages.Header.Decode(rec, off)  // off: 0, then each chain member's h.Next()
+h, err := stages.Header.Decode(rec, off)  // off: 0, then each chain member's h.Next(); err wraps ErrDecode
 h, err = stages.Security.Unwrap(h, rec, prevH) // prevH: the member before a related one
 if key, ok := stages.Hold.Cancels(h); ok { endHold(key); return } // only once verified; no reply
 release, err := stages.Flow.Admit(ctx, h); defer release()
 if cached, err := stages.Replay.Lookup(ctx, h); cached != nil { conn.write(wrap(h, cached)); return } // a fresh copy, under a reply reservation
-tbl, r, err := stages.Router.Route(h, prev) // prev: the member before a related one
+tbl, r, err := stages.Router.Route(h, prev) // prev: the member before a related one; tbl comes with err once chosen
 op := tbl.Ops[h.Op()]               // absent: not supported
 err = check(op, h, r)               // Versions, Needs (§4.2)
-inv, _, err := op.Decode(body(rec), h.Version()) // the bytes consumed matter to the compound runner only (below)
+inv, _, err := op.Decode(body(rec), h.Version()) // err wraps ErrDecode; the bytes consumed matter to the compound runner only (below)
 err = reserveReply(ctx, inv.Bound()) // RFC 24 §3.3
 err = inv.Resolve(r)
 role := op.Role
@@ -2148,13 +2176,17 @@ err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
 conn.write(reply) // the writer's queue (§6.2)
 ```
 
+Until `Route` returns a table, an `err` is mapped by `Stages.Errors`, and by
+the table after. A header that failed `Decode` or `Unwrap` is answered
+unwrapped, and a nil one closes the connection.
+
 For NFSv4 the RPC procedure is `COMPOUND`, a compound row: its `Members` is
 the minor version's operation table. Its `Decode` decodes the compound's own
 arguments and builds its `Invocation` itself rather than through `Bind`, so it
 can set `Invocation.Count` to the array's count; it returns the bytes
-they took. The runner refuses a count past the compound cap with `ErrTooLong`
-before it decodes any member (§4.3); otherwise it decodes exactly `Count`
-members, each's operation code read with `Members.ReadOp` and its arguments
+they took. The runner refuses a count past the row's `MaxMembers` with
+`ErrTooLong` before it decodes any member (§4.3); otherwise it decodes exactly
+`Count` members, each's operation code read with `Members.ReadOp` and its arguments
 with that row's `Decode`, moving on by the bytes each returned, and refuses
 bytes left after the last as the compound's decode error (§5.2), before any
 member runs. Outside a drain, a member k that does not decode — its arguments
@@ -2186,8 +2218,12 @@ ceiling (§4.3), the replies before it go out as a record of their own, wrapped
 once, and only then does the member reserve under its deadline: a chain never
 waits on the reply pool while holding it
 ([RFC 24 §2.6](rfc-24-resources.md#2.6%20Reservations%20are%20taken%20in%20one%20order)). A member `Unwrap`
-refuses is answered in a record of its own, and the chain's other replies are
-joined without it. Each such split is counted in `adapter_chain_splits_total`
+refuses splits the chain: the replies before it go out first, joined and
+wrapped once; its refusal goes out next in a record of its own, not wrapped,
+with the replies of the related members after it, each answered the refused
+member's status with no call; and the next unrelated member starts a new record, and the chain
+runs on. With a nil header from `Unwrap` the connection closes and nothing more
+is sent. Each such split is counted in `adapter_chain_splits_total`
 (§10.1).
 
 A member before the last that the service answered an error whose row holds
@@ -2398,21 +2434,23 @@ var ErrParked = errors.New("core: parked")
 // once it has it. On a connection already closed, Park calls cancel at once
 // and done's reply is dropped, as a close would.
 //
-// Otherwise core sends the interim reply at once and releases the receive
-// reservation, and the reply keeps a small-class reply reservation: the
-// request's own when it is of that class, else one taken before the request's
-// own is released (RFC 24 §3.3); a reply that would not fit is answered as its
-// protocol answers an overflow (RFC 22 §3.3). A request already pending past its interim (a LOCK
-// re-driven after a hold, then blocked) gets no second interim: its slot moves
-// from held to parked. A parked request holds no worker and no write data and
-// is not counted against the hold floor (§4.6): MaxPending bounds it. On done
-// core encodes the reply, wraps it and sends it under Final's header. A client
-// cancel calls cancel first, and done's error goes out as the protocol's
-// cancel status (§6.5). The start of a drain calls cancel, and done's error is
-// replaced by the drain's, answered as its table maps it (§3.1). Either way a
-// done(nil), a call that took effect (a waiting lock CancelLock reports
-// granted), is answered success (§6.5, RFC 22 §7). A closed connection calls
-// cancel, and done's reply is dropped.
+// Otherwise core sends the interim reply at once and releases the record's Buf
+// with its receive reservation, the handler having copied out of the decoded
+// arguments what done needs (§4.6), and the reply keeps a small-class reply
+// reservation: the request's own when it is of that class, else one taken
+// before the request's own is released (RFC 24 §3.3); a reply that would not
+// fit is answered as its protocol answers an overflow (RFC 22 §3.3). A request
+// already pending past its interim (a LOCK re-driven after a hold, then
+// blocked) gets no second interim: its slot moves from held to parked. A parked
+// request holds no worker and no write data and is not counted against the hold
+// floor (§4.6): MaxPending bounds it. On done core encodes the reply, wraps it
+// and sends it under Final's header. A client cancel calls cancel first, and
+// done's error is replaced by ErrCancelled, which the table maps to the
+// protocol's cancel status (§6.5). The start of a drain calls cancel, and
+// done's error is replaced by the drain's, answered as its table maps it
+// (§3.1). Either way a done(nil), a call that took effect (a waiting lock
+// CancelLock reports granted), is answered success (§6.5, RFC 22 §7). A closed
+// connection calls cancel, and done's reply is dropped.
 func (r *Request) Park(cancel func()) (done func(err error), err error)
 
 // core's own refusals. Each table maps every one, and §7.3's totality test
@@ -2429,8 +2467,13 @@ var (
 	ErrExpired        = errors.New("core: credential expired")            // §4.4
 	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")     // Stages.MaxPending
-	ErrDecode         = errors.New("core: cannot decode")                 // a header, an operation's or a member's arguments, a step of the record's walk (§4.1)
-	ErrCancelled      = errors.New("core: cancelled by its client")       // a held or parked request its client cancelled (§6.5); wraps nothing
+	ErrCancelled      = errors.New("core: cancelled")                     // a hold or a park its client's cancel ended (§4.6, §6.5)
+	// ErrDecode wraps, keeping it, the error of HeaderCodec.Decode, of a row's
+	// Decode, of a compound member's, and of a step of the record's walk that
+	// does not move forward inside the record (the runner, above). Every table
+	// maps it (NewErrorTable); a protocol's typed row for its own value still
+	// wins (§4.5).
+	ErrDecode = errors.New("core: request does not decode")
 	// ErrMoved and ErrDraining are what a request §3.1 does not serve gets
 	// while the adapter drains: ErrMoved where the service names a gateway
 	// node for the request's share (the move signal), ErrDraining where it
@@ -2816,6 +2859,15 @@ encrypted SMB message, the inner one. A connection with no transform has no
   the protocol RFCs and checked in unwrap, against the requirement the tree
   connected with (§3.6); a plain message where one is required is refused there, with the protocol's status, before the replay
   check.
+- **A reply to a header that failed decode or unwrap is not wrapped.** It goes
+  out as encoded, never signed or sealed under a session or context the
+  header merely names: SMB's bad signature, answered `STATUS_ACCESS_DENIED`;
+  `RPCSEC_GSS`'s failed verifier, integrity or privacy check. A refusal after
+  unwrap succeeded is wrapped under the header `Unwrap` returned. When
+  `Unwrap` returns no header with its error, nothing can be answered: the
+  pipeline closes the connection through `Conn.Close` with that error, as for
+  an SMB message that fails decryption (MS-SMB2 3.3.5.2.1.1), whose inner
+  header has no message ID to answer on.
 - **Unwrap runs on the reader**, because SMB's credit charge (admit) is in the
   inner header. **Wrap runs on the worker**, before the reply is queued: both
   protocols need only a unique nonce or sequence number per message, not an
@@ -2952,9 +3004,12 @@ inside the service, or a reply reservation's deadline, before it — is one clas
 ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), which the
 adapter builds itself for its own reply-reservation refusal. A request whose
 hold starts on an error the service returned, past its connection's hold
-floor with the hold pool full, is the adapter's own refusal; a call still in
-the service is never refused (§4.6). The error table answers both at once and holds neither; the statuses
-are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
+floor with the hold pool full, is the adapter's own refusal, the same
+`ErrDelay` with `DelayResources`; a call still in the service is never refused
+(§4.6). The error table answers both at once and holds neither: in a table
+that Holds, a typed row for that cause with no `Hold` wins over a holding
+`ErrDelay` row (§4.7's `ErrorTable`), so neither refusal, nor `Park`'s, starts
+a hold; the statuses are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
 [RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)).
 
 > ponytail: a fixed cap of 64 per connection for protocols without flow control.
@@ -3126,6 +3181,7 @@ func NewBufPool(b *WaitBudget) *BufPool                         // RFC 24 §2.5:
 func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) // one reservation for key of n's class's capacity plus RFC 24 §3.1's per-request overhead (8 KiB), released with the buffer; then a buffer: refs = 1
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
+func (b *Buf) Recharge(to *Budget) error                     // RFC 24 §4.3: the whole charge moved to a reservation from to; refused, nothing changes
 ```
 
 - **Each `Server` builds its own.** `core` builds a `BufPool` over each budget

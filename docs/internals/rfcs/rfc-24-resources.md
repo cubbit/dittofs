@@ -907,7 +907,17 @@ counts nothing about holds. This RFC fixes which pool holds the bytes:
 - **Past the floor**, the adapter reserves the call's whole receive charge —
   buffer class and per-request overhead, as charged at frame — from the hold
   pool and, only once that succeeds, releases the receive reservation, so the
-  charge is never absent. Failing, it refuses the call, and the receive
+  charge is never absent. It does so with `Recharge` on the call's record
+  `Buf`, whose last `Release` then returns the charge to the hold pool:
+
+  ```go
+  // Recharge moves b's whole charge to a reservation from to: it reserves the
+  // charge from to, and only then releases b's old reservation and keeps the
+  // new one. Refused, it returns the error and nothing changes.
+  func (b *Buf) Recharge(to *Budget) error
+  ```
+
+  If `Recharge` fails, the adapter refuses the call, and the receive
   reservation is released with it — except a call the interim timer finds
   still in the service, which is not refused and keeps its receive
   reservation, since it may still apply
