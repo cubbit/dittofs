@@ -1533,7 +1533,7 @@ type Mechanism interface {
 // and the per-message operations the mechanism defines.
 type Context struct {
 	Evidence vfs.Evidence // RFC 18 §3.1 through RFC 17 §3.0's alias: principal, SIDs, expiry
-	Keys    vfs.Keys        // RFC 18 §3.1's Session, Subkey and APRep; never in an Identity. Session is RFC 4121 §2's context key: the acceptor's subkey if the AP-REP sends one, else the authenticator's, else the ticket's session key
+	Keys    vfs.Keys        // RFC 18 §3.1's Session, Subkey and APRep, with Session's chain as RFC 18 §3.1 states it (NTLM's exported session key, or RFC 4121 §2's context key); never in an Identity
 	MIC     func(msg []byte) ([]byte, error)            // RFC 4121: krb5i, the RPCSEC_GSS verifier
 	Wrap    func(msg []byte) ([]byte, error)            // RFC 4121: krb5p
 	Unwrap  func(tok []byte) ([]byte, error)
