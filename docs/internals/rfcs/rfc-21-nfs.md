@@ -2511,7 +2511,13 @@ the `ILLEGAL` row, which answers `NFS4ERR_OP_ILLEGAL`, as develop does; `ErrVers
 to `NFS4ERR_MINOR_VERS_MISMATCH`, answered once for the compound before any
 operation runs; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrTooLong` to
 `NFS4ERR_TOO_MANY_OPS` for NFSv4.1 and to `NFS4ERR_RESOURCE` for NFSv4.0,
-which has no such status (two rows, split by `Versions`); `ErrMoved` to
+which has no such status (two rows, split by `Versions`); `ErrReplyTooBig`, a
+`COMPOUND` whose reply would hold more than a quarter of the reply pool
+([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)),
+to `NFS4ERR_REP_TOO_BIG` (RFC 8881 §15.1.3.6) in a row naming no version, which
+RFC 20 §4.7's `NewOpTable` demands of a table with a compound row, and to
+`NFS4ERR_RESOURCE` (RFC 7530 §13.1.3.4) for NFSv4.0, which has no reply-size
+status, in a row naming it that wins there; `ErrMoved` to
 `NFS4ERR_MOVED` for the NFSv4 operations that use the current filehandle (a
 row of NFSv4's table naming them in `Ops`; NFSv3, MOUNT and NLM each have a
 table of their own, RFC 20 §4.5), §7.4; `ErrDraining`, and `ErrMoved` for any other
