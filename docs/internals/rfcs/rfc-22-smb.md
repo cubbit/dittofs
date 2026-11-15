@@ -559,7 +559,13 @@ one gateway node's memory; a client that loses the node signs in again.
   stays open (MS-SMB2 3.3.5.2.4): it is never dropped unanswered, which would
   leave the client waiting out its timeout. A message that fails decryption,
   and a second `NEGOTIATE` on a connection, are not answered: the connection
-  is closed (MS-SMB2 3.3.5.2.1.1, 3.3.5.4; RFC 20 §4.7's `Conn.Close`). There is no per-share signing setting: SMB2 cannot
+  is closed (MS-SMB2 3.3.5.2.1.1, 3.3.5.4; RFC 20 §4.7's `Conn.Close`). An
+  encrypted message's inner headers are checked at unwrap: a malformed one is
+  `STATUS_INVALID_PARAMETER`, encrypted, and the connection stays open; one too
+  short to be a header, misaligned, or naming another session than the
+  transform header closes it (MS-SMB2 3.3.5.2.1.1, 3.3.5.2.6;
+  [RFC 20 §5.5](rfc-20-adapters.md#5.5%20Message%20transforms)). There is no
+  per-share signing setting: SMB2 cannot
   tell a client that one share needs signing and another does not, so a
   per-share requirement could only refuse an unsigned client's every request on
   that share.

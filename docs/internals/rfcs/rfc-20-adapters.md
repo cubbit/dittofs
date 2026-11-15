@@ -1362,7 +1362,7 @@ How each stage refuses:
 | --- | --- |
 | frame | length past the cap: connection closed. No room in the receive pool: not refused — the record is not read until room frees |
 | decode header, decode args | the protocol's garbage-args or invalid-parameter answer, from the table's row for `ErrDecode` (§4.7). A header that did not decode far enough to address a reply: connection closed |
-| unwrap | SMB: `STATUS_ACCESS_DENIED` on the request's message ID, wrapped as §5.5 says, connection kept; a message that fails decryption closes it (`Conn.Close`, MS-SMB2 3.3.5.2.1.1) ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). `RPCSEC_GSS`: a failed verifier `RPCSEC_GSS_CREDPROBLEM`; a sequence number below the window, or already seen, dropped unanswered; one above it advances the window ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
+| unwrap | SMB: `STATUS_ACCESS_DENIED` on the request's message ID, or, for a malformed inner header of an encrypted message, `STATUS_INVALID_PARAMETER` from the row for `ErrDecode`, each wrapped as §5.5 says, connection kept; a message that fails decryption, or an inner header too short to be one, misaligned, or naming another session than the transform header, closes it (`Conn.Close`, MS-SMB2 3.3.5.2.1.1, 3.3.5.2.6) ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). `RPCSEC_GSS`: a failed verifier `RPCSEC_GSS_CREDPROBLEM`; a sequence number below the window, or already seen, dropped unanswered; one above it advances the window ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
 | admit | the default cap never refuses, since the connection is not read until a request completes; a protocol's `Flow` may refuse, and a `Stages.Errors` row maps that refusal |
 | replay check | the cached reply, or the protocol's sequence error; past the deadline, the reply reservation's `ErrDelay` with `DelayResources` (§4.7's `ReplayCache`) |
 | resolve IDs | a table ID not in its table: the protocol's bad-ID answer. A client-held name is never refused here |
@@ -1917,7 +1917,11 @@ type HeaderCodec interface {
 	// A header that does not decode comes back with its error when enough
 	// decoded to address a reply, which Stages.Errors maps; with a nil Header
 	// nothing can be answered, and the connection closes. Either error is
-	// wrapped in ErrDecode.
+	// wrapped in ErrDecode. In a record Unwrap has already proved whole (an
+	// encrypted SMB message, §5.5; not a signed chain, whose members are
+	// proved one by one), a header that does not decode but can address a
+	// reply comes back with no error: the codec leaves its refusal to Unwrap,
+	// so the answer is wrapped.
 	Decode(rec *Buf, off int) (Header, error)
 	Encode(h Header, s Status, out *Buf) error
 	Chain(out *Buf, prev int) error            // points the reply at prev to the one appended after it (SMB2's NextCommand, padded to 8); nil-op where nothing chains
@@ -1937,12 +1941,14 @@ type Security interface {
 	// before the check, so the check never runs against an unresolved ID.
 	// A refusal that can be answered comes back with the header (a bad
 	// signature, an unsigned request where signing is required, a failed GSS
-	// verifier, integrity or privacy check), which carries §5.5's verdict: the
-	// key its answer is signed under, or none, and whether it may be sealed.
-	// It is answered, wrapped under that header, and the connection kept. A
-	// nil Header with its error
-	// says close: nothing is answered, and the pipeline closes the connection
-	// through Conn.Close with that error (a message that fails decryption).
+	// verifier, integrity or privacy check, and, with ErrDecode, a malformed
+	// inner header of an encrypted SMB message), which carries §5.5's verdict:
+	// the key its answer is signed under, or none, and whether it may be
+	// sealed. It is answered, wrapped under that header, and the connection
+	// kept. A nil Header with its error says close: nothing is answered, and
+	// the pipeline closes the connection through Conn.Close with that error (a
+	// message that fails decryption, or an inner header too short to be one,
+	// misaligned, or naming another session than the transform header).
 	Unwrap(h Header, rec *Buf, prev Header) (Header, error)
 	// Wrap signs or encrypts in place, a chain once per record (§4.7). The
 	// refusal of a header that failed Decode is not passed to it, alone or
@@ -2241,9 +2247,11 @@ after it, each answered the refused member's status with no call; and the next
 unrelated member starts a new record, and the chain runs on. A member whose
 header fails `Decode` splits the chain the same way, but its refusal's record
 is not passed to `Wrap` (§5.5), so no `Wrap` of a joined record reaches it.
-With a nil header from `Decode` or `Unwrap` the connection closes and nothing
-more is sent. Each such split is counted in `adapter_chain_splits_total`
-(§10.1).
+The chain runs on past a refused member only when that header's `Next` is a
+valid step, forward and inside the record; a bad step ends the chain, and
+nothing past it is read. With a nil header from `Decode` or `Unwrap` the
+connection closes and nothing more is sent. Each such split is counted in
+`adapter_chain_splits_total` (§10.1).
 
 A member before the last that the service answered an error whose row holds
 (an `ErrDelay`, a grace, an unavailable share), so applied nothing, is
@@ -2489,9 +2497,10 @@ var (
 	ErrCancelled      = errors.New("core: cancelled")                     // a hold or a park its client's cancel ended (§4.6, §6.5)
 	// ErrDecode wraps, keeping it, the error of HeaderCodec.Decode, of a row's
 	// Decode, of a compound member's, and of a step of the record's walk that
-	// does not move forward inside the record (the runner, above). Every table
-	// maps it (NewErrorTable); a protocol's typed row for its own value still
-	// wins (§4.5).
+	// does not move forward inside the record (the runner, above); Unwrap
+	// returns it for a malformed header of a record it proved (§5.5). Every
+	// table maps it (NewErrorTable); a protocol's typed row for its own value
+	// still wins (§4.5).
 	ErrDecode = errors.New("core: request does not decode")
 	// ErrMoved and ErrDraining are what a request §3.1 does not serve gets
 	// while the adapter drains: ErrMoved where the service names a gateway
@@ -2880,7 +2889,8 @@ encrypted SMB message, the inner one. A connection with no transform has no
   connected with (§3.6); a plain message where one is required is refused there, with the protocol's status, before the replay
   check.
 - **The refusal of a header that failed decode is not passed to `Wrap`; one at
-  unwrap is signed whenever the server holds the key.** A header that failed decode never
+  unwrap is signed under the key the server holds, unless its answer carries
+  no signature.** A header that failed decode never
   reached `Unwrap`, so nothing proved the session or context it names: its
   refusal goes out as encoded, and a client whose session requires signing
   discards it, which only a client that sent a malformed header meets. In a
@@ -2889,9 +2899,11 @@ encrypted SMB message, the inner one. A connection with no transform has no
   decrypts and authenticates the whole record under the transform header's
   session before any member after the first is decoded, and every unrelated
   member must name that session (MS-SMB2 3.3.5.2.1.1). SMB checks those inner
-  headers at unwrap, where MS-SMB2 checks the decrypted record, so none fails
-  decode with an answer: a malformed one is an unwrap refusal,
-  `STATUS_INVALID_PARAMETER` (MS-SMB2 3.3.5.2.6), encrypted under the
+  headers at unwrap, where MS-SMB2 checks the decrypted record: its codec
+  decodes one that can address a reply with no error, as `Decode` does in a
+  record `Unwrap` has proved (§4.7), so none fails decode with an answer. A
+  malformed one is an unwrap refusal with `ErrDecode`, answered
+  `STATUS_INVALID_PARAMETER` (§4.1; MS-SMB2 3.3.5.2.6) and encrypted under the
   transform's session, as 3.3.4.1.4 encrypts every response to an encrypted
   request; one MS-SMB2 disconnects for (too short to be a header, misaligned,
   or naming another session) closes the connection (3.3.5.2.1.1, 3.3.5.2.6). A
