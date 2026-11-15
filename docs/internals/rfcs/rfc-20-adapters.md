@@ -1945,9 +1945,9 @@ type Security interface {
 	// through Conn.Close with that error (a message that fails decryption).
 	Unwrap(h Header, rec *Buf, prev Header) (Header, error)
 	// Wrap signs or encrypts in place, a chain once per record (§4.7). The
-	// refusal of a header that failed Decode is not passed to it; a refusal
-	// at Unwrap is, under the header Unwrap returned with it, whose verdict
-	// §5.5 states.
+	// refusal of a header that failed Decode is not passed to it, alone or
+	// in a chain's record, which it splits (§4.7); a refusal at Unwrap is,
+	// under the header Unwrap returned with it, whose verdict §5.5 states.
 	Wrap(h Header, reply *Buf) error
 }
 type FlowControl interface {
@@ -2238,8 +2238,11 @@ refuses splits the chain: the replies before it go out first, joined and
 wrapped once; its refusal goes out next in a record of its own, wrapped once
 under its own header as §5.5 says, with the replies of the related members
 after it, each answered the refused member's status with no call; and the next
-unrelated member starts a new record, and the chain runs on. With a nil header
-from `Unwrap` the connection closes and nothing more is sent. Each such split is counted in `adapter_chain_splits_total`
+unrelated member starts a new record, and the chain runs on. A member whose
+header fails `Decode` splits the chain the same way, but its refusal's record
+is not passed to `Wrap` (§5.5), so no `Wrap` of a joined record reaches it.
+With a nil header from `Decode` or `Unwrap` the connection closes and nothing
+more is sent. Each such split is counted in `adapter_chain_splits_total`
 (§10.1).
 
 A member before the last that the service answered an error whose row holds
@@ -2880,7 +2883,18 @@ encrypted SMB message, the inner one. A connection with no transform has no
   unwrap is signed whenever the server holds the key.** A header that failed decode never
   reached `Unwrap`, so nothing proved the session or context it names: its
   refusal goes out as encoded, and a client whose session requires signing
-  discards it, which only a client that sent a malformed header meets. A
+  discards it, which only a client that sent a malformed header meets. In a
+  chain it goes out in a record of its own (§4.7). An encrypted SMB record is
+  the exception, since its transform proves every header in it: `Unwrap`
+  decrypts and authenticates the whole record under the transform header's
+  session before any member after the first is decoded, and every unrelated
+  member must name that session (MS-SMB2 3.3.5.2.1.1). SMB checks those inner
+  headers at unwrap, where MS-SMB2 checks the decrypted record, so none fails
+  decode with an answer: a malformed one is an unwrap refusal,
+  `STATUS_INVALID_PARAMETER` (MS-SMB2 3.3.5.2.6), encrypted under the
+  transform's session, as 3.3.4.1.4 encrypts every response to an encrypted
+  request; one MS-SMB2 disconnects for (too short to be a header, misaligned,
+  or naming another session) closes the connection (3.3.5.2.1.1, 3.3.5.2.6). A
   message `Unwrap` refused is answered under the header `Unwrap` returns with
   its refusal, which carries two facts for `Wrap`: the key to sign the answer
   under, or none, and whether the answer may be sealed. Both are the
@@ -3653,7 +3667,7 @@ measures only what happens before and after the service call.
 | How much is in flight per protocol? | `adapter_requests_in_flight{protocol}` | gauge |
 | How often is a request refused before the service? | `adapter_refusals_total{protocol, stage}` | counter |
 | How often are replays answered from the cache? | `adapter_replay_hits_total{protocol}` | counter |
-| How often does a chain's reply go out in more than one record, and why (§4.7)? | `adapter_chain_splits_total{protocol, reason}`, `reason` = `unwrap`, `reply_pool`, `quarter` | counter |
+| How often does a chain's reply go out in more than one record, and why (§4.7)? | `adapter_chain_splits_total{protocol, reason}`, `reason` = `unwrap`, `decode`, `reply_pool`, `quarter` | counter |
 | How long are requests on the wire around the service call? | `adapter_wire_seconds{protocol, stage}` | histogram |
 | How often does a handler fault? | `adapter_handler_panics_total{protocol, op}` | counter |
 | How often does an error have no row? | `adapter_unmapped_errors_total{protocol}` | counter |
