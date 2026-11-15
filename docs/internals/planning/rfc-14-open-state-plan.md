@@ -478,7 +478,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | Deleting `pkg/metadata/lock` (D3) | it serves today's server until the adapters move | stage 5 | stage 5 |
 | L1 and L20, the service's; L9, the engine's; L29's restart case (plan §3) | rows of other layers; L9 needs eviction | RFC 17 plan (L1, L20, L29), RFC 8 second part plan (L9) | stage 2; offload |
 | L52's SMB session cases (piece 8) | they are SMB session steps | RFC 22 plan | the SMB adapter, stage 5 |
-| L36's rename case (piece 3) | RFC 22's plan's amendment A6 added it after piece 3 merged; that plan builds it with the service's refusal | RFC 22 plan (T2.4) | that plan's T2.4 lands |
+| L36's rename case (piece 3) | RFC 22's plan's amendment A6 added it after piece 3 merged; that plan builds it with the service's refusal | RFC 22 plan (E2, T2.4) | that plan's T2.4 lands |
 | Model fuzzing: L56, L57 and L3b run as `-race` loops and a direct case (plan §4, piece 6) | model fuzzing comes after stage 1 | unowned | after stage 1 |
 | §13.3's benchmarks other than heap per state (plan §4) | their targets are fixed by a first after-merge run, and no registered suite runs `go test -bench` | RFC 29 harness | a registered suite runs `go test -bench` |
 | Concrete types for the seven views (plan §5 Q2) | §11.3 declares them as interfaces | RFC 14 edit, with RFC 17 plan's first area | RFC 14 §11.3 edited |

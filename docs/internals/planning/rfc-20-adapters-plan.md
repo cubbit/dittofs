@@ -863,7 +863,7 @@ decision to drop it (its issue closed as not planned).
 | `IPC$`, `dcerpc`, srvsvc share listing, lsarpc lookups | handlers | RFC 22 plan | with `TREE_CONNECT` |
 | `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, `gsstest` | no handshake to drive it | the RFC 22 plan (E4), until its own RFC (risk 5) | first `SESSION_SETUP` |
 | `gss`: RFC 4121 MIC token (`Context.MIC`) | no handshake to drive it | the RFC 22 plan (E4), until its own RFC (risk 5): SPNEGO's mechanism-list MIC over Kerberos | first `SESSION_SETUP` |
-| `gss`: RFC 4121 `Wrap`, `Unwrap` | no SMB consumer | RFC 21 plan, or `gss`'s own RFC | GSS `INIT` |
+| `gss`: RFC 4121 `Wrap`, `Unwrap` | no SMB consumer | RFC 21 plan | RFC 21's first RPCSEC_GSS `INIT` handler |
 | `translate` (ACLs, access masks, times, attributes, `Fit`) | no handler calls it | the RFC 22 plan for what SMB calls (its E7, E8, E12); RFC 21 plan for what NFS calls, RFC 19 §5.1's NFSv4 functions included | their first handler epic |
 | each protocol's error-table rows and its totality test (RFC 20 §7.3) | rows are protocol choices | RFC 21/22 plans | with their handlers |
 | handler tests on `vfstest.Memory` and `vfstest.Faults` (§7.2), the one-call rule read per handler from `vfstest.Memory`'s record of mutating calls | no handlers | RFC 21/22 plans | every handler epic |
