@@ -75,7 +75,7 @@ Eleven changes to `testproto`, each made by the subtask whose tests need it:
    names `context.Canceled` naming `ErrCancelled` instead (T5.2a, D17); a row for
    `ErrReplyTooBig`, with a status of its own (T5.4, D11); a typed row for
    `&vfs.Delay{Cause: vfs.DelayResources}`, its status `StatusDelay` and no `Hold`, in both
-   tables, with the `decision:` on `errorRows` saying so (T5.5b, D17).
+   tables, with the `decision:` on `errorRows` saying so (T5.2a, D17).
 9. `Unwrap` returning its header with its error on a bad checksum, so the refusal is answered
    and the connection kept (a related member with none before it still returns none, which
    closes the connection); the reply to it encoded under no session, and the client accepting
@@ -558,7 +558,11 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   deadline (R73), hold the pool full, keeping its place under `Flow`, so that 64 such waits
   stop the reader before the connection's own cancels. A refusal the reader answers (a
   header or `Unwrap` refused, D8) tries `BufPool.TryGet` and, only when that fails, waits on a
-  goroutine of its own, so the reader never waits on the reply pool. The close is asked for
+  goroutine of its own, so the reader never waits on the reply pool. That goroutine keeps the
+  request's record, and so its receive charge, until the status goes out, so the receive pool
+  bounds such waits as it bounds admitted requests (RFC 24 §6.1, as this pull request amends
+  it): a client that sends bad headers while the reply pool is full spends its receive turns,
+  not goroutines without bound. The close is asked for
   by `link.close` with D9's error, which E4's close count records as `reply_wait` (RFC 20
   §6.4, §10.1). A park's refusal needs no wait: `Park` keeps the request's own reply
   reservation when it is of the small class, and otherwise takes a small one with `TryGet`
@@ -629,7 +633,8 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   request amends them. `decision:` on the hold record. No prior art sought: the two RFC
   sentences conflict, and one must give.
 - **D13, a held request counts its record's length toward the floor's bytes, at least
-  64 KiB.** RFC 24 §4.3 counts "the write's bytes", which `core` does not read. The floor's two
+  64 KiB.** RFC 24 §4.3 counted "the write's bytes", which `core` does not read; RFC 24 §4.3
+  and RFC 20 §4.6 now count the record's length, as this pull request amends them. The floor's two
   figures are fields of `shared`, 256 and 32 MiB, which a test lowers per server through
   `hooks_test.go`: on `testproto` the pending ceiling of 8 is reached long before either.
   `decision:` at the count. No prior art sought: the record's length is the only size `core`
@@ -666,13 +671,16 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   and `vfs.Errors()` already lists, and which the error table answers at once and never holds
   (RFC 20 §6.3): a typed row for it with no `Hold` wins over a holding `ErrDelay` row (R26), so
   neither this refusal, nor R24's, nor `Park`'s (R70) starts a hold, and `testproto` gains
-  that row (§1.1's change 8). A hold or a park ended by its client's cancel is
+  that row (§1.1's change 8). **`NewOpTable` refuses a table that holds whose error table has no
+  such row naming neither `Ops` nor `Versions`** (D3): a row a protocol can forget, as D7 says of
+  `ErrDecode`, and without it the hold pool's refusal would start a hold while the totality
+  test, which sees the error mapped, passes. A hold or a park ended by its client's cancel is
   answered **`ErrCancelled`, a new member of `Errors()`**, which RFC 20 §6.5's cancelled
   status maps from; **`NewOpTable` refuses a table that holds whose error table has no row
   for it naming neither `Ops` nor `Versions`** (D3), for the reasons D7 gives: a cancel ends a
   hold of any operation and version. It lives in `core`'s `errors.go`, with `core`'s other
-  refusals; `ErrParked` stays in `hold.go`. RFC 20 §4.7 (`Errors()`, `NewOpTable`, `Park`),
-  §4.6 and §6.3 say so, as this pull request amends them, and `core.golden` takes
+  refusals; `ErrParked` stays in `hold.go`. RFC 20 §4.7 (`Errors()`, `NewOpTable`'s two checks,
+  `Park`), §4.6 and §6.3 say so, as this pull request amends them, and `core.golden` takes
   `ErrCancelled` with T5.2a. `decision:` at each. No prior art sought: both are choices among
   this surface's own errors.
 - **D18, the `protocol` label is a field of the table and of the stages, and a server
@@ -796,10 +804,10 @@ internal/adapter/adaptertest/testproto/   the eleven changes of §1.1, each by i
 test/adapter/known.yaml  T5.1c: the end-to-end entry removed
 test/suites.yaml         T5.10: ./internal/adapter/core/ added to unit/adapter-allocs
 docs/internals/rfcs/rfc-20-adapters.md   this pull request: §4.1, §4.3, §4.6, §4.7, §5.5,
-                                         §6.3, §6.8 (D6, D7, D10, D12, D17, Recharge), §6.4,
-                                         §6.9, §10.1 (D8, D9, D11, D18)
-docs/internals/rfcs/rfc-24-resources.md  this pull request: §2.5, §2.6, §3.3, §3.5, §4.2, R4
-                                         (D8, D9, D11), §4.3 (Recharge)
+                                         §6.3, §6.8 (D6, D7, D10, D12, D13, D17, Recharge),
+                                         §6.4, §6.9, §10.1 (D8, D9, D11, D18)
+docs/internals/rfcs/rfc-24-resources.md  this pull request: §2.5, §2.6, §3.3, §3.5, §4.2,
+                                         §6.1, R4 (D8, D9, D11), §4.3 (Recharge, D13)
 docs/internals/rfcs/rfc-17-vfs.md        T5.5d: §5.9 Hold (D16)
 ```
 
@@ -877,7 +885,13 @@ registry. Nothing else is exported.
   code, a range whose `First` is past its `Last`, and a row of `errs` with a `Hold` in a
   table that does not hold, each a panic naming the row (D3); a table that holds whose
   `errs` has no row for `ErrCancelled` naming neither `Ops` nor `Versions` refused the same
-  way (D17). `ErrCancelled`, added to `Errors()`, as RFC 20 §4.7 says since this pull request,
+  way, and so is one with no typed row for `&vfs.Delay{Cause: vfs.DelayResources}` with no
+  `Hold` naming neither (D17). `testproto`'s typed `DelayResources` row of §1.1's change 8, so
+  its holding table builds, with `TestErrorRows` rewritten for it: each error checked against
+  the first row that matches it in `NewErrorTable`'s order, the typed row with no `Hold` in
+  both tables, `ErrCancelled` checked once, and the `decision:` on `errorRows` no longer
+  calling `ErrDelay` the protocol's only delay. `ErrCancelled`, added to `Errors()`, as RFC 20
+  §4.7 says since this pull request,
   and `core.golden`; `testproto`'s cancel row renamed to it (§1.1's change 8), `ErrCancelled` a
   plain sentinel that does not wrap `context.Canceled`, so `TestErrorRows` checks it in place
   of `context.Canceled`; the holding table `dispatch_test.go` already builds gains that row, or
@@ -885,18 +899,22 @@ registry. Nothing else is exported.
 - **Landed in part:** #4194 gave `NewOpTable` its body and its first three checks, and moved
   the end-to-end entry's message in `test/adapter/known.yaml` to `core: new server`, where the
   specification now stops, with `TestNewOpTableChecksItsRows` and `testproto`'s
-  `TestTablesBuild`. `ErrCancelled`, its check, its row and its golden line are what this
-  subtask still adds.
+  `TestTablesBuild`. `ErrCancelled`, its check, its row and its golden line, and the
+  `DelayResources` check and row, are what this subtask still adds.
 - **Consumers:** T5.9, T5.4, T5.1a; T5.5b and T5.11, which answer `ErrCancelled`;
   `testproto`, whose tables build from here on.
-- **Acceptance criteria:** each of the four faults panics with the row's name, a holding
-  table whose only `ErrCancelled` row names an operation or versions included; `testproto`'s
+- **Acceptance criteria:** each of the five faults panics with the row's name, a holding
+  table whose only `ErrCancelled` row names an operation or versions included, and one whose
+  only `DelayResources` row has a `Hold` or names an operation; `testproto`'s
   two tables and its members' table build; a `Hold` row in a holding table is accepted;
   `ErrCancelled` is in `Errors()`.
 - **Tests:** in `dispatch_test.go`. One case per fault (catch a check dropped: two rows under
   one code would otherwise shadow each other silently), and the `ErrCancelled` rows that name
   an operation or a range of versions (catch a check that any row satisfies, which leaves a
-  cancel of another operation or version to the fault status). `testproto`'s `TestTablesBuild`,
+  cancel of another operation or version to the fault status). The holding table with no
+  typed `DelayResources` row, and the ones whose only such row has a `Hold` or names an
+  operation (catch a table that lets the hold pool's refusal start a hold). `testproto`'s
+  `TestTablesBuild`,
   which builds both versions' tables directly (catches a check that refuses a valid table).
   `TestErrorsListsEverySentinelOnce` (catches `ErrCancelled` left out of `Errors()`).
 
@@ -1027,7 +1045,8 @@ registry. Nothing else is exported.
   refuses at once, under any context, a charge past the reply pool's ceiling (D11);
   `reserveStatus(key)`, a status's buffer (D9): a `TryGet` first, then a wait of at most
   30 s from when it starts, past which it asks `link.close` with D9's error, which E4's
-  close count records as `reply_wait`.
+  close count records as `reply_wait`; its caller keeps the request's record, and so its
+  receive charge, until the status goes out (RFC 24 §6.1).
   `ErrReplyTooBig`, added to `Errors()` as RFC 20 §4.7 now lists it, with `core.golden`. In
   `pkg/resources`, `BufPool.TryGet(key, n) (*Buf, bool)` and `BufPool.Ceiling() int64`, as
   RFC 24 §2.5 now declares them, over a try and a ceiling on `WaitBudget` that stay
@@ -1147,8 +1166,9 @@ registry. Nothing else is exported.
     once when called from the test, from a handler's own call and from `Unwrap` on the
     reader, and `wait()` returns only once that `Echo` has ended (`TestCloseNeverBlocks`).
   - With the reply budget full, a header refused on the reader waits for its status's buffer
-    on its own goroutine: `serve` returns, and a `Cancel` handed to `serve` next on the same
-    connection returns too; the status goes out once room is freed.
+    on its own goroutine, keeping its record's receive charge: `serve` returns, a `Cancel`
+    handed to `serve` next on the same connection returns too, and the receive budget reads
+    the record's charge until the status goes out once room is freed.
 - **Tests:** seam tests in `pipeline_test.go`. The suite on the recorder (catches a recorder
   that would hide a writer's fault: an `out` that blocks, keeps a reference, fails before
   the close, or ignores `before`). The echo on both stage sets (catches a nil stage called,
@@ -1179,9 +1199,11 @@ registry. Nothing else is exported.
   request still runs). Each test ends with `CheckLeaks` (catches a reply reservation kept on
   a `NoReply` path). The header with a bad `next` against a reply budget the test holds
   full, then a `Cancel` on the same connection, in a `synctest` bubble: `synctest.Wait` shows
-  both `serve` calls returned with the status still waiting, and the status is sent once the
-  test frees room (catches a reader that waits on the reply pool for a refused header, which
-  stops the connection's cancels behind it, a case T5.3's two ends of the wait do not see).
+  both `serve` calls returned with the status still waiting and the receive budget holding
+  the record's charge, and the status is sent once the test frees room, the charge released
+  with it (catches a reader that waits on the reply pool for a refused header, which stops
+  the connection's cancels behind it, a case T5.3's two ends of the wait do not see, and a
+  wait that releases its record first, which no pool then bounds).
   What needs a service call (out of order, the replay hit, a request in
   the service as the drain begins, two servers) is T5.4's: `testproto` reaches the service
   only from a chain or a compound, since `Create` needs the filehandle a `PutFH` before it
@@ -1467,11 +1489,8 @@ registry. Nothing else is exported.
   most `MaxPending` of them, with RFC 20's
   `ponytail:`; `close` ending every hold; the gauges and the refusal counter; one child span
   per attempt. The record kept until the final answer is RFC 20 §4.6's, as this pull
-  request amends it (D12). `testproto`'s changes 5 and 6 of §1.1, and its
-  typed `DelayResources` row of change 8 (D17), with `TestErrorRows` rewritten for it: each
-  error checked against the first row that matches it in `NewErrorTable`'s order, the typed
-  row with no `Hold` in both tables, `ErrCancelled` checked once, and the `decision:` on
-  `errorRows` no longer calling `ErrDelay` the protocol's only delay.
+  request amends it (D12). `testproto`'s changes 5 and 6 of §1.1; its typed
+  `DelayResources` row of change 8 is T5.2a's (D17).
 - **Consumers:** T5.5c, T5.11.
 - **Acceptance criteria:**
   - In version 2, a `Create` the service answers `ErrDelay` twice gets one interim, runs a
@@ -1838,7 +1857,10 @@ A suggestion only: one pull request per subtask works as well.
   `Park`'s comment; D12); `ErrCancelled`, which `NewOpTable` demands a row for in a table
   that holds, and the hold floor's refusal as `ErrDelay` of `DelayResources` that a typed
   row answers without a hold (§4.7, §4.6, §6.3; D17); and `Buf.Recharge` (RFC 24 §4.3,
-  RFC 20 §6.8; T5.5a). Each subtask brings its code and golden line, and rule 9's order
+  RFC 20 §6.8; T5.5a); a held request counting its record's length toward the floor's bytes
+  (RFC 24 §4.3, RFC 20 §4.6; D13); and the bound on a refused header's status wait, which keeps
+  its record's receive charge (RFC 24 §3.3 and §6.1, RFC 20 §6.4 and §6.9; D9). Each subtask
+  brings its code and golden line, and rule 9's order
   holds: each amendment precedes its symbol. RFC 17 §5.9's line for `vfs.Hold` (D16) stays
   with T5.5d: RFC 17's surface is its own plan's to review, and that plan's piece 13 (#4239)
   builds the service's side of the same wait. D27's cancel key, and the queue
