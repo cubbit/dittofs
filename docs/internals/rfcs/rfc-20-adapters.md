@@ -1766,10 +1766,11 @@ it holds — the service counts nothing about holds:
   SMB, what is left of the request's hold;
 - **SMB counts per connection, with a floor.** Requests held — waiting in the
   service under `WithHold`, or between re-drives, but not a parked waiting lock
-  or change notification (§4.7's `Park`), which holds no write data, no worker
+  or change notification (§4.7's `Park`), which holds no record, no worker
   and at most a small reply —
   are counted per connection
-  against a floor of 256 requests and 32 MiB of write data, and past it against
+  against a floor of 256 requests and 32 MiB of records, each counted at its
+  length and at least 64 KiB, and past it against
   the node's hold pool
   ([RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go));
   a request neither can take, when its hold starts on an error the service
@@ -1851,7 +1852,7 @@ it holds — the service counts nothing about holds:
 > to withdraw a call it has not applied.
 
 > decision: a parked request is off the hold floor, which counts held requests
-> and their write data, because it holds neither: a waiting lock or a change
+> and their records, because it holds neither: a waiting lock or a change
 > notification can wait for hours and would starve the floor of the writes it
 > exists for. It stays bounded by the pending ceiling in count and by the small
 > class in reply bytes (§4.7's `Park`). Withdraw it if a client is found that
@@ -2086,7 +2087,9 @@ func Bind[Req, Rep any](
 // NewOpTable builds a table and checks it: codes unique, ranges well formed,
 // no ErrorRow.Hold unless holds, a MaxMembers on every row with Members, and,
 // where holds, a row of errs for ErrCancelled naming neither Ops nor Versions,
-// since a cancel ends a hold of any operation and version.
+// since a cancel ends a hold of any operation and version, and a typed row for
+// &vfs.Delay{Cause: vfs.DelayResources} with no Hold naming neither, so no
+// refusal of a node pool starts a hold (§6.3).
 func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable
 
 // Version is a protocol's version, minor version or dialect; Range a closed
@@ -2442,7 +2445,7 @@ var ErrParked = errors.New("core: parked")
 // fit is answered as its protocol answers an overflow (RFC 22 §3.3). A request
 // already pending past its interim (a LOCK re-driven after a hold, then
 // blocked) gets no second interim: its slot moves from held to parked. A parked
-// request holds no worker and no write data and is not counted against the hold
+// request holds no worker and no record and is not counted against the hold
 // floor (§4.6): MaxPending bounds it. On done core encodes the reply, wraps it
 // and sends it under Final's header. A client cancel calls cancel first, and
 // done's error is replaced by ErrCancelled, which the table maps to the
@@ -3009,8 +3012,9 @@ floor with the hold pool full, is the adapter's own refusal, the same
 `ErrDelay` with `DelayResources`; a call still in the service is never refused
 (§4.6). The error table answers both at once and holds neither: in a table
 that Holds, a typed row for that cause with no `Hold` wins over a holding
-`ErrDelay` row (§4.7's `ErrorTable`), so neither refusal, nor `Park`'s, starts
-a hold; the statuses are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
+`ErrDelay` row (§4.7's `ErrorTable`), and `NewOpTable` refuses a table that
+Holds without that row (§4.7), so neither refusal, nor `Park`'s, starts a hold;
+the statuses are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors),
 [RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors)).
 
 > ponytail: a fixed cap of 64 per connection for protocols without flow control.
@@ -3030,7 +3034,7 @@ a hold; the statuses are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%
 | connection limit | per node, `connection_limit`, and a quarter of it per address ([RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)) | new connections closed at accept, never left in the listen backlog |
 | accept failure | an `Accept` error the listener can recover from, such as no file descriptor left | retried after a backoff from 10 ms doubling to 1 s; failing for 60 s raises `adapter_listener_lost` (§3.7) |
 | drain timeout, `drain_timeout` | draining (§3.1) | remaining requests abandoned |
-| status buffer wait | a reply carrying a status alone that holds no reply reservation: 30 s from when it starts waiting ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)) | connection closed, counted under `reply_wait` (§10.1) |
+| status buffer wait | a reply carrying a status alone that holds no reply reservation, keeping its record's receive charge meanwhile ([RFC 24 §6.1](rfc-24-resources.md#6.1%20Goroutines)): 30 s from when it starts waiting ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)) | connection closed, counted under `reply_wait` (§10.1) |
 
 The timeouts are settings in [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings),
 each adapter's own under `adapters.<protocol>`; the request deadline is fixed
@@ -3230,7 +3234,7 @@ The rules of §6.1–§6.6 come to a small set of mechanisms:
 
 | Concern | Mechanism | Ceiling, and what replaces it |
 | --- | --- | --- |
-| requests in flight per connection | a goroutine per admitted request; the reader blocks in `Admit` (§4.7) on a slot, a credit or a counting semaphore of 64 | node-wide count bounded by the receive pool ([RFC 24 §6.1](rfc-24-resources.md#6.1%20Goroutines)) |
+| requests in flight per connection | a goroutine per admitted request, and per refused header waiting for its status's buffer, which keeps its record; the reader blocks in `Admit` (§4.7) on a slot, a credit or a counting semaphore of 64 | node-wide count bounded by the receive pool ([RFC 24 §6.1](rfc-24-resources.md#6.1%20Goroutines)) |
 | replies | one writer goroutine per connection reading a bounded channel; on each wake it drains every queued message into one `net.Buffers` and writes once | one system call per burst; a deeper queue only if a profile shows writers blocked with the socket idle |
 | per-connection ID tables (`FileId`, stateid, tree ID) | a map under the connection's mutex, held for the lookup only, never across the service call | one connection's requests contend with each other only |
 | node-wide tables (sessions, connection registry) | a map under a read-write mutex, read without holding it across the service call | shard by session ID when a mutex profile shows it |

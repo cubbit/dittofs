@@ -685,7 +685,10 @@ reply was reserved, or that `ErrDelay`) may have passed its call's deadline: it
 waits for
 its buffer at most 30 s from when it starts waiting, and a status that gets none
 by then closes its connection, since it can go out no other way
-([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics)'s `reply_wait`).
+([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics)'s `reply_wait`). Such a wait
+keeps its request's record, and so its receive charge, until the status goes
+out, so the receive pool bounds how many wait at once (§6.1), however the
+wait is run.
 
 The reservation is released when the writer has sent the reply, or discarded it
 with its connection
@@ -929,9 +932,11 @@ counts nothing about holds. This RFC fixes which pool holds the bytes:
   never shrinks: the buffer it
   backs is not shrunk by being held, so a 100 KiB write in a transfer-class
   buffer charges the hold pool about 1 MiB.
-- The adapter's per-connection floors in requests and bytes count the write's
-  bytes, at least 64 KiB; that is a logical count of what a connection may have
-  held, and it is kept apart from the hold pool, which counts memory. Past
+- The adapter's per-connection floors in requests and bytes count each held
+  request's record length, at least 64 KiB, since the adapter does not read
+  which of a record's bytes are a write's; that is a logical count of what a
+  connection may have held, and it is kept apart from the hold pool, which
+  counts memory. Past
   both, a request whose hold starts on an `ErrDelay` the service returned is
   refused at once and nothing is held for it; a call still in the service is
   not refused, as above.
@@ -1130,7 +1135,7 @@ Every goroutine the process runs is one of these, and no other:
 | Goroutine | Count bound |
 | --- | --- |
 | a connection's reader and writer | two per connection: `connection_limit` × 2 |
-| an admitted request | the receive pool over the smallest charge (§3.1) |
+| an admitted request, or a refused one waiting for its status's buffer (§3.3) | the receive pool over the smallest charge (§3.1): each keeps its record's receive charge until it is answered |
 | a pool worker — syncer halves, the work scheduler's runs, GC's | the pools' sizes ([RFC 3](rfc-3-syncer.md), [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)) |
 | a fixed loop — listeners, a journal's sync and seal loops, timers, health, each sidecar's loop ([RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars)) | a constant per component, or per journal |
 | an outbound NLM callback connection's reader and writer | two per host with a grant or reply to send ([RFC 20 §3.3](rfc-20-adapters.md#3.3%20Callbacks%20are%20the%20adapter%27s%20to%20deliver)), closed after; counted in `connection_limit` |
