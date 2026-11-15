@@ -361,7 +361,7 @@ flowchart TD
   E4 & E5 --> S3(["S3 core serves testproto end to end"]):::sync
   S3 -. "New on the real runner" .-> E6
   S4(["S4 internal/node exists, RFC 23"]):::sync --> E7["E7 Integration with the node 🔀"]:::sync
-  E5 -. "WithHold, read by the clone wait" .-> P11(["RFC 17 plan, the clone wait"]):::sync
+  E5 -. "WithHold, read by the clone wait" .-> P13(["RFC 17 plan piece 13, the clone wait"]):::sync
   P12(["RFC 17 plan piece 12"]):::sync -. "memory.New, Faults" .-> E2
   E6 --> E8["E8 E2E green"]
   E7 -. "node-level wiring" .-> E8
