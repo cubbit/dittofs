@@ -258,7 +258,7 @@ cited by number and title, and how it applies here or why it does not.
 | R40 | A chain's members come from one record, each with its header at its own offset; `Decode`, `Unwrap`, `Admit` and `Lookup` run per member, and so does everything from the row checks to the encoding. Each member's admission is released once its reply is encoded, before the next member is admitted (D8) | MUST | §4.7, amended (D8, §9) | T5.4 |
 | R41 | `Unwrap` and `Route` are handed the member before a related one, so the IDs it inherits are resolved before its check and its handles carry over | MUST | §4.7 | T5.4 |
 | R42 | A related member after one that failed is answered with the same status and reaches no service call | MUST | §4.3 | T5.4 |
-| R43 | A chain's replies are joined with `HeaderCodec.Chain`, and `Wrap` is called once on the joined record; a member `Unwrap` refused is not in it, and goes out in a record of its own (D6); the replies before a member whose reply buffer does not fit at once while its chain holds reply reservations, or whose reservation would take them past a quarter of the reply pool's ceiling, go out as a record of their own before it waits; each split is counted by its reason (D8) | MUST | §4.7, amended (D6, D8, §9) | T5.4 |
+| R43 | A chain's replies are joined with `HeaderCodec.Chain`, and `Wrap` is called once on the joined record; a member `Unwrap` or `Decode` refused is not in it, and goes out in a record of its own (D6); the replies before a member whose reply buffer does not fit at once while its chain holds reply reservations, or whose reservation would take them past a quarter of the reply pool's ceiling, go out as a record of their own before it waits; each split is counted by its reason (D8) | MUST | §4.7, amended (D6, D8, §9) | T5.4 |
 | R44 | A chain member whose row is `NoReply` stops the chain: the members after it do not run; those before it stay applied and are answered, chained with the refused member's interim, and no final reply follows | MUST | §4.7 | T5.4 |
 | R45 | That interim is handed the headers of the members after it, the only part of them decoded, in a slice taken from a `sync.Pool`; a later header that does not decode ends the list there | MUST | §4.7 | T5.4 |
 | R46 | While draining, a single-reply compound is judged whole before any operation runs: each operation's role is `Op.Role`, or `Invocation.Role` over its decoded arguments, called before `Resolve`; an operation that does not decode counts as refused | MUST | §4.7, §3.1 | T5.4 |
@@ -491,18 +491,24 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
     or context; neither said what `h` is for a refusal, so this is an addition to both, listed
     in §9. A refusal after `Unwrap` succeeded (`Admit`, `Lookup`, `Route`) is wrapped under
     the header `Unwrap` returned.
-  - **In a chain, a member that fails `Unwrap` splits its replies.** The replies of the
-    members before it are joined and wrapped once (R43) and go out first; its refusal goes out
-    after them in a record of its own, wrapped once under its own header as RFC 20 §5.5 says, with the
-    replies of the related members after it, each answered its status with no call (R42); the
-    next unrelated member starts a new record, joined and wrapped once with those after it,
-    and the chain runs on. Every member is answered, so its credits are granted and no
+  - **In a chain, a member that fails `Decode` or `Unwrap` splits its replies.** The replies
+    of the members before it are joined and wrapped once (R43) and go out first; its refusal
+    goes out after them in a record of its own, with the replies of the related members after
+    it, each answered its status with no call (R42); the next unrelated member starts a new
+    record, joined and wrapped once with those after it, and the chain runs on. An `Unwrap`
+    refusal's record is wrapped once under its own header as RFC 20 §5.5 says; the record of
+    a header that failed `Decode` is not passed to `Wrap`, so the carve-out holds per record
+    (the architect, on #4184). No inner header of an encrypted SMB record fails `Decode`
+    with an answer: SMB checks them at unwrap, where the transform has proved them (RFC 20
+    §5.5), and `testproto` has no such transform.
+    Every member is answered, so its credits are granted and no
     message ID waits out the client's timeout (RFC 22 §4.1). MS-SMB2 3.3.5.2.7.1 has each
     unrelated member handled on its own and lets their replies go out separately;
     3.3.5.2.7.2 compounds a related chain's replies as a SHOULD. A single `Wrap` of a joined
     record runs under one header, and the refused member may name another session than the
-    first member's; alone in its record, the refusal is wrapped under its own header. With a
-    nil `Header` the connection closes and nothing more is sent.
+    first member's; alone in its record, an `Unwrap` refusal is wrapped under its own header,
+    and a `Decode` refusal is not wrapped. With a nil `Header` the connection closes and
+    nothing more is sent.
 
   RFC 20 §4.7 (the `Stages` struct, the comments on `Decode`, `Unwrap`, `Route` and `Wrap`,
   the pipeline sketch, and the chain's split), §4.1 (its refusal table, and the stages' own
@@ -552,8 +558,9 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   `READ` replies would otherwise hold more than a quarter of the 16 MiB floor through the
   fourth's call. One member's own reservation past the quarter, an 8 MiB SMB `READ`'s, is
   its protocol's to cap (RFC 20 §4.3). Each split is counted in
-  `adapter_chain_splits_total{protocol, reason}`, `reason` `unwrap` for D6's, `reply_pool` and
-  `quarter` for this one's. RFC 20 §4.7's chain paragraph and §10.1, and RFC 24 §2.6, say so,
+  `adapter_chain_splits_total{protocol, reason}`, `reason` `unwrap` and `decode` for D6's,
+  `reply_pool` and `quarter` for this one's.
+  RFC 20 §4.7's chain paragraph and §10.1, and RFC 24 §2.6, say so,
   as this pull request amends them. `decision:` in `serve`, beside RFC 20 §5.5's
   `ponytail:` for `unwrap` on the reader, and in the runner at the try. `ponytail:` at the
   try: `TryGet` grants only when nothing waits (the budget's fast path in
@@ -1368,8 +1375,9 @@ registry. Nothing else is exported.
   failure ending the reply; while draining, read once, `judge` first. For a chain: each member
   decoded, unwrapped, admitted and looked up at its own offset, its admission released once
   its reply is encoded (D8), `prev` handed to `Unwrap` and `Route`, a related member after a
-  failed one answered the failed member's status without a call (R42), a member `Unwrap`
-  refuses splitting the chain's replies as D6 says, the replies joined with `Chain` and
+  failed one answered the failed member's status without a call (R42), a member whose header
+  fails `Decode`, or that `Unwrap` refuses, splitting the chain's replies as D6 says,
+  the replies joined with `Chain` and
   wrapped once per record, and sent before a member whose reply buffer does not fit at once
   (`TryGet`) while the chain holds reply reservations, or whose charge would take theirs past
   a quarter of the reply pool's ceiling (D8), each split counted under its reason; at a
@@ -1416,6 +1424,10 @@ registry. Nothing else is exported.
     the third's reply sealed under A; the client's balance then holds every member's credits.
     A related member whose checksum fails is refused the same way, and a related member after
     it is answered that status, with no call, in the refusal's record.
+  - A chain of a member under session A and a second under A whose `next` is bad sends two
+    records, counted `decode`: the first holds the first member's reply alone, sealed under A,
+    its checksum verifying, and the second the refusal, its checksum 0 and its arguments
+    clear.
   - A chain's replies arrive as one record whose checksum verifies.
   - A chain of 65 `Echo` on `Bare` is answered whole.
   - On a server whose reply budget the test sets to the charge of three `Echo` replies (each
@@ -1474,7 +1486,10 @@ registry. Nothing else is exported.
   first member's record, one left unsigned, a later member left unanswered, and its
   credits not granted); the related member's bad checksum and the related member after it
   (catch `Unwrap` handed no `prev`, which then closes the connection, and a related member
-  run after the refusal). The joined record (catches `Wrap` per member, which breaks the
+  run after the refusal). The bad `next` after a valid member, read from the records' bytes
+  (catches the refusal of an undecoded header joined into the first record, where the one
+  `Wrap` seals it under the session it only names). The joined record (catches `Wrap` per
+  member, which breaks the
   record's checksum). The 65-member chain on `Bare`, in a `synctest` bubble (catches admissions
   released at the join, which leaves the 65th waiting on its own chain until the bubble
   deadlocks). The chain past the reply budget, in a `synctest` bubble too (catches a member
@@ -1483,7 +1498,7 @@ registry. Nothing else is exported.
   `Faults.Hold` and its `Reached`, in the same bubble (catches an early send only past the
   ceiling, which leaves each chain waiting on bytes only the other's record frees). The two
   members over a quarter (catches a chain that holds the whole floor through its second
-  member's call), and the three splits' counts read from the registry (catch a split not
+  member's call), and the four splits' counts read from the registry (catch a split not
   counted, or counted under another reason). The walk's bad steps, through a header codec and a members table declared in the
   test that take each `Next` and each count as the bytes give them, inputs that stand for a lax
   protocol and not doubles (catch a `Next` that loops on its own header, appending replies for
@@ -1912,7 +1927,8 @@ A suggestion only: one pull request per subtask works as well.
   decisions point at: RFC 20 §4.3 (no request's reply past a quarter of the reply pool, D11);
   §4.7 (`Stages.Protocol`, `OpTable.Protocol` and `ErrReplyTooBig`, and the chain paragraph:
   each member's admission released before the next is admitted, the replies sent before a
-  member that does not fit or would pass the quarter, and `Unwrap`'s split; D6, D8, D11, D18);
+  member that does not fit or would pass the quarter, and the split at `Decode` or `Unwrap`;
+  D6, D8, D11, D18);
   `Park`'s comment (keeping a small reply reservation); §6.4 (the status's 30 s); §6.9 and
   §10.1 (the labels before and from `Route`, with the `ponytail:` for NFS,
   `adapter_chain_splits_total` and the `reply_wait` close; D8, D9, D18). RFC 24 §2.5
@@ -1923,7 +1939,8 @@ A suggestion only: one pull request per subtask works as well.
   demand for an `ErrReplyTooBig` row in a table with a compound row (§4.7, §4.3; D11), with
   RFC 21 §11.5's rows for it; how a refusal at unwrap is signed and sealed, the two facts
   `Unwrap`'s header carries, and that the refusal of a header that failed decode is not
-  passed to `Wrap`, stated once in §5.5, which §4.1 and §4.7 point at (D6); and
+  passed to `Wrap`, alone or in a chain, but an encrypted SMB record's inner headers are
+  checked at unwrap, stated once in §5.5, which §4.1 and §4.7 point at (D6); and
   `NewOpTable`'s refusal of a holding table with a row for `ErrCancelled`, or for
   `&vfs.Delay{Cause: vfs.DelayResources}` whatever its `Ops` or `Versions`, with a `Hold`
   (§4.7, §6.3; D17).
