@@ -4,9 +4,12 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // Once the process crashed, its engine's store views never reach the store,
@@ -37,4 +40,50 @@ func TestACrashedProcessChangesNothingInTheStore(t *testing.T) {
 	if err := c.PruneRemovals(ctx, share, file, entity.JournalVersion{}); !errors.Is(err, errCrashed) {
 		t.Errorf("PruneRemovals after the crash: %v, want errCrashed", err)
 	}
+}
+
+// Under HoldNextWrite's rule, a second write transaction decided while the
+// held one is still arming its hold does not close the channel: only the
+// held write does, once its hold is armed on the clock.
+func TestOnlyTheHeldWriteClosesHoldNextWritesChannel(t *testing.T) {
+	tc := sim.NewTestClock(time.Unix(0, 0))
+	t.Cleanup(func() { tc.Advance(time.Second) }) // the held write returns
+	clock := &armGate{Waiter: tc, arming: make(chan struct{}), release: make(chan struct{})}
+	e, err := newEntered(clock, []sim.Rule{{Op: kvtest.OpUpdate, Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Second}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _, _, _ = e.At(kvtest.OpUpdate, []byte("a")) }()
+	select {
+	case <-clock.arming:
+	case <-time.After(5 * time.Second):
+		t.Fatal("after 5 s: the held write's hold not armed")
+	}
+	if d, _, _ := e.At(kvtest.OpUpdate, []byte("b")); d != 0 {
+		t.Fatalf("the second write was held %v, want 0: the rule holds one", d)
+	}
+	select {
+	case <-e.ch:
+		t.Error("the channel closed on the unheld write, before the held write's hold was armed")
+	default:
+	}
+	close(clock.release)
+	select {
+	case <-e.ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("after 5 s: the channel still open once the held write's hold was armed")
+	}
+}
+
+// armGate is a clock that stops a hold just before it is armed, telling the
+// test it got there, until the test releases it.
+type armGate struct {
+	sim.Waiter
+	arming, release chan struct{}
+}
+
+func (c *armGate) After(d time.Duration) <-chan struct{} {
+	close(c.arming)
+	<-c.release
+	return c.Waiter.After(d)
 }

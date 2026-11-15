@@ -57,14 +57,42 @@ func newFenceUnit(t *testing.T) *fenceUnit {
 }
 
 // fault replaces the store's fault schedule with rules, delays on the test
-// clock.
-func (u *fenceUnit) fault(t *testing.T, rules ...sim.Rule) {
+// clock, and answers a channel closed once one of them holds a call: its
+// hold is armed, so a test advancing the clock after it moves a hold that
+// already counts.
+func (u *fenceUnit) fault(t *testing.T, rules ...sim.Rule) <-chan struct{} {
 	t.Helper()
-	s, err := sim.NewSchedule(1, u.clock, rules...)
+	c := &holdClock{TestClock: u.clock, armed: make(chan struct{})}
+	s, err := sim.NewSchedule(1, c, rules...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	u.faults.SetFault(s)
+	return c.armed
+}
+
+// holdClock is a schedule's clock that closes armed once a hold is armed.
+type holdClock struct {
+	*sim.TestClock
+	once  sync.Once
+	armed chan struct{}
+}
+
+func (c *holdClock) After(d time.Duration) <-chan struct{} {
+	ch := c.TestClock.After(d)
+	c.once.Do(func() { close(c.armed) })
+	return ch
+}
+
+// held waits until the fault's hold is armed, failing the test after five
+// seconds as eventually does.
+func held(t *testing.T, armed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-armed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("after 5 s: a write transaction held on the clock")
+	}
 }
 
 // everyUpdate is a rule acting on every write transaction the store runs.
@@ -166,9 +194,9 @@ func TestSelfFenceThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u.fault(t, nextUpdate(sim.FaultAction{Delay: 40 * time.Second}))
+	armed := u.fault(t, nextUpdate(sim.FaultAction{Delay: 40 * time.Second}))
 	done := u.commitInBackground(t, a)
-	u.outstanding(t)
+	held(t, armed)
 
 	u.clock.Advance(10 * time.Second)
 	if _, err := u.tryWrite(b); err != nil {
@@ -278,9 +306,9 @@ func TestSelfFenceTimesAFirstTransactionFromItsStart(t *testing.T) {
 	if _, err := u.tryWrite(a); err != nil {
 		t.Fatal(err)
 	}
-	u.fault(t, nextUpdate(sim.FaultAction{Delay: time.Second}))
+	armed := u.fault(t, nextUpdate(sim.FaultAction{Delay: time.Second}))
 	done := u.commitInBackground(t, a)
-	u.outstanding(t)
+	held(t, armed)
 	if _, err := u.tryWrite(b); err != nil {
 		t.Errorf("a second write while the first's commit is held: %v, want acknowledged", err)
 	}
@@ -323,11 +351,11 @@ func TestSelfFenceLiftsWhenAOneShotEnds(t *testing.T) {
 	u := newFenceUnit(t)
 	a := u.create(t, "a")
 	second := enginetest.AddShare(t, u.fs.Store, "second", 1<<30)
-	u.fault(t, nextUpdate(sim.FaultAction{Delay: 40 * time.Second, Err: context.DeadlineExceeded}))
+	armed := u.fault(t, nextUpdate(sim.FaultAction{Delay: 40 * time.Second, Err: context.DeadlineExceeded}))
 	ctx := &endingCtx{Context: context.Background(), done: make(chan struct{})}
 	bound := make(chan error, 1)
 	go func() { bound <- u.e.Bind(ctx, second) }()
-	u.outstanding(t)
+	held(t, armed)
 
 	u.clock.Advance(31 * time.Second)
 	if _, err := u.tryWrite(a); !fenced(err) {
@@ -663,10 +691,10 @@ func TestSelfFenceGateUnderRace(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := enginetest.AddShare(t, u.fs.Store, "second", 1<<30)
-	u.fault(t, nextUpdate(sim.FaultAction{Delay: time.Hour}))
+	armed := u.fault(t, nextUpdate(sim.FaultAction{Delay: time.Hour}))
 	bound := make(chan error, 1)
 	go func() { bound <- u.e.Bind(context.Background(), second) }()
-	u.outstanding(t)
+	held(t, armed)
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -1071,7 +1099,8 @@ func TestSelfFenceOnARemovalFailingAtTheStoreBesideAnUndecodableRecord(t *testin
 // store, its removal record's delete refused, at every retry: the node fences
 // 31 s on. Each retry's Resume finds no removal left and writes nothing;
 // counting it as a commit restarts the fence's clock every second and never
-// fences.
+// fences. Once the store heals and the prune commits, nothing is outstanding
+// or failing, and a quiet node acknowledges a write 31 s later.
 func TestSelfFenceOnARemovalWhosePruneFailsAtTheStore(t *testing.T) {
 	u := newFenceUnit(t)
 	x, b := u.create(t, "x"), u.create(t, "b")
@@ -1091,6 +1120,48 @@ func TestSelfFenceOnARemovalWhosePruneFailsAtTheStore(t *testing.T) {
 	}
 	if _, ok := u.nodeFenced(); !ok {
 		t.Error("node_fenced not raised 31s into the prune's failures")
+	}
+
+	u.faults.SetFault(nil)
+	u.until(t, "the prune commits", func() bool { return u.e.Stats().RemovalRuns["done"] == 1 })
+	eventually(t, "the removal loop idle", func() bool { return u.e.LoopParked(u.share.ID) })
+	if n, failing := u.e.FenceBusy(); n != 0 || failing {
+		t.Errorf("once the removal finished: %d outstanding, failing %v; want 0 and false", n, failing)
+	}
+	u.clock.Advance(31 * time.Second)
+	if _, err := u.tryWrite(b); err != nil {
+		t.Errorf("a write 31s after the removal finished on a quiet node: %v, want acknowledged", err)
+	}
+}
+
+// A phase 2 run whose Resume commits every batch is a commit, though its prune
+// then fails at the store: the bound restarts from the Resume.
+func TestSelfFenceCountsAPhase2ThatCommitsEveryBatchAsACommit(t *testing.T) {
+	u := newCutUnit(t)
+	runs := func() map[string]int64 { return u.e.Stats().RemovalRuns }
+	f := u.create(t, "f")
+	u.holed(t, f, 3)
+	u.fault(t, removalSet(2, 0, errInjected)) // every batch fails, so no run advances
+	if err := u.e.Truncate(t.Context(), u.share.ID, f, 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a failed phase 2 run", func() bool { return runs()["error"] > 0 })
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(20 * time.Second)
+	eventually(t, "a second failed phase 2 run", func() bool { return runs()["error"] > 1 })
+	// The next run, a second on, commits every batch; its prune fails at the store.
+	u.fault(t, sim.Rule{Op: kvtest.OpDelete, Key: "F‖*‖rm‖*", Action: sim.FaultAction{Err: syscall.ENOSPC}})
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(time.Second)
+	eventually(t, "an advanced phase 2 run", func() bool { return runs()["advanced"] == 1 })
+	eventually(t, "the removal loop waits on its backoff", func() bool { return u.e.LoopParked(u.share.ID) })
+	u.clock.Advance(29 * time.Second)
+	if c, ok := u.nodeFenced(); ok {
+		t.Fatalf("fenced 29 s after a Resume committed every batch, 50 s after the truncate: %v", c)
+	}
+	u.clock.Advance(2 * time.Second)
+	if _, ok := u.nodeFenced(); !ok {
+		t.Error("not fenced 31 s after the Resume committed every batch, its prune failing since")
 	}
 }
 
