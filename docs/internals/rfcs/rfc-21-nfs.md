@@ -363,9 +363,9 @@ MiB and 4 KiB, in at most 64 fragments: a record mark that would take it past
 either closes the connection ([RFC 20 §5.2](rfc-20-adapters.md#5.2%20Decoding%20is%20bounded),
 [RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)).
 
-> ponytail: 64 fragments let a record of the cap arrive in fragments of 16.5
-> KiB and more; common clients send one. Raise it when a client is seen sending
-> smaller ones.
+> ponytail: 64 fragments let a record of the cap arrive in fragments of just
+> over 16 KiB (1028 KiB over 64) and more; common clients send one. Raise it
+> when a client is seen sending smaller ones.
 
 The size is fixed, not a setting ([RFC 13](rfc-13-configuration.md)). A client
 negotiates down, never up, so a value that differs between nodes breaks a client

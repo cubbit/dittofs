@@ -1514,12 +1514,15 @@ service calls, admitted separately
   mutation the client will send again.
 - **No compound holds more than a quarter of the reply pool across its
   members.** The runner reserves a single-reply compound's reply as one charge
-  of its members' summed bounds before the first runs, and refuses one whose
-  reservation would pass a quarter of the reply pool's ceiling with
-  `ErrReplyTooBig` before any member runs, as a count past the cap is (§4.7). A
-  chain sends the replies it holds before a member whose reservation would take
-  them past that quarter (§4.7). One operation's own bound is its protocol's to
-  cap, as RFC 22's read size is. The pool grants in arrival order with nothing
+  of its members' summed bounds and `HeaderCodec.ReplyLen` of its header
+  before the first runs, and refuses one whose reservation would pass a quarter of the reply
+  pool's ceiling with `ErrReplyTooBig` before any member runs, as a count past
+  the cap is (§4.7). A chain sends the replies it holds before a member whose
+  reservation would take them past that quarter (§4.7). Both measure a
+  reservation as the pool charges it, `BufPool.Charge` of its bytes, and a
+  chain's held replies by their `Buf.Charge`, against `Ceiling()/4` (§6.8).
+  One operation's own bound is its protocol's to cap, as RFC 22's read size
+  is. The pool grants in arrival order with nothing
   passing its head
   ([RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)), so one
   reservation the whole ceiling could hold would stall every reply on the node
@@ -3362,6 +3365,7 @@ func NewBufPool(b *WaitBudget) *BufPool                         // RFC 24 §2.5:
 func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) // one reservation for key of n's class's capacity plus RFC 24 §3.1's per-request overhead (8 KiB), released with the buffer; then a buffer: refs = 1
 func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)    // RFC 24 §2.5: Get's charge taken only when it fits with no waiter ahead; otherwise false at once
 func (p *BufPool) Ceiling() int64                               // its budget's ceiling, what one charge is bounded by (§4.3)
+func (p *BufPool) Charge(n int) int64                           // RFC 24 §2.5: the charge Get would take for n bytes, n's class plus the per-request overhead; §4.3's quarter compares it with Ceiling()/4
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
 func (b *Buf) Recharge(to *Budget) error                     // RFC 24 §4.3: the whole charge moved to a reservation from to; refused, nothing changes
