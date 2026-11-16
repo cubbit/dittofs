@@ -154,3 +154,16 @@ func segState(s journal.SegmentInfo) string {
 	}
 	return st
 }
+
+// entryKindName is the one word an index entry's kind prints.
+func entryKindName(k journal.EntryKind) string {
+	switch k {
+	case journal.EntryHeld:
+		return "held"
+	case journal.EntryRetained:
+		return "retained"
+	case journal.EntryMarker:
+		return "marker"
+	}
+	return fmt.Sprintf("kind%d", uint8(k))
+}

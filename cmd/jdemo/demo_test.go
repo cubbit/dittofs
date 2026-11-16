@@ -48,7 +48,7 @@ func TestDemoRefusesUsedDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := journal.Init(context.Background(), dir, demoInstallID,
-		journal.WithSettings(demoSettings)); err != nil {
+		journal.WithSettings(demoSettings), journaltest.SuitableMount()); err != nil {
 		t.Fatalf("handcrafted init: %v", err)
 	}
 	before, err := os.ReadDir(dir)
@@ -110,6 +110,8 @@ func tailOf(s string, n int) string {
 func TestDefaultDirIsRemovedNamedDirIsKept(t *testing.T) {
 	// The default run leaves no 1.5 GiB of preallocated segments behind;
 	// a directory the presenter named is theirs to keep.
+	mainOptions = []journal.Option{journaltest.SuitableMount()}
+	defer func() { mainOptions = nil }()
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 	var out, errw strings.Builder
