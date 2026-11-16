@@ -119,7 +119,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R2 | `pkg/identity` is a leaf importing metadata types only | invariant | §2.7 | T1.1, T1.5 |
 | R3 | `pkg/vfs` aliases the value types an adapter needs, so an adapter imports `pkg/vfs` alone and neither identity package | invariant | §2.7; RFC 17 §3.0; RFC 20 §2.3 | T1.1, T1.5 |
 | R4 | Adapters map, squash and grant nothing; every spelling goes through `vfs.Service`'s `Spell` and `Find`, held by RFC 20 §7.1's import test (ID11) | invariant | §9.1 ID11; RFC 20 §7.1 | T1.5 |
-| R5 | Only `internal/node` and `internal/node/nodetest`, which builds a real installation as `node` does, import the server, `internal/identity` or any package under it, besides identity's own packages, `pkg/identity/identitytest` among them, which imports `internal/identity/directory` and `internal/identity/netlogon` and never the server (E6's T6.4, E7's T7.3), and `pkg/vfs/vfstest/memory`, which imports `internal/identity/identitymem` alone (E3's T3.6); `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use the real server | invariant | §2.7; §10 "Who stands in for what" | T1.5 |
+| R5 | Only `internal/node` imports the server, `internal/identity` or any package under it, besides identity's own packages, `pkg/identity/identitytest` among them, which imports `internal/identity/directory` and `internal/identity/netlogon` and never the server (E6's T6.4, E7's T7.3), and `pkg/vfs/vfstest/memory`, which imports `internal/identity/identitymem` alone (E3's T3.6); `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use the real server | invariant | §2.7; §10 "Who stands in for what" | T1.5 |
 | R6 | Only `internal/identity/directory` imports LDAP; `internal/auth/netlogon`, which S0 leaves and whose `join.go` imports it, is exempt by a `decision:` until E7's T7.6 moves it into `internal/identity/netlogon` and removes the exemption | invariant | §2.7 | T1.5 |
 | R7 | `Authenticator` is the same shape as `vfs.Principals.SignIn`, so the filesystem passes it through | invariant | §3.1 | T1.3, T1.6 |
 | R8 | `ErrLogonFailure` and `ErrUnknownPrincipal` are `vfserr`'s, and `vfs.Errors()` returns both; the adapter rows that map them are the RFC 21 and RFC 22 plans' (the plan's deferral row) | MUST | §2.7; RFC 17 §4.3; RFC 20 §7.3 | T1.2 |
@@ -293,10 +293,11 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
     the one `Apply` last delivered, and keys anything it caches under that read, so a disable or
     a raised not-before reaches the API within RFC 23 §5.3's second; the behaviour is E2's;
   - `NewHashes(u entity.User, password []byte, ntlm NTLMSetting) (PasswordHashes, error)`,
-    `PasswordHashes{ Password, NTHash []byte }` and `NTLMSetting{ On bool; Revision uint64 }`
+    `PasswordHashes{ Password, NTHash []byte }` and `NTLMSetting{ On bool; Generation uint64 }`
     (§8.1), with D7's stub body, consumed by E2 and RFC 23's plan's epic 5.
 - **Acceptance criteria:**
-  - Each signature is RFC 18's, with `metadata.` read as `entity.` (D6).
+  - Each signature is RFC 18's, with `metadata.` read as `entity.` (D6) and `NTLMSetting`'s
+    `Revision` named `Generation` (§9).
   - Each interface's comment states its error contract as §3.1, §4.1 and §8.1 do.
 - **Tests:** none of its own: declarations only, held by the compiler through T1.4's and
   T1.6's assertions (rule 10).
@@ -340,16 +341,16 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
 - **Deliverables:**
   - `pkg/identity/arch_test.go`, walking the module as `internal/vfs/arch_test.go` does:
     `pkg/identity` imports only the standard library, `entity`, `pkg/auth/sid` and `vfserr`;
-    no non-test package but `internal/node`, `internal/node/nodetest` and identity's own
+    no non-test package but `internal/node` and identity's own
     packages imports
     `internal/identity` or any package under it, `pkg/identity/identitytest` counting as one of
     identity's own packages for `internal/identity/directory` and `internal/identity/netlogon`
     only, never for the server, except `internal/identity/identitymem`, whose one
-    importer E3's T3.6 restricts to `pkg/vfs/vfstest/memory`; `internal/node/nodetest` is
-    allowed beside `internal/node`, since it builds a real installation as `node` does (RFC 23's
-    epic 3 breakdown, its D3), and no package below either is. The allowance is a ceiling, not a
-    need: E8's D4 hands identity's seams to `nodetest.WithNew` from `internal/node`'s
-    `export_test.go`, so `nodetest` itself imports nothing of identity; `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use
+    importer E3's T3.6 restricts to `pkg/vfs/vfstest/memory`; `internal/node` is the package
+    alone, so `internal/node/nodetest` imports nothing under `internal/identity`: once E8's T8.1
+    composes identity in `node.New`, `nodetest` reaches it through `node.New`, and E8's D4 hands
+    identity's seams to `nodetest.WithNew` from `internal/node`'s `export_test.go`; `_test.go`
+    files are not checked, since `*vfs.Filesystem`'s tests use
     the real server (RFC 18 §10). `pkg/vfs/vfstest/memory`, the verified in-memory
     `vfs.Service`, needs the real server too once E3's T3.6 makes `vfs.New` require it; it
     reaches it through `internal/identity/identitymem` (E3's T3.6), one of identity's own
@@ -363,8 +364,7 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
     violations of each in its `testdata/arch`, among them a non-test `internal/vfs` file
     importing `internal/identity`, a non-test `pkg/identity/identitytest` file importing
     `internal/identity`, and a non-test package importing
-    `internal/identity/directory`; `internal/node/nodetest` importing
-    `internal/identity/directory` is seeded as allowed;
+    `internal/identity/directory`, `internal/node/nodetest` among them;
   - `internal/identity/**` and `pkg/identity/**` in `test/suites.yaml`'s `e2e` `kerberos`
     cell's `paths:`, so a change to the server or the contract runs the Kerberos cell.
 - **Acceptance criteria:**
@@ -454,5 +454,10 @@ document, with its recommendation:
   reads `entity`'s, so E3's T3.6, which rebuilds `authz.Caller`, maps one onto the other, and
   E3's §9 holds the question. RFC 18 §6.1's field comment still lists
   `NotNarrowed`, `Grant` and `Share`; the RFC's next fold renames them to T1.3's prefixed names.
+- **`NTLMSetting.Revision` is `Generation` here.** RFC 18 §8.1 names the field `Revision`; the
+  setting record it is read from (`entity.Setting`, `pkg/metadata/entity/control.go`) calls it
+  `Generation`, and RFC 23 §4.4's entity tag and `Installation.NTLMOff.Off` hold that
+  generation. T1.3 uses `Generation`, so RFC 23's tracked read compares the same field; the
+  RFC's next fold renames §8.1's field.
 - **The estimate.** The plan's figure for epic 1 is 6 subtasks, 6 man-days; this document's is
   6 subtasks, 5.25 man-days.
