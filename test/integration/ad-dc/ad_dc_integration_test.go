@@ -277,13 +277,14 @@ func setupADDC(t *testing.T) (dcIP string) {
 		"--label", label,
 		"--network", network,
 		"--hostname", adDCHostname,
+		"-e", fmt.Sprintf("RPC_PORT_RANGE=%d-%d", adRPCPortLow, adRPCPortHigh),
 		adImage,
 	); err != nil {
 		t.Fatalf("docker run failed: %v\n%s", err, out)
 	}
 
-	// The ready marker is written once the KDC, LDAP and DNS accept
-	// connections, so no separate wait on a port is needed. Provisioning a
+	// The ready marker is written once the KDC, LDAP, DNS and the RPC endpoint
+	// mapper accept connections, so no separate wait on a port is needed. Provisioning a
 	// fresh domain under emulation is slow.
 	t.Log("Waiting for the AD-DC setup to finish...")
 	waitForADReady(t, 10*time.Minute)
