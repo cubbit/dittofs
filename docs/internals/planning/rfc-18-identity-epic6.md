@@ -40,8 +40,9 @@ evaluator through `Add`, lists T6.3's section in the node's settings table, read
 account's enabled state at a Kerberos sign-in through T6.11's cache read (its T8.5, D6 pending), and
 hands T6.9's `KerberosLinkSID` to RFC 23's API as `Deps.Directory`. **RFC 23's plan's epic 4**, its
 T4.11's success paths: T6.9's `KerberosLinkSID` and T6.4's in-memory directory with its suite. **RFC
-23's plan's epic 6**, its T6.4 and T6.6: T6.4's in-memory directory and T6.9's `Find`, for the grant
-by directory name and `domain resolve`/`domain test`.
+23's plan's epic 7**, its T7.6: T6.4's in-memory directory and T6.9's `Find`, for the grant
+by directory name, `resolve-principal` and `test-directory` (RFC 23's epic 6 tests only their
+arguments and refusal).
 
 ---
 
@@ -390,7 +391,8 @@ pkg/settings/
 
 **Subtask T6.1 estimate: 1.5 man-days.**
 
-- **Track:** C. **Depends on:** none; the rebase waits for RFC 23's plan's epic 1 (#4334) to merge.
+- **Track:** C. **Depends on:** none; RFC 23's plan's epic 1 (#4334), which the rebase waited for,
+  has merged.
 - **Covers:** R9, R23.
 - **Deliverables:** built, not merged, on the branch `test/ad-dc-network-tls` (9207ec946,
   f86998cd3, 24073d347), on GitHub:
@@ -402,15 +404,13 @@ pkg/settings/
   `x509negativeserial` godebug are gone; `docs/guide/identity.md` describes the network and the
   CA. Consumed by T6.4's and T6.6's suite runs in `integration/ad-dc`, and by E5's and E7's
   fixture parts. This subtask is also the one owner of moving the fixture to `feat/storage-v2`,
-  which E5's T5.1 and E7's T7.2 cite: once #4334 has merged, `test/ad-dc-network-tls` and the two
-  branches stacked on it, E5's `test/ad-dc-kerberos` and E7's `test/ad-dc-join` (not ancestors of
-  each other), rebased onto `feat/storage-v2` and opened there; and the `integration/ad-dc` cell's
-  place in the plan job's select in `.github/workflows/tests.yml` checked on `feat/storage-v2`. The
-  cell is in the select, and the `V2` skip beside it drops it while its tests drive v1's SMB
-  adapter (its `decision:`). The pull request lifts the skip for the cell, or names in its
-  description the v1 tests that keep it skipped and the subtask that deletes each (E7's T7.6 the
-  three NETLOGON tests, E8's T8.4 `TestADGroupSIDsFromPAC`); until it is lifted, no fixture test
-  runs on `feat/storage-v2`.
+  which E5's T5.1 and E7's T7.2 cite. The three branches are on `feat/storage-v2` and open there:
+  `test/ad-dc-network-tls-v2` (#4420), with E5's `test/ad-dc-kerberos-v2` (#4421) and E7's
+  `test/ad-dc-join-v2` (#4422) stacked on it (not ancestors of each other). #4420 also lifts the
+  `V2` skip that dropped the `integration/ad-dc` cell from the plan job's select in
+  `.github/workflows/tests.yml`, since its tests no longer drive v1's SMB adapter. What is left is
+  merging #4420, then #4421 and #4422, the second of those rebased on the first; until #4420 merges,
+  no fixture test runs on `feat/storage-v2`.
 - **Acceptance criteria:**
   - No test under `test/integration/ad-dc` sets `InsecureSkipVerify`.
   - Two runs on one Docker host use disjoint names.
@@ -894,7 +894,7 @@ a directory principal resolves end to end.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T6.1 | 1.5 | #4334 | the fixture's TLS part, built on its branch, rebased onto `feat/storage-v2` with the two stacked on it; may be open beside PR 2 |
+| 1 | T6.1 | 1.5 | — | the fixture's TLS part, open on `feat/storage-v2` as #4420 with #4421 and #4422 stacked on it; may be open beside PR 2 |
 | 2 | T6.2, T6.3 | 2.75 | — | the mint path E5 waits for, and the record every later subtask reads |
 | 3 | T6.4, T6.5, T6.6 | 8.25 | PR 1, PR 2 | the LDAP side whole: connection, in-memory directory and suite, client, groups, held to Samba |
 | 4 | T6.7, T6.8 | 4.5 | PR 3 | the cache and its outage mode, one review of the grace |
@@ -978,5 +978,5 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
   import rule forbids importing `internal/identity` outside `internal/node` and its own packages;
   it names the server's package, not the directory's, so the rule needs no change, but T6.4
   checks it.
-- The fixture branches are cut from `develop`; T6.1 rebases all three onto `feat/storage-v2` once
-  #4334 has merged, as asked in review, and opens them there.
+- The fixture branches were cut from `develop`; as asked in review, T6.1 moved all three onto
+  `feat/storage-v2` once #4334 had merged, as #4420 to #4422, open there.
