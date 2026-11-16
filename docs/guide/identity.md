@@ -84,6 +84,14 @@ provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
 - a CA, exported as `/keytabs/ca.pem`, that issues the DC's TLS certificate for
   its host name (`dc1.dittofs.ad` when the container runs with `--hostname dc1`)
   and its IPs.
+- computer accounts for the joins: `dittofs$` (password `MachinePass01!`), and
+  `offjoinaes$` (password `OffJoinAES01!`, `msDS-SupportedEncryptionTypes`
+  `0x18`) and `offjoinlegacy$` (password `OffJoinLegacy01!`, none), pre-staged
+  for an offline join. `MACHINE_PASSWORD`, `OFFJOIN_AES_PASSWORD` and
+  `OFFJOIN_LEGACY_PASSWORD` override the three passwords.
+
+NETLOGON's dynamic RPC port comes from the pinned range `50000-50019`, beside
+135 for the endpoint mapper.
 
 ### What the provisioning does
 
@@ -96,7 +104,8 @@ samba-tool domain provision \
     --domain=DITTOFS \
     --server-role=dc \
     --dns-backend=SAMBA_INTERNAL \
-    --adminpass="$ADMIN_PASSWORD"
+    --adminpass="$ADMIN_PASSWORD" \
+    --option="rpc server dynamic port range = 50000-50019"
 ```
 
 `--use-rfc2307` enables the POSIX (`uidNumber`/`gidNumber`) schema so those

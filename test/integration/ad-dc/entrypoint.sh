@@ -36,6 +36,12 @@ KEYTAB_DIR="${KEYTAB_DIR:-/keytabs}"
 # The provisioned smb.conf names the TLS files issue_tls_cert writes here.
 TLS_DIR=/var/lib/samba/private/tls
 
+# The DC's dynamic RPC ports, NETLOGON's on ncacn_ip_tcp among them, which the
+# endpoint mapper on 135 hands out. Pinned to a small range, as a firewalled
+# site pins a Windows DC's, so a firewall guide can name it. Read at provision
+# only; the tests pass it from fixture_test.go's adRPCPortLow/adRPCPortHigh.
+RPC_PORT_RANGE="${RPC_PORT_RANGE:-50000-50019}"
+
 # Service principals the DittoFS server presents to clients, and the account
 # that holds them.
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-dittofs-svc}"
@@ -82,6 +88,7 @@ if [ ! -f /var/lib/samba/.provisioned ]; then
         --server-role=dc \
         --dns-backend=SAMBA_INTERNAL \
         --adminpass="$ADMIN_PASSWORD" \
+        --option="rpc server dynamic port range = $RPC_PORT_RANGE" \
         --option="tls certfile = $TLS_DIR/cert.pem" \
         --option="tls keyfile = $TLS_DIR/key.pem" \
         --option="tls cafile = $TLS_DIR/ca.pem"
@@ -164,6 +171,12 @@ create_user_if_absent() {
     fi
 }
 
+# dn_of KIND NAME prints the distinguishedName of a samba-tool user or computer.
+dn_of() {
+    samba-tool "$1" show "$2" --attributes=distinguishedName 2>/dev/null \
+        | sed -n 's/^distinguishedName: //p' | head -n1
+}
+
 create_group_if_absent() {
     local group="$1"
     if ! samba-tool group show "$group" >/dev/null 2>&1; then
@@ -192,26 +205,48 @@ samba-tool group addmembers devs "$USER_ALICE" >/dev/null 2>&1 || true
 create_user_if_absent "$USER_BOB"
 samba-tool group addmembers engineering "$USER_BOB" >/dev/null 2>&1 || true
 
-# --- Machine account for NETLOGON passthrough tests (#1314, #1345) --------
-# Creates the DITTOFS$ computer account used by TestNetlogonPassthroughAlice.
-# samba-tool computer create yields a sAMAccountName of "dittofs$" (AD uppercases
-# it to DITTOFS$ on lookup).
+# --- Computer accounts for the joins --------------------------------------
+# Each is set up once, its password set only then, so a restart leaves it as
+# the tests or a join last left it. A marker written after the last step decides
+# "done", not the account's existence, so a start that died half-way through
+# an account finishes it on the next start.
+#
+# dittofs$ is the account an installation with the default NetBIOS name would
+# join as. It already exists, so an online join of that name must refuse it
+# rather than reset the password of whoever holds it; the NETLOGON tests sign
+# in as it with its password.
+#
+# offjoinaes$ and offjoinlegacy$ are pre-staged for an offline join, as an
+# administrator creates them and hands their password over: the first with
+# msDS-SupportedEncryptionTypes 0x18, which an offline join accepts, the second
+# without the attribute, as Active Directory Users and Computers creates one,
+# which an offline join refuses.
 #
 # NOTE (#1345): `samba-tool computer create --computerpassword=...` is NOT a
-# valid option on this samba (4.17.x) — it errors with "no such option", and the
-# old `|| true` SILENTLY SWALLOWED that, so the machine account was NEVER created
-# and every NETLOGON test ran against a nonexistent account. Create the computer
-# first, then set its password via `user setpassword` (which derives proper
-# Kerberos keys, making the account usable for both NETLOGON and Kerberos-SMB).
+# valid option on this samba (4.17.x). Create the computer first, then set its
+# password via `user setpassword`, which derives its Kerberos keys.
 MACHINE_PASSWORD="${MACHINE_PASSWORD:-MachinePass01!}"
-if ! samba-tool computer list 2>/dev/null | grep -qix 'dittofs\$'; then
-    log "Creating machine account dittofs\$ (NETLOGON passthrough)"
-    samba-tool computer create dittofs
-fi
-# Always (re)set the password so a reused domain DB (the .provisioned restart
-# path) or an account left by an earlier run reconciles to the expected
-# credential — and the AES/RC4 Kerberos keys regenerate from it each time.
-samba-tool user setpassword 'dittofs$' --newpassword="$MACHINE_PASSWORD"
+OFFJOIN_AES_PASSWORD="${OFFJOIN_AES_PASSWORD:-OffJoinAES01!}"
+OFFJOIN_LEGACY_PASSWORD="${OFFJOIN_LEGACY_PASSWORD:-OffJoinLegacy01!}"
+
+# create_computer_if_absent NAME PASSWORD [ENCTYPES]
+create_computer_if_absent() {
+    local name="$1" password="$2" enctypes="${3:-}" dn
+    local marker="/var/lib/samba/.computer-$name"
+    [ -f "$marker" ] && return 0
+    log "Creating computer account $name\$"
+    samba-tool computer show "$name" >/dev/null 2>&1 || samba-tool computer create "$name"
+    if [ -n "$enctypes" ]; then
+        dn="$(dn_of computer "$name")"
+        printf 'dn: %s\nchangetype: modify\nreplace: msDS-SupportedEncryptionTypes\nmsDS-SupportedEncryptionTypes: %s\n' \
+            "$dn" "$enctypes" | ldbmodify -H /var/lib/samba/private/sam.ldb
+    fi
+    samba-tool user setpassword "$name\$" --newpassword="$password"
+    touch "$marker"
+}
+create_computer_if_absent dittofs "$MACHINE_PASSWORD"
+create_computer_if_absent offjoinaes "$OFFJOIN_AES_PASSWORD" 24
+create_computer_if_absent offjoinlegacy "$OFFJOIN_LEGACY_PASSWORD"
 
 # --- Combined service keytab ----------------------------------------------
 # Register BOTH the DittoFS SMB (cifs/) AND NFS (nfs/) service principals on a
@@ -239,8 +274,7 @@ if [ ! -f "$keytab" ]; then
         samba-tool spn list "$SERVICE_ACCOUNT" | grep -qix "[[:space:]]*$spn" \
             || samba-tool spn add "$spn" "$SERVICE_ACCOUNT"
     done
-    svc_dn="$(samba-tool user show "$SERVICE_ACCOUNT" --attributes=distinguishedName \
-        | sed -n 's/^distinguishedName: //p')"
+    svc_dn="$(dn_of user "$SERVICE_ACCOUNT")"
     ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF
 dn: $svc_dn
 changetype: modify
@@ -290,8 +324,8 @@ EOF
 fi
 
 # Tests wait for this marker, so it is written last: once the keytab is whole
-# and the KDC, LDAP and DNS accept connections.
-for port in 88 389 53; do
+# and the KDC, LDAP, DNS and the RPC endpoint mapper accept connections.
+for port in 88 389 53 135; do
     for _ in $(seq 1 60); do
         (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && continue 2
         sleep 1

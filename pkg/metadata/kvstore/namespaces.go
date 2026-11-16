@@ -86,6 +86,12 @@ func (c controlTx) PutNamespace(n entity.Namespace, expect uint64) (uint64, erro
 	if err := expected(old.Generation, expect); err != nil {
 		return 0, err
 	}
+	// decision: a bound field is refused even on a namespace with no content,
+	// stricter than RFC 16's PutNamespace, since nothing here reads whether
+	// content exists. An empty namespace no share names can be deleted and
+	// created again with the new fields. Refuse it only while content exists,
+	// as RFC 23's bound_setting does, once the namespace's content can be read
+	// in this transaction.
 	if existed && (old.Store != n.Store || !bytes.Equal(old.Bound, n.Bound)) {
 		return 0, merrs.NewInvalidArgumentError("namespace " + n.ID.String() + "'s store and bound fields never change")
 	}

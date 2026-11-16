@@ -63,6 +63,13 @@ const (
 	KindJD     byte = 0x48 // a node's journal device to its journal: JD‖node‖device
 	KindUA     byte = 0x4A // enabled-admin index: UA‖principal, empty
 	KindNSR    byte = 0x4B // remote store to namespace: NSR‖store‖ns, empty
+	KindSS     byte = 0x40 // session: SS‖session, and SS‖session‖h‖hash, empty
+	KindSSH    byte = 0x41 // refresh-token index: SSH‖hash → session
+	KindAT     byte = 0x42 // API token: AT‖tokenID
+	KindATH    byte = 0x43 // token index: ATH‖hash → tokenID
+	KindATA    byte = 0x44 // per-account token index: ATA‖principal‖tokenID, empty
+	KindSF     byte = 0x49 // sign-in counts: SF‖tagged
+	KindSSA    byte = 0x4C // per-account session index: SSA‖principal‖session, empty
 )
 
 // Sub-kinds under F‖id. The File itself has none.
@@ -153,6 +160,8 @@ const (
 	SHRm byte = 0x04
 
 	CLSh byte = 0x01
+
+	SSh byte = 0x01 // a refresh hash the session has had
 )
 
 // Sub-kinds under J‖journal.
@@ -179,6 +188,14 @@ const (
 	KeyData   byte = 0x05
 
 	XPIdempotency byte = 0x01
+	XPSession     byte = 0x03
+	XPSource      byte = 0x04 // a source's sign-in count
+	XPToken       byte = 0x05
+	XPPair        byte = 0x06 // an account-and-source pair's sign-in count
+
+	SFAccount byte = 0x01
+	SFSource  byte = 0x02
+	SFPair    byte = 0x03
 
 	AUXActor  byte = 0x01
 	AUXTarget byte = 0x02
