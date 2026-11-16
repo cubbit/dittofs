@@ -577,6 +577,8 @@ func TestReopenAssembled_ARivalledFileIsRefusedThroughEitherTag(t *testing.T) {
 type reopenFigures struct {
 	files, segments   int
 	usedBytes         int64
+	journalDirtyBytes int64
+	journalHeldBytes  int64
 	shares            map[ShareTag]ShareStats
 	sets              map[ShareTag]map[FileID]bool
 	dirtySets         map[ShareTag]map[FileID]bool
@@ -621,6 +623,8 @@ func figuresOf(t *testing.T, j *Journal, tags []ShareTag) reopenFigures {
 	out.files = st.Files
 	out.segments = st.Segments
 	out.usedBytes = st.UsedBytes
+	out.journalDirtyBytes = st.DirtyBytes
+	out.journalHeldBytes = st.HeldBytes
 	for tag, ss := range st.Shares {
 		out.shares[tag] = ss
 	}
@@ -685,13 +689,12 @@ func TestReopenAssembled_EqualityOfFiles(t *testing.T) {
 }
 
 // TestReopenAssembled_EqualityOfDirtyFiles holds that the dirty-file list is
-// rebuilt whole: every share's dirty set survives the reopen. The write
-// times are not the first journal's — a rebuilt dirty file carries the zero
-// write time, the open's own restored-content figure, so the row compares
-// the sets and pins the zero time besides. The dirty BYTES are a figure the
-// open's seed applies no delta for: the journal-wide counter rises as
-// writes land, and the row leaves it to the share-charge figures rather
-// than hold the seed to bytes it never spelled.
+// rebuilt whole: every share's dirty set survives the reopen, with the
+// journal-wide dirty and held bytes beside them — the axes the open's seed
+// deltas carry, so a seed that spelled no bytes fails here. The write times
+// are not the first journal's — a rebuilt dirty file carries the zero write
+// time, the open's own restored-content figure — so the row compares the
+// sets and pins the zero time besides.
 func TestReopenAssembled_EqualityOfDirtyFiles(t *testing.T) {
 	before, after := equalityFixture(t)
 	if !after.dirtyZeroOfShare {
@@ -706,24 +709,29 @@ func TestReopenAssembled_EqualityOfDirtyFiles(t *testing.T) {
 				tag, maps.Keys(after.dirtySets[tag]), maps.Keys(before.dirtySets[tag]))
 		}
 	}
+	if got, want := after.journalDirtyBytes, before.journalDirtyBytes; got != want {
+		t.Fatalf("Stats().DirtyBytes after the reopen = %d, want %d: the seed must carry the dirty bytes the first journal held", got, want)
+	}
+	if got, want := after.journalHeldBytes, before.journalHeldBytes; got != want {
+		t.Fatalf("Stats().HeldBytes after the reopen = %d, want %d: the seed must carry the held bytes the first journal held", got, want)
+	}
 }
 
 // TestReopenAssembled_EqualityOfShareFigures holds the per-share figures at
 // the caller that reads them: every tag that holds a record — attached or
-// not, for no handle is open at either read — reports the same charge figures
-// after the reopen as before the crash. The charge is what the seed owns:
-// the record bytes still on disk, the withheld and forgotten records'
-// included. The held, dirty and unreclaimed byte axes read zero at an open
-// today — the deltas the open's seed applies carry no byte figures, and the
-// counters that serve them rise only as writes land — so the row leaves
-// them out rather than hold the seed to figures it never spelled.
+// not, for no handle is open at either read — reports the same figures after
+// the reopen as before the crash, charge and byte axes alike: the record
+// bytes still on disk (the withheld and forgotten records' included) beside
+// the held, dirty and unreclaimed bytes the running journal's own deltas
+// counted. A seed that spells no byte figures fails here, for every byte
+// axis it leaves reads zero.
 func TestReopenAssembled_EqualityOfShareFigures(t *testing.T) {
 	before, after := equalityFixture(t)
 	for _, tag := range []ShareTag{1, 2} {
 		b, a := before.shares[tag], after.shares[tag]
-		if a.Limit != b.Limit || a.UsedBytes != b.UsedBytes || a.ReservedBytes != b.ReservedBytes {
-			t.Fatalf("share %d's charge figures after the reopen = {Limit %d, UsedBytes %d, Reserved %d}, want {Limit %d, UsedBytes %d, Reserved %d}: the seed charged the share differently than the running journal did",
-				tag, a.Limit, a.UsedBytes, a.ReservedBytes, b.Limit, b.UsedBytes, b.ReservedBytes)
+		if a != b {
+			t.Fatalf("share %d's figures after the reopen = %+v, want %+v: the seed charged or counted the share differently than the running journal did",
+				tag, a, b)
 		}
 	}
 }
@@ -1060,14 +1068,30 @@ func TestReopenAssembled_ForgetLivenessHoldsItsHoldersTillTheyRetire(t *testing.
 		}
 		return true
 	}
+	// The seam counts every read its view took: the reads of the segment's
+	// slots the journal read at the arena of its own open included. The
+	// counter is the row's witness for the no-read half below — the same
+	// counts a worker that read the segment to decide would move.
+	readsOf := func(id core.SegmentID) int {
+		n := f.seam.CallsFor(kit.OpRead, segFile(id))
+		return n + f.seam.CallsFor(kit.OpReadDirect, segFile(id))
+	}
+	readsBefore := readsOf(segRemovals)
 
 	// The removals are settled at the caller: metadata has recorded both,
 	// the truncate the delete outranks and the delete itself. Their segment
 	// holds nothing else, so the settle retires it, and the worker's claim
-	// needs no read of the segment to learn that.
+	// — the tracker's Held re-check, the durability gate and the ledger's
+	// state — decides from the tables in memory alone: a path that read
+	// the segment to learn what it holds moves the counter this row holds
+	// against.
 	h := shareOf(t, j, tagRemovals)
 	h.Settle(removed, v(21))
 	waitFor(t, "the settled removals' segment to retire", 30*time.Second, func() bool { return gone(segRemovals) })
+	if got := readsOf(segRemovals); got != readsBefore {
+		t.Fatalf("retiring the settled removals' segment took the segment's bytes to read: %d read calls at the claim, want %d, the count the open itself left: the claim owes its answer to the tables in memory, not to the segment",
+			got-readsBefore, readsBefore)
+	}
 
 	// The forget record keeps its holder alive: the segment holding the
 	// tag's record below the forget and the forget record's own stay put
@@ -1075,10 +1099,17 @@ func TestReopenAssembled_ForgetLivenessHoldsItsHoldersTillTheyRetire(t *testing.
 	staysThrough(t, "the forget record's own segment to retire", 4*time.Second, func() bool { return gone(segForget) })
 	staysThrough(t, "the segment holding the forgotten tag's record below the forget to retire", 4*time.Second, func() bool { return gone(segBelow) })
 
-	// The last holder retires — the repack that would retire it is not
-	// built, so the retirer's own seam drives the same executor the
-	// journal's retirement path hands to — and the forget record's own
-	// segment retires behind it.
+	// The last holder's retirement is a post-repack retirement simulated
+	// by hand: the copy step a repack pass would run — moving the segment's
+	// live content out and unholding it — is a stub on this branch, so the
+	// row hands the executor the caller's word (NotHeld) that a repacked
+	// segment stands for, while the segment's file still holds the content
+	// the index names and the row never reads again. The simulation is a
+	// real answer for the clause the row pins — the tracker's hold on the
+	// forget record survives one holder's retirement, because the durable
+	// retirement signal prunes the forget's snapshot whatever word moved
+	// the segment — and no better witness exists until the copy pass
+	// lands.
 	if _, err := j.core.Retirer().Retire(segBelow, segment.NotHeld); err != nil {
 		t.Fatalf("retiring the forget record's last holder: %v", err)
 	}

@@ -441,41 +441,67 @@ func TestInspectOfAnEmptyIndexYieldsNothing(t *testing.T) {
 }
 
 // TestDirtySeedListsTheFilesTheRebuildRestoredDirty holds the seed the
-// journal side derives from a rebuilt index: one became-dirty delta per file
-// that holds or retains content whose offloaded bit is unset, at the zero
-// write time restored content carries, and none for the file whose offloaded
-// record covers everything it holds or for an index that holds no entry.
+// journal side derives from a rebuilt index: one delta per file that holds or
+// retains an extent — the became-dirty transition when the file holds or
+// retains content whose offloaded bit is unset, Unchanged when an offloaded
+// record covers everything it holds — at the zero write time restored content
+// carries, carrying each file's whole held, dirty and retained byte figures,
+// the counts the open's journal-wide axes and per-share figures open at. An
+// index holding no entry seeds nothing.
 func TestDirtySeedListsTheFilesTheRebuildRestoredDirty(t *testing.T) {
 	j, _ := reopenedJournal(t)
 
 	seed := dirtySeed(j.core.Index())
-	if len(seed) != 5 {
-		t.Fatalf("dirtySeed over the plant got %d deltas, want one per dirty file: %+v", len(seed), seed)
+	if len(seed) != 6 {
+		t.Fatalf("dirtySeed over the plant got %d deltas, want one per file that holds or retains an extent: %+v", len(seed), seed)
 	}
 	for _, d := range seed {
 		if !d.OldestDirty.IsZero() {
 			t.Errorf("the seed of file %v names the oldest dirty time %v, want the zero time restored content carries", d.File, d.OldestDirty)
 		}
-		if d.Dirty != index.BecameDirty {
-			t.Errorf("the seed of file %v carries the transition %v, want BecameDirty", d.File, d.Dirty)
+		if d.RetainedBytes != 0 {
+			t.Errorf("the seed of file %v carries %d retained bytes, want none: the index a rebuild builds retains nothing", d.File, d.RetainedBytes)
 		}
 		switch d.File {
 		case fileOf(1), fileOf(4), fileOf(5):
+			if d.Dirty != index.BecameDirty {
+				t.Errorf("the seed of file %v carries the transition %v, want BecameDirty", d.File, d.Dirty)
+			}
+			if d.HeldBytes != d.DirtyBytes {
+				t.Errorf("the seed of file %v carries %d held and %d dirty bytes, want equal figures: no planted record marks it offloaded", d.File, d.HeldBytes, d.DirtyBytes)
+			}
 			if d.Tag != marksTag && d.Tag != piecesTag {
 				t.Errorf("the seed of file %v carries tag %d, want the tag of the record that holds it", d.File, d.Tag)
 			}
 		case fileOf(2):
+			if d.Dirty != index.BecameDirty {
+				t.Errorf("the seed of the truncated file carries the transition %v, want BecameDirty: its held remainder is dirty", d.Dirty)
+			}
+			if d.HeldBytes != 40 {
+				t.Errorf("the seed of the truncated file carries %d held bytes, want 40: its held remainder [0,40)", d.HeldBytes)
+			}
 			if d.Tag != cutsTag {
-				t.Errorf("the seed of the truncated file carries tag %d, want %d: its held remainder is dirty", d.Tag, cutsTag)
+				t.Errorf("the seed of the truncated file carries tag %d, want %d", d.Tag, cutsTag)
 			}
 		case fileOf(3):
-			t.Errorf("the seed lists file %v, want it unlisted: its offloaded record covers everything it holds", d.File)
+			if d.Dirty != index.Unchanged {
+				t.Errorf("the seed of the over-marked file carries the transition %v, want Unchanged: its offloaded record covers everything it holds", d.Dirty)
+			}
+			if d.DirtyBytes != 0 {
+				t.Errorf("the seed of the over-marked file carries %d dirty bytes, want none: its offloaded record covers everything it holds", d.DirtyBytes)
+			}
+			if d.HeldBytes != 64 {
+				t.Errorf("the seed of the over-marked file carries %d held bytes, want 64: its offloaded record covers it and holds remain held", d.HeldBytes)
+			}
 		case fileOf(6):
+			if d.Dirty != index.BecameDirty {
+				t.Errorf("the seed of the rivalled file carries the transition %v, want BecameDirty", d.Dirty)
+			}
 			if d.Tag != ownerTag {
-				t.Errorf("the seed of the rivalled file carries tag %d, want its owner's %d", d.Tag, ownerTag)
+				t.Errorf("the seed of the rivalled file carries tag %d, want its owner's %d", d.File, d.Tag)
 			}
 		default:
-			t.Errorf("the seed lists the unknown file %v, want only the plant's dirty files", d.File)
+			t.Errorf("the seed lists the unknown file %v, want only the plant's files", d.File)
 		}
 	}
 	if got := dirtySeed(index.New(1 << 20)); got != nil {

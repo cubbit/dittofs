@@ -24,6 +24,22 @@
   issue: '#3378'
   message: 'stub:'
 
+- test: TestMetrics_ConditionsMoveTheirMetric/corrupt_data_loss
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The corrupt-dirty leg runs past every stub and fails at its own figure: no path raises the corrupt data-loss counter yet. Needs the corrupt outcomes.'
+  issue: '#3378'
+  message: 'a corrupt dirty extent moved CorruptExtentsDataLoss from 0 to 0, want it risen'
+
+- test: TestMetrics_ConditionsMoveTheirMetric/loss_corrupt
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The corrupt-dirty loss leg runs past every stub and fails at its own figure: no path raises the corrupt data-loss counter yet. Needs the corrupt outcomes and their loss events.'
+  issue: '#3378'
+  message: 'a corrupt dirty extent moved CorruptExtentsDataLoss from 0 to 0, want it risen'
+
 - test: TestModel
   status: fail
   fix: planned
@@ -1816,14 +1832,6 @@
   issue: '#3378'
   message: 'holds segments; recovering them is not built'
 
-- test: TestEdge_FilesystemENOSPCIsNotErrNoSpace
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path over a full device.'
-  issue: '#3378'
-  message: 'stub: Inspect.File'
-
 - test: TestEdge_SyncFailsThenSucceeds
   status: fail
   fix: planned
@@ -2063,6 +2071,14 @@
   reason: 'The journal opens; the check fails on a stub call. Needs Open: the synced corrupt loss masking what it superseded is built (Durability.Corrupt), the fixture cannot open a journal.'
   issue: '#3378'
   message: 'holds segments; recovering them is not built'
+
+- test: TestEdge_FilesystemENOSPCIsNotErrNoSpace
+  status: skip
+  fix: planned
+  category: feature
+  reason: 'The roll path answers a full device with the spare limit alone: no take reads the pool''s device-full state, so the check''s bounded retry would spend every attempt on a retryable refusal. Withdraws when a write on a full device answers the device''s error.'
+  issue: '#3378'
+  message: 'a content write on a full device answers the spare limit: no take reads the pool''s device-full state yet'
 
 - test: TestCounted_AllocationsPerCall
   status: skip

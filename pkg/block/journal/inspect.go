@@ -77,27 +77,49 @@ func entriesFrom(es []index.Entry) []IndexEntry {
 	return out
 }
 
-// dirtySeed derives the dirty-file seed of a rebuilt index: one became-dirty
-// delta per file that holds or retains an extent whose offloaded bit is unset,
-// the whole content of the list an open starts its dirty list from, so a file
-// nothing seeded answers unlisted until a write of its own lands. Each delta
-// carries the file's owner tag and the became-dirty transition alone, at the
-// zero write time content a rebuild restores carries; a file whose every
-// extent holds the bit, and one a removal marker left holding nothing, is no
-// member. It reads the index and mutates nothing.
+// dirtySeed derives the open's seed of a rebuilt index: one delta per file
+// that holds or retains an extent, carrying the file's whole held, dirty and
+// retained byte figures — the counters an open starts its journal-wide axes
+// and per-share figures from, which rise from these deltas alone until writes
+// land — and the became-dirty transition when the file holds or retains an
+// extent whose offloaded bit is unset, the whole content of the list an open
+// starts its dirty list from, so a file nothing seeded answers unlisted until
+// a write of its own lands. Every delta carries the file's owner tag and the
+// zero write time content a rebuild restores carries; a file a removal marker
+// left holding nothing seeds nothing, for it accounts no bytes either. The
+// axes follow the account path's own meanings: held every held extent's
+// length, dirty the held bytes whose offloaded bit is unset, retained every
+// retained extent's length — while the dirty-file list's membership counts a
+// retained extent with the bit unset as dirty, exactly as the index's own
+// deltas do. It reads the index and mutates nothing.
 func dirtySeed(ix *index.Index) []index.HeldDelta {
 	var out []index.HeldDelta
 	for id, es := range ix.InspectAll() {
+		var d index.HeldDelta
+		for _, e := range es {
+			switch e.Kind {
+			case index.EntryHeld:
+				d.Tag = e.Tag
+				d.HeldBytes += e.Extent.Len
+				if !e.Offloaded {
+					d.DirtyBytes += e.Extent.Len
+				}
+			case index.EntryRetained:
+				d.Tag = e.Tag
+				d.RetainedBytes += e.Extent.Len
+			}
+		}
+		if d == (index.HeldDelta{}) {
+			continue // a file holding only markers accounts nothing and lists nothing
+		}
+		d.File = id
 		for _, e := range es {
 			if (e.Kind == index.EntryHeld || e.Kind == index.EntryRetained) && !e.Offloaded {
-				out = append(out, index.HeldDelta{
-					Tag:   e.Tag,
-					File:  id,
-					Dirty: index.BecameDirty,
-				})
+				d.Dirty = index.BecameDirty
 				break
 			}
 		}
+		out = append(out, d)
 	}
 	return out
 }

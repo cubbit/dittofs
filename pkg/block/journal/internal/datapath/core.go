@@ -68,14 +68,17 @@ type Deps struct {
 // decision: State is plain data handed to New and holds no lock domain of its
 // own; the index and counters it carries take their own short, I/O-free locks.
 //
-// decision: the dirty-file list is seeded by the Open payload alone. The
-// rebuild's own index deltas are discarded, and apply adds a file only on
-// BecameDirty, so the open derives one became-dirty delta per rebuilt file
-// that holds content whose offloaded bit is unset — at the zero write time
-// restored content carries — and the wiring folds those through the dirty
-// list's own apply. A State that rebuilds the index while skipping the Open
-// payload leaves its dirty files unlisted; no journal-internal caller builds
-// that shape, so the gap is the caller's own to close.
+// decision: the dirty-file list, the journal-wide axes and the per-share
+// figures are all seeded by the Open payload alone. The rebuild's own index
+// deltas are discarded, so the open derives one delta per rebuilt file that
+// holds or retains an extent — its whole held, dirty and retained byte
+// figures, the became-dirty transition when the file holds content whose
+// offloaded bit is unset, and the zero write time restored content carries —
+// and the wiring folds each through Account, the path every running delta
+// takes. A State that rebuilds the index while skipping the Open payload
+// leaves its figures and dirty files at zero and unlisted; no
+// journal-internal caller builds that shape, so the gap is the caller's own
+// to close.
 type State struct {
 	Index    *index.Index
 	Counters *index.Counters
@@ -673,14 +676,16 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// droppable — a marker settled before the open read its record, a
 	// removal nothing on disk outranks — so its segment's candidate crosses
 	// now rather than at its file's first event, which a file whose records
-	// all resolved at the open may never see. The dirty seed follows through
-	// the dirty list's own apply — the consumer of every delta the account
-	// runs — at the zero write time restored content carries.
+	// all resolved at the open may never see. The seed's deltas each run
+	// through Account, the consumer every delta of a running journal takes,
+	// so the journal-wide axes and the per-share figures open at the
+	// figures the rebuilt index holds rather than at zero; the zero write
+	// time the deltas carry is the time restored content opens with.
 	if o := state.Open; o != nil {
 		tr.RegisterAtOpen(o.Live, o.Forgets, o.Unsynced)
 		tr.OpenDone()
 		for _, d := range o.Dirty {
-			c.dirtyFiles.apply(d)
+			c.Account(d)
 		}
 	}
 
