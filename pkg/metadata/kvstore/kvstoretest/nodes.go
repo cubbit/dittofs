@@ -12,34 +12,78 @@ import (
 
 const bothRoles = entity.NodeRoleProtocol | entity.NodeRoleStorage
 
-// Each start raises the node's epoch and then registers it: the epoch the
-// raise answered is the one the record holds, one per start, whatever the
-// registration carries.
+// Each start raises the node's epoch and registers the node, in either
+// order: the record holds the registration with the raised epoch, one per
+// start, whatever the registration carries, and registering returns the
+// epoch as stored then, this start's only once it is raised.
 func testNodeEpochAcrossStarts(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	nodes := s.Nodes()
-	id := entity.NodeID(uuid.New())
-	for start := uint64(1); start <= 2; start++ {
-		epoch, err := s.RaiseNodeEpoch(ctx, id)
-		must(t, err)
-		reg := entity.Node{ID: id, Address: "10.0.0.1:12049", Roles: bothRoles, Binary: "v1", Domain: "a", Epoch: 99,
-			Formats: map[entity.Format]entity.VersionRange{1: {Min: 1, Max: 2}, 2: {Min: 3, Max: 3}}}
-		rec, err := nodes.RegisterNode(ctx, reg)
-		must(t, err)
-		got, ok, err := nodes.Node(ctx, id)
-		if err != nil || !ok {
-			t.Fatalf("start %d: node record: %v, %v", start, ok, err)
-		}
-		if epoch != start || rec.Epoch != epoch || got.Epoch != epoch {
-			t.Errorf("start %d: raised %d, registered %d, read %d; want %d each", start, epoch, rec.Epoch, got.Epoch, start)
-		}
-		reg.Epoch = start
-		if !reflect.DeepEqual(got, reg) || !reflect.DeepEqual(rec, reg) {
-			t.Errorf("start %d: node record read %+v, registered %+v; want %+v", start, got, rec, reg)
+	for _, c := range []struct {
+		name          string
+		registerFirst bool
+	}{{"raise then register", false}, {"register then raise", true}} {
+		id := entity.NodeID(uuid.New())
+		for start := uint64(1); start <= 2; start++ {
+			reg := entity.Node{ID: id, Address: "10.0.0.1:12049", Roles: bothRoles, Binary: "v1", Domain: "a", Epoch: 99,
+				Formats: map[entity.Format]entity.VersionRange{1: {Min: 1, Max: 2}, 2: {Min: 3, Max: 3}}}
+			var epoch uint64
+			var rec entity.Node
+			var err error
+			wantRec := start
+			if c.registerFirst {
+				rec, err = nodes.RegisterNode(ctx, reg)
+				must(t, err)
+				epoch, err = s.RaiseNodeEpoch(ctx, id)
+				must(t, err)
+				wantRec = start - 1
+			} else {
+				epoch, err = s.RaiseNodeEpoch(ctx, id)
+				must(t, err)
+				rec, err = nodes.RegisterNode(ctx, reg)
+				must(t, err)
+			}
+			got, ok, err := nodes.Node(ctx, id)
+			if err != nil || !ok {
+				t.Fatalf("%s, start %d: node record: %v, %v", c.name, start, ok, err)
+			}
+			if epoch != start || rec.Epoch != wantRec || got.Epoch != start {
+				t.Errorf("%s, start %d: raised %d, registered %d, read %d; want %d, %d, %d",
+					c.name, start, epoch, rec.Epoch, got.Epoch, start, wantRec, start)
+			}
+			reg.Epoch = start
+			if !reflect.DeepEqual(got, reg) {
+				t.Errorf("%s, start %d: node record read %+v; want %+v", c.name, start, got, reg)
+			}
+			reg.Epoch = wantRec
+			if !reflect.DeepEqual(rec, reg) {
+				t.Errorf("%s, start %d: node record registered %+v; want %+v", c.name, start, rec, reg)
+			}
 		}
 	}
 	if _, ok, err := nodes.Node(ctx, entity.NodeID(uuid.New())); err != nil || ok {
 		t.Errorf("node never started: found %v, %v; want none", ok, err)
+	}
+}
+
+// A node write that names no node is refused and writes nothing.
+func testZeroNodeRefused(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	nodes := s.Nodes()
+	for name, write := range map[string]func() error{
+		"raise epoch": func() error { return errOf(s.RaiseNodeEpoch(ctx, entity.NodeID{})) },
+		"register":    func() error { return errOf(nodes.RegisterNode(ctx, entity.Node{Roles: bothRoles})) },
+		"status":      func() error { return nodes.PutNodeStatus(ctx, entity.NodeStatus{Settings: 1}) },
+	} {
+		if err := write(); !invalid(err) {
+			t.Errorf("%s with the zero node ID: %v, want invalid argument", name, err)
+		}
+	}
+	if _, ok, err := nodes.Node(ctx, entity.NodeID{}); err != nil || ok {
+		t.Errorf("zero node's record: found %v, %v; want none written", ok, err)
+	}
+	for st, err := range nodes.NodeStatuses(ctx, entity.NodeID{}) {
+		t.Errorf("node status listed after refused writes: %+v, %v; want none", st, err)
 	}
 }
 
@@ -71,10 +115,10 @@ func testNodeStatuses(t *testing.T, kvo Opener) {
 	want := []entity.NodeStatus{{
 		Node: ids[0], Settings: 1, ShareList: 2, Principals: 3, Claims: 4,
 		Refused: []entity.RefusedRecord{
-			{Record: entity.ResourceRef{Kind: entity.ResourceSetting, ID: []byte("b")}, Generation: 5, Error: []byte("bad")},
+			{Record: entity.SettingRef(instScope, "b"), Generation: 5, Error: []byte("bad")},
 			{Record: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte("a")}, Generation: 6, Error: []byte("worse")},
 		},
-		RestartPending: []entity.ResourceRef{{Kind: entity.ResourceAdapter, ID: []byte("smb")}, {Kind: entity.ResourceSetting, ID: []byte("a")}},
+		RestartPending: []entity.ResourceRef{{Kind: entity.ResourceAdapter, ID: []byte("smb")}, entity.SettingRef(entity.SettingScope{Kind: entity.ScopeShare, ID: uuid.New()}, "a")},
 		Secrets:        []entity.SecretVersion{{Secret: entity.SecretRef{2}, Version: 7}, {Secret: entity.SecretRef{1}, Version: 8}},
 		Conditions:     []byte("ready"),
 	}, {Node: ids[1], Settings: 9}}
@@ -85,10 +129,19 @@ func testNodeStatuses(t *testing.T, kvo Opener) {
 	for _, st := range slices.Backward(want) {
 		must(t, nodes.PutNodeStatus(ctx, st))
 	}
-	if got := all(t, nodes.NodeStatuses(ctx, entity.NodeID{})); !reflect.DeepEqual(got, want) {
+	list := func(after entity.NodeID) (got []entity.NodeStatus) {
+		for st, err := range nodes.NodeStatuses(ctx, after) {
+			if err != nil {
+				t.Fatalf("node statuses after %v: %v", after, err)
+			}
+			got = append(got, st)
+		}
+		return got
+	}
+	if got := list(entity.NodeID{}); !reflect.DeepEqual(got, want) {
 		t.Errorf("node statuses:\n got %+v\nwant %+v", got, want)
 	}
-	if got := all(t, nodes.NodeStatuses(ctx, ids[0])); !reflect.DeepEqual(got, want[1:]) {
+	if got := list(ids[0]); !reflect.DeepEqual(got, want[1:]) {
 		t.Errorf("node statuses after the first node:\n got %+v\nwant %+v", got, want[1:])
 	}
 }

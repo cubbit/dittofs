@@ -152,6 +152,7 @@ func Run(t *testing.T, open Opener) {
 		{"OperationStateWithAudit", testOperationStateWithAudit},
 		{"NodeEpochAcrossStarts", testNodeEpochAcrossStarts},
 		{"RegisterNodeRefuses", testRegisterNodeRefuses},
+		{"ZeroNodeRefused", testZeroNodeRefused},
 		{"NodeStatuses", testNodeStatuses},
 		{"ListReconciledRecords", testListReconciledRecords},
 	} {

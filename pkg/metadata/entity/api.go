@@ -51,6 +51,17 @@ var resourceKinds = []string{ResourceInstallation: "installation", ResourceNode:
 // String is the kind's name, empty for one no constant names.
 func (k ResourceKind) String() string { return enumString(resourceKinds, k) }
 
+// SettingRef names one setting as a resource: its scope's kind, its scope's
+// ID below installation, then its key. The key comes last, and the kind
+// says whether an ID precedes it, so two settings never share a reference.
+func SettingRef(scope SettingScope, key string) ResourceRef {
+	id := []byte{byte(scope.Kind)}
+	if scope.Kind != ScopeInstallation {
+		id = append(id, scope.ID[:]...)
+	}
+	return ResourceRef{Kind: ResourceSetting, ID: append(id, key...)}
+}
+
 // AuditRecord is one management action, written in the transaction of the
 // change it records and never rewritten.
 type AuditRecord struct {

@@ -53,8 +53,11 @@ func (n Nodes) Counters(ctx context.Context) (c Counters, err error) {
 // and its own transaction, and returns the raised value: every start's is
 // above every earlier start's, so what a start records under it is told from
 // what an earlier process left. A record it creates holds only the epoch
-// until the node registers.
+// until the node registers. The zero node ID is refused.
 func (s *Store) RaiseNodeEpoch(ctx context.Context, node entity.NodeID) (epoch uint64, err error) {
+	if node == (entity.NodeID{}) {
+		return 0, errZeroNode()
+	}
 	err = s.kv.Update(ctx, func(tx kv.Txn) error {
 		n, _, err := nodeIn(tx, node)
 		if err != nil {
@@ -67,12 +70,19 @@ func (s *Store) RaiseNodeEpoch(ctx context.Context, node entity.NodeID) (epoch u
 	return epoch, err
 }
 
+// errZeroNode refuses a node write that names no node.
+func errZeroNode() error { return merrs.NewInvalidArgumentError("a node record names its node") }
+
 // RegisterNode writes what a node registers at a start and returns the
-// record written. The epoch its start raised, and whether a takeover marked
-// it lapsed, are kept as stored: registering decides neither. Roles other
-// than both, and a version range whose minimum is above its maximum, are
-// refused.
+// record as stored. Its epoch, and whether a takeover marked it lapsed, are
+// kept as stored, not taken from node: registering decides neither, so the
+// epoch returned is the last one raised, which is this start's only once
+// this start has raised it. The zero node ID, roles other than both, and a
+// version range whose minimum is above its maximum, are refused.
 func (n Nodes) RegisterNode(ctx context.Context, node entity.Node) (rec entity.Node, err error) {
+	if node.ID == (entity.NodeID{}) {
+		return rec, errZeroNode()
+	}
 	if node.Roles != entity.NodeRoleProtocol|entity.NodeRoleStorage {
 		return rec, merrs.NewInvalidArgumentError("a node serves both the protocol and the storage role")
 	}
@@ -112,8 +122,12 @@ func nodeIn(r kv.Reader, id entity.NodeID) (entity.Node, bool, error) {
 	return n, err == nil, err
 }
 
-// PutNodeStatus replaces the node's status with s.
+// PutNodeStatus replaces the node's status with s; the zero node ID is
+// refused.
 func (n Nodes) PutNodeStatus(ctx context.Context, s entity.NodeStatus) error {
+	if s.Node == (entity.NodeID{}) {
+		return errZeroNode()
+	}
 	return n.s.kv.Update(ctx, func(tx kv.Txn) error {
 		return tx.Set(nodeStatusKey(s.Node), encodeNodeStatus(s))
 	})

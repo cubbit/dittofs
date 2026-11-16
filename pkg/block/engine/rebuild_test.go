@@ -74,7 +74,7 @@ func withOpenState() starterOption {
 // and answers it as a CloneHold.
 func (s *starter) openState(t *testing.T) engine.CloneHold {
 	t.Helper()
-	tb, err := openstate.New(openstate.Deps{Records: s.fs.Store, Clock: s.clock, Rand: rand.Reader,
+	tb, err := openstate.New(openstate.Deps{Records: s.fs.Store, Node: entity.NodeID{15: 1}, Clock: s.clock, Rand: rand.Reader,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
