@@ -455,7 +455,20 @@ func (r *soakRun) step() {
 		size := r.rng.Int64N(soakSpan)
 		desc = fmt.Sprintf("truncate %s to %d", f.name, size)
 		r.log.set(r.calls, desc, false)
-		grow := size >= f.leaves()
+		// The engine calls a truncate a grow when it reaches the size the
+		// file has now, what its replayed operations leave after any crash,
+		// which is the size the service reports; the soak's calls are
+		// sequential, so nothing moves it between this read and the call.
+		gctx, gcancel := r.bounded()
+		before, gerr := r.c.fs.GetAttr(gctx, r.c.admin, h)
+
+		gcancel()
+
+		if gerr != nil {
+			r.fail("GetAttr of %s before call %d: %v", f.name, r.calls, gerr)
+		}
+
+		grow := size >= before.Size
 
 		r.waiting(func() {
 			_, err = r.c.fs.SetAttr(

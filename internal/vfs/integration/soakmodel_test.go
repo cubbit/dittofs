@@ -79,19 +79,6 @@ func (o *soakOp) size(size int64) int64 {
 	return size
 }
 
-// leaves is the size f has once every op whose call answered success applies:
-// the size the engine's own operations leave, which decides a truncate's grow.
-func (f *fileModel) leaves() int64 {
-	var size int64
-	for _, o := range f.ops {
-		if o.done {
-			size = o.size(size)
-		}
-	}
-
-	return size
-}
-
 // fileModel is what the soak knows of one file: every op on it since it was
 // created empty, and the modify time it was created with.
 type fileModel struct {
@@ -770,6 +757,23 @@ func TestOracle(t *testing.T) {
 				return f.stat(8, grow.mtime)
 			},
 			"served size 8",
+		},
+		{
+			"O39 a truncate past the size a crash left is a grow, dropped with it",
+			func(m *soakModel, f *fileModel) error {
+				write(f, 0, 'a', 8, true)
+				// An unstable write to [8, 64) answered, then a crash dropped it,
+				// so the service reported 8 when the truncate to 32 was issued
+				// in the next process: a grow, which a crash before any Commit
+				// may drop as well.
+				lost := &soakOp{kind: opWrite, off: 8, proc: 1, done: true}
+				lost.data = bytes.Repeat([]byte{'b'}, 56)
+				f.add(lost, false)
+				f.add(&soakOp{kind: opTruncate, off: 32, proc: 2, done: true, grow: true}, false)
+
+				return f.stat(8, t0.Add(time.Second))
+			},
+			"",
 		},
 		{
 			"O28 a loss found after an SMB open, flushed without ErrLost",
