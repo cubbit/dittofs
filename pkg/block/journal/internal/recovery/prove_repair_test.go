@@ -106,3 +106,84 @@ func TestATornRecordOverASyncedWriteRestoresItsPlacement(t *testing.T) {
 		wantFate(t, st, 2, fateTornTail, bAt)
 	})
 }
+
+// TestATornCopyNeverDropsAGoodCopyWithItsNumbers holds the exclusion at the
+// repair's heart: the torn verdict drops the PLACEMENT the record was torn
+// at, never the record's numbers, so a good copy of the record elsewhere —
+// the copy a sealed segment carried beside the original, or a later copy
+// beside both — re-places and the record stays held by it. The rebuild keeps
+// a record's greater placement as its home, so before the repair the index
+// answers the record from the torn placement the tail read; after it, the
+// surviving copy answers, and the copy the rebuild had displaced holds
+// nothing.
+func TestATornCopyNeverDropsAGoodCopyWithItsNumbers(t *testing.T) {
+	const overwrite = 0x4100
+	rotPayload := func(seg []byte, at int64) {
+		seg[at+format.RecordHeaderSize+8+2] ^= 0xff // the cache reads the durable rot
+	}
+	t.Run("one good copy sealed before the torn tail", func(t *testing.T) {
+		a := tailRec(200, overwrite)
+		w := tailRec(201, overwrite) // over A's whole extent, R's first home
+		seg1, _ := buildSealed(1, a, w)
+		rAt1 := int64(format.SegmentHeaderSize) + tailLen // R's offset in segment 1
+
+		tornSeg := buildSeg(2, tailRec(201, overwrite)) // R's second home, same numbers
+		copy(tornSeg, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
+		tornAt := int64(format.SegmentHeaderSize)
+		rotPayload(tornSeg, tornAt)
+
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, seg1)
+		r.plantSeg(2, tornSeg)
+
+		st := runTails(t, r)
+
+		noTornReport(t, st)
+		wantPlacement(t, st, overwrite, index.Placed{
+			Extent:  core.Extent{Off: overwrite, Len: 16},
+			Record:  index.RecordAt{Segment: 1, Offset: uint32(rAt1)},
+			Version: core.Version{Counter: 201},
+			Seq:     100,
+		})
+		if got := planted(st); got != 1 {
+			t.Errorf("the index holds %d entries, want 1: the good copy of R alone, the torn placement's dropped as never written", got)
+		}
+		wantFate(t, st, 2, fateTornTail, tornAt)
+	})
+	t.Run("two good copies reach the fold, the greater re-places", func(t *testing.T) {
+		a := tailRec(200, overwrite)
+		w := tailRec(201, overwrite)
+		seg1, _ := buildSealed(1, a, w)
+		seg2, _ := buildSealed(2, tailRec(201, overwrite)) // R carried forward, same numbers
+		rAt2 := int64(format.SegmentHeaderSize)
+
+		tornSeg := buildSeg(3, tailRec(201, overwrite)) // R beside both, same numbers
+		copy(tornSeg, raw.SegmentHeader{Identity: journalID, ID: 3, Predecessor: 2}.Bytes())
+		tornAt := int64(format.SegmentHeaderSize)
+		rotPayload(tornSeg, tornAt)
+
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, seg1)
+		r.plantSeg(2, seg2)
+		r.plantSeg(3, tornSeg)
+
+		st := runTails(t, r)
+
+		noTornReport(t, st)
+		// Both surviving copies reach the fold, and it keeps what the rebuild
+		// keeps of two copies of one record: the one at the greater
+		// (segment, offset), the copy in segment 2.
+		wantPlacement(t, st, overwrite, index.Placed{
+			Extent:  core.Extent{Off: overwrite, Len: 16},
+			Record:  index.RecordAt{Segment: 2, Offset: uint32(rAt2)},
+			Version: core.Version{Counter: 201},
+			Seq:     100,
+		})
+		if got := planted(st); got != 1 {
+			t.Errorf("the index holds %d entries, want 1: the good copy of R alone, the torn placement's dropped as never written", got)
+		}
+		wantFate(t, st, 3, fateTornTail, tornAt)
+	})
+}

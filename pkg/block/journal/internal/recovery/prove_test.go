@@ -588,6 +588,77 @@ func TestARecordWholeOnlyInTheCacheIsLostByTheDevice(t *testing.T) {
 	})
 }
 
+// TestATornTailCutsAtTheFirstTornRecord holds the torn tail's own cut with
+// two torn records at the tail: the segment is cut at the FIRST torn one's
+// start, for a cut at the second's would leave the first's rotted bytes
+// below a seal that names nothing wrong — the crash tore the stream's last
+// writes, and the cut goes above both or neither holds. A is held by the
+// sync its own record names, so nothing held lies past either torn record.
+func TestATornTailCutsAtTheFirstTornRecord(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	endB := endAfter(tailRec(200, 0x4100), tailRec(201, 0x8100))
+	seg := buildSeg(2,
+		syncedRec(200, 0x4100, endA),
+		tailRec(201, 0x8100), tailRec(202, 0xc100))
+	seg[endA+format.RecordHeaderSize+8+2] ^= 0xff // B's payload
+	seg[endB+format.RecordHeaderSize+8+2] ^= 0xff // C's payload
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, seg)
+
+	st := runTails(t, r)
+
+	noTornReport(t, st)
+	wantFate(t, st, 2, fateTornTail, endA)
+	if got := planted(st); got != 1 {
+		t.Errorf("the index holds %d entries, want 1: A alone, both torn records dropped as never written", got)
+	}
+}
+
+// TestALostRecordUnderATornTailEndsItsSegment holds the term that keeps a
+// lost record's segment ended: the torn tail's seal is for a segment nothing
+// was LOST from — a lost record's segment is ended, whatever else the tail
+// says, for the cut keeps the lost record's own extent, which the
+// re-append claims. B is lost by the device — whole in the cache alone, its
+// syncs dropped — and the torn C after it cannot seal over it.
+func TestALostRecordUnderATornTailEndsItsSegment(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	endB := endAfter(tailRec(200, 0x4100), tailRec(201, 0x8100))
+	a := syncedRec(200, 0x4100, endA)
+	b := syncedRec(201, 0x8100, endA)
+	c := tailRec(202, 0xc100)
+	full := buildSeg(2, a, b, c)
+	name := format.SegmentName(2)
+	goodB := full[endA:endB] // B's whole bytes, header and body
+
+	durable := slices.Clone(full)
+	durable[endA+format.RecordHeaderSize+8+2] ^= 0xff // B's payload, rotted where the cache holds the good copy
+	durable[endB+format.RecordHeaderSize+8+2] ^= 0xff // C's payload, rotted in both views
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, durable)
+	r.writeLiveOnly(name, endA, goodB)
+	r.dropSyncs(name)
+
+	st := runTails(t, r)
+
+	// B alone is handed to the re-append, from the copy its first read
+	// verified; the torn C never is, and the segment ends at B's own end
+	// rather than sealing at C's start.
+	wantReappends(t, st, reappendOf(t, 2, endA, goodB))
+	if len(st.Proof.FailedWindows) != 0 {
+		t.Errorf("FailedWindows got %v, want none: the sync reported success", st.Proof.FailedWindows)
+	}
+	if len(st.Tails.Damaged) != 0 {
+		t.Errorf("Damaged got %v, want none: a lost record and a torn one are never damage", st.Tails.Damaged)
+	}
+	wantFate(t, st, 2, fateEnded, endB)
+	if got := planted(st); got != 2 {
+		t.Errorf("the index holds %d entries, want 2: A and B, the torn C dropped as never written", got)
+	}
+}
+
 // TestASealMarkerThatFailsProofWithUnprovenRecords holds the two halves
 // joined on one segment: a marker the cache holds whole over a rotted slot,
 // with an unproven record below it, leaves the sealed states — the marker is

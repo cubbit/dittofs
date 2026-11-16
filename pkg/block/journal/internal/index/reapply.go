@@ -9,8 +9,9 @@ import (
 
 // ReplayWindow re-applies to id, inside the extent window alone, the records
 // recs reach there — the answer set of a repair, already exclusive of the
-// record whose drop called for it — exactly as the rebuild that first applied
-// them would: every kind's reach is clipped to the window, the clip deciding
+// placement whose drop called for it, a surviving copy of the same record
+// included — exactly as the rebuild that first applied them would: every
+// kind's reach is clipped to the window, the clip deciding
 // each on its own rule (a truncate's and a delete's removal runs to the end of
 // the file), writes and fills hold their pieces in precedence order — the
 // greatest of the records reaching a byte holds it, last applied wins being
@@ -20,9 +21,12 @@ import (
 // nothing a record noted on its first pass is re-noted: the drop-range notes,
 // the counters and the removal markers the records raised the first time stay
 // as they were, for the notes name the record, not its placement, and the
-// repair only re-places. The over runs of the write at version torn — the
-// repair's one record, whose pieces the caller has already unplaced — go with
-// it, exactly as a failed window drops the failed write's.
+// repair only re-places. The over runs of the write of numbers torn — the
+// repair's one record, whose pieces the caller has already unplaced — go
+// with it, exactly as a failed window drops the failed write's, save where a
+// copy of the record stays in recs: a run names the record by version, not
+// its placement, so a surviving copy's supersede is as true as the placement
+// the verdict dropped was, and its runs stay.
 //
 // recs may carry two copies of one record — carried forward, or re-appended
 // beside its original — and the call keeps what the rebuild keeps, the one at
@@ -31,7 +35,7 @@ import (
 //
 // It takes the file's lock, creates no entry for a file without one, and
 // joins no piece across the window's ends.
-func (ix *Index) ReplayWindow(id core.FileID, window core.Extent, torn core.Version, recs []Record) {
+func (ix *Index) ReplayWindow(id core.FileID, window core.Extent, torn Numbers, recs []Record) {
 	if window.Len <= 0 {
 		return
 	}
@@ -47,8 +51,8 @@ func (ix *Index) ReplayWindow(id core.FileID, window core.Extent, torn core.Vers
 // replayWindow folds recs over f's held set inside the window, under the
 // file's lock, as ReplayWindow's contract spells it: one pass of placings and
 // cuts in precedence order, one pass of marks in sequence order, then the
-// over runs of the dropped write gone.
-func (f *file) replayWindow(window core.Extent, torn core.Version, recs []Record) {
+// over runs of the dropped write gone where no copy of it stayed.
+func (f *file) replayWindow(window core.Extent, torn Numbers, recs []Record) {
 	lo, hi := window.Off, window.Off+window.Len
 	// windowed clips e to the window, or answers nothing where they meet at
 	// no byte; the empty extent Len 0 never reaches the held set below.
@@ -160,6 +164,21 @@ func (f *file) replayWindow(window core.Extent, torn core.Version, recs []Record
 	// The dropped write's runs go with it: a supersede nobody made is not a
 	// change any later read may be told. A removal or a mark raised no run,
 	// and the runs of the writes that stayed are still true, so only the
-	// dropped write's are dropped.
-	f.held.dropOverBy(torn, window)
+	// dropped write's are dropped. But a copy of the record that stayed among
+	// the recs the fold kept keeps every run its version raised: a run names
+	// the record by version, never its placement, and the surviving copy's
+	// supersede is as true as the placement the verdict dropped was.
+	//
+	// decision: this keeps only the runs that are still here. A drop that
+	// emptied the file's held set lost them already — Unplace's settle frees
+	// the empty set with its runs, whichever copy of the record survives —
+	// and the fold re-notes nothing, so an open that un-places a record
+	// covering the file's whole held content leaves no run of it even where a
+	// good copy re-places. Widening the settle to keep an emptied set's runs
+	// changes what Since answers over a live journal's releases, so it is not
+	// taken from here; revisit if a torn-drop repair is ever required to
+	// report the supersede of a surviving copy whole-file.
+	if !slices.ContainsFunc(order, func(r Record) bool { return r.Numbers == torn }) {
+		f.held.dropOverBy(torn.Version, window)
+	}
 }

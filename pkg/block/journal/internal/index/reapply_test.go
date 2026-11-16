@@ -57,7 +57,7 @@ func TestReplayWindowRestoresWhatTheTornRecordDisplaced(t *testing.T) {
 	// repair applied exactly as the tail proof applies them.
 	got := rebuild(append(slices.Clone(rest), torn))
 	got.Unplace(alice, RecordAt{Segment: 1, Offset: 64}, window)
-	got.ReplayWindow(alice, window, torn.Numbers.Version, rest)
+	got.ReplayWindow(alice, window, torn.Numbers, rest)
 
 	if gotP, wantP := heldPieces(&got.fs, alice), heldPieces(&want.fs, alice); !slices.Equal(gotP, wantP) {
 		t.Errorf("the repaired index holds:\n got  %+v\n want %+v: the answer a rebuild without the torn record would give", gotP, wantP)
@@ -73,5 +73,60 @@ func TestReplayWindowRestoresWhatTheTornRecordDisplaced(t *testing.T) {
 		if gotB != wantB {
 			t.Errorf("segment %d backs got %d, want %d: the repair accounts the re-placed bytes the same", seg, gotB, wantB)
 		}
+	}
+}
+
+// TestARepairKeepsTheRunsOfACopyThatStays holds the repair's runs rule: the
+// drop was of one placement of the record, and a run names the record by
+// version, not its placement — so where a surviving copy reaches the fold,
+// the supersede runs the record's version raised stay, exactly the runs a
+// rebuild fed the surviving copies alone would hold, and the piece answers
+// from the surviving home. The torn record covers only part of the older
+// write, so the un-place leaves the older write's tail held and its runs —
+// and the record's — alive for the fold to keep.
+func TestARepairKeepsTheRunsOfACopyThatStays(t *testing.T) {
+	alice := fid(1)
+	old := recd(RecWrite, alice, 5, 5, 1, 32, 0, 8192)  // the older write, 0–8 KiB
+	keep := recd(RecWrite, alice, 9, 9, 1, 64, 0, 4096) // the surviving copy, the lesser home
+	torn := recd(RecWrite, alice, 9, 9, 3, 60, 0, 4096) // the greater home the verdict dropped — same numbers
+	window := core.Extent{Off: 0, Len: 4096}
+
+	rebuild := func(recs []Record) *Index {
+		t.Helper()
+		ix := New(math.MaxInt64)
+		b := newRebuilder(&ix.fs, &Counters{})
+		for _, r := range recs {
+			if err := b.Feed(r); err != nil {
+				t.Fatalf("Feed(seq %v) = %v", r.Numbers.Seq, err)
+			}
+		}
+		if err := b.Finish(ver(0)); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		return ix
+	}
+	overOf := func(ix *Index) []overRun {
+		t.Helper()
+		var over []overRun
+		ix.fs.view(alice, func(f *file) { over = slices.Clone(f.held.over) })
+		return over
+	}
+
+	// The answer the repair must reach: the same records with the torn
+	// placement never fed, for the copy that stays is the record.
+	want := rebuild([]Record{old, keep})
+	// The damaged state: the rebuild kept the torn placement as the record's
+	// home — the greater one — its drop and repair applied exactly as the
+	// tail proof applies them, the surviving copy fed with the record it
+	// overwrote.
+	got := rebuild([]Record{old, keep, torn})
+	got.Unplace(alice, RecordAt{Segment: 3, Offset: 60}, window)
+	got.ReplayWindow(alice, window, torn.Numbers, []Record{old, keep})
+
+	if gotO, wantO := overOf(got), overOf(want); !slices.Equal(gotO, wantO) {
+		t.Errorf("the repaired index keeps the over runs %+v, want %+v: the surviving copy's supersede keeps its runs", gotO, wantO)
+	}
+	if gotP, wantP := heldPieces(&got.fs, alice), heldPieces(&want.fs, alice); !slices.Equal(gotP, wantP) {
+		t.Errorf("the repaired index holds:\n got  %+v\n want %+v: the surviving copy re-places the record over what it overwrote", gotP, wantP)
 	}
 }

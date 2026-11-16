@@ -252,11 +252,14 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 	}
 	slices.Sort(pending)
 
-	// The numbers of the records this run has judged torn, one added at each
-	// drop: a later repair is fed no record an earlier or its own verdict
-	// drops, so the set the repairs re-apply is exactly the set a rebuild
-	// without the torn records would have been fed.
-	tornSoFar := make(map[index.Numbers]bool)
+	// The placements of the records this run has judged torn, one added at
+	// each drop: a later repair is fed no record from a placement an earlier
+	// or its own verdict dropped — while a copy of the record at another
+	// placement, a good one, is fed, so it re-places and the record stays
+	// held by it. The exclusion is keyed by placement, not by numbers: two
+	// copies of one record share their numbers, and only the placement the
+	// verdict reached goes.
+	tornSoFar := make(map[index.RecordAt]bool)
 
 	for _, id := range pending {
 		sc, ok := scans[id]
@@ -285,7 +288,7 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 // prove. Nothing is appended: the flow's only reaches into storage are its
 // reads and, where the marker flow made none, the one sync between the two
 // of them.
-func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect core.JournalID, sc *segmentScan, fate *segmentFate, marker markerSync, tornSoFar map[index.Numbers]bool) error {
+func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect core.JournalID, sc *segmentScan, fate *segmentFate, marker markerSync, tornSoFar map[index.RecordAt]bool) error {
 	if marker != markerSyncFailed && (sc.SyncedThrough >= sc.RecordsEnd || sc.RecordsEnd <= format.SegmentHeaderSize) {
 		// No record can end past the synced-through the segment's own records
 		// name when the point reaches the last record's end, and a segment
@@ -502,10 +505,12 @@ func unheldStraddles(cands []format.RecordHeader, verifiedAt map[int64]bool, poi
 // written, so nothing of the record survives the open: no re-append carries
 // it, no hold claims its extent, no aside phase ever answers for it — and
 // what it overwrote or cut holds its extent again, as it did before the
-// record's replay took it. tornSoFar holds the numbers the flow has judged
-// torn already, this one joining it, so a repair is fed no record a torn
-// verdict later in the run drops of its own.
-func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentScan, h format.RecordHeader, tornSoFar map[index.Numbers]bool) error {
+// record's replay took it. tornSoFar holds the placements the flow has
+// judged torn already, this one joining it, so a repair is fed no record a
+// torn verdict later in the run drops of its own — while a good copy of the
+// record at another placement is fed and re-places, for the verdict reached
+// one placement of the record, not the record itself.
+func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentScan, h format.RecordHeader, tornSoFar map[index.RecordAt]bool) error {
 	if h.Kind > format.KindUnmark {
 		// decision: an aside record is held only in the scan's aside list,
 		// which no built phase reads yet — the kinds' rules are the later
@@ -525,7 +530,7 @@ func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentSca
 	if cerr != nil {
 		return refusedRead(rd, cerr)
 	}
-	tornSoFar[r.Numbers] = true
+	tornSoFar[index.RecordAt{Segment: r.Segment, Offset: r.At}] = true
 	st.Rebuilt.Index.Unplace(r.File, index.RecordAt{Segment: r.Segment, Offset: r.At},
 		core.Extent{Off: r.Off, Len: r.Len})
 	return repairTornPlacement(rd, st, expect, r, tornSoFar)
@@ -538,18 +543,25 @@ func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentSca
 // The records to re-apply are every record of the file that reaches the span,
 // from any attached segment — the one the torn record sits in and the named
 // and unverified ones beside it, cross-segment overwrites included — minus
-// the records the run has judged torn so far, and the index folds them over
-// the span in the precedence the rebuild applies them in, so the answer does
-// not depend on the order the segments were fed or walked.
+// the placements the run has judged torn so far, so a good copy of the record
+// at another placement is fed while the torn placement is not, and the index
+// folds the survivors over the span in the precedence the rebuild applies
+// them in, so the answer does not depend on the order the segments were fed
+// or walked.
 //
 // ponytail: the records to re-apply are re-scanned from disk, one walk of
-// every attached segment per torn record — the scans the rebuild kept drop
-// their converted records so a journal of millions of records does not hold
-// them twice, and a torn record is a rare verdict of a damaged open. Keep a
-// per-open record index keyed on file and extent, shared by every repair the
-// run makes, when an open that finds many torn records shows these re-walks
-// in a profile.
-func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn index.Record, tornSoFar map[index.Numbers]bool) error {
+// every attached segment's record headers per torn record — the scans the
+// rebuild kept drop their converted records, so a journal of millions of
+// records does not hold them twice. A torn last record is the ordinary
+// result of a power loss mid-append, not a rare verdict of a damaged open, so
+// an ordinary power-loss open of a large journal pays the rebuild's header
+// walk of every attached segment and then, per torn record it finds, this
+// second one — named segments the rebuild read by catalog walked whole here
+// too. Restrict the walk to the segments the file's drop ranges name — the
+// per-(file, segment) notes the rebuild raised already cover every record of
+// the file, so they name every home a copy could sit in — when a large
+// journal's open shows these re-walks in a profile.
+func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn index.Record, tornSoFar map[index.RecordAt]bool) error {
 	window := tornReach(torn)
 	if window.Len <= 0 {
 		// A record whose replay reached nothing — a marks kind over no
@@ -567,7 +579,7 @@ func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn inde
 			return refusedRead(rd, err)
 		}
 		for _, r := range sc.Records {
-			if r.File != torn.File || tornSoFar[r.Numbers] || !reachesOverlap(tornReach(r), window) {
+			if r.File != torn.File || tornSoFar[index.RecordAt{Segment: r.Segment, Offset: r.At}] || !reachesOverlap(tornReach(r), window) {
 				continue
 			}
 			recs = append(recs, r)
@@ -584,7 +596,7 @@ func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn inde
 			return err
 		}
 	}
-	st.Rebuilt.Index.ReplayWindow(torn.File, window, torn.Numbers.Version, recs)
+	st.Rebuilt.Index.ReplayWindow(torn.File, window, torn.Numbers, recs)
 	return nil
 }
 
