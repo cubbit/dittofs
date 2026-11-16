@@ -61,12 +61,31 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 	}
 	// One key is kept for the principals generation a membership drop raises.
 	d := &batch{tx: tx, left: k - 1}
-	steps := []func(*batch, entity.Principal) error{dropGrants, dropMemberships, dropQuotas}
+	ctl := controlTx{tx: tx}
+	inGroups := func([16]byte) error { _, err := raisePrincipals(tx, &d.pgen); return err }
+	steps := []func() error{
+		func() error {
+			return d.dropPairs(grantsOfPrefix(p.ID), 3, func(share [16]byte) []byte { return grantKey(entity.ShareID(share), p.ID) },
+				func(share [16]byte) error { return moveGrantVersion(tx, entity.ShareID(share)) })
+		},
+		func() error {
+			return d.dropPairs(memberOfPrefix(p.ID), 2, func(g [16]byte) []byte { return memberKey(entity.PrincipalID(g), p.ID) }, inGroups)
+		},
+	}
+	if p.Kind == entity.PrincipalGroup {
+		steps = append(steps, func() error {
+			return d.dropPairs(membersPrefix(p.ID), 2, func(m [16]byte) []byte { return memberRevKey(entity.PrincipalID(m), p.ID) }, inGroups)
+		})
+	}
+	steps = append(steps, func() error { return d.dropQuotas(p) })
 	if p.Kind == entity.PrincipalUser {
-		steps = append(steps, dropTokens, dropSessions, dropSignInCount)
+		steps = append(steps,
+			func() error { return d.dropPairs(accountTokensPrefix(p), 4, nil, ctl.DeleteAPIToken) },
+			func() error { return d.dropSessions(p) },
+			func() error { return d.dropSignInCount(p) })
 	}
 	for _, step := range steps {
-		if err := step(d, p); err != nil || d.full {
+		if err := step(); err != nil {
 			return false, err
 		}
 	}
@@ -76,37 +95,35 @@ func deleteBatch(tx kv.Txn, p entity.Principal, k int) (bool, error) {
 	return true, deleteRecord(tx, p, secret)
 }
 
-// batch is what one batch of a deletion may still delete.
+// batch is what one batch of a deletion may still delete. A take it refuses
+// leaves that item to the next batch, and the steps after it may still take
+// smaller ones: the record goes only in a batch that took nothing.
 type batch struct {
 	tx   kv.Txn
 	left int  // keys it may still delete
 	took bool // whether it has taken an item
-	full bool // whether it left an item for the next batch
 	pgen uint64
 }
 
 // take reports whether an item deleting cost keys fits, charging it. The
 // batch's first item always fits.
-//
-// ponytail: an item is never split, so a session with more refresh hashes
-// than one transaction holds stops its account's deletion with
-// kv.ErrTooLarge. A session refreshed every 15 min has about 48; split a
-// session's hashes across batches if lifetimes ever grow that far.
 func (b *batch) take(cost int) bool {
 	if b.took && cost > b.left {
-		b.full = true
 		return false
 	}
 	b.left, b.took = b.left-cost, true
 	return true
 }
 
-// rows guards prefix, so a row added under it meanwhile conflicts with the
-// batch, and returns the keys of the rows under it the batch may reach.
+// rows returns the keys of the rows under prefix the batch may reach.
+//
+// decision: the range is not guarded. Every write adding a row under these
+// prefixes (a grant, a membership, a token, a session) first reads its
+// principal tracked and refuses one marked, so it either commits before the
+// mark, and every batch sees its row, or conflicts with the mark and is
+// refused on retry. Guard the range if a writer ever adds such a row without
+// that read.
 func (b *batch) rows(prefix []byte) ([][]byte, error) {
-	if err := b.tx.GuardRange(prefix); err != nil {
-		return nil, err
-	}
 	var out [][]byte
 	for row, err := range b.tx.Scan(prefix, nil) {
 		if err != nil {
@@ -120,70 +137,31 @@ func (b *batch) rows(prefix []byte) ([][]byte, error) {
 	return out, nil
 }
 
-// idAfter is the ID that ends key, a row under prefix.
-func idAfter(prefix, key []byte) ([16]byte, error) {
-	id, _, err := keys.ReadID(key[len(prefix):], keys.IDLen)
-	return [16]byte(id), err
-}
-
-func dropGrants(b *batch, p entity.Principal) error {
-	prefix := grantsOfPrefix(p.ID)
+// dropPairs deletes the rows under prefix, each ending in an ID and costing
+// cost keys: the row, the row twin names for its ID unless twin is nil, and
+// what then deletes or raises for it.
+func (b *batch) dropPairs(prefix []byte, cost int, twin func(id [16]byte) []byte, then func(id [16]byte) error) error {
 	rows, err := b.rows(prefix)
 	if err != nil {
 		return err
 	}
 	for _, k := range rows {
-		share, err := idAfter(prefix, k)
+		id, _, err := keys.ReadID(k[len(prefix):], keys.IDLen)
 		if err != nil {
 			return err
 		}
-		if !b.take(3) {
+		if !b.take(cost) {
 			return nil
 		}
-		if err := deletePair(b.tx, k, grantKey(share, p.ID)); err != nil {
+		del := [][]byte{k}
+		if twin != nil {
+			del = append(del, twin([16]byte(id)))
+		}
+		if err := deleteRows(b.tx, del); err != nil {
 			return err
 		}
-		if err := moveGrantVersion(b.tx, share); err != nil {
+		if err := then([16]byte(id)); err != nil {
 			return err
-		}
-	}
-	return nil
-}
-
-// twinRows is one direction of a two-way index: the rows under prefix, each
-// ending in an ID, and the other direction's row for that ID.
-type twinRows struct {
-	prefix []byte
-	twin   func(other [16]byte) []byte
-}
-
-// dropMemberships deletes the groups p is in and, for a group, its members,
-// each row with its twin, raising the principals generation once if it
-// deletes any.
-func dropMemberships(b *batch, p entity.Principal) error {
-	ways := []twinRows{{memberOfPrefix(p.ID), func(g [16]byte) []byte { return memberKey(g, p.ID) }}}
-	if p.Kind == entity.PrincipalGroup {
-		ways = append(ways, twinRows{membersPrefix(p.ID), func(m [16]byte) []byte { return memberRevKey(m, p.ID) }})
-	}
-	for _, w := range ways {
-		rows, err := b.rows(w.prefix)
-		if err != nil {
-			return err
-		}
-		for _, k := range rows {
-			other, err := idAfter(w.prefix, k)
-			if err != nil {
-				return err
-			}
-			if !b.take(2) {
-				return nil
-			}
-			if err := deletePair(b.tx, k, w.twin(other)); err != nil {
-				return err
-			}
-			if _, err := raisePrincipals(b.tx, &b.pgen); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
@@ -196,7 +174,7 @@ func dropMemberships(b *batch, p entity.Principal) error {
 // index names the shares holding a principal's quotas. Add a reverse index,
 // as grants have, when installations hold enough shares for a principal
 // deletion to show it.
-func dropQuotas(b *batch, p entity.Principal) error {
+func (b *batch) dropQuotas(p entity.Principal) error {
 	suffix, err := quotaSuffix(QuotaTarget{Principal: p})
 	if err != nil {
 		return err
@@ -232,30 +210,12 @@ func dropQuotas(b *batch, p entity.Principal) error {
 	return nil
 }
 
-func dropTokens(b *batch, p entity.Principal) error {
-	prefix := accountTokensPrefix(p)
-	rows, err := b.rows(prefix)
-	if err != nil {
-		return err
-	}
-	for _, k := range rows {
-		if !b.take(4) {
-			return nil
-		}
-		if err := (controlTx{tx: b.tx}).DeleteAPIToken([16]byte(k[len(prefix):])); err != nil {
-			return err
-		}
-		// The index row goes even when it names no token, so the batches end.
-		if err := b.tx.Delete(k); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // dropSessions deletes p's sessions, each costing its record, its index and
-// expiry rows and two rows per refresh hash it has had.
-func dropSessions(b *batch, p entity.Principal) error {
+// expiry rows and two rows per refresh hash it has had. A session that is
+// its batch's first item and outgrows the batch loses refresh hashes
+// instead, as many as fit, and keeps its record for a later batch, so no
+// session is too large to delete however often it was refreshed.
+func (b *batch) dropSessions(p entity.Principal) error {
 	prefix := accountSessionsPrefix(p)
 	rows, err := b.rows(prefix)
 	if err != nil {
@@ -263,12 +223,15 @@ func dropSessions(b *batch, p entity.Principal) error {
 	}
 	for _, k := range rows {
 		id := [16]byte(k[len(prefix):])
-		cost := 3
-		for _, err := range b.tx.Scan(sessionHashesPrefix(id), nil) {
-			if err != nil {
-				return err
-			}
-			cost += 2
+		hashes, err := sessionHashRows(b.tx, id)
+		if err != nil {
+			return err
+		}
+		cost := 3 + len(hashes)
+		if hashes != nil && !b.took && cost > b.left {
+			n := min(len(hashes), 2*max(1, b.left/2))
+			b.left, b.took = b.left-n, true
+			return deleteRows(b.tx, hashes[:n])
 		}
 		if !b.take(cost) {
 			return nil
@@ -276,6 +239,7 @@ func dropSessions(b *batch, p entity.Principal) error {
 		if err := (controlTx{tx: b.tx}).DeleteSession(id); err != nil {
 			return err
 		}
+		// The index row goes even when it names no session, so the batches end.
 		if err := b.tx.Delete(k); err != nil {
 			return err
 		}
@@ -283,12 +247,12 @@ func dropSessions(b *batch, p entity.Principal) error {
 	return nil
 }
 
-// dropSignInCount deletes p's account count. Its counts with a source
-// expire on their own.
-func dropSignInCount(b *batch, p entity.Principal) error {
+// dropSignInCount deletes p's account count and its expiry row. Its counts
+// with a source expire on their own.
+func (b *batch) dropSignInCount(p entity.Principal) error {
 	k := entity.SignInKey{Account: p}
 	ctl := controlTx{tx: b.tx}
-	if _, ok, err := ctl.SignInFailures(k); err != nil || !ok || !b.take(1) {
+	if _, ok, err := ctl.SignInFailures(k); err != nil || !ok || !b.take(2) {
 		return err
 	}
 	return ctl.DeleteSignInFailures(k)
@@ -308,8 +272,7 @@ func dropSignInCount(b *batch, p entity.Principal) error {
 // as a secret keeps a current version and the few it replaced. Delete the
 // versions in batches if retention ever keeps many.
 func deleteRecord(tx kv.Txn, p entity.Principal, secret entity.SecretRef) error {
-	var pgen uint64
-	if _, err := raisePrincipals(tx, &pgen); err != nil {
+	if _, err := raise(tx, pgenKey); err != nil {
 		return err
 	}
 	if secret != (entity.SecretRef{}) {
@@ -321,22 +284,12 @@ func deleteRecord(tx kv.Txn, p entity.Principal, secret entity.SecretRef) error 
 			}
 			versions = append(versions, slices.Clone(row.Key))
 		}
-		for _, k := range versions {
-			if err := tx.Delete(k); err != nil {
-				return err
-			}
+		if err := deleteRows(tx, versions); err != nil {
+			return err
 		}
 		if _, err := raise(tx, cfgGenKey); err != nil {
 			return err
 		}
 	}
 	return tx.Delete(principalKey(p))
-}
-
-// deletePair deletes a row and its twin.
-func deletePair(tx kv.Txn, row, twin []byte) error {
-	if err := tx.Delete(row); err != nil {
-		return err
-	}
-	return tx.Delete(twin)
 }

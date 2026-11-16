@@ -181,6 +181,14 @@ func testOwnerAndGroupAtCreate(t *testing.T, kvo Opener) {
 	if _, file := f.create(carol, pub, "lone", regular(0o644)); file.Group != carol.Principal {
 		t.Errorf("no group at all: group %v, want the creator's own principal", file.Group)
 	}
+	// A primary group marked deleted counts as none.
+	gone := f.group("gone")
+	dave := f.member("dave", gone)
+	cp := f.s.ControlPlane()
+	must(t, cp.DeleteGroup(ctx, gone, groupGeneration(t, cp, gone)))
+	if _, file := f.create(dave, pub, "orphan", regular(0o644)); file.Group != dave.Principal {
+		t.Errorf("create by a user whose primary group is marked: group %v, want the creator's own principal", file.Group)
+	}
 
 	// A setgid directory of group finance, mode 3777.
 	drop, _ := f.create(f.admin, f.root, "drop", kvstore.NewFile{Type: entity.Directory, Mode: 0o3777,

@@ -1,16 +1,22 @@
 package kvstoretest
 
 import (
+	"errors"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 )
 
-// From its mark, a deleted group grants nothing to its members, and a
-// primary naming it reads as none; a deleted user is found by no name or
-// ID; a write naming either is refused as not found; and a new principal
-// may take the name and the ID the mark freed.
+// A put naming Deleted stores the principal unmarked: only a deletion
+// marks. From its mark, a deleted group grants nothing to its members, and
+// a primary naming it reads as none; a deleted user is found by no name or
+// ID, nor are its tokens and sessions; a write naming either is refused as
+// not found; a new principal may take the name and the ID the mark freed;
+// and the deletion then runs to its end.
 func testMarkedPrincipalReads(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp, p := s.ControlPlane(), s.Principals()
@@ -20,9 +26,13 @@ func testMarkedPrincipalReads(t *testing.T, kvo Opener) {
 	u := user("alice", uid("1000"))
 	u.Primary = staff.Principal
 	sh := share("photos", "/photos")
+	staff.Deleted, u.Deleted = true, true
 	must(t, errOf(cp.PutGroup(ctx, staff, 0, entity.Alloc{})))
 	must(t, errOf(cp.PutGroup(ctx, outer, 0, entity.Alloc{})))
 	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+	if got, err := p.User(ctx, u.Principal); err != nil || got.Primary != staff.Principal {
+		t.Errorf("a user and its primary group put with Deleted set: got primary %v, %v; want %v, unmarked", got.Primary, err, staff.Principal)
+	}
 	must(t, errOf(CreateShare(ctx, cp, sh)))
 	must(t, cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: u.Principal}))
 	must(t, cp.AddMember(ctx, entity.Membership{Group: outer.Principal, Member: staff.Principal}))
@@ -57,8 +67,23 @@ func testMarkedPrincipalReads(t *testing.T, kvo Opener) {
 		t.Errorf("a new group taking a marked group's name and gid: %v", err)
 	}
 
+	e := time.Unix(1_900_000_000, 0).UTC()
+	sess := entity.Session{ID: uuid.New(), Account: u.Principal, Refresh: [32]byte{1}, Expires: e}
+	tok := entity.APIToken{ID: uuid.New(), Account: u.Principal, Hash: [32]byte{2}, Expires: e}
+	must(t, cp.PutSession(ctx, sess))
+	must(t, cp.PutAPIToken(ctx, tok))
 	userGen := userGeneration(t, s, u.Principal)
 	must(t, cp.DeleteUser(ctx, u.Principal, userGen))
+	for name, err := range map[string]error{
+		"APITokenByHash":   absent(cp.APITokenByHash(ctx, tok.Hash)),
+		"APIToken":         absent(cp.APIToken(ctx, tok.ID)),
+		"SessionByRefresh": absent(cp.SessionByRefresh(ctx, sess.Refresh)),
+		"Session":          absent(cp.Session(ctx, sess.ID)),
+	} {
+		if err != nil {
+			t.Errorf("%s of a marked user's: %v, want absent", name, err)
+		}
+	}
 	var inTx bool
 	must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) (err error) {
 		_, inTx, err = tx.User(u.Principal)
@@ -68,21 +93,36 @@ func testMarkedPrincipalReads(t *testing.T, kvo Opener) {
 		t.Errorf("a marked user read in a write: found, want not")
 	}
 	for name, err := range map[string]error{
-		"User":         errOf(p.User(ctx, u.Principal)),
-		"ByName":       errOf(p.ByName(ctx, entity.PrincipalUser, "alice")),
-		"ByProtocolID": errOf(p.ByProtocolID(ctx, uid("1000"))),
-		"PutUser":      errOf(cp.PutUser(ctx, u, userGen, entity.Alloc{})),
-		"DeleteUser":   cp.DeleteUser(ctx, u.Principal, userGen),
-		"SetQuota":     errOf(cp.SetQuota(ctx, sh.ID, entity.Quota{Principal: u.Principal, Hard: entity.Limit{Files: 1}}, 0)),
+		"User":          errOf(p.User(ctx, u.Principal)),
+		"ByName":        errOf(p.ByName(ctx, entity.PrincipalUser, "alice")),
+		"ByProtocolID":  errOf(p.ByProtocolID(ctx, uid("1000"))),
+		"PutUser":       errOf(cp.PutUser(ctx, u, userGen, entity.Alloc{})),
+		"DeleteUser":    cp.DeleteUser(ctx, u.Principal, userGen),
+		"SetQuota":      errOf(cp.SetQuota(ctx, sh.ID, entity.Quota{Principal: u.Principal, Hard: entity.Limit{Files: 1}}, 0)),
+		"PutAPIToken":   cp.PutAPIToken(ctx, entity.APIToken{ID: uuid.New(), Account: u.Principal, Hash: [32]byte{3}, Expires: e}),
+		"PutSession":    cp.PutSession(ctx, entity.Session{ID: uuid.New(), Account: u.Principal, Refresh: [32]byte{4}, Expires: e}),
+		"UpdateSession": cp.UpdateSession(ctx, sess),
+		"PutSignInFailures": cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+			return tx.PutSignInFailures(entity.SignInKey{Account: u.Principal}, entity.SignInFailures{Count: 1})
+		}),
 	} {
 		if !merrs.IsNotFoundError(err) {
 			t.Errorf("%s naming a marked user: got %v, want not found", name, err)
 		}
 	}
+	must(t, deleted(s, nil, u.Principal))
 }
 
-// ContinueDelete ends a deletion whose record is gone, refuses a principal
-// no deletion marked, and after its last batch answers done again.
+// absent is nil for a read that found nothing.
+func absent[T any](_ T, found bool, err error) error {
+	if err == nil && found {
+		err = errors.New("found")
+	}
+	return err
+}
+
+// ContinueDelete ends a deletion whose record is gone, as after its last
+// batch, and refuses a principal no deletion marked.
 func testContinueDeleteEnds(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp, n := s.ControlPlane(), s.Nodes()
@@ -90,13 +130,8 @@ func testContinueDeleteEnds(t *testing.T, kvo Opener) {
 		t.Errorf("ContinueDelete on a user with no record: got done %v, %v; want done", done, err)
 	}
 	u := user("alice")
-	gen, err := cp.PutUser(ctx, u, 0, entity.Alloc{})
-	must(t, err)
+	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 	if done, err := n.ContinueDelete(ctx, u.Principal); err == nil || done {
 		t.Errorf("ContinueDelete on an unmarked user: got done %v, %v; want refused", done, err)
-	}
-	must(t, deleted(s, cp.DeleteUser(ctx, u.Principal, gen), u.Principal))
-	if done, err := n.ContinueDelete(ctx, u.Principal); err != nil || !done {
-		t.Errorf("ContinueDelete after the last batch: got done %v, %v; want done", done, err)
 	}
 }

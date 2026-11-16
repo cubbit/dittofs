@@ -102,15 +102,11 @@ func groupsOf(r kv.Reader, of entity.Principal) ([]entity.Principal, error) {
 			}
 			seen[id] = true
 			g := entity.Principal{Kind: entity.PrincipalGroup, ID: id}
-			if b, ok, err := get(r, groupKey(id)); err != nil {
-				return nil, err
-			} else if ok {
-				if rec, err := decodeGroup(id, b); err != nil || rec.Deleted {
-					if err != nil {
-						return nil, err
-					}
-					continue
+			if ok, err := live(r, g); err != nil || !ok {
+				if err != nil {
+					return nil, err
 				}
+				continue
 			}
 			out = append(out, g)
 			queue = append(queue, id)
@@ -157,15 +153,10 @@ func (p Principals) User(ctx context.Context, of entity.Principal) (entity.User,
 		if of.Kind != entity.PrincipalUser {
 			return merrs.NewNotFoundError(of.ID.String(), "user")
 		}
-		b, ok, err := get(r, userKey(of.ID))
-		if err != nil || !ok {
+		var ok bool
+		var err error
+		if u, ok, err = userIn(r, of.ID); err != nil || !ok {
 			return notFound(err, of)
-		}
-		if u, err = decodeUser(of.ID, b); err != nil {
-			return err
-		}
-		if u.Deleted {
-			return notFound(nil, of)
 		}
 		u.Primary, err = primaryIn(r, u)
 		return err

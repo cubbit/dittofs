@@ -67,7 +67,8 @@ func byIndex(r kv.Reader, row kv.KeyValue, key func(entity.PrincipalID) []byte) 
 func fixedID(id entity.PrincipalID) bool { return [15]byte(id[:15]) == [15]byte{} }
 
 // PutUser creates a user, expect zero, or changes the one whose generation
-// expect names, raising its generation. A user marked deleted is not found.
+// expect names, raising its generation. A user marked deleted is not found,
+// and a put never marks one: the mark is DeleteUser's alone.
 func (c ControlPlane) PutUser(ctx context.Context, u entity.User, expect uint64, a entity.Alloc) (uint64, error) {
 	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutUser(u, expect, a) })
 }
@@ -111,7 +112,7 @@ func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) (uint64
 	if err := indexAdmin(c.tx, u.Principal.ID, enabledAdmin(old), enabledAdmin(u)); err != nil {
 		return 0, err
 	}
-	u.Generation = nextVersion(c.tx, old.Generation)
+	u.Deleted, u.Generation = false, nextVersion(c.tx, old.Generation)
 	if u.Position, err = c.principals(); err != nil {
 		return 0, err
 	}
@@ -119,7 +120,8 @@ func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) (uint64
 }
 
 // PutGroup creates a group, expect zero, or changes the one whose generation
-// expect names, raising its generation. A group marked deleted is not found.
+// expect names, raising its generation. A group marked deleted is not found,
+// and a put never marks one: the mark is DeleteGroup's alone.
 func (c ControlPlane) PutGroup(ctx context.Context, g entity.Group, expect uint64, a entity.Alloc) (uint64, error) {
 	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutGroup(g, expect, a) })
 }
@@ -154,7 +156,7 @@ func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) (uint
 	if err := reindex(c.tx, g.Principal, existed, old.Name, g.Name, old.IDs, g.IDs); err != nil {
 		return 0, err
 	}
-	g.Generation = nextVersion(c.tx, old.Generation)
+	g.Deleted, g.Generation = false, nextVersion(c.tx, old.Generation)
 	if g.Position, err = c.principals(); err != nil {
 		return 0, err
 	}
@@ -295,8 +297,9 @@ func (c ControlPlane) DeleteUser(ctx context.Context, p entity.Principal, expect
 
 // decision: the mark deletes the user's name index, so a sign-in naming a
 // marked user finds no account and fails as an unknown name does, not as a
-// disabled account. Keep the name row through the mark if a caller must
-// tell a deleted account from a wrong name.
+// disabled account. The specification requires the index deletion at the
+// mark, freeing the name at once; telling a deleted account from a wrong
+// name would take a change to that specification, not to this method.
 func (c controlTx) DeleteUser(p entity.Principal, expect uint64) error {
 	if p.Kind != entity.PrincipalUser {
 		return merrs.NewInvalidArgumentError("not a user")
@@ -353,15 +356,25 @@ func (c controlTx) DeleteGroup(p entity.Principal, expect uint64) error {
 // liveUser reads p's user record tracked, refusing one absent or marked
 // deleted as not found.
 func (c controlTx) liveUser(p entity.Principal) (entity.User, error) {
-	b, ok, err := get(c.tx, userKey(p.ID))
+	u, ok, err := userIn(c.tx, p.ID)
 	if err != nil || !ok {
 		return entity.User{}, notFound(err, p)
 	}
-	u, err := decodeUser(p.ID, b)
-	if err == nil && u.Deleted {
-		err = notFound(nil, p)
+	return u, nil
+}
+
+// userIn reads id's user record, tracked in a transaction. A user marked
+// deleted reads as absent.
+func userIn(r kv.Reader, id entity.PrincipalID) (entity.User, bool, error) {
+	b, ok, err := get(r, userKey(id))
+	if err != nil || !ok {
+		return entity.User{}, false, err
 	}
-	return u, err
+	u, err := decodeUser(id, b)
+	if err != nil || u.Deleted {
+		return entity.User{}, false, err
+	}
+	return u, true, nil
 }
 
 // liveGroup is liveUser for a group.
