@@ -1983,7 +1983,8 @@ type HeaderCodec interface {
 	Args(rec *Buf, h Header) []byte
 	// ReplyLen is the most Encode writes for h, a status-alone body included,
 	// with Chain's padding to 8 and the transform Wrap adds in place: the
-	// pipeline reserves Bound() + ReplyLen(h). For a compound row's message it
+	// pipeline reserves Bound() + ReplyLen(h), and ReplyLen(h) alone for a
+	// reply carrying a status alone (RFC 24 §3.3). For a compound row's message it
 	// also covers the compound's head and one result's head, which a reply that
 	// fails before or at a member writes beside the members' bounds.
 	ReplyLen(h Header) int
@@ -2144,7 +2145,10 @@ type Invocation struct {
 	// NFSv4's status, the request's tag and the count of results. Its size
 	// MUST NOT depend on s or n, so the runner writes it once before the
 	// members run and again, over its own bytes, once their status and count
-	// are known. nil on every other row.
+	// are known. nil on every other row. A compound row whose Decode returns
+	// no EncodeHead is the protocol's wiring at fault: core closes the
+	// connection with an error naming the row, as nothing could write the
+	// reply's head.
 	EncodeHead func(out *Buf, s Status, n int, v Version) error
 	// Role says what this request does to state: an SMB LOCK whose elements
 	// unlock releases it, a WRITE to an open under a break flushes it, an

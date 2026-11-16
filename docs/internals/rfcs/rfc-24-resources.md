@@ -724,7 +724,11 @@ by then closes its connection, since it can go out no other way
 ([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics)'s `reply_wait`). Such a wait
 keeps its request's record, and so its receive charge, until the status goes
 out, so the receive pool bounds how many wait at once (§6.1), however the
-wait is run.
+wait is run. Its buffer is `HeaderCodec.ReplyLen(h)` bytes once a header has
+decoded, which counts what the status alone carries, an NFSv4 `COMPOUND`'s tag
+among it ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
+and the small class for a refusal with no header. Either way the request holds
+no reply reservation while it waits, so the wait keeps §2.6's order.
 
 The reservation is released when the writer has sent the reply, or discarded it
 with its connection
