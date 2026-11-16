@@ -19,17 +19,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
-// The durability layer must satisfy the loss sink, so that the journal's
-// assembly step, once it is built, can hand it to recovery's Deps.Losses:
-// it is the layer that will publish the loss records an open finds on disk,
-// and the records a read-only journal failed earlier in this process will
-// reach the open the other way round, as the data Deps.Failed carries —
-// Durability.Failed() answering it at the same wiring point. The
-// assertion pins the interface that wiring will need; it lives here — not
-// in recovery — so the recovery package keeps clear of the layer it is
-// handed.
-var _ recovery.LossSink = (*durability.Durability)(nil)
-
 // resolveConfig resolves the options Init or Open was called with, over
 // dir, the directory the call names. A negative setting, or a negative
 // descriptor limit in a budget the caller passed, is refused with
@@ -315,11 +304,16 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// .spare.tmp unlinks and the classes it sorts the segments into. A
 		// read the device never completed refuses the open on its ranges;
 		// a pass that ran answers ErrNotImplemented below.
+		failed, err := durability.FailedFor(dir)
+		if err != nil {
+			return nil, err
+		}
 		if _, err := recovery.Run(ctx, recovery.Deps{
 			FS:          cfg.Storage,
 			Clock:       cfg.Clock,
 			Tracer:      cfg.Tracer,
 			Log:         cfg.Logger,
+			Failed:      failed,
 			ExtentLimit: s.ExtentLimit,
 		}, floor, expect, marks); err != nil {
 			return nil, err

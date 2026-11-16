@@ -153,11 +153,12 @@ type lossPiece struct {
 // same one, so a record whose body does not verify confines as a corrupt
 // drop on its own scan whatever its segment's source, and never reaches
 // this pass — and each aside carries the body that read decoded, which the
-// pass consumes. The collected losses land in State.Kinds.Losses, and the
-// run publishes them to the loss sink at its success exit: an open that
-// refuses publishes nothing and takes no piece, so the retry finds the
-// records on disk still unreported; the failed list the pass withholds by
-// is plain data the caller hands over, empty for none.
+// pass consumes. The collected losses land in State.Kinds.Losses and go no
+// further here: the open's own wiring places them into its loss ring once
+// the journal serves, so an open that refuses carries them nowhere — the
+// run returns no state at all — and the pieces stay unreported for the
+// retry. The failed list the pass withholds by is plain data the caller
+// hands over, empty for none.
 //
 // A loss record whose header names a zero-length extent, or one that names
 // no file, refuses the open naming its segment and its offset. A body that

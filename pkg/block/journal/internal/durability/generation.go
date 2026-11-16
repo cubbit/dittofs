@@ -134,6 +134,26 @@ func (s *dirState) addFailed(seq core.Seq) {
 	}
 }
 
+// FailedFor returns the failed list of the directory the journal is opening:
+// the sequence numbers an earlier read-only journal on it could not write
+// the loss record for, kept for the life of the process. A directory the
+// process failed nothing on answers nil. A path that names no directory
+// answers the error of resolving it.
+//
+// decision: the read lives here and not on a Durability because the open
+// asks for the list before it builds one — the registry entry the question
+// reads is the same one the layer it wires in will take, so a first open on
+// a directory with a failed record in the window its process lost receives
+// it, and the pieces the previous instance took answer for its loss
+// records. Overturned by an open that asks a layer it built.
+func FailedFor(dir string) ([]core.Seq, error) {
+	st, err := stateFor(dir)
+	if err != nil {
+		return nil, err
+	}
+	return st.failedSeqs(), nil
+}
+
 // failedSeqs returns a sorted copy of the failed list.
 func (s *dirState) failedSeqs() []core.Seq {
 	s.mu.Lock()

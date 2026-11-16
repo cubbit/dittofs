@@ -19,27 +19,13 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
-// lossSink stores what the kinds pass handed Place — an output sink, the
-// one stand-in the testing rules allow: it records what the code under test
-// delivered. The failed list the pass withholds by is plain data on the
-// deps, no method on the sink.
-type lossSink struct {
-	placed  []core.LossEvent
-	dropped []core.Seq
-}
-
-// Place stores the event and the seq of the record it drops.
-func (s *lossSink) Place(ev core.LossEvent, dropped core.Seq) {
-	s.placed = append(s.placed, ev)
-	s.dropped = append(s.dropped, dropped)
-}
-
-// asideRun is the rig's Run over Deps carrying the loss sink and the
-// directory's failed list, the shape every kinds check drives.
-func (r *rig) asideRun(sink LossSink, failed []core.Seq) (State, error) {
+// asideRun is the rig's Run over Deps carrying the directory's failed
+// list, the shape every kinds check drives: the collected losses come back
+// in State.Kinds.Losses for the checks to read, published by the open's
+// layer once it serves.
+func (r *rig) asideRun(failed []core.Seq) (State, error) {
 	r.t.Helper()
 	d := r.runDeps()
-	d.Losses = sink
 	d.Failed = failed
 	return Run(context.Background(), d, core.Version{}, journalID, nil)
 }
@@ -57,13 +43,13 @@ func forgetRec(tag uint32, seq uint64) raw.Record {
 }
 
 // TestRunPlacesAnUnsyncedLossRecordWithEveryField holds the placement rule:
-// a loss record with a decodable body publishes exactly one event through
-// the sink, every field of it read from the record the disk holds — the
+// a loss record with a decodable body collects exactly one event into the
+// run's losses, every field of it read from the record the disk holds — the
 // header's file, extent, version and share tag, the body's reason and the
 // bits it carries — and AtOpen set, while the event's number stays for the
-// sink to assign. The OpenLoss it collects carries the same event and the
-// seq of the record it drops, and holds no segments yet: the feed that
-// collects them is not built.
+// open's publishing layer to assign. The OpenLoss it collects carries the
+// same event and the seq of the record it drops, with the feed's segment
+// of the one withheld copy.
 func TestRunPlacesAnUnsyncedLossRecordWithEveryField(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
@@ -81,8 +67,7 @@ func TestRunPlacesAnUnsyncedLossRecordWithEveryField(t *testing.T) {
 		}))
 	r.plantSeg(id, seg)
 
-	sink := &lossSink{}
-	st, err := r.asideRun(sink, nil)
+	st, err := r.asideRun(nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -97,14 +82,14 @@ func TestRunPlacesAnUnsyncedLossRecordWithEveryField(t *testing.T) {
 		Synced:    false,
 		AtOpen:    true,
 	}
-	if len(sink.placed) != 1 {
-		t.Fatalf("Run: the sink was handed %d loss events, want the one the loss record names: %+v", len(sink.placed), sink.placed)
+	if len(st.Kinds.Losses) != 1 {
+		t.Fatalf("Run: State.Kinds.Losses holds %d losses, want the one the loss record names: %+v", len(st.Kinds.Losses), st.Kinds.Losses)
 	}
-	if got := sink.placed[0]; got != want {
+	if got := st.Kinds.Losses[0].Ev; got != want {
 		t.Errorf("Run: the placed event got %+v, want %+v", got, want)
 	}
-	if got := sink.dropped; !slices.Equal(got, []core.Seq{100}) {
-		t.Errorf("Run: the placed events name the dropped records %v, want [100]", got)
+	if got := st.Kinds.Losses[0].Dropped; got != 100 {
+		t.Errorf("Run: the collected loss names the dropped record %d, want 100", got)
 	}
 	if len(st.Kinds.Losses) != 1 {
 		t.Fatalf("Run: State.Kinds.Losses holds %d losses, want the one placed", len(st.Kinds.Losses))
@@ -142,11 +127,11 @@ func plantLossRec(file core.FileID, dropped, seq, counter uint64, off, n int64, 
 	})
 }
 
-// kindsRun opens the rig's journal with no loss sink and returns the state,
+// kindsRun opens the rig's journal with no failed list and returns the state,
 // refusing the test on the open's own refusal.
 func kindsRun(t *testing.T, r *rig) State {
 	t.Helper()
-	st, err := r.asideRun(nil, nil)
+	st, err := r.asideRun(nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -267,7 +252,7 @@ func TestRunWithholdsAForgottenTagBelowTheForgetsSeq(t *testing.T) {
 }
 
 // TestRunWithholdsARecordTheFailedListNamesAsAReadOnlyDrop holds the
-// read-only-failure rule: each seq the loss sink's failed list names that a
+// read-only-failure rule: each seq the directory's failed list names that a
 // scan finds on disk withholds whole — in every segment holding it, one note
 // per seq — and the note carries the found record's own file, extent,
 // version and tag with the reason a failed sync window takes, unsynced. No
@@ -280,8 +265,7 @@ func TestRunWithholdsARecordTheFailedListNamesAsAReadOnlyDrop(t *testing.T) {
 	r.plantSeg(1, buildSeg(1, failed))
 	r.plantSeg(2, buildSeg(2, writeRec(77, 5, 0, 32), writeRec(78, 6, 0x4100, 16))) // the copy, and G feeding
 
-	sink := &lossSink{}
-	st, err := r.asideRun(sink, []core.Seq{77})
+	st, err := r.asideRun([]core.Seq{77})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -294,8 +278,10 @@ func TestRunWithholdsARecordTheFailedListNamesAsAReadOnlyDrop(t *testing.T) {
 	} else if p.Seq != 78 {
 		t.Errorf("the record at 0x4100 holds seq %d, want 78", p.Seq)
 	}
-	if len(sink.placed) != 0 {
-		t.Errorf("the sink was handed %d loss events for a failed-list drop, want none: no ring event and no generation raise", len(sink.placed))
+	for _, lo := range st.Kinds.Losses {
+		if lo.Dropped == 77 {
+			t.Errorf("a failed-list drop collected a loss event of its own (%+v), want none: the open's layer never places it, no ring event and no generation raise", lo)
+		}
 	}
 	if len(st.Kinds.ReadOnlyDrops) != 1 {
 		t.Fatalf("State.Kinds.ReadOnlyDrops holds %d drops, want the one note of the failed seq: %+v", len(st.Kinds.ReadOnlyDrops), st.Kinds.ReadOnlyDrops)
@@ -572,13 +558,12 @@ func TestRunDeliversALossForASeqNoSegmentHolds(t *testing.T) {
 	file := kindsFile(10)                                                               // no record of the loss's own file is planted
 	r.plantSeg(1, buildSeg(1, plantLossRec(file, 424242, 12, 201, 0x4100, 16, 1|1<<8))) // synced, corrupt
 
-	sink := &lossSink{}
-	st, err := r.asideRun(sink, nil)
+	st, err := r.asideRun(nil)
 	if err != nil {
 		t.Fatalf("Run over a loss naming a seq no segment holds: %v, want the open to succeed", err)
 	}
-	if len(sink.placed) != 1 {
-		t.Fatalf("the sink was handed %d loss events, want the one the record names", len(sink.placed))
+	if len(st.Kinds.Losses) != 1 {
+		t.Fatalf("State.Kinds.Losses holds %d losses, want the one the record names", len(st.Kinds.Losses))
 	}
 	changes := st.Rebuilt.Index.Since(file, core.Version{})
 	if len(changes) != 1 || changes[0].Kind != core.ChangeLoss {
@@ -908,17 +893,13 @@ func TestRunRefusesAReadTheRemainderVerifyCannotComplete(t *testing.T) {
 	if err := r.seam.Schedule(kit.FailingFrom(kit.OpRead, name, verify, 0, syscall.EIO)); err != nil {
 		t.Fatalf("schedule: %v", err)
 	}
-	sink := &lossSink{}
 	d = r.runDeps()
-	d.Losses = sink
 	_, err := Run(context.Background(), d, core.Version{}, journalID, nil)
 	var ure *core.UnreadableRangesError
 	if !errors.As(err, &ure) {
 		t.Fatalf("Run over the read the verify could not complete got err %v, want an UnreadableRangesError naming the range no bound cleared", err)
 	}
-	if len(sink.placed) != 0 {
-		t.Errorf("the refused open published %d loss events, want none: an open that serves nothing publishes nothing", len(sink.placed))
-	}
+
 	if errors.Is(err, core.ErrCorrupt) {
 		t.Errorf("the refusal %v matches ErrCorrupt, want ErrUnreadable alone: a read the bound never cleared earns no verdict on bytes it never returned", err)
 	}
@@ -946,7 +927,7 @@ func TestRunAnswersTheUnreadRangesOverTheKindsPassesRefusal(t *testing.T) {
 	r.plantSeg(5, buildSeg(5, writeRec(2, 2, 0, 16))) // its header: unreadable
 	r.failReads(format.SegmentName(5), 0)
 
-	_, err := r.asideRun(nil, nil)
+	_, err := r.asideRun(nil)
 	var ure *core.UnreadableRangesError
 	if !errors.As(err, &ure) {
 		t.Fatalf("Run got err %v, want an UnreadableRangesError over the header no bound cleared, never the pass's aside refusal alone", err)
@@ -1006,17 +987,13 @@ func TestRunRefusesAReadTheAsideBodyCannotComplete(t *testing.T) {
 	if err := r.seam.Schedule(kit.FailingFrom(kit.OpRead, name, want, 0, syscall.EIO)); err != nil {
 		t.Fatalf("schedule: %v", err)
 	}
-	sink := &lossSink{}
 	d = r.runDeps()
-	d.Losses = sink
 	_, err := Run(context.Background(), d, core.Version{}, journalID, nil)
 	var ure *core.UnreadableRangesError
 	if !errors.As(err, &ure) {
 		t.Fatalf("Run over the read the aside body could not complete got err %v, want an UnreadableRangesError naming the range no bound cleared", err)
 	}
-	if len(sink.placed) != 0 {
-		t.Errorf("the refused open published %d loss events, want none: an open that serves nothing publishes nothing", len(sink.placed))
-	}
+
 	ranges := []core.SegmentRange{{Segment: id, Off: at, Len: 16}}
 	if !slices.Equal(ure.Ranges, ranges) {
 		t.Errorf("the refusal's ranges got %+v, want exactly the aside body read %+v", ure.Ranges, ranges)
@@ -1157,7 +1134,7 @@ func TestRunDoesNotLetACoveredForgetCoverAnything(t *testing.T) {
 			plantLossRec(file, 20, 5, 21, 0, 16, 1<<8), // the loss of the tag below the forget
 		))
 
-		st, err := r.asideRun(&lossSink{}, []core.Seq{10})
+		st, err := r.asideRun([]core.Seq{10})
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -1184,7 +1161,7 @@ func TestRunDoesNotLetACoveredForgetCoverAnything(t *testing.T) {
 			forgetRec(7, 10),
 		))
 
-		if _, err := r.asideRun(&lossSink{}, []core.Seq{10}); !errors.Is(err, core.ErrNotImplemented) {
+		if _, err := r.asideRun([]core.Seq{10}); !errors.Is(err, core.ErrNotImplemented) {
 			t.Fatalf("Run over a hold below a covered forget got err %v, want ErrNotImplemented: the covered forget covers nothing, so no rule covers the hold", err)
 		}
 	})
@@ -1296,8 +1273,7 @@ func TestRunWithholdsARecordTwoRulesNameTogether(t *testing.T) {
 	r.plantSeg(2, buildSeg(2, writeRec(40, 4, 0x4100, 16)))
 	r.plantSeg(3, buildSeg(3, forgetRec(7, 30), plantLossRec(file, 10, 31, 201, 0, 16, 1<<8)))
 
-	sink := &lossSink{}
-	st, err := r.asideRun(sink, nil)
+	st, err := r.asideRun(nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -1310,8 +1286,8 @@ func TestRunWithholdsARecordTwoRulesNameTogether(t *testing.T) {
 	} else if p.Seq != 40 {
 		t.Errorf("the record at 0x4100 holds seq %d, want 40", p.Seq)
 	}
-	if len(sink.placed) != 1 {
-		t.Errorf("the sink was handed %d loss events, want the one unsynced loss, covered by no rule", len(sink.placed))
+	if len(st.Kinds.Losses) != 1 {
+		t.Errorf("State.Kinds.Losses holds %d losses, want the one unsynced loss, covered by no rule", len(st.Kinds.Losses))
 	}
 	if st.Kinds.Withheld != (index.Numbers{Version: core.Version{Counter: 3}, Seq: 10}) {
 		t.Errorf("Withheld got %+v, want the greatest numbers a withheld record carried ({3,10})", st.Kinds.Withheld)
@@ -1393,8 +1369,7 @@ func TestRunDecodesASyncedSupersededLossWithItsExtent(t *testing.T) {
 		}))
 	r.plantSeg(id, seg)
 
-	sink := &lossSink{}
-	st, err := r.asideRun(sink, nil)
+	st, err := r.asideRun(nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -1437,7 +1412,7 @@ func TestRunCollectsForgetsByTheirGreatestSeq(t *testing.T) {
 	)
 	r.plantSeg(id, seg)
 
-	st, err := r.asideRun(nil, nil)
+	st, err := r.asideRun(nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -1468,8 +1443,8 @@ func TestRunCollectsForgetsByTheirGreatestSeq(t *testing.T) {
 // TestRunRefusesAVerifiedHoldKindRecord holds the D6 refusal: a hold, unhold
 // or stamp record that verifies — its header on the scan and its body read
 // whole here — and that no drop covers refuses the open with
-// ErrNotImplemented naming its kind and its segment, whatever the loss sink
-// (a nil one included) would have answered. The boundary row plants the hold
+// ErrNotImplemented naming its kind and its segment, whatever the failed
+// list the deps carry would have withheld. The boundary row plants the hold
 // at the seq just past a forget of its own tag — the first seq the forget
 // does not cover — and the refusal stands: a forget comparison that took one
 // seq too many would cover it, and the open would serve past a hold the
@@ -1517,14 +1492,11 @@ func TestRunRefusesAVerifiedHoldKindRecord(t *testing.T) {
 			r.plantSeg(3, buildSeg(3, plantLossRec(kindsFile(3), 1, 99, 9, 0x100, 16, 1<<8)))
 			r.plantSeg(2, buildSeg(2, tc.rec))
 
-			sink := &lossSink{}
-			st, err := r.asideRun(sink, nil)
+			st, err := r.asideRun(nil)
 			if !errors.Is(err, core.ErrNotImplemented) {
 				t.Fatalf("Run over a %s record got err %v, want one matching %v", tc.name, err, core.ErrNotImplemented)
 			}
-			if len(sink.placed) != 0 {
-				t.Errorf("the refused open published %d loss events, want none: an open that serves nothing publishes nothing", len(sink.placed))
-			}
+
 			if !strings.Contains(err.Error(), tc.kind) {
 				t.Errorf("Run: the refusal %q names no %s, the record's own kind", err, tc.kind)
 			}
@@ -1541,7 +1513,7 @@ func TestRunRefusesAVerifiedHoldKindRecord(t *testing.T) {
 // TestRunCoveredHoldKindRecordsDoNotRefuse holds the covered half of the
 // aside rule: a hold that another rule on the same disk already drops — a
 // loss record naming its seq, a forget of its own tag above it, the failed
-// list the sink answers — never refuses the open, and a Run with such
+// list the deps answer — never refuses the open, and a Run with such
 // records succeeding is the whole assertion.
 func TestRunCoveredHoldKindRecordsDoNotRefuse(t *testing.T) {
 	hold := func(seq uint64) raw.Record {
@@ -1576,7 +1548,7 @@ func TestRunCoveredHoldKindRecordsDoNotRefuse(t *testing.T) {
 			r.writeFormat()
 			r.plantSeg(1, buildSeg(1, tc.recs...))
 
-			if _, err := r.asideRun(&lossSink{}, tc.failed); err != nil {
+			if _, err := r.asideRun(tc.failed); err != nil {
 				t.Errorf("Run over a covered hold got err %v, want none: another rule already drops the record", err)
 			}
 		})
@@ -1588,7 +1560,7 @@ func TestRunCoveredHoldKindRecordsDoNotRefuse(t *testing.T) {
 // checksum-valid body this format version does not define, a reason or a
 // flag word no writer writes — drops into its own scan as a corrupt drop
 // the tail's classing judges like any other, publishes nothing through the
-// sink, and never refuses the open.
+// failed list, and never refuses the open.
 func TestRunConfinesALossBodyThatDoesNotVerify(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1618,13 +1590,12 @@ func TestRunConfinesALossBodyThatDoesNotVerify(t *testing.T) {
 			}
 			r.plantSeg(id, seg)
 
-			sink := &lossSink{}
-			st, err := r.asideRun(sink, nil)
+			st, err := r.asideRun(nil)
 			if err != nil {
 				t.Fatalf("Run over a loss body that does not verify got err %v, want none: the record confines", err)
 			}
-			if len(sink.placed) != 0 {
-				t.Errorf("Run: the sink was handed %d loss events over a confined record, want none", len(sink.placed))
+			if len(st.Kinds.Losses) != 0 {
+				t.Errorf("Run: the confined record collected %d loss events, want none", len(st.Kinds.Losses))
 			}
 			want := int64(format.SegmentHeaderSize) // the loss record's own offset
 			found := slices.ContainsFunc(st.Tails.Corrupt, func(c corruptRecord) bool {
@@ -1652,7 +1623,7 @@ func TestRunRefusesALossRecordOfZeroLength(t *testing.T) {
 		rc.Loss = &raw.LossBody{Dropped: 100, Flags: 1 | 1<<8}
 	})))
 
-	st, err := r.asideRun(nil, nil)
+	st, err := r.asideRun(nil)
 	if !errors.Is(err, core.ErrZeroLength) {
 		t.Fatalf("Run over a zero-length loss record got err %v, want one matching %v", err, core.ErrZeroLength)
 	}
@@ -1698,7 +1669,7 @@ func TestDecodeAsidesRefusesALossRecordThatNamesNoFile(t *testing.T) {
 }
 
 // TestRunCarriesEveryReasonAndFlagIntoTheEvent holds the reason mapping: each
-// reason a loss record can name decodes into the event the sink is handed,
+// reason a loss record can name decodes into the event the run collects,
 // and the flag word's two bits ride along as the synced and offloaded flags.
 func TestRunCarriesEveryReasonAndFlagIntoTheEvent(t *testing.T) {
 	r := newRig(t)
@@ -1730,16 +1701,16 @@ func TestRunCarriesEveryReasonAndFlagIntoTheEvent(t *testing.T) {
 	}
 	r.plantSeg(id, buildSeg(id, recs...))
 
-	sink := &lossSink{}
-	if _, err := r.asideRun(sink, nil); err != nil {
+	st, err := r.asideRun(nil)
+	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if len(sink.placed) != len(cases) {
-		t.Fatalf("Run: the sink was handed %d loss events, want the %d planted", len(sink.placed), len(cases))
+	if len(st.Kinds.Losses) != len(cases) {
+		t.Fatalf("Run: State.Kinds.Losses holds %d losses, want the %d planted", len(st.Kinds.Losses), len(cases))
 	}
 	for i, c := range cases {
-		got := sink.placed[i]
+		got := st.Kinds.Losses[i].Ev
 		if got.Reason != c.reason {
 			t.Errorf("Run: loss %d's event carries reason %d, want %d", i, got.Reason, c.reason)
 		}
@@ -1749,8 +1720,8 @@ func TestRunCarriesEveryReasonAndFlagIntoTheEvent(t *testing.T) {
 		if got.Offloaded != c.offloaded {
 			t.Errorf("Run: loss %d's event carries Offloaded %v, want %v", i, got.Offloaded, c.offloaded)
 		}
-		if got := sink.dropped[i]; got != core.Seq(200+i) {
-			t.Errorf("Run: loss %d's event names the dropped record %d, want %d", i, got, 200+i)
+		if got := st.Kinds.Losses[i].Dropped; got != core.Seq(200+i) {
+			t.Errorf("Run: loss %d's collection names the dropped record %d, want %d", i, got, 200+i)
 		}
 	}
 }
@@ -1774,13 +1745,12 @@ func TestRunDeliversTwoIdenticalLossRecordsOnce(t *testing.T) {
 	r.plantSeg(1, buildSeg(1, loss()))
 	r.plantSeg(2, buildSeg(2, loss())) // the carried-forward copy
 
-	sink := &lossSink{}
-	st, err := r.asideRun(sink, nil)
+	st, err := r.asideRun(nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(sink.placed) != 1 {
-		t.Errorf("Run: the sink was handed %d loss events for one piece, want one: %+v", len(sink.placed), sink.placed)
+	if len(st.Kinds.Losses) != 1 {
+		t.Errorf("Run: State.Kinds.Losses holds %d losses for one piece, want one: %+v", len(st.Kinds.Losses), st.Kinds.Losses)
 	}
 	if len(st.Kinds.Losses) != 1 {
 		t.Errorf("Run: State.Kinds.Losses holds %d losses for one piece, want one", len(st.Kinds.Losses))

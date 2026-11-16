@@ -14,16 +14,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
-// LossSink is where the loss events an open recovers reach the journal:
-// Place publishes one loss record the open found on disk. It is an output
-// the open hands over; the records a read-only journal failed earlier in
-// this process reach the open the other way round, as the data Deps.Failed
-// carries. Recovery depends on the behaviour only, never the layer that
-// implements it.
-type LossSink interface {
-	Place(ev core.LossEvent, dropped core.Seq)
-}
-
 // Deps is what recovery reaches the directory with. The open fills it from
 // its own config; nothing here resolves options or defaults.
 type Deps struct {
@@ -34,24 +24,11 @@ type Deps struct {
 
 	// Failed is the directory's failed list at open: the sequence numbers an
 	// earlier read-only journal on the same directory could not write the
-	// loss record for. It is data from the layer that tracks the list — the
-	// durability layer's Failed() answers it at the journal's assembly —
+	// loss record for. It is data the open hands the rebuild — the durability
+	// layer's FailedFor answers it before any layer of the open is built —
 	// not a call the rebuild makes back into that layer; nil is no failed
 	// list.
 	Failed []core.Seq
-
-	// Losses is where Run publishes the loss records the open found on
-	// disk, once the phases and the unreadable-ranges check have all
-	// passed: an open that refuses publishes nothing and takes no piece,
-	// so a retry re-entering the same directory finds the loss records on
-	// disk unreported and reports them then.
-	//
-	// decision: a nil Losses means no placement. Run never requires one
-	// non-nil, and every run before the journal's assembly opens — the
-	// tests included — takes it nil; the journal's own wiring point is the
-	// assembly step of its open, which builds the durability layer and
-	// hands it here.
-	Losses LossSink
 
 	// ExtentLimit is the index entry bound the rebuilt index carries into
 	// the journal's later writes. Zero is no bound. A rebuild over the bound
@@ -237,16 +214,6 @@ func Run(ctx context.Context, deps Deps, floor core.Version, expect core.Journal
 	ranges := rd.Unreadable()
 	if len(ranges) > 0 {
 		return State{}, &core.UnreadableRangesError{Ranges: ranges}
-	}
-	// The loss records the open found on disk are published only now, at
-	// the success exit: every refusal above serves nothing and publishes
-	// nothing, and the sink's piece-dedup keeps the records unreported
-	// for the retry. The events carry SeqNum zero — the sink assigns the
-	// numbers, in the ring it owns.
-	if deps.Losses != nil {
-		for _, lo := range st.Kinds.Losses {
-			deps.Losses.Place(lo.Ev, lo.Dropped)
-		}
 	}
 	return st, nil
 }
