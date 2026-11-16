@@ -486,12 +486,11 @@ type Deps struct {
 	Logger     *slog.Logger
 }
 
-// Store is the store's calls identity makes, RFC 16 §3.2's views, declared
-// here. It has no Close, so the server cannot close what it was handed.
+// Store is the store's calls identity makes, declared here. It has no Close,
+// so the server cannot close what it was handed.
 type Store interface {
-	Principals() kvstore.Principals
-	Records() kvstore.Records
-	Minter() kvstore.Minter // its writes are identity's only ones (§2.4, §5.1)
+	Principals() kvstore.Principals     // RFC 16 §3's lookups and a user's record
+	ControlPlane() kvstore.ControlPlane // its Write: the control-plane records identity writes, each with its audit record
 }
 
 // New takes no settings and starts nothing. *Server implements Authenticator,
@@ -516,13 +515,18 @@ type State struct {
 
 `Deps` and `State` are the composed shape: an implementation adds each field
 with the first code that reads it, so an early build holds fewer.
-`Principals`, `Records` and `Minter` are RFC 16 §3's views, defined there
-once; identity takes the one store that implements them, a concrete type where
-there is one implementation, as RFC 17 §2.3 does. A `Minter` write
-is one batch of new records (§4.1's mint): it never overwrites a record,
-allocates the IDs it is told to inside its one transaction, raises the
-principals generation once, and fails whole with `ErrExist` when another
-principal holds a row it would write (§2.2).
+`Principals`, `ControlPlane`, `Records` and `Minter` are RFC 16 §3's views,
+defined there once. `Store` gains a view with the first code that calls it, as
+`Deps` gains a field, so `Records` and `Minter` join it with their first
+callers; the node's `*kvstore.Store` implements every view, so it satisfies
+`Store` whatever it holds. identity writes through two of them. A `Minter`
+write is one batch of new principal records (§4.1's mint): it never overwrites
+a record, allocates the IDs it is told to inside its one transaction, raises
+the principals generation once, and fails whole with `ErrExist` when another
+principal holds a row it would write (§2.2). Every other write identity makes
+goes through `ControlPlane.Write`, which commits it with its audit record in
+one transaction: the installation's join and rotation records (§3.3, §3.5),
+and a scheduled operation's record with its audit record.
 
 **Start and stop.** No settings reach `New`. The node reads the records at
 start and hands identity its first `State` through `Apply`, before `Start`. It
@@ -628,13 +632,13 @@ type Keys struct{ Session, Subkey, APRep []byte }
 type Service uint8
 // NTLMAuthenticate is the decoded AUTHENTICATE message the adapter's NTLM
 // mechanism hands over, with the three messages' bytes kept exactly as sent so
-// the MIC can be checked (§3.5).
+// the MIC can be checked (§3.5). It carries no decoded MIC or MsvAvFlags:
+// identity reads the flags from NTResponse, which the proof authenticates, and
+// the MIC from Raw, so the adapter holds no unauthenticated copy to act on.
 type NTLMAuthenticate struct {
 	User, Domain, Workstation       string
 	NTResponse, EncryptedSessionKey []byte
-	MIC                             []byte
-	Flags                           uint32 // NegotiateFlags, and the AV pair MsvAvFlags
-	AVFlags                         uint32
+	Flags                           uint32 // NegotiateFlags
 	Negotiate, Challenge, Raw       []byte // the wire bytes of NEGOTIATE, CHALLENGE and this AUTHENTICATE
 }
 ```
@@ -1255,8 +1259,8 @@ func (s Scheme) Stored() bool // true for the schemes with index rows
 type Spelling struct{ Scheme Scheme; Num uint32; SID SID; Text string }
 ```
 
-Sign-in, `Find` and resolution (§4.3) share one internal mint, so every record
-identity writes goes through one path, under one rule: it never overwrites, and
+Sign-in, `Find` and resolution (§4.3) share one internal mint, so every principal
+record identity writes goes through one path, under one rule: it never overwrites, and
 **one sign-in, lookup or resolution mints every principal it needs in one
 batch**: one transaction, which allocates what each record lacks, with one
 principals-generation raise (§7.2), however many groups the batch holds. On
@@ -1786,7 +1790,8 @@ type Claims struct {
 func (id Identity) Key() ProofKey
 
 // Resolver is admission's step 4 (RFC 17 §4.9); *vfs.Filesystem is its only caller.
-// p is the share's policy, read in one snapshot (RFC 16 §3's SharePolicy);
+// p is the share's policy, built from one ShareIndex.Share read, the share
+// with its GrantVersion and its export policy (RFC 16 §3's SharePolicy);
 // narrowed is why admission held the call to read-only before resolution:
 // ReadOnlyNotNarrowed, ReadOnlyShare or ReadOnlyClient, never ReadOnlyGrant,
 // which step 4 sets itself.
@@ -2465,7 +2470,7 @@ Each slice ships alone, behind the one before it, and deletes what it replaces.
 | --- | --- | --- | --- |
 | 0, now | fixed in today's code: no default uid, the bootstrap admin without uid 0, no guest on a failed or unparsable setup, plain LDAP refused; the PAC failing its signature refused | the 1000 default; `root_to_admin`, `all_to_admin` | — |
 | 1 | the pure packages: the `pkg/identity` value types and `Key()`, the SID codec, owner strings, the closure walk, `NewHashes`, the throttle, each with its unit and fuzz tests | — | — |
-| 2 | the store: `Minter` with allocation inside its transaction, the uid, gid and RID counters, `PGEN`, the well-known IDs including root, `SharePolicy` (RFC 16) | — | slice 1 |
+| 2 | the store: `Minter` with allocation inside its transaction, the uid, gid and RID counters, `PGEN`, the well-known IDs including root, `ShareIndex.Share` with the share's `GrantVersion` (RFC 16) | — | slice 1 |
 | 3 | SIDs: today's uid-derived SIDs written once as stored values, read beside the derived ones in a shadow pass that logs every disagreement, then switched, so no SID changes (ID4) | RID derivation from a uid | slice 2 |
 | 4 | resolution in `*vfs.Filesystem` ([RFC 17 §9](rfc-17-vfs.md#9.%20Migration) slice 2), run in shadow beside today's resolver until their callers agree, then switched: squash `none`/`root`/`all`, stored `none` grants, one caller cache | the NFS share-permission resolver, the NFSv3 auth-context cache, SID share permissions, `default_permission` | slices 2, 3 |
 | 5 | the authenticator behind `SignIn`: Kerberos with the PAC binding, NTLM with the MIC, re-authentication, logon events | the five-domain NTLM retry; the RPCSEC_GSS "unmapped → nobody" path | slice 4 |

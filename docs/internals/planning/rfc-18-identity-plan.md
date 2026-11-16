@@ -292,18 +292,32 @@ that needs it.
   - an operator's `krb` link takes the directory's SID from a fresh answer only, as a rename does;
   - O3 records the tree kept across a guest or anonymous re-authentication, RFC 22's to close; O5
     closes what #4050 now names; O9 records which `identity.directory` row is kept.
-- **A19. Leftovers from the epic breakdowns' reviews** (RFC 18 §2.6, §3.7 and §6.1; RFC 7 §7.4):
+- **A19. Leftovers from the epic breakdowns' reviews** (RFC 18 §2.6, §3.1, §3.7, §4.1, §6.1 and
+  §11; RFC 16 §2.3 and §3; RFC 7 §7.4):
   - a principal marked deleted signs in as an unknown name does, logon outcome `logon_failure`, and
     only a `Disabled` one gets `disabled`: RFC 16 §3's `DeleteUser` deletes the name indexes in the
     mark's transaction (RFC 23 epic 2's R39, R40), so sign-in finds it by no name (epic 4's R14);
   - `ReadOnlyCause`'s values are `ReadOnlyNotNarrowed`, `ReadOnlyGrant`, `ReadOnlyShare` and
     `ReadOnlyClient`, the prefixed names epic 1 declares;
-  - `Deps.Store` is a `Store` interface identity declares, `Principals()`, `Records()` and
-    `Minter()`, epic 1 declaring `Principals()` alone and each later epic adding the view it calls.
-    It has no `Close`, so the server cannot close what it was handed, which the type holds rather
-    than a test; a node passes its `*kvstore.Store` unchanged. It is not narrowed further to a read
-    interface: `ErrUnavailable`'s tests run over a real kvstore on `kvtest.FaultKV`, which a
-    narrower interface would not make easier;
+  - `Deps.Store` is a `Store` interface identity declares with two methods, `Principals()
+    kvstore.Principals` and `ControlPlane() kvstore.ControlPlane`, the second for
+    `ControlPlane.Write`. Each later epic adds a method only when its first reader lands, so the
+    `Minter` view, `Minter() kvstore.Minter` (RFC 16 §3), arrives with E2, which builds it on
+    `*kvstore.Store`. It has no `Close`, so the server cannot close what it was handed, which the
+    type holds rather than a test; a node passes its `*kvstore.Store` unchanged, which implements
+    every view. It is not narrowed further to a read interface: `ErrUnavailable`'s tests run over
+    a real kvstore on `kvtest.FaultKV`, which a narrower interface would not make easier;
+  - §2.6 no longer calls the `Minter`'s writes identity's only ones: identity also writes the
+    installation's join and rotation records (epic 7's D5 and D11) and a scheduled operation with
+    its audit record (epic 5's T5.10), all through `ControlPlane.Write`; §4.1's one-path rule now
+    names the principal records it mints;
+  - RFC 16 §3's `Principals.SharePolicy` is dropped: resolution builds `SharePolicy` from one
+    `ShareIndex.Share` read, whose share carries `GrantVersion` (RFC 23's plan's epic 2, D20), and
+    RFC 16 §2.3's `Share` gains that field. `ManageGIDs` leaves `SharePolicy`, and `ExportPolicy`
+    marks it deferred with `AUTH_SYS` to RFC 21's plan, as the built `ExportPolicy` has none
+    (this plan's deferral ledger); RFC 18 §6.1's `Resolver` and §11's slice 2 cite the read;
+  - §3.1's `NTLMAuthenticate` drops `MIC` and `AVFlags`, which nothing authenticates: identity
+    reads the flags from `NTResponse`, which the proof authenticates, and the MIC from `Raw`;
   - §6.1's `Caller` gains `Group`, the credential's primary group a create stamps, as admission's
     `entity.Identity.Group` carries it today: an unsquashed claimed caller's gid, zero otherwise.
     Without it, a file an `AUTH_SYS` caller creates gets its stored primary group, not its gid,
