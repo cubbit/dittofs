@@ -353,6 +353,47 @@ func TestRunFeedsTheRemainderASyncedSupersededLossNames(t *testing.T) {
 			t.Errorf("the loss names segments %v, want [2]: superseded or whole, the record it names is its liveness", got)
 		}
 	})
+	t.Run("a loss extent past the record's end", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		file := kindsFile(1)
+		r.plantSeg(2, buildSeg(2,
+			writeRec(60, 5, 0, 64),
+			// A superseded loss naming [200,216): the writer's bug the row
+			// plants, for no honest loss names past the record it loses.
+			plantLossRec(file, 60, 61, 9, 200, 16, 1|4<<8),
+		))
+
+		st := kindsRun(t, r)
+
+		p, ok := st.Rebuilt.Index.Lookup(file, 0)
+		if !ok {
+			t.Fatalf("Lookup at 0 missed, want the record whole: the loss extent lies past its end and clips nothing")
+		}
+		if p.Extent != (core.Extent{Off: 0, Len: 64}) {
+			t.Errorf("the record got %+v, want its whole extent [0,64): a cut outside the record feeds it unclipped, never a bogus run to the cut's start", p.Extent)
+		}
+	})
+	t.Run("a loss extent before the record's start", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		file := kindsFile(1)
+		r.plantSeg(2, buildSeg(2,
+			writeRec(60, 5, 200, 64),
+			// A superseded loss naming [0,16), before the record's start.
+			plantLossRec(file, 60, 61, 9, 0, 16, 1|4<<8),
+		))
+
+		st := kindsRun(t, r)
+
+		p, ok := st.Rebuilt.Index.Lookup(file, 200)
+		if !ok {
+			t.Fatalf("Lookup at 200 missed, want the record whole: the loss extent lies before its start and clips nothing")
+		}
+		if p.Extent != (core.Extent{Off: 200, Len: 64}) {
+			t.Errorf("the record got %+v, want its whole extent [200,264): a cut the record does not overlap feeds it unclipped, never a bogus run to it", p.Extent)
+		}
+	})
 	t.Run("a removal the loss names feeds whole", func(t *testing.T) {
 		r := newRig(t)
 		r.writeFormat()

@@ -453,7 +453,14 @@ func keptRuns(e core.Extent, cuts []core.Extent) []core.Extent {
 	var out []core.Extent
 	cursor := e.Off
 	for _, c := range cs {
+		// A cut that does not overlap the record clips nothing of it, its
+		// clamped run empty: asking it for a run would feed a bogus piece
+		// from the record's start up to the cut's own off, past the
+		// record's end or before its start.
 		lo, hi := max(c.Off, e.Off), min(c.Off+c.Len, end)
+		if lo >= hi {
+			continue
+		}
 		if lo > cursor {
 			out = append(out, core.Extent{Off: cursor, Len: lo - cursor})
 		}
