@@ -31,17 +31,19 @@ func TestAdContainerNamesAreDistinct(t *testing.T) {
 
 // TestStaleADContainers checks that the leftover sweep picks only containers
 // older than its age limit, so it never removes a concurrent run's live DC,
-// and keeps a line whose time it cannot read.
+// only those whose name starts with the prefix, since Docker's name filter
+// also matches it mid-name, and keeps a line whose time it cannot read.
 func TestStaleADContainers(t *testing.T) {
 	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
-	ps := "old\t2026-11-16 12:30:00 +0200 CEST\n" + // 90 minutes ago
-		"young\t2026-11-16 11:30:00 +0000 UTC\n" +
-		"garbled\tyesterday\n"
-	got := staleADContainers(ps, now, time.Hour)
+	ps := "old\tp-run1-test\t2026-11-16 12:30:00 +0200 CEST\n" + // 90 minutes ago
+		"young\tp-run2-test\t2026-11-16 11:30:00 +0000 UTC\n" +
+		"midname\tother-p-test\t2026-11-16 09:00:00 +0000 UTC\n" +
+		"garbled\tp-run3-test\tyesterday\n"
+	got := staleADContainers(ps, "p-", now, time.Hour)
 	if want := []string{"old"}; !slices.Equal(got, want) {
 		t.Fatalf("staleADContainers = %q, want %q", got, want)
 	}
-	if got := staleADContainers("", now, time.Hour); len(got) != 0 {
+	if got := staleADContainers("", "p-", now, time.Hour); len(got) != 0 {
 		t.Fatalf("staleADContainers of empty output = %q, want none", got)
 	}
 }
