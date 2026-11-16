@@ -1017,6 +1017,10 @@ type Deps struct {
 	Budgets *resources.Budgets  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold, and the node's connection count (§3.6)
 	Metrics *metrics.Registry   // RFC 25 §8.2; nil registers nothing
 	Tracer  trace.Tracer        // RFC 25 §8.1: spans; nil is the no-op tracer
+	// SampleRatio is RFC 25 §6.3's tracing.sample_ratio, which the root passes
+	// beside Tracer: the adapter samples a request on the trace ID it draws and
+	// opens spans only for one it sampled (§10.2). 0 samples none.
+	SampleRatio float64
 	Logger  *slog.Logger        // nil discards
 	// Watch registers a loop with the node's liveness watchdog (RFC 25 §3.5)
 	// and returns it: Turn reports a pass, Idle a wait with nothing to do (an
@@ -4285,9 +4289,12 @@ nfs4 COMPOUND                      request span: frame → send, opened by the p
 - **Unsampled costs nothing.** With tracing off or a request unsampled, the
   span calls allocate nothing and read no clock beyond the trace ID; §6.10's
   pipeline benchmark asserts it. So the pipeline decides sampling from the
-  trace ID it draws for every request, before it opens a span, and calls the
-  tracer only for a sampled request: a tracer that samples nothing still
-  allocates in `Start`.
+  trace ID it draws for every request, before it opens a span, by the tracing
+  API's ratio rule (the ID's low eight bytes against `Deps.SampleRatio`), and
+  calls the tracer only for a sampled request: a tracer that samples nothing
+  still allocates in `Start`. The span takes that same ID ([RFC 25 §8.1](rfc-25-observability.md#8.1%20What%20the%20root%20builds)),
+  so the provider's sampler reaches the same verdict and a span's trace ID is
+  the one the request's log lines carry.
 
 ### 10.3 Logs
 
