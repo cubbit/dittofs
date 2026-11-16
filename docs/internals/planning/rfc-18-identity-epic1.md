@@ -119,7 +119,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R2 | `pkg/identity` is a leaf importing metadata types only | invariant | §2.7 | T1.1, T1.5 |
 | R3 | `pkg/vfs` aliases the value types an adapter needs, so an adapter imports `pkg/vfs` alone and neither identity package | invariant | §2.7; RFC 17 §3.0; RFC 20 §2.3 | T1.1, T1.5 |
 | R4 | Adapters map, squash and grant nothing; every spelling goes through `vfs.Service`'s `Spell` and `Find`, held by RFC 20 §7.1's import test (ID11) | invariant | §9.1 ID11; RFC 20 §7.1 | T1.5 |
-| R5 | Only `internal/node` imports the server, `internal/identity` or any package under it, besides identity's own packages and `pkg/vfs/vfstest/memory`, which imports `internal/identity/identitymem` alone (E3's T3.6); `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use the real server | invariant | §2.7; §10 "Who stands in for what" | T1.5 |
+| R5 | Only `internal/node` imports the server, `internal/identity` or any package under it, besides identity's own packages, `pkg/identity/identitytest` among them, which imports `internal/identity/directory` and `internal/identity/netlogon` and never the server (E6's T6.4, E7's T7.3), and `pkg/vfs/vfstest/memory`, which imports `internal/identity/identitymem` alone (E3's T3.6); `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use the real server | invariant | §2.7; §10 "Who stands in for what" | T1.5 |
 | R6 | Only `internal/identity/directory` imports LDAP; `internal/auth/netlogon`, which S0 leaves and whose `join.go` imports it, is exempt by a `decision:` until E7's T7.6 moves it into `internal/identity/netlogon` and removes the exemption | invariant | §2.7 | T1.5 |
 | R7 | `Authenticator` is the same shape as `vfs.Principals.SignIn`, so the filesystem passes it through | invariant | §3.1 | T1.3, T1.6 |
 | R8 | `ErrLogonFailure` and `ErrUnknownPrincipal` are `vfserr`'s, and `vfs.Errors()` returns both; the adapter rows that map them are the RFC 21 and RFC 22 plans' (the plan's deferral row) | MUST | §2.7; RFC 17 §4.3; RFC 20 §7.3 | T1.2 |
@@ -328,7 +328,9 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
   - `pkg/identity/arch_test.go`, walking the module as `internal/vfs/arch_test.go` does:
     `pkg/identity` imports only the standard library, `entity`, `pkg/auth/sid` and `vfserr`;
     no non-test package but `internal/node` and identity's own packages imports
-    `internal/identity` or any package under it, except `internal/identity/identitymem`, whose one
+    `internal/identity` or any package under it, `pkg/identity/identitytest` counting as one of
+    identity's own packages for `internal/identity/directory` and `internal/identity/netlogon`
+    only, never for the server, except `internal/identity/identitymem`, whose one
     importer E3's T3.6 restricts to `pkg/vfs/vfstest/memory`; `internal/node` is the package
     alone, so `internal/node/nodetest` imports nothing under `internal/identity` (a `node_test`
     test hands the node identity's in-memory seams through `nodetest.WithNew` and
@@ -344,7 +346,8 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
     `internal/identity/netlogon`, where `join.go`'s LDAP calls go through
     `internal/identity/directory` or R6 fails. Seeded
     violations of each in its `testdata/arch`, among them a non-test `internal/vfs` file
-    importing `internal/identity` and a non-test package importing
+    importing `internal/identity`, a non-test `pkg/identity/identitytest` file importing
+    `internal/identity`, and a non-test package importing
     `internal/identity/directory`, `internal/node/nodetest` among them;
   - `internal/identity/**` and `pkg/identity/**` in `test/suites.yaml`'s `e2e` `kerberos`
     cell's `paths:`, so a change to the server or the contract runs the Kerberos cell.
