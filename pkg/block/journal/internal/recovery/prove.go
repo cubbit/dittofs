@@ -324,7 +324,7 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 // when an open's profile shows this pass, and keep the rebuild as that
 // repair's test oracle.
 func rebuildExcludingTorn(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, torn map[index.RecordAt]bool) error {
-	out, kinds, _, err := rebuildOver(ctx, deps, rd, st.Attached, expect, floor, torn, &st.Tails)
+	out, kinds, _, err := rebuildOver(ctx, deps, rd, st.Attached, expect, floor, torn, &st.Tails, nil)
 	if err != nil {
 		return err
 	}

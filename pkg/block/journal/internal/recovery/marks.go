@@ -219,6 +219,120 @@ func runMarksRaise(ctx context.Context, _ Deps, _ *reader, st *State, _ core.Jou
 	return nil
 }
 
+// runMarksLostTail is the marks phase's second step and the open's gate over
+// a sync the device acknowledged and then lost: a lost tail is never read as
+// a torn tail, for the mark is the caller's durable record that its stream
+// synced through the range it names, and cutting what the device dropped as
+// a crash's torn end would cut a record the sync answered for. The check
+// runs after the tail's proof has verified every unproven tail and before
+// the spares phase — the open's first writing one — so a refused open has
+// written, zeroed and taken nothing, and every retry meets the same loss
+// over the same directory.
+//
+// A mark's tail is lost when its segment is on disk with its last verifying
+// record, if any, ending below the mark's Offset, and no copy of the record
+// carrying the mark's Sequence verifies anywhere — seqVerifies answers that
+// one question over the feed's map, the aside headers the scans keep and
+// the records the tail's proof handed to the re-append from first reads
+// that verified — and each of the three is checked, for a record about to be
+// re-appended is not lost whatever the device holds. A lost tail refuses the
+// open with ErrNotImplemented naming the mark's segment, its Offset and its
+// Sequence. A mark whose segment is absent is decided first, and decided by
+// nothing here: the retirement reading below owns it.
+func runMarksLostTail(ctx context.Context, _ Deps, _ *reader, st *State, _ core.JournalID, _ core.Version, marks []core.SyncMark) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The caller's own order, the one the raise judged the marks in: the
+	// refusal names the first lost tail that order reaches, as the raise's
+	// own refusals do.
+	for _, m := range marks {
+		sc, onDisk := markScan(st, core.SegmentID(m.Segment))
+		if !onDisk {
+			// ponytail: a segment's absence is taken as its retirement, so a
+			// device that loses both a synced tail and the directory entry of
+			// the segment holding it hides the loss. Upgrade to recording each
+			// retirement where the marks can see it, a metadata write per
+			// retired segment, when a lost directory entry is seen in the field.
+			continue
+		}
+		// The last verifying record's end, the walk's own answer. A
+		// catalogue-built scan leaves it zero with its End at the seal marker,
+		// where the records of the segment it proved ended; no scan End lies
+		// below the header's own size.
+		end := sc.RecordsEnd
+		if end == 0 {
+			end = sc.End
+		}
+		if end >= m.Offset {
+			continue // the sync's last record is where the mark says it ended
+		}
+		if seqVerifies(st, core.Seq(m.Sequence)) {
+			continue // a copy of the sync's record verifies, or the re-append carries one
+		}
+		return refuseLostTail(m)
+	}
+	return nil
+}
+
+// seqVerifies answers whether a copy of the record carrying seq verifies
+// anywhere: the feed's map — raised for every walk-attached copy wherever
+// it sits, withheld copies among them, so the converted records of every
+// segment answer by it — the aside headers the scans keep, for an aside
+// kind never feeds, and the records the tail's proof verified at their
+// first reads and handed to the re-append, which the re-append phase will
+// write back.
+func seqVerifies(st *State, seq core.Seq) bool {
+	if st.Kinds.MarkedOnDisk[seq] {
+		return true
+	}
+	for i := range st.Rebuilt.Scans {
+		for _, a := range st.Rebuilt.Scans[i].Aside {
+			if a.Header.Seq == seq {
+				return true
+			}
+		}
+	}
+	for _, rec := range st.Proof.Reappends {
+		if rec.Header.Seq == seq {
+			return true
+		}
+	}
+	return false
+}
+
+// refuseLostTail is the open's refusal of a sync the device acknowledged and
+// then lost: the mark's segment is on disk, its last verifying record ends
+// below the mark's Offset, and no copy of the record carrying the mark's
+// Sequence verifies anywhere.
+//
+// decision: a device that loses an acknowledged sync keeps its journal closed
+// until the reconcile's journal half exists — the lost record's extent may
+// have superseded content a serving read would then serve stale, and the
+// reconcile that would recover what it held is not built — so every retry
+// meets the same refusal over an unchanged directory. Withdrawn when the
+// reconcile's journal half lands.
+func refuseLostTail(m core.SyncMark) error {
+	return fmt.Errorf("%w: segment %d: the sync's acknowledged record, sequence %d ending at %d, verifies nowhere",
+		core.ErrNotImplemented, m.Segment, m.Sequence, m.Offset)
+}
+
+// markedSeqs seeds the map the feed raises: one entry per sequence number a
+// caller's sync mark names, left false until a walk-attached copy carrying
+// the number raises it true. Seeded by the marks' own numbers so the feed's
+// per-record lookup costs one miss over the marks alone, never a write per
+// record of the journal.
+func markedSeqs(marks []core.SyncMark) map[core.Seq]bool {
+	if len(marks) == 0 {
+		return nil
+	}
+	m := make(map[core.Seq]bool, len(marks))
+	for _, mk := range marks {
+		m[core.Seq(mk.Sequence)] = false
+	}
+	return m
+}
+
 // markScan finds the mark's segment's scan in the rebuild's answer,
 // reporting whether the segment was attached and scanned at all.
 func markScan(st *State, id core.SegmentID) (segmentScan, bool) {

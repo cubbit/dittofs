@@ -1,9 +1,12 @@
 package recovery
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -322,4 +325,208 @@ func TestPredecessorVerdictReachesTheSparesPhase(t *testing.T) {
 			t.Errorf("spares: the take over the sealed predecessor got adoptions %v, want %v", got, want)
 		}
 	})
+}
+
+// seqSyncedRec is syncedRec with the record's own sequence number set: the
+// lost-tail fixtures plant records the marks name by number, one number per
+// record, so the check's answers read at a glance.
+func seqSyncedRec(seq, off uint64, synced int64) raw.Record {
+	r := syncedRec(seq, off, synced)
+	r.Seq = seq
+	return r
+}
+
+// lostTailMark builds the mark of a stream whose sync covered one record past
+// A: it names C, of sequence seq, ending at endC, the offset where the
+// segment the stream lost C from would have ended.
+func lostTailMark(id core.SegmentID, seq uint64, endC int64) []core.SyncMark {
+	return []core.SyncMark{{Stream: 1, Segment: uint64(id), Through: endC, Offset: endC, Sequence: seq}}
+}
+
+// TestLostTailRefusesTheOpen plants the durable shape of a device that
+// acknowledged a sync and then lost the last record it covered: the segment's
+// file ends at A, the record the sync proved, while the mark — the caller's
+// durable record of the sync — names C past A's end, with C's number and its
+// end. No copy of C verifies anywhere, so the open refuses with
+// ErrNotImplemented naming the mark's segment, its Offset and its Sequence —
+// a lost tail must never be read as a torn tail — and the refusal writes
+// nothing: the bytes the directory held are the bytes it keeps, and the run
+// answers no state at all.
+func TestLostTailRefusesTheOpen(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	id := core.SegmentID(2)
+	endA := endAfter(seqSyncedRec(199, 0x4100, 0))
+	r.plantSeg(id, buildSeg(id, seqSyncedRec(199, 0x4100, endA)))
+	endC := endA + int64(len(seqSyncedRec(200, 0x8100, endA).Bytes()))
+	name := format.SegmentName(id)
+	if int64(len(r.fileBytes(name))) != endA {
+		t.Fatalf("fixture: the lost tail's file holds %d bytes, want %d: the device held A and lost C", len(r.fileBytes(name)), endA)
+	}
+	wantListing := slices.Clone(r.listing())
+	segBytes := r.fileBytes(name)
+	removes := r.seam.Calls(kit.OpRemove)
+	writes := r.seam.Calls(kit.OpWrite)
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endC))
+
+	if !errors.Is(err, core.ErrNotImplemented) {
+		t.Fatalf("the lost tail answered err %v, want ErrNotImplemented refusing the open", err)
+	}
+	for _, want := range [3]string{
+		fmt.Sprintf("segment %d", id),
+		fmt.Sprintf("sequence %d", 200),
+		fmt.Sprintf("ending at %d", endC),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not name %s, the mark's own fact", err.Error(), want)
+		}
+	}
+	if !slices.Equal(r.listing(), wantListing) {
+		t.Errorf("the refused open changed the directory %v, want the names it held %v", r.listing(), wantListing)
+	}
+	if got := r.fileBytes(name); !slices.Equal(got, segBytes) {
+		t.Errorf("the refused open changed the lost segment's bytes, got %x..., want the bytes it held", got[:format.SegmentHeaderSize])
+	}
+	if got, want := r.seam.Calls(kit.OpRemove), removes; got != want {
+		t.Errorf("the refused open removed something, got %d removes, want %d, the count before the run", got, want)
+	}
+	if got, want := r.seam.Calls(kit.OpWrite), writes; got != want {
+		t.Errorf("the refused open wrote something, got %d writes, want %d, the count before the run", got, want)
+	}
+	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs; got != want {
+		t.Errorf("the refused open synced the directory, got %d syncs, want %d, the count before the run", got, want)
+	}
+	if !reflect.DeepEqual(st, State{}) {
+		t.Errorf("the refused open returned state %+v, want the zero State: a refusal serves nothing", st)
+	}
+}
+
+// TestLostTailWithCachedCopyReappends plants the same loss with C whole in the
+// cache alone: the device's image of C is rotted, the pages a dead process
+// held it in serve it whole, and the sync the tail proof makes writes nothing
+// past them. C verifies at its first read and the proof hands it to the
+// re-append — the one set of records the lost-tail check must never read as
+// lost — so the open succeeds, and the record is duly in the re-append set
+// with the copy its first read verified.
+func TestLostTailWithCachedCopyReappends(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	id := core.SegmentID(2)
+	name := format.SegmentName(id)
+	endA := endAfter(seqSyncedRec(199, 0x4100, 0))
+	full := buildSeg(id, seqSyncedRec(199, 0x4100, endA), seqSyncedRec(200, 0x8100, endA))
+	durable := slices.Clone(full)
+	durable[endA+format.RecordHeaderSize+8+2] ^= 0xff // C's payload, rotted where the device alone sees it
+	r.plantSeg(id, durable)
+	r.writeLiveOnly(name, endA, full[endA:]) // the good C, whole in the cache alone
+	r.dropSyncs(name)                        // the open's sync makes nothing durable
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID,
+		lostTailMark(id, 200, int64(len(full))))
+
+	if err != nil {
+		t.Fatalf("the cached copy answered err %v, want the open to succeed over a record the re-append carries", err)
+	}
+	if len(st.Proof.Reappends) != 1 || st.Proof.Reappends[0].Segment != id || st.Proof.Reappends[0].At != endA {
+		t.Errorf("Reappends got %+v, want the one cached record of segment %d at %d", st.Proof.Reappends, id, endA)
+	}
+}
+
+// TestLostTailRefusedRetriesBurnNothing runs the refused open three times in a
+// row over the same directory, an interrupted recycle planted beside the lost
+// tail — a candidate whose dirty header and trailer slots the spares phase
+// would zero and sync were it ever to run before the refusal — and compares
+// the directory after each run: every name, every file's bytes and the count
+// of the segment files are what they were before the first, so each refused
+// retry burned nothing: no spare was taken, zeroed or unlinked on any retry,
+// for the check runs before the open's first writing phase.
+func TestLostTailRefusedRetriesBurnNothing(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	id := core.SegmentID(2)
+	endA := endAfter(seqSyncedRec(199, 0x4100, 0))
+	r.plantSeg(id, buildSeg(id, seqSyncedRec(199, 0x4100, endA)))
+	endC := endA + int64(len(seqSyncedRec(200, 0x8100, endA).Bytes()))
+	plantInterruptedRecycle(r, core.SegmentID(5), core.SegmentID(9))
+	marks := lostTailMark(id, 200, endC)
+	before := r.snapshot()
+	segsOf := func() int {
+		n := 0
+		for _, name := range r.listing() {
+			if kind, _ := format.ClassifyName(name); kind == format.NameSegment {
+				n++
+			}
+		}
+		return n
+	}
+	segCount := segsOf()
+
+	for open := 1; open <= 3; open++ {
+		_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, marks)
+
+		if !errors.Is(err, core.ErrNotImplemented) {
+			t.Fatalf("refused open %d answered err %v, want ErrNotImplemented: every retry meets the same loss", open, err)
+		}
+		got := r.snapshot()
+		if !maps.EqualFunc(got, before, bytes.Equal) {
+			t.Errorf("refused open %d changed the directory: got the files %v, want the bytes the first open found", open, slices.Sorted(maps.Keys(got)))
+		}
+		if count := segsOf(); count != segCount {
+			t.Errorf("refused open %d left %d segment files, want %d, the count before the first: no retry takes, zeroes or unlinks a spare", open, count, segCount)
+		}
+	}
+}
+
+// TestLostTailWithACopyElsewhereIsNotLost plants the lost tail beside a second
+// segment holding a copy of C, the record the mark names — the shape a repack
+// or a re-append from an earlier open leaves: the copy verifies in the other
+// segment even though the mark still names the segment it was appended in,
+// with its Offset past the last record that one holds. No copy anywhere is
+// one leg of a lost tail, and this copy answers it, so the open proceeds.
+func TestLostTailWithACopyElsewhereIsNotLost(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	id, other := core.SegmentID(2), core.SegmentID(4)
+	endA := endAfter(seqSyncedRec(199, 0x4100, 0))
+	r.plantSeg(id, buildSeg(id, seqSyncedRec(199, 0x4100, endA)))
+	endC := endA + int64(len(seqSyncedRec(200, 0x8100, endA).Bytes()))
+	cEnd := endAfter(seqSyncedRec(200, 0x8100, 0))
+	r.plantSeg(other, buildSeg(other, seqSyncedRec(200, 0x8100, cEnd)))
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endC))
+
+	if err != nil {
+		t.Fatalf("the copy in segment %d answered err %v, want the open to proceed over a record that verifies elsewhere", other, err)
+	}
+	if !st.Kinds.MarkedOnDisk[200] {
+		t.Errorf("the feed left the mark's sequence 200 unraised, so a record the walks attached carrying it went unseen")
+	}
+}
+
+// TestMarklessSegmentIsRetired plants one ordinary segment and a mark whose
+// segment no file names — an id above every one on disk — with the Offset
+// past a header's end and a sequence number nothing on disk carries: the very
+// shape that would be a lost tail, had the segment been there to lose. The
+// absence is read as a retirement, and a retirement is not a loss, so the open
+// proceeds and no fate names the retired id.
+func TestMarklessSegmentIsRetired(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	id := core.SegmentID(3)
+	endA := endAfter(seqSyncedRec(199, 0x4100, 0))
+	r.plantSeg(id, buildSeg(id, seqSyncedRec(199, 0x4100, endA)))
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID,
+		lostTailMark(42, 300, 4096))
+
+	if err != nil {
+		t.Fatalf("the retired mark answered err %v, want the open to read the mark's absent segment as a retirement", err)
+	}
+	for _, f := range st.Tails.Fates {
+		if f.ID == 42 {
+			t.Errorf("the retired id 42 took the fate %v, want none: an absent segment is retired, never ended", f.Kind)
+		}
+	}
 }
