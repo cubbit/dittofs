@@ -140,6 +140,7 @@ them.
 | R9 | Sign-in is `POST /api/v1/auth/sign-in` with a name and a password, checked by `APISignIn.Lookup` then `VerifyPassword` on that principal, never through `vfs`, and returns an access token and a refresh token | MUST | RFC 23 §5.3; RFC 18 §8.1 | T5.5 |
 | R10 | A disabled or deleted account cannot sign in, and the refusal does not say which | MUST | RFC 23 §5.3 | T5.5 |
 | R47 | A store that cannot answer is not a failed credential: `VerifyPassword` or `Account` answering `ErrUnavailable` is `503` `unavailable`, with no settled failure, no refusal audit and the source's raise taken back; only `ErrLogonFailure` settles a failure | MUST | RFC 23 §5.3, §8.1; RFC 18 §8.1 | T5.5 |
+| R48 | The problem table maps identity's `ErrLogonFailure` to `401` `unauthenticated` and its `ErrUnavailable` to `503` `unavailable`; both are in `vfs.Errors()`, so the table's totality test holds them | MUST | RFC 23 §4.7, §5.3; RFC 17 §4.3; RFC 18 §8.1 | T5.5 |
 | R11 | The access token is a signed JWT naming the account's principal, the session and an expiry 15 min ahead, and carries no role | MUST | RFC 23 §5.3 | T5.3 |
 | R12 | The access token is HS256, signed with `golang-jwt`, its `kid` naming the signing key's version, so a token signed before a rotation still verifies | MUST | RFC 23 plan §4.2 D3 | T5.3 |
 | R13 | On every call the API refuses a disabled or deleted account, a revoked session, and a token issued before the account's not-before time: an access token by its issue time, a refresh or an API token by its session's or its own creation time | MUST | RFC 23 §5.3, CP10 | T5.5, T5.6, T5.8 |
@@ -406,9 +407,10 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 
 - **Track:** C. **Depends on:** T5.2, T5.4; E4 (the call adapter, `Deps.Authenticate`, the
   client's `WithTokenSource`); the RFC 18 plan's epic 8's T8.1 (identity composed in `node.New`).
-- **Covers:** R9, R10, R13, R14, R16, R25, R32, R33, R39, R40, R41, R47.
+- **Covers:** R9, R10, R13, R14, R16, R25, R32, R33, R39, R40, R41, R47, R48.
 - **Deliverables:** `auth.Service` and `Authenticate` (D1), `node.New` setting
-  `Deps.Authenticate`; in `signin.go`: sign-in (`Lookup`, `reserve`, `VerifyPassword` on that
+  `Deps.Authenticate`; the problem table's row for `ErrLogonFailure`, `401` `unauthenticated`,
+  beside E4's `ErrUnavailable` row, `503` `unavailable` (R48); in `signin.go`: sign-in (`Lookup`, `reserve`, `VerifyPassword` on that
   principal, then one `Write` with the settlement, the session on a success, its `Created` from
   `tx.Now()` raised to `NotBefore`, and the audit record in its `WriteMeta`, D8; then `issue`), a
   failure settled and audited only on `errors.Is(err, identity.ErrLogonFailure)`, and
@@ -436,7 +438,9 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   (R40, R41); a captured log, the audit records and the series' labels holding no password or
   token (R39); a `kvtest` fault on the user read under the real identity: a sign-in answering `503`,
   no settled failure and no refusal audit record, the source's count as before, and a refresh and a
-  call with a valid access token each `503`, not `401` (R47); E4's client with a token source of
+  call with a valid access token each `503`, not `401` (R47); a wrong password's body answering
+  `401` with code `unauthenticated`, and E4's totality test over `vfs.Errors()` passing with both
+  identity errors mapped (R48); E4's client with a token source of
   the test's own over `Client.SignIn` and `Client.Refresh` on these routes, the clock advanced past
   the access token's lifetime: a create answered `401` refreshed once through the real `Refresh`
   and replayed with its body and key, one record and one idempotency record under that key, and a
@@ -470,8 +474,8 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 **Subtask T5.7 estimate: 3 man-days.**
 
 - **Track:** C. **Depends on:** T5.6; the RFC 18 plan's epic 2, T2.8 (an NT hash deleted with its
-  user), and its epic 8, T8.2 (identity in `node.New` with `Deps.Logons`, after its epic 4's T4.2
-  and T4.5).
+  user), and its epic 8, T8.2 (identity in `node.New` with `Deps.Logons`, the logon sink this
+  subtask's NTLM sign-in test needs, after its epic 4's T4.2 and T4.5).
 - **Covers:** R8, R14, R29, R31, R32, R34, R35, R36, R37, R39.
 - **Deliverables:** in `password.go`, the RFC 18 plan's password write: `POST /auth/password`, its
   current-password check through `reserve` and settled as a sign-in's; `NewHashes` on the
