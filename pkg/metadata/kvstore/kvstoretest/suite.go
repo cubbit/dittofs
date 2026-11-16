@@ -150,6 +150,10 @@ func Run(t *testing.T, open Opener) {
 		{"OneOperationPerTargetAndKind", testOneOperationPerTargetAndKind},
 		{"OperationReads", testOperationReads},
 		{"OperationStateWithAudit", testOperationStateWithAudit},
+		{"NodeEpochAcrossStarts", testNodeEpochAcrossStarts},
+		{"RegisterNodeRefuses", testRegisterNodeRefuses},
+		{"NodeStatuses", testNodeStatuses},
+		{"ListReconciledRecords", testListReconciledRecords},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}

@@ -91,6 +91,12 @@ func codecCases() []codecCase {
 		Account: group, State: entity.OpFailed, Claim: entity.OpClaim{Node: entity.NodeID{15: 1}, Epoch: 2, Expires: time.Unix(3, 0).UTC()},
 		Step: []byte("s"), Params: []byte("p"), Started: time.Unix(4, 0).UTC(), Updated: time.Unix(5, 6).UTC(),
 		Error: []byte("e"), Result: []byte("r"), Generation: 7}
+	node := entity.Node{ID: entity.NodeID{15: 5}, Address: "a", Roles: entity.RoleProtocol | entity.RoleStorage, Binary: "b",
+		Domain: "d", Epoch: 2, Formats: map[entity.Format]entity.VersionRange{2: {Min: 3, Max: 4}, 1: {Min: 1, Max: 1}}, Lapsed: true}
+	status := entity.NodeStatus{Node: node.ID, Settings: 1, ShareList: 2, Principals: 3, Claims: 4,
+		Refused:        []entity.RefusedRecord{{Record: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{9}}, Generation: 5, Error: []byte("e")}},
+		RestartPending: []entity.ResourceRef{{Kind: entity.ResourceSetting, ID: []byte{8}}},
+		Secrets:        []entity.SecretVersion{{Secret: entity.SecretRef{15: 7}, Version: 6}}, Conditions: []byte("c")}
 	set := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "k", Value: []byte("v"), Generation: 6, Schema: 1, Position: 14}
 	return []codecCase{
 		{"user", user, encodeUser(user),
@@ -144,6 +150,15 @@ func codecCases() []codecCase {
 				"0173" + "0170" + "0000000000000004" + "00000000" + "0000000000000005" + "00000006" +
 				"0165" + "0172" + "0000000000000007",
 			func(b []byte) (any, error) { return decodeOperation(op.ID, b) }},
+		{"node", node, encodeNode(node),
+			"01" + "0161" + "03" + "0162" + "0164" + "0000000000000002" + "02" +
+				"01" + "00000001" + "00000001" + "02" + "00000003" + "00000004" + "01",
+			func(b []byte) (any, error) { return decodeNode(node.ID, b) }},
+		{"node status", status, encodeNodeStatus(status),
+			"01" + "0000000000000001" + "0000000000000002" + "0000000000000003" + "0000000000000004" +
+				"01" + "05" + "0109" + "0000000000000005" + "0165" + "01" + "0c" + "0108" +
+				"01" + "00000000000000000000000000000007" + "0000000000000006" + "0163",
+			func(b []byte) (any, error) { return decodeNodeStatus(node.ID, b) }},
 		{"counter", uint64(7), encodeCounter(7), "01" + "0000000000000007",
 			func(b []byte) (any, error) { return decodeCounter(b) }},
 		{"setting", set, encodeSetting(set), "01" + "0176" + "0000000000000006" + "00000001" + "000000000000000e",
@@ -229,7 +244,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 	for _, c := range append(codecCases(), fileCodecCases()...) {
 		switch c.name {
 		case "user", "group", "share", "setting", "quota", "installation", "audit", "idempotency", "namespace",
-			"session", "api token", "sign-in failures", "operation":
+			"session", "api token", "sign-in failures", "operation", "node", "node status":
 			decoders[c.name] = c.dec
 			f.Add(c.enc)
 			f.Add(c.enc[:len(c.enc)/2])
@@ -242,6 +257,8 @@ func FuzzControlPlaneValues(f *testing.F) {
 		"share":            func(v any) []byte { return encodeShareInfo(v.(entity.Share)) },
 		"setting":          func(v any) []byte { return encodeSetting(v.(entity.Setting)) },
 		"operation":        func(v any) []byte { return encodeOperation(v.(entity.Operation)) },
+		"node":             func(v any) []byte { return encodeNode(v.(entity.Node)) },
+		"node status":      func(v any) []byte { return encodeNodeStatus(v.(entity.NodeStatus)) },
 		"quota":            func(v any) []byte { return encodeQuota(v.(entity.Quota)) },
 		"installation":     func(v any) []byte { return encodeInstallation(v.(entity.Installation)) },
 		"audit":            func(v any) []byte { return encodeAudit(v.(entity.AuditRecord)) },

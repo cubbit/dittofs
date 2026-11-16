@@ -1073,7 +1073,7 @@ func TestASecondStartRaisesNoEpoch(t *testing.T) {
 	if err := f.Start(ctx, f.sink, (&orderLog{}).order); err == nil {
 		t.Fatal("a second Start succeeded")
 	}
-	next, err := f.d.Records.RaiseNodeEpoch(ctx)
+	next, err := f.d.Records.RaiseNodeEpoch(ctx, f.d.Node)
 	if err != nil {
 		t.Fatal(err)
 	}

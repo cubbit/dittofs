@@ -147,7 +147,7 @@ func operationExpiryKey(op entity.Operation) []byte {
 }
 
 func encodeOperation(op entity.Operation) []byte {
-	w := codec.NewWriter(v1).String(op.Kind).Uint8(uint8(op.Target.Kind)).Bytes(op.Target.ID)
+	w := putResource(codec.NewWriter(v1).String(op.Kind), op.Target)
 	putPrincipal(w, op.Account).Uint8(uint8(op.State)).Fixed(op.Claim.Node[:]).Uint64(op.Claim.Epoch)
 	putTime(w, op.Claim.Expires).Bytes(op.Step).Bytes(op.Params)
 	putTime(putTime(w, op.Started), op.Updated).Bytes(op.Error).Bytes(op.Result).Uint64(op.Generation)
@@ -159,8 +159,8 @@ func decodeOperation(id entity.OperationID, b []byte) (entity.Operation, error) 
 	if err != nil {
 		return entity.Operation{}, err
 	}
-	op := entity.Operation{ID: id, Kind: r.String()}
-	op.Target = entity.ResourceRef{Kind: entity.ResourceKind(r.Uint8()), ID: cloneOrNil(r.Bytes())}
+	known := true
+	op := entity.Operation{ID: id, Kind: r.String(), Target: readResource(r, &known)}
 	op.Account, op.State = readPrincipal(r), entity.OpState(r.Uint8())
 	copy(op.Claim.Node[:], r.Fixed(16))
 	op.Claim.Epoch, op.Claim.Expires = r.Uint64(), readTime(r)
@@ -170,7 +170,7 @@ func decodeOperation(id entity.OperationID, b []byte) (entity.Operation, error) 
 	if err := r.Done(); err != nil {
 		return op, err
 	}
-	if op.Target.Kind.String() == "" || op.State.String() == "" {
+	if !known || op.State.String() == "" {
 		return op, errMalformed
 	}
 	return op, nil

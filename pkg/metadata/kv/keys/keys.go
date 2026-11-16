@@ -156,6 +156,7 @@ const (
 const (
 	NExp byte = 0x01
 	NClk byte = 0x02
+	NSt  byte = 0x03 // the node's status
 
 	SHRq byte = 0x01
 	SHXh byte = 0x02
