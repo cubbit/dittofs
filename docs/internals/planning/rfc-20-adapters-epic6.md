@@ -226,7 +226,8 @@ cited by number and title, and how it applies here or why it does not.
 | R21 | A credential whose body does not decode inside its opaque, an `AUTH_SYS` credential over RFC 5531's limits, and every flavour but `AUTH_NONE`, `AUTH_SYS` and `RPCSEC_GSS` are rejected `AUTH_BADCRED` at route and run nothing; none is treated as anonymous | MUST | RFC 21 §11.1; §4.1's route row | T6.2, T6.4a, T6.4b |
 | R36 | A verifier other than an empty `AUTH_NONE` beside an `AUTH_NONE` or `AUTH_SYS` credential is rejected `AUTH_BADVERF` | MUST | RFC 21 §11.1; §4.1's route row | T6.4a |
 | R37 | A message that is not a call, and answers no callback sent on the connection, is dropped unanswered through a `NoReply` row | MUST | §4.1's route row | T6.4a |
-| R22 | NFS, MOUNT, NLM and NSM are served over TCP; NLM and NSM are served over UDP too while RFC 20 §11's question 3 stands, which the ledger's rows "`core`'s datagram listener" and "MOUNT, NLM, NSM, `SM_NOTIFY`; NLM and NSM over UDP" defer | MUST | RFC 21 §2.2 | T6.4b |
+| R22 | NFS, MOUNT, NLM and NSM are served over TCP | MUST | RFC 21 §2.2 | T6.4b |
+| R42 | NFS and MOUNT are not served over UDP. NLM and NSM are, while RFC 20 §11's question 3 stands (RFC 21 §2.2), which the ledger's rows "`core`'s datagram listener" and "MOUNT, NLM, NSM, `SM_NOTIFY`; NLM and NSM over UDP" defer, so this epic binds no UDP listener | MUST NOT | RFC 21 §2.2 | T6.4b |
 | R23 | An NFS connection's first routed call ends its handshake deadline (`Conn.Established`); an SMB connection's first authenticated session does, the RFC 22 plan's | MUST | §4.7 (`Conn.Established`), §6.4 | T6.4a, T6.4b |
 | R24 | SMB has one table for every dialect | MUST | §4.8 | T6.3a, T6.3b |
 | R25 | A version or dialect selects a table or a row: the table is chosen by `Route` from the decoded header, before any argument is decoded | invariant | §4.7 (`Router`), §4.8, §9 A17 | T6.3a, T6.4a |
@@ -306,7 +307,10 @@ reads, so every loopback test fails.
   client against Samba (frame 4, a `NEGOTIATE` request; frame 6, its response), and
   `nfsv4-acl/reference.pcap`, a Linux client against the Linux kernel server (frame 4, an NFSv4
   `NULL` call under `AUTH_NONE`; frame 6, its reply; frame 8, a `COMPOUND` under `AUTH_SYS` of
-  minor version 0). Each file names the capture and the frame. They live under each `wire`
+  minor version 0). Every `COMPOUND` in that capture carries an empty tag (its 21 calls, read
+  with `tshark`), so the tag's cases use a hand-written `COMPOUND` under `AUTH_SYS` whose tag
+  is 5 bytes, not a multiple of 4, which checks the 3 bytes of XDR padding after it too (RFC
+  4506 §4.11). Each file names the capture and the frame. They live under each `wire`
   package's `testdata/golden/` as hex with comments, read by a helper in its tests. No marker:
   test data. Prior art: `pkg/block/journal/internal/format`'s `readGolden`.
 - **D4, a scaffold reply grants one credit.** RFC 22 §3.3's grant (what the client asks, at
@@ -400,8 +404,8 @@ Exported symbols added, all under `internal/adapter/`:
 Nothing else is exported, and `pkg/adapter` and `pkg/adapter/settings` export nothing new:
 T6.4b changes only `NFS.Validate`'s body. `core`
 changes only where RFC 20 §4.7 is amended, and each change has one owner: `Framer.Frame` and
-`HeaderCodec.Args` and `ReplyLen` land with E5's T5.1a, and `Framer.BodyLen`'s `last` and
-`MaxRecord` with E4's reader, which loops on them, each with `testproto`'s stages and
+`HeaderCodec.Args` and `ReplyLen` land with E5's T5.1a (which the epic 5 document is to
+state, §9), and `Framer.BodyLen`'s `last` and `MaxRecord` with E4's reader, which loops on them, each with `testproto`'s stages and
 `core.golden`. T6.3a and T6.4a implement the header stage's two, T6.3b and T6.4b the
 framer's.
 
@@ -629,7 +633,8 @@ framer's.
   - The knfsd capture's `NULL` call (frame 4) and `COMPOUND` (frame 8) parse to the fields
     `tshark` reads in the same capture, the `COMPOUND`'s credential a slice of the record, its
     tag and its minor version 0; a hand-written `NULL` call to MOUNT v3 under `AUTH_SYS` parses
-    too, with no minor version read.
+    too, with no minor version read; and D3's hand-written `COMPOUND` parses to its 5-byte tag,
+    its minor version read past the tag's 3 bytes of padding.
   - A credential body of 401 bytes inside the record, a verifier and a tag each running past
     the record, and an opaque whose padding runs past it return the call with an error; a
     message of 7 bytes returns none.
@@ -639,13 +644,14 @@ framer's.
     byte; each hand-written reply vector is written byte for byte: `PROG_UNAVAIL`,
     `PROG_MISMATCH` 3 and 4, `PROC_UNAVAIL`, `GARBAGE_ARGS`, `SYSTEM_ERR`, `RPC_MISMATCH` 2 and
     2, `AUTH_ERROR` with `AUTH_BADCRED` and with `AUTH_BADVERF`, and
-    `NFS4ERR_MINOR_VERS_MISMATCH` with its tag and no results.
+    `NFS4ERR_MINOR_VERS_MISMATCH` with D3's 5-byte tag, padded, and no results.
   - The refusals that claim a length (a credential, a tag and a group list each claiming more
     than 1 MiB) each add less than 4 KiB to `runtime.MemStats.TotalAlloc`.
 - **Tests:** in `wire_test.go` and `fuzz_test.go`, at `wire`'s API. No test double. The
   captured calls (catch a field read at the wrong offset, a flavour read as the credential's
   length, a body copied rather than sliced, and a misreading the hand-written vectors and the
-  parser share). The cap, at its byte and one past (catches a cap off by its header room). The
+  parser share; D3's `COMPOUND` catches a tag read as empty or its padding skipped, which no
+  captured call has). The cap, at its byte and one past (catches a cap off by its header room). The
   refusals with a call (catch a body over RFC 5531's 400 bytes accepted, a bound checked after
   the read or not at all, R8, and padding not counted, R9); the one with none (catches a
   message too short to address answered). `DecodeAuthSys`' refusals (catch RFC 5531's limits
@@ -697,11 +703,14 @@ framer's.
     test builds: a call to each program and version is routed to its table when served; NFS v2,
     and NFS v3 under 4.0 to 4.2, are refused `ErrVersion` with no table, and `Encode` of the
     status `Stages.Errors` maps it to names the range's lowest and highest (3 and 4 under the
-    default, 4 and 4 under 4.0 to 4.2); an unknown program, and MOUNT under 4.0 to 4.2, are
-    refused `PROG_UNAVAIL` with no table.
-  - Under 4.0 to 4.1, a `COMPOUND` of minor version 2 is refused `ErrVersion` with the `V4`
-    table, and `Encode` of `NFS4ERR_MINOR_VERS_MISMATCH` writes it with the request's tag and no
-    results; a `NULL` to NFS v4 under 4.1 to 4.1 is routed at version 0; two `COMPOUND`s on one
+    default, 4 and 4 under 4.0 to 4.2); under the default, MOUNT v1 and NLM v3 are refused
+    `ErrVersion` with no table and `Encode` names each program's own lowest and highest served,
+    3 and 3 and 4 and 4 (RFC 21 §2.1 serves MOUNT v3 and NLM v4; RFC 5531 §9's `mismatch_info`
+    is "the lowest and highest version numbers of the remote program supported by the server");
+    an unknown program, and MOUNT under 4.0 to 4.2, are refused `PROG_UNAVAIL` with no table.
+  - Under 4.0 to 4.1, D3's hand-written `COMPOUND` at minor version 2 is refused `ErrVersion`
+    with the `V4` table, and `Encode` of `NFS4ERR_MINOR_VERS_MISMATCH` writes it with the
+    request's 5-byte tag, padded, and no results; a `NULL` to NFS v4 under 4.1 to 4.1 is routed at version 0; two `COMPOUND`s on one
     connection, of minor versions 1 then 0, are each routed at their own.
   - A call of RPC version 3, a truncated `AUTH_SYS` body, 17 groups, a 256-byte machine name,
     `AUTH_DH`, flavour 99 and `RPCSEC_GSS` are each refused with no table, mapped to
@@ -712,14 +721,16 @@ framer's.
     with its error, which the stages' table maps to `GARBAGE_ARGS`; a message of 7 bytes
     returns none.
   - `Args` of frame 8's `COMPOUND` begins at its tag, past the `AUTH_SYS` credential and the
-    verifier; `Encode` of every status above writes no more than `ReplyLen`.
+    verifier; `Encode` of every status above writes no more than `ReplyLen`, D3's `COMPOUND`
+    and its tag included.
   - The header stage's `Decode`, `Route` and `Encode` of an `AUTH_SYS` call allocate nothing.
 - **Tests:** stage tests in `stages_test.go`, in the package, through `core.HeaderCodec`,
   `core.Router` and the stages' `ErrorTable.Map`, each refusal followed to the bytes `Encode`
   writes for its status. No test double: a settings value and the tables are inputs. The table
   of ranges (catches a range read once for every connection rather than from the one handed
-  in, MOUNT served under 4.x only or answered `PROG_MISMATCH`, and `PROG_MISMATCH` naming the
-  program's versions rather than the range's). The minor versions (catch the check made against
+  in, MOUNT served under 4.x only or answered `PROG_MISMATCH`, `PROG_MISMATCH` naming every
+  version a program has a table for rather than those the range serves, and one program's
+  numbers given to another, which MOUNT v1 and NLM v3 catch). The minor versions (catch the check made against
   the RPC version, a refusal without the `V4` table, which `Stages.Errors` would answer
   `PROG_MISMATCH`, an answer without its tag, a `NULL` read for a minor version it does not
   have, R41, and a minor version kept from one `COMPOUND` for the next, R20). The credentials
@@ -742,7 +753,7 @@ framer's.
 - **Track:** C. **Depends on:** T6.4a.
 - **Needs E5:** as T6.3b. **Needs E4:** as T6.3b, with `Conn.Settings`, `Conn.Established`
   and `Reconfigure`.
-- **Covers:** R1, R3 and R4 (over loopback), R10 (over loopback), R17, R18, R19, R21, R22, R23,
+- **Covers:** R1, R3 and R4 (over loopback), R10 (over loopback), R17, R18, R19, R21, R22, R42, R23,
   R26, R27, R28, R29, R30, R31, R32 (the tables' rows), R33.
 - **Deliverables:** `protocol/protocol.go`: the framer, unexported, over `wire.Fragment` and
   `wire.AppendRecordMark`, its `BodyLen` passing the record mark's last-fragment bit, its
@@ -771,12 +782,12 @@ framer's.
     hold, and a mode of `opportunistic` or `require` is refused by `Validate` naming
     `TLS.Mode`, with files that load and with files that do not exist alike.
   - With `Port` 0, `Addrs` reports `nfs`, `mount`, `nlm` and `nsm` over TCP at one port the
-    system picked, neither 2049 nor 12049.
+    system picked, neither 2049 nor 12049, and no `Socket` on `udp`.
   - Over loopback, under the default range, one call per path a refusal can take: a `NULL` to
     MOUNT v3, answered `PROC_UNAVAIL` from a table's row, in a record whose mark carries its
     length and its last-fragment bit; NFS v2, `PROG_MISMATCH` 3 and 4 from `Stages.Errors`; an
-    `AUTH_SYS` credential with 17 groups, `AUTH_BADCRED`; a `COMPOUND` of minor version 3,
-    `NFS4ERR_MINOR_VERS_MISMATCH` with its tag, from the `V4` table; a call whose verifier runs
+    `AUTH_SYS` credential with 17 groups, `AUTH_BADCRED`; D3's hand-written `COMPOUND` at minor
+    version 3, `NFS4ERR_MINOR_VERS_MISMATCH` with its 5-byte tag, padded, from the `V4` table; a call whose verifier runs
     past the record, `GARBAGE_ARGS`, and a `NULL` after it on the connection answered.
   - A `NULL` sent in two fragments is answered; a record whose fragments pass 1 MiB and 4 KiB
     in total, and one of 65 fragments, each close the connection.
@@ -807,7 +818,7 @@ framer's.
   both ways (catch a range read from `New`'s copy or reread after accept, R18, and `New`
   building only the tables in range, R27). The two adapters (catch a served set kept in a
   package variable, R29). The port and the listener (catch `New` binding a fixed port, and a
-  program left off the TCP listener, R22, R30). The labels (catch `V4` labelled `nfs3`, whose
+  program left off the TCP listener, R22, R30, and a UDP listener bound, R42). The labels (catch `V4` labelled `nfs3`, whose
   series merge with NFSv3's). `pkg/adapter/nfs`'s two tests (catch a typed nil server). The TLS
   modes, with missing files (catch a mode other than off accepted, and a file read before the
   refusal, whose error would name the file).
@@ -896,6 +907,11 @@ A suggestion only: one pull request per subtask works as well.
   reached at the RFC 22 plan's point where a session runs over loopback, after its epics 3 to
   5, not by this epic alone.
 - **Findings for other documents, not edited here.**
+  - The epic 5 document's T5.1a: this document has `HeaderCodec.Args` and `ReplyLen` and
+    `Framer.Frame` land with it, each added to `core`'s interfaces, to `testproto`'s stages and
+    to `core.golden`, but the epic 5 document names none of the three as a deliverable, on
+    `feat/storage-v2` or in #4449: its T5.1a reads `Args` and calls `Frame`, and `ReplyLen`
+    appears only in D9 and T5.4. Its T5.1a should list the three as its own.
   - E5's T5.11 and RFC 20 §4.7's `Park`: `Park` releases the record's `Buf` (E5's D12) before
     `HoldCodec.Final` gives the final reply's header, and `testproto`'s `decision:` on its
     header view says to withdraw the view if `core` ever releases a record before its request
