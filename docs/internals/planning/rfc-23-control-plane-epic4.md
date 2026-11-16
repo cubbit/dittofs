@@ -739,7 +739,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 - **Track:** B. **Depends on:** T4.9, T4.10; its success paths on the RFC 18 plan's epics 6 and 7
   (identity's calls and `pkg/identity/identitytest`'s in-memory directory and domain controller),
-  and the `krb` link's stored SID on its epic 5's T5.8 (`entity.ProtocolID.Linked`)
+  and the `krb` link's stored SID on its epic 5's T5.8a (`entity.ProtocolID.Linked`)
   and X1.
 - **Covers:** R3, R22, R44, R49, R50, R51, R61, R63, R64.
 - **Deliverables:** `res_domain.go`: a user's `krb` spelling, the SID asked of `Deps.Directory` before
@@ -827,10 +827,11 @@ Other open points:
   plan's epic 5 settles `pkg/identity.CheckKeytab(b []byte) error` (its D3), T4.9's keytab
   pre-write step calls it before `Seal`, a failure answered `400` `ErrInvalid`, `pkg/identity`
   joins D20's import allow-list, and T4.9 tests a keytab with one AES and one RC4 key refused with
-  no `Secret` version written. Until then the check is that epic's. A keytab version's retention is
-  RFC 23 §3.3's, inside the rotation operation, so no ledger row is needed; only if that epic's D13
-  picks a `retire-keytab-version` action do its route row and `OpKind` join T4.11, with an RFC 23
-  §3.3 amendment.
+  no `Secret` version written. Until then the secret route seals a keytab unchecked, and RFC 18
+  §3.3's import refusal is held by no test. A keytab version's retention is RFC 23 §3.3's, inside
+  the rotation operation, so no ledger row is needed; only if the RFC 18 plan's epic 5's D13 picks
+  a `retire-keytab-version` action do its route row and `OpKind` join T4.11, with an RFC 23 §3.3
+  amendment.
 - What this epic reads from E3: `internal/node/api` and `New(Deps)`, `Deps.Ready` and `Deps.Live`,
   its two architecture rules, the harness, and the runner's pickup of a new operation.
 - The least certain estimates: T4.4, whose order of checks and audit diff cross every resource, and
