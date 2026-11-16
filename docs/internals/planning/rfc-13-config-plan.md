@@ -1323,7 +1323,9 @@ and its §6.1 row naming this epic). No `dt` suite builds the image, so it is ch
   marker once `dfs init` exits 0; a run interrupted before the marker runs `dfs init` again, which
   resumes. The marker is the launcher's, never read by `dfs`, and lives in a volume other than the
   store's, so a store volume lost with the marker still in place refuses the start rather than
-  initialising again. With no `dt` suite building the image, it is checked by `docker compose up`
+  initialising again. The opposite, a marker volume lost with the store still in place, reruns
+  `dfs init`, which refuses the finished installation; the launcher then stops with "installation
+  exists, marker missing" rather than leaving `docker compose up` waiting. With no `dt` suite building the image, it is checked by `docker compose up`
   run twice over the same volumes, the second start serving (§6.1). The images, `Dockerfile`, `Dockerfile.goreleaser` and `Dockerfile.prebuilt`,
   never initialise on their own: their entrypoint stays `dfs` and their `CMD` stays `dfs start`, so
   a store volume that is unbound, mistyped or mounted late refuses the start rather than minting a
