@@ -41,6 +41,12 @@ type Deps struct {
 	Authenticate func(*http.Request) (auth.Caller, error)
 	// Store is the metadata store's control plane; nil, a write answers 503.
 	Store controlPlane
+	// Node is the node serving the API, as its audit records name it.
+	Node entity.NodeID
+	// Applied returns once the node has applied what was committed before
+	// it was called, or with ctx's error; nil, a write answers at its
+	// commit.
+	Applied func(ctx context.Context) error
 	// Tracer opens each call's span; nil, the no-op tracer.
 	Tracer trace.Tracer
 }
@@ -58,10 +64,14 @@ type Server struct {
 	serving  sync.WaitGroup
 	stopped  atomic.Bool
 
-	tracer   trace.Tracer
-	requests *prometheus.CounterVec
-	seconds  *prometheus.HistogramVec
-	unmapped prometheus.Counter
+	tracer             trace.Tracer
+	requests           *prometheus.CounterVec
+	seconds            *prometheus.HistogramVec
+	unmapped           prometheus.Counter
+	preconditions      *prometheus.CounterVec
+	replays            prometheus.Counter
+	idempotencyWritten prometheus.Counter
+	audits             *prometheus.CounterVec
 }
 
 // New returns the server over d, listening on nothing until Start.
@@ -81,11 +91,19 @@ func newServer(d Deps, rows []route) *Server {
 			Help: "How long API calls take, by op.", Buckets: requestBuckets}, []string{"op"}),
 		unmapped: prometheus.NewCounter(prometheus.CounterOpts{Name: "dittofs_api_unmapped_errors_total",
 			Help: "API errors answered 500 because the problem table names none of them; zero on a healthy node."}),
+		preconditions: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dittofs_api_precondition_failures_total",
+			Help: "Writes refused on a precondition, by kind: generation, idempotency or missing."}, []string{"kind"}),
+		replays: prometheus.NewCounter(prometheus.CounterOpts{Name: "dittofs_api_idempotent_replays_total",
+			Help: "Writes answered from their idempotency record."}),
+		idempotencyWritten: prometheus.NewCounter(prometheus.CounterOpts{Name: "dittofs_api_idempotency_records_written_total",
+			Help: "Idempotency records written with the writes they answer."}),
+		audits: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dittofs_audit_records_total",
+			Help: "Audit records written, by outcome: applied or refused."}, []string{"outcome"}),
 	}
 	if s.tracer == nil {
 		s.tracer = noop.NewTracerProvider().Tracer("")
 	}
-	d.Metrics.Registry().MustRegister(s.requests, s.seconds, s.unmapped)
+	d.Metrics.Registry().MustRegister(s.requests, s.seconds, s.unmapped, s.preconditions, s.replays, s.idempotencyWritten, s.audits)
 
 	api := http.NewServeMux()
 	api.HandleFunc("/", d.health)
