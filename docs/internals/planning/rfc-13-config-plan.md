@@ -1191,8 +1191,9 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
 - "§5.5 dead node" (single-node part);
 - "§5 propagation" (single-node part).
 
-Outside those rows, the built image's `HEALTHCHECK` on `https://localhost:8080/health/ready`
-reports healthy on its first run, with the certificate and key it starts with (RFC 23's plan's D13
+Outside those rows, the built image's `HEALTHCHECK` on `localhost:8080/health/ready`, over
+`http` until RFC 23's plan's epic 4 serves the API over TLS and over `https` after, reports healthy
+on its first run, with the certificate and key it starts with (RFC 23's plan's D13
 and its §6.1 row naming this epic). No `dt` suite builds the image, so it is checked by
 `docker compose up` on `docker-compose.yml` until a suite does (§6.1).
 
@@ -1217,8 +1218,8 @@ and its §6.1 row naming this epic). No `dt` suite builds the image, so it is ch
 - The certificate and key the image and the launchers start with, host bootstrap facts (RFC 13
   §2.2), so the API, bound on a non-loopback address, serves over TLS (RFC 23 §5.3): the image
   takes the pair mounted, as it takes every bootstrap fact, and the repository's launchers
-  generate a self-signed pair for their own installation. The certificate names `localhost` as
-  well as its host, since the probe calls `localhost` and verifies it. RFC 23's plan hands this
+  generate a self-signed pair for their own installation. The certificate names the host; the
+  probe does not verify it, since it reads one word. RFC 23's plan hands this
   here in its §6.1 ledger (its D13). It rides on the launchers' subtask, inside the epic's
   estimate.
 
@@ -1297,7 +1298,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | A per-role passphrase variable for key files (§4.3's `ponytail:`) | `keyprovider` reads one variable | unowned | two roles need distinct passphrases |
 | Appendix B sections no component has declared (D3, O4) | each section is its component's plan's | each component's plan | that plan declares the section |
 | "§5 adapter port" (O1, §1.4) | needs a serving adapter and its rebuild | RFC 20 plan, epic 7 | RFC 20's epic 7 lands |
-| The image's first-run `HEALTHCHECK` in a `dt` suite (epic 6's **Done when:**) | no suite builds the image | unowned | a suite builds the image |
+| The image's first-run `HEALTHCHECK` in a `dt` suite (epic 6's **Done when:**), `http` until RFC 23's plan's epic 4 adds TLS, unverified `https` after | no suite builds the image | unowned | a suite builds the image |
 
 ## 7. RFC coverage
 
