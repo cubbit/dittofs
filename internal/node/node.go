@@ -42,11 +42,13 @@ type Node struct {
 	open   *openstate.Table
 	engine *engine.Engine
 	fs     *vfs.Filesystem
+	runner *runner
 }
 
 // New opens the metadata store over cfg.KV, refusing a KV that holds no
 // installation or one this binary does not read, then builds open state,
-// the engine and the filesystem, each empty from its own Deps. It starts
+// the engine and the filesystem, each empty from its own Deps, and the
+// operation runner with the steps of the kinds this node drives. It starts
 // nothing: no journal, goroutine or listener exists until Start.
 //
 // ponytail: the node both builds and drives its components. Split the
@@ -107,6 +109,7 @@ func build(cfg Config) (*Node, error) {
 	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
+	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node, cfg.Logger, operationSteps(n.meta.Nodes()))
 	return n, nil
 }
 
