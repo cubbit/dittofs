@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
@@ -22,7 +23,10 @@ import (
 var key = netip.MustParseAddr("127.0.0.1")
 
 // pair returns two ends of a loopback connection: the server's and the
-// client's.
+// client's. The deadline tests use net.Pipe in a synctest bubble instead: its
+// deadlines run on the bubble's clock and a read blocked on it is durably
+// blocked. A pipe holds no bytes, so a client's write there returns only once
+// the reader has read it.
 func pair(t *testing.T) (srv, cli net.Conn) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -269,269 +273,319 @@ func TestAFifthFragment(t *testing.T) {
 	}
 }
 
+// readerHolds fails the test unless the client's write has returned: a pipe
+// hands a write over only as it is read, so its return says the reader holds
+// what follows the record it returned.
+func readerHolds(t *testing.T, sent <-chan error, what string) {
+	t.Helper()
+	synctest.Wait()
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Fatalf("the write of %s: %v", what, err)
+		}
+	default:
+		t.Fatalf("%s are not read with the record before them", what)
+	}
+}
+
 // The frame deadline runs from the record's first byte: a body that stops
 // half way is an error at the deadline, and a connection that sends nothing is
 // not timed out.
 func TestFrameDeadline(t *testing.T) {
-	srv, cli := pair(t)
-	r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 100*time.Millisecond)
-	body := payload(100)
-	if _, err := cli.Write(record(body, true)[:4+50]); err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	_, err := r.Read(context.Background())
-	if !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatalf("a stalled body returns %v, want the deadline", err)
-	}
-	if d := time.Since(start); d < 80*time.Millisecond || d > 2*time.Second {
-		t.Errorf("the deadline came at %v, want about 100ms", d)
-	}
-	if held := budgets.Receive.Reserved(); held != 0 {
-		t.Errorf("a stalled body leaves %d bytes held", held)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := net.Pipe()
+		defer func() { _, _ = srv.Close(), cli.Close() }()
+		r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 100*time.Millisecond)
+		go func() { _, _ = cli.Write(record(payload(100), true)[:4+50]) }()
+		start := time.Now()
+		done := make(chan error, 1)
+		go func() {
+			rec, err := r.Read(context.Background())
+			if rec != nil {
+				rec.Release()
+			}
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatalf("a stalled body returns %v, want the deadline", err)
+			}
+			if d := time.Since(start); d != 100*time.Millisecond {
+				t.Errorf("the deadline came at %v, want 100ms", d)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("a stalled body was not timed out")
+		}
+		if held := budgets.Receive.Reserved(); held != 0 {
+			t.Errorf("a stalled body leaves %d bytes held", held)
+		}
+	})
 }
 
 // A connection that sends nothing is not timed out: the deadline starts at
 // the record's first byte.
 func TestASilentConnectionIsNotTimedOut(t *testing.T) {
-	srv, cli := pair(t)
-	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 20*time.Millisecond)
-	done := make(chan error, 1)
-	go func() {
-		rec, err := r.Read(context.Background())
-		if rec != nil {
-			rec.Release()
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := net.Pipe()
+		defer func() { _, _ = srv.Close(), cli.Close() }()
+		r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 20*time.Millisecond)
+		done := make(chan error, 1)
+		go func() {
+			rec, err := r.Read(context.Background())
+			if rec != nil {
+				rec.Release()
+			}
+			done <- err
+		}()
+		time.Sleep(60 * time.Millisecond) // past read_timeout, on the bubble's clock
+		select {
+		case err := <-done:
+			t.Fatalf("a silent connection returns %v", err)
+		default:
 		}
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		t.Fatalf("a silent connection returns %v", err)
-	case <-time.After(60 * time.Millisecond):
-	}
-	if _, err := cli.Write(record(payload(10), true)); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("a record after silence: %v", err)
+		go func() { _, _ = cli.Write(record(payload(10), true)) }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("a record after silence: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("the record after silence did not come out")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("the record after silence did not come out")
-	}
+	})
 }
 
 // A record's deadline stops when the record ends: the next record's first bytes,
 // already read, wait as long as the client does.
 func TestTheDeadlineStopsAfterARecord(t *testing.T) {
-	srv, cli := pair(t)
-	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
-	first, second := record(payload(20), true), record(payload(20), true)
-	if _, err := cli.Write(append(append([]byte{}, first...), second[:2]...)); err != nil {
-		t.Fatal(err)
-	}
-	rec, err := r.Read(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(rec.B, payload(20)) {
-		t.Errorf("the first record is %x", rec.B)
-	}
-	rec.Release()
-	// The client pauses past read_timeout, two bytes of the next record
-	// already read.
-	time.Sleep(150 * time.Millisecond)
-	if _, err := cli.Write(second[2:]); err != nil {
-		t.Fatal(err)
-	}
-	rec, err = r.Read(context.Background())
-	if err != nil {
-		t.Fatalf("a pause between records: %v", err)
-	}
-	if !bytes.Equal(rec.B, payload(20)) {
-		t.Errorf("the second record is %x", rec.B)
-	}
-	rec.Release()
-	// And with nothing buffered: the deadline does not carry over to a record
-	// that comes after a pause either.
-	time.Sleep(150 * time.Millisecond)
-	if _, err := cli.Write(record(payload(30), true)); err != nil {
-		t.Fatal(err)
-	}
-	rec, err = r.Read(context.Background())
-	if err != nil {
-		t.Fatalf("a record after a pause: %v", err)
-	}
-	if !bytes.Equal(rec.B, payload(30)) {
-		t.Errorf("the third record is %x", rec.B)
-	}
-	rec.Release()
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := net.Pipe()
+		defer func() { _, _ = srv.Close(), cli.Close() }()
+		r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
+		first, second := record(payload(20), true), record(payload(20), true)
+		sent := make(chan error, 1)
+		go func() {
+			_, err := cli.Write(append(append([]byte{}, first...), second[:2]...))
+			sent <- err
+		}()
+		rec, err := r.Read(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(rec.B, payload(20)) {
+			t.Errorf("the first record is %x", rec.B)
+		}
+		rec.Release()
+		readerHolds(t, sent, "two bytes of the next record")
+		// The client pauses past read_timeout, two bytes of the next record
+		// already read.
+		time.Sleep(150 * time.Millisecond)
+		go func() { _, _ = cli.Write(second[2:]) }()
+		rec, err = r.Read(context.Background())
+		if err != nil {
+			t.Fatalf("a pause between records: %v", err)
+		}
+		if !bytes.Equal(rec.B, payload(20)) {
+			t.Errorf("the second record is %x", rec.B)
+		}
+		rec.Release()
+		// And with nothing buffered: the deadline does not carry over to a record
+		// that comes after a pause either.
+		time.Sleep(150 * time.Millisecond)
+		go func() { _, _ = cli.Write(record(payload(30), true)) }()
+		rec, err = r.Read(context.Background())
+		if err != nil {
+			t.Fatalf("a record after a pause: %v", err)
+		}
+		if !bytes.Equal(rec.B, payload(30)) {
+			t.Errorf("the third record is %x", rec.B)
+		}
+		rec.Release()
+	})
 }
 
 // A header that trickles is timed out: the record's deadline starts at its
 // first byte.
 func TestATrickledHeaderTimesOut(t *testing.T) {
-	srv, cli := pair(t)
-	r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
-	if _, err := cli.Write(record(payload(20), true)[:2]); err != nil {
-		t.Fatal(err)
-	}
-	// A backstop, so a reader that arms no deadline fails here rather than
-	// hanging the test.
-	if err := srv.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	_, err := r.Read(context.Background())
-	if !errors.Is(err, os.ErrDeadlineExceeded) || time.Since(start) > 500*time.Millisecond {
-		t.Fatalf("a trickled header returns %v after %v, want the deadline at 50ms", err, time.Since(start))
-	}
-	if held := budgets.Receive.Reserved(); held != 0 {
-		t.Errorf("a trickled header leaves %d bytes held", held)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := net.Pipe()
+		defer func() { _, _ = srv.Close(), cli.Close() }()
+		r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
+		go func() { _, _ = cli.Write(record(payload(20), true)[:2]) }()
+		// A backstop, so a reader that arms no deadline fails here rather than
+		// deadlocking the bubble.
+		if err := srv.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		_, err := r.Read(context.Background())
+		if d := time.Since(start); !errors.Is(err, os.ErrDeadlineExceeded) || d != 50*time.Millisecond {
+			t.Fatalf("a trickled header returns %v after %v, want the deadline at 50ms", err, d)
+		}
+		if held := budgets.Receive.Reserved(); held != 0 {
+			t.Errorf("a trickled header leaves %d bytes held", held)
+		}
+	})
 }
 
 // A record waiting for its receive charge is not timed out: the deadline stops
 // while it waits and starts a full read_timeout once the charge is granted.
 func TestTheDeadlineStopsAtTheReceiveWait(t *testing.T) {
-	srv, cli := pair(t)
-	budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", chargeOf(t, 1<<20))}
-	adaptertest.CheckLeaks(t, budgets)
-	pool := resources.NewBufPool(budgets.Receive)
-	held, err := pool.Get(context.Background(), key, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := core.NewTestReader(srv, framer(), pool, key, 100*time.Millisecond)
-	// Past the read buffer, so the rest of the record is read from the socket
-	// after the grant and the deadline restarted there is what it runs under.
-	body := payload(64 << 10)
-	go func() { _, _ = cli.Write(record(body, true)) }()
-	done := make(chan error, 1)
-	go func() {
-		rec, err := r.Read(context.Background())
-		if rec != nil {
-			rec.Release()
-		}
-		done <- err
-	}()
-	time.Sleep(300 * time.Millisecond) // longer than read_timeout, while it waits for the charge
-	held.Release()
-	select {
-	case err := <-done:
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := net.Pipe()
+		defer func() { _, _ = srv.Close(), cli.Close() }()
+		budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", chargeOf(t, 1<<20))}
+		adaptertest.CheckLeaks(t, budgets)
+		pool := resources.NewBufPool(budgets.Receive)
+		held, err := pool.Get(context.Background(), key, 1<<20)
 		if err != nil {
-			t.Fatalf("after the receive wait: %v", err)
+			t.Fatal(err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the record did not come out after the grant")
-	}
+		r := core.NewTestReader(srv, framer(), pool, key, 100*time.Millisecond)
+		// Past the read buffer, so the rest of the record is read from the
+		// connection after the grant and the deadline restarted there is what
+		// it runs under.
+		body := payload(64 << 10)
+		go func() { _, _ = cli.Write(record(body, true)) }()
+		done := make(chan error, 1)
+		go func() {
+			rec, err := r.Read(context.Background())
+			if rec != nil {
+				rec.Release()
+			}
+			done <- err
+		}()
+		time.Sleep(300 * time.Millisecond) // longer than read_timeout, while it waits for the charge
+		held.Release()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("after the receive wait: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("the record did not come out after the grant")
+		}
+	})
 }
 
 // A partial header already buffered is timed out from its own first byte: the
 // reader arms when it starts cutting, not only when it reads.
 func TestABufferedPartialHeaderTimesOut(t *testing.T) {
-	srv, cli := pair(t)
-	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
-	first, second := record(payload(20), true), record(payload(20), true)
-	if _, err := cli.Write(append(append([]byte{}, first...), second[:3]...)); err != nil {
-		t.Fatal(err)
-	}
-	rec, err := r.Read(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	rec.Release()
-	// Three bytes of the next header are read; the client stalls.
-	if err := srv.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	_, err = r.Read(context.Background())
-	if !errors.Is(err, os.ErrDeadlineExceeded) || time.Since(start) > 500*time.Millisecond {
-		t.Fatalf("a stalled buffered header returns %v after %v, want the deadline at 50ms", err, time.Since(start))
-	}
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := net.Pipe()
+		defer func() { _, _ = srv.Close(), cli.Close() }()
+		r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
+		first, second := record(payload(20), true), record(payload(20), true)
+		sent := make(chan error, 1)
+		go func() {
+			_, err := cli.Write(append(append([]byte{}, first...), second[:3]...))
+			sent <- err
+		}()
+		rec, err := r.Read(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec.Release()
+		// Three bytes of the next header are read; the client stalls.
+		readerHolds(t, sent, "three bytes of the next header")
+		if err := srv.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		_, err = r.Read(context.Background())
+		if d := time.Since(start); !errors.Is(err, os.ErrDeadlineExceeded) || d != 50*time.Millisecond {
+			t.Fatalf("a stalled buffered header returns %v after %v, want the deadline at 50ms", err, d)
+		}
+	})
 }
 
 // A context that ended before the read started stops it without blocking,
 // on a client that sends nothing, where no deadline is armed yet.
 func TestAReadUnderAnEndedContextDoesNotBlock(t *testing.T) {
-	srv, _ := pair(t)
-	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 5*time.Second)
-	// A backstop, so a read that blocks fails here rather than hanging.
-	if err := srv.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	start := time.Now()
-	if _, err := r.Read(ctx); !errors.Is(err, context.Canceled) || time.Since(start) > time.Second {
-		t.Fatalf("a read under an ended context returns %v after %v", err, time.Since(start))
-	}
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := net.Pipe()
+		defer func() { _, _ = srv.Close(), cli.Close() }()
+		r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 5*time.Second)
+		// A backstop, so a read that blocks fails here rather than deadlocking
+		// the bubble.
+		if err := srv.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		start := time.Now()
+		if _, err := r.Read(ctx); !errors.Is(err, context.Canceled) || time.Since(start) != 0 {
+			t.Fatalf("a read under an ended context returns %v after %v", err, time.Since(start))
+		}
+	})
 }
 
 // A context that ends while the reader waits for its receive charge stops it
 // after the grant rather than reading on.
 func TestACancelDuringTheWaitStopsTheRead(t *testing.T) {
-	srv, cli := pair(t)
-	budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", chargeOf(t, 1<<20))}
-	adaptertest.CheckLeaks(t, budgets)
-	pool := resources.NewBufPool(budgets.Receive)
-	held, err := pool.Get(context.Background(), key, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := core.NewTestReader(srv, framer(), pool, key, 5*time.Second)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		rec, err := r.Read(ctx)
-		if rec != nil {
-			rec.Release()
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := net.Pipe()
+		defer func() { _, _ = srv.Close(), cli.Close() }()
+		budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", chargeOf(t, 1<<20))}
+		adaptertest.CheckLeaks(t, budgets)
+		pool := resources.NewBufPool(budgets.Receive)
+		held, err := pool.Get(context.Background(), key, 1<<20)
+		if err != nil {
+			t.Fatal(err)
 		}
-		done <- err
-	}()
-	body := payload(20)
-	go func() { _, _ = cli.Write(record(body, true)) }()
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	held.Release()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("a read cancelled at the wait returns %v", err)
+		r := core.NewTestReader(srv, framer(), pool, key, 5*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			rec, err := r.Read(ctx)
+			if rec != nil {
+				rec.Release()
+			}
+			done <- err
+		}()
+		go func() { _, _ = cli.Write(record(payload(20), true)) }()
+		synctest.Wait() // the reader waits for its receive charge
+		cancel()
+		held.Release()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("a read cancelled at the wait returns %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("the read continued after its context ended")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the read continued after its context ended")
-	}
+	})
 }
 
 // A context that ends while the reader waits for a record's first byte stops
 // it when the byte arrives, before it arms the deadline.
 func TestACancelWhileTheHeaderWaitsStopsTheRead(t *testing.T) {
-	srv, cli := pair(t)
-	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 5*time.Second)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		rec, err := r.Read(ctx)
-		if rec != nil {
-			rec.Release()
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := net.Pipe()
+		defer func() { _, _ = srv.Close(), cli.Close() }()
+		r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 5*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			rec, err := r.Read(ctx)
+			if rec != nil {
+				rec.Release()
+			}
+			done <- err
+		}()
+		synctest.Wait() // the reader waits for the first byte
+		cancel()
+		go func() { _, _ = cli.Write(record(payload(20), true)) }()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("a read cancelled before its first byte returns %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("the read continued after its context ended")
 		}
-		done <- err
-	}()
-	time.Sleep(50 * time.Millisecond) // the reader waits for the first byte
-	cancel()
-	if _, err := cli.Write(record(payload(20), true)); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("a read cancelled before its first byte returns %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the read continued after its context ended")
-	}
+	})
 }
