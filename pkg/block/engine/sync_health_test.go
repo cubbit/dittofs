@@ -69,13 +69,17 @@ func TestHealthMonitor_RecoverAfterOneSuccess(t *testing.T) {
 	probe, _ := controllableProbe(shouldFail)
 
 	hm := NewHealthMonitor(probe, fastHealthConfig())
+	transitions := make(chan bool, 4)
+
+	hm.SetTransitionCallback(func(healthy bool) {
+		transitions <- healthy
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	hm.Start(ctx)
 	defer hm.Stop()
 
-	// Wait for unhealthy
-	time.Sleep(80 * time.Millisecond)
+	waitHealthTransition(t, transitions, false)
 	if hm.IsHealthy() {
 		t.Fatal("expected unhealthy after failures")
 	}
@@ -83,11 +87,24 @@ func TestHealthMonitor_RecoverAfterOneSuccess(t *testing.T) {
 	// Allow probe to succeed
 	shouldFail.Store(false)
 
-	// Wait for at least 1 successful probe
-	time.Sleep(30 * time.Millisecond)
-
+	waitHealthTransition(t, transitions, true)
 	if !hm.IsHealthy() {
 		t.Fatal("expected HealthMonitor to recover after 1 successful probe")
+	}
+}
+
+// waitHealthTransition waits for the monitor's transition callback to report
+// want, failing the test after 10 s or on a transition to the other state.
+func waitHealthTransition(t *testing.T, transitions <-chan bool, want bool) {
+	t.Helper()
+
+	select {
+	case got := <-transitions:
+		if got != want {
+			t.Fatalf("health transition = %v, want %v", got, want)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("no health transition to %v within 10s", want)
 	}
 }
 

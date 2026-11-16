@@ -19,10 +19,16 @@ type blockingSchedDeps struct {
 	entered  chan struct{}
 	release  chan struct{}
 	returned chan struct{}
+	// tickCtx, when set, receives the pinned tick's context, so a test can
+	// release the tick on the scheduler's own cancellation of it.
+	tickCtx chan context.Context
 }
 
 func (b *blockingSchedDeps) ListPolicies(ctx context.Context) ([]*models.SnapshotPolicy, error) {
 	b.once.Do(func() {
+		if b.tickCtx != nil {
+			b.tickCtx <- ctx
+		}
 		close(b.entered)
 		<-b.release
 		close(b.returned)
@@ -325,15 +331,13 @@ func TestSettingsWatcher_SecondStartDoesNotStrandTheFirst(t *testing.T) {
 // exists to prevent, skipped on precisely the boot where it matters.
 //
 // The wedged watcher here never returns from Stop, so it always exhausts its
-// own window. The scheduler tick is released after that window has passed but
-// while a second one would still be open — so it is joined only if the drain
-// gave the snapshot side a budget of its own.
+// own window. The scheduler tick is released when the snapshot drain stops
+// the scheduler, the moment it cancels the tick's context: a drain with a
+// window of its own is still waiting for the tick then and joins it, while one
+// that inherited the spent window has already given up.
 func TestDrainStartupWorkers_AWedgedWatcherDoesNotSkipTheSnapshotDrain(t *testing.T) {
 	// Taken once and restored once. Reading the global back in the deferred
-	// restore would read whatever a concurrent test left there, and the timer
-	// goroutine below must not read it at all: a write here and a read there
-	// are a data race, and the value it needs is fixed before the goroutine
-	// starts anyway.
+	// restore would read whatever a concurrent test left there.
 	const budget = 500 * time.Millisecond
 	prev := startupDrainTimeout
 	startupDrainTimeout = budget
@@ -343,6 +347,7 @@ func TestDrainStartupWorkers_AWedgedWatcherDoesNotSkipTheSnapshotDrain(t *testin
 		entered:  make(chan struct{}),
 		release:  make(chan struct{}),
 		returned: make(chan struct{}),
+		tickCtx:  make(chan context.Context, 1),
 	}
 
 	rt := New(nil)
@@ -358,28 +363,41 @@ func TestDrainStartupWorkers_AWedgedWatcherDoesNotSkipTheSnapshotDrain(t *testin
 		t.Fatal("scheduler never entered a tick")
 	}
 
+	tickCtx := <-deps.tickCtx
+
 	// A watcher whose goroutine never exits: Stop blocks for the whole window.
 	rt.settingsWatcher = NewSettingsWatcher(nil, time.Hour)
 	rt.settingsWatcher.stopped = make(chan struct{})
 	rt.settingsWatcher.stopCh = make(chan struct{})
 
-	// Released after the watcher's window is spent, but comfortably before the
-	// snapshot drain's own deadline — which is the middle of that second
-	// window, not its end. The release has to fall strictly inside
-	// (budget, budget+budget/2): at or before `budget` the watcher join may
-	// still be running, and at `budget+budget/2` it lands exactly on the
-	// scheduler join's deadline, where the join and its timeout are both ready
-	// and the select picks between them at random. That tie made this test fail
-	// roughly one run in twenty-five under -race, on a drain that had behaved
-	// correctly. A third of the way in keeps the property under test — the
-	// snapshot side got a window of its own — without racing the boundary it
-	// is being tested against.
+	// Released once the snapshot drain has cancelled the tick and is waiting
+	// for it. A drain that gave up instead returns at once, and the tick then
+	// stays in the store until cleanup, so that drain fails the check below on
+	// every run. No hook shows the drain parked in its join, so a pause of a
+	// tenth of the budget stands for it: the bounded wait is the assertion,
+	// with the rest of the scheduler join's half-budget window as its margin.
+	drained := make(chan struct{})
+
+	var releaseOnce sync.Once
+
+	release := func() {
+		releaseOnce.Do(func() {
+			close(deps.release)
+		})
+	}
+	t.Cleanup(release)
 	go func() {
-		time.Sleep(budget + budget/3)
-		close(deps.release)
+		<-tickCtx.Done()
+
+		select {
+		case <-drained:
+			return
+		case <-time.After(budget / 10):
+		}
+
+		release()
 	}()
 
-	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
 		rt.drainStartupWorkers(context.Background())

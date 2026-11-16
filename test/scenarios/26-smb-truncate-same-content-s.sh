@@ -48,7 +48,7 @@ smbclient //127.0.0.1/test -c 'lcd /tmp; put b.bin; put c.bin'
 dfsctl system drain-uploads
 
 /tmp/smb-truncate a.bin 3000000
-for _ in $(seq 1 10); do /tmp/smb-truncate b.bin 3000000 && break; sleep 1; done
+/tmp/smb-truncate b.bin 3000000
 /tmp/smb-truncate c.bin 6000000
 mkdir /tmp/back
 smbclient //127.0.0.1/test -c 'lcd /tmp/back; get a.bin; get b.bin; get c.bin'

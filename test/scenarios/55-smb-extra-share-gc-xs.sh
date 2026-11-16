@@ -26,8 +26,10 @@ test "$(jq .count /tmp/extra0.json)" -gt 6
 test "$(jq .bytes /tmp/extra0.json)" -ge "$(stat -c %s /tmp/up/large.bin)"
 test "$(rclone size --json s3:dittofs | jq .count)" -eq 0
 
-# Small files, one per round: GC sweeps something, and /extra's bucket shrinks every time
-for i in 1 2 3 4 5 6; do rclone size --json s3:extra >"/tmp/before$i.json"; smbclient //127.0.0.1/extra -c "del s$i.txt"; dfsctl store block gc /extra --grace-period 0 -o json >"/tmp/gc$i.json"; test "$(jq .objects_swept "/tmp/gc$i.json")" -ge 1; test "$(rclone size --json s3:extra | jq .count)" -lt "$(jq .count "/tmp/before$i.json")"; done
+# Small files, one per round: GC sweeps something, and /extra's bucket shrinks every time. The
+# bucket's listing can trail the GC's deletes, as the large file's round below allows for, so each
+# round polls for the shrink before it checks it.
+for i in 1 2 3 4 5 6; do rclone size --json s3:extra >"/tmp/before$i.json"; smbclient //127.0.0.1/extra -c "del s$i.txt"; dfsctl store block gc /extra --grace-period 0 -o json >"/tmp/gc$i.json"; test "$(jq .objects_swept "/tmp/gc$i.json")" -ge 1; for _ in $(seq 1 60); do test "$(rclone size --json s3:extra | jq .count)" -lt "$(jq .count "/tmp/before$i.json")" && break; sleep 2; done; test "$(rclone size --json s3:extra | jq .count)" -lt "$(jq .count "/tmp/before$i.json")"; done
 
 # The large file is still whole when read back from the bucket
 dfsctl store block evict --share /extra
