@@ -569,8 +569,8 @@ internal/identity/
     outage answered as a wrong password, R26); the zero principal's call reaching the argon2id
     verification, observed through an `export_test.go` hook that delivers the hash verified
     (catches a short-cut for an unknown name, R27; the comparison itself is held by
-    `subtle.ConstantTimeCompare`, rule 10); `Account` of a user disabled after an `Apply`:
-    `ErrLogonFailure` (R28);
+    `subtle.ConstantTimeCompare`, rule 10); `Account` of a user disabled in the store with no
+    `Apply` since: `ErrLogonFailure` (catches an `Account` answering from the last `Apply`, R28);
     the semaphore's slots held through the hook and the injected clock advanced past 5 s:
     `ErrUnavailable`, no goroutine left (D8).
   - Doubles: `kvtest`'s fault wrapper (kind 3), the injected clock (kind 1).
