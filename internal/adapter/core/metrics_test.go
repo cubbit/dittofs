@@ -182,6 +182,17 @@ func TestSeriesRecordEachIntoItsOwnSeries(t *testing.T) {
 	}
 }
 
+// orderedValues is m's values in its keys' order: a stage value's key is its
+// place in §10.1's list.
+func orderedValues(m map[int]string) []string {
+	keys := slices.Sorted(maps.Keys(m))
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = m[k]
+	}
+	return out
+}
+
 // Every series carries only the labels §10.1 gives it, and each label only
 // its closed set of values: the refusing stages, the timed ones, the table's
 // operations lower-cased, the service's errors, the reasons of a split.
@@ -246,11 +257,23 @@ func TestSeriesCarryOnlyTheirLabels(t *testing.T) {
 // send but call_service.
 func TestSeriesStageValues(t *testing.T) {
 	refusals, wire := core.StageNames()
-	if got, want := sortedValues(refusals), []string{"admit", "decode_args", "decode_header", "replay_check", "reply_too_big", "resolve_ids", "route", "unwrap"}; !slices.Equal(got, want) {
+	if got, want := sortedValues(refusals), []string{"admit", "decode_args", "decode_header", "replay_check", "reply_too_big", "reply_wait", "resolve_ids", "route", "unwrap"}; !slices.Equal(got, want) {
 		t.Errorf("a refusal counts under %v, want %v", got, want)
 	}
-	if got, want := sortedValues(wire), []string{"admit", "decode_args", "decode_header", "encode", "map_error", "replay_check", "resolve_ids", "route", "send", "unwrap", "wrap"}; !slices.Equal(got, want) {
+	if got, want := sortedValues(wire), []string{"admit", "decode_args", "decode_header", "encode", "map_error", "replay_check", "reply_wait", "resolve_ids", "route", "send", "unwrap", "wrap"}; !slices.Equal(got, want) {
 		t.Errorf("adapter_wire_seconds observes %v, want %v", got, want)
+	}
+}
+
+// The stage values take §10.1's order: reply_wait between decode_args and
+// resolve_ids, and reply_too_big, which only a refusal takes, last.
+func TestStageValuesAreInOrder(t *testing.T) {
+	refusals, wire := core.StageNames()
+	if got, want := orderedValues(wire), []string{"decode_header", "unwrap", "admit", "replay_check", "route", "decode_args", "reply_wait", "resolve_ids", "map_error", "encode", "wrap", "send"}; !slices.Equal(got, want) {
+		t.Errorf("adapter_wire_seconds' stages, in order, are %v, want %v", got, want)
+	}
+	if got, want := orderedValues(refusals), []string{"decode_header", "unwrap", "admit", "replay_check", "route", "decode_args", "reply_wait", "resolve_ids", "reply_too_big"}; !slices.Equal(got, want) {
+		t.Errorf("a refusal's stages, in order, are %v, want %v", got, want)
 	}
 }
 

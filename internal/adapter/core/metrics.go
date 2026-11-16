@@ -95,9 +95,11 @@ func newFamilies(r *metrics.Registry) (fs [vecs]family, wire histFamily) {
 	return fs, func(lv ...string) observer { return h.WithLabelValues(lv...) }
 }
 
-// stage is a value of the stage label: one of §4.1's stages, or
-// reply_too_big for §4.3's compound (§10.1). frame and call_service are
-// left out: no series records them.
+// stage is a value of the stage label, in §10.1's order: §4.1's stages from
+// decode_header to send, reply_wait, the request's own reply reservation,
+// between decode_args and resolve_ids, and reply_too_big, which only a
+// refusal takes, for a reply or §4.3's compound past the reply pool's
+// ceiling. frame and call_service are left out: no series records them.
 type stage uint8
 
 const (
@@ -107,6 +109,7 @@ const (
 	stageReplayCheck
 	stageRoute
 	stageDecodeArgs
+	stageReplyWait
 	stageResolveIDs
 	stageMapError
 	stageEncode
@@ -117,15 +120,15 @@ const (
 )
 
 var stageNames = [stages]string{
-	"decode_header", "unwrap", "admit", "replay_check", "route", "decode_args",
+	"decode_header", "unwrap", "admit", "replay_check", "route", "decode_args", "reply_wait",
 	"resolve_ids", "map_error", "encode", "wrap", "send", "reply_too_big",
 }
 
 // refusing is the stages a refusal counts under, and timed the stages
 // adapter_wire_seconds observes (§10.1).
 var (
-	refusing = []stage{stageDecodeHeader, stageUnwrap, stageAdmit, stageReplayCheck, stageRoute, stageDecodeArgs, stageResolveIDs, stageReplyTooBig}
-	timed    = []stage{stageDecodeHeader, stageUnwrap, stageAdmit, stageReplayCheck, stageRoute, stageDecodeArgs, stageResolveIDs, stageMapError, stageEncode, stageWrap, stageSend}
+	refusing = []stage{stageDecodeHeader, stageUnwrap, stageAdmit, stageReplayCheck, stageRoute, stageDecodeArgs, stageReplyWait, stageResolveIDs, stageReplyTooBig}
+	timed    = []stage{stageDecodeHeader, stageUnwrap, stageAdmit, stageReplayCheck, stageRoute, stageDecodeArgs, stageReplyWait, stageResolveIDs, stageMapError, stageEncode, stageWrap, stageSend}
 )
 
 // serviceErrors is the error label's values: each sentinel of the service's
