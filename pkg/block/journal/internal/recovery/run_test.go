@@ -386,8 +386,8 @@ func TestRun_CancelledContextAnswersTheContextsError(t *testing.T) {
 // bytes, never by a name-only listing, which would pass with the slots
 // unzeroed underneath. The boundary into the reappend phase — the one that
 // cancels under the spares phase's own span — is not one of those: the
-// cancellation reaches the run's reader the phase reads through, and its
-// first read refuses before anything is written, so the directory meets it
+// spares phase checks its context before anything it writes, so the
+// cancellation cuts the phase there and the directory meets it
 // as it began. A phase whose boundary check is skipped, or a run that answers
 // a partial state past the spares phase without its effects, is what this
 // fails.

@@ -3,6 +3,7 @@ package recovery
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -481,13 +482,14 @@ func TestSparesPhaseUnlinksAnOverCapSpare(t *testing.T) {
 	}
 }
 
-// TestSparesPhaseSyncsItsUnlinkWhenNothingIsAdopted plants a single short
-// spare, so the phase adopts nothing and removes exactly it: the removal is
-// the open's own change, so the phase's one directory sync still runs,
-// making the unlink durable — a short spare's name its sync never proved
-// could come back after a power cut — exactly once, the same once an open
-// that adopted something spends.
-func TestSparesPhaseSyncsItsUnlinkWhenNothingIsAdopted(t *testing.T) {
+// TestSparesPhaseUnlinksWithNoAdoptionAndNoDirectorySync plants a single
+// short spare, so the phase adopts nothing and removes exactly it: the
+// phase's one directory sync proves the names of the spares to be taken, and
+// a removal is not among what it proves — the sync runs only where a spare is
+// staged to be taken, so the unlink-only open spends none, and the removal is
+// left unproved by design: a power cut may resurrect the short spare, which
+// the next open re-reads and unlinks again.
+func TestSparesPhaseUnlinksWithNoAdoptionAndNoDirectorySync(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
 	short := core.SegmentID(4)
@@ -501,8 +503,8 @@ func TestSparesPhaseSyncsItsUnlinkWhenNothingIsAdopted(t *testing.T) {
 	if len(st.Spares.Adopted) != 0 {
 		t.Errorf("spares: an unlink-only open adopted %v, want nothing", st.Spares.Adopted)
 	}
-	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs+1; got != want {
-		t.Errorf("spares: the unlink-only open spent %d directory syncs, want exactly %d: the phase's one sync beside the fixture's %d, making the short spare's removal durable", got, want, dirSyncs)
+	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs; got != want {
+		t.Errorf("spares: the unlink-only open spent %d directory syncs, want exactly %d, the count before the run: the one sync proves only the names of spares to be taken, never a removal", got, want)
 	}
 }
 
@@ -841,11 +843,14 @@ func TestSparesPhaseClassesAdoptedSparesIntoTheThreeClasses(t *testing.T) {
 }
 
 // TestSparesPhaseFailsTheOpenWhenTheSlotSyncFails plants the interrupted
-// recycle and fails the one file sync its zeroing alone owes: the sync's own
-// error answers the open, no adoption is recorded — the failed sync rolled
-// the two slot writes back, so the candidate's bytes are the bytes it
-// arrived with — and the phase's directory sync is never reached, for no
-// adoption and no removal stand to be made durable.
+// recycle and fails the one file sync its zeroing alone owes. The phase's
+// directory sync runs first — the candidate is staged to be taken, so its
+// name is proved — and the zeroing starts past it: the slot sync's own error
+// answers the open, no adoption is recorded — the failed sync rolled the two
+// slot writes back, so the candidate's durable bytes are the bytes it arrived
+// with — and the removals never run. The spent directory sync is what the
+// refusal leaves behind: it proved a name whose file never became a spare,
+// and the next open re-reads the candidate and re-stages it the same way.
 func TestSparesPhaseFailsTheOpenWhenTheSlotSyncFails(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
@@ -853,6 +858,7 @@ func TestSparesPhaseFailsTheOpenWhenTheSlotSyncFails(t *testing.T) {
 	plantInterruptedRecycle(r, x, y)
 	before := r.fileBytes(format.SegmentName(y))
 	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+	removes := r.seam.Calls(kit.OpRemove)
 	if err := r.seam.Schedule(kit.Failing(kit.OpSync, format.SegmentName(y), 1, syscall.EIO)); err != nil {
 		t.Fatalf("fixture: schedule the failed file sync: %v", err)
 	}
@@ -868,8 +874,11 @@ func TestSparesPhaseFailsTheOpenWhenTheSlotSyncFails(t *testing.T) {
 	if after := r.fileBytes(format.SegmentName(y)); !slices.Equal(after, before) {
 		t.Errorf("spares: the failed sync's slot writes became durable, got %x..., want the bytes the file arrived with", after[:format.SegmentHeaderSize])
 	}
-	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs; got != want {
-		t.Errorf("spares: the failed slot sync still synced the directory, got %d syncs, want %d, the count before the run", got, want)
+	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs+1; got != want {
+		t.Errorf("spares: the open over a failed slot sync spent %d directory syncs, want exactly %d: the one before the zeroing, for the candidate staged to be taken", got, want)
+	}
+	if got := r.seam.Calls(kit.OpRemove); got != removes {
+		t.Errorf("spares: the failed slot sync unlinked something, got %d removes, want %d, the count before the run", got, removes)
 	}
 	if !slices.Contains(r.listing(), format.SegmentName(y)) {
 		t.Errorf("spares: the failed slot sync removed %s; the directory holds %v", format.SegmentName(y), r.listing())
@@ -880,10 +889,12 @@ func TestSparesPhaseFailsTheOpenWhenTheSlotSyncFails(t *testing.T) {
 // interrupted recycle and makes the three attempts of the phase's own
 // header-slot read fail — every read of the file before it, its header at
 // attach and the rebuild's three, answered — so the bound refuses the open
-// on the range it collected rather than zeroing a slot no read returned: the
-// error is the unreadable-ranges refusal naming the candidate, the file's
-// durable bytes are the bytes it arrived with, and nothing is adopted,
-// unlinked or synced.
+// on the range it collected rather than zeroing a slot no read returned:
+// the error is the unreadable-ranges refusal naming the candidate, the
+// file's durable bytes are the bytes it arrived with, nothing is written,
+// adopted or unlinked, and the phase's directory sync — already spent for
+// the candidate staged to be taken ahead of its zeroing — is all the
+// refusal leaves behind.
 func TestSparesPhaseRefusesWhenItsOwnSlotReadNeverCompletes(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
@@ -914,10 +925,168 @@ func TestSparesPhaseRefusesWhenItsOwnSlotReadNeverCompletes(t *testing.T) {
 	if got, want := r.seam.CallsFor(kit.OpWrite, format.SegmentName(y)), writesBefore; got != want {
 		t.Errorf("spares: the refused slot read preceded %d writes, want %d, the count before the run: no slot is written over an unread range", got, want)
 	}
-	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs; got != want {
-		t.Errorf("spares: the refused slot read still synced the directory, got %d syncs, want %d, the count before the run", got, want)
+	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs+1; got != want {
+		t.Errorf("spares: the refused slot read answered before the directory sync, got %d syncs, want exactly %d, the one before the zeroing for the candidate staged to be taken", got, want)
 	}
 	if !slices.Contains(r.listing(), format.SegmentName(y)) {
 		t.Errorf("spares: the refused slot read removed %s; the directory holds %v", format.SegmentName(y), r.listing())
+	}
+}
+
+// TestSparesPhaseAFailingDirectorySyncChangesNoCandidatesBytes plants the
+// interrupted recycle — the candidate whose dirty slots the phase would
+// zero — and fails the one directory sync its taking owes: the sync runs
+// ahead of the zeroing, so its failure answers the open before any slot is
+// written, and the candidate's durable bytes are the bytes it arrived with,
+// the dirty header and trailer slots included — nothing is adopted, nothing
+// is unlinked, and the file keeps its name over the sync that proved none.
+func TestSparesPhaseAFailingDirectorySyncChangesNoCandidatesBytes(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	x, y := core.SegmentID(3), core.SegmentID(9)
+	plantInterruptedRecycle(r, x, y)
+	before := r.fileBytes(format.SegmentName(y))
+	writes := r.seam.CallsFor(kit.OpWrite, format.SegmentName(y))
+	removes := r.seam.Calls(kit.OpRemove)
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+
+	if err := r.seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 1, syscall.EIO)); err != nil {
+		t.Fatalf("fixture: schedule the failed sync: %v", err)
+	}
+	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("spares: the failed directory sync answered err %v, want %v, the sync's own error", err, syscall.EIO)
+	}
+	if after := r.fileBytes(format.SegmentName(y)); !slices.Equal(after, before) {
+		t.Errorf("spares: the failed directory sync left the candidate's bytes changed, got %x..., want the dirty bytes the file arrived with: the sync runs ahead of the zeroing", after[:format.SegmentHeaderSize])
+	}
+	if got := r.seam.CallsFor(kit.OpWrite, format.SegmentName(y)); got != writes {
+		t.Errorf("spares: the failed directory sync wrote to the candidate, got %d writes, want %d, the count before the run", got, writes)
+	}
+	if got := r.seam.Calls(kit.OpRemove); got != removes {
+		t.Errorf("spares: the failed directory sync unlinked something, got %d removes, want %d, the count before the run", got, removes)
+	}
+	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs+1; got != want {
+		t.Errorf("spares: the failed directory sync spent %d directory syncs, want exactly %d: its one refusal, so a second sync cannot mask the first's failure", got, want)
+	}
+	if !slices.Contains(r.listing(), format.SegmentName(y)) {
+		t.Errorf("spares: the failed directory sync removed %s; the directory holds %v", format.SegmentName(y), r.listing())
+	}
+}
+
+// TestSparesPhaseACancelledOpenUnlinksNothing plants a short record-less
+// spare alone — the candidate whose fate the phase writes nothing to decide,
+// so no read of the run would carry the cancellation — and cancels the open
+// under the spares phase's own span, whose context check runs before any
+// sync, zeroing or removal: the cancelled open answers the context's error
+// there, the short spare keeps its name, and the phase spends no directory
+// sync and no removal over a cancellation.
+func TestSparesPhaseACancelledOpenUnlinksNothing(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	short := core.SegmentID(4)
+	r.write(format.SegmentName(short), make([]byte, testCap/2))
+	removes := r.seam.Calls(kit.OpRemove)
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	tracer := func(tctx context.Context, op core.SpanOp, _ ...slog.Attr) (context.Context, func(error)) {
+		if op == core.SpanOpenSpares {
+			cancel()
+		}
+		return tctx, func(error) {}
+	}
+	_, err := Run(ctx, r.runDepsWithTracer(tracer), core.Version{}, journalID, nil)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("spares: the open cancelled under the phase's own span answered err %v, want context.Canceled at the phase's own check", err)
+	}
+	if !slices.Contains(r.listing(), format.SegmentName(short)) {
+		t.Errorf("spares: the cancelled open unlinked the short spare %s; the directory holds %v, want it kept: the phase checks its context before the removals", format.SegmentName(short), r.listing())
+	}
+	if got := r.seam.Calls(kit.OpRemove); got != removes {
+		t.Errorf("spares: the cancelled open removed something, got %d removes, want %d, the count before the run", got, removes)
+	}
+	if got := r.seam.Calls(kit.OpSyncDir); got != dirSyncs {
+		t.Errorf("spares: the cancelled open synced the directory, got %d syncs, want %d, the count before the run", got, dirSyncs)
+	}
+}
+
+// TestSparesPhaseFailsTheOpenWhenTheAllocationQueryFails plants the
+// interrupted recycle and fails the allocation query of its file once: the
+// query is asked in the phase's write-free staging, so the open fails with
+// the query's own error, nothing is adopted or unlinked, the phase's
+// directory sync is never spent, and the candidate's durable bytes are the
+// dirty bytes it arrived with — taking nothing is the only answer over a
+// device that would not say whether the file is whole.
+func TestSparesPhaseFailsTheOpenWhenTheAllocationQueryFails(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	x, y := core.SegmentID(3), core.SegmentID(9)
+	plantInterruptedRecycle(r, x, y)
+	before := r.fileBytes(format.SegmentName(y))
+	removes := r.seam.Calls(kit.OpRemove)
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+
+	if err := r.seam.Schedule(kit.Failing(kit.OpAllocated, format.SegmentName(y), 1, syscall.EIO)); err != nil {
+		t.Fatalf("fixture: schedule the failed query: %v", err)
+	}
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+
+	if !errors.Is(err, syscall.EIO) {
+		t.Fatalf("spares: the failed allocation query answered err %v, want %v, the query's own error", err, syscall.EIO)
+	}
+	if len(st.Spares.Adopted) != 0 || len(st.Spares.Unlinked) != 0 {
+		t.Errorf("spares: the open over a failed query got adopted %v and unlinked %v, want neither", st.Spares.Adopted, st.Spares.Unlinked)
+	}
+	if after := r.fileBytes(format.SegmentName(y)); !slices.Equal(after, before) {
+		t.Errorf("spares: the failed query changed the candidate's bytes, got %x..., want the dirty bytes the file arrived with", after[:format.SegmentHeaderSize])
+	}
+	if got := r.seam.Calls(kit.OpRemove); got != removes {
+		t.Errorf("spares: the failed query unlinked something, got %d removes, want %d, the count before the run", got, removes)
+	}
+	if got := r.seam.Calls(kit.OpSyncDir); got != dirSyncs {
+		t.Errorf("spares: the failed query synced the directory, got %d syncs, want %d, the count before the run: the staging refuses before the sync", got, dirSyncs)
+	}
+	if !slices.Contains(r.listing(), format.SegmentName(y)) {
+		t.Errorf("spares: the failed query removed %s; the directory holds %v", format.SegmentName(y), r.listing())
+	}
+}
+
+// TestSparesPhaseUnlinksACandidateTheQueryAnswersNotWhole plants a whole
+// record-less spare whose file the seam answers not whole — the shape of a
+// cap-sized file whose middle a punch holed, whatever its bytes hold — and
+// runs the open: the candidate is unlinked and made again rather than
+// adopted, recorded alone, and the phase spends no directory sync, for
+// nothing was staged to be taken.
+func TestSparesPhaseUnlinksACandidateTheQueryAnswersNotWhole(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	holed, whole := core.SegmentID(4), core.SegmentID(7)
+	r.write(format.SegmentName(holed), make([]byte, testCap))
+	r.write(format.SegmentName(whole), make([]byte, testCap))
+	holedWrites := r.seam.CallsFor(kit.OpWrite, format.SegmentName(holed))
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+
+	if err := r.seam.Schedule(kit.NotWhole(format.SegmentName(holed), 1)); err != nil {
+		t.Fatalf("fixture: schedule the not-whole answer: %v", err)
+	}
+	st := r.runCandidates()
+
+	if got, want := st.Spares.Unlinked, []core.SegmentID{holed}; !slices.Equal(got, want) {
+		t.Errorf("spares: the not-whole candidate's unlinking got %v, want %v: the query, not the bytes or the size alone, is what finds it", got, want)
+	}
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: whole, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Errorf("spares: the whole spare beside it got adoptions %v, want %v", got, want)
+	}
+	if slices.Contains(r.listing(), format.SegmentName(holed)) {
+		t.Errorf("spares: the not-whole spare %s is still in the directory %v, want it unlinked", format.SegmentName(holed), r.listing())
+	}
+	if got := r.seam.CallsFor(kit.OpWrite, format.SegmentName(holed)); got != holedWrites {
+		t.Errorf("spares: the not-whole spare was written to, got %d writes, want %d, the count before the run: no byte of a file about to be removed is written", got, holedWrites)
+	}
+	if got := r.seam.Calls(kit.OpSyncDir); got != dirSyncs+1 {
+		t.Errorf("spares: the open spent %d directory syncs, want exactly %d beside the fixture's %d: the one for the spare staged beside the not-whole one", got, dirSyncs+1, dirSyncs)
 	}
 }

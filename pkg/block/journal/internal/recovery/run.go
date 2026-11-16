@@ -204,11 +204,10 @@ func rebuildReaders(deps Deps) int {
 // open — with one exception: a cancellation after the spares phase keeps
 // that phase's unlinks and zeroed slots, which a later open re-reads and
 // re-decides; cancelling under the spares phase's own span cuts it at its
-// first read, over a range the cancellation made the reader refuse, before
-// anything is written. floor and marks are carried for the phases that
-// consume them — floor for the rebuild, and marks for the spares phase,
-// which withholds every candidate a mark names, and for the marks and
-// tail-proof phases not yet built.
+// own context check, before anything is written. floor and marks are
+// carried for the phases that consume them — floor for the rebuild, and
+// marks for the spares phase, which withholds every candidate a mark
+// names, and for the marks and tail-proof phases not yet built.
 func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {
 	if err := ctx.Err(); err != nil {
 		return State{}, err

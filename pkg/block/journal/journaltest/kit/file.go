@@ -342,6 +342,26 @@ func (sf *seamFile) Allocate(off, n int64) error {
 	return sf.f.Truncate(off + n)
 }
 
+// Allocated answers the allocation query the journal's open asks of a spare
+// candidate: whole by default, for the seam models crash durability, not
+// allocation — a hole it holds reads as zeros exactly as on the device, so
+// nothing the seam could read of the file names one. The fault is what names
+// one: an error fails the query with its own error, and a loss — NotWhole's
+// rule, sim.Lose on the query — is the answer not whole, the shape a
+// cap-sized file whose body a punch holed gives.
+func (sf *seamFile) Allocated() (bool, error) {
+	a, err := sf.enter(OpAllocated)
+	if err != nil {
+		return false, err
+	}
+	defer sf.seam.mu.Unlock()
+
+	if a.lost() {
+		return false, nil
+	}
+	return true, nil
+}
+
 func (sf *seamFile) Truncate(size int64) error {
 	if _, err := sf.enter(OpTruncate); err != nil {
 		return err

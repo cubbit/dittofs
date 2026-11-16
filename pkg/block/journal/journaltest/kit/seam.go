@@ -20,6 +20,7 @@ const (
 	OpCreate     = "create"
 	OpOpen       = "open"
 	OpAllocate   = "allocate"
+	OpAllocated  = "allocated"
 	OpWrite      = "write"
 	OpRead       = "read"
 	OpReadDirect = "read_direct"
@@ -283,7 +284,7 @@ func (s *Seam) consult(op, key string) action {
 	switch {
 	case tearAfter > 0 && op != OpWrite:
 		panic(fmt.Sprintf("journaltest: a tear on %s is not supported", op))
-	case tearAfter < 0 && op != OpWrite && op != OpSync && op != OpSyncDir:
+	case tearAfter < 0 && op != OpWrite && op != OpSync && op != OpSyncDir && op != OpAllocated:
 		panic(fmt.Sprintf("journaltest: a loss on %s is not supported", op))
 	case tearAfter < 0 && err != nil:
 		panic(fmt.Sprintf("journaltest: a loss on %s with an error is not supported", op))

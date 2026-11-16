@@ -92,16 +92,19 @@ func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID
 // report one, the phase asks whether the device holds the file whole before
 // taking it. The interface is the consumer's own declaration, not the
 // platform's export, so it stays optional. The Linux platform's own file is
-// the one implementation that answers — FIEMAP's extent report, or the hole
-// seek its fallback runs where the filesystem serves none — so a holed
-// cap-sized spare is caught there whatever its filesystem answers. The
-// darwin and Windows platform files and the crash seam's file answer
-// nothing, deliberately: darwin's and Windows's queries are unmade (the seam
-// below names them), and the seam models crash durability, not allocation —
-// a hole it holds reads as zeros exactly as on the device, nothing the seam
-// could see differently. Over those, and over the same seam the recovery
-// rows here run through, the assertion finds nothing and the size alone
-// decides: a holed spare is adopted unseen.
+// the one implementation that answers of the device — FIEMAP's extent
+// report, or the hole seek its fallback runs where the filesystem serves
+// none — so a holed cap-sized spare is caught there whatever its filesystem
+// answers. The crash seam's file answers too, whole by default with a query
+// the kit's faults can fail or answer not whole — the seam models crash
+// durability, not allocation, so a hole it holds reads as zeros exactly as
+// on the device and its own answer could never see one; the answer is what
+// a fault names, the shape a check of the not-whole unlink needs. The darwin
+// and Windows platform files answer nothing, deliberately: their queries are
+// unmade (the marker in spareWholeOnDisk names the platform calls that would
+// make them). Over those two the
+// assertion finds nothing and the size alone decides: a holed spare passes
+// unseen.
 type allocProber interface{ Allocated() (bool, error) }
 
 // Spares is what the spares phase did with the candidates it re-adopted:
@@ -137,13 +140,24 @@ type AdoptedSpare struct {
 // slot at the file's end. Nothing durable ever reached a candidate, so the
 // old life's bytes become unreadable and each id is the allocator's again.
 //
-// The phase decides every adoption and unlink first, then spends its one
-// directory sync, and only past that sync records the adoptions and performs
-// the removals; the sync's failure is the open's — no spare is taken and
-// nothing is unlinked, every candidate keeping its name over a sync that
-// proved none. Each removal runs after the sync, so the sync does not itself
-// prove it: a power cut may resurrect a short spare, which is harmless — the
-// next open re-reads the same bytes, decides the same and unlinks it again.
+// The phase decides first — staging each whole candidate and collecting each
+// short one, writes none — then, only where a spare is to be taken, spends
+// its one directory sync, and only past that sync zeroes the staged slots,
+// recording each adoption as its zeroing succeeds, and performs the
+// removals. The sync's failure is the open's, and it changes nothing: no
+// slot was zeroed and nothing unlinked, every candidate keeping its name
+// and its bytes over a sync that proved none. A zeroing that fails past the
+// sync is the one place the phase leaves a half-done state behind: the
+// candidates zeroed before it keep their zeroed slots on disk, but the
+// failed open's State is discarded and the next open re-reads their bytes
+// and zeroes them the same way, idempotently, so nothing incorrect
+// survives it. Each removal runs unproved by the sync: a power cut may
+// resurrect a short spare, which is harmless — the next open re-reads the
+// same bytes, decides the same and unlinks it again.
+//
+// The phase checks its context before the first write and before the
+// directory sync, so a cancellation under it leaves nothing done: no
+// candidate is zeroed, taken or unlinked past the cancellation.
 //
 // The phase is the open's first writing one, so it refuses first, before
 // any candidate is touched; each slot is read through the open's reader, so
@@ -159,7 +173,7 @@ type AdoptedSpare struct {
 // name would take the writes of a whole segment and lose a crash's worth of
 // them. Each is left for the pool to make again; every adoption is recorded
 // with the class the pool's own targets' fill order gives its id.
-func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.JournalID, _ core.Version, marks []core.SyncMark) error {
+func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.JournalID, _ core.Version, marks []core.SyncMark) error {
 	// decision: a zero SegmentCap — a Deps literal that forgot the cap —
 	// refuses the phase naming it, rather than unlinking every candidate
 	// under "no cap right-sizes any spare": nothing distinguishes that
@@ -189,13 +203,20 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 	for _, sc := range st.Rebuilt.Scans {
 		sizes[sc.ID] = sc.Size
 	}
+	// The context is checked before any write: the staging below reads and
+	// asks, but writes nothing, so the open a caller that cancelled before
+	// the phase reaches answers here, taking and unlinking nothing.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	take := make([]core.SegmentID, 0, len(cand)) // the whole candidates staged for zeroing
 	adopted := make([]AdoptedSpare, 0, len(cand))
 	var unlinked []core.SegmentID
 	for _, id := range cand {
 		// The size is the scan's own answer, read through the open's retry
 		// bound: a spare the pool could take must hold exactly the cap, so
 		// a candidate whose file does not — a crash's empty leftover, a
-		// recycle interrupted short, a file grown past the cap — is staged
+		// recycle interrupted short, a file grown past the cap — is collected
 		// for unlinking and made again, never zeroed: no byte of a file
 		// about to be removed is read into a slot or written. The cap itself
 		// never reaches zero here: the phase above refused a Deps without
@@ -212,31 +233,51 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 			unlinked = append(unlinked, id)
 			continue
 		}
-		if err := zeroSpareSlots(deps, rd, id, sizes[id]); err != nil {
+		// candidates ascend, so take does too, and the i-th class is the
+		// i-th id's below.
+		take = append(take, id)
+	}
+	if len(take) > 0 {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		adopted = append(adopted, AdoptedSpare{ID: id})
-	}
-	if len(adopted) > 0 || len(unlinked) > 0 {
 		// A process that died may have left a spare's directory entry without
 		// the sync its own rename was owed: a spare taken before this sync
 		// could lose its name — and the records a later open re-appends into
-		// it — to a power cut, so the one sync precedes every recorded
-		// adoption and every performed removal, and its failure answers the
-		// open taking and unlinking nothing.
+		// it — to a power cut, so the sync precedes every zeroed slot and
+		// every recorded adoption, and its failure answers the open taking
+		// and unlinking nothing, every candidate's bytes as they began. It
+		// proves only the names of the spares to be taken: a removal is not
+		// among what it proves, so a phase that unlinks without adopting
+		// spends no sync and a resurrected short spare is idempotently
+		// re-unlinked at the next open, as the marker at the unlink below
+		// says.
 		if err := deps.FS.SyncDir(); err != nil {
 			return err
 		}
+		for _, id := range take {
+			if err := zeroSpareSlots(deps, rd, id, sizes[id]); err != nil {
+				// decision: a zeroing that fails here leaves the candidates
+				// zeroed before it holding zeroed slots on disk and none
+				// adopted, for the open's State is discarded over the
+				// failure and the next open re-reads their bytes and zeroes
+				// them the same way. Withdraw only if a later phase ever
+				// reads what this phase staged rather than the bytes
+				// themselves.
+				return err
+			}
+			adopted = append(adopted, AdoptedSpare{ID: id})
+		}
 	}
-	// The removals run after the sync and are not proved by it: a power cut
-	// may resurrect a short spare, which is harmless — the next open
-	// re-reads it, re-decides and unlinks it again.
+	// The removals run unproved by the sync: a power cut may resurrect a
+	// short spare, which is harmless — the next open re-reads it, re-decides
+	// and unlinks it again.
 	for _, id := range unlinked {
 		if err := unlinkSpare(deps, id); err != nil {
 			return err
 		}
 	}
-	classes := classesFor(deps.SpareTargets, len(adopted))
+	classes := deps.SpareTargets.AdoptClasses(len(adopted))
 	for i := range adopted {
 		adopted[i].Class = classes[i] // candidates ascend, so the i-th class is the i-th id's
 	}
@@ -254,15 +295,6 @@ func runSpares(_ context.Context, deps Deps, rd *reader, st *State, _ core.Journ
 		return taken[f.ID]
 	})
 	return nil
-}
-
-// classesFor returns the classes the next n adoptions take under the pool's
-// targets ts: the fill order's own single owner answers, the method the pool
-// itself would adopt into, so the classes the spares phase records are the
-// ones the pool would have filled. The candidates the phase adopts ascend by
-// id, so the i-th adoption takes the i-th class.
-func classesFor(ts segment.Targets, n int) []segment.Class {
-	return ts.AdoptClasses(n)
 }
 
 // unlinkSpare removes the candidate id's segment file, answering the error a
@@ -290,12 +322,12 @@ func spareWholeOnDisk(deps Deps, id core.SegmentID) (bool, error) {
 		return false, err
 	}
 
-	// ponytail: only the Linux platform's file answers the allocation query,
-	// by FIEMAP or the hole seek it falls back to; darwin's and Windows's
-	// files and the crash seam's answer nothing, so over them the size alone
-	// decides — the seam's spares cannot be holed, and a spare a punch holed
-	// passes on the other two unseen. Give the darwin and windows files
-	// their own Allocated, over F_LOG2PHYS_EXT and
+	// ponytail: the Linux platform's file answers the allocation query by
+	// FIEMAP or the hole seek it falls back to, and the crash seam's answers
+	// whole by default with a faultable not-whole, so over darwin's and
+	// Windows's files alone the size decides — a spare a punch holed passes
+	// on those two unseen. Give the darwin and windows files their own
+	// Allocated, over F_LOG2PHYS_EXT and
 	// FSCTL_QUERY_ALLOCATED_RANGES, when a short spare is seen on either;
 	// with it, the same assertion takes them.
 	whole := true
