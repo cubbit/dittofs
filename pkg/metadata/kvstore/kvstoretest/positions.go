@@ -3,8 +3,13 @@ package kvstoretest
 import (
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // counters reads every reconciled kind's counter.
@@ -128,5 +133,53 @@ func testVersionedKindsMoveNoCounter(t *testing.T, kvo Opener) {
 		if after := counters(t, s); after != before {
 			t.Errorf("%s written: counters %+v, want unchanged %+v", c.name, after, before)
 		}
+	}
+}
+
+// Removing a member, deleting a user and deleting a group each raise the
+// principals generation by one.
+func testPrincipalRemovalsRaise(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	u, g := user("alice"), group("staff")
+	userGen, err := cp.PutUser(ctx, u, 0, entity.Alloc{})
+	must(t, err)
+	groupGen, err := cp.PutGroup(ctx, g, 0, entity.Alloc{})
+	must(t, err)
+	m := entity.Membership{Group: g.Principal, Member: u.Principal}
+	must(t, cp.AddMember(ctx, m))
+	for _, c := range []struct {
+		name  string
+		write func() error
+	}{
+		{"member removed", func() error { return cp.RemoveMember(ctx, m) }},
+		{"user deleted", func() error { return cp.DeleteUser(ctx, u.Principal, userGen) }},
+		{"group deleted", func() error { return cp.DeleteGroup(ctx, g.Principal, groupGen) }},
+	} {
+		before := counters(t, s).Principals
+		must(t, c.write())
+		if after := counters(t, s).Principals; after != before+1 {
+			t.Errorf("%s: principals generation %d, want %d", c.name, after, before+1)
+		}
+	}
+}
+
+// A write retried after a conflict raises the principals generation again
+// in its new attempt, so the group it writes holds the counter's value.
+func testPrincipalsRaisedPerAttempt(t *testing.T, kvo Opener) {
+	f := kvtest.NewFaultKV(kvo(t))
+	must(t, kvstore.Init(ctx, f, uuid.New()))
+	s, err := kvstore.Open(ctx, f)
+	must(t, err)
+	cp := s.ControlPlane()
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: kvtest.OpSet, Key: "G‖*", Count: 1, Action: sim.FaultAction{Err: kv.ErrConflict}})
+	must(t, err)
+	f.SetFault(sched)
+	g := group("staff")
+	must(t, errOf(cp.PutGroup(ctx, g, 0, entity.Alloc{})))
+	f.SetFault(nil)
+	got, want := all(t, cp.Groups(ctx, ""))[0].Position, counters(t, s).Principals
+	if got != want || want == 0 {
+		t.Errorf("group written on a retried attempt: position %d, want the principals generation %d, above zero", got, want)
 	}
 }

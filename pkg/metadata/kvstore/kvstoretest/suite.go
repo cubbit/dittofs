@@ -146,6 +146,8 @@ func Run(t *testing.T, open Opener) {
 		{"SignInFailuresRace", testSignInFailuresRace},
 		{"Positions", testPositions},
 		{"PrincipalsRaisedOncePerWrite", testPrincipalsRaisedOncePerWrite},
+		{"PrincipalRemovalsRaise", testPrincipalRemovalsRaise},
+		{"PrincipalsRaisedPerAttempt", testPrincipalsRaisedPerAttempt},
 		{"VersionedKindsMoveNoCounter", testVersionedKindsMoveNoCounter},
 		{"OneOperationPerTargetAndKind", testOneOperationPerTargetAndKind},
 		{"OperationReads", testOperationReads},
