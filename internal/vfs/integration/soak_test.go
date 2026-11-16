@@ -50,6 +50,9 @@ const (
 	soakMaxWrite  = 4 << 10          // the largest write
 	soakCallBound = 10 * time.Second // a real-time backstop on one call, so a wedge fails instead of hanging
 	soakSlowCall  = 2 * time.Second  // a call this slow was parked, whatever it answered
+	// soakTick is how long, in real time, a call may wait before the loop
+	// moves the test clock under it: the soak's one wait on real time.
+	soakTick = 20 * time.Millisecond
 )
 
 var errInjected = errors.New("soak: an injected fault")
@@ -203,6 +206,12 @@ type soakRun struct {
 	opens []*smbOpen    // the same opens, as the oracle judges their flushes
 	calls int
 	seen  int // the faults already attributed
+
+	// clock is the test clock the run moves, and clockSteps the seed's stream
+	// of the steps it moves it by while a call waits, apart from the calls'
+	// own stream so a call's wait never changes the calls that follow.
+	clock      *sim.TestClock
+	clockSteps *rand.Rand
 }
 
 func runSoak(t *testing.T, seed uint64) {
@@ -213,7 +222,11 @@ func runSoak(t *testing.T, seed uint64) {
 		rng:  rand.New(rand.NewPCG(seed, 0)),
 		log:  &faultLog{},
 		m:    newSoakModel(),
+		// The clock's own stream: how far the clock moves while a call waits
+		// depends on how long it waits, so it draws apart from the calls.
+		clockSteps: rand.New(rand.NewPCG(seed, 1)),
 	}
+	r.clock = r.c.Clock
 
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -389,7 +402,10 @@ func (r *soakRun) step() {
 		desc = fmt.Sprintf("write %s [%d, %d) stable=%v", f.name, off, off+int64(len(data)), stable)
 		r.log.set(r.calls, desc, false)
 		var res vfs.WriteResult
-		res, err = r.c.fs.Write(ctx, r.c.admin, vfs.Anonymous(h), off, data, how)
+
+		r.waiting(func() {
+			res, err = r.c.fs.Write(ctx, r.c.admin, vfs.Anonymous(h), off, data, how)
+		})
 		op = &soakOp{
 			kind:     opWrite,
 			off:      off,
@@ -407,7 +423,10 @@ func (r *soakRun) step() {
 		desc = fmt.Sprintf("commit %s", f.name)
 		r.log.set(r.calls, desc, false)
 		var v vfs.Verifier
-		v, err = r.c.fs.Commit(ctx, r.c.admin, vfs.Anonymous(h), 0, 0)
+
+		r.waiting(func() {
+			v, err = r.c.fs.Commit(ctx, r.c.admin, vfs.Anonymous(h), 0, 0)
+		})
 		record = func() {
 			f.commit(r.proc, 0, 0, v, err)
 			if err == nil {
@@ -419,7 +438,10 @@ func (r *soakRun) step() {
 		desc = fmt.Sprintf("commit %s through an SMB open", f.name)
 		r.log.set(r.calls, desc, false)
 		var v vfs.Verifier
-		v, err = r.c.fs.Commit(ctx, r.smb, r.refs[i], 0, 0)
+
+		r.waiting(func() {
+			v, err = r.c.fs.Commit(ctx, r.smb, r.refs[i], 0, 0)
+		})
 		record = func() {
 			if ferr := r.m.flush(r.opens[i], v, err); ferr != nil {
 				r.fail("call %d, %s: %v", r.calls, desc, ferr)
@@ -434,12 +456,15 @@ func (r *soakRun) step() {
 		desc = fmt.Sprintf("truncate %s to %d", f.name, size)
 		r.log.set(r.calls, desc, false)
 		grow := size >= f.leaves()
-		_, err = r.c.fs.SetAttr(
-			ctx,
-			r.c.admin,
-			vfs.Target{H: h},
-			vfs.AttrChange{Attrs: entity.Attrs{}.WithSize(size)},
-		)
+
+		r.waiting(func() {
+			_, err = r.c.fs.SetAttr(
+				ctx,
+				r.c.admin,
+				vfs.Target{H: h},
+				vfs.AttrChange{Attrs: entity.Attrs{}.WithSize(size)},
+			)
+		})
 		op = f.add(
 			&soakOp{kind: opTruncate, off: size, proc: r.proc, done: err == nil, grow: grow},
 			false,
@@ -448,7 +473,9 @@ func (r *soakRun) step() {
 		off, n := r.rng.Int64N(soakSpan), 1+r.rng.Int64N(soakMaxWrite)
 		desc = fmt.Sprintf("deallocate %s [%d, %d)", f.name, off, off+n)
 		r.log.set(r.calls, desc, false)
-		_, err = r.c.fs.Deallocate(ctx, r.c.admin, vfs.Anonymous(h), off, n)
+		r.waiting(func() {
+			_, err = r.c.fs.Deallocate(ctx, r.c.admin, vfs.Anonymous(h), off, n)
+		})
 		op = f.add(
 			&soakOp{kind: opDeallocate, off: off, n: n, proc: r.proc, done: err == nil},
 			false,
@@ -516,7 +543,8 @@ func (r *soakRun) attribute(own ...*soakOp) bool {
 }
 
 // excused reports whether a call may answer err: success; ErrDelay, the
-// retry a failed window or a refusal answers; or any other error when a fault
+// retry a failed window, a refusal or the group commit's backoff after a
+// store fault answers (RFC 8 §11.2's own answer); or any other error when a fault
 // that failed an operation fired since the call before (faulted). A lost or
 // torn record fails no operation, so it excuses nothing, and an answer the
 // call's backstop cut off is a wedge, never excused.
@@ -537,14 +565,52 @@ func (r *soakRun) bounded() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(r.t.Context(), soakCallBound)
 }
 
-// slow fails a call that took soakSlowCall or longer from start. The clock
-// moves only between calls, so a call parked on it comes back only at the
-// backstop, and with a sync fault pending it comes back with the owed
-// failure, which excused() would take for a fault's answer.
+// slow fails a call that took soakSlowCall or longer from start, whatever it
+// answered: the clock moves under a waiting call, so a call that still takes
+// this long waits on something no timer of the engine ends, a wedge.
 func (r *soakRun) slow(desc string, start time.Time) {
-	if d := time.Since(start); d >= soakSlowCall {
-		r.fail("%s took %v, parked until it was cut off", desc, d)
+	if err := stalled(desc, time.Since(start)); err != nil {
+		r.fail("%v", err)
 	}
+}
+
+// stalled is slow's verdict on a call that took d: no fault before it and no
+// answer it gave excuses it.
+func stalled(desc string, d time.Duration) error {
+	if d < soakSlowCall {
+		return nil
+	}
+
+	return fmt.Errorf("%s took %v, parked until it was cut off", desc, d)
+}
+
+// waiting runs call, a client call, and moves the test clock while it waits:
+// every soakTick of real time, by a step the seed's clock stream draws, up to
+// twice ExistenceAge as between calls. A call waiting on the engine's timers,
+// such as the journal's re-sync of a failed window or the group commit's
+// backoff after a store fault, gets them as it would on a running clock; a
+// call waiting on anything else still meets its own deadline.
+func (r *soakRun) waiting(call func()) {
+	done, moved := make(chan struct{}), make(chan struct{})
+
+	go func() {
+		defer close(moved)
+
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(soakTick):
+				r.clock.Advance(
+					time.Duration(r.clockSteps.Int64N(int64(2 * enginetest.Settings.ExistenceAge))),
+				)
+			}
+		}
+	}()
+
+	call()
+	close(done)
+	<-moved
 }
 
 // check reads every file back after a restart: its size and modify time
@@ -603,7 +669,15 @@ func (r *soakRun) check() {
 		if found {
 			cctx, ccancel := r.bounded()
 			start := time.Now()
-			v, err := r.c.fs.Commit(cctx, r.smb, r.refs[i], 0, 0)
+
+			var (
+				v   vfs.Verifier
+				err error
+			)
+
+			r.waiting(func() {
+				v, err = r.c.fs.Commit(cctx, r.smb, r.refs[i], 0, 0)
+			})
 			ccancel()
 			r.slow("the flush of "+f.name+" after its loss", start)
 			// Attribute first, so a record lost in this Commit credits the
@@ -621,7 +695,15 @@ func (r *soakRun) check() {
 
 	vctx, vcancel := r.bounded()
 	start := time.Now()
-	v, err := r.c.fs.Commit(vctx, r.c.admin, vfs.Anonymous(r.files[0]), 0, 0)
+
+	var (
+		v   vfs.Verifier
+		err error
+	)
+
+	r.waiting(func() {
+		v, err = r.c.fs.Commit(vctx, r.c.admin, vfs.Anonymous(r.files[0]), 0, 0)
+	})
 	vcancel()
 	r.slow("the verifier's Commit", start)
 	faulted := r.attribute()
@@ -792,4 +874,70 @@ func (f *fileModel) pieces(size int64) [][2]int64 {
 	}
 
 	return ps
+}
+
+// TestSoakStalled holds that nothing excuses a stalled call: a call that
+// took the slow bound fails, whatever it answered, since the clock moves
+// while a call waits.
+func TestSoakStalled(t *testing.T) {
+	if err := stalled("a quick call", soakSlowCall-time.Millisecond); err != nil {
+		t.Errorf("a call under the slow bound: %v, want no failure", err)
+	}
+
+	for _, d := range []time.Duration{soakSlowCall, soakCallBound} {
+		if stalled("a parked call", d) == nil {
+			t.Errorf("a call that took %v is not failed", d)
+		}
+	}
+}
+
+// TestSoakWaitingMovesTheClock holds the loop's clock rule: a call waiting on
+// the test clock gets it moved by the seed's steps, without drawing from the
+// calls' stream, and a call waiting on anything else still meets its own
+// deadline and is failed as stalled.
+func TestSoakWaitingMovesTheClock(t *testing.T) {
+	r := &soakRun{
+		clock:      sim.NewTestClock(time.Unix(1000, 0)),
+		clockSteps: rand.New(rand.NewPCG(1, 1)),
+		rng:        rand.New(rand.NewPCG(1, 0)),
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), soakCallBound)
+	defer cancel()
+
+	start := time.Now()
+
+	var err error
+
+	r.waiting(func() {
+		select {
+		case <-r.clock.After(10 * time.Minute):
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	})
+
+	if err != nil {
+		t.Errorf("a call waiting ten minutes on the test clock: %v after %v, "+
+			"want it woken by the moved clock", err, time.Since(start))
+	}
+
+	if got, want := r.rng.Uint64(), rand.New(rand.NewPCG(1, 0)).Uint64(); got != want {
+		t.Errorf("the calls' stream after a wait drew %d, want %d: the wait drew from it",
+			got, want)
+	}
+
+	wedge, cancelWedge := context.WithTimeout(t.Context(), soakSlowCall)
+	defer cancelWedge()
+
+	start = time.Now()
+
+	r.waiting(func() {
+		<-wedge.Done()
+	})
+
+	if stalled("a wedged call", time.Since(start)) == nil {
+		t.Errorf("a call waiting on no timer of the clock returned after %v and is not failed",
+			time.Since(start))
+	}
 }
