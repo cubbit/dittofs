@@ -607,6 +607,16 @@ func (f *file) fold(recs []bufRec, window core.Extent) ([]bufRec, error) {
 				// clipped piece's skip is the clip's own head; the rebuild
 				// places the unclipped piece with skip 0, and this names
 				// the same bytes.
+				//
+				// The note is the one the rebuild's own write takes: a
+				// surviving write re-places its supersede over what it
+				// overwrote inside the window, exactly as the rebuild's
+				// insert notes it, so the runs come out a rebuild's that
+				// was never fed the torn record. It reaches the write
+				// alone: a fill and a release supersede nothing — the
+				// rebuild puts and cuts them with no note either — and
+				// the removals cut.
+				f.held.noteOver(e, r.numbers.Version)
 				f.held.put(Piece{Extent: e, Record: at, Skip: uint32(e.Off - r.off), Version: r.numbers.Version, Seq: r.numbers.Seq})
 			} else {
 				// decision: a rebuilt write carries no write time, so its

@@ -231,6 +231,18 @@ func (s *heldSet) noteOver(e core.Extent, by core.Version) {
 					return true
 				}
 			}
+			// decision: a run an earlier note already covers whole is left
+			// as it is, never noted a second time. One replay of one write
+			// notes each chain once, so only a repair's fold — which re-notes
+			// the supersedes its first replay already noted over the window —
+			// reaches the check, and overlapping copies of one run would
+			// have every reader merge them back into what the first already
+			// said. Overturned by a caller that reads a run's copy count.
+			if slices.ContainsFunc(s.over, func(r overRun) bool {
+				return r.by == by && r.was == p.Version && r.extent.Off <= q.Off && extentEnd(q) <= extentEnd(r.extent)
+			}) {
+				return true
+			}
 			s.over = append(s.over, overRun{extent: q, by: by, was: p.Version})
 		}
 		return true
@@ -248,6 +260,17 @@ func (s *heldSet) dropOver(v core.Version) {
 func (s *heldSet) dropOverBy(by core.Version, e core.Extent) {
 	s.over = slices.DeleteFunc(s.over, func(r overRun) bool {
 		return r.by == by && r.extent.Off >= e.Off && extentEnd(r.extent) <= extentEnd(e)
+	})
+}
+
+// dropOverWas forgets the runs superseding the write of version was lying
+// inside e, a torn record's repair does with the chains that name it: a
+// write the index holds no more has no run any caller can be told of, and a
+// rebuild that was never fed the record chained the surviving write over
+// what it displaced instead — so the fold re-notes that chain itself.
+func (s *heldSet) dropOverWas(was core.Version, e core.Extent) {
+	s.over = slices.DeleteFunc(s.over, func(r overRun) bool {
+		return r.was == was && r.extent.Off >= e.Off && extentEnd(r.extent) <= extentEnd(e)
 	})
 }
 

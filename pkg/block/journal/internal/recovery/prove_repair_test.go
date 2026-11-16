@@ -253,3 +253,53 @@ func TestTheRepairFoldsNoRecordTheCatalogueConfined(t *testing.T) {
 		Seq:     100,
 	})
 }
+
+// TestTheRepairReadsACataloguedSegmentTheWayTheRebuildDid holds the repair's
+// source rule: the survivors come from the same source the rebuild read each
+// segment by, or the two disagree at the records only the catalogue can name.
+// Segment 1 is named and sealed, holding the write G whose record header
+// rotted; the rebuild index G from its catalogue entry, while the segment's
+// header walk refuses the rotted header and answers nothing. The stream's
+// newest segment holds the torn write T over G's whole extent, so T's repair
+// collects G from the segment — and G, read the catalogue's way, survives
+// the fold: its index entry is re-placed, and a sealed durable write is not
+// silently lost, or served stale from T's dropped placement.
+func TestTheRepairReadsACataloguedSegmentTheWayTheRebuildDid(t *testing.T) {
+	const overwrite = 0x4100
+	g := tailRec(200, overwrite)
+	seg1, _ := buildSealed(1, g)
+	gAt := int64(format.SegmentHeaderSize)
+	seg1[gAt] ^= 0xff // G's record header, rotted where it sits: its catalogue entry stands in
+
+	tornSeg := buildSeg(2, tailRec(250, overwrite)) // T, over G's whole extent
+	copy(tornSeg, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
+	tornAt := int64(format.SegmentHeaderSize)
+	tornSeg[tornAt+format.RecordHeaderSize+8+2] ^= 0xff // T's payload, torn in both views
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg1)
+	r.plantSeg(2, tornSeg)
+
+	st := runTails(t, r)
+
+	if got := st.Rebuilt.ByCatalog; got != 1 {
+		t.Fatalf("Run rebuilt %d segments by catalog, want 1: G's rotted header never refuses or demotes its segment", got)
+	}
+	// T alone is the tear: no re-append, no failed window, and segment 2's
+	// fate is the torn tail the classing owned.
+	noTornReport(t, st)
+	wantFate(t, st, 2, fateTornTail, tornAt)
+	// G holds its extent again: the repair re-places the record the rebuild
+	// indexed, and its placement names the same segment and offset the
+	// rebuild's entry did.
+	wantPlacement(t, st, overwrite, index.Placed{
+		Extent:  core.Extent{Off: overwrite, Len: 16},
+		Record:  index.RecordAt{Segment: 1, Offset: uint32(gAt)},
+		Version: core.Version{Counter: 200},
+		Seq:     100,
+	})
+	if got := planted(st); got != 1 {
+		t.Errorf("the index holds %d entries, want 1: G alone, the torn T dropped as never written", got)
+	}
+}

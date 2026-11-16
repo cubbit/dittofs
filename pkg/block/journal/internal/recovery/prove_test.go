@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"math"
 	"reflect"
 	"slices"
 	"syscall"
@@ -993,4 +994,69 @@ func TestAnUnprovenTailRecordsFirstReadRefusedRefusesTheOpen(t *testing.T) {
 	if !reflect.DeepEqual(st, State{}) {
 		t.Errorf("the refused open returned state %+v, want the zero State: a refusal rebuilds nothing", st)
 	}
+}
+
+// TestTheProofsOpenOfASegmentTakesTheReadersBound holds the open of a segment
+// the proof makes: it answers to the same bound every read of the open takes,
+// so a refusal the device clears on the third attempt is started again and
+// the proof proceeds, while an open no bounded attempt completes refuses the
+// open on the segment whole — an open reaches every byte of the segment and
+// names no range of its own, the same name a size it could not measure takes
+// — with nothing written and no state returned.
+func TestTheProofsOpenOfASegmentTakesTheReadersBound(t *testing.T) {
+	seg, _, name := proveSeg()
+
+	// The fault arms at the eighth open of this fixture's segment — the
+	// marker flow's own, the attach pass's and the rebuild's reads having
+	// made the first seven. The from is the count of those opens over this
+	// fixture's two records, not a measured number anywhere else.
+	const proofOpen = 8
+	t.Run("twice refused, the third attempt opens", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(2, seg)
+		r.seam.Schedule(kit.FailingFrom(kit.OpOpen, name, proofOpen, 2, syscall.EIO))
+		synced := r.seam.CallsFor(kit.OpSync, name)
+
+		st := runTails(t, r)
+
+		if calls := r.seam.CallsFor(kit.OpOpen, name); calls != proofOpen+2 {
+			t.Errorf("opens of the segment got %d, want %d: the seven earlier opens and the bound's three, the third opening", calls, proofOpen+2)
+		}
+		if calls := r.seam.CallsFor(kit.OpSync, name) - synced; calls != 1 {
+			t.Errorf("the open's syncs of the segment got %d, want 1: the open the third attempt made reached the sync it was opened for", calls)
+		}
+		wantFate(t, st, 2, fateSealed, 0)
+	})
+	t.Run("no attempt completes: the open refuses on the segment whole", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(2, seg)
+		r.seam.Schedule(kit.FailingFrom(kit.OpOpen, name, proofOpen, 0, syscall.EIO))
+		synced := r.seam.CallsFor(kit.OpSync, name)
+		before := r.fileBytes(name)
+
+		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+
+		var ure *core.UnreadableRangesError
+		if !errors.As(err, &ure) {
+			t.Fatalf("Run over an open no bounded attempt completes got err %v, want an UnreadableRangesError", err)
+		}
+		want := []core.SegmentRange{{Segment: 2, Off: 0, Len: math.MaxInt64}}
+		if !slices.Equal(ure.Ranges, want) {
+			t.Errorf("the refusal names ranges %v, want the segment whole %+v: an open reaches every byte and names no range of its own", ure.Ranges, want)
+		}
+		if calls := r.seam.CallsFor(kit.OpOpen, name); calls != proofOpen+2 {
+			t.Errorf("opens of the segment got %d, want %d: the bound spent its three attempts on the proof's own open", calls, proofOpen+2)
+		}
+		if calls := r.seam.CallsFor(kit.OpSync, name) - synced; calls != 0 {
+			t.Errorf("the open's syncs of the segment got %d, want 0: the refused open never reached the sync it was opened for", calls)
+		}
+		if after := r.fileBytes(name); !slices.Equal(before, after) {
+			t.Errorf("the refused open changed the segment: got %x, want the bytes it held, %x", after, before)
+		}
+		if !reflect.DeepEqual(st, State{}) {
+			t.Errorf("the refused open returned state %+v, want the zero State: a refusal rebuilds nothing", st)
+		}
+	})
 }

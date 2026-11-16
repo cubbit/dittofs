@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -124,14 +125,95 @@ func (r *reader) ReadAt(name string, buf []byte, off int64) (n int, err error) {
 	// The format file is read by ReadFormat, which answers its own failure;
 	// every name here is a segment the open reaches through the pass.
 	_, id := format.ClassifyName(name)
-	// A range an earlier failed read already collected contains is not named
-	// twice: a scan that narrows a failed read to fewer bytes of the same
-	// place fails the same bytes again, and the open names them once.
-	sr := core.SegmentRange{Segment: id, Off: off, Len: int64(len(buf))}
+	r.unreadable(core.SegmentRange{Segment: id, Off: off, Len: int64(len(buf))})
+	return n, err
+}
+
+// unreadable collects sr as a range no bounded read completed. A range an
+// earlier failed read already collected contains is not named twice: a scan
+// that narrows a failed read to fewer bytes of the same place fails the same
+// bytes again, and the open names them once.
+func (r *reader) unreadable(sr core.SegmentRange) {
 	if !slices.ContainsFunc(r.unread, func(o core.SegmentRange) bool {
 		return o.Segment == sr.Segment && o.Off <= sr.Off && sr.Off+sr.Len <= o.Off+o.Len
 	}) {
 		r.unread = append(r.unread, sr)
+	}
+}
+
+// openSegment opens the segment id's file as the open's other reaches into
+// storage do: under the same bound every read takes, so an open the device
+// does not answer is started again and, when no bounded attempt completes,
+// collected — the file whole, for an open reaches every byte of the segment
+// and names no range of its own, the same name a size it could not measure
+// takes. The sync the flows that open a segment make happens on the handle
+// between the open and the read, so the open stays this method's and the
+// reads below the flow's own.
+func (r *reader) openSegment(id core.SegmentID) (storage.File, error) {
+	name := format.SegmentName(id)
+	var f storage.File
+	_, err := readretry.Do(r.ctx, r.clk, readretry.Attempts, func() error {
+		var ferr error
+		f, ferr = r.fs.Open(name)
+		return ferr
+	})
+	switch {
+	case err == nil:
+		return f, nil
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return nil, err
+	}
+	r.warnUnreadable(name, err)
+	r.unreadable(core.SegmentRange{Segment: id, Off: 0, Len: math.MaxInt64})
+	return nil, err
+}
+
+// ReadAtDirect reads len(buf) bytes of the segment file name holds at off
+// directly — off the device, past the page cache — through the open file f,
+// under the same bound ReadAt takes: a direct read the device does not answer
+// is started again, and a read that ends in io.EOF completed to the file's
+// own end, coming back as ReadAt's short read does.
+//
+// refuse names the caller's rule for a read no bounded attempt completed,
+// and with it the range ends here: warned and collected, so the caller's
+// refusal answer and the open's end check name it as ReadAt's own do. The
+// marker flow — whose refusal keeps the journal closed on a seal no read the
+// device never showed may prove — passes true; the tail's re-read of a record
+// whose first read verified passes false, for its rule is the lost one: the
+// record is handed to the re-append from the copy kept, and a range the
+// device refused names no byte of the open, so it is never collected there.
+//
+// decision: the open stays the caller's, not one opened per attempt inside
+// the bound. The read proves the bytes a sync carried to the device, and
+// the flows sync the segment between opening it and reading — the marker
+// its marker, the tail its records — so a fresh handle per attempt would
+// read beside the very sync the flow made on the handle it holds. The bound
+// retries the read over the handle the flow owns, as the direct read's own
+// contract leaves the refusal's meaning to the tail check. Overturned if a
+// platform is found whose direct reads answer differently per handle.
+func (r *reader) ReadAtDirect(f storage.File, name string, buf []byte, off int64, refuse bool) (n int, err error) {
+	endOfFile := false
+	_, err = readretry.Do(r.ctx, r.clk, readretry.Attempts, func() error {
+		var rerr error
+		n, rerr = f.ReadAtDirect(buf, off)
+		if errors.Is(rerr, io.EOF) {
+			endOfFile = true
+			return nil
+		}
+		return rerr
+	})
+	switch {
+	case endOfFile:
+		return n, io.EOF
+	case err == nil:
+		return n, nil
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return n, err
+	}
+	if refuse {
+		r.warnUnreadable(name, err)
+		_, id := format.ClassifyName(name)
+		r.unreadable(core.SegmentRange{Segment: id, Off: off, Len: int64(len(buf))})
 	}
 	return n, err
 }

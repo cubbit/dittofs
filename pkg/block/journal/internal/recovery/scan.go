@@ -395,14 +395,15 @@ func segSize(rd *reader, id core.SegmentID) (int64, error) {
 	return 0, err
 }
 
-// segmentRecords answers the records of one segment's scan the rebuild
-// indexes: its converted records minus the placements judged — the carriers
-// of the drops a scan set aside, the catalogue's confines and the clone
-// targets whose bodies failed. rebuildIndex feeds its own scans through it,
-// and repairTornPlacement, which re-walks a segment's headers fresh, hands
-// the fresh scan here with the placements the rebuild's own scan of the
-// segment dropped, so the repair's record set is the rebuild's by
-// construction: no record the rebuild confined comes back through a repair.
+// segmentRecords answers the records of one segment's scan the repair
+// folds: its converted records minus the placements judged. The judged set
+// is the REBUILD's own scan's — not the fresh scan's, whose source keeps its
+// confined records out of its Records itself — so repairTornPlacement, which
+// re-reads each attached segment, hands the fresh scan here with the
+// placements the rebuild's scan of the segment dropped: no record the
+// rebuild never fed comes back through a repair. The rebuild's own feed
+// needs none of this: its scan's records exclude every entry it judged
+// before they were buffered, so rebuildIndex feeds its Records straight.
 //
 // The judged offset is the entry's where a catalogue drop named one — a
 // confined record's header is zero where none verified — and the scanned
@@ -426,7 +427,7 @@ func segmentRecords(sc segmentScan, judged []droppedRecord) []index.Record {
 // rebuildDrops answers the placements the rebuild's own scan of segment id
 // set aside: the drops its catalogue confined and its clone targets whose
 // bodies failed. A segment the rebuild attached holds no scan and answered
-// nothing of it, so a repair walking it fresh judges by none.
+// nothing of it, so a repair reading it fresh judges by none.
 func rebuildDrops(st *State, id core.SegmentID) []droppedRecord {
 	for i := range st.Rebuilt.Scans {
 		if st.Rebuilt.Scans[i].ID == id {

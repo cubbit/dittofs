@@ -1,6 +1,7 @@
 package index
 
 import (
+	"cmp"
 	"math"
 	"slices"
 	"testing"
@@ -125,6 +126,100 @@ func TestARepairKeepsTheRunsOfACopyThatStays(t *testing.T) {
 	if gotP, wantP := heldPieces(&got.fs, alice), heldPieces(&want.fs, alice); !slices.Equal(gotP, wantP) {
 		t.Errorf("the repaired index holds:\n got  %+v\n want %+v: the surviving copy re-places the record over what it overwrote", gotP, wantP)
 	}
+}
+
+// TestARepairCarriesTheRunsARebuildWithoutTheTornRecordHolds is the runs
+// half of the repair's identity over chained supersedes: three same-file
+// writes reaching the torn one's window — the middle one torn — must leave
+// the over runs exactly a rebuild that was never fed the torn record holds,
+// which means the repair's fold re-notes the surviving write's supersede
+// over what it overwrote, and the torn record's own runs go with it from
+// both ends: the runs its write raised (a rebuild never fed it holds none)
+// and the chains that name it as the superseded one (a rebuild without it
+// chains the surviving write over what the torn one displaced). The probes
+// are the three shapes the window cuts: the torn write the size of what it
+// overwrites, a smaller one inside two bigger writes, and a bigger one over
+// two smaller.
+//
+// runsCanonical answers the runs in the form a caller reads them: the set
+// keeps its runs in no order and merges only those its own writer produced
+// back to back, so the comparison sorts and merges the runs of one
+// (superseder, superseded) pair before it makes it exact.
+func TestARepairCarriesTheRunsARebuildWithoutTheTornRecordHolds(t *testing.T) {
+	alice := fid(1)
+	rows := []struct {
+		name                    string
+		oldLen, tornLen, newLen int64
+	}{
+		{"the torn write the size of what it overwrites", 8192, 8192, 8192},
+		{"a smaller torn write inside two bigger ones", 16384, 4096, 16384},
+		{"a bigger torn write over two smaller ones", 4096, 16384, 4096},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			old := recd(RecWrite, alice, 5, 5, 1, 0, 0, row.oldLen)
+			torn := recd(RecWrite, alice, 9, 9, 1, 32, 0, row.tornLen)
+			rest := []Record{old, recd(RecWrite, alice, 11, 11, 1, 64, 0, row.newLen)}
+
+			rebuild := func(recs []Record) *Index {
+				t.Helper()
+				ix := New(math.MaxInt64)
+				b := newRebuilder(&ix.fs, &Counters{})
+				for _, r := range recs {
+					if err := b.Feed(r); err != nil {
+						t.Fatalf("Feed(seq %v) = %v", r.Numbers.Seq, err)
+					}
+				}
+				if err := b.Finish(ver(0)); err != nil {
+					t.Fatalf("Finish: %v", err)
+				}
+				return ix
+			}
+
+			want := rebuild(rest)
+			got := rebuild(append(slices.Clone(rest), torn))
+			got.DropTorn(alice, RecordAt{Segment: 1, Offset: 32}, torn, rest)
+
+			gotO, wantO := runsCanonical(runsOf(t, got, alice)), runsCanonical(runsOf(t, want, alice))
+			if !slices.Equal(gotO, wantO) {
+				t.Errorf("the repaired index keeps the over runs %+v, want %+v: the runs a rebuild never fed the torn record holds", gotO, wantO)
+			}
+			if gotP, wantP := heldPieces(&got.fs, alice), heldPieces(&want.fs, alice); !slices.Equal(gotP, wantP) {
+				t.Errorf("the repaired index holds:\n got  %+v\n want %+v", gotP, wantP)
+			}
+		})
+	}
+}
+
+// runsOf answers the file's over runs, unsorted, for the canonical form
+// below to normalise.
+func runsOf(t *testing.T, ix *Index, id core.FileID) []overRun {
+	t.Helper()
+	var over []overRun
+	ix.fs.view(id, func(f *file) { over = slices.Clone(f.held.over) })
+	return over
+}
+
+// runsCanonical sorts runs by superseder, superseded and offset, then merges
+// the runs of one pair back to back: the same answer overOf's own merge
+// gives a caller, whatever order and shape the set happens to keep them in.
+func runsCanonical(rs []overRun) []overRun {
+	slices.SortFunc(rs, func(a, b overRun) int {
+		return cmp.Or(
+			a.by.Compare(b.by),
+			a.was.Compare(b.was),
+			cmp.Compare(a.extent.Off, b.extent.Off),
+		)
+	})
+	out := rs[:0]
+	for _, r := range rs {
+		if n := len(out); n > 0 && out[n-1].by == r.by && out[n-1].was == r.was && extentEnd(out[n-1].extent) == r.extent.Off {
+			out[n-1].extent.Len += r.extent.Len
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // TestATornRemovalTakesItsMarkerWithIt holds the repair's own rule for a

@@ -11,7 +11,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
-	"github.com/cubbit/dittofs/pkg/block/journal/internal/readretry"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
@@ -138,10 +137,11 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 			return fmt.Errorf("%w: segment %d holds a seal-to-prove fate no scan answers", core.ErrCorrupt, fate.ID)
 		}
 
-		f, err := deps.FS.Open(format.SegmentName(fate.ID))
+		f, err := rd.openSegment(fate.ID)
 		if err != nil {
 			// The house read rule: the refusal answers on the ranges the
-			// reader collected, exactly as the open's other reads answer.
+			// reader collected, the segment whole among them, exactly as the
+			// open's other reads answer.
 			return refusedRead(rd, err)
 		}
 
@@ -183,35 +183,25 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 		}
 		markerSyncOf[fate.ID] = markerSyncSpent
 
-		// The marker read, taken straight off the device and under the
-		// read bound. It never goes through the reader — a range the
-		// reader would collect here names the marker, and the refusal it
-		// answers below names it by hand — and its bytes are never classed:
-		// a short file is its own length, and the bytes either decode or
-		// they do not.
+		// The marker read, taken straight off the device through the
+		// reader's direct path and under the read bound, its range
+		// collected when no bounded attempt completes — so the refusal it
+		// answers names what the reader collected, as the open's other
+		// reads do. Its bytes are never classed: a short file is its own
+		// length, and the bytes either decode or they do not.
 		buf := make([]byte, format.SealMarkerSize)
-		var n int
-		_, rerr := readretry.Do(ctx, rd.clk, readretry.Attempts, func() error {
-			var e error
-			n, e = f.ReadAtDirect(buf, sc.End)
-			if errors.Is(e, io.EOF) {
-				return nil // a read to the file's own end completed
-			}
-			return e
-		})
+		n, rerr := rd.ReadAtDirect(f, format.SegmentName(fate.ID), buf, sc.End, true)
 		_ = f.Close()
 		switch {
 		case isContextErr(rerr):
 			return rerr
-		case rerr != nil:
-			// A read no bounded attempt completed refuses the open on the
-			// marker's own range, as read.go's read refusals refuse on
+		case rerr != nil && !errors.Is(rerr, io.EOF):
+			// A direct read no bounded attempt completed refuses the open on
+			// the marker's own range, as read.go's read refusals refuse on
 			// what the reader collected: the marker names a seal no
 			// successor proves, so no marker the device never showed may
 			// seal one.
-			return &core.UnreadableRangesError{Ranges: []core.SegmentRange{{
-				Segment: fate.ID, Off: sc.End, Len: format.SealMarkerSize,
-			}}}
+			return refusedRead(rd, rerr)
 		}
 
 		if _, derr := format.DecodeSealMarker(buf[:n], expect, fate.ID, sc.End); derr == nil {
@@ -267,7 +257,7 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 			// scan names a segment whose tail nothing may speak for.
 			return fmt.Errorf("%w: segment %d holds a fate no scan answers", core.ErrCorrupt, id)
 		}
-		if err := proveTail(ctx, deps.FS, rd, st, expect, sc, fateByID[id], markerSyncOf[id], tornSoFar); err != nil {
+		if err := proveTail(ctx, rd, st, expect, sc, fateByID[id], markerSyncOf[id], tornSoFar); err != nil {
 			return err
 		}
 	}
@@ -287,7 +277,7 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 // prove. Nothing is appended: the flow's only reaches into storage are its
 // reads and, where the marker flow made none, the one sync between the two
 // of them.
-func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect core.JournalID, sc *segmentScan, fate *segmentFate, marker markerSync, tornSoFar map[index.RecordAt]bool) error {
+func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID, sc *segmentScan, fate *segmentFate, marker markerSync, tornSoFar map[index.RecordAt]bool) error {
 	if marker != markerSyncFailed && (sc.SyncedThrough >= sc.RecordsEnd || sc.RecordsEnd <= format.SegmentHeaderSize) {
 		// No record can end past the synced-through the segment's own records
 		// name when the point reaches the last record's end, and a segment
@@ -371,10 +361,11 @@ func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect
 			return nil
 		}
 
-		f, ferr := fs.Open(name)
+		f, ferr := rd.openSegment(sc.ID)
 		if ferr != nil {
 			// The house read rule, as the open's other opens take it: the
-			// refusal answers on the ranges the reader collected.
+			// refusal answers on the ranges the reader collected, the
+			// segment whole among them.
 			return refusedRead(rd, ferr)
 		}
 		var serr error
@@ -413,7 +404,7 @@ func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect
 			// that verified at the first read is re-read there and checked
 			// again.
 			for _, rec := range verified {
-				holds, rerr := tailOnDevice(ctx, f, rd, expect, rec)
+				holds, rerr := tailOnDevice(f, rd, expect, rec)
 				if rerr != nil {
 					_ = f.Close()
 					return rerr
@@ -547,26 +538,34 @@ func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentSca
 // extent, or the removal to the end a truncate's and a delete's reach names.
 // The records to re-apply are every record of the file that reaches the span,
 // from any attached segment — the one the torn record sits in and the named
-// and unverified ones beside it, cross-segment overwrites included — minus
-// the placements the run has judged torn so far, so a good copy of the record
-// at another placement is fed while the torn placement is not, and minus the
-// placements the rebuild's own scan judged — its catalogue's confines and its
-// clone targets whose bodies failed — so a record the rebuild never
-// indexed never comes back through a repair. The index then takes the torn
-// record's own drop with the fold, placements and marker alike.
+// and unverified ones beside it, cross-segment overwrites included — read
+// from the same source the rebuild read each segment by: a named segment
+// whose header verified takes its catalogue, walking only where the catalogue
+// demotes — no verifying footer, an entry its record contradicts — and every
+// unnamed or unverified segment takes the walk. The survivors must come from
+// the rebuild's own source, or the identity breaks at the records the two
+// disagree on: a write whose record header rotted is indexed from its
+// catalogue entry by the rebuild and refused by the walk, so reading the
+// segment the walk's way would drop a durable sealed write the rebuild holds
+// — and with it the repair's own answer. Minus the placements the run has
+// judged torn so far, so a good copy of the record at another placement is
+// fed while the torn placement is not, and minus the placements the
+// rebuild's own scan judged — its catalogue's confines and its clone targets
+// whose bodies failed — so a record the rebuild never indexed never comes
+// back through a repair. The index then takes the torn record's own drop with
+// the fold, placements and marker alike.
 //
-// ponytail: the records to re-apply are re-scanned from disk, one walk of
-// every attached segment's record headers per torn record — the scans the
-// rebuild kept drop their converted records, so a journal of millions of
-// records does not hold them twice. A torn last record is the ordinary
-// result of a power loss mid-append, not a rare verdict of a damaged open, so
-// an ordinary power-loss open of a large journal pays the rebuild's header
-// walk of every attached segment and then, per torn record it finds, this
-// second one — named segments the rebuild read by catalog walked whole here
-// too. Restrict the walk to the segments the file's drop ranges name — the
+// ponytail: the records to re-apply are re-read from disk, once per torn
+// record over every attached segment — the scans the rebuild kept drop their
+// converted records, so a journal of millions of records does not hold them
+// twice. A torn last record is the ordinary result of a power loss
+// mid-append, not a rare verdict of a damaged open, so an ordinary
+// power-loss open of a large journal pays the rebuild's read of every
+// attached segment and then, per torn record it finds, this second one.
+// Restrict the re-read to the segments the file's drop ranges name — the
 // per-(file, segment) notes the rebuild raised already cover every record of
 // the file, so they name every home a copy could sit in — when a large
-// journal's open shows these re-walks in a profile.
+// journal's open shows these re-reads in a profile.
 func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn index.Record, tornSoFar map[index.RecordAt]bool) error {
 	window := torn.Reach()
 	if window.Len <= 0 {
@@ -575,16 +574,49 @@ func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn inde
 		// index holds.
 		return nil
 	}
+	// The named set is the same one the run built for the rebuild and the
+	// classing, and the collect's own condition mirrors the rebuild's
+	// dispatch: there is no force-scan switch here, and a rebuild that
+	// walked a named segment by force is a test's, never the open's — the
+	// identity the repair must reach is the real rebuild's, which read the
+	// catalogue.
+	named := successorSet(st.Attached.Own)
 	var recs []index.Record
-	collect := func(id core.SegmentID) error {
+	collect := func(info SegmentInfo) error {
 		// A read the bound does not clear refuses the open, as the open's
-		// other reads do; the scans the rebuild made of these bytes already
+		// other reads do; the reads the rebuild made of these bytes already
 		// succeeded, so this only refuses where the device stopped answering.
-		sc, err := scanSegment(rd, expect, SegmentInfo{ID: id})
+		var sc segmentScan
+		var err error
+		if !info.Unverified && named[info.ID] {
+			var byCat bool
+			var cerr error
+			sc, byCat, cerr = catalogSegment(rd, expect, info)
+			switch {
+			case cerr != nil:
+				err = cerr
+			case byCat:
+				// The catalogue's answer, the same source the rebuild read.
+			default:
+				// The demotion, the rebuild's own fallback: no verifying
+				// footer — or an entry its record contradicts — sends the
+				// segment to the walk.
+				sc, err = scanSegment(rd, expect, info)
+			}
+		} else {
+			sc, err = scanSegment(rd, expect, info)
+		}
 		if err != nil {
 			return refusedRead(rd, err)
 		}
-		for _, r := range segmentRecords(sc, rebuildDrops(st, id)) {
+		// The judged set keeps the fold to the rebuild's verdicts, whichever
+		// source served the fresh read: the catalogue's confined entries are
+		// named by their entry's record offset and the walk's confined clone
+		// targets by their header's, one shape per source — the source that
+		// confined a record keeps it out of its own Records as well, so the
+		// set answers the day a second read of unchanged bytes ever
+		// disagrees with the first.
+		for _, r := range segmentRecords(sc, rebuildDrops(st, info.ID)) {
 			if r.File != torn.File || tornSoFar[index.RecordAt{Segment: r.Segment, Offset: r.At}] || !reachesOverlap(r.Reach(), window) {
 				continue
 			}
@@ -593,12 +625,14 @@ func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn inde
 		return nil
 	}
 	for _, info := range st.Attached.Own {
-		if err := collect(info.ID); err != nil {
+		if err := collect(info); err != nil {
 			return err
 		}
 	}
+	// A segment whose header slot cannot be judged is read by its records
+	// alone, as the rebuild read it — never offered a catalogue.
 	for _, id := range slices.Concat(st.Attached.Unverified, st.Attached.ZeroHeader) {
-		if err := collect(id); err != nil {
+		if err := collect(SegmentInfo{ID: id, Unverified: true}); err != nil {
 			return err
 		}
 	}
@@ -706,30 +740,23 @@ func tailFirst(rd *reader, expect core.JournalID, seg core.SegmentID, name strin
 // a refusal of the open, for the record below it already verified at its
 // first read and its copy is kept: the record is lost by the device, and the
 // re-append writes it back. This is the one read at open whose refusal does
-// not keep the journal closed — the ceiling read.go's refusal decisions
-// name, withdrawn with theirs when an unread record can be held instead of
-// refused. A short read is the same verdict as disagreeing bytes: the device
-// answered with what it holds. Only the context's error comes back as
-// itself, answered by the caller, so a cancelled open is never taken for a
-// lost record.
-func tailOnDevice(ctx context.Context, f storage.File, rd *reader, expect core.JournalID, rec tailRecord) (holds bool, err error) {
+// not keep the journal closed, so the reader was told not to collect its
+// range — no bytes it reached reach the open's end check — and the ruling
+// lives here with the readers' refusal decisions, withdrawn with theirs when
+// an unread record can be held instead of refused. A short read is the same
+// verdict as disagreeing bytes: the device answered with what it holds. Only
+// the context's error comes back as itself, answered by the caller, so a
+// cancelled open is never taken for a lost record.
+func tailOnDevice(f storage.File, rd *reader, expect core.JournalID, rec tailRecord) (holds bool, err error) {
 	// The whole record, header and body, at the offset its header named: one
 	// read answers the device's copy of the record the first read kept.
 	whole := make([]byte, len(rec.First))
-	var n int
-	_, rerr := readretry.Do(ctx, rd.clk, readretry.Attempts, func() error {
-		var e error
-		n, e = f.ReadAtDirect(whole, rec.At)
-		if errors.Is(e, io.EOF) {
-			return nil // a read to the file's own end completed, short
-		}
-		return e
-	})
+	n, rerr := rd.ReadAtDirect(f, format.SegmentName(rec.Segment), whole, rec.At, false)
 	if isContextErr(rerr) {
 		return false, rerr
 	}
 	if rerr != nil {
-		return false, nil // the device refused the read: the record is lost, never a verdict
+		return false, nil // the device refused the read, or answered short of the file's end: lost, never a verdict
 	}
 	if n < format.RecordHeaderSize {
 		return false, nil // the device answered short of the record's own header

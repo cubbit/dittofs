@@ -67,12 +67,15 @@ func (f *file) repairTorn(window core.Extent, torn Numbers, recs []Record) {
 	// told, and "treated as never written" means the index must hold what a
 	// rebuild that was never fed the record holds — a marker left by its
 	// first replay would have Since yield a delete or truncate of content
-	// the index actually holds. A removal or a mark raised no run, and the
-	// runs of the writes that stayed are still true, so only the torn
-	// record's own are dropped. A surviving copy among the survivors keeps
-	// runs and marker alike: both name the record by version, never its
-	// placement, and the surviving copy's supersede is as true as the
-	// placement the verdict dropped was.
+	// the index actually holds. The torn record's own go at both ends: the
+	// runs its write raised, and the chains naming it as the superseded one,
+	// for a rebuild without the record chains the surviving write over what
+	// it displaced — a chain the fold above re-noted itself. A removal or a
+	// mark raised no run, and the runs of the writes that stayed are still
+	// true, so the drop reaches the torn record's versions alone. A
+	// surviving copy among the survivors keeps runs and marker alike: both
+	// name the record by version, never its placement, and the surviving
+	// copy's supersede is as true as the placement the verdict dropped was.
 	//
 	// decision: this keeps only the runs and markers that are still here. A
 	// drop that emptied the file's held set lost the runs already — the
@@ -88,6 +91,7 @@ func (f *file) repairTorn(window core.Extent, torn Numbers, recs []Record) {
 		return
 	}
 	f.held.dropOverBy(torn.Version, window)
+	f.held.dropOverWas(torn.Version, window)
 	f.markers = slices.DeleteFunc(f.markers, func(m marker) bool { return m.version == torn.Version })
 }
 
