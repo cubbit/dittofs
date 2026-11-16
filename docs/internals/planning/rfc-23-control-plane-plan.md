@@ -820,6 +820,8 @@ func (n *Node) reconcileLoop(ctx context.Context) {
 		}
 		if err == nil && (full || c.Settings != n.seen.Settings) { // only the settings generation re-applies sections
 			err = n.apply(ctx) // fails only on a failed read; a refused section waits for the next generation
+		} else if err == nil && n.smb == nil && n.smbRefused != nil { // D12: nothing serves SMB
+			n.retrySMB(ctx) // applySMB on n.applied's section, on the read's backoff, 1 s doubling to 30 s
 		}
 		if err != nil { // node_reconcile_errors_total (rule 3)
 			full, skip, backoff = true, backoff, min(2*backoff, 30)
@@ -848,8 +850,10 @@ func (n *Node) apply(ctx context.Context) error {
 	n.identity.Apply(settings.Get[identity.Settings](next, n.nodeID))
 	// ... *vfs.Filesystem and the engine, each with its own section
 	if err := n.applySMB(ctx, settings.Get[adaptersettings.SMB](next, n.nodeID)); err != nil { // D12
-		// RFC 23 §2.3, §2.4: reported refused, and not retried until the settings generation
-		// moves, so a lasting port conflict restarts nothing on later ticks
+		// RFC 23 §2.3, §2.4: reported refused; while an adapter serves, not retried until the
+		// settings generation moves, so a lasting port conflict restarts nothing on later ticks.
+		// With nothing serving (n.smb nil), the loop retries it on the read's backoff, so a port
+		// held for a moment at boot, by an old process still exiting, does not leave SMB down
 		n.refused(adaptersettings.SectionSMB, err)
 	}
 	n.applied = next
@@ -1484,7 +1488,8 @@ runs RFC 23's e2e rows.
   RFC says, and benchmarks it at 10⁴ shares, a cold pass and steady share churn, against
   RFC 23 §2.3's bound on applying a change. The sketch's reconcile re-applies settings only when
   the settings generation moves; it retries only a failed read, after a backoff, with a full pass,
-  and a refused section waits for the next generation. A store whose reads fail is a test on the
+  and a refused section waits for the next generation, except an adapter with nothing serving,
+  retried on the read's backoff. A store whose reads fail is a test on the
   injected clock, of the backoff and of the full pass after it, not a benchmark, since each
   recovery is one more cold pass.
 - **O7. A1 reached into RFC 20's code and plans.** `pkg/adapter/settings.Adapter` has `Port`, which
