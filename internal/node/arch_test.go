@@ -267,6 +267,24 @@ func nodeImporters(root string) ([]string, error) {
 	return bad, err
 }
 
+// enginewireImporters returns each non-test file under root that imports
+// enginewire outside the two packages its package doc names: the node and
+// enginetest.
+func enginewireImporters(root string) ([]string, error) {
+	var bad []string
+	err := walkImports(root, false, func(file string, imports []string) {
+		dir := path.Dir(file)
+		if dir == "internal/node" || dir == "pkg/block/engine/enginetest" {
+			return
+		}
+		if slices.Contains(imports, module+"pkg/block/engine/enginewire") {
+			bad = append(bad, file+" imports enginewire")
+		}
+	})
+	slices.Sort(bad)
+	return bad, err
+}
+
 // cliRoots are where the CLI's dependency closure starts, and cliAllowed what
 // of this module it may reach: neither the metadata or block stores, nor the
 // control-plane server, nor anything that reads the host's bootstrap.
@@ -338,6 +356,8 @@ func TestImportRules(t *testing.T) {
 				"internal/cli/cli_test.go imports the node",
 				"internal/node/nodetest2/harness.go imports the node",
 			}},
+		{"who imports enginewire", enginewireImporters, "enginewire-importers",
+			[]string{"pkg/vfs/vfs.go imports enginewire"}},
 		{"the CLI's closure", cliClosure, "cli-closure",
 			[]string{"internal/cli/output reaches pkg/metadata"}},
 		{"the wire types' imports", cliClosure, "apiv1-stdlib",
@@ -739,61 +759,87 @@ func TestAPIExports(t *testing.T) {
 	}
 }
 
-// composeCalls counts the references to enginewire's Compose in the non-test
-// files in dir, under whatever name each file imports the package.
-func composeCalls(dir string) (int, error) {
+// importName returns the name file f imports the package at import path p
+// under, its last element unless renamed, or "" when f does not import it.
+func importName(f *ast.File, p string) string {
+	for _, imp := range f.Imports {
+		if ip, _ := strconv.Unquote(imp.Path.Value); ip == p {
+			if imp.Name != nil {
+				return imp.Name.Name
+			}
+			return path.Base(p)
+		}
+	}
+	return ""
+}
+
+// composeCalls counts, in the non-test files in dir, the references to
+// enginewire's Compose and the engine.Deps composite literals, each package
+// under whatever name each file imports it.
+func composeCalls(dir string) (compose, deps int, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	n := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
 		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
-		name := ""
-		for _, imp := range f.Imports {
-			if p, _ := strconv.Unquote(imp.Path.Value); p == module+"pkg/block/engine/enginewire" {
-				name = "enginewire"
-				if imp.Name != nil {
-					name = imp.Name.Name
-				}
+		wire := importName(f, module+"pkg/block/engine/enginewire")
+		eng := importName(f, module+"pkg/block/engine")
+		named := func(x ast.Expr, pkg, sel string) bool {
+			s, ok := x.(*ast.SelectorExpr)
+			if !ok || s.Sel.Name != sel {
+				return false
 			}
+			id, ok := s.X.(*ast.Ident)
+			return ok && pkg != "" && id.Name == pkg
 		}
 		ast.Inspect(f, func(x ast.Node) bool {
-			if s, ok := x.(*ast.SelectorExpr); ok && s.Sel.Name == "Compose" {
-				if id, ok := s.X.(*ast.Ident); ok && name != "" && id.Name == name {
-					n++
+			switch x := x.(type) {
+			case *ast.SelectorExpr:
+				if named(x, wire, "Compose") {
+					compose++
+				}
+			case *ast.CompositeLit:
+				if named(x.Type, eng, "Deps") {
+					deps++
 				}
 			}
 			return true
 		})
 	}
-	return n, nil
+	return compose, deps, nil
 }
 
-// The node composes the engine through enginewire's Compose exactly once: a
-// copy of the wiring inlined in its place, or a second Compose whose table
-// is not the one the engine's holds act on, is caught.
+// The node references enginewire's Compose exactly once and writes no
+// engine.Deps literal: a node building Deps itself instead of composing, one
+// composing twice, and one composing once but handing engine.New Deps it built
+// itself are caught. A Deps the node builds without a literal, from a
+// declared variable or a constructor of its own, is not.
 func TestNodeComposesOnce(t *testing.T) {
 	for _, tc := range []struct {
-		dir  string
-		want int
+		dir           string
+		compose, deps int
 	}{
-		{".", 1},
-		{"testdata/arch/compose-inline", 0},
-		{"testdata/arch/compose-twice", 2},
+		{".", 1, 0},
+		{"testdata/arch/compose-inline", 0, 1},
+		{"testdata/arch/compose-twice", 2, 0},
+		{"testdata/arch/compose-once-inline-deps", 1, 1},
 	} {
-		got, err := composeCalls(tc.dir)
+		compose, deps, err := composeCalls(tc.dir)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.dir, err)
 		}
-		if got != tc.want {
-			t.Errorf("%s: enginewire.Compose referenced %d times, want %d", tc.dir, got, tc.want)
+		if compose != tc.compose {
+			t.Errorf("%s: enginewire.Compose referenced %d times, want %d", tc.dir, compose, tc.compose)
+		}
+		if deps != tc.deps {
+			t.Errorf("%s: engine.Deps literals %d, want %d", tc.dir, deps, tc.deps)
 		}
 	}
 }

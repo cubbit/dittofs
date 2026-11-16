@@ -1,6 +1,11 @@
 // Package enginewire composes the engine's dependencies over the metadata
 // store and open state. The node and the engine's test fixture both build
 // the engine from it, so the fixture runs the wiring the node ships.
+//
+// decision: this is the one composition code imported by another package:
+// the node and enginetest both build the engine from it, so the fixture runs
+// the wiring the node ships, departing from RFC 8 §2.1's "nothing imports
+// it". Only internal/node and enginetest import it.
 package enginewire
 
 import (
