@@ -164,8 +164,13 @@ held by the compiler: E1's interface assertions (T1.4, T1.6) and the consumers E
   `State.Settings`, and E2's T2.5 and T2.6 read `netbios_name` and `Deps.Secrets`),
   `Deps.Tracer` (E3's T3.1,
   whose `identity.resolve` span is the first span identity opens; E4's
-  `identity.authenticate` reads the same field), `Deps.Logons` (E4), `State.Keytab` (E5),
-  `State.Machine` (E7); `Deps.Issuers` is deferred with `TokenVerifier`. `State.NTLM`, the
+  `identity.authenticate` reads the same field), `Deps.Logons` (E4's T4.5), `State.Keytab` (E5's
+  T5.2), `Deps.Directory` (E6's T6.5), `State.Directory` (E6's T6.3, pending E6's D2),
+  `Clock.After` (E2's T2.6, for its hashing bound's wait; E6's T6.5 waits on it too),
+  `State.Machine` (E7); `Deps.Issuers` is deferred with `TokenVerifier`. Later keys and fields
+  join the types E2 adds: the settings keys `identity.keytab` (E5's T5.2) and
+  `DirectoryStaleGrace` (E6's T6.7), `RequirePAC` on E6's directory record (E5's T5.8), and
+  `Prune` and `Versions` on `SecretProvider` (E5's T5.10). `State.NTLM`, the
   `identity.ntlm` revision, has no reader in E2 or E3: the on-or-off value, by which resolution
   refuses `Secret` callers (E3's T3.10), is the `NTLM` key of `State.Settings`; the revision
   lands with its first reader, pending E2's D6. `Generation` is the one field E1 adds before its
@@ -297,7 +302,7 @@ test/suites.yaml            T1.5  internal/identity/** in the e2e kerberos cell'
 - **Covers:** R10, R11, R12, R13, R14, R15.
 - **Deliverables:** `internal/identity`: `Deps{ Store *kvstore.Store; Clock Clock; Metrics
   *metrics.Registry; Logger *slog.Logger }` (RFC 18 §2.6, D4); `Clock{ Now() time.Time }`, the
-  package's own subset; `State{ Generation uint64 }` (D4); `New(Deps) (*Server, error)`;
+  package's own subset, to which E2's T2.6 adds `After`; `State{ Generation uint64 }` (D4); `New(Deps) (*Server, error)`;
   `Apply(State) error`, swapping an `atomic.Pointer`; `Start(ctx) error`; `Stop(ctx) error`;
   the stubbed `SignIn`, `Spell`, `Find`, `Resolve`, `Lookup`, `VerifyPassword` and `Account`
   (D7); `var _` assertions for the four interfaces; RFC 18 §2.6's `decision:` at `Server`.
