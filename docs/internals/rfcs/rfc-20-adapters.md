@@ -1018,8 +1018,9 @@ type Deps struct {
 	Metrics *metrics.Registry   // RFC 25 §8.2; nil registers nothing
 	Tracer  trace.Tracer        // RFC 25 §8.1: spans; nil is the no-op tracer
 	// SampleRatio is RFC 25 §6.3's tracing.sample_ratio, which the root passes
-	// beside Tracer: the adapter samples a request on the trace ID it draws and
-	// opens spans only for one it sampled (§10.2). 0 samples none.
+	// beside Tracer, and 0 while tracing.endpoint is unset (RFC 25 §8.1): the
+	// adapter samples a request on the trace ID it draws and opens spans only
+	// for one it sampled (§10.2). 0 samples none.
 	SampleRatio float64
 	Logger  *slog.Logger        // nil discards
 	// Watch registers a loop with the node's liveness watchdog (RFC 25 §3.5)
@@ -1049,6 +1050,9 @@ type Loop interface {
 	Idle()
 	Close()
 }
+
+func ContextWithTraceID(ctx context.Context, id trace.TraceID) context.Context // ctx carrying the trace ID drawn for a request the adapter sampled, which the root's ID generator gives its span (§10.2, RFC 25 §8.1)
+func TraceIDFromContext(ctx context.Context) (trace.TraceID, bool)              // the ID ContextWithTraceID put in ctx
 ```
 
 Each protocol has one public constructor. It validates the settings, builds its
@@ -4272,7 +4276,10 @@ nfs4 COMPOUND                      request span: frame → send, opened by the p
 - **The request span** is opened when a record is framed and ended when its
   reply is handed to the writer, or when it is dropped. The sampling decision
   is made there, once, and travels with the context
-  ([RFC 25 §6.3](rfc-25-observability.md#6.3%20Sampling%20and%20cost)).
+  ([RFC 25 §6.3](rfc-25-observability.md#6.3%20Sampling%20and%20cost)): a
+  sampled request's context carries its span and an unsampled one's none, and
+  no component below opens a span without a sampled parent
+  ([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)).
 - **One child per operation** in a compound, opened by the trace middleware
   (§4.7) and named `adapter.<protocol>.<operation>`, the operation's name as its
   table gives it ([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)); a
