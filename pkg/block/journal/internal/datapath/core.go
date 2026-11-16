@@ -28,6 +28,14 @@ type Deps struct {
 	Streams     int   // number of append streams, at least 1
 	SegmentCap  int64 // size a segment is accounted at
 	ExtentLimit int64 // the placement index's entry bound
+	// LastSegment is the highest segment id the directory holds, the figure
+	// the spare maker draws its first id above so a fresh spare never meets a
+	// rebuilt segment's id. Zero keeps the drawing fresh — the answer of a
+	// caller opening a directory with no segments, which the production open
+	// is today; a caller that rebuilds a directory's state passes the highest
+	// id its attach pass found, or the pool's spares collide with the rebuilt
+	// ids and no spare readies.
+	LastSegment core.SegmentID
 	// MaxBytes is the journal's configured maximum local footprint, in
 	// bytes: the whole segments WriteAt's admission reserves against and
 	// the spare maker raises UsedBytes under. Zero keeps the maker
@@ -505,7 +513,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	if maxBytes > 0 {
 		makerBytes = maxBytes
 	}
-	maker := segment.NewMaker(fs, state.Set, makerBytes, 0, deps.Log)
+	maker := segment.NewMaker(fs, state.Set, makerBytes, deps.LastSegment, deps.Log)
 	// The pool asks the read-only check before each spare it makes, so a
 	// read-only journal makes none (RFC 1 §5.4). The headroom's spare class
 	// is sized by the records it holds, whole spares at the charge the
