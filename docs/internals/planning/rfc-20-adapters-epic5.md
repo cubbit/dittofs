@@ -365,10 +365,12 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
     `link` is what the pipeline reads of its connection: `ctx`, the connection's context;
     `remote netip.Addr`, the budgets' key; `set settings.Settings`, the snapshot loaded at
     accept (D22); `out func(msg *resources.Buf, key, before uint64) error`, the writer's
-    enqueue; `close func(err error)`, `Conn.Close`; and `idle func()`, which the pipeline
-    calls each time nothing runs, is held, is parked or waits for a status's buffer any more,
-    the moment `wait` returns, for the idle timeout: E4's T4.7a adds it to `link`, an edit to
-    `pipeline.go` it owns (the epic 4 document's D8).
+    enqueue of a buffer that holds the reply's body alone, which the writer frames with
+    `Framer.Frame` (the RFC 20 amendment, `docs/rfc-20-e6-gaps`); `close func(err error)`,
+    `Conn.Close`; and `idle func()`, which the pipeline calls each time nothing runs, is
+    held, is parked or waits for a status's buffer any more, the moment `wait` returns, for
+    the idle timeout: E4's T4.7a adds it to `link`, an edit to `pipeline.go` it owns (the
+    epic 4 document's D8).
   - `(p *pipeline) serve(rec *resources.Buf)`, called by the reader only, one record at a
     time.
   - `(p *pipeline) drain()`, `(p *pipeline) wait(ctx context.Context) error`, which returns
@@ -601,7 +603,9 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   `BufPool` hands out no buffer without a reservation, and RFC 24 §3.3, as this pull request
   amends it, has every reply reserved from the reply pool, the receive reservation's overhead
   being the request's own. **The pipeline calls `Get` on the reply pool for every reply, of
-  the bound plus the header.** A small request is then charged 12 KiB twice while it runs.
+  `Bound() + ReplyLen(h)`**, `ReplyLen` being the most the reply's header, a status-only body,
+  `Chain`'s padding and `Wrap`'s transform add (the RFC 20 amendment, `docs/rfc-20-e6-gaps`).
+  A small request is then charged 12 KiB twice while it runs.
   **A reply that carries a status alone and holds no reservation yet (a refusal before the
   reply was reserved, or R24's delay once a reservation's wait ends) waits for its buffer at
   most 30 s from when it starts waiting, holding no reply reservation (D8); past that its
@@ -1228,11 +1232,14 @@ registry. Nothing else is exported.
   constructor of a `link`'s `out` and `close` and checks that `out` never blocks, also past
   its queue's bound, takes the message's reference whatever it returns, fails only once
   closed, and sends a message handed with `before` ahead of the reply of that key; and the
-  recorder that passes it, which E4's tests reach through `hooks_test.go` to run the suite on
-  E4's writer. Then, in `pipeline.go`, `link`, `shared`, `pipeline` and D1's functions:
+  recorder that passes it, which frames each record it passes with `Framer.Frame`, and which
+  E4's tests reach through `hooks_test.go` to run the suite on E4's writer. Then, in
+  `pipeline.go`, `link`, `shared`, `pipeline` and D1's functions:
   `withDefaults` (R6, D6, D25), `serve` as D8 splits it, one request from `Route` to `out` in
-  RFC 20 §4.7's order, D6's paths (an error before a table, an `Unwrap` refusal wrapped under
-  the header it returned and that of a header that failed `Decode` not passed to `Wrap`, as
+  RFC 20 §4.7's order, a message's arguments read from `HeaderCodec.Args` (the RFC 20
+  amendment, `docs/rfc-20-e6-gaps`), D6's paths (an error before a table, an `Unwrap` refusal
+  wrapped under the header it returned and that of a header that failed `Decode` not passed
+  to `Wrap`, as
   RFC 20 §5.5 says, `Unwrap`'s nil header closing the connection), decode errors wrapped in
   `ErrDecode` (D7), a table's
   series resolved at its first `Route` and an empty `Protocol` closing the connection (D18),
@@ -1413,15 +1420,17 @@ registry. Nothing else is exported.
 - **Deliverables:** in `compound.go`, the walk, the judgment and the runner.
   `members(row *Op, inv Invocation, rest []byte, v Version)` refuses a `Count` past the row's
   `MaxMembers` with `ErrTooLong` before it reads a member (D10), decodes up to `Count`
-  members with their rows, returns those that decoded with the index and error of the first
+  members with their rows, each member's arguments from `HeaderCodec.Args`, returns those
+  that decoded with the index and error of the first
   that did not or has no row, and returns none, with the compound's decode error, when bytes
   are left after the last; a chain's walk takes each header at the `Next` of the one before;
   every step of both is checked as R93 says. `judge(ms, r)` takes each member's role from
   `Op.Role` or its `Invocation.Role`, counts a member that did not decode as refused,
   collects every `Invocation.Handle`, and answers whether the compound runs whole. The runner,
-  for a compound row: the members decoded, one reply buffer of the bounds' sum through
-  `reserveReply`, answered `ErrReplyTooBig` when its charge passes a quarter of the reply
-  pool's ceiling (D11), the members run
+  for a compound row: the members decoded, one reply buffer of their `Bound() +
+  ReplyLen(h)` summed through `reserveReply`, and each member's own reservation the same
+  formula, answered `ErrReplyTooBig` when its charge passes a quarter of the reply pool's
+  ceiling (D11), the members run
   in turn through T5.2b's checks and the chain, the `Request` carried between them, the first
   failure ending the reply; while draining, read once, `judge` first. For a chain: each member
   decoded, unwrapped, admitted and looked up at its own offset, its admission released once
