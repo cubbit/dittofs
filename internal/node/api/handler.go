@@ -37,11 +37,15 @@ type request[B any] struct {
 // none is the body of a request that carries none.
 type none struct{}
 
-// answer is what a call sends: its status, its headers and its body.
+// answer is what a call sends: its status, its headers and its body; or,
+// for a long poll that must wait, park, which handle runs for the answer to
+// send, its write deadline moved past wait.
 type answer struct {
 	status int
 	header http.Header
 	body   []byte
+	park   func(context.Context) (answer, error)
+	wait   time.Duration
 }
 
 // adapter runs a row's handler for a caller that holds the row's right, and
@@ -53,11 +57,7 @@ type adapter func(ctx context.Context, s *Server, r *http.Request, id [16]byte) 
 // read adapts a read: its answer is 200 with what h returns.
 func read[R any](h func(context.Context, request[none]) (R, error)) adapter {
 	return func(ctx context.Context, _ *Server, _ *http.Request, id [16]byte) (answer, error) {
-		resp, err := h(ctx, request[none]{ID: id})
-		if err != nil {
-			return answer{}, err
-		}
-		return jsonAnswer(http.StatusOK, resp)
+		return jsonOr(h(ctx, request[none]{ID: id}))
 	}
 }
 
@@ -79,6 +79,14 @@ func call[B any](h func(context.Context, request[B]) (answer, error)) adapter {
 func decodeRequest[B any](r *http.Request, id [16]byte) (request[B], error) {
 	rq := request[B]{ID: id}
 	return rq, decode(http.MaxBytesReader(nil, r.Body, maxBody), &rq.Body)
+}
+
+// jsonOr is 200 with v, or err.
+func jsonOr(v any, err error) (answer, error) {
+	if err != nil {
+		return answer{}, err
+	}
+	return jsonAnswer(http.StatusOK, v)
 }
 
 func jsonAnswer(status int, v any) (answer, error) {
@@ -106,7 +114,6 @@ func requestID(ctx context.Context) string {
 func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 	start := time.Now()
 	ctx := context.WithValue(r.Context(), requestIDKey{}, rand.Text())
-	ctx = context.WithValue(ctx, controllerKey{}, http.NewResponseController(w))
 	rt, id := pick(rows, r)
 	op := "unmatched"
 	if rt != nil {
@@ -114,6 +121,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 	}
 	ctx, span := s.tracer.Start(ctx, op)
 	a, err := s.run(ctx, r, rt, id)
+	if err == nil && a.park != nil {
+		// A parked poll holds no call slot: once calls are bounded, the
+		// slot this call holds is released here, before it parks. Its
+		// write deadline, the wall clock's whatever clock the wait is on,
+		// moves past its wait, so the write timeout that bounds every
+		// other call does not cut it off.
+		if err = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(a.wait + s.api.WriteTimeout)); err == nil {
+			a, err = a.park(ctx)
+		}
+	}
 	outcome := "ok"
 	if err != nil {
 		p, named := problemOf(err)

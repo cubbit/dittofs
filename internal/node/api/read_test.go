@@ -3,9 +3,10 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -77,6 +78,9 @@ func TestListingResumesFromKey(t *testing.T) {
 	got = append(got, names)
 	s.netgroups(t, "a", "c")
 	for next != "" {
+		if len(got) == 10 {
+			t.Fatalf("listing four records two a page: still paging after %d pages, got %q", len(got), got)
+		}
 		names, next = s.tags(t, "?limit=2&after="+url.QueryEscape(next))
 		got = append(got, names)
 	}
@@ -165,28 +169,16 @@ func TestSecretReadsAsReference(t *testing.T) {
 }
 
 type polled struct {
-	status int
-	body   []byte
-	err    error
+	reply
+	err error
 }
 
-// poll sends GET path in the background and delivers its answer.
-func (s *served) poll(t *testing.T, path string) <-chan polled {
+// poll sends GET path under ctx in the background and delivers its answer.
+func (s *served) poll(ctx context.Context, path string) <-chan polled {
 	ch := make(chan polled, 1)
 	go func() {
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, s.url+path, nil)
-		if err != nil {
-			ch <- polled{err: err}
-			return
-		}
-		resp, err := s.client.Do(req)
-		if err != nil {
-			ch <- polled{err: err}
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-		b, err := io.ReadAll(resp.Body)
-		ch <- polled{resp.StatusCode, b, err}
+		r, err := s.send(ctx, http.MethodGet, path, "")
+		ch <- polled{r, err}
 	}()
 	return ch
 }
@@ -222,7 +214,7 @@ func TestParkedPollAnswersOnTheClock(t *testing.T) {
 	s.putKnob(t, id, "a", 0)
 	base := s.clock.Pending()
 
-	ch := s.poll(t, knobAt(id)+"?wait=30s")
+	ch := s.poll(t.Context(), knobAt(id)+"?wait=30s")
 	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
 	s.putKnob(t, id, "b", 1)
 	select {
@@ -235,7 +227,7 @@ func TestParkedPollAnswersOnTheClock(t *testing.T) {
 		t.Errorf("poll after the change: answered %d %s err %v, want 200 at generation 2", p.status, p.body, p.err)
 	}
 
-	ch = s.poll(t, knobAt(id)+"?wait=5s")
+	ch = s.poll(t.Context(), knobAt(id)+"?wait=5s")
 	eventually(t, "the second poll parks", func() bool { return s.clock.Pending() == base+1 })
 	s.clock.Advance(5 * time.Second)
 	if p := answered(t, "poll past its wait", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":2,"spec":{"value":"b"}}` {
@@ -243,16 +235,20 @@ func TestParkedPollAnswersOnTheClock(t *testing.T) {
 	}
 }
 
-// ?wait= is a duration above 0 and at most 60 s.
+// ?wait= is a duration above 0 and at most 60 s, given once, and a read
+// takes no other query parameter.
 func TestWaitBounds(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
-	for _, w := range []string{"61s", "0s", "-1s", "soon"} {
+	for _, tc := range []struct{ q, field string }{
+		{"wait=61s", "wait"}, {"wait=0s", "wait"}, {"wait=-1s", "wait"}, {"wait=soon", "wait"},
+		{"wait=5s&wait=junk", "wait"}, {"wiat=5s", "wiat"},
+	} {
 		// Polled, so a wait accepted in error parks and is reported, not
 		// waited out.
-		r := answered(t, "GET knob?wait="+w, s.poll(t, knobAt(uuid.NewString())+"?wait="+w))
+		r := answered(t, "GET knob?"+tc.q, s.poll(t.Context(), knobAt(uuid.NewString())+"?"+tc.q))
 		var p apiv1.Problem
-		if err := json.Unmarshal(r.body, &p); err != nil || r.status != http.StatusBadRequest || p.Field != "wait" {
-			t.Errorf("GET knob?wait=%s: answered %d %s, want 400 naming wait", w, r.status, r.body)
+		if err := json.Unmarshal(r.body, &p); err != nil || r.status != http.StatusBadRequest || p.Field != tc.field {
+			t.Errorf("GET knob?%s: answered %d %s, want 400 naming %s", tc.q, r.status, r.body, tc.field)
 		}
 	}
 	if r := s.do(t, http.MethodGet, knobAt(uuid.NewString()), ""); r.status != http.StatusOK || string(r.body) != `{"generation":0,"spec":{"value":""}}` {
@@ -267,10 +263,10 @@ func TestParkedPollsAreBounded(t *testing.T) {
 	base := s.clock.Pending()
 	var parked []<-chan polled
 	for range 256 {
-		parked = append(parked, s.poll(t, knobAt(id)+"?wait=30s"))
+		parked = append(parked, s.poll(t.Context(), knobAt(id)+"?wait=30s"))
 	}
 	eventually(t, "256 polls park", func() bool { return s.clock.Pending() == base+256 })
-	next := s.poll(t, knobAt(id)+"?wait=30s")
+	next := s.poll(t.Context(), knobAt(id)+"?wait=30s")
 	var refused polled
 	eventually(t, "the 257th poll answers or parks", func() bool {
 		select {
@@ -293,6 +289,20 @@ func TestParkedPollsAreBounded(t *testing.T) {
 			t.Errorf("parked poll %d past its wait: answered %d %s, want 200", i, p.status, p.body)
 		}
 	}
+	// Each answered poll gave its slot back, so the next one parks.
+	again := s.poll(t.Context(), knobAt(id)+"?wait=30s")
+	var early polled
+	eventually(t, "a poll after the 256 drained answers or parks", func() bool {
+		select {
+		case early = <-again:
+			return true
+		default:
+			return s.clock.Pending() == base+1
+		}
+	})
+	if early.status != 0 {
+		t.Errorf("a poll after the 256 drained: answered %d %s, want it parked", early.status, early.body)
+	}
 }
 
 // A parked poll outlives the write timeout that bounds every other call.
@@ -302,7 +312,7 @@ func TestParkedPollOutlivesWriteTimeout(t *testing.T) {
 	id := uuid.NewString()
 	s.putKnob(t, id, "a", 0)
 	base := s.clock.Pending()
-	ch := s.poll(t, knobAt(id)+"?wait=30s")
+	ch := s.poll(t.Context(), knobAt(id)+"?wait=30s")
 	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
 	// The write timeout is the HTTP server's, on the wall clock, which no
 	// test clock moves: this bounded wait is the assertion that the parked
@@ -324,11 +334,11 @@ func TestReadOnAnotherNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	caller, _ := one(entity.RoleOperator)
-	first := serve(t, caller, func(d *api.Deps) { d.Store, d.Reads = disk.cp, disk.cp })
+	first := serve(t, caller, disk.use)
 	// The second node is the API alone, since a test watches one harness.
 	srv := api.NewWithTestRows(api.Deps{Addr: "127.0.0.1:0", MetricsAddr: "127.0.0.1:0", Metrics: metrics.New("test", "test"),
 		Logger: slog.New(slog.NewTextHandler(t.Output(), nil)), Authenticate: caller, Live: func() bool { return true },
-		Store: second.ControlPlane(), Reads: second.ControlPlane(), Clock: first.clock, Node: testNode})
+		Store: second.ControlPlane(), Clock: first.clock, Node: testNode})
 	addr, _, err := srv.Start()
 	if err != nil {
 		t.Fatal(err)
@@ -340,10 +350,123 @@ func TestReadOnAnotherNode(t *testing.T) {
 	})
 	other := &served{url: "http://" + addr.String(), client: first.client}
 	id := uuid.NewString()
+	if r := other.do(t, http.MethodGet, knobAt(id), ""); r.status != http.StatusOK || string(r.body) != `{"generation":0,"spec":{"value":""}}` {
+		t.Fatalf("GET knob on the second node before the write: answered %d %s, want 200 at generation 0", r.status, r.body)
+	}
 	if r := first.do(t, http.MethodPut, knobAt(id), `{"spec":{"value":"on"}}`, "If-None-Match", "*"); r.status != http.StatusOK {
 		t.Fatalf("PUT knob on the first node: answered %d %s", r.status, r.body)
 	}
 	if r := other.do(t, http.MethodGet, knobAt(id), ""); r.status != http.StatusOK || string(r.body) != `{"generation":1,"spec":{"value":"on"}}` {
 		t.Errorf("GET knob on the second node: answered %d %s, want 200 at generation 1", r.status, r.body)
+	}
+}
+
+// A GET answers its record's tag as its ETag, which a PUT's If-Match then
+// names.
+func TestReadETag(t *testing.T) {
+	s := serve(t, as(entity.RoleOperator, false))
+	id := uuid.NewString()
+	s.putKnob(t, id, "a", 0)
+	r := s.do(t, http.MethodGet, knobAt(id), "")
+	if r.status != http.StatusOK || r.header.Get("ETag") != `"1"` {
+		t.Fatalf("GET knob: answered %d %s ETag %q, want 200 ETag \"1\"", r.status, r.body, r.header.Get("ETag"))
+	}
+	if p := s.do(t, http.MethodPut, knobAt(id), `{"spec":{"value":"b"}}`, "If-Match", r.header.Get("ETag")); p.status != http.StatusOK {
+		t.Errorf("PUT knob with the ETag GET read: answered %d %s, want 200", p.status, p.body)
+	}
+}
+
+// A first read that already answers the wait answers at once, never
+// parking, and a row may take a wait word that names no duration.
+func TestWaitAlreadyDone(t *testing.T) {
+	s := serve(t, as(entity.RoleViewer, false))
+	id := uuid.NewString()
+	s.putKnob(t, id, api.KnobOn, 0)
+	base := s.clock.Pending()
+	p := answered(t, "GET knob?wait=on with the knob on", s.poll(t.Context(), knobAt(id)+"?wait="+api.KnobOn))
+	if p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":1,"spec":{"value":"on"}}` || s.clock.Pending() != base {
+		t.Errorf("GET knob?wait=on with the knob on: answered %d %s err %v, %d waits on the clock; want 200 at generation 1 and %d waits", p.status, p.body, p.err, s.clock.Pending(), base)
+	}
+
+	other := uuid.NewString()
+	s.putKnob(t, other, "off", 0)
+	ch := s.poll(t.Context(), knobAt(other)+"?wait="+api.KnobOn)
+	eventually(t, "the poll on the knob that is off parks", func() bool { return s.clock.Pending() == base+1 })
+	s.putKnob(t, other, api.KnobOn, 1)
+	s.clock.Advance(time.Second)
+	if p := answered(t, "poll once the knob is on", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":2,"spec":{"value":"on"}}` {
+		t.Errorf("GET knob?wait=on once the knob turned on: answered %d %s err %v, want 200 at generation 2", p.status, p.body, p.err)
+	}
+}
+
+// Stop answers a parked poll with its last read rather than waiting out
+// its wait.
+func TestStopAnswersParkedPoll(t *testing.T) {
+	var srv *api.Server
+	s := serveWith(t, as(entity.RoleViewer, false), func(v *api.Server) { srv = v })
+	id := uuid.NewString()
+	s.putKnob(t, id, "a", 0)
+	base := s.clock.Pending()
+	ch := s.poll(t.Context(), knobAt(id)+"?wait=30s")
+	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
+	// The poll waits on the test clock, which nothing advances, so this
+	// bounded wait is the assertion that Stop does not wait the poll out.
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := srv.Stop(ctx); err != nil {
+		t.Errorf("Stop with a parked poll: %v, want nil", err)
+	}
+	if p := answered(t, "the parked poll on Stop", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":1,"spec":{"value":"a"}}` {
+		t.Errorf("parked poll on Stop: answered %d %s err %v, want 200 with its last read", p.status, p.body, p.err)
+	}
+}
+
+// A node with no clock refuses a read that would park 503 unavailable.
+func TestWaitWithNoClock(t *testing.T) {
+	s := serve(t, as(entity.RoleViewer, false), func(d *api.Deps) { d.Clock = nil })
+	p := answered(t, "GET knob?wait=5s with no clock", s.poll(t.Context(), knobAt(uuid.NewString())+"?wait=5s"))
+	if p.err != nil || p.status != http.StatusServiceUnavailable || p.problem(t).Code != apiv1.CodeUnavailable {
+		t.Errorf("GET knob?wait=5s with no clock: answered %d %s err %v, want 503 unavailable", p.status, p.body, p.err)
+	}
+}
+
+// A parked poll whose caller goes away ends its call.
+func TestCancelledPollEnds(t *testing.T) {
+	s := serve(t, as(entity.RoleViewer, false))
+	id := uuid.NewString()
+	base := s.clock.Pending()
+	ctx, cancel := context.WithCancel(t.Context())
+	ch := s.poll(ctx, knobAt(id)+"?wait=30s")
+	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
+	cancel()
+	if p := answered(t, "the cancelled poll", ch); !errors.Is(p.err, context.Canceled) {
+		t.Fatalf("cancelled poll: answered %d %s err %v, want the client's cancellation", p.status, p.body, p.err)
+	}
+	eventually(t, "the cancelled poll's call ends", func() bool {
+		for _, sp := range s.spans.Ended() {
+			if sp.Name() == "GET /api/v1/knobs/{id}" {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// A cursor naming a key outside its listing's range is refused, naming
+// after; one inside it resumes there.
+func TestCursorOutsideListing(t *testing.T) {
+	s := serve(t, as(entity.RoleViewer, false))
+	s.netgroups(t, "b", "d")
+	cursor := func(key string) string {
+		return base64.RawURLEncoding.EncodeToString(append([]byte{1}, key...))
+	}
+	for _, key := range []string{"0", api.TagsTo, "~"} {
+		r := s.do(t, http.MethodGet, "/api/v1/tags?after="+cursor(key), "")
+		if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != "after" {
+			t.Errorf("GET tags after %q: answered %d field %q, want 400 naming after", key, r.status, p.Field)
+		}
+	}
+	if names, _ := s.tags(t, "?after="+cursor("b")); !slices.Equal(names, []string{"d"}) {
+		t.Errorf("GET tags after b: %q, want [d]", names)
 	}
 }

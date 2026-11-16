@@ -82,7 +82,6 @@ func serveWith(t *testing.T, authenticate func(*http.Request) (auth.Caller, erro
 		Authenticate: authenticate,
 		Store:        s.store,
 		SigningKey:   signingKey("installation-a"),
-		Reads:        s.store,
 		Clock:        s.clock,
 		Node:         testNode,
 		Tracer:       sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(s.spans)).Tracer("api"),
@@ -132,8 +131,8 @@ type reply struct {
 	body   []byte
 }
 
-// do sends method on path with body and the headers hdr names in pairs, a
-// name and its value.
+// send sends method on path with body and the headers hdr names in pairs, a
+// name and its value, under ctx.
 func (s *served) send(ctx context.Context, method, path, body string, hdr ...string) (reply, error) {
 	req, err := http.NewRequestWithContext(ctx, method, s.url+path, strings.NewReader(body))
 	if err != nil {
