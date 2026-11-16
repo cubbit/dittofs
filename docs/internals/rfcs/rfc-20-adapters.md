@@ -3189,7 +3189,11 @@ deadline (§6.4). A failed write closes the connection.
 **Order where the protocol needs it.** When answering a request makes the
 service send a callback on the same connection — an SMB lease break to the very
 client whose request caused it — the callback is queued ahead of that request's
-reply, so the client never sees an answer before the break it depends on. That
+reply, so the client never sees an answer before the break it depends on. The
+callback goes ahead of its request's reply when it is queued while that reply
+still waits; one queued once the reply is being written lands behind it. A
+break that needs an acknowledgement holds its request until the break ends
+([RFC 22 §6.3](rfc-22-smb.md#6.3%20Breaks)), so it is always queued first. That
 is the only order the writer keeps between messages; every other reply goes out
 as it completes.
 
