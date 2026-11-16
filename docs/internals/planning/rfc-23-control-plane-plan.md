@@ -1194,7 +1194,7 @@ API write commits in, and a share's removal steps past the mark.
 
 ### Epic 3 — The node 🔀
 
-**Epic 3 estimate: 11 subtasks, 29 man-days.**
+**Epic 3 estimate: 11 subtasks, 29.5 man-days.**
 
 `node.New` composes what §1.1's dependency limits name, and the node starts, reconciles, reports
 and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.

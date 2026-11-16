@@ -9,7 +9,7 @@ root's duties; [RFC 25](../rfcs/rfc-25-observability.md) §3.5 and §3.6, the pa
 loops and readiness need; [RFC 13](../rfcs/rfc-13-configuration.md) §2.2 and
 [RFC 28](../rfcs/rfc-28-journal-format.md) §2.1 as a consumer of the node identity.
 **Track:** A.
-**Epic 3 estimate: 11 subtasks, 29 man-days.**
+**Epic 3 estimate: 11 subtasks, 29.5 man-days.**
 **Depends on:** S1 (E1 merged): the node's surface (`New`, `Node`, `Config`, `Start`, `Stop`) and
 its export pin, and `dfs start` over the stub. E2 provides what the node reads and writes: the
 counters, the node and node-status records through its node view, the operation record, its
@@ -98,7 +98,7 @@ the journal's knowledge of `node-id`; the harness; the reconcile benchmark.
 - **S1**, E1 merged: v1 gone, the node's surface frozen.
 - **S2**, this epic's checkpoint: the node starts and reconciles; RFC 20's plan's epic 7 starts.
 - **S3**, adapters serve through the node, outside RFC 23's plan.
-- **X1**, the RFC 13 plan's epic 2: the node identity.
+- **X1**, the RFC 13 plan's bootstrap and secrets, its epics 2 and 4; here, its node identity.
 - **X3**, the RFC 13 plan's epic 5: `apply` filled on `settings.Diff` and `Get`.
 
 ## 2. How the general rules apply
@@ -161,6 +161,7 @@ that subtasks and tests can cite them.
 | R15 | Step 5 starts open state with the built filesystem as its `Sink`, raising the node epoch, then the engine with the whole set of attached shares in one call | MUST | RFC 23 §2.2 (step 5); RFC 16 §3 | T3.3 |
 | R16 | Step 6 starts `*vfs.Filesystem`, then runs step 3 of every removal a crash interrupted, `JoinShare` then `DropShare`, before any adapter serves | MUST | RFC 23 §2.2 (step 6); RFC 16 §2.3.2 | T3.6 |
 | R17 | Step 7 starts the operation runner, which resumes the operations this node holds | MUST | RFC 23 §2.2 (step 7), §4.6 | T3.4 |
+| R18 | No adapter starts before the first full reconcile completes | withdrawn | RFC 23 §2.2 (steps 8, 9): this epic builds no adapter; RFC 20's plan's epic 7 and E8 own it | — |
 | R19 | Readiness turns true once every adapter the records enable is serving or was refused at configured; with none enabled, once the first full reconcile completes | MUST | RFC 23 §2.2 | T3.3 |
 | R20 | A failure at any start step stops the start, closes what earlier steps opened in reverse but the health listener and the store, raises `start_failed` and leaves `/health/ready` answering `not_ready`; `Stop` then closes the health listener just before the store | MUST | RFC 23 §2.2; RFC 25 §3.6 | T3.3 |
 | R21 | `Stop` turns readiness false and stops reconcile, then the runner (each operation left at its last durable step), the filesystem (`Drain`, then `Stop`), the engine, open state after the engine, the API listener, and the metadata store last | MUST | RFC 23 §2.2; CP4 | T3.3 |
@@ -206,19 +207,18 @@ that subtasks and tests can cite them.
 | R40 | The operation record chooses no driver for work its owner drives, and its progress is read from the owner's durable cursor | MUST NOT | RFC 23 §4.6; CP7 | T3.4, T3.6 |
 | R41 | Every state change of an operation the runner records commits through `Write` with its audit record | MUST | RFC 23 §6; RFC 16 §3 | T3.4 |
 | R42 | A share's deletion is driven past the mark to its end and resumed at start; its operation ends when the removal does | MUST | RFC 23 §3.2, §4.6; RFC 16 §2.3.2 | T3.6 |
+| R52 | An operation's last step can write in the transaction that ends it, as `identity.nt-hash-delete`'s sets `Installation.NTLMOff`'s `Deleted`; a failed end commits neither the end nor its writes | MUST | RFC 23 §4.1 | T3.4 |
+| R53 | A failed operation carries its owner's error, a succeeded one its result, and its progress is read from the owner's cursor | MUST | RFC 23 §4.6 | T3.4 |
 | R43 | A user's or a group's deletion drops its grants, memberships and quotas in batches from the mark, resumed at start; its operation ends when the batches do | MUST | RFC 23 §3.5; RFC 16 §3 | T3.4 |
 
 **The sweep, the journal and the bound**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
+| R44 | RFC 23's own section as a typed struct with defaults and `Validate` | withdrawn | moved to E5 and X3 (D9) | — |
 | R45 | The node runs the expiry sweep with the audit retention and exports its idempotency deletions as `api_idempotency_records_deleted_total` | MUST | RFC 23 §6, §11; RFC 23 plan §5 epic 3 | T3.8 |
 | R46 | A journal's attach knows `node-id` and `node-id.tmp` as its own files, and neither logs nor refuses them as unrecognised | MUST | RFC 28 §2.1; RFC 23 plan §5 epic 3 | T3.10 |
 | R47 | A live change reaches the node within 5 s, measured by a full reconcile at 10⁴ shares, cold and under steady share churn | bound | RFC 23 §8; RFC 23 plan O6 | T3.11 |
-
-RFC 23 §2.2's rule that no adapter starts before the first full reconcile is not this epic's to
-break: it builds no adapter. RFC 20's plan's epic 7 writes start step 9 after step 8, and E8's
-"§2.2 order" clause tests it. RFC 23's own settings section is E5's and X3's (D9).
 
 ## 4. Decisions this epic takes
 
@@ -251,19 +251,32 @@ break: it builds no adapter. RFC 20's plan's epic 7 writes start step 9 after st
   registry. Which record names a namespace's remote store is a dependency of T3.5.
 - **D6, every namespace answers held.** RFC 23's plan's §4.3 note, at `addShare`: no `Claim`, no
   `Fenced` binding, no `namespace_unclaimed`. Its upgrade path is RFC 27's `Claim` at step 5.
-- **D7, the runner's step table is handed to it by `New`.** `newRunner(store, clock, steps)`, with
-  steps keyed on `entity.Operation`'s kind type and `type Step func(ctx, op entity.Operation) (next
-  []byte, done bool, err error)`, the shape the RFC 18 plan's sketch uses. A turn commits only when
-  the step's `next` or the state differs from the record's: an unchanged turn writes nothing, so a
-  step that waits (E5's signing-key rotation keeps its switch time in `next` and returns not done)
-  costs no commit per second. `New` writes the rows
-  this epic owns; the RFC 18 plan's epics 2 and 7 and E5 add theirs in `New`. An operation whose
-  kind has no row stays `pending` and is reported refused in node status, naming the kind, so a
-  binary that gains the step later runs it; a `decision:` marker says so. At start the runner pages through
-  E2's `Operations` listing and resumes every operation not ended; a `ponytail:` names its ceiling,
-  one full page-through of the operation records per start, bounded by the 7-day sweep of ended
-  operations, and its upgrade, a listing of E2's running index. RFC 23's plan's §4.3 `ponytail:`: no claim.
-  Prior art: TrueNAS' job manager (from memory).
+- **D7, the runner's step table is handed to it by `New`.** `newRunner(store, clock, steps)`, keyed
+  on `entity.Operation`'s kind type, each row a `Step` and its `Progress`:
+  ```go
+  type StepResult struct {
+  	Next   []byte                               // the step's durable cursor, recorded as Operation.Step
+  	Done   bool                                 // the work has ended
+  	Result json.RawMessage                      // set with Done: Operation.Result
+  	End    func(tx entity.ControlPlaneTx) error // set with Done: writes in the transaction that ends the operation
+  }
+  type Step func(ctx context.Context, op entity.Operation) (StepResult, error)
+  type Progress func(next []byte) apiv1.Progress // read from the cursor; E4's operation read calls it
+  ```
+  A turn commits only when `Next` or the state differs from the record's: an unchanged turn writes
+  nothing, so a step that waits (E5's signing-key rotation keeps its switch time in `Next`) costs no
+  commit per second. `Done` commits `succeeded`, `Result` and `End`'s writes in one `Write` with its
+  audit record; an `End` that fails commits none of them, and the operation stays `running` for the
+  next turn. An error wrapping `ErrStepFailed`, or a `*apiv1.Problem`, fails the operation with
+  that error as `Operation.Error`; any other error is retried with the same `Next` on D10's
+  backoff. `New` writes the rows this epic owns; the RFC 18 plan's epics 2, 5 and 7 and E5 provide
+  step functions, which the RFC 18 plan's epic 8 and E5 register in `New`. An operation whose kind
+  has no row stays `pending` and is reported refused in node status, naming the kind, so a binary
+  that gains the step later runs it; a `decision:` marker says so. At start the runner pages
+  through E2's `Operations` listing and resumes every operation not ended; a `ponytail:` names its
+  ceiling, one full page-through of the operation records per start, bounded by the 7-day sweep of
+  ended operations, and its upgrade, a listing of E2's running index. RFC 23's plan's §4.3
+  `ponytail:`: no claim. Prior art: TrueNAS' job manager (from memory).
 - **D8, one `removeShare`, two callers; the cursor is the owner's record.** RFC 23 §4.6 lets the
   operation record choose no driver and read progress from the owner's cursor. On one node the
   runner is the coordinator RFC 16 §2.3.2 names. Step 3 of a share's removal is one function,
@@ -367,6 +380,42 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   (R8), the engine's own tests running unchanged through `enginetest.Holds`. R6's "closes what it
   built" is T3.3's.
 
+### T3.4 The operation runner and the principals' deletion
+
+**Subtask T3.4 estimate: 4 man-days.**
+
+- **Track:** A. **Depends on:** T3.1.
+- **Covers:** R39, R40, R41, R43, R52, R53.
+- **Deliverables:** `newRunner(cp, clock, steps)` and its loop, D7's `StepResult`, `Step` and
+  `Progress`: at start it pages through E2's `Operations` and drives each one not ended (D7's
+  `ponytail:`); a new operation is picked up at the next turn; a turn commits through
+  `ControlPlane.Write` only when `Next` or the state changed, with an audit record on a state
+  change; `Done` commits `succeeded`, `Result` and `End` in one `Write`; a terminal error
+  (`ErrStepFailed`, or a `*apiv1.Problem`) fails the operation with it as `Error`, any other is
+  retried with the same `Next` on D10's backoff; `Stop` returning with each operation at its last
+  durable step; a kind with no row left `pending` and reported refused (D7's `decision:` marker,
+  RFC 23's plan's §4.3 `ponytail:`). The user's and the group's deletion steps, each calling E2's
+  `ContinueDelete` once per batch and ending when it answers done (D8), their rows in `New`, each
+  with its `Progress`. Consumed by T3.3 (start step 7 starts it, with its watchdog `Loop`), T3.6,
+  E4 (its operation read calls each row's `Progress`; E2's record stores none), E5 and the RFC 18
+  plan.
+- **Acceptance criteria:**
+  - A user deletion stopped between two batches resumes after a restart and ends `succeeded`,
+    with no grant, membership, quota or secret of the user left.
+  - A state change and its audit record commit together; an end and its `End` writes commit
+    together or not at all.
+- **Tests:** in package `node`, `newRunner` over Badger under `t.TempDir()` with the real user
+  deletion step, asserting by durable state: the store closed and reopened between two batches,
+  the operation resumed from the record and every row gone (catches a cursor kept in memory, R39,
+  R40, R43; rule 8); a step returning the same `Next` twice committing once, the commits counted
+  with `kv.Counting` around the KV (D7); a `FaultKV` error on a state change's commit, neither the
+  state nor its audit record present (R41); the user deletion's step given an `End` that writes a
+  setting, its commit faulted through `FaultKV`: the operation still `running` and the setting
+  absent, then committed at the next turn (R52); a step's terminal error recorded as `Error` and
+  the state `failed`, a plain error leaving the state `running` with the same `Step`, a `Result`
+  read back (R53); an operation of a kind with no row still `pending` after a turn (D7). R17,
+  start step 7 starting the runner, is T3.3's.
+
 ### T3.2 Health, the API package and the metrics listener
 
 **Subtask T3.2 estimate: 3.5 man-days.**
@@ -401,15 +450,15 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 
 **Subtask T3.3 estimate: 4.5 man-days.**
 
-- **Track:** A. **Depends on:** T3.2.
-- **Covers:** R5, R6, R9, R11, R13, R14, R15, R19, R20, R21, R22, R23, R36.
+- **Track:** A. **Depends on:** T3.2, T3.4.
+- **Covers:** R5, R6, R9, R11, R13, R14, R15, R17, R19, R20, R21, R22, R23, R36.
 - **Deliverables:** `Start`: step 1 nothing more than `New` did (T3.10 adds the node identity);
   step 2 the API and metrics listeners; step 3 `Nodes.RegisterNode` with the bound addresses; step
   4 the counters and records read, then `apply`, whose first call hands the engine RFC 13 Appendix
   B's defaults through `engine.Apply` (X3 later changes their source, not the call); step 5 open
   state started with the filesystem as `Sink` and its admission as `Order`, which raises the node
   epoch (`RegisterNode` reads it, as E2 has it), then the engine with every attached share in one
-  call; step 6 the filesystem; step 7 a runner slot T3.4 fills; step 8 a full-reconcile slot T3.5
+  call; step 6 the filesystem; step 7 T3.4's runner started, with its watchdog `Loop` (R17); step 8 a full-reconcile slot T3.5
   fills; readiness `ready`. A failed step undoes the earlier ones in reverse but the health
   listener and the store, raises `start_failed`, and sets readiness `not_ready`. `Stop`: readiness
   `draining`, then the reverse, each step bounded on `cfg.Clock.After` (D14), a missed one leaving
@@ -427,37 +476,11 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   the test holds, step 3 a `FaultKV` error on registration's commit (asserting no engine series,
   R14), step 4 a `FaultKV` read error, step 5 a `FaultKV` error on the epoch's commit, step 6 a
   `FaultKV` error on the filesystem's serve transaction, each with the undo's order and the health
-  answer (R20); steps 1, 7 and 8 have no fault of their own to reach and are held by T3.1's, T3.4's
-  and T3.5's tests; a stop step held past its bound by a `FaultKV` delay on a commit the runner's
+  answer (R20); steps 1 and 8 have no fault of their own to reach and are held by T3.1's and T3.5's tests;
+  an operation written through the store before start, driven after step 7 (R17); a stop step held past its bound by a `FaultKV` delay on a commit the runner's
   step makes, the clock advanced 30 s, the store still open and the error naming the step (R23);
   a second `Start` refused (R9); no adapter enabled, ready after step 8 (R19); every test watched
   (R6). R9's exports are E1's pin.
-
-### T3.4 The operation runner and the principals' deletion
-
-**Subtask T3.4 estimate: 3.5 man-days.**
-
-- **Track:** A. **Depends on:** T3.3.
-- **Covers:** R17, R39, R40, R41, R43.
-- **Deliverables:** `newRunner(cp, clock, steps)` and its loop: at start it pages through E2's
-  `Operations` and drives each one not ended (D7's `ponytail:`); a new operation is picked up at the next turn; each step's `next`, state
-  and `Updated` committed through `ControlPlane.Write` only when `next` or the state changed (D7), with an audit record on a state change;
-  `Stop` returning with each operation at its last durable step; a kind with no row left `pending`
-  and reported refused (D7, its `decision:` marker and RFC 23's plan's §4.3 `ponytail:`); its
-  watchdog `Loop`. The user's and the group's deletion steps, each calling E2's `ContinueDelete`
-  once per batch and ending when it answers done (D8), their rows in `New`. Consumed by T3.6, E4,
-  E5 and the RFC 18 plan.
-- **Acceptance criteria:**
-  - A user deletion stopped between two batches resumes after a restart and ends `succeeded`,
-    with no grant, membership, quota or secret of the user left.
-  - A state change and its audit record commit together.
-- **Tests:** in package `node`, `newRunner` over Badger under `t.TempDir()` with the real user
-  deletion step, asserting by durable state: the store closed and reopened between two batches,
-  the operation resumed from the record and every row gone (catches a cursor kept in memory, R17,
-  R39, R40, R43; rule 8); a step returning the same `next` twice committing once, the commits counted
-  with `kv.Counting` around the KV (D7); a `FaultKV` error on a state change's commit, neither the state nor its
-  audit record present (R41); an operation of a kind with no row still `pending` after a turn
-  (D7).
 
 ### T3.5 Reconcile
 
@@ -473,7 +496,7 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   change through the binding; `apply`, the slot X3 fills, called only when the settings or
   principals generation moved, returning refusals with a retry flag, and D10's one backoff; the
   refused set with each record's generation and error; its watchdog `Loop`, each store call under
-  a 20 s deadline. Consumed by T3.6, T3.7 and, at S2, RFC 20's plan's epic 7.
+  a 20 s deadline on `cfg.Clock`. Consumed by T3.6, T3.7 and, at S2, RFC 20's plan's epic 7.
 - **Acceptance criteria:**
   - A share written through the store is bound within one turn; quiesced, its binding refuses new
     calls; resumed, it serves again.
@@ -489,13 +512,14 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   while a share is created, the share bound at the first read that works and not before (R26); a
   refusal flagged for retry retried on the backoff, one not flagged waiting for the next generation
   (D10); a grant written, no series moved (R28); two changes applied in counter order (R32); a
-  `FaultKV` delay of 25 s on a store call, liveness still `live` (R37).
+  `FaultKV` delay on a store call, waited on the schedule's `sim.TestClock` and advanced past the
+  20 s deadline, the call ended and liveness still `live`, never wall time (R37).
 
 ### T3.6 A share's removal driven
 
 **Subtask T3.6 estimate: 3 man-days.**
 
-- **Track:** A. **Depends on:** T3.4, T3.5.
+- **Track:** A. **Depends on:** T3.3, T3.5.
 - **Covers:** R16, R27, R40, R42.
 - **Deliverables:** `removeShare`, step 3 for the share's shard (`engine.Unbind`, `JoinShare`,
   open state's `DropShare`, `engine.Drop`, recorded through E2's `RecordShardRemoval`), with D8's
@@ -576,9 +600,9 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   `t.TempDir()`, its bootstrap naming `127.0.0.1:0`, the bound address read from the child's log:
   ready, then `SIGTERM`, exit 0 (R1); no installation, exit non-zero and the step in its output
   (R1); a `controlplane.db` beside the bootstrap, refused naming it with no store directory created
-  (R3); a stop step held past its bound by a journal device made
-  unwritable under the child, exit non-zero naming the step (R23); the architecture rule over a
-  planted violation (R2).
+  (R3); the exit code and message as a function of `Stop`'s error, in process, a step-bound error
+  giving non-zero and the step's name (R23; the bound itself is T3.3's, on the injected clock); the
+  architecture rule over a planted violation (R2).
 
 ### T3.10 The node identity at start
 
@@ -618,14 +642,14 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 ```mermaid
 flowchart TD
   S1(["S1, E1 merged"]):::sync --> T3_1["T3.1 New and the harness"]
-  T3_1 --> T3_2["T3.2 Health, API package, metrics"]
-  T3_2 --> T3_3["T3.3 Start and stop"]
-  T3_3 --> C1(["after T3.3: the harness starts a node: E5 and E6"]):::sync
-  T3_3 --> T3_4["T3.4 Runner and principals' deletion"]
+  T3_1 --> T3_4["T3.4 Runner and principals' deletion"]
   T3_4 --> C2(["after T3.4: the RFC 18 plan's kinds"]):::sync
+  T3_1 --> T3_2["T3.2 Health, API package, metrics"]
+  T3_2 & T3_4 --> T3_3["T3.3 Start and stop"]
+  T3_3 --> C1(["after T3.3: the harness starts a node: E5 and E6"]):::sync
   T3_3 --> T3_5["T3.5 Reconcile"]
   T3_5 --> C3(["after T3.5: S2"]):::sync
-  T3_4 & T3_5 --> T3_6["T3.6 Share removal"]
+  T3_5 --> T3_6["T3.6 Share removal"]
   T3_5 --> T3_7["T3.7 Node status"]
   T3_3 --> T3_8["T3.8 Sweep"]
   T3_3 --> T3_9["T3.9 dfs start"]
@@ -635,19 +659,18 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-Checkpoints: after T3.3 the harness builds, starts and stops a node, and E5 and E6 start on it;
-after T3.4 the RFC 18 plan's operation kinds have a runner; after T3.5, S2: RFC 20's plan's epic 7
+Checkpoints: after T3.4 the RFC 18 plan's operation kinds have a runner; after T3.3 the harness builds, starts
+and stops a node, and E5 and E6 start on it; after T3.5, S2: RFC 20's plan's epic 7
 writes the adapter rows.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T3.1, T3.2 | 6.5 | — | `New`, the harness, health and the API package: what every later test runs on |
-| 2 | T3.3 | 4.5 | PR 1 | start and stop in RFC 23 §2.2's order, the node's first lifecycle |
-| 3 | T3.4 | 3.5 | PR 2 | the runner and the first kinds it drives |
-| 4 | T3.5, T3.6 | 7 | PR 3 | reconcile and the share's removal, with `vfs`'s own join deleted beside its owner (D15): S2 |
-| 5 | T3.7, T3.8, T3.9, T3.10, T3.11 | 7.5 | PR 4 | status, sweep, `dfs start`, node identity and the benchmark: a working server |
+| 1 | T3.1, T3.4 | 7 | — | `New`, the harness and the runner with its first kinds: what the RFC 18 plan's and E5's steps wait on |
+| 2 | T3.2, T3.3 | 8 | PR 1 | health, the API package, and start and stop in RFC 23 §2.2's order |
+| 3 | T3.5, T3.6 | 7 | PR 2 | reconcile and the share's removal, with `vfs`'s own join deleted beside its owner (D15): S2 |
+| 4 | T3.7, T3.8, T3.9, T3.10, T3.11 | 7.5 | PR 3 | status, sweep, `dfs start`, node identity and the benchmark: a working server |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -658,5 +681,7 @@ A suggestion only: one pull request per subtask works as well.
   `ContinueDelete`, `ContinueRemoval`, `ContinueShardRemoval` and `RecordShardRemoval`.
 - The least certain estimates: T3.3, whose undo and stop bounds cross components whose `Stop`
   semantics differ, and T3.6, whose step 3 joins a share that is still serving.
-- T3.9's stop-bound exit test relies on a journal device made unwritable to hold a stop step; if
-  the engine's close does not wait on it, the test moves to E7's server fixture.
+- `nodetest.WithStep`, so another package's step runs through the real runner in the harness, is
+  not built: `Config` and `New` are frozen at five fields and no harness reaches the unexported
+  step table. A step's owner tests its function over a real store, and through the runner once its
+  registering epic (the RFC 18 plan's epic 8, E5) puts it in `New`.
