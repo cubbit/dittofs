@@ -81,7 +81,10 @@ type FlowControl interface {
 
 type Framer interface {
 	HeaderLen() int
-	BodyLen(hdr []byte) (int, error)
+
+	BodyLen(hdr []byte) (n int, last bool, err error)
+
+	MaxRecord() (bytes, fragments int)
 }
 
 type Handler[Req, Rep any] func(ctx context.Context, r *Request, req *Req) (*Rep, error)

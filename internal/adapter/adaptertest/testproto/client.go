@@ -167,13 +167,28 @@ func (c *Client) Recv() ([]Reply, error) {
 	if _, err := io.ReadFull(c.c, prefix[:]); err != nil {
 		return nil, fmt.Errorf("testproto: receive: %w", err)
 	}
-	n, err := framer{}.BodyLen(prefix[:])
+	n, last, err := framer{}.BodyLen(prefix[:])
 	if err != nil {
 		return nil, err
 	}
-	body := make([]byte, n)
-	if _, err := io.ReadFull(c.c, body); err != nil {
-		return nil, fmt.Errorf("testproto: receive: %w", err)
+	var body []byte
+	for {
+		frag := make([]byte, n)
+		if _, err := io.ReadFull(c.c, frag); err != nil {
+			return nil, fmt.Errorf("testproto: receive: %w", err)
+		}
+		body = append(body, frag...)
+		if last {
+			break
+		}
+		if _, err := io.ReadFull(c.c, prefix[:]); err != nil {
+			return nil, fmt.Errorf("testproto: receive: %w", err)
+		}
+		fn, fl, err := framer{}.BodyLen(prefix[:])
+		if err != nil {
+			return nil, err
+		}
+		n, last = fn, fl
 	}
 
 	replies, err := openReplies(body)

@@ -184,9 +184,9 @@ func TestVectorsDecodeToTheirFields(t *testing.T) {
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			n, err := framer{}.BodyLen(c.vector[:lengthLen])
-			if err != nil || n != len(c.vector)-lengthLen {
-				t.Fatalf("BodyLen = %d, %v; want %d", n, err, len(c.vector)-lengthLen)
+			n, last, err := framer{}.BodyLen(c.vector[:lengthLen])
+			if err != nil || !last || n != len(c.vector)-lengthLen {
+				t.Fatalf("BodyLen = %d, %t, %v; want %d and the last fragment", n, last, err, len(c.vector)-lengthLen)
 			}
 			got := decodeAll(t, c.vector[lengthLen:])
 			if len(got) != len(c.want) {
@@ -221,13 +221,13 @@ func TestAppendEncodesToTheVectors(t *testing.T) {
 }
 
 func TestBodyLenRefusesPastTheCap(t *testing.T) {
-	if n, err := (framer{}).BodyLen([]byte{0x00, 0x10, 0x00, 0x00}); err != nil || n != 1<<20 {
-		t.Errorf("BodyLen at the cap = %d, %v; want 1 MiB", n, err)
+	if n, last, err := (framer{}).BodyLen([]byte{0x00, 0x10, 0x00, 0x00}); err != nil || !last || n != 1<<20 {
+		t.Errorf("BodyLen at the cap = %d, %t, %v; want 1 MiB and the last fragment", n, last, err)
 	}
-	if _, err := (framer{}).BodyLen([]byte{0x00, 0x10, 0x00, 0x01}); !errors.Is(err, errTooLong) {
+	if _, _, err := (framer{}).BodyLen([]byte{0x00, 0x10, 0x00, 0x01}); !errors.Is(err, errTooLong) {
 		t.Errorf("BodyLen one byte past the cap = %v, want a refusal", err)
 	}
-	if _, err := (framer{}).BodyLen([]byte{0x00, 0x10}); err == nil {
+	if _, _, err := (framer{}).BodyLen([]byte{0x00, 0x10}); err == nil {
 		t.Error("BodyLen of a 2-byte prefix was accepted")
 	}
 }
@@ -447,20 +447,26 @@ func FuzzFrame(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, record []byte) {
 		if len(record) < lengthLen {
-			if _, err := (framer{}).BodyLen(record); err == nil {
+			if _, _, err := (framer{}).BodyLen(record); err == nil {
 				t.Fatal("a prefix shorter than 4 bytes was accepted")
 			}
 			return
 		}
-		n, err := framer{}.BodyLen(record[:lengthLen])
+		n, last, err := framer{}.BodyLen(record[:lengthLen])
 		if err != nil {
-			if binary.BigEndian.Uint32(record) <= maxBody {
+			if binary.BigEndian.Uint32(record)&^moreFragments <= maxBody {
 				t.Fatalf("a length within the cap was refused: %v", err)
 			}
 			return
 		}
 		if n > maxBody {
 			t.Fatalf("a length of %d past the cap was accepted", n)
+		}
+		if last != (binary.BigEndian.Uint32(record[:lengthLen])&moreFragments == 0) {
+			t.Fatalf("a prefix of %x reads as last %t", record[:lengthLen], last)
+		}
+		if bytes, fragments := (framer{}).MaxRecord(); bytes != maxBody || fragments != maxFragments {
+			t.Fatalf("MaxRecord = %d, %d; want %d, %d", bytes, fragments, maxBody, maxFragments)
 		}
 		body := record[lengthLen:]
 		if n < len(body) {
