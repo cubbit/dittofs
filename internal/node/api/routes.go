@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
@@ -14,7 +15,7 @@ import (
 type route struct {
 	method, pattern string
 	verb            string
-	right           right
+	right           auth.Right
 	mustChange      bool
 	serve           adapter
 }
@@ -40,7 +41,7 @@ func (rt *route) op() string {
 // listing's filter. Overturned only if a resource ever lacks a stable ID,
 // which no record of the metadata store does.
 var routes = []route{
-	{method: http.MethodGet, pattern: "/api/version", right: public, serve: read(version)},
+	{method: http.MethodGet, pattern: "/api/version", right: auth.Public, serve: read(version)},
 }
 
 // version answers the API's major versions and nothing else.

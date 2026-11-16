@@ -33,7 +33,6 @@ func TestClosedSetsAreRFC23s(t *testing.T) {
 			"installation.rotate-machine-password", "share.delete", "user.delete",
 			"group.delete", "identity.nt-hash-delete",
 		}},
-		{"Role", strs(roles), []string{"viewer", "operator", "admin"}},
 		{"OpState", strs(opStates), []string{
 			"pending", "running", "succeeded", "failed", "cancelling", "cancelled",
 		}},

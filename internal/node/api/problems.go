@@ -45,13 +45,14 @@ type storeCode merrs.ErrorCode
 func (c storeCode) Error() string { return merrs.ErrorCode(c).String() }
 
 // components answers each component error, by its name: the first row whose
-// error the answered one is, under errors.Is, or whose storeCode is its
-// *merrs.StoreError's code. A typed error matches the row of the sentinel it
-// is, so vfserr's *AccessError answers as ErrAccess.
+// error the answered one is, under errors.Is, and only when none is, the row
+// of its *merrs.StoreError's code, so a cause the store error carries answers
+// before the code that wraps it. A typed error matches the row of the
+// sentinel it is, so vfserr's *AccessError answers as ErrAccess.
 //
-// Identity's errors join this table with the package that declares them:
-// its ErrUnavailable 503 unavailable, its ErrUnknownPrincipal 400 naming the
-// name, and its ErrLogonFailure 401 unauthenticated.
+// Identity's logon failure and unknown principal are to be vfserr's, and
+// its unavailable is already vfserr.ErrUnavailable, so their rows are the
+// rows below.
 var components = []struct {
 	err error
 	answerOf
@@ -67,6 +68,11 @@ var components = []struct {
 	{entity.ErrWrongShare, answerOf{http.StatusBadRequest, "wrong_share", false}},
 	{entity.ErrCrossProject, answerOf{http.StatusConflict, "cross_project", false}},
 	{entity.ErrInconsistent, answerOf{http.StatusInternalServerError, "inconsistent", false}},
+	{entity.ErrMoving, answerOf{http.StatusConflict, "moving", true}},
+	{entity.ErrRehoming, answerOf{http.StatusConflict, "rehoming", false}},
+	// The installation's state refuses a new share for good: no status but
+	// 409 of RFC 23's error table says so.
+	{entity.ErrTagsExhausted, answerOf{http.StatusConflict, "tags_exhausted", false}},
 
 	{vfserr.ErrNotFound, answerOf{http.StatusNotFound, "not_found", false}},
 	{vfserr.ErrExist, answerOf{http.StatusConflict, "exist", false}},
@@ -100,6 +106,10 @@ var components = []struct {
 	{vfserr.ErrPastEnd, answerOf{http.StatusBadRequest, "past_end", false}},
 	{vfserr.ErrFileOpen, answerOf{http.StatusInternalServerError, "file_open", false}},
 
+	// ponytail: the metadata store's codes, and kv's errors below, are
+	// answered here because kvstore passes them up from Write untranslated.
+	// Upgrade by translating them to vfserr or entity errors at Write, after
+	// which merrs and kv leave this table and its covered packages.
 	{storeCode(merrs.ErrNotFound), answerOf{http.StatusNotFound, "not_found", false}},
 	{storeCode(merrs.ErrAccessDenied), answerOf{http.StatusForbidden, "access_denied", false}},
 	{storeCode(merrs.ErrAuthRequired), answerOf{http.StatusForbidden, "auth_required", false}},
@@ -129,10 +139,12 @@ var components = []struct {
 	{storeCode(merrs.ErrCrossShare), answerOf{http.StatusBadRequest, "cross_share", false}},
 
 	{kv.ErrNotFound, answerOf{http.StatusNotFound, "not_found", false}},
-	{kv.ErrConflict, answerOf{http.StatusServiceUnavailable, "conflict", true}},
+	// A transaction that kept conflicting, or a store that closed, is the
+	// store unable to answer now.
+	{kv.ErrConflict, answerOf{http.StatusServiceUnavailable, apiv1.CodeUnavailable, true}},
 	{kv.ErrTooLarge, answerOf{http.StatusBadRequest, "too_large", false}},
 	{kv.ErrUncommittedVersion, answerOf{http.StatusInternalServerError, "uncommitted_version", false}},
-	{kv.ErrClosed, answerOf{http.StatusServiceUnavailable, "closed", true}},
+	{kv.ErrClosed, answerOf{http.StatusServiceUnavailable, apiv1.CodeUnavailable, true}},
 
 	// A request whose client went away, or whose deadline passed, is
 	// refused as the node being unable to answer it now.
@@ -151,7 +163,9 @@ func (r *refusal) Error() string { return string(r.code) + ": " + r.detail }
 
 // problemOf is err's problem body, without its request ID, and whether the
 // table names err: an error it does not name is a 500, which the caller
-// counts. A *fieldError also names the refused field.
+// counts and logs. Only a refusal's or a refused field's text reaches the
+// detail; any other error's text stays in the log, since it may carry what
+// no caller should read.
 func problemOf(err error) (apiv1.Problem, bool) {
 	a, ok := lookup(err)
 	if !ok {
@@ -159,14 +173,14 @@ func problemOf(err error) (apiv1.Problem, bool) {
 	}
 	p := apiv1.Problem{Status: a.status, Code: a.code, Title: http.StatusText(a.status), Retryable: a.retryable}
 	var r *refusal
-	if errors.As(err, &r) {
-		p.Detail = r.detail
-	} else {
-		p.Detail = err.Error()
-	}
 	var f *fieldError
-	if errors.As(err, &f) {
-		p.Field = f.field
+	switch {
+	case !ok:
+		p.Detail = "internal error"
+	case errors.As(err, &r):
+		p.Detail = r.detail
+	case errors.As(err, &f):
+		p.Field, p.Detail = f.field, f.detail
 	}
 	return p, ok
 }
@@ -177,10 +191,18 @@ func lookup(err error) (answerOf, bool) {
 		a, ok := own[r.code]
 		return a, ok
 	}
+	if a, ok := row(err); ok {
+		return a, true
+	}
 	var se *merrs.StoreError
 	if errors.As(err, &se) {
-		err = storeCode(se.Code)
+		return row(storeCode(se.Code))
 	}
+	return answerOf{}, false
+}
+
+// row is the first component row err is.
+func row(err error) (answerOf, bool) {
 	for _, c := range components {
 		if errors.Is(err, c.err) {
 			return c.answerOf, true

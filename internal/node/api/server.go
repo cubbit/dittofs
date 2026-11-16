@@ -33,7 +33,8 @@ type Deps struct {
 	Addr, MetricsAddr string
 	// Metrics is the registry the metrics listener serves.
 	Metrics *metrics.Registry
-	// Logger is where a listener that fails while serving is logged.
+	// Logger is where a listener that fails while serving is logged, and
+	// an error the problem table does not name.
 	Logger *slog.Logger
 	// Authenticate answers who a request is; nil, every route but the
 	// public ones answers 401.
@@ -96,7 +97,7 @@ func newServer(d Deps, rows []route) *Server {
 		groups[key] = append(groups[key], rt)
 	}
 	for key, g := range groups {
-		api.Handle(key, s.group(g))
+		api.HandleFunc(key, func(w http.ResponseWriter, r *http.Request) { s.handle(w, r, g) })
 	}
 
 	mux := http.NewServeMux()

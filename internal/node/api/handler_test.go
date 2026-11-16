@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -19,35 +21,61 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // served is the API over a harness's store, serving the test rows beside the
-// production table, its series in reg and its spans in spans.
+// production table, its series in reg, its spans in spans and its log lines
+// in log.
 type served struct {
 	url    string
 	client *http.Client
 	reg    *metrics.Registry
 	spans  *tracetest.SpanRecorder
 	store  kvstore.ControlPlane
+	log    *lockedBuffer
 }
 
-func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error)) *served {
+// lockedBuffer is a log the server writes and the test reads.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// serve starts the API over d's defaults, each of edit then changing them.
+func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), edit ...func(*api.Deps)) *served {
 	t.Helper()
 	h := nodetest.New(t, nodetest.InMemory(), nodetest.Watch())
-	s := &served{reg: metrics.New("test", "test"), spans: tracetest.NewSpanRecorder(), store: h.Store().ControlPlane()}
-	srv := api.NewWithTestRows(api.Deps{
+	s := &served{reg: metrics.New("test", "test"), spans: tracetest.NewSpanRecorder(), store: h.Store().ControlPlane(), log: &lockedBuffer{}}
+	d := api.Deps{
 		Ready:        func() string { return "ready" },
 		Live:         func() bool { return true },
 		Addr:         "127.0.0.1:0",
 		MetricsAddr:  "127.0.0.1:0",
 		Metrics:      s.reg,
-		Logger:       slog.New(slog.NewTextHandler(t.Output(), nil)),
+		Logger:       slog.New(slog.NewJSONHandler(io.MultiWriter(t.Output(), s.log), nil)),
 		Authenticate: authenticate,
 		Store:        s.store,
 		Tracer:       sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(s.spans)).Tracer("api"),
-	})
+	}
+	for _, e := range edit {
+		e(&d)
+	}
+	srv := api.NewWithTestRows(d)
 	addr, _, err := srv.Start()
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -65,6 +93,12 @@ func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error)) 
 }
 
 // as authenticates every request as an account of role.
+//
+// decision: these tests authenticate through a function answering a fixed
+// Caller, which is no stand-in for a collaborator: a Caller is the input the
+// API routes on, and the real Authenticate arrives with sign-in. They test
+// routing and the adapters; which role holds which right is the role
+// table's own test, over auth.Allowed.
 func as(role entity.APIRole, mustChange bool) func(*http.Request) (auth.Caller, error) {
 	return func(*http.Request) (auth.Caller, error) {
 		return auth.Caller{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: entity.NewPrincipalID()}, Role: role, MustChange: mustChange}, nil
@@ -175,7 +209,8 @@ func TestPathsAndVerbs(t *testing.T) {
 }
 
 // A caller that may read a resource but not change it is refused 403, one
-// that may not read it 404, as though it did not exist.
+// that may not read it 404, as though it did not exist, and one holding the
+// right is answered.
 func TestRoles(t *testing.T) {
 	var role atomic.Uint32
 	s := serve(t, func(r *http.Request) (auth.Caller, error) {
@@ -186,21 +221,12 @@ func TestRoles(t *testing.T) {
 		method, path string
 		status       int
 	}{
-		{entity.RoleViewer, http.MethodGet, thing, http.StatusOK},
 		{entity.RoleViewer, http.MethodPost, thing + ":poke", http.StatusForbidden},
-		{entity.RoleOperator, http.MethodPost, thing + ":poke", http.StatusOK},
-		{entity.RoleViewer, http.MethodPut, "/api/v1/netgroups/" + api.TestID, http.StatusForbidden},
 		{entity.RoleViewer, http.MethodGet, "/api/v1/accounts/" + api.TestID, http.StatusNotFound},
-		{entity.RoleOperator, http.MethodGet, "/api/v1/accounts/" + api.TestID, http.StatusNotFound},
-		{entity.RoleAdmin, http.MethodGet, "/api/v1/accounts/" + api.TestID, http.StatusOK},
-		{entity.RoleNone, http.MethodGet, thing, http.StatusNotFound},
+		{entity.RoleOperator, http.MethodPost, thing + ":poke", http.StatusOK},
 	} {
 		role.Store(uint32(tc.role))
-		body := ""
-		if tc.method == http.MethodPut {
-			body = `{"members":[]}`
-		}
-		r := s.do(t, tc.method, tc.path, body)
+		r := s.do(t, tc.method, tc.path, "")
 		if r.status != tc.status {
 			t.Errorf("%v %s %s: answered %d %s, want %d", tc.role, tc.method, tc.path, r.status, r.body, tc.status)
 		}
@@ -224,6 +250,18 @@ func TestMustChangePassword(t *testing.T) {
 	}
 }
 
+// A row a caller that must change its password may not read answers it 404,
+// as a path no row names does, so that refusal maps no route.
+func TestMustChangeMapsNoRoute(t *testing.T) {
+	viewer := serve(t, as(entity.RoleViewer, true))
+	for _, path := range []string{"/api/v1/accounts/" + api.TestID, "/api/v1/no-such/" + api.TestID} {
+		r := viewer.do(t, http.MethodGet, path, "")
+		if p := r.problem(t); r.status != http.StatusNotFound || p.Code != "not_found" {
+			t.Errorf("must-change viewer, GET %s: answered %d %q, want 404 not_found", path, r.status, p.Code)
+		}
+	}
+}
+
 // A write answers what its transaction committed, which the store then
 // holds; a body naming a field the request does not declare is refused 400
 // invalid naming it, in a problem body with every key, and writes nothing.
@@ -232,7 +270,7 @@ func TestWrite(t *testing.T) {
 	r := s.do(t, http.MethodPut, "/api/v1/netgroups/"+api.TestID, `{"members":["10.0.0.0/8"]}`)
 	var put struct{ Version uint64 }
 	if err := json.Unmarshal(r.body, &put); r.status != http.StatusOK || err != nil || put.Version == 0 {
-		t.Fatalf("PUT netgroup: answered %d %s, want 200 with its version", r.status, r.body)
+		t.Fatalf("PUT netgroup: answered %d %s (%v), want 200 with its version", r.status, r.body, err)
 	}
 	other := "1d6f3c2a-4b5e-4f7a-8c9d-0e1f2a3b4c5d"
 	r = s.do(t, http.MethodPut, "/api/v1/netgroups/"+other, `{"members":["x"],"colour":"red"}`)
@@ -249,6 +287,15 @@ func TestWrite(t *testing.T) {
 			t.Errorf("problem %s: no key %q", r.body, k)
 		}
 	}
+	got := netgroups(t, s)
+	if len(got) != 1 || got[0].Name != api.TestID || !slices.Equal(got[0].Members, []string{"10.0.0.0/8"}) || got[0].Version != put.Version {
+		t.Errorf("netgroups held: %+v, want only %s with 10.0.0.0/8 at the answered version %d", got, api.TestID, put.Version)
+	}
+}
+
+// netgroups is every netgroup the store holds.
+func netgroups(t *testing.T, s *served) []entity.Netgroup {
+	t.Helper()
 	var got []entity.Netgroup
 	for n, err := range s.store.Netgroups(t.Context(), "") {
 		if err != nil {
@@ -256,8 +303,98 @@ func TestWrite(t *testing.T) {
 		}
 		got = append(got, n)
 	}
-	if len(got) != 1 || got[0].Name != api.TestID || !slices.Equal(got[0].Members, []string{"10.0.0.0/8"}) || got[0].Version != put.Version {
-		t.Errorf("netgroups held: %+v, want only %s with 10.0.0.0/8 at the answered version %d", got, api.TestID, put.Version)
+	return got
+}
+
+// A write whose transaction fails answers the failure's problem and stores
+// nothing of it, the record it wrote before failing included.
+func TestWriteThatFailsStoresNothing(t *testing.T) {
+	s := serve(t, as(entity.RoleOperator, false))
+	r := s.do(t, http.MethodPut, "/api/v1/pairs/"+api.TestID, "")
+	if p := r.problem(t); r.status != http.StatusBadRequest || p.Code != "invalid_argument" {
+		t.Errorf("PUT pair: answered %d %q, want 400 invalid_argument", r.status, p.Code)
+	}
+	if got := netgroups(t, s); len(got) != 0 {
+		t.Errorf("netgroups held after the failed write: %+v, want none", got)
+	}
+}
+
+// With no store, a write answers 503 unavailable.
+func TestWriteWithNoStore(t *testing.T) {
+	s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) { d.Store = nil })
+	if r := s.do(t, http.MethodPut, "/api/v1/netgroups/"+api.TestID, `{"members":[]}`); r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
+		t.Errorf("PUT with no store: answered %d %s, want 503 unavailable", r.status, r.body)
+	}
+}
+
+// A body over the bound is refused 400 invalid and writes nothing.
+func TestBodyOverTheBound(t *testing.T) {
+	put := "/api/v1/netgroups/" + api.TestID
+	s := serve(t, as(entity.RoleOperator, false))
+	big := `{"members":["` + strings.Repeat("a", 1<<20) + `"]}`
+	if r := s.do(t, http.MethodPut, put, big); r.status != http.StatusBadRequest || r.problem(t).Code != "invalid" {
+		t.Errorf("PUT of %d bytes: answered %d %.200s, want 400 invalid", len(big), r.status, r.body)
+	}
+	if got := netgroups(t, s); len(got) != 0 {
+		t.Errorf("netgroups held after the refused PUT: %+v, want none", got)
+	}
+}
+
+// An Authenticate that fails answers its error's problem and runs no row.
+func TestAuthenticateFails(t *testing.T) {
+	failing := serve(t, func(*http.Request) (auth.Caller, error) { return auth.Caller{}, vfserr.ErrAccess })
+	if r := failing.do(t, http.MethodGet, thing, ""); r.status != http.StatusForbidden || r.problem(t).Code != "access" {
+		t.Errorf("GET with Authenticate failing ErrAccess: answered %d %s, want 403 access", r.status, r.body)
+	}
+}
+
+// An error no row names answers 500 "internal error", never its own text,
+// and is logged with the request ID its body carries.
+func TestUnnamedErrorIsLoggedNotAnswered(t *testing.T) {
+	s := serve(t, as(entity.RoleViewer, false))
+	r := s.do(t, http.MethodGet, "/api/v1/fail", "")
+	p := r.problem(t)
+	if r.status != http.StatusInternalServerError || p.Detail != "internal error" || bytes.Contains(r.body, []byte(api.UnnamedError)) {
+		t.Errorf("GET /api/v1/fail: answered %d %s, want 500 internal error without the error's text", r.status, r.body)
+	}
+	var line struct {
+		RequestID string `json:"request_id"`
+		Err       string `json:"err"`
+	}
+	if err := json.Unmarshal([]byte(s.log.String()), &line); err != nil {
+		t.Fatalf("log %q: %v, want one JSON line", s.log.String(), err)
+	}
+	if p.RequestID == "" || line.RequestID != p.RequestID || line.Err != api.UnnamedError {
+		t.Errorf("logged request %q err %q, want the body's request %q and err %q", line.RequestID, line.Err, p.RequestID, api.UnnamedError)
+	}
+}
+
+// A call's span carries the row's pattern, the path's ID in canonical form
+// once it parses, and the outcome; a path segment that is no ID reaches no
+// attribute, however long.
+func TestSpanAttributes(t *testing.T) {
+	s := serve(t, as(entity.RoleViewer, false))
+	s.do(t, http.MethodGet, "/api/v1/things/"+strings.ToUpper(api.TestID), "")
+	long := strings.Repeat("a", 200<<10)
+	s.do(t, http.MethodGet, "/api/v1/things/"+long, "")
+	spans := s.spans.Ended()
+	if len(spans) != 2 {
+		t.Fatalf("spans: got %d, want 2", len(spans))
+	}
+	attrs := func(i int) map[string]string {
+		m := map[string]string{}
+		for _, a := range spans[i].Attributes() {
+			m[string(a.Key)] = a.Value.String()
+		}
+		return m
+	}
+	want := map[string]string{"api.pattern": "GET /api/v1/things/{id}", "api.id": api.TestID, "api.outcome": "ok"}
+	if got := attrs(0); !maps.Equal(got, want) {
+		t.Errorf("span of the read: got %v, want %v", got, want)
+	}
+	want = map[string]string{"api.pattern": "GET /api/v1/things/{id}", "api.outcome": "not_found"}
+	if got := attrs(1); !maps.Equal(got, want) {
+		t.Errorf("span of the read naming no ID: got %.300v, want %v", got, want)
 	}
 }
 
