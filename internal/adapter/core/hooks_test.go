@@ -197,3 +197,23 @@ func (p *pipeline) Runs() int {
 	defer p.mu.Unlock()
 	return p.runs
 }
+
+// TestWriter is a connection's writer, reached by its tests.
+type TestWriter struct{ w *writer }
+
+// NewTestWriter starts a writer over nc, its gathered writes bounded by
+// timeout and closeConn its connection's close.
+func NewTestWriter(nc net.Conn, f Framer, timeout time.Duration, closeConn func(error)) *TestWriter {
+	return &TestWriter{w: newWriter(nc, f, timeout, closeConn)}
+}
+
+// Out queues a message.
+func (t *TestWriter) Out(msg *resources.Buf, key, before uint64) error {
+	return t.w.out(msg, key, before)
+}
+
+// Stop ends the writer.
+func (t *TestWriter) Stop() { t.w.stop() }
+
+// OnBatch has the writer report each gathered write's message count.
+func OnBatch(t *TestWriter, fn func(n int)) { t.w.onBatch = fn }

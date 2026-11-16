@@ -1,0 +1,222 @@
+package core_test
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net"
+	"net/netip"
+	"os"
+	"sync"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
+	"github.com/cubbit/dittofs/internal/adapter/core"
+	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/resources"
+)
+
+// chargeOfChunk is what a reply of n bytes reserves, learned from a pool of
+// its own.
+func chargeOfChunk(n int) int64 {
+	b := resources.NewWaitBudget("probe", 1<<30)
+	buf, err := resources.NewBufPool(b).Get(context.Background(), netip.Addr{}, n)
+	if err != nil {
+		panic(err)
+	}
+	c := b.Reserved()
+	buf.Release()
+	return c
+}
+
+// buildWriter is the connection's writer, held to the suite of out every
+// writer passes.
+func buildWriter(t *testing.T) newOut {
+	return func(f core.Framer) (func(*resources.Buf, uint64, uint64) error, func(error), net.Conn, bound) {
+		conn, peer := net.Pipe()
+		w := core.NewTestWriter(conn, f, 0, func(error) {})
+		closeOut := func(error) {
+			w.Stop()
+			_ = conn.Close()
+		}
+		// Every subtest of the suite closes the writer inside its own bubble;
+		// a cleanup here would close a bubble's channel after it ends.
+		return w.Out, closeOut, peer, bound{msgs: 64}
+	}
+}
+
+// The writer passes the suite of out.
+func TestTheWriterPassesTheSuiteOfOut(t *testing.T) {
+	testOut(t, buildWriter(t))
+}
+
+// A message the peer holds the write of, and nine queued behind it, go out in
+// one gathered write.
+func TestTheGatheredWrite(t *testing.T) {
+	f := testproto.New(adapter.Deps{}).Framer()
+	conn, peer := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	budget := resources.NewWaitBudget("reply", 1<<30)
+	pool := resources.NewBufPool(budget)
+	w := core.NewTestWriter(conn, f, 0, func(error) {})
+	defer w.Stop()
+	batches := make(chan int, 16)
+	core.OnBatch(w, func(n int) { batches <- n })
+	msg := func(body string) *resources.Buf {
+		b, err := pool.Get(context.Background(), netip.Addr{}, len(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.B = append(b.B[:0], body...)
+		return b
+	}
+	if err := w.Out(msg("first"), 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if n := <-batches; n != 1 {
+		t.Fatalf("the first write gathered %d messages, want 1", n)
+	}
+	for i := range 9 {
+		if err := w.Out(msg(string(rune('a'+i))), 0, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A backstop, so a writer that sends one message per wake fails here rather
+	// than hanging the test.
+	if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		hdr := make([]byte, f.HeaderLen())
+		if _, err := io.ReadFull(peer, hdr); err != nil {
+			t.Fatal(err)
+		}
+		n, _, err := f.BodyLen(hdr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadFull(peer, make([]byte, n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := <-batches; n != 9 {
+		t.Errorf("the write after the first gathered %d messages, want 9", n)
+	}
+	// A later batch's hook follows the one before it, whose messages are
+	// released by then: queue one and read it, then only its charge is held.
+	for _, m := range []string{"z"} {
+		if err := w.Out(msg(m), 0, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := <-batches; n != 1 {
+		t.Fatalf("the last write gathered %d messages, want 1", n)
+	}
+	if r, want := budget.Reserved(), chargeOfChunk(len("z")); r != want {
+		t.Errorf("%d bytes are reserved after the last batch, want the one message's %d", r, want)
+	}
+	hdr := make([]byte, f.HeaderLen())
+	if _, err := io.ReadFull(peer, hdr); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err := f.BodyLen(hdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(peer, make([]byte, n)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A peer that reads nothing closes the connection at write_timeout, not
+// before, and every queued message is released.
+func TestTheSilentPeerCloses(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := testproto.New(adapter.Deps{}).Framer()
+		conn, peer := net.Pipe()
+		var mu sync.Mutex
+		var closeErr error
+		closed := make(chan time.Time, 1)
+		budget := resources.NewWaitBudget("reply", 1<<30)
+		pool := resources.NewBufPool(budget)
+		w := core.NewTestWriter(conn, f, time.Second, func(err error) {
+			mu.Lock()
+			closeErr = err
+			mu.Unlock()
+			closed <- time.Now()
+		})
+		defer w.Stop()
+		defer func() { _ = peer.Close() }()
+		msg, err := pool.Get(context.Background(), netip.Addr{}, 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg.B = append(msg.B[:0], "stuck"...)
+		start := time.Now()
+		if err := w.Out(msg, 0, 0); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		select {
+		case <-closed:
+			t.Fatal("the connection closed before the deadline")
+		default:
+		}
+		time.Sleep(900 * time.Millisecond)
+		select {
+		case <-closed:
+			t.Fatal("the connection closed before write_timeout")
+		default:
+		}
+		time.Sleep(200 * time.Millisecond)
+		select {
+		case at := <-closed:
+			if d := at.Sub(start); d < time.Second || d > 1100*time.Millisecond {
+				t.Errorf("the connection closed at %v, want write_timeout", d)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !errors.Is(closeErr, os.ErrDeadlineExceeded) {
+				t.Errorf("the connection closed with %v, want the write's deadline", closeErr)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("the connection did not close at write_timeout")
+		}
+		if r := budget.Reserved(); r != 0 {
+			t.Errorf("%d bytes are still reserved after the close", r)
+		}
+	})
+}
+
+// A write to a peer that has closed calls the connection's close with the
+// write's error.
+func TestTheClosedPeerCloses(t *testing.T) {
+	f := testproto.New(adapter.Deps{}).Framer()
+	conn, peer := net.Pipe()
+	defer func() { _ = conn.Close() }()
+	closed := make(chan error, 1)
+	w := core.NewTestWriter(conn, f, 0, func(err error) { closed <- err })
+	defer w.Stop()
+	pool := resources.NewBufPool(resources.NewWaitBudget("reply", 1<<30))
+	msg, err := pool.Get(context.Background(), netip.Addr{}, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg.B = append(msg.B[:0], "gone"...)
+	if err := peer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Out(msg, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-closed:
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Errorf("the connection closed with %v, want the write's error", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a write to a closed peer did not close the connection")
+	}
+}
