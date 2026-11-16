@@ -320,13 +320,15 @@ func TestRunFeedsTheRemainderASyncedSupersededLossNames(t *testing.T) {
 		file := kindsFile(1)
 		r.plantSeg(2, buildSeg(2,
 			writeRec(60, 5, 0, 128),
-			plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8), // synced, superseded
+			// synced, superseded, at the writer's convention: the loss
+			// record's content version is the dropped record's own.
+			plantLossRec(file, 60, 61, 5, 0, 64, 1|4<<8),
 		))
 
 		st := kindsRun(t, r)
 
 		if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
-			t.Errorf("Lookup at 0 hit, want a miss: the loss's extent covers the record's first half")
+			t.Errorf("Lookup at 0 hit, want a miss: the named record is excluded over the loss extent by its sequence, whatever its version")
 		}
 		p, ok := st.Rebuilt.Index.Lookup(file, 64)
 		if !ok {
@@ -339,13 +341,38 @@ func TestRunFeedsTheRemainderASyncedSupersededLossNames(t *testing.T) {
 			t.Errorf("the loss names segments %v, want [2]: superseded or whole, the record it names is its liveness", got)
 		}
 	})
+	t.Run("a loss above the dropped record's version", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		file := kindsFile(1)
+		r.plantSeg(2, buildSeg(2,
+			writeRec(60, 5, 0, 128),
+			// The old plant shape, a loss version above the record's: the
+			// seq-aware cut makes the outcome identical to the equal-version
+			// row — the named record goes over the loss extent, its
+			// remainder stays, and no convention of loss versions can hide
+			// the rule.
+			plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8),
+		))
+
+		st := kindsRun(t, r)
+
+		if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+			t.Errorf("Lookup at 0 hit, want a miss: the named record is excluded over the loss extent at whatever version the loss record carries")
+		}
+		if p, ok := st.Rebuilt.Index.Lookup(file, 64); !ok {
+			t.Fatalf("Lookup at 64 missed, want the record's [64,128) run held: a loss version above the record's changes nothing the equal-version row does not")
+		} else if p.Extent != (core.Extent{Off: 64, Len: 64}) || p.Seq != 60 {
+			t.Errorf("the kept run got %+v of seq %d, want the cut extent [64,128) under the record's own seq 60", p.Extent, p.Seq)
+		}
+	})
 	t.Run("a cut in the middle of the record", func(t *testing.T) {
 		r := newRig(t)
 		r.writeFormat()
 		file := kindsFile(1)
 		r.plantSeg(2, buildSeg(2,
 			writeRec(60, 5, 0, 128),
-			plantLossRec(file, 60, 61, 9, 32, 32, 1|4<<8), // synced, superseded over [32,64)
+			plantLossRec(file, 60, 61, 5, 32, 32, 1|4<<8), // synced, superseded over [32,64)
 		))
 
 		st := kindsRun(t, r)
@@ -375,7 +402,7 @@ func TestRunFeedsTheRemainderASyncedSupersededLossNames(t *testing.T) {
 			writeRec(60, 5, 0, 64),
 			// A superseded loss naming [200,216): the writer's bug the row
 			// plants, for no honest loss names past the record it loses.
-			plantLossRec(file, 60, 61, 9, 200, 16, 1|4<<8),
+			plantLossRec(file, 60, 61, 5, 200, 16, 1|4<<8),
 		))
 
 		st := kindsRun(t, r)
@@ -395,7 +422,7 @@ func TestRunFeedsTheRemainderASyncedSupersededLossNames(t *testing.T) {
 		r.plantSeg(2, buildSeg(2,
 			writeRec(60, 5, 200, 64),
 			// A superseded loss naming [0,16), before the record's start.
-			plantLossRec(file, 60, 61, 9, 0, 16, 1|4<<8),
+			plantLossRec(file, 60, 61, 5, 0, 16, 1|4<<8),
 		))
 
 		st := kindsRun(t, r)
@@ -417,7 +444,7 @@ func TestRunFeedsTheRemainderASyncedSupersededLossNames(t *testing.T) {
 				rc.Seq, rc.Version = 62, raw.Version{Counter: 62}
 				rc.Offset, rc.Length = 0x100, 0
 			}),
-			plantLossRec(file, 62, 63, 9, 0x40, 16, 1|4<<8),
+			plantLossRec(file, 62, 63, 62, 0x40, 16, 1|4<<8),
 		))
 
 		st := kindsRun(t, r)
@@ -438,7 +465,7 @@ func TestRunFeedsTheRemainderASyncedSupersededLossNames(t *testing.T) {
 		file := kindsFile(1)
 		r.plantSeg(2, buildSeg(2,
 			writeRec(60, 5, 0, 64),
-			plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8),
+			plantLossRec(file, 60, 61, 5, 0, 64, 1|4<<8),
 		))
 
 		st := kindsRun(t, r)
@@ -479,13 +506,15 @@ func TestRunAppliesASyncedLossRecordAsItsCut(t *testing.T) {
 			r.plantSeg(2, buildSeg(2,
 				writeRec(10, 3, 0, 64), // Q at v3, below the loss's version
 				writeRec(11, 5, 0, 64), // R at v5, withheld by the feed
-				plantLossRec(file, 11, 12, 9, 0, 64, row.flags),
+				// The loss record's version is the dropped record's own, the
+				// writer's convention: v5, R's.
+				plantLossRec(file, 11, 12, 5, 0, 64, row.flags),
 			))
 
 			st := kindsRun(t, r)
 
 			if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
-				t.Errorf("Lookup over the loss's extent hit, want the cut to drop every record below the loss's version there")
+				t.Errorf("Lookup over the loss's extent hit, want the cut to drop Q below the loss's version and the named R by its sequence")
 			}
 			changes := st.Rebuilt.Index.Since(file, core.Version{})
 			if !row.yields && len(changes) != 0 {
@@ -499,10 +528,10 @@ func TestRunAppliesASyncedLossRecordAsItsCut(t *testing.T) {
 					t.Fatalf("Since got %+v among the loss's markers, want only the loss's own: the cut dropped every held record", ch)
 				}
 			}
-			if len(changes) != 1 || changes[0].Version.Counter != 9 || changes[0].Extent != (core.Extent{Off: 0, Len: 64}) {
-				t.Fatalf("the loss markers got %+v, want the single one at v9 over [0,64), unsettled", changes)
+			if len(changes) != 1 || changes[0].Version.Counter != 5 || changes[0].Extent != (core.Extent{Off: 0, Len: 64}) {
+				t.Fatalf("the loss markers got %+v, want the single one at v5 over [0,64), unsettled", changes)
 			}
-			st.Rebuilt.Index.SettleFor(7, file, core.Version{Counter: 9})
+			st.Rebuilt.Index.SettleFor(7, file, core.Version{Counter: 5})
 			if changes := st.Rebuilt.Index.Since(file, core.Version{}); len(changes) != 0 {
 				t.Errorf("Since yielded %+v after settling at the loss's version, want the marker settled and nothing held behind it", changes)
 			}
@@ -615,7 +644,7 @@ func TestRunServesABadCopyFromItsLiveTwin(t *testing.T) {
 			// The re-appended copy, healthy, in an intact segment of its own.
 			r.plantSeg(2, buildSeg(2, writeRec(60, 5, 0, 128)))
 			// The synced superseded loss whose kept run [64,128) the original rots in.
-			r.plantSeg(3, buildSeg(3, plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8)))
+			r.plantSeg(3, buildSeg(3, plantLossRec(file, 60, 61, 5, 0, 64, 1|4<<8)))
 
 			st := kindsRun(t, r)
 
@@ -707,7 +736,7 @@ func TestRunSubtractsARottenDropByATwinBelowTheTornTailCut(t *testing.T) {
 	file := kindsFile(1)
 	// Segment 1: the rotten original, intact, confined by the remainder
 	// verify over the run its superseded loss leaves.
-	seg1 := buildSeg(1, writeRec(60, 5, 0, 128), plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8))
+	seg1 := buildSeg(1, writeRec(60, 5, 0, 128), plantLossRec(file, 60, 61, 5, 0, 64, 1|4<<8))
 	seg1[format.SegmentHeaderSize+format.RecordHeaderSize+8+70] ^= 0xff
 	r.plantSeg(1, seg1)
 	// Segment 2: the healthy twin, then a torn tail past it — the cut falls
@@ -866,7 +895,7 @@ func TestRunRefusesAReadTheRemainderVerifyCannotComplete(t *testing.T) {
 	name := format.SegmentName(id)
 	r.plantSeg(id, buildSeg(id,
 		writeRec(60, 5, 0, 128), // the payload is intact: only the fault can fail the verify
-		plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8),
+		plantLossRec(file, 60, 61, 5, 0, 64, 1|4<<8),
 	))
 
 	// Measure: the same open over the recorder, unfaulted, names the verify
@@ -1012,7 +1041,7 @@ func TestRunACutLeavesAVerifiedAsideInPlace(t *testing.T) {
 	file := kindsFile(1)
 	seg := buildSeg(1,
 		writeRec(60, 5, 0, 64),
-		plantLossRec(file, 60, 61, 9, 0, 64, 1<<8), // unsynced, corrupt: withholds the record whole
+		plantLossRec(file, 60, 61, 5, 0, 64, 1<<8), // unsynced, corrupt: withholds the record whole
 	)
 	lossEnd := int64(len(seg))
 	seg = append(seg, bytes.Repeat([]byte{0xff}, 16)...) // the torn tail behind the loss record
@@ -1046,7 +1075,7 @@ func TestRunSkipsTheRemainderVerifyOfARecordAnotherRuleDropsWhole(t *testing.T) 
 	id := core.SegmentID(1)
 	seg := buildSeg(id,
 		writeRec(60, 5, 0, 128),
-		plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8), // synced, superseded: the kept run is [64,128)
+		plantLossRec(file, 60, 61, 5, 0, 64, 1|4<<8), // synced, superseded: the kept run is [64,128)
 		plantLossRec(file, 60, 62, 10, 0, 128, 1<<8), // unsynced, corrupt: the record drops whole
 	)
 	// One payload byte rotted: the kept run verifies as badly as the rest.
@@ -1085,7 +1114,7 @@ func TestRunKeepsAConfinedTwinFromSubtractingItsEqualDrop(t *testing.T) {
 	for _, id := range []core.SegmentID{1, 2} {
 		var seg []byte
 		if id == 1 {
-			seg = buildSeg(id, writeRec(60, 5, 0, 128), plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8))
+			seg = buildSeg(id, writeRec(60, 5, 0, 128), plantLossRec(file, 60, 61, 5, 0, 64, 1|4<<8))
 		} else {
 			seg = buildSeg(id, writeRec(60, 5, 0, 128))
 		}
@@ -1182,7 +1211,7 @@ func TestRunConfinesARottenSupersededRemainderAsCorrupt(t *testing.T) {
 	id := core.SegmentID(1)
 	seg := buildSeg(id,
 		writeRec(60, 5, 0, 128),
-		plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8), // the kept run is [64,128)
+		plantLossRec(file, 60, 61, 5, 0, 64, 1|4<<8), // the kept run is [64,128)
 	)
 	// One payload byte of the record rotted after its writer built it.
 	seg[format.SegmentHeaderSize+format.RecordHeaderSize+8+70] ^= 0xff
@@ -1315,7 +1344,8 @@ func TestRunGivesACoveredLossRecordNoEffectAnywhere(t *testing.T) {
 		rec(10, func(rc *raw.Record) { // the covered loss: tag 9, seq 5
 			rc.Tag = 9
 			rc.FileID = file.Bytes()
-			rc.Seq, rc.Version = 5, raw.Version{Counter: 9}
+			// The writer's convention: the version of the record it names.
+			rc.Seq, rc.Version = 5, raw.Version{Counter: 3}
 			rc.Offset, rc.Length = 0, 64
 			rc.Loss = &raw.LossBody{Dropped: 10, Flags: 1 | 4<<8} // synced, superseded
 		}),
