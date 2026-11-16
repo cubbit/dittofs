@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"errors"
 	"iter"
 	"math"
 	"slices"
@@ -205,7 +204,7 @@ func createShareRecords(tx kv.Txn, s *entity.Share, ns entity.NamespaceID) error
 }
 
 // ErrTagsExhausted is an installation that has given every journal tag.
-var ErrTagsExhausted = errors.New("kvstore: installation has no share tags left")
+var ErrTagsExhausted = entity.ErrTagsExhausted
 
 // nextTag mints a journal tag no share of the installation has had: the
 // tag counter's next value, from 1, since a zero tag names no share.

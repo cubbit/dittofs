@@ -15,9 +15,9 @@ import (
 
 var (
 	// ErrRehoming is a share whose namespace a re-home is moving.
-	ErrRehoming = errors.New("kvstore: share is being re-homed")
+	ErrRehoming = entity.ErrRehoming
 	// ErrMoving is a share one of whose namespaces a move has paused.
-	ErrMoving = errors.New("kvstore: a namespace of the share is paused by a move")
+	ErrMoving = entity.ErrMoving
 )
 
 // The passes of a share's removal, in order, as its state record's Step
