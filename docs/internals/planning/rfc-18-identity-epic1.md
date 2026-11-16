@@ -182,9 +182,9 @@ held by the compiler: E1's interface assertions (T1.4, T1.6) and the consumers E
   interface has no `Close`, which holds R10. `*kvstore.Store` satisfies it, so the node and the
   tests pass it unchanged. Agreed on #4419.
 - **D6, `SharePolicy` is declared in `entity` as RFC 16 §3 states it, without `ManageGIDs`.**
-  `Resolver.Resolve` takes it, so the type must exist at S1. Its one reader is
-  `Principals.SharePolicy`, which RFC 23's plan's epic 2 (T2.3) implements over one snapshot,
-  reading the export policy and `S‖id‖gv` in one transaction; E3 calls it. `ManageGIDs` is left
+  `Resolver.Resolve` takes it, so the type must exist at S1. E3's T3.6 builds it
+  from the share and export policy `ShareIndex.Share` reads in one view, with the
+  `GrantVersion` RFC 23's plan's epic 2's T2.3 returns from that read. `ManageGIDs` is left
   out until RFC 21 gives it a source: `ExportPolicy` has none, and a field that is always false
   would be trusted by its readers. Agreed on #4419. RFC 18's `metadata.`
   prefix is `entity` on this branch, where the store's value types live. Prior art: RFC 16 §3.
