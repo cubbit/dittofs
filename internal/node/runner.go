@@ -82,7 +82,9 @@ func (r *runner) run(ctx context.Context) {
 func (r *runner) turn(ctx context.Context) {
 	for op, err := range r.cp.Operations(ctx, entity.OperationID{}) {
 		if err != nil {
-			r.log.Warn("operation runner: list the operations", "error", err)
+			if ctx.Err() == nil {
+				r.log.Warn("operation runner: list the operations", "error", err)
+			}
 			return
 		}
 		if op.State == entity.OpPending || op.State == entity.OpRunning {

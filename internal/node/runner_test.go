@@ -108,11 +108,11 @@ func (b *bench) operation(kind string, target entity.ResourceRef) entity.Operati
 }
 
 // deleteUser marks u and creates its pending deletion in one write, as the
-// management API's delete does.
+// management API's delete does for an account.
 func (b *bench) deleteUser(u entity.Principal, gen uint64) entity.Operation {
 	b.t.Helper()
 	op := entity.Operation{ID: entity.OperationID(uuid.New()), Kind: string(apiv1.OpUserDelete),
-		Target: entity.ResourceRef{Kind: entity.ResourceUser, ID: u.ID[:]}, State: entity.OpPending}
+		Target: entity.ResourceRef{Kind: entity.ResourceUser, ID: u.ID[:]}, Account: entity.NewUser(), State: entity.OpPending}
 	b.must(b.store.ControlPlane().Write(b.t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
 		if err := tx.DeleteUser(u, gen); err != nil {
 			return err
