@@ -44,7 +44,7 @@ func TestPRTier(t *testing.T) {
 		"lint-go", "lint-repo", "shellcheck",
 		"unit", "unit/windows", "unit/journal-index", "unit/journal-plant", "unit/journal-conformance-norace", "unit/adapter-allocs",
 		"journal-conformance",
-		"engine-conformance", "adapter-conformance",
+		"engine-conformance", "engine-soak", "adapter-conformance",
 		"integration", "integration/portmap", "integration/kerberos",
 		"operator",
 		"e2e/kerberos", "e2e/cross-protocol",
