@@ -195,10 +195,14 @@ without it.
 **The frozen surface:**
 
 - the node's exported surface (RFC 23 §2.1, "The node's surface");
-- the wire types package and the CLI's client entry points (RFC 23 §4.1, §4.6 and §4.7's codes, §7);
-- the kvstore view's methods with `expect`, as RFC 16 §3 declares them, and amendment A3's entry
-  point;
+- the wire types every later epic shares: the resource envelope, the page, the problem, the closed
+  code and `OpKind` sets, the operation and the version body (RFC 23 §4.1, §4.2, §4.6, §4.7, §9);
+  each resource's spec and status types land with the epic that serves it, epic 4 or epic 5;
 - the new `cmd/dfs`, whose commands are wired to stub bodies.
+
+The kvstore view's methods with `expect` and amendment A3's entry point are epic 2's, which
+declares and fills them together; `pkg/apiclient`'s client is epic 4's, which lands it whole with
+its core.
 
 **The seams it exposes:**
 
@@ -364,7 +368,9 @@ registers no suite and no group, and changes no `lint-go` tag.
     - `pkg/apiclient`'s client;
     - kvstore's view methods.
 
-    All of it is frozen at S1. A deferred action or resource adds an `OpKind`, a code or a type
+    The node's surface and the shared wire types are frozen at S1; kvstore's view methods when
+    epic 2 lands them, `pkg/apiclient`'s client when epic 4 lands it, and each resource's wire
+    types with the epic that serves it. A deferred action or resource adds an `OpKind`, a code or a type
     additively, as RFC 23 §9 allows within a major version. The route table, the write path and the
     problem table stay unexported inside `internal/node/api`. The token code is the one exception:
     it lives in the sub-package `internal/node/api/auth`, whose exports only `internal/node/api`
@@ -377,17 +383,17 @@ registers no suite and no group, and changes no `lint-go` tag.
 
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
-| E1 ⛔ | Delete v1, declare the surface | v1 deleted with the tests that drive it, harness fixed; the node's, wire types', client's and kvstore's surfaces; the new `cmd/dfs` skeleton; architecture tests | 8 | 16.75 | team | every epic; the RFC 13 plan (#4059) and the RFC 18 plan (#4058) |
-| E2 | Store records | the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry | 8 | 20.5 | C | E5; partly E3, E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059, `Node`, `NodeStatus`, `JournalID`); the RFC 18 plan's epic 3 (#4058, the principals generation) |
+| E1 ⛔ | Delete v1, declare the surface | v1 deleted with the tests that drive it, harness fixed, landed first; the node's surface and the shared wire types; the new `cmd/dfs` skeleton; architecture tests | 6 | 12.25 | team | every epic; the RFC 13 plan (#4059) and the RFC 18 plan (#4058) |
+| E2 | Store records | the view's signatures with `expect`; the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry | 9 | 22.5 | C | E5; partly E3, E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059, `Node`, `NodeStatus`, `JournalID`); the RFC 18 plan's epic 3 (#4058, the principals generation) |
 | E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition with RFC 8's root duties, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven, RFC 23's own settings section, the harness | 10 | 23 | A | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the `apply` slot); the RFC 18 plan's epics 2 and 7 (#4058, the runner) |
-| E4 | The management API | server, route table, typed handlers (D14), write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5), the client's core | 14 | 32 | B | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the write path's `Check` slot) |
-| E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention | 8 | 18 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
+| E4 | The management API | server, route table, typed handlers (D14), write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5), each resource's wire types, the client | 14 | 34 | B | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the write path's `Check` slot) |
+| E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 8 | 18.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
 | E6 | The CLI | `login` and the rebuilt `dfsctl` on epic 4's client, generated reference | 5 | 11 | A | E7 |
 | E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 5 | 13.5 | team | E8 (partly) |
 | E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **58** | **134.75** | | |
+| | **Total** | | **57** | **134.75** | | |
 
-**Plan estimate: 58 subtasks, 134.75 man-days, not counting epic 8.**
+**Plan estimate: 57 subtasks, 134.75 man-days, not counting epic 8.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -442,12 +448,13 @@ flowchart TD
 
 - **S1, v1 gone and the surface frozen.** Epic 1 has merged:
   - v1's trees are deleted; the module, `dt` and every remaining cell build and pass without them;
-  - the node's, wire types', client's and kvstore's exported surfaces are declared;
+  - the node's exported surface and the shared wire types are declared;
   - `dfs init`, `dfs start` and `dfs`'s `reset-admin` exist, with stub bodies;
   - the architecture tests run in `unit`.
 
-  Unblocks epics 2, 3 and 4, and is the RFC 13 plan's S0 (#4059) and part of the RFC 18 plan's
-  (#4058), which also waits for the RFC 13 plan's S1.
+  Unblocks epics 2, 3 and 4. The RFC 13 plan's S0 (#4059) and the part of the RFC 18 plan's
+  (#4058) that waits on this plan come earlier, at epic 1's first pull request, which deletes v1;
+  the RFC 18 plan also waits for the RFC 13 plan's S1.
 - **S2, the node starts and reconciles.** `node.New` composes what §1.1's dependency limits name,
   the start and stop steps run in order, and reconcile applies share changes and reads the settings
   generation; setting changes reach the components once X3 is in. This is RFC
@@ -473,7 +480,7 @@ flowchart TD
 
 | Epic | Blocks | Why |
 | --- | --- | --- |
-| E1 ⛔ | every epic; the RFC 13 plan (#4059) and the RFC 18 plan (#4058) | Each epic builds on the frozen surface, and v1's trees would otherwise collide with v2's names (`cmd/dfs`, `pkg/apiclient`, `pkg/health`, `pkg/config`). Both other plans start at their S0, this epic's merge: #4059 on the stripped `pkg/config`, #4058 on v1's identity deleted. Only the deletion half unblocks them, but it cannot land alone, since the module must build with v2's names in place of v1's. |
+| E1 ⛔ | every epic; the RFC 13 plan (#4059) and the RFC 18 plan (#4058) | Each epic builds on the frozen surface, and v1's trees would otherwise collide with v2's names (`cmd/dfs`, `pkg/apiclient`, `pkg/health`, `pkg/config`). Both other plans start at their S0, this epic's first pull request, the deletion: #4059 on the stripped `pkg/config`, #4058 on v1's identity deleted. The deletion builds alone, leaves first, with the new `dfs` replacing v1's in the same change. |
 | E2 | E5; partly E3 and E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059); the RFC 18 plan's epic 3 (#4058) | E5's accounts, tokens and sessions are E2's records. E4 builds its server, route table, problem table and reads before E2 lands, and its write path once A3's entry point is in. E3 builds its composition and start and stop before E2 lands, and its node status, the sweeper's start and the removal's driving once E2's records and steps are in. E2's sweeper takes each retention as an input, so it needs no setting. The RFC 13 plan's version gate writes a node's ranges into the `Node` record, its `WriteMissingNodeIDs` reads `JournalID` and its `Prune` reads `NodeStatus`, and its S3 waits for these records; the RFC 18 plan's epic 3 reads the principals generation. |
 | E3 | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059); the RFC 18 plan's epics 2 and 7 (#4058) | Epic 5's signed-in callers extend the harness, and its sessions and tokens read RFC 23's own section; the CLI's tests run against the node the harness builds; integration runs every row on it. The RFC 13 plan's epic 5 fills the `apply` slot; the RFC 18 plan's epics 2 and 7 put their steps on the runner. |
 | E4 | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059) | Epic 5's sign-in routes go in the route table; the CLI is built against `pkg/node/apiv1` from S1, and tested against the routes. The RFC 13 plan's epic 5 fills the write path's `Check` slot. |
@@ -496,8 +503,8 @@ flowchart TD
   table, which need only the user fields epic 2 lands first, puts its routes in epic 4's table and
   its callers in epic 3's harness once those land, and takes sign-in and `dfs init` once X1 and X2
   are in.
-- **The team converges** at epic 1 (one pull request, since the deletion and the new surface must
-  land together) and at epic 7.
+- **The team converges** at epic 1, whose deletion lands first as its own pull request, and at
+  epic 7.
 
 ## 4. Implementation decisions
 
@@ -518,14 +525,15 @@ internal/node/api/            the management API server, one package: server and
 internal/node/api/auth/       sign-in, tokens, sessions, roles, throttling, the         E5
                               signing key; imported by internal/node/api only (rule 11)
 internal/node/nodetest/       in-process node harness (KV, clock, 127.0.0.1:0)          E3, E5
-pkg/node/apiv1/               wire types, standard library only, one file per resource  E1
-pkg/apiclient/                client on pkg/node/apiv1 (same path as v1's), one file    E1 surface, E4 core, E6
+pkg/node/apiv1/               wire types, standard library only, one file per resource  E1 shared, E4, E5
+pkg/apiclient/                client on pkg/node/apiv1 (same path as v1's), one file    E4, E6
                               per resource
 cmd/dfsctl/commands/<noun>/   CLI: one sub-package per noun, bodies rebuilt             E6
 pkg/health/                   + RFC 25's registry and watchdog, the parts used          E3
-pkg/metadata/entity/          + RFC 16's records for RFC 23 (fields, codecs, fuzz),     E1 fields, E2
+pkg/metadata/                 + WriteMeta and ControlPlaneTx, beside RFC 16 §3's views  E2
+pkg/metadata/entity/          + RFC 16's records for RFC 23 (fields, codecs, fuzz),     E2
                               and its User fields
-pkg/metadata/kvstore/         + those records' view methods, expect on every write,     E1 surface, E2
+pkg/metadata/kvstore/         + those records' view methods, expect on every write,     E2
                               A3's entry point, a share's removal steps (a new file:
                               the existing removal.go removes a file's data), sweeper
 ```
@@ -1077,14 +1085,15 @@ the reset of the account's and the pair's counts in the transaction that writes 
 
 ### Epic 1 — Delete v1, declare the surface ⛔
 
-**Epic 1 estimate: 8 subtasks, 16.75 man-days.**
+**Epic 1 estimate: 6 subtasks, 12.25 man-days.**
 
 This epic deletes v1 whole and puts the frozen surface, and the tests that guard the layering, in
-its place. It lands as one pull request, so the module never builds half of either.
+its place. The deletion lands first, as its own pull request, each of its subtasks leaving the module
+building; the surface follows.
 
 **Owns:** RFC 23 Appendix B (the code it describes is removed); RFC 23 §2.1, "The node's surface", as
-declarations; RFC 23 §4.1, §4.6 and §4.7's shapes and codes, as declarations; RFC 16 §3's
-`ControlPlane` signatures with A3; RFC 23 CP14 and CP16, as architecture tests.
+declarations; RFC 23 §4.1, §4.2, §4.6, §4.7 and §9's shared shapes and codes, as declarations;
+RFC 23 CP14 and CP16, as architecture tests.
 
 **Done when:**
 - v1's trees in §1.1's table are gone;
@@ -1121,13 +1130,10 @@ declarations; RFC 23 §4.1, §4.6 and §4.7's shapes and codes, as declarations;
   (`rfc-20-adapters-epic1.md`) keeps for the e2e helpers: this epic overrides D5, since those
   methods go with the helpers they serve, and epics 6 and 8 rebuild the client and the helpers on
   the new API.
-- Write `pkg/node/apiv1`: the resource envelope, page, problem, operation, progress, the closed
-  `OpKind` and code sets, and the spec and status types of every in-scope resource (RFC 23 §3.1,
-  without the deferred ones).
+- Write `pkg/node/apiv1`'s shared types: the resource envelope, page, problem, operation,
+  progress, version body, and the closed `OpKind` and code sets. Each resource's spec and status
+  land with the epic that serves it.
 - Declare the node's surface (RFC 23 §2.1) with stub bodies.
-- Declare the kvstore view's methods with `expect` (RFC 16 §3) and A3's entry point, with the
-  record types those methods name, `Operation` among them: their fields only, since epic 2 adds
-  their codecs, fuzz targets and storage.
 - Write the new `cmd/dfs` with `init`, `start` and `reset-admin` over the stubs, beside the
   commands D13 keeps; drop `--foreground`, `--pid-file` and `--log-file` from every caller D13
   lists, the fixture tests that assert them included; regenerate
@@ -1144,7 +1150,7 @@ declarations; RFC 23 §4.1, §4.6 and §4.7's shapes and codes, as declarations;
 
 ### Epic 2 — Store records
 
-**Epic 2 estimate: 8 subtasks, 20.5 man-days.**
+**Epic 2 estimate: 9 subtasks, 22.5 man-days.**
 
 The metadata store gains every record and field RFC 16 declares for RFC 23, the one transaction an
 API write commits in, and a share's removal steps past the mark.
@@ -1166,6 +1172,10 @@ API write commits in, and a share's removal steps past the mark.
   KV.
 
 **Expected content:**
+- The view's signatures, declared here with their bodies rather than in epic 1: `expect` on every
+  write, `DeleteGrant`, `PutOperation` and `Write`, with `WriteMeta` and `ControlPlaneTx` in the
+  root `pkg/metadata`, where RFC 16 §3 declares the views and which kvstore and the API both import,
+  and every caller updated.
 - A3's entry point: the transaction type carrying the view's writes, and the audit and idempotency
   records written in it.
 - `expect` on every write of the view, including the renames RFC 16 makes (`DeleteGrant`).
@@ -1249,7 +1259,7 @@ and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 
 ### Epic 4 — The management API
 
-**Epic 4 estimate: 14 subtasks, 32 man-days.**
+**Epic 4 estimate: 14 subtasks, 34 man-days.**
 
 The API server answers every in-scope resource and action, writes only records, and maps every
 error to a status.
@@ -1337,14 +1347,17 @@ error to a status.
 - The two architecture rules §1.3 leaves to this epic, landed with `internal/node/api`: its
   imports, and its writes only through `Write`, checked on the method sets of the store types the
   package uses, not only on interfaces it declares.
-- `pkg/apiclient`'s core on `pkg/node/apiv1`, landed with the API tests that are its first
-  consumer: the transport over a URL or the local socket, problem decoding, the `ETag` echoed, one
+- Each resource's spec and status types in `pkg/node/apiv1`, with the route that serves it; the
+  token, session and sign-in types are epic 5's.
+- `pkg/apiclient`, landed whole with the API tests that are its first consumer: one generic
+  `Resource[Spec, Status]` (`List`, `Get`, `Create`, `Replace`, `Patch`, `Delete`), each resource's
+  accessor added with its route, and its core: the transport over a URL or the local socket, problem decoding, the `ETag` echoed, one
   idempotency key per command reused across its retries, `?wait=`, and the version check at first
   contact (RFC 23 §7, §9). Epic 6 builds the commands on it.
 
 ### Epic 5 — Accounts and sign-in 🔀
 
-**Epic 5 estimate: 8 subtasks, 18 man-days.**
+**Epic 5 estimate: 8 subtasks, 18.5 man-days.**
 
 The installation gets its first account. API accounts sign in, hold tokens, and are authorized per
 call against their current record.
@@ -1354,6 +1367,7 @@ call against their current record.
 - RFC 23 §4.5's credential calls;
 - RFC 23 §6's refusals and sign-ins;
 - RFC 16 §3.2's `Init`, as `dfs init` calls it;
+- the wire types of API tokens, sessions and sign-in in `pkg/node/apiv1`;
 - RFC 18 §8.1 as a consumer: the RFC 18 plan builds it (O11); `TokenVerifier` (RFC 18 §8.2) waits
   for OpenID Connect.
 
@@ -1651,13 +1665,13 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | RFC 23 §2, §2.1, §2.2, §2.3 | E1 (surface), E3; E7 (rows); E8 ("§2.2 order"'s adapter clause); §2.1's syncer, remote clients and GC §6.1 |
 | RFC 23 §2.4 | E2 (records), E3 (writer), E4 (`applied`); E7 (row) |
 | RFC 23 §2.5 | E3; E7 (row) |
-| RFC 23 §3.1 | E1 (types), E2 (records) |
+| RFC 23 §3.1 | E1 (shared types), E2 (records), E4 and E5 (each resource's types) |
 | RFC 23 §3.2 | E2 (removal steps), E3 (driving), E4 (routes); E7 (delete row); E8 (mount row) |
 | RFC 23 §3.3 | E4 (with the RFC 13 plan's D9 refusal); rotation and deferred actions O2 |
 | RFC 23 §3.4 | E4 (with A1); the node's adapter rows, RFC 20's plan's epic 7 (D12); O7 |
 | RFC 23 §3.5 | E3 (user and group deletion driven), E4 (with A5), E6; E7 (row) |
 | RFC 23 §3.6 | deferred, O2 |
-| RFC 23 §4.1, §4.2, §4.3, §4.4, §4.7 | E1 (types), E4; E7 (rows) |
+| RFC 23 §4.1, §4.2, §4.3, §4.4, §4.7 | E1 (shared types), E4; E7 (rows) |
 | RFC 23 §4.5 | E2 (record), E4 (server), E5 (credential calls); E7 (row) |
 | RFC 23 §4.6 | E2 (record), E3 (runner), E4 (reading, cancel); takeover O2 |
 | RFC 23 §5.1, §5.2, §5.3 | E5; E7 (rows); E8 (§5.1 mount row) |
@@ -1676,7 +1690,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | RFC 13 §2.2 | the RFC 13 plan; E3, E5 consume it (A1, A2) |
 | RFC 13 §6 | the RFC 13 plan; its epic 5 wires `Check` into E4's write path (X3) |
 | RFC 13 §7 | the RFC 13 plan; E5 (the signing key, a consumer) |
-| RFC 16 §2.3, §3, §4.2 | E1 (signatures, A3), E2 (with `SignInFailures`) |
+| RFC 16 §2.3, §3, §4.2 | E2 (signatures, A3, with `SignInFailures`) |
 | RFC 16 §2.3.2 | E2 (steps), E3 (driving) |
 | RFC 16 §3.2 | E5 (`Init`) |
 | RFC 8 §2.1, §2.6 (the root's duties) | E3 (a share with no remote refused, `Stats` adapted); E4 (share create) |
