@@ -171,7 +171,7 @@ func shareNamespace(tx controlTx, s entity.Share) (entity.NamespaceID, error) {
 // keys in the namespaces' share indexes from old's namespaces to next's, so
 // the index never drifts from the record. Every write of a share's
 // namespaces goes through it: a share's create, and its removal and a
-// re-home once they write them. A new record naming no namespace deletes it.
+// re-home once they write them.
 func putShareNamespaces(tx kv.Txn, share entity.ShareID, old, next shareNamespaces) error {
 	in := func(gs []entity.NamespaceGen, ns entity.NamespaceID) bool {
 		return slices.ContainsFunc(gs, func(g entity.NamespaceGen) bool { return g.Namespace == ns })
@@ -189,9 +189,6 @@ func putShareNamespaces(tx kv.Txn, share entity.ShareID, old, next shareNamespac
 				return err
 			}
 		}
-	}
-	if len(next.Namespaces) == 0 {
-		return tx.Delete(namespacesKey(share))
 	}
 	return tx.Set(namespacesKey(share), encodeNamespaces(next))
 }
