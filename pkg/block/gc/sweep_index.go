@@ -3,6 +3,7 @@ package gc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -121,6 +122,12 @@ func sweepFromSyncedIndex(
 			stats.BytesFreed += freed
 			statsMu.Unlock()
 			return nil
+		}
+
+		if errors.Is(rerr, context.DeadlineExceeded) {
+			// The store is not answering: end the sweep, which records the
+			// error once, and leave the rest of the remote for the next run.
+			return fmt.Errorf("block-reclaim %s: %w", key, rerr)
 		}
 		if rerr != nil {
 			addError("block-reclaim " + key + ": " + rerr.Error())
