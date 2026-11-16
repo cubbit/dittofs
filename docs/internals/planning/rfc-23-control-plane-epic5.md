@@ -139,6 +139,7 @@ them.
 | --- | --- | --- | --- | --- |
 | R9 | Sign-in is `POST /api/v1/auth/sign-in` with a name and a password, checked by `APISignIn.Lookup` then `VerifyPassword` on that principal, never through `vfs`, and returns an access token and a refresh token | MUST | RFC 23 §5.3; RFC 18 §8.1 | T5.5 |
 | R10 | A disabled or deleted account cannot sign in, and the refusal does not say which | MUST | RFC 23 §5.3 | T5.5 |
+| R47 | A store that cannot answer is not a failed credential: `VerifyPassword` or `Account` answering `ErrUnavailable` is `503` `unavailable`, with no settled failure, no refusal audit and the source's raise taken back; only `ErrLogonFailure` settles a failure | MUST | RFC 23 §5.3, §8.1; RFC 18 §8.1 | T5.5 |
 | R11 | The access token is a signed JWT naming the account's principal, the session and an expiry 15 min ahead, and carries no role | MUST | RFC 23 §5.3 | T5.3 |
 | R12 | The access token is HS256, signed with `golang-jwt`, its `kid` naming the signing key's version, so a token signed before a rotation still verifies | MUST | RFC 23 plan §4.2 D3 | T5.3 |
 | R13 | On every call the API refuses a disabled or deleted account, a revoked session, and a token issued before the account's not-before time: an access token by its issue time, a refresh or an API token by its session's or its own creation time | MUST | RFC 23 §5.3, CP10 | T5.5, T5.6, T5.8 |
@@ -403,13 +404,17 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 **Subtask T5.5 estimate: 3.5 man-days.**
 
 - **Track:** C. **Depends on:** T5.2, T5.4; E4 (the call adapter, `Deps.Authenticate`).
-- **Covers:** R9, R10, R13, R14, R16, R25, R32, R33, R39, R40, R41.
+- **Covers:** R9, R10, R13, R14, R16, R25, R32, R33, R39, R40, R41, R47.
 - **Deliverables:** `auth.Service` and `Authenticate` (D1), `node.New` setting
   `Deps.Authenticate`; in `signin.go`: sign-in (`Lookup`, `reserve`, `VerifyPassword` on that
   principal, then one `Write` with the settlement, the session on a success, its `Created` from
-  `tx.Now()` raised to `NotBefore`, and the audit record in its `WriteMeta`, D8; then `issue`);
+  `tx.Now()` raised to `NotBefore`, and the audit record in its `WriteMeta`, D8; then `issue`), a
+  failure settled and audited only on `errors.Is(err, identity.ErrLogonFailure)`, and
+  `ErrUnavailable` answered `503` with no settlement, no refusal audit and the source's raise taken
+  back (R47);
   refresh through `Session(id)`, reading the account through `APISignIn.Account` as `Authenticate`
-  does, an invalidated token revoking the session with `DeleteSession`;
+  does, an invalidated token revoking the session with `DeleteSession`; `Account`'s `ErrUnavailable`
+  answered `503`, not `401`, in refresh and in `Authenticate` alike (R47);
   sign-out; the two series; RFC 23 §4.5's `decision:` at the credential routes; `bench_test.go`,
   checked sign-ins from many sources beside metadata commits, in the manual tier. Consumed by T5.6
   and E6's `login`.
@@ -427,7 +432,10 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   per checked sign-in (R33); 4 failures as `alice` and 1 as `ALICE`, then `CORP\alice` answering
   `429` (R25, R32); a checked failure audited, a `429` not; the series read from the registry
   (R40, R41); a captured log, the audit records and the series' labels holding no password or
-  token (R39); the benchmark under `-count=10`, setup before `b.ResetTimer()` (R33).
+  token (R39); a `kvtest` fault on the user read under the real identity: a sign-in answering `503`,
+  no settled failure and no refusal audit record, the source's count as before, and a refresh and a
+  call with a valid access token each `503`, not `401` (R47); the benchmark under `-count=10`, setup
+  before `b.ResetTimer()` (R33).
 
 ### T5.6 The per-call check, roles and `last_admin`
 
@@ -456,7 +464,7 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 **Subtask T5.7 estimate: 3 man-days.**
 
 - **Track:** C. **Depends on:** T5.6; the RFC 18 plan's epic 2, T2.8 (an NT hash deleted with its
-  user).
+  user), and its epic 4, T4.2 (`SignIn` resolving the NT hash).
 - **Covers:** R8, R14, R29, R31, R32, R34, R35, R36, R37, R39.
 - **Deliverables:** in `password.go`, the RFC 18 plan's password write: `POST /auth/password`, its
   current-password check through `reserve` and settled as a sign-in's; `NewHashes` on the
@@ -477,7 +485,9 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   with NTLM on (R37); the
   change held after reading `identity.ntlm` by a blocking fault while an NTLM-off commits, then
   refused and resealed with no NT hash (R8's hash rule, the RFC 18 plan's §3.5); the store's raw
-  keys and the captured log holding neither password (R39); an operator setting an admin's
+  keys and the captured log holding neither password (R39); with NTLM on, after `POST /auth/password`,
+  identity's `SignIn` verifying an NTLMv2 AUTHENTICATE for the new password and refusing one for the
+  old (R37, at the consumer of the NT hash); an operator setting an admin's
   password refused (R8).
 
 ### T5.8 API tokens
@@ -504,13 +514,15 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 
 - **Track:** C. **Depends on:** T5.3; E3 (the runner).
 - **Covers:** R8, R19.
-- **Deliverables:** in `rotate.go`, the `installation.rotate-signing-key` step (D9), its row in
+- **Deliverables:** in `rotate.go`, the `installation.rotate-signing-key` step (D9) and its
+  `Progress` (E3's step table pairs each step with one: phase `switched`, then `pruned`), its row in
   `New`'s step table, its `ponytail:`; the verifier refreshed at the switch. Consumed by E4's rotate
   route.
 - **Acceptance criteria:**
   - A token signed before the switch verifies until the prune, and is refused after it.
 - **Tests:** over the harness: rotate, a pre-rotation token verifying, the clock advanced 15 min and
-  a turn run, the operation ended, the token refused and the old version gone (R19); turns before
+  a turn run, the operation ended, the token refused and the old version gone (R19); the
+  operation's progress read through the API naming each phase in turn; turns before
   then committing nothing, read through `kv.Counting` (R19); a restart between the switch and the
   prune resuming at the prune (R19); no secret route writing the key (R8).
 
