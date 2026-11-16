@@ -424,16 +424,11 @@ certificates or perform ACME. Setting `cert_file` without `key_file` (or vice ve
 # Private CA
 dfsctl login --server https://host:port --cacert /etc/dittofs/tls/ca.crt -u admin
 
-# Mutual TLS
-dfsctl login --server https://host:port --cacert ca.crt \
-    --client-cert client.crt --client-key client.key -u admin
-
-dfsctl share list   # reuses stored CA / client cert — no flags needed
+dfsctl share list   # reuses the stored CA — no flags needed
 ```
 
-The login stores certificate file paths (not contents); each command re-reads them, so
-cert-manager rotation is picked up automatically. `--tls-skip-verify` is insecure and intended
-only for development against self-signed certs.
+The login stores the CA bundle's file path (not its contents); each command re-reads it, so
+cert-manager rotation is picked up automatically.
 
 See [`./configuration.md`](./configuration.md) for the full option reference.
 

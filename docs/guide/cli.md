@@ -483,6 +483,10 @@ Manage named connection contexts for one or more DittoFS servers.
 
 Each context stores a server URL, authentication credentials, and a display name. Contexts work similarly to kubectl contexts: log in once per server, then switch between them with 'context use'. All subsequent dfsctl commands use the active context automatically.
 
+```
+dfsctl context [flags]
+```
+
 **Examples:**
 
 ```bash
@@ -683,6 +687,10 @@ Manage Unix groups on the DittoFS server. Groups bundle users together so
 that share permissions can be granted to multiple users at once using a single
 group reference. Each group carries a Unix GID used for NFS uid/gid resolution.
 All subcommands require admin privileges.
+
+```
+dfsctl group [flags]
+```
 
 **Examples:**
 
@@ -1013,8 +1021,8 @@ dfsctl login [flags]
 # First login to a local server (prompts for password)
 dfsctl login --server http://localhost:8080 --username admin
 
-# Login to a remote server with mutual TLS
-dfsctl login --server https://dfs.example.com --username admin --cacert ca.pem --client-cert client.pem --client-key client.key
+# Login to a remote server whose certificate a private CA signs
+dfsctl login --server https://dfs.example.com --username admin --cacert ca.pem
 
 # Login passing password on the command line (less secure; avoid in shared environments)
 dfsctl login --server http://localhost:8080 -u admin -p secret
@@ -1026,14 +1034,11 @@ dfsctl login
 Flags:
 
 ```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate
-      --client-cert string   Path to a PEM client certificate for mutual TLS
-      --client-key string    Path to the PEM client private key for mutual TLS
-  -c, --context string       Context name (defaults to current or auto-generated)
-  -p, --password string      Password
-      --server string        Server URL (default "http://localhost:8080")
-      --tls-skip-verify      Disable TLS certificate verification (insecure)
-  -u, --username string      Username
+      --cacert string     Path to a PEM CA bundle trusted for the server certificate
+  -c, --context string    Context name (defaults to current or auto-generated)
+  -p, --password string   Password
+      --server string     Server URL (default "http://localhost:8080")
+  -u, --username string   Username
 ```
 
 Global flags:
@@ -1088,6 +1093,10 @@ Manage per-identity (user/group/default-user) storage quotas on a share.
 Quotas bound both bytes and inode (file) count, with optional soft thresholds
 and a grace period before a soft threshold is enforced as hard. These operations
 require admin privileges.
+
+```
+dfsctl quota [flags]
+```
 
 **Examples:**
 
@@ -1262,6 +1271,10 @@ The `share` tree uses `share <verb> <name>` — Cobra
 resolves the verb as the subcommand and `<name>` as its positional
 argument. These operations require admin privileges.
 
+```
+dfsctl share [flags]
+```
+
 **Examples:**
 
 ```bash
@@ -1350,33 +1363,28 @@ dfsctl share create --name /export --metadata default --block-store s3-store --s
 Flags:
 
 ```
-      --access-based-enumeration        Enable Windows access-based enumeration (SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM). When true, SMB clients only see directory entries they can read.
-      --acl-canonicalize-inherited      When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba "acl flag inherited canonicalization = no"). Default true matches Windows. (default true)
-      --allow-mfsymlink                 Convert 1067-byte XSym (Minshall+French) symlink files written by macOS/Windows SMB clients into real symlinks on CLOSE. Off by default (XSym files are stored as regular files).
-      --block-store string              Block store name (required)
-      --change-notify-disabled          Reject SMB2 CHANGE_NOTIFY with STATUS_NOT_IMPLEMENTED on this share (mirrors Samba 'kernel change notify = no').
-      --commit-ack string               What a COMMIT waits for: journal (survives host crash) or block-store (survives device loss)
-      --continuous-availability         Advertise SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY and allow SMB3 persistent durable handles on this share.
-      --default-permission string       Default permission for unmapped UIDs (none|read|read-write|admin) (default "none")
-      --description string              Share description
-      --enable-trash                    Enable the per-share recycle bin so deletes move to #recycle instead of being permanent.
-      --encrypt-data                    Require SMB3 encryption for this share
-      --journal-size string             Per-share journal size override (e.g., 10GiB, 500MiB)
-      --metadata string                 Metadata store name (required)
-      --name string                     Share name/path (required)
-      --owner string                    Username that owns the share's root directory (defaults to root). The owner can write at the share root; other principals are governed by POSIX mode plus their share permission grant.
-      --quota-bytes string              Per-share byte quota (e.g., '10GiB', '500MiB'). 0 = unlimited (default)
-      --read-buffer-size string         Per-share read buffer size override (e.g., 2GiB, 256MiB)
-      --read-only                       Make share read-only
-      --relaxed-metadata-commit         Let an operation that promised stable metadata return before the metadata fsync
-      --retention string                Retention policy (pin|ttl|lru)
-      --retention-ttl string            Retention TTL duration (e.g., 72h, 24h)
-      --squash string                   Squash mode, for NFS and SMB (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest). Default root_to_guest (root_squash); use none or root_to_admin so a UID 0 caller (a root-mounted NFS client, the built-in SMB admin) is not squashed to guest.
-      --streams-disabled                Reject SMB2 Alternate Data Stream opens with STATUS_OBJECT_NAME_INVALID on this share (mirrors Samba 'smbd:streams = no').
-      --trash-exclude strings           Glob patterns whose deletions bypass the recycle bin (repeatable).
-      --trash-max-size int              Max bytes the recycle bin may hold before the reaper evicts oldest items (0 = unbounded).
-      --trash-restrict-empty-to-admin   Restrict emptying the recycle bin to admins.
-      --trash-retention-days int        Days to retain recycled items before the reaper purges them (0 = keep forever).
+      --access-based-enumeration     Enable Windows access-based enumeration (SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM). When true, SMB clients only see directory entries they can read.
+      --acl-canonicalize-inherited   When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba "acl flag inherited canonicalization = no"). Default true matches Windows. (default true)
+      --allow-mfsymlink              Convert 1067-byte XSym (Minshall+French) symlink files written by macOS/Windows SMB clients into real symlinks on CLOSE. Off by default (XSym files are stored as regular files).
+      --block-store string           Block store name (required)
+      --change-notify-disabled       Reject SMB2 CHANGE_NOTIFY with STATUS_NOT_IMPLEMENTED on this share (mirrors Samba 'kernel change notify = no').
+      --commit-ack string            What a COMMIT waits for: journal (survives host crash) or block-store (survives device loss)
+      --continuous-availability      Advertise SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY and allow SMB3 persistent durable handles on this share.
+      --default-permission string    Default permission for unmapped UIDs (none|read|read-write|admin) (default "none")
+      --description string           Share description
+      --encrypt-data                 Require SMB3 encryption for this share
+      --journal-size string          Per-share journal size override (e.g., 10GiB, 500MiB)
+      --metadata string              Metadata store name (required)
+      --name string                  Share name/path (required)
+      --owner string                 Username that owns the share's root directory (defaults to root). The owner can write at the share root; other principals are governed by POSIX mode plus their share permission grant.
+      --quota-bytes string           Per-share byte quota (e.g., '10GiB', '500MiB'). 0 = unlimited (default)
+      --read-buffer-size string      Per-share read buffer size override (e.g., 2GiB, 256MiB)
+      --read-only                    Make share read-only
+      --relaxed-metadata-commit      Let an operation that promised stable metadata return before the metadata fsync
+      --retention string             Retention policy (pin|ttl|lru)
+      --retention-ttl string         Retention TTL duration (e.g., 72h, 24h)
+      --squash string                Squash mode, for NFS and SMB (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest). Default root_to_guest (root_squash); use none or root_to_admin so a UID 0 caller (a root-mounted NFS client, the built-in SMB admin) is not squashed to guest.
+      --streams-disabled             Reject SMB2 Alternate Data Stream opens with STATUS_OBJECT_NAME_INVALID on this share (mirrors Samba 'smbd:streams = no').
 ```
 
 Global flags:
@@ -1484,25 +1492,20 @@ dfsctl share edit /archive --quota-bytes 0
 Flags:
 
 ```
-      --access-based-enumeration string        Enable/disable Windows access-based enumeration (true|false). Takes effect on adapter restart.
-      --acl-canonicalize-inherited string      When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba "acl flag inherited canonicalization = no"). Default true matches Windows. Takes effect on adapter restart.
-      --block-store string                     Block store name
-      --commit-ack string                      What a COMMIT waits for: journal (survives host crash) or block-store (survives device loss)
-      --default-permission string              Default permission (none|read|read-write|admin)
-      --description string                     Share description
-      --enable-trash string                    Enable/disable the per-share recycle bin (true|false). Applied live; disabling auto-empties the bin.
-      --encrypt-data string                    Require SMB3 encryption (true|false)
-      --journal-size string                    Per-share journal size override (e.g., 10GiB, 500MiB)
-      --quota-bytes string                     Per-share byte quota (e.g., '10GiB'). 0 = remove quota
-      --read-buffer-size string                Per-share read buffer size override (e.g., 2GiB, 256MiB)
-      --read-only string                       Set read-only (true|false)
-      --relaxed-metadata-commit                Let an operation that promised stable metadata return before the metadata fsync
-      --retention string                       Retention policy (pin|ttl|lru)
-      --retention-ttl string                   Retention TTL duration (e.g., 72h)
-      --trash-exclude strings                  Glob patterns whose deletions bypass the recycle bin (repeatable).
-      --trash-max-size int                     Max bytes the recycle bin may hold before the reaper evicts oldest items (0 = unbounded). -1 leaves unchanged. (default -1)
-      --trash-restrict-empty-to-admin string   Restrict emptying the recycle bin to admins (true|false).
-      --trash-retention-days int               Days to retain recycled items before the reaper purges them (0 = keep forever). -1 leaves unchanged. (default -1)
+      --access-based-enumeration string     Enable/disable Windows access-based enumeration (true|false). Takes effect on adapter restart.
+      --acl-canonicalize-inherited string   When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba "acl flag inherited canonicalization = no"). Default true matches Windows. Takes effect on adapter restart.
+      --block-store string                  Block store name
+      --commit-ack string                   What a COMMIT waits for: journal (survives host crash) or block-store (survives device loss)
+      --default-permission string           Default permission (none|read|read-write|admin)
+      --description string                  Share description
+      --encrypt-data string                 Require SMB3 encryption (true|false)
+      --journal-size string                 Per-share journal size override (e.g., 10GiB, 500MiB)
+      --quota-bytes string                  Per-share byte quota (e.g., '10GiB'). 0 = remove quota
+      --read-buffer-size string             Per-share read buffer size override (e.g., 2GiB, 256MiB)
+      --read-only string                    Set read-only (true|false)
+      --relaxed-metadata-commit             Let an operation that promised stable metadata return before the metadata fsync
+      --retention string                    Retention policy (pin|ttl|lru)
+      --retention-ttl string                Retention TTL duration (e.g., 72h)
 ```
 
 Global flags:
@@ -1674,6 +1677,10 @@ policy, which applies over NFS and SMB alike; the squash mode maps the
 identities of SMB sessions too, guest sessions excepted. Changes take effect
 immediately.
 
+```
+dfsctl share nfs-config [flags]
+```
+
 **Examples:**
 
 ```bash
@@ -1792,6 +1799,10 @@ Manage permissions on shares.
 
 Permission commands allow you to grant, revoke, and list permissions
 for users and groups on shares.
+
+```
+dfsctl share permission [flags]
+```
 
 **Examples:**
 
@@ -2027,8 +2038,7 @@ Show a detailed, field-by-field view of a single share.
 
 Unlike 'share list', which shows summary columns, 'share show' displays every
 attribute of the share: store IDs, read-only state, ACL settings, retention
-policy and TTL, cache size overrides, quota, trash (recycle bin) settings, and
-creation/update timestamps. Use this command when debugging a misconfigured
+policy and TTL, cache size overrides, quota, and creation/update timestamps. Use this command when debugging a misconfigured
 share or before editing it.
 
 ```
@@ -2106,6 +2116,10 @@ distinct from identities resolved via Kerberos or LDAP — they are accounts
 stored in the DittoFS control plane and used for direct authentication.
 Most subcommands require admin privileges; "change-password" operates on the
 currently authenticated account and is available to all users.
+
+```
+dfsctl user [flags]
+```
 
 **Examples:**
 

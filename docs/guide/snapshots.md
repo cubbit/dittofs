@@ -7,21 +7,22 @@ Operator guide: model, CLI, restore runbook, recovery paths, failure modes.
 
 - [1. Overview](#1-overview)
 - [2. Snapshot model](#2-snapshot-model)
-- [3. CLI walkthrough](#3-cli-walkthrough)
-- [4. Creating a snapshot](#4-creating-a-snapshot)
-- [5. Listing and inspecting](#5-listing-and-inspecting)
-- [6. Deleting a snapshot](#6-deleting-a-snapshot)
-- [7. Restore runbook](#7-restore-runbook)
-- [8. Recovering from the safety snapshot](#8-recovering-from-the-safety-snapshot)
-  - [8.1 Automatic crash recovery](#81-automatic-crash-recovery)
-- [9. The verify gate](#9-the-verify-gate)
-- [10. GC hold semantics](#10-gc-hold-semantics)
-- [11. Failure modes and recovery](#11-failure-modes-and-recovery)
-- [12. Scheduled snapshots (policies)](#12-scheduled-snapshots-policies)
-- [13. Limitations](#13-limitations)
-- [14. REST API reference](#14-rest-api-reference)
+- [3. Creating a snapshot](#3-creating-a-snapshot)
+- [4. Deleting a snapshot](#4-deleting-a-snapshot)
+- [5. Restore runbook](#5-restore-runbook)
+- [6. Recovering from the safety snapshot](#6-recovering-from-the-safety-snapshot)
+  - [6.1 Automatic crash recovery](#61-automatic-crash-recovery)
+- [7. The verify gate](#7-the-verify-gate)
+- [8. GC hold semantics](#8-gc-hold-semantics)
+- [9. Failure modes and recovery](#9-failure-modes-and-recovery)
+- [10. Scheduled snapshots (policies)](#10-scheduled-snapshots-policies)
+- [11. Limitations](#11-limitations)
+- [12. REST API reference](#12-rest-api-reference)
 
 ## 1. Overview
+
+> The CLI no longer has snapshot commands. They return with the snapshot API.
+> The flags named on this page are those of the removed commands.
 
 A **share snapshot** is a point-in-time reference to the content of a
 share. It captures the metadata for every file in the share at the
@@ -110,21 +111,7 @@ hold" deletes the file. There is no separate locking protocol, no
 held-by counter, no in-memory hold table. The disk is the source of
 truth.
 
-## 3. CLI walkthrough
-
-The CLI no longer has snapshot commands. They return with the snapshot API.
-The flags named on this page are those of the removed commands.
-
-## 4. Creating a snapshot
-
-The removed `create` command took these flags:
-
-| Flag | Default | Description |
-|---|---|---|
-| `--name` | `""` | Human-friendly name. Stored alongside the snapshot for operator reference; does not need to be unique. |
-| `--no-verify` | `false` | Skip the verify gate (upload drain + remote HEAD probes). GC hold still applies; remote-durability is not asserted. |
-| `--retry` | `""` | Resume from a `failed` snapshot ID. The orchestrator re-runs the steps from the failure point; the original snapshot row transitions to `ready` on success. |
-| `--no-wait` | `false` | Return immediately with the new snapshot ID and exit 0. Otherwise the command blocks on `WaitForSnapshot` and exits 0 on `ready` or non-zero on `failed`. |
+## 3. Creating a snapshot
 
 ### `--no-verify` semantics
 
@@ -176,7 +163,7 @@ part of the verify gate: if the block store cannot be reached, create fails with
 `--no-verify` exactly as it does without it.
 
 Restoring a `remote_durable=false` snapshot requires the explicit
-`--force` flag (§7). Without `--force`, restore refuses with
+`--force` flag (§5). Without `--force`, restore refuses with
 `ErrSnapshotNotDurable` (HTTP 412).
 
 ### `--retry` semantics
@@ -194,22 +181,16 @@ snapshot record — and `remote_durable` reflects the retry's outcome.
 Retry refuses if the target ID does not exist (`404`) or is not in
 `failed` state (`409 Conflict`).
 
-## 5. Listing and inspecting
-
-The CLI no longer has commands to list or show snapshots. They return with the
-snapshot API.
-
-## 6. Deleting a snapshot
+## 4. Deleting a snapshot
 
 Deleting a snapshot removes the snapshot row, wipes the on-disk directory
 (`<localStoreDir>/snapshots/<share>/<id>/`), and releases the GC
-hold for any block referenced only by this snapshot. The CLI no longer
-has a command to delete one; it returns with the snapshot API.
+hold for any block referenced only by this snapshot.
 
 ### Safety snapshots are not special
 
 Every successful restore creates a `pre-restore-*` safety snapshot
-(§7) that captures the share's state immediately before the restore
+(§5) that captures the share's state immediately before the restore
 overwrote it. These are normal snapshots — the `remove` command does
 not refuse them, treat them specially, or warn. Operators are
 expected to delete them explicitly after the restore is validated.
@@ -230,7 +211,7 @@ If a block is referenced by another snapshot or by a live file in
 the share, GC will still skip it — the hold semantics are union,
 not exclusive.
 
-## 7. Restore runbook
+## 5. Restore runbook
 
 Restore replaces the share's metadata store with the snapshot's
 saved state. It is a **destructive** operation against the live
@@ -243,8 +224,7 @@ creates a `pre-restore-*` safety snapshot first.
 ```
 1. Stop traffic. Ensure no clients are writing to the share.
 2. dfsctl share disable /<share>
-3. Restore the snapshot. The CLI no longer has a restore
-   command; it returns with the snapshot API.
+3. Restore the snapshot.
 4. Verify data integrity (sample files, check timestamps,
    compare known checksums).
 5. dfsctl share enable /<share>
@@ -253,8 +233,6 @@ creates a `pre-restore-*` safety snapshot first.
 ```
 
 ### Why the share must be disabled first
-
-The restore handler refuses on an enabled share.
 
 There is no auto-disable / auto-enable wrapper around restore. The
 explicit disable step exists so the operator unambiguously owns the
@@ -268,7 +246,7 @@ return the share to service before integrity has been validated.
 3. Create the pre-restore safety snapshot. Its ID is returned to
    the caller in the same response.
 4. Write a durable **restore-in-progress marker** (see
-   [§8.1](#81-automatic-crash-recovery)) naming the safety snapshot,
+   [§6.1](#81-automatic-crash-recovery)) naming the safety snapshot,
    immediately before the first destructive step.
 5. Reset the block store's local journal cache.
 6. Reset the metadata store via its `Resetable` interface.
@@ -284,7 +262,7 @@ restore returns an error and the safety snapshot exists for
 rollback. Crucially, the restore-in-progress marker (written at
 step 4 and cleared only at step 10) survives a crash: the next
 server startup detects it and **automatically rolls the share back
-to the safety snapshot** — see [§8.1](#81-automatic-crash-recovery).
+to the safety snapshot** — see [§6.1](#81-automatic-crash-recovery).
 
 ### `--force` for non-durable snapshots
 
@@ -303,7 +281,7 @@ is bounded by the server's `snapshot.restore_http_timeout` config
 (default 30 minutes); the CLI's HTTP client matches. For very
 large shares with slow remotes, increase both before starting.
 
-## 8. Recovering from the safety snapshot
+## 6. Recovering from the safety snapshot
 
 The safety snapshot is the first line of recovery if a restore was
 accepted but later found to have brought back the wrong state — for
@@ -342,7 +320,7 @@ Failing to delete safety snaps eventually consumes GC budget
 (blocks held by the chain cannot be reclaimed until the chain is
 gone). Setting an internal SOP for deletion keeps that bounded.
 
-### 8.1 Automatic crash recovery
+### 6.1 Automatic crash recovery
 
 Restore is not a single atomic operation — it resets the block-store
 overlay, resets the metadata store, and replays the metadata dump as
@@ -385,7 +363,7 @@ from the remote), the marker is **retained** so a later boot retries
 once the underlying cause is fixed; the failure is logged at `Error`
 level.
 
-## 9. The verify gate
+## 7. The verify gate
 
 The verify gate is the optional remote-durability check inside
 snapshot create. The full create pipeline runs in this order so that
@@ -424,7 +402,7 @@ since been deleted out-of-band (lifecycle rule, bucket cleanup,
 mis-configuration). The verify gate at snapshot time is the only
 HEAD-probe pass; restore trusts the result.
 
-## 10. GC hold semantics
+## 8. GC hold semantics
 
 The block-store GC and the snapshot subsystem coordinate through
 one rule:
@@ -466,7 +444,7 @@ The reverse race — GC sweeping between step 3 and a subsequent
 to disk before computing references; the new manifest is visible
 to the next GC enumeration as soon as it lands.
 
-## 11. Failure modes and recovery
+## 9. Failure modes and recovery
 
 Restore is the path most likely to surface real failures because it
 combines durability assumptions, on-disk artifacts, and metadata
@@ -571,7 +549,7 @@ a partial state.
   restore-in-progress marker survives, and the **next startup
   automatically rolls the share back to the safety snapshot** before
   any adapter serves traffic (see
-  [§8.1](#81-automatic-crash-recovery)). No manual step is required;
+  [§6.1](#81-automatic-crash-recovery)). No manual step is required;
   confirm via the `restore recovery: share rolled back to safety
   snapshot` log line.
 
@@ -607,7 +585,7 @@ slow remote.
 not remotely durable). Re-run create with `--retry=<failed-id>` to
 re-attempt against the same row.
 
-## 12. Scheduled snapshots (policies)
+## 10. Scheduled snapshots (policies)
 
 A **snapshot policy** makes a share snapshot itself automatically on a
 fixed interval and prunes old scheduler-created snapshots. One policy
@@ -633,11 +611,6 @@ policies on a configurable interval.
 - **Overlap is skipped.** If a snapshot for the share is already in
   flight when the policy comes due, the scheduler logs and skips that
   tick (it does not queue a second one); the next tick retries.
-
-### CLI
-
-The CLI no longer has snapshot policy commands. They return with the
-snapshot API.
 
 The scheduler feeds the same snapshot pool as on-demand creation, so
 policy-created snapshots list, show, and restore exactly like manual ones.
@@ -670,7 +643,7 @@ spec:
       enabled: true
 ```
 
-## 13. Limitations
+## 11. Limitations
 
 - **No cross-share restore.** A snapshot of `/photos` can only be
   restored back into `/photos`. There is no surface to clone or
@@ -695,7 +668,7 @@ spec:
 For background on these decisions, see
 [ARCHITECTURE.md — Share Snapshots](../internals/architecture.md#share-snapshots).
 
-## 14. REST API reference
+## 12. REST API reference
 
 All snapshot endpoints live under the existing
 `/api/v1/shares` admin group and inherit `RequireAdmin`. Auth is
@@ -733,7 +706,7 @@ share returns `404`; an invalid `interval`/`ttl` returns `400`.
 { "name": "weekly-2026-05", "no_verify": false, "retry_of": "" }
 ```
 
-All fields optional. `no_verify=true` skips the verify gate (§4).
+All fields optional. `no_verify=true` skips the verify gate (§3).
 `retry_of=<failed-id>` reattempts a prior failed snapshot.
 
 ### Restore body
@@ -743,7 +716,7 @@ All fields optional. `no_verify=true` skips the verify gate (§4).
 ```
 
 `allow_non_durable=true` is the equivalent of the CLI's `--force`
-(§7). The default is `false` and restore refuses on a
+(§5). The default is `false` and restore refuses on a
 `remote_durable=false` snapshot.
 
 ### Restore response

@@ -315,7 +315,7 @@ survives the sweep. The provider that exposes this hold to the GC
 layer is `SnapshotHoldProvider`. No hold flag lives in any database
 table — the disk is the source of truth.
 
-See [SNAPSHOTS.md](../guide/snapshots.md#10-gc-hold-semantics) for the
+See [SNAPSHOTS.md](../guide/snapshots.md#8-gc-hold-semantics) for the
 operator-facing description of the hold semantics, including the
 delete-vs-GC race window.
 
@@ -526,18 +526,11 @@ The Control Plane is the central management component enabling flexible, multi-s
 3. **Handle Identity**: File handles encode both the share ID and file-specific data
 4. **Store Resolution**: When handling operations, the runtime decodes the handle to identify the share, then routes to the correct stores
 
-### Configuration Example
+### Configuring shares
 
-Shares are managed at runtime via `dfsctl` (persisted in the control plane database).
-The CLI no longer creates stores: remote (block) stores return as resource commands
-of the v2 management API.
-
-```bash
-# Create shares referencing stores by name (each gets its own BlockStore + journal)
-./dfsctl share create --name /temp --metadata fast-meta --block-store mem-blocks
-./dfsctl share create --name /archive --metadata persistent-meta \
-  --block-store s3-remote
-```
+Each share names its metadata store and its block store, and gets its own
+`*engine.Store` and journal directory. The CLI's share and store commands are
+unavailable until they are rebuilt on the v2 management API.
 
 ### Benefits
 

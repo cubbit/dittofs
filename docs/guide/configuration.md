@@ -285,9 +285,9 @@ Related glossary terms: [TLS / mTLS](glossary.md#authentication).
 ### 6. Block Store Configuration
 
 Every share references exactly **one block store** — the durable home for its
-content. A share names its block store with
-`dfsctl share create/edit --block-store <name>`. Valid types are `s3` and
-`memory`. Today's CLI has no command to create a block store: remote stores
+content. Valid types are `s3` and `memory`. The CLI's share commands are
+unavailable until they are rebuilt on the v2 management API, so no command
+attaches a block store to a share today. Today's CLI has no command to create a block store: remote stores
 return as resource commands of the v2 management API.
 
 > **No content store is wired yet.** The data path is being moved onto the new
@@ -596,8 +596,8 @@ to it instead of AWS. The store reads exactly these config keys (see
 
 Credentials live in the store's own config (`access_key_id`,
 `secret_access_key`) — they are not read from the `DITTOFS_*` server-config
-environment. Attach a store to a share with
-`dfsctl share create … --block-store <name>`.
+environment. The CLI's share commands, which attach a store to a share, are
+unavailable until they are rebuilt on the v2 management API.
 
 ##### Verified providers
 
@@ -1258,7 +1258,7 @@ The CLI no longer maps a Kerberos principal to a user.
 Controls the background scheduler that drives per-share snapshot policies
 (schedule + retention). Policies themselves are configured per share. The CLI
 no longer has snapshot commands; they return with the snapshot API. See
-[SNAPSHOTS.md §12](snapshots.md#12-scheduled-snapshots-policies). These
+[SNAPSHOTS.md §10](snapshots.md#10-scheduled-snapshots-policies). These
 knobs only tune the daemon-wide scheduler loop.
 
 ```yaml
@@ -1707,9 +1707,6 @@ export DITTOFS_CONTROLPLANE_PPROF_BLOCK_RATE_NS=1000000
 # Start server with overrides
 DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 ```
-
-Store instances are managed through the control-plane API; their settings are
-persisted in the database. Today's CLI creates none of them.
 
 ## Configuration Precedence
 

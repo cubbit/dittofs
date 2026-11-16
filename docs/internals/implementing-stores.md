@@ -570,8 +570,9 @@ name alone.
 ### Selecting the store
 
 The CLI no longer creates block stores: they return as resource commands of the
-v2 management API. Attach one to a share with `dfsctl share create/edit --block-store <name>`. The journal has
-no equivalent — it is not a named entity the CLI can create.
+v2 management API. The share commands that attach one to a share are unavailable
+until then too. The journal has no equivalent — it is not a named entity the CLI
+can create.
 
 ## Additional Resources
 
