@@ -141,7 +141,9 @@ func Bind[Req, Rep any](
 // ErrCancelled for every operation and version (one naming neither Ops nor
 // Versions that replies at once with a status other than the fault or
 // success) and no row for it, whatever its Ops or Versions, that holds, sends
-// no reply or answers the fault or success.
+// no reply or answers the fault or success; and, where it holds, the same of
+// a typed row for &vfs.Delay{Cause: vfs.DelayResources}, read among the typed
+// rows alone.
 //
 // decision: a table that fails a check panics, naming the row, as
 // NewErrorTable does: a table is program text and NewOpTable returns no
@@ -174,6 +176,18 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 		}
 		if !errs.mapsEverywhere(ErrCancelled) {
 			panic("core: op table: it holds, and no row of its error table answers ErrCancelled for every operation and version")
+		}
+		// A node pool's refusal, the hold pool's among them, is ErrDelay of
+		// DelayResources, answered at once and never held (§6.3), so it is
+		// mapped as ErrCancelled is, by a typed row. The value also matches
+		// the holding ErrDelay row, which every typed row outranks (§4.7), so
+		// only typed rows are read.
+		typed, resources := errs.typedOnly(), &vfs.Delay{Cause: vfs.DelayResources}
+		if r, ok := typed.badRow(resources); ok {
+			panic(fmt.Sprintf("core: op table: it holds, and error row %s matches ErrDelay of DelayResources but holds, sends no reply or answers the fault or success", describe(r)))
+		}
+		if !typed.mapsEverywhere(resources) {
+			panic("core: op table: it holds, and no typed row of its error table answers ErrDelay of DelayResources for every operation and version")
 		}
 	}
 	return t
