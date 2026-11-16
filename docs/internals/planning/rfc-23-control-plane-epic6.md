@@ -8,9 +8,11 @@ the part a unit test can check.
 **Epic 6 estimate: 6 subtasks, 12 man-days.**
 **Depends on:** E1, whose `dfsctl` tree refuses every v1 command until this epic; E3's harness
 `internal/node/nodetest`; E4's client (`pkg/apiclient`) and routes, `GET /api/v1/health` among them;
-E5's sign-in, refresh, sign-out, password change, API tokens and signing-key rotation; the RFC 18
-plan's verified in-memory directory (its epics 6 and 7), for the grant by directory name and the
-domain commands.
+E5's sign-in, refresh, sign-out, password change, API tokens and signing-key rotation; for the
+grant by directory name and the domain commands, the RFC 18 plan's epic 6's T6.4 (`identitytest`'s
+in-memory directory and its suite) and T6.9 (`Find`), its epic 7's `resolve-principal` and
+`test-directory` runner kinds, and its epic 8's T8.1 (identity composed in `node.New`) and T8.2
+(`nodetest`'s option for the in-memory directory).
 **Blocks:** E7, whose "§7 CLI" row runs this epic's shared suite against `dfsctl` in a child
 process; E8, whose e2e setup drives the rebuilt CLI.
 
@@ -50,6 +52,10 @@ regenerated reference.
 
 - `login --oidc` and its device grant: a row of
   [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger) (OpenID Connect sign-in).
+- A command importing a keytab as a `Secret` version of `identity.keytab`, and a `user update` flag
+  writing a user's Kerberos name: RFC 23 §7 names neither, and the routes they would call are E4's
+  T4.9 keytab step and T4.11 `krb` link, settled with the RFC 18 plan's epic 5; a row of
+  [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger) (the keytab import command).
 - The client's transport, its version check, its idempotency key, its retry on `401` and its
   credential calls: E4's client, with the edits §9 lists.
 - The success paths of every settings-backed write (settings, adapters, remote stores,
@@ -342,7 +348,8 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 **Subtask T6.4 estimate: 2 man-days.**
 
 - **Track:** A. **Depends on:** T6.3; E4 (shares, export policies, grants, quotas); the RFC 18
-  plan's in-memory directory.
+  plan's epic 6's T6.4 and T6.9, its epic 7's `resolve-principal` kind, and its epic 8's T8.1 and
+  T8.2.
 - **Covers:** R3, R16, R18.
 - **Deliverables:** `share create|list|get|update|delete|quiesce|resume`, `share export-policy
   get|set|update`; `grant set|remove|list` by user, group or directory name, the last through
@@ -384,7 +391,8 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 **Subtask T6.6 estimate: 2.25 man-days.**
 
 - **Track:** A. **Depends on:** T6.3; E4 (stores, namespaces, secrets, adapters, settings, nodes, the
-  audit, the domain's routes, `GET /api/v1/health`); the RFC 18 plan's in-memory directory.
+  audit, the domain's routes, `GET /api/v1/health`); the RFC 18 plan's epic 6's T6.4 and T6.9, its
+  epic 7's `resolve-principal` and `test-directory` kinds, and its epic 8's T8.1 and T8.2.
 - **Covers:** R3, R17.
 - **Deliverables:** `store create|list|get|update|delete|set-credential` (the credential from a
   prompt or a file); `namespace create|list|get|delete`; `adapter list|get|set`;
