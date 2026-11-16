@@ -192,13 +192,14 @@ func createShareRecords(tx kv.Txn, s *entity.Share, ns entity.NamespaceID) error
 		{root, encodeFile(rf)},
 		{floorKey(s.ID, s.Root, rf.Version), encodeEmpty()},
 		{numberKey(s.ID), encodeCounter(rootNumber + 1)},
-		{namespacesKey(s.ID), encodeNamespaces(shareNamespaces{
-			Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: ns}}, Write: 1})},
-		{namespaceShareKey(ns, s.ID), nil},
 	} {
 		if err := tx.Set(kvs[0], kvs[1]); err != nil {
 			return err
 		}
+	}
+	if err := putShareNamespaces(tx, s.ID, shareNamespaces{}, shareNamespaces{
+		Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: ns}}, Write: 1}); err != nil {
+		return err
 	}
 	return chargeFile(tx, s.ID, nil, &rf)
 }

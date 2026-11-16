@@ -15,11 +15,11 @@ import (
 
 // Namespaces lists the namespaces whose ID sorts after after, in ID order.
 //
-// ponytail: the listing reads every namespace in one transaction, through
+// ponytail: every page reads every namespace in one transaction, through
 // the store index, which holds one key per namespace where the namespace's
-// own prefix holds all its content records. Page it, seeking from one
-// namespace's info record to the next one's, once an installation holds
-// more namespaces than one transaction reads.
+// own prefix holds all its content records: a page costs O(N) reads in the
+// namespace count. Page the index by ID once that cost shows in production,
+// where an installation holds namespaces in the ten thousands.
 func (c ControlPlane) Namespaces(ctx context.Context, after entity.NamespaceID) iter.Seq2[entity.Namespace, error] {
 	return func(yield func(entity.Namespace, error) bool) {
 		var list []entity.Namespace
@@ -58,14 +58,16 @@ func (c ControlPlane) Namespaces(ctx context.Context, after entity.NamespaceID) 
 
 // PutNamespace creates a namespace, expect zero, or replaces the one whose
 // generation expect names, raising its generation. The record and its key
-// in the store index are written together, and a namespace that moves to
-// another store leaves the old store's index in the same transaction. A
-// namespace naming no remote store is refused.
+// in the store index are written together. A namespace naming no remote
+// store is refused, and so is a change to an existing one's store or bound
+// fields: both are fixed at its creation, and moving a namespace to another
+// store is a move, never a put.
 //
-// decision: a bound field changes here like any other: whether content
-// exists, which decides that a bound field is refused, is the caller's to
-// read through the settings schema's check, not this record's. Refuse it
-// here once the store can answer whether the namespace holds content.
+// decision: the remote store's existence is not read here, since no record
+// of a remote store exists for it to read; the caller creating a namespace
+// reads the store in the same transaction, so the store's deletion and the
+// namespace's create conflict. Read the store's record here, tracked, once
+// one is written.
 func (c ControlPlane) PutNamespace(ctx context.Context, n entity.Namespace, expect uint64) (uint64, error) {
 	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutNamespace(n, expect) })
 }
@@ -84,10 +86,8 @@ func (c controlTx) PutNamespace(n entity.Namespace, expect uint64) (uint64, erro
 	if err := expected(old.Generation, expect); err != nil {
 		return 0, err
 	}
-	if existed && old.Store != n.Store {
-		if err := c.tx.Delete(storeIndexKey(old.Store, n.ID)); err != nil {
-			return 0, err
-		}
+	if existed && (old.Store != n.Store || !bytes.Equal(old.Bound, n.Bound)) {
+		return 0, merrs.NewInvalidArgumentError("namespace " + n.ID.String() + "'s store and bound fields never change")
 	}
 	n.Generation = old.Generation + 1
 	if err := c.tx.Set(namespaceInfoKey(n.ID), encodeNamespace(n)); err != nil {
@@ -98,6 +98,12 @@ func (c controlTx) PutNamespace(n entity.Namespace, expect uint64) (uint64, erro
 
 // DeleteNamespace deletes the namespace whose generation expect names,
 // with its key in the store index, and refuses one a share still names.
+//
+// decision: the record goes once no share names the namespace, and its
+// content is drained after, by the collector, rather than the record
+// outliving the drain: nothing drains a namespace yet, so a record kept
+// until its drain would never go. Keep the record until its drain has run
+// once the drain lands.
 func (c ControlPlane) DeleteNamespace(ctx context.Context, id entity.NamespaceID, expect uint64) error {
 	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteNamespace(id, expect) })
 }
@@ -107,7 +113,10 @@ func (c controlTx) DeleteNamespace(id entity.NamespaceID, expect uint64) error {
 	if err != nil {
 		return err
 	}
-	if err := expected(old.Generation, expect); err != nil || !existed {
+	if !existed {
+		return merrs.NewNotFoundError(id.String(), "namespace")
+	}
+	if err := expected(old.Generation, expect); err != nil {
 		return err
 	}
 	if named, err := c.NamespaceNamed(id); err != nil || named {
@@ -143,7 +152,7 @@ func (c controlTx) NamespaceNamed(ns entity.NamespaceID) (bool, error) {
 
 // shareNamespace is the namespace a new share is created in: the one its
 // Namespaces names, read tracked so a deletion of it conflicts with the
-// create, and refused when no record of it names a remote store.
+// create, and refused when it has no record.
 func shareNamespace(tx controlTx, s entity.Share) (entity.NamespaceID, error) {
 	if len(s.Namespaces) != 1 {
 		return entity.NamespaceID{}, merrs.NewInvalidArgumentError("a new share names exactly one namespace")
@@ -151,11 +160,40 @@ func shareNamespace(tx controlTx, s entity.Share) (entity.NamespaceID, error) {
 	id := s.Namespaces[0].Namespace
 	if _, ok, err := tx.Namespace(id); err != nil || !ok {
 		if err == nil {
-			err = merrs.NewInvalidArgumentError("namespace " + id.String() + " of share " + s.Name + " names no remote store")
+			err = merrs.NewInvalidArgumentError("namespace " + id.String() + " of share " + s.Name + " does not exist")
 		}
 		return id, err
 	}
 	return id, nil
+}
+
+// putShareNamespaces writes share's namespaces record and moves the share's
+// keys in the namespaces' share indexes from old's namespaces to next's, so
+// the index never drifts from the record. Every write of a share's
+// namespaces goes through it: a share's create, and its removal and a
+// re-home once they write them. A new record naming no namespace deletes it.
+func putShareNamespaces(tx kv.Txn, share entity.ShareID, old, next shareNamespaces) error {
+	in := func(gs []entity.NamespaceGen, ns entity.NamespaceID) bool {
+		return slices.ContainsFunc(gs, func(g entity.NamespaceGen) bool { return g.Namespace == ns })
+	}
+	for _, g := range old.Namespaces {
+		if !in(next.Namespaces, g.Namespace) {
+			if err := tx.Delete(namespaceShareKey(g.Namespace, share)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, g := range next.Namespaces {
+		if !in(old.Namespaces, g.Namespace) {
+			if err := tx.Set(namespaceShareKey(g.Namespace, share), nil); err != nil {
+				return err
+			}
+		}
+	}
+	if len(next.Namespaces) == 0 {
+		return tx.Delete(namespacesKey(share))
+	}
+	return tx.Set(namespacesKey(share), encodeNamespaces(next))
 }
 
 func namespaceIn(r kv.Reader, id entity.NamespaceID) (entity.Namespace, bool, error) {
