@@ -264,7 +264,7 @@ func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.Jou
 			return err
 		}
 		for _, id := range take {
-			// Each write's doorstep: the write this spare's zeroing is was
+			// Each write's doorstep: the write this spare's zeroing is
 			// about to start, so an already-landed cancellation answers here
 			// and the spare's bytes stand as the phase read them.
 			if err := ctx.Err(); err != nil {
