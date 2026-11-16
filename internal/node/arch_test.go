@@ -11,11 +11,18 @@ import (
 	"testing"
 )
 
+// configFields are the fields of Config: what the host supplies and the node
+// cannot build.
+var configFields = []string{"Bootstrap", "KV", "Clock", "Metrics", "Logger"}
+
 // nodeExports returns the violations of the node's surface in the package
-// whose sources are in dir: each exported package-level declaration other
-// than New, Node and Config, each exported method of Node other than Start
-// and Stop, and each of those five missing. It reads every .go file but the
-// tests, whatever its build tags, so a file behind a tag cannot hide one.
+// whose sources are in dir: an exported package-level declaration other than
+// New, Node and Config; an exported method of Node other than Start and Stop;
+// a field Node embeds, whose methods it would promote, or exports; a Config
+// whose fields are not exactly configFields; a method whose receiver it cannot
+// name, which it reports rather than skips; and each of New, Node, Config,
+// Start and Stop missing. It reads every .go file but the tests, whatever its
+// build tags, so a file behind a tag cannot hide one.
 func nodeExports(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -55,6 +62,8 @@ func nodeExports(dir string) ([]string, error) {
 				}
 				if id, ok := recv.(*ast.Ident); ok {
 					note(id.Name + "." + d.Name.Name)
+				} else {
+					bad = append(bad, "unresolved receiver of "+d.Name.Name)
 				}
 			case *ast.GenDecl:
 				for _, s := range d.Specs {
@@ -63,6 +72,7 @@ func nodeExports(dir string) ([]string, error) {
 						if s.Name.IsExported() {
 							note(s.Name.Name)
 						}
+						bad = append(bad, structViolations(s)...)
 					case *ast.ValueSpec:
 						for _, n := range s.Names {
 							if n.IsExported() {
@@ -83,17 +93,55 @@ func nodeExports(dir string) ([]string, error) {
 	return bad, nil
 }
 
+// structViolations checks the fields of Node and Config: Node embeds nothing
+// and exports no field, and Config's fields are exactly configFields.
+func structViolations(s *ast.TypeSpec) []string {
+	if s.Name.Name != "Node" && s.Name.Name != "Config" {
+		return nil
+	}
+	st, ok := s.Type.(*ast.StructType)
+	if !ok || s.TypeParams != nil || s.Assign.IsValid() {
+		return []string{s.Name.Name + " is not a plain struct"}
+	}
+	var bad, names []string
+	for _, f := range st.Fields.List {
+		if len(f.Names) == 0 {
+			bad = append(bad, "embedded field in "+s.Name.Name)
+			continue
+		}
+		for _, n := range f.Names {
+			names = append(names, n.Name)
+			if s.Name.Name == "Node" && n.IsExported() {
+				bad = append(bad, "exported field: Node."+n.Name)
+			}
+		}
+	}
+	if s.Name.Name == "Config" && !slices.Equal(names, configFields) {
+		bad = append(bad, "Config fields "+strings.Join(names, ","))
+	}
+	return bad
+}
+
 // The node exports New, Node and Config, and Node's Start and Stop, and
-// nothing else; the planted tree, with one export too many, is caught.
+// nothing else; each planted tree, holding one violation, is caught.
 func TestNodeExports(t *testing.T) {
 	for _, tc := range []struct {
 		dir  string
 		want []string
 	}{
 		{".", nil},
-		{filepath.Join("testdata", "arch", "exports"), []string{"extra export: Extra"}},
+		{"extra-func", []string{"extra export: Extra"}},
+		{"extra-method", []string{"extra export: Node.Pause"}},
+		{"embedded", []string{"embedded field in Node"}},
+		{"exported-field", []string{"exported field: Node.State"}},
+		{"config-field", []string{"Config fields Bootstrap,KV,Clock,Metrics,Logger,Fault"}},
+		{"generic", []string{"unresolved receiver of Open"}},
 	} {
-		got, err := nodeExports(tc.dir)
+		dir := tc.dir
+		if dir != "." {
+			dir = filepath.Join("testdata", "arch", dir)
+		}
+		got, err := nodeExports(dir)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.dir, err)
 		}
