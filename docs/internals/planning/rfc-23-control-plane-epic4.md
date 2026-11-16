@@ -174,6 +174,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | R24 | A call that starts long work commits its first durable step and answers `202 Accepted` with a `Location` of `/api/v1/operations/{id}` and the operation's body; the record chooses no driver for work a component owns | MUST, MUST NOT | RFC 23 §4.6 | T4.4, T4.6 |
 | R25 | `GET /operations/{id}` answers from the store on any node; `?wait=` returns when the state or phase changes or after the wait, at most 60 s | MUST | RFC 23 §4.6 | T4.6 |
 | R26 | `POST /operations/{id}:cancel` answers `409` `not_cancellable` for every kind in scope | MUST | RFC 23 §4.6 | T4.6 |
+| R69 | An operation's reads render a zero `Account` as started by the schedule, never as a principal's, so the scheduled rotation is told from one a caller started | MUST | RFC 23 §4.6 | T4.6 |
 | R27 | A second request for the same work on the same target while one runs is refused `409` `operation_running`, naming it | MUST | RFC 23 §4.6 | T4.4 |
 
 **Errors**
@@ -222,7 +223,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R49 | An offline `join-domain` writes the password as a new version of the machine password's `Secret`, marked `HandedOver`, in its own write audited as a `set` of the reference and committed before the operation, refused `409` `operation_running` while a `join-domain` or `rotate-machine-password` runs; an online one never puts the administrator credential in the operation's record: the route picks the operation's ID and hands the credential to identity under it before the write that creates the operation, and the hold ends with the request when that write is refused, by the release the hold returned | MUST | RFC 23 §3.5, §4.5 | T4.11 |
-| R50 | `resolve-principal`, `test-directory`, `join-domain` and `rotate-machine-password` are operations the runner drives through identity; the API writes their records only | MUST | RFC 23 §3.5, §4.1 | T4.11 |
+| R50 | `resolve-principal`, `test-directory`, `join-domain` and `rotate-machine-password` are operations the runner drives through identity; the API writes their records only, except the weekly `rotate-machine-password` identity's own loop creates with the zero `Account` and the schedule as its audit actor | MUST | RFC 23 §3.5, §4.1, §4.6 | T4.11 |
 | R51 | A write turning `identity.ntlm` off from on sets `Installation.NTLMOff`'s `Off` to the settings generation and clears `Deleted`, and one setting it off while already off changes neither; the settings route is the only writer of `Off`. Turning it on (a put of on, or the delete of the installation's `identity.ntlm` record) is refused `409` `operation_running` while `Off` is set and `Deleted` is zero, naming the deletion running or the last one failed. Turning it off starts an `identity.nt-hash-delete` unless one runs, and while already off starts one only when `Deleted` is zero and none runs. The route reads `NTLMOff` and the running index tracked in the write's transaction, and a write starting one answers `202`, its target the installation | MUST | RFC 23 §4.1 | T4.11 |
 
 **The audit**
@@ -574,9 +575,10 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 **Subtask T4.6 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.5.
-- **Covers:** R3, R24, R25, R26, R53, R58, R60, R66.
+- **Covers:** R3, R24, R25, R26, R53, R58, R60, R66, R69.
 - **Deliverables:** `GET /operations` (by state) and `/operations/{id}` with `?wait=` (at most 60 s),
-  `:cancel` answering `409` `not_cancellable`, its `Progress` filled by
+  `:cancel` answering `409` `not_cancellable`, a zero `Account` rendered as the schedule's (R69),
+  its `Progress` filled by
   `Deps.Progress(kind, next)`, the per-kind `func(next []byte) Progress` E3's runner registers with
   each step, from the operation's recorded `Step`; `GET /nodes` and `/nodes/{id}` with the binary
   version; `GET /api/v1/health` (`viewer`, answering before ready): the word from `Deps.Ready()`
@@ -588,7 +590,9 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   - `:cancel` answers `not_cancellable` for every kind of `OpKind`'s set.
 - **Tests:** a wait answered on the runner's state change, another at 60 s on the clock (R25); an
   operation's body and `Location` as the starting write answered them (R24); cancel for every kind
-  (R26); an audit range read back in store-time order and filtered by actor (R53); a node's binary
+  (R26); an operation record written with the zero `Account`, as identity's loop writes the
+  scheduled rotation, read back through both routes as the schedule's (R69); an audit range read
+  back in store-time order and filtered by actor (R53); a node's binary
   version (R58); the operations gauge before and after an operation ends (R60); `/api/v1/health`
   `401` with no `Authenticate` and answered for `viewer`, its word and conditions equal to
   `Deps.Ready()` and the registry's after a condition is set and cleared, answered while `Ready`
@@ -719,7 +723,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   Range}` for each ID the request leaves out, the range read from `identity.id_range` through the
   settings table; edit, `disabled`, `email` parsed with `net/mail`, delete as an operation,
   memberships), `res_grants.go` (`PUT` and `DELETE` by principal
-  ID, `none` included, a machine principal refused), `res_netgroups.go` (put and delete whole),
+  ID, `none` included, a machine principal refused, the grant and its version for the entity tag
+  read through E2's `ControlPlane.ShareGrant`), `res_netgroups.go` (put and delete whole),
   `res_quotas.go`; their wire types; each user, group, membership and spelling row marked as
   raising `PGEN`, so T4.4's adapter waits on `Deps.Applied` after its commit (D22), the first
   production rows to do so. Consumed by E5 (the role field, `last_admin`, `email`'s
@@ -768,8 +773,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   offline; the account name; the online join's `OU`, `DNSHostName` and `Takeover`; the offline
   join's secret version; no credential field) and `ResolvePrincipalParams` (a name or a SID), the
   `Operation.Params` these routes write and identity's steps decode (RFC 16's "encoded by that
-  kind"), consumed by the RFC 18 plan's epic 7's T7.5 and T7.14; once that epic's D6 (a) stores
-  `Installation.Join.Names`, T4.9's keytab pre-write step also refusing `400` `ErrInvalid` a key
+  kind"), consumed by the RFC 18 plan's epic 7's T7.5 and T7.14; with
+  `Installation.Join.Names`, which E2's T2.4 stores and that epic's D6 fills, T4.9's keytab pre-write step also refusing `400` `ErrInvalid` a key
   for a name in it, with no `Secret` version written (RFC 18 §3.3, that epic's R27); each refusing `503` `unavailable` while its
   interface is nil (D13); `ntlm.go`, the rule (D14), called by the settings route; the
   installation's wire type; the import rule extended with `pkg/identity`, for `JoinCredential`. Consumed by
@@ -794,7 +799,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   with no operation written and no credential held, and one with neither given answered `202`
   (catches a check run after the write, or one refusing the defaults); `JoinDomainParams` and
   `ResolvePrincipalParams` read back raw from the operation record as each route wrote them, the
-  online join's holding no credential (R49); once D6 (a) lands, a keytab holding a key for a name
+  online join's holding no credential (R49); a keytab holding a key for a name
   in `Join.Names` refused `400` with no `Secret` version written; each kind's operation
   record written with its target (R50); the `identity.ntlm` rule as a function of a transaction over
   the store: a turn-off from on setting `Off` to the generation and clearing `Deleted`; a second
