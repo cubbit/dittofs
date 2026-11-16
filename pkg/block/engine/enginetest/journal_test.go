@@ -10,6 +10,16 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
 
+// A refused Share hands nothing to opened and answers a nil handle.
+func TestARefusedShareHandsNothingOn(t *testing.T) {
+	h, err := wrapJournal(&journal.Journal{}, func(journal.ShareTag, engine.Handle) {
+		t.Error("opened called for a refused Share, want it not called")
+	}).Share(1, 0, journal.Version{})
+	if !errors.Is(err, journal.ErrNotImplemented) || h != nil {
+		t.Errorf("Share = %v, %v; want nil, the journal's error", h, err)
+	}
+}
+
 // RFC 1 §9.4: the fake answers Share as the journal does. Tag 0, a negative
 // limit and a floor of another epoch are refused and raise nothing. A Share
 // of a tag whose handle is open returns that handle, its limit replaced, the
