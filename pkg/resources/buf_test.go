@@ -3,6 +3,7 @@ package resources
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -501,4 +502,21 @@ func TestRechargeReservesBeforeItReleases(t *testing.T) {
 			t.Errorf("at the end: receive %d, hold %d; want 0 and 0", receive.Reserved(), hold.Reserved())
 		}
 	})
+}
+
+// Charge is what Get reserves for a buffer of n bytes: its class's capacity
+// and the overhead, or n and the overhead past the largest class.
+func TestChargeIsWhatGetReserves(t *testing.T) {
+	for _, n := range []int{0, 4 << 10, 1 << 20, 9 << 20} {
+		b := NewWaitBudget("t", 1<<30)
+		p := NewBufPool(b)
+		buf, err := p.Get(context.Background(), netip.Addr{}, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := p.Charge(n), b.Reserved(); got != want {
+			t.Errorf("Charge(%d) = %d, Get reserved %d", n, got, want)
+		}
+		buf.Release()
+	}
 }

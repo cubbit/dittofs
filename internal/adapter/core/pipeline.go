@@ -575,9 +575,18 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 	}
 	tr.op = op
 	if err == nil {
-		if inv, _, err = op.Decode(p.st.Header.Args(rec, h), h.Version()); err != nil {
+		args := p.st.Header.Args(rec, h)
+		var n int
+		inv, n, err = op.Decode(args, h.Version())
+		if err == nil && op.Members != nil && (n < 0 || n > len(args)) {
+			err = fmt.Errorf("a compound's arguments of %d bytes, %d in its message", n, len(args))
+		}
+		if err != nil {
 			err = fmt.Errorf("%w: %v", ErrDecode, err)
 			p.refused(tr, stageDecodeArgs)
+		} else if op.Members != nil {
+			p.compound(tr, h, r, tb, op, inv, args[n:], release)
+			return
 		}
 	}
 	var reply *resources.Buf
@@ -612,7 +621,7 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		case expired && !op.Expired && role != RoleRelease:
 			err = ErrExpired
 		case draining && role == RoleNone:
-			err = drainErr(ctx, r, inv)
+			err = drainErr(ctx, handlesOf(inv))
 		}
 		if err != nil {
 			p.refused(tr, stageResolveIDs)
@@ -623,7 +632,15 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		tr.ran = true
 		err = ts.chains[op.Code](ctx, r)
 	}
+	p.finish(tr, h, tb, errs, op, inv, reply, err, release)
+}
 
+// finish answers a request whose call, or refusal, gave err: its status
+// mapped by errs, encoded into reply or, with none reserved, a status's
+// buffer, stored where its row is cacheable, and sent; or, for a NoReply
+// row, nothing, or an interim where the table holds.
+func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op *Op, inv Invocation, reply *resources.Buf, err error, release func()) {
+	ctx := tr.ctx
 	if err != nil && p.endedByClose(err) {
 		if reply != nil {
 			reply.Release()
@@ -644,13 +661,7 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		s, send = p.mapped(tr, errs, err, op, h.Version(), true)
 	}
 	if !send {
-		if tb != nil && tb.Holds {
-			p.interim(ctx, h, reply)
-		} else if reply != nil {
-			reply.Release()
-		}
-		release()
-		p.end(tr, false, 0, 0, err)
+		p.unanswered(tr, h, tb, reply, err, release)
 		return
 	}
 	if reply == nil {
@@ -666,6 +677,16 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		release()
 		p.drop(tr, nil, encErr)
 		return
+	}
+	if op != nil && op.Members != nil {
+		// A compound's reply carries its head even when the compound is
+		// refused whole: the status, and a count of no results.
+		if encErr := op.Members.EncodeHead(reply, s, 0, h.Version()); encErr != nil {
+			reply.Release()
+			release()
+			p.drop(tr, nil, encErr)
+			return
+		}
 	}
 	release()
 	if op != nil && op.Cacheable {
@@ -768,6 +789,18 @@ func (p *pipeline) mapped(tr *track, errs *ErrorTable, err error, op *Op, v Vers
 		p.sh.log.LogAttrs(tr.ctx, slog.LevelDebug, "an error its row answers", tr.attrs(err)...)
 	}
 	return s, reply
+}
+
+// unanswered ends a request refused with a NoReply row, err: no final
+// reply, and where tb holds, an interim in reply's place.
+func (p *pipeline) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
+	if tb != nil && tb.Holds {
+		p.interim(tr.ctx, h, reply)
+	} else if reply != nil {
+		reply.Release()
+	}
+	release()
+	p.end(tr, false, 0, 0, err)
 }
 
 // attrs is a request's log line's keys: its trace ID, its span ID where a
@@ -958,13 +991,24 @@ func (p *pipeline) interim(ctx context.Context, h Header, buf *resources.Buf) {
 	p.send(h, buf, 0)
 }
 
-// drainErr is what a request the drain does not serve is refused with.
+// handlesOf is the filehandle inv's arguments name, if any.
+func handlesOf(inv Invocation) []vfs.Handle {
+	if inv.Handle != nil {
+		if h, ok := inv.Handle(); ok {
+			return []vfs.Handle{h}
+		}
+	}
+	return nil
+}
+
+// drainErr is what a request the drain does not serve is refused with,
+// decided once from every filehandle it names.
 //
 // decision: ErrDraining, the service's answer while no topology names a
 // target for the request's share; asking the service for a move target, and
 // answering ErrMoved where it names one, comes with the drain. Withdraw it
 // then.
-func drainErr(context.Context, *Request, Invocation) error { return ErrDraining }
+func drainErr(context.Context, []vfs.Handle) error { return ErrDraining }
 
 // drain begins the connection's drain: from here on a request whose role is
 // none is refused with drainErr.

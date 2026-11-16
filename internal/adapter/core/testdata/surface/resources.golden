@@ -16,6 +16,8 @@ func (b *WaitBudget) Reserved() int64
 
 func (p *BufPool) Ceiling() int64
 
+func (p *BufPool) Charge(n int) int64
+
 func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error)
 
 func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)

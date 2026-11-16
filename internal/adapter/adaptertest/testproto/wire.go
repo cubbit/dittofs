@@ -60,7 +60,9 @@
 //	Compound  count (4 bytes), then per member: operation (4), length (4), arguments
 //
 // Every other operation has none. A Cancel names its target by carrying the
-// target's message ID as its own. A reply's arguments are its body.
+// target's message ID as its own. A reply's arguments are its body; a
+// compound's reply body is its status (4 bytes) and its count of results (4),
+// then per result: operation (4), status (4), length (4), body.
 package testproto
 
 import (
@@ -318,8 +320,16 @@ func (headerCodec) Args(rec *resources.Buf, h core.Header) []byte {
 }
 
 // ReplyLen is the most Encode writes for h: a reply header's 40 bytes, since a
-// status alone has no body, Chain pads nothing and Wrap adds nothing.
-func (headerCodec) ReplyLen(core.Header) int { return headerLen }
+// status alone has no body, Chain pads nothing and Wrap adds nothing; and, for
+// a compound, its head and the status-alone result of a member that did not
+// decode, which its runner writes.
+func (headerCodec) ReplyLen(h core.Header) int {
+	if h.Op() == OpCompound {
+		return headerLen + compoundHead + resultHead
+	}
+
+	return headerLen
+}
 
 // Chain points the reply at prev in out to the one appended after it, which
 // starts at out's end.

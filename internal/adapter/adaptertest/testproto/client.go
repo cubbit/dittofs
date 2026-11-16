@@ -2,6 +2,7 @@ package testproto
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -235,3 +236,38 @@ func openReplies(body []byte) ([]Reply, error) {
 // the credits every Msg sent charged; it starts at 1, the credit a connection
 // opens with.
 func (c *Client) Balance() int { return int(c.balance.Load()) }
+
+// Result is one member's result in a compound's reply.
+type Result struct {
+	Op     uint32
+	Status core.Status
+	Body   []byte
+}
+
+// Results reads a compound's reply body: its status and its results.
+func Results(body []byte) (core.Status, []Result, error) {
+	if len(body) < compoundHead {
+		return 0, nil, fmt.Errorf("testproto: a compound reply of %d bytes", len(body))
+	}
+	status := core.Status(binary.BigEndian.Uint32(body))
+	n := int(binary.BigEndian.Uint32(body[4:]))
+	body = body[compoundHead:]
+	var results []Result
+	for range n {
+		if len(body) < resultHead {
+			return status, results, errors.New("testproto: a compound result past the reply")
+		}
+		length := int(binary.BigEndian.Uint32(body[8:]))
+		if length > len(body)-resultHead {
+			return status, results, errors.New("testproto: a compound result's body past the reply")
+		}
+		results = append(results, Result{
+			Op:     binary.BigEndian.Uint32(body),
+			Status: core.Status(binary.BigEndian.Uint32(body[4:])),
+			Body:   body[resultHead : resultHead+length],
+		})
+		body = body[resultHead+length:]
+	}
+
+	return status, results, nil
+}

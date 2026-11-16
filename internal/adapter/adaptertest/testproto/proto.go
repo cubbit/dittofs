@@ -82,6 +82,17 @@ type Protocol struct {
 	pool   *resources.BufPool // over the reply budget; nil when d has no budgets
 	tables func() [2]*core.OpTable
 	errs   *core.ErrorTable // the stages' own, for a refusal before Route returns a table
+	call   vfs.Call         // what every request's Call starts from
+}
+
+// WithCall is p with every request's Call starting from c: the identity a
+// session would resolve, which testproto does not model, so a test hands it
+// the call its service admits. A session's expiry is still its own.
+func (p *Protocol) WithCall(c vfs.Call) *Protocol {
+	q := *p
+	q.call = c
+
+	return &q
 }
 
 // New returns the protocol over d: its handlers call d.VFS, and the replay
@@ -216,7 +227,7 @@ func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, err
 		}
 	}
 	s.sid, s.tid = hd.session(), hd.tree()
-	r := &core.Request{Version: v, Level: core.NeedsNothing, Conn: rt.cs.c, State: s}
+	r := &core.Request{Call: rt.cs.p.call, Version: v, Level: core.NeedsNothing, Conn: rt.cs.c, State: s}
 	if rt.cs.version.Load() != 0 {
 		r.Level = core.NeedsNegotiated
 		if carried, expires, hasTree := rt.cs.p.reg.look(s.sid, rt.cs, s.tid); carried && !rt.cs.p.bare {
@@ -239,7 +250,7 @@ func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, err
 func (p *Protocol) build() [2]*core.OpTable {
 	errs := core.NewErrorTable(StatusFault, errorRows(false)...)
 	members := core.NewOpTable(errs, false, memberRows(p.ops())...)
-	members.ReadOp = readOp
+	members.ReadOp, members.EncodeResult, members.EncodeHead = readOp, encodeResult, encodeHead
 
 	tables := [2]*core.OpTable{
 		core.NewOpTable(errs, false, append(p.ops(), compound(members))...),
@@ -448,14 +459,14 @@ func decodeName(b []byte, _ core.Version, req *nameReq) (int, error) {
 	return len(b), nil
 }
 
-// create makes one service call: a Create of the name in the current
-// filehandle's directory.
+// create makes one service call: a Create of a regular file of the name in
+// the current filehandle's directory.
 func (p *Protocol) create(ctx context.Context, r *core.Request, req *nameReq) (*empty, error) {
 	s, err := stateOf(r)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := p.d.VFS.Create(ctx, r.Call, s.fh, req.name, vfs.CreateArgs{}); err != nil {
+	if _, err := p.d.VFS.Create(ctx, r.Call, s.fh, req.name, vfs.CreateArgs{Kind: vfs.CreateRegular}); err != nil {
 		return nil, err
 	}
 

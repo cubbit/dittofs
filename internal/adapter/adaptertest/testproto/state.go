@@ -278,11 +278,14 @@ func violate(_ context.Context, r *core.Request, _ *empty) (*empty, error) {
 	return &empty{}, nil
 }
 
+// maxMembers is the compound row's cap.
+const maxMembers = 8
+
 // compound is version 1's compound row over members, its members' table.
 func compound(members *core.OpTable) *core.Op {
 	return &core.Op{
 		Code: OpCompound, Name: "Compound", Versions: core.Range{First: 1, Last: 1}, Needs: core.NeedsNothing,
-		Decode: decodeCompound, Members: members,
+		Decode: decodeCompound, Members: members, MaxMembers: maxMembers,
 	}
 }
 
@@ -338,6 +341,9 @@ func memberRows(rows []*core.Op) []*core.Op {
 			}
 			n := int(length)
 			inv, _, err := whole(b[4:4+n], v)
+			if err == nil {
+				inv = asResult(inv)
+			}
 
 			return inv, 4 + n, err
 		}
@@ -345,4 +351,52 @@ func memberRows(rows []*core.Op) []*core.Op {
 	}
 
 	return out
+}
+
+// resultHead is a member's result head: its code, its status and its body's
+// length, 4 bytes each.
+const resultHead = 12
+
+// compoundHead is a compound reply's head: its status and its count of
+// results, 4 bytes each, whatever their values.
+const compoundHead = 8
+
+// asResult is a member's invocation as a compound's result: its body follows
+// the result head encodeResult wrote, whose length it sets, so a reader finds
+// the next result; and its bound counts that head.
+func asResult(inv core.Invocation) core.Invocation {
+	bound, enc := inv.Bound, inv.Encode
+	inv.Bound = func() int { return resultHead + bound() }
+	inv.Encode = func(out *resources.Buf, v core.Version) error {
+		at := len(out.B)
+		if at < 4 {
+			return errMember
+		}
+		if err := enc(out, v); err != nil {
+			return err
+		}
+		binary.BigEndian.PutUint32(out.B[at-4:], uint32(len(out.B)-at))
+
+		return nil
+	}
+
+	return inv
+}
+
+// encodeResult writes a member's result head, its body's length 0 until the
+// member's own Encode sets it: a member that did not decode has none.
+func encodeResult(out *resources.Buf, op uint32, s core.Status, _ core.Version) error {
+	out.B = binary.BigEndian.AppendUint32(out.B, op)
+	out.B = binary.BigEndian.AppendUint32(out.B, uint32(s))
+	out.B = binary.BigEndian.AppendUint32(out.B, 0)
+
+	return nil
+}
+
+// encodeHead writes a compound reply's head.
+func encodeHead(out *resources.Buf, s core.Status, n int, _ core.Version) error {
+	out.B = binary.BigEndian.AppendUint32(out.B, uint32(s))
+	out.B = binary.BigEndian.AppendUint32(out.B, uint32(n))
+
+	return nil
 }

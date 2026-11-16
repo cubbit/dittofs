@@ -165,6 +165,14 @@ func (p *BufPool) Ceiling() int64 {
 	return p.budget.ceiling()
 }
 
+// Charge is what Get would charge for a buffer of n bytes: n's class's
+// capacity, or n itself past the largest class, plus the per-request
+// overhead.
+func (p *BufPool) Charge(n int) int64 {
+	_, charge := chargeOf(n)
+	return charge
+}
+
 // chargeOf is n's class and what a buffer of n bytes is charged: its class's
 // capacity, or n itself past the largest class, plus the overhead.
 func chargeOf(n int) (class int, charge int64) {
