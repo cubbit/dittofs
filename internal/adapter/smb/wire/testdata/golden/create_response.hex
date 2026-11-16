@@ -1,0 +1,27 @@
+# test/pcap-corpus/smb-sd/reference.pcap, frame 127: the reference server's
+# answer to frame 126, STATUS_ACCESS_DENIED, the frame's TCP payload as
+# tshark cuts it (tcp.payload). The Direct TCP header (MS-SMB2 2.1), the SMB2
+# header in its sync form (MS-SMB2 2.2.1.2), field by field, then the ERROR
+# response's body (MS-SMB2 2.2.2). Multi-byte fields are little-endian
+# (MS-SMB2 2.2).
+00                          # Direct TCP header: Zero
+00 00 49                    # StreamProtocolLength 73, big-endian
+fe 53 4d 42                 # [0,4)   ProtocolId 0xFE 'S' 'M' 'B'
+40 00                       # [4,6)   StructureSize 64
+01 00                       # [6,8)   CreditCharge 1, the request's
+22 00 00 c0                 # [8,12)  Status 0xC0000022, STATUS_ACCESS_DENIED
+05 00                       # [12,14) Command 0x0005, CREATE
+01 00                       # [14,16) CreditResponse 1
+11 00 00 00                 # [16,20) Flags 0x00000011: the request's priority 1 and SERVER_TO_REDIR
+00 00 00 00                 # [20,24) NextCommand 0
+0e 00 00 00 00 00 00 00     # [24,32) MessageId 14, the request's
+00 00 00 00                 # [32,36) Reserved, the request's
+b3 b3 88 09                 # [36,40) TreeId, the request's
+dc 65 d9 a6 00 00 00 00     # [40,48) SessionId, the request's
+00 00 00 00 00 00 00 00     # [48,64) Signature: not signed
+00 00 00 00 00 00 00 00
+09 00                       # [64,66) the ERROR response's StructureSize 9
+00                          # [66]    ErrorContextCount 0
+00                          # [67]    Reserved
+00 00 00 00                 # [68,72) ByteCount 0
+00                          # [72]    ErrorData: the one byte StructureSize counts

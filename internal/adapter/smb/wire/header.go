@@ -10,6 +10,7 @@ package wire
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 )
 
 // The SMB2 header's fields, by offset (MS-SMB2 2.2.1.1, 2.2.1.2).
@@ -29,10 +30,19 @@ const (
 	offSignature     = 48
 )
 
+// ErrUnaddressable is wrapped by every refusal of DecodeHeader that returns
+// no header: nothing can be answered, and the connection closes.
+var ErrUnaddressable = errors.New("smb: an SMB2 header no reply can be addressed to")
+
+// The refusals that wrap ErrUnaddressable are built once, so a refusal
+// allocates nothing.
 var (
-	errShort         = errors.New("smb: a message shorter than the 64-byte SMB2 header")
-	errProtocolID    = errors.New("smb: a protocol ID other than SMB2's")
-	errCommand       = errors.New("smb: a command code no SMB2 request carries")
+	errShort      = fmt.Errorf("%w: a message shorter than the 64-byte header", ErrUnaddressable)
+	errProtocolID = fmt.Errorf("%w: a protocol ID other than SMB2's", ErrUnaddressable)
+	errCommand    = fmt.Errorf("%w: a command code no SMB2 request carries", ErrUnaddressable)
+)
+
+var (
 	errNextCommand   = errors.New("smb: a NextCommand that is not a step to an 8-byte aligned header inside the message")
 	errStructureSize = errors.New("smb: an SMB2 header whose StructureSize is not 64")
 	errChain         = errors.New("smb: a chained reply that does not lie in the buffer")
@@ -62,16 +72,16 @@ func (h *Header) sessionID() uint64     { return binary.LittleEndian.Uint64(h[of
 // DecodeHeader returns the SMB2 header at off in msg, as a view of msg's
 // bytes.
 //
-// A header no reply can be addressed to comes back nil with its error, and
-// its connection closes unanswered (MS-SMB2 3.3.5.2.6, RFC 22 §16.5): fewer
-// than 64 bytes at off, a protocol ID other than SMB2's, or a command code
-// MS-SMB2 2.2.1.2 does not define. A header that can be answered but is
-// malformed comes back with its error, which is answered
-// STATUS_INVALID_PARAMETER: a NextCommand other than 0 that is not a multiple
-// of 8, or does not step past this header to a whole header inside msg
-// (MS-SMB2 2.2.1.2's subsequent, 8-byte aligned header), and then a
-// StructureSize other than 64. NextCommand is judged first: its refusal ends
-// the chain, so another refusal must not hide it.
+// A header no reply can be addressed to comes back nil with an error wrapping
+// ErrUnaddressable, and its connection closes unanswered (MS-SMB2 3.3.5.2.6,
+// RFC 22 §16.5): fewer than 64 bytes at off, a protocol ID other than SMB2's,
+// or a command code MS-SMB2 2.2.1.2 does not define. A header that can be
+// answered but is malformed comes back with an error that does not wrap it,
+// which is answered STATUS_INVALID_PARAMETER: a NextCommand other than 0 that
+// is not a multiple of 8, or does not step past this header to a whole header
+// inside msg (MS-SMB2 2.2.1.2's subsequent, 8-byte aligned header), and then
+// a StructureSize other than 64. NextCommand is judged first: its refusal
+// ends the chain, so another refusal must not hide it.
 func DecodeHeader(msg []byte, off int) (*Header, error) {
 	if off < 0 || len(msg)-off < HeaderLen {
 		return nil, errShort
@@ -100,11 +110,10 @@ func DecodeHeader(msg []byte, off int) (*Header, error) {
 // The reply is req's header with MS-SMB2 3.3.4.4's changes: the status
 // written, NextCommand 0 until Chain sets it, SERVER_TO_REDIR set, and the
 // grant written as handed, which MS-SMB2 3.3.4.4 has be 0 for a request with
-// an async ID. Of req's flags it keeps only ASYNC_COMMAND and
-// RELATED_OPERATIONS, and its signature is zero: a reply is signed after it
-// is encoded. So it carries req's command, credit charge (MS-SMB2 3.3.4.1),
-// message ID, async ID or Reserved and tree ID, and session. Its
-// StructureSize is 64, whatever req's.
+// an async ID. So it carries req's command, credit charge (MS-SMB2 3.3.4.1),
+// flags, message ID, async ID or Reserved and tree ID, and session. SIGNED
+// is cleared and the signature is zero: a reply is signed, when it is, after
+// it is encoded. Its StructureSize is 64, whatever req's.
 func AppendReply(out []byte, req *Header, status uint32, credits uint16) []byte {
 	at := len(out)
 	out = append(out, req[:]...)
@@ -112,7 +121,7 @@ func AppendReply(out []byte, req *Header, status uint32, credits uint16) []byte 
 	binary.LittleEndian.PutUint16(r[offStructureSize:], HeaderLen)
 	binary.LittleEndian.PutUint32(r[offStatus:], status)
 	binary.LittleEndian.PutUint16(r[offCredits:], credits)
-	binary.LittleEndian.PutUint32(r[offFlags:], FlagServerToRedir|req.Flags()&(FlagAsyncCommand|FlagRelatedOperations))
+	binary.LittleEndian.PutUint32(r[offFlags:], FlagServerToRedir|req.Flags()&^flagSigned)
 	binary.LittleEndian.PutUint32(r[offNextCommand:], 0)
 	clear(r[offSignature:])
 

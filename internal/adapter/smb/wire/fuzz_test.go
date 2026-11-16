@@ -12,8 +12,9 @@ import (
 // from AppendReply, decodes as a reply carrying its command, message ID and
 // session.
 func FuzzRecord(f *testing.F) {
-	f.Add(readGolden(f, "negotiate_request"))
-	f.Add(readGolden(f, "negotiate_response"))
+	for _, name := range []string{"negotiate_request", "negotiate_response", "create_request", "create_response"} {
+		f.Add(readGolden(f, name))
+	}
 	for _, name := range []string{"sync_request", "async_request", "chain_request"} {
 		msg := readGolden(f, name)
 		f.Add(append(AppendFrame(nil, len(msg)), msg...))

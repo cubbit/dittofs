@@ -21,11 +21,12 @@ const protocolID = 0x424D53FE
 // SERVER_TO_CLIENT_NOTIFICATION, which only a server sends (MS-SMB2 2.2.44).
 const lastCommand = 0x0012
 
-// The Flags bits a reply carries (MS-SMB2 2.2.1.1).
+// Flags bits (MS-SMB2 2.2.1.1).
 const (
 	FlagServerToRedir     = 0x00000001 // the message is a response
 	FlagAsyncCommand      = 0x00000002 // the header is in its async form
 	FlagRelatedOperations = 0x00000004 // the request is a related member of a chain
+	flagSigned            = 0x00000008 // the message is signed
 )
 
 // The statuses the server's tables name (MS-ERREF 2.3.1).

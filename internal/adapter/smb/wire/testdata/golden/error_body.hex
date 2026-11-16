@@ -1,8 +1,10 @@
 # The SMB2 ERROR response's body with no error data, written by hand from
 # MS-SMB2 2.2.2 and 3.3.4.4: its StructureSize is 9 whatever the error data's
 # length, and with nothing provided ByteCount is 0. The ninth byte is the one
-# byte of ErrorData that StructureSize counts, sent as 0. Multi-byte fields
-# are little-endian (MS-SMB2 2.2).
+# byte of ErrorData that StructureSize counts, sent as 0. The reference
+# server sends these same 9 bytes after the header of frame 127 in
+# test/pcap-corpus/smb-sd/reference.pcap (create_response.hex). Multi-byte
+# fields are little-endian (MS-SMB2 2.2).
 09 00                       # [0,2) StructureSize 9
 00                          # [2]   ErrorContextCount 0
 00                          # [3]   Reserved

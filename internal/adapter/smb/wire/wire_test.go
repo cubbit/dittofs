@@ -94,6 +94,7 @@ type fields struct {
 
 func TestDecodeHeaderReadsEachFieldInPlace(t *testing.T) {
 	negotiate := readGolden(t, "negotiate_request")[FrameHeaderLen:]
+	create := readGolden(t, "create_request")[FrameHeaderLen:]
 	sync := readGolden(t, "sync_request")
 	async := readGolden(t, "async_request")
 	chain := readGolden(t, "chain_request")
@@ -107,6 +108,10 @@ func TestDecodeHeaderReadsEachFieldInPlace(t *testing.T) {
 	}{
 		{"the capture's NEGOTIATE request, frame 4", negotiate, 0, false, fields{
 			command: 0x0000, credits: 31,
+		}},
+		{"the capture's CREATE request, frame 126", create, 0, false, fields{
+			command: 0x0005, flags: 0x00000010, creditCharge: 1, credits: 1,
+			messageID: 14, id: 0x0988b3b3, sessionID: 0xa6d965dc,
 		}},
 		{"a sync header", sync, 0, false, fields{
 			command: 0x0008, flags: 0x10000000, creditCharge: 2, credits: 10,
@@ -154,6 +159,18 @@ func patched(msg []byte, off int, b ...byte) []byte {
 	return c
 }
 
+// decode is DecodeHeader, with a panic reported as the test's failure.
+func decode(t *testing.T, msg []byte, off int) (h *Header, err error) {
+	t.Helper()
+	defer func() {
+		if p := recover(); p != nil {
+			t.Errorf("DecodeHeader of %d bytes at %d panicked: %v", len(msg), off, p)
+		}
+	}()
+
+	return DecodeHeader(msg, off)
+}
+
 func TestDecodeHeaderRefusesWithNoHeaderWhatCannotBeAnswered(t *testing.T) {
 	sync := readGolden(t, "sync_request")
 	chain := readGolden(t, "chain_request")
@@ -165,14 +182,21 @@ func TestDecodeHeaderRefusesWithNoHeaderWhatCannotBeAnswered(t *testing.T) {
 	}{
 		{"63 bytes", sync[:63], 0, errShort},
 		{"a member with 63 bytes left", chain[:80+63], 80, errShort},
+		{"offset -1", sync, -1, errShort},
 		{"command 0x0013", patched(sync, 12, 0x13, 0x00), 0, errCommand},
 		{"protocol ID 0xFF 'SMB', SMB1's", patched(sync, 0, 0xff), 0, errProtocolID},
 		{"protocol ID 0xFD 'SMB', the transform header's", patched(sync, 0, 0xfd), 0, errProtocolID},
 		{"protocol ID 0xFC 'SMB', the compression transform header's", patched(sync, 0, 0xfc), 0, errProtocolID},
+		{"protocol ID 0xFE 'SMC'", patched(sync, 3, 'C'), 0, errProtocolID},
 	} {
-		if h, err := DecodeHeader(c.msg, c.off); h != nil || !errors.Is(err, c.err) {
-			t.Errorf("%s: DecodeHeader = %v, %v; want no header and %v", c.name, h, err, c.err)
+		h, err := decode(t, c.msg, c.off)
+		if h != nil || !errors.Is(err, c.err) || !errors.Is(err, ErrUnaddressable) {
+			t.Errorf("%s: DecodeHeader = %v, %v; want no header and %v, which is ErrUnaddressable", c.name, h, err, c.err)
 		}
+	}
+
+	if h, err := DecodeHeader(patched(sync, 12, 0x12, 0x00), 0); h == nil || err != nil {
+		t.Errorf("command 0x0012, OPLOCK_BREAK, the last MS-SMB2 2.2.1.2 defines: DecodeHeader = %v, %v; want the header", h, err)
 	}
 }
 
@@ -191,14 +215,15 @@ func TestDecodeHeaderReturnsAMalformedHeaderWithItsError(t *testing.T) {
 		err  error
 	}{
 		{"StructureSize 65", patched(sync, 4, 0x41, 0x00), errStructureSize},
+		{"StructureSize 63", patched(sync, 4, 0x3f, 0x00), errStructureSize},
 		{"NextCommand 68, not a multiple of 8", room(68, 68), errNextCommand},
 		{"NextCommand 72, its header one byte past the message", room(72, 72-1), errNextCommand},
 		{"NextCommand 8, inside this header", room(8, 64), errNextCommand},
 		{"NextCommand 68 and StructureSize 65: the step's refusal first", patched(room(68, 68), 4, 0x41), errNextCommand},
 	} {
 		h, err := DecodeHeader(c.msg, 0)
-		if h == nil || &h[0] != &c.msg[0] || !errors.Is(err, c.err) {
-			t.Errorf("%s: DecodeHeader = %v, %v; want the header and %v", c.name, h, err, c.err)
+		if h == nil || &h[0] != &c.msg[0] || !errors.Is(err, c.err) || errors.Is(err, ErrUnaddressable) {
+			t.Errorf("%s: DecodeHeader = %v, %v; want the header and %v, which is not ErrUnaddressable", c.name, h, err, c.err)
 		}
 	}
 
@@ -207,23 +232,59 @@ func TestDecodeHeaderReturnsAMalformedHeaderWithItsError(t *testing.T) {
 	}
 }
 
-func TestAppendReplyGivesTheCapturesResponseHeader(t *testing.T) {
-	req := readGolden(t, "negotiate_request")
-	resp := readGolden(t, "negotiate_response")
-	h, err := DecodeHeader(req[FrameHeaderLen:], 0)
-	if err != nil {
-		t.Fatal(err)
+// No field of the reference server's response headers is the server's own
+// choice: each is its request's header with MS-SMB2 3.3.4.4's changes, as
+// AppendReply writes it, and the request's flags are kept.
+func TestAppendReplyGivesTheCapturesResponses(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		req, resp string
+		status    uint32
+		errorBody bool
+	}{
+		// Frame 6 is STATUS_SUCCESS with a grant of 1 credit; its NEGOTIATE
+		// body, not this package's, is left out of the comparison.
+		{"frame 4, NEGOTIATE, and frame 6", "negotiate_request", "negotiate_response", 0, false},
+		// Frame 127 is the whole message: STATUS_ACCESS_DENIED with a grant of
+		// 1 credit, the request's priority kept in Flags, and the error body.
+		{"frame 126, CREATE, and frame 127", "create_request", "create_response", 0xC0000022, true},
+	} {
+		req, resp := readGolden(t, c.req), readGolden(t, c.resp)
+		h, err := DecodeHeader(req[FrameHeaderLen:], 0)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		got := AppendReply(nil, h, c.status, 1)
+		want := resp[FrameHeaderLen : FrameHeaderLen+HeaderLen]
+		if c.errorBody {
+			got, want = AppendError(got), resp[FrameHeaderLen:]
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s: the reply =\n% x\nwant the capture's\n% x", c.name, got, want)
+		}
+		if got, want := AppendFrame(nil, len(resp)-FrameHeaderLen), resp[:FrameHeaderLen]; !bytes.Equal(got, want) {
+			t.Errorf("%s: AppendFrame for the response = % x; want its Direct TCP header % x", c.name, got, want)
+		}
 	}
+}
 
-	// Frame 6's status is STATUS_SUCCESS and it grants 1 credit. No field of
-	// its header is the server's own choice: it is the request's header with
-	// MS-SMB2 3.3.4.4's changes, as AppendReply writes it.
-	got := AppendReply(nil, h, 0, 1)
-	if want := resp[FrameHeaderLen : FrameHeaderLen+HeaderLen]; !bytes.Equal(got, want) {
-		t.Errorf("AppendReply over frame 4's header =\n% x\nwant frame 6's\n% x", got, want)
-	}
-	if got, want := AppendFrame(nil, len(resp)-FrameHeaderLen), resp[:FrameHeaderLen]; !bytes.Equal(got, want) {
-		t.Errorf("AppendFrame for frame 6's message = % x; want frame 6's Direct TCP header % x", got, want)
+func TestAppendReplyKeepsTheSyncForm(t *testing.T) {
+	sync := readGolden(t, "sync_request")
+	want := readGolden(t, "sync_reply")
+	for _, c := range []struct {
+		name string
+		req  []byte
+	}{
+		{"a sync request with a non-zero Reserved", sync},
+		{"the same request with StructureSize 65", patched(sync, 4, 0x41, 0x00)},
+	} {
+		h, _ := DecodeHeader(c.req, 0)
+		if h == nil {
+			t.Fatalf("%s: no header", c.name)
+		}
+		if got := AppendReply(nil, h, StatusNotSupported, 1); !bytes.Equal(got, want) {
+			t.Errorf("%s: AppendReply =\n% x\nwant\n% x", c.name, got, want)
+		}
 	}
 }
 
