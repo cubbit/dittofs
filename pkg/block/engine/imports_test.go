@@ -33,16 +33,18 @@ var allowed = map[string][]string{
 	// The test fixture composes the engine over the real journal, its seam and
 	// profiler, the real store on an in-memory kv.KV, and a test clock. The
 	// unit tests' start failure tests, and the fixture's rows of the self-fence,
-	// put the fault-injecting kv.KV under that store.
-	module + "pkg/block/journal/journaltest":     {"enginetest"},
+	// put the fault-injecting kv.KV under that store. enginewire's test runs
+	// Compose over the real store on an in-memory kv.KV, a journal initialised
+	// on a mount taken as suitable, and a test clock.
+	module + "pkg/block/journal/journaltest":     {"enginetest", wireTests},
 	module + "pkg/block/journal/journaltest/kit": {"enginetest"},
 	module + "internal/prof":                     {"enginetest", unitTests},
-	module + "pkg/metadata/kv":                   {"enginetest", unitTests},
-	module + "pkg/metadata/kv/badgerkv":          {"enginetest", unitTests},
+	module + "pkg/metadata/kv":                   {"enginetest", unitTests, wireTests},
+	module + "pkg/metadata/kv/badgerkv":          {"enginetest", unitTests, wireTests},
 	module + "pkg/metadata/kv/keys":              {"enginetest", unitTests},
 	module + "pkg/metadata/kv/kvtest":            {"enginetest", unitTests},
-	module + "pkg/metadata/kvstore/kvstoretest":  {"enginetest", unitTests},
-	module + "pkg/sim":                           {"enginetest", unitTests, internalTests},
+	module + "pkg/metadata/kvstore/kvstoretest":  {"enginetest", unitTests, wireTests},
+	module + "pkg/sim":                           {"enginetest", unitTests, internalTests, wireTests},
 }
 
 // unitTests names the engine's external test package, whose unit
@@ -51,6 +53,9 @@ var allowed = map[string][]string{
 // tests put the fault-injecting kv.KV under that store. The engine's own
 // files import none of them.
 const unitTests = "._test"
+
+// wireTests names enginewire's external test package.
+const wireTests = "enginewire_test"
 
 // internalTests names the engine's test files in its own package, which may
 // import pkg/sim, the test clock's package, and nothing else of the unit
