@@ -16,10 +16,12 @@ import (
 // continues that directory's count rather than starting at zero. The count
 // is not persisted, so a restart of the process starts it over; a client
 // that sees the verifier change across a restart already treats it as a
-// reboot. The directory's loss ring, the count that numbers its events and
-// the pieces a Lose or a Place has taken live here with it, for the same
-// reason: a reopen neither re-reports a loss record found on disk nor
-// restarts the numbering, and keeps the ring history already published.
+// reboot. The failed list and the pieces a Lose or a Place has taken live
+// here with it: a reopen does not re-report a loss record found on disk,
+// for the piece it names is the directory's, taken once by whichever
+// instance reported it. The ring of published events does not: it is the
+// Durability's own, so a reopen starts an empty one and no live drain of
+// one instance re-reads another's history.
 var registry = struct {
 	// decision: mu is a leaf mutex over dirs, held for one map lookup or
 	// insert and never across I/O; it is outside the six lock domains.
@@ -28,8 +30,7 @@ var registry = struct {
 }{dirs: map[string]*dirState{}}
 
 // dirState is one directory's generation, the sequence numbers whose loss
-// record could not be appended, the ring of its published loss events with
-// the count that numbers them, and the pieces a Lose or a Place has taken.
+// record could not be appended, and the pieces a Lose or a Place has taken.
 // Its mutex is a leaf: nothing is called while it is held.
 //
 // ponytail: an entry is one small struct per directory ever opened, and none
@@ -42,13 +43,6 @@ type dirState struct {
 	mu     sync.Mutex
 	gen    uint64
 	failed []core.Seq
-
-	// ring holds the directory's published loss events, head the index of the
-	// oldest and count how many the ring holds, all under mu.
-	ring      [core.LossRingSize]core.LossEvent
-	head      int
-	count     int
-	nextEvent uint64
 
 	// pieces holds every (dropped seq, extent) a Lose or a Place on the
 	// directory has taken, so one piece of a dropped record is reported once,
@@ -106,58 +100,13 @@ func (s *dirState) takeLocked(k piece) bool {
 	return true
 }
 
-// place takes the piece of the loss record an open found on disk (dropped with
-// ev's extent) and publishes its event, in one section. A piece an earlier
-// Lose or Place on the directory took — the previous open included —
-// publishes nothing, so a later open does not report the same loss record as
-// new; another piece of the same record is placed on its own.
-func (s *dirState) place(ev core.LossEvent, dropped core.Seq) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.takeLocked(piece{dropped, ev.Extent}) {
-		return
-	}
-	s.pushLocked(ev)
-}
-
-// push publishes ev with the directory's next event number, overwriting the
-// oldest when the ring is full. Every Durability on the directory shares the
-// numbering.
-func (s *dirState) push(ev core.LossEvent) core.LossEvent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.pushLocked(ev)
-}
-
-// pushLocked is push with the caller holding mu.
-func (s *dirState) pushLocked(ev core.LossEvent) core.LossEvent {
-	s.nextEvent++
-	ev.SeqNum = s.nextEvent
-	if s.count < core.LossRingSize {
-		s.ring[(s.head+s.count)%core.LossRingSize] = ev
-		s.count++
-		return ev
-	}
-	s.ring[s.head] = ev
-	s.head = (s.head + 1) % core.LossRingSize
-	return ev
-}
-
-// losses returns a copy of the ring's events, oldest first, with the
-// generation. The raise of a generation and the publishing of its event are
-// paired per publishing instance only, in the section this reader locks with
-// the publishing one; across the Durability instances of one directory the
-// generation may lead the events -- a later instance can read a generation
-// its own events do not reach. The engine tolerates a generation ahead of
-// its events.
-func (s *dirState) losses() ([]core.LossEvent, uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]core.LossEvent, s.count)
-	for i := range out {
-		out[i] = s.ring[(s.head+i)%core.LossRingSize]
-	}
-	return out, s.gen
+// takePiece takes the piece of the loss record an open found on disk
+// (dropped with ev's extent), reporting false when an earlier Lose or Place
+// already had. The call that took the piece is the one that publishes; a
+// later one — the previous open's Durability included — says only that the
+// piece was named before, and never that its record is on disk.
+func (s *dirState) takePiece(dropped core.Seq, ext core.Extent) bool {
+	return s.take(piece{dropped, ext})
 }
 
 // raise raises the generation by one and returns it.

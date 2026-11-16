@@ -279,19 +279,31 @@ type Durability struct {
 	// lmu guards the reason counters, and the generation raise and the event
 	// publish of a Lose made with them.
 	//
-	// decision: lmu holds the raise, the counters and the publish of a Lose as
-	// one section, so a snapshot pairs a generation with exactly the events
-	// that raised it. The ring, its event count and the piece set live in the
-	// directory's state; the registry's own mutex is taken inside lmu and
-	// calls nothing back, so lmu is a leaf on the journal's lock order and
-	// is never held across an Append, a Sync or a MarkLoss, which take locks
-	// of other domains. A window raise (RaiseWindow) takes the registry alone
-	// and raises with no event, so a snapshot may show it ahead of the events.
+	// decision: lmu holds the raise, the counters, this instance's ring and
+	// the publish of a Lose as one section, so a snapshot pairs a generation
+	// with exactly the events that raised it. The piece set and the failed
+	// list live in the directory's state; the registry's own mutex is taken
+	// inside lmu and calls nothing back, so lmu is a leaf on the journal's
+	// lock order and is never held across an Append, a Sync or a MarkLoss,
+	// which take locks of other domains. A window raise (RaiseWindow) takes
+	// the registry alone and raises with no event, so a snapshot may show
+	// it ahead of the events.
 	lmu               sync.Mutex
 	corruptDataLoss   uint64
 	corruptRepairable uint64
 	stale             uint64
 	superseded        uint64
+
+	// ring holds this instance's published loss events, head the index of
+	// the oldest and count how many the ring holds, nextEvent the count
+	// that numbers them, all under lmu: its reader pairs the ring with the
+	// generation raises below. A Durability built later on the directory
+	// starts an empty ring of its own — the pieces the dedup holds are the
+	// directory's, the published events the publishing instance's.
+	ring      [core.LossRingSize]core.LossEvent
+	head      int
+	count     int
+	nextEvent uint64
 
 	// dmu guards damaged and unproduced.
 	//
@@ -903,6 +915,33 @@ func (d *Durability) Lost(at segment.Location) bool {
 // SyncBound returns the longest a record waits for a sync.
 func (d *Durability) SyncBound() time.Duration { return core.SyncBound }
 
+// pushRingLocked publishes ev into this instance's ring with its next
+// event number, overwriting the oldest when the ring is full, the caller
+// holding lmu. The counter is this instance's own: a reopen numbers its
+// events from its own zero.
+func (d *Durability) pushRingLocked(ev core.LossEvent) core.LossEvent {
+	d.nextEvent++
+	ev.SeqNum = d.nextEvent
+	if d.count < core.LossRingSize {
+		d.ring[(d.head+d.count)%core.LossRingSize] = ev
+		d.count++
+		return ev
+	}
+	d.ring[d.head] = ev
+	d.head = (d.head + 1) % core.LossRingSize
+	return ev
+}
+
+// lossesLocked returns a copy of this instance's ring, oldest first, the
+// caller holding lmu.
+func (d *Durability) lossesLocked() []core.LossEvent {
+	out := make([]core.LossEvent, d.count)
+	for i := range out {
+		out[i] = d.ring[(d.head+i)%core.LossRingSize]
+	}
+	return out
+}
+
 // Stats returns the counters kept at each sync, without walking the ledger. A
 // sync is counted just after the waiters it covered are released, so a Sync
 // that has just returned may not be in the counters yet.
@@ -933,10 +972,14 @@ func (d *Durability) Stats() Part {
 	}
 
 	d.lmu.Lock()
-	// The ring and the generation are read in one section, and lmu holds the
-	// raise and the publish of a Lose together, so the snapshot never holds
-	// the raise without its event, nor an event without its raise.
-	p.Losses, p.LossGeneration = d.dir.losses()
+	// This instance's ring and the directory's generation are read in one
+	// section, and lmu holds the raise and the publish of a Lose together,
+	// so the snapshot never holds the raise without its event, nor an
+	// event without its raise. The raise stays with the directory so a
+	// reopen reports the generation it continues; the events are this
+	// ring's, which the reopen starts empty.
+	p.Losses = d.lossesLocked()
+	p.LossGeneration = d.dir.load()
 	p.CorruptDataLoss = d.corruptDataLoss
 	p.CorruptRepairable = d.corruptRepairable
 	p.StaleExtents = d.stale

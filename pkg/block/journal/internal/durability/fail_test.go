@@ -92,8 +92,9 @@ func releaser(t *testing.T) (<-chan struct{}, func()) {
 
 // events returns a copy of the loss events published so far, oldest first.
 func (r *rig) events() []core.LossEvent {
-	out, _ := r.d.dir.losses()
-	return out
+	r.d.lmu.Lock()
+	defer r.d.lmu.Unlock()
+	return r.d.lossesLocked()
 }
 
 // lossRecordsOnDisk returns the durable loss records' bodies, in segment order.

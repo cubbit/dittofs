@@ -210,7 +210,7 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	case l.Reason == core.LossSuperseded:
 		d.superseded++
 	}
-	ev := d.dir.push(core.LossEvent{
+	ev := d.pushRingLocked(core.LossEvent{
 		Share:     l.Share,
 		File:      l.File,
 		Extent:    l.Extent,
@@ -371,14 +371,21 @@ func (d *Durability) EndDeferral(seg core.SegmentID, l Loss) bool {
 }
 
 // Place publishes ev, a loss record found at open, for the dropped record
-// seq. It appends nothing, raises nothing and counts nothing: the counters
-// are of drops this run made, and the record is already on disk. A piece
-// (seq and ev.Extent) already taken by a Lose or a Place publishes nothing,
-// through whichever Durability on the directory took it — the previous open
-// included — so a later open does not report the same loss record as new,
-// while another piece of the same record is. The event's Synced is kept as
-// the caller set it.
+// seq, to this instance's ring. It appends nothing, raises nothing and
+// counts nothing: the counters are of drops this run made, and the record
+// is already on disk. A piece (seq and ev.Extent) already taken by a Lose
+// or a Place on the directory — through whichever Durability, the previous
+// open's included — publishes nothing, so a later open does not report the
+// same loss record as new, while another piece of the same record is
+// placed on its own; the piece is the directory's, the published events
+// this ring's, which the later open starts empty. The event's Synced is
+// kept as the caller set it.
 func (d *Durability) Place(ev core.LossEvent, dropped core.Seq) {
+	if !d.dir.takePiece(dropped, ev.Extent) {
+		return
+	}
 	ev.AtOpen = true
-	d.dir.place(ev, dropped)
+	d.lmu.Lock()
+	d.pushRingLocked(ev)
+	d.lmu.Unlock()
 }
