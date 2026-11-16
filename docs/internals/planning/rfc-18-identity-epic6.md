@@ -20,13 +20,16 @@ and §8.2's `Source`.
 **Depends on:** **E1** (S1): `pkg/identity`'s `Identities`, `FindOpts`, `Spelling`, `Caller`;
 `internal/identity`'s `Server`, `Deps`, `State`, `Apply`, `Start`. **E2**: T2.3's `Minter.Create`
 (T6.2), T2.4's `Settings`, `State.Settings` and `Apply`'s refusal (T6.3), T2.5's `Spell` and
-`Find` (T6.9) and T2.2's `Alloc` (T6.9). **E3, partly**: T3.1's `Deps.Tracer` and `Resolve`, T3.4's
-closure and T3.8's caller cache, for T6.11 alone; the rest does not wait. **#4059's S1** (the RFC 13
+`Find` (T6.9), T2.2's `Alloc` (T6.9) and T2.6's `Clock.After` (T6.5, D7). **E3, partly**: T3.1's
+`Deps.Tracer`, for T6.7's spans, and T3.1's `Resolve`, T3.4's closure and T3.8's caller cache, for
+T6.11; the rest does not wait. **E4, partly**: T4.4's `kvstore.FoldName`, which T6.7's keys fold
+with. **#4059's S1** (the RFC 13
 plan's): `pkg/settings`' `Of`, for T6.3. **#4059's epic 3, partly**: its write check `Check` with
 tracked reads, for T6.13 alone. **RFC 23's plan's epic 3, partly**: `pkg/health`'s `Condition`,
 for T6.8's source.
-**Blocks:** **E5**, partly: its machine mints call T6.2's mint path, and its §4.2 mapping calls
-T6.9's step 3 and its `krb` link takes T6.7's fresh-only answer. **E7**, partly: `resolve-principal`
+**Blocks:** **E5**, partly: its T5.9's machine mints call T6.2's mint path, and its T5.8 adds
+`require_pac` to T6.3's record and reads its schema and realm; T6.9's step 3 joins E5's Kerberos
+branch, called by whichever of T6.9 and E5's T5.5 lands second. **E7**, partly: `resolve-principal`
 wraps T6.9's `Find`, `test-directory` wraps T6.5's test call, and pass-through compares the
 `LogonDomainID` with T6.5's domain SID. **E8**: "directory deadline", "disabled directory account"
 and "deny-only lookup error" run on this epic's directory, and E8 adds T6.8's source to the node's
@@ -78,8 +81,10 @@ directory step; the benchmarks; the NetBIOS cross-check and the section's write 
   builds no `uid` or `gid` question.
 - An owner string's name and the "name held at mint" row's owner-string clause (RFC 18 §4.5): the
   deferral ledger row "NFSv4 owner strings (RFC 18 §4.5) and `FuzzOwnerString`".
-- The `krb` row's linked SID and the PAC's binding to it (RFC 18 §3.4, §4.2): E5; this epic gives
-  it the fresh-only answer (T6.7). Steps 1, 2 and 4 of §4.2: E5.
+- The `krb` row's linked SID and the PAC's binding to it (RFC 18 §3.4, §4.2): E5. The link's
+  write, RFC 23 §3.5's user edit, which RFC 18 §4.2 has take a fresh answer only: RFC 23's plan,
+  on T6.7's fresh-only answer. Steps 1, 2 and 4 of §4.2: E5.
+- `require_pac`, the record's one field E5 reads first: E5's T5.8 adds it to T6.3's record.
 - Pass-through, its `LogonDomainID` check and its share of the 20-second bound (RFC 18 §3.5,
   §5.1): E7. A join refused against an `rfc2307` record: E7.
 - The `resolve-principal` and `test-directory` runner kinds: E7, wrapping T6.9's `Find` and
@@ -99,9 +104,10 @@ directory step; the benchmarks; the NetBIOS cross-check and the section's write 
 
 - **E1**, the contract and the server's surface: `pkg/identity`, `internal/identity`'s lifecycle.
 - **E2**, principals and accounts: `Minter.Create`, `Alloc`, identity's settings section, `Spell`
-  and `Find`.
+  and `Find`, and `Clock.After` with its hashing bound's wait (T2.6).
 - **E3**, resolution: `Resolve`, the group closure, admission's caller cache, `Deps.Tracer`.
-- **E5**, Kerberos and the PAC: §4.2's steps 1, 2 and 4, machine mints.
+- **E4**, local NTLMv2 sign-in, whose T4.4 exports E2's name fold as `kvstore.FoldName`.
+- **E5**, Kerberos and the PAC: §4.2's steps 1, 2 and 4, machine mints, `require_pac`.
 - **E6**, this epic.
 - **E7**, NETLOGON and the machine account: pass-through, the join, the runner kinds.
 - **E8**, the integration epic: identity composed into the node, the rows several epics meet in.
@@ -131,7 +137,7 @@ number and title and not copied.
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T6.4, T6.5, T6.7, T6.8, T6.9 | RFC 18's notes at their sites: §5.1's `ponytail:` (one directory) at the client, §5.2's two `ponytail:` notes (constant TTLs, one cache per node) at the cache, §5.3's `decision:` (stale then closed) and `ponytail:` (recovery burst) at the cache's grace, §5.5's `ponytail:` (no NT hash read) at the client's attribute list, §4.4's `decision:` (no mint for an unauthenticated lookup) at `Find`; this document's D1 to D13 markers at theirs |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | each R row's test is named in its subtask with the bug it catches; R6's write role is held by #4059's write check, run on this section (T6.13) |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T6.3, T6.4, T6.8 | the exports are `internal/identity/directory`'s `Record`, `Conn`, `Request`, `Entry`, `Dialer` and `DialTLS`, which `internal/node` and `identitytest` call, `State.Directory` and `Deps.Directory`, `Server.Conditions` for the node's registry, and `identitytest`'s directory, fault wrapper and suite; the client, the cache and the mint path stay unexported |
-| rule 12, each subtask creates only what it declares | all | each deliverable names its consumer; `Deps.Directory` and `Clock.After` land with the client (T6.5), `State.Directory` with `Apply`'s check (T6.3), `Settings.DirectoryStaleGrace` with the cache (T6.7), the fault wrapper with the in-memory directory it wraps (T6.4), first used in T6.6 |
+| rule 12, each subtask creates only what it declares | all | each deliverable names its consumer; `Deps.Directory` lands with the client (T6.5), `State.Directory` with `Apply`'s check (T6.3), `Settings.DirectoryStaleGrace` with the cache (T6.7), the fault wrapper with the in-memory directory it wraps (T6.4), first used in T6.6; `Clock.After` is E2's T2.6's (D7) and the record's `RequirePAC` E5's T5.8's |
 
 ## 3. Requirements and invariants
 
@@ -142,7 +148,7 @@ tests can cite them. Sources are RFC 18 unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | There is at most one directory, named by `identity.directory`: its schema, `ad` or `rfc2307`, `ad` when the record names none; its address, base, bind credential reference, trust roots, realm and NetBIOS domain; the attributes holding a user's and a group's name, `sAMAccountName` by default and `uid` and `cn` for an `rfc2307` one; `require_pac`, true unless set false; optionally a domain controller address and a DNS server | invariant | §5.1; RFC 13 Appendix B | T6.3 |
+| R1 | There is at most one directory, named by `identity.directory`: its schema, `ad` or `rfc2307`, `ad` when the record names none; its address, base, bind credential reference, trust roots, realm and NetBIOS domain; the attributes holding a user's and a group's name, `sAMAccountName` by default and `uid` and `cn` for an `rfc2307` one; `require_pac`, true unless set false; optionally a domain controller address and a DNS server | invariant | §5.1; RFC 13 Appendix B | T6.3; E5's T5.8 for `require_pac` |
 | R2 | A record that asks for plain LDAP or for skipping certificate verification is refused at validation | MUST | §5.1; RFC 13 Appendix B; §10 "directory TLS" | T6.3 |
 | R3 | An `ad` record whose realm holds a lower-case ASCII letter is refused at validation | invariant | §4.2, §5.1; RFC 13 Appendix B | T6.3 |
 | R4 | `identity.netbios_name` never equals the record's NetBIOS domain, compared with ASCII letters folded: a write of either is refused at validation naming the other, checked against the other's current value in the write's transaction, read tracked so that a concurrent write of the other side conflicts; the component checks it again when it applies them | MUST NOT | §3.5, §4.6; RFC 13 §6, Appendix B | T6.3, T6.13 |
@@ -287,8 +293,9 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   injected clock cancels at 20 seconds, which every query, mint and wait below it inherits; E5's
   and E7's sign-ins open it the same way. Identity's `Clock` subset gains `After(d) <-chan struct{}`,
   which `pkg/sim`'s test clock already has, in T6.5, whose 5-second query timeout is the first
-  wait, unless an earlier subtask of E2 or E3 has added a timer method, which this epic then uses
-  (§9). Prior art: `context.WithDeadline`, here driven by the injected clock (from memory).
+  wait, unless an earlier subtask has added it: E2's T2.6, whose hashing bound waits 5 s on the
+  injected clock, is the first wait in the order of work, so by the field rule it adds `After` and
+  this epic uses it, pending E2's document saying so (§9). Prior art: `context.WithDeadline`, here driven by the injected clock (from memory).
 - **D8, fixed bounds, held at their sites by `ponytail:` markers.** The directory cache holds
   65 536 entries, least recently used evicted and counted; in-flight queries are capped at 64 per
   node, the rest waiting within the bound; a SID lookup carries at most 64 SIDs in one OR filter,
@@ -308,8 +315,8 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   (from memory).
 - **D11, a definite answer is a fresh one.** The cache answers a caller that asks "fresh only"
   from a query or a fresh entry, never a stale one, and fails `ErrUnavailable` otherwise. The
-  rename rule's question about a holder asks it (R53), and so does E5's `krb` link, which RFC 18
-  §4.2 requires to take a fresh answer only. Prior art: none found.
+  rename rule's question about a holder asks it (R53), and so does the `krb` link's write, RFC 23
+  §3.5's user edit, which RFC 18 §4.2 requires to take a fresh answer only. Prior art: none found.
 - **D12, a gone entry disables at resolution, writing nothing.** RFC 16 §3's `Minter` has no
   disable, and RFC 18 §5.1 keeps a directory principal's enabled state out of the store; "no such
   entry" for a minted principal is cached as a negative answer for 30 seconds and read by
@@ -333,7 +340,6 @@ internal/identity/
                               T6.5  Deps.Directory, the client swapped on a record change
   settings.go                 T6.3  the identity.directory section's registration
                               T6.7  Settings.DirectoryStaleGrace
-  clock.go                    T6.5  Clock.After, unless E2 or E3 added a timer (D7)
   dircache.go                 T6.7  the directory cache, fresh-only answers (D11)
   outage.go                   T6.8  directory_unreachable, the probe (D9), Conditions
   dirmint.go                  T6.9  directory mints, Find's directory spellings, step 3, the bound
@@ -341,7 +347,7 @@ internal/identity/
   resolve_dir.go              T6.11 resolution's directory step
   dir_bench_test.go           T6.12 the benchmarks
 internal/identity/directory/
-  record.go                   T6.3  Record, its defaults and Validate (D3, D4)
+  record.go                   T6.3  Record, its defaults and Validate (D3, D4); E5's T5.8 adds RequirePAC
   conn.go                     T6.4  Conn, Request, Entry, Dialer, DialTLS
   client.go                   T6.5  the client: domain SID, who holds, the test call
   filter.go                   T6.5  filters built from escaped values
@@ -424,14 +430,15 @@ pkg/settings/
 - **Covers:** R1, R2, R3, R4, R6.
 - **Deliverables:** `directory.Record{Schema, Address, Base, BindName string; BindCredential
   entity.SecretRef; TrustRoots string; Realm, NetBIOSDomain, UserNameAttr, GroupNameAttr string;
-  RequirePAC bool; DCAddress, DNSServer string}` with RFC 13 Appendix B's defaults and `Validate`:
+  DCAddress, DNSServer string}` with RFC 13 Appendix B's defaults and `Validate`:
   the address scheme of D4, the trust roots parsed as PEM, an `ad` realm with a lower-case ASCII
   letter refused, an unknown schema refused, D4's `decision:` marker; the section declared through
   `settings.Of("identity.directory", installation, …, settings.WriteRole(auth.Admin),
   settings.SecretRef("bind_credential", "directory credential"))` (D3);
   `State.Directory *directory.Record` (D2); `Apply` refusing a `State` whose
   `Settings.NetBIOSName` equals `Directory.NetBIOSDomain` with ASCII letters folded, and keeping
-  the last applied. Consumed by T6.4 (`Dialer` takes a `Record`), T6.5, T6.13, E5 (`RequirePAC`, the realm), E7
+  the last applied; `require_pac`, whose first reader is E5's T5.8, is added there. Consumed by
+  T6.4 (`Dialer` takes a `Record`), T6.5, T6.13, E5's T5.8 (the schema and realm), E7
   (`DCAddress`, `DNSServer`, the NetBIOS domain) and E8, which fills `State.Directory` and lists
   the section.
 - **Acceptance criteria:**
@@ -440,8 +447,8 @@ pkg/settings/
   with `insecure_skip_verify` or `allow_plaintext` refused by the strict decode, `http://`,
   `ldapi://` and an empty address refused, `ldap://` and `ldaps://` accepted (R2); realm
   `corp.example` on an `ad` record refused and on an `rfc2307` one accepted (catches the rule
-  applied to every schema, R3); defaults read back: schema `ad`, `sAMAccountName`, `require_pac`
-  true, and `uid` and `cn` for `rfc2307` (R1). At `Apply`, over the memory KV store:
+  applied to every schema, R3); defaults read back: schema `ad`, `sAMAccountName`, and `uid` and
+  `cn` for `rfc2307` (R1; `require_pac`'s default is E5's T5.8's test). At `Apply`, over the memory KV store:
   `NetBIOSName` `CORP` with a record whose domain is `corp`: refused, the last `State` kept,
   read through `export_test.go` (catches a case-sensitive compare, R4); `NetBIOSName` `KDC` with
   a domain spelled with the Kelvin sign U+212A for its `K`: accepted (catches a Unicode fold in
@@ -502,7 +509,7 @@ pkg/settings/
 
 **Subtask T6.5 estimate: 3 man-days.**
 
-- **Track:** C. **Depends on:** T6.4. E2's T2.4 (`Deps.Secrets`).
+- **Track:** C. **Depends on:** T6.4. E2's T2.4 (`Deps.Secrets`), E2's T2.6 (`Clock.After`).
 - **Covers:** R8, R10, R11, R12, R13, R14, R15, R16, R18, R19, R20, R21, R24.
 - **Deliverables:**
   - the client, unexported in `internal/identity/directory`: one `Conn` dialled at its first
@@ -517,7 +524,7 @@ pkg/settings/
     `accountExpires`, its `mail`, its `objectGUID` as the entry ID, an `rfc2307` entry's `entryUUID`; an attribute list that names
     no NT-hash attribute, with §5.5's `ponytail:` at it;
   - the test call: bind, read the base entry, report the answer, for E7's `test-directory`;
-  - identity's `Clock` gaining `After` for the query timeout (D7);
+  - the query timeout on E2's `Clock.After` (D7);
   - `Deps.Directory` (D1), optional: `New` accepts a `Deps` without it, so no earlier epic's
     caller changes, and every directory question then answers `ErrUnavailable`, as E1's stubs
     do; `Apply` building a new client on a changed `State.Directory`, the old
@@ -575,10 +582,10 @@ pkg/settings/
 
 **Subtask T6.7 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T6.5. E3's T3.1 (`Deps.Tracer`).
+- **Track:** C. **Depends on:** T6.5. E3's T3.1 (`Deps.Tracer`), E4's T4.4 (`kvstore.FoldName`).
 - **Covers:** R7, R8, R14, R16, R25, R26, R27, R28, R29, R30, R31, R32, R33, R34, R35, R38.
 - **Deliverables:** the cache in `internal/identity`: one per `Server`, emptied with each new
-  client; keys per R29, names folded with E2's fold; a positive entry fresh 5 minutes, a negative
+  client; keys per R29, names folded with `kvstore.FoldName`, E2's fold as E4's T4.4 exports it; a positive entry fresh 5 minutes, a negative
   30 seconds, on the injected clock, and never served stale, since RFC 18 §5.4 forbids a cached
   negative answer as a fallback; misses through `x/sync/singleflight`'s `DoChan`; an error
   stored nowhere and leaving a positive entry in place; past the fresh window a failed query
@@ -586,8 +593,8 @@ pkg/settings/
   `ErrUnavailable` counted `refused`; the fresh-only answer (D11); 65 536 entries with LRU
   eviction, 64 queries in flight (D8); `identity_directory_lookups_total{question,
   result}`, `identity_directory_seconds` and a span per query; §5.2's two `ponytail:` notes and
-  §5.3's `decision:`. `Settings.DirectoryStaleGrace`, default 15 minutes, live. `identitytest`'s
-  Consumed by T6.8 to T6.11 and E5's `krb` link.
+  §5.3's `decision:`. `Settings.DirectoryStaleGrace`, default 15 minutes, live. Consumed by T6.8
+  to T6.11 and by RFC 23's plan's `krb` link write (D11).
 - **Acceptance criteria:**
   - A question answered fresh sends no query; one past its window sends exactly one.
   - A negative entry past its 30 seconds, with the directory failing, is `ErrUnavailable`.
@@ -653,7 +660,8 @@ pkg/settings/
   no principal asked of the directory and minted only with `FindOpts.Mint`, §4.4's `decision:` at
   that branch; `qualified` `<directory domain>\name` both ways, the domain compared with ASCII
   letters folded; §4.2 step 3 as an unexported `s.byKerberosName(ctx, user, realm string, mint
-  bool)` reaching the principal through its entry's `dir` spelling. D7's bound opened by `Find`'s
+  bool)` reaching the principal through its entry's `dir` spelling, called as step 3 from E5's
+  Kerberos branch by whichever of T6.9 and E5's T5.5 lands second. D7's bound opened by `Find`'s
   directory branch. Consumed by T6.10, T6.11, E5 (step 3), E7
   (`resolve-principal`, pass-through's SID) and RFC 22's `lsarpc` through `Find`.
 - **Acceptance criteria:**
@@ -797,10 +805,11 @@ flowchart TD
   T6_1["T6.1 Fixture TLS part"] --> T6_4["T6.4 Conn, in-memory directory, suite"]
   T6_3 --> T6_4
   T6_4 --> T6_5["T6.5 The client"]
-  E2X -. "T2.4" .-> T6_5
+  E2X -. "T2.4, T2.6" .-> T6_5
   T6_5 --> T6_6["T6.6 Groups, paging, ranges"]
   T6_5 --> T6_7["T6.7 The cache"]
   E3X(["E3: Tracer, closure, caller cache"]):::sync -. "T3.1" .-> T6_7
+  E4X(["E4 T4.4: kvstore.FoldName"]):::sync -. "fold" .-> T6_7
   T6_7 --> T6_8["T6.8 Outage mode"]
   X23(["RFC 23 epic 3: pkg/health"]):::sync -. "Condition" .-> T6_8
   T6_2 & T6_6 & T6_7 --> T6_9["T6.9 Directory principals"]
@@ -817,7 +826,7 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-Checkpoints: after T6.2 E5 can mint machines; after T6.6 the directory answers every question
+Checkpoints: after T6.2 E5 can mint machines, and after T6.3 E5's T5.8 can add `require_pac`; after T6.6 the directory answers every question
 against Samba; after T6.9 E5's step 3 and E7's `resolve-principal` have their calls; after T6.11
 a directory principal resolves end to end.
 
@@ -861,13 +870,14 @@ transaction.
 - **The swap's one transaction (D5).** RFC 16 §3's `Rename` takes one principal; RFC 18 §5.1
   wants a swap's renames in one transaction. Recommended: `Rename` takes a list, amending RFC 16 §3.
   Alternative: a `Renames` call beside the single one.
-- **The timer on identity's `Clock` (D7).** E2's T2.6 and E3's T3.8 wait on the injected clock but
-  neither names the method. Recommended: the first subtask that waits adds `After`, the method
-  `pkg/sim`'s test clock already has, and this epic uses it; if none has when T6.5 starts, T6.5
-  adds it.
-- **The mint path's owner.** E2's document leaves it to "the first epic that mints, E6 or E5".
-  Recommended: this epic owns T6.2; should E5 reach its machine mint first, E5 takes T6.2 whole,
-  keeping its id.
+- **The timer on identity's `Clock` (D7).** E2's T2.6 waits 5 s on the injected clock without
+  naming the method. Recommended: the first subtask that waits adds `After`, the method
+  `pkg/sim`'s test clock already has; in the order of work that is E2's T2.6, and E2's document
+  should say so. This epic then uses it; if E2's document leaves it out, T6.5 adds it.
+
+**Settled here:** the mint path's owner. E2's document leaves it to "the first epic that mints, E6
+or E5". T6.2 owns it: it needs only E2's T2.3 and comes second in this epic, while E5's machine
+mint, T5.9, is late in E5, which depends on T6.2 for it.
 
 **Where the RFC 18 plan and the RFCs disagree:**
 
