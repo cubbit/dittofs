@@ -68,7 +68,7 @@ func (e engineSeries) Collect(ch chan<- prometheus.Metric) {
 // them: its node's, each journal's and each share's.
 type engineConditions struct{ stats func() engine.Stats }
 
-func (e engineConditions) Conditions(dst []health.Condition) []health.Condition {
+func (e *engineConditions) Conditions(dst []health.Condition) []health.Condition {
 	s := e.stats()
 	dst = append(dst, s.Node.Conditions...)
 	for _, j := range s.Journals {

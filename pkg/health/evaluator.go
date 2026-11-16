@@ -34,7 +34,9 @@ type Condition struct {
 }
 
 // Source is what a component implements to publish its conditions: it
-// appends the conditions it holds now to dst and returns the result.
+// appends the conditions it holds now to dst and returns the result. Remove
+// finds a source by identity, so an implementation is a pointer: a value of
+// an uncomparable type, such as a struct holding a func, panics there.
 type Source interface {
 	Conditions(dst []Condition) []Condition
 }
