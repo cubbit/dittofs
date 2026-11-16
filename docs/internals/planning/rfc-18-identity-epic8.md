@@ -36,11 +36,11 @@ and **RFC 23's plan's epic 5's T5.5**, which both need identity built in `node.N
 makes `vfs.New` refuse a `Deps` without it, and T5.5 builds `auth.Service` on the node's
 `APISignIn` (D1); both list T8.1 among their dependencies. **RFC 23's plan's epic 5's T5.7**, whose
 password write signs in over NTLM on the node and so waits for T8.2's `Deps.Logons`. **RFC 23's
-plan's epic 6's T6.4 and T6.6**, whose grant by directory name and `domain resolve` and `domain
-test` need identity in the node (T8.1, T8.2) and an in-memory directory their `clisuite` tests
-cannot reach under D4 (§9). **RFC 23's plan's epic 7's T7.5**, whose "NTLM back on" row runs
-`identity.nt-hash-delete` on the step T8.10 registers, and its **T7.6**, whose R22 and R26 rows run
-over the node composed here.
+plan's epic 7's T7.5**, whose "NTLM back on" row runs `identity.nt-hash-delete` on the step T8.10
+registers, and its **T7.6**, whose R22 and R26 rows run over the node composed here, as do the
+grant by directory name, `resolve-principal` and `test-directory`, which need identity in the node
+(T8.1, T8.2) and the in-memory directory (D4, §9); RFC 23's plan's epic 6 tests only their
+arguments and refusal.
 
 ---
 
@@ -502,7 +502,8 @@ test/integration/ad-dc/
   `Installation.MachinePassword`, with their `KeyVersion` and `HandedOver`, and `State.Join` from
   `Installation.Join` (pending E7's D6), both rebuilt on a settings move; the machine password's
   versions reported; `JoinStep` and `JoinProgress`, `RotateStep` and `RotateProgress`,
-  `ResolvePrincipalStep` and `TestDirectoryStep` in the runner's table under `join-domain`,
+  `ResolvePrincipalStep` and `ResolvePrincipalProgress`, `TestDirectoryStep` and
+  `TestDirectoryProgress` in the runner's table under `join-domain`,
   `rotate-machine-password`, `resolve-principal` and `test-directory` as they are, typed by
   `internal/node/step` (E7's D4, D10 here), with no adapter: the runner fails the operation on a
   step's `*apiv1.Problem` and retries any other error; `api.Deps.Joins` filled from identity (D10).
@@ -681,7 +682,10 @@ and `Harness.Node()`).
 
 **Pending the user's answer** (the recommended option is written in place). D1, D3 and D4 were
 settled in review: T8.1 first, the writer's wait now RFC 23's plan's epic 3's D16, and the dialers
-handed by `export_test.go`'s constructor.
+handed by `export_test.go`'s constructor. The in-memory directory for RFC 23's plan's epic 6 was
+settled as (b) in #4408: under D4 it reaches the node only through `internal/node`'s
+`export_test.go`, which a `clisuite` test under `cmd/dfsctl` cannot import, so that epic's T6.4 and
+T6.6 test only the CLI's arguments and refusal, and the success paths run in its epic 7's T7.6.
 
 - **A directory account's enabled state at sign-in (D6).** Options: (a) T8.5 adds it to E5's branch;
   (b) E6 adds it beside T6.9's step 3. Recommended: (a), which E5's and E6's §1.2 now name; under
@@ -689,13 +693,6 @@ handed by `export_test.go`'s constructor.
 - **Expiry at `Resolve` (D7).** Options: (a) no refusal at `Resolve`, as RFC 18 §6.1 says, and the
   RFC 18 plan's line dropped; (b) `Resolve` refuses an expired identity `ErrAccess` as a second
   gate, RFC 18 §6.1 amended. Recommended: (a); E3's open point asks the same.
-- **An in-memory directory for RFC 23's plan's epic 6.** Under D4, `nodetest` imports nothing of
-  identity and the in-memory directory reaches the node only through `internal/node`'s
-  `export_test.go`, which a `clisuite` test under `cmd/dfsctl` cannot import; so epic 6's T6.4
-  grant by directory name and T6.6's `domain resolve` and `domain test` have no directory to
-  succeed against. Options: (a) a seam `nodetest` can reach, at the cost of `Config`'s five fields
-  or epic 1's export pin; (b) those rows test the CLI's arguments and refusal, and their success
-  paths move to RFC 23's plan's epic 7 or the Samba rows. Recommended: (b).
 - **E7's D6 and D11, as they reach T8.6.** Under E7's D6 (a), recommended there, T8.6 fills
   `State.Join` from `Installation.Join`; under (b) or (c) it fills nothing and its restart test
   goes. Under E7's D11 (b), T8.6 also creates the scheduled rotation from reconcile; under (a),
