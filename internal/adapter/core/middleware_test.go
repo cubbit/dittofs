@@ -1,0 +1,411 @@
+package core_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"runtime"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
+	"github.com/cubbit/dittofs/internal/adapter/core"
+	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/cubbit/dittofs/pkg/vfs"
+)
+
+var t0 = time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+
+// manualClock is a clock the test moves: a timer fires when Advance passes
+// it, or at once when armed already due.
+type manualClock struct {
+	mu     sync.Mutex
+	now    time.Time
+	timers map[int]manualTimer
+	next   int
+}
+
+type manualTimer struct {
+	at time.Time
+	f  func()
+}
+
+func newManualClock() *manualClock { return &manualClock{now: t0, timers: map[int]manualTimer{}} }
+
+func (c *manualClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *manualClock) AfterFunc(d time.Duration, f func()) func() bool {
+	if d <= 0 {
+		f()
+		return func() bool { return false }
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	id := c.next
+	c.next++
+	c.timers[id] = manualTimer{c.now.Add(d), f}
+	return func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		_, ok := c.timers[id]
+		delete(c.timers, id)
+		return ok
+	}
+}
+
+func (c *manualClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	var due []func()
+	for id, tm := range c.timers {
+		if !tm.at.After(c.now) {
+			due = append(due, tm.f)
+			delete(c.timers, id)
+		}
+	}
+	c.mu.Unlock()
+	for _, f := range due {
+		f()
+	}
+}
+
+func (c *manualClock) pending() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.timers)
+}
+
+// The call's deadline is on the server's clock: 30 s from the attempt's
+// start the context carries, or the hold's deadline where that is sooner,
+// or 30 s from the clock's now with no start. The context is done when the
+// clock reaches it, not before.
+func TestDeadlineCountsFromTheAttemptStart(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		ctx  func(context.Context) context.Context
+		want time.Duration // after t0
+	}{
+		{"a start 10 s before the call", func(ctx context.Context) context.Context { return core.WithAttemptStart(ctx, t0.Add(-10*time.Second)) }, 20 * time.Second},
+		{"no start", func(ctx context.Context) context.Context { return ctx }, 30 * time.Second},
+		{"a hold's deadline sooner", func(ctx context.Context) context.Context {
+			return core.WithHoldDeadline(core.WithAttemptStart(ctx, t0.Add(-10*time.Second)), t0.Add(5*time.Second))
+		}, 5 * time.Second},
+		{"a hold's deadline later", func(ctx context.Context) context.Context {
+			return core.WithHoldDeadline(core.WithAttemptStart(ctx, t0.Add(-10*time.Second)), t0.Add(40*time.Second))
+		}, 20 * time.Second},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			clk := newManualClock()
+			sh := core.NewShared(adapter.Deps{})
+			core.SetClock(sh, clk)
+			call := sh.Deadline(func(ctx context.Context, _ *core.Request) error {
+				if at, ok := ctx.Deadline(); !ok || !at.Equal(t0.Add(c.want)) {
+					t.Errorf("the call's deadline is %v (%v), want %v after t0", at, ok, c.want)
+				}
+				clk.Advance(c.want - time.Second)
+				if ctx.Err() != nil {
+					t.Errorf("a second before its deadline the context is done: %v", ctx.Err())
+				}
+				clk.Advance(time.Second)
+				select {
+				case <-ctx.Done():
+				default:
+					t.Fatal("the context is not done when the clock reaches its deadline")
+				}
+				if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					t.Errorf("at its deadline Err = %v, want DeadlineExceeded", ctx.Err())
+				}
+				return nil
+			})
+			if err := call(c.ctx(context.Background()), nil); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// The call's context ends with the call: Canceled, its timer stopped; and a
+// parent's cancel reaches it.
+func TestDeadlineEndsWithTheCall(t *testing.T) {
+	clk := newManualClock()
+	sh := core.NewShared(adapter.Deps{})
+	core.SetClock(sh, clk)
+	var seen context.Context
+	if err := sh.Deadline(func(ctx context.Context, _ *core.Request) error { seen = ctx; return nil })(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(seen.Err(), context.Canceled) || clk.pending() != 0 {
+		t.Errorf("after the call, its context's Err is %v and %d timers are armed; want Canceled and none", seen.Err(), clk.pending())
+	}
+	synctest.Test(t, func(t *testing.T) {
+		parent, cancel := context.WithCancel(context.Background())
+		_ = sh.Deadline(func(ctx context.Context, _ *core.Request) error {
+			cancel()
+			synctest.Wait()
+			if !errors.Is(ctx.Err(), context.Canceled) {
+				t.Errorf("after its parent's cancel Err = %v, want Canceled", ctx.Err())
+			}
+			return nil
+		})(parent, nil)
+	})
+}
+
+// A context derived from the call's starts no goroutine to watch it, and
+// ends when the clock reaches the call's deadline.
+func TestDeadlineContextStartsNoGoroutine(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		sh := core.NewShared(adapter.Deps{})
+		core.SetClock(sh, clk)
+		_ = sh.Deadline(func(ctx context.Context, _ *core.Request) error {
+			synctest.Wait()
+			before := runtime.NumGoroutine()
+			child, cancel := context.WithCancel(ctx)
+			defer cancel()
+			synctest.Wait()
+			if after := runtime.NumGoroutine(); after != before {
+				t.Errorf("deriving a context started %d goroutines, want none", after-before)
+			}
+			clk.Advance(30 * time.Second)
+			synctest.Wait()
+			if !errors.Is(child.Err(), context.DeadlineExceeded) {
+				t.Errorf("the derived context's Err at the deadline is %v, want DeadlineExceeded", child.Err())
+			}
+			return nil
+		})(context.Background(), nil)
+	})
+}
+
+// A panicking handler is answered ErrPanicked, logged once at error with its
+// operation and its stack, and counted under its operation alone.
+func TestRecoveryAnswersAPanic(t *testing.T) {
+	var logged bytes.Buffer
+	m := metrics.New("v", "c")
+	sh := core.NewShared(adapter.Deps{Metrics: m, Logger: slog.New(slog.NewJSONHandler(&logged, nil))})
+	tb := routed(t)[0]
+	ts, err := sh.Table(tb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo := tb.Ops[testproto.OpEcho]
+	err = sh.Recovery(echo, ts)(func(context.Context, *core.Request) error { panic("boom") })(context.Background(), nil)
+	if !errors.Is(err, core.ErrPanicked) {
+		t.Errorf("a panic is answered %v, want ErrPanicked", err)
+	}
+	lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+	var rec struct{ Level, Op, Stack string }
+	if len(lines) != 1 || json.Unmarshal([]byte(lines[0]), &rec) != nil {
+		t.Fatalf("logged %q, want one record", logged.String())
+	}
+	if rec.Level != "ERROR" || rec.Op != echo.Name || !strings.Contains(rec.Stack, "TestRecoveryAnswersAPanic") {
+		t.Errorf("logged %+v, want an error naming %s with the panicking frame in its stack", rec, echo.Name)
+	}
+	got, _ := scrape(t, m)
+	for _, op := range tb.Ops {
+		want := 0.0
+		if op == echo {
+			want = 1
+		}
+		if k := "adapter_handler_panics_total{op=" + strings.ToLower(op.Name) + ",protocol=" + testproto.Name + "}"; got[k] != want {
+			t.Errorf("%s = %v, want %v", k, got[k], want)
+		}
+	}
+}
+
+// A handler that returns is answered its own error, and nothing is logged or
+// counted.
+func TestRecoveryPassesAnErrorThrough(t *testing.T) {
+	var logged bytes.Buffer
+	sh := core.NewShared(adapter.Deps{Logger: slog.New(slog.NewJSONHandler(&logged, nil))})
+	tb := routed(t)[0]
+	ts, err := sh.Table(tb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sh.Recovery(tb.Ops[testproto.OpEcho], ts)(func(context.Context, *core.Request) error { return errHandler })(context.Background(), nil); err != errHandler {
+		t.Errorf("the handler's error came back as %v", err)
+	}
+	if logged.Len() != 0 {
+		t.Errorf("a handler that returned logged %q", logged.String())
+	}
+}
+
+var errHandler = errors.New("the handler's own error")
+
+// traced is a server on a recording tracer, a test clock and a registry of
+// its own, with the series of testproto's version 1 table and of its
+// compound members.
+type traced struct {
+	sh             *core.Shared
+	spans          *tracetest.SpanRecorder
+	tracer         trace.Tracer
+	clk            *manualClock
+	m              *metrics.Registry
+	logged         *bytes.Buffer
+	top, members   *core.TableSeries
+	topEcho, mEcho *core.Op
+}
+
+func newTraced(t *testing.T, tracing bool) traced {
+	t.Helper()
+	tr := traced{spans: tracetest.NewSpanRecorder(), clk: newManualClock(), m: metrics.New("v", "c"), logged: &bytes.Buffer{}}
+	tr.tracer = sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(tr.spans)).Tracer("test")
+	d := adapter.Deps{Metrics: tr.m, Logger: slog.New(slog.NewJSONHandler(tr.logged, nil))}
+	if tracing {
+		d.Tracer = tr.tracer
+	}
+	tr.sh = core.NewShared(d)
+	core.SetClock(tr.sh, tr.clk)
+	tb := routed(t)[0]
+	members := tb.Ops[testproto.OpCompound].Members
+	var err error
+	if tr.top, err = tr.sh.Table(tb); err != nil {
+		t.Fatal(err)
+	}
+	if tr.members, err = tr.sh.Table(members); err != nil {
+		t.Fatal(err)
+	}
+	tr.topEcho, tr.mEcho = tb.Ops[testproto.OpEcho], members.Ops[testproto.OpEcho]
+	return tr
+}
+
+// request is a request routed at version 1 whose resolve_ids began 2 ms
+// before t0, its handler h.
+func request(h core.Call) *core.Request {
+	r := &core.Request{Version: 1}
+	core.SetResolveStart(r, t0.Add(-2*time.Millisecond))
+	core.SetInvoke(r, h)
+	return r
+}
+
+// R90's attribute keys, as §10.1's labels write them.
+var spanKeys = []string{"protocol", "version", "op", "status", "result", "request_bytes", "reply_bytes", "stage"}
+
+// A compound member's call runs in a span of its own, a child of the
+// request's named adapter.<protocol>.<operation>, with R90's attributes
+// only: the result ok, or the service error's name.
+func TestChainOpensASpanPerCompoundMember(t *testing.T) {
+	tr := newTraced(t, true)
+	reqCtx, reqSpan := tr.tracer.Start(context.Background(), "request")
+	for _, answer := range []error{nil, vfs.ErrNotFound} {
+		err := tr.members.Chain(tr.mEcho)(reqCtx, request(func(ctx context.Context, _ *core.Request) error {
+			if sc := trace.SpanFromContext(ctx); sc.SpanContext().SpanID() == reqSpan.SpanContext().SpanID() || !sc.IsRecording() {
+				t.Error("a member's call runs under the request's span, not a recording span of its own")
+			}
+			return answer
+		}))
+		if err != answer {
+			t.Errorf("the chain answered %v, want the handler's %v", err, answer)
+		}
+	}
+	reqSpan.End()
+	var results []string
+	for _, s := range tr.spans.Ended() {
+		if s.Name() != "adapter."+testproto.Name+"."+tr.mEcho.Name {
+			continue
+		}
+		if s.Parent().SpanID() != reqSpan.SpanContext().SpanID() {
+			t.Errorf("the member's span's parent is %v, want the request's", s.Parent().SpanID())
+		}
+		attrs := map[string]string{}
+		for _, kv := range s.Attributes() {
+			if !slices.Contains(spanKeys, string(kv.Key)) {
+				t.Errorf("the member's span carries %s, outside R90's keys", kv.Key)
+			}
+			attrs[string(kv.Key)] = kv.Value.String()
+		}
+		if attrs["protocol"] != testproto.Name || attrs["version"] != "1" || attrs["op"] != "echo" {
+			t.Errorf("the member's span's attributes are %v", attrs)
+		}
+		results = append(results, attrs["result"])
+	}
+	if !slices.Equal(results, []string{"ok", "not_found"}) {
+		t.Errorf("the members' spans' results are %v, want ok and not_found", results)
+	}
+}
+
+// Outside a compound the call runs under the request's span, and the chain
+// opens none.
+func TestChainOutsideACompoundOpensNoSpan(t *testing.T) {
+	tr := newTraced(t, true)
+	reqCtx, reqSpan := tr.tracer.Start(context.Background(), "request")
+	_ = tr.top.Chain(tr.topEcho)(reqCtx, request(func(ctx context.Context, _ *core.Request) error {
+		if trace.SpanFromContext(ctx).SpanContext().SpanID() != reqSpan.SpanContext().SpanID() {
+			t.Error("a single operation's call runs under a span of its own")
+		}
+		return nil
+	}))
+	if n := len(tr.spans.Ended()); n != 0 {
+		t.Errorf("the chain ended %d spans, want none", n)
+	}
+}
+
+// The chain's fixed order (R79), seen from a member's call that panics:
+// the handler's context is the deadline's own, done at 30 s on the clock
+// while the span is still open; the panic, which recovery turns into
+// ErrPanicked outermost, reaches the span first, which ends with the fault
+// recorded, and the metrics hinge observed resolve_ids at entry and marks
+// the call's end on the way out.
+func TestChainOrder(t *testing.T) {
+	tr := newTraced(t, true)
+	reqCtx, _ := tr.tracer.Start(context.Background(), "request")
+	r := request(func(ctx context.Context, _ *core.Request) error {
+		if !core.OnTheDeadline(ctx) {
+			t.Error("the handler's context is not the deadline's own: the deadline is not innermost")
+		}
+		tr.clk.Advance(30 * time.Second)
+		if ctx.Err() == nil || !trace.SpanFromContext(ctx).IsRecording() {
+			t.Errorf("at 30 s the context's Err is %v and the span recording %v; want done inside an open span", ctx.Err(), trace.SpanFromContext(ctx).IsRecording())
+		}
+		panic("boom")
+	})
+	if err := tr.members.Chain(tr.mEcho)(reqCtx, r); !errors.Is(err, core.ErrPanicked) {
+		t.Fatalf("a panic is answered %v, want ErrPanicked", err)
+	}
+	ended := tr.spans.Ended()
+	if len(ended) != 1 || len(ended[0].Events()) != 1 || ended[0].Events()[0].Name != "exception" {
+		t.Errorf("the member's span ended %d times; want once, with the fault recorded", len(ended))
+	}
+	if got := core.CallEnd(r); !got.Equal(t0.Add(30 * time.Second)) {
+		t.Errorf("the call's end is marked at %v, want the clock's %v", got, t0.Add(30*time.Second))
+	}
+	got, _ := scrape(t, tr.m)
+	k := "adapter_wire_seconds{protocol=" + testproto.Name + ",stage=resolve_ids}"
+	if got[k] != 1 || got["adapter_wire_seconds_sum{protocol="+testproto.Name+",stage=resolve_ids}"] != 0.002 {
+		t.Errorf("resolve_ids observed %v times, summing %v; want once, 2 ms", got[k], got["adapter_wire_seconds_sum{protocol="+testproto.Name+",stage=resolve_ids}"])
+	}
+	if !strings.Contains(tr.logged.String(), `"level":"ERROR"`) {
+		t.Errorf("the panic was not logged at error: %q", tr.logged.String())
+	}
+}
+
+// With no tracer a member's call runs under the request's context, and the
+// rest of the chain still runs.
+func TestChainWithoutATracer(t *testing.T) {
+	tr := newTraced(t, false)
+	reqCtx, reqSpan := tr.tracer.Start(context.Background(), "request")
+	err := tr.members.Chain(tr.mEcho)(reqCtx, request(func(ctx context.Context, _ *core.Request) error {
+		if trace.SpanFromContext(ctx).SpanContext().SpanID() != reqSpan.SpanContext().SpanID() {
+			t.Error("with no tracer a member's call runs under a span of its own")
+		}
+		return errHandler
+	}))
+	if err != errHandler {
+		t.Errorf("the chain answered %v, want the handler's", err)
+	}
+}

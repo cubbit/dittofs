@@ -20,12 +20,15 @@ const module = "github.com/cubbit/dittofs/"
 // standard library, in any file. An entry is added by the change that needs
 // it, with its reason.
 var outside = []string{
-	"go.opentelemetry.io/otel/trace", // the tracing API Deps.Tracer names
+	"go.opentelemetry.io/otel/trace",     // the tracing API Deps.Tracer names
+	"go.opentelemetry.io/otel/attribute", // the tracing API's span attributes, which RFC 20 §10.2 lists
 }
 
 // outsideTests is what an adapter's test files may import besides.
 var outsideTests = []string{
-	"github.com/pmezard/go-difflib/difflib", // the frozen surface's test prints a diff against its golden files
+	"github.com/pmezard/go-difflib/difflib",        // the frozen surface's test prints a diff against its golden files
+	"go.opentelemetry.io/otel/sdk/trace",           // the tracing SDK, whose provider records the spans a test reads
+	"go.opentelemetry.io/otel/sdk/trace/tracetest", // the SDK's span recorder, the sink those spans end in
 }
 
 // fileIO is the standard library a wire package may not import, each with the

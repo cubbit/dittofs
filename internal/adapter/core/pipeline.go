@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/resources"
@@ -15,7 +18,7 @@ import (
 )
 
 // shared is what every connection of one server shares: the request path's
-// series, resolved once per server.
+// series, resolved once per server, its clock, its logger and its tracer.
 //
 // decision: the series are kept here, never in a table: two servers may
 // share a table, and a node's servers share its one registry. A table's are
@@ -31,12 +34,19 @@ type shared struct {
 	mu       sync.Mutex
 	tables   atomic.Pointer[map[*OpTable]*tableSeries]
 	labels   atomic.Pointer[map[string]*labelSeries]
+	clock    clock
+	log      *slog.Logger
+	tracer   trace.Tracer // nil: no spans
 }
 
 // newShared is a server's shared state, its vectors registered on
-// d.Metrics, or recording nothing without one.
+// d.Metrics, or recording nothing without one, on the runtime's clock,
+// d.Logger, or a logger that discards, and d.Tracer.
 func newShared(d adapter.Deps) *shared {
-	sh := &shared{}
+	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer}
+	if sh.log == nil {
+		sh.log = slog.New(slog.DiscardHandler)
+	}
 	sh.fam, sh.wire = newFamilies(d.Metrics)
 	sh.holdPool = sh.fam[vHoldPoolBytes]()
 	sh.tables.Store(&map[*OpTable]*tableSeries{})
