@@ -316,7 +316,8 @@ registers no suite and no group, and changes no `lint-go` tag.
    Headers compared byte for byte, and the access token that `golang-jwt` parses, are not decoders
    of this component.
 3. **Observability follows RFC 25.** Each epic owns the series of RFC 23 §11 for what it builds:
-   - the store: `audit_records_total`;
+   - the store: none; the sweep returns its counts, which the node exports, and `Write`'s
+     caller counts what commits (epic 2's D5);
    - the node: `node_reconciled_position`, `node_reconcile_errors_total`, `node_restart_pending`,
      and the RFC 13 plan's `config_generation_lag_seconds{kind}`, set from the positions it
      reconciles;
@@ -384,16 +385,16 @@ registers no suite and no group, and changes no `lint-go` tag.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | Delete v1, declare the surface | v1 deleted with the tests that drive it, harness fixed, landed first; the node's surface and the shared wire types; the new `cmd/dfs` skeleton; architecture tests | 6 | 12.25 | team | every epic; the RFC 13 plan (#4059) and the RFC 18 plan (#4058) |
-| E2 | Store records | the view's signatures with `expect`; the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry | 9 | 22.5 | C | E5; partly E3, E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059, `Node`, `NodeStatus`, `JournalID`); the RFC 18 plan's epic 3 (#4058, the principals generation) |
+| E2 | Store records | the view's signatures with `expect`; the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry | 11 | 26 | C | E5; partly E3, E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059, `Node`, `NodeStatus`, `JournalID`); the RFC 18 plan's epic 3 (#4058, the principals generation) |
 | E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition with RFC 8's root duties, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven, RFC 23's own settings section, the harness | 10 | 23 | A | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the `apply` slot); the RFC 18 plan's epics 2 and 7 (#4058, the runner) |
 | E4 | The management API | server, route table, typed handlers (D14), write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5), each resource's wire types, the client | 14 | 34 | B | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the write path's `Check` slot) |
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 8 | 18.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
 | E6 | The CLI | `login` and the rebuilt `dfsctl` on epic 4's client, generated reference | 5 | 11 | A | E7 |
 | E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 5 | 13.5 | team | E8 (partly) |
 | E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **57** | **134.75** | | |
+| | **Total** | | **59** | **138.25** | | |
 
-**Plan estimate: 57 subtasks, 134.75 man-days, not counting epic 8.**
+**Plan estimate: 59 subtasks, 138.25 man-days, not counting epic 8.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -530,12 +531,12 @@ pkg/apiclient/                client on pkg/node/apiv1 (same path as v1's), one 
                               per resource
 cmd/dfsctl/commands/<noun>/   CLI: one sub-package per noun, bodies rebuilt             E6
 pkg/health/                   + RFC 25's registry and watchdog, the parts used          E3
-pkg/metadata/                 + WriteMeta and ControlPlaneTx, beside RFC 16 §3's views  E2
-pkg/metadata/entity/          + RFC 16's records for RFC 23 (fields, codecs, fuzz),     E2
-                              and its User fields
-pkg/metadata/kvstore/         + those records' view methods, expect on every write,     E2
-                              A3's entry point, a share's removal steps (a new file:
-                              the existing removal.go removes a file's data), sweeper
+pkg/metadata/entity/          + RFC 16's records for RFC 23 (fields), its User fields,  E2
+                              WriteMeta and ControlPlaneTx
+pkg/metadata/kvstore/         + those records' codecs and fuzz targets, view methods,   E2
+                              expect on every write, A3's entry point, the node view,
+                              a user's, group's and share's removal past the mark
+                              (shareremove.go; removal.go removes a file's data), sweep
 ```
 
 Reconcile, the runner and the health endpoints stay files, not packages: RFC 23 §2.1 makes
@@ -1152,7 +1153,7 @@ RFC 23 CP14 and CP16, as architecture tests.
 
 ### Epic 2 — Store records
 
-**Epic 2 estimate: 9 subtasks, 22.5 man-days.**
+**Epic 2 estimate: 11 subtasks, 26 man-days.**
 
 The metadata store gains every record and field RFC 16 declares for RFC 23, the one transaction an
 API write commits in, and a share's removal steps past the mark.
@@ -1190,7 +1191,9 @@ API write commits in, and a share's removal steps past the mark.
 - `Node` and `NodeStatus` records, the latter including the secret versions a node holds (RFC 23
   §2.4).
 - A share's removal steps after the mark, in bounded batches, each resumable from the removal's
-  record (RFC 16 §2.3.2).
+  record (RFC 16 §2.3.2), through step 6; step 7, the namespace's drain, is GC's (§6.1).
+- A user's and a group's deletion past the mark, in bounded batches resumed from the mark, the
+  last deleting the record and a user's secrets (RFC 16 §3).
 - The sweeper (§4.3 above), over every `XP` tag RFC 16 §4.2 lists, with each retention passed in
   by its caller.
 
@@ -1656,6 +1659,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | Server-sent changes, a watch (RFC 23 §13 item 3, §7) | open in the RFC | unowned | the operator moves onto the new wire shapes |
 | Signalling parked long polls instead of a per-second re-read (§4.3's `ponytail:`) | one read per parked poll per second | unowned | parked polls near RFC 23 §4.3's bound show in a profile |
 | Per-kind sweep schedules (§4.3's `ponytail:`) | one pass per kind per interval | unowned | a profile shows the sweep |
+| A namespace's drain once its last share is removed, RFC 16 §2.3.2's step 7 (epic 2's D9) | it runs RFC 9 §7.6's gate, which GC owns and nothing yet reads; GC finds a namespace no share names from the shares' `nsg` records, so nothing migrates | RFC 9's plan | GC is built |
 | `node.Config.Transport` (RFC 23 §2.1, epic 1's D2) | it is nil on one node, and nothing reads it | RFC 15, with the cluster rows | a second node |
 | `node.Config.Fault`, the fault seam (RFC 23 §2.1, RFC 8 §2.1; epic 1's D2) | no component's `Deps` takes a fault seam; the store's faults come through the KV, which `kvtest` wraps | unowned | a component's `Deps` takes a fault seam |
 
