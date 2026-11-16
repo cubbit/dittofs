@@ -34,6 +34,12 @@ DOMAIN="${AD_DOMAIN:-DITTOFS}"
 ADMIN_PASSWORD="${AD_ADMIN_PASSWORD:-Passw0rd!2024}"
 KEYTAB_DIR="${KEYTAB_DIR:-/keytabs}"
 
+# The DC's dynamic RPC ports, NETLOGON's on ncacn_ip_tcp among them, which the
+# endpoint mapper on 135 hands out. Pinned to a small range, as a firewalled
+# site pins a Windows DC's, so a firewall guide can name it; the Dockerfile's
+# EXPOSE lists it with the DC's other ports.
+RPC_PORT_RANGE="50000-50019"
+
 # Service principals the DittoFS server presents to clients.
 SMB_SPN="${SMB_SPN:-cifs/dittofs.${REALM,,}}"
 NFS_SPN="${NFS_SPN:-nfs/dittofs.${REALM,,}}"
@@ -77,7 +83,8 @@ if [ ! -f /var/lib/samba/.provisioned ]; then
         --domain="$DOMAIN" \
         --server-role=dc \
         --dns-backend=SAMBA_INTERNAL \
-        --adminpass="$ADMIN_PASSWORD"
+        --adminpass="$ADMIN_PASSWORD" \
+        --option="rpc server dynamic port range = $RPC_PORT_RANGE"
 
     # Samba writes its own krb5.conf during provision; expose it to other
     # containers / the Go test on the shared volume.

@@ -38,8 +38,11 @@ RUN set -eu; \
 
 COPY --chmod=0755 entrypoint.sh /entrypoint.sh
 
-# 88 = Kerberos KDC, 389 = LDAP, 464 = kpasswd. The tests publish none of them:
-# they reach the DC on its IP on a Docker network of its own.
-EXPOSE 88/tcp 88/udp 389/tcp 464/tcp 464/udp
+# The ports a client of the DC reaches: 88 Kerberos, 135 the RPC endpoint
+# mapper, 389 LDAP, 445 SMB, 464 kpasswd, 636 LDAPS, and 50000-50019 the dynamic
+# RPC range NETLOGON on ncacn_ip_tcp takes a port from (entrypoint.sh's
+# RPC_PORT_RANGE). The tests publish none of them: they reach the DC on its IP
+# on a Docker network of its own.
+EXPOSE 88/tcp 88/udp 135/tcp 389/tcp 445/tcp 464/tcp 464/udp 636/tcp 50000-50019/tcp
 
 ENTRYPOINT ["/entrypoint.sh"]

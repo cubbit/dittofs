@@ -9,11 +9,24 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/oiweiwei/go-msrpc/dcerpc"
+	"github.com/oiweiwei/go-msrpc/msrpc/dcetypes"
+	"github.com/oiweiwei/go-msrpc/msrpc/dtyp"
+	epm "github.com/oiweiwei/go-msrpc/msrpc/epm/epm/v3"
+	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
+
 	"github.com/cubbit/dittofs/internal/auth/netlogon"
+)
+
+// The DC's dynamic RPC port range, entrypoint.sh's RPC_PORT_RANGE.
+const (
+	adRPCPortLow  = 50000
+	adRPCPortHigh = 50019
 )
 
 // TestADFixture checks the fixture's own promises, the ones the identity
@@ -46,6 +59,49 @@ func TestADFixture(t *testing.T) {
 			t.Fatalf("LDAPS handshake verifying %s against the fixture CA: %v", adDCHost, err)
 		}
 		_ = conn.Close()
+	})
+
+	// The endpoint mapper hands out NETLOGON on ncacn_ip_tcp from the pinned
+	// range, the one a firewall in front of the DC opens.
+	t.Run("netlogon on a pinned rpc port", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		cc, err := dcerpc.Dial(ctx, "ncacn_ip_tcp:"+dcIP+"[135]")
+		if err != nil {
+			t.Fatalf("dial the endpoint mapper: %v", err)
+		}
+		defer func() { _ = cc.Close(ctx) }()
+		cli, err := epm.NewEpmClient(ctx, cc, dcerpc.WithInsecure())
+		if err != nil {
+			t.Fatalf("bind the endpoint mapper: %v", err)
+		}
+		// Samba answers with every endpoint it holds whatever the inquiry, so
+		// NETLOGON's are picked out by the interface each tower names.
+		resp, err := cli.Lookup(ctx, &epm.LookupRequest{
+			InquiryType: 1, // RPC_C_EP_MATCH_BY_IF
+			InterfaceID: &dcetypes.InterfaceID{UUID: dtyp.GUIDFromUUID(logon.LogonSyntaxUUID), VersMajor: 1},
+			MaxEntries:  500,
+		})
+		if err != nil {
+			t.Fatalf("endpoint mapper lookup: %v", err)
+		}
+		found := 0
+		for _, e := range resp.Entries {
+			b := e.Tower.Binding()
+			if b.SyntaxID.IfUUID.String() != logon.LogonSyntaxUUID.String() ||
+				b.StringBinding.ProtocolSequence != dcerpc.ProtocolSequenceIPTCP {
+				continue
+			}
+			found++
+			port, err := strconv.Atoi(b.StringBinding.Endpoint)
+			if err != nil || port < adRPCPortLow || port > adRPCPortHigh {
+				t.Errorf("NETLOGON on ncacn_ip_tcp port %q, want one in %d-%d",
+					b.StringBinding.Endpoint, adRPCPortLow, adRPCPortHigh)
+			}
+		}
+		if found == 0 {
+			t.Errorf("the endpoint mapper holds no ncacn_ip_tcp endpoint for NETLOGON")
+		}
 	})
 
 	// The computer accounts the joins start from exist with the passwords
