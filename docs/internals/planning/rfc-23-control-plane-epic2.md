@@ -16,7 +16,8 @@ plan's epic 1, if it lands first, gives the settings view's delete and the secre
 runner, sweep and the removals it drives (T2.6–T2.8, T2.10–T2.12); the RFC 13 plan's epics 2 and
 4, partly, which write the `Node` record, commit secrets with `tx.PutSecret` and count on a user's
 deletion removing its secrets; the RFC 18 plan's epic 2, which raises the principals generation in its own transactions (T2.6's
-helper), and its epic 3, which waits for the raise but reads no `PGEN`.
+helper), and its epic 3, whose T3.6 reads `ShareIndex.Share`'s `GrantVersion` (T2.3) and reads no
+`PGEN`.
 
 ---
 
@@ -825,7 +826,8 @@ flowchart TD
   T2_5 --> C1(["after T2.5: E4's write path"]):::sync
   T2_4 --> T2_6["T2.6 Positions, PGEN, Counters"]
   T2_4 --> T2_7["T2.7 Operation record"]
-  T2_6 --> C5(["after T2.6: the RFC 18 plan's epic 2 T2.3 and epic 3 T3.8 start"]):::sync
+  T2_6 --> C5(["after T2.6: the RFC 18 plan's epic 2 T2.3 starts"]):::sync
+  T2_3 --> C6(["after T2.3: the RFC 18 plan's epic 3 T3.6 starts"]):::sync
   T2_6 --> T2_8["T2.8 Node records, node view, node epoch"]
   T2_7 & T2_8 --> C2(["after T2.8: E3's status, counters and runner"]):::sync
   T2_4 --> T2_9["T2.9 Sessions, tokens, sign-in counts"]
@@ -838,8 +840,8 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-Checkpoints: after T2.2, E5 starts on the user fields; after T2.6, the RFC 18 plan's epic 2
-T2.3 and epic 3 T3.8 start; after T2.5, E4's write path commits through
+Checkpoints: after T2.2, E5 starts on the user fields; after T2.3, the RFC 18 plan's epic 3 T3.6
+starts; after T2.6, the RFC 18 plan's epic 2 T2.3 starts; after T2.5, E4's write path commits through
 `Write`; after T2.8, E3 reads the counters, writes its status and runs operations; after T2.9, E5's
 sessions and throttling have their records; after T2.12, E3 drives every removal. T2.1 waits on
 nothing and can run beside T2.2–T2.9.
