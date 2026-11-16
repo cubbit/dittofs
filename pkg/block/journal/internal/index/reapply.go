@@ -55,43 +55,48 @@ func (ix *Index) DropTorn(id core.FileID, at RecordAt, torn Record, survivors []
 	})
 }
 
-// repairTorn folds the survivors over f's held set inside the window, under
-// the file's lock, and takes the torn record's own leavings with it: one
-// precedence-ordered fold of placings, cuts and marks — the same fold the
-// rebuild replays a file's records by — then the teardown of the torn
-// record, answering its kind, where no copy of it stayed among the
-// survivors.
+// repairTorn takes the torn record's own leavings under the file's lock,
+// then folds the survivors over f's held set inside the window: the
+// teardown FIRST, answering the record's kind, so the fold — one
+// precedence-ordered fold of placings, cuts and marks, the same fold the
+// rebuild replays a file's records by — re-notes the surviving chain's runs
+// after it, exactly the runs a rebuild never fed the torn record holds.
+// With no copy of it among the survivors the teardown runs in every kind
+// that raised something; the fold runs only over a reach that spans bytes,
+// for a zero window is the rebuild's whole-file pass, which a repair never
+// is.
 func (f *file) repairTorn(window core.Extent, torn Record, recs []Record) {
-	// The fold runs only over a reach that spans bytes: a zero window is
-	// the rebuild's whole-file pass, which a repair never is. With no fold
-	// run, kept is every survivor unclipped, so the surviving-copy guard
-	// below reads the same rule as over a window — a record with these
-	// exact numbers survives — where the fold's kept is the survivors the
-	// window kept, the record's own copy among them.
-	kept := toBufs(recs)
-	if window.Len > 0 {
-		kept, _ = f.fold(kept, window) // a repair's fold cannot err: its removals cut, never the marking ops
-	}
-
+	// The surviving-copy guard reads the survivors the caller handed over,
+	// before the fold: a fold over a window returns the survivors its
+	// equal-numbers collapse kept — every numbers the input held, a copy
+	// whose reach misses the window included — and with no fold run at all
+	// the input is the survivors itself, so the guard answers the same
+	// either way.
+	//
 	// A surviving copy keeps the torn record's leavings: a teardown never
 	// runs while a record with these exact numbers stays among the
 	// survivors, for a run and a marker name the record by version, never
 	// its placement, and the surviving copy's supersede is as true as the
 	// placement the verdict dropped was.
 	//
-	// The teardown answers the torn record's kind, for a mark carries the
-	// version of the content it marked — the same version as a surviving
-	// write, a different sequence number — and a teardown keyed on the
-	// version alone would take the surviving write's runs with the mark's.
-	// Runs come from writes, markers from removals: a write's own go at
-	// both ends, the runs its supersede raised and the chains naming it as
-	// the superseded one (a rebuild without the record chains the
-	// surviving write over what it displaced — a chain the fold above
-	// re-noted itself), and a removal's marker goes so Since yields no
-	// delete or truncate of content the index actually holds. The kinds
-	// beside a write — fill, release, offloaded, unmark — tear down
-	// nothing: a mark changed bits alone, a fill's piece went with the
-	// un-place, and a release raised nothing to tear down.
+	// The teardown answers the torn record's kind, and runs before the
+	// fold: dropOverWas and dropOverBy match the version alone, and a fill
+	// carries the write's version — the same one the torn write holds — so
+	// a teardown that ran after the fold would take the chains the fold
+	// just re-noted for the surviving writes (a rebuild without the record
+	// chains the surviving write over what it displaced, and the fold
+	// re-notes that chain itself). Runs come from writes, markers from
+	// removals: a write goes at both ends — the runs its supersede raised
+	// and the chains naming it as the superseded one — while a fill raised
+	// no run of its own but the writes over it named it as theirs, so its
+	// teardown takes the chains alone; a removal's marker goes so Since
+	// yields no delete or truncate of content the index actually holds. A
+	// mark carries the version of the content it marked — the same version
+	// as a surviving write, a different sequence number — so the removals
+	// alone key the marker teardown, never the marks; and the kinds that
+	// raised nothing at all — release, offloaded, unmark — tear down
+	// nothing: a mark changed bits alone, and every bit went with the piece
+	// it sat on under the un-place.
 	//
 	// decision: this keeps only the runs and markers that are still here. A
 	// drop that emptied the file's held set lost the runs already — the
@@ -103,15 +108,19 @@ func (f *file) repairTorn(window core.Extent, torn Record, recs []Record) {
 	// releases, so it is not taken from here; revisit if a torn-drop repair
 	// is ever required to report the supersede of a surviving copy
 	// whole-file.
-	if slices.ContainsFunc(kept, func(r bufRec) bool { return r.numbers == torn.Numbers }) {
-		return
+	if !slices.ContainsFunc(recs, func(r Record) bool { return r.Numbers == torn.Numbers }) {
+		switch torn.Kind {
+		case RecWrite:
+			f.held.dropOverBy(torn.Numbers.Version, window)
+			f.held.dropOverWas(torn.Numbers.Version, window)
+		case RecFill:
+			f.held.dropOverWas(torn.Numbers.Version, window)
+		case RecTruncate, RecDeallocate, RecDelete, RecCloneTarget:
+			f.markers = slices.DeleteFunc(f.markers, func(m marker) bool { return m.version == torn.Numbers.Version })
+		}
 	}
-	switch torn.Kind {
-	case RecWrite:
-		f.held.dropOverBy(torn.Numbers.Version, window)
-		f.held.dropOverWas(torn.Numbers.Version, window)
-	case RecTruncate, RecDeallocate, RecDelete, RecCloneTarget:
-		f.markers = slices.DeleteFunc(f.markers, func(m marker) bool { return m.version == torn.Numbers.Version })
+	if window.Len > 0 {
+		_, _ = f.fold(toBufs(recs), window) // a repair's fold cannot err: its removals cut, never the marking ops
 	}
 }
 

@@ -288,6 +288,144 @@ func TestATornRemovalWithAnEmptyReachTakesItsMarkerWithIt(t *testing.T) {
 	}
 }
 
+// TestATornFillTakesTheRunsThatNameItAsTheSuperseded holds the teardown's
+// kind rule for a torn fill: a fill raised no run of its own, but the writes
+// over it named it as the superseded one, and a rebuild that was never fed
+// the fill holds no such run — the later write overrote nothing it was fed.
+// The answer is exactly a rebuild without the torn fill: the write alone,
+// its empty supersede set.
+func TestATornFillTakesTheRunsThatNameItAsTheSuperseded(t *testing.T) {
+	const KiB = 1024
+	alice := fid(1)
+	torn := recd(RecFill, alice, 1, 1, 1, 32, 0, 4*KiB)            // the torn fill, v1
+	rest := []Record{recd(RecWrite, alice, 2, 2, 1, 64, 0, 4*KiB)} // the write over it, v2
+
+	rebuild := func(recs []Record) *Index {
+		t.Helper()
+		ix := New(math.MaxInt64)
+		b := newRebuilder(&ix.fs, &Counters{})
+		for _, r := range recs {
+			if err := b.Feed(r); err != nil {
+				t.Fatalf("Feed(seq %v) = %v", r.Numbers.Seq, err)
+			}
+		}
+		if err := b.Finish(ver(0)); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		return ix
+	}
+
+	// The answer the repair must reach: the write alone, the torn fill never
+	// fed — no write reports the fill as its superseded one.
+	want := rebuild(rest)
+	// The damaged state: the write superseded the fill's placement and noted
+	// the chain; the drop and repair run exactly as the tail proof applies
+	// them.
+	got := rebuild(append(slices.Clone(rest), torn))
+	got.DropTorn(alice, RecordAt{Segment: 1, Offset: 32}, torn, rest)
+
+	if gotO, wantO := runsCanonical(runsOf(t, got, alice)), runsCanonical(runsOf(t, want, alice)); !slices.Equal(gotO, wantO) {
+		t.Errorf("the repaired index keeps the over runs %+v, want %+v: the runs the later write raised over the torn fill go with the fill", gotO, wantO)
+	}
+	if gotP, wantP := heldPieces(&got.fs, alice), heldPieces(&want.fs, alice); !slices.Equal(gotP, wantP) {
+		t.Errorf("the repaired index holds:\n got  %+v\n want %+v: the write over the torn fill answers alone", gotP, wantP)
+	}
+}
+
+// TestTheTeardownRunsBeforeTheFoldSoTheFillKeepsItsChain holds the repair's
+// order: the teardown answers the torn record's kind FIRST, then the fold
+// re-places the survivors, for dropOverWas matches the superseded one's
+// version alone and a fill carries the write's version — the torn write's
+// own. A fold-then-teardown repairs the torn write v5 and loses the run
+// {by v6, was v5} the surviving fill re-noted; the answer is a rebuild that
+// was never fed the torn write, which holds that run.
+func TestTheTeardownRunsBeforeTheFoldSoTheFillKeepsItsChain(t *testing.T) {
+	const KiB = 1024
+	alice := fid(1)
+	fill := recd(RecFill, alice, 8, 5, 1, 32, 0, 4*KiB)   // the surviving fill: the torn write's version, a sequence of its own
+	torn := recd(RecWrite, alice, 9, 5, 1, 64, 0, 4*KiB)  // the torn write, v5
+	over := recd(RecWrite, alice, 11, 6, 1, 96, 0, 4*KiB) // the write above both, v6
+	rest := []Record{fill, over}
+
+	rebuild := func(recs []Record) *Index {
+		t.Helper()
+		ix := New(math.MaxInt64)
+		b := newRebuilder(&ix.fs, &Counters{})
+		for _, r := range recs {
+			if err := b.Feed(r); err != nil {
+				t.Fatalf("Feed(seq %v) = %v", r.Numbers.Seq, err)
+			}
+		}
+		if err := b.Finish(ver(0)); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		return ix
+	}
+
+	// The answer the repair must reach: the fill and the write above it, the
+	// torn write never fed — the write's chain over the fill standing.
+	want := rebuild(rest)
+	// The damaged state: the torn write displaced the fill and the write
+	// over it chained the torn write; the drop and repair run exactly as the
+	// tail proof applies them.
+	got := rebuild([]Record{fill, torn, over})
+	got.DropTorn(alice, RecordAt{Segment: 1, Offset: 64}, torn, rest)
+
+	if gotO, wantO := runsCanonical(runsOf(t, got, alice)), runsCanonical(runsOf(t, want, alice)); !slices.Equal(gotO, wantO) {
+		t.Errorf("the repaired index keeps the over runs %+v, want %+v: the fill re-noted after the teardown keeps its chain under the later write", gotO, wantO)
+	}
+	if gotP, wantP := heldPieces(&got.fs, alice), heldPieces(&want.fs, alice); !slices.Equal(gotP, wantP) {
+		t.Errorf("the repaired index holds:\n got  %+v\n want %+v", gotP, wantP)
+	}
+}
+
+// TestARepairsRemovalCutsOnlyWhatSitsBelowTheRemoval holds the repair's
+// removal arm against the rebuild's own rule: a removal cuts content below
+// its version, and content at its own version stays — an equal-version
+// deallocate beside the write it was carried with does not drop it, exactly
+// as the rebuild's removal (read remove in markers.go) keeps it. The repair
+// folded both survivors must not cut what sits at the removal's own version,
+// or a rebuild without the torn record holds content the repair loses.
+func TestARepairsRemovalCutsOnlyWhatSitsBelowTheRemoval(t *testing.T) {
+	const KiB = 1024
+	alice := fid(1)
+	w := recd(RecWrite, alice, 40, 50, 1, 0, 0, 4*KiB)       // W, at the removal's own version
+	d := recd(RecDeallocate, alice, 41, 50, 1, 32, 0, 4*KiB) // D, the same version as W's
+	torn := recd(RecWrite, alice, 9, 60, 1, 64, 0, 4*KiB)    // the torn write above both
+	rest := []Record{w, d}
+
+	rebuild := func(recs []Record) *Index {
+		t.Helper()
+		ix := New(math.MaxInt64)
+		b := newRebuilder(&ix.fs, &Counters{})
+		for _, r := range recs {
+			if err := b.Feed(r); err != nil {
+				t.Fatalf("Feed(seq %v) = %v", r.Numbers.Seq, err)
+			}
+		}
+		if err := b.Finish(ver(0)); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		return ix
+	}
+
+	// The answer the repair must reach: W and the removal at the same
+	// version, the torn write never fed — the removal's cut takes content
+	// strictly below its own.
+	want := rebuild(rest)
+	// The damaged state: the torn write overwrote both survivors; the drop
+	// and repair run exactly as the tail proof applies them.
+	got := rebuild(append(slices.Clone(rest), torn))
+	got.DropTorn(alice, RecordAt{Segment: 1, Offset: 64}, torn, rest)
+
+	if gotP, wantP := heldPieces(&got.fs, alice), heldPieces(&want.fs, alice); !slices.Equal(gotP, wantP) {
+		t.Errorf("the repaired index holds:\n got  %+v\n want %+v: the repair's removal keeps content at the removal's own version, as the rebuild's removal does", gotP, wantP)
+	}
+	if gotM, wantM := markerCount(&got.fs, alice), markerCount(&want.fs, alice); gotM != wantM {
+		t.Errorf("the repaired index keeps %d markers, want the %d a rebuild never fed the torn write leaves", gotM, wantM)
+	}
+}
+
 // runsOf answers the file's over runs, unsorted, for the canonical form
 // below to normalise.
 func runsOf(t *testing.T, ix *Index, id core.FileID) []overRun {

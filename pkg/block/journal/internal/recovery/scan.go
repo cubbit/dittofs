@@ -224,6 +224,28 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 	return sc, nil
 }
 
+// readSegment reads one attached segment the way the rebuild and a torn
+// record's repair both do, so the two can never disagree on a segment's
+// source: a named segment with a verified header takes the catalogue its
+// trailer names — the source the rebuild indexed it by — and falls back to
+// the walk where the trailer holds nothing it verifies with or an entry its
+// record contradicts, while every unnamed or unverified-header segment takes
+// the walk, never offered a catalogue. forceScan turns the catalogue off,
+// the test-only switch a source-compare check needs.
+func readSegment(rd *reader, identity core.JournalID, info SegmentInfo, named map[core.SegmentID]bool, forceScan bool) (segmentScan, error) {
+	if forceScan || info.Unverified || !named[info.ID] {
+		return scanSegment(rd, identity, info)
+	}
+	sc, byCatalog, err := catalogSegment(rd, identity, info)
+	if err != nil || byCatalog {
+		return sc, err
+	}
+	// The demotion: a named segment whose trailer holds no verifying
+	// footer — a segment sealed at a crash holds a marker but no trailer —
+	// falls back to the walk, whose answer the catalogued one must match.
+	return scanSegment(rd, identity, info)
+}
+
 // largestCounter is the largest 64-bit value, the number this journal never
 // issues: its version limit is exclusive above one below the top, so a
 // record carrying it — as a version counter or a sequence number — comes
@@ -527,7 +549,10 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	// named is the successor set the run built once (successorSet), the
 	// same one the tail's classing reads. The catalogue a named segment's
 	// trailer may hold is the only thing this buys — a segment nobody names
-	// takes the walk, its trailer never read.
+	// takes the walk, its trailer never read — and the dispatch naming that
+	// is readSegment's, the same function a torn record's repair reads its
+	// survivors by, so the rebuild and the repair can never read one
+	// segment two ways.
 	//
 	// decision: only a verified own header's claim counts. The attach pass
 	// read and verified every own header before this dispatch, so the
@@ -573,24 +598,7 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 			}
 			srd := newReader(wctx, rd.fs, rd.clk, rd.log)
 			workers[i] = srd
-			switch {
-			case forceScan || own[i].Unverified || !named[own[i].ID]:
-				scans[i], errs[i] = scanSegment(srd, identity, own[i])
-			default:
-				got, byCatalog, cerr := catalogSegment(srd, identity, own[i])
-				switch {
-				case cerr != nil:
-					scans[i], errs[i] = got, cerr
-				case byCatalog:
-					scans[i] = got
-				default:
-					// The demotion: a named segment whose trailer holds no
-					// verifying footer — a segment sealed at a crash holds
-					// a marker but no trailer — falls back to the walk,
-					// whose answer the catalogued one must match.
-					scans[i], errs[i] = scanSegment(srd, identity, own[i])
-				}
-			}
+			scans[i], errs[i] = readSegment(srd, identity, own[i], named, forceScan)
 			if errs[i] != nil {
 				cancel() // the running workers answer their next read at the context's error
 			}

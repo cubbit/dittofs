@@ -190,17 +190,18 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 		// reads do. Its bytes are never classed: a short file is its own
 		// length, and the bytes either decode or they do not.
 		buf := make([]byte, format.SealMarkerSize)
-		n, rerr := rd.ReadAtDirect(f, format.SegmentName(fate.ID), buf, sc.End, true)
+		n, refused, rerr := rd.ReadAtDirect(f, format.SegmentName(fate.ID), buf, sc.End)
 		_ = f.Close()
 		switch {
 		case isContextErr(rerr):
 			return rerr
-		case rerr != nil && !errors.Is(rerr, io.EOF):
-			// A direct read no bounded attempt completed refuses the open on
-			// the marker's own range, as read.go's read refusals refuse on
-			// what the reader collected: the marker names a seal no
+		case refused:
+			// A direct read no bounded attempt completed refuses the open
+			// on the marker's own range, as read.go's read refusals refuse
+			// on what the caller collects here: the marker names a seal no
 			// successor proves, so no marker the device never showed may
 			// seal one.
+			rd.unreadable(core.SegmentRange{Segment: fate.ID, Off: sc.End, Len: int64(len(buf))})
 			return refusedRead(rd, rerr)
 		}
 
@@ -303,6 +304,13 @@ func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID
 	// state holds of it, its displacement repaired at once.
 	name := format.SegmentName(sc.ID)
 	var verified []tailRecord
+	// The torn records this proof has judged, content kinds alone: every
+	// repair of them runs below over one shared read of the attached
+	// segments, so the verdicts are collected here rather than repaired as
+	// each is judged — a power loss tears the whole unsynced tail, and the
+	// segment each torn record sat in never decides how many times the
+	// journal's other segments are read.
+	var tornCands []format.RecordHeader
 	verifiedAt := make(map[int64]bool, len(cands))
 	heldEnd := heldBelow
 	torn, tornAt := false, int64(0)
@@ -314,13 +322,20 @@ func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID
 		if !ok {
 			// A record whose bytes read and do not verify is torn: never
 			// re-appended, never reported, never damage, and held nowhere
-			// — the index entry for a content record, the aside entry for
-			// an aside one, both dropped, so the journal never claims to
-			// hold a byte the device never took — and the record's
-			// displacement repaired: what it overwrote or cut holds its
-			// extent again.
-			if derr := dropTornRecord(rd, st, expect, sc, h, tornSoFar); derr != nil {
-				return derr
+			// — the aside entry for an aside kind dropped at once, right
+			// here, and a content record's index entry and its
+			// displacement repaired below.
+			if h.Kind > format.KindUnmark {
+				// decision: an aside record is held only in the scan's
+				// aside list, which no built phase reads yet — the kinds'
+				// rules are the later marks phase's — so dropping it
+				// changes nothing a caller can see today, and the state
+				// must still not claim it once one is.
+				sc.Aside = slices.DeleteFunc(sc.Aside, func(a asideRecord) bool {
+					return a.Header.Offset == h.Offset
+				})
+			} else {
+				tornCands = append(tornCands, h)
 			}
 			if !torn || h.Offset < tornAt {
 				tornAt = h.Offset
@@ -331,6 +346,16 @@ func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID
 		verified = append(verified, rec)
 		verifiedAt[h.Offset] = true
 		heldEnd = max(heldEnd, h.Offset+h.Size())
+	}
+
+	// The torn records' drops and repairs, judged above then applied here:
+	// one batched read of the attached segments answers every torn record
+	// this proof found, in whatever order the verdicts came, and nothing
+	// between the two steps reads the index.
+	if len(tornCands) > 0 {
+		if rerr := repairTornPlacements(rd, st, expect, tornCands, tornSoFar); rerr != nil {
+			return rerr
+		}
 	}
 
 	lost := false
@@ -495,135 +520,99 @@ func unheldStraddles(cands []format.RecordHeader, verifiedAt map[int64]bool, poi
 	return false
 }
 
-// dropTornRecord drops one record the flow found torn — verified at neither
-// of its reads — from everything the rebuilt state holds of it: the index
-// entry the walk fed for a content record, the aside entry it set for an
-// aside one, and, for a content record, the placement of everything its
-// replay displaced, re-placed from the records that remain. Torn is never
-// written, so nothing of the record survives the open: no re-append carries
-// it, no hold claims its extent, no aside phase ever answers for it — and
-// what it overwrote or cut holds its extent again, as it did before the
-// record's replay took it. tornSoFar holds the placements the flow has
-// judged torn already, this one joining it, so a repair is fed no record a
-// torn verdict later in the run drops of its own — while a good copy of the
-// record at another placement is fed and re-places, for the verdict reached
-// one placement of the record, not the record itself.
-func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentScan, h format.RecordHeader, tornSoFar map[index.RecordAt]bool) error {
-	if h.Kind > format.KindUnmark {
-		// decision: an aside record is held only in the scan's aside list,
-		// which no built phase reads yet — the kinds' rules are the later
-		// marks phase's — so dropping it changes nothing a caller can see
-		// today, and the state must still not claim it once one is.
-		sc.Aside = slices.DeleteFunc(sc.Aside, func(a asideRecord) bool {
-			return a.Header.Offset == h.Offset
-		})
-		return nil
-	}
-	// The content kinds the walk fed the index one converted record each.
-	// Only a clone target makes contentRecord read — the spec its body is —
-	// and a clone target's body was verified at the scan, so a torn
-	// candidate never asks for it; a read that refuses here refuses the
-	// open, exactly as the flow's own reads do.
-	r, cerr := contentRecord(rd, expect, h)
-	if cerr != nil {
-		return refusedRead(rd, cerr)
-	}
-	tornSoFar[index.RecordAt{Segment: r.Segment, Offset: r.At}] = true
-	return repairTornPlacement(rd, st, expect, r, tornSoFar)
-}
-
-// repairTornPlacement restores what the torn record's replay displaced: the
-// index comes out exactly as the rebuild would have produced it had the
-// record never been fed, over the span the record's replay reached — its
-// extent, or the removal to the end a truncate's and a delete's reach
-// names — and over no span at all the same, where only the teardown runs:
-// the whole repair reaches DropTorn whatever the span is, so a removal
-// whose reach holds no byte — a truncate past every offset, a shape the
-// open's own verdicts cannot produce, a removal carrying no body that a
-// mid-append tear could fail — still takes the marker its replay left.
-// The records to re-apply are every record of the file that reaches the span,
-// from any attached segment — the one the torn record sits in and the named
-// and unverified ones beside it, cross-segment overwrites included — read
-// from the same source the rebuild read each segment by: a named segment
-// whose header verified takes its catalogue, walking only where the catalogue
-// demotes — no verifying footer, an entry its record contradicts — and every
-// unnamed or unverified segment takes the walk. The survivors must come from
-// the rebuild's own source, or the identity breaks at the records the two
+// repairTornPlacements restores what each torn record's replay displaced:
+// the index comes out exactly as the rebuild would have produced it had the
+// records never been fed, over the spans their replays reached — an extent,
+// or the removal to the end a truncate's and a delete's reach names — and
+// over no span at all the same, where only each record's teardown runs: the
+// whole repair reaches DropTorn whatever the span is, so a removal whose
+// reach holds no byte — a truncate past every offset — still takes the
+// marker its replay left, unless a surviving copy of the record stays among
+// the survivors and keeps it.
+//
+// Every attached segment is read ONCE for the whole batch of torn records,
+// through the same dispatch the rebuild read each segment by (readSegment:
+// a named segment by its catalogue, demoted as the rebuild demotes,
+// everything else by the walk — a rebuild that walked a named segment by
+// force is a test's, never the open's). The survivors must come from the
+// rebuild's own source, or the identity breaks at the records the two
 // disagree on: a write whose record header rotted is indexed from its
 // catalogue entry by the rebuild and refused by the walk, so reading the
-// segment the walk's way would drop a durable sealed write the rebuild holds
-// — and with it the repair's own answer. Minus the placements the run has
-// judged torn so far, so a good copy of the record at another placement is
-// fed while the torn placement is not, and minus the placements the
-// rebuild's own scan judged — its catalogue's confines and its clone targets
-// whose bodies failed — so a record the rebuild never indexed never comes
-// back through a repair. The index then answers the torn record's own
-// teardown with the fold, its kind deciding it — runs, marker, or nothing.
+// segment the walk's way would drop a durable sealed write the rebuild
+// holds — and with it the repair's own answer. Each segment's answer, the
+// fresh records minus the placements the rebuild's own scan judged (its
+// catalogue's confines and its clone targets whose bodies failed) and the
+// records the feed's rule dropped (Accepts answers the rule the survivors
+// pass), fills one batch of survivors grouped by file. Each torn record's
+// repair then reads its own survivors out of its file's slice — by its
+// file, by the placements the run has judged torn so far, every placement
+// in this batch among them (each verdict lands in the set before any record
+// is read, so a torn record is never folded as another one's survivor,
+// whatever order the proof judged them in), and by its reach, while a copy
+// of the torn record's own numbers reaches its repair wherever its reach
+// spans no byte, for the surviving copy is what keeps the teardown from
+// running.
 //
-// ponytail: the records to re-apply are re-read from disk, once per torn
-// record over every attached segment — the scans the rebuild kept drop their
-// converted records, so a journal of millions of records does not hold them
-// twice. A torn last record is the ordinary result of a power loss
-// mid-append, not a rare verdict of a damaged open, so an ordinary
-// power-loss open of a large journal pays the rebuild's read of every
-// attached segment and then, per torn record it finds, this second one.
+// A copy in a home the open ends, or whose strand a torn tail's cut takes,
+// leaves the batch's answer while its numbers hold a copy in a home the
+// open keeps, so the fold's equal-numbers collapse keeps a surviving home's
+// placement — the same kept-home answer the repoint gave the rebuilt index
+// when the classing ended the segment, read here over the fates the proof
+// has settled since. The last copy of a record stays wherever it sits: a
+// repair never drops a record whole.
+//
+// The synced loss cuts apply again over each torn record's window right
+// after its repair's fold (applyCutsIn), for the fold re-places the pieces
+// the cuts had dropped over that span, and a rebuild that was never fed the
+// torn record holds the cuts' answer there.
+//
+// ponytail: the survivors are re-read from disk, once per proof NEVER per
+// torn record — the scans the rebuild kept drop their converted records, so
+// a journal of millions of records does not hold them twice, and a power
+// loss that tears a tail of a thousand records pays one walk, not a
+// thousand. The batch holds every accepted record of every attached
+// segment while one segment's repairs run — the memory the rebuild's own
+// buffers peaked at, held once more and freed at the end of the repair.
 // Restrict the re-read to the segments the file's drop ranges name — the
 // per-(file, segment) notes the rebuild raised already cover every record of
 // the file, so they name every home a copy could sit in — when a large
 // journal's open shows these re-reads in a profile.
-func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn index.Record, tornSoFar map[index.RecordAt]bool) error {
-	window := torn.Reach()
-	// The named set is the same one the run built for the rebuild and the
-	// classing, and the collect's own condition mirrors the rebuild's
-	// dispatch: there is no force-scan switch here, and a rebuild that
-	// walked a named segment by force is a test's, never the open's — the
-	// identity the repair must reach is the real rebuild's, which read the
-	// catalogue.
-	named := successorSet(st.Attached.Own)
-	var recs []index.Record
-	collect := func(info SegmentInfo) error {
-		// A read the bound does not clear refuses the open, as the open's
-		// other reads do; the reads the rebuild made of these bytes already
-		// succeeded, so this only refuses where the device stopped answering.
-		var sc segmentScan
-		var err error
-		if !info.Unverified && named[info.ID] {
-			var byCat bool
-			var cerr error
-			sc, byCat, cerr = catalogSegment(rd, expect, info)
-			switch {
-			case cerr != nil:
-				err = cerr
-			case byCat:
-				// The catalogue's answer, the same source the rebuild read.
-			default:
-				// The demotion, the rebuild's own fallback: no verifying
-				// footer — or an entry its record contradicts — sends the
-				// segment to the walk.
-				sc, err = scanSegment(rd, expect, info)
-			}
-		} else {
-			sc, err = scanSegment(rd, expect, info)
+func repairTornPlacements(rd *reader, st *State, expect core.JournalID, torn []format.RecordHeader, tornSoFar map[index.RecordAt]bool) error {
+	// The records to drop, in the order the proof judged them: each
+	// conversion answers the header's own columns, reading only a clone
+	// target's spec — a torn candidate's header decoded at its first read,
+	// so a healthy spec it never reads. A read the bound does not clear
+	// refuses the open, exactly as the flow's own reads do. Each torn
+	// record's own placement joins the judged set here, before any
+	// survivor is read, so a record this proof judged torn reaches no
+	// survivor list at all.
+	drops := make([]index.Record, 0, len(torn))
+	for _, h := range torn {
+		r, cerr := contentRecord(rd, expect, h)
+		if cerr != nil {
+			return refusedRead(rd, cerr)
 		}
+		tornSoFar[index.RecordAt{Segment: r.Segment, Offset: r.At}] = true
+		drops = append(drops, r)
+	}
+	// One read of every attached segment the rebuild's own way, judged by
+	// the rebuild's own drops and the feed's own rule, grouped by file: the
+	// survivors every torn record of this proof folds, read once for the
+	// batch. A read the bound does not clear refuses the open, as the
+	// open's other reads do; the reads the rebuild made of these bytes
+	// already succeeded, so this only refuses where the device stopped
+	// answering.
+	named := successorSet(st.Attached.Own)
+	byFile := make(map[core.FileID][]index.Record)
+	collect := func(info SegmentInfo) error {
+		sc, err := readSegment(rd, expect, info, named, false)
 		if err != nil {
 			return refusedRead(rd, err)
 		}
-		// The judged set keeps the fold to the rebuild's verdicts, whichever
-		// source served the fresh read: the catalogue's confined entries are
-		// named by their entry's record offset and the walk's confined clone
-		// targets by their header's, one shape per source — the source that
-		// confined a record keeps it out of its own Records as well, so the
-		// set answers the day a second read of unchanged bytes ever
-		// disagrees with the first. A record the feed withheld whole stays
-		// out by its numbers, whose fresh header reads healthy — only the
-		// withheld set finds it — so the repair hands back none of what the
-		// rebuild never served.
 		for _, r := range segmentRecords(sc, rebuildDrops(st, info.ID)) {
-			if st.Kinds.WithheldAt[index.RecordAt{Segment: r.Segment, Offset: r.At}] ||
-				r.File != torn.File || tornSoFar[index.RecordAt{Segment: r.Segment, Offset: r.At}] || !reachesOverlap(r.Reach(), window) {
-				continue
+			if st.Kinds.Accepts(r) {
+				byFile[r.File] = append(byFile[r.File], r)
 			}
-			recs = append(recs, r)
 		}
 		return nil
 	}
@@ -639,8 +628,52 @@ func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn inde
 			return err
 		}
 	}
-	st.Rebuilt.Index.DropTorn(torn.File, index.RecordAt{Segment: torn.Segment, Offset: torn.At}, torn, recs)
+	// One repair per torn record, over its own survivors read out of the
+	// batch: the reach filter is each torn record's own, and the synced
+	// loss cuts follow its fold, the window naming the repair's pass.
+	kept := keptHome(st.Tails)
+	for _, tr := range drops {
+		window := tr.Reach()
+		cands := byFile[tr.File]
+		recs := make([]index.Record, 0, len(cands))
+		for _, r := range cands {
+			if tornSoFar[index.RecordAt{Segment: r.Segment, Offset: r.At}] ||
+				(!reachesOverlap(r.Reach(), window) && r.Numbers != tr.Numbers) {
+				continue
+			}
+			recs = append(recs, r)
+		}
+		st.Rebuilt.Index.DropTorn(tr.File, index.RecordAt{Segment: tr.Segment, Offset: tr.At}, tr, foldKeptHomes(recs, kept))
+		if err := st.Kinds.applyCutsIn(st.Rebuilt.Index, tr.File, window); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// foldKeptHomes answers the survivors the fold's collapse answers with: a
+// copy in a home the open ends, or whose placement a torn tail's cut takes,
+// leaves the survivors only while its numbers hold a copy in a home the
+// open keeps, so the collapse never hands the placement to the greater home
+// a segment the open discards — the repoint moved the piece off that home
+// when the rebuild finished, and the repair must not put it back. The last
+// copy of a record stays wherever it sits.
+func foldKeptHomes(recs []index.Record, kept func(core.SegmentID, int64) bool) []index.Record {
+	var keptTwin map[index.Numbers]bool
+	for _, r := range recs {
+		if kept(r.Segment, int64(r.At)) {
+			if keptTwin == nil {
+				keptTwin = make(map[index.Numbers]bool, len(recs))
+			}
+			keptTwin[r.Numbers] = true
+		}
+	}
+	if keptTwin == nil {
+		return recs
+	}
+	return slices.DeleteFunc(recs, func(r index.Record) bool {
+		return !kept(r.Segment, int64(r.At)) && keptTwin[r.Numbers]
+	})
 }
 
 // reachesOverlap reports whether two reaches cover a byte in common.
@@ -752,18 +785,21 @@ func tailFirst(rd *reader, expect core.JournalID, seg core.SegmentID, name strin
 // a refusal of the open, for the record below it already verified at its
 // first read and its copy is kept: the record is lost by the device, and the
 // re-append writes it back. This is the one read at open whose refusal does
-// not keep the journal closed, so the reader was told not to collect its
-// range — no bytes it reached reach the open's end check — and the ruling
-// lives here with the readers' refusal decisions, withdrawn with theirs when
-// an unread record can be held instead of refused. A short read is the same
-// verdict as disagreeing bytes: the device answered with what it holds. Only
-// the context's error comes back as itself, answered by the caller, so a
+// not keep the journal closed, so its range is collected nowhere — no bytes
+// it reached reach the open's end check — and the ruling lives here with
+// the readers' refusal decisions, withdrawn with theirs when an unread
+// record can be held instead of refused. A short read is the same verdict
+// as disagreeing bytes: the device answered with what it holds. Only the
+// context's error comes back as itself, answered by the caller, so a
 // cancelled open is never taken for a lost record.
 func tailOnDevice(f storage.File, rd *reader, expect core.JournalID, rec tailRecord) (holds bool, err error) {
 	// The whole record, header and body, at the offset its header named: one
-	// read answers the device's copy of the record the first read kept.
+	// read answers the device's copy of the record the first read kept. The
+	// refusal the read answers is not the caller's here, whatever the
+	// verdict below makes of its err — the rule under which it goes
+	// uncollected is the ruling above.
 	whole := make([]byte, len(rec.First))
-	n, rerr := rd.ReadAtDirect(f, format.SegmentName(rec.Segment), whole, rec.At, false)
+	n, _, rerr := rd.ReadAtDirect(f, format.SegmentName(rec.Segment), whole, rec.At)
 	if isContextErr(rerr) {
 		return false, rerr
 	}

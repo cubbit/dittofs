@@ -1,12 +1,16 @@
 package recovery
 
 import (
+	"context"
+	"math"
 	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -340,5 +344,250 @@ func TestTheRepairFoldsNoRecordTheFeedWithheld(t *testing.T) {
 	}
 	if _, ok := st.Rebuilt.Index.Lookup(tailFile(), overwrite); ok {
 		t.Errorf("Lookup over the withheld record's extent hit, want a miss: the repair hands back nothing the feed withheld")
+	}
+}
+
+// TestTheRepairFoldsTheCopyTheOpenKeeps holds the fold's copy rule against
+// the repoint's: a record carried in two homes, one the open keeps and one
+// its classing ends, was re-pointed to the surviving home when the rebuild
+// finished — and the repair of a torn record over its extent must not hand
+// the placement back. The fold's collapse keeps the greatest (segment,
+// offset), so the survivors filter out a copy in a home the open ends while
+// its numbers hold a copy in a home it keeps; the placement then names the
+// segment the open keeps, never one whose emptying takes the bytes away.
+func TestTheRepairFoldsTheCopyTheOpenKeeps(t *testing.T) {
+	const overwrite = 0x4100
+	// X, one record seq 9 v201 over the tail's file: the raw body both homes
+	// carry, byte-identical numbers with it.
+	xRaw := rec(1, func(rc *raw.Record) {
+		rc.Seq = 9
+		rc.Version = raw.Version{Counter: 201}
+		rc.Offset = overwrite
+		rc.Write = &raw.WriteBody{MTime: 1, Payload: bytes16()}
+	})
+	seg1, _ := buildSealed(1, xRaw) // X's kept home, named by segment 2's header
+
+	// Segment 2, the home the classing ends: X again at its greater home,
+	// then a torn slot a sync never proved, then a record holding past the
+	// slot — the torn-slot rule ends the segment however healthy X's copy is.
+	seg2 := buildSeg(2, xRaw)
+	endX := int64(len(seg2))
+	seg2 = append(seg2, make([]byte, 16)...)
+	hold := syncedRec(202, 0x8100, endX) // synced below the slot, so nothing proves the torn bytes
+	hold.Identity, hold.Segment, hold.RecordOffset = journalID, 2, uint32(len(seg2))
+	seg2 = append(seg2, hold.Bytes()...)
+	copy(seg2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
+
+	// Segment 3, the newest: the torn write over X's extent.
+	tornSeg := buildSeg(3, tailRec(250, overwrite))
+	copy(tornSeg, raw.SegmentHeader{Identity: journalID, ID: 3}.Bytes())
+	tornAt := int64(format.SegmentHeaderSize)
+	tornSeg[tornAt+format.RecordHeaderSize+8+2] ^= 0xff // T's payload, torn to the first read
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg1)
+	r.plantSeg(2, seg2)
+	r.plantSeg(3, tornSeg)
+
+	st := runTails(t, r)
+
+	noTornReport(t, st)
+	wantFate(t, st, 2, fateEnded, 0)
+	wantFate(t, st, 3, fateTornTail, tornAt)
+	// The placement answers from segment 1, the home the open keeps: the
+	// repoint moved the piece there and the repair's fold did not hand it
+	// back to the ended home.
+	wantPlacement(t, st, overwrite, index.Placed{
+		Extent:  core.Extent{Off: overwrite, Len: 16},
+		Record:  index.RecordAt{Segment: 1, Offset: format.SegmentHeaderSize},
+		Version: core.Version{Counter: 201},
+		Seq:     9,
+	})
+	if got := planted(st); got != 2 {
+		t.Errorf("the index holds %d entries, want 2: X at its surviving home and the holding record, the torn write's placement dropped as never written", got)
+	}
+}
+
+// TestTheRepairReappliesTheSyncedLossCutsItsFoldUndid holds the order the
+// loss cuts and the repair's fold answer in: a synced superseded loss cut
+// the write W over [0,4K) once the rebuild finished, and a torn write over
+// the same extent makes the repair's fold re-place W's piece there — the
+// cut must land again after the fold, or the open serves bytes the loss
+// record dropped, never the hole a rebuild that saw no torn record holds.
+func TestTheRepairReappliesTheSyncedLossCutsItsFoldUndid(t *testing.T) {
+	const KiB = 1024
+	file := tailFile()
+	w := writeRec(5, 3, 0, 8*KiB)                      // W, v3 seq5 over [0,8K)
+	l := plantLossRec(file, 5, 8, 4, 0, 4*KiB, 1|4<<8) // a synced superseded loss dropping seq5 over [0,4K) at v4
+	seg1 := buildSeg(1, w, l)
+	tornSeg := buildSeg(2, writeRec(9, 6, 0, 4*KiB)) // the torn write over the loss extent
+	copy(tornSeg, raw.SegmentHeader{Identity: journalID, ID: 2}.Bytes())
+	tornAt := int64(format.SegmentHeaderSize)
+	tornSeg[tornAt+format.RecordHeaderSize+8+2] ^= 0xff
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg1)
+	r.plantSeg(2, tornSeg)
+
+	st := runTails(t, r)
+
+	noTornReport(t, st)
+	wantFate(t, st, 2, fateTornTail, tornAt)
+	if p, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+		t.Errorf("Lookup at 0 got %+v, want a miss: the synced superseded cut takes the extent the repair's fold re-placed, again", p)
+	}
+	p, ok := st.Rebuilt.Index.Lookup(file, 4*KiB)
+	if !ok {
+		t.Fatalf("Lookup at 4096 missed, want the cut to leave W's [4K,8K) run held")
+	}
+	if p.Extent != (core.Extent{Off: 4 * KiB, Len: 4 * KiB}) || p.Version != (core.Version{Counter: 3}) || p.Seq != 5 || p.Record != (index.RecordAt{Segment: 1, Offset: format.SegmentHeaderSize}) {
+		t.Errorf("the kept run got %+v, want W's [4K,8K) at v3 seq 5 from segment 1: the cut takes the loss extent alone, again over the fold's answer", p)
+	}
+}
+
+// TestTheTornRecordsOwnCopyKeepsItsMarkerWhenItsReachIsEmpty holds the
+// survivor rule over a reach that spans no byte: a truncate past every
+// offset reaches nothing, yet its copy in a surviving home names a record
+// the journal wrote, so the repair must see that copy — a rebuild that was
+// never fed the torn placement keeps the marker the surviving copy stands
+// for, and the teardown that never sees the copy deletes it instead. A
+// removal carries no body, so the open's own verdicts cannot tear one —
+// its header either verifies whole or attaches nothing — and the test
+// drives the repair with the verdict the flow's reads cannot produce, over
+// the planted second copy whose numbers say the record was written.
+func TestTheTornRecordsOwnCopyKeepsItsMarkerWhenItsReachIsEmpty(t *testing.T) {
+	xRaw := rec(4, func(rc *raw.Record) { // a truncate past every offset
+		rc.FileID = tailFile().Bytes()
+		rc.Seq = 9
+		rc.Version = raw.Version{Counter: 9}
+		rc.Offset = math.MaxInt64
+		rc.Length = 0
+	})
+	seg1, _ := buildSealed(1, xRaw) // the surviving copy, named by segment 2's header
+	seg2 := buildSeg(2, xRaw)       // the torn placement, same numbers
+	x2At := int64(format.SegmentHeaderSize)
+	copy(seg2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg1)
+	r.plantSeg(2, seg2)
+
+	st := runTails(t, r)
+
+	noTornReport(t, st)
+	truncates := 0
+	for _, ch := range st.Rebuilt.Index.Since(tailFile(), core.Version{}) {
+		if ch.Kind == core.ChangeTruncate {
+			truncates++
+		}
+	}
+	if truncates != 1 {
+		t.Fatalf("the open left %d truncate changes, want the one the surviving copy owns", truncates)
+	}
+
+	// The fabricated torn verdict: segment 2's copy of the truncate, a
+	// record whose no-body shape cannot tear at the open's own reads — via
+	// the repair's entry exactly as the flow reaches it after its verdict.
+	rd := newReader(context.Background(), r.seam.FS(), r.clk, nil)
+	tornSoFar := map[index.RecordAt]bool{}
+	h := format.RecordHeader{
+		Kind: format.KindTruncate, Segment: 2, File: tailFile(),
+		Extent: core.Extent{Off: math.MaxInt64, Len: 0},
+		Seq:    9, Version: core.Version{Counter: 9}, Tag: 7, Offset: x2At,
+	}
+	if err := repairTornPlacements(rd, &st, journalID, []format.RecordHeader{h}, tornSoFar); err != nil {
+		t.Fatalf("the repair of a torn no-body truncate: %v", err)
+	}
+
+	truncates = 0
+	for _, ch := range st.Rebuilt.Index.Since(tailFile(), core.Version{}) {
+		if ch.Kind == core.ChangeTruncate {
+			truncates++
+		}
+	}
+	if truncates != 1 {
+		t.Errorf("the repaired index keeps %d truncate changes, want the 1 the surviving copy owns: a copy with the torn record's numbers reaches the repair wherever its reach spans no byte", truncates)
+	}
+}
+
+// countingFS wraps the rig's filesystem, counting the opens of one segment's
+// file as they pass through — the repair's read cost answered by the door
+// every read goes through, without answering anything on the store's behalf.
+type countingFS struct {
+	storage.FS
+	name  string
+	opens atomic.Int64
+}
+
+// Open counts the watched name's opens and passes the open through.
+func (c *countingFS) Open(name string) (storage.File, error) {
+	if name == c.name {
+		c.opens.Add(1)
+	}
+	return c.FS.Open(name)
+}
+
+// TestTheRepairReadsEachSegmentOnceHoweverManyTornRecordsWereJudged holds
+// the repair's read shape: a power loss tears a whole unsynced tail, so the
+// records one segment's proof judged torn share one read of every attached
+// segment — never one read per torn record. Two journals identical except
+// one more torn record in the tail must open the OLDER segment's file the
+// same number of times: a repair that re-reads pays a full walk of every
+// attached segment per torn record, and the difference a second torn record
+// adds is the whole walk again.
+func TestTheRepairReadsEachSegmentOnceHoweverManyTornRecordsWereJudged(t *testing.T) {
+	run := func(t *testing.T, rotTwo bool) int64 {
+		t.Helper()
+		// Segment 1: twenty-four synced writes of the tail's file over the
+		// torn records' extent, the survivors every repair re-places; each
+		// one's synced-through lies past the segment's own end, so the proof
+		// never reaches the segment.
+		surv := make([]raw.Record, 0, 24)
+		for i := range 24 {
+			surv = append(surv, rec(1, func(rc *raw.Record) {
+				rc.Seq = uint64(i + 1)
+				rc.Version = raw.Version{Counter: 200 + uint64(i)}
+				rc.Offset = 0x4100
+				rc.SyncedThrough = 1 << 28
+				rc.Write = &raw.WriteBody{MTime: 1, Payload: bytes16()}
+			}))
+		}
+		seg1 := buildSeg(1, surv...)
+
+		// Segment 2, the tail: a holding write, then two writes the proof
+		// may find torn — the first rotted in both runs, the second only in
+		// the second run.
+		tails := []raw.Record{
+			tailRec(250, 0x100),            // holds wherever the tail lands
+			writeRec(260, 260, 0x4100, 16), // the first torn write
+			writeRec(270, 270, 0x4100, 16), // the second, written over the first
+		}
+		t1At := endAfter(tails[0])
+		t2At := endAfter(tails[0], tails[1])
+		seg2 := buildSeg(2, tails...)
+		seg2[t1At+format.RecordHeaderSize+8+2] ^= 0xff
+		if rotTwo {
+			seg2[t2At+format.RecordHeaderSize+8+2] ^= 0xff
+		}
+
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, seg1)
+		r.plantSeg(2, seg2)
+		d := r.runDeps()
+		c := &countingFS{FS: d.FS, name: format.SegmentName(1)}
+		d.FS = c
+		if _, err := Run(context.Background(), d, core.Version{}, journalID, nil); err != nil {
+			t.Fatalf("Run over a tail of torn records: %v", err)
+		}
+		return c.opens.Load()
+	}
+	one := run(t, false)
+	two := run(t, true)
+	if d := two - one; d > 6 {
+		t.Errorf("one more torn record added %d opens of the older segment, want at most 6: the repairs of one proof share one read of every attached segment", d)
 	}
 }

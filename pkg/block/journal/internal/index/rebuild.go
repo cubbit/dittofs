@@ -523,9 +523,10 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 // applies records ascending. The repair re-places content alone, for
 // nothing a record noted on its first pass is re-noted: a write puts
 // without its supersede runs or its write time, a removal cuts the pieces
-// its reach covers and raises nothing, and the marker it left the first
-// time stays, for it names the removal, not the placement the repair is
-// rebuilding around.
+// its reach covers below its own version — the rebuilt removal's own rule,
+// so a survivor sharing the removal's version stays — and raises nothing,
+// and the marker it left the first time stays, for it names the removal,
+// not the placement the repair is rebuilding around.
 //
 // decision: records with equal numbers are one record, whatever its copy
 // count — a header-only record carried forward by repack, a record
@@ -657,13 +658,17 @@ func (f *file) fold(recs []bufRec, window core.Extent) ([]bufRec, error) {
 			f.held.cut(e)
 		case RecTruncate, RecDeallocate, RecDelete, RecCloneTarget:
 			if repair {
-				// A removal cut the pieces its reach covered at its place
-				// in the precedence: everything already applied below it,
-				// and nothing above — the records above re-place theirs.
-				// The marker it left the first time stays: it names the
-				// removal, not one placement. The torn record's own goes
-				// with the tear, beside the fold its repair runs.
-				f.held.cut(e)
+				// A removal cut the pieces its reach covered at its place in
+				// the precedence: everything already applied below it, and
+				// nothing above — the records above re-place theirs — by
+				// the removal's own rule (read remove in markers.go), which
+				// holds content at or above the removal's version: a
+				// deallocate sharing a survivor's version never drops it,
+				// whatever order the fold reaches the two records in. The
+				// marker it left the first time stays: it names the removal,
+				// not one placement. The torn record's own goes with the
+				// tear, beside the fold its repair runs.
+				f.held.cutBelow(e, r.numbers.Version)
 				continue
 			}
 			switch r.kind {
