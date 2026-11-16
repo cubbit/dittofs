@@ -37,8 +37,15 @@ type Config struct {
 	// when a sync completes. It is required.
 	Index *index.Index
 
-	// Dir is the journal's directory, the key of its per-process loss state.
+	// Dir is the journal's directory, half the key of its per-process loss
+	// state: an identity keys the other half.
 	Dir string
+
+	// Identity is the journal the per-process loss state belongs to. A path
+	// this process emptied and Init'd a new journal at must not inherit the
+	// dead journal's failed list, taken pieces or generation, and its new
+	// identity re-reaches the sequence numbers the dead one issued.
+	Identity core.JournalID
 
 	// Counters issue the loss record's sequence number. It is required.
 	Counters *index.Counters
@@ -276,26 +283,34 @@ type Durability struct {
 	// with no lock held before it takes each queued end event's window.
 	beforeTakeWindow func()
 
-	// lmu guards the loss ring, the counters and pieces, and the generation
-	// read and raise that go with them.
+	// lmu guards the reason counters, and the generation raise and the event
+	// publish of a Lose made with them.
 	//
-	// decision: lmu is a leaf mutex over the ring, the counters, the pieces
-	// set and the generation read and raise made with them, so a snapshot
-	// pairs a generation with exactly the events that raised it. The
-	// directory registry's own mutex is taken inside it and calls nothing
-	// back. It is never held across an Append, a Sync or a MarkLoss, which
-	// take locks of other domains, so it adds no edge to the journal's lock
-	// order. A window raise (RaiseWindow) takes the registry alone and raises
-	// with no event, so a snapshot may show it ahead of the events.
+	// decision: lmu holds the raise, the counters, this instance's ring and
+	// the publish of a Lose as one section, so a snapshot pairs a generation
+	// with exactly the events that raised it. The piece set and the failed
+	// list live in the directory's state; the registry's own mutex is taken
+	// inside lmu and calls nothing back, so lmu is a leaf on the journal's
+	// lock order and is never held across an Append, a Sync or a MarkLoss,
+	// which take locks of other domains. A window raise (RaiseWindow) takes
+	// the registry alone and raises with no event, so a snapshot may show
+	// it ahead of the events.
 	lmu               sync.Mutex
-	ring              [core.LossRingSize]core.LossEvent
-	head              int // index of the oldest event
-	count             int
-	nextEvent         uint64
 	corruptDataLoss   uint64
 	corruptRepairable uint64
 	stale             uint64
 	superseded        uint64
+
+	// ring holds this instance's published loss events, head the index of
+	// the oldest and count how many the ring holds, nextEvent the count
+	// that numbers them, all under lmu: its reader pairs the ring with the
+	// generation raises below. A Durability built later on the directory
+	// starts an empty ring of its own — the pieces the dedup holds are the
+	// directory's, the published events the publishing instance's.
+	ring      [core.LossRingSize]core.LossEvent
+	head      int
+	count     int
+	nextEvent uint64
 
 	// dmu guards damaged and unproduced.
 	//
@@ -349,22 +364,10 @@ type Durability struct {
 	// no lock held after each pass's step over the held segments.
 	afterHolds func()
 
-	// pieces holds every (dropped seq, extent) a Lose or a Place has taken,
-	// so one piece of a dropped record is reported once, while another piece
-	// of the same record, which a reconcile can drop alone, is reported on
-	// its own.
-	//
-	// ponytail: it grows by one entry per piece lost for the life of the
-	// Durability and is never pruned, so it follows the number of loss
-	// records the journal holds, not the ring. Upgrade to dropping an entry
-	// once no copy of its dropped record remains to be reported again, when
-	// a journal with a long loss history shows up in a heap profile.
-	pieces map[piece]struct{}
-
 	// deferredLosses holds, per segment, the losses Lose deferred against
 	// it — one entry per deferred piece it took, the entry the copy that
 	// retires the segment builds its loss record from. An entry leaves on
-	// EndDeferral alone. Guarded by lmu, like pieces.
+	// EndDeferral alone. Guarded by lmu.
 	deferredLosses map[core.SegmentID][]Loss
 
 	// resolved is Config.Resolved: the announcement of a resolved window.
@@ -462,7 +465,7 @@ func New(cfg Config) (*Durability, error) {
 	if cfg.Counters == nil || cfg.MarkLoss == nil {
 		panic("durability: the layer needs its counters and loss marker")
 	}
-	dir, err := stateFor(cfg.Dir)
+	dir, err := stateFor(cfg.Dir, cfg.Identity)
 	if err != nil {
 		return nil, err
 	}
@@ -494,7 +497,6 @@ func New(cfg Config) (*Durability, error) {
 		account:        cfg.Account,
 		lossRegistered: cfg.LossRegistered,
 		emptied:        cfg.Emptied,
-		pieces:         map[piece]struct{}{},
 		deferredLosses: map[core.SegmentID][]Loss{},
 	}
 	d.refuse = d.Admit
@@ -920,6 +922,33 @@ func (d *Durability) Lost(at segment.Location) bool {
 // SyncBound returns the longest a record waits for a sync.
 func (d *Durability) SyncBound() time.Duration { return core.SyncBound }
 
+// pushRingLocked publishes ev into this instance's ring with its next
+// event number, overwriting the oldest when the ring is full, the caller
+// holding lmu. The counter is this instance's own: a reopen numbers its
+// events from its own zero.
+func (d *Durability) pushRingLocked(ev core.LossEvent) core.LossEvent {
+	d.nextEvent++
+	ev.SeqNum = d.nextEvent
+	if d.count < core.LossRingSize {
+		d.ring[(d.head+d.count)%core.LossRingSize] = ev
+		d.count++
+		return ev
+	}
+	d.ring[d.head] = ev
+	d.head = (d.head + 1) % core.LossRingSize
+	return ev
+}
+
+// lossesLocked returns a copy of this instance's ring, oldest first, the
+// caller holding lmu.
+func (d *Durability) lossesLocked() []core.LossEvent {
+	out := make([]core.LossEvent, d.count)
+	for i := range out {
+		out[i] = d.ring[(d.head+i)%core.LossRingSize]
+	}
+	return out
+}
+
 // Stats returns the counters kept at each sync, without walking the ledger. A
 // sync is counted just after the waiters it covered are released, so a Sync
 // that has just returned may not be in the counters yet.
@@ -950,18 +979,18 @@ func (d *Durability) Stats() Part {
 	}
 
 	d.lmu.Lock()
-	p.Losses = make([]core.LossEvent, d.count)
-	for i := range p.Losses {
-		p.Losses[i] = d.ring[(d.head+i)%core.LossRingSize]
-	}
+	// This instance's ring and the directory's generation are read in one
+	// section, and lmu holds the raise and the publish of a Lose together,
+	// so the snapshot never holds the raise without its event, nor an
+	// event without its raise. The raise stays with the directory so a
+	// reopen reports the generation it continues; the events are this
+	// ring's, which the reopen starts empty.
+	p.Losses = d.lossesLocked()
+	p.LossGeneration = d.dir.load()
 	p.CorruptDataLoss = d.corruptDataLoss
 	p.CorruptRepairable = d.corruptRepairable
 	p.StaleExtents = d.stale
 	p.SupersededExtents = d.superseded
-	// The generation is read in the same section as the ring: Lose raises it
-	// and publishes in one section, so the snapshot never holds the raise
-	// without its event, nor an event without its raise.
-	p.LossGeneration = d.dir.load()
 	d.lmu.Unlock()
 	p.DamagedSegments, p.Segments = d.damagedReport()
 	return p

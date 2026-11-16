@@ -118,7 +118,7 @@ func testRevokedGrantRefusesNextCall(t *testing.T, kvo Opener) {
 	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
 	h, _ := f.create(alice, pub, "x", regular(0o644))
 	must(t, errOf(f.s.Files().Get(ctx, alice, h)))
-	must(t, f.s.ControlPlane().RemoveGrant(ctx, f.share.ID, alice.Principal))
+	must(t, f.s.ControlPlane().DeleteGrant(ctx, f.share.ID, alice.Principal, grantVersion(t, f.s.ControlPlane(), f.share.ID, alice.Principal)))
 	if _, e := f.s.Files().Get(ctx, alice, h); !isDenied(e) {
 		t.Errorf("call after the grant was removed: %v", e)
 	}
@@ -132,14 +132,14 @@ func testDefaultGrants(t *testing.T, kvo Opener) {
 	cp, files := f.s.ControlPlane(), f.s.Files()
 	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
 	dave := user("dave")
-	must(t, cp.PutUser(ctx, dave))
+	must(t, errOf(cp.PutUser(ctx, dave, 0, entity.Alloc{})))
 	claimed := entity.Identity{Principal: dave.Principal}
 	proven := entity.Identity{Principal: dave.Principal, Authenticated: true}
 	if e := files.Authorize(ctx, proven, pub, nil, entity.ReadData); !isDenied(e) {
 		t.Errorf("no grant at all: %v", e)
 	}
-	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: entity.Everyone, Access: entity.AccessRead}))
-	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: entity.AuthenticatedUsers, Access: entity.AccessReadWrite}))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: entity.Everyone, Access: entity.AccessRead}, 0)))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: entity.AuthenticatedUsers, Access: entity.AccessReadWrite}, 0)))
 	if e := files.Authorize(ctx, claimed, pub, nil, entity.ReadData); e != nil {
 		t.Errorf("everyone's read grant, read: %v", e)
 	}
@@ -154,16 +154,16 @@ func testDefaultGrants(t *testing.T, kvo Opener) {
 	}
 	staff := f.group("staff")
 	must(t, cp.AddMember(ctx, entity.Membership{Group: staff, Member: dave.Principal}))
-	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: staff, Access: entity.AccessRead}))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: staff, Access: entity.AccessRead}, 0)))
 	inStaff := entity.Identity{Principal: dave.Principal, Groups: []entity.Principal{staff}, Authenticated: true}
 	if e := files.Authorize(ctx, inStaff, pub, nil, entity.WriteData); !isDenied(e) {
 		t.Errorf("a group's read grant gave way to authenticated users': %v", e)
 	}
-	if e := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: entity.Owner, Access: entity.AccessRead}); !isCode(e, merrs.ErrInvalidArgument) {
+	if _, e := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: entity.Owner, Access: entity.AccessRead}, 0); !isCode(e, merrs.ErrInvalidArgument) {
 		t.Errorf("a grant naming OWNER@: %v", e)
 	}
 	for _, d := range []entity.Principal{entity.Everyone, entity.AuthenticatedUsers} {
-		if e := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: d, Access: entity.AccessAdmin}); !isCode(e, merrs.ErrInvalidArgument) {
+		if _, e := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: d, Access: entity.AccessAdmin}, 0); !isCode(e, merrs.ErrInvalidArgument) {
 			t.Errorf("a default grant of admin to %v: %v", d, e)
 		}
 	}
@@ -171,40 +171,40 @@ func testDefaultGrants(t *testing.T, kvo Opener) {
 	// under the cap's back.
 	for _, d := range []entity.Principal{entity.Everyone, entity.AuthenticatedUsers} {
 		as := entity.Principal{Kind: entity.PrincipalGroup, ID: d.ID}
-		if e := cp.PutGroup(ctx, entity.Group{Principal: as, Name: d.String()}); !isCode(e, merrs.ErrInvalidArgument) {
+		if _, e := cp.PutGroup(ctx, entity.Group{Principal: as, Name: d.String()}, 0, entity.Alloc{}); !isCode(e, merrs.ErrInvalidArgument) {
 			t.Errorf("a group holding %v's ID: %v", d, e)
 		}
-		if e := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: as, Access: entity.AccessAdmin}); e == nil {
+		if _, e := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: as, Access: entity.AccessAdmin}, 0); e == nil {
 			t.Errorf("an admin grant to a group holding %v's ID", d)
 		}
-		if e := cp.PutUser(ctx, entity.User{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: d.ID}, Name: d.String()}); !isCode(e, merrs.ErrInvalidArgument) {
+		if _, e := cp.PutUser(ctx, entity.User{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: d.ID}, Name: d.String()}, 0, entity.Alloc{}); !isCode(e, merrs.ErrInvalidArgument) {
 			t.Errorf("a user holding %v's ID: %v", d, e)
 		}
 	}
 
 	// A grant of none is stored and blocks, a user's and a group's alike,
 	// where the defaults would admit.
-	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: staff, Access: entity.AccessNone}))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: staff, Access: entity.AccessNone}, grantVersion(t, cp, f.share.ID, staff))))
 	if e := files.Authorize(ctx, inStaff, pub, nil, entity.ReadData); !isDenied(e) {
 		t.Errorf("a group's grant of none gave way to the defaults: %v", e)
 	}
 	// The widest of the caller's groups' grants decides, in either order.
 	readers := f.group("readers")
-	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: readers, Access: entity.AccessRead}))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: readers, Access: entity.AccessRead}, 0)))
 	for _, gs := range [][]entity.Principal{{readers, staff}, {staff, readers}} {
 		if e := files.Authorize(ctx, entity.Identity{Principal: dave.Principal, Groups: gs}, pub, nil, entity.ReadData); e != nil {
 			t.Errorf("groups %v granted read and none: %v", gs, e)
 		}
 	}
 	erin := user("erin")
-	must(t, cp.PutUser(ctx, erin))
-	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: erin.Principal, Access: entity.AccessNone}))
+	must(t, errOf(cp.PutUser(ctx, erin, 0, entity.Alloc{})))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: erin.Principal, Access: entity.AccessNone}, grantVersion(t, cp, f.share.ID, erin.Principal))))
 	for _, id := range []entity.Identity{{Principal: erin.Principal}, {Principal: erin.Principal, Authenticated: true}} {
 		if e := files.Authorize(ctx, id, pub, nil, entity.ReadData); !isDenied(e) {
 			t.Errorf("a user's grant of none gave way to the defaults (%+v): %v", id, e)
 		}
 	}
-	must(t, cp.RemoveGrant(ctx, f.share.ID, erin.Principal))
+	must(t, cp.DeleteGrant(ctx, f.share.ID, erin.Principal, grantVersion(t, cp, f.share.ID, erin.Principal)))
 	if e := files.Authorize(ctx, entity.Identity{Principal: erin.Principal}, pub, nil, entity.ReadData); e != nil {
 		t.Errorf("everyone's read grant after removing the user's none: %v", e)
 	}

@@ -459,7 +459,7 @@ func TestWaitBudgetCancelRacingGrant(t *testing.T) {
 }
 
 // A charge larger than the ceiling can never fit: it is refused at once under
-// any context, with an error a caller cannot take for a delay.
+// any context, with ErrTooLarge, which a caller cannot take for a delay.
 func TestWaitBudgetRefusesAChargePastItsCeiling(t *testing.T) {
 	for _, name := range []string{"live", "cancelled", "past its deadline"} {
 		t.Run(name, func(t *testing.T) {
@@ -470,8 +470,8 @@ func TestWaitBudgetRefusesAChargePastItsCeiling(t *testing.T) {
 				ctx := ctxs[name]
 				b := NewWaitBudget("receive", 10)
 				_, err := b.Reserve(ctx, client, 11)
-				if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					t.Errorf("Reserve(11) of 10 = %v, want an error that matches no context error", err)
+				if !errors.Is(err, ErrTooLarge) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("Reserve(11) of 10 = %v, want ErrTooLarge, matching no context error", err)
 				}
 				if _, err := b.Reserve(ctx, client, -1); err == nil || !strings.Contains(err.Error(), "cannot be negative") {
 					t.Errorf("Reserve(-1) = %v, want a refusal naming the negative charge", err)

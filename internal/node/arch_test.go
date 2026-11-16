@@ -4,9 +4,12 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -147,6 +150,204 @@ func TestNodeExports(t *testing.T) {
 		}
 		if !slices.Equal(got, tc.want) {
 			t.Errorf("%s: violations %q, want %q", tc.dir, got, tc.want)
+		}
+	}
+}
+
+const module = "github.com/cubbit/dittofs/"
+
+// under reports whether p is root or a path below it.
+func under(p, root string) bool { return p == root || strings.HasPrefix(p, root+"/") }
+
+// standard reports whether an import path is the standard library's: its
+// first element has no dot, and it is not cgo's "C", which links C code.
+func standard(imp string) bool {
+	first, _, _ := strings.Cut(imp, "/")
+	return imp != "C" && !strings.Contains(first, ".")
+}
+
+// walkImports calls fn with each .go file under root, as a slash path relative
+// to root, and the paths it imports; test files are read only when tests is
+// set. It leaves out testdata, hidden directories and nested modules.
+//
+// decision: every file is parsed with go/parser, ignoring build constraints
+// and GOOS or GOARCH file-name suffixes, rather than listed through go/build,
+// which reads only the files of one build; so no file behind a tag or for
+// another platform can hide an import from a rule. Its ceiling is the source
+// on disk: an import that only a build-time generator writes is not seen.
+func walkImports(root string, tests bool, fn func(file string, imports []string)) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p == root {
+				return nil
+			}
+			if name := d.Name(); name == "testdata" || strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(p, "go.mod")); err == nil {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, ".go") || (!tests && strings.HasSuffix(p, "_test.go")) {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		var imports []string
+		for _, imp := range f.Imports {
+			ip, err := strconv.Unquote(imp.Path.Value)
+			if err != nil {
+				return err
+			}
+			imports = append(imports, ip)
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		fn(filepath.ToSlash(rel), imports)
+		return nil
+	})
+}
+
+// v1Paths are v1's control plane, which never returns at these paths.
+// pkg/identity and pkg/apiclient come back in v2 at the same paths, so the
+// compiler, not this rule, guards their deletion.
+var v1Paths = []string{module + "pkg/controlplane", module + "internal/controlplane", module + "pkg/snapshot"}
+
+// v1Imports returns each import of a v1 path by a file under root, tests
+// included.
+func v1Imports(root string) ([]string, error) {
+	var bad []string
+	err := walkImports(root, true, func(file string, imports []string) {
+		for _, imp := range imports {
+			if slices.ContainsFunc(v1Paths, func(v1 string) bool { return under(imp, v1) }) {
+				bad = append(bad, file+" imports "+imp)
+			}
+		}
+	})
+	slices.Sort(bad)
+	return bad, err
+}
+
+// nodeImporters returns each file under root, tests included, that imports
+// the node but may not: only the server's start command and the test harness
+// build a node.
+func nodeImporters(root string) ([]string, error) {
+	var bad []string
+	err := walkImports(root, true, func(file string, imports []string) {
+		// decision: the harness under internal/node/nodetest is the one
+		// importer besides dfs start, because it drives a whole node in tests
+		// as dfs start does in production; no other exemption is named.
+		if file == "cmd/dfs/commands/start.go" || under(file, "internal/node/nodetest") {
+			return
+		}
+		if slices.Contains(imports, module+"internal/node") {
+			bad = append(bad, file+" imports the node")
+		}
+	})
+	slices.Sort(bad)
+	return bad, err
+}
+
+// cliRoots are where the CLI's dependency closure starts, and cliAllowed what
+// of this module it may reach: neither the metadata or block stores, nor the
+// control-plane server, nor anything that reads the host's bootstrap.
+var (
+	cliRoots   = []string{"cmd/dfsctl", "pkg/node/apiv1", "pkg/apiclient"}
+	cliAllowed = []string{"cmd/dfsctl", "pkg/apiclient", "pkg/node/apiv1", "internal/cli"}
+)
+
+// cliClosure returns each package of this module the CLI's binary reaches
+// outside cliAllowed, and each import of a package under pkg/node/apiv1
+// outside the standard library. It follows non-test files only, as the
+// binary is built from them.
+func cliClosure(root string) ([]string, error) {
+	pkgs := map[string][]string{}
+	err := walkImports(root, false, func(file string, imports []string) {
+		dir := path.Dir(file)
+		pkgs[dir] = append(pkgs[dir], imports...)
+	})
+	if err != nil {
+		return nil, err
+	}
+	var bad, queue []string
+	seen := map[string]bool{}
+	for dir := range pkgs {
+		if slices.ContainsFunc(cliRoots, func(r string) bool { return under(dir, r) }) {
+			seen[dir] = true
+			queue = append(queue, dir)
+		}
+	}
+	for len(queue) > 0 {
+		dir := queue[0]
+		queue = queue[1:]
+		for _, imp := range pkgs[dir] {
+			if under(dir, "pkg/node/apiv1") && !standard(imp) {
+				bad = append(bad, dir+" imports "+imp+" outside the standard library")
+			}
+			dep, ok := strings.CutPrefix(imp, module)
+			if !ok || seen[dep] {
+				continue
+			}
+			seen[dep] = true
+			if !slices.ContainsFunc(cliAllowed, func(a string) bool { return under(dep, a) }) {
+				bad = append(bad, dir+" reaches "+dep)
+			}
+			queue = append(queue, dep)
+		}
+	}
+	slices.Sort(bad)
+	return bad, nil
+}
+
+// Each import rule reports nothing over the module and exactly the violation
+// planted in its testdata tree, beside the allowed look-alikes planted with it.
+func TestImportRules(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rule func(root string) ([]string, error)
+		tree string
+		want []string
+	}{
+		{"no v1 import", v1Imports, "no-v1",
+			[]string{
+				"pkg/store/store.go imports " + module + "pkg/controlplane/runtime",
+				"pkg/store/store_test.go imports " + module + "pkg/controlplane/models",
+			}},
+		{"who imports the node", nodeImporters, "node-importers",
+			[]string{
+				"cmd/dfs/commands/stop.go imports the node",
+				"internal/cli/cli_test.go imports the node",
+				"internal/node/nodetest2/harness.go imports the node",
+			}},
+		{"the CLI's closure", cliClosure, "cli-closure",
+			[]string{"internal/cli/output reaches pkg/metadata"}},
+		{"the wire types' imports", cliClosure, "apiv1-stdlib",
+			[]string{
+				"pkg/node/apiv1 imports C outside the standard library",
+				"pkg/node/apiv1 imports github.com/spf13/cobra outside the standard library",
+			}},
+	} {
+		got, err := tc.rule(filepath.Join("..", ".."))
+		if err != nil {
+			t.Fatalf("%s over the module: %v", tc.name, err)
+		}
+		if len(got) > 0 {
+			t.Errorf("%s over the module: violations %q, want none", tc.name, got)
+		}
+		got, err = tc.rule(filepath.Join("testdata", "arch", tc.tree))
+		if err != nil {
+			t.Fatalf("%s over %s: %v", tc.name, tc.tree, err)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s over %s: violations %q, want %q", tc.name, tc.tree, got, tc.want)
 		}
 	}
 }

@@ -90,10 +90,10 @@ func TestFoldDirectoryIndex(t *testing.T) {
 	ctx := context.Background()
 	cp := f.s.ControlPlane()
 	admin := entity.User{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: entity.NewPrincipalID()}, Name: "admin"}
-	if err := cp.PutUser(ctx, admin); err != nil {
+	if _, err := cp.PutUser(ctx, admin, 0, entity.Alloc{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share, Principal: admin.Principal, Access: entity.AccessAdmin}); err != nil {
+	if _, err := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share, Principal: admin.Principal, Access: entity.AccessAdmin}, 0); err != nil {
 		t.Fatal(err)
 	}
 	id := entity.Identity{Principal: admin.Principal, Privileged: true}

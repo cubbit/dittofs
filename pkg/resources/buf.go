@@ -137,21 +137,52 @@ func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) 
 	if n < 0 {
 		return nil, fmt.Errorf("resources: get a %d-byte buffer", n)
 	}
-	class := classOf(n)
-	charge := n
-	if class != unpooled {
-		charge = capacity(class)
-	}
-	res, err := p.budget.Reserve(ctx, key, int64(charge)+overhead)
+	class, charge := chargeOf(n)
+	res, err := p.budget.Reserve(ctx, key, charge)
 	if err != nil {
 		return nil, fmt.Errorf("resources: get a %d-byte buffer: %w", n, err)
 	}
+	return p.take(class, n, res), nil
+}
+
+// TryGet is Get's one try with no context: it takes Get's charge for key only
+// when it fits and no waiter is ahead of it, and otherwise returns false at
+// once, allocating nothing.
+func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool) {
+	if n < 0 {
+		return nil, false
+	}
+	class, charge := chargeOf(n)
+	res, ok := p.budget.try(key, charge)
+	if !ok {
+		return nil, false
+	}
+	return p.take(class, n, res), true
+}
+
+// Ceiling is the pool's budget's ceiling, what one charge is bounded by.
+func (p *BufPool) Ceiling() int64 {
+	return p.budget.ceiling()
+}
+
+// chargeOf is n's class and what a buffer of n bytes is charged: its class's
+// capacity, or n itself past the largest class, plus the overhead.
+func chargeOf(n int) (class int, charge int64) {
+	class = classOf(n)
+	if class == unpooled {
+		return class, int64(n) + overhead
+	}
+	return class, int64(capacity(class)) + overhead
+}
+
+// take hands out a buffer of n bytes in class, holding res.
+func (p *BufPool) take(class, n int, res Reservation) *Buf {
 	// decision: a buffer past the largest class is charged n and the
 	// overhead exactly, allocated at n, and dropped at its last Release. The
 	// largest class is the pool's own, since a pool is told no protocol.
 	if class == unpooled {
 		mem := make([]byte, n)
-		return &Buf{B: mem, mem: mem, pool: p, class: unpooled, res: res}, nil
+		return &Buf{B: mem, mem: mem, pool: p, class: unpooled, res: res}
 	}
 	b := p.free[class].Get().(*Buf)
 	b.res = res
@@ -170,7 +201,7 @@ func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) 
 	// The count leaves -1 last, so a stale call on the buffer panics until
 	// it is ready to hand out.
 	b.borrowers.Store(0)
-	return b, nil
+	return b
 }
 
 // Retain adds a borrower: the service, the writer, a held request.
@@ -192,6 +223,28 @@ func (b *Buf) borrow(delta int32, released string) (was int32) {
 			return was
 		}
 	}
+}
+
+// Recharge moves b's whole charge to a reservation from to: it reserves the
+// charge from to, and only then releases b's old reservation and keeps the
+// new one, so the charge is never absent. Refused, it returns the error and
+// nothing changes. The last Release then returns the charge to to. A holder
+// calls it, and Charge, while no other holder does.
+func (b *Buf) Recharge(to *Budget) error {
+	res, err := to.Reserve(b.res.n)
+	if err != nil {
+		return err
+	}
+	old := b.res
+	b.res = res
+	old.Release()
+	return nil
+}
+
+// Charge is b's whole charge, its class's capacity and the per-request
+// overhead, which a held request counts against its connection's floor.
+func (b *Buf) Charge() int64 {
+	return b.res.n
 }
 
 // Release drops a borrower; the last release returns the bytes and the

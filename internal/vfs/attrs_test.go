@@ -339,8 +339,8 @@ func TestEveryAttributesCallIsAdmitted(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o644)
-	s.must(t, s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Clients: []entity.ClientRule{
-		{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("192.168.0.0/16")}, Access: entity.AccessNone}}}))
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Clients: []entity.ClientRule{
+		{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("192.168.0.0/16")}, Access: entity.AccessNone}}}, 0)))
 	c := proven(s.alice.Principal, outside)
 	tg := vfs.Target{H: h}
 	calls := map[string]func() error{
@@ -427,7 +427,7 @@ func TestEachAttributeAsksItsOwnRight(t *testing.T) {
 		t.Errorf("a chmod by a caller granted write the ACL: %v", err)
 	}
 	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
-	s.must(t, s.cp.PutGroup(ctx, staff))
+	s.must(t, errOf(s.cp.PutGroup(ctx, staff, 0, entity.Alloc{})))
 	s.must(t, s.cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: s.bob.Principal}))
 	if _, err := s.SetAttr(ctx, bob, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithGroup(staff.Principal)}); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("a chgrp by a non-owner granted write the ACL, not change the owner: %v, want ErrAccess", err)
@@ -605,7 +605,7 @@ func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
 	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
-	s.must(t, s.cp.PutGroup(ctx, staff))
+	s.must(t, errOf(s.cp.PutGroup(ctx, staff, 0, entity.Alloc{})))
 	s.must(t, s.cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: s.bob.Principal}))
 	g := s.file(t, "g", s.alice.Principal, 0o664)
 	_, err := s.fs.Store.Files().SetAttrs(ctx, s.fs.Admin, g, entity.Attrs{}.WithGroup(staff.Principal))

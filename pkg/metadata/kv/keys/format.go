@@ -136,6 +136,7 @@ var kindNames = map[byte]string{
 	KindSL: "SL", KindIN: "IN", KindNSM: "NSM", KindPX: "PX", KindN: "N", KindSH: "SH", KindJ: "J", KindRS: "RS",
 	KindMV: "MV", KindSLOT: "SLOT", KindCFG: "CFG", KindCFGGEN: "CFGGEN", KindSEC: "SEC", KindCL: "CL",
 	KindCLO: "CLO", KindTG: "TG", KindMKP: "MKP", KindIDS: "IDS", KindJD: "JD",
+	KindIK: "IK", KindXP: "XP", KindAU: "AU", KindAUX: "AUX", KindUA: "UA", KindNSR: "NSR",
 }
 
 var fSubNames = map[byte]string{
@@ -150,7 +151,7 @@ var fSubLayouts = map[byte]string{
 var sSubNames = map[byte]string{
 	SInfo: "info", SSt: "st", SNsg: "nsg", SG: "g", SXp: "xp", SSnap: "snap", SCut: "cut", SLive: "live",
 	SSc: "sc", SHd: "hd", SHr: "hr", SUse: "use", SRh: "rh", SOr: "or", SUt: "ut", SPu: "pu", SPj: "pj",
-	SUd: "ud", SQt: "qt", SQx: "qx", SVf: "vf", SFnc: "fnc", SVl: "vl", SShs: "shs", SPr: "pr", SRr: "rr", SDo: "do",
+	SUd: "ud", SQt: "qt", SQx: "qx", SVf: "vf", SFnc: "fnc", SVl: "vl", SShs: "shs", SPr: "pr", SRr: "rr", SDo: "do", SGv: "gv",
 }
 
 var sSubLayouts = map[byte]string{

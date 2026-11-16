@@ -97,13 +97,13 @@ func (t *ErrorTable) mapsEverywhere(err error) bool {
 // zero Status is success in every protocol here: NFS3_OK, NFS4_OK, RPC's
 // SUCCESS and STATUS_SUCCESS are all 0.
 //
-// decision: err is the bare sentinel, which a protocol's typed row never
-// matches, so that row still wins for its own value (§4.5) and goes
-// unchecked: a protocol may hold its own decode or cancel value, send no
-// reply for it, or answer it the fault or success, and only that protocol's
-// tests would see it. The ceiling is that protocol's own value; the
-// catch-all for the sentinel stays checked. Check typed rows too if a
-// protocol is found answering its own value that way.
+// decision: ErrDecode's and ErrCancelled's checks pass the bare sentinel,
+// which a protocol's typed row never matches, so that row still wins for its
+// own value (§4.5) and goes unchecked: a protocol may hold its own decode or
+// cancel value, send no reply for it, or answer it the fault or success, and
+// only that protocol's tests would see it. The ceiling is that protocol's own
+// value; the catch-all for the sentinel stays checked. Check typed rows too if
+// a protocol is found answering its own value that way.
 func (t *ErrorTable) badRow(err error) (ErrorRow, bool) {
 	for _, r := range t.rows {
 		if errors.Is(err, r.Err) && (r.NoReply || r.Hold != nil || r.Status == t.fault || r.Status == 0) {
@@ -111,6 +111,13 @@ func (t *ErrorTable) badRow(err error) (ErrorRow, bool) {
 		}
 	}
 	return ErrorRow{}, false
+}
+
+// typedOnly is t with its typed rows alone, for a check of a typed value that
+// also matches a sentinel's row.
+func (t *ErrorTable) typedOnly() *ErrorTable {
+	rows := slices.DeleteFunc(slices.Clone(t.rows), func(r ErrorRow) bool { return !r.typed() })
+	return &ErrorTable{fault: t.fault, rows: rows}
 }
 
 // Map is err's status for op at v; reply false is a NoReply row.
@@ -146,7 +153,7 @@ func (r ErrorRow) matches(err error, op *Op, v Version) bool {
 // sentinel's, then Ops and Versions, Ops, Versions, neither.
 func rank(r ErrorRow) int {
 	n := 0
-	if _, typed := r.Err.(interface{ Is(error) bool }); !typed {
+	if !r.typed() {
 		n = 4
 	}
 	switch {
@@ -159,6 +166,12 @@ func rank(r ErrorRow) int {
 		n += 3
 	}
 	return n
+}
+
+// typed reports whether r's Err is a typed value: one with an Is method.
+func (r ErrorRow) typed() bool {
+	_, ok := r.Err.(interface{ Is(error) bool })
+	return ok
 }
 
 // overlap reports whether two rows of one rank can match one error,
@@ -195,18 +208,19 @@ func describe(r ErrorRow) string {
 // NewErrorTable's check cannot see. Overturned if a caller must match a
 // decode error's cause.
 var (
-	ErrNotSupported   = errors.New("core: operation not supported")        // absent from the table, or switched off
-	ErrVersion        = errors.New("core: version not served")             // outside Op.Versions
-	ErrNotNegotiated  = errors.New("core: not negotiated")                 // Needs: negotiated
-	ErrNoSession      = errors.New("core: no session")                     // Needs: session
-	ErrNoTree         = errors.New("core: no tree")                        // Needs: tree
-	ErrNoFH           = errors.New("core: no current filehandle")          // Needs: NeedsFH
-	ErrTooLong        = errors.New("core: compound past its cap")          // the compound cap
-	ErrExpired        = errors.New("core: credential expired")             // an expired credential, Op.Expired false
-	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
-	ErrTooManyPending = errors.New("core: too many pending requests")      // Stages.MaxPending
-	ErrDecode         = errors.New("core: cannot decode")                  // a header, an operation's or a member's arguments, a step of the record's walk (§4.1)
-	ErrCancelled      = errors.New("core: cancelled by its client")        // a held or parked request its client cancelled (§6.5); wraps nothing
+	ErrNotSupported   = errors.New("core: operation not supported")                // absent from the table, or switched off
+	ErrVersion        = errors.New("core: version not served")                     // outside Op.Versions
+	ErrNotNegotiated  = errors.New("core: not negotiated")                         // Needs: negotiated
+	ErrNoSession      = errors.New("core: no session")                             // Needs: session
+	ErrNoTree         = errors.New("core: no tree")                                // Needs: tree
+	ErrNoFH           = errors.New("core: no current filehandle")                  // Needs: NeedsFH
+	ErrTooLong        = errors.New("core: compound past its cap")                  // the compound cap
+	ErrReplyTooBig    = errors.New("core: reply past a quarter of the reply pool") // a reply's charge past a quarter of the reply pool's ceiling (§4.3)
+	ErrExpired        = errors.New("core: credential expired")                     // an expired credential, Op.Expired false
+	ErrNotLast        = errors.New("core: not the last member of a chain")         // Park
+	ErrTooManyPending = errors.New("core: too many pending requests")              // Stages.MaxPending
+	ErrDecode         = errors.New("core: cannot decode")                          // a header, an operation's or a member's arguments, a step of the record's walk (§4.1)
+	ErrCancelled      = errors.New("core: cancelled by its client")                // a held or parked request its client cancelled (§6.5); wraps nothing
 	// ErrMoved and ErrDraining are what a request the drain does not serve
 	// gets while the adapter drains: ErrMoved where the service names a
 	// gateway node for the request's share (the move signal), ErrDraining
@@ -220,6 +234,7 @@ var (
 func Errors() []error {
 	return []error{
 		ErrNotSupported, ErrVersion, ErrNotNegotiated, ErrNoSession, ErrNoTree, ErrNoFH,
-		ErrTooLong, ErrExpired, ErrNotLast, ErrTooManyPending, ErrDecode, ErrCancelled, ErrMoved, ErrDraining,
+		ErrTooLong, ErrReplyTooBig, ErrExpired, ErrNotLast, ErrTooManyPending, ErrDecode, ErrCancelled, ErrMoved,
+		ErrDraining,
 	}
 }

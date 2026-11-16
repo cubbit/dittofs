@@ -33,7 +33,7 @@ func TestDeleteShareGates(t *testing.T) {
 				kvs = append(kvs, append(shareKey(share, sub[0]), sub[1:]...), []byte{1})
 			}
 			rows(t, s, kvs...)
-			err := s.ControlPlane().DeleteShare(ctx, share, c.disp)
+			err := s.ControlPlane().DeleteShare(ctx, share, c.disp, 1)
 			if (err == nil) != c.allow {
 				t.Fatalf("DeleteShare = %v, want allowed %v", err, c.allow)
 			}
@@ -61,7 +61,7 @@ func TestDeleteSharePausedNamespace(t *testing.T) {
 		t.Fatalf("a new share's namespaces: %+v", nss)
 	}
 	rows(t, s, gcPauseKey(nss.Namespaces[0].Namespace), []byte{1})
-	if err := s.ControlPlane().DeleteShare(ctx, share, entity.SnapshotsDelete); !errors.Is(err, ErrMoving) {
+	if err := s.ControlPlane().DeleteShare(ctx, share, entity.SnapshotsDelete, 0); !errors.Is(err, ErrMoving) {
 		t.Fatalf("DeleteShare under a pause: %v", err)
 	}
 }

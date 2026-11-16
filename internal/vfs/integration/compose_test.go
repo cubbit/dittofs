@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
@@ -76,10 +77,20 @@ func (c *composition) user(t *testing.T, p entity.Principal, name, uid string, a
 	t.Helper()
 	cp := c.FS.Store.ControlPlane()
 	u := entity.User{Principal: p, Name: name, IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: uid}}}
-	if err := cp.PutUser(t.Context(), u); err != nil {
+	// p may already be a user with a grant, the share's administrator among
+	// them: each write expects what it replaces.
+	old, err := c.FS.Store.Principals().User(t.Context(), p)
+	if err != nil && !merrs.IsNotFoundError(err) {
 		t.Fatal(err)
 	}
-	if err := cp.SetGrant(t.Context(), entity.ShareGrant{Share: c.Share.ID, Principal: p, Access: a}); err != nil {
+	if _, err := cp.PutUser(t.Context(), u, old.Generation, entity.Alloc{}); err != nil {
+		t.Fatal(err)
+	}
+	g, _, err := cp.ShareGrant(t.Context(), c.Share.ID, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cp.SetGrant(t.Context(), entity.ShareGrant{Share: c.Share.ID, Principal: p, Access: a}, g.Version); err != nil {
 		t.Fatal(err)
 	}
 }

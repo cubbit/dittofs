@@ -7,6 +7,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 )
 
 // ShareOf is share id of s as the engine binds it: its tag and shard as the
@@ -40,7 +41,7 @@ func AddShare(tb testing.TB, s *kvstore.Store, name string, limit int64) engine.
 		Root: entity.NewFileID(),
 	}
 
-	if err := s.ControlPlane().PutShare(tb.Context(), sh); err != nil {
+	if _, err := kvstoretest.CreateShare(tb.Context(), s.ControlPlane(), sh); err != nil {
 		tb.Fatalf("enginetest: create share %s: %v", name, err)
 	}
 

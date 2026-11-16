@@ -35,7 +35,7 @@ func fileCodecCases() []codecCase {
 	e := entity.Entry{Parent: fid, Name: []byte("README"), Child: entity.FileID{15: 2}, Type: entity.Regular}
 	d := delta{Modify: t0, Change: t0, Version: entity.VersionOf(11), Cut: 1, Subdirs: -1}
 	uq := entity.Quota{Share: sid, Principal: entity.Principal{Kind: entity.PrincipalUser, ID: pid},
-		Hard: entity.Limit{Bytes: 10}, Soft: entity.Limit{Bytes: 8}, Advisory: entity.Limit{Files: 5000}, Grace: time.Hour}
+		Hard: entity.Limit{Bytes: 10}, Soft: entity.Limit{Bytes: 8}, Advisory: entity.Limit{Files: 5000}, Grace: time.Hour, Version: 3}
 	pq := entity.Quota{Share: sid, Project: 7, Hard: entity.Limit{Files: 1000}}
 	return []codecCase{
 		{"file", f, encodeFile(f),
@@ -49,10 +49,10 @@ func fileCodecCases() []codecCase {
 				"087665726966696572" + "022f61" + "00000000" + "00000000" + "00000000000000000000000000000000",
 			func(b []byte) (any, error) { return decodeFile(sid, fid, b) }},
 		{"quota", uq, encodeQuota(uq),
-			"01" + "01" + hexU64(10) + hexU64(0) + hexU64(8) + hexU64(0) + hexU64(0) + hexU64(5000) + hexU64(uint64(time.Hour)),
+			"01" + "01" + hexU64(10) + hexU64(0) + hexU64(8) + hexU64(0) + hexU64(0) + hexU64(5000) + hexU64(uint64(time.Hour)) + hexU64(3),
 			func(b []byte) (any, error) { return decodeQuota(sid, append([]byte{quotaPrincipal}, pid[:]...), b) }},
 		{"project quota", pq, encodeQuota(pq),
-			"01" + "00" + hexU64(0) + hexU64(1000) + strings.Repeat(hexU64(0), 4) + hexU64(0),
+			"01" + "00" + hexU64(0) + hexU64(1000) + strings.Repeat(hexU64(0), 4) + hexU64(0) + hexU64(0),
 			func(b []byte) (any, error) { return decodeQuota(sid, keys.Uint64([]byte{quotaProject}, 7), b) }},
 		{"soft exceeded since", t0, encodeSince(t0), "01" + "000000006b49d200" + "0000007b",
 			func(b []byte) (any, error) { return decodeSince(b) }},

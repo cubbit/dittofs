@@ -459,6 +459,15 @@ func WithSpares(n int) Option {
 	return func(f *Fixture) { f.settings.SpareTarget = n }
 }
 
+// WithSegmentCap has every open of the journal in Dir give its segments a
+// cap of n bytes instead of the format's own, so the preallocated tail a
+// row reopens over is as small as the row chooses. A row whose writes stay
+// far below the cap pays nothing for it; a row that would roll under it
+// names none.
+func WithSegmentCap(n int64) Option {
+	return func(f *Fixture) { journaltest.SetSegmentCap(&f.settings, n) }
+}
+
 // journalOnly fails a control that acts on the journal in Dir, which
 // WithFakeJournal leaves unread.
 func (f *Fixture) journalOnly(what string) {
@@ -771,7 +780,7 @@ func (f *Fixture) addSecond() {
 		Access:    entity.AccessAdmin,
 	}
 
-	if err := f.FS.Store.ControlPlane().SetGrant(ctx, grant); err != nil {
+	if _, err := f.FS.Store.ControlPlane().SetGrant(ctx, grant, 0); err != nil {
 		f.t.Fatalf("fixture: grant on the second share: %v", err)
 	}
 
@@ -1170,6 +1179,17 @@ func (f *Fixture) FailFile(id entity.FileID) <-chan struct{} {
 
 // Heal lifts every fault: the store serves every call from now on.
 func (f *Fixture) Heal() { f.faults.SetFault(nil) }
+
+// FaultStore makes the store consult s before every call, as kvtest.FaultKV
+// applies it, replacing any fault set before, HoldNextWrite's, HoldWrites'
+// and FailFile's included; Heal lifts it. Crash leaves it in place, so one
+// schedule spans a run's crashes. The test's cleanup heals it before the
+// fixture's close, whose last group commit would otherwise meet it.
+func (f *Fixture) FaultStore(s sim.Fault) {
+	f.t.Helper()
+	f.t.Cleanup(f.Heal)
+	f.faults.SetFault(s)
+}
 
 // fault replaces the store's faults with rules, delays on the fixture's
 // clock, and answers a channel closed once the store first runs a write

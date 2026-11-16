@@ -218,26 +218,34 @@ func TestRows(t *testing.T) {
 	}
 }
 
-// Every refusal of core's has a row, the two drain errors answer nothing, and
-// only the table that holds holds, for HoldFor from the hold's start.
+// Each error is answered by the first row that matches it in NewErrorTable's
+// order, a typed row before a sentinel's, since no row here names operations
+// or versions. Every refusal of core's has a status of its own, the two drain
+// errors answer nothing, and only the table that holds holds ErrDelay, for
+// HoldFor from the hold's start; ErrDelay of DelayResources is answered
+// StatusDelay at once in both tables, by a typed row.
 func TestErrorRows(t *testing.T) {
+	resources := &vfs.Delay{Cause: vfs.DelayResources}
 	for _, holds := range []bool{false, true} {
 		rows := errorRows(holds)
-		find := func(err error) *core.ErrorRow {
-			var found *core.ErrorRow
+		first := func(err error) *core.ErrorRow {
+			var sentinel *core.ErrorRow
 			for i := range rows {
-				if errors.Is(err, rows[i].Err) {
-					if found != nil {
-						t.Errorf("two rows match %v", err)
-					}
-					found = &rows[i]
+				if !errors.Is(err, rows[i].Err) {
+					continue
+				}
+				if _, typed := rows[i].Err.(interface{ Is(error) bool }); typed {
+					return &rows[i]
+				}
+				if sentinel == nil {
+					sentinel = &rows[i]
 				}
 			}
-			return found
+			return sentinel
 		}
 		statuses := map[core.Status]error{}
 		for _, err := range append(core.Errors(), vfs.ErrDelay) {
-			r := find(err)
+			r := first(err)
 			if r == nil {
 				t.Errorf("holds %v: no row maps %v", holds, err)
 				continue
@@ -260,13 +268,16 @@ func TestErrorRows(t *testing.T) {
 				t.Errorf("holds %v: %v has a Hold: %v", holds, err, r.Hold != nil)
 			}
 		}
-		if r := find(vfs.ErrDelay); holds && r != nil && r.Hold != nil {
+		if r := first(vfs.ErrDelay); holds && r != nil && r.Hold != nil {
 			start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 			if got := r.Hold(vfs.ErrDelay, start); !got.Equal(start.Add(HoldFor)) {
 				t.Errorf("the hold ends at %v, want %v after its start", got, HoldFor)
 			}
 		}
-		if find(vfs.ErrNotFound) != nil {
+		if r := first(resources); r == nil || r == first(vfs.ErrDelay) || r.Hold != nil || r.NoReply || r.Status != StatusDelay {
+			t.Errorf("holds %v: %v is answered by %+v; want a typed row answering StatusDelay at once", holds, resources, r)
+		}
+		if first(vfs.ErrNotFound) != nil {
 			t.Errorf("holds %v: a row maps ErrNotFound; the tables leave service errors to the fault status", holds)
 		}
 	}

@@ -1,0 +1,103 @@
+package durability_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+)
+
+// TestTheLossRingLivesPerInstanceAndItsDedupPerDirectory catches a reopen
+// in one process re-reporting a loss found on disk: the (dropped seq, extent)
+// pieces a Lose or a Place has taken live per directory, so a Durability
+// built later on the directory does not publish a piece an earlier one took
+// — while the ring that holds the published events is this instance's own:
+// a reopen starts an empty one, and the previous instance's live events are
+// not a fresh drain's concern. The numbering starts over with the ring; the
+// generation the events' raises move is the directory's still.
+func TestTheLossRingLivesPerInstanceAndItsDedupPerDirectory(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+
+	// A loss record found at open, placed through the first open's layer:
+	// its ring holds the one event, numbered from its own count.
+	first := core.LossEvent{File: file(2), Reason: core.LossCorrupt, Extent: core.Extent{Off: 0, Len: 3}}
+	e.d.Place(first, 9)
+	if got := e.d.Stats().Losses; len(got) != 1 || got[0].SeqNum != 1 {
+		t.Fatalf("the first instance's ring after one Place = %+v, want the one event numbered 1", got)
+	}
+
+	// A reopen: the second Durability on the same directory, bound to the same
+	// streams, the way a close and open in one process builds one. Its ring
+	// starts empty: the pieces are the directory's, the events this
+	// instance's own.
+	reopen := e.newDurability()
+	if got := reopen.Stats().Losses; len(got) != 0 {
+		t.Fatalf("the reopen's ring = %+v, want none: a fresh instance holds no published events, the earlier instance's ring is its own", got)
+	}
+
+	// The same piece placed through the reopen publishes nothing anywhere:
+	// the directory took it, so no open reports the loss record as new. A
+	// new piece placed through the reopen publishes into the reopen's own
+	// ring, numbered from its own count.
+	reopen.Place(first, 9)
+	if got := reopen.Stats().Losses; len(got) != 0 {
+		t.Fatalf("the reopen's ring after re-placing a taken piece = %+v, want none: the piece dedup is the directory's", got)
+	}
+	if got := e.d.Stats().Losses; len(got) != 1 {
+		t.Errorf("the first instance's ring = %+v, want its own one event: a taken piece publishes through no instance", got)
+	}
+	next := core.LossEvent{File: file(2), Reason: core.LossCorrupt, Extent: core.Extent{Off: 8, Len: 3}}
+	reopen.Place(next, 10)
+	if got := reopen.Stats().Losses; len(got) != 1 || got[0].SeqNum != 1 || got[0].Extent != next.Extent {
+		t.Fatalf("the reopen's ring = %+v, want the one new piece, numbered 1 of its own count", got)
+	}
+	if got := e.d.Stats().Losses; len(got) != 1 {
+		t.Errorf("the first instance's ring = %+v, want its own one event: the reopen publishes into its own ring alone", got)
+	}
+
+	// A piece Lost through the first instance publishes nothing through the
+	// reopen: one loss record, one event in the first instance's ring, one
+	// raise of the directory's generation.
+	if _, err := e.d.Lose(ctx, loss(11)); err != nil {
+		t.Fatalf("Lose through the first instance: %v", err)
+	}
+	ev, err := reopen.Lose(ctx, loss(11))
+	if err != nil || ev != (core.LossEvent{}) {
+		t.Fatalf("Lose of an already-reported piece through the reopen = %+v, %v, want the zero event and nil", ev, err)
+	}
+	if lh, _ := e.lossRecords(); len(lh) != 1 {
+		t.Errorf("%d loss records for one dropped piece, want 1", len(lh))
+	}
+	if got := e.d.Stats().Losses; len(got) != 2 {
+		t.Errorf("the first instance's ring after the Lose = %+v, want 2 events: the Place's and the Lose's", got)
+	}
+	if got := reopen.Stats().Losses; len(got) != 1 {
+		t.Errorf("the reopen's ring holds %d events, want 1: another instance's Lose publishes nothing here", len(got))
+	}
+
+	// Place appended nothing, raised nothing and counted nothing, and the
+	// generation the Lose raised is the directory's, through either
+	// instance.
+	if got := e.d.Generation(); got != 1 {
+		t.Errorf("the first instance's generation = %d, want 1: raised once by the one Lose, never by a Place", got)
+	}
+	if got := reopen.Generation(); got != 1 {
+		t.Errorf("the reopen's generation = %d, want the directory's 1", got)
+	}
+
+	// Another directory shares none of it: the same piece placed there is new,
+	// published and numbered from 1, and raises nothing.
+	other := buildEnv(t)
+	other.d.Place(first, 9)
+	p := other.d.Stats()
+	if len(p.Losses) != 1 || p.Losses[0].SeqNum != 1 {
+		t.Errorf("the other directory's ring = %+v, want the piece published anew and numbered 1", p.Losses)
+	}
+	if p.LossGeneration != 0 {
+		t.Errorf("the other directory's generation = %d, want 0", p.LossGeneration)
+	}
+	if got := e.d.Stats().Losses; len(got) != 2 {
+		t.Errorf("the first directory's ring changed to %d events after a Place at another directory, want 2", len(got))
+	}
+}

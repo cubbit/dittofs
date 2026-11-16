@@ -257,6 +257,7 @@ func testConfig(t testing.TB, clock core.Clock, domains Domains) Config {
 		Domains:  domains,
 		Index:    index.New(1 << 20),
 		Dir:      t.TempDir(),
+		Identity: rigIdentity,
 		Counters: counters,
 		MarkLoss: func(core.FileID, core.Extent, core.Version) (index.HeldDelta, []core.SegmentID, error) {
 			return index.HeldDelta{}, nil, nil

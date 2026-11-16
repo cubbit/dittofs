@@ -60,18 +60,25 @@ Examples:
 			return fmt.Errorf("accepts 2 args, received %d", len(args))
 		}
 		return nil
-	}, RunE: cmdutil.Unavailable,
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if !cmd.Flags().Changed("file-mode") {
+			mountFileMode = defaultMode()
+		}
+		if !cmd.Flags().Changed("dir-mode") {
+			mountDirMode = defaultMode()
+		}
+		return cmdutil.Unavailable(cmd, args)
+	},
 }
 
 func init() {
-	defaultMode, modeHelp := getDefaultModeForPlatform()
-
 	mountCmd.Flags().StringVarP(&mountProtocol, "protocol", "p", "", "Protocol to use (nfs or smb) (required)")
 	mountCmd.Flags().StringVarP(&mountUsername, "username", "u", "", "Username for SMB mount (defaults to login username)")
 	mountCmd.Flags().StringVarP(&mountPassword, "password", "P", "", "Password for SMB mount (will prompt if not provided)")
 	mountCmd.Flags().StringVar(&mountNFSVersion, "nfs-version", "3", "NFS protocol version for NFS mounts (3, 4, 4.0, 4.1, 4.2). v4 carries locking in-protocol; v3 locking needs the server UDP transport + portmapper")
-	mountCmd.Flags().StringVar(&mountFileMode, "file-mode", defaultMode, modeHelp)
-	mountCmd.Flags().StringVar(&mountDirMode, "dir-mode", defaultMode, "Directory permissions for SMB mount (octal)")
+	mountCmd.Flags().StringVar(&mountFileMode, "file-mode", "", "File permissions for SMB mount (octal; default 0755 on Linux, 0777 on macOS)")
+	mountCmd.Flags().StringVar(&mountDirMode, "dir-mode", "", "Directory permissions for SMB mount (octal; default 0755 on Linux, 0777 on macOS)")
 
 	_ = mountCmd.MarkFlagRequired("protocol")
 }

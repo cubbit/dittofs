@@ -25,6 +25,15 @@ func main() {
 	out := flag.String("out", "docs/guide/cli.md", "output file path")
 	flag.Parse()
 
+	if err := generate(*out); err != nil {
+		fmt.Fprintf(os.Stderr, "gendocs: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("wrote %s\n", *out)
+}
+
+// generate renders the reference of both command trees and writes it to out.
+func generate(out string) error {
 	var buf bytes.Buffer
 
 	buf.WriteString("# CLI Reference\n\n")
@@ -41,17 +50,25 @@ func main() {
 		{dfsctl.GetRootCmd(), "dfsctl"},
 	} {
 		bin.root.DisableAutoGenTag = true
+		initHelpFlags(bin.root)
 		fmt.Fprintf(&buf, "## `%s`\n\n", bin.name)
 		writeTree(&buf, bin.root)
 		buf.WriteString("\n")
 		writeCommand(&buf, bin.root)
 	}
 
-	if err := os.WriteFile(*out, buf.Bytes(), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "gendocs: %v\n", err)
-		os.Exit(1)
+	return os.WriteFile(out, buf.Bytes(), 0o644)
+}
+
+// initHelpFlags adds the help flag to c and every descendant, as cobra does to
+// a command it executes, and hides it, so the reference lists no help row and
+// does not depend on whether something else touched the tree first.
+func initHelpFlags(c *cobra.Command) {
+	c.InitDefaultHelpFlag()
+	c.Flags().Lookup("help").Hidden = true
+	for _, k := range c.Commands() {
+		initHelpFlags(k)
 	}
-	fmt.Printf("wrote %s\n", *out)
 }
 
 // writeTree renders the command hierarchy as a nested, clickable index. Each

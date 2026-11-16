@@ -10,6 +10,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/datapath"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/platform"
@@ -303,11 +304,16 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// .spare.tmp unlinks and the classes it sorts the segments into. A
 		// read the device never completed refuses the open on its ranges;
 		// a pass that ran answers ErrNotImplemented below.
+		failed, err := durability.FailedFor(dir, ff.Identity)
+		if err != nil {
+			return nil, err
+		}
 		if _, err := recovery.Run(ctx, recovery.Deps{
 			FS:          cfg.Storage,
 			Clock:       cfg.Clock,
 			Tracer:      cfg.Tracer,
 			Log:         cfg.Logger,
+			Failed:      failed,
 			ExtentLimit: s.ExtentLimit,
 		}, floor, expect, marks); err != nil {
 			return nil, err

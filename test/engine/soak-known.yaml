@@ -1,0 +1,17 @@
+# The soak's seeds that fail today over the real journal, one entry per seed, never a pattern.
+# A seed that starts to pass fails the run: remove its entry in the change that turned it
+# green, a journal change included. Each entry's message is the failure it is known by.
+- test: TestSoak/seed=1
+  message: 'holds segments; recovering them is not built'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 10: the soak over the real journal. Its first round of writes, stable writes, Commits, truncates and deallocates runs under the seed''s faults, and the seed stops at its first crash: the restart''s journal Open finds the segments the crash left and answers not implemented, until the journal''s Open recovers them.'
+  issue: '#4206'
+- test: TestSoak/seed=2
+  message: 'holds segments; recovering them is not built'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Epic 10: the soak over the real journal. Its first round of writes, stable writes, Commits, truncates and deallocates runs under the seed''s faults, and the seed stops at its first crash: the restart''s journal Open finds the segments the crash left and answers not implemented, until the journal''s Open recovers them.'
+  issue: '#4206'
