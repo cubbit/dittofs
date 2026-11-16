@@ -74,6 +74,15 @@ func (r *rig) failReadsFrom(name string, from int) {
 	r.scheduleFaults()
 }
 
+// failOpensFrom schedules opens of name failing count times with EIO from
+// the from'th matching call on — every open from it when count is zero —
+// keeping the rules the rig's fault helpers scheduled before it.
+func (r *rig) failOpensFrom(name string, from, count int) {
+	r.t.Helper()
+	r.faults = append(r.faults, kit.FailingFrom(kit.OpOpen, name, from, count, syscall.EIO))
+	r.scheduleFaults()
+}
+
 // scheduleFaults schedules every rule the rig's fault helpers collected as
 // the seam's one fault: each rule fires on its own op, and a leg that both
 // drops a file's syncs and fails its direct reads needs both in the one
@@ -1015,7 +1024,7 @@ func TestTheProofsOpenOfASegmentTakesTheReadersBound(t *testing.T) {
 		r := newRig(t)
 		r.writeFormat()
 		r.plantSeg(2, seg)
-		r.seam.Schedule(kit.FailingFrom(kit.OpOpen, name, proofOpen, 2, syscall.EIO))
+		r.failOpensFrom(name, proofOpen, 2)
 		synced := r.seam.CallsFor(kit.OpSync, name)
 
 		st := runTails(t, r)
@@ -1032,7 +1041,7 @@ func TestTheProofsOpenOfASegmentTakesTheReadersBound(t *testing.T) {
 		r := newRig(t)
 		r.writeFormat()
 		r.plantSeg(2, seg)
-		r.seam.Schedule(kit.FailingFrom(kit.OpOpen, name, proofOpen, 0, syscall.EIO))
+		r.failOpensFrom(name, proofOpen, 0)
 		synced := r.seam.CallsFor(kit.OpSync, name)
 		before := r.fileBytes(name)
 
