@@ -190,7 +190,9 @@ func TestRFC8A_StableWriteLazyExistence(t *testing.T) {
 // far above the journal's counter is bound, and a write over its content is
 // given a version above them. The store stamps its own versions from the
 // clock in nanoseconds, so the floor is set relative to the store's, not at
-// 9·10⁸. With no offload or eviction in this part, a read proves nothing.
+// 9·10⁸. The half left: the offload, eviction and read are the engine's
+// second part's, which offloads; the restore repeat is RFC 12's, and the
+// clone repeat is checked with them, once a read can prove it.
 func TestRFC8A_AttachAboveTheFloor(t *testing.T) {
 	f := enginetest.New(t)
 	ctx := t.Context()
@@ -265,8 +267,10 @@ func lostJournal(f *enginetest.Fixture) bool {
 
 // TestRFC8A_JournalGone, adapted: two shares written without offload, the
 // journal directory deleted, and a restart refuses both shares by name with
-// the device, raises journal_lost and creates no journal. The operator's
-// acknowledgement that serves them again is not built here.
+// the device, raises journal_lost and creates no journal. The half left: the
+// operator's acknowledgement that serves them again, and the Lost read after
+// it, are the engine's second part's; the replicated journal's rejoin is the
+// cluster's.
 func TestRFC8A_JournalGone(t *testing.T) {
 	f := enginetest.New(t)
 	ctx := t.Context()
@@ -312,9 +316,10 @@ func TestRFC8A_JournalGone(t *testing.T) {
 // TestRFC8A_AttachAfterDeviceLoss, adapted: the device's journal destroyed
 // and initialised again, its share is refused by name until the store
 // records the new journal, as the operator's step would, and then attaches
-// to it with its first version above the limit it had. The rewrite of the
-// shards' journal identity and a share whose removal reads offloaded are not
-// built here.
+// to it with its first version above the limit it had. The half left: the
+// operator's acknowledgement that re-initialises the device and rewrites the
+// shards' journal identity, and a share whose removal reads offloaded, are
+// the engine's second part's.
 func TestRFC8A_AttachAfterDeviceLoss(t *testing.T) {
 	f := enginetest.New(t)
 	ctx := t.Context()
@@ -514,7 +519,9 @@ func unsuitableJournal(f *enginetest.Fixture) bool {
 // directory; once the check clears and 30 s pass, the share attaches by
 // itself, its content reads back, its shard's incarnation is raised in the
 // start form, the write verifier differs from before the restart and the
-// condition clears.
+// condition clears. The half left: the second device whose share stays
+// served needs the fixture to run two journal devices, which it adds with
+// the change that composes them.
 func TestRFC8A_UnsuitableJournalAtStart(t *testing.T) {
 	f := enginetest.New(t)
 	_, id := f.File("a")

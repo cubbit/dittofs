@@ -37,7 +37,9 @@ func awaitShut(t *testing.T, f *enginetest.Fixture, file entity.FileID) {
 // §2.3 unbind and drop, adapted (no offload pass): a share with pending writes
 // and a removal batch in flight is unbound, which returns once the batch has,
 // and dropped, after which the journal's figures name no entry for the share
-// and each accepted write had its Done exactly once.
+// and each accepted write had its Done exactly once. The half left: the offload
+// pass in flight that Unbind waits for, and the hold-mark offloads it lets
+// start, are the engine's second part's, which offloads.
 func TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag(t *testing.T) {
 	f := enginetest.New(t)
 	ctx := t.Context()
