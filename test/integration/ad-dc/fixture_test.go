@@ -22,8 +22,7 @@ func TestADFixture(t *testing.T) {
 		t.Skip("docker not found, skipping AD-DC integration test")
 	}
 
-	dcIP, _, _, cleanup := setupADDC(t)
-	defer cleanup()
+	dcIP := setupADDC(t)
 
 	// A client reaching the DC by its host name verifies its certificate
 	// against the exported CA alone, with Go's default verification.

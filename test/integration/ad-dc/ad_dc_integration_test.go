@@ -13,11 +13,11 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -58,13 +58,68 @@ const (
 var adContainerName string
 
 // adNamePrefix starts the name of every image, container and network the
-// fixture makes. DITTOFS_AD_DC_NAME_PREFIX replaces it on a host whose Docker
-// names are shared between users.
-var adNamePrefix = cmp.Or(os.Getenv("DITTOFS_AD_DC_NAME_PREFIX"), "dittofs-ad-dc-test")
+// fixture makes, and is the key of the label they carry. Setting
+// DITTOFS_AD_DC_NAME_PREFIX replaces it on a host whose Docker names are shared
+// between users. It is lowercased because Docker image names must be.
+var adNamePrefix = strings.ToLower(cmp.Or(os.Getenv("DITTOFS_AD_DC_NAME_PREFIX"), "dittofs-ad-dc-test"))
 
 // adRunID tells this run's containers and networks apart from those of any
 // other run on the same Docker host, so two runs never remove each other's DC.
 var adRunID = strings.ToLower(rand.Text()[:8])
+
+// adStaleAge is how old a labelled container, network or image must be before
+// a later run removes it as left behind by a run that was killed before its
+// t.Cleanup ran. It is well above the suite's 20-minute timeout, so a run still
+// in flight on the same host keeps its DC.
+const adStaleAge = time.Hour
+
+var sweepADLeftoversOnce sync.Once
+
+// sweepADLeftovers removes what earlier runs under the same name prefix left
+// behind: a go test timeout panic, Ctrl-C or SIGKILL skips t.Cleanup, and each
+// leaked network holds one of Docker's few default bridge subnets. Containers
+// go first, since Docker refuses to remove a network or image still in use.
+// Failures are only logged: a leftover that stays costs a subnet, not this run.
+func sweepADLeftovers(t *testing.T) {
+	t.Helper()
+	out, err := adDockerOutput("ps", "-a", "--filter", "label="+adNamePrefix,
+		"--format", "{{.ID}}\t{{.CreatedAt}}")
+	if err != nil {
+		t.Logf("list leftover AD-DC containers: %v", err)
+		return
+	}
+	if ids := staleADContainers(string(out), time.Now(), adStaleAge); len(ids) > 0 {
+		t.Logf("Removing %d AD-DC container(s) left by killed runs", len(ids))
+		if out, err := adDockerCombined("rm", append([]string{"-f"}, ids...)...); err != nil {
+			t.Logf("remove leftover AD-DC containers: %v\n%s", err, out)
+		}
+	}
+	until := "until=" + adStaleAge.String()
+	if out, err := adDockerCombined("network", "prune", "-f", "--filter", "label="+adNamePrefix, "--filter", until); err != nil {
+		t.Logf("prune leftover AD-DC networks: %v\n%s", err, out)
+	}
+	if out, err := adDockerCombined("image", "prune", "-a", "-f", "--filter", "label="+adNamePrefix, "--filter", until); err != nil {
+		t.Logf("prune leftover AD-DC images: %v\n%s", err, out)
+	}
+}
+
+// staleADContainers returns the IDs in `docker ps --format '{{.ID}}\t{{.CreatedAt}}'`
+// output whose container was created more than maxAge before now. A line whose
+// time does not parse is left out, so an unexpected format never removes a DC.
+func staleADContainers(psOut string, now time.Time, maxAge time.Duration) []string {
+	var ids []string
+	for _, line := range strings.Split(strings.TrimSpace(psOut), "\n") {
+		id, created, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		at, err := time.Parse("2006-01-02 15:04:05 -0700 MST", created)
+		if err == nil && now.Sub(at) > maxAge {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
 
 // uniqueContainerName derives a Docker container name unique to t and to this
 // run, so a fixture is never shared between tests or between concurrent runs.
@@ -112,33 +167,37 @@ func adDockerExec(args ...string) ([]byte, error) {
 // AD-DC Docker Setup
 
 // setupADDC builds the Samba AD-DC image and runs it on a Docker network of
-// its own, letting its entrypoint provision the domain. Once the setup is done
-// it copies out the exported keytab and writes a krb5.conf pointing at the KDC.
+// its own, letting its entrypoint provision the domain, and returns the DC's
+// IP on that network. t.Cleanup removes the container, network and image.
 //
 // The DC is reached on its container IP, with no port published on the host,
 // so a run never takes a host port another run or user holds. That needs a
 // container IP the host can route to: true of a Linux Docker host, not of
 // Docker Desktop, where these tests fail rather than skip.
-func setupADDC(t *testing.T) (dcIP, keytabPath, krb5ConfPath string, cleanup func()) {
+func setupADDC(t *testing.T) (dcIP string) {
 	t.Helper()
 
-	tmpDir := t.TempDir()
+	sweepADLeftoversOnce.Do(func() { sweepADLeftovers(t) })
 
 	// Address a container private to this test so no other test's teardown can
-	// remove the DC out from under an in-flight docker exec.
+	// remove the DC out from under an in-flight docker exec. The image is tagged
+	// for this run, so a concurrent run's build cannot retag it between this
+	// run's build and its docker run.
 	container := uniqueContainerName(t)
 	network := container + "-net"
+	image := adNamePrefix + ":" + adRunID
+	label := adNamePrefix + "=" + adRunID
 	adContainerName = container
 
 	// Register the teardown before the container exists, so a t.Fatalf anywhere
-	// below cannot orphan the container or its network. The network goes last:
-	// Docker refuses to remove one a container is still attached to.
-	cleanup = func() {
+	// below cannot orphan the container or its network. The network and image go
+	// last: Docker refuses to remove either while a container uses it.
+	t.Cleanup(func() {
 		t.Log("Cleaning up AD-DC container...")
 		_ = exec.Command("docker", "rm", "-f", container).Run()
 		_ = exec.Command("docker", "network", "rm", network).Run()
-	}
-	t.Cleanup(cleanup)
+		_ = exec.Command("docker", "rmi", image).Run()
+	})
 
 	dockerfileDir := findADDockerfileDir(t)
 
@@ -147,7 +206,8 @@ func setupADDC(t *testing.T) (dcIP, keytabPath, krb5ConfPath string, cleanup fun
 	t.Log("Building Samba AD-DC image (slow on first run)...")
 	buildCmd := exec.Command("docker", "build",
 		"--platform", "linux/amd64",
-		"-t", adNamePrefix, dockerfileDir,
+		"--label", label,
+		"-t", image, dockerfileDir,
 	)
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
@@ -155,7 +215,7 @@ func setupADDC(t *testing.T) (dcIP, keytabPath, krb5ConfPath string, cleanup fun
 		t.Fatalf("docker build failed: %v", err)
 	}
 
-	if out, err := adDockerCombined("network", "create", "--label", adNamePrefix, network); err != nil {
+	if out, err := adDockerCombined("network", "create", "--label", label, network); err != nil {
 		t.Fatalf("docker network create %s: %v\n%s", network, err, out)
 	}
 
@@ -171,11 +231,10 @@ func setupADDC(t *testing.T) (dcIP, keytabPath, krb5ConfPath string, cleanup fun
 		"--platform", "linux/amd64",
 		"--privileged",
 		"--name", container,
-		"--label", adNamePrefix,
+		"--label", label,
 		"--network", network,
 		"--hostname", adDCHostname,
-		"--network-alias", adDCHost,
-		adNamePrefix,
+		image,
 	); err != nil {
 		t.Fatalf("docker run failed: %v\n%s", err, out)
 	}
@@ -188,39 +247,35 @@ func setupADDC(t *testing.T) (dcIP, keytabPath, krb5ConfPath string, cleanup fun
 
 	dcIP = getContainerIP(t)
 	t.Logf("AD-DC reachable at %s on network %s", dcIP, network)
+	return dcIP
+}
 
-	// Copy the keytab out of the container. docker cp reads as root inside the
-	// container, so the fixture's chmod 0400 / chown to the dittofs uid does
-	// not block us (it would block a host volume mount).
-	keytabPath = filepath.Join(tmpDir, "dittofs.keytab")
-	if out, err := adDockerCombined("cp",
-		adContainerName+":/keytabs/dittofs.keytab", keytabPath); err != nil {
-		dumpADLogs(t)
-		t.Fatalf("copy keytab: %v\n%s", err, out)
+// getContainerIP returns the IP of adContainerName on its fixture network.
+// On a Linux Docker host this IP is directly reachable from the host, which
+// NETLOGON requires: the endpoint mapper (port 135) and the dynamic RPC ports
+// must all be reachable without NAT. On Docker Desktop container IPs are not
+// host-reachable, so the tests time out and FAIL there (they do not skip).
+func getContainerIP(t *testing.T) string {
+	t.Helper()
+	// Newer Docker engines drop the legacy top-level .NetworkSettings.IPAddress
+	// field, so use the per-network Networks map, populated on both old and new
+	// engines. Emit one IP per line so multiple attached networks don't
+	// concatenate into a single invalid address; the AD-DC fixture attaches only
+	// its own network, so the first non-empty line is the IP we want.
+	out, err := adDockerOutput("inspect",
+		"--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}\n{{end}}",
+		adContainerName,
+	)
+	if err != nil {
+		t.Fatalf("docker inspect network IP: %v", err)
 	}
-
-	// Write a host-side krb5.conf that points the realm KDC at the container
-	// (force TCP). The Samba-generated krb5.conf in the container references
-	// the DC hostname, which the host cannot resolve, so we synthesise a
-	// minimal one like the MIT KDC test.
-	krb5ConfPath = filepath.Join(tmpDir, "krb5.conf")
-	hostKrb5Conf := fmt.Sprintf(`[libdefaults]
-    default_realm = %s
-    dns_lookup_realm = false
-    dns_lookup_kdc = false
-    udp_preference_limit = 1
-    rdns = false
-
-[realms]
-    %s = {
-        kdc = %s:88
-    }
-`, adRealm, adRealm, dcIP)
-	if err := os.WriteFile(krb5ConfPath, []byte(hostKrb5Conf), 0o644); err != nil {
-		t.Fatalf("write krb5.conf: %v", err)
+	for _, line := range strings.Split(string(out), "\n") {
+		if ip := strings.TrimSpace(line); ip != "" {
+			return ip
+		}
 	}
-
-	return dcIP, keytabPath, krb5ConfPath, cleanup
+	t.Fatal("could not determine container IP address from docker inspect")
+	return ""
 }
 
 // copyADCA copies the fixture CA, which issued the DC's TLS certificate, out
