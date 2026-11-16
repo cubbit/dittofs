@@ -563,7 +563,9 @@ when that `G` is empty or a right asked for by name lies outside it
 for a maximal request — computed in the evaluation that admitted it. A
 privileged open's grant is likewise its mapped request (`G` computed with its
 privilege, for a maximal one, §3.5): privilege lifts the check on what was asked, and never
-widens what was asked. A request through any open is refused a right outside
+widens what was asked. A maximal request asks for every right, so its `G` computed with
+privilege, `WRITE_DAC` and `WRITE_OWNER` included, widens nothing. A request through any open is
+refused a right outside
 that grant — a write through a handle opened for read, a DACL set through a
 backup handle opened to read — and a delete on close is decided by the delete in
 the stored grant.

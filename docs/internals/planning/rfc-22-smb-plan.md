@@ -91,7 +91,9 @@ and E5 to E8, for sign-in (§3.2).
   point 14.
 - **A5. RFC 20 §4.3, §7.2 and §9's A5, RFC 17 §3.1: sign-in, principal lookups and session
   setup's client record are outside the one-call rule.** RFC 20 §4.3 leaves out the `Principals`
-  calls (`SignIn`, `Find`) and session setup's client-record calls (`Connect`, `AddSession`, the
+  calls where a request needs them (`SignIn` in `SESSION_SETUP`, `Find` in a request carrying a
+  SID, a principal's name or a security descriptor) and session setup's client-record calls
+  (`Connect`, `AddSession`, the
   `Disconnect` a `PreviousSessionId` runs as the session registry's cleanup, and the `Disconnect`
   with `Last` a `Connect`'s decision sends), and a `Disconnect` with `Last` repeated at a newer
   `Gen`, in any handler. §7.2's record keeps them, with the calls §4.3 already exempts, and its
@@ -359,7 +361,7 @@ rows of RFC 20's deferral ledger.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | SMB surface | `smb/protocol`'s request state; `smb/ops`' handler set, table and `ioctl/` table; the callbacks value | 3 | 3 | team | all |
-| E2 ⛔ | Test foundations | the SMB handler harness on `memory.New` and `vfstest.Faults`; golden files cut from Samba captures; the import test's call-site and file-size rules; the service's halves of A3, A6, A7 and plan gaps 23 and 25 | 4 | 11 | team; T2.4 in B | E3 to E14, but T2.4, beside E3, only T6.1, T8.1, T8.5 and the rows of plan gaps 23 and 25 |
+| E2 ⛔ | Test foundations | the SMB handler harness on `memory.New` and `vfstest.Faults`; golden files cut from Samba captures; the import test's call-site and file-size rules; the service's halves of A3, A6, A7 and plan gaps 23 and 25 | 5 | 11 | team; T2.4 and T2.5 in B | E3 to E14, but T2.4, beside E3, only T6.1, T8.1 and T8.5, and T2.5, after S2b, only the rows of plan gaps 23 and 25 |
 | E3 | Negotiation and the connection's stages | `NEGOTIATE`, `Caps`, signing, encryption, preauthentication, credits, the message-ID window, `HoldCodec`, the error table and its totality test, `ECHO`, `CANCEL` | 9 | 24 | A | E5; S4 |
 | E4 | Authentication mechanisms | `gss`: `Exchanges`, NTLM, Kerberos, SPNEGO, `Identity`, `gsstest` | 6 | 17.5 | B | E5; S4 |
 | E5 🔀 | Sessions | `SESSION_SETUP`, `LOGOFF`, the session registry, the client record, re-authentication, expiry, multichannel, `PreviousSessionId`, the scripted client | 8 | 15 | A | E9; E14 (partly); S4 |
@@ -374,9 +376,9 @@ rows of RFC 20's deferral ledger.
 | E14 🔀 | Wire tests against Samba | the differential runner, SMB scripts per area, the divergence list | 4 | 13 | B | E16 |
 | E15 🔀 | Integration with the node | settings, the SMB suites turned on | none | planned after S7 | team | E16 (partly) |
 | E16 🔀 | E2E green | in-process rows, suites burned down, e2e, Windows and system rows, cross-protocol rows, benchmarks, pins | 7 | 22.5 | team | none |
-| | **Total** | | **87** | **234** | | |
+| | **Total** | | **88** | **234** | | |
 
-**Plan estimate: 87 subtasks, 234 man-days, not counting epic 15.**
+**Plan estimate: 88 subtasks, 234 man-days, not counting epic 15.**
 
 Nor T16.3, the SMB suites' burn-down, which is planned after E15 as E15 is (§6.2, point 12), nor
 the two rows parked in §6.5's deferral ledger: T13.4's Previous Versions and T16.1's remote outage
@@ -399,7 +401,7 @@ flowchart TD
   R1(["RFC 20 S1 core surface frozen"]):::sync --> E1["E1 SMB surface ⛔"]:::blocker --> S1(["S1 SMB surface frozen"]):::sync
   S1 --> E2["E2 Test foundations ⛔"]:::blocker
   R2(["RFC 20 S2 and T6.1"]):::sync --> E2
-  E2 -- "but T2.4" --> S2(["S2 SMB test foundations in CI"]):::sync
+  E2 -- "but T2.4 and T2.5" --> S2(["S2 SMB test foundations in CI"]):::sync
   subgraph A["Track A"]
     E3["E3 Negotiation and stages"] --> E5["E5 Sessions 🔀"]:::sync
     E5 --> E9["E9 Leases, breaks, holds"] --> E10["E10 Durable handles, replay"]
@@ -416,7 +418,8 @@ flowchart TD
     E13["E13 Control codes, snapshots"]
   end
   S2 --> E3 & E4 & E6 & E7 & E12 & E13 & E14
-  E2 -. "T2.4, beside E3" .-> E6 & E7 & E8 & E9
+  E2 -. "T2.4, beside E3" .-> E6 & E8
+  S2b(["S2b stream and directory RFC changes"]):::sync -. "T2.5" .-> E7 & E8 & E9
   E4 --> E5
   E7 -. "CREATE, READ, WRITE rows" .-> E6
   E6 -. "TREE_CONNECT" .-> E9
@@ -433,11 +436,11 @@ flowchart TD
   S3(["S3 SMB scaffold on core: RFC 20 S3 and T6.3"]):::sync -. "loopback" .-> E3
   S3 --> S4(["S4 a guest session over loopback"]):::sync
   E3 & E4 & E5 --> S4
-  E6 -. "guest flag, plan gap 19" .-> S4
-  S4 -. "loopback rows" .-> E6
+  E6 -. "T6.1's guest flag, plan gap 19" .-> S4
+  S4 -. "loopback rows after T6.1" .-> E6
   S4 -. "loopback rows" .-> E11
   S4 --> S4b(["S4b a signed session over loopback"]):::sync
-  S4b -. "signing and encryption rows" .-> E6
+  S4b -. "T6.1's signing and encryption rows" .-> E6
   S4b -. "lease and durable loopback rows" .-> E9 & E10
   S5(["S5 composed in-process node: #4050 E3's nodetest, RFC 20 E7"]):::sync -. "DittoFS side" .-> E14
   S5 -. "in-process rows" .-> E16["E16 E2E green 🔀"]:::sync
@@ -461,11 +464,16 @@ holds its S4 and its epic 7.
 - **S1 SMB surface frozen** (after E1, which starts at RFC 20's S1, when `core`'s §4.7 surface and
   `Bind`'s body exist). The request state, the handler set and its tables and the callbacks value
   compile with stub bodies. Unblocks E2.
-- **S2 SMB test foundations in CI** (after E2 but T2.4, which runs beside E3 (§3.4); E2 needs RFC
+- **S2 SMB test foundations in CI** (after E2 but T2.4 and T2.5, which run beside E3 and after S2b
+  (§3.4); E2 needs RFC
   20's S2, the import test in CI, and its T6.1, `smb/wire`'s framer and header codec). The handler
   harness runs a row on `memory.New`, golden files load from the capture corpus, and the import
   test reports its two new seeded violations. Unblocks every middle epic but those that wait on
   another epic.
+- **🔀 S2b the stream and directory RFC changes** (outside: the RFC pull requests of plan gaps 23
+  and 25, which this plan proposes). RFC 17 §3.0's `OpenRequest` names a stream, and RFC 14 §2.4
+  grants no caching grant on a directory. Unblocks T2.5, and through it T7.5's stream `CREATE`,
+  the stream rows of T8.4, T8.5 and T8.8, and T9.2's directory row.
 - **🔀 S3 SMB scaffold on core** (outside: RFC 20's S3 with its T6.3). An SMB connection runs
   through `core`'s pipeline over loopback, every command answered not supported. Unblocks E3's
   loopback rows and, with E3, E4 and E5, S4.
@@ -500,10 +508,11 @@ holds its S4 and its epic 7.
 | 🔀 RFC 20 S1 | E1 | `core`'s surface and `Bind` are what E1's types plug into |
 | ⛔ E1 | E2, and through it every epic | the request state and handler set every handler epic writes against |
 | 🔀 RFC 20 S2 and T6.1 | E2 | the import test E2 extends, and `smb/wire`'s header the harness decodes |
-| ⛔ E2 | E3, E4, E6, E7, E12, E13 and E14, through S2, but T2.4 | the harness every handler test runs on, and the import test from the first SMB package |
-| T2.4 | T6.1, T8.1 and T8.5; the rows of plan gaps 23 and 25 in E7, E8 and E9 | the service's halves of A3, A6 and A7 that T6.1's `MaximalAccess`, T8.1's names made over NFS and T8.5's stream rename rely on, and the service's changes of plan gaps 23 and 25: no caching grant on a directory, a named stream's open |
+| ⛔ E2 | E3, E4, E6, E7, E12, E13 and E14, through S2, but T2.4 and T2.5 | the harness every handler test runs on, and the import test from the first SMB package |
+| T2.4 | T6.1, T8.1 and T8.5 | the service's halves of A3, A6 and A7 that T6.1's `MaximalAccess`, T8.1's names made over NFS and T8.5's stream rename rely on |
+| T2.5 | the rows of plan gaps 23 and 25 in E7, E8 and E9 | the service's changes of plan gaps 23 and 25, after S2b: no caching grant on a directory, a named stream's open |
 | E3 | E5; S4 | a session needs a negotiated connection, its signing keys and credits |
-| E4 | E5; S4 | T5.3 drives every mechanism and `Identity`, and T5.8 signs in through `gsstest`; E4 starts after T2.4, at S2 + 4.5, and still ends inside E3, at S2 + 22 |
+| E4 | E5; S4 | T5.3 drives every mechanism and `Identity`, and T5.8 signs in through `gsstest`; E4 but T4.3 starts after T2.4, at S2 + 3.5, and ends inside E3, at S2 + 17; T4.3 follows T6.4 (§3.4) |
 | 🔀 E5 | E9; E14, partly; S4 | breaks go to sessions; the wire scripts drive the scripted client |
 | E6 | E9, E11 and S4, partly | their loopback rows need a tree (T6.1), and S4's guest session a share with T6.1's guest flag (plan gap 19) |
 | E7 | E8; E6, E9, E11, E12 and E13, partly | queries, locks, descriptors and control codes resolve E7's `FileId`s; leases and `SecD` ride on `CREATE`; pipes on `IPC$` are reached through E7's `CREATE`, `READ` and `WRITE` rows (T7.5) |
@@ -524,17 +533,20 @@ holds its S4 and its epic 7.
 - **Track A: E3, E5, E9, E10.** The connection and its security, then sessions, then RFC 14's wire
   side: leases, breaks, holds, durable handles and replay. It starts at S2 with `NEGOTIATE` and the
   stages on specification vectors, runs its first loopback rows at S3, and its session setup waits
-  for E4, which track B starts after T2.4 and finishes inside E3; its first session (S4), a guest's,
+  for E4 but T4.3, which track B starts after T2.4 and finishes inside E3; its first session
+  (S4), a guest's,
   waits for no sign-in but for T6.1's guest flag (plan gap 19), and its signed one (S4b) for RFC
   18's plan's S2 (S6a). E9 needs E7's `CREATE` and E6's `TREE_CONNECT`, which tracks C and B finish
   well before. At 70 man-days this is the longest track and the workload's critical path.
-- **Track B: E2's T2.4, E4, E6, E12, E14.** The service's halves of the amendments, then
+- **Track B: E2's T2.4, E4 but T4.3, E6's T6.1 to T6.4, T4.3, T6.5, E12, E14, and T2.5 after
+  S2b.** The service's halves of the amendments, then
   authentication, then trees and the RPC services, then security descriptors, then the wire tests.
   T2.4 comes first, beside E3: it gates only T6.1, T8.1, T8.5 and the rows of plan gaps 23 and 25,
-  and ends at S2 + 4.5, before track C reaches E8 at S2 + 21; its parts for plan gaps 23 and 25
-  still wait for their RFC pull requests. E4 follows because E5 needs it, and within E4, NTLM and
-  SPNEGO come before T4.3, whose rows wait for S6b anyway. T2.4 and E4, 22 man-days, still end
-  inside E3's 24, so E5 starts no later. In E6, `TREE_CONNECT` comes first because every file
+  and ends at S2 + 3.5, before track C reaches E8 at S2 + 21; T2.5, plan gaps 23 and 25's
+  service changes, waits for S2b and for no subtask of the first mount. E4 follows because E5
+  needs it, and its Kerberos subtask T4.3 waits until after T6.4: the first mount needs no
+  Kerberos, and T4.3's rows wait for S6b anyway. T2.4 and E4 but T4.3, 17 man-days, end inside
+  E3's 24, so E5 starts no later. In E6, `TREE_CONNECT` comes first because every file
   request needs a tree. E14's runner and scripts are built against Samba alone and its DittoFS side
   waits for S5. At 66 man-days the track ends about 4 man-days before track A; it then takes E16's
   in-process rows (T16.1, T16.2) as S5 and their epics allow.
@@ -544,8 +556,9 @@ holds its S4 and its epic 7.
   nothing outside the track: E11 then starts about man-day 52 instead of 43. Within E8,
   `QUERY_INFO` and `SET_INFO`, the end of file included, come before directories, reparse points
   and streams. At 66 man-days.
-- **The team.** E1 and E2 but T2.4 before the tracks, which start at S2 without it; E15 at S7;
-  E16 after the tracks. E1, E2 but T2.4, and E16, 32 man-days, are the difference between the
+- **The team.** E1 and E2 but T2.4 and T2.5 before the tracks, which start at S2 without them; E15
+  at S7; E16 after the tracks. E1, E2 but T2.4 and T2.5, and E16, 32 man-days, are the
+  difference between the
   tracks' 202 and the plan's 234.
 - **The FSLogix workload.** One VHDX of 10 to 30 GB per user, held open through one handle all
   session, overwritten at random in 64 KiB pieces, and truncated at sign-out. It can first run at
@@ -573,10 +586,12 @@ user, comes before AD:
   25, so the first mount ships the service's refusal of a stream's rename with no test that can
   fail until then; T16.4's `mount.cifs` and `smbclient` rows signed in with NTLM, but RFC 20 §7.5's
   reconnect, cancel and order rows, which need E10, E11 and E9; sign-in at #4058's S2 and E8
-  (S6a), and S7. About 118.5 man-days: the figures of E1 to E8 named, less about 13.5 for T4.3,
-  T6.5, T8.7 and T8.8, and not counting T16.4's rows or E15, planned after S7. The critical path
-  is E1 → E2 but T2.4 → E3 → E5, 48.5 man-days in series, then S7; T2.4's 4.5 run beside E3, on
-  track B.
+  (S6a), and S7. About 117.5 man-days: the figures of E1 to E8 named, less about 14.5 for T2.5
+  (1), T4.3 (4), T6.5 (3.5), T8.7 (3) and T8.8 (3), and not counting T16.4's rows or E15, planned
+  after S7. The critical path is E1 → E2 but T2.4 and T2.5 → E3 → E5, 48.5 man-days in series,
+  then S7. The other tracks reach the first mount sooner, S2 being at 9.5: track B's T2.4, E4
+  but T4.3 and T6.1 to T6.4 at 41.5 (9.5 + 3.5 + 13.5 + 15), and track C's E7 and T8.1 to T8.6
+  at 46.5 (9.5 + 21 + 16).
 - **Then Kerberos and AD:** T4.3, and T16.4's Kerberos and AD row once S6b holds (#4058's E5 to
   E7).
 - **Off it:** E9 to E14, T6.5, T8.7, T8.8, and the rest of E16. #4053's stress run is not this
@@ -688,10 +703,11 @@ RFC sections: RFC 20 §4.7's `Request.State`, §4.8 (one table for every dialect
 
 ### Epic 2 - Test foundations ⛔
 
-**Epic 2 estimate: 4 subtasks, 11 man-days.**
+**Epic 2 estimate: 5 subtasks, 11 man-days.**
 
 What every SMB test stands on (§1.4), and, beside E3, what the service owes this pull request's
-amendments and plan gaps 23 and 25 before T6.1, T8.1, T8.5 and those gaps' rows rely on it (T2.4).
+amendments and plan gaps 23 and 25 before T6.1, T8.1, T8.5 and those gaps' rows rely on it (T2.4,
+3.5 man-days, and T2.5, 1 man-day after S2b).
 No red suite is registered: `unit` holds no known failures, and the SMB protocol suites are off on
 the branch until the cutover.
 
@@ -704,10 +720,11 @@ sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`).
   leaves outside it not counted (amendments A2 and A5), the reply bytes compared, an error mapped
   through a given table; `vfstest.Mutations` changed to keep each call's reference and answer, so
   the harness exempts a call by the request's context, never by its operation (RFC 20 §7.2), and
-  `pkg/vfs/service.go`'s comment on `Mutates` says so, as RFC 17 §3.0 now does: the calls RFC 20
+  `pkg/vfs/service.go`'s comment on `Mutates` says so, as RFC 17 §3.1 now does: the calls RFC 20
   §4.3 leaves outside the rule are true for it, and the check exempts them by context; its
   own test proving a second mutating call and a wrong byte each fail it, so do a `FreeState` with
-  no revoked answer before it and a `Connect` on a leg that does not complete its setup, and that
+  no revoked answer before it, a `Connect` on a leg that does not complete its setup and a `Find`
+  in a `READ`, and that
   a session setup's `SignIn` and `Connect`, and a `Find` per SID before one `SetACL`, do not.
 - T2.2 Reference captures: a script recording Samba per command area into `test/pcap-corpus/smb`,
   against the AD domain controller and Samba member of `test/smbfuzz`'s fixture rather than a
@@ -724,17 +741,20 @@ sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`).
   NFS finds the parent, since `..` is resolved before the spelling; `Root`'s `MaximalAccess`
   computed for `ForOpen(false)` (RFC 17 §3.0);
   `Rename` through a named stream's open refused before either name is looked up (RFC 17 §5.4),
-  and open state's `CheckChange` refusing it (RFC 14 §9.4). The service's changes of plan gaps 23
-  and 25, as their RFC pull requests settle them, before T9.2's directory row and T7.5's stream
-  `CREATE`: open state granting no caching grant on a directory, and `pkg/vfs`'s `OpenRequest`
-  carrying a stream's name, which `memory.New` passes to open state. Tests: a privileged admin's
+  and open state's `CheckChange` refusing it (RFC 14 §9.4). Tests: a privileged admin's
   `Root` over SMB; on `memory.New`, the refusals A3 leaves to the service, a maximal open refused
   for each of RFC 19 §3.4's two reasons, and a backup-intent maximal open (RFC 19 §3.5): an
   unprivileged caller's granted no right only privilege gives, an admin's answering a
-  `MaximalAccess` with none; RFC 14's L36 rename case in `pkg/openstate`; a caching grant asked on
-  a directory granted none; an open naming a stream the file lacks never answered with the base
-  file. `Rename`'s own refusal has no test that can fail until `memory.New` opens a named stream
-  (plan gap 25); RFC 22 §18's §12.1 row in T8.8 is then its test.
+  `MaximalAccess` with none, and an admin's maximal open with no backup intent, the DACL granting
+  `READ`, granted `READ` alone (what `forOpen` before the grant guards); RFC 14's L36 rename case
+  in `pkg/openstate`.
+- T2.5 The service's changes of plan gaps 23 and 25, after S2b, before T9.2's directory row and
+  T7.5's stream `CREATE`: open state granting no caching grant on a directory, and `pkg/vfs`'s
+  `OpenRequest` carrying a stream's name, which `memory.New` passes to open state. Tests: a
+  caching grant asked on a directory granted none; an open naming a stream the file lacks never
+  answered with the base file; a `SetAttr` setting `DeleteOnClose` through a named stream's open
+  refused `ErrInvalid`, the base file kept. `Rename`'s own refusal through a stream's open is then
+  testable: RFC 22 §18's §12.1 row in T8.8 is its test.
 
 ### Epic 3 - Negotiation and the connection's stages
 
@@ -951,7 +971,7 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
   and round-tripping.
 - T7.5 `CREATE`: one `Open` with disposition, access, deny mode, directory, name and the options of
   Appendix D; open by file ID and shared virtual disks refused; a named stream opened through
-  T2.4's field as plan gap 25 settles; a stream's delete refused before the call, from the request
+  T2.5's field as plan gap 25 settles; a stream's delete refused before the call, from the request
   alone (§12.1); the reply's `MaximalAccess` and `QFid`; §16.5's read-only narrowing
   (`ErrReadOnly`, T3.8's row); §18's generic-rights and delete-through-the-parent rows on
   `memory.New`. E7 owns the dispatch from the `CREATE`, `READ` and `WRITE` rows to a pipe on `IPC$`
@@ -979,7 +999,10 @@ Appendix F's reparse codes; RFC 20 §4.9's `Fit`, §6.10's `QUERY_INFO` gate.
 - T8.1 The name mapping of §12.3 and Appendix B (plan gap 27): its three cases on `posix` and
   `windows` shares, hidden names, unpaired surrogates, forbidden characters and device names
   refused on create and rename; on `memory.New`, a name with a reserved character that a call over
-  NFS made on a `windows` share shown over SMB in its private-use spelling (A7).
+  NFS made on a `windows` share shown over SMB in its private-use spelling (A7); a component
+  split at its first `:` before §12.3's checks, which apply to each part (`CON:s` and `a:s*t`
+  refused, a stream name of 300 characters refused); a trailing space or period sent over SMB
+  stored on a `posix` share and refused on a `windows` one.
 - T8.2 Information-class codecs (Appendix E), with the `QUERY_INFO` 0-allocation gate.
 - T8.3 `QUERY_INFO`, file and file-system classes: §16.3's attribute bits and times, allocation from
   `Charged`, derived file IDs never the `FileID`, the volume serial, `NTFS` and Appendix E.2's
@@ -1018,7 +1041,7 @@ bounds by cause; Appendix D's `RqLs`; Appendix G's `OPLOCK_BREAK`; RFC 20 §3.3'
 - T9.1 Lease and oplock codecs: break notifications and acknowledgements in both forms.
 - T9.2 Caching requests on `CREATE`: lease key, parent, epoch and version, oplock levels as grant
   kinds; none for a guest or null session; the join test through `OpenRequest.Conn` (plan gap
-  18); the service grants none on a directory (RFC 22 §6.2; plan gap 23, T2.4) and refuses the
+  18); the service grants none on a directory (RFC 22 §6.2; plan gap 23, T2.5) and refuses the
   other-file key with
   `ErrInvalid` (RFC 14 §2.4); the adapter encodes `OpenResult.Grant` in the response's lease
   context.
@@ -1214,7 +1237,9 @@ SMB rows.
   open across a restart, a session after a restart, §16.6's persistent state and a lock-sequence
   replay across a restart, and the workload's I/O at 30 GB with its
   sign-out truncate read back cold, guest first and with a lease and a persistent handle once S6a
-  holds.
+  holds. The workload row runs at 1 GB in the PR tier's in-process cell, and at 30 GB in a
+  nightly cell on ditto (`host:dedicated`, its `/cache` volume), since 30 GB fits no standard
+  runner's `t.TempDir()`.
 - T16.3, planned after E15: `smbtorture`, `smbtorture/kerberos` and `wpts` burned down to the
   failures RFC 22 §18 names (`smb2.streams.io`, `.names`, `.rename`, `.rename2`,
   `.basefile-rename-with-open-stream`), the (cluster) rows, `rpc.witness` among them, and plan gap
@@ -1241,8 +1266,12 @@ SMB rows.
   added to `bench/ditto/night.sh` rather than a nightly cell of their own: that script mounts with
   the kernel client and turns encryption off on the adapter (its line 161), so the step drives the
   scripted client against each target's port directly, with the target's encryption allowed for
-  the step, and score.py compares the two targets as it does the other steps. A night of one
-  repeat takes about 1 h 30 min of `perf-night`'s 3 h, so the step fits under its `STOP_AFTER`;
+  the step, and score.py compares the two targets as it does the other steps; a run at a credit
+  target of 512 with 8 MiB `READ` and `WRITE`, the figures RFC 22 §3.3's `ponytail:` rests on. A
+  night of one repeat takes about 1 h 30 min of `perf-night`'s 3 h, measured without this step,
+  so the step is held to 60 minutes across both targets, each run's length set to fit, and the
+  night still ends inside `STOP_AFTER`'s 2 h 55 min; the profile-container soak is a cell of its
+  own, outside the night;
   a cell of its own would need its own host lock, setup and reporting, and is the move when the
   night outgrows the box. A profile-container soak, the `core` soak under real traffic of RFC
   20's plan's ledger.
@@ -1394,8 +1423,8 @@ settled keeps its number, with what settled it.
     directory none, but the adapter learns the file's type only from `OpenResult`, after open state
     has granted, and no RFC has the service refuse it: RFC 14 has no such rule, and
     `feat/storage-v2`'s open state grants on any file. Proposed for the RFC pull request: RFC 14
-    §2.4 grants no caching grant on a directory until directory leases (RFC 22 §20, point 4); T2.4
-    makes the service's change once it settles. Epics 2 and 9.
+    §2.4 grants no caching grant on a directory until directory leases (RFC 22 §20, point 4); T2.5
+    makes the service's change once it settles (S2b). Epics 2 and 9.
 24. **Encryption nonces** (RFC 22 §3.2, §4.2). Neither RFC 22 nor this plan says how a GCM or CCM
     nonce is chosen, and a session's channels share one key (T5.6); a nonce repeated under one key
     breaks GCM. Proposed for the RFC pull request: RFC 22 §3.2 names the source, such as a
@@ -1407,13 +1436,13 @@ settled keeps its number, with what settled it.
     `OpenRequest` and `pkg/vfs`'s have no field for it, and the store creates no stream yet (RFC
     17's plan, §5 point 3's `Files.Streams` row). So T7.5's stream `CREATE` and the §12.1 rows of
     T8.4, T8.5 and T8.8 cannot run on `memory.New`. Proposed for the RFC pull request: RFC 17 §3.0's
-    `OpenRequest` carries the stream's name, which T2.4 adds to `pkg/vfs` and `memory.New` once it
-    settles. The same pull request settles whether RFC 17 §5.4's `renameAt` answers a stream's
-    rename itself or asks open state's check, and fixes two RFC 17 sketches: §3.0's `openLocked`
-    drops `Rights`' errors (`g, _ :=`, `max, _ :=`) where `internal/vfs/opens.go` returns
-    `storeErr`, and calls `Rights` a third time where the code reuses the first result; §5.4's
-    calls `s.authz.Grant` and `isStream`, which are defined nowhere (`authz` has `Decide` and
-    `Rights`). Epics 2, 7 and 8.
+    `OpenRequest` carries the stream's name, which T2.5 adds to `pkg/vfs` and `memory.New` once it
+    settles (S2b). Who refuses a stream's rename is settled by A6: `renameAt` refuses it first,
+    `ErrAccess` from the open's grant, else open state's `ErrInvalid` (RFC 17 §5.4, RFC 14 §9.4);
+    the same pull request writes that branch of RFC 17 §5.4's sketch, a comment until `OpenRequest`
+    names the stream, and fixes §3.0's `openLocked` sketch, which drops `Rights`' errors
+    (`g, _ :=`, `max, _ :=`) where `internal/vfs/opens.go` returns `storeErr`, and calls `Rights`
+    a third time where the code reuses the first result. Epics 2, 7 and 8.
 26. **An exact-name `QUERY_DIRECTORY` pattern** (RFC 22 Appendix G's `QUERY_DIRECTORY` row; §5.1,
     §12.2, §12.3). Appendix G maps `QUERY_DIRECTORY` to `ReadDir` alone, so a pattern without
     wildcards, which Windows sends to probe one name, scans the directory by cursor. Settled in
@@ -1587,6 +1616,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
+| Witness, RFC 22 §14 (amendment A1; §6.2, point 13) | **(cluster)**: one node has no other node to move a client to | the cluster stage | a share served by more than one node |
 | `/durable-handles`, v1's listing of durable opens, which RFC 20's plan's ledger gives this plan (plan gap 13, §6.4) | RFC 23 defines no endpoint or record for it, and RFC 23's plan (#4050) builds none | unowned | RFC 23 adds an endpoint over RFC 14 §8.1's durable opens |
 | T13.4, Previous Versions, with §18's §15 rows (E13; §6.2, point 9) | `Snapshots` answers an empty list until RFC 12's store view, which #3119 leaves for later; kept in E13, it would stall track C on RFC 12 | the stage that builds RFC 12's store view, running T13.4 as written here | RFC 12's store view answers `Snapshots` |
 | T16.1's remote outage on reads on the composed node, §18's §16.5 row (E16; §7) | a journal-only node has no remote tier to fail; the row's `memory.New` half, through `vfstest.Faults`, stands in T7.6 and T9.5 | RFC 8's second part, the remote tier (stage 3 of #3119, planned separately) | a composed node with a remote tier |

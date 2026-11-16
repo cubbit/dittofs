@@ -1392,7 +1392,10 @@ type Handler[Req, Rep any] func(ctx context.Context, r *core.Request, req *Req) 
   ([RFC 14 §5.3](rfc-14-open-state.md#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)):
   that frees state the service already ended and changes no file, so it is not
   a second call either. Calls in the
-  `Principals` area (`SignIn`, `Find`) are outside the one-call rule. So are
+  `Principals` area are outside the one-call rule only where a request needs
+  them: `SignIn` in a request that sets up a session (SMB's `SESSION_SETUP`),
+  and `Find` in a request that carries a SID, a principal's name, or a
+  security descriptor or ACL that names one. So are
   session setup's client-record calls (`Connect`, `AddSession`, the
   `Disconnect` a `PreviousSessionId` runs as the session registry's cleanup,
   and the `Disconnect` with `Last` a `Connect`'s decision sends, §3.2), and a
@@ -1533,7 +1536,7 @@ type Mechanism interface {
 // and the per-message operations the mechanism defines.
 type Context struct {
 	Evidence vfs.Evidence // RFC 18 §3.1 through RFC 17 §3.0's alias: principal, SIDs, expiry
-	Keys    vfs.Keys        // RFC 18 §3.1's Session, Subkey and APRep, with Session's chain as RFC 18 §3.1 states it (NTLM's exported session key, or RFC 4121 §2's context key); never in an Identity
+	Keys    vfs.Keys        // RFC 18 §3.1's Session, Subkey and APRep; Session is NTLM's exported session key, or RFC 4121 §2's context key (the authenticator's subkey when present); never in an Identity
 	MIC     func(msg []byte) ([]byte, error)            // RFC 4121: krb5i, the RPCSEC_GSS verifier
 	Wrap    func(msg []byte) ([]byte, error)            // RFC 4121: krb5p
 	Unwrap  func(tok []byte) ([]byte, error)
@@ -3216,9 +3219,10 @@ request it came in, never by its operation alone, since `FreeState`,
 `FreeState` of the reference that request's call was answered `ErrState`
 (`Revoked`) for, a `Disconnect` with `Last` at the `Gen` that request's
 previous `Disconnect` returned, session setup's client-record calls in the
-leg that completes the setup, and the `Principals` calls. So a `FreeState`
-with no revoked answer before it, or a `Connect` on every leg, still fails
-the test. A handler that answers from adapter state where it should have
+leg that completes the setup, and a `Principals` call in a request §4.3 names
+for it. So a `FreeState` with no revoked answer before it, a `Connect` on
+every leg, or a `Find` in a `READ`, still fails the test. A handler that answers from adapter
+state where it should have
 called the service is caught by the same record: the missing call shows as a
 missing entry (§4.3). Read-only calls are not asserted, so a handler free to
 fetch attributes once rather than twice does not break its test. The service

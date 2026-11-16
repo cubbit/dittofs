@@ -2115,12 +2115,10 @@ exists, for the target:
 
 ```go
 func (s *Filesystem) renameAt(ctx context.Context, c Caller, from Target, fromName []byte, to Handle, toName []byte, noReplace bool) (RenameResult, error) {
-	if from.Open != nil && isStream(from.Open) { // before either name is looked up, so the answer shows neither the target nor the base's name
-		if err := s.authz.Grant(ctx, c, from.Open, Delete); err != nil { // the open's grant, as authz.Rename checks it (§4.6): ErrAccess without DELETE
-			return RenameResult{}, err
-		}
-		return RenameResult{}, ErrInvalid // open state's refusal (RFC 14 §9.4), answered here: a stream has no entry, so nothing is renamed
-	}
+	// A named stream's open is refused here, before either name is looked up,
+	// as the paragraph below says: ErrAccess when its grant holds no DELETE,
+	// as authz.Rename checks any open (§4.6), else open state's ErrInvalid
+	// (RFC 14 §9.4). Its code comes with OpenRequest naming the stream.
 	src, err := s.lookup(ctx, c, from.H, fromName) // ErrNotFound
 	if err != nil {
 		return RenameResult{}, err
@@ -2189,7 +2187,8 @@ func (s *Filesystem) renameAt(ctx context.Context, c Caller, from Target, fromNa
 `from.Open` is a named stream's open, and a `SetAttr` setting or clearing
 `DeleteOnClose` through one, are refused `ErrAccess` when the open's grant
 holds no `DELETE`, as on any file, and otherwise `ErrInvalid` by open state,
-changing nothing
+the layer that knows the open is a stream's and that also refuses its
+disposition, changing nothing
 ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)): a stream has
 no entry
 ([RFC 7 §2.7](rfc-7-namespace-metadata.md#2.7%20Extended%20attributes%20and%20named%20streams)).

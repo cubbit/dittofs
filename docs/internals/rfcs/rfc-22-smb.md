@@ -660,8 +660,8 @@ card. A client asks for the server's addresses
 - When a gateway node is lost, its sessions, tree connects and the volatile
   halves of FileIds go with it
   ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
-- The client reaches a surviving node through a floating address or Witness
-  ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)), sets up a new
+- The client reaches a surviving node through a floating address or Witness,
+  **(cluster)** ([RFC 15 §5.3](rfc-15-topology.md#5.3%20Client%20addressing)), sets up a new
   session, tree connects, and reconnects its durable and persistent opens
   ([§6.4](#6.4%20Durable%20and%20persistent%20handles)).
 - **`PreviousSessionId` is honoured on the node that holds it.** A
@@ -2037,7 +2037,9 @@ SMB carries UTF-16. Three cases:
 
 A UTF-16 name with an unpaired surrogate is `STATUS_OBJECT_NAME_INVALID`.
 
-**Names SMB refuses to create.** A name an SMB client sends to create or rename
+**Names SMB refuses to create.** A path component is split at its first `:`
+into a base name and a stream name before these checks (§12.1), which apply
+to each part. A name an SMB client sends to create or rename
 to **MUST** be refused with `STATUS_OBJECT_NAME_INVALID` when it contains a
 character MS-FSCC 2.1.5.2 forbids in a component — a control character or one
 of `" * / : < > ? \ |` — or when it is a reserved device name, from the one
@@ -2057,7 +2059,12 @@ themselves, as a Windows server stores them, so a Mac saving
 `Q3: draft.docx` creates `Q3` U+F022 ` draft.docx` and sees it again; no stored
 name there can hold a reserved character to map. On a `posix` share a device
 name made over NFS is listed and openable over SMB, since refusing it there
-would hide a file another protocol made under a valid name.
+would hide a file another protocol made under a valid name. There only
+Appendix B's code points, up to U+F029, spell a reserved character; U+F02A to
+U+F07F are ordinary characters. A trailing space or period an SMB client sends
+is stored on a `posix` share, which makes no promise across protocols, though a
+Windows client then cannot open the name; on a `windows` share RFC 7 §3.8
+refuses it.
 
 Example, on a `posix` share: build01 creates `a:b` over NFS; alice-pc sees it with the colon shown
 as U+F022 and can open it. A name in a legacy 8-bit encoding is not shown on
