@@ -615,11 +615,14 @@ type MachineJoin struct {
 	Account      string    // the computer account's name, with its $
 	Owner        []byte    // the computer object's owner, a binary SID, as the join read it
 	Delegation   []byte    // its msDS-AllowedToActOnBehalfOfOtherIdentity as read, empty when unset
+	Names        []string  // the account's service names, with the directory's sPNMappings applied
 	LastRotation struct {
-		At     time.Time // store time
-		Failed bool      // cleared only by a rotation completed
-		Tag    uint32    // the key version number sealed with the version
-		Read   uint32    // the number the confirm read; differs from Tag on a reported mismatch
+		At        time.Time // store time
+		Confirmed time.Time // store time of the last rotation confirmed; a failed rotation leaves it
+		Version   uint64    // the secret version the rotation sealed
+		Failed    bool      // cleared only by a rotation completed
+		Tag       uint32    // the key version number sealed with the version
+		Read      uint32    // the number the confirm read; differs from Tag on a reported mismatch
 	}
 }
 
