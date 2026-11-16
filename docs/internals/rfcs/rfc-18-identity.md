@@ -1172,11 +1172,13 @@ no user, or a guest one, naming the guest account.
 
 ### 3.7 Disabled and deleted principals
 
-- A principal whose record is `Disabled`, or marked deleted
-  ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)),
-  **MUST** fail sign-in with `ErrLogonFailure` (logon outcome `disabled`), and
-  **MUST** be refused at resolution on every call, whatever evidence its
-  connection holds. The second rule is what stops a session or GSS context set
+- A principal whose record is `Disabled` **MUST** fail sign-in with
+  `ErrLogonFailure` (logon outcome `disabled`). One marked deleted
+  ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer))
+  has lost its name indexes in the mark's own transaction, so it is found by no
+  name: its sign-in **MUST** fail as an unknown name's does, `ErrLogonFailure`
+  with logon outcome `logon_failure`. Both **MUST** be refused at resolution on
+  every call, whatever evidence their connection holds. The second rule is what stops a session or GSS context set
   up before the change, within §7.2's bound.
 - A directory account is disabled when the directory says so, or when it
   answers "no such entry" for a principal it once minted (§5.1).
@@ -1788,7 +1790,7 @@ type Caller struct {
 	Groups        []metadata.Principal // the closure, sorted
 	DenyOnly      []metadata.Principal // principals the proof marked deny-only (§3.4); empty when squashed
 	Access        metadata.ShareAccess // the grant's level, narrowed to read where admission narrowed it (§6.4)
-	ReadOnly      ReadOnlyCause        // why Access is read: NotNarrowed, Grant (the grant's own level) or Share (a client rule or the policy's ReadOnly flag)
+	ReadOnly      ReadOnlyCause        // why Access is read: ReadOnlyNotNarrowed, ReadOnlyGrant (the grant's own level) or ReadOnlyShare (a client rule or the policy's ReadOnly flag)
 	Authenticated bool                 // §6.5
 	Admin         bool                 // §6.5
 	Privileged    bool                 // §6.5; a protocol may confine it to an open (RFC 19 §3.5)

@@ -291,6 +291,12 @@ that needs it.
   - an operator's `krb` link takes the directory's SID from a fresh answer only, as a rename does;
   - O3 records the tree kept across a guest or anonymous re-authentication, RFC 22's to close; O5
     closes what #4050 now names; O9 records which `identity.directory` row is kept.
+- **A19. Leftovers from the epic breakdowns' reviews** (RFC 18 §3.7 and §6.1):
+  - a principal marked deleted signs in as an unknown name does, logon outcome `logon_failure`, and
+    only a `Disabled` one gets `disabled`: RFC 16 §3's `DeleteUser` deletes the name indexes in the
+    mark's transaction (RFC 23 epic 2's R39, R40), so sign-in finds it by no name (epic 4's R14);
+  - `ReadOnlyCause`'s values are `ReadOnlyNotNarrowed`, `ReadOnlyGrant` and `ReadOnlyShare`, the
+    prefixed names epic 1 declares.
 
 ## 1. Introduction
 
@@ -319,7 +325,7 @@ What replaces what:
 | develop's LDAP `idmap: rid` mode, a uid derived from a RID and so stable across installations | uids and gids allocated from `identity.id_range` (RFC 18 §2.3) | dropped |
 | develop's LDAP `nested_groups`, `max_group_results` and `timeout` | nesting always followed (`tokenGroups`, D6), the group cap (RFC 18 §2.5), RFC 18 §5.1's query timeout and bound | dropped as settings |
 | develop's `User.DisplayName` and `LastLogin` | none: RFC 16 §2.3's `User` holds neither | dropped |
-| `dfsctl user create --host-uid` and `--host-gid` | the uid and gid of RFC 23 §3.5's user write | rebuilt by RFC 23's plan |
+| `dfsctl user create --host-uid` and `--host-gid` | `--uid` and `--gid`, the uid and gid of RFC 23 §3.5's user write | rebuilt by RFC 23's plan's epic 6 (T6.5) |
 | squash modes `root_to_admin`, `all_to_admin` | `Squash` of `none`, `root` or `all` (RFC 18 §6.2), admin only from a share grant (ID6) | dropped |
 | develop's `kerberos.max_clock_skew` | a fixed 5 minutes (RFC 18 §3.3) | dropped |
 | develop's `kerberos.identity_mapping.default_uid`, a uid for a principal not in the static map | a refusal: a Kerberos name no step maps is refused (RFC 18 §4.2) | dropped |
