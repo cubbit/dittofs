@@ -3,6 +3,7 @@ package node_test
 import (
 	"errors"
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
@@ -39,5 +40,24 @@ func TestNewRefusesAKVWithNoInstallation(t *testing.T) {
 	}
 	if err := db.View(t.Context(), func(kv.Reader) error { return nil }); err == nil {
 		t.Error("the KV after a refused New: a View succeeded, want it closed")
+	}
+}
+
+// The engine's series are in the registry the node was handed from New on,
+// so a scrape answers them before anything starts.
+func TestEngineSeriesRegistered(t *testing.T) {
+	h := nodetest.New(t)
+	mfs, err := h.Metrics().Registry().Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var got []string
+	for _, mf := range mfs {
+		got = append(got, mf.GetName())
+	}
+	for _, want := range []string{"dittofs_engine_self_fences_total", "dittofs_engine_stability_points_total", "dittofs_engine_pending_existence_ops", "dittofs_engine_read_seconds"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("series after New: %s missing from %v", want, got)
+		}
 	}
 }

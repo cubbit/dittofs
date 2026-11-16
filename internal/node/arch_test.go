@@ -2,15 +2,20 @@ package node
 
 import (
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io/fs"
+	"iter"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -20,7 +25,9 @@ var configFields = []string{"Bootstrap", "KV", "Clock", "Metrics", "Logger"}
 
 // nodeExports returns the violations of the node's surface in the package
 // whose sources are in dir: an exported package-level declaration other than
-// New, Node and Config; an exported method of Node other than Start and Stop;
+// New, Node and Config; an exported method of Node other than Start and Stop,
+// or of another exported type, a method of an unexported type being no part
+// of the surface;
 // a field Node embeds, whose methods it would promote, or exports; a Config
 // whose fields are not exactly configFields; a method whose receiver it cannot
 // name, which it reports rather than skips; and each of New, Node, Config,
@@ -64,7 +71,9 @@ func nodeExports(dir string) ([]string, error) {
 					recv = s.X
 				}
 				if id, ok := recv.(*ast.Ident); ok {
-					note(id.Name + "." + d.Name.Name)
+					if id.IsExported() {
+						note(id.Name + "." + d.Name.Name)
+					}
 				} else {
 					bad = append(bad, "unresolved receiver of "+d.Name.Name)
 				}
@@ -238,17 +247,14 @@ func v1Imports(root string) ([]string, error) {
 
 // nodeImporters returns each file under root, tests included, that imports
 // the node but may not: only the server's start command and the test harness
-// build a node, and the node's own external tests drive it.
+// build a node.
 func nodeImporters(root string) ([]string, error) {
 	var bad []string
 	err := walkImports(root, true, func(file string, imports []string) {
 		// decision: the harness under internal/node/nodetest is the one
 		// importer besides dfs start, because it drives a whole node in tests
-		// as dfs start does in production; the node's own _test.go files are
-		// its tests, in package node_test only because they use the harness,
-		// which imports the node. No other exemption is named.
-		ownTest := path.Dir(file) == "internal/node" && strings.HasSuffix(file, "_test.go")
-		if file == "cmd/dfs/commands/start.go" || under(file, "internal/node/nodetest") || ownTest {
+		// as dfs start does in production; no other exemption is named.
+		if file == "cmd/dfs/commands/start.go" || under(file, "internal/node/nodetest") {
 			return
 		}
 		if slices.Contains(imports, module+"internal/node") {
@@ -352,5 +358,248 @@ func TestImportRules(t *testing.T) {
 		if !slices.Equal(got, tc.want) {
 			t.Errorf("%s over %s: violations %q, want %q", tc.name, tc.tree, got, tc.want)
 		}
+	}
+}
+
+// componentAllowed reports whether a package under internal/node but node
+// and nodetest may import the module's package rel: none it allows is a
+// component's implementation. Everything else it reaches through an interface
+// it declares or a value the node hands it.
+func componentAllowed(rel string) bool {
+	return strings.HasPrefix(rel, "internal/node/") || rel == "pkg/health" || rel == "pkg/metrics"
+}
+
+// componentImports returns, for every package below root but root itself,
+// nodetest and testdata, each import of its non-test files, whatever their
+// build tags, that is neither the standard library nor on componentAllowed.
+func componentImports(root string) ([]string, error) {
+	var bad []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path != root && (d.Name() == "nodetest" || d.Name() == "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Dir(path) == root || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		for _, imp := range f.Imports {
+			p, _ := strconv.Unquote(imp.Path.Value)
+			rel, inModule := strings.CutPrefix(p, module)
+			std := !strings.Contains(strings.Split(p, "/")[0], ".")
+			if std || inModule && componentAllowed(rel) {
+				continue
+			}
+			r, _ := filepath.Rel(root, path)
+			bad = append(bad, filepath.ToSlash(r)+" imports "+p)
+		}
+		return nil
+	})
+	return bad, err
+}
+
+// No package under internal/node but node and nodetest imports a component's
+// implementation; a planted package importing the engine is caught.
+func TestNoComponentImports(t *testing.T) {
+	for _, tc := range []struct {
+		root string
+		want []string
+	}{
+		{".", nil},
+		{"testdata/arch/component-import", []string{"api/server.go imports github.com/cubbit/dittofs/pkg/block/engine"}},
+	} {
+		got, err := componentImports(tc.root)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.root, err)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: violations %q, want %q", tc.root, got, tc.want)
+		}
+	}
+}
+
+// typeCheck type-checks the package whose non-test sources are in dir as
+// import path path, with every import read from source.
+func typeCheck(dir, path string) ([]*ast.File, *types.Info, error) {
+	fset, imp := sourceImporter()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	var files []*ast.File
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, 0)
+		if err != nil {
+			return nil, nil, err
+		}
+		files = append(files, f)
+	}
+	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
+	conf := types.Config{Importer: imp}
+	if _, err := conf.Check(path, fset, files, info); err != nil {
+		return nil, nil, err
+	}
+	return files, info, nil
+}
+
+// sourceImporter is one importer from source for every check, so a package
+// two checks import is type-checked once.
+var sourceImporter = sync.OnceValues(func() (*token.FileSet, types.Importer) {
+	fset := token.NewFileSet()
+	return fset, importer.ForCompiler(fset, "source", nil)
+})
+
+// kvUpdate is the KV's write transaction, through which every write of the
+// store commits.
+const kvUpdate = "(" + module + "pkg/metadata/kv.KV).Update"
+
+// storeWriters returns every exported method of the metadata store's package
+// that writes the store, by its full name: one whose body, or a
+// function or method of the package it calls, opens the KV's write
+// transaction. Write, which commits a change with its audit record, is the
+// one write left out.
+func storeWriters() (map[string]bool, error) {
+	files, info, err := typeCheck("../../pkg/metadata/kvstore", module+"pkg/metadata/kvstore")
+	if err != nil {
+		return nil, err
+	}
+	calls := map[string][]string{} // a function's full name: the full names it calls
+	var methods []string
+	for fd := range funcDecls(files) {
+		fn := info.Defs[fd.Name].(*types.Func)
+		if fd.Recv != nil && fn.Exported() && fn.Name() != "Write" {
+			methods = append(methods, fn.FullName())
+		}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok {
+				var callee *ast.Ident
+				switch f := c.Fun.(type) {
+				case *ast.Ident:
+					callee = f
+				case *ast.SelectorExpr:
+					callee = f.Sel
+				}
+				if g, ok := info.Uses[callee].(*types.Func); ok {
+					calls[fn.FullName()] = append(calls[fn.FullName()], g.Origin().FullName())
+				}
+			}
+			return true
+		})
+	}
+	writes := map[string]bool{kvUpdate: true}
+	for grew := true; grew; {
+		grew = false
+		for fn, called := range calls {
+			if !writes[fn] && slices.ContainsFunc(called, func(c string) bool { return writes[c] }) {
+				writes[fn], grew = true, true
+			}
+		}
+	}
+	out := map[string]bool{}
+	for _, m := range methods {
+		if writes[m] {
+			out[m] = true
+		}
+	}
+	return out, nil
+}
+
+// funcDecls yields every function and method with a body in files.
+func funcDecls(files []*ast.File) iter.Seq[*ast.FuncDecl] {
+	return func(yield func(*ast.FuncDecl) bool) {
+		for _, f := range files {
+			for _, d := range f.Decls {
+				if fd, ok := d.(*ast.FuncDecl); ok && fd.Body != nil && !yield(fd) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// storeWrites type-checks the package in dir and returns each method that
+// writes the store on a type the package uses: one of writers, the KV's write
+// transaction, or a method of an interface named as one of writers, which
+// the node could fill with the store's.
+func storeWrites(dir string, writers map[string]bool) ([]string, error) {
+	_, info, err := typeCheck(dir, module+"internal/node/api")
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]bool{"Update": true}
+	for w := range writers {
+		names[w[strings.LastIndex(w, ".")+1:]] = true
+	}
+	used := map[types.Type]bool{}
+	for _, tv := range info.Types {
+		used[tv.Type] = true
+	}
+	for _, objs := range []map[*ast.Ident]types.Object{info.Defs, info.Uses} {
+		for _, o := range objs {
+			if o != nil {
+				used[o.Type()] = true
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for t := range used {
+		for _, t := range []types.Type{t, types.NewPointer(t)} {
+			ms := types.NewMethodSet(t)
+			for i := range ms.Len() {
+				m := ms.At(i).Obj().(*types.Func)
+				_, iface := m.Signature().Recv().Type().Underlying().(*types.Interface)
+				if iface && names[m.Name()] || writers[m.Origin().FullName()] || m.FullName() == kvUpdate {
+					seen[m.FullName()] = true
+				}
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(seen)), nil
+}
+
+// No type internal/node/api uses has a method that writes the store but
+// Write; planted packages holding a store method in an interface of their
+// own, and the store's view itself, are caught.
+func TestAPIWritesOnlyThroughWrite(t *testing.T) {
+	writers, err := storeWriters()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := "(" + module + "pkg/metadata/kvstore.ControlPlane)."
+	if !writers[cp+"PutShare"] || writers[cp+"Shares"] {
+		t.Fatalf("store writers %v: want ControlPlane's PutShare in and Shares out", slices.Sorted(maps.Keys(writers)))
+	}
+	for _, tc := range []struct {
+		dir  string
+		want []string
+	}{
+		{"api", nil},
+		{"testdata/arch/store-write/interface", []string{"(interface).PutShare"}},
+	} {
+		got, err := storeWrites(tc.dir, writers)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.dir, err)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: violations %q, want %q", tc.dir, got, tc.want)
+		}
+	}
+	got, err := storeWrites("testdata/arch/store-write/view", writers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got, cp+"PutShare") || slices.Contains(got, cp+"Shares") {
+		t.Errorf("the store's view: violations %q, want PutShare among them and Shares not", got)
 	}
 }
