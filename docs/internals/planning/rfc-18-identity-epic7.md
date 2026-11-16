@@ -19,17 +19,17 @@ writes, `resolve-principal`, `test-directory`) and §4.6 (operations);
 `identity.netbios_name`; [RFC 25](../rfcs/rfc-25-observability.md) §3.9's two condition rows; MS-NRPC
 2.2.1.4.11, 3.1.4.1 and 3.4.5.2.6, and MS-APDS 3.1.5.2.1.
 **Track:** A.
-**Epic 7 estimate: 17 subtasks, 36.5 man-days.**
+**Epic 7 estimate: 17 subtasks, 36.75 man-days.**
 **Depends on:** **S1**, E1's surface frozen: `SignIn`, `Deps`, `State`, `Apply`, `*Server`.
 **RFC 23's plan's epic 1** (#4334): `cmd/dfs`'s and `cmd/dfsctl`'s `netlogon` commands deleted, so
 T7.6 can move the package. **E2**: T2.4's `State.Settings` (`identity.netbios_name`), `Deps.Secrets`
-and `SecretProvider`; T2.3's `Minter` and T2.1's `PrincipalMachine`, which pass-through reaches
-through E6's mint and never binds. **E3**: T3.1's `Deps.Tracer` and `Resolve`. **E4**: T4.1's
-`exportedKey` and `checkMIC`, T4.2's domain table and NTLMv1 refusal, T4.4's throttle and T4.5's
-logon event and series, which pass-through joins as the table's third row. **E5**: T5.2's key ring and
-T5.3's key selection, which the derived keys join (T7.9); T5.7's PAC SID filter (T7.11); T5.10's
-`Prune` and `Versions` on `SecretProvider` (T7.12); T5.11's ticket fetch (T7.16). **E6**: T6.3's
-record, T6.4's `DialTLS`, T6.5's client, test call and domain SID, T6.9's `Find` with
+and `SecretProvider`, which T7.12 extends with `Prune` and `Versions`; T2.3's `Minter` and T2.1's
+`PrincipalMachine`, which pass-through reaches through E6's mint and never binds. **E3**: T3.1's
+`Deps.Tracer` and `Resolve`. **E4**: T4.1's `exportedKey` and `checkMIC`, T4.2's domain table and
+NTLMv1 refusal, T4.4's throttle and T4.5's logon event and series, which pass-through joins as the
+table's third row. **E5**: T5.2's key ring and T5.3's key selection, which the derived keys join
+(T7.9); T5.7's PAC SID filter (T7.11); T5.11's ticket fetch (T7.16). **E6**: T6.3's record, T6.4's
+`DialTLS`, T6.5's client, test call and domain SID, T6.9's `Find` with
 `FindOpts.Mint`. **RFC 23's plan's epic 3** (#4336, merged): T3.4's runner and its D7's leaf
 `internal/node/step`, whose `StepResult`, `Step` and `Progress` these steps return and take, a
 `*apiv1.Problem` failing an operation and any other error retried.
@@ -40,9 +40,10 @@ its T2.4's `Write` with its audit record and T2.7's `PutOperation` on `ControlPl
 **RFC 23's plan's epic 4** (#4337): T4.11's routes, which write each operation, pick the online
 join's ID and call `HoldJoinCredential` before the creating `Write`, and seal the offline join's
 password with `secrets.Meta{HandedOver: true}` in a write of their own. **#4059**: `secrets.Seal`,
-`secrets.Meta`, `secrets.Version`, `Prune`. **The fixture branch** `test/ad-dc-join` (b4858ccfc,
-869cdc2c5, 98540128a), moved onto `feat/storage-v2` by E6's T6.1 as `test/ad-dc-join-v2` (#4422),
-open there and stacked on #4420: `dittofs$`, `offjoinaes$` and `offjoinlegacy$` pre-staged, the RPC
+`secrets.Meta`, `secrets.Version`, the provider's `Prune` and `Versions`. **The fixture branch**
+`test/ad-dc-join` (b4858ccfc, 869cdc2c5, 98540128a), moved onto `feat/storage-v2` by E6's T6.1 as
+`test/ad-dc-join-v2` (#4422), open there and stacked on #4420: `dittofs$`, `offjoinaes$` and
+`offjoinlegacy$` pre-staged, the RPC
 range 50000-50019 pinned. What is left of it is merging #4422 after #4420.
 **Blocks:** **E8**, whose T8.6 fills `Deps.DomainController`, `State.Machine` and `State.Join`
 (D6), and registers this epic's four kinds; whose T8.7 bounds a pass-through and
@@ -122,12 +123,13 @@ Kerberos and pass-through on an installation joined offline to an explicit contr
 
 - **E1**, the contract and the server's surface: `pkg/identity`, `internal/identity`'s lifecycle,
   the import checks.
-- **E2**, principals and accounts: settings, `Deps.Secrets`, the `Minter`, `PrincipalMachine`.
+- **E2**, principals and accounts: settings, `Deps.Secrets` and `SecretProvider`, the `Minter`,
+  `PrincipalMachine`.
 - **E3**, resolution: `Resolve`, `Deps.Tracer`.
 - **E4**, local NTLMv2 sign-in: the domain table, the MIC and key functions, the throttle, the
   logon event.
 - **E5**, Kerberos and the PAC: the key ring, key selection, the SID filter, the test realm,
-  `Prune` and `Versions`, the Samba ticket fetch.
+  the Samba ticket fetch.
 - **E6**, the directory: its record, `DialTLS`, client, test call, domain SID and `Find`.
 - **E7**, this epic.
 - **E8**, the integration epic: identity composed into the node.
@@ -290,8 +292,8 @@ epic's test holds it.
   and removes E1's exemption. Reads bind with the directory record's bind credential, an online
   join's writes with the held administrator credential. Prior art: `adcli` creates the computer
   object over LDAP and sets its password there (from memory).
-- **D4, the kinds are methods on `*Server` typed by `internal/node/step`.** As E2's T2.7 and E5's
-  T5.10 are: `JoinStep(ctx, op entity.Operation) (step.StepResult, error)` and
+- **D4, the kinds are methods on `*Server` typed by `internal/node/step`.** As E2's T2.7 is:
+  `JoinStep(ctx, op entity.Operation) (step.StepResult, error)` and
   `JoinProgress(next []byte) apiv1.Progress`, and the same for the other three kinds; E8 puts them
   in the runner's table in `node.New` as they are (its T8.6). A terminal failure is a
   `*apiv1.Problem` whose detail names the controller, the number read, the version or the missing
@@ -371,9 +373,12 @@ epic's test holds it.
   running operation: a version below the one `Join.LastRotation.Version` names stops deriving keys
   (T7.9) and backing the channel's fallback (T7.10) once the clock passes
   `LastRotation.Confirmed` plus 10 hours plus the skew, from `State` alone, a restart included. The
-  secret itself is pruned by a rotation's first turn, before it pins, through `Prune`, once the
-  retention has passed since the last confirm and that confirm completed, and the old version is
-  reported revocable then; a joined installation's first rotation prunes what a failed join kept.
+  secret itself is pruned by a rotation's first turn, before it pins, through `SecretProvider`'s
+  `Prune` inside that turn's control-plane `Write`, with an audit record naming the versions it
+  drops, as RFC 23 §3.3's credential rotation prunes with `tx.PruneSecret` inside an audited `Write`,
+  once the retention has passed since the last confirm and that confirm completed, and the old
+  version is reported revocable then; a joined installation's first rotation prunes what a failed
+  join kept.
   `Prune` drops every version below the current one, so it never runs while the current version is
   unconfirmed. A `ponytail:` marker names the ceiling: a previous version's sealed value stays in
   the store, used by no key and no channel, until the next rotation, at most the schedule's 7 days.
@@ -398,6 +403,7 @@ internal/identity/directory/
 internal/identity/
   server.go             T7.9   State.Machine, State.Join
                         T7.10  Deps.DomainController
+                        T7.12  SecretProvider gains Prune and Versions
   machinekeys.go        T7.9   derived keys into E5's ring, the fallback, D8
   channel.go            T7.10  the node's channel, R17's order, fallback, semaphore, the 5 s call
                                bound, machine_account_unhealthy
@@ -784,13 +790,16 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 
 ### T7.12 The rotation and its prune
 
-**Subtask T7.12 estimate: 4.25 man-days.**
+**Subtask T7.12 estimate: 4.5 man-days.**
 
-- **Track:** A. **Depends on:** T7.10. E5's T5.10 (`Prune`, `Versions`); RFC 23's plan's epic 2's
-  T2.4 (`SetMachineJoin`, which writes `Join`).
+- **Track:** A. **Depends on:** T7.10. E2's T2.4 (`SecretProvider`); #4059's provider's `Prune` and
+  `Versions`; RFC 23's plan's epic 2's T2.4 (`SetMachineJoin`, which writes `Join`, and `Write` with
+  its audit record).
 - **Covers:** R23, R46, R47, R48, R49, R50, R51, R52, R53, R54, R55, R56, R57, R59, R63.
-- **Deliverables:** `RotateStep` and `RotateProgress` (D4), the cursor recording the pinned
-  controller, the tag, the sealed version, whether a set was attempted, and the first unanswered
+- **Deliverables:** `Prune` and `Versions` added to `SecretProvider` (RFC 18 §2.6, declared by E2's
+  T2.4), which `*secrets.Provider` implements, `Prune` taking the caller's `ControlPlaneTx` so D14's
+  prune commits inside an audited `Write`; `RotateStep` and `RotateProgress` (D4), the cursor
+  recording the pinned controller, the tag, the sealed version, whether a set was attempted, and the first unanswered
   time; in RFC 18 §3.5's order: at the first turn, a `join-domain` running on the installation,
   read tracked from the running index, failing the rotation as a problem naming it before anything
   is written, `LastRotation` and the condition untouched (R63), then the prune of D14; pin a
@@ -831,6 +840,11 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   prunes the previous version, no longer listed by `Versions`, the revocation in `result`,
   `LastRotation` byte-equal before and after (R57; the keys' expiry is T7.9's); after a failed
   rotation, the next one prunes nothing (catches `Prune` dropping the confirmed previous version);
+  the prune's turn: one `Write` dropping the previous version and holding an audit record that names
+  the reference and the versions dropped, and with `kvtest`'s wrapper failing that `Write`'s commit,
+  `Versions` still listing both versions and no audit record stored (catches a prune committed
+  outside the audited `Write`, RFC 23 §3.3); `*secrets.Provider` assigned to a `SecretProvider` in the test,
+  so a signature drift fails the build;
   a rotation started during an offline join's closing rotations: refused at its first turn naming
   the join, nothing sealed, and the join's second confirm still reading the recorded number plus
   two, joined (catches two passwords sealed from one number, R63, R43).
@@ -999,7 +1013,7 @@ flowchart TD
   T7_10 --> T7_11["T7.11 Pass-through"]
   X4(["E3 T3.1, E4 T4.1, T4.2, T4.4, T4.5, E5 T5.7, E6 T6.5, T6.9"]):::sync --> T7_11
   T7_10 --> T7_12["T7.12 Rotation and prune"]
-  X5(["E5 T5.10"]):::sync --> T7_12
+  X5(["#4059 provider Prune and Versions"]):::sync --> T7_12
   X10(["RFC 23 plan epic 2: T2.4 SetMachineJoin, MachineJoin's new fields, Write with audit; T2.7 PutOperation"]):::sync --> T7_9 & T7_12 & T7_13
   T7_12 --> T7_13["T7.13 Schedule"]
   T7_1 & T7_4 & T7_12 --> T7_14["T7.14 Online join"]
@@ -1027,7 +1041,7 @@ both joins run and E8's T8.6 can start.
 | 2 | T7.3, T7.4, T7.5 | 5 | S1, E6's T6.4, T6.5 and T6.9, the kinds' parameter types | the seam and the calls other epics wait for; may be open beside PR 1 |
 | 3 | T7.6, T7.7, T7.8 | 6.75 | PR 1, PR 2, #4334 | the client moved, hardened and held to Samba |
 | 4 | T7.9, T7.10, T7.11 | 8 | PR 2; RFC 23's plan's epic 2's T2.4; E2's T2.4, E3's T3.1, E4, E5's T5.2, T5.3 and T5.7, E6's T6.5 and T6.9 | derived keys and pass-through; may be open beside PR 3 |
-| 5 | T7.12, T7.13 | 5.25 | PR 4, E5's T5.10, RFC 23's plan's epic 2's T2.4 and T2.7 | the rotation, its prune and its schedule |
+| 5 | T7.12, T7.13 | 5.5 | PR 4, #4059's `Prune` and `Versions`, RFC 23's plan's epic 2's T2.4 and T2.7 | the rotation, its prune and its schedule |
 | 6 | T7.14, T7.15 | 6 | PR 5, E6's T6.3 | both joins |
 | 7 | T7.16, T7.17 | 3.75 | PR 3, PR 6, E5's T5.11 | the joins against Samba and the guides |
 
@@ -1061,7 +1075,7 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
 
 **Where the RFC 18 plan and this document differ:**
 
-- The figure here is 36.5 man-days over 17 subtasks, against the RFC 18 plan's 32 over 13. It holds
+- The figure here is 36.75 man-days over 17 subtasks, against the RFC 18 plan's 32 over 13. It holds
   work the RFC 18 plan's list does not name: the rotation's schedule (T7.13, 0.75),
   `HoldJoinCredential` (T7.4, 0.5), the online join and a rotation against Samba (in T7.16,
   0.5), the keys' and the fallback's expiry at the retention (in T7.9 and T7.10, 0.5), the call
@@ -1069,8 +1083,9 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
   0.25) and the account's LDAP moved into the directory package (in T7.6 and T7.7), less a fixture
   remainder smaller than planned, since three of its commits exist, and the credential arithmetic
   `go-msrpc` already has, plus review's additions: the domain's `Computers` container read (in
-  T7.3, 0.25), a rotation and a join refusing each other (in T7.12, 0.25), the schedule's audit
-  record (in T7.13, 0.25) and the salt checked against Samba with a chosen host name (in T7.16,
+  T7.3, 0.25), a rotation and a join refusing each other (in T7.12, 0.25), `Prune` and `Versions`
+  on `SecretProvider`, which E5 no longer adds (in T7.12, 0.25), the schedule's audit record (in
+  T7.13, 0.25) and the salt checked against Samba with a chosen host name (in T7.16,
   0.25). T7.6 and T7.7 are the least certain: they depend on T7.1, and the fallback adds 2.
 - The RFC 18 plan has D5's spike run "before the epic is broken down". It has not run, so T7.1 is
   the first subtask, and the transport-dependent parts (T7.6, T7.17) say what the fallback costs.
@@ -1092,7 +1107,7 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
 
 - RFC 18 §2.6 calls the `Minter`'s writes identity's only ones, while §3.5 has the join's and the
   rotation's steps seal versions and write the `Installation` record and `identity.netbios_name`
-  (D5); E5's T5.10 needs the same amendment. The `ControlPlaneTx` method that writes `Join` is RFC
+  (D5), and D14's prune drops versions. The `ControlPlaneTx` method that writes `Join` is RFC
   23's plan's epic 2's `SetMachineJoin` (its T2.4 and R55, added by #4485).
 - RFC 18 §2.6's `Deps` names neither the directory's dialer (E6's `Deps.Directory`) nor the domain
   controller's (`Deps.DomainController`), and its `State` has no `Join` (D6).
@@ -1107,6 +1122,10 @@ D6 and D11 were settled in review as (a): `MachineJoin` gains `Names`, `LastRota
 - RFC 18 §3.3 refuses an imported key for a name the account holds; RFC 23's secret route can check
   it only once the names are stored (D6), and until then R27's import half is unmet: T7.9's ring
   skips the key (D8).
+- The RFC 13 plan's `Prune` commits `PruneSecret` on its own, outside any `Write`, while RFC 23
+  §3.3 prunes a rotated credential with `tx.PruneSecret` inside an audited `Write`. T7.12's
+  `SecretProvider.Prune` takes the caller's `ControlPlaneTx` (D14); #4059's provider needs that
+  form, and RFC 13 §7 should say a prune commits in the caller's audited `Write`.
 - RFC 13 §7's `Prune` drops every version below the lowest held and never the current one, while RFC
   18 §3.5 has a failed join prune "the rest it sealed", the newest version whenever it sealed one it
   never sent, and a later join prune "once it is joined". T7.14 keeps every version it attempted to
