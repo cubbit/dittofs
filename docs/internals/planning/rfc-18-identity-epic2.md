@@ -18,7 +18,7 @@ counters land, T2.2 (`Installation.NTLMOff`, its R54), T2.6 (positions and the `
 D8 and T2.11 (`DeleteUser`'s mark, batches and secret deletion); RFC 23's epic 3 document (pull
 request #4336), D7 and T3.4 (the runner's `StepResult`, `Step` and `Progress`).
 **Track:** C.
-**Epic 2 estimate: 8 subtasks, 13.5 man-days.**
+**Epic 2 estimate: 8 subtasks, 13.75 man-days.**
 **Depends on:** **S1**, epic 1's identity surface frozen. **#4059's S1 and S2**: `pkg/settings`
 and `pkg/secrets` frozen, with `Seal` taking the kind, the owner and `secrets.Meta`, the kvstore
 secrets view (`Secret`, `PutSecret`, `PruneSecret`) on the view and on `ControlPlaneTx`, and
@@ -29,8 +29,7 @@ once-per-transaction `PGEN` raise and the records' `Position`); T2.8 for its T2.
 mark and batches, whose last batch deletes the secrets the record references, its D8); T2.7 for
 its T2.6 (the `PGEN` helper) and T2.7 (`PutOperation`), and for `ControlPlaneTx.SetNTHashDeleted`,
 which RFC 23's epic 2 adds through #4336; everything else starts before it. **RFC 23's plan's
-epic 3**, for T2.7 only: its T3.4, the runner whose `StepResult` E8 adapts this epic's step into,
-registering it in `node.New`. RFC 23's
+epic 3**, for T2.7 only: its T3.4, whose `internal/node/step` types the step returns. RFC 23's
 plan's epic 1 (#4314, D1) deletes v1 first, which S1 already waits on.
 **Blocks:** **E6**, whose T6.2 is identity's one mint path over T2.3's `Create`, and which also
 waits for T2.4 (T6.3, T6.5; T6.9 reads the range), T2.2 and T2.5 (T6.9) and T2.6's `Clock.After`
@@ -106,8 +105,7 @@ behind `Alloc` on `PutUser` and `PutGroup`; `Minter.Create`; identity's settings
 - The group closure, the cap, squash and grants: E3. "An API role grants nothing on files" (RFC
   18 §8) is resolution's, E3's.
 - `identity.netbios_name` against the directory record's NetBIOS domain: E6.
-- Registering the deletion's step in `node.New`, adapting it into `node.StepResult`, and the
-  runner's own resume across a restart: E8, and RFC 23's plan's epic 3 (its T3.4, R52).
+- Registering the deletion's step in `node.New`, and the runner's own resume across a restart: E8, and RFC 23's plan's epic 3 (its T3.4, R52).
 - `State.NTLM`, the `identity.ntlm` revision (RFC 18 §2.6): no code of this epic reads it (D6, §9).
   The on-or-off value is another thing: it is the `NTLM` key of T2.4's `State.Settings`, which E3's
   T3.10 reads to refuse `Secret` callers.
@@ -153,7 +151,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no external system is reached |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T2.1, T2.2, T2.4, T2.5, T2.6, T2.7 | RFC 18's `decision:` notes of §2.1 (root) at root's ID, §2.3 (a missing uid is allocated) at `Alloc`, §3.5 (NTLM on by default) at the setting's default, §4.4 (a deleted principal is the null SID) at `Spell`, §8 (one `User` record) at `Account`; D1's, D3's and D8's `decision:` markers, D2's and D4's `ponytail:` markers, and the NT-hash cost marker at `NewHashes`; epic 1's stub `ponytail:` markers removed from each body this epic fills |
 | rule 10, a test must be able to fail | all | each R-row's test is named in its subtask with the bug it catches; R24's purity, R27's constant-time compare and R33's single writer are held by the code's shape, each named as such |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T2.1, T2.2, T2.4, T2.5 | the exports are `entity`'s and kvstore's fields and methods RFC 16 declares, `Scheme.Stored()` (RFC 18 §2.2), `entity.FoldPrincipalName` (D2), identity's settings struct, `Deps.Secrets`, and the deletion's step and its progress as plain-typed methods on `*Server` (cursor in; next cursor, done and the end write out), which E8 adapts into `node.StepResult`, since `internal/node` imports identity and identity cannot import `node` |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T2.1, T2.2, T2.4, T2.5 | the exports are `entity`'s and kvstore's fields and methods RFC 16 declares, `Scheme.Stored()` (RFC 18 §2.2), `entity.FoldPrincipalName` (D2), identity's settings struct, `Deps.Secrets`, and the deletion's step and progress, typed by `internal/node/step` |
 | rule 12, each subtask creates only what it declares | all | each deliverable names its consumer; `SchemeDir` lands with `Stored()` and `NewHashes`, `Rename` and `SetEmail` with E6, the mint path with E6's T6.2 |
 
 ## 3. Requirements and invariants
@@ -228,8 +226,9 @@ spells it `merrs.NewInvalidArgumentError`, as RFC 23's plan's epic 2 does (its D
 | R30 | `identity.netbios_name` is at most 15 bytes of `[A-Z0-9-]`, default `DITTOFS`; `identity.ntlm` defaults on; `identity.id_range` as R11 | MUST | RFC 13 Appendix B; §3.5 | T2.4 |
 | R31 | Turning NTLM off deletes every stored NT hash, as an operation in bounded batches | MUST | §3.5; RFC 23 §4.1, §4.6 | T2.7 |
 | R32 | The deletion records each step durably and makes each idempotent, so a restart resumes it from its record | MUST | RFC 23 §4.6 | T2.7 |
-| R35 | `Apply` swaps `State` whole now that it holds `Settings` beside `Generation`: no reader sees one `Apply`'s `Generation` with another's `Settings` (epic 1's R12, which one field could not test) | invariant | §2.6 | T2.4 |
 | R33 | The deletion's last step sets `Installation.NTLMOff.Deleted` in the transaction that ends it, through its `End` calling RFC 23's `ControlPlaneTx.SetNTHashDeleted(op)`, and nothing else of identity writes `NTLMOff` | invariant | RFC 16 §2.3, §4.2 `IN`; RFC 23 §4.1; RFC 23 epic 3's R52 | T2.7 |
+| R35 | `Apply` swaps `State` whole now that it holds `Settings` beside `Generation`: no reader sees one `Apply`'s `Generation` with another's `Settings` (epic 1's R12, which one field could not test) | invariant | §2.6 | T2.4 |
+| R36 | The deletion can fail: a record it cannot decode, which no retry heals, fails the operation and leaves `NTLMOff.Deleted` zero, so a second turn-off starts a new deletion | invariant | RFC 23 §4.1, §12; RFC 23 epic 3's D7 (`ErrStepFailed`) | T2.7 |
 
 **Deleting a user**
 
@@ -578,38 +577,43 @@ internal/identity/
 
 ### T2.7 The `identity.nt-hash-delete` step
 
-**Subtask T2.7 estimate: 2.25 man-days.**
+**Subtask T2.7 estimate: 2.5 man-days.**
 
 - **Track:** C. **Depends on:** T2.1, T2.2. #4059's S1 and S2; RFC 23's plan's epic 2's T2.6
   (the `PGEN` raise and `Position`, for each user `DropNTHashes` zeroes) and T2.7 (`PutOperation`),
   its `ControlPlaneTx.SetNTHashDeleted` (added through #4336), and its epic 3's T3.4 (the runner's
   `StepResult`); RFC 16 §3's amendment (D4).
-- **Covers:** R4, R31, R32, R33.
+- **Covers:** R4, R31, R32, R33, R36.
 - **Deliverables:** kvstore's `DropNTHashes` (D4), with its `ponytail:` on the batch size;
-  identity's step and progress as plain-typed methods on `*Server`, since `internal/node` imports
-  identity: `NTHashDeleteStep(ctx, op entity.OperationID, cursor []byte) (next []byte, done bool,
-  end func(entity.ControlPlaneTx) error, err error)`, its cursor the last `SecretRef` dropped and
-  the count dropped so far, its `end`, set with `done`, calling `tx.SetNTHashDeleted(op)`, and
-  every error it returns plain, so the runner retries it; `NTHashDeleteProgress(cursor []byte)
-  (done, total int64)`, the count read from the cursor with `total` -1. Consumed by E8, which
-  adapts both into `node.StepResult` and `node.Progress` and registers the row in `node.New`, by
+  identity's step and progress as methods on `*Server` typed by RFC 23's leaf package
+  `internal/node/step` (its epic 3 D7): `NTHashDeleteStep(ctx, op entity.Operation)
+  (step.StepResult, error)`, its cursor `op.Step`, holding the last `SecretRef` dropped and the
+  count dropped so far, its `End`, set with `Done`, calling `tx.SetNTHashDeleted(op.ID)`; a
+  record `DropNTHashes` cannot decode returned wrapping RFC 23's `ErrStepFailed`, which fails the
+  operation and leaves `Deleted` zero, and every other error plain, so the runner retries it;
+  `NTHashDeleteProgress(next []byte) apiv1.Progress`, the count read from the cursor with `Total`
+  -1. Consumed by E8's T8.10, which puts both in the runner's table in `node.New`, by
   RFC 23's plan's epic 4, whose settings route starts the operation, and by E8's "NTLM off" row.
 - **Acceptance criteria:**
   - After the loop below ends, no `Secret` of kind nt-hash exists and every user's `NTHash` is
     zero, while their `Password` is untouched.
-  - `NTLMOff.Deleted` names the operation, and the step's `end` is the one writer of `NTLMOff` in
+  - `NTLMOff.Deleted` names the operation, and the step's `End` is the one writer of `NTLMOff` in
     identity (R33's single writer, held by the code's shape and named as such, rule 10).
 - **Tests:** calling the step in a loop over the memory KV store and Badger, NT hashes sealed
-  through #4059's provider, feeding each turn's `next` back in and committing the last turn's
-  `end` through `ControlPlane.Write`: 600 users, run to `done`: none left, `NTLMOff.Deleted` set,
+  through #4059's provider, feeding each turn's `Next` back in as `op.Step` and committing the last
+  turn's `End` through `ControlPlane.Write`: 600 users, run to `done`: none left, `NTLMOff.Deleted` set,
   and each turn's progress at most 256 more than the last (R31, R33); `kvtest`'s fault wrapper
-  failing the third batch's commit, the store reopened and the loop resumed from the last returned
-  `next`: it completes, and no batch's users lost their `Password` (catches a cursor that runs
-  ahead of its batch's commit, R32); a `PutUser` holding a generation read before a batch zeroed
+  failing the third batch's commit: an error, and the turn retried with the same cursor completes;
+  the third turn's input cursor fed again after that turn committed, the store reopened first (a
+  crash before the runner recorded `Next`): the turn succeeds, the run ends with none left, the
+  last progress counting 600, and no user's `Password` touched (catches a step that fails or
+  double-counts on a batch already dropped, R32); a `User` record holding bytes its codec refuses:
+  the step's error wraps `ErrStepFailed`, and `NTLMOff.Deleted` stays zero (catches a deletion
+  that can never fail, so RFC 23 §4.1's second turn-off has nothing to finish, R36); a `PutUser` holding a generation read before a batch zeroed
   its `NTHash`: refused, the reference stays zero (catches a stale reference written back, R4); a
-  `done` turn whose `end` is not committed: `NTLMOff.Deleted` still zero (catches a completion
-  written by the step itself rather than by `end`, R33). The runner's own resume and its commit of
-  `end` with `succeeded` are RFC 23's epic 3 T3.4's tests (its R52). Doubles: `kvtest`'s fault
+  `Done` turn whose `End` is not committed: `NTLMOff.Deleted` still zero (catches a completion
+  written by the step itself rather than by `End`, R33). The runner's own resume and its commit of
+  `End` with `succeeded` are RFC 23's epic 3 T3.4's tests (its R52). Doubles: `kvtest`'s fault
   wrapper (kind 3).
 
 ### T2.8 A deleted user leaves no NT hash, and signs in nowhere
@@ -676,7 +680,7 @@ RFC 23's user deletion; after T2.8 RFC 23's plan's epic 5's password writes may 
 | 1 | T2.1, T2.2, T2.3 | 4.75 | — | principals in the store: the records, the name fold, allocation and `Create`, one review of kvstore |
 | 2 | T2.4, T2.5 | 3.5 | PR 1 | identity's settings and the naming it serves |
 | 3 | T2.6 | 2 | PR 2 | the accounts RFC 23's plan's epic 5 and E4 wait for |
-| 4 | T2.7 | 2.25 | PR 1 | the NT-hash deletion, once RFC 23's `StepResult` and `SetNTHashDeleted` land; may be open beside PR 2 and PR 3 |
+| 4 | T2.7 | 2.5 | PR 1 | the NT-hash deletion, once RFC 23's `StepResult` and `SetNTHashDeleted` land; may be open beside PR 2 and PR 3 |
 | 5 | T2.8 | 1 | PR 3 | the NT hash's deletion with its user and the marked-deleted sign-in cases, once RFC 23's plan's epic 2's T2.11 lands, and before RFC 23's plan's epic 5's password write |
 
 A suggestion only: one pull request per subtask works as well.
@@ -688,10 +692,11 @@ the version this document was written against. RFC 18 §8.1 declares `Lookup` an
 principal-based `VerifyPassword`, which epic 1 freezes.
 
 The plan's figure for this epic is 8 subtasks, 13 man-days; this document's is 8 subtasks,
-13.5 man-days: the mint path goes to E6's T6.2 (below); the allocation behind RFC 23's
+13.75 man-days: the mint path goes to E6's T6.2 (below); the allocation behind RFC 23's
 `entity.Alloc` on `PutUser` and `PutGroup` comes in (T2.2), which RFC 23's plan's epic 2 refuses
 until it lands (its D2), as does `NTHash` among the secrets `DeleteUser` deletes, which the plan lists
-nowhere (T2.8, R34); `Installation.NTLMOff` is RFC 23's plan's epic 2's (its T2.2, R54).
+nowhere (T2.8, R34); `Installation.NTLMOff` is RFC 23's plan's epic 2's (its T2.2, R54); and the
+deletion's step can fail on a record it cannot decode (T2.7, R36).
 
 **Pending the user's answer** (the recommended option is written in place):
 
@@ -736,9 +741,7 @@ nowhere (T2.8, R34); `Installation.NTLMOff` is RFC 23's plan's epic 2's (its T2.
 
 - **`ControlPlaneTx.SetNTHashDeleted(op)`.** RFC 23's epic 2 declares `Installation()` on
   `ControlPlaneTx` as a read only; it adds one setter per writer of `NTLMOff` (`SetNTLMOff(gen)`,
-  `SetNTHashDeleted(op)`) through #4336. T2.7's `end` waits for it.
-- **RFC 23's epic 2 PR table.** Its PR 5 row says T2.11 is what "the RFC 18 plan's epic 2 T2.6
-  waits for"; since the marked-deleted cases moved to T2.8, it reads T2.8, in a follow-up to #4326.
+  `SetNTHashDeleted(op)`) through #4336. T2.7's `End` waits for it.
 
 - `tx.PutSecret`, which the API's password write uses (D5), is #4059's secrets view on
   `ControlPlaneTx`; whichever of the RFC 13 plan's view changes and RFC 23's plan's epic 2 lands
