@@ -692,10 +692,10 @@ func (c *Client) Balance() int
   | `core` behaviour | What `testproto` gives it | Test lands in |
   | --- | --- | --- |
   | handshake deadline; kept state past the idle timeout | `Session` (`Established`, `Keep`), `Logoff` | E4 T4.7 |
-  | `OnClose` on close | the registry | E4 T4.5 |
-  | a message sent ahead of a named reply | `Notify` | E4 T4.4 |
+  | `OnClose` on close | the registry | E4 T4.10 |
+  | a message sent ahead of a named reply | `Notify` | E5 T5.1c, over loopback; E4 T4.4 holds `before` through the suite of `out` |
   | session and tree levels; `Versions` | `Session`, `Tree`, D3's tables | E5 T5.2b |
-  | drain decided per request; the expired-credential gate | `Echo`'s role, `PutFH`'s handle, `Session`'s expiry, `Logoff` | E5 T5.1a, T5.2b; E4 T4.5 |
+  | drain decided per request; the expired-credential gate | `Echo`'s role, `PutFH`'s handle, `Session`'s expiry, `Logoff` | E5 T5.1a, T5.2b; E4 T4.5a, T4.5b |
   | chains: a related member's state, a bad checksum, a pending last member, a member before the last pending or answered `ErrNotLast`, a `NoReply` stop whose interim grants the later members' credits, replies wrapped once | version 2, `Msg.Related`, `Msg.Pend`, the stages, `Client.Balance` | E5 T5.4, T5.5b, T5.5c |
   | a single-reply compound judged whole while draining; the slot's sequence kept; a compound past its cap | the compound row, `PutFH`'s handle, `Echo`'s role, `ReplayCache` | E5 T5.4 |
   | holds past the ceiling and the floor, a cancel before and after its target | `Create` held by `Faults`, `OpCancel`, `HoldCodec` | E5 T5.5b |

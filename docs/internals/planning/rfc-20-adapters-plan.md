@@ -700,8 +700,9 @@ rows, A10, A11, A14, A19, A20.
   session before a reconnect of that session is served.
 - T4.6 `Reconfigure`: refuse the other protocol's settings or any other type, validate (the
   shape's `Validate`, also run by `New`), refuse a changed `Port` with a sentinel error, one
-  field compared (RFC 20 §3.6), load the TLS certificates, open added listeners before swapping the snapshot, close removed
-  ones and their connections after.
+  field compared (RFC 20 §3.6), open added listeners before swapping the snapshot, close removed
+  ones and their connections after; no TLS certificate is loaded, since `Validate` refuses a
+  TLS mode other than off until `StartTLS` (RFC 20 §3.6, the ledger's NFS-over-TLS row).
 - T4.7 Health (`Health.Ready()` from the state and the conditions, liveness from accept-loop
   `Loop.Turn` and `Idle` through `Deps.Watch`, a nil `Watch` watching nothing, `adapter_listener_lost`; `adapter_refused` is the node's, E7),
   `Connections()` from a connection map in `Server`, the idle timeout that
@@ -924,8 +925,9 @@ decision to drop it (its issue closed as not planned).
 | MOUNT, NLM, NSM, `SM_NOTIFY`; NLM and NSM over UDP (RFC 20 §11 q3, which drops MOUNT over UDP) | auxiliary programs are RFC 21's | RFC 21 plan | its auxiliary-services epic |
 | `core`'s datagram listener (RFC 20 §3.1: a bounded queue, a datagram dropped when it is full), and the UDP listener of RFC 20 §4.8's example | every epic 4 subtask is TCP; only NLM and NSM over UDP need it | RFC 21 plan | with NLM and NSM over UDP |
 | RPCSEC_GSS context table and window; NFSv4.1 slots and reply cache, with the session's reply budget (`ca_maxresponsesize`, RFC 20 §4.3) and the bound by a quarter of the slots on calls waiting under `vfs.WithHold` (RFC 20 §4.6), which `core` cannot check without them; the v3 and v4.0 duplicate-request cache (RFC 20 §11 q2) | stage state machines, no driver here | RFC 21 plan | with `EXCHANGE_ID`/`CREATE_SESSION` and GSS `INIT` |
-| NFS-over-TLS (`Conn.StartTLS`, `tlsconfig` reload, `require` mode); a certificate that does not load refused when `New` loads it (at configured) and when `Reconfigure` does, before the snapshot swap, never by `Validate`, which reads no file (RFC 20 §3.6); the loading lands with E4's `Reconfigure` and RFC 21's `New` (E6 has no TLS) | starts at the `NULL` handler; `StartTLS` is a method added to `Conn`, no frozen signature changed | RFC 21 plan | with `NULL` |
+| NFS-over-TLS (`Conn.StartTLS`, `tlsconfig` reload, the `opportunistic` and `require` modes, which `Validate` refuses until then) and the certificate loading by `New` and by `Reconfigure`, which reads only `Common`, before the snapshot swap (RFC 20 §3.6, §5.5) | starts at the `NULL` handler; `StartTLS` is a method added to `Conn`, no frozen signature changed | RFC 21 plan | with `NULL` |
 | NFS callbacks (`CB_RECALL`, `CB_NOTIFY`, `CB_RECALL_ANY`, NLM `GRANTED` via `Deps.DialClient`) | need sessions and handlers | RFC 21 plan | with delegations and NLM |
+| `ConnInfo.Session`: the `Conn` call that names the session a connection carries (RFC 20 §3.4) | no session registry here | RFC 21 and RFC 22 plans | with their session registries |
 | SMB 2.1–3.1.1 commands and `ioctl/` | handlers are RFC 22's | RFC 22 plan | its handler epics |
 | SMB transform header, signing, encryption, credits, message-ID window, multichannel session registry, `Caps` | stage state machines, no driver here | RFC 22 plan | with `NEGOTIATE` and `SESSION_SETUP` |
 | SMB callbacks (lease break, change notify, lock wait, revoked) | need sessions and handlers | RFC 22 plan | with leases |
