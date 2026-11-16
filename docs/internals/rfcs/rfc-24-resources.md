@@ -680,10 +680,12 @@ at its hold bound
 ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)),
 so the wait is bounded by the longest deadline or hold bound in flight, though
 no deadline of its own runs: the request it would read has not started.
-The frame deadline, RFC 20 §6.4's `read_timeout`, runs from a record's first
-byte, stops while the reader waits for receive room, and runs a full
-`read_timeout` once the reservation is granted, so no connection is closed for
-the node's want of memory.
+The frame deadline, RFC 20 §6.4's `read_timeout`, runs only while the reader
+cuts a record: from its first byte, one already read included, stopped while
+the reader waits for receive room and a full `read_timeout` again once the
+reservation is granted, and disarmed between records, so no connection is
+closed for the node's want of memory or while the reader is paused outside a
+record.
 
 > decision: memory at the receive ceiling is backpressure, not an error. An
 > answer the client must retry costs a read of the whole request it then
