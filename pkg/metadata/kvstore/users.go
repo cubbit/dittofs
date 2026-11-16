@@ -67,7 +67,7 @@ func byIndex(r kv.Reader, row kv.KeyValue, key func(entity.PrincipalID) []byte) 
 func fixedID(id entity.PrincipalID) bool { return [15]byte(id[:15]) == [15]byte{} }
 
 // PutUser creates a user, expect zero, or changes the one whose generation
-// expect names, raising its generation.
+// expect names, raising its generation. A user marked deleted is not found.
 func (c ControlPlane) PutUser(ctx context.Context, u entity.User, expect uint64, a entity.Alloc) (uint64, error) {
 	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutUser(u, expect, a) })
 }
@@ -98,6 +98,9 @@ func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) (uint64
 		if old, err = decodeUser(u.Principal.ID, b); err != nil {
 			return 0, err
 		}
+		if old.Deleted {
+			return 0, notFound(nil, u.Principal)
+		}
 	}
 	if err := expected(old.Generation, expect); err != nil {
 		return 0, err
@@ -116,7 +119,7 @@ func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) (uint64
 }
 
 // PutGroup creates a group, expect zero, or changes the one whose generation
-// expect names, raising its generation.
+// expect names, raising its generation. A group marked deleted is not found.
 func (c ControlPlane) PutGroup(ctx context.Context, g entity.Group, expect uint64, a entity.Alloc) (uint64, error) {
 	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutGroup(g, expect, a) })
 }
@@ -140,6 +143,9 @@ func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) (uint
 	if existed {
 		if old, err = decodeGroup(g.Principal.ID, b); err != nil {
 			return 0, err
+		}
+		if old.Deleted {
+			return 0, notFound(nil, g.Principal)
 		}
 	}
 	if err := expected(old.Generation, expect); err != nil {
@@ -279,20 +285,23 @@ func claim(tx kv.Txn, key []byte, what string, p entity.Principal, value []byte,
 	return tx.Set(key, value)
 }
 
-// DeleteUser removes the user whose generation expect names.
+// DeleteUser starts the deletion of the user whose generation expect names,
+// and returns once the user is marked: found by no name or protocol ID,
+// admitted nowhere, and no longer an enabled admin. Nodes.ContinueDelete
+// drops the rest in batches.
 func (c ControlPlane) DeleteUser(ctx context.Context, p entity.Principal, expect uint64) error {
 	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteUser(p, expect) })
 }
 
+// decision: the mark deletes the user's name index, so a sign-in naming a
+// marked user finds no account and fails as an unknown name does, not as a
+// disabled account. Keep the name row through the mark if a caller must
+// tell a deleted account from a wrong name.
 func (c controlTx) DeleteUser(p entity.Principal, expect uint64) error {
 	if p.Kind != entity.PrincipalUser {
 		return merrs.NewInvalidArgumentError("not a user")
 	}
-	b, ok, err := get(c.tx, userKey(p.ID))
-	if err != nil || !ok {
-		return notFound(err, p)
-	}
-	u, err := decodeUser(p.ID, b)
+	u, err := c.liveUser(p)
 	if err != nil {
 		return err
 	}
@@ -302,14 +311,20 @@ func (c controlTx) DeleteUser(p entity.Principal, expect uint64) error {
 	if err := indexAdmin(c.tx, p.ID, enabledAdmin(u), false); err != nil {
 		return err
 	}
-	if _, err := c.principals(); err != nil {
+	if err := unindex(c.tx, p, u.Name, u.IDs); err != nil {
 		return err
 	}
-	return deletePrincipal(c.tx, p, userKey(p.ID), u.Name, u.IDs)
+	u.Deleted, u.Generation = true, nextVersion(c.tx, u.Generation)
+	if u.Position, err = c.principals(); err != nil {
+		return err
+	}
+	return c.tx.Set(userKey(p.ID), encodeUser(u))
 }
 
-// DeleteGroup removes the group whose generation expect names, with its
-// members' rows in both directions.
+// DeleteGroup starts the deletion of the group whose generation expect
+// names, and returns once the group is marked: found by no name or protocol
+// ID, and its memberships grant nothing. Nodes.ContinueDelete drops the rest
+// in batches.
 func (c ControlPlane) DeleteGroup(ctx context.Context, p entity.Principal, expect uint64) error {
 	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteGroup(p, expect) })
 }
@@ -318,26 +333,64 @@ func (c controlTx) DeleteGroup(p entity.Principal, expect uint64) error {
 	if p.Kind != entity.PrincipalGroup {
 		return merrs.NewInvalidArgumentError("not a group")
 	}
-	b, ok, err := get(c.tx, groupKey(p.ID))
-	if err != nil || !ok {
-		return notFound(err, p)
-	}
-	g, err := decodeGroup(p.ID, b)
+	g, err := c.liveGroup(p)
 	if err != nil {
 		return err
 	}
 	if err := expected(g.Generation, expect); err != nil {
 		return err
 	}
-	if err := dropPairs(c.tx, membersPrefix(p.ID), func(m []byte) []byte {
-		return memberRevKey(entity.PrincipalID(m), p.ID)
-	}); err != nil {
+	if err := unindex(c.tx, p, g.Name, g.IDs); err != nil {
 		return err
 	}
-	if _, err := c.principals(); err != nil {
+	g.Deleted, g.Generation = true, nextVersion(c.tx, g.Generation)
+	if g.Position, err = c.principals(); err != nil {
 		return err
 	}
-	return deletePrincipal(c.tx, p, groupKey(p.ID), g.Name, g.IDs)
+	return c.tx.Set(groupKey(p.ID), encodeGroup(g))
+}
+
+// liveUser reads p's user record tracked, refusing one absent or marked
+// deleted as not found.
+func (c controlTx) liveUser(p entity.Principal) (entity.User, error) {
+	b, ok, err := get(c.tx, userKey(p.ID))
+	if err != nil || !ok {
+		return entity.User{}, notFound(err, p)
+	}
+	u, err := decodeUser(p.ID, b)
+	if err == nil && u.Deleted {
+		err = notFound(nil, p)
+	}
+	return u, err
+}
+
+// liveGroup is liveUser for a group.
+func (c controlTx) liveGroup(p entity.Principal) (entity.Group, error) {
+	b, ok, err := get(c.tx, groupKey(p.ID))
+	if err != nil || !ok {
+		return entity.Group{}, notFound(err, p)
+	}
+	g, err := decodeGroup(p.ID, b)
+	if err == nil && g.Deleted {
+		err = notFound(nil, p)
+	}
+	return g, err
+}
+
+// live reports whether p's user or group record exists and is not marked
+// deleted. A transaction's read is tracked, so a mark committed meanwhile
+// conflicts with the caller.
+func live(r kv.Reader, p entity.Principal) (bool, error) {
+	b, ok, err := get(r, principalKey(p))
+	if err != nil || !ok {
+		return false, err
+	}
+	if p.Kind == entity.PrincipalGroup {
+		g, err := decodeGroup(p.ID, b)
+		return !g.Deleted, err
+	}
+	u, err := decodeUser(p.ID, b)
+	return !u.Deleted, err
 }
 
 func notFound(err error, p entity.Principal) error {
@@ -347,39 +400,8 @@ func notFound(err error, p entity.Principal) error {
 	return merrs.NewNotFoundError(p.String(), "principal")
 }
 
-// deletePrincipal removes p's record, its index rows, the groups it is a
-// member of, its grants and its quotas, moving the grant-list version of
-// every share it held a grant on. Files keep naming p, as an unknown
-// principal. The membership and grant rows are found by scan, so their ranges are
-// guarded: a membership or grant added for p after this transaction's
-// snapshot makes one of the two conflict, rather than leave a row naming a
-// principal that no longer exists.
-//
-// ponytail: one transaction for every row, so a principal in more groups or
-// with more grants than one transaction holds fails with kv.ErrTooLarge.
-// Delete in batches sized from the store's limits, the record last, when a
-// principal can reach that many rows.
-func deletePrincipal(tx kv.Txn, p entity.Principal, record []byte, name string, ids entity.ProtocolIDs) error {
-	if err := dropQuotas(tx, p); err != nil {
-		return err
-	}
-	if err := dropPairs(tx, memberOfPrefix(p.ID), func(g []byte) []byte {
-		return memberKey(entity.PrincipalID(g), p.ID)
-	}); err != nil {
-		return err
-	}
-	var granted []entity.ShareID
-	if err := dropPairs(tx, grantsOfPrefix(p.ID), func(share []byte) []byte {
-		granted = append(granted, entity.ShareID(share))
-		return grantKey(entity.ShareID(share), p.ID)
-	}); err != nil {
-		return err
-	}
-	for _, share := range granted {
-		if err := moveGrantVersion(tx, share); err != nil {
-			return err
-		}
-	}
+// unindex deletes p's name and protocol-ID rows.
+func unindex(tx kv.Txn, p entity.Principal, name string, ids entity.ProtocolIDs) error {
 	if err := tx.Delete(nameKey(nameKind(p.Kind), name)); err != nil {
 		return err
 	}
@@ -388,40 +410,11 @@ func deletePrincipal(tx kv.Txn, p entity.Principal, record []byte, name string, 
 			return err
 		}
 	}
-	return tx.Delete(record)
-}
-
-// dropPairs deletes every row under prefix, whose key ends in one ID, and
-// the row twin names for that ID: a two-way index's other direction. The
-// prefix is guarded first.
-func dropPairs(tx kv.Txn, prefix []byte, twin func(id []byte) []byte) error {
-	if err := tx.GuardRange(prefix); err != nil {
-		return err
-	}
-	var rows [][]byte
-	for row, err := range tx.Scan(prefix, nil) {
-		if err != nil {
-			return err
-		}
-		rows = append(rows, slices.Clone(row.Key))
-	}
-	for _, k := range rows {
-		id, _, err := keys.ReadID(k[len(prefix):], keys.IDLen)
-		if err != nil {
-			return err
-		}
-		if err := tx.Delete(k); err != nil {
-			return err
-		}
-		if err := tx.Delete(twin(id)); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
-// AddMember adds a user or a nested group to a group. Both must exist; the
-// reads that check so conflict with a deletion of either.
+// AddMember adds a user or a nested group to a group. Both must exist,
+// unmarked; the reads that check so conflict with a deletion of either.
 func (c ControlPlane) AddMember(ctx context.Context, m entity.Membership) error {
 	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.AddMember(m) })
 }
@@ -431,7 +424,7 @@ func (c controlTx) AddMember(m entity.Membership) error {
 		return merrs.NewInvalidArgumentError("a membership is a user or another group in a group")
 	}
 	for _, p := range []entity.Principal{m.Group, m.Member} {
-		if _, ok, err := get(c.tx, principalKey(p)); err != nil || !ok {
+		if ok, err := live(c.tx, p); err != nil || !ok {
 			return notFound(err, p)
 		}
 	}

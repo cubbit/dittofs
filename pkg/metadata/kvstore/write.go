@@ -173,7 +173,10 @@ func (c controlTx) User(p entity.Principal) (entity.User, bool, error) {
 		return entity.User{}, false, err
 	}
 	u, err := decodeUser(p.ID, b)
-	return u, err == nil, err
+	if err != nil || u.Deleted {
+		return entity.User{}, false, err
+	}
+	return u, true, nil
 }
 
 func (c controlTx) Share(id entity.ShareID) (entity.Share, bool, error) {

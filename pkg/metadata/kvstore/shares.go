@@ -443,8 +443,10 @@ func (c controlTx) SetGrant(g entity.ShareGrant, expect uint64) (uint64, error) 
 	if err := liveShare(c.tx, g.Share); err != nil {
 		return 0, err
 	}
-	if _, ok, err := get(c.tx, principalKey(g.Principal)); !isDefault && (err != nil || !ok) {
-		return 0, notFound(err, g.Principal)
+	if !isDefault {
+		if ok, err := live(c.tx, g.Principal); err != nil || !ok {
+			return 0, notFound(err, g.Principal)
+		}
 	}
 	old, _, err := grantIn(c.tx, g.Share, g.Principal.ID)
 	if err != nil {

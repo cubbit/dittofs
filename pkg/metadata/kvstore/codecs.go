@@ -90,7 +90,7 @@ func encodeUser(u entity.User) []byte {
 	w := codec.NewWriter(v1).String(u.Name)
 	putIDs(w, u.IDs)
 	putPrincipal(w, u.Primary).Bool(u.Disabled).Fixed(u.Secret[:]).String(u.Email).Uint8(uint8(u.Role))
-	return putSeconds(w, u.NotBefore).Bool(u.MustChange).Uint64(u.Generation).Uint64(u.Position).Encode()
+	return putSeconds(w, u.NotBefore).Bool(u.MustChange).Uint64(u.Generation).Uint64(u.Position).Bool(u.Deleted).Encode()
 }
 
 // putSeconds writes t in whole seconds, the zero time as zero.
@@ -119,7 +119,7 @@ func decodeUser(id entity.PrincipalID, b []byte) (entity.User, error) {
 	u.Disabled = r.Bool()
 	copy(u.Secret[:], r.Fixed(16))
 	u.Email, u.Role = r.String(), entity.APIRole(r.Uint8())
-	u.NotBefore, u.MustChange, u.Generation, u.Position = readSeconds(r), r.Bool(), r.Uint64(), r.Uint64()
+	u.NotBefore, u.MustChange, u.Generation, u.Position, u.Deleted = readSeconds(r), r.Bool(), r.Uint64(), r.Uint64(), r.Bool()
 	if err := r.Done(); err != nil {
 		return u, err
 	}
@@ -134,7 +134,7 @@ func decodeUser(id entity.PrincipalID, b []byte) (entity.User, error) {
 func encodeGroup(g entity.Group) []byte {
 	w := codec.NewWriter(v1).String(g.Name)
 	putIDs(w, g.IDs)
-	return w.Uint64(g.Generation).Uint64(g.Position).Encode()
+	return w.Uint64(g.Generation).Uint64(g.Position).Bool(g.Deleted).Encode()
 }
 
 func decodeGroup(id entity.PrincipalID, b []byte) (entity.Group, error) {
@@ -143,7 +143,7 @@ func decodeGroup(id entity.PrincipalID, b []byte) (entity.Group, error) {
 		return entity.Group{}, err
 	}
 	g := entity.Group{Principal: entity.Principal{Kind: entity.PrincipalGroup, ID: id}, Name: r.String(), IDs: readIDs(r)}
-	g.Generation, g.Position = r.Uint64(), r.Uint64()
+	g.Generation, g.Position, g.Deleted = r.Uint64(), r.Uint64(), r.Bool()
 	return g, r.Done()
 }
 

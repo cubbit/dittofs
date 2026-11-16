@@ -56,7 +56,8 @@ func (p Principals) ByProtocolID(ctx context.Context, id entity.ProtocolID) (ent
 
 // Groups yields every group p is a member of, directly or through nested
 // groups, each once, nearest first. A cycle of nested groups ends the walk
-// rather than loop.
+// rather than loop. A group marked deleted is not one, nor are the groups
+// reached only through it.
 func (p Principals) Groups(ctx context.Context, of entity.Principal) iter.Seq2[entity.Principal, error] {
 	return func(yield func(entity.Principal, error) bool) {
 		var groups []entity.Principal
@@ -100,7 +101,14 @@ func groupsOf(r kv.Reader, of entity.Principal) ([]entity.Principal, error) {
 				continue
 			}
 			seen[id] = true
-			out = append(out, entity.Principal{Kind: entity.PrincipalGroup, ID: id})
+			g := entity.Principal{Kind: entity.PrincipalGroup, ID: id}
+			if ok, err := live(r, g); err != nil || !ok {
+				if err != nil {
+					return nil, err
+				}
+				continue
+			}
+			out = append(out, g)
 			queue = append(queue, id)
 		}
 	}
@@ -137,7 +145,8 @@ func grantIn(r kv.Reader, share entity.ShareID, p entity.PrincipalID) (entity.Sh
 }
 
 // User is the user record of p: what resolution reads to refuse a disabled
-// or deleted user. A deleted one is not found.
+// or deleted user. A deleted one, or one marked deleted, is not found, and a
+// Primary naming a group deleted or marked deleted reads as zero.
 func (p Principals) User(ctx context.Context, of entity.Principal) (entity.User, error) {
 	var u entity.User
 	err := p.s.kv.View(ctx, func(r kv.Reader) error {
@@ -148,8 +157,26 @@ func (p Principals) User(ctx context.Context, of entity.Principal) (entity.User,
 		if err != nil || !ok {
 			return notFound(err, of)
 		}
-		u, err = decodeUser(of.ID, b)
+		if u, err = decodeUser(of.ID, b); err != nil {
+			return err
+		}
+		if u.Deleted {
+			return notFound(nil, of)
+		}
+		u.Primary, err = primaryIn(r, u)
 		return err
 	})
 	return u, err
+}
+
+// primaryIn is u's primary group, or zero when it names none or a group
+// deleted or marked deleted.
+func primaryIn(r kv.Reader, u entity.User) (entity.Principal, error) {
+	if u.Primary.IsZero() {
+		return u.Primary, nil
+	}
+	if ok, err := live(r, u.Primary); err != nil || !ok {
+		return entity.Principal{}, err
+	}
+	return u.Primary, nil
 }

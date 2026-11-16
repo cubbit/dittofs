@@ -125,7 +125,7 @@ func (c controlTx) SetQuota(share entity.ShareID, q entity.Quota, expect uint64)
 		return 0, err
 	}
 	if q.Principal != (entity.Principal{}) {
-		if _, ok, err := get(c.tx, principalKey(q.Principal)); err != nil || !ok {
+		if ok, err := live(c.tx, q.Principal); err != nil || !ok {
 			return 0, notFound(err, q.Principal)
 		}
 	}
@@ -261,42 +261,4 @@ func decodeSince(b []byte) (time.Time, error) {
 	}
 	t := readTime(r)
 	return t, r.Done()
-}
-
-// dropQuotas deletes p's quota records in every share, as deleting p does.
-// Each is read first, tracked, so a quota set for p meanwhile conflicts.
-//
-// ponytail: it reads two keys in every share, O(shares), since no index
-// names the shares holding a principal's quotas. Add a reverse index, as
-// grants have, when installations hold enough shares for a principal
-// deletion to show it.
-func dropQuotas(tx kv.Txn, p entity.Principal) error {
-	suffix, err := quotaSuffix(QuotaTarget{Principal: p})
-	if err != nil {
-		return err
-	}
-	var shares []entity.ShareID
-	for row, err := range tx.Scan([]byte{keys.KindNX, keys.NXShare}, nil) {
-		if err != nil {
-			return err
-		}
-		id, err := decodeID(row.Value)
-		if err != nil {
-			return err
-		}
-		shares = append(shares, entity.ShareID(id))
-	}
-	for _, share := range shares {
-		for _, sub := range []byte{keys.SQt, keys.SQx} {
-			key := quotaKey(share, sub, suffix)
-			if _, ok, err := get(tx, key); err != nil {
-				return err
-			} else if ok {
-				if err := tx.Delete(key); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	return nil
 }
