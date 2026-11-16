@@ -5,14 +5,13 @@ package node
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/config"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -84,21 +83,18 @@ func build(cfg Config) (*Node, error) {
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
 		return nil, fmt.Errorf("node: metadata store: %w", err)
 	}
-	if n.open, err = openstate.New(openstate.Deps{Records: n.meta, Clock: cfg.Clock, Rand: rand.Reader, Logger: cfg.Logger}); err != nil {
+	open, deps, err := enginewire.Compose(enginewire.Params{
+		Node:    cfg.Bootstrap.Node,
+		Devices: cfg.Bootstrap.Devices,
+		Store:   n.meta,
+		Clock:   cfg.Clock,
+		Logger:  cfg.Logger,
+	})
+	if err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
-	if n.engine, err = engine.New(engine.Deps{
-		Node:      cfg.Bootstrap.Node,
-		Devices:   cfg.Bootstrap.Devices,
-		Open:      openJournal(cfg.Clock),
-		Existence: n.meta.Existence(),
-		Content:   n.meta.Content(),
-		Lifecycle: n.meta.Lifecycle(),
-		Holds:     openstate.EngineHolds(n.open, n.meta.Opens()),
-		Clock:     cfg.Clock,
-		Logger:    cfg.Logger,
-		Tracer:    noTrace,
-	}); err != nil {
+	n.open = open
+	if n.engine, err = engine.New(deps); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
 	var reg prometheus.Registerer
@@ -112,23 +108,6 @@ func build(cfg Config) (*Node, error) {
 		return nil, fmt.Errorf("node: %w", err)
 	}
 	return n, nil
-}
-
-// openJournal is the engine's opener: each device's journal, opened at
-// the engine's Start once it has read what the store records for it.
-func openJournal(clock engine.Clock) func(context.Context, string, journal.Version, journal.JournalID) (engine.Journal, error) {
-	return func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
-		j, err := journal.Open(ctx, dir, floor, expect, nil, journal.WithClock(clock))
-		if err != nil {
-			return nil, err
-		}
-		return engine.JournalOf(j), nil
-	}
-}
-
-// noTrace is the engine's Tracer, and starts no span.
-func noTrace(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
-	return ctx, func(error) {}
 }
 
 // Start starts the services New built. It does not start one yet: it

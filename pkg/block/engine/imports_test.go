@@ -19,15 +19,16 @@ const module = "github.com/cubbit/dittofs/"
 // packages under this directory it applies to; "*" is every one. Nothing of
 // the previous engine, journal, syncer, carver, remote tier or metadata
 // service is on it, and neither is the filesystem's package: the engine takes
-// only its errors, from pkg/vfs/vfserr. Open state is the fixture's, which
-// adapts the table to the engine's CloneHold as the root does, and the unit
-// tests', which run a clone's hold over the real table.
+// only its errors, from pkg/vfs/vfserr. Open state is enginewire's, which
+// builds the table and adapts it to the engine's CloneHold for the node and
+// the fixture alike, the fixture's, which starts and stops that table, and
+// the unit tests', which run a clone's hold over the real table.
 var allowed = map[string][]string{
 	module + "pkg/block/journal":    {"*"},
 	module + "pkg/health":           {"*"},
 	module + "pkg/metadata/entity":  {"*"},
 	module + "pkg/metadata/kvstore": {"*"},
-	module + "pkg/openstate":        {"enginetest", unitTests},
+	module + "pkg/openstate":        {"enginetest", "enginewire", unitTests},
 	module + "pkg/vfs/vfserr":       {"*"},
 	// The test fixture composes the engine over the real journal, its seam and
 	// profiler, the real store on an in-memory kv.KV, and a test clock. The

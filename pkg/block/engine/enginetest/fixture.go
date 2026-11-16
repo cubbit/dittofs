@@ -3,7 +3,6 @@ package enginetest
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
@@ -59,7 +59,7 @@ const sparesBackstop = 10 * time.Second
 // needs one before it lands is refused for want of a spare. It polls the real
 // condition, since the pool works in real time and no clock can be injected
 // there, and fails once the backstop passes.
-func awaitSpares(ctx context.Context, j *journal.Journal, settings journal.Settings) error {
+func awaitSpares(ctx context.Context, j engine.Journal, settings journal.Settings) error {
 	ctx, cancel := context.WithTimeout(ctx, sparesBackstop)
 	defer cancel()
 
@@ -628,7 +628,7 @@ func newFixture(t *testing.T, wrap func(kv.KV) kv.KV, opts ...Option) *Fixture {
 	}
 
 	if f.Journal, err = journal.Init(t.Context(), dir, fixtureInstall,
-		journal.WithClock(clock), journaltest.SuitableMount(), journal.WithStorage(seam.FS())); err != nil {
+		append(f.journalOptions(), journal.WithClock(clock))...); err != nil {
 		t.Fatalf("fixture: journal init: %v", err)
 	}
 
@@ -708,14 +708,8 @@ func (f *Fixture) Reinit() journal.JournalID {
 		f.t.Fatalf("fixture: make the journal directory: %v", err)
 	}
 
-	id, err := journal.Init(
-		f.t.Context(),
-		f.Dir,
-		fixtureInstall,
-		journal.WithClock(f.Clock),
-		journaltest.SuitableMount(),
-		journal.WithStorage(f.Seam.FS()),
-	)
+	id, err := journal.Init(f.t.Context(), f.Dir, fixtureInstall,
+		append(f.journalOptions(), journal.WithClock(f.Clock))...)
 	if err != nil {
 		f.t.Fatalf("fixture: journal init: %v", err)
 	}
@@ -813,46 +807,46 @@ func (f *Fixture) start() {
 	ctx := t.Context()
 
 	f.crashed = new(atomic.Bool)
-	var err error
-	f.Opens, err = openstate.New(openstate.Deps{Records: f.FS.Store, Clock: f.Clock, Rand: rand.Reader, Logger: f.logger})
+	opens, d, err := enginewire.Compose(enginewire.Params{
+		Node:    f.Node,
+		Devices: []string{f.Dir},
+		Store:   f.FS.Store,
+		Clock:   f.Clock,
+		Logger:  f.logger,
+		Journal: append(f.journalOptions(), journal.WithSettings(f.settings)),
+	})
 	if err != nil {
 		t.Fatalf("fixture: open state: %v", err)
 	}
+	f.Opens = opens
+	open := d.Open
+	d.Open = func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
+		if f.refuse.Load() {
+			return nil, fmt.Errorf(
+				"journal: directory %s refused: mount has no barriers: %w",
+				dir, journal.ErrUnsuitableStorage,
+			)
+		}
+		if f.fake != nil {
+			f.fake.Reopen()
+			return f.fake, nil
+		}
+		j, err := open(ctx, dir, floor, expect)
+		if err != nil {
+			return nil, err
+		}
+		if err := awaitSpares(ctx, j, f.settings); err != nil {
+			_ = j.Close()
+			return nil, err
+		}
+		return wrapJournal(j, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
+	}
+	d.Existence = fencedExistence{Existence: d.Existence, crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate, commitGate: &f.commitGate}
+	d.Content = fencedContent{Content: d.Content, crashed: f.crashed}
+	d.Lifecycle = gatedLifecycle{Lifecycle: d.Lifecycle, startGate: &f.startGate}
+	d.Tracer = f.Trace
 
-	e, err := engine.New(engine.Deps{
-		Node:    f.Node,
-		Devices: []string{f.Dir},
-		Open: func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
-			if f.refuse.Load() {
-				return nil, fmt.Errorf(
-					"journal: directory %s refused: mount has no barriers: %w",
-					dir, journal.ErrUnsuitableStorage,
-				)
-			}
-			if f.fake != nil {
-				f.fake.Reopen()
-				return f.fake, nil
-			}
-			j, err := journal.Open(ctx, dir, floor, expect, nil,
-				journal.WithClock(f.Clock), journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS()),
-				journal.WithSettings(f.settings))
-			if err != nil {
-				return nil, err
-			}
-			if err := awaitSpares(ctx, j, f.settings); err != nil {
-				_ = j.Close()
-				return nil, err
-			}
-			return wrapJournal(j, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }), nil
-		},
-		Existence: fencedExistence{Existence: f.FS.Store.Existence(), crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate, commitGate: &f.commitGate},
-		Content:   fencedContent{Content: f.FS.Store.Content(), crashed: f.crashed},
-		Lifecycle: gatedLifecycle{Lifecycle: f.FS.Store.Lifecycle(), startGate: &f.startGate},
-		Holds:     Holds(f.Opens, f.FS.Store.Opens()),
-		Clock:     f.Clock,
-		Logger:    f.logger,
-		Tracer:    f.Trace,
-	})
+	e, err := engine.New(d)
 	if err != nil {
 		t.Fatalf("fixture: engine: %v", err)
 	}
@@ -887,6 +881,13 @@ func (f *Fixture) start() {
 		}
 		f.serving = true
 	}
+}
+
+// journalOptions are the options every journal of the fixture's directory
+// opens or initialises with: a mount taken as suitable, reached through the
+// crash-simulating seam.
+func (f *Fixture) journalOptions() []journal.Option {
+	return []journal.Option{journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS())}
 }
 
 // closeDeadline bounds the fixture's engine close. The fixture closes over a

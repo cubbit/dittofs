@@ -5,10 +5,9 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
-// wrapJournal returns j as the engine's Journal, engine.JournalOf, handing
-// each handle its Share returns to opened.
-func wrapJournal(j *journal.Journal, opened func(journal.ShareTag, engine.Handle)) engine.Journal {
-	return &wrappedJournal{engine.JournalOf(j), opened}
+// wrapJournal returns j, handing each handle its Share returns to opened.
+func wrapJournal(j engine.Journal, opened func(journal.ShareTag, engine.Handle)) engine.Journal {
+	return &wrappedJournal{j, opened}
 }
 
 type wrappedJournal struct {
