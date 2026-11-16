@@ -1092,44 +1092,6 @@ func TestSparesPhaseUnlinksACandidateTheQueryAnswersNotWhole(t *testing.T) {
 	}
 }
 
-// TestSparesPhaseACancelledOpenWithNoTakeUnlinksNothing plants a single short
-// record-less candidate — no whole spare, so the phase stages nothing to
-// take — and cancels the open under the spares phase's own span: the
-// context check the phase makes past its staging guards the removals too,
-// not only the adoptions, so the cancelled open answers the context's error
-// and the short spare keeps its name — nothing zeroed, nothing synced,
-// nothing unlinked.
-func TestSparesPhaseACancelledOpenWithNoTakeUnlinksNothing(t *testing.T) {
-	r := newRig(t)
-	r.writeFormat()
-	short := core.SegmentID(4)
-	r.write(format.SegmentName(short), make([]byte, testCap/2))
-	removes := r.seam.Calls(kit.OpRemove)
-	dirSyncs := r.seam.Calls(kit.OpSyncDir)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	tracer := func(tctx context.Context, op core.SpanOp, _ ...slog.Attr) (context.Context, func(error)) {
-		if op == core.SpanOpenSpares {
-			cancel()
-		}
-		return tctx, func(error) {}
-	}
-	_, err := Run(ctx, r.runDepsWithTracer(tracer), core.Version{}, journalID, nil)
-
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("spares: the open cancelled under the phase's own span, staging nothing, answered err %v, want context.Canceled before the removals", err)
-	}
-	if !slices.Contains(r.listing(), format.SegmentName(short)) {
-		t.Errorf("spares: the cancelled open unlinked the short spare %s; the directory holds %v, want it kept: the phase's context check guards the removals too", format.SegmentName(short), r.listing())
-	}
-	if got := r.seam.Calls(kit.OpRemove); got != removes {
-		t.Errorf("spares: the cancelled open removed something, got %d removes, want %d, the count before the run", got, removes)
-	}
-	if got := r.seam.Calls(kit.OpSyncDir); got != dirSyncs {
-		t.Errorf("spares: the cancelled open synced the directory, got %d syncs, want %d, the count before the run", got, dirSyncs)
-	}
-}
-
 // TestSparesPhaseACancelledPastItsStagingWithNoTakeUnlinksNothing plants a
 // single cap-sized record-less candidate whose allocation query the seam
 // answers not whole, and cancels the open while that query is held: the
@@ -1179,5 +1141,136 @@ func TestSparesPhaseACancelledPastItsStagingWithNoTakeUnlinksNothing(t *testing.
 	}
 	if got := r.seam.Calls(kit.OpSyncDir); got != dirSyncs {
 		t.Errorf("spares: the cancelled open synced the directory, got %d syncs, want %d, the count before the run", got, dirSyncs)
+	}
+}
+
+// cancelledUnder runs the open under a context that is cancelled while the
+// hold's first matching call is parked at the seam, and asserts the open
+// answers the context's error: the row arms h, runs the open, waits for the
+// hold to be reached, cancels and releases, so the write under way finishes
+// and every later write is the doorstep check's to refuse.
+func cancelledUnder(t *testing.T, r *rig, h *kit.Hold) error {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := Run(ctx, r.runDeps(), core.Version{}, journalID, nil)
+		done <- err
+	}()
+
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		cancel()
+		t.Fatal("spares: the cancelled open never reached the call the row parks at; the open is stuck before it")
+	}
+	cancel()
+	h.Release()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("spares: the cancelled open never answered; it is parked somewhere past the hold")
+	}
+	return nil
+}
+
+// TestSparesPhaseACancelledDuringTheDirectorySyncZeroesNothingPlants two
+// interrupted recycles — two staged spares whose dirty slots the phase would
+// zero — and a short spare beside them, and cancels the open while the
+// phase's directory sync is under way: the sync in flight finishes, but no
+// write begins past the cancellation — neither staged spare is zeroed, its
+// durable bytes the dirty bytes the fixture planted, and the short spare
+// keeps its name.
+func TestSparesPhaseACancelledDuringTheDirectorySyncZeroesNothing(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	x1, y1 := core.SegmentID(3), core.SegmentID(9)
+	x2, y2 := core.SegmentID(4), core.SegmentID(10)
+	short := core.SegmentID(7)
+	plantInterruptedRecycle(r, x1, y1)
+	plantInterruptedRecycle(r, x2, y2)
+	r.write(format.SegmentName(short), make([]byte, testCap/2))
+	before1, before2 := r.fileBytes(format.SegmentName(y1)), r.fileBytes(format.SegmentName(y2))
+	removes := r.seam.Calls(kit.OpRemove)
+
+	held := r.seam.HoldFirst(t, kit.OpSyncDir, "*")
+	err := cancelledUnder(t, r, held)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("spares: the open cancelled during the phase's directory sync answered err %v, want context.Canceled before the zeroings began", err)
+	}
+	if after := r.fileBytes(format.SegmentName(y1)); !slices.Equal(after, before1) {
+		t.Errorf("spares: the cancelled open zeroed the staged spare %d, got %x..., want the dirty bytes it arrived with: no write begins past the cancellation", y1, after[:format.SegmentHeaderSize])
+	}
+	if after := r.fileBytes(format.SegmentName(y2)); !slices.Equal(after, before2) {
+		t.Errorf("spares: the cancelled open zeroed the staged spare %d, got %x..., want the dirty bytes it arrived with: no write begins past the cancellation", y2, after[:format.SegmentHeaderSize])
+	}
+	if !slices.Contains(r.listing(), format.SegmentName(short)) {
+		t.Errorf("spares: the cancelled open unlinked the short spare %s; the directory holds %v, want it kept: no write begins past the cancellation", format.SegmentName(short), r.listing())
+	}
+	if got := r.seam.Calls(kit.OpRemove); got != removes {
+		t.Errorf("spares: the cancelled open removed something, got %d removes, want %d, the count before the run", got, removes)
+	}
+}
+
+// TestSparesPhaseACancelledDuringTheFirstZeroingStopsTheRest plants two
+// interrupted recycles and cancels the open while the first staged spare's
+// zeroing is under way: the write in flight finishes — its whole self is
+// zeroed and synced — but the second staged spare keeps the dirty bytes it
+// arrived with, no removal runs, and the open answers the context's error.
+func TestSparesPhaseACancelledDuringTheFirstZeroingStopsTheRest(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	x1, y1 := core.SegmentID(3), core.SegmentID(9)
+	x2, y2 := core.SegmentID(4), core.SegmentID(10)
+	plantInterruptedRecycle(r, x1, y1)
+	plantInterruptedRecycle(r, x2, y2)
+	before2 := r.fileBytes(format.SegmentName(y2))
+	removes := r.seam.Calls(kit.OpRemove)
+
+	held := r.seam.HoldFirst(t, kit.OpWrite, format.SegmentName(y1))
+	err := cancelledUnder(t, r, held)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("spares: the open cancelled during the first zeroing answered err %v, want context.Canceled before the second staged spare's zeroing began", err)
+	}
+	if after1 := r.fileBytes(format.SegmentName(y1)); anyHeaderByte(after1[:format.SegmentHeaderSize]) || anyHeaderByte(after1[testCap-format.TrailerSize:]) {
+		t.Errorf("spares: the write the cancellation landed on did not finish, got header %x and trailer %x, want the in-flight zeroing completed",
+			after1[:format.SegmentHeaderSize], after1[testCap-format.TrailerSize:])
+	}
+	if after := r.fileBytes(format.SegmentName(y2)); !slices.Equal(after, before2) {
+		t.Errorf("spares: the cancelled open zeroed the second staged spare %d, got %x..., want the dirty bytes it arrived with: no write begins past the cancellation", y2, after[:format.SegmentHeaderSize])
+	}
+	if got := r.seam.Calls(kit.OpRemove); got != removes {
+		t.Errorf("spares: the cancelled open removed something, got %d removes, want %d, the count before the run", got, removes)
+	}
+}
+
+// TestSparesPhaseACancelledDuringTheUnlinksStopsTheRest plants two short
+// record-less candidates — the phase stages nothing to take, so the removals
+// are all it does — and cancels the open while the first candidate's removal
+// is under way: that removal finishes, but the second candidate keeps its
+// name, for no write begins past the cancellation.
+func TestSparesPhaseACancelledDuringTheUnlinksStopsTheRest(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	first, second := core.SegmentID(4), core.SegmentID(9)
+	r.write(format.SegmentName(first), make([]byte, testCap/2))
+	r.write(format.SegmentName(second), make([]byte, testCap/2))
+
+	held := r.seam.HoldFirst(t, kit.OpRemove, format.SegmentName(first))
+	err := cancelledUnder(t, r, held)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("spares: the open cancelled during the first removal answered err %v, want context.Canceled before the second removal began", err)
+	}
+	if slices.Contains(r.listing(), format.SegmentName(first)) {
+		t.Errorf("spares: the removal the cancellation landed on did not finish, %s is still in the directory %v, want the in-flight removal completed", format.SegmentName(first), r.listing())
+	}
+	if !slices.Contains(r.listing(), format.SegmentName(second)) {
+		t.Errorf("spares: the cancelled open unlinked the second short spare %s; the directory holds %v, want it kept: no write begins past the cancellation", format.SegmentName(second), r.listing())
 	}
 }

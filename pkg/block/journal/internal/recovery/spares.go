@@ -155,10 +155,13 @@ type AdoptedSpare struct {
 // resurrect a short spare, which is harmless — the next open re-reads the
 // same bytes, decides the same and unlinks it again.
 //
-// The phase checks its context before the first write and again, past its
-// staging, before the whole write-and-unlink pass — the directory sync, the
-// zeroing and the removals alike — so a cancellation under it leaves nothing
-// done: no candidate is zeroed, taken or unlinked past the cancellation.
+// The phase checks its context before its first write and again at each
+// write's doorstep — each zeroing and each removal before it starts, past
+// the check the staging's end already made. A cancellation stops no write
+// already under way: the one in flight finishes, and the next open settles
+// what it left idempotently — a half-zeroed slot zeroed the same way, a
+// removal that never became durable re-decided — but no write begins past
+// the cancellation: no further candidate is zeroed, taken or unlinked.
 //
 // The phase is the open's first writing one, so it refuses first, before
 // any candidate is touched; each slot is read through the open's reader, so
@@ -238,10 +241,10 @@ func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.Jou
 		// i-th id's below.
 		take = append(take, id)
 	}
-	// The context is checked again where the phase begins to act, so the
-	// check guards the whole write-and-unlink pass whatever it decided —
-	// adoptions staged or only removals collected: a cancellation here
-	// leaves nothing zeroed, nothing synced and nothing unlinked.
+	// The context is checked again where the phase begins to act, and then at
+	// each write's doorstep below — each zeroing and each removal checks
+	// before it starts: a cancellation lands only on a write under way, which
+	// finishes, while no new write begins past it.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -261,6 +264,12 @@ func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.Jou
 			return err
 		}
 		for _, id := range take {
+			// Each write's doorstep: the write this spare's zeroing is was
+			// about to start, so an already-landed cancellation answers here
+			// and the spare's bytes stand as the phase read them.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if err := zeroSpareSlots(deps, rd, id, sizes[id]); err != nil {
 				// decision: a zeroing that fails here leaves the candidates
 				// zeroed before it holding zeroed slots on disk and none
@@ -278,6 +287,13 @@ func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.Jou
 	// short spare, which is harmless — the next open re-reads it, re-decides
 	// and unlinks it again.
 	for _, id := range unlinked {
+		// Each write's doorstep, the removals' own: a cancellation that
+		// landed while an earlier removal ran stops the rest here, leaving
+		// the candidate for the next open to unlink, which re-decides it the
+		// same way.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := unlinkSpare(deps, id); err != nil {
 			return err
 		}
