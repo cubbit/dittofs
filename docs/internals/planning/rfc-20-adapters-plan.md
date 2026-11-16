@@ -506,7 +506,7 @@ A connection, from accept to the writer (E4 for the connection, E5 for the pipel
 stages := proto.NewConn(c) // nil stages take core's defaults here
 for {
 	hdr := readN(conn, fr.HeaderLen())
-	n, err := fr.BodyLen(hdr) // past the cap: close
+	n, last, err := fr.BodyLen(hdr) // past the cap: close; not last: read the next fragment into rec, within fr.MaxRecord()
 	rec, err := pool.Get(ctx, remote, n) // Budgets.Receive: waits for room, never refuses
 	readInto(rec, conn)
 	p.serve(rec) // on the reader: returns once the request is admitted

@@ -253,7 +253,7 @@ which epic owns the rest.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R54 | `core`'s exported identifiers are exactly §4.7's (with `Handler` of §4.3 and the `Server` `NewServer` returns); everything else is unexported, and a protocol reaches nothing else | MUST | §4.7; rule 9 | T1.7 |
-| R55 | `Protocol` is `{Framer() Framer; NewConn(c *Conn) Stages}`; `Framer` is `{HeaderLen() int; BodyLen(hdr []byte) (int, error)}` | MUST | §4.7 | T1.7 |
+| R55 | `Protocol` is `{Framer() Framer; NewConn(c *Conn) Stages}`; `Framer` is `{HeaderLen() int; BodyLen(hdr []byte) (int, error)}` (amended after S1: `Framer` is as RFC 20 §4.7 now states it, with `BodyLen`'s `last`, `MaxRecord` and `Frame`) | MUST | §4.7 | T1.7 |
 | R56 | `Stages` is a struct of fields: `Header` and `Router` required; `Security`, `Flow`, `Replay`, `Hold` nil for the default; `MaxPending int`; `OnClose func(ctx context.Context)`. A stage is a field present or nil, never discovered by type assertion (defaults: E4, E5) | MUST | §4.7, §2.5 | T1.7 |
 | R57 | Stage interfaces with §4.7's signatures: `HeaderCodec{Decode, Encode, Chain}`, `Router{Route}`, `Security{Unwrap, Wrap}`, `FlowControl{Admit}`, `ReplayCache{Lookup, Store}` | MUST | §4.7 | T1.7 |
 | R58 | `OpTable{Ops map[uint32]*Op; Errors *ErrorTable; Holds bool; ReadOp func(b []byte) (op uint32, n int, err error)}`, `ReadOp` set only on a compound row's `Members` and `NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable` (its checks, codes unique and ranges well formed: E5) | MUST | §4.7, §4.2 | T1.7 |
