@@ -62,12 +62,13 @@ start and names the record that replaced it.
 - dashboards: none.
 
 **RFC amendments in this pull request.** The user agreed to A1:
-- **A1. Every write of `identity.directory`'s address, trust roots, domain controller address or DNS
-  server, its first value included, is by `admin` only** (RFC 13 Appendix B's `identity.directory`
-  row). An `operator`
-  may otherwise keep the existing, correctly owned bind-credential reference, point the address at
-  their own host and the trust roots at their own CA, and receive the credential; TLS does not help
-  when they supplied the roots. The row's text is the RFC 18 plan's pull request's, word for
+- **A1. `identity.directory` is written by `admin` only, the whole record, its first value
+  included** (RFC 13 Appendix B's `identity.directory` row, O9). An `operator` may otherwise keep
+  the existing, correctly owned bind-credential reference, point the address at their own host and
+  the trust roots at their own CA, and receive the credential; TLS does not help when they supplied
+  the roots. With no domain controller address set, the realm chooses the controllers through DNS
+  service records, and the base and name attributes choose which entry a name maps to, so every
+  field of the record is admin's, as `identity.oidc` is. The row's text is the RFC 18 plan's pull request's, word for
   word, which carries this clause too, so the two merge cleanly in either order.
 - **A2. RFC 13 §7 names the provider's full surface**: below the interface #4050 amends, which
   this plan leaves as #4050 writes it, one block declares the built-in provider's methods,
@@ -562,7 +563,7 @@ to a secret of another kind or another owner. Without both, an `operator` who ma
 `identity.directory` could point its bind credential at the OpenID Connect client secret or a
 user's NT hash, aim the address at their own host, and receive the value, which RFC 23 §5.2 forbids
 ("no route writes a secret by reference alone"). D10 does not stop an `operator` keeping the
-correct reference and moving the address and trust roots instead; A1 makes those fields
+correct reference and moving the address and trust roots instead; A1 makes the whole record
 admin-only, as D9 fails closed on a store's location.
 - **Prior art (from memory).** Vault's policies bind a token to the paths it may read, not to
   whatever path a request names.
@@ -775,10 +776,7 @@ func (t Table) Check(tx metadata.ControlPlaneTx, caller auth.Role, w Write, hold
 		return err
 	}
 	if rank(caller) < rank(sec.writeRole) { // an explicit rank, never the names; an empty or unknown role ranks lowest, and Of panics on an unknown WriteRole
-		return ErrForbidden // admin-only sections (RFC 13 Appendix B)
-	}
-	if rank(caller) < rank(sec.keyRole(key)) { // any write to an admin-only key, its first value included (A1)
-		return ErrForbidden // identity.directory's address, trust roots, DC address and DNS server
+		return ErrForbidden // admin-only sections, identity.directory among them, its first value included (RFC 13 Appendix B, A1)
 	}
 	s, err := sec.effectiveAfter(tx, w) // a put's row, or what a delete leaves
 	if err != nil {
@@ -1035,10 +1033,9 @@ freshly sealed `remote credential` among them once epic 4 seals (§3.3), and an 
 passes; D10's refusal of a reference swapped to a secret of another kind or owner, also once
 epic 4 seals; the §5.4 format-version
 refusal; a required key left unset; each role's write to an admin-only section and to a default
-one, only an `admin`'s passing the first and an `operator`'s passing the second; and, with the same
-rank check, an `operator`'s first put and later change of an admin-only key refused and an
-`admin`'s passing, while an `operator`'s write to the section's other keys passes (A1), on a
-section declared in the test (the RFC 18 plan's epic 6 runs it on `identity.directory`);
+one, only an `admin`'s passing the first and an `operator`'s passing the second, an `operator`'s
+first put to an admin-only section refused as its later change is (A1; the RFC 18 plan's epic 6
+runs it on `identity.directory`);
 a key spelled in another case than declared (`adapters.smb.Port`) refused; and an `operator`'s write to `identity.oidc.*` refused, the longest
 section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
 
@@ -1051,10 +1048,8 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
 - `settings.Of` and the table: a section from a component's typed settings, defaults and
   `Validate` (D2); its required keys, the ones with no default (RFC 13 §4.2), since a strict decode
   over a full `def T` cannot tell an omitted field from its zero value; its write role, `admin`
-  for the sections RFC 13 Appendix B writes by `admin` only (`identity.oidc`, `api.oidc_role_map`),
-  and per key where a row says so (`identity.directory`'s address, trust roots, domain controller
-  address and DNS server, A1),
-  compared by an explicit rank, since `UserRole` is a string; its `Per` thing for Appendix B's
+  for the sections RFC 13 Appendix B writes by `admin` only (`identity.oidc`, `api.oidc_role_map`,
+  `identity.directory`, A1, and the others RFC 23 §5.2 lists), compared by an explicit rank, since `UserRole` is a string; its `Per` thing for Appendix B's
   "per journal" rows; its `SecretRef` fields with their kinds (D10); and `Of` refusing a class,
   `Required` or `SecretRef` name that is not a field of `T`.
 - The snapshot, `Read` and `Get`: `Read` decodes each section on its own, takes the installation
@@ -1267,13 +1262,11 @@ and its §6.1 row naming this epic). No `dt` suite builds the image, so it is ch
 - **O8. `docs/guide/configuration.md` has one owner,** this plan's epic 2, which rewrites it for
   the bootstrap. #4050's epic 7 and the RFC 18 plan's epic 7 each add their own section rather than
   rewriting it; #4050's plan still says its epic 7 rewrites it, pending that thread.
-- **O9. Whether A1's field set is wide enough** (RFC 13 Appendix B's `identity.directory`). With no
-  domain controller address set, the record's realm chooses the controllers through DNS service
-  records, so an `operator` who changes it redirects the bind as a new address would; the base and
-  the name attributes change which entry a name maps to. The options: add the realm to A1's list;
-  make the whole record `admin`-only, as `identity.oidc` is, which drops per-key write roles; or
-  keep A1 as it is with a `decision:` note naming the ceiling. Pending the user's answer on this
-  pull request.
+- **O9. A1's field set — decided: the whole record.** With no domain controller address set, the
+  realm chooses the controllers through DNS service records, and the base and name attributes
+  change which entry a name maps to, so the user chose to make all of `identity.directory`
+  `admin`-only, as `identity.oidc` is (A1). No per-key write role exists; RFC 23 §5.2's list names
+  the record, in #4050.
 
 ### 6.1 Deferral ledger
 
