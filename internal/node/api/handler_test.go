@@ -56,6 +56,9 @@ func (l *lockedBuffer) String() string {
 	return l.b.String()
 }
 
+// testNode is the node every served API names in its audit records.
+var testNode = entity.NodeID{'a', 'p', 'i'}
+
 // serve starts the API over d's defaults, each of edit then changing them.
 func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), edit ...func(*api.Deps)) *served {
 	t.Helper()
@@ -70,10 +73,14 @@ func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), 
 		Logger:       slog.New(slog.NewJSONHandler(io.MultiWriter(t.Output(), s.log), nil)),
 		Authenticate: authenticate,
 		Store:        s.store,
+		Node:         testNode,
 		Tracer:       sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(s.spans)).Tracer("api"),
 	}
 	for _, e := range edit {
 		e(&d)
+	}
+	if cp, ok := d.Store.(kvstore.ControlPlane); ok {
+		s.store = cp
 	}
 	srv := api.NewWithTestRows(d)
 	addr, _, err := srv.Start()
