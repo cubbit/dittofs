@@ -431,7 +431,7 @@ func TestDocsCommandReferences(t *testing.T) {
 // as a separate token, where the value must not be read as a subcommand.
 func TestCheckerAcceptsAndRejects(t *testing.T) {
 	accept := []string{
-		"`dfsctl store block add --name r1`",
+		"`dfsctl quota set /archive --scope user --id 1000`",
 		"`dfsctl -o json share list`",
 		"`dfsctl --server https://host:8443 share list`",
 		"`dfs start`",
@@ -452,7 +452,7 @@ func TestCheckerAcceptsAndRejects(t *testing.T) {
 	reject := []string{
 		"`dfsctl user update alice`",                   // it is `user edit`
 		"`dfs config init`",                            // it is `dfs init`
-		"`dfsctl store block health --kind remote`",    // no such flag
+		"`dfsctl quota list --kind remote`",            // no such flag
 		"`dfs init --admin`",                           // no such flag
 		"dfs start --config c.yaml \\\n  --pid-file p", // a flag on a continued line
 	}
