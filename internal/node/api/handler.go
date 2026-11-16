@@ -24,11 +24,14 @@ const maxBody = 1 << 20
 // the caller may not know exists.
 var errNotFound = fmt.Errorf("api: no such resource: %w", vfserr.ErrNotFound)
 
-// request is a handler's decoded request: the ID its path names and its
-// body, decoded strictly.
+// request is a handler's decoded request: the ID its path names, its body,
+// decoded strictly, and, for a write, the tag its record must have, which the
+// handler passes to the store's write as its expect: the one If-Match names,
+// or zero under If-None-Match: *.
 type request[B any] struct {
-	ID   [16]byte
-	Body B
+	ID     [16]byte
+	Body   B
+	Expect uint64
 }
 
 // none is the body of a request that carries none.
@@ -45,11 +48,11 @@ type answer struct {
 // returns what to send. No handler is handed the http.ResponseWriter, so none
 // answers before its adapter has the whole answer: a write's is made inside
 // its transaction and sent only once that has committed.
-type adapter func(ctx context.Context, d *Deps, r *http.Request, id [16]byte) (answer, error)
+type adapter func(ctx context.Context, s *Server, r *http.Request, id [16]byte) (answer, error)
 
 // read adapts a read: its answer is 200 with what h returns.
 func read[R any](h func(context.Context, request[none]) (R, error)) adapter {
-	return func(ctx context.Context, _ *Deps, _ *http.Request, id [16]byte) (answer, error) {
+	return func(ctx context.Context, _ *Server, _ *http.Request, id [16]byte) (answer, error) {
 		resp, err := h(ctx, request[none]{ID: id})
 		if err != nil {
 			return answer{}, err
@@ -58,35 +61,10 @@ func read[R any](h func(context.Context, request[none]) (R, error)) adapter {
 	}
 }
 
-// write adapts a write: h runs inside one transaction of the store's Write,
-// and the answer, 200 with what h returns, is made inside it, so a write
-// answers only what committed.
-func write[B, R any](h func(context.Context, request[B], entity.ControlPlaneTx) (R, error)) adapter {
-	return func(ctx context.Context, d *Deps, r *http.Request, id [16]byte) (answer, error) {
-		rq, err := decodeRequest[B](r, id)
-		if err != nil {
-			return answer{}, err
-		}
-		if d.Store == nil {
-			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
-		}
-		var a answer
-		err = d.Store.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-			resp, err := h(ctx, rq, tx)
-			if err != nil {
-				return err
-			}
-			a, err = jsonAnswer(http.StatusOK, resp)
-			return err
-		})
-		return a, err
-	}
-}
-
 // call adapts a call that is no write of the adapter's: h makes the whole
 // answer, and writes through its own Write if it writes.
 func call[B any](h func(context.Context, request[B]) (answer, error)) adapter {
-	return func(ctx context.Context, _ *Deps, r *http.Request, id [16]byte) (answer, error) {
+	return func(ctx context.Context, _ *Server, r *http.Request, id [16]byte) (answer, error) {
 		rq, err := decodeRequest[B](r, id)
 		if err != nil {
 			return answer{}, err
@@ -209,5 +187,5 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 		id = sid
 		trace.SpanFromContext(ctx).SetAttributes(attribute.String("api.id", sid.String()))
 	}
-	return rt.serve(ctx, &s.d, r, id)
+	return rt.serve(ctx, s, r, id)
 }

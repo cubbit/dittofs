@@ -111,11 +111,16 @@ type reply struct {
 	body   []byte
 }
 
-func (s *served) do(t *testing.T, method, path, body string) reply {
+// do sends method on path with body and the headers hdr names in pairs, a
+// name and its value.
+func (s *served) do(t *testing.T, method, path, body string, hdr ...string) reply {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), method, s.url+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
+	}
+	for i := 0; i+1 < len(hdr); i += 2 {
+		req.Header.Set(hdr[i], hdr[i+1])
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -264,21 +269,20 @@ func TestMustChangeMapsNoRoute(t *testing.T) {
 	}
 }
 
-// A write answers what its transaction committed, which the store then
-// holds; a body naming a field the request does not declare is refused 400
-// invalid naming it, in a problem body with every key, and writes nothing.
+// A write answers what its transaction committed, with its tag, which the
+// store then holds; a body naming a field the request does not declare is
+// refused 400 invalid naming it, in a problem body with every key, and writes
+// nothing.
 func TestWrite(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
-	r := s.do(t, http.MethodPut, "/api/v1/netgroups/"+api.TestID, `{"members":["10.0.0.0/8"]}`)
-	var put struct{ Version uint64 }
-	if err := json.Unmarshal(r.body, &put); r.status != http.StatusOK || err != nil || put.Version == 0 {
-		t.Fatalf("PUT netgroup: answered %d %s (%v), want 200 with its version", r.status, r.body, err)
+	r := s.do(t, http.MethodPut, knobPath, `{"spec":{"value":"on"}}`, "If-None-Match", "*")
+	if r.status != http.StatusOK || string(r.body) != `{"spec":{"value":"on"}}` || r.header.Get("ETag") != `"1"` {
+		t.Fatalf("PUT knob: answered %d %s ETag %q, want 200 with its spec and ETag \"1\"", r.status, r.body, r.header.Get("ETag"))
 	}
-	other := "1d6f3c2a-4b5e-4f7a-8c9d-0e1f2a3b4c5d"
-	r = s.do(t, http.MethodPut, "/api/v1/netgroups/"+other, `{"members":["x"],"colour":"red"}`)
+	r = s.do(t, http.MethodPut, "/api/v1/knobs/"+otherID, `{"spec":{"value":"x","colour":"red"}}`, "If-None-Match", "*")
 	p := r.problem(t)
-	if r.status != http.StatusBadRequest || p.Code != "invalid" || p.Field != "colour" {
-		t.Errorf("unknown field: answered %d %q field %q, want 400 invalid naming colour", r.status, p.Code, p.Field)
+	if r.status != http.StatusBadRequest || p.Code != "invalid" || p.Field != "spec.colour" {
+		t.Errorf("unknown field: answered %d %q field %q, want 400 invalid naming spec.colour", r.status, p.Code, p.Field)
 	}
 	var keys map[string]any
 	if err := json.Unmarshal(r.body, &keys); err != nil {
@@ -289,56 +293,73 @@ func TestWrite(t *testing.T) {
 			t.Errorf("problem %s: no key %q", r.body, k)
 		}
 	}
-	got := netgroups(t, s)
-	if len(got) != 1 || got[0].Name != api.TestID || !slices.Equal(got[0].Members, []string{"10.0.0.0/8"}) || got[0].Version != put.Version {
-		t.Errorf("netgroups held: %+v, want only %s with 10.0.0.0/8 at the answered version %d", got, api.TestID, put.Version)
+	if got := s.knob(t, api.TestID); string(got.Value) != `{"value":"on"}` || got.Generation != 1 {
+		t.Errorf("knob held: %q at %d, want {\"value\":\"on\"} at 1", got.Value, got.Generation)
+	}
+	if got := s.knob(t, otherID); got.Generation != 0 {
+		t.Errorf("knob held after the refused PUT: %+v, want none", got)
 	}
 }
 
-// netgroups is every netgroup the store holds.
-func netgroups(t *testing.T, s *served) []entity.Netgroup {
+const (
+	knobPath = "/api/v1/knobs/" + api.TestID
+	otherID  = "1d6f3c2a-4b5e-4f7a-8c9d-0e1f2a3b4c5d"
+)
+
+// knob is the setting the knob id names holds, its zero value when it holds
+// none.
+func (s *served) knob(t *testing.T, id string) entity.Setting {
 	t.Helper()
-	var got []entity.Netgroup
-	for n, err := range s.store.Netgroups(t.Context(), "") {
+	return s.setting(t, id, "knob")
+}
+
+func (s *served) setting(t *testing.T, id, key string) entity.Setting {
+	t.Helper()
+	sid, err := entity.ParseShareID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for st, err := range s.store.Settings(t.Context(), entity.SettingScope{Kind: entity.ScopeNode, ID: sid}) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got = append(got, n)
+		if st.Key == key {
+			return st
+		}
 	}
-	return got
+	return entity.Setting{}
 }
 
 // A write whose transaction fails answers the failure's problem and stores
 // nothing of it, the record it wrote before failing included.
 func TestWriteThatFailsStoresNothing(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
-	r := s.do(t, http.MethodPut, "/api/v1/pairs/"+api.TestID, "")
+	r := s.do(t, http.MethodPut, knobPath, `{"spec":{"value":"`+api.KnobBreaks+`"}}`, "If-None-Match", "*")
 	if p := r.problem(t); r.status != http.StatusBadRequest || p.Code != "invalid_argument" {
-		t.Errorf("PUT pair: answered %d %q, want 400 invalid_argument", r.status, p.Code)
+		t.Errorf("PUT knob that breaks: answered %d %q, want 400 invalid_argument", r.status, p.Code)
 	}
-	if got := netgroups(t, s); len(got) != 0 {
-		t.Errorf("netgroups held after the failed write: %+v, want none", got)
+	if got := s.knob(t, api.TestID); got.Generation != 0 {
+		t.Errorf("knob held after the failed write: %+v, want none", got)
 	}
 }
 
 // With no store, a write answers 503 unavailable.
 func TestWriteWithNoStore(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) { d.Store = nil })
-	if r := s.do(t, http.MethodPut, "/api/v1/netgroups/"+api.TestID, `{"members":[]}`); r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
+	if r := s.do(t, http.MethodPut, knobPath, `{"spec":{}}`, "If-None-Match", "*"); r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
 		t.Errorf("PUT with no store: answered %d %s, want 503 unavailable", r.status, r.body)
 	}
 }
 
 // A body over the bound is refused 400 invalid and writes nothing.
 func TestBodyOverTheBound(t *testing.T) {
-	put := "/api/v1/netgroups/" + api.TestID
 	s := serve(t, as(entity.RoleOperator, false))
-	big := `{"members":["` + strings.Repeat("a", 1<<20) + `"]}`
-	if r := s.do(t, http.MethodPut, put, big); r.status != http.StatusBadRequest || r.problem(t).Code != "invalid" {
+	big := `{"spec":{"value":"` + strings.Repeat("a", 1<<20) + `"}}`
+	if r := s.do(t, http.MethodPut, knobPath, big, "If-None-Match", "*"); r.status != http.StatusBadRequest || r.problem(t).Code != "invalid" {
 		t.Errorf("PUT of %d bytes: answered %d %.200s, want 400 invalid", len(big), r.status, r.body)
 	}
-	if got := netgroups(t, s); len(got) != 0 {
-		t.Errorf("netgroups held after the refused PUT: %+v, want none", got)
+	if got := s.knob(t, api.TestID); got.Generation != 0 {
+		t.Errorf("knob held after the refused PUT: %+v, want none", got)
 	}
 }
 
@@ -428,9 +449,9 @@ func TestSpanAttributes(t *testing.T) {
 func TestSeriesAndSpans(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	const marker = "body-field-7f3a"
-	put := "PUT /api/v1/netgroups/{id}"
-	s.do(t, http.MethodPut, "/api/v1/netgroups/"+api.TestID, `{"members":["`+marker+`"]}`)
-	s.do(t, http.MethodPut, "/api/v1/netgroups/"+api.TestID, `{"members":["`+marker+`"],"colour":1}`)
+	put := "PUT /api/v1/knobs/{id}"
+	s.do(t, http.MethodPut, knobPath, `{"spec":{"value":"`+marker+`"}}`, "If-None-Match", "*")
+	s.do(t, http.MethodPut, knobPath, `{"spec":{"value":"`+marker+`"},"colour":1}`, "If-Match", `"1"`)
 	if r := s.do(t, http.MethodGet, "/api/v1/fail", ""); r.status != http.StatusInternalServerError {
 		t.Errorf("GET /api/v1/fail: answered %d %s, want 500", r.status, r.body)
 	}
