@@ -25,13 +25,62 @@ func hexOf(id journal.FileID) string {
 var fileHex = hexOf(FILE)
 
 // beat is one step of a story: a title, the caption the presenter narrates,
-// and the work the beat does once the presenter's Enter lands.
+// the facts the room is told to look for before the beat runs, and the work
+// the beat does once the presenter's Enter lands.
 type beat struct {
 	title   string
 	caption string
 	// mutates marks a beat whose effect the views should re-diff.
 	mutates bool
-	run     func(*demo)
+	// watch names the facts this beat is expected to move — printed as
+	// hints before the Enter, confirmed with measured deltas after.
+	watch []watching
+	run   func(*demo)
+}
+
+// watching is one fact a beat moves, with the prose the presenter narrates.
+type watching struct {
+	kind watchKind
+	hint string
+}
+
+// watchKind is a Stats field a beat asks to be measured across its run.
+type watchKind uint8
+
+const (
+	watchHeld watchKind = iota
+	watchDirty
+	watchFiles
+	watchEntries
+	watchSegments
+	watchSealed
+	watchSpares
+	watchMarkers
+	watchVersions
+)
+
+func (k watchKind) of(st journal.Stats) int64 {
+	switch k {
+	case watchHeld:
+		return st.HeldBytes
+	case watchDirty:
+		return st.DirtyBytes
+	case watchFiles:
+		return int64(st.Files)
+	case watchEntries:
+		return st.ExtentCount
+	case watchSegments:
+		return int64(st.Segments)
+	case watchSealed:
+		return int64(st.Sealed)
+	case watchSpares:
+		return int64(st.Spares)
+	case watchMarkers:
+		return int64(st.RemovalMarkers)
+	case watchVersions:
+		return int64(st.VersionsLeft)
+	}
+	return 0
 }
 
 // stories holds a story by name; the basic one is the session sheet's.
@@ -72,6 +121,12 @@ func basicStory() []beat {
 			title:   "a first write",
 			caption: "the journal takes the bytes as one record and the placement index gains a held entry; the version is drawn now, from the window",
 			mutates: true,
+			watch: []watching{
+				{watchEntries, "one held entry at v1"},
+				{watchDirty, "the 11 bytes go dirty"},
+				{watchFiles, "the file appears in the share"},
+				{watchVersions, "a version is drawn from the window"},
+			},
 			run: func(d *demo) {
 				h := d.h[d.tag]
 				v, err := h.WriteAt(context.Background(), FILE, 0, []byte("hello world"), 0)
@@ -83,6 +138,10 @@ func basicStory() []beat {
 			title:   "overwrite half of it",
 			caption: "a newer version supersedes part of the old extent: the index narrows the old entry and keeps the superseded range retained until its settle",
 			mutates: true,
+			watch: []watching{
+				{watchEntries, "one more index entry, the old range narrowed"},
+				{watchVersions, "another version drawn"},
+			},
 			run: func(d *demo) {
 				h := d.h[d.tag]
 				v, err := h.WriteAt(context.Background(), FILE, 2, []byte("XY"), 0)
@@ -94,6 +153,11 @@ func basicStory() []beat {
 			title:   "a big write — the roll",
 			caption: "300 MB of pattern: the active segment crosses its cap and rolls onto a fresh one; the spare the open made becomes the next segment",
 			mutates: true,
+			watch: []watching{
+				{watchSegments, "the pool's spare becomes a content segment"},
+				{watchHeld, "300 MB goes held"},
+				{watchVersions, "another version drawn"},
+			},
 			run: func(d *demo) {
 				h := d.h[d.tag]
 				payload := make([]byte, 300_000_000)
@@ -147,6 +211,11 @@ func basicStory() []beat {
 			title:   "truncate",
 			caption: "everything past 32 goes: the index drops those extents and the removal marker waits, unsettled, for metadata to record it; the record is durable the moment Truncate returns",
 			mutates: true,
+			watch: []watching{
+				{watchMarkers, "a removal marker waits, unsettled"},
+				{watchHeld, "the held bytes past 32 go"},
+				{watchVersions, "another version drawn"},
+			},
 			run: func(d *demo) {
 				h := d.h[d.tag]
 				v, err := h.Truncate(context.Background(), FILE, 32)
@@ -158,6 +227,9 @@ func basicStory() []beat {
 			title:   "settle the removal",
 			caption: "Settle says metadata has recorded the truncation: the marker goes, the superseded ranges go with it — Since narrows to what is still owed",
 			mutates: true,
+			watch: []watching{
+				{watchMarkers, "the marker goes"},
+			},
 			run: func(d *demo) {
 				h := d.h[d.tag]
 				d.printf("    h.Settle(FILE, journal.Version{Counter: %d})   // the truncate's version\n", d.version.Counter)
@@ -180,8 +252,13 @@ func basicStory() []beat {
 		},
 		{
 			title:   "a reserved write",
-			caption: "the engine reserves before a burst: these write's bytes, entries, versions and spares are held up front, so no limit refuses them",
+			caption: "the engine reserves before a burst: the write's bytes, entries, versions and spares are held up front, so no limit refuses them",
 			mutates: true,
+			watch: []watching{
+				{watchEntries, "one more index entry"},
+				{watchDirty, "the 8 bytes go dirty"},
+				{watchVersions, "another version drawn"},
+			},
 			run: func(d *demo) {
 				h := d.h[d.tag]
 				res, err := h.Reserve(8192, 2)
@@ -262,4 +339,60 @@ func changeKindWord(k journal.ChangeKind) string {
 		return "loss"
 	}
 	return fmt.Sprintf("kind%d", uint8(k))
+}
+
+// confirmed renders one watched fact after the beat ran: the journal's own
+// measurement of what moved, so the confirmation can never claim something
+// that did not happen. A watched value that stayed put says so plainly.
+func (w watching) confirmed(before, after journal.Stats) string {
+	var delta int64
+	if w.kind == watchVersions {
+		// Versions left counts DOWN what the window still holds: one
+		// drawn version shows as −1 in the line's terms.
+		delta = int64(after.VersionsLeft) - int64(before.VersionsLeft)
+	} else {
+		delta = w.kind.of(after) - w.kind.of(before)
+	}
+	if delta == 0 {
+		return "· " + w.hint + " — unchanged"
+	}
+	name, value := "", ""
+	switch w.kind {
+	case watchHeld:
+		name, value = "held", signedBytes(delta)
+	case watchDirty:
+		name, value = "dirty", signedBytes(delta)
+	case watchFiles:
+		name, value = "files", signedCount(delta)
+	case watchEntries:
+		name, value = "index", signedCount(delta)+" entry"
+		if delta != 1 {
+			value += "ies"
+		}
+	case watchSegments:
+		name, value = "segments", signedCount(delta)
+	case watchSealed:
+		name, value = "sealed", signedCount(delta)
+	case watchSpares:
+		name, value = "spares", signedCount(delta)
+	case watchMarkers:
+		name, value = "removal markers", signedCount(delta)
+	case watchVersions:
+		name, value = "versions", signedCount(-delta)
+	}
+	return "✓ " + name + " " + value
+}
+
+func signedCount(delta int64) string {
+	if delta > 0 {
+		return "+" + fmt.Sprint(delta)
+	}
+	return fmt.Sprint(delta)
+}
+
+func signedBytes(delta int64) string {
+	if delta > 0 {
+		return "+" + humanSize(delta)
+	}
+	return "-" + humanSize(-delta)
 }

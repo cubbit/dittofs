@@ -9,9 +9,11 @@ go run ./cmd/jdemo --dir talk-journal    # name the directory (a used one opens 
 
 ## Driving
 
-- **`Enter`** runs the beat the screen shows; every beat prints its public API
-  call source-style and what it returned — the version drawn, the bytes read,
-  or the journal's own answer verbatim.
+- Each beat fills the screen with its step banner — `· STEP 3 OF 12 ·` — its
+  title and caption, and a **look for** line telling the room what to watch.
+- **`Enter`** runs the beat: the public API call, source-style, and what it
+  returned — then each watched fact confirmed with a **✓** and the delta the
+  journal's own stats measured. An unchanged watch says so, never a lie.
 - Between beats the chooser offers the views, as often as you like:
   `(i)` index, `(s)` segments, `(f)` filesystem, `(d)` data dump, `(+)` stats.
   An empty line moves to the next beat; `q` ends the story.
