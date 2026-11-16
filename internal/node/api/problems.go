@@ -50,9 +50,9 @@ func (c storeCode) Error() string { return merrs.ErrorCode(c).String() }
 // before the code that wraps it. A typed error matches the row of the
 // sentinel it is, so vfserr's *AccessError answers as ErrAccess.
 //
-// Identity's logon failure and unknown principal are to be vfserr's, and
-// its unavailable is already vfserr.ErrUnavailable, so their rows are the
-// rows below.
+// Identity's logon failure and unknown principal are to be declared in
+// vfserr, whose every error this table must name, and its unavailable is
+// already vfserr.ErrUnavailable.
 var components = []struct {
 	err error
 	answerOf
@@ -70,8 +70,7 @@ var components = []struct {
 	{entity.ErrInconsistent, answerOf{http.StatusInternalServerError, "inconsistent", false}},
 	{entity.ErrMoving, answerOf{http.StatusConflict, "moving", true}},
 	{entity.ErrRehoming, answerOf{http.StatusConflict, "rehoming", false}},
-	// The installation's state refuses a new share for good: no status but
-	// 409 of RFC 23's error table says so.
+	// The installation's state refuses a new share, for good.
 	{entity.ErrTagsExhausted, answerOf{http.StatusConflict, "tags_exhausted", false}},
 
 	{vfserr.ErrNotFound, answerOf{http.StatusNotFound, "not_found", false}},

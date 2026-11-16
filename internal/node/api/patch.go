@@ -19,7 +19,10 @@ func mergePatch(doc, patch []byte) ([]byte, error) {
 	if err := checkKeys(patch, nil); err != nil {
 		return nil, err
 	}
-	p, _ := decodeAny(patch) // checkKeys has read it as one value
+	p, err := decodeAny(patch)
+	if err != nil {
+		return nil, &fieldError{detail: "patch: " + err.Error()}
+	}
 	if _, ok := p.(map[string]any); !ok {
 		return nil, &fieldError{detail: "a patch is a JSON object"}
 	}

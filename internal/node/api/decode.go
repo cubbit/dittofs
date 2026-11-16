@@ -46,18 +46,12 @@ func decode(r io.Reader, v any) error {
 	return nil
 }
 
-// checkKeys refuses b unless it holds one JSON value with no key repeated in
-// any object, and, under a t that is not nil, every key of an object read
-// into a struct is exactly the JSON name of one of its fields.
+// checkKeys refuses the first JSON value b holds unless no key repeats in
+// any of its objects and, under a t that is not nil, every key of an object
+// read into a struct is exactly the JSON name of one of its fields. What
+// follows the value is its callers' to refuse.
 func checkKeys(b []byte, t reflect.Type) error {
-	dec := json.NewDecoder(bytes.NewReader(b))
-	if err := walk(dec, t, ""); err != nil {
-		return err
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return &fieldError{detail: "data after the value"}
-	}
-	return nil
+	return walk(json.NewDecoder(bytes.NewReader(b)), t, "")
 }
 
 var unmarshaler = reflect.TypeFor[json.Unmarshaler]()
