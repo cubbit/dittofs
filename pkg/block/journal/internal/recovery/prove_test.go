@@ -1060,3 +1060,35 @@ func TestTheProofsOpenOfASegmentTakesTheReadersBound(t *testing.T) {
 		}
 	})
 }
+
+// TestTheTailProofNeverJudgesARecordTheFeedWithheld holds the whole-withhold
+// rule over the proof: a record whose seq the directory's failed list names —
+// T7.5's feed withholds it whole, so it is neither proven nor handed over —
+// is not a tail candidate at all, not even judged, though its header reads
+// healthy: it is planted with a rotted payload on purpose, so a proof that
+// first-read it would judge it torn and cut the segment at its own start.
+// Withheld, the first read never happens, nothing is re-appended, and its
+// fate follows the segment's: the segment keeps the intact fate the classing
+// wrote, its record judged by nobody and handed to nobody.
+func TestTheTailProofNeverJudgesARecordTheFeedWithheld(t *testing.T) {
+	w := tailRec(201, 0x4100) // W's seq is 100, the failed list's
+	seg := buildSeg(2, w)
+	wAt := int64(format.SegmentHeaderSize)
+	seg[wAt+format.RecordHeaderSize+8+2] ^= 0xff // W's payload, rotted where a first read takes it
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, seg)
+
+	st, err := r.asideRun([]core.Seq{100})
+	if err != nil {
+		t.Fatalf("Run over a withheld tail record: %v", err)
+	}
+
+	noTornReport(t, st)
+	if _, ok := st.Rebuilt.Index.Lookup(tailFile(), 0x4100); ok {
+		t.Errorf("Lookup over the withheld record's extent hit, want a miss: the feed serves nothing of a record the failed list names")
+	}
+	// The fate stands as the classing wrote it — intact, no cut named —
+	// never the torn tail a first read of W would have judged and named.
+	wantFate(t, st, 2, fateIntact, 0)
+}

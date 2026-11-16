@@ -205,6 +205,7 @@ func TestTheRepairFoldsNoRecordTheCatalogueConfined(t *testing.T) {
 	g := tailRec(200, overwrite)
 	c := rec(7, func(r *raw.Record) { // a clone target of the tail's own file, cutting G's extent
 		r.FileID = rec(1, nil).FileID
+		r.Seq = 103 // no other record of C's numbers anywhere: the copies rule masks no drop of its seq
 		r.Version = raw.Version{Counter: 300}
 		r.Clone = &raw.CloneBody{Share: srcShare(), File: srcFile(), Off: 0x101, AsOf: raw.Version{Counter: 9}}
 	})
@@ -301,5 +302,43 @@ func TestTheRepairReadsACataloguedSegmentTheWayTheRebuildDid(t *testing.T) {
 	})
 	if got := planted(st); got != 1 {
 		t.Errorf("the index holds %d entries, want 1: G alone, the torn T dropped as never written", got)
+	}
+}
+
+// TestTheRepairFoldsNoRecordTheFeedWithheld holds the withheld rule over the
+// repair: a record the feed withheld whole — here one whose seq the
+// directory's failed list names, sealed with a synced segment before the torn
+// tail — was never fed, so the repair of the torn record over its extent may
+// not re-place it either. Its fresh header reads healthy, so the rebuild's
+// judged set never finds it; only the withheld set does, and the index comes
+// out holding nothing of what the force of the failed list kept out of it.
+func TestTheRepairFoldsNoRecordTheFeedWithheld(t *testing.T) {
+	const overwrite = 0x4100
+	endA := endAfter(tailRec(200, 0x4100))
+	a := syncedRec(200, overwrite, endA) // A, withheld whole by its seq on the failed list
+	seg1, _ := buildSealed(1, a)
+	b := writeRec(101, 201, overwrite, 16) // T over A's whole extent, seq the list does not name
+	seg2 := buildSeg(2, b)
+	copy(seg2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
+	bAt := int64(format.SegmentHeaderSize)
+	seg2[bAt+format.RecordHeaderSize+8+2] ^= 0xff // T's payload, torn to the first read
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg1)
+	r.plantSeg(2, seg2)
+
+	st, err := r.asideRun([]core.Seq{100})
+	if err != nil {
+		t.Fatalf("Run over a withheld record beside a torn tail: %v", err)
+	}
+
+	noTornReport(t, st)
+	wantFate(t, st, 2, fateTornTail, bAt)
+	if got := planted(st); got != 0 {
+		t.Errorf("the index holds %d entries, want 0: A is withheld whole and the repair may not fold it back, T torn as never written", got)
+	}
+	if _, ok := st.Rebuilt.Index.Lookup(tailFile(), overwrite); ok {
+		t.Errorf("Lookup over the withheld record's extent hit, want a miss: the repair hands back nothing the feed withheld")
 	}
 }

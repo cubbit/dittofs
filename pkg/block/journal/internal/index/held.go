@@ -218,8 +218,24 @@ type overRun struct {
 // noteOver records, before e is overwritten by the write of version by, one
 // run for each held piece in e written at a lower version. A piece at or above
 // by is not superseded by it: a rebuild applies records in version order, so
-// that happens only when the same write is put again.
+// that happens only when the same write is put again. Every note stands, none
+// is skipped: this is the client-write shape, where a scan of the runs would
+// ride every write between settles.
 func (s *heldSet) noteOver(e core.Extent, by core.Version) {
+	s.noteSupersede(e, by, false)
+}
+
+// noteOverOnce is noteOver for a repair's fold, the one caller that re-notes
+// chains its first replay already noted over the window: it leaves a run an
+// earlier note already covers whole as it is, and still notes a partial
+// overlap. The scan it costs rides the rare repair, never a client write.
+func (s *heldSet) noteOverOnce(e core.Extent, by core.Version) {
+	s.noteSupersede(e, by, true)
+}
+
+// noteSupersede is the note both callers share, the once shape carrying the
+// repair's dedup below.
+func (s *heldSet) noteSupersede(e core.Extent, by core.Version, once bool) {
 	s.visit(e, func(p Piece) bool {
 		if p.Version.Compare(by) < 0 {
 			q := clip(p, e).Extent
@@ -232,13 +248,14 @@ func (s *heldSet) noteOver(e core.Extent, by core.Version) {
 				}
 			}
 			// decision: a run an earlier note already covers whole is left
-			// as it is, never noted a second time. One replay of one write
-			// notes each chain once, so only a repair's fold — which re-notes
-			// the supersedes its first replay already noted over the window —
-			// reaches the check, and overlapping copies of one run would
-			// have every reader merge them back into what the first already
-			// said. Overturned by a caller that reads a run's copy count.
-			if slices.ContainsFunc(s.over, func(r overRun) bool {
+			// as it is, never noted a second time — reach it once only. One
+			// replay of one write notes each chain once, so only a repair's
+			// fold — which re-notes the supersedes its first replay already
+			// noted over the run-holding window — reaches the check, and
+			// overlapping copies of one run would have every reader merge
+			// them back into what the first already said. Overturned by a
+			// caller that reads a run's copy count.
+			if once && slices.ContainsFunc(s.over, func(r overRun) bool {
 				return r.by == by && r.was == p.Version && r.extent.Off <= q.Off && extentEnd(q) <= extentEnd(r.extent)
 			}) {
 				return true

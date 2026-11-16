@@ -84,6 +84,15 @@ type kindResults struct {
 	// scans.
 	Withheld index.Numbers
 
+	// WithheldAt holds the locations of the records the rules named by
+	// Withheld's failed-list, whole-loss and forget axes withheld — by their
+	// numbers, wherever they sit — one entry per placement the feed served
+	// nothing of. The confined copies stay out: the classing already carries
+	// them as corrupt drops on their own scans. The tail's proof and its
+	// repair read this set so a record the feed withheld whole is proven,
+	// handed over and re-placed nowhere.
+	WithheldAt map[index.RecordAt]bool
+
 	// Records holds one Rec per header-only record the scans attached — a
 	// release, truncate, deallocate, delete, clone target, offloaded or
 	// unmark record — filled by the feed, one entry per copy at the
@@ -215,13 +224,14 @@ type lossPiece struct {
 // fetching the extent again.
 func decodeAsides(rd *reader, identity core.JournalID, failed []core.Seq, scs []segmentScan) (kindState, error) {
 	ks := kindState{
-		whole:      map[core.Seq]bool{},
-		superseded: map[core.Seq]supersededLoss{},
-		forget:     map[core.ShareTag]core.Seq{},
-		failed:     map[core.Seq]bool{},
-		pieces:     map[lossPiece]bool{},
-		confined:   map[index.RecordAt]bool{},
-		copies:     map[copyKey][]index.RecordAt{},
+		whole:       map[core.Seq]bool{},
+		superseded:  map[core.Seq]supersededLoss{},
+		forget:      map[core.ShareTag]core.Seq{},
+		failed:      map[core.Seq]bool{},
+		pieces:      map[lossPiece]bool{},
+		confined:    map[index.RecordAt]bool{},
+		copies:      map[copyKey][]index.RecordAt{},
+		kindResults: kindResults{WithheldAt: map[index.RecordAt]bool{}},
 	}
 	for _, seq := range failed {
 		ks.failed[seq] = true
@@ -960,6 +970,13 @@ func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
 	withheld := ks.withheldWhole(rec) ||
 		ks.confined[index.RecordAt{Segment: rec.Segment, Offset: rec.At}]
 	if withheld {
+		if ks.withheldWhole(rec) {
+			// The location joins the withheld set the later phases read: a
+			// record the rules drop whole is judged nowhere past this feed.
+			// The confined copies stay out, for the classing already names
+			// them as corrupt drops where they sit.
+			ks.WithheldAt[index.RecordAt{Segment: rec.Segment, Offset: rec.At}] = true
+		}
 		// The withheld numbers fold by their two axes, the highest sequence
 		// number and the highest version among the withheld independently:
 		// no one record need carry both, and the counters a later pass

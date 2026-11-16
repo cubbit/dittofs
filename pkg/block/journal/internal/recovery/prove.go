@@ -287,7 +287,7 @@ func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID
 		// segment without records to prove.
 		return nil
 	}
-	cands, heldBelow, err := tailCandidates(rd, expect, *sc)
+	cands, heldBelow, err := tailCandidates(rd, expect, *sc, st.Kinds.WithheldAt)
 	if err != nil {
 		return err
 	}
@@ -615,9 +615,13 @@ func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn inde
 		// targets by their header's, one shape per source — the source that
 		// confined a record keeps it out of its own Records as well, so the
 		// set answers the day a second read of unchanged bytes ever
-		// disagrees with the first.
+		// disagrees with the first. A record the feed withheld whole stays
+		// out by its numbers, whose fresh header reads healthy — only the
+		// withheld set finds it — so the repair hands back none of what the
+		// rebuild never served.
 		for _, r := range segmentRecords(sc, rebuildDrops(st, info.ID)) {
-			if r.File != torn.File || tornSoFar[index.RecordAt{Segment: r.Segment, Offset: r.At}] || !reachesOverlap(r.Reach(), window) {
+			if st.Kinds.WithheldAt[index.RecordAt{Segment: r.Segment, Offset: r.At}] ||
+				r.File != torn.File || tornSoFar[index.RecordAt{Segment: r.Segment, Offset: r.At}] || !reachesOverlap(r.Reach(), window) {
 				continue
 			}
 			recs = append(recs, r)
@@ -655,7 +659,13 @@ func reachesOverlap(a, b core.Extent) bool {
 // the classing already dropped is out of the candidates — confined, or a
 // clone target whose body failed: its torn-or-corrupt verdict is judged, not
 // judged twice — while its end still counts toward heldBelow when it lies
-// below the point, for the same proving sync names it.
+// below the point, for the same proving sync names it. A record the feed
+// withheld whole is out the same way and judged not at all — neither proven
+// nor handed over: no first read, no sync because of it, no re-read, no
+// re-append, no torn drop — so its fate follows the segment's, whatever the
+// flow finds in the records around it; its end counts toward heldBelow below
+// the point like a dropped record's, for the sync named those bytes whether
+// or not the journal holds the record.
 //
 // ponytail: the rebuild holds nothing of the records it fed the index — the
 // scans it keeps drop them, so a journal of millions of records does not
@@ -664,7 +674,7 @@ func reachesOverlap(a, b core.Extent) bool {
 // tail is unproven. Keep the unproven tail's record offsets in the scan, set
 // where the scan walks, when an open whose newest segments are long shows
 // the re-walk in a profile.
-func tailCandidates(rd *reader, expect core.JournalID, sc segmentScan) ([]format.RecordHeader, int64, error) {
+func tailCandidates(rd *reader, expect core.JournalID, sc segmentScan, withheld map[index.RecordAt]bool) ([]format.RecordHeader, int64, error) {
 	walk, werr := format.ScanSegmentHeaders(
 		readerAt{rd: rd, name: format.SegmentName(sc.ID)}, sc.Size, expect, sc.ID)
 	if werr != nil {
@@ -691,6 +701,9 @@ func tailCandidates(rd *reader, expect core.JournalID, sc segmentScan) ([]format
 		}
 		if judged[h.Offset] {
 			continue
+		}
+		if withheld[index.RecordAt{Segment: sc.ID, Offset: uint32(h.Offset)}] {
+			continue // the feed withheld the record whole: its fate follows the segment's
 		}
 		out = append(out, h)
 	}
