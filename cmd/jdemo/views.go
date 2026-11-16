@@ -1,18 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
-)
 
-// fileRow is one row of the filesystem view: a thing in the journal's
-// directory, its size in bytes, and any note.
-type fileRow struct {
-	name string
-	size int64
-	note string
-}
+	"github.com/cubbit/dittofs/pkg/block/journal"
+)
 
 // viewFS shows the journal's directory as it is: format file, segments,
 // spares — the on-disk story the index, once it lands, names by id.
@@ -22,38 +18,36 @@ func (d *demo) viewFS() {
 		d.printf("filesystem: %v\n", err)
 		return
 	}
-	rows := make([]fileRow, 0, len(entries))
+	rows := make([]viewRow, 0, len(entries))
 	for _, e := range entries {
-		var row fileRow
+		var note string
 		switch {
 		case strings.HasSuffix(e.Name(), ".seg"):
-			row = fileRow{name: e.Name(), note: "segment"}
+			note = "segment"
 		case strings.HasSuffix(e.Name(), ".spare.tmp"):
-			row = fileRow{name: e.Name(), note: "spare (spooling)"}
+			note = "spare (spooling)"
 		case e.Name() == "format":
-			row = fileRow{name: e.Name(), note: "the journal's identity, version, settings"}
+			note = "the journal's identity, version, settings"
 		default:
-			row = fileRow{name: e.Name(), note: "unknown to the demo"}
+			note = "unknown to the demo"
 		}
+		size := int64(0)
 		if info, err := e.Info(); err == nil {
-			row.size = info.Size()
+			size = info.Size()
 		}
-		rows = append(rows, row)
+		rows = append(rows, viewRow{
+			key:  e.Name(),
+			text: fmt.Sprintf("%-32s %9s  %s", e.Name(), humanSize(size), note),
+		})
 	}
-	renderFiles(d, rows)
+	// ReadDir's ascending names leave growth reading downward: the newest
+	// (highest-id) segment is the last row.
+	d.renderView("filesystem", rows)
 	d.printf("state file (a sibling, outside the journal's dir): %s\n", statePath(d.dir))
 }
 
-// renderFiles prints fileRows through the demo's screen. Sizes are human
-// ones: at distance, "256 MiB" reads and "268435456" does not.
-func renderFiles(d *demo, rows []fileRow) {
-	d.printf("%-32s %-9s %s\n", "name", "size", "what")
-	for _, r := range rows {
-		d.printf("%-32s %-9s %s\n", r.name, humanSize(r.size), r.note)
-	}
-}
-
-// humanSize renders bytes at the scale a screen can carry.
+// humanSize renders bytes at the scale a screen can carry: at distance,
+// "256 MiB" reads and "268435456" does not.
 func humanSize(n int64) string {
 	switch {
 	case n >= 1<<30:
@@ -67,9 +61,38 @@ func humanSize(n int64) string {
 	}
 }
 
-// viewStats shows the journal's totals and the per-share breakdown —
-// the measured view, honest even where the read-outs behind other views
-// are still stubs.
+// viewStats shows the journal's totals and the per-share breakdown as
+// diffable rows — the measured view, honest even where the read-outs
+// behind other views are still stubs.
 func (d *demo) viewStats() {
-	renderStats(d.out, d.j.Stats())
+	st := d.j.Stats()
+	rows := []viewRow{
+		{key: "max bytes", text: fmt.Sprintf("max bytes          %12d", st.MaxBytes)},
+		{key: "used", text: fmt.Sprintf("used               %12d", st.UsedBytes)},
+		{key: "reserved", text: fmt.Sprintf("reserved           %12d", st.ReservedBytes)},
+		{key: "held", text: fmt.Sprintf("held               %12d", st.HeldBytes)},
+		{key: "dirty", text: fmt.Sprintf("dirty              %12d", st.DirtyBytes)},
+		{key: "files", text: fmt.Sprintf("files              %12d", st.Files)},
+		{key: "index entries", text: fmt.Sprintf("index entries      %12d", st.ExtentCount)},
+		{key: "segments", text: fmt.Sprintf("segments           %12d (%d sealed)", st.Segments, st.Sealed)},
+		{key: "spares", text: fmt.Sprintf("spares             %12d", st.Spares)},
+		{key: "unreclaimed", text: fmt.Sprintf("unreclaimed        %12d", st.UnreclaimedBytes)},
+		{key: "removal markers", text: fmt.Sprintf("removal markers    %12d", st.RemovalMarkers)},
+		{key: "versions left", text: fmt.Sprintf("versions left      %12d", st.VersionsLeft)},
+	}
+	// The rows are sorted by tag below the totals: a map's iteration is
+	// not an order, and screens must not reshuffle between looks.
+	tags := make([]journal.ShareTag, 0, len(st.Shares))
+	for tag := range st.Shares {
+		tags = append(tags, tag)
+	}
+	slices.Sort(tags)
+	for _, tag := range tags {
+		s := st.Shares[tag]
+		rows = append(rows, viewRow{
+			key:  fmt.Sprintf("share %d", tag),
+			text: fmt.Sprintf("share %-12d %9d used %7d held %7d dirty", tag, s.UsedBytes, s.HeldBytes, s.DirtyBytes),
+		})
+	}
+	d.renderView("stats", rows)
 }

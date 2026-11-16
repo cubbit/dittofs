@@ -63,6 +63,10 @@ type demo struct {
 
 	views map[rune]func(*demo)
 	quit  bool
+
+	// lastView holds each view's last-shown rows, the diff layer's
+	// snapshots; markStale drops them all.
+	lastView map[string]map[string]string
 }
 
 // newDemo wires the driver: journal directory dir, keystrokes from in, the
@@ -223,6 +227,9 @@ func (d *demo) beat(b beat) {
 	d.printf("%s\n%s\n\n", b.title, b.caption)
 	if d.waitEnter() {
 		b.run(d)
+		if b.mutates {
+			d.markStale()
+		}
 	}
 	d.printf("\n")
 	if d.quit {
