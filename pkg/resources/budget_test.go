@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -62,8 +63,8 @@ func TestBudgetRefusesPastItsCeiling(t *testing.T) {
 	if _, err := b.Reserve(4); err != nil || b.Reserved() != 10 {
 		t.Errorf("Reserve(4) over 6 of 10 = %v with %d reserved, want 10: the ceiling itself fits", err, b.Reserved())
 	}
-	if _, err := b.Reserve(-1); err == nil || b.Reserved() != 10 {
-		t.Errorf("Reserve(-1) = %v with %d reserved, want a refusal and 10", err, b.Reserved())
+	if _, err := b.Reserve(-1); err == nil || !strings.Contains(err.Error(), "cannot be negative") || b.Reserved() != 10 {
+		t.Errorf("Reserve(-1) = %v with %d reserved, want a refusal naming the negative charge and 10", err, b.Reserved())
 	}
 }
 
@@ -118,14 +119,17 @@ func TestReleasePastZeroPanicsInTests(t *testing.T) {
 	}
 }
 
-// records keeps what the default logger was handed.
+// records keeps what the budgets' logger was handed.
 type records struct {
-	slog.Handler
 	mu  sync.Mutex
 	got []slog.Record
 }
 
 func (h *records) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *records) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *records) WithGroup(string) slog.Handler { return h }
 
 func (h *records) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
@@ -404,41 +408,50 @@ func TestWaitBudgetCancelledHeadLetsTheNextFit(t *testing.T) {
 }
 
 // A grant and a cancel that both reach a waiter before it wakes leave nothing
-// lost: it returns either the reservation or the context's error, and the
-// bytes reach the waiter behind it either way. A waiter woken by its cancel
-// finds the grant already made, and gives it back.
+// lost, and the bytes reach the waiter behind it either way. Granted first,
+// the parked waiter wakes on ready and returns the reservation. Cancelled
+// first, with the release run inline under the mutex so the waiter its cancel
+// woke cannot take the lock before the grant, it finds the grant made, gives
+// it back and returns the context's error.
 func TestWaitBudgetCancelRacingGrant(t *testing.T) {
-	orders := map[string]func(release, cancel func()){
-		"grant then cancel": func(release, cancel func()) { release(); cancel() },
-		"cancel then grant": func(release, cancel func()) { cancel(); release() },
+	orders := map[string]struct {
+		both func(b *WaitBudget, held Reservation, cancel func())
+		want error
+	}{
+		// The waiter is parked in its select, so the first close wakes it.
+		"grant then cancel": {func(_ *WaitBudget, held Reservation, cancel func()) { held.Release(); cancel() }, nil},
+		// The release runs inline under the mutex, so the waiter woken by
+		// its cancel cannot take the lock before the grant is made.
+		"cancel then grant": {func(b *WaitBudget, _ Reservation, cancel func()) {
+			b.c.mu.Lock()
+			cancel()
+			b.releaseLocked(10)
+			b.c.mu.Unlock()
+		}, context.Canceled},
 	}
-	for name, both := range orders {
+	for name, order := range orders {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				b := NewWaitBudget("receive", 10)
-				for range 200 {
-					held := mustReserve(t, kindOf(b), 10)
-					ctx, cancel := context.WithCancel(t.Context())
-					w := startWaiting(t, ctx, b, 10)
-					behind := startWaiting(t, t.Context(), b, 10)
-					both(held.Release, cancel)
-					synctest.Wait()
-					switch {
-					case !w.returned():
-						t.Fatal("the waiter neither took its grant nor its cancel")
-					case w.err == nil:
-						w.res.Release()
-					case !errors.Is(w.err, context.Canceled):
-						t.Fatalf("the waiter returned %v", w.err)
-					}
-					synctest.Wait()
-					if !behind.returned() || behind.err != nil {
-						t.Fatalf("the waiter behind returned %v (%v), want it granted the bytes", behind.returned(), behind.err)
-					}
-					behind.res.Release()
-					if got, queued := b.Reserved(), b.waiters.Len(); got != 0 || queued != 0 {
-						t.Fatalf("a round ended at %d reserved and %d queued, want 0 and 0", got, queued)
-					}
+				held := mustReserve(t, kindOf(b), 10)
+				ctx, cancel := context.WithCancel(t.Context())
+				w := startWaiting(t, ctx, b, 10)
+				behind := startWaiting(t, t.Context(), b, 10)
+				order.both(b, held, cancel)
+				synctest.Wait()
+				if !w.returned() || !errors.Is(w.err, order.want) {
+					t.Fatalf("the waiter returned %v (%v), want %v", w.returned(), w.err, order.want)
+				}
+				if w.err == nil {
+					w.res.Release()
+				}
+				synctest.Wait()
+				if !behind.returned() || behind.err != nil {
+					t.Fatalf("the waiter behind returned %v (%v), want it granted the bytes", behind.returned(), behind.err)
+				}
+				behind.res.Release()
+				if got, queued := b.Reserved(), b.waiters.Len(); got != 0 || queued != 0 {
+					t.Fatalf("the round ended at %d reserved and %d queued, want 0 and 0", got, queued)
 				}
 			})
 		})
@@ -460,8 +473,8 @@ func TestWaitBudgetRefusesAChargePastItsCeiling(t *testing.T) {
 				if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					t.Errorf("Reserve(11) of 10 = %v, want an error that matches no context error", err)
 				}
-				if _, err := b.Reserve(ctx, client, -1); err == nil {
-					t.Error("Reserve(-1) was granted")
+				if _, err := b.Reserve(ctx, client, -1); err == nil || !strings.Contains(err.Error(), "cannot be negative") {
+					t.Errorf("Reserve(-1) = %v, want a refusal naming the negative charge", err)
 				}
 				if got, queued := b.Reserved(), b.waiters.Len(); got != 0 || queued != 0 {
 					t.Errorf("after the refusals %d reserved and %d queued, want 0 and 0", got, queued)
