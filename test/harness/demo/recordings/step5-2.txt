@@ -1,4 +1,4 @@
-# perl -0pi -e 's|(      macos:\n(?:        .*\n)*?        tier: nightly\n)|$1        known: test/clients/known-demo.yaml\n|' test/suites.yaml && git --no-pager diff -U1 test/suites.yaml | tail -n 3 | 2026-11-16 16:21 CET | f02e02620
+# perl -0pi -e 's|(      macos:\n(?:        .*\n)*?        tier: nightly\n)|$1        known: test/clients/known-demo.yaml\n|' test/suites.yaml && git --no-pager diff -U1 test/suites.yaml | tail -n 3 | 2026-11-16 16:57 CET | f02e02620
          tier: nightly
 +        known: test/clients/known-demo.yaml
        windows:

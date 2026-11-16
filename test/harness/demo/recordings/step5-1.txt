@@ -1,4 +1,4 @@
-# cp test/harness/demo/known-demo.yaml test/clients/ && cat test/clients/known-demo.yaml | 2026-11-16 16:21 CET | f02e02620
+# cp "test/harness/demo/known-demo.yaml" test/clients/ && cat test/clients/known-demo.yaml | 2026-11-16 16:57 CET | f02e02620
 - test: test/clients/files.sh
   status: fail
   fix: wontfix

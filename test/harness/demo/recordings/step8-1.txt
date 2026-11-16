@@ -1,7 +1,7 @@
-# test/harness/bin/dt run pjdfstest/badger-s3/4.1 --in host --ci; echo "dt exit: $?" | 2026-11-16 16:22 CET | f02e02620
+# test/harness/bin/dt run pjdfstest/badger-s3/4.1 --in host --ci; echo "dt exit: $?" | 2026-11-16 16:58 CET | f02e02620
 [dt] pjdfstest/badger-s3/4.1: not run dt mounts NFS only on Linux yet
 ::error title=dt pjdfstest/badger-s3/4.1::not run: dt mounts NFS only on Linux yet
 CELL                     RESULT   TIME  NOTE
 pjdfstest/badger-s3/4.1  not run  0s    dt mounts NFS only on Linux yet
-results: <worktree>/test/harness/results/20261116T152213Z-f02e0262
+results: <worktree>/test/harness/results/20261116T155823Z-f02e0262
 dt exit: 2

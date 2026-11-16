@@ -1,4 +1,4 @@
-# test/harness/bin/dt report test/harness/demo/nightly-run | 2026-11-16 16:22 CET | f02e02620
+# test/harness/bin/dt report "test/harness/demo/nightly-run" | 2026-11-16 16:59 CET | f02e02620
 run 20261103T071003Z-419a8401: exit 0
 CELL    RESULT  TIME    NOTE
 system  passed  25m37s  

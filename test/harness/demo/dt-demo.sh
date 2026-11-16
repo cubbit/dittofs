@@ -53,7 +53,7 @@ step2() {
   look '^SMB adapter change .*e2e/' "SMB adapter change: adds the e2e cells"
   look '^worktree back at' "back where it started"
   cmd 60 <<EOF
-$DEMO_DIR/plan-compare.sh
+"$DEMO_DIR/plan-compare.sh"
 EOF
 }
 
@@ -72,7 +72,7 @@ step4() {
   title "Step 4: a regression fails the run" "Show: one broken expectation in a client test, named in the output and in the report"
   look 'FAIL: file.txt reads back other content' "FAIL: file.txt reads back other content"
   look 'dt exit: 1' "failed, exit 1"
-  look '[Nn][Ee][Ww]' "one NEW FAILURE row"
+  look '^clients/macos +test/clients/files\.sh ' "one NEW FAILURE row: files.sh"
   cmd 10 <<'EOF'
 sed -i '' 's/uname -s)" ]/uname -s)!" ]/' test/clients/files.sh && git --no-pager diff -U0 test/clients/files.sh | grep '^[-+]\['
 EOF
@@ -91,7 +91,7 @@ step5() {
   look 'dt exit: 0' "passed, exit 0"
   look '"grade":"known"' "CTRF: files.sh skipped, grade known, with its reason"
   cmd 10 <<EOF
-cp $DEMO_DIR/known-demo.yaml test/clients/ && cat test/clients/known-demo.yaml
+cp "$DEMO_DIR/known-demo.yaml" test/clients/ && cat test/clients/known-demo.yaml
 EOF
   cmd 10 <<'EOF'
 perl -0pi -e 's|(      macos:\n(?:        .*\n)*?        tier: nightly\n)|$1        known: test/clients/known-demo.yaml\n|' test/suites.yaml && git --no-pager diff -U1 test/suites.yaml | tail -n 3
@@ -161,10 +161,10 @@ step9() {
 test/harness/bin/dt plan --tier nightly | awk 'NR==1 || $2=="dedicated"'
 EOF
   cmd 30 <<EOF
-test/harness/bin/dt report $run
+test/harness/bin/dt report "$run"
 EOF
   cmd 10 <<EOF
-jq -c '[.results.tests[] | .extra.grade // .status] | group_by(.) | map({(.[0]): length}) | add' $run/summary.json
+jq -c '[.results.tests[] | .extra.grade // .status] | group_by(.) | map({(.[0]): length}) | add' "$run/summary.json"
 EOF
 }
 
@@ -253,5 +253,20 @@ demo_setup() { # [--quick]
   [ -n "$(ls "$DEMO_SAVED"/step*-*.txt 2>/dev/null)" ] && ok "saved outputs in $DEMO_SAVED" || warn "no saved outputs yet: run $(demo_name) record once, then setup again"
   strong "ready. Next: $(demo_name) (DEMO_HINTS=1 shows each step's 'look for' first)"
 }
+
+# The steps commit, reset and check out files in DEMO_WT, so the demo runs only in a detached linked
+# worktree, as setup makes, never in a checkout that may hold work.
+case "${1:-}" in
+  help | -h | --help | replay) ;;
+  *)
+    if [ -d "$DEMO_WT" ]; then
+      dirs=$(git -C "$DEMO_WT" rev-parse --path-format=absolute --git-dir --git-common-dir 2>/dev/null | sort -u | wc -l)
+      if [ "$dirs" -ne 2 ] || git -C "$DEMO_WT" symbolic-ref -q HEAD >/dev/null; then
+        bad "DEMO_WT=$DEMO_WT is not a detached worktree of its own, and the demo resets it: refusing"
+        exit 1
+      fi
+    fi
+    ;;
+esac
 
 demo_main "$@"

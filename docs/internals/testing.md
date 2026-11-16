@@ -247,7 +247,7 @@ test/harness/bin/dt unit                                       # unit, integrati
 | `--tier T` | Runs at tier T, or a suite's own tier when wider |
 | `--only a,b` / `--skip a,b` | Narrows a group |
 | `--retry N` | Runs each new failure again, up to N times; a pass on retry is graded flaky |
-| `--ci` | What CI uses: an unmet need fails the cell instead of skipping it, and failures print GitHub annotations |
+| `--ci` | What CI uses: an unmet need makes the cell not run (exit 2) instead of skipping it, and failures print GitHub annotations |
 | `--results DIR` | Where results go, inside the checkout. Default `test/harness/results` |
 | `--place P` | Runs every cell of the tier that `dt plan` gives place P, as the dedicated host does |
 | `--OPTION` | Runs the suite's option of that name: `--kerberos`, `--nonrace`, `--knfsd`, `--smb21`, `--macos`, `--windows`, `--stress`, `--portmap`, `--ad-dc`, `--cross-protocol`, `--smb` |
@@ -387,7 +387,8 @@ the file.
 | A skip an entry expects | `expected_skip` | none |
 | A skip no entry expects, in a suite with a known file | `unexpected_skip` | not run (exit 2) |
 | A skip in a suite without a known file | `ungraded` | none |
-| A crash, hang or timeout | `new` | fails it; no entry can excuse one |
+| A Go test that crashes, or any test that hangs past its limit | `new` | fails it; no entry can excuse one |
+| Output that stops mid-test (tap, subunit, nfstest) | `incomplete` | not run (exit 2) |
 
 So the change that fixes a known failure removes its entry in the same pull request, or the run
 fails.
@@ -644,7 +645,7 @@ The checks that keep a suite honest:
 **Unit.**
 
 ```bash
-test/harness/bin/dt run unit                      # every package, -race (as after a merge)
+test/harness/bin/dt run unit --tier merge         # every package, -race, no -short (as after a merge)
 test/harness/bin/dt run unit --changed            # what a pull request runs
 test/harness/bin/dt run unit --packages ./pkg/metadata/...,./internal/adapter/nfs/...
 go test ./pkg/metadata/...                        # plain go test works for a quick loop

@@ -1,3 +1,3 @@
-# jq -c '.results.tests[] | {name, status, extra}' "$(ls -d test/harness/results/*/ | tail -1)summary.json" | 2026-11-16 16:21 CET | f02e02620
+# jq -c '.results.tests[] | {name, status, extra}' "$(ls -d test/harness/results/*/ | tail -1)summary.json" | 2026-11-16 16:58 CET | f02e02620
 {"name":"test/clients/files.sh","status":"skipped","extra":{"grade":"known","reason":"demo: the read-back check expects a trailing \"!\""}}
 {"name":"test/clients/xattr.sh","status":"passed","extra":null}

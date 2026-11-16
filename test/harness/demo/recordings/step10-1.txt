@@ -1,4 +1,4 @@
-# test/harness/bin/dt doctor | 2026-11-16 16:22 CET | f02e02620
+# test/harness/bin/dt doctor | 2026-11-16 16:59 CET | f02e02620
 NEED                MET  WHY                                                                                                                  HOW
 disk:110            no   70 GB free here                                                                                                      free disk space
 docker              yes                                                                                                                       

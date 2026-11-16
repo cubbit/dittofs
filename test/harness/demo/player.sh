@@ -81,14 +81,38 @@ typeit() {
   fi
 }
 
-# wait_enter: the presenter's Enter after the typed command, as in a terminal.
-wait_enter() { [ "$MODE" = record ] && { echo; return; }; local k; IFS= read -rs k; echo; }
+# wait_enter: the presenter's Enter after the typed command, as in a terminal. It reads the
+# player's own input, which demo_main keeps on fd 3: cmd's stdin is the step's text, already read.
+wait_enter() { [ "$MODE" = record ] && { echo; return; }; local k; IFS= read -rs k <&3; echo; }
+
+# run_limited SECONDS CMD...: runs CMD in a process group of its own and, after SECONDS, stops the
+# whole group (TERM, then KILL 3 s later), so no child outlives the limit; it then exits 142.
+# Ctrl-C stops the group too, then the player.
+run_limited() {
+  perl -e '
+    my $t = shift;
+    my $pid = fork;
+    defined $pid or die "fork: $!\n";
+    if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
+    my ($late, $int) = (0, 0);
+    $SIG{ALRM} = sub { kill($late++ ? "KILL" : "TERM", -$pid); alarm 3 };
+    $SIG{INT} = sub { $int = 1; kill "TERM", -$pid };
+    $SIG{TERM} = sub { kill "TERM", -$pid };
+    alarm $t;
+    1 while waitpid($pid, 0) == -1 && $!{EINTR};
+    my $st = $?;
+    alarm 0;
+    if ($int) { $SIG{INT} = "DEFAULT"; kill "INT", $$ }
+    if ($late) { kill "KILL", -$pid; exit 142 }
+    exit($st & 127 ? 128 + ($st & 127) : $st >> 8);
+  ' "$@"
+}
 
 # ---- what a step calls -----------------------------------------------------------------------------
 # A step calls title, then look for each item to check, then cmd for each command (its text on stdin).
 # cmd numbers the step's commands: the saved output of step S's K-th command is $DEMO_SAVED/stepS-K.txt.
 
-MODE='' STEP=0 IDX=0 CAP='' BROKE=0
+MODE='' STEP=0 IDX=0 CAP='' BROKE=0 TAKES_BROKEN=''
 LOOK_RE=() LOOK_TXT=()
 
 title() { # TITLE SUBTITLE
@@ -128,11 +152,10 @@ cmd() { # [TIMEOUT] < command text
       fi
       ;;
     *)
-      (cd "$DEMO_WT" && perl -e 'alarm shift; exec @ARGV' "$t" bash -c "$c" 2>&1) | demo_mask | tee -a "$CAP" | {
+      (cd "$DEMO_WT" && run_limited "$t" bash -c "$c" 2>&1) | demo_mask | tee -a "$CAP" | {
         if [ "$MODE" = record ]; then
-          { printf '# %s | %s | %s\n' "$shown" "$(date '+%Y-%m-%d %H:%M %Z')" "$(git -C "$DEMO_WT" rev-parse --short=9 HEAD 2>/dev/null || echo -)"; cat; } >"$f.part"
-          mv "$f.part" "$f"
-          sed 1d "$f" | tail -n 3
+          { printf '# %s | %s | %s\n' "$shown" "$(date '+%Y-%m-%d %H:%M %Z')" "$(git -C "$DEMO_WT" rev-parse --short=9 HEAD 2>/dev/null || echo -)"; cat; } >"$f.new"
+          sed 1d "$f.new" | tail -n 3
         else
           cat
         fi
@@ -162,6 +185,20 @@ checks() {
   [ "$miss" = 0 ] || BROKE=1
 }
 
+# keep_take: in record, a step whose checks all passed replaces its saved outputs; a step that
+# broke keeps the earlier ones, so a bad take never becomes the fallback.
+keep_take() {
+  local f
+  if [ "$BROKE" = 0 ]; then
+    rm -f "$DEMO_SAVED/step$STEP"-*.txt
+    for f in "$DEMO_SAVED/step$STEP"-*.txt.new; do [ -f "$f" ] && mv "$f" "${f%.new}"; done
+  else
+    rm -f "$DEMO_SAVED/step$STEP"-*.txt.new
+    TAKES_BROKEN="$TAKES_BROKEN $STEP"
+    warn "step $STEP: something differs, so its earlier recording stays"
+  fi
+}
+
 # ---- the player ------------------------------------------------------------------------------------
 
 play() {
@@ -176,6 +213,7 @@ play() {
     checks
     rm -f "$CAP"
     if [ "$MODE" = record ]; then
+      keep_take
       STEP=$((STEP + 1))
       continue
     fi
@@ -190,7 +228,7 @@ play() {
       r) hook demo_undo "$STEP" ;; # undo the step's own edit, so it applies once again
       f) show_saved "$STEP"; printf '%sEnter to go on%s ' "$D" "$N"; IFS= read -rs k; STEP=$((STEP + 1)) ;;
       b) [ "$STEP" -gt 1 ] && STEP=$((STEP - 1)) ;;
-      [1-9]) STEP=$k ;;
+      [1-9]) [ "$k" -le "$DEMO_STEPS" ] && STEP=$k ;;
       q) break ;;
     esac
   done
@@ -214,9 +252,13 @@ usage() { # the demo script's opening comment
 }
 
 demo_main() {
+  exec 3<&0 # the presenter's keys, for wait_enter
   case "${1:-}" in
     setup) MODE=setup; if declare -F demo_setup >/dev/null; then demo_setup "${2:-}"; else ok "this demo needs no setup"; fi ;;
-    record) MODE=record; DEMO_TYPE_SPEED=0; play; hook demo_reset; hook demo_after_record; ok "saved to $DEMO_SAVED" ;;
+    record)
+      MODE=record; DEMO_TYPE_SPEED=0; play; hook demo_reset; hook demo_after_record
+      [ -z "$TAKES_BROKEN" ] || { bad "step(s)$TAKES_BROKEN broke: their earlier recordings stay in $DEMO_SAVED"; exit 1; }
+      ok "saved to $DEMO_SAVED" ;;
     replay) MODE=replay; play ;;
     reset) MODE=reset; hook demo_reset ;;
     cleanup) MODE=cleanup; hook demo_reset quiet; hook demo_cleanup ;;

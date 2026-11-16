@@ -1,42 +1,42 @@
-# test/harness/bin/dt run pjdfstest chmod/00.t --in container --parallel 3 | grep -Ev '(^|] )ok [0-9]+$'; echo "dt exit: ${PIPESTATUS[0]} in ${SECONDS} s" | 2026-11-16 16:22 CET | f02e02620
+# test/harness/bin/dt run pjdfstest chmod/00.t --in container --parallel 3 | grep -Ev '(^|] )ok [0-9]+$'; echo "dt exit: ${PIPESTATUS[0]} in ${SECONDS} s" | 2026-11-16 16:58 CET | f02e02620
 [dt] in dtc: dt run pjdfstest chmod/00.t --parallel=3 --in=host
-[dt] $ go build -o <worktree>/test/harness/results/20261116T152234Z-f02e0262/bin/ ./cmd/dfs ./cmd/dfsctl
-[pjdfstest/badger-s3/4.1] [dt] fixture: blocks in the bucket dittofs-dt at http://127.0.0.1:4566, under dt-588e34e0855c0352/
-[pjdfstest/badger-s3/4] [dt] fixture: blocks in the bucket dittofs-dt at http://127.0.0.1:4566, under dt-184bdf1966c75a81/
-[pjdfstest/badger-s3/3] [dt] fixture: blocks in the bucket dittofs-dt at http://127.0.0.1:4566, under dt-14e8037230190c12/
-[pjdfstest/badger-s3/4] [dt] fixture: dfs started, pid 142, its API at http://127.0.0.1:36061, its output in <worktree>/test/harness/results/20261116T152234Z-f02e0262/pjdfstest-badger-s3-4/dfs.log
-[pjdfstest/badger-s3/4.1] [dt] fixture: dfs started, pid 143, its API at http://127.0.0.1:38893, its output in <worktree>/test/harness/results/20261116T152234Z-f02e0262/pjdfstest-badger-s3-4.1/dfs.log
-[pjdfstest/badger-s3/3] [dt] fixture: dfs started, pid 145, its API at http://127.0.0.1:40193, its output in <worktree>/test/harness/results/20261116T152234Z-f02e0262/pjdfstest-badger-s3-3/dfs.log
-[pjdfstest/badger-s3/4] [dt] fixture: NFS exports /export at 172.17.0.3:43915
-[pjdfstest/badger-s3/4] [dt] fixture: $ mount -t nfs -o vers=4.0,port=43915,noac,sync,lookupcache=none 172.17.0.3:/export /tmp/dt2710967639
-[pjdfstest/badger-s3/4.1] [dt] fixture: NFS exports /export at 172.17.0.3:44483
-[pjdfstest/badger-s3/3] [dt] fixture: NFS exports /export at 172.17.0.3:39557
-[pjdfstest/badger-s3/3] [dt] fixture: $ mount -t nfs -o nfsvers=3,tcp,port=39557,mountport=39557,nolock,noac,sync,lookupcache=none 172.17.0.3:/export /tmp/dt2044451007
-[pjdfstest/badger-s3/4.1] [dt] fixture: $ mount -t nfs -o vers=4.1,port=44483,noac,sync,lookupcache=none 172.17.0.3:/export /tmp/dt2698279416
-[pjdfstest/badger-s3/3] [dt] fixture: NFS vers=3 mounted at /tmp/dt2044451007
-[pjdfstest/badger-s3/3] [dt] $ prove -v <worktree>/test/harness/results/20261116T152234Z-f02e0262/tools/pjdfstest/tests/chmod/00.t
-[pjdfstest/badger-s3/4] [dt] fixture: NFS vers=4.0 mounted at /tmp/dt2710967639
-[pjdfstest/badger-s3/4] [dt] $ prove -v <worktree>/test/harness/results/20261116T152234Z-f02e0262/tools/pjdfstest/tests/chmod/00.t
-[pjdfstest/badger-s3/4.1] [dt] fixture: NFS vers=4.1 mounted at /tmp/dt2698279416
-[pjdfstest/badger-s3/4.1] [dt] $ prove -v <worktree>/test/harness/results/20261116T152234Z-f02e0262/tools/pjdfstest/tests/chmod/00.t
-[pjdfstest/badger-s3/3] <worktree>/test/harness/results/20261116T152234Z-f02e0262/tools/pjdfstest/tests/chmod/00.t .. 
+[dt] $ go build -o <worktree>/test/harness/results/20261116T155845Z-f02e0262/bin/ ./cmd/dfs ./cmd/dfsctl
+[pjdfstest/badger-s3/4] [dt] fixture: blocks in the bucket dittofs-dt at http://127.0.0.1:4566, under dt-994dc283e374569e/
+[pjdfstest/badger-s3/4.1] [dt] fixture: blocks in the bucket dittofs-dt at http://127.0.0.1:4566, under dt-7877bcc428317033/
+[pjdfstest/badger-s3/3] [dt] fixture: blocks in the bucket dittofs-dt at http://127.0.0.1:4566, under dt-0dbb3694e8f32adf/
+[pjdfstest/badger-s3/3] [dt] fixture: dfs started, pid 145, its API at http://127.0.0.1:39659, its output in <worktree>/test/harness/results/20261116T155845Z-f02e0262/pjdfstest-badger-s3-3/dfs.log
+[pjdfstest/badger-s3/4.1] [dt] fixture: dfs started, pid 146, its API at http://127.0.0.1:43063, its output in <worktree>/test/harness/results/20261116T155845Z-f02e0262/pjdfstest-badger-s3-4.1/dfs.log
+[pjdfstest/badger-s3/4] [dt] fixture: dfs started, pid 144, its API at http://127.0.0.1:37113, its output in <worktree>/test/harness/results/20261116T155845Z-f02e0262/pjdfstest-badger-s3-4/dfs.log
+[pjdfstest/badger-s3/4] [dt] fixture: NFS exports /export at 172.17.0.3:34637
+[pjdfstest/badger-s3/4] [dt] fixture: $ mount -t nfs -o vers=4.0,port=34637,noac,sync,lookupcache=none 172.17.0.3:/export /tmp/dt2752314107
+[pjdfstest/badger-s3/4] [dt] fixture: NFS vers=4.0 mounted at /tmp/dt2752314107
+[pjdfstest/badger-s3/4] [dt] $ prove -v <worktree>/test/harness/results/20261116T155845Z-f02e0262/tools/pjdfstest/tests/chmod/00.t
+[pjdfstest/badger-s3/3] [dt] fixture: NFS exports /export at 172.17.0.3:46413
+[pjdfstest/badger-s3/4.1] [dt] fixture: NFS exports /export at 172.17.0.3:42879
+[pjdfstest/badger-s3/3] [dt] fixture: $ mount -t nfs -o nfsvers=3,tcp,port=46413,mountport=46413,nolock,noac,sync,lookupcache=none 172.17.0.3:/export /tmp/dt1934822112
+[pjdfstest/badger-s3/4.1] [dt] fixture: $ mount -t nfs -o vers=4.1,port=42879,noac,sync,lookupcache=none 172.17.0.3:/export /tmp/dt3710969747
+[pjdfstest/badger-s3/3] [dt] fixture: NFS vers=3 mounted at /tmp/dt1934822112
+[pjdfstest/badger-s3/4.1] [dt] fixture: NFS vers=4.1 mounted at /tmp/dt3710969747
+[pjdfstest/badger-s3/3] [dt] $ prove -v <worktree>/test/harness/results/20261116T155845Z-f02e0262/tools/pjdfstest/tests/chmod/00.t
+[pjdfstest/badger-s3/4.1] [dt] $ prove -v <worktree>/test/harness/results/20261116T155845Z-f02e0262/tools/pjdfstest/tests/chmod/00.t
+[pjdfstest/badger-s3/3] <worktree>/test/harness/results/20261116T155845Z-f02e0262/tools/pjdfstest/tests/chmod/00.t .. 
 [pjdfstest/badger-s3/3] 1..119
 [pjdfstest/badger-s3/3] ok
 [pjdfstest/badger-s3/3] All tests successful.
-[pjdfstest/badger-s3/3] Files=1, Tests=119, 12 wallclock secs ( 0.02 usr  0.00 sys +  0.16 cusr  0.16 csys =  0.34 CPU)
+[pjdfstest/badger-s3/3] Files=1, Tests=119, 13 wallclock secs ( 0.02 usr  0.00 sys +  0.17 cusr  0.13 csys =  0.32 CPU)
 [pjdfstest/badger-s3/3] Result: PASS
-[pjdfstest/badger-s3/4] <worktree>/test/harness/results/20261116T152234Z-f02e0262/tools/pjdfstest/tests/chmod/00.t .. 
-[pjdfstest/badger-s3/4] 1..119
-[pjdfstest/badger-s3/4] ok
-[pjdfstest/badger-s3/4] All tests successful.
-[pjdfstest/badger-s3/4] Files=1, Tests=119, 12 wallclock secs ( 0.02 usr  0.00 sys +  0.17 cusr  0.14 csys =  0.33 CPU)
-[pjdfstest/badger-s3/4] Result: PASS
-[pjdfstest/badger-s3/4.1] <worktree>/test/harness/results/20261116T152234Z-f02e0262/tools/pjdfstest/tests/chmod/00.t .. 
+[pjdfstest/badger-s3/4.1] <worktree>/test/harness/results/20261116T155845Z-f02e0262/tools/pjdfstest/tests/chmod/00.t .. 
 [pjdfstest/badger-s3/4.1] 1..119
 [pjdfstest/badger-s3/4.1] ok
 [pjdfstest/badger-s3/4.1] All tests successful.
-[pjdfstest/badger-s3/4.1] Files=1, Tests=119, 12 wallclock secs ( 0.02 usr  0.00 sys +  0.16 cusr  0.14 csys =  0.32 CPU)
+[pjdfstest/badger-s3/4.1] Files=1, Tests=119, 13 wallclock secs ( 0.01 usr  0.01 sys +  0.15 cusr  0.12 csys =  0.29 CPU)
 [pjdfstest/badger-s3/4.1] Result: PASS
+[pjdfstest/badger-s3/4] <worktree>/test/harness/results/20261116T155845Z-f02e0262/tools/pjdfstest/tests/chmod/00.t .. 
+[pjdfstest/badger-s3/4] 1..119
+[pjdfstest/badger-s3/4] ok
+[pjdfstest/badger-s3/4] All tests successful.
+[pjdfstest/badger-s3/4] Files=1, Tests=119, 13 wallclock secs ( 0.02 usr  0.00 sys +  0.16 cusr  0.12 csys =  0.30 CPU)
+[pjdfstest/badger-s3/4] Result: PASS
 [dt] pjdfstest/badger-s3/3: passed 
 [dt] pjdfstest/badger-s3/4: passed 
 [dt] pjdfstest/badger-s3/4.1: passed 
@@ -44,5 +44,5 @@ CELL                     RESULT  TIME  NOTE
 pjdfstest/badger-s3/3    passed  13s   
 pjdfstest/badger-s3/4    passed  13s   
 pjdfstest/badger-s3/4.1  passed  13s   
-results: <worktree>/test/harness/results/20261116T152234Z-f02e0262
+results: <worktree>/test/harness/results/20261116T155845Z-f02e0262
 dt exit: 0 in 17 s

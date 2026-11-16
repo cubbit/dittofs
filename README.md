@@ -293,7 +293,7 @@ Full docs live in [`docs/`](docs/), split by audience.
 - [NFS protocol](docs/internals/nfs-protocol.md) · [SMB protocol](docs/internals/smb-protocol.md) — wire format, dispatch, internals
 - [ACL design](docs/internals/acl-design.md) · [Security model](docs/internals/security-model.md) · [Encryption design](docs/internals/encryption-design.md)
 - [Implementing Stores](docs/internals/implementing-stores.md) — metadata/block store contracts
-- [Testing](docs/internals/testing.md) — Windows VM setup, WPTS & smbtorture conformance
+- [Testing](docs/internals/testing.md): running, reading and adding tests with `dt`, the conformance suites, and the Windows checklists
 - [Debugging](docs/internals/debugging.md) — protocol interop and pcap-diff playbook
 - [Issue priority triage](docs/internals/priorities.md) — how board items get their priority
 - [Contributing](docs/internals/contributing.md) · [Releasing](docs/internals/releasing.md)

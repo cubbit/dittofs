@@ -1,4 +1,4 @@
-# test/harness/bin/dt list --tier pr | 2026-11-16 16:21 CET | f02e02620
+# test/harness/bin/dt list --tier pr | 2026-11-16 16:57 CET | f02e02620
 SUITE                 TIER  FORMAT   NEEDS                                                               HERE
 lint-go               pr    exit                                                                         yes
 lint-repo             pr    exit                                                                         yes
