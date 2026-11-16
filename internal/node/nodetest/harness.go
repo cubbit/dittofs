@@ -128,6 +128,9 @@ func (h *Harness) Node() *node.Node { return h.node }
 // Clock is the node's clock, which only the test advances.
 func (h *Harness) Clock() *sim.TestClock { return h.clock }
 
+// Metrics is the registry the node built last registers its series in.
+func (h *Harness) Metrics() *metrics.Registry { return h.cfg.Metrics }
+
 // Store is a metadata store over the node's KV, for a test to write records
 // and read them back, as another node's would.
 func (h *Harness) Store() *kvstore.Store { return h.store }

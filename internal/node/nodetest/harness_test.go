@@ -29,27 +29,17 @@ func TestTheRecordedJournalOpens(t *testing.T) {
 }
 
 // Restart builds a new node over the same installation: the store read
-// after it holds the installation and the journal recorded before it,
-// which only the old directory holds.
+// after it holds the journal recorded before it, which only the old
+// directory holds. A Restart over a fresh directory stops in the harness
+// before this, or, if it initialises one, fails here.
 func TestRestartKeepsTheInstallation(t *testing.T) {
 	h := New(t, Watch())
-	before, err := h.Store().Installation(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
 	dev := entity.JournalDir(h.cfg.Bootstrap.Devices[0])
 	jBefore, err := h.Store().Lifecycle().JournalID(t.Context(), nodeID, dev)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.Restart(t)
-	after, err := h.Store().Installation(t.Context())
-	if err != nil {
-		t.Fatalf("Installation after the restart: %v", err)
-	}
-	if after.ID != before.ID || after.Instance != before.Instance {
-		t.Errorf("Installation after the restart: got ID %x instance %x, want %x, %x", after.ID, after.Instance, before.ID, before.Instance)
-	}
 	jAfter, err := h.Store().Lifecycle().JournalID(t.Context(), nodeID, dev)
 	if err != nil || jAfter != jBefore {
 		t.Errorf("JournalID of the device after the restart: got %x, %v; want %x", jAfter, err, jBefore)

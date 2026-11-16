@@ -109,7 +109,7 @@ func NewUnit(t *testing.T, o UnitOptions) *Unit {
 		}
 		t.Cleanup(tb.Stop)
 		u.Opens = tb
-		d.Holds = Holds(tb, u.FS.Store.Opens())
+		d.Holds = openstate.EngineHolds(tb, u.FS.Store.Opens())
 	}
 
 	for _, f := range o.Deps {

@@ -19,28 +19,32 @@ const module = "github.com/cubbit/dittofs/"
 // packages under this directory it applies to; "*" is every one. Nothing of
 // the previous engine, journal, syncer, carver, remote tier or metadata
 // service is on it, and neither is the filesystem's package: the engine takes
-// only its errors, from pkg/vfs/vfserr. Open state is the fixture's, which
-// adapts the table to the engine's CloneHold as the root does, and the unit
-// tests', which run a clone's hold over the real table.
+// only its errors, from pkg/vfs/vfserr. Open state is enginewire's, which
+// builds the table and adapts it to the engine's CloneHold for the node and
+// the fixture alike, the fixture's, which starts and stops that table, and
+// the unit tests', which run a clone's hold over the real table.
 var allowed = map[string][]string{
 	module + "pkg/block/journal":    {"*"},
+	module + "pkg/health":           {"*"},
 	module + "pkg/metadata/entity":  {"*"},
 	module + "pkg/metadata/kvstore": {"*"},
-	module + "pkg/openstate":        {"enginetest", unitTests},
+	module + "pkg/openstate":        {"enginetest", "enginewire", unitTests},
 	module + "pkg/vfs/vfserr":       {"*"},
 	// The test fixture composes the engine over the real journal, its seam and
 	// profiler, the real store on an in-memory kv.KV, and a test clock. The
 	// unit tests' start failure tests, and the fixture's rows of the self-fence,
-	// put the fault-injecting kv.KV under that store.
-	module + "pkg/block/journal/journaltest":     {"enginetest"},
+	// put the fault-injecting kv.KV under that store. enginewire's test runs
+	// Compose over the real store on an in-memory kv.KV, a journal initialised
+	// on a mount taken as suitable, and a test clock.
+	module + "pkg/block/journal/journaltest":     {"enginetest", wireTests},
 	module + "pkg/block/journal/journaltest/kit": {"enginetest"},
 	module + "internal/prof":                     {"enginetest", unitTests},
-	module + "pkg/metadata/kv":                   {"enginetest", unitTests},
-	module + "pkg/metadata/kv/badgerkv":          {"enginetest", unitTests},
+	module + "pkg/metadata/kv":                   {"enginetest", unitTests, wireTests},
+	module + "pkg/metadata/kv/badgerkv":          {"enginetest", unitTests, wireTests},
 	module + "pkg/metadata/kv/keys":              {"enginetest", unitTests},
 	module + "pkg/metadata/kv/kvtest":            {"enginetest", unitTests},
-	module + "pkg/metadata/kvstore/kvstoretest":  {"enginetest", unitTests},
-	module + "pkg/sim":                           {"enginetest", unitTests, internalTests},
+	module + "pkg/metadata/kvstore/kvstoretest":  {"enginetest", unitTests, wireTests},
+	module + "pkg/sim":                           {"enginetest", unitTests, internalTests, wireTests},
 }
 
 // unitTests names the engine's external test package, whose unit
@@ -49,6 +53,9 @@ var allowed = map[string][]string{
 // tests put the fault-injecting kv.KV under that store. The engine's own
 // files import none of them.
 const unitTests = "._test"
+
+// wireTests names enginewire's external test package.
+const wireTests = "enginewire_test"
 
 // internalTests names the engine's test files in its own package, which may
 // import pkg/sim, the test clock's package, and nothing else of the unit

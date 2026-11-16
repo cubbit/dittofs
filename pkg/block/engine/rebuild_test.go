@@ -84,7 +84,7 @@ func (s *starter) openState(t *testing.T) engine.CloneHold {
 	}
 	t.Cleanup(tb.Stop)
 	s.tb = tb
-	return enginetest.Holds(tb, s.fs.Store.Opens())
+	return openstate.EngineHolds(tb, s.fs.Store.Opens())
 }
 
 // serve has open state's recovery serve share one's shard.

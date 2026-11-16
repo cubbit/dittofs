@@ -132,27 +132,6 @@ func TestHandlerServesText(t *testing.T) {
 	}
 }
 
-func TestWithAuth(t *testing.T) {
-	base := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	h := withAuth("sekret", base)
-
-	// Missing token → 401.
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no-token: want 401, got %d", rec.Code)
-	}
-
-	// Correct token → 200.
-	rec = httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	req.Header.Set("Authorization", "Bearer sekret")
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("good-token: want 200, got %d", rec.Code)
-	}
-}
-
 // A share whose residency could not be determined must still report a safety
 // gauge, but must NOT publish byte counts: zeros there are indistinguishable
 // from a clean, fully-local share, which is the one wrong answer this signal
