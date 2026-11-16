@@ -306,14 +306,14 @@ Full docs live in [`docs/`](docs/), split by audience.
 
 ```bash
 test/harness/bin/dt run unit                     # the Go tests
-test/harness/bin/dt services up postgres kmip    # the services integration needs
+test/harness/bin/dt services up postgres kmip localstack   # the services integration and e2e need
 test/harness/bin/dt run integration
-test/harness/bin/dt run e2e                      # Linux, a kernel NFS client, passwordless sudo and Localstack
+test/harness/bin/dt run e2e                      # Linux, a kernel NFS client and passwordless sudo
 ```
 
 [docs/internals/testing.md](docs/internals/testing.md) is the guide: what each suite needs, how to
 run and read a run, the conformance suites and the Windows checklists. See also
-[test/e2e/](test/e2e/) and [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+[test/e2e/](test/e2e/) and, for the benchmarks, [bench/README.md](bench/README.md).
 
 ## Security
 

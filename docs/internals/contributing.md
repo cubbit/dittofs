@@ -174,9 +174,11 @@ section and "Writing tests" in [CLAUDE.md](../../CLAUDE.md).
 
 ## Benchmarking
 
-`bench-smoke` runs on pull requests, non-blocking; `fio-verify` and `perf-night` run nightly; the
-rest are in the `manual` tier of `test/suites.yaml` (RFC 29 §4.3). [`docs/BENCHMARKS.md`](../BENCHMARKS.md) covers
-how to run them (`dfsbench`, `go test -bench`), the reports and the local perf gates.
+`bench-smoke` runs on pull requests, non-blocking; `fio-verify` and `perf-night` run nightly. The
+others, Go's `-bench` and `dfsbench`'s full runs, are run by hand, and RFC 29 §4.10 plans two
+`manual` suites, a metadata-scale benchmark and a journal simulation.
+[`bench/README.md`](../../bench/README.md) covers how to run them: `dfsbench`, the components'
+`go test -bench` and `make bench-blockstore`.
 
 To compare a change, run the same benchmark with `-count=10` before and after it on one machine
 and compare the two with `benchstat`; never against a number from another host. Call

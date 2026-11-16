@@ -13,6 +13,8 @@ tags:
 
 **Status:** reviewed: accepted (#2975), revision 5: the questions §9 held are settled. Built: the
 harness, its registry and its suites follow it, and [`testing.md`](../testing.md) is the guide to them.
+Not built yet: §4.10's comparison against a stored baseline and its two manual suites, and `dt`
+reading `dfsbench-json` (§4.6).
 **Discussion:** #2975, and the pull request that settled §9.
 
 ## Summary
@@ -34,7 +36,7 @@ reliable way to tell what they found.
 **The proposal.**
 
 - **One command, `dt`, written in Go,** runs every suite the same way on a laptop and in CI.
-- **One file, `test/suites.yaml`, lists the 19 suites.** A variant of a suite is an option of it,
+- **One file, `test/suites.yaml`, lists every suite.** A variant of a suite is an option of it,
   and sets of suites are groups.
 - **`dt` builds the DittoFS server each suite needs** (the fixture) and calls each test tool
   directly. The per-suite scripts go.
