@@ -129,6 +129,13 @@ func (m *soakModel) file(name string, created time.Time) *fileModel {
 
 // add records op on f, acknowledged at once when the call answered a stable
 // write, a shrinking truncate or a deallocate with success.
+//
+// decision: a growing truncate is not acknowledged when it answers, only by a
+// later Commit of the same process, because the engine answers a grow before
+// any sync and its group commit commits it later (its remove.go), so a crash
+// before that may drop it. RFC 8 does not say whether a grow must be stable
+// on return; NFSv3 asks for SETATTR to be on stable storage before the reply.
+// Overturned if RFC 8 makes a grow stable on return, or the engine does.
 func (f *fileModel) add(op *soakOp, stable bool) *soakOp {
 	op.acked = op.done && (stable || op.kind == opDeallocate || op.kind == opTruncate && !op.grow)
 	f.ops = append(f.ops, op)
@@ -139,8 +146,10 @@ func (f *fileModel) add(op *soakOp, stable bool) *soakOp {
 // commit records a Commit of [off, off+length) of f in process proc, length
 // 0 meaning to the end of the file. A Commit answered success acknowledges
 // every unstable write of the same process in its range that carries the
-// verifier it answered, and every growing truncate of the same process. A Commit that failed, or answered another verifier,
-// reported a loss and acknowledges nothing.
+// verifier it answered, and every growing truncate of the same process
+// whatever the verifier: the Commit syncs the whole file, and a failed window
+// re-appends a truncate's record. A Commit that failed acknowledges nothing,
+// and one that answered another verifier acknowledges no write.
 func (f *fileModel) commit(proc int, off, length int64, v vfs.Verifier, err error) {
 	if err != nil {
 		return

@@ -121,6 +121,12 @@ func (l loggedFault) At(op string, key []byte) (time.Duration, int, error) {
 	// One lock covers the pause, the draw and the record, so a fault drawn
 	// while paused is never logged, and one drawn while running is logged
 	// with the call in flight when it was drawn.
+	//
+	// decision: the lock is held across inner.At because no soak rule
+	// delays: sim.Schedule.At waits out a rule's Delay on the clock, which
+	// would block every faulted call and the writer's set and since while it
+	// waits. Overturned by a soak rule with a Delay, which needs the wait
+	// taken outside the lock.
 	l.log.mu.Lock()
 	defer l.log.mu.Unlock()
 
@@ -386,7 +392,7 @@ func (r *soakRun) step() {
 	case k < 50:
 		stable := k >= 35
 		// A stable write is a Write and a Commit over its extent, so it is the
-		// file's next stability point, which a failed window fails once.
+		// file's next stability point, where a failed window's debt is paid.
 		commit = stable
 		off := r.rng.Int64N(soakSpan)
 		data := make([]byte, 1+r.rng.IntN(soakMaxWrite))
