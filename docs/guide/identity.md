@@ -84,6 +84,12 @@ provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
 - a CA, exported as `/keytabs/ca.pem`, that issues the DC's TLS certificate for
   its host name (`dc1.dittofs.ad` when the container runs with `--hostname dc1`)
   and its IPs.
+- computer accounts for the joins: `dittofs$` (password `MachinePass01!`), and
+  `offjoinaes$` (`msDS-SupportedEncryptionTypes` `0x18`) and `offjoinlegacy$`
+  (none), pre-staged for an offline join.
+
+NETLOGON's dynamic RPC port comes from the pinned range `50000-50019`, beside
+135 for the endpoint mapper.
 
 ### What the provisioning does
 
