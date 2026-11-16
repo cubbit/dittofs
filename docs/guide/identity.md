@@ -513,6 +513,15 @@ the realm + alice/bob + nested groups and asserts identity unification:
 go test -tags=ad_dc -v -timeout 20m ./test/integration/ad-dc/
 ```
 
+The suite needs a Linux Docker host. The tests reach the DC on its container
+IP, with no port published on the host, and Docker Desktop (macOS, Windows)
+does not route the host to container IPs, so there the tests fail rather than
+skip. Every image, container and network the fixture makes is named and
+labelled with the prefix `dittofs-ad-dc-test`; set `DITTOFS_AD_DC_NAME_PREFIX`
+to use another on a Docker host shared between users. A run removes what an
+earlier run under the same prefix left behind when it was killed, once it is
+more than an hour old.
+
 It verifies, among other things:
 
 - **RFC2307 idmap:** `alice@DITTOFS.AD` resolves to `uid 10001`, `gid 10000`
