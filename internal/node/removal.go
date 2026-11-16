@@ -8,7 +8,6 @@ import (
 	"github.com/cubbit/dittofs/internal/node/step"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
-	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
@@ -27,11 +26,15 @@ func operationSteps(nodes kvstore.Nodes) map[string]stepRow {
 // no cursor, since each batch finds what is left from the rows, and a record
 // already gone answers done.
 //
-// decision: a principal that is not marked, and a batch too large for one
-// transaction, fail the operation rather than retry it. Only the mark marks,
-// and a marked record is never put again, so neither changes on a retry; and
-// the running operation would hold the target, refusing the deletion that
-// could mark it. Retry them if a batch's size can ever change between turns.
+// decision: a principal that is not marked, and a target that names no
+// principal of kind, fail the operation rather than retry it: only the mark
+// marks, and the running operation holds its target, refusing the deletion
+// that could mark it, so neither changes on a retry. Every other error,
+// kv.ErrTooLarge included, is retried on the runner's backoff, since a
+// failed deletion is never resumed and would leave the principal marked and
+// half-deleted; and a batch's size can change between turns, as its quota
+// drop reads every share. Fail a batch too large for one transaction only if
+// a batch is ever bounded by its key budget alone.
 func principalDeletion(nodes kvstore.Nodes, kind entity.PrincipalKind) step.Step {
 	target := entity.ResourceUser
 	if kind == entity.PrincipalGroup {
@@ -42,7 +45,7 @@ func principalDeletion(nodes kvstore.Nodes, kind entity.PrincipalKind) step.Step
 			return step.StepResult{}, fmt.Errorf("%w: %s's target %s %x names no %s", step.ErrStepFailed, op.Kind, op.Target.Kind, op.Target.ID, target)
 		}
 		done, err := nodes.ContinueDelete(ctx, entity.Principal{Kind: kind, ID: entity.PrincipalID(op.Target.ID)})
-		if se, ok := errors.AsType[*merrs.StoreError](err); (ok && se.Code == merrs.ErrInvalidArgument) || errors.Is(err, kv.ErrTooLarge) {
+		if se, ok := errors.AsType[*merrs.StoreError](err); ok && se.Code == merrs.ErrInvalidArgument {
 			err = fmt.Errorf("%w: %w", step.ErrStepFailed, err)
 		}
 		return step.StepResult{Done: done}, err
