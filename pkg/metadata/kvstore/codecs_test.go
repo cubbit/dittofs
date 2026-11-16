@@ -80,6 +80,12 @@ func codecCases() []codecCase {
 	apos := auditPos(audit.Time, audit.ID)
 	idem := entity.IdempotencyRecord{Account: group, Key: "k", Digest: [32]byte{31: 1}, Answer: []byte("a"), Expires: time.Unix(8, 9).UTC()}
 	nsr := entity.Namespace{ID: entity.NamespaceID{15: 4}, Store: [16]byte{0: 0x5E}, Bound: []byte("b"), Generation: 3}
+	alice := entity.Principal{Kind: entity.PrincipalUser, ID: pid}
+	sess := entity.Session{ID: [16]byte{15: 0x51}, Account: alice, Refresh: [32]byte{31: 2},
+		Created: time.Unix(3, 4).UTC(), Expires: time.Unix(5, 0).UTC(), Revoked: true}
+	tok := entity.APIToken{ID: [16]byte{15: 0x52}, Account: alice, Hash: [32]byte{31: 3},
+		Created: time.Unix(6, 0).UTC(), Expires: time.Unix(7, 0).UTC()}
+	fails := entity.SignInFailures{Count: 3, Last: time.Unix(8, 0).UTC(), Failed: time.Unix(9, 1).UTC(), Nonce: 10}
 	set := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "k", Value: []byte("v"), Generation: 6, Schema: 1}
 	return []codecCase{
 		{"user", user, encodeUser(user),
@@ -142,6 +148,19 @@ func codecCases() []codecCase {
 		{"namespace", nsr, encodeNamespace(nsr),
 			"01" + "5e000000000000000000000000000000" + "0162" + "0000000000000003",
 			func(b []byte) (any, error) { return decodeNamespace(nsr.ID, b) }},
+		{"session", sess, encodeSession(sess),
+			"01" + "01" + "aa000000000000000000000000000001" +
+				"0000000000000000000000000000000000000000000000000000000000000002" +
+				"0000000000000003" + "00000004" + "0000000000000005" + "00000000" + "01",
+			func(b []byte) (any, error) { return decodeSession(sess.ID, b) }},
+		{"api token", tok, encodeToken(tok),
+			"01" + "01" + "aa000000000000000000000000000001" +
+				"0000000000000000000000000000000000000000000000000000000000000003" +
+				"0000000000000006" + "00000000" + "0000000000000007" + "00000000",
+			func(b []byte) (any, error) { return decodeToken(tok.ID, b) }},
+		{"sign-in failures", fails, encodeSignIn(fails),
+			"01" + "00000003" + "0000000000000008" + "00000000" + "0000000000000009" + "00000001" + "000000000000000a",
+			func(b []byte) (any, error) { return decodeSignIn(b) }},
 	}
 }
 
@@ -198,7 +217,8 @@ func FuzzControlPlaneValues(f *testing.F) {
 	decoders := map[string]func([]byte) (any, error){}
 	for _, c := range append(codecCases(), fileCodecCases()...) {
 		switch c.name {
-		case "user", "group", "share", "quota", "installation", "audit", "idempotency", "namespace":
+		case "user", "group", "share", "quota", "installation", "audit", "idempotency", "namespace",
+			"session", "api token", "sign-in failures":
 			decoders[c.name] = c.dec
 			f.Add(c.enc)
 			f.Add(c.enc[:len(c.enc)/2])
@@ -206,14 +226,17 @@ func FuzzControlPlaneValues(f *testing.F) {
 		}
 	}
 	encoders := map[string]func(any) []byte{
-		"user":         func(v any) []byte { return encodeUser(v.(entity.User)) },
-		"group":        func(v any) []byte { return encodeGroup(v.(entity.Group)) },
-		"share":        func(v any) []byte { return encodeShareInfo(v.(entity.Share)) },
-		"quota":        func(v any) []byte { return encodeQuota(v.(entity.Quota)) },
-		"installation": func(v any) []byte { return encodeInstallation(v.(entity.Installation)) },
-		"audit":        func(v any) []byte { return encodeAudit(v.(entity.AuditRecord)) },
-		"idempotency":  func(v any) []byte { return encodeIdempotency(v.(entity.IdempotencyRecord)) },
-		"namespace":    func(v any) []byte { return encodeNamespace(v.(entity.Namespace)) },
+		"user":             func(v any) []byte { return encodeUser(v.(entity.User)) },
+		"group":            func(v any) []byte { return encodeGroup(v.(entity.Group)) },
+		"share":            func(v any) []byte { return encodeShareInfo(v.(entity.Share)) },
+		"quota":            func(v any) []byte { return encodeQuota(v.(entity.Quota)) },
+		"installation":     func(v any) []byte { return encodeInstallation(v.(entity.Installation)) },
+		"audit":            func(v any) []byte { return encodeAudit(v.(entity.AuditRecord)) },
+		"idempotency":      func(v any) []byte { return encodeIdempotency(v.(entity.IdempotencyRecord)) },
+		"namespace":        func(v any) []byte { return encodeNamespace(v.(entity.Namespace)) },
+		"session":          func(v any) []byte { return encodeSession(v.(entity.Session)) },
+		"api token":        func(v any) []byte { return encodeToken(v.(entity.APIToken)) },
+		"sign-in failures": func(v any) []byte { return encodeSignIn(v.(entity.SignInFailures)) },
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
 		for name, dec := range decoders {

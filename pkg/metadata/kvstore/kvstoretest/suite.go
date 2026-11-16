@@ -138,6 +138,10 @@ func Run(t *testing.T, open Opener) {
 		{"ShareNamesNamespace", testShareNamesNamespace},
 		{"StoreDeleteRacesNamespace", testStoreDeleteRacesNamespace},
 		{"NamespaceDeleteRacesShare", testNamespaceDeleteRacesShare},
+		{"SessionRefreshIndex", testSessionRefreshIndex},
+		{"APITokens", testAPITokens},
+		{"SignInFailures", testSignInFailures},
+		{"SignInFailuresRace", testSignInFailuresRace},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}
