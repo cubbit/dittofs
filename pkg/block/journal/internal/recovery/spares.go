@@ -70,7 +70,7 @@ import (
 // evidence loss: the open that next finds the predecessor unnamed judges
 // its tail on the device, cutting it where no acknowledged record sits and
 // sealing it there, with every record its trailer proved still reading
-// back — the verdict on the marker moved, with the take's release, to the
+// back — the verdict on the marker moved, with the take's release, to
 // the unnamed path the tail proof owns, but the predecessor's bytes lost
 // nothing. Today no end reaches this phase unproven: the open refuses a
 // named predecessor whose end neither proof seals, so the hold binds where
