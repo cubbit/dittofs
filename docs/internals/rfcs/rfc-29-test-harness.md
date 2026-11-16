@@ -11,8 +11,8 @@ tags:
 ---
 # RFC 29 — one test harness, with a suite registry, one runner and one result format
 
-**Status:** reviewed: accepted (#2975), revision 5: the questions §9 held are settled. Nothing here is
-implemented yet; §8 orders the work.
+**Status:** reviewed: accepted (#2975), revision 5: the questions §9 held are settled. Built: the
+harness, its registry and its suites follow it, and [`testing.md`](../testing.md) is the guide to them.
 **Discussion:** #2975, and the pull request that settled §9.
 
 ## Summary
@@ -34,7 +34,7 @@ reliable way to tell what they found.
 **The proposal.**
 
 - **One command, `dt`, written in Go,** runs every suite the same way on a laptop and in CI.
-- **One file, `test/suites.yaml`, lists the 15 suites.** A variant of a suite is an option of it,
+- **One file, `test/suites.yaml`, lists the 19 suites.** A variant of a suite is an option of it,
   and sets of suites are groups.
 - **`dt` builds the DittoFS server each suite needs** (the fixture) and calls each test tool
   directly. The per-suite scripts go.
@@ -43,9 +43,9 @@ reliable way to tell what they found.
   pass.
 - **One result format:** CTRF JSON, with JUnit for CI tools. Results are graded against known
   failures and expected skips kept as YAML, and history answers "is this flaky?".
-- **Three tiers.** A quick run on every PR, on the production storage profile only, aiming at 20
-  minutes or less. The full set after every merge. The long suites nightly. One gate check decides
-  merges.
+- **Four tiers.** A quick run on every PR, on the production storage profile only, aiming at 20
+  minutes or less. The full set after every merge. The long suites nightly. The rest are `manual`,
+  run by hand. One gate check decides merges.
 - **One develop-red issue, updated in place,** plus an issue per failing test with guardrails.
   Red gets noticed, without the floods that got the last alarm removed (#1705).
 
@@ -1006,7 +1006,7 @@ its server's output goes beside them, to `{out}/dfs.log` (§4.6).
 
 | Tier | Runs on | Contains | Budget (wall clock) |
 |---|---|---|---|
-| `pr` | every pull request (and `merge_group`, if a merge queue is ever available) | suites and options with `tier: pr`, narrowed by `select.pr` | p90 ≤ 20 min |
+| `pr` | every pull request (and `merge_group`, through the merge queue) | suites and options with `tier: pr`, narrowed by `select.pr` | p90 ≤ 20 min |
 | `merge` | every push to develop, that is, every merge, and to `main` and `feat/storage-v2` | `pr` plus `tier: merge`, every profile | ≤ 60 min |
 | `nightly` | schedule, and the dedicated host | everything except `manual` | ≤ 4 h |
 | `manual` | `dt run NAME`, or `workflow_dispatch` | the benchmarks, comparisons and long simulations run by hand (§4.10) | none |
@@ -1213,7 +1213,7 @@ workflow's.
 | Flag | Effect |
 |---|---|
 | `--ci` | non-interactive; GitHub annotations for new failures and unexpected passes, each by name, and for a cell that failed or didn't run with no test to name, once, with its note; a suite that can't run here is an error, not a skip. The job summary comes from `dt report` (§4.6) |
-| `--retry N` | re-run failed tests up to N times (default 0; CI passes 1 on develop and the schedule, never on pull requests, §4.7) |
+| `--retry N` | re-run failed tests up to N times (default 0; CI passes 1 on a push to develop, main or feat/storage-v2, and on the schedule, never on a pull request or in the merge queue, §4.7) |
 | `--in host\|container\|auto` | where the whole run happens: `host` here; `container` in `dtc`, which runs the same command with `--in host`, and whose exit status is the run's, any but 1 to 3 as 2; `auto`, the default, moves to `dtc` when Docker, which `dtc` runs in, is here, a cell needs what the host lacks and the container gives, and no cell needs what the host has and the container lacks, such as macOS. A cell `dtc` can't run, as one whose fixture has `users: self`, which refuses root, counts for neither, unless it runs here, which keeps the run here. With `--ci` the default is `host`: in CI the plan picks the place. Inside `dtc` the run stays there whatever `--in` says |
 | `--results DIR` | where results go (default `test/harness/results/`, gitignored) |
 | `--base REF` | the ref `{base}` stands for in the commands that use it, instead of the base dt finds (`origin/develop` here, the event's in CI); a ref that names no commit in the checkout stops the run before any cell starts |
@@ -1672,7 +1672,8 @@ AD-DC failure of 2026-10-06/07 wasn't flaky: `TestSMBNTLMNetlogonPassthrough` fa
 from #2914 on, and is fixed in #2980.
 
 **Retry.** None on pull requests. A test that fails on a PR fails the PR unless it's quarantined,
-so a PR can't merge a flaky test it introduced. On develop and the schedule, `--retry 1` runs only
+so a PR can't merge a flaky test it introduced. On a push to develop, main or feat/storage-v2, and
+on the schedule, `--retry 1` runs only
 the failed tests again: `go test -run '^(A|B)$'`, the one scenario, the one test file or test code.
 A pass on retry there is flaky: it doesn't open the develop-red issue, and `dt history` counts it.
 An unexpected pass isn't retried, nor is a known failure: only new failures are.
@@ -1733,8 +1734,8 @@ One workflow, `tests.yml`, runs every registered suite:
   - `plan` runs `dt plan --tier T --json`.
   - `run` is a matrix over its cells, each `dt run CELL --tier T --ci` on the runner `dt plan`
     named (`ubuntu-latest` for `ubuntu`), less the cells it places on the dedicated host, which runs
-    them itself (§4.5), with `--retry 1` on develop and the schedule, never on
-    PRs, nor on a dispatch. Each job is named after its cell, and uploads its results as the
+    them itself (§4.5), with `--retry 1` on a push to develop, main or feat/storage-v2, and on the
+    schedule, never on PRs, nor on a dispatch. Each job is named after its cell, and uploads its results as the
     artifact `dt-run-CELL-ATTEMPT`, the cell's name with `-` for `/`, without `{bin}` and `{tools}`.
     A cell with `tools` gets nix and the shared nix cache; on a push it builds them as
     `.#NAME` and publishes them to the cache, as the old jobs did, and a pull request or a

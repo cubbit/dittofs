@@ -329,8 +329,9 @@ that decode to the same value (padding and reserved fields may differ). A target
 encode and decode agree passes when both share a bug. Commit every crasher to
 `testdata/fuzz/<FuzzName>/`, where it becomes a regression seed that plain `go test` runs.
 
-**Benchmarks** run in the `manual` tier, with only `bench-smoke` on pull requests, non-blocking
-(RFC 29 §4.3). They measure only the operation. Do setup before `b.ResetTimer()`, or between
+**Benchmarks**: `bench-smoke` runs on pull requests, non-blocking, and `fio-verify` and
+`perf-night` nightly; the rest are in the `manual` tier (RFC 29 §4.3). They measure only the
+operation. Do setup before `b.ResetTimer()`, or between
 `b.StopTimer()` and `b.StartTimer()`, but remember that Go sizes `b.N` from the timed region
 alone, so an expensive untimed setup inside the loop multiplies the run's wall time. Call
 `b.ReportAllocs()` on hot paths. Compare with `benchstat` over `-count=10` runs on the same
