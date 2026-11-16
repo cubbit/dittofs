@@ -35,12 +35,12 @@
     "title": "What the RFC promises",
     "items": [
       "One database holds every kind of metadata, so there is only one thing to run, back up, replicate and test.",
-      "Reading a file's attributes costs exactly what the RFC's table of keys states, never more. No record holds a list that grows with a file or a directory.",
-      "No counter becomes a hot key. Space usage and directory times are written as small [[delta-fold|delta records]], so parallel creates in one directory do not have to wait for each other.",
+      "Reading a file's attributes always takes the same small number of reads, however large the file or its directory grows. No record holds a list that grows with them: each entry of a directory, for example, is a record of its own.",
+      "No counter is a single value that every writer must rewrite in turn. Space usage and directory times are written as small [[delta-fold|delta records]], so parallel creates in one directory do not have to wait for each other.",
       "When two transactions conflict, the losing one is retried within its caller's deadline. The conflict is never returned as an error.",
-      "A store opens only under a binary that knows its format and its [[fold-rule|fold rules]]. A value written in a codec version the binary does not know is refused, never guessed at."
+      "A store opens only under a binary that knows its format and its [[fold-rule|fold rules]]. A value written with a [[value-codec|codec]] version the binary does not know is refused, never guessed at."
     ],
-    "notes": "'Start here · What this RFC promises', backed by §2.3 (one database), §4.2 and §1.2 rule 2 (bounded reads), §4.4 (counters), §4.1 (retries under RFC 0 §9.2), §4.3 and §4.6 (codecs and format)."
+    "notes": "'Start here · What this RFC promises', backed by §2.3 (one database), §4.2 and §1.2 rule 2 (bounded reads: a file's attributes are one record, and a directory's entries are records of their own, so no read grows with the directory), §4.4 (counters), §4.1 (retries under RFC 0 §9.2), §4.3 and §4.6 (codecs and format). The RFC words the second promise as 'costs what §4.2 states'; the key layout itself comes later, on 'Where every key lives'."
   },
   "model": {
     "kicker": "The model"

@@ -129,6 +129,12 @@ English (`en`), Italian (`it`) and Brazilian Portuguese (`pt-BR`).
   only after the deck has introduced it. An analogy's limit cannot talk about
   "a box" the analogy never mentioned. This holds in English first; a
   translation inherits the gap.
+- **Never carry over a pointer.** An RFC sentence that points elsewhere
+  ("costs what §4.2 states", "see below", "the table in §5") does not go
+  into a slide as it stands, not even with the section number reworded as
+  "the RFC's table of keys". Say what it points to, in words the deck has
+  already introduced, or move the claim after the slide that introduces it.
+  The citation goes in the speaker notes.
 - **Write full sentences that stand on their own. This is mandatory.** A
   learner who has only the slide in front of them, without a speaker, must
   be able to follow every caption and list item. Concision is not a goal;
@@ -336,6 +342,12 @@ built from, and the term ids for the three opening slides.
 The order gives the decks a consistent shape; an RFC that does not need a
 section skips it rather than padding it.
 
+The slides before "How it works" — the opening, the problem, what the RFC
+promises — speak in outcomes a newcomer already understands: what is fast,
+what survives a crash, what is refused. Mechanisms such as keys, codecs or
+folds wait for the slides that explain them. An RFC's "What this RFC
+promises" list is rewritten this way, not translated.
+
 1. **The problem.** What breaks or costs too much without this RFC, with a
    concrete case.
 2. **One running example.** A single operation followed through the whole
@@ -384,6 +396,15 @@ stand between the two.
   a person, or an agent given only the RFC and the deck — looks for
   simplifications that became false, citations that do not support their
   slide, and claims the RFC does not make. Not the author re-reading.
+- **Read it cold.** A reviewer who has never read the RFC — a person, or an
+  agent given only the deck's English strings in slide order, without the
+  RFC and without the speaker notes — reads the slides front to back and
+  lists every sentence they cannot follow from the slides before it: a
+  term, a name, a table or a mechanism not yet shown, or a pointer to the
+  RFC. Neither the adversarial review nor the language review catches
+  this, because both reviewers know the RFC: a promise slide that said
+  "costs what the RFC's table of keys states", six slides before the keys
+  appear, passed both. Fix each finding in English first.
 - **Translations keep the meaning.** A translation is checked against the
   English for dropped qualifiers ("usually", "at most", "on a single node")
   — the words a translator most often loses and the ones that carry the rule.
@@ -427,9 +448,10 @@ stand between the two.
 6. Translate to `it` and `pt-BR`; run `?check=1` in each.
 7. Adversarial review (see [Correctness](#correctness)); fix; record the RFC
    commit in `deck.json`.
-8. Language review, last, once the content no longer changes (see
+8. Cold read (see [Correctness](#correctness)); fix, in every language.
+9. Language review, last, once the content no longer changes (see
    [Correctness](#correctness)); then `?check=1` again in every language.
-9. Add the deck to `learn-dittofs/decks.json` under its section, and give a
+10. Add the deck to `learn-dittofs/decks.json` under its section, and give a
    new section a `name` and a one-sentence `blurb` under `sections.<id>` in
    `learn-dittofs/i18n/<lang>.json`. A section may hold several decks, shown
    as numbered parts; `sections.<id>.parts` names them (adapters: the model,

@@ -35,12 +35,12 @@
     "title": "O que o RFC promete",
     "items": [
       "Um único banco de dados guarda todo tipo de metadado, então só existe uma coisa para operar, fazer backup, replicar e testar.",
-      "Ler os atributos de um arquivo custa exatamente o que a tabela de chaves do RFC indica, nunca mais. Nenhum record guarda uma lista que cresce com um arquivo ou um diretório.",
-      "Nenhum contador vira uma chave disputada por todos. O espaço usado e os tempos de diretório são gravados como pequenos [[delta-fold|records de delta]], então criações paralelas no mesmo diretório não precisam esperar umas pelas outras.",
+      "Ler os atributos de um arquivo sempre exige o mesmo pequeno número de leituras, por mais que o arquivo ou o seu diretório cresçam. Nenhum record guarda uma lista que cresce com eles: cada entrada de um diretório, por exemplo, é um record próprio.",
+      "Nenhum contador é um valor único que cada gravação precisa reescrever na sua vez. O espaço usado e os tempos de diretório são gravados como pequenos [[delta-fold|records de delta]], então criações paralelas no mesmo diretório não precisam esperar umas pelas outras.",
       "Quando duas transações entram em conflito, a que perde é repetida dentro do prazo de quem a chamou. O conflito nunca é devolvido como erro.",
-      "Um store só abre com um binário que conhece o seu formato e as suas [[fold-rule|fold rules]]. Um valor gravado numa versão de codec que o binário não conhece é recusado, sem tentar adivinhar."
+      "Um store só abre com um binário que conhece o seu formato e as suas [[fold-rule|fold rules]]. Um valor gravado numa versão de [[value-codec|codec]] que o binário não conhece é recusado, sem tentar adivinhar."
     ],
-    "notes": "'Start here · What this RFC promises', apoiada no §2.3 (um banco), no §4.2 e na regra 2 do §1.2 (leituras limitadas), no §4.4 (contadores), no §4.1 (repetições segundo o RFC 0 §9.2), no §4.3 e no §4.6 (codecs e formato)."
+    "notes": "'Start here · What this RFC promises', apoiada no §2.3 (um banco), no §4.2 e na regra 2 do §1.2 (leituras limitadas: os atributos de um arquivo são um só record e as entradas de um diretório são records próprios, então nenhuma leitura cresce com o diretório), no §4.4 (contadores), no §4.1 (repetições segundo o RFC 0 §9.2), no §4.3 e no §4.6 (codecs e formato). O RFC formula a segunda promessa como 'costs what §4.2 states'; a disposição das chaves vem depois, em 'Onde fica cada chave'."
   },
   "model": {
     "kicker": "O modelo"

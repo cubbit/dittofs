@@ -35,12 +35,12 @@
     "title": "Cosa promette l'RFC",
     "items": [
       "Un solo database contiene ogni tipo di metadato, quindi c'è una sola cosa da gestire, salvare, replicare e testare.",
-      "Leggere gli attributi di un file costa esattamente quanto indica la tabella delle chiavi dell'RFC, mai di più. Nessun record contiene una lista che cresce con un file o con una directory.",
-      "Nessun contatore diventa una chiave su cui tutti si contendono. Lo spazio usato e i tempi delle directory si scrivono come piccoli [[delta-fold|record delta]], così le creazioni parallele in una stessa directory non devono aspettarsi a vicenda.",
+      "Leggere gli attributi di un file richiede sempre lo stesso piccolo numero di letture, per quanto crescano il file o la sua directory. Nessun record contiene una lista che cresce con loro: ogni voce di una directory, per esempio, è un record a sé.",
+      "Nessun contatore è un unico valore che ogni scrittura deve riscrivere a turno. Lo spazio usato e i tempi delle directory si scrivono come piccoli [[delta-fold|record delta]], così le creazioni parallele in una stessa directory non devono aspettarsi a vicenda.",
       "Quando due transazioni vanno in conflitto, quella che perde viene ritentata entro la scadenza di chi l'ha chiamata. Il conflitto non viene mai restituito come errore.",
-      "Uno store si apre solo con un binario che ne conosce il formato e le [[fold-rule|fold rule]]. Un valore scritto in una versione di codec che il binario non conosce viene rifiutato, senza tirare a indovinare."
+      "Uno store si apre solo con un binario che ne conosce il formato e le [[fold-rule|fold rule]]. Un valore scritto con una versione di [[value-codec|codec]] che il binario non conosce viene rifiutato, senza tirare a indovinare."
     ],
-    "notes": "'Start here · What this RFC promises', con dietro il §2.3 (un database), il §4.2 e la regola 2 del §1.2 (letture limitate), il §4.4 (contatori), il §4.1 (nuovi tentativi secondo RFC 0 §9.2), il §4.3 e il §4.6 (codec e formato)."
+    "notes": "'Start here · What this RFC promises', con dietro il §2.3 (un database), il §4.2 e la regola 2 del §1.2 (letture limitate: gli attributi di un file sono un solo record e le voci di una directory sono record a sé, quindi nessuna lettura cresce con la directory), il §4.4 (contatori), il §4.1 (nuovi tentativi secondo RFC 0 §9.2), il §4.3 e il §4.6 (codec e formato). L'RFC formula la seconda promessa come 'costs what §4.2 states'; la disposizione delle chiavi arriva più avanti, in 'Dove sta ogni chiave'."
   },
   "model": {
     "kicker": "Il modello"
