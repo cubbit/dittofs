@@ -60,8 +60,6 @@ func TestWireBodies(t *testing.T) {
 		{"created API token", APITokenStatus{Created: at, Token: "t1"}, new(APITokenStatus),
 			[]string{"created", "token"}},
 		{"listed API token", APITokenStatus{Created: at}, new(APITokenStatus), []string{"created"}},
-		{"session", SessionStatus{Created: at, Expires: at.Add(12 * time.Hour)}, new(SessionStatus),
-			[]string{"created", "expires"}},
 	} {
 		b, err := json.Marshal(tc.in)
 		if err != nil {

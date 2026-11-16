@@ -13,7 +13,11 @@ const day = 24 * time.Hour
 
 // minAuditRetention is the shortest audit.retention a write may set, so no
 // write can make the sweep delete its own record or the quarter's before it.
-const minAuditRetention = 90 * day
+// minAuditRetentionText is how a refusal names it.
+const (
+	minAuditRetention     = 90 * day
+	minAuditRetentionText = "90 days"
+)
 
 // Settings is the section, each field under its installation-wide key.
 type Settings struct {
@@ -41,7 +45,7 @@ func (s Settings) Validate() error {
 		}
 	}
 	if s.AuditRetention < minAuditRetention {
-		errs = append(errs, fmt.Errorf("settings: audit.retention: %s is under %s", s.AuditRetention, minAuditRetention))
+		errs = append(errs, fmt.Errorf("settings: audit.retention: %s is under %s", s.AuditRetention, minAuditRetentionText))
 	}
 	return errors.Join(errs...)
 }

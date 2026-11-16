@@ -20,27 +20,37 @@ func TestDefaults(t *testing.T) {
 }
 
 // Validate accepts the defaults and an audit kept 90 days, and refuses one
-// kept 89 days and a lifetime that is not positive, naming the key.
+// kept 89 days and a lifetime that is not positive, naming every key it
+// refuses and the audit's floor in days.
 func TestValidate(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		change func(*apisettings.Settings)
-		refuse string // the key named, empty when accepted
+		refuse []string // what the refusal names, none when accepted
 	}{
-		{"defaults", func(*apisettings.Settings) {}, ""},
-		{"audit kept 90 days", func(s *apisettings.Settings) { s.AuditRetention = 90 * day }, ""},
-		{"audit kept 89 days", func(s *apisettings.Settings) { s.AuditRetention = 89 * day }, "audit.retention"},
-		{"no session lifetime", func(s *apisettings.Settings) { s.SessionLifetime = 0 }, "api.session_lifetime"},
-		{"negative token lifetime", func(s *apisettings.Settings) { s.TokenMaxLifetime = -time.Hour }, "api.token_max_lifetime"},
+		{"defaults", func(*apisettings.Settings) {}, nil},
+		{"audit kept 90 days", func(s *apisettings.Settings) { s.AuditRetention = 90 * day }, nil},
+		{"audit kept 89 days", func(s *apisettings.Settings) { s.AuditRetention = 89 * day },
+			[]string{"audit.retention", "under 90 days"}},
+		{"no session lifetime", func(s *apisettings.Settings) { s.SessionLifetime = 0 }, []string{"api.session_lifetime"}},
+		{"negative token lifetime", func(s *apisettings.Settings) { s.TokenMaxLifetime = -time.Hour },
+			[]string{"api.token_max_lifetime"}},
+		{"two keys broken", func(s *apisettings.Settings) { s.SessionLifetime, s.AuditRetention = 0, day },
+			[]string{"api.session_lifetime", "audit.retention"}},
 	} {
 		s := apisettings.Defaults()
 		tc.change(&s)
 		err := s.Validate()
-		switch {
-		case tc.refuse == "" && err != nil:
-			t.Errorf("%s: refused %v, want accepted", tc.name, err)
-		case tc.refuse != "" && (err == nil || !strings.Contains(err.Error(), tc.refuse)):
-			t.Errorf("%s: got %v, want a refusal naming %s", tc.name, err, tc.refuse)
+		if len(tc.refuse) == 0 {
+			if err != nil {
+				t.Errorf("%s: refused %v, want accepted", tc.name, err)
+			}
+			continue
+		}
+		for _, want := range tc.refuse {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: got %v, want a refusal naming %q", tc.name, err, want)
+			}
 		}
 	}
 }
