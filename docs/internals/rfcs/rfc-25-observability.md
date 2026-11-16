@@ -333,7 +333,8 @@ are three kinds of allowed label, and a list of forbidden ones.
 
 1. **Closed sets**, named in the owning RFC's table — for example `op`, `protocol`,
    `outcome`, `result`, `reason`, `kind`, `direction`, `state`, `role`, `cause`,
-   `stage` (the pipeline stages of [RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline)),
+   `stage` (the pipeline stages of [RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline), with
+   the values [RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics) lists),
    `pool` (RFC 24's fixed pools). Values are
    lower-case words; an error label takes the names of the closed error set it
    reports ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values),
