@@ -1825,12 +1825,11 @@ metadata (`FILE_SYNC`).
   verifier (RFC 1813 §3.3.21, RFC 8881 §18.3.4), which recovers the data, where
   an error would lose it. A `COMMIT` is never answered with a verifier sampled
   before a loss it was told of.
-- **A stable write whose own sync fails is an I/O error.** A `DATA_SYNC` or
-  `FILE_SYNC` `WRITE` whose sync failed (`ErrLost` on the `Write`,
-  [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal))
-  **MUST** be answered `NFS4ERR_IO` / `NFS3ERR_IO`, never success: the client
-  was promised nothing for it, and a verifier cannot carry the loss of a write
-  that was never answered.
+- **A stable write whose sync may have lost it is retried.** A `DATA_SYNC` or
+  `FILE_SYNC` `WRITE` whose `Commit` answers a verifier other than its `Write`'s
+  is `ErrDelay` (`DelayCommit`, [RFC 17 §5.8](rfc-17-vfs.md#5.8%20The%20write%20verifier)).
+  It is answered `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`, never success, and the
+  client resends the `WRITE`.
 - A write refused for capacity is answered as §11.5 says: "retry"
   (`NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`) for the journal's capacity or the
   share's journal limit while offload or repack can drain it, for as long as
@@ -2471,7 +2470,7 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrAccess`, the read-only marker's refusals included, a delete's `ReadOnly` cause too ([RFC 7 §7.9](rfc-7-namespace-metadata.md#7.9%20The%20read-only%20marker%20refuses%20writes%20and%20deletes)) | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
 | `ErrWrongShare` — a handle of another share than the one asked | `NFS4ERR_ACCESS` | `NFS3ERR_ACCES` |
 | `ErrCross` (`CrossShare`) — a `RENAME` or `LINK` between shares | `NFS4ERR_XDEV` | `NFS3ERR_XDEV` |
-| `ErrDelay` — a recall or break in progress, a write held behind a clone past its own deadline or past what its session lets wait (`DelayClone`, §9.3), a share frozen for a move (§7.4), any transient refusal [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s one table classes as retry-later, a stability reply waiting on a stalled store (§9.1), or a store conflict still unresolved at the caller's deadline (`DelayConflict`, [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_DELAY`, for as long as the cause lasts | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
+| `ErrDelay`: a recall or break in progress, a write held behind a clone past its own deadline or past what its session lets wait (`DelayClone`, §9.3), a share frozen for a move (§7.4), any transient refusal [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s one table classes as retry-later, a stability reply waiting on a stalled store (§9.1), a stable write whose sync may have lost it (`DelayCommit`, §9.1), or a store conflict still unresolved at the caller's deadline (`DelayConflict`, [RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)) | `NFS4ERR_DELAY`, for as long as the cause lasts | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrDelay` with `DelayResources` — a node memory pool spent: the share's cap on the request buffers, open state, or a reply reservation's deadline ([RFC 24 §4.2](rfc-24-resources.md#4.2%20Across%20shares%3A%20the%20share%20cap%20at%20admission)) | `NFS4ERR_DELAY`, at once; never held | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD`, which the Linux lock manager waits on and resends, where `NLM4_DENIED_NOLOCKS` reaches the application as `ENOLCK` with no retry |
 | `ErrBlocked` — a blocking NLM lock left waiting (§6.1) | — | NLM: `NLM4_BLOCKED` |
 | `ErrStale` — a released file's handle | `NFS4ERR_STALE` | `NFS3ERR_STALE` |
@@ -2489,7 +2488,6 @@ so the rows say it. NLM codes are for NFSv3 locking (§6).
 | `ErrState` (`ClientInUse`) | `NFS4ERR_CLID_INUSE` | — |
 | `ErrState` (`RecordChanged`) — another node wrote the client record's adapter bytes first | never sent: the adapter rereads the record and decides again (§3.5); a `CREATE_SESSION` it then finds misordered is its own `NFS4ERR_SEQ_MISORDERED` | — |
 | `ErrLost` on `Commit` — a loss of unstable writes the client was answered for | the `COMMIT` reply, with the new verifier (§9.1) | the same |
-| `ErrLost` on a stable `Write` — the sync that write waited on failed (§9.1) | `NFS4ERR_IO` | `NFS3ERR_IO` |
 | `ErrGrace` | `NFS4ERR_GRACE` | `NFS3ERR_JUKEBOX`; NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrState` (`NoReclaim`) — one reclaim refused while its client still owes reclaims: a shard the record does not name for it, or state the shard does not hold (§5.4) | `NFS4ERR_RECLAIM_BAD` | NLM: `NLM4_DENIED_GRACE_PERIOD` |
 | `ErrState` (`NoGrace`) — a reclaim from a client with nothing left to reclaim (§5.4); the service, which knows the shard's grace ([RFC 14 §4.2](rfc-14-open-state.md#4.2%20Grace%20makes%20volatile%20state%20safe)), answers it as its own kind ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)), so no handler splits by grace | `NFS4ERR_NO_GRACE` | NLM: `NLM4_DENIED` |
@@ -2762,7 +2760,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §5.4 reboot *(1 node)* | pynfs reboot and reclaim tests against a restart of the single node. | reboot recovery tested nowhere in the first release |
 | §5.2, §5.4 lock across a restart *(1 node)* | An NFSv4.0 Linux client holds a byte-range lock on a file and writes under it continuously; restart the node. Assert the first `WRITE` after the restart is `NFS4ERR_STALE_STATEID`, never `NFS4ERR_BAD_STATEID`, `RENEW` is `NFS4ERR_STALE_CLIENTID`, and after `SETCLIENTID` and the confirm the lock's reclaim is granted in grace; a second client's conflicting lock is refused throughout, and the writer's I/O resumes without an error. Repeat over NFSv4.1 with the client's `SEQUENCE` carrying `SEQ4_STATUS_RESTART_RECLAIM_NEEDED`. | a stateid lost in a restart answered bad, so the client skips the lock in its reclaim |
 | §7.2 cookies *(1 node)* | With the share's hash key fixed so two names collide, list with a `maxcount` that ends a page between them; assert the page ends before the pair and the next holds both. | a page ending inside a chain |
-| §9.1 failed stable write *(1 node)* | Fail the journal sync under a `FILE_SYNC` `WRITE`; assert `NFS4ERR_IO` / `NFS3ERR_IO`. | a stable write answered success over a failed sync |
+| §9.1 failed stable write *(1 node)* | Fail the journal sync under a `FILE_SYNC` `WRITE`; assert `NFS4ERR_DELAY` / `NFS3ERR_JUKEBOX`, then that the resent `WRITE` succeeds and reads back. | a stable write answered success or an I/O error over a failed sync |
 | §9.2 close-to-open and WCC *(1 node)* | Two clients on the one node: one writes and closes, the other opens and reads the new data. Two NFSv3 clients write one file in parallel, 10^4 writes each; for every reply that carries `before`, assert it equals the previous write's `after`. | `change` or `before` read outside the accept-lock hold |
 | §8.1 privilege *(1 node)* | An export with `Squash=root` admitting `AUTH_SYS`, and a share grant naming uid 1500 `admin`: over `AUTH_SYS` as uid 1500, `chown` another user's file and read a mode-0600 file of another user; assert `NFS4ERR_PERM` and `NFS4ERR_ACCESS`. As root: assert squashed. Over Kerberos as the `admin` principal: assert both succeed. On a `sec=krb5` export, a principal the ID mapping maps to uid 0 runs `tar xpf` of an archive with other owners: with `no_root_squash` assert the owners restored; with `root_squash` assert squashed and `NFS4ERR_PERM`. | an `admin` grant honoured on an asserted uid, or root over Kerberos treated otherwise than root over `AUTH_SYS` |
 | §3.5 replay through another node | `CREATE_SESSION` on P1, drop the reply, restart P1, replay the same `csa_sequence` through P2: assert the stored reply from `Adapter` and one session; `csa_sequence` + 2: `NFS4ERR_SEQ_MISORDERED`. Race two `CREATE_SESSION`s of one sequence on P1 and P2: one session, both answered with its reply. | |
