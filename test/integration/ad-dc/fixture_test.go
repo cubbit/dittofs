@@ -23,7 +23,8 @@ import (
 	"github.com/cubbit/dittofs/internal/auth/netlogon"
 )
 
-// The DC's dynamic RPC port range, entrypoint.sh's RPC_PORT_RANGE.
+// The DC's dynamic RPC port range, which setupADDC hands entrypoint.sh as
+// RPC_PORT_RANGE.
 const (
 	adRPCPortLow  = 50000
 	adRPCPortHigh = 50019
@@ -135,10 +136,7 @@ func TestADFixture(t *testing.T) {
 	// that set it is not undone by the fixture's next start.
 	t.Run("restart keeps a machine password", func(t *testing.T) {
 		const rotated = "RotatedMachinePass02!"
-		if out, err := adDockerExec("samba-tool", "user", "setpassword", machineAccountName,
-			"--newpassword="+rotated); err != nil {
-			t.Fatalf("samba-tool setpassword %s: %v\n%s", machineAccountName, err, out)
-		}
+		rotateMachinePassword(t, rotated)
 		// Drop the ready marker first, so the wait below sees only the one the
 		// restarted entrypoint writes.
 		if out, err := adDockerExec("rm", "-f", "/keytabs/.ready"); err != nil {
@@ -170,11 +168,11 @@ func TestADFixture(t *testing.T) {
 	})
 }
 
-// waitForMachinePassword waits until the DC accepts a NETLOGON secure channel
-// for the computer account name$ with password.
+// waitForMachinePassword waits up to a minute for the DC to accept a NETLOGON
+// secure channel for the computer account name$ with password.
 func waitForMachinePassword(t *testing.T, dcIP, name, password string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	a := netlogon.NewAuthenticator(netlogon.NewOfflineProvider(netlogon.MachineCredential{
 		AccountName: strings.ToUpper(name) + "$",
@@ -185,34 +183,15 @@ func waitForMachinePassword(t *testing.T, dcIP, name, password string) {
 		DCAddresses: []string{dcIP},
 	}))
 	defer a.Close(ctx)
-	waitForSecureChannel(t, ctx, a, time.Minute)
-}
-
-// waitForSecureChannel polls Probe until the DC accepts a secure channel for
-// the provider's machine account, failing the test with the last error once
-// timeout has passed.
-func waitForSecureChannel(
-	t *testing.T,
-	ctx context.Context,
-	auth *netlogon.Authenticator,
-	timeout time.Duration,
-) {
-	t.Helper()
-
-	deadline := time.Now().Add(timeout)
-
 	for {
-		err := auth.Probe(ctx)
+		err := a.Probe(ctx)
 		if err == nil {
 			return
 		}
-
-		if time.Now().After(deadline) {
+		if ctx.Err() != nil {
 			dumpADLogs(t)
-			t.Fatalf("the DC did not accept a secure channel for the joined account within %v: %v",
-				timeout, err)
+			t.Fatalf("the DC did not accept a secure channel for %s$ within a minute: %v", name, err)
 		}
-
 		time.Sleep(250 * time.Millisecond)
 	}
 }
