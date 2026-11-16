@@ -251,6 +251,14 @@ func (c controlTx) DeleteAPIToken(id [16]byte) error {
 	return nil
 }
 
+// SignInFailures reads a count tracked, so a sign-in raising it conflicts
+// with any other that commits between its read and its commit.
+//
+// decision: no test can observe the tracking, since the raise's Set already
+// conflicts with any concurrent write of the count, the kv contract
+// conflicting blind writes; a raise read untracked passes the race case as
+// well. The tracked read decides only on a backend that stops conflicting
+// blind writes.
 func (c controlTx) SignInFailures(k entity.SignInKey) (entity.SignInFailures, bool, error) {
 	tag, tail, err := signInTail(k)
 	if err != nil {
