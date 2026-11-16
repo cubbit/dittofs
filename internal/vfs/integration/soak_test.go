@@ -776,12 +776,7 @@ func (r *soakRun) failedWindows() {
 
 		for i, id := range r.ids {
 			if journal.NewFileID(id) == ev.File {
-				var v vfs.Verifier
-				if op := r.doomed[i]; op != nil {
-					v = op.verifier
-				}
-
-				r.m.failWindow(r.m.files[i], r.proc, v)
+				r.m.failWindow(r.m.files[i], r.proc, r.doomed[i])
 				delete(r.doomed, i)
 			}
 		}
@@ -812,9 +807,13 @@ func (r *soakRun) attribute(own ...*soakOp) bool {
 	failed := false
 	for _, f := range r.log.since(r.seen) {
 		r.seen++
-		failed = failed || f.err != nil
+		// Over the in-memory journal a sync fault is only the draw that dooms
+		// a write's window, which fails nothing until a later Sync answers it
+		// as a changed verifier, so it excuses no error.
+		doom := r.fake != nil && f.side == "journal" && f.op == kit.OpSync
+		failed = failed || f.err != nil && !doom
 		// Over the in-memory journal the run knows which file a failed
-		// window held and requires its report (fileModel.stability); over
+		// window held and requires its report (failedWindows); over
 		// the real journal it cannot tell, so it only excuses one failure of
 		// every file with an unacknowledged write.
 		if f.side == "journal" && f.op == kit.OpSync && f.err != nil && r.fake == nil {
@@ -1398,7 +1397,20 @@ func TestSoakFaultFake(t *testing.T) {
 			t.Fatal("a failed window drawn over an append was not armed")
 		}
 
+		if w.r.attribute() {
+			t.Error("the draw that dooms a write's window excuses the write's own error")
+		}
+
+		op := w.f.add(
+			&soakOp{kind: opWrite, off: 3, data: []byte("new"), proc: 1, done: true},
+			false,
+		)
+		w.r.doomed = map[int]*soakOp{0: op}
 		write(t, w)
+
+		if !op.dropped {
+			t.Error("the write whose window failed may still read back")
+		}
 
 		if w.r.fake.Durable(w.id) || !w.r.m.owesLost(w.o) {
 			t.Errorf("after the window's Sync: durable %v, the open may answer ErrLost %v; "+

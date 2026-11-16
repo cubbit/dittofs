@@ -47,6 +47,9 @@ type soakOp struct {
 	// faulted is set when the schedule lost the op's journal record: in the
 	// op's own call, or credited to it as written since its file's last sync.
 	faulted bool
+	// dropped is set on an unstable write whose sync window failed: it reads
+	// as the file did before it, until a resend writes it again.
+	dropped bool
 	mtime   time.Time // the file's modify time the service answered after the call
 }
 
@@ -286,12 +289,21 @@ func (m *soakModel) owesLost(o *smbOpen) bool {
 	return false
 }
 
-// failWindow records a failed sync window holding a write of f, which
-// carried verifier v, while process proc serves it. It is a loss of the file:
-// each SMB open of it taken before is owed ErrLost on one flush, and its next
-// Commit without an open answers a changed verifier.
-func (m *soakModel) failWindow(f *fileModel, proc int, v vfs.Verifier) {
+// failWindow records a failed sync window holding the write w of f, nil
+// when the soak cannot tell which, while process proc serves it. It is a
+// loss of the file: each SMB open of it taken before is owed ErrLost on one
+// flush, its next Commit without an open answers a changed verifier, and w
+// reads as the file did before it (RFC 8 §5.1).
+func (m *soakModel) failWindow(f *fileModel, proc int, w *soakOp) {
 	m.lose(f, proc)
+
+	var v vfs.Verifier
+
+	if w != nil {
+		w.dropped = true
+		v = w.verifier
+	}
+
 	f.window = &failedWindow{proc: proc, verifier: v}
 }
 
@@ -302,10 +314,10 @@ func (m *soakModel) failWindow(f *fileModel, proc int, v vfs.Verifier) {
 // have the client take that write as stable. A restart before it drops the
 // check, since a new process answers a new verifier anyway.
 //
-// decision: the oracle holds the answer of 16 November 2026, that the
-// engine's plan is right and RFC 8 §5.1's "fails once" is wrong: the Commit
-// does not fail, it changes the verifier. Overturned only by a change of that
-// answer.
+// decision: after a failed sync window the file's next Commit succeeds with
+// a changed verifier and does not fail, as the engine's plan says. RFC 8 §5.1
+// still says that Commit "fails once"; that sentence is wrong and is being
+// corrected to match. Overturned if the corrected §5.1 keeps the failure.
 func (f *fileModel) nfsCommit(proc int, v vfs.Verifier, err error) error {
 	w := f.window
 	if w == nil || err != nil {
@@ -386,7 +398,7 @@ func (f *fileModel) candidates(at int64) (vals []byte, lost bool, floor int) {
 	// Every op after the newest acknowledged one may or may not have landed,
 	// whole or torn, so each of its bytes is one the read may answer.
 	for _, o := range f.ops[floor+1:] {
-		if v, ok := o.covers(at); ok && !slices.Contains(vals, v) {
+		if v, ok := o.covers(at); ok && !o.dropped && !slices.Contains(vals, v) {
 			vals = append(vals, v)
 		}
 	}
@@ -991,7 +1003,7 @@ func TestOracle(t *testing.T) {
 			"O42 the Commit after a failed window answers the dropped write's verifier",
 			func(m *soakModel, f *fileModel) error {
 				w := write(f, 0, 'a', 4, false)
-				m.failWindow(f, 1, w.verifier)
+				m.failWindow(f, 1, w)
 
 				return f.nfsCommit(1, w.verifier, nil)
 			},
@@ -1001,7 +1013,7 @@ func TestOracle(t *testing.T) {
 			"O50 a Commit that failed after a window leaves the check for the next one",
 			func(m *soakModel, f *fileModel) error {
 				w := write(f, 0, 'a', 4, false)
-				m.failWindow(f, 1, w.verifier)
+				m.failWindow(f, 1, w)
 
 				if err := f.nfsCommit(1, vB, errors.New("a store fault")); err != nil {
 					return fmt.Errorf("a failed Commit: %w", err)
@@ -1015,7 +1027,7 @@ func TestOracle(t *testing.T) {
 			"O43 the Commit after a failed window answers a changed verifier",
 			func(m *soakModel, f *fileModel) error {
 				w := write(f, 0, 'a', 4, false)
-				m.failWindow(f, 1, w.verifier)
+				m.failWindow(f, 1, w)
 
 				if err := f.nfsCommit(1, vB, nil); err != nil {
 					return err
@@ -1035,7 +1047,7 @@ func TestOracle(t *testing.T) {
 			"O44 a restart before the Commit drops the check",
 			func(m *soakModel, f *fileModel) error {
 				w := write(f, 0, 'a', 4, false)
-				m.failWindow(f, 1, w.verifier)
+				m.failWindow(f, 1, w)
 
 				return f.nfsCommit(2, w.verifier, nil)
 			},
@@ -1046,7 +1058,7 @@ func TestOracle(t *testing.T) {
 			func(m *soakModel, f *fileModel) error {
 				w := write(f, 0, 'a', 4, false)
 				o := m.open(f, 1)
-				m.failWindow(f, 1, w.verifier)
+				m.failWindow(f, 1, w)
 
 				return m.flush(o, vB, nil, false)
 			},
@@ -1057,7 +1069,7 @@ func TestOracle(t *testing.T) {
 			func(m *soakModel, f *fileModel) error {
 				w := write(f, 0, 'a', 4, false)
 				o := m.open(f, 1)
-				m.failWindow(f, 1, w.verifier)
+				m.failWindow(f, 1, w)
 
 				if err := m.flush(o, vB, vfs.ErrLost, false); err != nil {
 					return fmt.Errorf("the first flush: %w", err)
@@ -1075,7 +1087,7 @@ func TestOracle(t *testing.T) {
 			"O47 an open taken after the window owes nothing",
 			func(m *soakModel, f *fileModel) error {
 				w := write(f, 0, 'a', 4, false)
-				m.failWindow(f, 1, w.verifier)
+				m.failWindow(f, 1, w)
 
 				return m.flush(m.open(f, 1), vB, nil, false)
 			},
@@ -1087,6 +1099,34 @@ func TestOracle(t *testing.T) {
 				write(f, 0, 'a', 4, true)
 
 				return m.flush(m.open(f, 1), vA, vfs.ErrLost, true)
+			},
+			"",
+		},
+		{
+			"O51 a write whose window failed reads back",
+			func(m *soakModel, f *fileModel) error {
+				m.failWindow(f, 1, write(f, 0, 'a', 4, false))
+
+				return read(m, f, 0, bytesOf('a', 4), false)
+			},
+			"a byte no write put there",
+		},
+		{
+			"O52 a write whose window failed reads as the file did before it",
+			func(m *soakModel, f *fileModel) error {
+				m.failWindow(f, 1, write(f, 0, 'a', 4, false))
+
+				return read(m, f, 0, bytesOf(0, 4), false)
+			},
+			"",
+		},
+		{
+			"O53 a resent write reads back after its window failed",
+			func(m *soakModel, f *fileModel) error {
+				m.failWindow(f, 1, write(f, 0, 'a', 4, false))
+				write(f, 0, 'a', 4, false)
+
+				return read(m, f, 0, bytesOf('a', 4), false)
 			},
 			"",
 		},
