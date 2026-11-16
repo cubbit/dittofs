@@ -173,10 +173,12 @@ func TestDeadlineEndsWithTheCall(t *testing.T) {
 
 // A deadline already spent, or a parent already done, shows on the call's
 // context as the call starts, not later from a timer's or a watch's
-// goroutine (§6.4, §6.5).
+// goroutine (§6.4, §6.5); a parent's end shows with its own error.
 func TestDeadlineSpentOrCancelledShowsAtOnce(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Unix(0, 0))
+	defer cancelExpired()
 	for _, c := range []struct {
 		name   string
 		parent context.Context
@@ -184,6 +186,7 @@ func TestDeadlineSpentOrCancelledShowsAtOnce(t *testing.T) {
 	}{
 		{"an attempt started 30 s ago", core.WithAttemptStart(context.Background(), t0.Add(-30*time.Second)), context.DeadlineExceeded},
 		{"a parent cancelled", cancelled, context.Canceled},
+		{"a parent past its own deadline", expired, context.DeadlineExceeded},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sh := core.NewShared(adapter.Deps{})
