@@ -618,3 +618,17 @@ func (f *Fixture) awaitSpares() {
 		f.tb.Fatalf("fixture: the journal's pool did not reach its spares: %v", err)
 	}
 }
+
+// WaitSpares waits until the pool of the journal the fixture opened last has
+// made every spare it is short of and settled — a check whose next steps take
+// no seam call, or hold the seam's syncs and so park a refill mid-flight,
+// then finds every spare its roll needs ready there, none still owed to a
+// take the check's own earlier writes made. The wait relays on the pool's
+// settle events, so it serves at any point of the journal's life, the
+// fixture's first open included, and a pool that cannot fill answers its
+// refusal rather than parking forever.
+func (f *Fixture) WaitSpares() {
+	f.tb.Helper()
+
+	f.awaitSpares()
+}

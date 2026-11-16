@@ -1106,9 +1106,20 @@ func retire(t *testing.T, f *journaltest.Fixture, seg journal.SegmentID) retired
 // sync a take leads to, and checks that the directory gained a segment file
 // by then. The hold is released however it returns, a failure included, so
 // a fixture whose lifetime ends before the test's never closes on it.
+//
+// The pool settles before the hold goes up. A take can sit between the
+// fixture's own open-time wait and this one — a row's earlier write starting
+// a stream takes, for the first segment of the stream is a roll — and its
+// refill rides a directory sync that the hold parks forever, so a roll that
+// finds the spare the take left the pool short of would wait on the held
+// refill: the write is refused again and again, bounded yields at a time,
+// where before the hold the same refill lands a moment later. Settled, every
+// spare the roll needs is ready, and the sync the hold parks is the
+// refill of the take the roll itself makes.
 func awaitSpare(t *testing.T, f *journaltest.Fixture, roll func()) {
 	t.Helper()
 
+	f.WaitSpares()
 	before := segmentFiles(t, f)
 	held := f.Seam.Hold(t, kit.OpSyncDir, "*")
 	defer held.Release()
