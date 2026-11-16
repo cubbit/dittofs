@@ -1,0 +1,19 @@
+# test/harness/bin/dt doctor | 2026-11-16 16:59 CET | f02e02620
+NEED                MET  WHY                                                                                                                  HOW
+disk:110            no   70 GB free here                                                                                                      free disk space
+docker              yes                                                                                                                       
+fio                 yes                                                                                                                       
+host:dedicated      no   only the dedicated host meets it                                                                                     run it on the dedicated host
+linux               no   this machine runs darwin                                                                                             run it on Linux, or in dtc
+macos               yes                                                                                                                       
+nfs-client          yes                                                                                                                       
+nfs4-acl-tools      no   not available on darwin                                                                                              run it on Linux, or in dtc
+podman              yes                                                                                                                       
+root                no   no passwordless sudo                                                                                                 allow passwordless sudo
+rpcbind             no   rpcinfo -p: exit status 1                                                                                            install and start rpcbind
+service:kmip        no   DITTOFS_TEST_KMIP_ENDPOINT isn't set, and test/harness/state/kmip.env doesn't exist (dt services up kmip writes it)  dt services up kmip
+service:localstack  yes                                                                                                                       
+service:postgres    no   nothing answers at localhost:15432                                                                                   dt services up postgres
+smb-client          yes                                                                                                                       
+smbclient           no   not available on darwin                                                                                              run it on Linux, or in dtc
+windows             no   this machine runs darwin                                                                                             run it on Windows
