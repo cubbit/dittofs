@@ -138,7 +138,7 @@ that subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R9 | `internal/node`'s exported package-level declarations are `New`, `Node` and `Config`, and `*Node`'s exported methods `Start` and `Stop`, and nothing else | MUST | RFC 23 §2.1 ("The node's surface", and its decision); RFC 23 plan §1.5 rule 11 | T1.3, T1.6 |
+| R9 | `internal/node`'s exported package-level declarations are `New`, `Node` and `Config`, and `*Node`'s exported methods `Start` and `Stop`, and nothing else | MUST | RFC 23 §2.1 ("The node's surface", and its decision); RFC 23 plan §1.5 rule 11 | T1.3 |
 | R10 | `Config` carries what the host supplies and the node cannot build: the bootstrap, the KV the metadata store opens on, the clock, the metrics registry and the logger | MUST | RFC 23 §2 (step 2), §2.1 | T1.3 |
 
 **The shared wire types**
@@ -268,8 +268,8 @@ pkg/node/apiv1/
   codes.go opkind.go operation.go version.go T1.5
   closedsets_test.go wire_test.go          T1.5
 internal/node/
-  arch_test.go                             T1.6  the four rules
-  testdata/arch/                           T1.6  one planted violation per rule
+  arch_test.go                             T1.3  the export pin (R9); T1.6  the other three rules
+  testdata/arch/                           T1.3, T1.6  one planted violation per rule
 ```
 
 ## 6. Subtasks
@@ -298,7 +298,10 @@ internal/node/
     that start the server, with their helper: `TestRealServer`, `TestRealSMB`, `TestSetupEnds`,
     `TestSetupServerExits` and `TestStartOnSetPort` in `fixture_unix_test.go`, and
     `TestDfsEndsWithDT`, `TestRealClients`, `TestRealKerberos`, `TestRealMount` and
-    `TestRealSMBMount` in `fixture_linux_test.go`. `Unsupported`, `Placeholders` and `Network`,
+    `TestRealSMBMount` in `fixture_linux_test.go`. What the kept files still use stays: `knfsd.go`
+    reads the `Share` constant, and `mount.go` and `smb.go` hang their mount helpers on `*Server`;
+    those declarations move out of the deleted `fixture.go`, and any receiver that served only the
+    deleted DittoFS start goes with it. `Unsupported`, `Placeholders` and `Network`,
     which `test/harness/run` calls, move to a new `spec.go`, unchanged except that `Unsupported`
     refuses a fixture whose server is DittoFS, naming the integration epic's rebuild; `run`'s
     `startFixture` keeps its `knfsd` branch and refuses the other the same way. The rest of the
@@ -335,7 +338,7 @@ internal/node/
 
 ### T1.3 Replace the server
 
-**Subtask T1.3 estimate: 4.5 man-days.**
+**Subtask T1.3 estimate: 4.75 man-days.**
 
 - **Track:** the team. **Depends on:** T1.2.
 - **Covers:** R1, R2, R4, R5, R6, R7, R8, R9, R10.
@@ -391,7 +394,11 @@ internal/node/
   - `dfs config show`, `validate` and `edit` work on the stripped file.
 - **Tests:** `cmd/dfs/commands/config`'s existing tests, trimmed to the keys that stay; the three
   `cmd/gendocs` tests, which fail on any invocation this subtask leaves naming a removed command or
-  flag (R5, R7).
+  flag (R5, R7); and `internal/node/arch_test.go`'s export pin (R9, D10): `internal/node`'s exported
+  package-level declarations are exactly `New`, `Node` and `Config` and `*Node`'s exported methods
+  exactly `Start` and `Stop`, run over the package and over `testdata/arch/exports/` with one
+  planted extra export. It lands here because `internal/node` is new in this subtask and
+  `lint-repo`'s `test/new-package-tests.sh` refuses a new package with no `_test.go`.
 
 ### T1.4 The daemon flags' other callers, and the reference test
 
@@ -450,11 +457,11 @@ internal/node/
 
 ### T1.6 The architecture tests
 
-**Subtask T1.6 estimate: 1.5 man-days.**
+**Subtask T1.6 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T1.3, T1.5.
-- **Covers:** R3, R9, R11, R19, R20, R21.
-- **Deliverables:** `internal/node/arch_test.go`, each rule a function of a source root (D10), run
+- **Covers:** R3, R11, R19, R20, R21.
+- **Deliverables:** three rules added to `internal/node/arch_test.go`, each a function of a source root (D10), run
   over the module and over `internal/node/testdata/arch/<rule>/`:
   - **no v1 import** (R3): no `.go` file outside `testdata` imports a path under
     `pkg/controlplane`, `internal/controlplane` or `pkg/snapshot`. `pkg/identity` and
@@ -469,15 +476,13 @@ internal/node/
     `pkg/node/apiv1`, and of `pkg/apiclient` once E4 lands it, stay, of this module, within
     `cmd/dfsctl/...`, `pkg/apiclient`, `pkg/node/apiv1` and `internal/cli/...`, and
     `pkg/node/apiv1`'s within the standard library;
-  - **the node's exports** (R9): `internal/node`'s exported package-level declarations are exactly
-    `New`, `Node` and `Config`, and `*Node`'s exported methods exactly `Start` and `Stop`.
-  Consumed by every later epic, whose changes these rules hold; E4 adds the two rules over
+  Beside T1.3's export pin, in the file T1.3 created. Consumed by every later epic, whose changes these rules hold; E4 adds the two rules over
   `internal/node/api` to the same file.
 - **Acceptance criteria:**
   - Each rule reports nothing over the module and exactly its planted violation over its
     `testdata` tree.
 - **Tests:** at the module's sources, where CP14 and CP16 are stated: each rule's two runs (catch a
-  forbidden import or export, R3, R9, R11, R19, R20; and, through the planted violation, a rule
+  forbidden import, R3, R11, R19, R20; and, through the planted violation, a rule
   that has stopped detecting anything, R21). No test double: `testdata` trees are inputs.
 
 ## 7. Order of work
@@ -502,8 +507,8 @@ T1.1–T1.4.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T1.1, T1.2, T1.3 | 8 | — | the deletion, leaves first, with the new `dfs` in place of v1's (D1); S0 for the RFC 13 plan, and unblocks the RFC 18 plan |
-| 2 | T1.4, T1.5, T1.6 | 4.25 | PR 1 | the remaining callers and the reference test, the shared wire types, and the rules that hold the layering: S1 |
+| 1 | T1.1, T1.2, T1.3 | 8.25 | — | the deletion, leaves first, with the new `dfs` in place of v1's (D1); S0 for the RFC 13 plan, and unblocks the RFC 18 plan |
+| 2 | T1.4, T1.5, T1.6 | 4 | PR 1 | the remaining callers and the reference test, the shared wire types, and the rules that hold the layering: S1 |
 
 A suggestion only for PR 2, which can be one pull request per subtask as well; PR 1 lands first as
 its own (D1).
