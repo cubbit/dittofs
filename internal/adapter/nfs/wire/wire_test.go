@@ -280,8 +280,8 @@ func TestParseRefusals(t *testing.T) {
 		}
 		// The credential's length claims a body the record does not hold; a
 		// version other than 2 stops the parse before it, so the router can
-		// answer RPC_MISMATCH rather than a decode refusal (RFC 20 section
-		// 4.1's route row).
+		// answer RPC_MISMATCH rather than a decode refusal (RFC 21 section
+		// 11.5).
 		b = binary.BigEndian.AppendUint32(b, 1)
 		b = binary.BigEndian.AppendUint32(b, 400)
 		call, err := wire.ParseCall(b)
@@ -290,6 +290,15 @@ func TestParseRefusals(t *testing.T) {
 		}
 		if call.RPCVersion() != 3 {
 			t.Errorf("the RPC version reads %d", call.RPCVersion())
+		}
+	})
+	t.Run("an RPC version other than two, the record ending after it", func(t *testing.T) {
+		b := binary.BigEndian.AppendUint32(nil, 0x11223344)
+		b = binary.BigEndian.AppendUint32(b, 0)
+		b = binary.BigEndian.AppendUint32(b, 3)
+		call, err := wire.ParseCall(b)
+		if err != nil || call.RPCVersion() != 3 {
+			t.Errorf("RPC version 3 and nothing after it: %d, %v, want 3 and no error", call.RPCVersion(), err)
 		}
 	})
 	t.Run("a message of seven bytes", func(t *testing.T) {

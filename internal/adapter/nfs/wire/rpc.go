@@ -73,15 +73,18 @@ func walk(c []byte) (fields, error) {
 	if f.typ != callType {
 		return f, ErrNotCall
 	}
-	for i, p := range []*uint32{&f.rpcvers, &f.prog, &f.vers, &f.proc} {
-		v, ok := r.u32()
-		if !ok {
-			return f, fmt.Errorf("nfs/wire: %w: the call's field %d", errPastRecord, i)
-		}
-		*p = v
+	if f.rpcvers, ok = r.u32(); !ok {
+		return f, fmt.Errorf("nfs/wire: %w: the call's RPC version", errPastRecord)
 	}
 	if f.rpcvers != rpcVersion {
-		return f, nil
+		return f, nil // RFC 21 section 11.5: decoded no further
+	}
+	for i, p := range []*uint32{&f.prog, &f.vers, &f.proc} {
+		v, ok := r.u32()
+		if !ok {
+			return f, fmt.Errorf("nfs/wire: %w: the call's field %d", errPastRecord, i+1)
+		}
+		*p = v
 	}
 	var err error
 	if f.credFlavour, f.credAt, f.credLen, err = r.opaqueAuth(); err != nil {
