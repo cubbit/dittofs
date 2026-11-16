@@ -98,10 +98,12 @@ type Settings struct {
 //
 // decision: the cap is not a setting, and no name journal exports may set
 // it, yet a check over hundreds of segments cannot run at the format's size
-// in a temporary directory. So the field is unexported, and this setter lives in
-// internal/core, which only code inside the journal's tree can import: its
-// tests' fixture sets it and passes the settings through WithSettings, and
-// the public surface does not change.
+// in a temporary directory. So the field is unexported, and the setter has
+// two doors, both for test harnesses alone: this one in internal/core, which
+// only code inside the journal's tree can import - its tests' fixture sets it
+// and passes the settings through WithSettings - and journaltest.SetSegmentCap,
+// which the harnesses outside the tree import, the engine's fixture the first.
+// No operator surface changes anywhere.
 func SetSegmentCap(s *Settings, n int64) {
 	s.segmentCap = n
 }
