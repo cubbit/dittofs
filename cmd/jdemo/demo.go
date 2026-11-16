@@ -82,7 +82,7 @@ func newDemo(dir string, in io.Reader, out io.Writer) *demo {
 	d.views = map[rune]func(*demo){
 		'i': (*demo).viewIndex,
 		's': (*demo).viewSegments,
-		'd': nil, // the data dump — Task 4
+		'd': (*demo).viewDump,
 		'f': (*demo).viewFS,
 		'+': (*demo).viewStats,
 	}

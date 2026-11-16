@@ -69,3 +69,40 @@ func TestDemoRefusesUsedDir(t *testing.T) {
 		t.Errorf("refused run touched the journal dir: %d entries before, %d after", len(before), len(after))
 	}
 }
+
+func TestDemoEndToEndInteractive(t *testing.T) {
+	// The whole demo, driven as a presenter would: run every beat, look at
+	// every view once, quit. The stub answers print honestly in their
+	// beats, and the journal closes clean.
+	base := t.TempDir()
+	dir := filepath.Join(base, "journal")
+	// One beat's script: Enter runs it; each view key gets a look at the
+	// chooser; an empty line leaves for the next beat.
+	beatScript := "\n" + "i\n" + "s\n" + "f\n" + "d\n" + "+\n" + "\n"
+	script := strings.Repeat(beatScript, len(stories["basic"]))
+	script += "q\n"
+	d, out := newTestDemo(t, dir, script)
+	if err := d.run(); err != nil {
+		t.Fatalf("run: %v (out tail %q)", err, tailOf(out.String(), 400))
+	}
+	screen := out.String()
+	for _, want := range []string{
+		"(first look)", // a view rendered its rows
+		"→ v1",         // the first write's version
+		"journal: not implemented",
+	} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("end-to-end screen lacks %q (tail: %s)", want, tailOf(screen, 400))
+		}
+	}
+	if _, err := os.Stat(statePath(dir)); os.IsNotExist(err) {
+		t.Errorf("state file missing after the interactive run")
+	}
+}
+
+func tailOf(s string, n int) string {
+	if len(s) > n {
+		return s[len(s)-n:]
+	}
+	return s
+}
