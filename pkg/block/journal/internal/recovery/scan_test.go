@@ -528,12 +528,12 @@ func TestScanSegmentTooShortForASlotIsEmpty(t *testing.T) {
 	}
 }
 
-// TestScanSegmentRefusesACloneTargetBodyThatDoesNotVerify holds the one body
+// TestScanSegmentDropsACloneTargetBodyThatDoesNotVerify holds the one body
 // the rebuild reads at the scan: a clone target's 56-byte spec, verified
-// whole where it is read. A body that does not verify fails the scan naming
-// the segment and the record's offset — never silently dropped, for the
-// destination's extent would then read as zeros.
-func TestScanSegmentRefusesACloneTargetBodyThatDoesNotVerify(t *testing.T) {
+// whole where it is read. A body that does not verify is carried as a dropped
+// record, its header known, its entry zero and its synced flag unset for the
+// tail's classing to decide, and feeds nothing to the index.
+func TestScanSegmentDropsACloneTargetBodyThatDoesNotVerify(t *testing.T) {
 	id := core.SegmentID(14)
 	seg := buildSeg(id, rec(7, func(r *raw.Record) {
 		r.Clone = &raw.CloneBody{Share: srcShare(), File: srcFile(), Off: 0x101, AsOf: raw.Version{Counter: 9}}
@@ -542,15 +542,23 @@ func TestScanSegmentRefusesACloneTargetBodyThatDoesNotVerify(t *testing.T) {
 	r := newRig(t)
 	r.plantSeg(id, seg)
 
-	_, err := r.scan(id, journalID)
-	if err == nil {
-		t.Fatalf("scanSegment over a clone target whose body does not verify returned no error, want the open to fail")
+	sc, err := r.scan(id, journalID)
+	if err != nil {
+		t.Fatalf("scanSegment over a clone target whose body does not verify: %v, want it carried as a drop", err)
 	}
-	if !errors.Is(err, core.ErrCorrupt) {
-		t.Errorf("scanSegment: a clone target body that does not verify got err %v, want ErrCorrupt", err)
+	if len(sc.Records) != 0 || len(sc.Dropped) != 1 {
+		t.Fatalf("scanSegment got %d records and %d drops, want 0 and 1", len(sc.Records), len(sc.Dropped))
 	}
-	if got := err.Error(); !contains(got, "14") || !contains(got, fmt.Sprint(format.SegmentHeaderSize)) {
-		t.Errorf("scanSegment: the refusal %q names neither the segment 14 nor the record's offset", got)
+	d := sc.Dropped[0]
+	if !errors.Is(d.Err, core.ErrCorrupt) || d.Synced || d.Entry != (format.CatalogEntry{}) || d.Header.Offset != format.SegmentHeaderSize {
+		t.Errorf("the drop got err %v synced %v entry %+v offset %d, want ErrCorrupt, unsynced, a zero entry at %d",
+			d.Err, d.Synced, d.Entry, d.Header.Offset, format.SegmentHeaderSize)
+	}
+	if got := d.Err.Error(); !contains(got, "14") || !contains(got, fmt.Sprint(format.SegmentHeaderSize)) {
+		t.Errorf("scanSegment: the drop's error %q names neither the segment 14 nor the record's offset", got)
+	}
+	if sc.VerifiedEnd != format.SegmentHeaderSize {
+		t.Errorf("VerifiedEnd got %d, want %d: no record verified whole", sc.VerifiedEnd, format.SegmentHeaderSize)
 	}
 }
 
