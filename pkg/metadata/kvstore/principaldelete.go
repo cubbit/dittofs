@@ -17,6 +17,7 @@ import (
 // a group; its quota records; and, for a user, its API tokens, its sessions
 // and its account's sign-in count. The batch that finds none of them left
 // deletes the record and, for a user, every version of the secret it names.
+// Files keep naming p, as an unknown principal.
 //
 // Each batch finds what is left by the rows themselves, so a restart resumes
 // from the mark with no cursor, and a batch lost to a crash is run again. An
@@ -86,6 +87,11 @@ type batch struct {
 
 // take reports whether an item deleting cost keys fits, charging it. The
 // batch's first item always fits.
+//
+// ponytail: an item is never split, so a session with more refresh hashes
+// than one transaction holds stops its account's deletion with
+// kv.ErrTooLarge. A session refreshed every 15 min has about 48; split a
+// session's hashes across batches if lifetimes ever grow that far.
 func (b *batch) take(cost int) bool {
 	if b.took && cost > b.left {
 		b.full = true
