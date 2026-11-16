@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that verifies is read by scanning it, as one with no footer is. The open
   still refuses a named predecessor that ends without its seal marker, at any
   length, and a range inside a sealed segment that no footer names.
+- **The journal's open re-adopts its spare segments.** A record-less segment a
+  crash left untaken — a spare no stream took, or a recycle interrupted after
+  its rename — is taken back as a spare at open, zeroing only the two slots a
+  take writes before its records: a crash costs no spare, and the headroom, the
+  repack reserve and a stream's next segment come back without new allocation.
+  Each re-adoption is recorded under the class the pool's own fill order would
+  have made the spare in.
+- **A spare the open cannot take whole it unlinks and makes again.** A
+  candidate whose file does not hold exactly the segment cap — or whose body
+  the device does not hold allocated whole, where the platform reports its
+  files' allocation — is removed rather than re-adopted, so the pool never
+  takes writes into a hole a crash would lose. A segment a sync mark names is
+  left exactly as it stands for the phases that read it.
 
 ## [0.36.0] — 2026-10-19
 
