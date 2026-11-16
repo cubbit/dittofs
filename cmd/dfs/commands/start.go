@@ -39,7 +39,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	// The KV, the clock and the metrics registry join the node's
-	// configuration once the node opens its stores.
+	// configuration once the start command opens the host's store; until
+	// then New refuses.
 	n, err := node.New(node.Config{Bootstrap: *cfg, Logger: slog.Default()})
 	if err != nil {
 		return fmt.Errorf("building the node: %w", err)

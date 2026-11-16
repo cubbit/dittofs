@@ -29,7 +29,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/sim"
-	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // Settings are the engine settings the fixture applies. The existence age is
@@ -994,65 +993,9 @@ func (s *Sink) ClosedCalls() []Closed {
 func noOrder(entity.FileID) func() { return func() {} }
 
 // Holds adapts t, over the store's durable opens, to the engine's
-// CloneHold, as the composition root does. An orphan CloneClose leaves
-// reaches t's Sink.Closed.
-func Holds(t *openstate.Table, records OpenRecords) engine.CloneHold {
-	return cloneHold{opens: t.Opens(), recovery: t.Recovery(), records: records}
-}
-
-// OpenRecords reads a file's durable opens: the store's Opens.
-type OpenRecords interface {
-	Of(ctx context.Context, share entity.ShareID, file entity.FileID) ([]entity.OpenRecord, error)
-}
-
-// cloneHold is the open-state table as the engine's CloneHold.
-type cloneHold struct {
-	opens    openstate.Opens
-	recovery openstate.Recovery
-	records  OpenRecords
-}
-
-// Hold answers ErrStale only for a source holding no open of the clone's.
-// CloneOpen answers ErrBadState for that and for a share whose open state
-// was dropped, so the record is read again to tell them apart; the dropped
-// share's answer crosses as itself, which the engine retries.
-func (h cloneHold) Hold(ctx context.Context, src engine.CloneSrc) (entity.OpenID, error) {
-	id, err := h.opens.CloneOpen(ctx, openstate.FileKey{Share: src.Share, Shard: src.Shard, ID: src.File}, openstate.CloneSource{Dst: src.Dst, Version: src.AsOf})
-	if !errors.Is(err, openstate.ErrBadState) {
-		return id, holdErr(err)
-	}
-	recs, rerr := h.records.Of(ctx, src.Share, src.File)
-	if rerr != nil {
-		return 0, rerr
-	}
-	if !slices.ContainsFunc(recs, func(r entity.OpenRecord) bool {
-		return r.Kind == entity.OpenCloneSource && r.CloneDst == src.Dst && r.CloneVersion == src.AsOf
-	}) {
-		return 0, entity.ErrStale
-	}
-	return 0, err
-}
-
-func (h cloneHold) Release(ctx context.Context, o entity.OpenID) error {
-	err := h.opens.CloneClose(ctx, o)
-	if errors.Is(err, openstate.ErrBadState) {
-		return nil // the hold is already gone
-	}
-	return holdErr(err)
-}
-
-// holdErr is open state's answer to a clone's hold in the engine's types: a
-// shard not yet served or a table not running holds the clone for a retry.
-func holdErr(err error) error {
-	var delay *openstate.DelayError
-	if errors.As(err, &delay) && delay.Cause == openstate.DelayFrozen || errors.Is(err, openstate.ErrStopped) {
-		return &vfserr.Delay{Cause: vfserr.DelayFrozen}
-	}
-	return err
-}
-
-func (h cloneHold) Served(ctx context.Context, s entity.ShardID) error {
-	return holdErr(h.recovery.Served(ctx, s))
+// CloneHold, as the composition root does: open state's EngineHolds.
+func Holds(t *openstate.Table, records openstate.OpenRecords) engine.CloneHold {
+	return openstate.EngineHolds(t, records)
 }
 
 // errCrashed answers a store change the crashed process's engine makes.
