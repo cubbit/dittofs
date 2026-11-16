@@ -378,7 +378,7 @@ pkg/metadata/kvstore/
   principals.go, codecs.go  T5.8a  Linked in the record and the PX‖krb value; refused on another scheme
   kvstoretest/         T5.8a  rows for Linked
 test/integration/ad-dc/
-  entrypoint.sh, fixture_test.go, ad_dc_keytab_test.go   T5.1  service names on dittofs-svc, AES only
+  entrypoint.sh, fixture_test.go                         T5.1  service names on dittofs-svc, AES only
   pac_capture_test.go, capture-pacs.sh                   T5.1  the PAC capture
   pac_capture_test.go                                    T5.11 also writes alice's AP-REQ for cifs/
 docs/guide/identity.md                                   T5.1  the fixture's service account
@@ -401,7 +401,7 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   rebased on E7's #4422 if that merges first. The part: the `cifs/` and `nfs/` service names moved
   off Administrator onto an account of their own, `dittofs-svc`, with
   `msDS-SupportedEncryptionTypes` `0x18`, so the exported keytab holds no RC4 key (`entrypoint.sh`,
-  `ad_dc_keytab_test.go`); `capture-pacs.sh`, which runs `TestADPACCapture` with
+  `fixture_test.go`'s AES-only subtest); `capture-pacs.sh`, which runs `TestADPACCapture` with
   `DITTOFS_AD_DC_PAC_OUT` set and writes `tgt.pac` with `krbtgt.keytab` and `service.pac` with
   `service.keytab`; `docs/guide/identity.md`'s account of the fixture. The fixture's TLS part is
   E6's and its join part E7's.
