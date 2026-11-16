@@ -246,14 +246,17 @@ func v1Imports(root string) ([]string, error) {
 
 // nodeImporters returns each file under root, tests included, that imports
 // the node but may not: only the server's start command and the test harness
-// build a node.
+// build a node, and the node's own external tests drive it.
 func nodeImporters(root string) ([]string, error) {
 	var bad []string
 	err := walkImports(root, true, func(file string, imports []string) {
 		// decision: the harness under internal/node/nodetest is the one
 		// importer besides dfs start, because it drives a whole node in tests
-		// as dfs start does in production; no other exemption is named.
-		if file == "cmd/dfs/commands/start.go" || under(file, "internal/node/nodetest") {
+		// as dfs start does in production; the node's own _test.go files are
+		// its tests, in package node_test only because they use the harness,
+		// which imports the node. No other exemption is named.
+		ownTest := path.Dir(file) == "internal/node" && strings.HasSuffix(file, "_test.go")
+		if file == "cmd/dfs/commands/start.go" || under(file, "internal/node/nodetest") || ownTest {
 			return
 		}
 		if slices.Contains(imports, module+"internal/node") {
