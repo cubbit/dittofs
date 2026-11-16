@@ -206,7 +206,7 @@ them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R46 | `pkg/node/apiv1` carries the bodies of sign-in, refresh, sign-out, the password change, `:set-password`, an API token and a session, and imports only the standard library | MUST | RFC 23 plan §5 epic 5, §4.2 D1 | T5.1 |
+| R46 | `pkg/node/apiv1` carries the bodies of sign-in, refresh, the password change, `:set-password` and an API token, and imports only the standard library; sign-out has no body, since it takes its session from the access token, and a session has none until a route answers with one | MUST | RFC 23 plan §5 epic 5, §4.2 D1 | T5.1 |
 
 ## 4. Decisions this epic takes
 
@@ -279,7 +279,7 @@ them.
 ```text
 pkg/node/apiv1/
   auth.go                                  T5.1  SignIn, Tokens, Refresh, PasswordChange, SetPassword,
-                                                 APITokenSpec, APITokenStatus, SessionStatus
+                                                 APITokenSpec, APITokenStatus
 internal/node/api/apisettings/
   settings.go settings_test.go             T5.1  Settings, defaults, Validate (D4)
 internal/node/api/auth/
@@ -313,8 +313,10 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   their seeds in E4's strict-decoder fuzz target; `internal/node/api/apisettings` (D4) with its
   test; this epic's rights in `auth`'s table: own password, own tokens and sign-out for every role;
   accounts with a role, roles, others' service tokens and the signing key's rotation for `admin`;
-  E4's import rule's allow-list gaining `apisettings`, `pkg/identity` and `pkg/secrets` for `auth`,
-  an explicit edit. Consumed by T5.5–T5.9, E6 (the bodies) and E3's sweep (the retention).
+  E4's import rule's allow-list gaining `apisettings`, an explicit edit. No `SessionStatus`, since
+  no route answers with one, and no sign-out body, since sign-out takes its session from the access
+  token. `pkg/identity` joins the allow-list for `auth` in T5.5, the first subtask that imports it;
+  `pkg/secrets` needs no edit, since E4's D20 allows it for the whole API. Consumed by T5.5–T5.9, E6 (the bodies) and E3's sweep (the retention).
 - **Acceptance criteria:**
   - Each right of RFC 23 §5.2 this epic adds answers per role as the table says.
   - `go list -deps ./pkg/node/apiv1` names only standard-library packages.
@@ -419,7 +421,8 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   refresh through `Session(id)`, reading the account through `APISignIn.Account` as `Authenticate`
   does, an invalidated token revoking the session with `DeleteSession`; `Account`'s `ErrUnavailable`
   answered `503`, not `401`, in refresh and in `Authenticate` alike (R47);
-  sign-out; the two series; RFC 23 §4.5's `decision:` at the credential routes; `bench_test.go`,
+  sign-out; the two series; RFC 23 §4.5's `decision:` at the credential routes; `pkg/identity`
+  added to E4's import allow-list for `auth` (T5.1); `bench_test.go`,
   checked sign-ins from many sources beside metadata commits, in the manual tier. Consumed by T5.6
   and E6's `login`.
 - **Acceptance criteria:**
@@ -602,9 +605,9 @@ A suggestion only: one pull request per subtask works as well. PR 4 and PR 5 can
   epic's `auth` calls `Write` for the counts, the sign-in's settlement, refresh and the password
   change (D1, D8). E4's rule needs `auth` named beside the adapter, its calls holding their audit
   records as R40 says.
-- **E4's import rule:** whether `pkg/secrets` counts as a component's implementation under CP16 is
-  E4's rule's call; T5.1 adds it to the allow-list for `auth` explicitly, with `pkg/identity` and
-  `apisettings`.
+- **E4's import rule:** E4's D20 allows `pkg/secrets` for the whole API, `auth` included. T5.1 adds
+  `apisettings` to the allow-list, and T5.5, the first subtask whose `auth` imports `pkg/identity`,
+  adds it.
 - **E3's harness:** `nodetest` initialises through `install.Run` from T5.4 on (D6), replacing its
   own `kvstore.Init` and `journal.Init`; E3's harness tests must keep passing over it.
 - **E2's names:** `Session(id)`, `DeleteSession(id)`, `Sessions(account)`, `ControlPlaneTx.Now()`,

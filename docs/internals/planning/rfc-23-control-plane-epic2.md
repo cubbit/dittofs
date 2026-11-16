@@ -211,7 +211,7 @@ them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R39 | A user's or a group's deletion deletes its name and protocol-ID indexes and marks the record deleted in its first transaction; bounded batches a restart resumes from that mark drop its grants (through `GR`), setting `S‖id‖gv` on each share whose grant a batch drops, its memberships (`M`, `MR`) and quota records, and a user's API tokens (through `ATA`) and its account's `SF` count; the last transaction deletes the record, a user's with every version of the secret it names, raising `CFGGEN` | MUST | RFC 16 §3, §4.2 (`S‖id‖gv`, `ATA`, `SF`, `CFGGEN`); RFC 23 §5.3 | T2.11 |
+| R39 | A user's or a group's deletion deletes its name and protocol-ID indexes and marks the record deleted in its first transaction; bounded batches a restart resumes from that mark drop its grants (through `GR`), setting `S‖id‖gv` on each share whose grant a batch drops, its memberships (`M`, `MR`) and quota records, and a user's API tokens (through `ATA`), its sessions (through `SSA`, each with its `SSH` rows) and its account's `SF` count; the last transaction deletes the record, a user's with every version of the secret it names, raising `CFGGEN` | MUST | RFC 16 §3, §4.2 (`S‖id‖gv`, `ATA`, `SSA`, `SF`, `CFGGEN`); RFC 23 §5.3 | T2.11 |
 | R40 | A marked user is admitted nowhere; a membership of a marked group grants nothing, and a `User.Primary` naming one counts as zero | MUST | RFC 16 §3 | T2.11 |
 | R41 | A share's removal runs its steps in order after the mark, each idempotent and recorded in `S‖id‖st`, and each shard's in its `SH‖shard‖rm` row, so a crash resumes it where its record says it stopped | MUST | RFC 16 §2.3.2 | T2.12 |
 | R42 | `st` moves to the forget phase only in a batch that finds every shard's `rm` row at offloaded or later, and past step 4 only in the batch that finds the last shard done, each batch reading its shards and rows with tracking and recording its cursor in `st` | MUST | RFC 16 §2.3.2 | T2.12 |
@@ -708,7 +708,8 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   `DeleteSignInFailures(key)`. `PutSignInFailures` writes the source's `XP` row (tag 0x04) at
   `Failed` + 15 min and the pair's (tag 0x06) at `Last` + 24 h, moving it when the time moves, and
   none for an account's (D6). Sessions (tag 0x03) and tokens (tag 0x05) expire at their `Expires`.
-  Consumed by E5's sign-in, refresh, sign-out and token routes, and by T2.11.
+  Consumed by E5's sign-in, refresh, sign-out and token routes, and by T2.11, which deletes an
+  account's sessions through `SSA`.
 - **Acceptance criteria:**
   - A refresh token's hash, rotated twice, finds its session by any of the three hashes until the
     session expires.
@@ -719,7 +720,11 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   leaves an old hash findable, R32); a token
   found by hash and listed by account, the three rows written together (R33); a count read tracked
   and raised in one `Write`, and two raises of one count, the first held open by a `FaultKV` delay
-  after its read, where the second retries and both raises land (catches an untracked read, R34);
+  after its read, where the first retries and both raises land (R34). That race cannot catch an
+  untracked read: the kv contract makes a write conflict with any concurrent write of the same key,
+  so the raise's own `Set` already retries it and the tracked read is redundant today; a
+  `decision:` at the case says so, and that it decides only on a backend that stops conflicting
+  blind writes;
   the `XP` row's place after each kind of move (R35, R36); golden vectors, refusal cases and
   `FuzzControlPlaneValues` entries for the three codecs (R12, R13). R6 is held by the types:
   neither record has a field that could hold a token. No double.
@@ -743,10 +748,14 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 - **Acceptance criteria:**
   - With the store's clock advanced past each kind's expiry, one `Sweep` loop leaves none of that
     kind and every index row of it gone; before it, nothing is deleted.
-  - A batch never deletes more than K records; `More` says whether another is due.
+  - A batch never writes more than K keys, K the store's key budget for one transaction, each
+    record charged its own keys with its index and expiry rows; `More` says whether another is due.
+    No fixed record count bounds it.
 - **Tests:** in `RunDurable`, the clock advanced, never slept: each kind just before and just after
   its expiry (R24, R30, R35), a session's `SSH` rows gone with it (R32), a token's three rows (R33),
-  an audit record at and past the retention (R25); K + 1 records needing two calls (R37). No
+  an audit record at and past the retention (R25); in kvstore's internal test, the budget set
+  small, records filling it swept in one call and one key past it needing two, a session larger
+  than the whole budget included (R37). No
   double.
 
 ### T2.11 A user's and a group's deletion past the mark
@@ -758,8 +767,8 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 - **Deliverables:** the mark as `DeleteUser`'s and `DeleteGroup`'s first transaction (their
   `ControlPlaneTx` form, T2.4); on `Nodes`, `ContinueDelete(ctx, p entity.Principal) (done bool,
   err error)`, one bounded batch from the mark: grants through `GR`, setting each share's `gv` in
-  the batch that drops its grant, on T2.3's write of `gv` for a deletion (R16), memberships, quota records, a user's API tokens through `ATA` and
-  its account's `SF` count; the last batch deleting the record and, for a user, the `SEC` rows of
+  the batch that drops its grant, on T2.3's write of `gv` for a deletion (R16), memberships, quota records, a user's API tokens through `ATA`,
+  its sessions through `SSA`, each with its `SSH` rows, and its account's `SF` count; the last batch deleting the record and, for a user, the `SEC` rows of
   the references it holds, raising `CFGGEN` (D8, its `decision:` marker); an absent record answers
   `done` (D14). The mark deletes the user's name index, so identity's sign-in outcome for a marked
   user is `logon_failure`, not RFC 18 §3.7's `disabled`; a `decision:` at the mark names that
@@ -769,11 +778,11 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   them at start.
 - **Acceptance criteria:**
   - After the mark, the user is found by no name or protocol ID and is admitted nowhere; after the
-    batches, no grant, membership, quota record, API token, sign-in count or secret version of it
-    remains, and every share it held a grant on has a later `gv`.
+    batches, no grant, membership, quota record, API token, session, sign-in count or secret
+    version of it remains, and every share it held a grant on has a later `gv`.
   - A group's members lose its grants from the mark on.
 - **Tests:** in `RunDurable`: a user with grants on two shares, memberships, a quota, an API token,
-  a sign-in count and two secrets at two versions each, deleted in batches of 1, the store reopened between two batches and
+  a session refreshed once, a sign-in count and two secrets at two versions each, deleted in batches of 1, the store reopened between two batches and
   the deletion resumed to the end (catches a cursor kept in memory, R39; rule 8), with each row
   checked gone and `CFGGEN` raised by the last batch (R33, R39); `ContinueDelete` on an already
   deleted principal answering `done` (D14); `DeleteUser`'s and `DeleteGroup`'s marks each raising
@@ -787,18 +796,26 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 - **Covers:** R41, R42, R43, R44, R45, R46.
 - **Deliverables:** in `shareremove.go`, the steps after `stepMarked`, each recorded in `S‖id‖st`:
   step 2 with nothing to do (D9's `ponytail:`); for step 3, the store's side, `RecordShardRemoval(ctx,
-  shard, step)`, which records the `rm` rows (offloaded, forgotten) E3's driving reports, and `st`'s
-  move to the forget phase; step 4 as `ContinueShardRemoval(ctx, shard) (done bool, err error)`
-  (D10); steps 5 and 6; step 7 not run (D9's `ponytail:`). On `Nodes`, `ContinueRemoval(ctx, share
-  entity.ShareID) (step uint8, done bool, err error)` runs one bounded batch of the coordinator's
-  step `st` names; an absent record answers `done` (D14). Consumed by E3, which drives step 3 and
+  share, shard, reached entity.TagState)`, which records the `rm` rows (offloaded, forgotten) E3's
+  driving reports, and `st`'s move to the forget phase; step 4 as `ContinueShardRemoval(ctx, share,
+  shard) (done bool, err error)` (D10); steps 5 and 6, step 6 leaving `st` as a retired tombstone so
+  the `ShareID` is never given again and a setting written to the removed share is refused (a
+  `decision:` at the last transaction); step 7 not run (D9's `ponytail:`). On `Nodes`,
+  `ContinueRemoval(ctx, share entity.ShareID) (step uint8, done bool, err error)` runs one bounded
+  batch of the coordinator's step `st` names and answers the step it stands at, which the driver
+  acts on; a shard's step recorded before it is due answers the exported `ErrRemovalOrder`; an
+  absent record answers `done` (D14). Consumed by E3, which drives step 3 and
   the batches and resumes them at start.
 - **Acceptance criteria:**
   - A share with files, grants, share-scoped settings and a client row, removed in batches of 1,
     leaves no row of it but what step 6 says, and its tag is not given to the next share.
   - `st` does not reach the forget phase while a shard's `rm` row is below offloaded.
-- **Tests:** in `RunDurable`: the removal run to the end with the store reopened after each batch
-  (catches a step that is not idempotent or a cursor not in `st`, R41; rule 8); `st` held at
+- **Tests:** in `RunDurable`, `ShareRemovalAcrossReopens`: the removal run to the end in batches of
+  one row, through a wrapper that shrinks the backend's reported transaction limits, with the store
+  reopened before each batch (catches a step that is not idempotent or a cursor not in `st`, R41;
+  rule 8), the removed `ShareID` refused by `PutShare` after it (R46). The rest stay in kvstore's
+  internal tests, the full removal end to end among them, because they read keys the package does
+  not export; a deviation from running them all in `RunDurable`: `st` held at
   offloaded until the last shard's row moves (R42); a shard whose files are linked and open, every
   file's refs gone and its chunks' counts down, with no journal version taken (catches the release
   path's holder check or a fence, R43); grants, settings with `CFGGEN` raised, a referenced secret

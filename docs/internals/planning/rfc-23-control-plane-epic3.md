@@ -207,7 +207,7 @@ that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R39 | Work no component drives on its own is driven by the operation runner; each kind records its steps durably and makes each idempotent | MUST | RFC 23 §4.6 | T3.4 |
 | R40 | The operation record chooses no driver for work its owner drives, and its progress is read from the owner's durable cursor | MUST NOT | RFC 23 §4.6; CP7 | T3.4, T3.6 |
-| R41 | Every state change of an operation the runner records commits through `Write` with its audit record | MUST | RFC 23 §6; RFC 16 §3 | T3.4 |
+| R41 | Every state change and every phase change of an operation the runner records commits through `Write` with its audit record | MUST | RFC 23 §6; RFC 16 §3 | T3.4 |
 | R42 | A share's deletion is driven past the mark to its end and resumed at start; its operation ends when the removal does | MUST | RFC 23 §3.2, §4.6; RFC 16 §2.3.2 | T3.6 |
 | R52 | An operation's last step can write in the transaction that ends it, as `identity.nt-hash-delete`'s sets `Installation.NTLMOff`'s `Deleted`; a failed end commits neither the end nor its writes | MUST | RFC 23 §4.1 | T3.4 |
 | R53 | A failed operation carries its owner's error, a succeeded one its result, and its progress is read from the owner's cursor | MUST | RFC 23 §4.6 | T3.4 |
@@ -278,9 +278,12 @@ that subtasks and tests can cite them.
   	End    func(tx entity.ControlPlaneTx) error // set with Done: writes in the transaction that ends the operation
   }
   type Step func(ctx context.Context, op entity.Operation) (StepResult, error)
-  type Progress func(next []byte) apiv1.Progress // read from the cursor; E4's operation read calls it
+  type Progress func(ctx context.Context, op entity.Operation) apiv1.Progress // E4's operation read calls it
   ```
-  A turn commits only when `Next` or the state differs from the record's: an unchanged turn writes
+  `Progress` takes the operation, not its cursor: a share's deletion keeps its progress in the
+  removal's own records, not in `Step` (D8, R40), so its `Progress` reads them, and E4's T4.6
+  calls the same function. A runner-driven kind reads `op.Step`. A turn commits only when `Next`,
+  the state or the phase differs from the record's: an unchanged turn writes
   nothing, so a step that waits (E5's signing-key rotation keeps its switch time in `Next`) costs no
   commit per second. `Done` commits `succeeded`, `Result` and `End`'s writes in one `Write` with its
   audit record; an `End` that fails commits none of them, and the operation stays `running` for the
@@ -288,18 +291,26 @@ that subtasks and tests can cite them.
   that error as `Operation.Error`; any other error is retried with the same `Next` on D10's
   backoff. `New` writes the rows this epic owns; the RFC 18 plan's epics 2, 5 and 7 and E5 provide
   step functions, which the RFC 18 plan's epic 8 and E5 register in `New`. An operation whose kind
-  has no row stays `pending` and is reported refused in node status, naming the kind, so a binary
-  that gains the step later runs it; a `decision:` marker says so. At start the runner pages
-  through E2's `Operations` listing and resumes every operation not ended; a `ponytail:` names its
-  ceiling, one full page-through of the operation records per start, bounded by the 7-day sweep of
-  ended operations, and its upgrade, a listing of E2's running index. RFC 23's plan's §4.3
-  `ponytail:`: no claim. Prior art: TrueNAS' job manager (from memory).
+  has no row stays `pending`, so a binary that gains the step later runs it; a `decision:` marker
+  says so. The runner keeps the kinds it found with no row, and `refusedKinds()` hands them to
+  T3.7, which reports them in node status. Each turn the runner pages through E2's
+  running-operations index (`RunningOperations`) and drives every operation in it, so a restart
+  resumes them and a new one is picked up at the next turn; a `ponytail:` names its ceiling, one
+  page-through of the running index per turn, and its upgrade, a cursor or a wake-up per
+  operation, once that shows in a profile. A state change is audited, and so is a phase change:
+  when the phase the row's `Progress` reads before a step differs from the one it reads after, the
+  turn's commit carries an audit record naming both (RFC 23 §6's "started, each phase, ended").
+  RFC 23's plan's §4.3 `ponytail:`: no claim. Prior art: TrueNAS' job manager (from memory).
 - **D8, one `removeShare`, two callers; the cursor is the owner's record.** RFC 23 §4.6 lets the
   operation record choose no driver and read progress from the owner's cursor. On one node the
   runner is the coordinator RFC 16 §2.3.2 names. Step 3 of a share's removal is one function,
   `removeShare`, called only by the share deletion's runner step while serving and by start step
   6 after a crash; reconcile never binds a share whose removal is marked and never calls it. Each
-  deletion's step calls E2's continuation once per batch and keeps nothing in `Step`. A
+  deletion's step calls E2's continuation once per batch and keeps nothing in `Step`. A share
+  deletion's turn calls `ContinueRemoval` first and runs step 3 only once it answers 3, so the
+  driver acts on the step the record names rather than on its own count; a step asked before it is
+  due (a shard's removal recorded, or its files dropped, before the record reaches that step)
+  answers E2's exported `kvstore.ErrRemovalOrder`, which the runner retries. A
   `decision:` marker at `removeShare` names its two callers. Prior art: none needed.
 - **D9, RFC 23's own section is not this epic's.** `internal/node/api/auth` may not import
   `internal/node/api` (RFC 23's plan's rule 11), so the section cannot live in the API package.
@@ -351,6 +362,19 @@ that subtasks and tests can cite them.
   D12's reason, a test fixture importing `testing`, it moves to `pkg/block/engine`'s `JournalOf`,
   which the node and `enginetest` both call. No marker.
 
+- **D18, the node and `enginetest` build the engine through one `enginewire.Compose`.**
+  `pkg/block/engine/enginewire.Compose(Params)` builds open state over the store and returns it
+  with the engine's `Deps`: each device's journal opener over `journal.Open` and `JournalOf`
+  (D17), the store's views, `openstate.EngineHolds` (D12) and a no-op `Tracer`. It opens and
+  starts nothing. `node.New` and `enginetest` both call it, so the fixture the engine's tests run
+  on is wired as the node ships it. That makes it the one composition code another package
+  imports, a stated departure from RFC 8 §2.1 and RFC 23 §2.1's "nothing imports it". Only
+  `internal/node` and `enginetest` may import it, and `node.go` calls it once and builds no
+  `engine.Deps` literal; an architecture rule over the module pins both, each over a planted
+  violation. Compose shares construction only: T3.3 shares the start and stop order of open
+  state and the engine the same way, so the fixture runs the order the node ships. A `decision:`
+  marker in the package says so. Prior art: none needed.
+
 ## 5. Target tree
 
 ```text
@@ -358,6 +382,8 @@ pkg/openstate/
   engineholds.go                           T3.1  EngineHolds, moved from enginetest (D12)
 pkg/block/engine/
   journalof.go                             T3.1  JournalOf, moved from enginetest (D17)
+pkg/block/engine/enginewire/
+  enginewire.go                            T3.2  Compose, which the node and enginetest call (D18)
 pkg/config/
   config.go                                T3.1  the bootstrap's host-set Node and Devices (D1)
 internal/node/
@@ -446,16 +472,20 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Track:** A. **Depends on:** T3.1.
 - **Covers:** R39, R40, R41, R43, R52, R53.
 - **Deliverables:** `newRunner(cp, clock, steps)` and its loop, D7's `StepResult`, `Step` and
-  `Progress`: at start it pages through E2's `Operations` and drives each one not ended (D7's
-  `ponytail:`); a new operation is picked up at the next turn; a turn commits through
-  `ControlPlane.Write` only when `Next` or the state changed, with an audit record on a state
-  change; `Done` commits `succeeded`, `Result` and `End` in one `Write`; a terminal error
+  `Progress`: each turn it pages through E2's running-operations index and drives each operation
+  in it (D7's `ponytail:`), so a new operation is picked up at the next turn; a turn commits
+  through `ControlPlane.Write` only when `Next`, the state or the phase changed, with an audit
+  record on a state change and on a phase change, the phase read through the row's `Progress`
+  before and after the step (D7); `Done` commits `succeeded`, `Result` and `End` in one `Write`; a terminal error
   (`ErrStepFailed`, or a `*apiv1.Problem`) fails the operation with it as `Error`, any other is
   retried with the same `Next` on D10's backoff; `Stop` returning with each operation at its last
-  durable step; a kind with no row left `pending` and reported refused (D7's `decision:` marker,
-  RFC 23's plan's §4.3 `ponytail:`). The user's and the group's deletion steps, each calling E2's
-  `ContinueDelete` once per batch and ending when it answers done (D8), their rows in `New`, each
-  with its `Progress`. Consumed by T3.3 (start step 7 starts it, with its watchdog `Loop`), T3.6,
+  durable step; a kind with no row left `pending` and kept for `refusedKinds()`, which T3.7 reads
+  (D7's `decision:` marker, RFC 23's plan's §4.3 `ponytail:`). The user's and the group's deletion
+  steps, each calling E2's `ContinueDelete` once per batch and ending when it answers done (D8),
+  their rows in `New`, each with its `Progress`. Only a principal that is not marked, or a target
+  that names no principal of the step's kind, fails a deletion; every other error, `kv.ErrTooLarge`
+  included, is retried on D10's backoff, since a failed deletion is never resumed and a batch's
+  size can change between turns; a `decision:` at the step says so. Consumed by T3.3 (start step 7 starts it, with its watchdog `Loop`), T3.6,
   E4 (its operation read calls each row's `Progress`; E2's record stores none), E5 and the RFC 18
   plan.
 - **Acceptance criteria:**
@@ -472,7 +502,10 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   setting, its commit faulted through `FaultKV`: the operation still `running` and the setting
   absent, then committed at the next turn (R52); a step's terminal error recorded as `Error` and
   the state `failed`, a plain error leaving the state `running` with the same `Step`, a `Result`
-  read back (R53); an operation of a kind with no row still `pending` after a turn (D7). R17,
+  read back (R53); a step whose phase moves while its `Next` stays committing once with an audit
+  record naming both phases, and a turn whose phase stays writing none (R41); an operation of a
+  kind with no row still `pending` after a turn and named by `refusedKinds()` (D7); an unmarked
+  principal failing the deletion, and a `FaultKV` `kv.ErrTooLarge` leaving it `running` (D7). R17,
   start step 7 starting the runner, is T3.3's.
 
 ### T3.2 Health, the API package and the metrics listener
@@ -526,7 +559,9 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   listener and the store, raises `start_failed`, and sets readiness `not_ready`. `Stop`: readiness
   `draining`, then the reverse, each step bounded on `cfg.Clock.After` (D14), a missed one leaving
   its dependents open and named in the error; the health listener closed just before the store,
-  then the KV (D13). A second `Start` refused. RFC 23 §2.1's `decision:` at `Start`. T3.2's engine
+  then the KV (D13). Open state's and the engine's start and stop order shared with `enginetest`
+  the way D18 shares their construction, so the fixture runs the order the node ships. A second
+  `Start` refused. RFC 23 §2.1's `decision:` at `Start`. T3.2's engine
   adapter registered in `Config.Metrics` and the evaluator if this subtask's readiness reads the
   evaluator; otherwise T3.7 registers it (R38).
 - **Acceptance criteria:**
@@ -598,8 +633,11 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Covers:** R16, R27, R40, R42.
 - **Deliverables:** `removeShare`, step 3 for the share's shard (`engine.Unbind`, `JoinShare`,
   open state's `DropShare`, `engine.Drop`, recorded through E2's `RecordShardRemoval`), with D8's
-  `decision:` marker naming its two callers; the share deletion's runner step calling it while
-  serving, then E2's `ContinueShardRemoval` and `ContinueRemoval` once per batch to the end; start
+  `decision:` marker naming its two callers; the share deletion's runner step, which calls E2's
+  `ContinueRemoval` first each turn and acts on the step it answers: at 3 it calls `removeShare`
+  while serving, at 4 E2's `ContinueShardRemoval`, once per batch to the end, never a step the
+  record has not reached (D8); E2's `ErrRemovalOrder`, exported, retried; its `Progress` read from
+  the removal's own records (D7); start
   step 6 calling it for every removal a crash left at step 3; `internal/vfs`'s own join and its
   `ponytail:` deleted in the same pull request (D15). Consumed by E4's share delete route.
 - **Acceptance criteria:**
@@ -611,7 +649,8 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   the open's record gone and the share's rows read back gone (R27, R42); a restart between the
   mark and step 3, the shard's `rm` row recorded before `/health/ready` answers `ready` (R16); a
   restart during step 4's batches, the operation resumed and its progress read from the removal's
-  record (R40).
+  record (R40); a shard's removal recorded before `ContinueRemoval` answers 3 refused with
+  `ErrRemovalOrder`, the operation still `running` (D8).
 
 ### T3.7 Node status and its series
 
@@ -620,7 +659,9 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Track:** A. **Depends on:** T3.5.
 - **Covers:** R30, R31, R32, R33, R38.
 - **Deliverables:** the status built from the reconciled positions, the refused and
-  restart-pending sets and the evaluator's conditions, compared by its canonical bytes and written
+  restart-pending sets, the operation kinds the runner has no step for (T3.4's `refusedKinds()`,
+  each among the refused records naming its kind, the `ponytail:` at it removed) and the
+  evaluator's conditions, compared by its canonical bytes and written
   through `Nodes.PutNodeStatus` at most once a second and only on a change, the last written moved
   only after a commit; RFC 23 §2.4's `ponytail:`; the `node_` series,
   `config_generation_lag_seconds{kind}` from the time a counter was first read above the reconciled
@@ -635,7 +676,8 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Tests:** in `node_test`, watched, the status read back through `Nodes` (R30, R31); a write
   faulted through `FaultKV`, the next turn writing it again (catches the last written moved before
   the commit, R30); a section refused, the position still advancing past it and the refusal listed
-  (R32); the series read from `Config.Metrics`, the condition raised and cleared on the clock
+  (R32); an operation of a kind with no step, its kind read back among the status's refused
+  records (D7); the series read from `Config.Metrics`, the condition raised and cleared on the clock
   (R33).
 
 ### T3.8 The sweep
