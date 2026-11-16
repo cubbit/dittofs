@@ -10,7 +10,7 @@ reports), §3.5 (the domain's actions) and §4.1 (the rule for turning `identity
 [RFC 13](../rfcs/rfc-13-configuration.md) §6, §7 (a new secret version resolved again and reported)
 and Appendix B's `identity.*` rows; [RFC 25](../rfcs/rfc-25-observability.md) §3.9, §5.4 and §7.
 **Track:** the team.
-**Epic 8 estimate: 11 subtasks, 14.75 man-days.**
+**Epic 8 estimate: 11 subtasks, 15 man-days.**
 **Depends on:** **E2**: T2.4's `Settings`, `State.Settings` and `Deps.Secrets` and T2.6's
 `APISignIn` (T8.1), T2.7's `identity.nt-hash-delete` step (T8.10). **E3**: T3.1's span, T3.6's
 admission through identity and T3.10's resolution over the caller cache (T8.2, T8.3, T8.9). **E4**:
@@ -22,7 +22,7 @@ T6.5's `Deps.Directory`, T6.8's `Conditions` and T6.9's directory principals and
 and T6.1's fixture part, rebased onto `feat/storage-v2` with the cell selected there (T8.4). **E7**:
 T7.3's in-memory domain controller, T7.4's `HoldJoinCredential`, T7.5's, T7.12's and T7.14's step
 methods, T7.6's and T7.7's `NewDialer`, T7.9's `State.Machine` and `State.Join` (its D6,
-pending), T7.10's `Deps.DomainController` and `machine_account_unhealthy`, T7.11's pass-through,
+settled (a)), T7.10's `Deps.DomainController` and `machine_account_unhealthy`, T7.11's pass-through,
 T7.12's `machine_password_rotation_failed` and T7.14's and T7.15's `Installation.Join` (T8.6, T8.7,
 T8.8, T8.11). **RFC 23's plan**: its epic 3's `node.New`, start and stop, reconcile's `apply`
 and its T3.1's `internal/node/nodetest` with `WithNew` and `Harness.Node()`, the current node
@@ -179,7 +179,6 @@ tests can cite them. Sources are RFC 18 unless named.
 | R14 | `directory_unreachable` alerts as a ticket and pages at 5 minutes once unhealthy; `machine_account_unhealthy` and `machine_password_rotation_failed` page at 5 minutes | invariant | RFC 25 §3.9, §7 | RFC 25 §3.9's rows, which E6's T6.8 and E7 name; no Go table holds them yet, so no test here (D8) |
 | R15 | `identity.authenticate` and `identity.resolve` are children of the caller's span, and carry the proof kind, the outcome and the principal's ID only | invariant | §9.2 "Spans"; RFC 25 §5.4 | T8.2, which hands the node's tracer; held by E3's T3.1 and E4's T4.5 span tests |
 | R16 | No log line, logon line or stored operation record carries a password, an NT hash, a key, a session key, an online join's administrator credential or a user's e-mail address | MUST NOT | §2.2, §3.1, §3.5; RFC 25 §5.4 | T8.11; the online join's administrator credential held by RFC 23's plan's epic 7's T7.6 (its R22) |
-| R31 | A join, online or offline, keeps no idempotency record | MUST NOT | RFC 23 §3.5 | held by RFC 23's plan's epic 4's T4.11 (its R22) |
 
 **Rows several epics meet in**
 
@@ -204,6 +203,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | --- | --- | --- | --- | --- |
 | R29 | A user created through the API and given a password with `set-password` signs in by NTLM through the filesystem service and is admitted to a share granting it | test row | RFC 23 §3.5; §3.5; the MVP issue #4053 | T8.9 |
 | R30 | A ticket the Samba domain controller issued signs in to the composed node over verified TLS to its directory, and the caller holds the groups its PAC and the directory give | test row | §3.3, §3.4; §10 "Suites" | T8.4 |
+| R31 | A join, online or offline, keeps no idempotency record | MUST NOT | RFC 23 §3.5 | held by RFC 23's plan's epic 4's T4.11 (its R22) |
 
 Which test or enforcer holds each row is in its subtask's **Tests**, or in the row when another
 epic's test holds it.
@@ -319,7 +319,7 @@ test/integration/ad-dc/
 
 - **Track:** the team. **Depends on:** S1. E2's T2.4 and T2.6; RFC 23's plan's epic 3 (`node.New`,
   start and stop, reconcile's `apply`, T3.1's `nodetest` with `WithNew` and `Harness.Node()`);
-  #4059's S1 and S2.
+  #4059's S1 and S2 and its epic 5 (the settings table and Appendix B check).
 - **Covers:** R1, R2, R3, R4, R11.
 - **Deliverables:**
   - in `node.New`, `identity.New(identity.Deps{Store, Secrets, Clock, Metrics, Logger})` at row
@@ -349,9 +349,11 @@ test/integration/ad-dc/
 
 **Subtask T8.2 estimate: 3.25 man-days.**
 
-- **Track:** the team. **Depends on:** T8.1. E3's T3.1 and T3.10; E4's T4.2 and T4.5; E5's T5.2,
-  T5.5 and T5.10; E6's T6.3, T6.5, T6.8 and T6.9; #4059's epic 4 (version reads) and epic 5
-  (`apply` on `settings.Diff`, the secret-version report).
+- **Track:** the team. **Depends on:** T8.1. E3's T3.1, T3.6 and T3.10; E4's T4.2 and T4.5; E5's
+  T5.2, T5.5 and T5.10; E6's T6.3, T6.5, T6.8 and T6.9; #4059's epic 4 (version reads) and epic 5
+  (`apply` on `settings.Diff`, the secret-version report); the RFC 13 pull request adding the
+  `identity.keytab` row to Appendix B, without which the table check fails on the `identity`
+  section (§1.2, §9).
 - **Covers:** R2, R3, R5, R6, R8, R9, R10, R11, R12, R13, R15.
 - **Deliverables:** `apply` handing identity a new `State` on each move of the principals or
   settings generation; D2's retry and its `decision:`, the refused record in node status;
@@ -500,11 +502,12 @@ test/integration/ad-dc/
   `netlogon.NewDialer((&net.Dialer{}).DialContext)` (E7's T7.6, T7.7), or the in-memory one through
   `seams` and `NewWithDialers` (D4); `State.Machine` from the provider's versions of
   `Installation.MachinePassword`, with their `KeyVersion` and `HandedOver`, and `State.Join` from
-  `Installation.Join` (pending E7's D6), both rebuilt on a settings move; the machine password's
+  `Installation.Join` (E7's D6, settled (a)), both rebuilt on a settings move; the machine password's
   versions reported; `JoinStep` and `JoinProgress`, `RotateStep` and `RotateProgress`,
   `ResolvePrincipalStep` and `ResolvePrincipalProgress`, `TestDirectoryStep` and
-  `TestDirectoryProgress` in the runner's table under `join-domain`,
-  `rotate-machine-password`, `resolve-principal` and `test-directory` as they are, typed by
+  `TestDirectoryProgress` in the runner's table under `installation.join-domain`,
+  `installation.rotate-machine-password`, `installation.resolve-principal` and
+  `installation.test-directory` (`pkg/node/apiv1`'s `OpKind` values) as they are, typed by
   `internal/node/step` (E7's D4, D10 here), with no adapter: the runner fails the operation on a
   step's `*apiv1.Problem` and retries any other error; `api.Deps.Joins` filled from identity (D10).
   Consumed by T8.7, T8.11.
@@ -536,21 +539,28 @@ test/integration/ad-dc/
 
 ### T8.7 The pass-through's share of the 20-second bound
 
-**Subtask T8.7 estimate: 0.75 man-days.**
+**Subtask T8.7 estimate: 1 man-days.**
 
 - **Track:** the team. **Depends on:** T8.6. E6's T6.11; E7's pass-through.
 - **Covers:** R21.
-- **Deliverables:** a test in `internal/identity/integration_test.go`.
+- **Deliverables:** two tests in `internal/identity/integration_test.go`.
 - **Acceptance criteria:**
   - The bound holds a pass-through sign-in whose own directory work is under 20 seconds.
+  - The bound holds a sign-in whose directory queries alone pass 20 seconds.
 - **Tests:** in `internal/identity`, over the memory KV store, the in-memory directory and domain
-  controller and the injected clock: a cold pass-through sign-in of a user in 3 groups, every
-  directory query delayed 4 seconds through the fault wrapper: it succeeds with the domain
-  controller answering at once (the control: the directory's share alone stays under the bound),
-  and fails `ErrUnavailable` at 20 seconds on the clock, nothing minted, with the domain
-  controller's answer delayed 15 seconds (catches the pass-through's wait and call counted outside
-  the bound, R21). Doubles: the in-memory directory and domain controller (kind 2), the fault
-  wrapper (kind 3), the injected clock (kind 1).
+  controller and the injected clock:
+  - a cold pass-through sign-in of a user in 3 groups, every directory query delayed 4 seconds
+    through the fault wrapper: it succeeds with the domain controller answering at once (the
+    control: the directory's share alone stays under the bound), and fails `ErrUnavailable` at 20
+    seconds on the clock, nothing minted, with the domain controller's answer delayed 15 seconds
+    (catches the pass-through's wait and call counted outside the bound, R21);
+  - RFC 18 §10's "directory deadline" sign-in clause: a cold pass-through sign-in of a user in 300
+    groups, each directory query delayed 4 seconds, the domain controller answering at once: it
+    fails `ErrUnavailable` at 20 seconds on the clock, and nothing is minted (catches the deadline
+    applied only to the secure-channel wait and the call, which lets the sign-in run for 20
+    minutes, R21). E6's T6.11 holds a resolution's bound, not a sign-in's.
+  - Doubles: the in-memory directory and domain controller (kind 2), the fault wrapper (kind 3),
+    the injected clock (kind 1).
 
 ### T8.8 The NetBIOS name while joined
 
@@ -566,7 +576,7 @@ test/integration/ad-dc/
   - The refusal names the joined state.
 - **Tests:** through `Check` over the memory KV store's `Write`: "NetBIOS name while joined", a
   joined installation, a change refused and the name read back unchanged; not joined, accepted
-  (R26); a join committing between the change's read and its commit, held by a `sim.Fault` delay:
+  (R26); a join committing between the change's read and its commit, held by a `FaultKV` delay:
   the change's commit fails on its tracked read (catches a read that is not tracked). Doubles:
   `kvtest`'s `FaultKV` (kind 3), the injected clock (kind 1).
 
@@ -633,10 +643,10 @@ test/integration/ad-dc/
 
 ```mermaid
 flowchart TD
-  X1(["S1, E2 T2.4 and T2.6, RFC 23 plan epic 3, #4059 S1 and S2"]):::sync --> T8_1["T8.1 Identity in node.New"]
+  X1(["S1, E2 T2.4 and T2.6, RFC 23 plan epic 3, #4059 S1, S2 and epic 5"]):::sync --> T8_1["T8.1 Identity in node.New"]
   T8_1 --> C0(["after T8.1: E3's T3.6 and RFC 23 epic 5 unblocked"]):::sync
   T8_1 --> T8_2["T8.2 Kerberos and the directory in the node"]
-  X2(["E3 T3.1 and T3.10, E4 T4.2 and T4.5, E5 T5.2, T5.5 and T5.10, E6 T6.3, T6.5, T6.8 and T6.9, #4059 epics 4 and 5"]):::sync --> T8_2
+  X2(["E3 T3.1, T3.6 and T3.10, E4 T4.2 and T4.5, E5 T5.2, T5.5 and T5.10, E6 T6.3, T6.5, T6.8 and T6.9, #4059 epics 4 and 5, RFC 13 PR adding the identity.keytab row"]):::sync --> T8_2
   T8_2 --> T8_3["T8.3 Applied at once"]
   X3(["E3 T3.6, RFC 23 plan epic 3 T3.5 (D16), epic 4 write path"]):::sync --> T8_3
   T8_2 --> T8_4["T8.4 alice's Samba ticket"]
@@ -664,10 +674,10 @@ passes through; after T8.11, E9 can start once S3 is reached.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T8.1 | 1.5 | E2's T2.4 and T2.6, RFC 23's plan's epic 3 | identity in the node, which E3's T3.6 and RFC 23's plan's epic 5 wait for |
-| 2 | T8.2, T8.3, T8.4 | 5 | PR 1, E3's T3.6, E4, E5, E6 | the node delivering every principal, Kerberos and directory change, checked against Samba |
+| 1 | T8.1 | 1.5 | E2's T2.4 and T2.6, RFC 23's plan's epic 3, #4059's epic 5 | identity in the node, which E3's T3.6 and RFC 23's plan's epic 5 wait for |
+| 2 | T8.2, T8.3, T8.4 | 5 | PR 1, E3's T3.6, E4, E5, E6, the RFC 13 PR adding the `identity.keytab` row | the node delivering every principal, Kerberos and directory change, checked against Samba |
 | 3 | T8.5 | 2 | E5's T5.8b, E6's T6.11 | the Kerberos clauses in identity alone; may be open beside PR 2 |
-| 4 | T8.6, T8.7, T8.8 | 3.75 | PR 2, E7 | the machine account in the node and what pass-through and the join close |
+| 4 | T8.6, T8.7, T8.8 | 4 | PR 2, E7 | the machine account in the node and what pass-through and the join close |
 | 5 | T8.9, T8.10, T8.11 | 2.5 | PR 4, RFC 23's plan's epics 4 and 5 | the rows through the API, and the capture over everything above |
 
 A suggestion only: one pull request per subtask works as well.
@@ -702,7 +712,7 @@ T6.6 test only the CLI's arguments and refusal, and the success paths run in its
 
 **Where the RFC 18 plan and this document differ:**
 
-- The figure here is 14.75 man-days over 11 subtasks, against the RFC 18 plan's 10.5 over 5. It
+- The figure here is 15 man-days over 11 subtasks, against the RFC 18 plan's 10.5 over 5. It
   holds work the RFC 18 plan's list does not name: the writer's at-once apply held at identity
   (T8.3, 0.5; RFC 23's plan's epic 3 builds it, D3), the
   enabled state at sign-in (in T8.5, 0.75), the NetBIOS check (T8.8, 0.75), the machine account's
@@ -713,8 +723,8 @@ T6.6 test only the CLI's arguments and refusal, and the success paths run in its
   It holds less of the rows: the review found every clause of "admin needs proof", "deny-only
   lookup error" and "NTLM without a domain controller", and the resolution halves of "disabled
   directory account" and "directory deadline", already tested by E3, E4, E5 and E6, so §3 names
-  those tests instead. T8.6 is the least certain: it waits on E7's D6, still pending, and on E7's
-  transport spike (its T7.1).
+  those tests instead. T8.6 is the least certain: it waits on E7's transport spike (its
+  T7.1).
 - The RFC 18 plan has E8 wait on E3, E5, E6 and E7; T8.1 waits only on E2 and RFC 23's plan's
   epic 3, and blocks E3's T3.6 and RFC 23's plan's epic 5's T5.5 (D1).
 - "NTLM off"'s password-set half is RFC 23's plan's epic 5's test (D9); E2's document, which gives
