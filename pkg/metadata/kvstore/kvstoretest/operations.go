@@ -33,8 +33,10 @@ func testOneOperationPerTargetAndKind(t *testing.T, kvo Opener) {
 	if got, ok, err := cp.RunningOperation(ctx, "share.delete", shareRef("a")); err != nil || !ok || got.ID != first.ID {
 		t.Fatalf("running share.delete on a: got %v, %v, %v; want %v", got.ID, ok, err, first.ID)
 	}
-	if _, err := cp.PutOperation(ctx, second, 0); !errors.Is(err, entity.ErrOperationRunning) {
-		t.Errorf("second share.delete on a while the first runs: %v, want %v", err, entity.ErrOperationRunning)
+	_, err = cp.PutOperation(ctx, second, 0)
+	var running *entity.OperationRunningError
+	if !errors.Is(err, entity.ErrOperationRunning) || !errors.As(err, &running) || running.ID != first.ID {
+		t.Errorf("second share.delete on a while the first runs: %v, want %v naming %v", err, entity.ErrOperationRunning, first.ID)
 	}
 	for _, beside := range []entity.Operation{operation("share.rehome", shareRef("a")), operation("share.delete", shareRef("b"))} {
 		if _, err := cp.PutOperation(ctx, beside, 0); err != nil {
@@ -147,5 +149,68 @@ func testOperationStateWithAudit(t *testing.T, kvo Opener) {
 	target := entity.ResourceRef{Kind: entity.ResourceOperation, ID: op.ID[:]}
 	if got := audits(t, cp, entity.AuditFilter{Target: &target}); len(got) != 1 {
 		t.Errorf("audit records of the operation: got %d, want 1", len(got))
+	}
+}
+
+// A write's read of the running index is tracked: a start of that kind on
+// that target committed after the read makes the write retry, and its
+// committing attempt finds the operation running.
+func testRunningOperationTracked(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
+		t.Run(b.name, func(t *testing.T) {
+			s, h := heldStore(t, b)
+			cp := s.ControlPlane()
+			op := operation("share.delete", shareRef("a"))
+			var found []bool
+			outer, inner := race(h,
+				func() error {
+					return cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+						_, ok, err := tx.RunningOperation(op.Kind, op.Target)
+						if err != nil {
+							return err
+						}
+						found = append(found, ok)
+						return errOf(tx.PutSetting(entity.Setting{Scope: instScope, Key: "k"}, 0))
+					})
+				},
+				func() error { return errOf(cp.PutOperation(ctx, op, 0)) })
+			must(t, inner)
+			must(t, outer)
+			if len(found) == 0 || !found[len(found)-1] {
+				t.Errorf("running share.delete on a, read by each attempt: %v; want the committing attempt to find it", found)
+			}
+		})
+	}
+}
+
+// The running listing gives every operation not yet ended, once each, and
+// resumes after any it gave.
+func testRunningOperations(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	running := map[entity.OperationID]bool{}
+	for _, target := range []string{"a", "b", "c"} {
+		op := operation("share.delete", shareRef(target))
+		gen, err := cp.PutOperation(ctx, op, 0)
+		must(t, err)
+		if target == "b" {
+			op.State = entity.OpSucceeded
+			must(t, errOf(cp.PutOperation(ctx, op, gen)))
+			continue
+		}
+		running[op.ID] = true
+	}
+	var listed []entity.Operation
+	for op, err := range cp.RunningOperations(ctx, entity.Operation{}) {
+		if err != nil {
+			t.Fatalf("running operations: %v", err)
+		}
+		listed = append(listed, op)
+	}
+	if len(listed) != len(running) || !running[listed[0].ID] || !running[listed[1].ID] || listed[0].ID == listed[1].ID {
+		t.Fatalf("running operations: got %+v, want each of %v once", listed, running)
+	}
+	if rest := all(t, cp.RunningOperations(ctx, listed[0])); len(rest) != 1 || rest[0].ID != listed[1].ID {
+		t.Errorf("running operations after %v: got %+v, want %v alone", listed[0].ID, rest, listed[1].ID)
 	}
 }

@@ -150,6 +150,8 @@ func Run(t *testing.T, open Opener) {
 		{"OneOperationPerTargetAndKind", testOneOperationPerTargetAndKind},
 		{"OperationReads", testOperationReads},
 		{"OperationStateWithAudit", testOperationStateWithAudit},
+		{"RunningOperationTracked", testRunningOperationTracked},
+		{"RunningOperations", testRunningOperations},
 		{"NodeEpochAcrossStarts", testNodeEpochAcrossStarts},
 		{"RegisterNodeRefuses", testRegisterNodeRefuses},
 		{"ZeroNodeRefused", testZeroNodeRefused},

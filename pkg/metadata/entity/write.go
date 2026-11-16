@@ -18,6 +18,14 @@ var ErrIdempotencyMismatch = errors.New("entity: idempotency key used for anothe
 // its kind runs there. Nothing was written.
 var ErrOperationRunning = errors.New("entity: an operation of this kind already runs on this target")
 
+// OperationRunningError is ErrOperationRunning naming the operation that
+// runs: ID is the one a caller polls instead of starting its own.
+type OperationRunningError struct{ ID OperationID }
+
+func (e *OperationRunningError) Error() string { return ErrOperationRunning.Error() }
+
+func (e *OperationRunningError) Is(target error) bool { return target == ErrOperationRunning }
+
 // IdempotentReplay is a request whose idempotency key its account already
 // used for the same request: Answer is the answer recorded then, and nothing
 // was written.
@@ -86,6 +94,9 @@ type ControlPlaneTx interface {
 	// whose generation expect names. Its kind and target never change, and
 	// an ended one does not change at all.
 	PutOperation(op Operation, expect uint64) (uint64, error)
+	// RunningOperation is the operation of kind running on target; false
+	// when none runs.
+	RunningOperation(kind string, target ResourceRef) (Operation, bool, error)
 	AddMember(m Membership) error
 	RemoveMember(m Membership) error
 

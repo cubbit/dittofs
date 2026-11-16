@@ -25,7 +25,8 @@ func (c ControlPlane) PutOperation(ctx context.Context, op entity.Operation, exp
 
 // PutOperation writes op at the transaction's store time. A running
 // operation holds its kind and target's running index, so a second one there
-// is refused entity.ErrOperationRunning, the index read tracked so that of
+// is refused with an entity.OperationRunningError naming the one that runs,
+// the index read tracked so that of
 // two racing starts the second conflicts and then finds it held. The write
 // that ends an operation releases the index and writes its expiry row, 7
 // days on.
@@ -69,10 +70,14 @@ func (c controlTx) PutOperation(op entity.Operation, expect uint64) (uint64, err
 			return 0, err
 		}
 	case !existed:
-		if _, held, err := get(c.tx, running); err != nil {
+		if b, held, err := get(c.tx, running); err != nil {
 			return 0, err
 		} else if held {
-			return 0, entity.ErrOperationRunning
+			id, err := decodeID(b)
+			if err != nil {
+				return 0, err
+			}
+			return 0, &entity.OperationRunningError{ID: entity.OperationID(id)}
 		}
 		if err := c.tx.Set(running, encodeID(op.ID)); err != nil {
 			return 0, err
@@ -118,20 +123,53 @@ func (c ControlPlane) Operations(ctx context.Context, after entity.OperationID) 
 // none runs.
 func (c ControlPlane) RunningOperation(ctx context.Context, kind string, target entity.ResourceRef) (op entity.Operation, found bool, err error) {
 	err = c.s.kv.View(ctx, func(r kv.Reader) error {
-		b, ok, err := get(r, runningKey(kind, target))
-		if err != nil || !ok {
-			return err
-		}
-		id, err := decodeID(b)
-		if err != nil {
-			return err
-		}
-		if op, found, err = operationIn(r, id); err == nil && !found {
-			return errors.New("kvstore: running-operation index names no operation")
-		}
+		op, found, err = runningIn(r, runningKey(kind, target))
 		return err
 	})
 	return op, found, err
+}
+
+// RunningOperation reads the running index tracked, so a start of kind on
+// target committed after the read makes the transaction retry.
+func (c controlTx) RunningOperation(kind string, target entity.ResourceRef) (entity.Operation, bool, error) {
+	return runningIn(c.tx, runningKey(kind, target))
+}
+
+// RunningOperations lists every operation not yet ended, through the running
+// index, in the order of its kind and target, resuming after the operation
+// after; the zero operation starts from the first.
+func (c ControlPlane) RunningOperations(ctx context.Context, after entity.Operation) iter.Seq2[entity.Operation, error] {
+	var cursor []byte
+	if after.Kind != "" {
+		cursor = runningKey(after.Kind, after.Target)
+	}
+	return pages(ctx, c.s.kv, []byte{keys.KindOPR}, cursor, func(r kv.Reader, row kv.KeyValue) (entity.Operation, error) {
+		return indexedIn(r, row.Value)
+	})
+}
+
+// runningIn reads the operation the running index row at key names; false
+// when there is no row.
+func runningIn(r kv.Reader, key []byte) (entity.Operation, bool, error) {
+	b, ok, err := get(r, key)
+	if err != nil || !ok {
+		return entity.Operation{}, false, err
+	}
+	op, err := indexedIn(r, b)
+	return op, err == nil, err
+}
+
+// indexedIn reads the operation a running index row's value names.
+func indexedIn(r kv.Reader, b []byte) (entity.Operation, error) {
+	id, err := decodeID(b)
+	if err != nil {
+		return entity.Operation{}, err
+	}
+	op, found, err := operationIn(r, entity.OperationID(id))
+	if err == nil && !found {
+		err = errors.New("kvstore: running-operation index names no operation")
+	}
+	return op, err
 }
 
 func operationKey(id entity.OperationID) []byte { return keys.ID([]byte{keys.KindOP}, id[:]) }
