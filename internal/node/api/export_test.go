@@ -6,15 +6,21 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"iter"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
+
+// SetWriteTimeout sets the API listener's write timeout; call it before
+// Start.
+func (s *Server) SetWriteTimeout(d time.Duration) { s.api.WriteTimeout = d }
 
 // NewWithTestRows is New serving testRows beside the production table, so
 // the adapters run, through the production mux and authentication, on rows
@@ -81,6 +87,9 @@ var testRows = []route{
 		return none{}, nil
 	})},
 	{method: http.MethodPost, pattern: "/api/v1/password", kind: entity.ResourceUser, right: auth.Self, mustChange: true, serve: call(verb("password"))},
+	{method: http.MethodGet, pattern: "/api/v1/knobs/{id}", right: auth.View, serve: watch(readKnob, func(was, now knobRead) bool { return was.Generation != now.Generation })},
+	{method: http.MethodGet, pattern: "/api/v1/vaults/{id}", right: auth.View, serve: watch(readVault, func(vaultRead, vaultRead) bool { return false })},
+	{method: http.MethodGet, pattern: "/api/v1/tags", right: auth.View, serve: list(tags)},
 	{method: http.MethodGet, pattern: "/api/v1/fail", right: auth.View, serve: read(func(context.Context, request[none]) (none, error) {
 		return none{}, errors.New(UnnamedError)
 	})},
@@ -211,4 +220,76 @@ func (h *Hold) Applied(context.Context) error {
 	h.Reached <- struct{}{}
 	<-h.Release
 	return h.Err
+}
+
+// knobRead is a knob as GET reads it: its tag and its spec, generation 0
+// when there is none.
+type knobRead struct {
+	Generation uint64   `json:"generation"`
+	Spec       knobSpec `json:"spec"`
+}
+
+func readKnob(ctx context.Context, st reads, rq request[none]) (knobRead, error) {
+	s, err := settingIn(ctx, st, rq.ID, "knob")
+	if err != nil || s.Generation == 0 {
+		return knobRead{}, err
+	}
+	k := knobRead{Generation: s.Generation}
+	return k, json.Unmarshal(s.Value, &k.Spec)
+}
+
+// vaultRead is a vault as GET reads it: the reference its password was
+// sealed under, and its version.
+type vaultRead struct {
+	Generation uint64    `json:"generation"`
+	Spec       vaultSpec `json:"spec"`
+}
+
+func readVault(ctx context.Context, st reads, rq request[none]) (vaultRead, error) {
+	s, err := settingIn(ctx, st, rq.ID, "vault")
+	return vaultRead{Generation: s.Generation, Spec: vaultSpec{Password: string(s.Value)}}, err
+}
+
+// settingIn is the setting key at the node scope id names, the zero one
+// when there is none.
+func settingIn(ctx context.Context, st reads, id [16]byte, key string) (entity.Setting, error) {
+	for s, err := range st.Settings(ctx, nodeScope(id)) {
+		if err != nil || s.Key == key {
+			return s, err
+		}
+	}
+	return entity.Setting{}, nil
+}
+
+// tag is a netgroup as the test listing GET /api/v1/tags answers it, in
+// name order, filtered by name.
+type tag struct {
+	Name    string   `json:"name"`
+	Members []string `json:"members"`
+}
+
+var tags = listing[entity.Netgroup, tag]{
+	filters: []string{"name"},
+	records: func(ctx context.Context, st reads, after []byte, f map[string]string) iter.Seq2[entity.Netgroup, error] {
+		all := st.Netgroups(ctx, string(after))
+		name, ok := f["name"]
+		if !ok {
+			return all
+		}
+		// The store has no lookup of one netgroup, so the test listing
+		// finds a name by walking to it; a production listing's name
+		// filter reads its name index.
+		return func(yield func(entity.Netgroup, error) bool) {
+			for g, err := range all {
+				if err != nil || g.Name >= name {
+					if err != nil || g.Name == name {
+						yield(g, err)
+					}
+					return
+				}
+			}
+		}
+	},
+	key:  func(g entity.Netgroup) []byte { return []byte(g.Name) },
+	item: func(g entity.Netgroup) tag { return tag{g.Name, g.Members} },
 }
