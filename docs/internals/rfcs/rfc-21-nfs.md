@@ -353,7 +353,9 @@ such limit derives from one fixed value: **1 MiB** of data, plus the RPC and
 compound overhead for the limits that include headers. That covers NFSv4's
 `maxread` and `maxwrite`, NFSv3 `FSINFO`'s `rtmax`, `wtmax`, `rtpref` and
 `wtpref`, and a session's largest request and reply (`ca_maxrequestsize`,
-`ca_maxresponsesize`). The preferred directory-read
+`ca_maxresponsesize`), the reply's being the transfer class's capacity, 1 MiB
+and its 4 KiB of header room ([RFC 24 §3.1](rfc-24-resources.md#3.1%20Buffer%20classes)),
+the class a 1 MiB `READ`'s reply is drawn from. The preferred directory-read
 size (`dtpref`) is 64 KiB; the largest file (`maxfilesize`) is 2^63 − 1.
 
 The size is fixed, not a setting ([RFC 13](rfc-13-configuration.md)). A client

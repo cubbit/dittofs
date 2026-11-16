@@ -1362,7 +1362,7 @@ How each stage refuses:
 | --- | --- |
 | frame | length past the cap: connection closed. No room in the receive pool: not refused — the record is not read until room frees |
 | decode header, decode args | the protocol's garbage-args or invalid-parameter answer, from the table's row for `ErrDecode` (§4.7). A header that did not decode far enough to address a reply: connection closed |
-| unwrap | SMB: `STATUS_ACCESS_DENIED` on the request's message ID, or, for a malformed inner header of an encrypted message, `STATUS_INVALID_PARAMETER` from the row for `ErrDecode`, each wrapped as §5.5 says, connection kept; a message that fails decryption, or an inner header too short to be one, misaligned, or naming another session than the transform header, closes it (`Conn.Close`, MS-SMB2 3.3.5.2.1.1, 3.3.5.2.6) ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). `RPCSEC_GSS`: a failed verifier `RPCSEC_GSS_CREDPROBLEM`; a sequence number below the window, or already seen, dropped unanswered and counted under `unwrap` (§10.1); one above it advances the window only once its verifier checks, so a call with a forged verifier leaves the window as it was ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
+| unwrap | SMB: `STATUS_ACCESS_DENIED` on the request's message ID, or, for a malformed inner header of an encrypted message, `STATUS_INVALID_PARAMETER` from the row for `ErrDecode`, each wrapped as §5.5 says, connection kept; a message that fails decryption, or an inner header too short to be one, misaligned, or, for an unrelated member, naming another session than the transform header, closes it (`Conn.Close`, MS-SMB2 3.3.5.2.1.1, 3.3.5.2.6) ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). `RPCSEC_GSS`: a failed verifier `RPCSEC_GSS_CREDPROBLEM`; a sequence number below the window, or already seen, dropped unanswered and counted under `unwrap` (§10.1); one above it advances the window only once its verifier checks, so a call with a forged verifier leaves the window as it was ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
 | admit | the default cap never refuses, since the connection is not read until a request completes; a protocol's `Flow` may refuse, and a `Stages.Errors` row maps that refusal |
 | replay check | the cached reply, or the protocol's sequence error; past the deadline, the reply reservation's `ErrDelay` with `DelayResources` (§4.7's `ReplayCache`) |
 | resolve IDs | a table ID not in its table: the protocol's bad-ID answer. A client-held name is never refused here |
@@ -1948,7 +1948,8 @@ type Security interface {
 	// kept. A nil Header with its error says close: nothing is answered, and
 	// the pipeline closes the connection through Conn.Close with that error (a
 	// message that fails decryption, or an inner header too short to be one,
-	// misaligned, or naming another session than the transform header).
+	// misaligned, or, for an unrelated member, naming another session than the
+	// transform header).
 	Unwrap(h Header, rec *Buf, prev Header) (Header, error)
 	// Wrap signs or encrypts in place, a chain once per record (§4.7). The
 	// refusal of a header that failed Decode is not passed to it, alone or
@@ -2940,7 +2941,13 @@ encrypted SMB message, the inner one. A connection with no transform has no
     response to a signed request: a client whose session requires signing
     discards a response that fails its check, an interim aside (MS-SMB2
     3.2.5.1.3), so an unsigned refusal would leave it waiting out its timeout,
-    which [RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in) forbids.
+    which [RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in) forbids. SMB's
+    `Unwrap` signs it only for a message ID inside the connection's window and
+    unused, which the refusal consumes, checking the window first as MS-SMB2
+    3.3.5.2.3 does before 3.3.5.2.4; a message ID outside the window, or one
+    already used, closes the connection with nothing signed. Two messages
+    signed under one message ID would reuse AES-GMAC's nonce (MS-SMB2 3.1.4.1).
+    A chain member refused at unwrap is held to the same rule.
   - A request neither signed nor encrypted, on a session that requires
     signing, is answered `STATUS_ACCESS_DENIED` with a zero signature: MS-SMB2
     3.3.5.2.4 fails it, and 3.3.4.1.1 zeroes the signature of the response to
@@ -3268,6 +3275,8 @@ type Buf struct {
 	// unexported: its class, its reference count and its Reservation
 }
 
+var ErrTooLarge error // RFC 24 §2.5: what a WaitBudget's Reserve, and so Get, wraps when it refuses a charge past the ceiling at once
+
 func NewBufPool(b *WaitBudget) *BufPool                         // RFC 24 §2.5: every buffer it hands out is reserved from b, the receive or reply budget
 func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) // one reservation for key of n's class's capacity plus RFC 24 §3.1's per-request overhead (8 KiB), released with the buffer; then a buffer: refs = 1
 func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)    // RFC 24 §2.5: Get's charge taken only when it fits with no waiter ahead; otherwise false at once
@@ -3275,6 +3284,7 @@ func (p *BufPool) Ceiling() int64                               // its budget's 
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
 func (b *Buf) Recharge(to *Budget) error                     // RFC 24 §4.3: the whole charge moved to a reservation from to; refused, nothing changes
+func (b *Buf) Charge() int64                                 // RFC 24 §4.3: the whole charge, class capacity and per-request overhead, which the hold floor counts
 ```
 
 - **Each `Server` builds its own.** `core` builds a `BufPool` over each budget
@@ -3693,7 +3703,7 @@ measures only what happens before and after the service call.
 | How many connections, per protocol and state? | `adapter_connections{protocol, state}` | gauge |
 | How often are connections refused or closed, and why? | `adapter_connection_closes_total{protocol, reason}` | counter |
 | How much is in flight per protocol? | `adapter_requests_in_flight{protocol}` | gauge |
-| How often is a request refused before the service? | `adapter_refusals_total{protocol, stage}` | counter |
+| How often is a request refused before the service? | `adapter_refusals_total{protocol, stage}`, `stage` where it was refused, `reply_too_big` for §4.3's compound | counter |
 | How often are replays answered from the cache? | `adapter_replay_hits_total{protocol}` | counter |
 | How often does a chain's reply go out in more than one record, and why (§4.7)? | `adapter_chain_splits_total{protocol, reason}`, `reason` = `unwrap`, `decode`, `flow`, `reply_pool`, `quarter` | counter |
 | How long are requests on the wire around the service call? | `adapter_wire_seconds{protocol, stage}` | histogram |

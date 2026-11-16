@@ -476,7 +476,10 @@ point: connection state at a session, the hold pool, the share cap and open
 state. A wait **MUST NOT** be entered while holding a reservation later in this
 order, nor flow control's or the reply pool's while the same request holds a
 reply reservation: a chain whose earlier members hold theirs sends their
-replies first
+replies first. One exemption: a request waits at flow control while it holds
+its own record's receive charge, the reader once it has framed the record and
+a chain's later member, since an admitted request never waits on the receive
+pool, so no cycle runs through that wait
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)). Each wait
 ends:
 

@@ -11,7 +11,7 @@ expired-credential check, §5.3, §5.5's note on the reader and §6.8 (who holds
 RFC 17 §4.3 (errors and their kinds); [RFC 25](../rfcs/rfc-25-observability.md) §8.2 (the
 registry's calls); [RFC 22](../rfcs/rfc-22-smb.md) §6.3 (the re-run backoff).
 **Track:** A.
-**Epic 5 estimate: 17 subtasks, 31 man-days.**
+**Epic 5 estimate: 17 subtasks, 29 man-days.**
 **Depends on:** **S2, `testproto` and the import test in CI**: E1's frozen surface of `core`,
 E2's `testproto` with its stateful half, `adaptertest.CheckLeaks`, the `adapter-conformance`
 suite and its end-to-end specification, the `unit/adapter-allocs` cell. **E3**: the bodies of
@@ -52,7 +52,8 @@ The bodies of `Park` and `Conn.Send`, and the checks `NewErrorTable` and `NewOpT
 lack (#4194 gave them and `Map` their bodies); `pipeline.go`,
 `compound.go`, `middleware.go` and `metrics.go` in `internal/adapter/core`, and the hold table
 in `hold.go`; `Stages.Errors`, `Stages.Protocol`, `OpTable.Protocol`, `Op.MaxMembers`,
-`ErrDecode`, `ErrCancelled` and `ErrReplyTooBig`, as RFC 20 states them since this pull
+`ErrReplyTooBig` (`ErrDecode` and `ErrCancelled` having landed with #4229), as RFC 20 states
+them since this pull
 request; the three registry calls in `pkg/metrics`; `Buf.Recharge`, `Buf.Charge`,
 `BufPool.TryGet`, `BufPool.Ceiling` and `ErrTooLarge` in `pkg/resources`; `WithHold` and its
 reader in `pkg/vfs`, with D16's
@@ -75,7 +76,8 @@ Eleven changes to `testproto`, each made by the subtask whose tests need it:
 7. `Park`'s reply carrying its name, its encoder refusing a name that does not fit the buffer
    it is handed with an error a new row maps (T5.11, D26).
 8. A row for `ErrDecode`, with a status of its own, in every table (T5.7, D7); the row that
-   names `context.Canceled` naming `ErrCancelled` instead (T5.2a, D17); a row for
+   names `context.Canceled` naming `ErrCancelled` instead (T5.2a, D17), both landed with #4229;
+   a row for
    `ErrReplyTooBig`, with a status of its own, naming neither `Ops` nor `Versions` (T5.4,
    D11); a typed row for
    `&vfs.Delay{Cause: vfs.DelayResources}`, its status `StatusDelay` and no `Hold`, in both
@@ -324,7 +326,7 @@ cited by number and title, and how it applies here or why it does not.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R84 | Every metric, span and log key of the request path is recorded by `core`; a protocol supplies only names, through its tables and its stages (D18) | MUST | §10 | T5.9 |
-| R85 | The request path produces `adapter_requests_in_flight`, `adapter_refusals_total` by stage, `adapter_replay_hits_total`, `adapter_wire_seconds` by stage in the `request` bucket set, `adapter_handler_panics_total` by operation, `adapter_unmapped_errors_total`, `adapter_status_mapped_total` by error, `adapter_held_requests`, `adapter_held_bytes`, `adapter_hold_pool_bytes`, `adapter_hold_refusals_total` and `adapter_chain_splits_total` by reason, each labeled by `protocol` but the hold pool's, before `Route` by the stages' and from it by the table's (D18) | MUST | §10.1, amended (D8, D18) | T5.9, T5.1b, T5.6, T5.5b, T5.4 |
+| R85 | The request path produces `adapter_requests_in_flight`, `adapter_refusals_total` by stage, `reply_too_big` among them (D11), `adapter_replay_hits_total`, `adapter_wire_seconds` by stage in the `request` bucket set, `adapter_handler_panics_total` by operation, `adapter_unmapped_errors_total`, `adapter_status_mapped_total` by error, `adapter_held_requests`, `adapter_held_bytes`, `adapter_hold_pool_bytes`, `adapter_hold_refusals_total` and `adapter_chain_splits_total` by reason, each labeled by `protocol` but the hold pool's, before `Route` by the stages' and from it by the table's (D18) | MUST | §10.1, amended (D8, D18) | T5.9, T5.1b, T5.6, T5.5b, T5.4 |
 | R86 | No series carries a client, principal, share or path label | MUST NOT | §10.1 | T5.9 |
 | R87 | Every series a request can touch is resolved once, per protocol and per operation, so recording on the request path is an atomic add or a histogram observe, with no label lookup and no allocation (D18 says when) | bound | §10.1, §6.9 | T5.9, T5.10 |
 | R88 | The request span is opened when a record is framed and ended when its reply is handed to the writer, or when it is dropped; the sampling decision is made there, once | MUST | §10.2 | T5.1b |
@@ -367,7 +369,8 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   - `(p *pipeline) serve(rec *resources.Buf)`, called by the reader only, one record at a
     time.
   - `(p *pipeline) drain()`, `(p *pipeline) wait(ctx context.Context) error`, which returns
-    nil once nothing runs, is held or is parked, and `(p *pipeline) close()`.
+    nil once nothing runs, is held, is parked or waits for a status's buffer (D9), and
+    `(p *pipeline) close()`.
   - The bodies of `Conn.Send`, which wraps the message and hands it to `out` with its
     `before` (T5.1c), and of `Request.Park`.
   - The suite `out` must pass, and the recorder that passes it (T5.1a, D2).
@@ -499,8 +502,9 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
     goes out after them in a record of its own, with the replies of the related members after
     it, each answered its status with no call (R42); the next unrelated member starts a new
     record, joined and wrapped once with those after it, and the chain runs on when the
-    refused header's `next` is a valid step; a bad one ends the chain, and nothing past it is
-    read (R93; the architect, on #4184). An `Unwrap`
+    refused header's `next` is a valid step; a bad one ends the chain: nothing past it is read,
+    and once the refusal's record and those before it are sent the connection closes (R93; the
+    architect, on #4184). An `Unwrap`
     refusal's record is wrapped once under its own header as RFC 20 §5.5 says; the record of
     a header that failed `Decode` is not passed to `Wrap`, so the carve-out holds per record
     (the architect, on #4184). No inner header of an encrypted SMB record fails `Decode`
@@ -513,8 +517,9 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
     unrelated member handled on its own and lets their replies go out separately;
     3.3.5.2.7.2 compounds a related chain's replies as a SHOULD. A single `Wrap` of a joined
     record runs under one header, and the refused member may name another session than the
-    first member's; alone in its record, an `Unwrap` refusal is wrapped under its own header,
-    and a `Decode` refusal is not wrapped. With a nil `Header` the connection closes and
+    first member's; in a record of its own, with only its related members' replies, an `Unwrap`
+    refusal is wrapped under its own header, and a `Decode` refusal is not wrapped. With a nil
+    `Header` the connection closes and
     nothing more is sent.
 
   RFC 20 §4.7 (the `Stages` struct, the comments on `Decode`, `Unwrap`, `Route` and `Wrap`,
@@ -604,8 +609,11 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   goroutine of its own, so the reader never waits on the reply pool. That goroutine keeps the
   request's record, and so its receive charge, until the status goes out, so the receive pool
   bounds such waits as it bounds admitted requests (RFC 24 §6.1, as this pull request amends
-  it): a client that sends bad headers while the reply pool is full spends its receive turns,
-  not goroutines without bound. The close is asked for
+  it). **A connection has at most one such wait: the reader reads no further record until that
+  status goes out**, so a client that sends bad headers while the reply pool is full holds one
+  record, not the receive pool's per-address share (RFC 24's R7) for 30 s at a time. **The
+  wait runs under the connection's context**, so a close ends it and releases the record at
+  once, and `wait()` counts it beside what runs, is held or is parked. The close is asked for
   by `link.close` with D9's error, which E4's close count records as `reply_wait` (RFC 20
   §6.4, §10.1). A park's refusal needs no wait: `Park` keeps the request's own reply
   reservation when it is of the small class, and otherwise takes a small one with `TryGet`
@@ -613,11 +621,12 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   still holds (RFC 24 §3.3). The try is on the pool, not the budget: the status, the chain's
   member and `Park` each need a `*Buf`, which a `Reservation` cannot become, so
   `WaitBudget`'s own try and ceiling stay unexported (RFC 24 §2.5). `decision:` at the wait,
-  naming the ceiling: a pool held full for 30 s
+  its 30 s a constant against RFC 20 §6.9's timeouts as settings until a status is seen waiting
+  past it, and naming the ceiling: a pool held full for 30 s
   by parks across connections closes the connection whose status waited, not those whose
   parks fill the pool, so an SMB client there loses its non-durable opens, and a status can
   arrive up to its 30 s past its own deadline; until RFC 24 §4.1's turns bound each client's
-  share, or the ledger's row for a node-wide cap on parks' reply reservations, whichever comes
+  share, or the ledger's row for a per-key cap on parks' reply reservations, whichever comes
   first. `ponytail:` at the call: at 64 requests in flight a connection
   over-reserves 768 KiB; give `BufPool` an unreserved small buffer, or set one aside per
   connection at accept for its statuses, when the reply budget is shown to bind before the
@@ -650,7 +659,9 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   the usual attributes) fits the transfer class. `decision:` at the comparison, naming the
   ceiling: a `GETATTR` asking for ACLs beside a 1 MiB `READ` is refused at the floor; charge
   the exact size past the transfer class, as RFC 24 §3.1 charges one past the largest, when
-  such a compound is seen refused. The runner reads
+  such a compound is seen refused, which `adapter_refusals_total`'s stage `reply_too_big` shows
+  (R85). RFC 21 §2.3 now advertises that capacity as `ca_maxresponsesize`, so a compound
+  refused at the floor is one whose bounds pass what its session allows. The runner reads
   the ceiling through `BufPool.Ceiling() int64`, which RFC 24 §2.5 now declares and T5.3
   builds with `resources.golden`. The quarter compares the charge `Get` would take, the class
   of the summed bounds and the header plus `BufPool`'s 8 KiB, not the bare bounds. A chain is
@@ -849,8 +860,8 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
 
 ```text
 internal/adapter/core/
-  errors.go              T5.7: NewErrorTable, Map, ErrDecode; T5.2a: ErrCancelled;
-                         T5.3: ErrReplyTooBig
+  errors.go              T5.3: ErrReplyTooBig (NewErrorTable, Map, ErrDecode and
+                         ErrCancelled have landed)
   dispatch.go            T5.2a: NewOpTable; T5.4: Op.MaxMembers; T5.9: OpTable.Protocol;
                          T5.11: Request.Park
   protocol.go            T5.1a: Stages.Errors; T5.9: Stages.Protocol
@@ -868,7 +879,7 @@ internal/adapter/core/
   errors_test.go  dispatch_test.go  metrics_test.go  middleware_test.go
   pipeline_test.go  compound_test.go  hold_test.go  conn_test.go  bench_test.go
   testdata/fuzz/FuzzRecordWalk/       T5.4: the crashers, kept as seeds
-  testdata/surface/core.golden        T5.7: ErrDecode; T5.2a: ErrCancelled; T5.3: ErrReplyTooBig;
+  testdata/surface/core.golden        T5.3: ErrReplyTooBig;
                                       T5.4: Op.MaxMembers; T5.1a: Stages.Errors;
                                       T5.9: OpTable.Protocol, Stages.Protocol
   testdata/surface/resources.golden   T5.5a: Buf.Recharge; T5.3: BufPool.TryGet,
@@ -890,8 +901,9 @@ docs/internals/rfcs/rfc-17-vfs.md        T5.5d: §5.9 Hold (D16)
 ```
 
 Exported symbols added: `Stages.Errors *ErrorTable`; `OpTable.Protocol string`;
-`Op.MaxMembers int`; `ErrDecode`, `ErrCancelled` and `ErrReplyTooBig`, each in `Errors()`;
-`Stages.Protocol string`; `func (b *Buf) Recharge(to *Budget) error`;
+`Op.MaxMembers int`; `ErrReplyTooBig`, in `Errors()`;
+`Stages.Protocol string`; `func (b *Buf) Recharge(to *Budget) error` and
+`func (b *Buf) Charge() int64`; `resources.ErrTooLarge`;
 `func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)` and
 `func (p *BufPool) Ceiling() int64`;
 `vfs.WithHold(ctx context.Context, max time.Duration) context.Context` and
@@ -903,24 +915,20 @@ registry. Nothing else is exported.
 
 ### T5.7 Error tables
 
-**Subtask T5.7 estimate: 2 man-days.**
+**Subtask T5.7 estimate: 0 man-days.**
 
 - **Track:** A; one of the three the program's split lets track C take. **Depends on:** S2.
 - **Needs E4:** nothing.
 - **Covers:** R26, R27, R28, the mapping half of R29 and R30, and what forces R3's answer
   to exist (D7).
-- **Deliverables:** in `errors.go`, the bodies of `NewErrorTable` and `Map`: rows ranked and
-  sorted at build (D4), equal rows that overlap refused (D3), `Map` answering the first match,
-  `reply` false on a `NoReply` row, the fault status where none matches. An unexported
-  `mapped(err, op, v) (Status, bool, bool)` beside `Map`, its third result false where no row
-  matched, which T5.1b calls to count and log. `ErrDecode`, added to `Errors()`, and
-  `NewErrorTable` refusing a table that breaks D7's rule for it, as RFC 20 §4.7 says since this
-  pull request, and `core.golden`; `testproto`'s row for
-  it, with a status of its own (§1.1's change 8); the tables `errors_test.go` and
-  `dispatch_test.go` already build gain that row, or they panic.
-- **Landed in part:** #4194 gave `NewErrorTable`, `Map` and `mapped` their bodies, with the
-  tests of the first five criteria below. `ErrDecode`, its check, its row and its golden
-  line are what this subtask still adds.
+- **Deliverables:** none left. In `errors.go`, the bodies of `NewErrorTable` and `Map`, rows
+  ranked and sorted at build (D4), equal rows that overlap refused (D3), and the unexported
+  `mapped(err, op, v) (Status, bool, bool)` that T5.1b calls; `ErrDecode` in `Errors()` with
+  D7's check, `testproto`'s row for it and `core.golden`'s line. The criteria and tests below
+  are what landed, kept as the record later subtasks keep passing.
+- **Landed:** whole. #4194 gave `NewErrorTable`, `Map` and `mapped` their bodies, with the tests
+  of the first five criteria below; #4229 gave `ErrDecode`, its check, its row and its golden
+  line, and #4266 widened the check to a row answering success.
 - **Consumers:** T5.2a (the check on `Hold`), T5.1a, T5.1b, `testproto`'s tables.
 - **Acceptance criteria:**
   - A row naming `&vfs.Delay{Cause: vfs.DelayRecall}` wins over a row naming `vfs.ErrDelay`,
@@ -957,49 +965,32 @@ registry. Nothing else is exported.
 
 **Subtask T5.2a estimate: 1 man-days.**
 
-- **Track:** A. **Depends on:** T5.7.
+- **Track:** A. **Depends on:** S2.
 - **Needs E4:** nothing.
 - **Covers:** R15.
-- **Deliverables:** in `dispatch.go`, `NewOpTable`'s body: the map built, and a duplicate
-  code, a range whose `First` is past its `Last`, and a row of `errs` with a `Hold` in a
-  table that does not hold, each a panic naming the row (D3); a table that holds whose
-  `errs` breaks D17's rule for `ErrCancelled` or for `&vfs.Delay{Cause: vfs.DelayResources}`,
-  refused the same way (D17). `testproto`'s typed `DelayResources` row
-  of §1.1's change 8, so
-  its holding table builds, with `TestErrorRows` rewritten for it: each error checked against
-  the first row that matches it in `NewErrorTable`'s order, the typed row with no `Hold` in
-  both tables, `ErrCancelled` checked once, and the `decision:` on `errorRows` no longer
-  calling `ErrDelay` the protocol's only delay. `ErrCancelled`, added to `Errors()`, as RFC 20
-  §4.7 says since this pull request,
-  and `core.golden`; `testproto`'s cancel row renamed to it (§1.1's change 8), `ErrCancelled` a
-  plain sentinel that does not wrap `context.Canceled`, so `TestErrorRows` checks it in place
-  of `context.Canceled`; the holding table `dispatch_test.go` already builds gains that row, or
-  it panics.
+- **Deliverables:** in `dispatch.go`, D17's check for `&vfs.Delay{Cause: vfs.DelayResources}` in
+  a table that holds, reading typed rows only, a panic naming the row as the others are (D3,
+  D17). `testproto`'s typed `DelayResources` row of §1.1's change 8, so its holding table
+  builds, with `TestErrorRows` rewritten for it: each error checked against the first row that
+  matches it in `NewErrorTable`'s order, the typed row with no `Hold` in both tables, and the
+  `decision:` on `errorRows` no longer calling `ErrDelay` the protocol's only delay; the
+  holding tables `dispatch_test.go` builds gain the typed row, or they panic.
 - **Landed in part:** #4194 gave `NewOpTable` its body and its first three checks, and moved
   the end-to-end entry's message in `test/adapter/known.yaml` to `core: new server`, where the
   specification now stops, with `TestNewOpTableChecksItsRows` and `testproto`'s
-  `TestTablesBuild`. `ErrCancelled`, its two checks, its row and its golden line, and the
-  `DelayResources` check and row, are what this subtask still adds.
+  `TestTablesBuild`; #4229 gave `ErrCancelled`, its two checks, its row and its golden line,
+  and #4266 widened them to a row answering success. The `DelayResources` check and row are
+  what this subtask still adds.
 - **Consumers:** T5.9, T5.4, T5.1a; T5.5b and T5.11, which answer `ErrCancelled`;
   `testproto`, whose tables build from here on.
-- **Acceptance criteria:** each of the five faults panics with the row's name, a holding
-  table whose only `ErrCancelled` row names an operation or versions, or holds, sends no reply
-  or answers the fault or success, or that has the row naming neither beside an operation's
-  own `ErrCancelled` row that does, included, and one whose only typed `DelayResources` row
-  does, names an operation or names a range of versions, or that has the row naming neither
-  beside an operation's own typed `DelayResources` row that does; a protocol's typed cancel row
-  is not checked, and a sentinel `ErrDelay` row that holds is accepted beside the typed one;
-  `testproto`'s
-  two tables and its members' table build; a `Hold` row in a holding table is accepted;
-  `ErrCancelled` is in `Errors()`.
-- **Tests:** in `dispatch_test.go`. One case per fault (catch a check dropped: two rows under
-  one code would otherwise shadow each other silently), and the `ErrCancelled` rows that name
-  an operation or a range of versions (catch a check that any row satisfies, which leaves a
-  cancel of another operation or version to the fault status). The holding tables whose only
-  `ErrCancelled` row holds, sends no reply or answers the fault or success, and whose row naming
-  neither sits beside an operation's own `ErrCancelled` row that does (catch a cancelled request
-  held again until its bound or left unanswered, the narrower row outranking the other in the
-  second, R26). The holding table with no
+- **Acceptance criteria:** a holding table with no typed `DelayResources` row naming neither,
+  one whose only such row holds, sends no reply, answers the fault or success, names an
+  operation or names a range of versions, and one with that row beside an operation's own
+  typed `DelayResources` row that holds, each panic with the row's name; a sentinel `ErrDelay`
+  row that holds is accepted beside the typed one; `testproto`'s two tables and its members'
+  table build.
+- **Tests:** in `dispatch_test.go`, beside #4229's cases for the faults and `ErrCancelled`.
+  The holding table with no
   typed `DelayResources` row, and the ones whose only such row holds, names an
   operation or names a range of versions (catch a table that lets the hold pool's refusal
   start a hold, for any operation or version). The holding table whose typed row sits beside a
@@ -1009,7 +1000,6 @@ registry. Nothing else is exported.
   row naming neither, which the operation's own row outranks there, R26). `testproto`'s
   `TestTablesBuild`,
   which builds both versions' tables directly (catches a check that refuses a valid table).
-  `TestErrorsListsEverySentinelOnce` (catches `ErrCancelled` left out of `Errors()`).
 
 ### T5.9 Series and the registry's calls
 
@@ -1056,8 +1046,9 @@ registry. Nothing else is exported.
   beside a table of the same label (catches a series registered twice under one name); one table on two
   registries (catches series kept in the table, which sends the second server's counts to the
   first);
-  the allocation count of each record method at 0, skipped under the race detector (catches a
-  label lookup per call).
+  the allocation count of each record method at 0, skipped under the race detector, and a
+  registry declared in the test counting each `WithLabelValues` call, none per record (catches
+  a label lookup per call, which allocates nothing on an existing child).
 - **Rules:** rule 3: nothing outside `core` records; rule 9: the amendment precedes the field.
 
 ### T5.6 The middleware chain
@@ -1139,10 +1130,12 @@ registry. Nothing else is exported.
   at once, under any context, a charge past the reply pool's ceiling (D11), and passes any
   other error on as it is; `ErrTooLarge` in `pkg/resources`, with `resources.golden`'s line, the
   sentinel #4221 left to this subtask;
-  `reserveStatus(key)`, a status's buffer (D9): a `TryGet` first, then a wait of at most
-  30 s from when it starts, past which it asks `link.close` with D9's error, which E4's
-  close count records as `reply_wait`; its caller keeps the request's record, and so its
-  receive charge, until the status goes out (RFC 24 §6.1).
+  `reserveStatus(ctx, key, close func(error))`, a status's buffer (D9): a `TryGet` first,
+  then a wait under `ctx`, the connection's, so a close ends it at once, of at most 30 s from
+  when it starts, past which it calls `close` with D9's error, which E4's close count records
+  as `reply_wait`; T5.1a passes `link`'s context and `close`, so T5.3 declares neither; its
+  caller keeps the request's record, and so its receive charge, until the status goes out or
+  the wait ends (RFC 24 §6.1).
   `ErrReplyTooBig`, added to `Errors()` as RFC 20 §4.7 now lists it, with `core.golden`. In
   `pkg/resources`, `BufPool.TryGet(key, n) (*Buf, bool)` and `BufPool.Ceiling() int64`, as
   RFC 24 §2.5 now declares them, over a try and a ceiling on `WaitBudget` that stay
@@ -1159,14 +1152,15 @@ registry. Nothing else is exported.
     error; when room frees first it returns the buffer.
   - A bound past the reply pool's ceiling returns `ErrReplyTooBig` at once, under a context
     with no deadline, with nothing reserved.
-  - With the reply budget full, `reserveStatus` returns the buffer once room frees, and when
-    the clock passes 30 s from its start closes the connection with D9's error, with nothing
-    reserved.
+  - With the reply budget full, `reserveStatus` returns the buffer once room frees; when the
+    clock passes 30 s from its start it calls `close` with D9's error; when its context ends
+    first it returns at once; each with nothing left reserved.
   - `TryGet` returns a buffer charged as `Get` charges it when the charge fits with no
     waiter, refuses one with a waiter ahead or past what is left, and allocates nothing on a
     refusal; `Ceiling` reads the budget's ceiling.
   - `ErrReplyTooBig` is in `Errors()`.
-- **Tests:** in `pipeline_test.go`, through `hooks_test.go`, each in a `synctest` bubble. The
+- **Tests:** in `pipeline_test.go`, each in a `synctest` bubble, whose clock the 30 s reads,
+  with a `close` the test records. The
   65th `Admit` still blocked after `synctest.Wait`, then returning on a release (catches a cap
   of 65 and a semaphore that never blocks). The double release (catches a counter that
   drifts). The three ends of a waiting reservation, the budget read after each (catches a
@@ -1174,7 +1168,7 @@ registry. Nothing else is exported.
   error path). The bound past the ceiling, `synctest.Wait` showing `reserveReply` returned
   (catches the refusal passed on as it is, which no table maps and the unmapped-error alert
   then counts, and a sum that waits on a budget that can never grant it). The status's wait
-  against a budget the test holds full, its two ends (catch a status wait under the request's
+  against a budget the test holds full, its three ends (catch a status wait under the request's
   context, which never ends while parks hold the pool, and one under the attempt's passed
   deadline, which refuses at once and sends nothing). In `pkg/resources`, `TryGet`'s
   answers with and without a waiter queued, the budget read after each, and its allocation
@@ -1241,9 +1235,12 @@ registry. Nothing else is exported.
   - The recorder passes the suite of `out`.
   - An `Echo` handed to `serve` over `Bare` and over the full protocol is answered its
     payload.
-  - An `Echo` with no role byte and a header whose `next` is bad are answered `testproto`'s
-    status for `ErrDecode`, on their own message ID, the connection kept, and
-    `adapter_unmapped_errors_total` does not move.
+  - An `Echo` with no role byte is answered `testproto`'s status for `ErrDecode`, on its own
+    message ID, the connection kept; a header whose `next` is bad is answered the same, and
+    the connection then closes (R93); `adapter_unmapped_errors_total` moves for neither.
+  - With the reply pool held full, a second bad header is read only once the first one's
+    status goes out (D9); a close during that wait releases its record's receive charge, and
+    `wait()` returns only after.
   - A message with a bad checksum, one that overdraws its credits and a version the router
     refuses are each answered a status on their own message ID, the connection kept. A record
     too short for a header closes the connection.
@@ -1864,7 +1861,7 @@ registry. Nothing else is exported.
 - **Covers:** R87, R92.
 - **Deliverables:** in `bench_test.go`, `BenchmarkPipeline`, which calls `b.ReportAllocs()`,
   over loopback against `vfstest.Null`, with a registry, a tracer that samples nothing and a
-  discarding logger, in five cases: an `Echo` over `Bare`, which reaches no service; a
+  discarding logger, in seven cases: an `Echo` over `Bare`, which reaches no service; a
   version 1 compound of `PutFH` and `Create` over the full protocol, its `Negotiate`,
   `Session` and `Tree` sent before `b.ResetTimer()`, the service reached through a
   pass-through declared in the test that derives one `context.WithCancel` child per call, as
@@ -1873,7 +1870,10 @@ registry. Nothing else is exported.
   past every row of `core`'s refusals; that compound in version 2, whose table holds, so the
   interim timer (D14) is armed per call; and the `Echo` case under `b.RunParallel` with 64
   requests in flight on one connection, so the reply pool's, `shared`'s and the hold table's
-  mutexes contend. Loopback's round trip dominates ns/op, so only allocations are gated; ns/op
+  mutexes contend; a chain of three `Echo`, idle and with one waiter parked on the reply pool,
+  so D8's early send is measured; and the `Echo` case across `GOMAXPROCS` connections, so the
+  budgets' mutexes contend across connections. Loopback's round trip dominates ns/op, so only
+  allocations are gated; ns/op
   and the mutex and block profiles are compared with `benchstat` over `-count=10`, in RFC 20
   §6.10's nightly run. `TestPipelineAllocs`,
   which reads `testing.AllocsPerRun` over the first four, its requests pre-encoded with
@@ -1903,8 +1903,8 @@ registry. Nothing else is exported.
 
 ```mermaid
 flowchart TD
-  S2(["S2 testproto and the import test in CI"]):::sync --> T5_7["T5.7 error tables"]
-  T5_7 --> T5_2a["T5.2a NewOpTable"]
+  S2(["S2 testproto and the import test in CI"]):::sync --> T5_7["T5.7 error tables, landed"]
+  S2 --> T5_2a["T5.2a NewOpTable"]
   T5_2a --> T5_9["T5.9 series"]
   T5_9 --> T5_6["T5.6 middleware chain"]
   S2 --> T5_5d["T5.5d WithHold"]
@@ -1939,23 +1939,23 @@ Fifteen subtasks, 28.5 man-days, need no socket:
 
 | When | Subtasks | Man-days |
 | --- | --- | --- |
-| at S2, now | T5.7, then T5.2a, then T5.9, then T5.6; T5.5d at any time | 7.5 |
+| at S2, now | T5.2a, then T5.9, then T5.6; T5.5d at any time (T5.7 has landed) | 5.5 |
 | now, E3's two pull requests having merged (#4177, #4178) | T5.3 and T5.5a, then T5.1a, T5.1b and T5.2b, T5.4, T5.8, T5.5b, T5.5c, T5.11 | 21 |
 | once E4's `Server`, accept, reader and writer have landed, its writer passing the suite of `out`, with `Conn.Settings`, `Conn.Established` and `Conn.Close` | T5.1c, T5.10 | 2.5 |
 
-**The critical path** is T5.7, T5.2a, T5.9, T5.6, T5.1a, T5.1b, T5.4, T5.8, T5.5b, T5.5c,
-T5.11, T5.1c and T5.10: 27.5 of the 31 man-days, all serial, with S3 reached at T5.1c
-after 26.25. Only T5.5d, T5.3, T5.5a and T5.2b are off it: E3 has merged (#4177, #4178), so
+**The critical path** is T5.2a, T5.9, T5.6, T5.1a, T5.1b, T5.4, T5.8, T5.5b, T5.5c,
+T5.11, T5.1c and T5.10: 25.5 of the 29 man-days, all serial, with S3 reached at T5.1c
+after 24.25. Only T5.5d, T5.3, T5.5a and T5.2b are off it: E3 has merged (#4177, #4178), so
 T5.3 can start at once. Only T5.1c and T5.10 wait for E4, 2.5
 man-days after it lands. The least certain subtasks, T5.4, T5.5b and T5.1a, are on the path.
-Track C taking T5.7, T5.9 and T5.6 shortens it only while track A has something else to build;
-the error tables go first because two subtasks and `testproto`'s tables build on them.
+Track C taking T5.9 and T5.6 shortens it only while track A has something else to build;
+T5.2a goes first because `testproto`'s holding table builds on it.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T5.7, T5.2a | 3 | none | the two rows every table must have, `ErrDecode` and `ErrCancelled`, with their checks; #4194 delivered the rest of both subtasks |
+| 1 | T5.2a | 1 | none | D17's `DelayResources` check and `testproto`'s typed row; #4194, #4229 and #4266 delivered the rest of T5.2a and the whole of T5.7 |
 | 2 | T5.9 | 2.5 | PR 1 | the registry's calls and `core`'s series under D18's two labels |
 | 3 | T5.6 | 1.5 | PR 2 | the chain |
 | 4 | T5.3, T5.5a | 2 | E3 | what reserves: the cap, the reply reservation, the status's bounded wait, `TryGet` and the ceiling, `Recharge`; open beside PR 1 to PR 3 |
@@ -1992,7 +1992,8 @@ A suggestion only: one pull request per subtask works as well.
   his to say before T5.2a lands: `ErrCancelled` follows RFC 20's spelling and `testproto`'s
   `StatusCancelled`, while Go's is `context.Canceled`.
 - **Rules this revision settles, written into the RFCs in this pull request**, which the
-  decisions point at: RFC 20 §4.3 (no request's reply past a quarter of the reply pool, D11);
+  decisions point at: RFC 20 §4.3 (no compound's reply, and no chain's held replies, past a quarter
+  of the reply pool, D11);
   §4.7 (`Stages.Protocol`, `OpTable.Protocol` and `ErrReplyTooBig`, and the chain paragraph:
   each member's admission released before the next is admitted, the replies sent before a
   member that does not fit or would pass the quarter, and the split at `Decode` or `Unwrap`;
@@ -2041,7 +2042,7 @@ A suggestion only: one pull request per subtask works as well.
   which runs on every change: a finding for an RFC 20 pull request; T5.10 follows §7. Parks'
   small reply reservations are bounded per connection by `MaxPending` (RFC 24 §3.3) and across
   connections only by the reply pool, which many connections' parks can fill: input to the
-  ledger's row for a node-wide cap on parks' reply reservations, and to its row for RFC 24's
+  ledger's row for a per-key cap on parks' reply reservations, and to its row for RFC 24's
   turns, whose share per client (RFC 24 §4.1, its R7) bounds them; until then D9's 30 s close
   is the ceiling a status meets.
 - **Changes from the epic's first description in who owns what.** `Conn.Close`'s body, which
@@ -2076,7 +2077,9 @@ A suggestion only: one pull request per subtask works as well.
   whose D6 touched four sections of RFC 20; each of the others is a sentence or a line,
   under the quarter day this document counts in. The ninth review moves 0.25 from T5.5b to
   T5.2a, with the `DelayResources` check, `testproto`'s row for it and `TestErrorRows`'
-  rewrite, which the seventh moved there: the total stays 31.
+  rewrite, which the seventh moved there: the total stays 31. #4229 and #4266 then landed what
+  was left of T5.7, `ErrDecode` and its check, and `ErrCancelled`'s part of T5.2a, so T5.7 is 0
+  and the total 29.
 - **Edits to the program's implementation plan and to the epic 1 and epic 2 documents**,
   made in this document's pull request:
   - the ledger's row for each protocol's error-table rows and totality test now names the
@@ -2108,9 +2111,10 @@ A suggestion only: one pull request per subtask works as well.
     split subtasks; epic 4's gains the connection, close and byte series, `Conn.Close`'s
     body, D1's calls with the `link`, and a writer that passes the suite of `out`;
   - epic 5's estimate line and its row in the program's §2 carry this document's figure,
-    17 subtasks and 31 man-days, and the program's total follows; the architect accepted the
+    17 subtasks and 29 man-days, and the program's total follows; the architect accepted the
     earlier figure against 26.5 (he quoted 29), 30.5 was the fourth revision's, 31.25 the fifth
-    review's, and 31 is this one's; epic 4's breakdown prices what it gained, and the program's
+    review's, 31 the ninth review's, and 29 is this one's; epic 4's breakdown prices what it
+    gained, and the program's
     estimate line says it leaves that out;
   - `Conn.Settings`'s body is E4's and `Conn.Send`'s is T5.1c's, in the program's epic 4
     section and its coverage row for RFC 20 §4.7; its risk 9 follows D2; RFC 24 §10's two
@@ -2129,7 +2133,8 @@ A suggestion only: one pull request per subtask works as well.
   first pull request (#4177, the budgets) has merged and its second (#4178, `BufPool`) has
   merged too; T5.3 and everything after it need both. `vfstest.Null`, `memory.New`,
   `vfstest.Faults`, `vfstest.RecordMutations` and `adaptertest.CheckLeaks` are on the branch
-  as named. #4194 delivered T5.7 and T5.2a but for `ErrDecode` and `ErrCancelled`.
+  as named. #4194, #4229 and #4266 delivered T5.7 whole and T5.2a but for D17's
+  `DelayResources` check and row.
 - **Not taken from the third review, with the reason.** Checking D22's switched-off names
   against the tables when settings load: `settings.Adapter`'s check already refuses an empty
   or repeated name, and a name no table has is the protocol's to refuse in its shape's
