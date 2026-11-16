@@ -15,8 +15,8 @@
     "two": "O [[open-state|open state]] é tudo o que o servidor prometeu sobre um arquivo — [[open|opens]], [[deny-mode|deny modes]], [[byte-range-lock|locks]], [[caching-grant|caching grants]] — guardado em uma tabela por arquivo no seu [[primary]], para que NFS e SMB sigam as mesmas regras. O RFC 14 diz como esse estado é concedido, como entra em conflito, como é retomado e recuperado quando um cliente, um servidor ou um primary sai de cena.",
     "twoNotes": "De 'Start here · In plain words' e §1 Purpose: quem mantém este arquivo aberto, o que pode fazer com ele, o que prometemos a ele, e o que acontece com tudo isso quando um cliente, um servidor ou um primary sai de cena? É um único componente porque cada tipo de estado é consultado pelos outros (§1).",
     "knownTitle": "Termos que você já conhece",
-    "knownLead": "Estes termos vêm do glossário do RFC 0 e dos RFCs em que este se apoia: 7, 11, 15, 16 e 17. Clique em um para ler a definição.",
-    "knownNotes": "Cada definição reformula de forma simples a linha do glossário do RFC 0, que é a definição de referência. Shard e shard incarnation são do RFC 0 e do RFC 11; aqui servem para o grace (§4.4).",
+    "knownLead": "Estes termos vêm do glossário comum e dos projetos em que este se apoia: a árvore de arquivos e suas permissões, qual nó é dono de qual shard, a estrutura do cluster, o metadata store e o filesystem service. Clique em um para ler a definição.",
+    "knownNotes": "Cada definição reformula de forma simples a linha do glossário do RFC 0, que é a definição de referência. Shard e shard incarnation são do RFC 0 e do RFC 11; aqui servem para o grace (§4.4). Fontes: RFC 0 (glossário), RFC 7 (nomes, permissões, existência), RFC 11 (ownership dos shards), RFC 15 (topologia), RFC 16 (metadata store), RFC 17 (filesystem service).",
     "newTitle": "Termos novos",
     "newNotes": "De 'Start here · Terms' e das seções que definem cada termo: cliente §2.1, open §2.2, lock e lock owner §2, §2.3, lock waiter §2.10, state reference §2.11, open-state step §3, client lease e lease owner §4.1, grace e reclaim §4.2, grace instance §4.4, NLM/NSM §4.5, recall §5.2, delegation e oplock §5.1, revoked set §5.3, grant budget §5.5, opens SMB-durable e persistent §8.1, delete pending §9.4, watch §2.5.",
     "clashTitle": "Termos em conflito",
@@ -25,18 +25,18 @@
   "problem": {
     "kicker": "O problema",
     "title": "alice-pc, um reinício e um [[grace-period|grace period]]",
-    "notes": "'Start here · The problem, in one example'. alice-pc mantém profiles/alice/ODFC_alice.vhdx o dia todo: um open SMB persistent de leitura e escrita que nega escrita aos outros, sob um lease SMB. Quando N1 reinicia, a tabela em memória some; sem uma regra, um segundo desktop poderia abrir o arquivo para escrita antes de alice-pc voltar. §4.4: antes de responder a qualquer pedido de open state, um primary DEVE instalar todo open persistent do shard, como desconectado, em Recovery.ServeShard — o Timeout de um open persistent, até 300 s, dura mais que um grace limitado a 90 s. §4.2: durante o grace todo pedido que não é reclaim é recusado com ErrGrace, um tente-mais-tarde; um adapter que segura um pedido assim, como o SMB faz com um open, DEVE deixá-lo sobreviver ao grace. O grace DEVERIA terminar antes, assim que todo cliente cujo registro nomeia o shard tiver terminado (no SMB: reconectou cada open persistent ou deixou o Timeout passar, §4.4). Então o open em espera encontra o deny-write de alice-pc (§6). Se o open fosse só SMB-durable, não teria sobrevivido ao reinício (§8.1)."
+    "notes": "'Start here · The problem, in one example'. alice-pc mantém profiles/alice/ODFC_alice.vhdx o dia todo: um open SMB persistent de leitura e escrita que nega escrita aos outros, sob um lease SMB. Quando N1 reinicia, a tabela em memória some; sem uma regra, um segundo desktop poderia abrir o arquivo para escrita antes de alice-pc voltar. §4.4: antes de responder a qualquer pedido de open state, um primary DEVE instalar todo open persistent do shard, como desconectado, em Recovery.ServeShard — o Timeout de um open persistent, até 300 s, dura mais que um grace limitado a 90 s. §4.2: durante o grace todo pedido que não é reclaim é recusado com ErrGrace, um tente-mais-tarde; um adapter que segura um pedido assim, como o SMB faz com um open, DEVE deixá-lo sobreviver ao grace. O grace DEVERIA terminar antes, assim que todo cliente cujo registro nomeia o shard tiver terminado (no SMB: reconectou cada open persistent ou deixou o Timeout passar, §4.4). Então o open em espera encontra o deny-write de alice-pc (§6). Se o open fosse só SMB-durable, não teria sobrevivido ao reinício (§8.1). Durante o grace só se aceitam reclaims (§4.2); os clientes contados são aqueles cujo registro durable cita o shard (§4.2, §4.4)."
   },
   "desk": {
     "title": "Um balcão por arquivo e três leases",
     "analogy": "**Analogia:** cada arquivo tem um balcão no seu [[primary]], onde ficam todas as promessas sobre ele — quem o mantém aberto, quem travou quais bytes, quem pode guardá-lo em cache. Tanto NFS quanto SMB vão a esse balcão. **Onde ela deixa de valer:** quase tudo nesse balcão fica na memória, não no papel, então depois de um reinício o servidor precisa confiar no que os clientes dizem que tinham.",
     "nodeTitle": "Node lease (cluster)",
-    "node": "Responde à pergunta: este servidor ainda é o [[primary]] dos seus arquivos? Quem o define é o RFC 11, não o RFC 14.",
+    "node": "Responde à pergunta: este servidor ainda é o [[primary]] dos seus arquivos? Ele pertence ao projeto que decide qual nó é dono de qual shard, não ao open state.",
     "clientTitle": "Client lease",
     "client": "Responde à pergunta: este cliente ainda está vivo? Um [[client-lease]] dura 90 s, e cada pedido do cliente o renova.",
     "smbTitle": "Lease SMB",
     "smb": "Um [[lease]] SMB é a promessa de que o cliente pode guardar o arquivo em cache, então é um tipo de [[caching-grant]].",
-    "notes": "'Start here · In plain words': três coisas dividem a palavra lease, e nada mais. A confiança: a decisão do §4.2 — um cliente elegível é acreditado sobre o que tinha, como o NFSv4 acredita, porque o estado volátil não deixa nada que o prove. O client lease não compartilha registro com o node lease do RFC 11 nem com um lease SMB (§4.1)."
+    "notes": "'Start here · In plain words': três coisas dividem a palavra lease, e nada mais. A confiança: a decisão do §4.2 — um cliente elegível é acreditado sobre o que tinha, como o NFSv4 acredita, porque o estado volátil não deixa nada que o prove. O client lease não compartilha registro com o node lease do RFC 11 nem com um lease SMB (§4.1). O node lease é do RFC 11 (ownership)."
   },
   "entities": {
     "kicker": "Quem tem o quê"
@@ -93,7 +93,7 @@
       ],
       [
         "[[byte-range-lock]]",
-        "o lock sobreposto de outro owner, e o I/O do outro protocolo",
+        "o lock sobreposto de outro owner e, para um lock SMB, as leituras e escritas de outros clientes no seu intervalo",
         "o unlock, o fechamento ou a expiração do lease do cliente"
       ],
       [
@@ -113,7 +113,7 @@
       ]
     ],
     "footer": "A chave da tabela é o **arquivo**, nunca um nome ou um [[handle]]. A tabela **NÃO DEVE** ficar em um [[adapter]], porque um lock que o outro protocolo não enxerga não é um lock.",
-    "notes": "§3, sua tabela e os dois parágrafos seguintes. Usar o handle como chave é o erro mais sutil: um cliente pode ter vários handles para o mesmo arquivo, e poderia pegar um lock duas vezes (§3). O primary também executa o I/O do arquivo, então uma verificação e o I/O que ela admite rodam em um processo, sob uma epoch. Todo adapter chega à tabela pelo filesystem service (RFC 17). Um lock NLM dura até o unlock ou o reinício do seu host. As chamadas rodam sob o open-state step: o admission lock do serviço, depois o mutex da entrada; um step decide, persiste e então aplica, então a memória nunca mostra o que o store recusou (§3). Layouts são reservados (cluster, §2.6)."
+    "notes": "§3, sua tabela e os dois parágrafos seguintes. Usar o handle como chave é o erro mais sutil: um cliente pode ter vários handles para o mesmo arquivo, e poderia pegar um lock duas vezes (§3). O primary também executa o I/O do arquivo, então uma verificação e o I/O que ela admite rodam em um processo, sob uma epoch. Todo adapter chega à tabela pelo filesystem service (RFC 17). Um lock NLM dura até o unlock ou o reinício do seu host. As chamadas rodam sob o open-state step: o admission lock do serviço, depois o mutex da entrada; um step decide, persiste e então aplica, então a memória nunca mostra o que o store recusou (§3). Layouts são reservados (cluster, §2.6). Só um lock SMB é obrigatório contra I/O; um lock NFS recusa só locks sobrepostos (§2.3, §7)."
   },
   "conflicts": {
     "kicker": "Conflitos"
@@ -169,8 +169,8 @@
     "lead": "Um novo [[open]] só é concedido se nenhum open já existente nega o acesso que ele pede, **e** se ele não nega a nenhum open existente o acesso que esse já tem.",
     "ok": "alice-pc mantém o arquivo aberto para leitura e escrita e proíbe a escrita aos outros. Um segundo open que pede **leitura e não proíbe nada** é concedido.",
     "refused": "Um segundo open que pede **leitura e proíbe a escrita** é recusado, porque proibiria a escrita a alice-pc, que já tem esse acesso.",
-    "footer": "Uma verificação que falha é uma violação de compartilhamento, respondida com `ErrShareViolation`. Um open só é comparado com os opens do mesmo stream. Um open que não pede nenhum acesso a dados, por exemplo um que só lê atributos, fica fora da verificação.",
-    "notes": "§6, 'The check is two-way', sua tabela e seu exemplo. Por stream: um open é verificado só contra opens do mesmo stream; entre um arquivo e seus streams só o delete é julgado (§6). Um open cujo Access não tem read, execute, write, append nem delete é concedido quaisquer que sejam os deny modes mantidos, e o seu Deny não recusa nada (MS-FSA 2.1.5.1.2.2); ainda assim é um open e mantém o arquivo vivo."
+    "footer": "Uma verificação que falha é uma violação de compartilhamento, respondida com `ErrShareViolation`. Um open dos dados do arquivo só é comparado com os outros opens desses dados, e um open de um [[named-stream]] só com os opens desse stream. Um open que não pede nenhum acesso a dados, por exemplo um que só lê atributos, fica fora da verificação.",
+    "notes": "§6, 'The check is two-way', sua tabela e seu exemplo. Por stream: um open é verificado só contra opens do mesmo stream; entre um arquivo e seus streams só o delete é julgado (§6). Um open cujo Access não tem read, execute, write, append nem delete é concedido quaisquer que sejam os deny modes mantidos, e o seu Deny não recusa nada (MS-FSA 2.1.5.1.2.2); ainda assim é um open e mantém o arquivo vivo. Named stream: §2.2 e §8.1."
   },
   "denyrules": {
     "title": "Quatro regras sobre [[deny-mode|deny modes]]",
@@ -178,9 +178,9 @@
       "O deny mode é verificado **uma única vez, quando o [[open]] é concedido**, e nunca mais a cada leitura ou escrita feita por esse open.",
       "Um [[anonymous-open]] nunca foi concedido, então nada foi verificado para ele. Por isso suas leituras e escritas são verificadas **a cada operação**.",
       "Um open em conflito é recusado. Ele **nunca é rebaixado em silêncio** para um acesso menor do que o cliente pediu.",
-      "Antes de recusar por conflito de deny mode, o servidor **interrompe o caching de handle** dos opens que o causam. Só o conflito que sobra depois disso é recusado."
+      "Alguns clientes SMB mantêm um arquivo aberto mesmo depois que a aplicação o fechou, e isso se chama [[handle-caching|handle caching]]. Antes de recusar por conflito de deny mode, o servidor retoma esse caching dos opens que o causam, e assim um cliente que mantinha o arquivo aberto só no seu cache o fecha. Só o conflito que sobra depois disso é recusado."
     ],
-    "notes": "§6. Um deny mode NÃO DEVE ser reavaliado a cada leitura ou escrita: o open concedido foi concedido. I/O anônimo (NFSv3, e NFSv4 com o stateid anônimo) DEVE ser verificado a cada operação e recusado com ErrShareViolation. Um open NÃO DEVE ser rebaixado em silêncio: um cliente que pediu escrita e ganhou leitura descobre na primeira escrita. Antes de recusar por um conflito de deny mode, o primary DEVE quebrar todo grant com caching de handle sobre um open que o causa, e responder ErrDelay; a nova tentativa verifica de novo. Recusar antes faria falhar todo open, e toda escrita NFS, bloqueados só pelo handle em cache do Windows Explorer."
+    "notes": "§6. Um deny mode NÃO DEVE ser reavaliado a cada leitura ou escrita: o open concedido foi concedido. I/O anônimo (NFSv3, e NFSv4 com o stateid anônimo) DEVE ser verificado a cada operação e recusado com ErrShareViolation. Um open NÃO DEVE ser rebaixado em silêncio: um cliente que pediu escrita e ganhou leitura descobre na primeira escrita. Antes de recusar por um conflito de deny mode, o primary DEVE quebrar todo grant com caching de handle sobre um open que o causa, e responder ErrDelay; a nova tentativa verifica de novo. Recusar antes faria falhar todo open, e toda escrita NFS, bloqueados só pelo handle em cache do Windows Explorer. O handle caching é o grant do tipo handle: manter o arquivo aberto depois que a aplicação o fechou (§5.1; o break do §6)."
   },
   "locks": {
     "kicker": "Locks",
@@ -188,23 +188,23 @@
     "items": [
       "Um intervalo é guardado como [offset, último byte] em 64 bits. Um lock \"até o fim do arquivo\" é guardado como se chegasse ao byte 2⁶⁴−1.",
       "Um pedido pode indicar até 64 intervalos e é atômico: o servidor concede todos de uma vez, ou nenhum.",
-      "O novo lock de um [[lock-owner|owner]] **merging** sobre um intervalo seu o substitui, se funde com ele ou o divide. Já os locks de um owner **stacking** se empilham lado a lado.",
+      "Cada protocolo define como se combinam os locks de um mesmo [[lock-owner|owner]]. O novo lock de um owner **merging** sobre um intervalo seu o substitui, se funde com ele ou o divide, enquanto os locks de um owner **stacking** se empilham lado a lado.",
       "Locks SMB se empilham e são obrigatórios, então barram leituras e escritas de outros clientes. Locks NFS se fundem e são consultivos, então barram só outros pedidos de lock.",
-      "Um lock feito sob um [[open]] é liberado quando esse open fecha. Um lock sem open é liberado por um unlock, pelo reinício do host que o mantém ou por uma revogação."
+      "Um lock feito sob um [[open]] é liberado quando esse open fecha. Um lock sem open, como o lock [[nlm|NLM]] de um host NFSv3, é liberado por um unlock, pelo reinício desse host ou por uma revogação."
     ],
-    "notes": "§2.3. Um comprimento que quer dizer 'até o fim do arquivo' — um comprimento NFSv4 todo em uns, um comprimento NLM 0 — é guardado como chegando a 2⁶⁴−1, nunca calculado como offset mais comprimento. Um intervalo de comprimento zero em X termina em X − 1 (MS-FSA 2.1.4.10). Uma lista nomeia no máximo 64 intervalos; um conflito em qualquer um não deixa nenhum. Só um pedido de um intervalo pode esperar. O marcador ponytail: um único flag, Stack, carrega duas regras que hoje andam juntas por protocolo — locks stacking são obrigatórios, merging consultivos. Um lock sem open é liberado por unlock, pelo reinício do seu host (§4.5) ou por revogação. Questão aberta 3 (§15): se um lock NFS além de 2⁶³ e um SMB devem algum dia se encontrar."
+    "notes": "§2.3. Um comprimento que quer dizer 'até o fim do arquivo' — um comprimento NFSv4 todo em uns, um comprimento NLM 0 — é guardado como chegando a 2⁶⁴−1, nunca calculado como offset mais comprimento. Um intervalo de comprimento zero em X termina em X − 1 (MS-FSA 2.1.4.10). Uma lista nomeia no máximo 64 intervalos; um conflito em qualquer um não deixa nenhum. Só um pedido de um intervalo pode esperar. O marcador ponytail: um único flag, Stack, carrega duas regras que hoje andam juntas por protocolo — locks stacking são obrigatórios, merging consultivos. Um lock sem open é liberado por unlock, pelo reinício do seu host (§4.5) ou por revogação. Questão aberta 3 (§15): se um lock NFS além de 2⁶³ e um SMB devem algum dia se encontrar. Qual regra um owner segue depende do protocolo (§2.3, §7). Um lock sem open é o de um host NLM (§2, §4.5)."
   },
   "waiters": {
     "title": "Esperar um lock sem prender um worker",
     "items": [
-      "Um pedido em conflito que pode esperar vira um [[lock-waiter]]. O servidor o registra e responde na hora, sem deixar um worker ocupado.",
+      "Um pedido de lock diz se vai esperar caso o intervalo esteja ocupado. Se vai esperar e está em conflito, vira um [[lock-waiter]]. O servidor o registra e responde na hora, sem deixar um worker ocupado.",
       "**Poll:** o cliente pede de novo mais tarde. Quando o intervalo se libera, o servidor o reserva para esse cliente até a próxima tentativa dele ou até um prazo.",
       "**Callback:** quando o intervalo se libera, o próprio servidor concede o lock e continua oferecendo a concessão até o cliente responder.",
       "Waiters de intervalos sobrepostos são atendidos por ordem de chegada. Um cliente que reenvia o mesmo pedido mantém seu lugar na fila.",
       "Um waiter não tem timeout próprio, e o servidor não detecta deadlocks."
     ],
-    "footer": "Um lock que precisa esperar um [[recall]] também espera como waiter, porque um recall não é um conflito: o intervalo pode muito bem estar livre.",
-    "notes": "§2.10. Um pedido em espera NÃO DEVE prender um worker. Um waiter de poll fica Reserved até o próximo poll do owner pegar o lock ou passar o seu Deadline. Uma concessão por callback é feita sob o admission lock do arquivo, e o serviço DEVE continuar chamando até o cliente confirmar, recusar ou cancelar, ou o seu estado acabar; para um cliente que não é um host NLM ele PODE parar de chamar após um período de lease, e o lock continua concedido e oferecido. Um owner tem no máximo um waiter por arquivo. Não detectar deadlocks é uma decisão registrada. Só um pedido de callback registra um waiter por causa de um recall; um de poll ou que não espera recebe ErrDelay e tenta de novo."
+    "footer": "O [[adapter]] de cada protocolo escolhe de qual das duas formas seus clientes esperam. Antes de decidir um lock, o servidor faz o [[recall]] de todo [[caching-grant]] que outro cliente mantém no arquivo. Um pedido com callback espera esse recall como waiter, mesmo com o intervalo livre.",
+    "notes": "§2.10. Um pedido em espera NÃO DEVE prender um worker. Um waiter de poll fica Reserved até o próximo poll do owner pegar o lock ou passar o seu Deadline. Uma concessão por callback é feita sob o admission lock do arquivo, e o serviço DEVE continuar chamando até o cliente confirmar, recusar ou cancelar, ou o seu estado acabar; para um cliente que não é um host NLM ele PODE parar de chamar após um período de lease, e o lock continua concedido e oferecido. Um owner tem no máximo um waiter por arquivo. Não detectar deadlocks é uma decisão registrada. Só um pedido de callback registra um waiter por causa de um recall; um de poll ou que não espera recebe ErrDelay e tenta de novo. O tipo de espera é escolhido pelo adapter do protocolo; a tabela guarda só o tipo (§2.10). Tabela do §7: todo caching grant de outro cliente é chamado de volta a nenhum antes de decidir um lock."
   },
   "grants": {
     "kicker": "Caching grants",
@@ -269,32 +269,32 @@
       "Os 90 s são fixos, não uma configuração. O valor foi escolhido por julgamento, não medido.",
       "Quando o lease expira, todo [[open]], lock, waiter, grant e [[watch]] do cliente é liberado de uma vez, marcando o cliente como encerrado em vez de percorrer todo o seu estado.",
       "Um cliente que reinicia volta com um novo [[client-id|client ID]]. O ID antigo termina no mesmo instante em que o novo aparece.",
-      "(cluster) Um único nó, o [[lease-owner]] do cliente, renova e expira o lease dele. Um gateway isolado desse nó recusa os pedidos do cliente, mas não faz ninguém expirar."
+      "(cluster) Um único nó, o [[lease-owner]] do cliente, renova e expira o lease dele. Um [[gateway-node|nó aonde chegam as chamadas do cliente]] que não alcança o lease owner recusa essas chamadas, mas não faz ninguém expirar."
     ],
-    "notes": "§4.1 e §4.3. Sem lease, um notebook que hiberna segurando um lock bloqueia todos os outros clientes para sempre. A decisão dos 90 s: longo o bastante para aguentar uma breve queda de rede ou suspensão, curto o bastante para o grace de um failover ficar perto de um minuto e meio; encurtar ou alongar com medição, como um único valor, não uma configuração. A liberação é uma marca: cada primary marca o cliente como encerrado no seu índice de clientes, e a partir daí toda verificação trata o estado dele como ausente; as entradas são removidas depois, arquivo por arquivo. Um nó que não alcança o lease owner por mais de meio lease responde ErrUnavailable aos pedidos de open state do cliente (decisão). Intervalo de renovação, 10 s (cluster)."
+    "notes": "§4.1 e §4.3. Sem lease, um notebook que hiberna segurando um lock bloqueia todos os outros clientes para sempre. A decisão dos 90 s: longo o bastante para aguentar uma breve queda de rede ou suspensão, curto o bastante para o grace de um failover ficar perto de um minuto e meio; encurtar ou alongar com medição, como um único valor, não uma configuração. A liberação é uma marca: cada primary marca o cliente como encerrado no seu índice de clientes, e a partir daí toda verificação trata o estado dele como ausente; as entradas são removidas depois, arquivo por arquivo. Um nó que não alcança o lease owner por mais de meio lease responde ErrUnavailable aos pedidos de open state do cliente (decisão). Intervalo de renovação, 10 s (cluster). O nó aonde chegam as chamadas de um cliente é o seu nó gateway (RFC 15)."
   },
   "grace": {
     "title": "[[grace-period|Grace]]: só reclaims, por um tempo",
     "items": [
       "Um [[primary]] que perdeu open state **DEVE** entrar num grace period que dura um período de lease, ou seja, 90 s.",
       "Durante o grace ele **DEVE** recusar todo pedido de estado novo que não seja um [[open-reclaim|reclaim]], mesmo que pareça não haver conflito, porque o estado com que compará-lo se perdeu.",
-      "Num shard cujos registros citam um cliente NFSv4, também recebem `ErrGrace` as leituras e escritas feitas por opens anônimos ou ainda não recuperados, os removes e os renames.",
-      "O grace **DEVE** terminar sozinho, sem um operador. Ele **DEVERIA** acabar antes, assim que cada cliente presente nos registros tiver terminado o reclaim ou expirado.",
+      "Leituras e escritas por um [[anonymous-open|open anônimo]] ou por um open ainda não recuperado, removes e renames também recebem `ErrGrace` se um cliente NFSv4 tinha estado no shard, porque um deny mode ou um [[caching-grant]] que ele ainda pode recuperar entraria em conflito com eles. O SMB não precisa disso, porque seus opens persistent voltam antes de o grace começar.",
+      "O grace **DEVE** terminar sozinho, sem um operador. Ele **DEVERIA** acabar antes, assim que cada cliente que tinha estado no shard tiver terminado o reclaim ou expirado.",
       "`ErrGrace` quer dizer \"tente mais tarde\", não é uma falha. O SMB deixa esse open em espera, para que ele seja concedido assim que o grace acabar."
     ],
-    "notes": "§4.2. O estado contra o qual um pedido novo seria verificado é justamente o que se perdeu, então um conflito não pode ser decidido. A regra ErrGrace para I/O vale num shard cujos registros nomeiam um cliente que pode recuperar um deny mode ou um lock obrigatório (um cliente NFSv4), para toda leitura ou escrita por um open anônimo ou não recuperado; os opens persistent de um cliente SMB são instalados no ServeShard e o I/O anônimo é julgado contra eles. A questão aberta 7 pergunta se essa recusa é ampla demais. RFC 0 §10.2: nenhum estado exige intervenção para sair. Decisão: um cliente cujo Recovery é refusal ou notice nunca conta como terminado, então num shard em que ele tinha estado o grace dura o período inteiro. O limite de um open SMB em espera é o grace restante mais 35 s."
+    "notes": "§4.2. O estado contra o qual um pedido novo seria verificado é justamente o que se perdeu, então um conflito não pode ser decidido. A regra ErrGrace para I/O vale num shard cujos registros nomeiam um cliente que pode recuperar um deny mode ou um lock obrigatório (um cliente NFSv4), para toda leitura ou escrita por um open anônimo ou não recuperado; os opens persistent de um cliente SMB são instalados no ServeShard e o I/O anônimo é julgado contra eles. A questão aberta 7 pergunta se essa recusa é ampla demais. RFC 0 §10.2: nenhum estado exige intervenção para sair. Decisão: um cliente cujo Recovery é refusal ou notice nunca conta como terminado, então num shard em que ele tinha estado o grace dura o período inteiro. O limite de um open SMB em espera é o grace restante mais 35 s. Um cliente SMB reconecta em vez de fazer reclaim: seus opens persistent são instalados com deny modes e locks quando ServeShard começa a servir o shard (§4.2, §4.4). Remove e rename são recusados porque podem conflitar com um deny mode ou um grant ainda a recuperar (§4.2)."
   },
   "reclaim": {
     "title": "Um [[open-reclaim|reclaim]] nunca leva mais do que havia",
     "items": [
-      "Um reclaim só é aceito de um cliente cujo registro no metadata store mostra que ele tinha estado naquele [[shard]]. Qualquer outro reclaim é recusado.",
+      "Um reclaim só é aceito de um cliente cujo registro no metadata store mostra que ele tinha estado naquele [[shard]]. Os demais são recusados.",
       "O cliente recebe de volta só o que diz que tinha, e só depois de uma nova verificação de permissões, como num [[open]] novo.",
-      "Cada reclaim é comparado com os já feitos, então, se dois clientes reivindicam o mesmo lock exclusivo, só um deles fica com ele.",
-      "O servidor precisa confiar no que o cliente declara, porque estado mantido só na memória não deixa prova. Uma cota limita quanto se pode recuperar.",
-      "Um shard que não perdeu nada responde a um reclaim com o estado que ainda mantém para esse cliente, em vez de recusá-lo."
+      "Cada reclaim é comparado com os já feitos, então, se dois clientes reivindicam o mesmo lock exclusivo, só um deles o obtém.",
+      "O servidor precisa confiar no cliente, porque estado só em memória não deixa prova. Cada nó limita o estado volátil recuperado, e além disso o reclaim tenta mais tarde.",
+      "Um cliente chamado ao reclaim pode recuperar tudo o que tem, e não só o que o shard perdido tinha. Um shard intacto responde então com o estado que ainda mantém para ele."
     ],
-    "footer": "O grace suspende as verificações de conflito contra o estado que se perdeu. Nunca suspende as verificações de permissão.",
-    "notes": "§4.2. Sem o registro durable do cliente, todo reclaim DEVE ser recusado. Um reclaim DEVE restaurar só os acessos e deny modes, locks e grants que o cliente declara, depois de autorizá-los contra a ACL e o mode atuais do arquivo e o share grant atual de quem chama. Reclaims em conflito: ErrReclaimConflict. A decisão: um cliente elegível é acreditado, como o NFSv4 acredita; o teto é a cota de reclaim do RFC 24 §4.6 (acima dela, ErrDelay; nunca para um open persistent e seus locks). Pedir mais do que o open ainda tem, ou nomear um open que não tem, é ErrNoReclaim."
+    "footer": "O grace suspende as verificações de conflito contra o estado perdido, nunca as de permissão.",
+    "notes": "§4.2. Sem o registro durable do cliente, todo reclaim DEVE ser recusado. Um reclaim DEVE restaurar só os acessos e deny modes, locks e grants que o cliente declara, depois de autorizá-los contra a ACL e o mode atuais do arquivo e o share grant atual de quem chama. Reclaims em conflito: ErrReclaimConflict. A decisão: um cliente elegível é acreditado, como o NFSv4 acredita; o teto é a cota de reclaim do RFC 24 §4.6 (acima dela, ErrDelay; nunca para um open persistent e seus locks). Pedir mais do que o open ainda tem, ou nomear um open que não tem, é ErrNoReclaim. Um reclaim além da reclaim allowance do nó recebe ErrDelay (DelayResources), nunca para um open persistent e seus locks (§4.2). Reclaim num shard que não perdeu nada: §4.2. Um cliente chamado de novo ao reclaim por uma perda posterior recupera tudo (§4.2)."
   },
   "instance": {
     "title": "O grace é por [[shard]], e cada perda é nova",
@@ -312,55 +312,50 @@
         "7"
       ],
       [
-        "um handover passa a tabela para um novo primary",
+        "um [[handover]], uma troca de primary planejada, passa a tabela para o novo primary",
         "8",
         "7 — nada perdido"
       ],
       [
-        "o novo primary sofre um crash",
+        "o novo primary sofre um crash, e a tabela se perde",
         "9",
         "9 — um grace novo"
       ]
     ],
-    "footer": "Uma [[state-reference|referência]] emitida sob a grace instance 7 agora está obsoleta. Cada inicialização eleva a incarnation de todos os shards antes de o nó responder a qualquer coisa, então uma grace instance nunca se repete.",
-    "notes": "§4.4, 'Two numbers on a shard', e o seu exemplo: um handover da incarnation 7 para a 8 mantém a grace instance 7, e um crash depois leva as duas a 9. Cada state reference carrega os bits baixos da grace instance em que foi criada. Toda partida DEVE subir a incarnation de todo shard que serve antes de responder a um pedido de open state, devolver um write verifier ou deixar um shard entrar em grace; se ela se repetisse, um ReclaimComplete enviado no mount encerraria na hora a nova instância. O resto do cluster continua concedendo: em grace ficam só os shards que perderam estado. Cada cliente guarda, por shard, a instância em que terminou o último reclaim (ShardMark.Done)."
+    "footer": "Cada [[state-reference|referência]] carrega a grace instance sob a qual foi emitida. Uma emitida sob a 7 agora está obsoleta, porque o estado que ela nomeia pode ter se perdido. Cada inicialização eleva a incarnation de todos os shards antes de o nó responder a qualquer coisa, então uma grace instance nunca se repete.",
+    "notes": "§4.4, 'Two numbers on a shard', e o seu exemplo: um handover da incarnation 7 para a 8 mantém a grace instance 7, e um crash depois leva as duas a 9. Cada state reference carrega os bits baixos da grace instance em que foi criada. Toda partida DEVE subir a incarnation de todo shard que serve antes de responder a um pedido de open state, devolver um write verifier ou deixar um shard entrar em grace; se ela se repetisse, um ReclaimComplete enviado no mount encerraria na hora a nova instância. O resto do cluster continua concedendo: em grace ficam só os shards que perderam estado. Cada cliente guarda, por shard, a instância em que terminou o último reclaim (ShardMark.Done). Um handover é uma troca de primary planejada que envia a tabela (§10)."
   },
   "recovery": {
-    "title": "Cada cliente é chamado ao reclaim do seu jeito",
+    "title": "Como cada cliente descobre que deve fazer reclaim",
     "table": [
       [
-        "Recovery",
-        "Avisado por",
-        "Termina quando",
-        "Usado por"
+        "Cliente",
+        "Como descobre que deve fazer reclaim",
+        "Quando terminou"
       ],
       [
-        "status",
-        "um flag na próxima renovação do lease",
-        "envia `ReclaimComplete` para o que lhe foi mostrado",
-        "NFSv4.1"
+        "NFSv4.1",
+        "a próxima renovação do lease volta com um flag que indica os shards onde ele deve fazer reclaim",
+        "quando avisa o servidor que terminou, para os shards que lhe foram mostrados"
       ],
       [
-        "refusal",
-        "`ErrStaleClient` em resposta à renovação e às chamadas",
-        "nunca; ele se registra de novo, mantém seu ID e então faz reclaim",
-        "NFSv4.0"
+        "NFSv4.0",
+        "o servidor recusa a renovação e as chamadas como vindas de um cliente que ele não conhece mais",
+        "nunca conta como terminado, embora se registre de novo com o mesmo nome, mantenha seu client ID e faça reclaim"
       ],
       [
-        "reconnect",
-        "`Revoked`, diante do qual o adapter encerra a conexão",
-        "cada um dos seus opens persistent reconectou ou expirou",
-        "SMB"
+        "SMB",
+        "o servidor faz o adapter SMB encerrar a conexão do cliente, e o cliente reconecta",
+        "cada um dos seus [[persistent-open|opens persistent]] reconectou ou expirou"
       ],
       [
-        "notice",
-        "`Revoked`, diante do qual o adapter envia um aviso de reinício",
-        "nunca",
-        "[[nlm|NLM]]"
+        "[[nlm|NLM]]",
+        "o servidor faz o adapter NFS enviar ao host um aviso de reinício",
+        "nunca"
       ]
     ],
-    "footer": "O servidor precisa avisar cada cliente, porque um cliente cuja sessão sobreviveu a um failover não vê reinício nenhum. O [[nlm|NLM]] não tem lease, então os locks de um host NLM duram até ele desbloqueá-los ou reiniciar.",
-    "notes": "A tabela do §4.4 e o §4.5. Uma conclusão encerra só os pares (shard, instância) mostrados ao cliente, então um shard que fez failover nesse meio-tempo continua aberto para ele. NLM: o único NSM state number durable da instalação DEVE subir, de forma durable, antes de começar o grace de um shard em que um host NLM tinha locks, e a perda é informada a todo cliente NLM que os registros do shard nomeiam. Decisão: um host NLM que morre e nunca volta mantém seus locks até um administrador revogar o seu cliente — o contrato do próprio protocolo NLM; a condição de health lock_grant_unacknowledged aponta um host assim."
+    "footer": "(cluster) O servidor precisa avisar cada cliente, porque um cliente cujo [[gateway-node|nó gateway]] continuou funcionando enquanto o primary do shard se perdia não vê reinício nenhum. Um cliente que nunca conta como terminado faz o grace durar os 90 s inteiros nos shards em que tinha estado. O [[nlm|NLM]] não tem lease, então os locks de um host NLM duram até ele desbloqueá-los ou reiniciar.",
+    "notes": "A tabela do §4.4 e o §4.5. Uma conclusão encerra só os pares (shard, instância) mostrados ao cliente, então um shard que fez failover nesse meio-tempo continua aberto para ele. NLM: o único NSM state number durable da instalação DEVE subir, de forma durable, antes de começar o grace de um shard em que um host NLM tinha locks, e a perda é informada a todo cliente NLM que os registros do shard nomeiam. Decisão: um host NLM que morre e nunca volta mantém seus locks até um administrador revogar o seu cliente — o contrato do próprio protocolo NLM; a condição de health lock_grant_unacknowledged aponta um host assim. As linhas são os tipos de Recovery do §4.4: status (ClientStatus.ReclaimNeeded na renovação, encerrado por ReclaimComplete), refusal (ErrStaleClient; propõe e confirma de novo com o mesmo nome e Boot), reconnect e notice (o callback Revoked com RevokedShardState). Decisão do §4.2: refusal e notice nunca contam como terminados, então o grace dura o período inteiro."
   },
   "durable": {
     "kicker": "O que sobrevive",
@@ -376,7 +371,7 @@
       ],
       [
         "[[open]]",
-        "volátil, mas durable se mantém vivo um arquivo sem nome, é a origem de um clone ou é persistent"
+        "volátil, mas durable se mantém vivo um arquivo que perdeu o último nome, mantém aberta a origem de um [[clone]] enquanto o clone é feito ou é persistent"
       ],
       [
         "[[byte-range-lock|lock]]",
@@ -391,12 +386,12 @@
         "volátil, mas durable enquanto o arquivo tiver um open persistent"
       ],
       [
-        "NSM state number",
-        "**durable**, um por instalação"
+        "[[nlm|NSM]] state number, que sobe sempre que locks NLM se perdem",
+        "**durable**, um por [[installation|instalação]]"
       ]
     ],
     "footer": "Aqui, durable quer dizer gravado no metadata store. Gravar um registro para cada open deixaria todo open mais lento, enquanto um grant perdido custa a um cliente apenas o seu cache.",
-    "notes": "A tabela do §8, resumida. Também voláteis: watches (a especificação NFSv4.1 não permite recuperar notificações de diretório), lock waiters, sequências dos owners, propostas de cliente pendentes, o revoked set, o grant fence e a contagem do grant budget. Um Expires durable transformaria toda renovação em uma gravação no store: 10⁵ clientes renovando são 10⁵ gravações por período de lease. Uma chamada que precisa gravar um registro de cliente, um open durable ou um delete pending com o store indisponível é recusada com o erro do store e não muda estado volátil (decisão, ainda não testada contra uma indisponibilidade). Opens durable vivem só sob o prefixo de opens do seu arquivo, para que um release os encontre (RFC 16 §4.2, RFC 7 §4.5)."
+    "notes": "A tabela do §8, resumida. Também voláteis: watches (a especificação NFSv4.1 não permite recuperar notificações de diretório), lock waiters, sequências dos owners, propostas de cliente pendentes, o revoked set, o grant fence e a contagem do grant budget. Um Expires durable transformaria toda renovação em uma gravação no store: 10⁵ clientes renovando são 10⁵ gravações por período de lease. Uma chamada que precisa gravar um registro de cliente, um open durable ou um delete pending com o store indisponível é recusada com o erro do store e não muda estado volátil (decisão, ainda não testada contra uma indisponibilidade). Opens durable vivem só sob o prefixo de opens do seu arquivo, para que um release os encontre (RFC 16 §4.2, RFC 7 §4.5). Open de origem de um clone: §9.2, §11. NSM state number: §4.5. Um NSM state number por instalação (§4.5). Open de origem de um clone: CloneOpen do engine (§11, §9.2)."
   },
   "smbopens": {
     "title": "Opens SMB: none, durable, persistent",
@@ -413,31 +408,31 @@
       ],
       [
         "[[smb-durable-open|SMB-durable]]",
-        "uma desconexão, durante o seu `Timeout`, e um handover, mas não um reinício nem um failover",
+        "uma desconexão, durante o seu `Timeout`, e um [[handover]], mas não um reinício nem um [[takeover|failover]]",
         "a tabela do primary"
       ],
       [
         "[[persistent-open|persistent]]",
-        "tudo isso, e também um reinício ou failover do seu [[primary]]",
+        "tudo isso, mais um reinício ou um [[takeover|failover]] do seu [[primary]]",
         "um registro durable, com locks e lease"
       ]
     ],
     "items": [
       "Toda escrita feita por um open persistent **DEVE** ser estável antes de o servidor confirmá-la.",
-      "Opens persistent são ativados por [[share]] e vêm desligados por padrão. Num cluster, uma share com os profile containers dos usuários **DEVERIA** ativá-los."
+      "Opens persistent são ativados por [[share]] e vêm desligados por padrão. Num cluster, uma share com os profile containers dos usuários, arquivos que o Windows mantém abertos durante toda a sessão de um usuário, **DEVERIA** ativá-los."
     ],
-    "notes": "§8.1. A regra de escritas estáveis também cobre todo open em uma share continuously available (RFC 1 §5.2; RFC 17 V19). A decisão: a continuous availability se ativa por share (RFC 15 §5.3), então só as shares que precisam pagam escritas estáveis e um registro por open; rever se o custo medido for baixo. Toda mudança em um open persistent faz commit antes da resposta que a revela. Um open persistent de um stream com nome é recusado com ErrInvalid; o adapter pede um durable no lugar. Questão aberta 2: o custo dos opens persistent não foi medido."
+    "notes": "§8.1. A regra de escritas estáveis também cobre todo open em uma share continuously available (RFC 1 §5.2; RFC 17 V19). A decisão: a continuous availability se ativa por share (RFC 15 §5.3), então só as shares que precisam pagam escritas estáveis e um registro por open; rever se o custo medido for baixo. Toda mudança em um open persistent faz commit antes da resposta que a revela. Um open persistent de um stream com nome é recusado com ErrInvalid; o adapter pede um durable no lugar. Questão aberta 2: o custo dos opens persistent não foi medido. Handover: §10. Takeover (failover): §4.4, §10. Profile containers abertos a sessão inteira (§5.3, §8.1)."
   },
   "reconnect": {
     "title": "Reconexões, replays e app instances",
     "items": [
-      "Uma reconexão só encontra o seu open antigo se cliente, principal, share, create GUID e lease key coincidirem todos.",
-      "Quando um create é repetido, o servidor devolve o [[open]] existente em vez de criá-lo uma segunda vez.",
-      "Um pedido de lock com um número de sequência que o servidor já viu recebe sucesso como resposta, mas não é aplicado de novo.",
-      "Um create com um app instance ID primeiro fecha o open do mesmo arquivo que outro cliente mantém com esse ID. Se os dois trazem uma versão e a nova não é maior, o create é recusado.",
-      "Quando uma [[session|sessão]] se perde, seus opens voláteis fecham e os durable e persistent começam a contar o seu `Timeout`. Um `LOGOFF` fecha todos."
+      "Uma reconexão só encontra o seu open antigo se coincidirem o cliente, o usuário, o share, o ID que o cliente deu ao open (o create GUID) e o ID do seu [[lease]] (a lease key).",
+      "Um cliente que não recebe resposta pode reenviar um create, marcado como replay. O servidor então devolve o [[open]] existente em vez de criá-lo uma segunda vez.",
+      "O SMB numera os pedidos de lock nos opens durable e persistent. Um pedido de lock com um número que o servidor já viu recebe sucesso como resposta, mas não é aplicado de novo.",
+      "Um app instance ID é uma etiqueta que um open pode levar. Um create com essa etiqueta primeiro fecha o open do mesmo arquivo que outro cliente mantém com a mesma, a menos que os dois tragam uma versão e a nova não seja maior, e nesse caso o create é recusado.",
+      "Quando uma [[session|sessão]] se perde, seus opens voláteis fecham e os durable e persistent começam a contar o seu `Timeout`. Quando o usuário sai com `LOGOFF`, todos fecham."
     ],
-    "notes": "§8.1. Create GUID e lease key só contam onde o open os tem; qualquer outra coisa é recusada como se o open não existisse. Um create que nomeia um create ID mantido por outro open do seu cliente é ErrCreateInUse. Replay de lock: LockSeq em um índice, uma vez por pedido. App instance: o antecessor só é fechado se pertence a outro cliente e o acesso máximo de quem chama inclui leitura; senão, o create encontra o deny mode dele como qualquer outro; uma versão não maior é ErrInstanceVersion. Uma desconexão age sobre os opens cuja Session é ela, nunca sobre o registro do cliente; um nó gateway perdido (cluster) conta como desconexão no lapso do seu lease. Um open SMB também descobre uma perda do journal com o processo vivo no próximo flush (LossSeen)."
+    "notes": "§8.1. Create GUID e lease key só contam onde o open os tem; qualquer outra coisa é recusada como se o open não existisse. Um create que nomeia um create ID mantido por outro open do seu cliente é ErrCreateInUse. Replay de lock: LockSeq em um índice, uma vez por pedido. App instance: o antecessor só é fechado se pertence a outro cliente e o acesso máximo de quem chama inclui leitura; senão, o create encontra o deny mode dele como qualquer outro; uma versão não maior é ErrInstanceVersion. Uma desconexão age sobre os opens cuja Session é ela, nunca sobre o registro do cliente; um nó gateway perdido (cluster) conta como desconexão no lapso do seu lease. Um open SMB também descobre uma perda do journal com o processo vivo no próximo flush (LossSeen). O create GUID é Durable.Create; as sequências de lock valem nos opens SMB-durable v2 e persistent; Logoff fecha todo open da sessão (§2.1, §8.1)."
   },
   "life": {
     "kicker": "A vida de um arquivo"
@@ -448,10 +443,10 @@
       "Um [[open]] mantém um arquivo vivo. Quando um arquivo aberto perde o seu último nome, o servidor torna esse open durable no mesmo passo.",
       "Quando o último open de um arquivo sem nome fecha, o open state o informa e o [[filesystem-service]] libera o arquivo.",
       "Depois de uma perda, nada é liberado antes de o [[grace-period|grace]] acabar. Então o servidor fecha todo open registrado que ninguém recuperou.",
-      "Opens, locks e grants nunca retêm bytes no disco. A eviction e a recuperação do espaço local os ignoram.",
+      "Opens, locks e grants nunca retêm bytes no disco. Quando o servidor libera espaço no seu disco local, ele os ignora.",
       "O SMB não pode renomear nem apagar um diretório enquanto um arquivo diretamente dentro dele estiver aberto. O NFS pode fazer as duas coisas."
     ],
-    "notes": "§9.1: um unlink que deixa um arquivo aberto sem entrada DEVE tornar o open durable na mesma transação; o open state nunca libera um arquivo por conta própria. Abrir e fechar um arquivo com nome NÃO DEVE gravar registro para o open, a menos que seja persistent. §9.2: até o grace acabar, um novo primary DEVE tratar todo arquivo do shard como possivelmente aberto; no fim do grace DEVE fechar todo registro de open durable que não é persistent, não é origem de clone e não foi recuperado. §9.3: manter open state NÃO DEVE tornar um extent inelegível para eviction ou reclaim. §9.5: só os filhos diretos contam (decisão); o POSIX permite as duas coisas via NFS."
+    "notes": "§9.1: um unlink que deixa um arquivo aberto sem entrada DEVE tornar o open durable na mesma transação; o open state nunca libera um arquivo por conta própria. Abrir e fechar um arquivo com nome NÃO DEVE gravar registro para o open, a menos que seja persistent. §9.2: até o grace acabar, um novo primary DEVE tratar todo arquivo do shard como possivelmente aberto; no fim do grace DEVE fechar todo registro de open durable que não é persistent, não é origem de clone e não foi recuperado. §9.3: manter open state NÃO DEVE tornar um extent inelegível para eviction ou reclaim. §9.5: só os filhos diretos contam (decisão); o POSIX permite as duas coisas via NFS. Eviction e recuperação de espaço local: §9.3."
   },
   "deleteclose": {
     "title": "[[delete-pending|Delete on close]]",
@@ -459,14 +454,14 @@
       "O SMB apaga um arquivo marcando-o como delete pending. O nome só é removido quando o último open do arquivo fecha.",
       "Até lá, opens novos de qualquer protocolo recebem `ErrDeletePending`, enquanto lookups e listagens ainda veem o nome.",
       "O último fechamento remove aquele único nome, agindo como o principal que marcou o arquivo, e não como quem fechou por último.",
-      "Um delete com semântica POSIX não é delete pending. O nome some na hora, como num `REMOVE` NFS.",
-      "O delete pending só é gravado no metadata store enquanto o arquivo tem um [[persistent-open]]. Fora disso, um failover o perde."
+      "Um cliente pode, em vez disso, pedir um delete com semântica POSIX. Isso não é delete pending, e o nome some na hora, como num `REMOVE` NFS.",
+      "O delete pending só é gravado no metadata store enquanto o arquivo tem um [[persistent-open]]. Fora disso, um [[takeover|failover]] o perde."
     ],
-    "notes": "§9.4. O unlink adiado roda como o principal que marcou o arquivo, pelo grant do open que marcou — nunca como quem fecha por último, que pode não ter acesso de exclusão algum. O rename de um arquivo delete pending é recusado; o unlink do seu nome é permitido. Um unlink ainda recusado no último fechamento é registrado em log e contado, e o arquivo fica. Decisão: um stream com nome não é apagado sozinho, então um desbloqueio do Windows (que remove Zone.Identifier) falha. Decisão: sem um open persistent um failover perde um delete pending e o arquivo mantém o nome, como faz um crash antes do último fechamento em um volume local."
+    "notes": "§9.4. O unlink adiado roda como o principal que marcou o arquivo, pelo grant do open que marcou — nunca como quem fecha por último, que pode não ter acesso de exclusão algum. O rename de um arquivo delete pending é recusado; o unlink do seu nome é permitido. Um unlink ainda recusado no último fechamento é registrado em log e contado, e o arquivo fica. Decisão: um stream com nome não é apagado sozinho, então um desbloqueio do Windows (que remove Zone.Identifier) falha. Decisão: sem um open persistent um failover perde um delete pending e o arquivo mantém o nome, como faz um crash antes do último fechamento em um volume local. Delete com semântica POSIX: §9.4."
   },
   "cluster": {
     "kicker": "(cluster) Quando o primary muda",
-    "title": "Handover, movimentação em lote, failover",
+    "title": "Handover, movimentação de arquivos, failover",
     "table": [
       [
         "Mudança",
@@ -474,23 +469,23 @@
         "Grace?"
       ],
       [
-        "handover",
-        "enviada inteira ao novo [[primary]], com as suas entradas de dedup",
+        "um [[handover]], uma troca de [[primary]] planejada",
+        "enviada inteira ao novo primary, com os [[dedup-table|resultados das chamadas recentes]], para que uma chamada reenviada depois de uma resposta perdida não rode duas vezes",
         "não, e nenhum cliente é avisado"
       ],
       [
-        "movimentação de arquivos em lote",
-        "só as entradas desses arquivos se movem; os registros dos clientes recebem antes o novo [[shard]]",
+        "alguns arquivos passam para outro [[shard]]",
+        "só as entradas desses arquivos se movem, e cada cliente que elas citam é antes registrado como tendo estado no novo shard, para que uma perda posterior ali o chame ao reclaim",
         "não"
       ],
       [
-        "failover",
+        "um [[takeover|failover]], quando o node lease do primary expira e outro nó assume",
         "perdida junto com o primary antigo",
         "sim, para esse shard"
       ]
     ],
-    "footer": "O primary antigo para de servir open state um pouco antes de o seu node lease expirar, pela margem de deriva dos relógios. O novo primary só começa o grace quando esse lease expirou, mais a mesma margem, para que os dois nunca sirvam o shard ao mesmo tempo.",
-    "notes": "§10 e §4.4 'A former primary fences itself'. Sem as entradas de dedup, uma chamada repetida cuja resposta se perdeu no handover rodaria de novo: um segundo open, um lock em conflito com o do próprio cliente. Uma movimentação em lote grava uma forwarding entry no shard que cede, então uma referência que o nomeia recebe um erro de roteamento, nunca bad stateid. Um marcador ponytail registra que ainda não existe chamada de export ou install para handovers. O último parágrafo do §10 vale também para um nó só: quando um nó que serve um shard inicia, a incarnation sobe e o write verifier NFS DEVE mudar."
+    "footer": "O primary antigo para de servir open state um pouco antes de o seu [[node-lease|node lease]] expirar, por uma margem do quanto os relógios dos nós podem divergir. O novo primary só começa o grace quando esse lease expirou, mais a mesma margem, para que os dois nunca sirvam o shard ao mesmo tempo.",
+    "notes": "§10 e §4.4 'A former primary fences itself'. Sem as entradas de dedup, uma chamada repetida cuja resposta se perdeu no handover rodaria de novo: um segundo open, um lock em conflito com o do próprio cliente. Uma movimentação em lote grava uma forwarding entry no shard que cede, então uma referência que o nomeia recebe um erro de roteamento, nunca bad stateid. Um marcador ponytail registra que ainda não existe chamada de export ou install para handovers. O último parágrafo do §10 vale também para um nó só: quando um nó que serve um shard inicia, a incarnation sobe e o write verifier NFS DEVE mudar. Margem de deriva dos relógios: §4.4, RFC 11 §3.1. Entradas de dedup: RFC 15 §4.3. O commit de uma movimentação em lote acrescenta o shard receptor a cada registro de cliente citado (§10). O failover é um takeover depois que o node lease do primary expirou (§4.4, §10)."
   },
   "numbers": {
     "kicker": "Números concretos",
@@ -514,24 +509,24 @@
     "kicker": "O que muda para quem",
     "title": "O que muda para quem",
     "devTitle": "Quem escreve adapters",
-    "dev": "Os adapters só traduzem os pedidos em chamadas neutras, e os erros no sentido inverso. Um [[adapter]] não guarda [[open-state|open state]]: o que uma reconexão precisa reencontrar vai nos bytes opacos `Adapter`.",
+    "dev": "Os adapters só traduzem os pedidos em chamadas neutras, e os erros no sentido inverso. Um [[adapter]] não guarda [[open-state|open state]]. O que uma reconexão precisa reencontrar é guardado como [[adapter-bytes|Adapter bytes]], que a tabela conserva sem lê-los.",
     "svcTitle": "Serviço e store",
-    "svc": "Cada nó tem uma `*openstate.Table`, chamada pelo [[filesystem-service]] e, num clone, pelo engine. Ela grava os registros durable pela view `OpenRecords` do RFC 16 e nunca chama outro nó.",
+    "svc": "Cada nó guarda o open state numa única tabela. Quem a chama é o [[filesystem-service]], e também o [[engine]], para manter aberta a origem de um [[clone]] enquanto a copia. A tabela grava os registros durable no metadata store e nunca chama outro nó.",
     "opsTitle": "Operadores",
     "ops": "Depois de um reinício, estado novo pode ser recusado por até 90 s. [[persistent-open|Opens persistent]] são ativados por share. As verificações de saúde apontam grace travado, recalls perdidos, loops de reboot e locks concedidos sem confirmação.",
-    "notes": "§3.1 (adapters traduzem; os bytes Adapter viajam opacos e nunca valem como verdade no gateway), §3 (a tabela é local ao nó e só sai pelo seu Sink; todo passo entre nós é do serviço, pelos Peers do RFC 17), §11 (o serviço é o único chamador, exceto o hold de clone do engine), §11.1, §8.1, §14 (quatro condições de health: lock_grant_unacknowledged, recall_deadline_misses, client_reboot_loop, grace_stuck)."
+    "notes": "§3.1 (adapters traduzem; os bytes Adapter viajam opacos e nunca valem como verdade no gateway), §3 (a tabela é local ao nó e só sai pelo seu Sink; todo passo entre nós é do serviço, pelos Peers do RFC 17), §11 (o serviço é o único chamador, exceto o hold de clone do engine), §11.1, §8.1, §14 (quatro condições de health: lock_grant_unacknowledged, recall_deadline_misses, client_reboot_loop, grace_stuck). O engine chama CloneOpen/CloneClose para a origem de um clone (§11). Os registros durable passam pela view OpenRecords do RFC 16. Adapter bytes: §3.1."
   },
   "today": {
     "title": "Onde o código de hoje é diferente",
-    "lead": "Aqui se segue o Apêndice B do RFC, que é informativo. `pkg/openstate` é escrito do zero e substitui `pkg/metadata/lock`, que depois é apagado em vez de portado.",
+    "lead": "O código de hoje se comporta de forma diferente deste projeto nos pontos a seguir.",
     "items": [
-      "Hoje o estado NFSv4 vive no [[adapter]] NFS, e os leases SMB no lease manager do SMB.",
-      "Hoje a chave do estado são strings de [[handle]], e não o arquivo.",
-      "Hoje todo lock é persistido e restaurado na inicialização, enquanto o RFC 14 mantém quase todos os locks só na memória.",
-      "Hoje há duas máquinas de estado de grace separadas, e nenhuma [[grace-instance]].",
-      "Os timeouts de hoje também são outros: uma espera de 5 s pelo break de um lock e uma pausa de 30 s por arquivo nos grants novos."
+      "Hoje o open state NFSv4 vive no [[adapter]] NFS, e os leases SMB no adapter SMB.",
+      "Hoje a chave do estado é o [[handle]] que o cliente apresenta, e não o arquivo.",
+      "Hoje todo lock é gravado no store e restaurado na inicialização, enquanto este projeto mantém quase todos os locks só na memória.",
+      "Hoje o NFS e o SMB rodam cada um o seu próprio grace period, e não existem [[grace-instance|grace instances]].",
+      "Os timeouts de hoje também são outros. Um lock espera só 5 s pelo recall do [[caching-grant]] de outro cliente, e depois de um recall um arquivo fica 30 s sem grants novos."
     ],
-    "notes": "Apêndice B. Também: um timeout de waiter (BlockingTimeout, 60 s) declarado mas lido em lugar nenhum; limites de lock como configurações; detecção de deadlock (deadlock.go) e delegations de diretório (dir_delegation.go), que o RFC não especifica; um único RWMutex sobre um mapa de locks."
+    "notes": "Apêndice B. Também: um timeout de waiter (BlockingTimeout, 60 s) declarado mas lido em lugar nenhum; limites de lock como configurações; detecção de deadlock (deadlock.go) e delegations de diretório (dir_delegation.go), que o RFC não especifica; um único RWMutex sobre um mapa de locks. Apêndice B (informativo): internal/adapter/nfs/v4/state, lease manager do SMB, handleKey := string(fileHandle), RestoreLocks, duas máquinas de grace, byteRangeLockBreakWaitTimeout = 5 s, RecentlyRecalledTTL = 30 s por arquivo; pkg/openstate substitui pkg/metadata/lock."
   },
   "rules": {
     "kicker": "Regras e não-objetivos",
@@ -550,12 +545,12 @@
     "title": "O que o RFC 14 não faz",
     "lead": "O RFC diz que este componente **NÃO DEVE** fazer nenhuma das coisas a seguir.",
     "items": [
-      "Decidir nomes, permissões ou quando um arquivo deixa de existir. Isso cabe ao RFC 7.",
+      "Decidir nomes, permissões ou quando um arquivo deixa de existir. Isso cabe à camada que guarda nomes e diretórios.",
       "Guardar o conteúdo dos arquivos ou saber onde ele está. Um lock diz respeito só a quem pode agir sobre um arquivo.",
-      "Definir shard records, node leases ou epochs do primary. Isso cabe ao RFC 11.",
+      "Definir shard records, node leases ou as [[epoch|epochs]] que barram um primary antigo. Isso cabe ao projeto que decide qual nó é dono de qual shard.",
       "Codificar um protocolo de rede. Stateids, FileIds e lease keys cabem aos [[adapter|adapters]]."
     ],
-    "notes": "§1.1. Valores de protocolo que precisam sobreviver a uma conexão — uma lease key, um create GUID, um app instance, uma sequência de lock — aqui são campos opacos, comparados e nunca interpretados. Também não oferecidos: layouts pNFS, reservados (§2.6); cópia assíncrona — toda cópia é síncrona e não mantém open state (§2.7)."
+    "notes": "§1.1. Valores de protocolo que precisam sobreviver a uma conexão — uma lease key, um create GUID, um app instance, uma sequência de lock — aqui são campos opacos, comparados e nunca interpretados. Também não oferecidos: layouts pNFS, reservados (§2.6); cópia assíncrona — toda cópia é síncrona e não mantém open state (§2.7). As epochs barram um primary superado (§10). Nomes, permissões e existência: RFC 7; shard records, node leases e epochs: RFC 11."
   },
   "open": {
     "kicker": "Ainda em aberto",
@@ -563,11 +558,11 @@
     "questions": [
       "Alguma carga de trabalho precisa de um prazo de [[recall]] NFS mais curto que o lease de 90 s?",
       "Quanto custam os [[persistent-open|opens persistent]]? Ninguém mediu ainda.",
-      "Um lock NFS situado além do byte 2⁶³ deve algum dia se encontrar com um lock SMB?",
+      "Locks SMB são intervalos simples de 64 bits, enquanto o NFS pode travar \"até o fim do arquivo\". Um lock NFS situado além do byte 2⁶³ deve algum dia se encontrar com um lock SMB?",
       "A API de gerenciamento deveria mostrar quem mantém um arquivo, com seus locks e waiters?",
       "A recusa de I/O anônimo durante o grace é mais ampla do que precisa?"
     ],
-    "notes": "O §15 lista sete questões; este slide mostra a 1, 2, 3, 4 e 7. As questões 5 e 6 tratam de qual proposta de cliente cede no teto de 4.096 propostas e do nome pendente de um principal comprovado; as duas recomendam passar o nível de prova com Propose."
+    "notes": "O §15 lista sete questões; este slide mostra a 1, 2, 3, 4 e 7. As questões 5 e 6 tratam de qual proposta de cliente cede no teto de 4.096 propostas e do nome pendente de um principal comprovado; as duas recomendam passar o nível de prova com Propose. Pergunta 3: intervalos SMB de 64 bits contra locks NFS até o fim do arquivo (§15, §2.3)."
   },
   "quizDeny": {
     "question": "Um editor do Windows mantém `data.bin` aberto e proíbe a escrita aos outros. Depois, build01 manda um `WRITE` NFSv3 para ele. O que acontece?",
@@ -632,8 +627,8 @@
         "alice-pc mantém um [[persistent-open]] num arquivo, proibindo a escrita aos outros, sob um [[lease]] SMB. O registro do open está no metadata store.",
         "N1 reinicia. A sua tabela de open state, que ficava na memória, some, mas o registro do open persistent no metadata store continua lá.",
         "Antes de responder a qualquer um, N1 reinstala do store todo open persistent. Depois entra num [[grace-period|grace period]] de no máximo 90 s.",
-        "Um segundo desktop pede para abrir o arquivo para escrita. Isso não é um [[open-reclaim|reclaim]], então N1 responde `ErrGrace`, e o SMB deixa o pedido em espera.",
-        "alice-pc reconecta e recupera o seu open. O grace acaba antes do prazo, assim que todos os clientes citados nos registros terminam.",
+        "Um segundo desktop pede para abrir o arquivo para escrita. Durante o grace, N1 só aceita [[open-reclaim|reclaims]], clientes retomando o que tinham, então responde `ErrGrace`, um \"tente mais tarde\", e o SMB deixa o pedido em espera.",
+        "alice-pc reconecta e recupera o seu open. O grace acaba antes do prazo, assim que termina cada cliente que, segundo o metadata store, tinha estado em N1.",
         "Agora o open em espera é comparado com o [[deny-mode|deny-write]] de alice-pc, e é recusado como violação de compartilhamento."
       ]
     },

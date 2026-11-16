@@ -16,7 +16,7 @@
       "content-version", "offloaded-bit", "offer", "report",
       "release", "fill", "missing", "change-version",
       "removal-marker", "repack", "unreclaimed-bytes", "headroom",
-      "loss-event", "placement-index"
+      "loss-event", "placement-index", "floor-bucket", "version-limit"
     ],
     "conflicts": ["record", "offload", "sync", "release", "durable", "handle"]
   }

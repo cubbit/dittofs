@@ -39,6 +39,9 @@ const views = {
       packets: [{ link: 'fss' }, { link: 'es', with: true }, { link: 'gs', with: true }, { link: 'ms', with: true }],
     },
     {
+      focus: ['fs', 'engine', 'gc'],
+    },
+    {
       focus: ['store', 'kv'],
       packets: [{ link: 'sk' }],
     },
@@ -49,34 +52,40 @@ const views = {
   ],
 };
 
-// alice's three operations and the keys each one writes, grouped by scope as
+// alice's three operations and the records each one writes, grouped by scope as
 // in the RFC's own key figure. Records light up as a step writes them.
-const rec = (id, x, y, label, sub, w = 200) => ({ id, x, y, w, h: 72, label, sub: `${S}.example.${sub}` });
 const E = `${S}.example`;
+// A record: label is a string key under the example (or a literal after '='),
+// sub is a string key under the example.
+const rec = (id, x, y, label, sub, w = 200) => ({
+  id, x, y, w, h: 72,
+  label: label.startsWith('=') ? label : `${E}.${label}`,
+  sub: `${E}.${sub}`,
+});
 const example = {
   viewBox: [1200, 500],
   nodes: [
     { id: 'alice', x: 10, y: 205, w: 200, h: 84, kind: 'client', label: '=alice-pc', sub: `${S}.cast.client` },
-    { id: 'gf7', x: 240, y: 10, w: 440, h: 225, kind: 'group', label: '=F‖profiles‖f7' },
+    { id: 'gf7', x: 240, y: 10, w: 440, h: 225, kind: 'group', label: `${E}.groupF7` },
     rec('fFile', 255, 50, '=File', 'fileF7'),
-    rec('fOv', 465, 50, '=ov‖start', 'overwrite'),
-    rec('fRef', 255, 142, '=ref‖offset', 'ref'),
-    rec('fFence', 465, 142, '=fx · fo', 'fence'),
-    { id: 'gd1', x: 240, y: 255, w: 440, h: 225, kind: 'group', label: '=F‖profiles‖d1 · d9' },
+    rec('fOv', 465, 50, 'overwrite', 'overwriteSub'),
+    rec('fRef', 255, 142, 'ref', 'refSub'),
+    rec('fFence', 465, 142, 'fence', 'fenceSub'),
+    { id: 'gd1', x: 240, y: 255, w: 440, h: 225, kind: 'group', label: `${E}.groupDir` },
     rec('d9', 255, 295, '=File (d9)', 'newDir'),
-    rec('dEntry', 465, 295, '=e‖digest‖downloads', 'entry'),
-    rec('dDelta', 255, 387, '=t‖unique', 'timeDelta'),
+    rec('dEntry', 465, 295, '=Entry', 'entry'),
+    rec('dDelta', 255, 387, 'timeDelta', 'timeDeltaSub'),
     rec('dFile', 465, 387, '=File (d1)', 'fileD1'),
     { id: 'gS', x: 700, y: 10, w: 235, h: 225, kind: 'group', label: `${E}.perShare` },
-    rec('sVf', 717, 50, '=vf‖…', 'versionFloor'),
-    rec('sUd', 717, 142, '=ud‖…', 'usageDelta'),
+    rec('sVf', 717, 50, 'versionFloor', 'versionFloorSub'),
+    rec('sUd', 717, 142, 'usageDelta', 'usageDeltaSub'),
     { id: 'gN', x: 700, y: 255, w: 235, h: 225, kind: 'group', label: `${E}.serverWide` },
-    rec('nNode', 717, 295, '=N‖N1', 'nodeRecord'),
+    rec('nNode', 717, 295, '=N1', 'nodeRecord'),
     { id: 'gC', x: 955, y: 10, w: 235, h: 470, kind: 'group', label: `${E}.perNamespace` },
-    rec('cI', 972, 50, '=I‖ns‖name', 'putIntent'),
-    rec('cC', 972, 150, '=C‖ns‖hash', 'chunk'),
-    rec('cB', 972, 250, '=B‖ns‖name', 'block'),
-    rec('cCR', 972, 350, '=CR‖…', 'reverseRef'),
+    rec('cI', 972, 50, 'putIntent', 'putIntentSub'),
+    rec('cC', 972, 150, 'chunk', 'chunkSub'),
+    rec('cB', 972, 250, 'block', 'blockSub'),
+    rec('cCR', 972, 350, 'reverseRef', 'reverseRefSub'),
   ],
   links: [
     { id: 'af', from: 'alice', to: 'gf7', start: [110, 205], via: [[110, 122]], end: [240, 122] },
@@ -84,9 +93,16 @@ const example = {
   ],
   steps: [
     {
-      focus: ['fFile', 'fOv', 'sVf'],
-      tone: { fFile: 'good', fOv: 'good', sVf: 'good' },
+      focus: ['fFile', 'fOv'],
+      tone: { fFile: 'good', fOv: 'good' },
       packets: [{ link: 'af', label: '=flush' }],
+    },
+    {
+      focus: ['fFile', 'fOv', 'sVf'],
+      tone: { sVf: 'good' },
+    },
+    {
+      focus: ['fFile', 'fOv', 'sVf', 'fFence', 'nNode'],
       marks: [
         { on: 'fFence', text: `${E}.guarded`, tone: 'info', below: true },
         { on: 'nNode', text: `${E}.guarded`, tone: 'info', below: true },
@@ -98,15 +114,20 @@ const example = {
       tone: { fFile: null, fOv: null, sVf: null, cI: 'good' },
     },
     {
+      focus: ['fRef', 'cC', 'cB'],
+      tone: { cI: null, fRef: 'good', cC: 'good', cB: 'good' },
+      dim: ['cI'],
+    },
+    {
       focus: ['fRef', 'cC', 'cB', 'cCR'],
-      tone: { cI: null, fRef: 'good', cC: 'good', cB: 'good', cCR: 'good' },
+      tone: { cCR: 'good' },
       dim: ['fFile', 'fOv'],
       marks: [{ on: 'fOv', text: `${E}.untouched`, tone: 'warn' }],
     },
     {
       clear: true,
       focus: ['d9', 'dEntry', 'dDelta', 'sUd'],
-      undim: ['fFile', 'fOv'],
+      undim: ['fFile', 'fOv', 'cI'],
       tone: { fRef: null, cC: null, cB: null, cCR: null, d9: 'good', dEntry: 'good', dDelta: 'good', sUd: 'good' },
       packets: [{ link: 'ad', label: '=mkdir' }],
       marks: [{ on: 'dFile', text: `${E}.guarded`, tone: 'info', below: true }],
@@ -121,10 +142,10 @@ const guards = {
   nodes: [
     { id: 'alice', x: 20, y: 40, w: 230, h: 84, kind: 'client', label: '=alice-pc', sub: `${S}.cast.client` },
     { id: 'build', x: 20, y: 240, w: 230, h: 84, kind: 'client', label: '=build01', sub: `${S}.cast.build` },
-    { id: 'dir', x: 470, y: 40, w: 280, h: 84, kind: 'store', label: '=F‖…‖d1', sub: `${G}.dir` },
-    { id: 'ea', x: 900, y: 40, w: 280, h: 72, kind: 'store', label: '=e‖…‖a.txt', hidden: true },
-    { id: 'eb', x: 900, y: 150, w: 280, h: 72, kind: 'store', label: '=e‖…‖b.txt', hidden: true },
-    { id: 'rep', x: 640, y: 240, w: 360, h: 84, kind: 'store', label: '=e‖…‖report.docx', hidden: true },
+    { id: 'dir', x: 470, y: 40, w: 280, h: 84, kind: 'store', label: '=d1', sub: `${G}.dir` },
+    { id: 'ea', x: 900, y: 40, w: 280, h: 72, kind: 'store', label: '=Entry a.txt', hidden: true },
+    { id: 'eb', x: 900, y: 150, w: 280, h: 72, kind: 'store', label: '=Entry b.txt', hidden: true },
+    { id: 'rep', x: 640, y: 240, w: 360, h: 84, kind: 'store', label: '=Entry report.docx', hidden: true },
   ],
   links: [
     { id: 'ad', from: 'alice', to: 'dir' },

@@ -47,22 +47,22 @@
   },
   "views": {
     "title": "Um store, uma [[view]] restrita por consumidor",
-    "notes": "§3 (o que cada consumidor tem), §3.2 (um único store concreto construído a partir de um KV; helpers no nível da transação como unlinkTx e chargeUsageTx), regra 3 do §1.2, e a figura rfc16-views. Lista completa: o filesystem service tem Namespace, Files, Capacity, ShareIndex e Principals.User; o open state OpenRecords; o engine Existence, Content, Lifecycle e Inspect.Refs só para o reseed; o GC Blocks; a identidade Principals, Records e Minter; a management API ControlPlane. O store é uma folha: nunca chama o engine."
+    "notes": "§3 (o que cada consumidor tem), §3.2 (um único store concreto construído a partir de um KV; helpers no nível da transação como unlinkTx e chargeUsageTx), regra 3 do §1.2, e a figura rfc16-views. Lista completa: o filesystem service tem Namespace, Files, Capacity, ShareIndex e Principals.User; o open state OpenRecords; o engine Existence, Content, Lifecycle e Inspect.Refs só para o reseed; o GC Blocks; a identidade Principals, Records e Minter; a management API ControlPlane. O store é uma folha: nunca chama o engine. O que cada view cobre está na tabela do §3: Namespace, Files, Capacity guardam nomes, atributos, ACLs, xattrs, streams, statfs e uso (RFC 7); Existence, Content, Blocks o caminho de escrita, os commits e refs do engine, o GC (RFC 6); Lifecycle a identidade de journal de um dispositivo e os seus sync marks, os version limits, as incarnações (RFC 8 §2.1)."
   },
   "rules3": {
     "title": "Três regras que mantêm o modelo coerente",
     "c1Title": "Uma [[entity|entidade]] não é um record",
     "c1": "Uma leitura devolve um File inteiro, mas é a operação que decide quais records uma escrita toca. Não existe `Put(File)`. Escritas são operações como `SetAttrs`, `Truncate` ou `Rename`, e cada uma indica os campos que muda.",
     "c2Title": "Coleções são iteradores",
-    "c2": "Nenhuma entidade tem um campo de lista como `File.Refs` ou `Directory.Entries`, porque esses dados são lidos por um iterador. Uma lista dentro de uma entidade é uma leitura O(N) escondida numa struct, e foi assim que uma escrita sequencial de 160 GB ficou lenta.",
+    "c2": "Nenhuma entidade tem um campo de lista como `File.Refs` ou `Directory.Entries`, porque esses dados são lidos por um iterador. Uma lista dentro de uma entidade é uma leitura O(N) escondida numa struct, e cada mudança na lista a relê e a regrava inteira.",
     "c3Title": "Interfaces seguem os consumidores",
     "c3": "Quem chama declara a [[view]] restrita de que precisa. Não há interface CRUD por entidade, nem interface com um método por record.",
-    "notes": "§1.2, regras 1–3. O motivo da regra 1: quem pudesse escrever a struct inteira faria ler-modificar-escrever, e toda escrita conflitaria com toda mudança de atributo. A regra 2 cita o RFC 6 §5.2. A regra 3 cita o RFC 0 §1.2 (autonomia dos componentes)."
+    "notes": "§1.2, regras 1–3. O motivo da regra 1: quem pudesse escrever a struct inteira faria ler-modificar-escrever, e toda escrita conflitaria com toda mudança de atributo. A regra 2 cita o RFC 6 §5.2. A regra 3 cita o RFC 0 §1.2 (autonomia dos componentes). O caso medido da regra 2, uma escrita sequencial de 160 GB que ficou lenta porque cada commit regravava a lista inteira de refs do arquivo, está dois slides adiante (Start here · The problem, in one example)."
   },
   "example": {
     "kicker": "Exemplo condutor",
     "title": "A manhã da alice, chave por chave",
-    "notes": "'Start here · The problem, in one example' e a figura rfc16-keys. Nó N1; share profiles; a pasta da alice profiles/alice/ é o diretório d1, o seu disco de perfil ODFC_alice.vhdx é o arquivo f7. A escrita em si não toca metadados: só o journal a guarda. O flush espera a sua transação porque sobrescreve conteúdo já confirmado; um append teria ficado para o próximo group commit. A chave da entry é o digest com chave do nome após o fold, depois o próprio nome após o fold, e guarda o original 'Downloads'. Fences: records (shard, epoch) sob guard, para que uma tomada de posse depois do snapshot faça a transação falhar. As legendas são curtas; a sequência completa: o flush reescreve o único record File de f7 (tempos, contador de mudanças; tamanho igual), move a sua entrada de version floor para o novo contador, acrescenta um overwrite record e põe guard no fence record de f7 e no node record de N1. O offload commit escreve o ref, o chunk record, o block record e as entradas de índice ao lado. O mkdir escreve o File de d9, uma Entry sob d1 com chave o digest do nome após o fold, um delta para os tempos de d1 e um delta de uso, e põe guard no record de d1."
+    "notes": "'Start here · The problem, in one example' e a figura rfc16-keys. Nó N1; share profiles; a pasta da alice profiles/alice/ é o diretório d1, o seu disco de perfil ODFC_alice.vhdx é o arquivo f7. A escrita em si não toca metadados: só o journal a guarda. O flush espera a sua transação porque sobrescreve conteúdo já confirmado; um append teria ficado para o próximo group commit. A chave da entry é o digest com chave do nome após o fold, depois o próprio nome após o fold, e guarda o original 'Downloads'. Fences: records (shard, epoch) sob guard, para que uma tomada de posse depois do snapshot faça a transação falhar. As legendas são curtas; a sequência completa: o flush reescreve o único record File de f7 (tempos, contador de mudanças; tamanho igual), move a sua entrada de version floor para o novo contador, acrescenta um overwrite record e põe guard no fence record de f7 e no node record de N1. O offload commit escreve o ref, o chunk record, o block record e as entradas de índice ao lado. O mkdir escreve o File de d9, uma Entry sob d1 com chave o digest do nome após o fold, um delta para os tempos de d1 e um delta de uso, e põe guard no record de d1. Acréscimos para a leitura a frio: o índice de versões é S‖id‖vf do §4.2 (uma entrada por File na sua Version, movida por toda transação que a eleva) e o §8.3 do RFC 6 (o journal abre com o floor, então não reemite uma versão que os metadados já têm; é um índice, nunca um contador que todo commit regrava). O guard no record de N1: §4.1 'Every fenced commit guards its primary's node record' (recusado se o record não tiver a node epoch do commit, sem marca; um takeover a marca). Put intent: I‖ns‖name do §4.2 e §7.6 do RFC 6 (registrado antes de todo put; o commit que cria o record do block o apaga e falha sem ele; nenhum objeto indicado por um intent é apagado; um início abandona os intents da execução anterior). Ref reverso: CR‖ns‖hash‖ShareID‖FileID‖offset‖died do §4.2 e §6.1 do RFC 6 (o índice de refs reversos é a autoridade, o refcount o seu cache). O fold posterior dos deltas de tempo de d1: §4.4. As chaves, para referência: F‖profiles‖f7 (File, ov‖start, ref‖offset, fx e fo), F‖profiles‖d1 (e‖digest‖downloads, t‖unique), F‖profiles‖d9, S‖profiles‖vf‖…, S‖profiles‖ud‖…, N‖N1, I‖ns‖name, C‖ns‖hash, B‖ns‖name, CR‖…."
   },
   "measured": {
     "title": "Dois desenhos que o RFC evita, ambos medidos",
@@ -91,7 +91,7 @@
       [
         "Por share",
         "`S‖share`",
-        "info e estado da share, grants, export policy, snapshots, uso, version floor"
+        "info e estado da share, grants, export policy, snapshots, uso, índice de versões"
       ],
       [
         "Por namespace",
@@ -146,12 +146,12 @@
         "As duas fazem commit"
       ],
       [
-        "Uma chave é criada sob o prefixo P depois do snapshot de uma transação que chamou `GuardRange(P)`",
-        "Essa transação aborta"
+        "G põe um único guard em todas as chaves sob o prefixo P, com `GuardRange(P)`, e outra transação cria uma chave sob P depois do snapshot de G",
+        "G aborta"
       ]
     ],
-    "footer": "Nenhuma regra pode supor que W falha. Quando W decide algo com base no que G gravou, a própria W precisa rastrear uma chave que G grava. Um guard numa transação que não grava nada não garante nada, e quem chama **NÃO DEVE** contar com ele.",
-    "notes": "§4.1 'Guards bind their own transaction, and are shared' e §5 decisão 10. Um backend em que o guard é um lock compartilhado, de modo que um guard tomado depois do commit de outra transação com guard falha, não cumpre a regra: medido, colocava em fila as criações num diretório a 26–85/s. A suíte de conformidade KV faz commit de dois guards nas duas ordens (§6.1)."
+    "footer": "Nenhuma regra pode supor que W falha. Quando W decide algo com base no que G gravou, a própria W precisa ler uma chave que G grava, com um `Get` ou um guard, para que o seu commit falhe se essa chave tiver mudado. Um guard numa transação que não grava nada não garante nada, e quem chama **NÃO DEVE** contar com ele.",
+    "notes": "§4.1 'Guards bind their own transaction, and are shared' e §5 decisão 10. Um backend em que o guard é um lock compartilhado, de modo que um guard tomado depois do commit de outra transação com guard falha, não cumpre a regra: medido, colocava em fila as criações num diretório a 26–85/s. A suíte de conformidade KV faz commit de dois guards nas duas ordens (§6.1). A leitura rastreada do rodapé é a regra de isolamento do §4.1 (todo Get, Guard e chave sob um GuardRange se registra, e o commit aborta se outra transação a gravou depois do snapshot), mostrada dois slides adiante."
   },
   "quizGuards": {
     "question": "No mesmo instante, alice-pc cria `notes.txt` e build01 cria `build.log` no diretório d1. O que acontece?",
@@ -173,10 +173,10 @@
       "Cada `Update` roda sobre um único snapshot consistente do store.",
       "O store detecta todo conflito write-write, inclusive o de uma escrita cega, que não leu nada antes. Ele também rastreia cada `Get`, cada `Guard` e cada chave de um intervalo sob guard.",
       "Assim, um lost update (as duas leem e gravam a mesma chave) ou um write skew (cada uma lê a chave que a outra grava) aborta a transação que faz commit em segundo lugar, e `Update` a repete.",
-      "`Scan` e `Before` não são rastreados, então uma leitura de intervalo não percebe uma chave que outra transação acrescenta a esse intervalo."
+      "`Scan`, que lista as chaves sob um prefixo, e `Before`, que acha a última chave antes de uma dada, não são rastreados. Então uma leitura de intervalo não percebe uma chave que outra transação acrescenta a esse intervalo."
     ],
     "rule": "Uma decisão tomada sobre um intervalo, como “o diretório está vazio, então pode ser removido”, **DEVE** fazer cada lado rastrear uma chave que o outro grava. É por isso que a remoção de um diretório chama `GuardRange` sobre as suas entries.",
-    "notes": "§4.1 'Isolation: snapshot isolation plus conflict-tracked reads' e 'Where the store's own transactions fall short, the backend supplies the rest' (um store embarcado cujas transações rastreiam menos mantém o seu próprio log das chaves confirmadas recentemente e o verifica no commit). RFC 7 §3.6 para a remoção de diretório. Aqui 'snapshot' é a visão consistente de leitura da transação, não um snapshot de share."
+    "notes": "§4.1 'Isolation: snapshot isolation plus conflict-tracked reads' e 'Where the store's own transactions fall short, the backend supplies the rest' (um store embarcado cujas transações rastreiam menos mantém o seu próprio log das chaves confirmadas recentemente e o verifica no commit). RFC 7 §3.6 para a remoção de diretório. Aqui 'snapshot' é a visão consistente de leitura da transação, não um snapshot de share. Before é definido no Reader do §4.1: o último record sob um prefixo cuja chave vem antes de uma chave dada, não rastreado, como Scan."
   },
   "durable": {
     "title": "Confirmado só quando não pode mais se perder",
@@ -186,13 +186,13 @@
   "time": {
     "title": "Hora, versões e limites vêm do store",
     "c1Title": "[[store-time|Now]]",
-    "c1": "Todo instante que o store guarda para comparar depois é tirado de `Now` e comparado com `Now`. `Now` nunca volta atrás entre transações que fazem commit em ordem. Sem um oráculo de timestamps, isso vale dentro de um nó, cujo relógio fica abaixo de um teto elevado uma vez por segundo.",
+    "c1": "Todo instante que o store guarda para comparar depois é tirado de `Now` e comparado com `Now`. `Now` nunca volta atrás entre transações que fazem commit em ordem.",
     "c2Title": "[[change-sequence|Change sequence]]",
     "c2": "Toda escrita confirmada carrega a versão que o store lhe atribuiu no commit. Nenhuma transação precisa gravar um contador para obtê-la.",
     "c3Title": "[[key-budget|Limits]]",
-    "c3": "A maior chave e o maior valor, e os bytes, as chaves e a idade que uma transação pode atingir, são propriedades do backend, nunca configurações. O RFC 6 tira deles o seu key budget K.",
-    "footer": "Nenhuma transação mantém o seu snapshot aberto enquanto espera ou faz I/O remoto, então um lote de K itens faz commit bem dentro do limite de idade.",
-    "notes": "§4.1 'Now is store time', 'Every committed write carries a change sequence', 'Transaction limits are the backend's'. O teto do relógio é N‖node‖clk, uma escrita por segundo por nó, nunca uma por transação. Entre nós, num store sem oracle, duas leituras em ordem de commit podem diferir até σ (RFC 0 §1.4). Os conflict ranges contam no orçamento porque alguns backends os cobram do mesmo limite que as escritas."
+    "c3": "A maior chave e o maior valor, e os bytes, as chaves e a idade que uma transação pode atingir, são propriedades do backend, nunca configurações. O [[key-budget|key budget]] de uma operação em lotes é tirado deles.",
+    "footer": "Alguns stores têm um oráculo de timestamps, um serviço que distribui instantes ordenados. Sem ele, `Now` só mantém a ordem dentro de um nó. É o relógio do nó, nunca abaixo do último valor devolvido e nunca acima de um teto que o nó grava e eleva uma vez por segundo, então um relógio atrasado durante um reinício não faz `Now` voltar atrás.",
+    "notes": "§4.1 'Now is store time', 'Every committed write carries a change sequence', 'Transaction limits are the backend's'. O teto do relógio é N‖node‖clk, uma escrita por segundo por nó, nunca uma por transação. Entre nós, num store sem oracle, duas leituras em ordem de commit podem diferir até σ (RFC 0 §1.4). Os conflict ranges contam no orçamento porque alguns backends os cobram do mesmo limite que as escritas. Oráculo de timestamps e relógio limitado: §4.1 'Now is store time'. O key budget K é o do §5.2 do RFC 6, tirado de Limits (§4.1). Nenhuma transação mantém um snapshot durante I/O remoto ou uma espera (RFC 6 §5.4), então um lote de K itens faz commit bem dentro de Age."
   },
   "counters": {
     "title": "Por que contadores são [[delta-fold|deltas]]",
@@ -230,13 +230,13 @@
   "fold": {
     "title": "Quem consolida, e como se lê o total",
     "items": [
-      "A chave de um delta **DEVE** ser única entre todos os writers, por isso é formada pelo ID e pela epoch do nó seguidos de um número de sequência. Um delta gravado sob a chave de outro o substituiria, e um dos dois se perderia.",
+      "A chave de um delta **DEVE** ser única entre todos os writers. Ela é formada pelo ID do nó do primary que grava e pela sua [[node-epoch|node epoch]], seguidos de um número de sequência. Um delta gravado sob a chave de outro o substituiria, e um dos dois se perderia.",
       "O [[primary]] de cada [[shard]] consolida em lotes os deltas do seu shard em totais guardados por shard, então dois folds nunca gravam a mesma chave.",
       "Quem lê, como `statfs` ou uma checagem de quota, soma os totais de cada shard e os deltas ainda não consolidados.",
-      "Os tempos de diretório também são gravados como deltas. Eles só são consolidados quando não há nenhuma criação, link ou rename para aquele diretório em andamento.",
+      "Os tempos de diretório também são gravados como deltas, e o primary os consolida no próprio record do diretório. Toda criação, link ou rename para o diretório põe um guard nesse record, então um fold só começa quando nenhuma está em andamento, e as novas esperam o seu commit. Isso é a [[fold-admission|fold admission]].",
       "Cada delta faz commit na mesma transação da mudança que registra, então um crash não perde nada e nada precisa ser reconstruído."
     ],
-    "notes": "§4.4. Um fold põe guard em SH‖shard, então o fold de um ex-primary conflita com a tomada de posse. metadata_unfolded_deltas é o alerta quando o fold fica para trás. Marcadores ponytail: uma leitura de uso percorre um total por shard (O(shards)); a vazão do fold limita o ritmo sustentado de transações que mudam a cobrança, por shard. Um delta de tempo de diretório também leva o cut depois do qual foi escrito, para que os snapshots vejam os tempos certos."
+    "notes": "§4.4. Um fold põe guard em SH‖shard, então o fold de um ex-primary conflita com a tomada de posse. metadata_unfolded_deltas é o alerta quando o fold fica para trás. Marcadores ponytail: uma leitura de uso percorre um total por shard (O(shards)); a vazão do fold limita o ritmo sustentado de transações que mudam a cobrança, por shard. Um delta de tempo de diretório também leva o cut depois do qual foi escrito, para que os snapshots vejam os tempos certos. A parte única da chave de um delta é o ID do nó do primary e a sua epoch, depois uma sequência (§4.4, e §4.2.1: NodeID, node epoch e sequência de quem grava, 32 bytes). Folds dos tempos de diretório e a sua admissão: §4.4 'Directory times are the same problem' e RFC 7 §9.2."
   },
   "quizFold": {
     "question": "Muitas transações acabaram de mudar o uso de uma share, e o [[primary]] ainda não consolidou os deltas delas. O que o `statfs` mostra?",
@@ -257,11 +257,11 @@
     "items": [
       "Um arquivo é cobrado pelo seu tamanho lógico inteiro, sem os holes, mesmo quando um clone ou a deduplicação compartilham o seu conteúdo com outro arquivo.",
       "Os bytes são cobrados quando chega o seu [[existence|existence commit]], mas a escrita foi admitida muito antes disso.",
-      "Por isso cada [[primary]] mantém em memória uma reserva por principal, outra por projeto e outra por share. Uma escrita reserva os bytes que pode acrescentar antes de ser confirmada."
+      "Por isso cada [[primary]] mantém em memória uma reserva por [[principal]], outra por projeto (uma árvore de diretórios com [[quota|cota]] própria) e outra por share. Uma escrita reserva os bytes que pode acrescentar antes de ser confirmada."
     ],
     "decisionTitle": "Uma quota pode ser ultrapassada, mas só até um limite declarado",
-    "decision": "Cada primary só vê as próprias reservas. Quando uma mesma quota recebe escritas por vários shards ao mesmo tempo, ela pode ser ultrapassada no máximo pela soma das margens de reserva que cada um desses primaries pode ter. Com um único shard, ela não é ultrapassada depois que todas as remoções terminam.",
-    "notes": "§4.4 'Charging is logical bytes per file' e 'Quota is enforced by reservation', com o seu marcador decision. A folga de cada primary é min(S, f × Hard) (RFC 17 §5.6). Um crash perde as reservas; o recovery confirma a existence de toda escrita reaplicada antes de servir o arquivo. Uma remoção ainda em andamento com crédito de hole faz o uso parecer menor até terminar. Caminho de melhoria: dar a cada primary, por lease, uma fatia da quota restante."
+    "decision": "Cada primary só vê as próprias reservas, os bytes que admitiu e que ainda não fizeram commit. Quando uma mesma cota recebe escritas por vários shards ao mesmo tempo, o uso pode passar dela no máximo pela soma das reservas que esses primaries podem ter. Com um único shard não pode, exceto enquanto a remoção de um arquivo ainda roda, que até terminar faz o uso parecer menor do que é.",
+    "notes": "§4.4 'Charging is logical bytes per file' e 'Quota is enforced by reservation', com o seu marcador decision. A folga de cada primary é min(S, f × Hard) (RFC 17 §5.6). Um crash perde as reservas; o recovery confirma a existence de toda escrita reaplicada antes de servir o arquivo. Uma remoção ainda em andamento com crédito de hole faz o uso parecer menor até terminar. Caminho de melhoria: dar a cada primary, por lease, uma fatia da quota restante. Redação para a leitura a frio: as reservas de cada primary são limitadas pelos bytes admitidos cuja existence ainda não fez commit; com um único shard o excesso é zero quando toda remoção termina, e uma remoção ainda rodando sob um hole credit faz o uso parecer menor até terminar (marcador decision do §4.4; RFC 6 §6.2). Projeto: um alvo de cota (§4.2 S‖id‖qt, RFC 7 §2.8)."
   },
   "entities": {
     "kicker": "Entidades",
@@ -314,7 +314,7 @@
       [
         "Escopo",
         "Entidades",
-        "Incluído quando uma share é exportada"
+        "Copiado num export dos metadados da share, para um backup ou uma mudança"
       ],
       [
         "Por share",
@@ -324,10 +324,10 @@
       [
         "Do servidor inteiro",
         "usuários, grupos, netgroups, nós, shards, configurações, records da API",
-        "Não. O export leva só os principals e netgroups que a share referencia."
+        "Não. Um export leva só os principals e netgroups que os arquivos e as policies da share referenciam."
       ]
     ],
-    "notes": "§2.3 e a sua tabela de escopos (RFC 26 para export e import). Um import DEVE recusar, antes de publicar qualquer coisa, nome ou caminho de share, principal ou netgroup em colisão (§2.3.1, consequências do §4.2). Os segredos são cifrados em envelope com uma chave guardada fora do KV (§2.3, §5 decisão 9)."
+    "notes": "§2.3 e a sua tabela de escopos (RFC 26 para export e import). Um import DEVE recusar, antes de publicar qualquer coisa, nome ou caminho de share, principal ou netgroup em colisão (§2.3.1, consequências do §4.2). Os segredos são cifrados em envelope com uma chave guardada fora do KV (§2.3, §5 decisão 9). Aqui 'export' é o do RFC 26: o stream selado dos metadados de uma share que um catalog backup e uma mudança de namespace gravam. Não é servir a share por NFS. A export policy da linha por share é a política de acesso da share."
   },
   "shares": {
     "title": "Nomes, caminhos e estado das shares",
@@ -351,23 +351,23 @@
       ],
       [
         "`retired`",
-        "A share foi apagada com os snapshots desanexados. A chamada recebe `ErrStale`, e os records da share ficam até o seu último snapshot desanexado ser apagado."
+        "A share foi apagada, mas os seus snapshots foram desanexados, ou seja, mantidos por conta própria. A chamada recebe `ErrStale`, e os records de que esses snapshots precisam ficam até o último deles ser apagado."
       ]
     ],
     "footer": "Renomear uma share ou mudar o seu caminho mantém funcionando os handles, o open state e os tree connects já existentes, porque eles se referem ao ID da share, não ao nome.",
-    "notes": "§2.3.1. Nomes: sem \\ / : * ? \" < > | ou caracteres de controle, e não IPC$; um nome terminado em $ é acessível mas não listado. Uma share tem o seu próprio shard, tirado de IDS‖shard, nunca reutilizado. Um cut de snapshot não é um estado: o seu gate segura as escritas por pouco tempo (RFC 12 §2.3)."
+    "notes": "§2.3.1. Nomes: sem \\ / : * ? \" < > | ou caracteres de controle, e não IPC$; um nome terminado em $ é acessível mas não listado. Uma share tem o seu próprio shard, tirado de IDS‖shard, nunca reutilizado. Um cut de snapshot não é um estado: o seu gate segura as escritas por pouco tempo (RFC 12 §2.3). Share retired e snapshots desanexados: §2.3.1 (records, FileIDs, record Cut e snapshots desanexados ficam até o último snapshot desanexado ser apagado; RFC 12 §2.8)."
   },
   "removal1": {
     "kicker": "Quando as coisas somem",
     "title": "Remover uma [[share]]: some na hora",
     "steps": [
-      "Se o cut de um snapshot estiver em andamento, `DeleteShare` responde [[retry-later|tente mais tarde]]. Se a share tiver snapshots, o pedido precisa dizer se eles serão apagados ou desanexados.",
+      "Se o cut de um snapshot estiver em andamento, `DeleteShare` responde [[retry-later|tente mais tarde]]. Se a share tiver [[snapshot|snapshots]], o pedido precisa dizer se eles serão apagados ou desanexados, o que os mantém depois que a share deixa de existir.",
       "Senão, uma transação marca a share como `being removed` e libera o seu nome e caminho.",
       "A partir desse commit, toda chamada à share recebe `ErrStale`, e uma nova share pode usar o nome.",
       "O resto da limpeza roda em segundo plano. Cada passo dela é idempotente e registrado, então depois de um crash a remoção retoma de onde o registro diz que parou."
     ],
     "footer": "`DeleteShare` também é recusado enquanto o GC estiver pausado num [[namespace]] que a share indica. Um pedido para apagar os snapshots é recusado se algum deles estiver travado ou em uso por um backup, clone, restore, cópia ou movimentação.",
-    "notes": "'Start here · Scenarios', o operador removendo 'profiles'; §2.3.2 e a sua tabela de estados. A remoção não tem volta. O passo 1 lê com rastreamento e põe range guard nos records de snapshot e de uso da share, então todo gate concorrente (uma pausa de namespace, o anúncio de um cut, um re-home, um novo record de uso, escritas do control plane) vale nas duas ordens de commit. Um re-home em andamento não a recusa: a remoção encerra o re-home."
+    "notes": "'Start here · Scenarios', o operador removendo 'profiles'; §2.3.2 e a sua tabela de estados. A remoção não tem volta. O passo 1 lê com rastreamento e põe range guard nos records de snapshot e de uso da share, então todo gate concorrente (uma pausa de namespace, o anúncio de um cut, um re-home, um novo record de uso, escritas do control plane) vale nas duas ordens de commit. Um re-home em andamento não a recusa: a remoção encerra o re-home. Desanexar os snapshots os mantém depois da remoção da share (§2.3.2, RFC 12 §2.8)."
   },
   "removal2": {
     "title": "Sete passos, todos retomáveis",
@@ -380,7 +380,7 @@
       "**Os records da share, e depois os seus shards**, são apagados. Se os snapshots foram desanexados, a share passa a `retired` e guarda o que eles precisam.",
       "**O [[namespace]]** é esvaziado quando nada mais o referencia."
     ],
-    "decision": "O nome da share é liberado na hora, e o espaço só depois. Apagar os records das chaves de criptografia não torna os dados ilegíveis, porque cópias das chaves continuam existindo, cifradas com uma master key.",
+    "decision": "O nome da share é liberado na hora, e o espaço só depois. Os clientes veem a share sumir no primeiro commit, mas os seus bytes ficam no bucket até o [[gc|GC]] apagá-los.",
     "notes": "§2.3.2, passos 1–7 e o marcador decision. Um coordenador, o primary do shard que tem a raiz da share, conduz a remoção; os passos 3 e 4 rodam em cada shard, registrados em SH‖shard‖rm, avançados em lotes dentro de K. Com detach, o passo 3 primeiro faz offload do que os holds dos snapshots mantidos cobrem. O passo 4 não é um apagamento por intervalo: as contagens e os refs reversos que um ref nomeia ficam fora do prefixo. O ID da share e o seu tag de journal nunca são reutilizados. As chaves sobrevivem, envoltas por uma master key, em todo export e em todo objeto keys das locations. O RFC sugere uma disposição `shred`, que recusa enquanto algum backup citar o namespace e destrói a master key que cifra as suas chaves, se uma instalação precisar tornar ilegíveis os dados apagados (decisão em §2.3.2)."
   },
   "format": {
@@ -390,10 +390,10 @@
       "Um binário mais novo lê o [[format-record|format record]] antes de qualquer outra chave, e encontra um formato que sabe ler.",
       "Ele continua gravando nesse formato mais antigo, e registra no record do seu nó a faixa de formatos que suporta.",
       "Para voltar atrás, um operador reinstala o binário antigo, que ainda consegue abrir o store.",
-      "Só quando um operador eleva o formato pelo gate do control plane o binário antigo se recusa a abrir o store, e diz por quê."
+      "Só quando um operador eleva o formato pelo control plane o binário antigo se recusa a abrir o store, e diz por quê. O control plane recusa essa elevação enquanto algum nó registrado não souber ler o novo formato."
     ],
     "footer": "Todo valor gravado começa com o byte de versão do seu [[value-codec|codec]]. Um binário só grava as versões de codec que o formato ativo permite, e recusa uma versão que não conhece em vez de tentar adivinhar.",
-    "notes": "'Start here · Scenarios', atualização e rollback; §4.6 e §4.3. O gate recusa enquanto o intervalo de algum nó registrado não tiver a nova versão (RFC 13 §5.5). Um novo tipo de record, uma mudança na codificação das chaves ou uma nova versão de codec são uma mudança de formato. Uma mudança que deixasse um binário mais novo ler só um store reescrito por ele é uma migração, um passo próprio do operador."
+    "notes": "'Start here · Scenarios', atualização e rollback; §4.6 e §4.3. O gate recusa enquanto o intervalo de algum nó registrado não tiver a nova versão (RFC 13 §5.5). Um novo tipo de record, uma mudança na codificação das chaves ou uma nova versão de codec são uma mudança de formato. Uma mudança que deixasse um binário mais novo ler só um store reescrito por ele é uma migração, um passo próprio do operador. O gate do control plane é o passo que eleva o formato regravando \\x00format numa transação que confere a faixa de cada nó registrado (§4.6)."
   },
   "foldrules": {
     "title": "Uma [[fold-rule|fold rule]], congelada de vez",
@@ -416,21 +416,21 @@
     ],
     "why": [
       "Abrir um store nunca o atualiza. O binário mais novo continua gravando o formato que encontrou no [[format-record|format record]], então voltar atrás é só reinstalar o antigo.",
-      "Abrir um store não muda o formato dele. Só um operador o muda, elevando-o pelo gate do control plane, e só a partir daí o binário antigo recusa o store.",
+      "Abrir um store não muda o formato dele. Só um operador o muda, elevando-o pelo control plane, e só a partir daí o binário antigo recusa o store.",
       "Não é preciso restaurar nada. O binário mais novo só grava as versões de codec que o formato ativo permite, então o antigo ainda lê todos os valores do store."
     ],
-    "notes": "§4.6 'A store is never upgraded by being opened' (o rollback de um único nó é reinstalar o binário antigo; o formato n define as versões de codec que um binário pode gravar, então nenhum valor gravado é ilegível para um leitor mais antigo do formato n) e 'Start here · Scenarios', atualização e rollback."
+    "notes": "§4.6 'A store is never upgraded by being opened' (o rollback de um único nó é reinstalar o binário antigo; o formato n define as versões de codec que um binário pode gravar, então nenhum valor gravado é ilegível para um leitor mais antigo do formato n) e 'Start here · Scenarios', atualização e rollback. A elevação pelo gate do control plane: §4.6."
   },
   "inspect": {
     "kicker": "Depuração",
     "title": "Ler sem um cliente: Inspect e dump",
     "items": [
       "[[inspect|Inspect]] lê arquivos, entries, refs, chunks e blocks pelo seu ID, sem nenhuma checagem de autorização.",
-      "Só consumidores internos confiáveis o recebem: snapshots, export, auditoria, reparo, a management API e a ferramenta de debug. Um adapter, nunca.",
+      "Só consumidores internos confiáveis o recebem: snapshots, backups e mudanças de metadados, auditoria, reparo, a management API e a ferramenta de debug. Um adapter, nunca.",
       "`dump file <id>` imprime um File em JSON com a sua ACL, xattrs, entries, holes e refs. `dump chunk` confere a contagem de referências de um chunk com uma recontagem.",
-      "Os records `Secret` são cifrados em envelope com uma chave guardada fora do store, e nunca entram num dump nem num export."
+      "Os records `Secret` são cifrados em envelope com uma chave guardada fora do store, e nunca entram num dump nem são copiados num export."
     ],
-    "notes": "§3.1 (Inspect; entregá-la a um adapter contornaria o ponto de controle do RFC 7 §7.1), §4.5 (dump; nenhum outro caminho de debug deveria ler chaves cruas), §2.3 (Secret), §5 decisão 9."
+    "notes": "§3.1 (Inspect; entregá-la a um adapter contornaria o ponto de controle do RFC 7 §7.1), §4.5 (dump; nenhum outro caminho de debug deveria ler chaves cruas), §2.3 (Secret), §5 decisão 9. Aqui export é o export de metadados do RFC 26 (catalog backups, mudanças de namespace), como no slide do control plane."
   },
   "testing": {
     "kicker": "Testes",
@@ -450,7 +450,7 @@
     "n2": "3,5–5,1 TB",
     "w2": "de chaves e valores brutos, de 10⁸ arquivos sem snapshots a 10⁹ arquivos com snapshots",
     "n3": "79%",
-    "w3": "do total são records de conteúdo (refs, chunks, chaves reversas), com 10⁹ arquivos",
+    "w3": "do total são records de conteúdo (refs, chunks, refs reversos), com 10⁹ arquivos",
     "n4": "0,9 TB",
     "w4": "só para o índice de refs reversos, um quarto do total",
     "n5": "×3",
@@ -488,12 +488,12 @@
     "title": "Questões em aberto",
     "questions": [
       "A vazão que o fold consegue sustentar para uma share no store replicado.",
-      "Se o agrupamento em `EntriesPlus` reduz o bastante a diferença de desempenho no `READDIRPLUS`.",
-      "As chamadas exatas da view `Lifecycle` são uma proposta, a decidir quando o start do engine for construído.",
-      "Nenhum RFC diz ainda quem regrava a identidade de journal dos shards quando um dispositivo é reinicializado.",
-      "As metas do benchmark de durabilidade, pelo menos 10 commits por sync do dispositivo e p99 dentro de três tempos de sync, são propostas, não medidas."
+      "Se ler em lotes as entries de um diretório junto com os seus atributos reduz o bastante a diferença de desempenho no `READDIRPLUS` do NFS.",
+      "As chamadas exatas de `Lifecycle`, a view que o engine lê ao iniciar, são uma proposta, a decidir quando esse início for construído.",
+      "O store registra qual journal fica em cada dispositivo de um nó. Quando um dispositivo é apagado e preparado de novo, nenhuma regra diz ainda quem regrava a referência dos shards a esse journal.",
+      "As metas do benchmark de commits duráveis são propostas, não medidas: pelo menos 10 commits por segundo para cada sync do dispositivo, e p99 dentro de três tempos de sync."
     ],
-    "notes": "§5 (ainda em aberto, para medir no store replicado), §3 (os formatos de Lifecycle são uma proposta), §3.2 (duas propostas em torno de RecordJournal), §7.1 (o marcador decision do gate de durabilidade), §7.4 'Suites'."
+    "notes": "§5 (ainda em aberto, para medir no store replicado), §3 (os formatos de Lifecycle são uma proposta), §3.2 (duas propostas em torno de RecordJournal), §7.1 (o marcador decision do gate de durabilidade), §7.4 'Suites'. Redação para a leitura a frio: EntriesPlus é a chamada em lotes de entries com atributos por trás do READDIRPLUS (§5); Lifecycle é a view de início do engine (§3); RecordJournal grava J‖journal e JD‖node‖device, e quem regrava a identidade de journal dos shards quando um dispositivo é reinicializado está em aberto (§3.2); o gate de durabilidade é o §7.1 com o seu marcador decision."
   },
   "scenes": {
     "cast": {
@@ -515,23 +515,24 @@
       "steps": [
         "Os adapters NFS e SMB só têm `vfs.Service`, a interface do filesystem service. Eles nunca chegam diretamente ao store.",
         "O filesystem service, o engine, o GC e a management API recebem cada um apenas a [[view]] que declararam, uma interface restrita sobre o store.",
+        "Cada view leva o nome do que cobre. `Namespace`, `Files` e `Capacity` cobrem nomes, atributos e espaço usado. `Existence`, `Content` e `Lifecycle`, do engine, cobrem o fato de uma escrita ter acontecido, quais [[chunk|chunks]] guardam os seus bytes e o que o engine lê ao iniciar. `Blocks`, do GC, cobre os blocks que ele pode apagar.",
         "Por trás de todas essas views há um único metadata store, que só chega ao seu banco de dados por uma pequena interface, o [[kv|KV]].",
         "Abaixo do KV roda um banco embarcado, quando há um único nó, ou um replicado, quando há um cluster."
       ]
     },
     "example": {
-      "perShare": "por share · S‖profiles",
+      "perShare": "por share: profiles",
       "serverWide": "servidor inteiro",
       "perNamespace": "por namespace",
       "fileF7": "atributos de f7",
-      "overwrite": "sobrescrita",
+      "overwrite": "overwrite record",
       "ref": "ref",
-      "fence": "fences",
+      "fence": "fence records",
       "fileD1": "record de d1",
-      "newDir": "novo diretório",
-      "entry": "Entry “Downloads”",
+      "newDir": "nova pasta",
+      "entry": "“Downloads” → d9",
       "timeDelta": "delta de tempo",
-      "versionFloor": "version floor",
+      "versionFloor": "índice de versões",
       "usageDelta": "delta de uso",
       "nodeRecord": "node record",
       "putIntent": "put intent",
@@ -541,11 +542,26 @@
       "guarded": "sob guard",
       "untouched": "não tocado",
       "steps": [
-        "**Flush.** alice-pc sobrescreve 64 KiB do disco de perfil da alice, o arquivo f7, e faz flush. Uma transação regrava o record File de f7, acrescenta um overwrite record e move a entrada de f7 no version floor. Ela também põe um [[guard]] nos [[fence-records|fences]] de f7 e no record do nó N1, e por isso falha se outro nó tiver assumido o arquivo.",
-        "**Upload.** Alguns minutos depois, os bytes novos são enviados ao bucket. Antes de o envio começar, um record de put intent indica o novo [[block]].",
-        "**Offload commit.** Terminado o envio, uma transação grava um [[ref]] dizendo qual [[chunk]] contém esses bytes, os records do chunk e do block e as suas entradas de índice. Ela nunca toca o record File de f7, então os envios e as escritas da alice nunca disputam uma chave.",
-        "**mkdir Downloads.** alice-pc cria a pasta `Downloads` dentro da pasta d1 da alice. Uma transação grava o record File do novo diretório, a sua Entry sob d1, um [[delta-fold|delta]] para os tempos de d1 e um delta de uso. No record de d1 ela só põe um guard, sem nunca regravá-lo."
-      ]
+        "**Flush.** alice-pc sobrescreve 64 KiB do disco de perfil da alice, o arquivo f7, e faz flush. Uma transação regrava o record File de f7, com os seus tempos e o contador de mudanças, e acrescenta um overwrite record dizendo quais 64 KiB foram substituídos.",
+        "A mesma transação move a entrada de f7 no índice de versões da share para o novo valor do contador. O índice tem uma entrada por arquivo, então quando o [[journal]] abre ele consegue achar o maior contador entre todos os arquivos, e nunca entrega um que já foi usado.",
+        "A transação também põe um [[guard]] nos [[fence-records|fence records]] de f7 e no record do nó N1, que guarda a [[node-epoch|node epoch]] de N1. Se outro nó assumiu o arquivo nesse meio-tempo, um desses records mudou, e a transação falha.",
+        "**Upload.** Alguns minutos depois, os bytes novos são enviados ao bucket como um novo [[block]]. Logo antes do envio, um [[put-intent|put intent]] registra o nome do block. O GC nunca apaga um objeto que um intent indica, e se o nó cair antes do commit seguinte, ele abandona o intent ao reiniciar, para que o objeto possa ser apagado.",
+        "**Offload commit.** Terminado o envio, uma transação grava um [[ref]] dizendo qual [[chunk]] agora contém esses bytes de f7, um record do chunk dizendo em que block ele está, e o record do próprio block. Na mesma transação ela apaga o put intent.",
+        "Ela grava também um ref reverso, uma chave arquivada sob o chunk que indica f7 e o offset. Os refs reversos dizem quais arquivos usam um chunk, e a contagem de referências do chunk é um resumo deles em cache. Nada disso toca o record File de f7, então os envios e as escritas da alice nunca disputam uma chave.",
+        "**mkdir Downloads.** alice-pc cria a pasta `Downloads`, d9, dentro da pasta d1 da alice. Uma transação grava o record File de d9, uma Entry sob d1 que liga o nome a d9, um [[delta-fold|delta]] para os tempos de d1 e um delta de uso. No record de d1 ela só põe um guard, e um fold posterior soma nele os deltas de tempo."
+      ],
+      "groupF7": "arquivo f7",
+      "groupDir": "pastas d1 e d9",
+      "overwriteSub": "64 KiB substituídos",
+      "refSub": "bytes → chunk",
+      "fenceSub": "shard e epoch",
+      "timeDeltaSub": "para os tempos de d1",
+      "versionFloorSub": "última mudança de f7",
+      "usageDeltaSub": "espaço usado",
+      "putIntentSub": "indica o block",
+      "chunkSub": "em que block está",
+      "blockSub": "o objeto enviado",
+      "reverseRefSub": "chunk → f7"
     },
     "guards": {
       "dir": "record de d1",

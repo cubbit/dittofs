@@ -9,7 +9,7 @@
   "terms": {
     "known": [
       "filesystem-service", "share", "node", "primary", "gateway-node", "open-state",
-      "deny-mode", "handle", "caching-grant", "anonymous-open", "admission", "retry-later"
+      "deny-mode", "handle", "caching-grant", "anonymous-open", "admission", "retry-later", "adapter-bytes"
     ],
     "new": [
       "adapter", "core", "pipeline", "codec",

@@ -6,8 +6,8 @@
     "kicker": "Aprenda DittoFS · Introdução",
     "title": "DittoFS, de fora para dentro",
     "lead": "O DittoFS é um servidor de arquivos para clientes NFS e SMB que guarda os arquivos num bucket. Esta introdução mostra quem o usa, o que roda dentro dele e o caminho de uma escrita do cliente até o bucket.",
-    "built": "Baseado no RFC 0 e no architecture.md (562b578)",
-    "notes": "O único deck que não está ligado a um só RFC. Fontes: docs/internals/rfcs/rfc-0-data-lifecycle.md ('Start here', Glossary, §1 Scope, §4.2, §5, §10) para o design, docs/internals/architecture.md para o código de hoje, e README.md para o que é o DittoFS. Commit 562b578. Os RFCs especificam o design-alvo; os slides que descrevem o código de hoje dizem isso. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique num termo sublinhado para ver a definição."
+    "built": "Baseado nos documentos de design do DittoFS e na visão geral do código, no commit 562b578",
+    "notes": "O único deck que não está ligado a um só RFC. Fontes: docs/internals/rfcs/rfc-0-data-lifecycle.md ('Start here', Glossary, §1 Scope, §4.2, §5, §10) para o design, docs/internals/architecture.md para o código de hoje, e README.md para o que é o DittoFS. Commit 562b578. Os RFCs especificam o design-alvo; os slides que descrevem o código de hoje dizem isso. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique num termo sublinhado para ver a definição. As fontes do selo: RFC 0 e docs/internals/architecture.md no commit 562b578."
   },
   "learn": {
     "kicker": "Antes de começar",
@@ -67,11 +67,11 @@
     "items": [
       "Os usuários montam uma [[share]] como qualquer NAS: como unidade no Windows ou como ponto de montagem no Linux.",
       "As escritas deles são respondidas na velocidade do disco local, mesmo que o conteúdo acabe num bucket.",
-      "Os arquivos sobrevivem a um reinício, porque o servidor só responde a uma escrita quando consegue recuperá-la.",
+      "Uma escrita sobrevive a um crash do servidor quando é respondida, e a uma queda de energia quando passa por um flush.",
       "Eles veem os mesmos arquivos via NFS e via SMB, e os locks valem para os dois protocolos.",
       "Usuários e permissões são os mesmos, seja qual for o protocolo pelo qual o cliente chega."
     ],
-    "notes": "RFC 0 'The problem' (responder a pequenas sobrescritas aleatórias na velocidade do disco local, manter toda escrita confirmada após um crash), 'What this RFC promises' (uma escrita só é confirmada quando o journal consegue recuperá-la), RFC 14 §7 (conflitos entre protocolos), RFC 19 (um só modelo de ACL). README.md 'Features' lista como já funcionando a coordenação entre protocolos e um modelo de ACL compartilhado."
+    "notes": "RFC 0 'The problem' (responder a pequenas sobrescritas aleatórias na velocidade do disco local, manter toda escrita confirmada após um crash), 'What this RFC promises' (uma escrita só é confirmada quando o journal consegue recuperá-la), RFC 14 §7 (conflitos entre protocolos), RFC 19 (um só modelo de ACL). README.md 'Features' lista como já funcionando a coordenação entre protocolos e um modelo de ACL compartilhado. O terceiro item: RFC 1 'What this RFC promises' (uma escrita confirmada sobrevive na hora à morte do processo, e a uma queda de energia depois do sync, pelo flush do cliente ou dentro de um limite fixo)."
   },
   "problem": {
     "title": "Por que não pôr os arquivos só num bucket?",
@@ -97,9 +97,9 @@
     "analogyTitle": "Analogia",
     "analogy": "O [[journal]] é a bandeja da mesa, o bucket é um armazém e o [[metadata-store|metadata store]] é um livro-razão. Os papéis esperam na bandeja até que o livro-razão diga que o armazém os recebeu, guardados em caixas. Só então a cópia da bandeja pode ir para o lixo, e se um papel for necessário de novo, é buscado no armazém.",
     "stopsTitle": "Onde deixa de valer",
-    "stops": "Neste armazém uma caixa nunca é reaberta para corrigir uma folha: toda mudança vai para uma caixa nova. E como bandeja e livro-razão são consultados separadamente, o DittoFS consegue distinguir uma folha que nunca foi escrita de uma que foi escrita e depois perdida.",
-    "footer": "A analogia e o seu limite vêm do próprio RFC 0.",
-    "notes": "RFC 0 'Start here · In plain words'. A segunda metade de 'onde deixa de valer' é a função de residency (§4.2): journal e metadados respondem a perguntas diferentes, então a combinação deles pode apontar uma perda em vez de devolver zeros."
+    "stops": "Neste armazém uma caixa nunca é reaberta para corrigir uma folha, e toda mudança vai para uma caixa nova. Além disso, o livro-razão anota cada folha escrita, mesmo antes que o armazém a receba. Assim, quando uma folha não está nem na bandeja nem no armazém, o livro-razão diz ao DittoFS se ela nunca foi escrita ou se foi escrita e depois perdida.",
+    "footer": "O resto desta introdução acompanha uma escrita pela bandeja, pelo armazém e pelo livro-razão, chamando-os pelos nomes reais.",
+    "notes": "RFC 0 'Start here · In plain words'. A segunda metade de 'onde deixa de valer' é a função de residency (§4.2): journal e metadados respondem a perguntas diferentes, então a combinação deles pode apontar uma perda em vez de devolver zeros. A analogia e o seu limite são do próprio RFC 0 ('In plain words'). O livro-razão que anota cada escrita: RFC 0 'One write, followed end to end' passo 2 e §4.2 (os metadados registram a existence separada dos bytes, então uma escrita que nada mais guarda é lida como Lost)."
   },
   "inside": {
     "kicker": "Dentro de um nó"
@@ -150,7 +150,7 @@
     "title": "O [[filesystem-service|filesystem service]] decide num só lugar",
     "lead": "Toda chamada, de qualquer adapter, passa pelos mesmos passos na mesma ordem:",
     "steps": [
-      "**Rotear** — só num cluster, a chamada vai para o [[primary]] do arquivo, o nó que decide por ele.",
+      "**Rotear** — quando vários nós trabalham juntos num cluster, a chamada vai para o [[primary]] do arquivo, o único nó que decide por ele. Um nó sozinho não roteia nada.",
       "**Admitir** — o estado e as regras da share precisam deixar este cliente entrar ([[admission]]).",
       "**Autorizar** — verifica-se o [[share-grant|share grant]] do usuário e depois as permissões do arquivo.",
       "**Open state** — a chamada é confrontada com os deny modes, locks e caching grants que outros detêm.",
@@ -158,7 +158,7 @@
       "**Engine** — só no fim o conteúdo é lido ou gravado."
     ],
     "footer": "Hoje os adapters chamam o [[runtime|Runtime]] e o `pkg/metadata` em vez dele.",
-    "notes": "RFC 0 §1.3 (o filesystem service decide e ordena toda operação dos clientes no primary); RFC 17 'Start here' (os seis passos de toda chamada) — os nomes dos passos seguem a cena do deck do RFC 17. A linha sobre hoje: architecture.md 'Core Abstraction Layers' (os adapters passam pelo Runtime e pelo pkg/metadata)."
+    "notes": "RFC 0 §1.3 (o filesystem service decide e ordena toda operação dos clientes no primary); RFC 17 'Start here' (os seis passos de toda chamada) — os nomes dos passos seguem a cena do deck do RFC 17. A linha sobre hoje: architecture.md 'Core Abstraction Layers' (os adapters passam pelo Runtime e pelo pkg/metadata). Roteamento: RFC 0 'Start here · The same system as a cluster' e §1.3 (cada shard tem um só primary; num nó só, é esse nó)."
   },
   "below": {
     "title": "Abaixo do serviço: três partes",
@@ -167,9 +167,9 @@
     "c2Title": "Open state",
     "c2": "Registra quem mantém cada arquivo aberto, com lock ou em cache. A maior parte vive em memória, no nó que é o [[primary]] do arquivo.",
     "c3Title": "Engine",
-    "c3": "Move o conteúdo dos arquivos. Comanda o [[journal]], o [[carver]] e o [[syncer]], e decide quando enviar, fazer evict e buscar.",
+    "c3": "Move o conteúdo dos arquivos. Comanda o [[journal]], onde toda escrita chega primeiro, o [[carver]], que empacota os bytes para o envio, e o [[syncer]], que os envia ao bucket e os busca de volta. Decide quando cada uma dessas coisas acontece.",
     "footer": "Cada um tem a sua própria seção: [[metadata-store|metadata store]], [[open-state|open state]], [[engine]], [[journal]].",
-    "notes": "RFC 0 §1.3 (a terceira camada; o GC faz parte do content subsystem mas é um irmão do engine, executado por namespace remoto — RFC 8 §1, §10.5), linhas do Glossary para metadata store, open state e engine; RFC 14 'In plain words' ('a maior parte da mesa vive em memória'). Hoje, architecture.md: metadados no BadgerDB por meio do pkg/metadata (que também tem um lock manager por share), conteúdo num engine.Store por share (pkg/block/engine) que compõe journal, syncer e block store daquela share."
+    "notes": "RFC 0 §1.3 (a terceira camada; o GC faz parte do content subsystem mas é um irmão do engine, executado por namespace remoto — RFC 8 §1, §10.5), linhas do Glossary para metadata store, open state e engine; RFC 14 'In plain words' ('a maior parte da mesa vive em memória'). Hoje, architecture.md: metadados no BadgerDB por meio do pkg/metadata (que também tem um lock manager por share), conteúdo num engine.Store por share (pkg/block/engine) que compõe journal, syncer e block store daquela share. As frases sobre carver e syncer: RFC 0 Glossary ('carver', 'syncer'), §5.2 (o offload corta, empacota e faz o put)."
   },
   "units": {
     "title": "As unidades, da menor à maior",
@@ -239,27 +239,27 @@
   },
   "write": {
     "title": "Uma escrita, do início ao fim",
-    "notes": "RFC 0 'Start here · One write, followed end to end', passos 1–4, e §5.1, §5.2, §8.1. O passo 2 simplifica: a escrita sobrescreveu conteúdo já confirmado, então o flush espera o commit da sua existence, que entra no próximo group commit; um append ou o preenchimento de um buraco é registrado em até um segundo sem que o flush espere. Passo 3: chunks de cerca de 256 KiB, cada um nomeado por um hash com chave; um bloco de cerca de 4 MiB; uma transação de metadados registra chunks e bloco, e só então o journal fica sabendo quais extents estão seguros. Passo 4: o evict descarta só extents que já passaram por offload; o espaço em disco volta quando um segment inteiro não guarda mais nada necessário."
+    "notes": "RFC 0 'Start here · One write, followed end to end', passos 1–4, e §5.1, §5.2, §8.1. O passo 2 simplifica: a escrita sobrescreveu conteúdo já confirmado, então o flush espera o commit da sua existence, que entra no próximo group commit; um append ou o preenchimento de um buraco é registrado em até um segundo sem que o flush espere. Passo 3: chunks de cerca de 256 KiB, cada um nomeado por um hash com chave; um bloco de cerca de 4 MiB; uma transação de metadados registra chunks e bloco, e só então o journal fica sabendo quais extents estão seguros. Passo 4: o evict descarta só extents que já passaram por offload; o espaço em disco volta quando um segment inteiro não guarda mais nada necessário. O motivo do passo 2: RFC 0 'What this RFC promises' item 2 (depois do stability point uma sobrescrita nunca é lida como o conteúdo mais antigo que substituiu). A premissa do passo 2: até o commit da existence, os metadados ainda apontam para o chunk antigo (RFC 0 §4.2, a linha do chunk stale: Lost se descartado, nunca o chunk stale); o dispositivo do journal perdido é RFC 0 §10 'Journal device lost'."
   },
   "safe": {
     "title": "Quando uma escrita está segura?",
     "items": [
-      "Uma escrita só é respondida quando o [[journal]] consegue recuperá-la.",
+      "Uma escrita só é respondida quando o [[journal]] consegue recuperá-la mesmo se o processo do DittoFS morrer.",
       "Nada é cortado, hasheado ou enviado enquanto o cliente espera.",
-      "Um flush a torna [[durable]], seja o `COMMIT` do NFS, o `FLUSH` do SMB ou um `fsync`.",
+      "Um flush, seja o `COMMIT` do NFS, o `FLUSH` do SMB ou um `fsync`, a torna [[durable]] até diante de uma queda de energia.",
       "A cópia local só é descartada quando um [[report]] confirma que o bucket a tem.",
-      "Um [[block|bloco]] só sai do bucket quando nenhum arquivo, snapshot ou clone o usa."
+      "Um [[block|bloco]] só sai do bucket quando nenhum arquivo, [[snapshot|snapshot]] ou [[clone]] o usa."
     ],
-    "footer": "O metadata store registra que uma escrita aconteceu, com o novo tamanho e a nova data de modificação do arquivo, em cerca de um segundo. Um flush que cobre uma sobrescrita espera até que isso aconteça.",
-    "notes": "RFC 0 'What this RFC promises' itens 1, 3 e 4; §5.1 (o conteúdo NÃO DEVE ser cortado, hasheado nem transferido no caminho de escrita; a existence é confirmada em group commit dentro de existence_age, proposta 1 s, e um stability point espera o commit da existence das sobrescritas pendentes de conteúdo confirmado). O item 5 simplifica 'um bloco só é apagado quando nenhum arquivo, snapshot ou clone referencia um chunk cujo record o localiza ali'. O quarto item: 'nunca presumido pelo fim de uma transferência ou pela passagem do tempo'."
+    "footer": "O metadata store registra em cerca de um segundo que cada escrita aconteceu. Um flush só espera por isso quando cobre uma sobrescrita, porque até então o metadata store ainda aponta para os bytes antigos. Uma escrita que só aumentava um arquivo ou preenchia um buraco, se for perdida antes disso, deixa o arquivo como estava, mais curto ou com o buraco.",
+    "notes": "RFC 0 'What this RFC promises' itens 1, 3 e 4; §5.1 (o conteúdo NÃO DEVE ser cortado, hasheado nem transferido no caminho de escrita; a existence é confirmada em group commit dentro de existence_age, proposta 1 s, e um stability point espera o commit da existence das sobrescritas pendentes de conteúdo confirmado). O item 5 simplifica 'um bloco só é apagado quando nenhum arquivo, snapshot ou clone referencia um chunk cujo record o localiza ali'. O quarto item: 'nunca presumido pelo fim de uma transferência ou pela passagem do tempo'. Itens 1 e 3, sobre morte do processo e queda de energia: RFC 1 'What this RFC promises' item 1. O motivo do rodapé: RFC 0 'What this RFC promises' item 2 (um extent cuja escrita chegou ao stability point nunca é lido como o conteúdo mais antigo que ela substituiu; se os bytes sumiram a leitura falha) e §10 'Local content corrupt'. Clone e snapshot: RFC 0 Glossary 'Snapshots and backups'. O caso de aumento ou buraco: RFC 0 §10 'Journal device lost' (um append ou preenchimento de buraco cuja existence ainda estava pendente não deixa rastro, e o arquivo é lido como antes dessa escrita, mais curto ou com um buraco, não como zeros sobre dados escritos)."
   },
   "read": {
     "title": "Uma leitura a frio",
-    "notes": "RFC 0 'One write, followed end to end' passo 5; o terceiro Scenario (uma sobrescrita durante uma busca: o fill nunca sobrescreve o que o journal tem, a escrita vence); §6.1 Resolution, §6.2 Fill, §4.2 (escrito, sem chunk atual, nada no journal: Lost, a leitura falha). O código de hoje segue a mesma ordem: architecture.md 'Block Reads (verified)' — primeiro o journal, depois um GET de intervalo do bloco empacotado, verificado com BLAKE3 e trazido de volta ao journal."
+    "notes": "RFC 0 'One write, followed end to end' passo 5; o terceiro Scenario (uma sobrescrita durante uma busca: o fill nunca sobrescreve o que o journal tem, a escrita vence); §6.1 Resolution, §6.2 Fill, §4.2 (escrito, sem chunk atual, nada no journal: Lost, a leitura falha). O código de hoje segue a mesma ordem: architecture.md 'Block Reads (verified)' — primeiro o journal, depois um GET de intervalo do bloco empacotado, verificado com BLAKE3 e trazido de volta ao journal. A 'versão atual' do passo 5: RFC 0 §4.2 (uma sobrescrita de conteúdo já em offload torna o seu chunk stale; descartada, é lida como Lost, nunca o chunk stale)."
   },
   "partial": {
     "title": "Uma leitura pela metade: journal e bucket",
-    "notes": "RFC 0 §6.1 (pergunta-se primeiro ao journal, que devolve os bytes que tem e os extents que não tem; os metadados só são consultados sobre esses), §6.2 (um fill NÃO DEVE sobrescrever um extent que o journal tem; é opcional). RFC 8 §7.1 (metadados só para o que o journal não tem), §7.2 (nenhum byte de um chunk é copiado antes de o chunk inteiro ser verificado; a resposta sai em ordem de arquivo), §7.3 (o fill é uma decisão), §7.8 (proposta: só os chunks cobertos se os bytes faltantes forem no máximo um quarto do bloco e a leitura não for sequencial; senão o bloco inteiro). Chunks de cerca de 256 KiB são o tamanho do design (RFC 0); desenho fora de escala. Hoje uma leitura a frio é um GET com range do bloco empacotado, verificado com BLAKE3 (architecture.md 'Block Reads')."
+    "notes": "RFC 0 §6.1 (pergunta-se primeiro ao journal, que devolve os bytes que tem e os extents que não tem; os metadados só são consultados sobre esses), §6.2 (um fill NÃO DEVE sobrescrever um extent que o journal tem; é opcional). RFC 8 §7.1 (metadados só para o que o journal não tem), §7.2 (nenhum byte de um chunk é copiado antes de o chunk inteiro ser verificado; a resposta sai em ordem de arquivo), §7.3 (o fill é uma decisão), §7.8 (proposta: só os chunks cobertos se os bytes faltantes forem no máximo um quarto do bloco e a leitura não for sequencial; senão o bloco inteiro). Chunks de cerca de 256 KiB são o tamanho do design (RFC 0); desenho fora de escala. Hoje uma leitura a frio é um GET com range do bloco empacotado, verificado com BLAKE3 (architecture.md 'Block Reads'). O passo 3 diz em palavras a regra do §7.8; o RFC 8 marca o quarto como uma proposta fixa, tirada de trabalhos anteriores. Os quatro chunks são desenhados a partir do offset da leitura; o slide os põe no meio de K1 para que valha a condição 'não sequencial' do §7.8, que o exemplo do RFC deixa em aberto."
   },
   "residency": {
     "title": "Duas fontes, cinco respostas",
@@ -324,18 +324,18 @@
   },
   "restart": {
     "title": "N1 cai no meio de um upload",
-    "notes": "RFC 0 §1.4 (put intents: abandonados na partida, antes do primeiro offload) e 'Scenarios · N1 crashes in the middle of an upload', passos 1–6, e §10 'Crash'. O nome de um bloco é cunhado de novo a cada tentativa de put e nunca reutilizado (RFC 8); o objeto órfão é recolhido pelo GC (RFC 9 §5). O write verifier do NFS muda a cada reinício, então os clientes NFS reenviam as escritas instáveis (RFC 0 §1.4). Resultado, nas palavras do RFC: o upload que falhou custa tempo e espaço no bucket, nunca dados."
+    "notes": "RFC 0 §1.4 (put intents: abandonados na partida, antes do primeiro offload) e 'Scenarios · N1 crashes in the middle of an upload', passos 1–6, e §10 'Crash'. O nome de um bloco é cunhado de novo a cada tentativa de put e nunca reutilizado (RFC 8); o objeto órfão é recolhido pelo GC (RFC 9 §5). O write verifier do NFS muda a cada reinício, então os clientes NFS reenviam as escritas instáveis (RFC 0 §1.4). Resultado, nas palavras do RFC: o upload que falhou custa tempo e espaço no bucket, nunca dados. O put intent é um record de metadados (RFC 0 Glossary 'Metadata records'); um nó único abandona todo intent ao iniciar porque é o único que escreve, então toda tentativa começada por um processo anterior terminou (RFC 0 §1.4); I9: um block name é criado por uma única tentativa de put e nenhuma outra o usa."
   },
   "survive": {
     "title": "O que um reinício mantém",
     "c1Title": "Mantido",
-    "c1": "Se só o processo morreu, toda escrita que o [[journal]] respondeu é mantida. Depois de uma queda de energia, são mantidas as que já passaram por [[sync]]. Os metadados e tudo o que está no bucket também são mantidos.",
+    "c1": "Se só o processo do DittoFS morreu, toda escrita que o [[journal]] respondeu é mantida, porque o sistema operacional ainda a tem. Uma queda de energia também apaga o que o sistema ainda não tinha gravado no disco, então só ficam as escritas que já passaram por [[sync]]. O journal faz sync a cada flush e, sozinho, em cerca de um segundo. Os metadados e o conteúdo do bucket também são mantidos.",
     "c2Title": "Refeito",
     "c2": "O journal reconstrói o seu índice a partir dos próprios arquivos. Um upload interrompido é refeito, porque os seus bytes ainda estão [[dirty|Dirty]].",
     "c3Title": "Retomado",
     "c3": "Boa parte do [[open-state|open state]] fica em memória e se perde. Os clientes retomam opens e locks durante um [[grace-period|grace period]] depois do reinício.",
     "footer": "Um [[smb-durable-open|open SMB-durable]] não sobrevive a um reinício. Um [[persistent-open|persistent open]] sobrevive, porque fica gravado no metadata store.",
-    "notes": "RFC 1 'What the RFC promises' (uma escrita confirmada sobrevive à morte imediata do processo, e a um crash do host depois do sync — pelo flush do cliente ou dentro de um limite fixo, 1 s proposto); RFC 0 §10 'Crash'; RFC 14 §8 (o que é durable: opens e locks são voláteis e retomados no grace, caching grants nunca são retomados) e §8.1. Conexões e sessões também se perdem; os clientes se reconectam."
+    "notes": "RFC 1 'What the RFC promises' (uma escrita confirmada sobrevive à morte imediata do processo, e a um crash do host depois do sync — pelo flush do cliente ou dentro de um limite fixo, 1 s proposto); RFC 0 §10 'Crash'; RFC 14 §8 (o que é durable: opens e locks são voláteis e retomados no grace, caching grants nunca são retomados) e §8.1. Conexões e sessões também se perdem; os clientes se reconectam. Morte do processo contra queda de energia: RFC 1 'Scenarios · The power fails half a second after a write nobody flushed' (se só o processo tivesse morrido o sistema operacional ainda teria o record; um record sem sync não sobrevive à perda do host) e §5.2 (o timer de sync, 1 s proposto)."
   },
   "outage": {
     "title": "O bucket para de responder",
@@ -362,7 +362,7 @@
       ],
       [
         "o journal enche",
-        "enquanto offload, evict e [[repack]] liberam espaço, as escritas recebem [[retry-later]]"
+        "as escritas recebem [[retry-later]] enquanto o offload envia os bytes, o evict descarta as cópias locais e o [[repack]] devolve o espaço em disco"
       ],
       [
         "falha a gravação de metadados",
@@ -377,8 +377,8 @@
         "o conteúdo que já está no bucket está salvo, mas as shares servidas por esse journal esperam um operador"
       ]
     ],
-    "footer": "Toda condição se resolve sozinha quando a causa some, exceto três que esperam um operador: um disco de journal perdido com conteúdo que nenhum outro journal tem, um metadata store perdido e um nó iniciado a partir de uma imagem de disco copiada ou restaurada.",
-    "notes": "RFC 0 §10, simplificado, e §10.2. A linha completa é 'Journal at capacity, remote available'; o repack é o RFC 1 §7.2. A linha dos 30 s é o self-fence (§1.4). Disco do journal perdido: depois do reconhecimento do operador, o conteúdo que nunca passou por offload e cuja existence foi confirmada é lido como Lost. As três exceções (§10.2, 'What this RFC promises'): um dispositivo de journal perdido numa share que nenhum outro journal tem, um metadata store perdido (um operador inicia um recovery import do catalog backup mais recente) e um nó iniciado a partir de uma imagem copiada ou restaurada."
+    "footer": "Toda condição se resolve sozinha quando a causa some, exceto três que esperam um operador: um disco de journal perdido, um metadata store perdido e um nó iniciado a partir de uma imagem de disco copiada ou restaurada, porque a cópia e o original poderiam servir ao mesmo tempo e responder aos clientes como um só servidor.",
+    "notes": "RFC 0 §10, simplificado, e §10.2. A linha completa é 'Journal at capacity, remote available'; o repack é o RFC 1 §7.2. A linha dos 30 s é o self-fence (§1.4). Disco do journal perdido: depois do reconhecimento do operador, o conteúdo que nunca passou por offload e cuja existence foi confirmada é lido como Lost. As três exceções (§10.2, 'What this RFC promises'): um dispositivo de journal perdido numa share que nenhum outro journal tem, um metadata store perdido (um operador inicia um recovery import do catalog backup mais recente) e um nó iniciado a partir de uma imagem copiada ou restaurada. Por que uma imagem copiada espera: RFC 0 §10.2, a decisão sobre o nó iniciado de uma imagem copiada (duas cópias que voltassem as duas responderiam aos clientes como um só servidor). É o repack que devolve espaço ao journal (RFC 0 §8.2; o evict sozinho não libera nada, §8.1). A primeira exceção do rodapé vale para um nó só: ali nenhum outro journal tem o conteúdo de uma share; num cluster o journal de uma réplica pode assumir o shard sem operador (§10 'Journal device lost')."
   },
   "quizFull": {
     "question": "O bucket está fora do ar há horas e o [[journal]] do N1 está cheio. O que acontece com a próxima escrita NFS do build01?",
@@ -406,19 +406,19 @@
       "Um lock NFS é apenas consultivo, então recusa outros locks, mas nunca leituras ou escritas.",
       "Um [[caching-grant|caching grant]] em conflito com um pedido sofre [[recall]] antes que o pedido prossiga."
     ],
-    "footer": "Hoje esse estado vive em cada adapter, mais um lock manager compartilhado.",
-    "notes": "RFC 14 'In plain words', 'A scenario: an NFS build tool and an SMB editor share one file' e §7 'Conflicts across protocols'. Um caching grant é um lease ou oplock SMB, ou uma delegation NFSv4; o recall acontece no protocolo de quem o tem, seja qual for o protocolo que causou o conflito. Hoje: RFC 14 Apêndice B (estado NFSv4 no adapter NFS, leases SMB no lease manager SMB, locks em pkg/metadata/lock); o README.md lista como funcionando os breaks bidirecionais de lease/delegation entre SMB e NFS."
+    "footer": "Hoje cada adapter guarda os opens e os caching grants do seu protocolo, e os locks de bytes ficam num único lock manager compartilhado pelos dois adapters.",
+    "notes": "RFC 14 'In plain words', 'A scenario: an NFS build tool and an SMB editor share one file' e §7 'Conflicts across protocols'. Um caching grant é um lease ou oplock SMB, ou uma delegation NFSv4; o recall acontece no protocolo de quem o tem, seja qual for o protocolo que causou o conflito. Hoje: RFC 14 Apêndice B (estado NFSv4 no adapter NFS, leases SMB no lease manager SMB, locks em pkg/metadata/lock); o README.md lista como funcionando os breaks bidirecionais de lease/delegation entre SMB e NFS. A linha sobre hoje: RFC 14 Apêndice B (o estado NFSv4 no adapter NFS, os leases SMB no lease manager SMB, os locks de bytes em pkg/metadata/lock)."
   },
   "identity": {
     "title": "Quem você é, verificado num só lugar",
     "items": [
       "O adapter informa quem o cliente diz ser e qual prova, se houver, confirma isso.",
-      "A [[admission]] aplica as regras da share: quais flavours de segurança e quais clientes ela aceita, e como as identidades passam por squashing.",
+      "A [[admission]] aplica as regras da share. Elas dizem quais flavours de segurança e quais clientes ela aceita, e quais usuários passam por squashing, de modo que o root, por exemplo, age como o usuário anônimo da share.",
       "O [[share-grant|share grant]] do usuário define um teto, e dentro dele quem decide é o mode ou a ACL do arquivo.",
       "As permissões de arquivo são decididas num só [[chokepoint]], com um único modelo de ACL para NFS e SMB."
     ],
-    "footer": "Hoje toda operação leva um `AuthContext`, o squashing acontece em `Runtime.ApplyIdentityMapping` e as permissões são verificadas em `pkg/metadata`.",
-    "notes": "RFC 17 (admission, autorização, o chokepoint), RFC 18 (identidade e squashing), RFC 19 (um só modelo de ACL, o teto da share). AUTH_SYS só declara uma identidade; Kerberos e NTLM a provam — a Identity neutra registra qual dos dois. Hoje: o invariante de arquitetura 2 do CLAUDE.md (toda operação carrega um *metadata.AuthContext; Runtime.ApplyIdentityMapping faz o squashing num só lugar para os dois adapters; as verificações de permissão ficam em pkg/metadata)."
+    "footer": "Hoje cada adapter anexa a cada operação uma descrição de quem chama, uma única função compartilhada faz o squashing para os dois protocolos, e a camada de metadados verifica as permissões.",
+    "notes": "RFC 17 (admission, autorização, o chokepoint), RFC 18 (identidade e squashing), RFC 19 (um só modelo de ACL, o teto da share). AUTH_SYS só declara uma identidade; Kerberos e NTLM a provam — a Identity neutra registra qual dos dois. Hoje: o invariante de arquitetura 2 do CLAUDE.md (toda operação carrega um *metadata.AuthContext; Runtime.ApplyIdentityMapping faz o squashing num só lugar para os dois adapters; as verificações de permissão ficam em pkg/metadata). Squashing: RFC 18 'Start here · In plain words' ('squash: substituir o principal de quem chama pelo principal anônimo da share') e o seu exemplo de root squash. A linha sobre hoje em palavras: a descrição de quem chama é metadata.AuthContext, a função compartilhada de squashing é Runtime.ApplyIdentityMapping e a camada de metadados é pkg/metadata."
   },
   "horizon": {
     "kicker": "O escopo, e o código de hoje"
@@ -432,8 +432,8 @@
       "Uma chamada que chega a outro nó é encaminhada ao primary pelo [[gateway-node|gateway]] desse nó, que por si só não decide nada.",
       "Os journals de cada nó são replicados em outros nós, para que uma réplica possa assumir os shards de um nó perdido."
     ],
-    "footer": "Os RFCs 10, 11 e 15 descrevem o cluster, que vem depois da primeira release.",
-    "notes": "RFC 0 'Start here · The same system as a cluster', §1.3 ('Each shard has one primary'), §1.4 (o perfil de nó único; os RFCs 10, 11 e 15 têm o status deferred), §10 'Node lost' (cluster). Hoje, architecture.md 'Multi-Node Metadata': o Badger serve exatamente um processo dfs."
+    "footer": "O cluster vem depois da primeira release.",
+    "notes": "RFC 0 'Start here · The same system as a cluster', §1.3 ('Each shard has one primary'), §1.4 (o perfil de nó único; os RFCs 10, 11 e 15 têm o status deferred), §10 'Node lost' (cluster). Hoje, architecture.md 'Multi-Node Metadata': o Badger serve exatamente um processo dfs. Os RFCs 10, 11 e 15 descrevem o cluster."
   },
   "differs": {
     "title": "Onde o código de hoje difere do design",
@@ -450,8 +450,8 @@
       ],
       [
         "[[chunk|Chunks]]",
-        "1–16 MiB, deduplicados entre arquivos",
-        "cerca de 256 KiB, sem dedup entre arquivos na primeira release"
+        "1–16 MiB, e um chunk comum a dois arquivos é guardado uma só vez, com [[deduplication|deduplicação]]",
+        "cerca de 256 KiB, e na primeira release os chunks de cada arquivo são enviados mesmo quando idênticos"
       ],
       [
         "Os adapters chamam",
@@ -469,8 +469,8 @@
         "records no [[metadata-store|metadata store]]"
       ]
     ],
-    "footer": "Os decks das seções explicam o design; o architecture.md descreve o código como ele é.",
-    "notes": "Hoje: architecture.md 'Per-Share Block Store Isolation' e 'Block Store — Local Journal Tier' (um diretório de journal por share), 'Carve' (FastCDC 1/4/16 MiB, dedup contra o SyncedHashStore), 'Key Interfaces'; Apêndice B dos RFCs 14 e 23. Design: RFC 0 §1 e RFC 1 (um journal por dispositivo), Glossary 'chunk' e §3.1 (a primeira release não deduplica entre arquivos), §1.3, RFC 14 §3, RFC 0 Glossary 'control plane'."
+    "footer": "Com deduplicação, o offload pula um chunk que consta como já guardado, e depois a cópia local pode ser descartada. Uma única resposta errada deixaria esses bytes sem cópia em lugar nenhum, por isso o design deixa a deduplicação fora da primeira release. Os decks das seções explicam o design, e o guia de arquitetura do repositório, `docs/internals/architecture.md`, descreve o código como ele é.",
+    "notes": "Hoje: architecture.md 'Per-Share Block Store Isolation' e 'Block Store — Local Journal Tier' (um diretório de journal por share), 'Carve' (FastCDC 1/4/16 MiB, dedup contra o SyncedHashStore), 'Key Interfaces'; Apêndice B dos RFCs 14 e 23. Design: RFC 0 §1 e RFC 1 (um journal por dispositivo), Glossary 'chunk' e §3.1 (a primeira release não deduplica entre arquivos), §1.3, RFC 14 §3, RFC 0 Glossary 'control plane'. O motivo do rodapé: RFC 0 §3.1, a decisão que deixa a deduplicação entre arquivos fora da primeira release (o seu oráculo é o único componente em que uma única resposta errada, um chunk dado como guardado que não está em lugar nenhum, perde dados). A cadeia: com deduplicação o offload referencia um chunk já guardado em vez de enviá-lo, e o extent passa a constar como em offload e pode ser descartado; o RFC 8 §6.5 aponta um chunk dado como guardado que não está em lugar nenhum como a única resposta errada que perde dados."
   },
   "next": {
     "kicker": "Para onde ir depois",
@@ -555,7 +555,7 @@
       "evicted": "evict feito",
       "steps": [
         "Às 09:00 a alice-pc grava 64 KiB no seu disco de perfil. O N1 acrescenta um [[record]] ao [[journal]] no seu disco local e responde. Enquanto ela espera, nada é cortado, hasheado ou enviado.",
-        "Logo depois a alice-pc envia um flush, e o journal faz o [[sync]] do record no seu disco. Como a escrita substituiu dados que já existiam, o flush só é respondido quando o metadata store registrou que a escrita aconteceu, ou seja, a sua [[existence|existência]].",
+        "Logo depois a alice-pc envia um flush, e o journal faz o [[sync]] do record no seu disco. Até aqui, o metadata store aponta para a versão anterior desses 64 KiB. Por isso o flush também espera que ele registre que a escrita aconteceu, a sua [[existence|existência]]. A partir daí, se o disco do journal se perdesse antes do envio, uma leitura falharia com um erro em vez de devolver os bytes antigos.",
         "Às 09:04, em segundo plano, o N1 faz o [[offload]] dos bytes: corta-os em [[chunk|chunks]], empacota-os num [[block|bloco]] e faz o put do bloco em `dfs-data`. Quando o bucket o guardou, o metadata store registra chunks e bloco, e só então o journal fica sabendo que esses bytes estão seguros.",
         "Às 18:00 o journal está enchendo. Ele faz [[evict]] da sua cópia local desses 64 KiB, e pode fazê-lo porque agora o bucket os tem."
       ]
@@ -572,7 +572,7 @@
         "O N1 pergunta então ao [[metadata-store|metadata store]], que responde que os bytes estão no chunk C, dentro do bloco K1 no bucket.",
         "O N1 busca esses bytes em `dfs-data`, verifica-os contra o seu hash e os envia à alice-pc.",
         "O N1 também pode guardar uma cópia local deles, o que se chama [[fill]]. Um fill nunca sobrescreve uma escrita mais nova que esteja no journal.",
-        "Suponha que o metadata store tivesse respondido que esses bytes foram escritos, mas que nenhum chunk atual os contém. Como o journal também não os tem, eles estão [[lost|Lost]], e a leitura falha com um erro em vez de devolver zeros."
+        "Suponha que o metadata store tivesse respondido que esses bytes foram reescritos depois do último envio, então nenhum chunk no bucket tem a versão atual deles. Como o journal também não os tem, eles estão [[lost|Lost]], e a leitura falha com um erro em vez de devolver zeros ou a versão antiga."
       ]
     },
     "restart": {
@@ -585,11 +585,11 @@
       "serving": "servindo de novo",
       "intentGone": "intent abandonado",
       "steps": [
-        "O N1 inicia um [[offload]]. Primeiro registra que pretende fazer o put de um novo bloco, K7, no bucket, e depois inicia o envio.",
+        "O N1 inicia um [[offload]]. Primeiro grava no metadata store um [[put-intent|put intent]], uma nota com o nome do novo bloco, K7, e depois inicia o envio ao bucket.",
         "O N1 cai antes que o metadata store registre K7. Por isso, os bytes que ele estava enviando continuam [[dirty|Dirty]] no journal, ainda sem offload.",
         "Quando o N1 reinicia, o [[journal]] reconstrói o seu índice a partir dos próprios arquivos. Um último record gravado só pela metade conta como nunca escrito.",
-        "Antes de voltar a servir os clientes, o [[engine]] registra no metadata store a [[existence|existência]] das escritas que ainda não estavam registradas. Depois abandona o intent de K7.",
-        "Mais tarde, o [[gc|GC]] apaga o que K7 deixou no bucket, e um novo offload envia os mesmos bytes com um nome novo, K8."
+        "Antes de voltar a servir os clientes, o [[engine]] registra no metadata store a [[existence|existência]] das escritas que ainda não estavam registradas. Depois abandona o intent de K7, porque nenhum envio iniciado antes da queda pode estar ainda em andamento.",
+        "Mais tarde, o [[gc|GC]] apaga o que K7 deixou no bucket. Um novo offload envia os mesmos bytes com um nome novo, K8, porque cada tentativa de envio recebe um [[block-name|block name]] novo, que nunca é reutilizado."
       ]
     },
     "partial": {
@@ -598,15 +598,15 @@
       "fromJournal": "do journal",
       "fromChunks": "dos chunks verificados",
       "missing": "960 KiB: missing",
-      "remote": "Remote · bloco K1",
+      "remote": "bloco K1 · só no bucket",
       "only4": "4 chunks, não o bloco de 4 MiB",
       "dropped": "primeiros 64 KiB do C1: versão antiga, descartada",
       "fill": "fill: talvez",
       "neverOver": "nunca sobrescrito",
       "steps": [
         "A alice-pc acabou de reescrever 64 KiB de um arquivo, a partir de 2 GiB, e agora lê 1 MiB a partir do mesmo ponto. O N1 pergunta primeiro ao [[journal]]: ele ainda tem os 64 KiB recém-escritos e aponta os outros 960 KiB como [[missing]], ou seja, ausentes do disco local.",
-        "Só para esses 960 KiB o N1 pergunta ao [[metadata-store|metadata store]] onde estão: em quatro [[chunk|chunks]] do [[block|bloco]] K1, que está Remote, isto é, existe apenas no bucket.",
-        "Uma leitura tão pequena e isolada usa menos de um quarto do bloco K1, que tem cerca de 4 MiB. Por isso o N1 baixa do `dfs-data` só os quatro chunks que a leitura cobre, e não o bloco inteiro.",
+        "Só para esses 960 KiB o N1 pergunta ao [[metadata-store|metadata store]] onde estão: em quatro [[chunk|chunks]] no meio do [[block|bloco]] K1, que existe apenas no bucket.",
+        "O N1 baixa o bloco inteiro quando uma leitura usa mais de um quarto dele, começa no início do bloco ou continua de onde a leitura anterior parou. Esta leitura usa 960 KiB do bloco K1, que tem cerca de 4 MiB, e começa no meio dele, então o N1 baixa do `dfs-data` só os quatro chunks que ela cobre.",
         "Antes de usar um único byte de um chunk, o N1 verifica o chunk inteiro contra o seu hash. O C1 também contém os primeiros 64 KiB na versão anterior à reescrita da alice-pc: o N1 os descarta, porque a versão nova está no journal.",
         "O N1 monta a resposta na ordem do arquivo: primeiro os 64 KiB do journal, depois os 960 KiB dos chunks. Também pode guardar no próprio disco os bytes baixados com um [[fill]], para que a próxima leitura os encontre ali; mas um fill nunca escreve sobre os 64 KiB do journal."
       ]

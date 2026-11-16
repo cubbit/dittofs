@@ -34,9 +34,9 @@
       "A read never returns zeros for bytes the [[journal|journal]] does not hold. It lists exactly those ranges as [[missing]] and leaves the caller's buffer untouched for them.",
       "The journal never releases bytes the engine has not reported as [[offload|offloaded]]. A [[release]] that asks for any such bytes is refused as a whole, and nothing is released."
     ],
-    "footer": "After a crash, the journal rebuilds its state from its own files alone. RFC 28 describes how.",
+    "footer": "After a crash, the journal rebuilds what it held by reading its own files on the local disk, and nothing else. This step, run when the journal opens again, is called recovery.",
     "notes": "'Start here · What this RFC promises', which cites §3.1, §3.2, §3.4, §3.5, §3.6, §5.2, §6 and RFC 28 §3. The fifth promise is about writes; removals and releases draw on reserved space instead (§6). The 1 s bound is a proposal (§5.2, 'proposal: 1 s'); the slide gives it as an example.",
-    "notes2": "Deck framing: the fill and limit promises of 'Start here · What this RFC promises' (§3.4, §6). The fifth promise is about writes; removals and releases draw on reserved space instead (§6). The footer is RFC 28 §3.",
+    "notes2": "Deck framing: the fill and limit promises of 'Start here · What this RFC promises' (§3.4, §6). The fifth promise is about writes; removals and releases draw on reserved space instead (§6). The footer: 'Start here · What this RFC promises' (the journal rebuilds itself from its own files alone) and §4 (the placement index is built at recovery). How recovery reads the files is RFC 28 §3, which this deck does not cover.",
     "items2": [
       "A [[fill]], which puts bytes fetched from the bucket back, never overwrites bytes the journal holds. It is refused if the file changed after the read that found the bytes missing.",
       "A write that would go over a limit is refused at once, with an error that names the limit. It never waits for space and never goes over."
@@ -68,18 +68,18 @@
     "c3Title": "[[lost|Lost]]",
     "c3": "The bytes were written, but they have been lost since.",
     "rule": "The journal **MUST** report all three in the same way, as [[missing]], and leave the caller's buffer untouched. Telling them apart is the [[engine]]'s job.",
-    "exact": "The `missing` list is exact. It is never widened to a whole [[segment|segment]], [[record|record]] or [[block|block]], because the caller pays for a remote transfer for every entry in it. Returning zeros instead would hand Windows a corrupt disk that looks valid.",
-    "notes": "§2 (the gaps carry no explanation), §3.2 (ReadAt), §1.1 (non-goals). The Windows remark is from 'Start here · The problem', step 5. The rule that telling the three apart is the engine's job is RFC 0 §6.1."
+    "exact": "The `missing` list is exact. It is never widened to a whole [[segment|segment]], [[record|record]] or [[block|block]], because the caller pays for a remote transfer for every entry in it. Zeros would be worse: if the file is a virtual disk that Windows mounts, such as a profile kept in a `.vhdx` file, they would hand Windows a corrupt disk that looks valid.",
+    "notes": "§2 (the gaps carry no explanation), §3.2 (ReadAt), §1.1 (non-goals). The Windows remark is from 'Start here · The problem': alice's profile is `ODFC_alice.vhdx`, a 30 GB virtual disk, and step 5 says zeros would hand Windows a corrupt disk that looks valid. The rule that telling the three apart is the engine's job is RFC 0 §6.1."
   },
   "placement": {
     "title": "Where the bytes sit on disk",
     "items": [
-      "Every [[record|record]] is appended at the end of its [[append-stream|stream]]. So even a file written in order is stored out of order, interleaved with other files.",
+      "The journal appends to a few [[append-stream|streams]], and each stream takes the writes of many files at once. Every [[record|record]] goes at the end of its stream, so even a file written in order is stored out of order, interleaved with other files.",
       "Nothing relates an [[extent|extent]]'s position in the file to its position on disk.",
       "The [[journal|journal]] never writes into space freed inside a [[segment|segment]]. A write that fills a gap in a file goes wherever its stream has got to, like any other write.",
       "There is one journal per disk, shared by every [[share|share]] placed on that disk. Each record carries the [[share-tag|tag]] of the share that wrote it."
     ],
-    "notes": "§2 (a gap is a gap in the file, not in storage; the placement figure), §1, §3 (tags)."
+    "notes": "§2 (a gap is a gap in the file, not in storage; the placement figure: 'a sequential file is stored out of order, interleaved with other files'), §1, §3 (tags). Few streams, many files: RFC 28 §2.2 (the number of append streams is configurable, 16 proposed; writes to different FileIDs may proceed concurrently)."
   },
   "quizGap": {
     "question": "Nobody has ever written the first MiB of a file, and a client reads it. What does the [[journal]] answer?",
@@ -112,17 +112,17 @@
     ],
     "boundsTitle": "Bounded",
     "bounds": [
-      "`limit` caps the dirty bytes that one call offers.",
-      "An offer pins the [[segment|segments]] it reads, and the RFC proposes at most 64 for one offer and 256 for all offers together.",
+      "The engine passes each call a size limit, and one offer never holds more dirty bytes than that.",
+      "Every [[segment|segment]] an offer reads is pinned: it stays on disk, and [[repack]] can neither move nor free it until the engine's callback returns. The proposed caps are 64 pinned segments for one offer and 256 for all offers together. At a cap the offer stops, and the rest waits for a later offer.",
       "Every byte is checked against its [[record|record]]'s checksum before it is handed out."
     ],
     "example": "For example, one pass offers 64 MiB, which the engine carves into 16 blocks of 4 MiB. Block 3 commits first, and its 4 MiB can be evicted at once. Then block 9 fails, and everything reported before that stays marked.",
-    "notes": "§3.3 Offload: what an offer is, report block by block, limit, pinned segments, 'Offered returns no unverified byte'. The 64 and 256 bounds carry a decision marker: constants, not measured. Deck wording: the 64 and 256 bounds are 'proposals' in §3.3 and §10 question 4."
+    "notes": "§3.3 Offload: what an offer is, report block by block, 'limit bounds the dirty bytes one call offers' (the engine chooses it, RFC 8 §6.2), 'An offer pins a bounded number of segments' (every segment holding an offered record stays on disk, unmoved, until fn returns; repack cannot retire it meanwhile, §7.2), 'Offered returns no unverified byte'. The 64 and 256 bounds carry a decision marker: constants, not measured. They are 'proposals' in §3.3 and §10 question 4. When the next extent would pass a cap, the offer stops adding extents and offers the rest in a later call; the first extent always fits, so an offer is never empty (§3.3)."
   },
   "repack": {
     "title": "Space comes back in whole [[segment|segments]]",
     "ponytail": "Freeing space a whole segment at a time means copying the live [[record|records]] that share the segment. When a segment is 85% live, about 5.7 bytes are copied for every byte freed. That cost has not been measured yet.",
-    "notes": "§3.5 (a release returns no storage), §7.1 (storage is freed in whole segments only; the ponytail marker with u ÷ (1 − u)), §7.2 Repack (selection: least live payload first; content preservation). The 20% in the scene is an illustration. The 'not measured' cost is benchmark J8 (§10 question 1)."
+    "notes": "§3.5 (a release returns no storage), §7.1 (storage is freed in whole segments only; the ponytail marker with u ÷ (1 − u)), §7.2 Repack (selection: least live payload first; content preservation). The 20% in the scene is an illustration. The 'not measured' cost is benchmark J8 (§10 question 1). The spare: §7.1 (a segment's storage returns to the filesystem when unlinked, or to the spare pool when recycled as a spare) and §6 (a spare becomes a stream's next segment)."
   },
   "versions": {
     "title": "Two numbers on every [[record|record]]",
@@ -150,7 +150,7 @@
       [
         "[[fill|Fill]]",
         "a new one",
-        "the version of the copy it came from"
+        "the version the metadata recorded with the copy in the bucket"
       ],
       [
         "[[repack|Repack]] copy",
@@ -158,15 +158,24 @@
         "the original's, unchanged"
       ]
     ],
-    "footer": "For every byte of a file, the newest content version the journal has applied is the one a read gets. A read never looks at sequence numbers, which are used to order records during recovery.",
-    "notes": "§4.3 Versions (the table, abridged), §2 (the newest version applied wins), §4 (a lookup must be unambiguous without sequence numbers). Versions are assigned inside the file's serialised append (§3.1)."
+    "footer": "For every byte of a file, the newest content version the journal has applied is the one a read gets. A read never looks at sequence numbers, which are used to order records during recovery. When bytes are uploaded, the metadata that records them keeps their content version, so bytes fetched back from the bucket come with the version they had.",
+    "notes": "§4.3 Versions (the table, abridged), §2 (the newest version applied wins), §4 (a lookup must be unambiguous without sequence numbers). Versions are assigned inside the file's serialised append (§3.1). Fill's version: §3.4, 'v is the content version of the ref the bytes were fetched from: its newest (RFC 6 §2.1)'; the filled record carries it."
   },
   "race": {
     "kicker": "When things race"
   },
   "fill": {
     "title": "A fetch races a new write",
-    "notes": "'Start here · Scenarios', the fetch that races a write; §3.2 (asOf), §3.4 Fill. Outcome: the old bucket bytes never land over the new write, and are never marked offloaded. The check is deliberately coarse: a needless refusal costs only a cache miss. A file with no index entry is checked against its floor bucket, one of 4,096 chosen by a hash of its ID."
+    "notes": "'Start here · Scenarios', the fetch that races a write; §3.2 (asOf), §3.4 Fill: Fill(ctx, id, off, p, asOf, v), where asOf is the change version ReadAt returned (the check) and v the content version of the ref the bytes came from (stamped on the record). Outcome: the old bucket bytes never land over the new write, and are never marked offloaded. The check is deliberately coarse: a needless refusal costs only a cache miss."
+  },
+  "floor": {
+    "title": "A file the journal holds nothing of",
+    "items": [
+      "When a file is deleted, or everything it held is released, the journal stops tracking it and keeps no change version for it.",
+      "A [[fill]] for such a file is checked instead against one of 4,096 [[floor-bucket|floor buckets]], picked by a hash of the file's ID. When the journal stops tracking a file, it raises the file's bucket to the file's last change version, so an older fill is still refused.",
+      "The table has a fixed size, so it does not grow with the number of files the journal once held. The cost is that a change to one file can refuse fills of the other files in its bucket, about one file in 4,096. Such a needless refusal costs only a cache miss."
+    ],
+    "notes": "§3.4 Fill, floor buckets: 'The per-file change version is bounded by floor buckets: a fixed table of 4,096 versions, indexed by a hash of the FileID'; a file's entry is dropped when it holds no extent and no removal marker (after a Delete, or once everything it held was released), and dropping it raises the file's bucket to the entry's version; a file with no entry is compared against its bucket; at open every bucket starts at the highest version on disk. The decision marker: one bucket confines a delete's needless refusals to about one file in 4,096; 'a needless refusal costs only a cache miss'."
   },
   "fillwrite": {
     "title": "[[fill|Fill]] is not a write",
@@ -189,7 +198,7 @@
       [
         "[[content-version|Content version]]",
         "new, from the [[journal|journal]]",
-        "the version of the copy fetched"
+        "the one recorded with the copy fetched"
       ],
       [
         "[[offloaded-bit|Offloaded bit]]",
@@ -233,12 +242,12 @@
     "lead": "After a failed sync the OS may have dropped the pages it could not write and marked them clean, so a later sync can “succeed” without writing them.",
     "steps": [
       "Everything written to the [[segment|segment]] since its last successful sync, which the RFC calls the window, counts as not [[durable|durable]].",
-      "Nothing more is appended to that segment, not even a seal marker. The stream carries on in a new segment.",
+      "When a segment is full, the journal seals it by appending a seal marker at its end. A failed segment gets nothing more appended, not even that marker, and the stream carries on in a new segment.",
       "The [[journal|journal]] appends the window's [[record|records]] again in the new segment, taking them from its own copy in memory or reading them back and checking them against the checksum it kept. Otherwise it fails them as [[loss-event|loss events]].",
-      "If it fails them, the next `Sync` of each file that had a write in the window returns the error, once, and the [[write-verifier]] changes so that clients send their writes again."
+      "If it fails them, the next `Sync` for each file that had a write in the window returns the error, and only that one. `Sync` is the call the engine makes when a client flushes a file. The [[write-verifier]] also changes, so that clients send their writes again."
     ],
     "rule": "A later successful sync never counts as success for writes made before the failure.",
-    "notes": "§5.3 A failed sync; §5.1 (the last two ordering rules); 'Start here · Scenarios' (the disk reports an error). Header-only records are always re-appended, never failed, outside a read-only journal."
+    "notes": "§5.3 A failed sync (no further append, 'not even a seal marker'); §5.1 (the last two ordering rules); §5.2 (the stream makes a segment durable when it rolls, because the seal marker must be durable before a successor exists; 'The journal's part in a client's flush is Sync'); §3.1 (Sync names files); 'Start here · Scenarios' (the disk reports an error). The 'only that one' is the conformance check of §5.3 'a failed window is reported once': the next Sync(F) fails, the one after succeeds. Header-only records are always re-appended, never failed, outside a read-only journal."
   },
   "readonly": {
     "title": "When the disk stops taking writes",
@@ -255,25 +264,37 @@
     "title": "A full [[journal|journal]] refuses at once",
     "items": [
       "Before it accepts a write's bytes, the journal reserves space for them against the [[share]]'s limit and against the journal's maximum size.",
-      "If they do not fit, `WriteAt` fails **at once** with `ErrNoSpace`, naming the limit that was hit: share, journal, index, headroom, version limit or spare pool. It does no I/O and does not wait.",
+      "If they do not fit, `WriteAt` fails **at once** with `ErrNoSpace`, which names the limit that was hit. It does no I/O and does not wait.",
       "It does not wait because only the [[engine]]'s own calls free space. A journal that waited would be waiting for its own caller.",
-      "While [[offload|offload]], [[release|release]] and [[repack|repack]] can still free space, the engine answers the client [[retry-later]], so that the client tries again."
+      "While [[offload|offload]], [[release|release]] and [[repack|repack]] can still free space, the engine answers [[retry-later]] instead of an error. An NFS client then sends the write again, and an SMB request is kept pending."
     ],
     "headroomTitle": "Headroom",
     "headroom": "[[record|Records]] that free space, such as releases, truncates, deletes and seals, draw on a reserved [[headroom]] outside every limit, so a full journal can still release. Once less than half of the headroom is left, content writes are refused first.",
     "notes": "§6 Capacity: the two bounds, 'a refusal is immediate, and named', records without bytes, the headroom and its half rule. Checking a counter and then deciding is not conformant: the reservation must be atomic. RFC 8 §10.2 holds the engine's table of answers."
   },
+  "limits": {
+    "title": "The six limits a write can hit",
+    "items": [
+      "**Share** and **journal**: each [[share]] has a limit on the bytes of its records, and the journal has a maximum size on disk, counted in whole [[segment|segments]].",
+      "**Index**: a configured cap on how many [[extent|extents]] the [[placement-index|placement index]] may hold in memory.",
+      "**Headroom**: once less than half of the [[headroom]] is left, content writes are refused, so that the records that free space can still be appended.",
+      "**Version limit**: a client can see a [[content-version|content version]] before its record is synced, so after a crash the journal must never hand out that version again. It never gives out one at or above the [[version-limit|version limit]], which the engine records in the metadata store ahead of time. A write that would reach it is refused until the engine raises it.",
+      "**Spare pool**: when a [[append-stream|stream]]'s segment is full, the stream moves to an empty spare segment that the journal made in advance. If no spare is ready, the write is refused."
+    ],
+    "footer": "A refusal at the spare pool clears on its own once a new spare is ready, so the engine simply retries. Every other limit clears only once the engine frees space.",
+    "notes": "§6 Capacity: the two bounds (a share's limit on its record bytes, the journal's maximum on allocated storage in whole segments), 'a refusal is immediate, and named', the headroom's half rule, the spare pool ('When a stream's segment fills, a spare becomes its next segment and the journal makes a new spare off the write path'; a content write that needs a segment while no spare is ready is refused naming the spare pool; 'spare clears on its own and is retried, every other limit clears only once the engine reclaims space'). §4.2 (ExtentLimit, the index entry bound). §4.3 (the version limit: no version issued at or above it, raised by the caller ahead by time; a write that would reach it fails with ErrNoSpace naming the limit, answered ErrDelay until the raise commits, RFC 8 §2.7 and §10.2)."
+  },
   "full": {
     "title": "A large copy meets a full [[journal|journal]]",
     "steps": [
       "A write needs more space than the journal's maximum allows, so `WriteAt` fails at once with `ErrNoSpace`.",
-      "The [[engine|engine]] answers the client [[retry-later|retry-later]] (`ErrDelay`), so the client will try again.",
+      "The [[engine|engine]] does not fail the write. It frees space and then tries the write again itself. If that takes a while, the client is told [[retry-later|retry-later]] (`ErrDelay`) rather than an error: an NFS client sends the write again, and an SMB request is kept pending.",
       "The engine releases [[extent|extents]] that were already reported [[offload|offloaded]]. The [[release|release]] records it appends draw on the [[headroom|headroom]].",
       "A release frees no disk space by itself. [[repack|Repack]] then copies a [[segment|segment]]'s live records forward and unlinks the segment file.",
-      "The engine retries the write within the client's deadline, and it fits."
+      "The engine's retry comes within the client's deadline, and the write fits."
     ],
     "outcome": "The limit is never overrun, and no [[dirty|dirty]] byte is dropped to make room.",
-    "notes": "'Start here · Scenarios', the journal is full while a large copy streams in; §3.5, §6, §7.2."
+    "notes": "'Start here · Scenarios', the journal is full while a large copy streams in (step 2: the engine answers retry-later; step 5: the engine retries within the client's deadline); §3.5, §6, §7.2. Who retries: RFC 8 §10.2 has the engine repack or evict and retry, answering ErrDelay while it is still refused; RFC 0's glossary row for retry-later and its 'journal at capacity' row: NFS answers NFS4ERR_DELAY / NFS3ERR_JUKEBOX and the client retries, SMB holds the request pending with an interim response."
   },
   "quizSync": {
     "question": "A [[sync]] of a [[segment]] fails, then a second sync of it succeeds. What of the writes the failed sync should have covered?",
@@ -323,8 +344,9 @@
         "no"
       ]
     ],
-    "footer": "The [[placement-index]] is rebuilt when the journal opens, from the catalogs or by scanning the segments. For each file it is a set ordered by start offset, such as a B-tree, so that looking up one offset costs O(log n). Walking the extents one by one is forbidden.",
-    "notes": "§4 (the comparison table, abridged), §4.1 (the required bounds), 'Representation' (B-tree is a SHOULD)."
+    "footer": "During recovery, the [[placement-index]] is rebuilt from the catalogs, or by reading the segments themselves where there is no catalog, as in a segment that was never sealed. For each file it is a set ordered by start offset, such as a B-tree, so that looking up one offset costs O(log n). Walking the extents one by one is forbidden.",
+    "notes": "§4 (the comparison table, abridged: the catalog lives inside each sealed segment, describes every record live or superseded, is immutable for the life of its segment and is not authoritative; the index is built from the catalogs or a scan at recovery, never the other way round; an active segment has no catalog until it seals), §4.1 (the required bounds), 'Representation' (B-tree is a SHOULD). The catalog's layout is RFC 28 §2.4.",
+    "catalog": "When a [[segment]] is sealed, the journal writes a catalog inside it that lists every [[record]] the segment holds. The catalog never changes afterwards, so it still lists records that are no longer live, because a later write replaced them or a release dropped them. That is why only the placement index is authoritative."
   },
   "indexsize": {
     "title": "The index grows with [[extent|extents]], not bytes",
@@ -332,8 +354,8 @@
       [
         "1 TiB held as",
         "Extents",
-        "Index, in order",
-        "Index, random order"
+        "Index, extents written in offset order",
+        "Index, extents written in random order"
       ],
       [
         "1 MiB extents",
@@ -354,7 +376,7 @@
         "~1.16 GB"
       ]
     ],
-    "footer": "Past a configured bound (`ExtentLimit`), writes and [[fill|fills]] are refused with an error that names the index, so the journal never degrades silently. Removals and [[release|releases]] are not refused at the bound itself, so the count can come down again.",
+    "footer": "Extents written in random order leave the index's B-tree nodes less full, so an entry costs about 69 bytes instead of 53. Past a configured bound (`ExtentLimit`), writes and [[fill|fills]] are refused with an error that names the index, so the journal never degrades silently. Removals and [[release|releases]] are not refused at the bound itself, so the count can come down again.",
     "notes": "§4.2: about 53 bytes an entry in order and 69 in random order, measured in one file of 10^6 extents; many small files cost more per entry. Releases, deallocates and clone targets that split an extent are refused once the count is an eighth above the bound; reports, truncates, deletes and Forget never are."
   },
   "numbers": {
@@ -369,21 +391,30 @@
     "n4": "64 · 256",
     "w4": "the proposed caps on [[segment|segments]] pinned by one [[offer|offer]], and by all offers together",
     "n5": "65,536",
-    "w5": "header-only [[record|records]] that the proposed [[headroom|headroom]] can hold, about 14 MiB",
+    "w5": "records with no bytes after their header, such as releases and removals, that the proposed [[headroom|headroom]] can hold, about 14 MiB",
     "n6": "4,096",
-    "w6": "floor buckets, a fixed table of versions that a [[fill|fill]] is checked against when its file has no index entry",
-    "notes": "256 MiB: 'Start here · The problem' and §7.4. 1 s: §5.2 and 'Start here'. 53–69: §4.2. 64 and 256: §3.3. 65,536 and 14 MiB: §6 (journal.headroom_records). 4,096: §3.4. §10 question 4 says the headroom, reserves and pin bounds are unmeasured. The 256 MiB segment, the 1 s bound, the 64 · 256 pin bounds and the 65,536 headroom records are all proposals."
+    "w6": "[[floor-bucket|floor buckets]], against which a [[fill|fill]] is checked when the journal holds nothing of its file",
+    "notes": "256 MiB: 'Start here · The problem' and §7.4. 1 s: §5.2 and 'Start here'. 53–69: §4.2. 64 and 256: §3.3. 65,536 and 14 MiB: §6 (journal.headroom_records). 4,096: §3.4. §10 question 4 says the headroom, reserves and pin bounds are unmeasured. The 256 MiB segment, the 1 s bound, the 64 · 256 pin bounds and the 65,536 headroom records are all proposals. Header-only records: §6 (releases, truncates, deletes and other records without bytes draw on the headroom)."
   },
   "shares": {
     "title": "One [[journal|journal]], many [[share|shares]]",
     "items": [
-      "Each share works through its own `Handle`, and its [[share-tag|tag]] is written into every [[record|record]] it appends.",
+      "Each share works through its own journal `Handle`, which is the share's access to the journal, not a client's file handle. The share's [[share-tag|tag]] is written into every [[record|record]] it appends.",
       "A tag names exactly one share. It is taken from a counter that never goes down, so a tag is never reused.",
-      "A call on a file that belongs to another tag is refused with `ErrOtherShare`. One share's bytes are never served through another share's [[handle|handle]].",
-      "Each share has a limit, so that one share cannot take the whole disk. The limits of all the shares may add up to more than the journal's maximum.",
-      "A tag that no share claims is stranded, and its bytes are never served, [[evict|evicted]] or [[offer|offered]]. They are exported for salvage after serving starts, and only then is the tag forgotten."
+      "A call on a file that belongs to another tag is refused with `ErrOtherShare`. One share's bytes are never served through another share's journal `Handle`.",
+      "Each share has a limit, so that one share cannot take the whole disk. The limits of all the shares may add up to more than the journal's maximum."
     ],
-    "notes": "§3 Interface: 'A tag names one share, once', 'A file is its share's, and the journal checks it', Forget, Strand and salvage. §6: share limits. In a correct installation ErrOtherShare never fires; it guards against a clone, restore or move that skipped a step."
+    "notes": "§3 Interface: 'A tag names one share, once', 'A file is its share's, and the journal checks it'. §6: share limits. The journal Handle is §3's (*Journal).Share result, one share's access to the journal; the deck does not link the glossary's 'handle', which is a client's file handle. In a correct installation ErrOtherShare never fires; it guards against a clone, restore or move that skipped a step."
+  },
+  "stranded": {
+    "title": "A [[share-tag|tag]] that no share claims",
+    "items": [
+      "A tag can be left without a share when its [[share]] is deleted, or when the installation's metadata is restored from a backup. A restore creates each share afresh with a new tag, so the journal never serves bytes it held under the old tag as if they were the restored share's current content.",
+      "Before the node serves clients, the engine strands each such tag. From then on its bytes are never served through another share, nor [[evict|evicted]] or [[offer|offered]].",
+      "Once the node is serving, the engine exports the tag's bytes for **salvage**: it copies every byte the journal holds for the tag into files in a separate salvage directory, where an operator can recover them.",
+      "The export waits until serving has started so that it does not keep the node offline for hours. Only after it succeeds is the tag forgotten, because its bytes may be the only copy of a lost share's content."
+    ],
+    "notes": "§3 Interface: 'A tag no share claims is stranded before serving and salvaged after' (a recovery import, which gives the shares new identities, or a share's deletion; Strand before serving; export of every held extent under salvage.path after serving starts, then Forget), the decision marker 'salvage runs after serving, not before' (exporting first would hold the installation offline for hours), 'A share attached as an import holds none of its old extents' (an import gets a new tag), and 'The journal offers no shortcut: a tag forgotten unread would drop dirty bytes that may be the only copy'. The caller's side is RFC 8 §2.5 step 5 and RFC 26 §2.3. An export of an encrypting share is sealed with a salvage data key; a failed export is a health condition, retried, and the tag stays stranded until it succeeds. Why a restore gets a new tag: §3, 'A share attached as an import holds none of its old extents' (an import gets a new tag, so calls on the old tag's files through it are refused and the share never serves stale, clean extents over what was written since)."
   },
   "concurrency": {
     "title": "What must not block what",
@@ -417,8 +448,8 @@
     "opsTitle": "Operators",
     "ops": "There is one journal per disk, sized by a maximum and by per-share limits. A full journal makes clients retry, not fail, while space can still be freed. Unclaimed tags are reported with their bytes and exported for salvage before they are forgotten.",
     "testTitle": "Test authors",
-    "test": "Tests use a real filesystem, a fault layer beneath the journal and virtual time. The checks come in four groups: silent data loss, wedging, recovery and observability.",
-    "notes": "The deck's framing, from §3.4 (the caller of Fill), §3.5 and §7.2 (policy is the engine's), §6, §3 (strand and salvage), §1.3 and §9.4."
+    "test": "Tests use a real filesystem, a fault layer beneath the journal and virtual time. The checks look for silent data loss, for a journal that gets stuck or uses resources without bound, for recovery after a crash, and for what the journal reports about itself.",
+    "notes": "The deck's framing, from §3.4 (the caller of Fill), §3.5 and §7.2 (policy is the engine's), §6, §3 (strand and salvage), §1.3 and §9.4. The four groups are §9.4's: A silent data loss, B wedging and unbounded resource use, C recovery, D observability."
   },
   "rules": {
     "kicker": "Rules and non-goals",
@@ -452,12 +483,12 @@
     "questions": [
       "How much extra writing [[repack|repack]] causes under a load with many evictions has not been measured.",
       "The index's memory use and lookup cost were measured, but the cost of inserting into it was not.",
-      "A [[sync|sync]] covers one stream, so writers spread over more streams share fewer syncs, and a create-heavy load measured slower as streams were added.",
+      "A [[sync|sync]] covers one [[append-stream|stream]], so when writers are spread over more streams, each sync serves fewer of them. In one measurement, a load that creates many files ran slower as streams were added. More streams also mean less waiting between writers, and which effect wins has not been measured.",
       "The [[headroom|headroom]], the reserves and the pin bounds are proposals that have not been measured on a full [[journal|journal]].",
-      "The RFC still owes a rule that lets repack seal an active [[segment|segment]] when space runs short.",
-      "The inspection breakdown does not yet show the [[unreclaimed-bytes|unreclaimed bytes]] of each segment."
+      "[[repack|Repack]] cannot copy out of a [[segment|segment]] still being appended to, and a segment is sealed only when it is full or idle. The RFC still owes a rule that lets repack seal such a segment when space runs short.",
+      "The journal shows its space segment by segment, with each one's allocated and held bytes, but that per-segment breakdown does not yet show each segment's [[unreclaimed-bytes|unreclaimed bytes]]."
     ],
-    "notes": "§10 Open questions (RFC 28 §5 holds the format's). Question 1 is benchmark J8. Question 5: a pass scoped to a share seals such a segment itself (a rule owed in Repack's contract, §7.2), so repack can reach its unreclaimed bytes."
+    "notes": "§10 Open questions (RFC 28 §5 holds the format's). Question 1 is benchmark J8. Question 3: more streams spread writers over more syncs; a create-heavy load measured slower as streams were added, unmeasured against the contention more streams remove. Question 5: a pass scoped to a share seals such a segment itself (a rule owed in Repack's contract, §7.2), so repack can reach its unreclaimed bytes. Question 6: the per-segment accounting of §4.4 (inspection) reports allocated and held bytes only. Repack and active segments: question 5 and RFC 8 §10.2 step 4 (each active segment holding the scope's unreclaimed bytes must be sealed so repack can reach them; a segment seals only when full or idle, RFC 28 §3.1)."
   },
   "scenes": {
     "cast": {
@@ -517,7 +548,7 @@
       "steps": [
         "After many releases, most of segment `0041.seg` is **unreclaimed**. Most of its bytes back nothing, yet the whole file stays allocated.",
         "**Repack** prefers the segments with the least live payload and copies their live records forward, versions and offloaded bits unchanged.",
-        "Once the copies are [[durable|durable]], `0041.seg` is unlinked or kept as a spare segment for reuse. Only now does the space come back."
+        "Once the copies are [[durable|durable]], `0041.seg` is unlinked, or kept as an empty spare that a stream can take later as its next segment. Only now does the space come back."
       ]
     },
     "fill": {
@@ -529,7 +560,7 @@
         "Windows reads the first MiB of a file, `[0, 1 MiB)`. The journal holds none of it, so it answers **missing**, together with the file's [[change-version|change version]], v50.",
         "The engine starts fetching those bytes from the bucket `dfs-data`.",
         "Meanwhile alice-pc writes 4 KiB at offset 0. It gets v51, and the file's change version rises to v51.",
-        "The fetch returns and the engine calls `Fill` with v50. Because the file has changed since, Fill writes nothing and returns a distinct error."
+        "The fetch returns. The engine calls `Fill` with the bytes, the version recorded with their copy in the bucket, and v50, the change version the read returned. The file has changed since v50, so Fill writes nothing and returns a distinct error."
       ]
     }
   }

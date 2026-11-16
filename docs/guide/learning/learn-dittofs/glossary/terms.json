@@ -1088,5 +1088,127 @@
     "sourceLabel": "CLI reference · dfsctl",
     "rfcs": ["rfc-23"],
     "code": ["cmd/dfsctl", "pkg/apiclient"]
+  },
+  "epoch": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-10", "rfc-11", "rfc-15", "rfc-17", "rfc-8"]
+  },
+  "node-epoch": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-10", "rfc-11", "rfc-15", "rfc-8"]
+  },
+  "node-lease": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-11", "rfc-14"]
+  },
+  "handover": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-10", "rfc-14", "rfc-22"]
+  },
+  "namespace-move": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-17", "rfc-20", "rfc-22", "rfc-27"]
+  },
+  "clone": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-6", "rfc-12", "rfc-14", "rfc-17", "rfc-22"]
+  },
+  "deduplication": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#31-deduplication",
+    "sourceLabel": "RFC 0 §3.1",
+    "rfcs": ["rfc-0", "rfc-6", "rfc-8"]
+  },
+  "dedup-table": {
+    "source": "docs/internals/rfcs/rfc-15-topology.md#43-the-route-envelope",
+    "sourceLabel": "RFC 15 §4.3",
+    "rfcs": ["rfc-15", "rfc-14", "rfc-17", "rfc-20"]
+  },
+  "sync-mark": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#31-write",
+    "sourceLabel": "RFC 1 §3.1",
+    "rfcs": ["rfc-1", "rfc-8", "rfc-28"]
+  },
+  "adapter-bytes": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#21-client",
+    "sourceLabel": "RFC 14 §2.1",
+    "rfcs": ["rfc-14", "rfc-15", "rfc-17", "rfc-20", "rfc-22"]
+  },
+  "floor-bucket": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#34-fill",
+    "sourceLabel": "RFC 1 §3.4",
+    "rfcs": ["rfc-1"]
+  },
+  "version-limit": {
+    "source": "docs/internals/rfcs/rfc-1-journal.md#43-versions",
+    "sourceLabel": "RFC 1 §4.3",
+    "rfcs": ["rfc-1", "rfc-7", "rfc-8"]
+  },
+  "admission-lock": {
+    "source": "docs/internals/rfcs/rfc-17-vfs.md#50-one-lock-order",
+    "sourceLabel": "RFC 17 §5.0",
+    "rfcs": ["rfc-17", "rfc-14", "rfc-7"]
+  },
+  "fold-admission": {
+    "source": "docs/internals/rfcs/rfc-7-namespace-metadata.md#92-timestamps",
+    "sourceLabel": "RFC 7 §9.2",
+    "rfcs": ["rfc-7", "rfc-17"]
+  },
+  "accept-lock": {
+    "source": "docs/internals/rfcs/rfc-7-namespace-metadata.md#92-timestamps",
+    "sourceLabel": "RFC 7 §9.2",
+    "rfcs": ["rfc-7", "rfc-1", "rfc-8", "rfc-17"]
+  },
+  "not-yours": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#22-open",
+    "sourceLabel": "RFC 14 §2.2",
+    "rfcs": ["rfc-14", "rfc-17", "rfc-21", "rfc-22"]
+  },
+  "handle-caching": {
+    "source": "docs/internals/rfcs/rfc-14-open-state.md#6-a-deny-mode-is-checked-at-open",
+    "sourceLabel": "RFC 14 §6",
+    "rfcs": ["rfc-14", "rfc-17", "rfc-22"]
+  },
+  "quota": {
+    "source": "docs/internals/rfcs/rfc-7-namespace-metadata.md#28-a-share-is-one-filesystem",
+    "sourceLabel": "RFC 7 §2.8",
+    "rfcs": ["rfc-7", "rfc-16", "rfc-17"]
+  },
+  "named-stream": {
+    "source": "docs/internals/rfcs/rfc-7-namespace-metadata.md#27-extended-attributes-and-named-streams",
+    "sourceLabel": "RFC 7 §2.7",
+    "rfcs": ["rfc-7", "rfc-14", "rfc-17", "rfc-20", "rfc-22"]
+  },
+  "dtc": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#45-where-a-suite-runs",
+    "sourceLabel": "RFC 29 §4.5",
+    "rfcs": ["rfc-29"],
+    "code": ["test/harness/bin/dtc", "test/harness/docker/dev.Dockerfile"]
+  },
+  "system-scenario": {
+    "source": "docs/internals/rfcs/rfc-29-test-harness.md#41-the-registry-testsuitesyaml",
+    "sourceLabel": "RFC 29 §4.1",
+    "rfcs": ["rfc-29", "rfc-17"],
+    "code": ["test/scenarios"]
+  },
+  "floating-address": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-15", "rfc-22"]
+  },
+  "pending-release": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-7", "rfc-8", "rfc-17"]
+  },
+  "takeover": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-10", "rfc-14", "rfc-17", "rfc-8"]
   }
 }

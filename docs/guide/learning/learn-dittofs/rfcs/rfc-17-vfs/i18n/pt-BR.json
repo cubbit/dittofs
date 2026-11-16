@@ -73,20 +73,20 @@
       [
         "`*vfs.Gateway` (cluster)",
         "o que os adapters recebem num cluster. Manda cada chamada ao primary do arquivo, roteia de novo a que chegou ao nó errado e reenvia a que perdeu a resposta",
-        "decide nem admite uma chamada, nem responde por conta própria, exceto com `ErrUnavailable` ao parar ou se nenhum primary responde a tempo"
+        "decide ou admite uma chamada, ou responde por conta própria, exceto com `ErrUnavailable` ao parar ou se nenhum primary responde a tempo"
       ],
       [
         "`vfs.Serve` (cluster)",
-        "verifica toda chamada que chega a um primary. Recusa a que traz epoch de nó ou de shard desatualizada, responde a um retry com o resultado guardado sob seu request ID e, fora isso, chama o filesystem",
+        "verifica toda chamada que chega a um primary e recusa a que traz [[node-epoch|node epoch]] ou [[epoch|shard epoch]] velha, números que sobem quando um nó reinicia ou o primary muda. Responde a um reenvio pela [[dedup-table|tabela de dedup]] e, senão, chama o filesystem",
         "encaminha uma chamada para outro nó"
       ]
     ],
-    "footer": "Num único nó os [[adapter|adapters]] recebem o próprio filesystem, e num cluster recebem o gateway. Um adapter não tem como saber qual dos dois tem em mãos. Só o filesystem chama o metadata store, o [[engine]], o open state e a identidade.",
-    "notes": "A tabela de §2 e a de deployments; §2.3 para o wiring. Decisão em §2: o corte entre nós é vfs.Service, não a interface entre service e engine, assim o open state fica ao lado do I/O que controla, uma WRITE é uma única chamada encaminhada com seus bytes, e uma única shard epoch faz o fencing da chamada inteira. Decisão em §2.1: um único componente chama store e engine, assim limite de transação, retry, fence e chave de cache são decididos uma só vez."
+    "footer": "Num único nó os [[adapter|adapters]] recebem o próprio filesystem, e num cluster recebem o gateway. Um adapter não tem como saber qual dos dois tem em mãos. Só o filesystem chama o metadata store, o [[engine]], o open state e a identidade, o componente que autentica os chamadores e os mapeia para usuários.",
+    "notes": "A tabela de §2 e a de deployments; §2.3 para o wiring. Decisão em §2: o corte entre nós é vfs.Service, não a interface entre service e engine, assim o open state fica ao lado do I/O que controla, uma WRITE é uma única chamada encaminhada com seus bytes, e uma única shard epoch faz o fencing da chamada inteira. Decisão em §2.1: um único componente chama store e engine, assim limite de transação, retry, fence e chave de cache são decididos uma só vez. Serve faz o fencing de cada chamada pela node epoch do remetente, pela shard epoch e por uma contagem de hops igual a zero (a tabela de §2); uma shard epoch sobe quando um novo primary assume (RFC 11, RFC 15 §4.3). A identidade é a do RFC 18: SignIn delega ao seu authenticator, e o resolver mapeia uma Identity para um chamador na share (§2, §4.9 passo 4)."
   },
   "route": {
     "title": "O [[gateway-node|gateway]] roteia, o [[primary]] decide",
-    "notes": "(cluster) §2, §2.1, §4.7, RFC 15 §4.3. Uma chamada que nomeia um handle vai ao primary do shard desse handle; Rename e Link ao coordenador do RFC 15 §4.2; Copy e Clone ao primary do destino; chamadas que não nomeiam arquivo rodam no filesystem local e nunca são encaminhadas. Um handle que o router não sabe localizar vai ao filesystem local, que admite antes de responder ErrStale. Um adapter dá um request ID a cada chamada com vfs.WithRequestID; repetir uma mudança não é considerado seguro."
+    "notes": "(cluster) §2, §2.1, §4.7, RFC 15 §4.3. Uma chamada que nomeia um handle vai ao primary do shard desse handle; Rename e Link ao coordenador do RFC 15 §4.2; Copy e Clone ao primary do destino; chamadas que não nomeiam arquivo rodam no filesystem local e nunca são encaminhadas. Um handle que o router não sabe localizar vai ao filesystem local, que admite antes de responder ErrStale. Um adapter dá um request ID a cada chamada com vfs.WithRequestID; repetir uma mudança não é considerado seguro. Serve faz o fencing de cada chamada por node epoch, shard epoch e hop zero, e o Service verificado que ele devolve aplica as mesmas verificações no caminho local do gateway (a tabela de §2)."
   },
   "owners": {
     "title": "Quem é dono do [[open-state|open state]] e dos locks",
@@ -98,7 +98,7 @@
       ],
       [
         "[[adapter]]",
-        "a parte de protocolo de um lock em espera: o pedido que terá de responder e o host NLM que terá de chamar de volta",
+        "a parte de protocolo de um [[lock-waiter|lock em espera]], isto é, um pedido de lock que espera seu intervalo ficar livre: o pedido que terá de responder e o host [[nlm|NLM]] que terá de chamar de volta",
         "decide um conflito"
       ],
       [
@@ -107,13 +107,13 @@
         "guarda open state: só roteia cada chamada de lock e de open para o primary do arquivo"
       ],
       [
-        "filesystem no nó que tem as sessões do cliente (lease owner)",
-        "o registro de lease de cada cliente e o canal de [[callback]] que chega até ele",
+        "filesystem no nó ao qual o cliente está conectado, o seu [[lease-owner|lease owner]], que pode não ser o primary do arquivo",
+        "o registro de [[client-lease|lease]] de cada cliente e o canal de [[callback]] que chega até ele",
         "—"
       ]
     ],
-    "footer": "A tabela de open state fica em memória, indexada por arquivo. Quando um primary passa por failover, a tabela se perde, e os clientes a reconstroem recuperando seu estado durante o grace period, só para aquele [[shard]]. Em troca, um lock custa um hop até o primary e nenhuma escrita no store.",
-    "notes": "§2.2. Decisões ali: o open state é um componente próprio, nem no store (todo lock seria uma transação do store) nem no engine (unlink, rename e delete on close nunca chamam o engine); e não há um gerenciador de locks distribuído separado, que acrescentaria um hop e uma janela a cada escrita. Locks escalam entre shards, não dentro de um único shard muito disputado.",
+    "footer": "A tabela de open state fica em memória, indexada por arquivo. Quando outro nó [[takeover|assume]] como primary, a tabela se perde, e os clientes a reconstroem recuperando seu estado durante o [[grace-period|grace period]], só para aquele [[shard]]. Em troca, um lock custa um hop até o primary e nenhuma escrita no store.",
+    "notes": "§2.2. Decisões ali: o open state é um componente próprio, nem no store (todo lock seria uma transação do store) nem no engine (unlink, rename e delete on close nunca chamam o engine); e não há um gerenciador de locks distribuído separado, que acrescentaria um hop e uma janela a cada escrita. Locks escalam entre shards, não dentro de um único shard muito disputado. §2.1: uma chamada que não nomeia arquivo roda no filesystem local, que é o lease owner dos clientes conectados ao seu nó, enquanto as chamadas sobre um arquivo vão ao primary do seu shard.",
     "table2": [
       [
         "Quem",
@@ -122,7 +122,7 @@
       ],
       [
         "filesystem, no [[primary]] do arquivo",
-        "a tabela de open state: opens, [[deny-mode|deny modes]], locks de intervalo de bytes de NLM, NFSv4 e SMB juntos, [[caching-grant|caching grants]] e watches",
+        "a tabela de open state: opens, [[deny-mode|deny modes]], locks de intervalo de bytes de NLM, NFSv4 e SMB juntos, [[caching-grant|caching grants]] e [[watch|watches]]",
         "—"
       ],
       [
@@ -182,19 +182,19 @@
     "ret": "Toda chamada que altera algo devolve os atributos de cada objeto que mudou, antes e depois da mudança, ambos lidos enquanto o lock do arquivo é mantido uma única vez. Nenhum handler faz um `GetAttr` depois de uma mudança, porque ele poderia mostrar a escrita de outro cliente como se fosse desta chamada.",
     "readTitle": "Chamadas que não mudam nada",
     "read": "`Lookup`, `ReadDir`, `GetAttr`, `Read`, `Seek`, `TestLock`, `Root` e mais alguns não mudam nada, então uma requisição pode fazer quantos quiser. Os demais métodos podem mudar estado, e um handler faz no máximo uma chamada dessas por requisição.",
-    "version": "`GetAttr` junta o registro do store com o overlay do [[engine]], que descreve as escritas já em staging mas ainda sem commit. Assim, a `Version` de um arquivo sobe a cada escrita que o primary aceita, não só quando essa escrita recebe commit, e nunca volta atrás.",
-    "notes": "§3.1 ('Every mutating call returns the attributes', 'Which calls change state', vfs.Mutates), §5.7 (GetAttr e o overlay; Before é nil onde o lock não pode ser obtido, e nunca para um diretório via NFSv3), V16, V31."
+    "version": "`GetAttr` junta o registro do metadata store com as escritas que o [[engine]] já colocou em staging mas que o store ainda não registrou. Assim, a `Version` de um arquivo, um número que sobe a cada mudança no arquivo, cresce a cada escrita que o primary aceita, não só quando o store a registra, e nunca volta atrás.",
+    "notes": "§3.1 ('Every mutating call returns the attributes', 'Which calls change state', vfs.Mutates), §5.7 (GetAttr e o overlay; Before é nil onde o lock não pode ser obtido, e nunca para um diretório via NFSv3), V16, V31. O overlay do engine é Size, Times e Version das operações em staging ainda sem commit (§5.7)."
   },
   "notyours": {
     "title": "O estado pertence a quem o recebeu",
     "items": [
-      "Toda chamada de [[open-state|open state]] indica o cliente que a faz. Um `OpenID`, `GrantID`, `WatchID` ou lock owner que esse cliente não detém é recusado com `NotYours`.",
-      "Indicar o cliente certo não basta. O acesso concedido a um open vale só para o principal, isto é, o usuário, a quem foi concedido.",
+      "Toda chamada de [[open-state|open state]] indica o cliente que a faz. Um open, um [[caching-grant]], um [[watch]] ou um [[lock-owner|lock owner]] que esse cliente não detém é recusado com [[not-yours|NotYours]].",
+      "Indicar o cliente certo não basta. Um cliente pode levar as chamadas de vários usuários, e o acesso concedido a um open vale só para o [[principal]], isto é, o usuário, a quem foi concedido.",
       "Se bob apresenta o open de alice para escrever, ele é recusado com `NotYours`, mesmo num arquivo em que bob poderia escrever por conta própria, e o open de alice continua intacto.",
-      "Uma delegation pertence ao cliente, não a quem abriu o arquivo. O I/O feito com ela só é permitido se o cliente chamador a detém numa sessão, é verificado com o principal do próprio chamador e não ganha acesso algum com a delegation."
+      "Uma [[delegation]] pertence ao cliente, não a quem abriu o arquivo. O I/O feito com ela só é permitido se o cliente chamador a detém numa [[session|sessão]], é verificado com o principal do próprio chamador e não ganha acesso algum com a delegation."
     ],
-    "footer": "Uma chamada sem sessão que apresenta estado criado numa sessão também é recusada com `NotYours`. O NFSv4.0 não tem sessões, então nunca recebe delegation.",
-    "notes": "§3.1, 'Every open-state call names the client', 'Naming the right client is not enough' e 'A delegation is the client's'; V8, V18, V24. No NFSv4.0 um stateid nomeia o cliente só por meio do estado, então quem o descobrisse poderia apresentá-lo: daí a verificação do principal."
+    "footer": "Uma chamada feita fora de qualquer [[session|sessão]] que apresenta estado criado numa sessão também é recusada com `NotYours`. O NFSv4.0 não tem sessões, então nunca recebe delegation.",
+    "notes": "§3.1, 'Every open-state call names the client', 'Naming the right client is not enough' e 'A delegation is the client's'; V8, V18, V24. No NFSv4.0 um stateid nomeia o cliente só por meio do estado, então quem o descobrisse poderia apresentá-lo: daí a verificação do principal. Os IDs recusados são OpenID, GrantID, WatchID e lock owner (§3.1). Um cliente pode agir por vários principals: um cliente NFSv4 pode fazer I/O sob sua delegation por qualquer um dos seus open-owners e principals (§3.1, RFC 8881 §9.1.3)."
   },
   "callbacks": {
     "kicker": "Callbacks"
@@ -207,13 +207,13 @@
     "title": "Quando um cliente não responde",
     "items": [
       "Um [[callback]] **não deve** bloquear o service além do seu prazo. Um callback que falha ou expira conta como um cliente que não respondeu.",
-      "Se um cliente não confirma um recall dentro do prazo, o grant é revogado, e esse cliente não recebe novos grants por um período de lease.",
-      "Quando um break SMB expira, o lease é forçado a ficar sem caching e a requisição que esperava por ele segue. Os opens do cliente continuam, com seus locks e [[deny-mode|deny modes]].",
+      "Se um cliente não confirma um recall dentro do prazo, o grant é revogado, e esse cliente não recebe novos grants por um período de [[client-lease|client lease]], 90 s.",
+      "Quando um break SMB expira, o lease é forçado a ficar sem caching. A requisição em conflito, que o adapter SMB [[held-request|reteve]] enquanto isso, segue. Os opens do cliente continuam, com seus locks e [[deny-mode|deny modes]].",
       "Depois que uma delegation NFS é revogada, as escritas seguintes feitas com ela são recusadas.",
       "Um break SMB vai para uma sessão que tem um dos opens do [[lease]], ou que está autenticada como um dos usuários que o abriram. Ele nunca é endereçado por um `ClientGuid`, que qualquer cliente poderia enviar."
     ],
-    "footer": "O service só espera dentro de uma chamada num caso: atrás de um clone ou de um chunk de cópia ainda em andamento, e só pelo tempo que o adapter permite.",
-    "notes": "§3.2: os MUSTs sobre callbacks, 'Recalls after one is revoked', 'An SMB break goes by its open', V6, V36. Uma requisição retida atrás de um recall DEVE ser retida além do break deadline (35 s para SMB), e uma atrás de um freeze além de migration.freeze_timeout mais o break deadline; o RFC 13 recusa configurações que violem qualquer dos dois. ErrBlocked não ocupa worker e não tem prazo."
+    "footer": "O service só espera dentro de uma chamada num caso. Uma chamada que encontra um [[clone]] ou uma cópia ainda em andamento sobre os mesmos bytes espera que termine, mas só pelo tempo que o adapter permite.",
+    "notes": "§3.2: os MUSTs sobre callbacks, 'Recalls after one is revoked', 'An SMB break goes by its open', V6, V36. Uma requisição retida atrás de um recall DEVE ser retida além do break deadline (35 s para SMB), e uma atrás de um freeze além de migration.freeze_timeout mais o break deadline; o RFC 13 recusa configurações que violem qualquer dos dois. ErrBlocked não ocupa worker e não tem prazo. A única espera dentro de uma chamada: atrás de um clone ou de um chunk de cópia em andamento, limitada pelo WithHold do adapter (§5.9). 'Um período de lease' é o client lease, 90 s (RFC 14). O SMB não consegue dizer a um cliente para tentar de novo, então seu adapter retém a requisição e a executa de novo (§3.2, RFC 20 §4.6)."
   },
   "errors": {
     "kicker": "Erros",
@@ -237,7 +237,7 @@
       ],
       [
         "`ErrShareViolation`",
-        "Um [[deny-mode]] mantido por outro open está em conflito. Isso só é decidido depois do break do handle caching."
+        "Um [[deny-mode]] mantido por outro open está em conflito. Se esse open só continua vivo pelo [[handle-caching|handle caching]] de um cliente SMB, o service primeiro quebra o caching e decide no retry."
       ],
       [
         "`ErrLocked`",
@@ -245,7 +245,7 @@
       ]
     ],
     "footer": "Cada erro é declarado uma só vez, em `pkg/vfs/vfserr`. `vfs.Errors()` lista todos, então um teste pode verificar que a tabela de erros de cada adapter cobre cada um deles.",
-    "notes": "§4.3: uma seleção da tabela, que também tem ErrNotFound, ErrExist, ErrNotEmpty, ErrNotDir, ErrIsDir, ErrReadOnly, ErrNameTooLong, ErrInvalid, ErrRangeNotLocked, ErrDeletePending, ErrBlocked, ErrWrongSecurity, ErrCross, ErrIncomplete, ErrInconsistent, ErrLost, ErrUnavailable, ErrCorrupt, ErrIO e ErrPastEnd. vfserr é uma folha que importa só a biblioteca padrão, então o engine pode devolver ErrDelay e ErrCross sem importar pkg/vfs. ErrFileOpen é o único valor não reexportado: só o service o lê.",
+    "notes": "§4.3: uma seleção da tabela, que também tem ErrNotFound, ErrExist, ErrNotEmpty, ErrNotDir, ErrIsDir, ErrReadOnly, ErrNameTooLong, ErrInvalid, ErrRangeNotLocked, ErrDeletePending, ErrBlocked, ErrWrongSecurity, ErrCross, ErrIncomplete, ErrInconsistent, ErrLost, ErrUnavailable, ErrCorrupt, ErrIO e ErrPastEnd. vfserr é uma folha que importa só a biblioteca padrão, então o engine pode devolver ErrDelay e ErrCross sem importar pkg/vfs. ErrFileOpen é o único valor não reexportado: só o service o lê. ErrShareViolation vem depois do break dos handle-caching grants que cobrem os opens em conflito (§4.6 'Deny modes', §5.3).",
     "table2": [
       [
         "Erro",
@@ -265,19 +265,19 @@
       ],
       [
         "`ErrState`",
-        "Um nome de estado apresentado pelo cliente não pode ser usado, por exemplo `NotYours`, `StaleState` ou `BadState`."
+        "Um nome de estado apresentado pelo cliente não pode ser usado: [[not-yours|NotYours]] (é de outro cliente ou usuário), `StaleState` (pode ter se perdido com o open state do seu shard) ou `BadState` (esse estado não existe)."
       ]
     ],
     "title2": "Mais erros neutros",
-    "notes2": "§4.3, continuação: o resto da seleção. ErrQuota traz o escopo ultrapassado, o primeiro entre share, project, user e group. Os tipos de StateError (NotYours, StaleState, BadState e os outros) e os valores de DelayCause estão listados em §4.3."
+    "notes2": "§4.3, continuação: o resto da seleção. ErrQuota traz o escopo ultrapassado, o primeiro entre share, project, user e group. Os tipos de StateError (NotYours, StaleState, BadState e os outros) e os valores de DelayCause estão listados em §4.3. StaleState: um stateid ou FileId cujo estado pode ter se perdido com o open state do seu shard; BadState: qualquer outro cujo registro falta — expirado, liberado, nunca emitido (§4.3)."
   },
   "delay": {
     "title": "[[retry-later|ErrDelay]] sempre diz o porquê",
     "causes": [
       "`DelayRecall` — há um recall de [[caching-grant]] em andamento",
-      "`DelayClone` — um clone ou chunk de cópia ainda em andamento ocupa o intervalo que a chamada toca",
-      "`DelayConflict` — um conflito de metadados ainda não estava resolvido quando o prazo acabou",
-      "`DelayFrozen` — a share está em quiesce, congelada para uma mudança, ou foi movida",
+      "`DelayClone` — um [[clone]] ou uma cópia ainda em andamento ocupa os bytes que a chamada toca",
+      "`DelayConflict` — duas mudanças nos mesmos metadados colidiram, e os retries do store não resolveram isso até o prazo",
+      "`DelayFrozen` — um administrador pausou a share (quiesce), ou a share está congelada para uma [[namespace-move|movimentação]], ou já foi movida",
       "`DelayCapacity` — o [[journal]] está cheio, ou a share esgotou o seu próprio limite dentro dele",
       "`DelayCommit` — os commits de metadados não estão sendo concluídos",
       "`DelayResources` — um dos pools de memória do nó se esgotou"
@@ -287,9 +287,9 @@
       "Uma recusa temporária nunca vira `ErrNoSpace` só porque um prazo acabou.",
       "Um conflito que ainda existe no fim do prazo recebe `DelayConflict`, nunca um erro de I/O.",
       "Uma recusa de roteamento nunca chega a um [[adapter]], porque o próprio gateway roteia a chamada de novo.",
-      "Quem decide quanto tempo reter uma requisição é o adapter, pela causa e nunca pela operação."
+      "Um adapter NFS repassa o retry ao cliente, enquanto um adapter SMB [[held-request|retém a requisição]]. Por quanto tempo depende da causa, nunca da operação."
     ],
-    "notes": "§4.3, o tipo Delay e o parágrafo depois dele; §3.2 ('How long a delayed request may be held'). Toda chamada leva o prazo por tentativa da pipeline (RFC 20 §6.4); o service não define nenhum. As causas estão abreviadas: DelayFrozen cobre também uma share não anexada aqui, um shard ainda não servido e conteúdo ainda não reconciliado após dano; DelayCommit também a margem de quota esgotada (cluster) e o sync de uma escrita estável que pode tê-la perdido."
+    "notes": "§4.3, o tipo Delay e o parágrafo depois dele; §3.2 ('How long a delayed request may be held'). Toda chamada leva o prazo por tentativa da pipeline (RFC 20 §6.4); o service não define nenhum. As causas estão abreviadas: DelayFrozen cobre também uma share não anexada aqui, um shard ainda não servido e conteúdo ainda não reconciliado após dano; DelayCommit também a margem de quota esgotada (cluster) e o sync de uma escrita estável que pode tê-la perdido. Quiesce é um estado da share que a API de gerenciamento liga e desliga (RFC 16 §2.3.1). Um conflito de metadados é um conflito write-write que o store detecta de forma otimista e tenta de novo até o prazo (RFC 0 §9.2)."
   },
   "access": {
     "kicker": "Chegando a um arquivo"
@@ -299,7 +299,7 @@
     "order": "Toda chamada: **[[admission]]** → **autorização** → **verificação de conflitos**, nessa ordem.",
     "items": [
       "Só o chokepoint do metadata store decide permissões, e o package `authz` do service é o único código que o chama.",
-      "O [[share-grant]] é verificado a cada chamada. Uma decisão em cache tem na chave a versão da lista de grants da share, então um grant alterado ou apagado nunca é respondido pelo cache.",
+      "O [[share-grant]] é lido na admission a cada chamada, e o chokepoint o aplica como teto do que o arquivo permite. Uma decisão em cache tem na chave a versão da lista de grants, então um grant alterado ou apagado nunca é respondido pelo cache.",
       "Uma chamada feita por meio de um open é decidida pelo acesso guardado com esse open. Uma chamada anônima, ou sem open, verifica o chamador do zero.",
       "Um open é decidido junto com o diretório pai. Assim, o acesso `DELETE` do SMB vem do direito de apagar um filho desse diretório, como num remove NFS.",
       "Ter um [[handle]] não concede nada: toda chamada sobre ele é autorizada do zero."
@@ -309,26 +309,26 @@
   "admission": {
     "title": "[[admission|Admission]]: cinco verificações em toda chamada",
     "steps": [
-      "**Estado da share.** Uma share em quiesce responde `ErrDelay`, e uma em remoção ou aposentada responde `ErrStale`.",
+      "**Estado da share.** Uma share pausada por um administrador responde `ErrDelay`, e uma em remoção ou aposentada responde `ErrStale`.",
       "**Mínimos de segurança.** A forma como a chamada foi autenticada e protegida é comparada com os mínimos da share, e uma chamada abaixo deles recebe `ErrWrongSecurity`.",
       "**Regras de clientes.** O endereço e os netgroups do cliente podem recusar a chamada com `ErrAccess`, ou limitá-la a somente leitura.",
-      "**Resolução.** O service mapeia a [[identity]] do chamador, aplica o squash, reúne os grupos do usuário e lê o seu [[share-grant|share grant]].",
+      "**Resolução.** O service mapeia a [[identity]] do chamador, aplica o squash, reúne os grupos e lê o [[share-grant|share grant]], sem recusar nada.",
       "**Teto da share.** Se a share já usa todo o seu limite dos buffers de requisição do nó, a chamada recebe `ErrDelay` na hora."
     ],
-    "footer": "A admission roda antes de o [[handle]] ser resolvido, então um cliente recusado não descobre nada sobre o arquivo. Nenhuma chamada a pula: nem um lock, um unlock ou um watch, nem um `PUTFH` do NFSv4, nem uma descida a partir do [[pseudo-filesystem]].",
-    "notes": "§4.9 e sua figura. O passo 5 não vale para uma chamada que só libera estado (close, unlock, cancel, devolução de grant, liberação de um state ID) ou o recupera; os passos 1, 2 e 4 continuam valendo, e a recusa do passo 3 não vale para uma chamada que só libera. Um compound que entra em outra share é readmitido e resolvido de novo na passagem. Os passos 1–4 só podem ir para cache por (share, identidade) com na chave as versões de policy, netgroups, lista de shares e lista de grants e a geração de principals, mais o endereço do cliente quando uma regra de clientes decidiu; o passo 5 nunca vai para cache. V12, V39."
+    "footer": "A admission roda antes de o [[handle]] ser resolvido, então um cliente recusado não descobre nada sobre o arquivo. Nenhuma chamada a pula, seja um lock, um unlock, um watch, um `PUTFH` do NFSv4 ou uma descida a partir do [[pseudo-filesystem]].",
+    "notes": "§4.9 e sua figura. O passo 5 não vale para uma chamada que só libera estado (close, unlock, cancel, devolução de grant, liberação de um state ID) ou o recupera; os passos 1, 2 e 4 continuam valendo, e a recusa do passo 3 não vale para uma chamada que só libera. Um compound que entra em outra share é readmitido e resolvido de novo na passagem. Os passos 1–4 só podem ir para cache por (share, identidade) com na chave as versões de policy, netgroups, lista de shares e lista de grants e a geração de principals, mais o endereço do cliente quando uma regra de clientes decidiu; o passo 5 nunca vai para cache. V12, V39. Uma share pausada está no estado quiesced (§4.9 passo 1, RFC 16 §2.3.1). A resolução não recusa nada; Authorize aplica como teto da share o acesso que ela leu (§4.6)."
   },
   "revoked": {
     "title": "bob perde seu [[share-grant]]",
     "lead": "Um administrador remove o grant de bob em `profiles` enquanto bob-pc ainda tem [[handle|handles]].",
     "steps": [
       "A chamada seguinte de bob-pc apresenta um handle obtido antes.",
-      "O filesystem admite a chamada, e o [[chokepoint]] avalia de novo o share grant de bob, como em toda chamada.",
-      "Nenhum grant o admite mais, então a chamada é recusada. Ter um handle não concede nada.",
+      "A [[admission]] roda, como em toda chamada, e lê de novo o share grant de bob. Não encontra nenhum, mas a admission não recusa por isso. Ela passa para a verificação seguinte o acesso de bob à share, agora nenhum.",
+      "O [[chokepoint]] aplica esse acesso à share como teto do que o arquivo permite. Sem grant, recusa a chamada com `ErrAccess`. Ter um handle não concede nada.",
       "Todo cache de permissões tem o grant na chave, então nenhum \"sim\" antigo sobrevive."
     ],
     "outcome": "A perda do acesso vale a partir da próxima chamada, não do próximo mount.",
-    "notes": "'Start here · Scenarios', o cenário do próprio RFC; §4.6; V9."
+    "notes": "'Start here · Scenarios', o cenário do próprio RFC; §4.6; V9. O passo de resolução da admission lê o acesso à share nos grants e não recusa nada (§4.9 passo 4); Authorize aplica esse acesso como teto da share (§4.6), e um share grant que recusa dá ErrAccess (§4.3)."
   },
   "reaching": {
     "title": "Chegar a uma [[share]], e removê-la",
@@ -354,13 +354,16 @@
   "lockorder": {
     "title": "Um único [[lock-order|lock order]] para toda chamada",
     "levels": [
-      "Primeiro, o **lock de admission** de cada arquivo que a chamada toca, o nível externo do passo de open state.",
-      "Depois, a **fold admission** em cada diretório cujas contagens ou atributos a chamada muda. Se não conseguir pegar todas dentro do prazo, a chamada responde `ErrDelay`.",
-      "Por fim, o **accept lock** de cada arquivo para o qual a chamada tira uma nova versão."
+      "Primeiro, o [[admission-lock|lock de admission]] de cada arquivo que a chamada toca. A chamada o segura durante uma verificação do [[open-state|open state]] e durante a mudança ou o I/O que essa verificação permite.",
+      "Depois, a [[fold-admission|fold admission]] em cada diretório que a chamada muda. Uma mudança acrescenta uma pequena atualização às contagens e aos tempos do diretório em vez de reescrevê-los, e um [[delta-fold|fold]] junta depois essas atualizações. A fold admission faz novas mudanças esperarem enquanto um fold roda. Se a chamada não passar por todas as barreiras dentro do prazo, responde `ErrDelay`.",
+      "Por fim, o [[accept-lock|accept lock]] de cada arquivo que a chamada muda. A chamada o segura enquanto a mudança recebe seu número de versão e é aplicada, então os atributos lidos antes e depois são exatos."
     ],
-    "heldTitle": "Cada nível é pego em ordem de file ID, e uma chamada retida não segura nada",
-    "held": "Uma escrita retida atrás de um clone em andamento libera seus locks e sua [[quota-reservation|quota reservation]], e refaz as verificações quando a espera termina. Se os segurasse, todo open, close, lock e confirmação de break no arquivo esperaria junto, tempo suficiente para um break de [[lease]] expirar e ser revogado.",
-    "notes": "§5.0. Uma chamada na fila da fold admission não segura accept lock, e uma esperando um accept lock já segura todo open-state step de que precisa, então uma write e um unlink do último nome do arquivo nunca seguram, cada uma, o que a outra espera. O mutex das entradas da tabela é uma folha, nunca segurado quando uma chamada retorna. O V29 coloca esses casos em corrida 10⁴ vezes."
+    "heldTitle": "Uma chamada em espera não segura nenhum lock",
+    "held": "O service faz uma escrita esperar enquanto um [[clone]] ainda copia os bytes que ela toca. Durante a espera, a escrita libera seus locks e sua [[quota-reservation|quota reservation]], e refaz as verificações quando a espera termina.",
+    "notes": "§5.0, 'One lock order, for every call'. O lock de admission é o nível externo do passo de open state, sob o qual uma chamada faz toda verificação sobre um arquivo e a mudança que ela admite (§4.8). A fold admission cobre todo diretório cujos deltas a chamada escreve, ou cujos atributos ela muda (§5.0; RFC 7 §9.2, §9.4). O accept lock é segurado enquanto uma mudança tira sua versão e é aplicada (§5.1 passo 6, §5.7). Cada nível é pego em ordem de file ID. Uma chamada na fila da fold admission não segura accept lock, e uma esperando um accept lock já segura todo open-state step de que precisa, então uma write e um unlink do último nome do arquivo nunca seguram, cada uma, o que a outra espera. O mutex das entradas da tabela é uma folha, nunca segurado quando uma chamada retorna. O V29 coloca esses casos em corrida 10⁴ vezes.",
+    "order": "Dentro de cada nível, uma chamada pega os locks na ordem dos IDs dos arquivos. Como toda chamada os pega na mesma ordem, duas chamadas nunca seguram, cada uma, o que a outra espera.",
+    "heldWhy": "Se a escrita em espera segurasse seus locks, todo open, close e lock no arquivo esperaria junto, e também a confirmação do cliente a um break de [[lease]]. O break poderia então expirar, e o lease seria revogado.",
+    "heldNotes": "§5.0, 'A held call holds nothing': uma chamada retida atrás de um clone ou de um chunk de cópia (§5.9) libera seu accept lock, todo open-state step que pegou e sua quota reservation durante a espera, e quando a espera termina refaz os passos 3–6 de §5.1. Se os segurasse, todo open, close, lock e confirmação de break no arquivo esperaria junto, tempo suficiente para um break de lease expirar e ser revogado. O V29 testa isso com um clone de 1 GiB sob escritas e um break de lease pendente."
   },
   "write": {
     "title": "Uma escrita, passo a passo",
@@ -379,11 +382,19 @@
       ],
       [
         "3",
-        "Verifica o grace e os locks de intervalo de bytes. Um [[caching-grant]] em conflito inicia um recall, e a chamada responde `ErrDelay`."
+        "Durante um [[grace-period|grace period]], recusa com `ErrGrace` uma escrita que toca estado que um cliente ainda pode recuperar. Depois verifica os locks de intervalo de bytes. Um [[caching-grant]] em conflito inicia um recall, e a chamada responde `ErrDelay`."
       ],
       [
         "4",
         "[[quota-reservation|Reserva quota]] para o que a escrita acrescenta: os buracos que preenche mais os bytes além do fim do arquivo."
+      ]
+    ],
+    "footer": "Os passos 3 a 6 rodam no [[primary]] como um único passo. O [[accept-lock|accept lock]] nunca fica preso durante um sync, nem durante um [[group-commit|group commit]], a transação de metadados que registra muitas escritas de uma vez.",
+    "notes": "A tabela e o esboço de código de §5.1. No passo 2, para uma escrita anônima ou sob delegation, pede-se write data abaixo do tamanho e, a partir dele, write data se o chamador o tem, senão append data. Passo 6: toda mudança recusada com ErrVersionBehind pega nova versão e tenta de novo dentro do prazo, sem nunca expor isso. O V3 testa cada ordem pelo que uma recusa deixa intacto: uma escrita recusada no passo 3 não guarda reserva, não coloca bytes em staging e não limpa bit setuid. Cada ordem roda no filesystem no primary do arquivo, para onde o gateway roteou a chamada (introdução de §5), então o roteamento não é um passo aqui. A verificação do grace no passo 3: RFC 14 §4.4. 'The lock never spans a sync or a group commit' (§5.1) é o accept lock do passo 6. Escritas estáveis: §5.1, 'Which writes are stable'.",
+    "table2": [
+      [
+        "Passo",
+        "O que acontece"
       ],
       [
         "5",
@@ -391,32 +402,42 @@
       ],
       [
         "6",
-        "Sob o accept lock, captura o [[wcc|WCC]] de antes, chama o `Write` do [[engine]] e captura o WCC de depois."
+        "Sob o [[accept-lock|accept lock]], captura o [[wcc|WCC]] de antes, chama o `Write` do [[engine]] e captura o WCC de depois."
       ],
       [
         "7",
-        "Responde. Uma escrita estável espera antes que o [[journal]] a sincronize."
+        "Responde. Uma escrita estável, isto é, uma que depois de confirmada precisa sobreviver a um crash, espera antes que o [[journal]] a sincronize."
       ]
     ],
-    "footer": "Os passos 3 a 6 rodam no [[primary]] como um único passo, e o lock nunca fica preso durante um sync ou um group commit. Os passos seguem a numeração da sequência de escrita do RFC, não a da figura de seis passos.",
-    "notes": "A tabela e o esboço de código de §5.1. No passo 2, para uma escrita anônima ou sob delegation, pede-se write data abaixo do tamanho e, a partir dele, write data se o chamador o tem, senão append data. Passo 6: toda mudança recusada com ErrVersionBehind pega nova versão e tenta de novo dentro do prazo, sem nunca expor isso. O V3 testa cada ordem pelo que uma recusa deixa intacto: uma escrita recusada no passo 3 não guarda reserva, não coloca bytes em staging e não limpa bit setuid."
+    "lead": "A tabela começa no [[primary]], depois do roteamento do gateway, e agrupa as verificações de um jeito diferente da figura de seis passos, então seus números não batem com os da figura.",
+    "title2": "Uma escrita, passo a passo (continuação)",
+    "notes2": "A tabela de §5.1, passos 5 a 7, e a frase depois dela: 'Steps 3–6 run at the primary as one step (§4.8), except across a hold (§5.0). The lock never spans a sync or a group commit.' O lock é o accept lock do passo 6. Escritas estáveis: §5.1, 'Which writes are stable'."
   },
   "stable": {
-    "title": "Escritas confirmadas, leituras verificadas",
-    "writeTitle": "Quando uma escrita é estável",
+    "title": "Quando uma escrita é estável",
     "write": [
-      "Uma escrita é estável quando o cliente pede, e sempre que passa por um open persistente ou por uma [[share]] continuously available.",
-      "Uma escrita estável só é respondida depois que o [[journal]] a sincronizou e, se ela sobrescreve conteúdo já com commit, também depois do seu existence commit.",
-      "Com o journal cheio, uma escrita recebe `ErrDelay` (`DelayCapacity`) enquanto offload ou repack ainda puderem liberar espaço."
+      "Uma escrita é estável quando o cliente pede. Ela é sempre estável quando passa por um [[persistent-open|persistent open]] ou por uma share [[continuously-available|continuously available]], porque esses opens sobrevivem a um reinício, e as escritas que eles confirmaram também precisam sobreviver.",
+      "Uma escrita estável só é respondida depois que o [[journal]] a [[sync|sincronizou]] no disco local.",
+      "Se a escrita sobrescreve bytes cuja [[existence|existência]] o metadata store já registrou, ela espera também o [[existence|existence commit]]. Depois de um crash, o journal sincronizado basta para reconstruir um append ou o preenchimento de um buraco, mas uma sobrescrita precisa também do seu registro nos metadados.",
+      "Com o journal cheio, uma escrita recebe `ErrDelay` (`DelayCapacity`) enquanto [[offload]] ou [[repack]] ainda puderem liberar espaço, nunca `ErrNoSpace`."
     ],
     "readTitle": "O que uma leitura devolve",
     "read": [
       "Uma leitura devolve só bytes já verificados, enviados em streaming pelo [[engine]].",
-      "Ela pode devolver `n` bytes bons e depois um erro. O adapter responde com uma leitura curta desses bytes quando `n > 0` e o seu protocolo permite.",
-      "Bytes que falharam nunca são trocados por zeros. Onde ficam os buracos e os dados é respondido pelo `Allocation` do engine."
+      "Ela pode devolver `n` bytes bons e depois um erro para os bytes seguintes, por exemplo porque estão [[lost|Lost]]. O adapter responde com uma leitura curta dos `n` bytes quando `n > 0` e o seu protocolo permite.",
+      "Bytes que falharam nunca são trocados por zeros.",
+      "Onde ficam os buracos e os dados de um arquivo também é respondido pelo [[engine]], então nenhum [[adapter]] precisa descobrir isso lendo o arquivo."
     ],
-    "verifier": "**O [[write-verifier]].** `Write` lê o valor antes de colocar os bytes em staging, e `Commit` o lê de novo depois do sync. Se os dois forem diferentes, uma perda pode ter levado a escrita, então uma escrita estável recebe `ErrDelay` em vez de sucesso. O SMB não tem verifier, então é um `FLUSH` atravessando uma perda que falha com `ErrLost`, uma vez para cada open.",
-    "notes": "§5.1 ('Which writes are stable', passo 7, o parágrafo sobre capacidade), §5.2, §5.8; V19, V20, V25, V42. Estável a pedido: NFS FILE_SYNC ou DATA_SYNC, SMB write-through. Um append estável além do tamanho com commit, ou o preenchimento de um buraco com commit, espera só o sync. Um open durable não persistente não pode ser recuperado após um reinício do primary, então suas escritas não precisam ser estáveis. Uma escrita estável responde com o verifier devolvido pela sua Write, nunca o do Commit. Uma quota lógica recusa na hora. Leitura: ErrUnavailable é temporário e retido (§3.2). Seek a partir do fim ou além é ErrPastEnd; não pega lock de intervalo nem recolhe grant, então pode não ver bytes que outro cliente guarda em cache sob um grant de escrita."
+    "notes": "§5.1 ('Which writes are stable', passo 7, o parágrafo sobre capacidade); V19, V20. Estável a pedido: NFS FILE_SYNC ou DATA_SYNC, SMB write-through. Conteúdo com commit é aquele cuja existência o metadata store registrou (RFC 8 §5.1): um append estável além do tamanho com commit, ou o preenchimento de um buraco com commit, espera só o sync, e um cujo extent cobre conteúdo com commit espera também um sync mark registrado. Um open durable não persistente não pode ser recuperado após um reinício do primary, então suas escritas não precisam ser estáveis. Uma quota lógica recusa na hora (§5.6). Por quê: appends e preenchimentos de buracos são recuperáveis dos registros sincronizados, que a recuperação reaplica; uma sobrescrita de conteúdo com commit é registrada pelo overwrite record do seu existence commit (RFC 8 §5.1, RFC 6 §3.3).",
+    "verifierTitle": "O [[write-verifier|write verifier]] revela uma perda",
+    "smb": "O SMB não tem verifier. Um `FLUSH` SMB que atravessa uma perda dessas falha em vez disso com `ErrLost`, que avisa que dados já confirmados se perderam, uma vez para cada open do arquivo.",
+    "verifierNotes": "§5.8. Write devolve o verifier lido antes de colocar os bytes em staging, e Commit o lido depois que seu sync terminou, então uma perda antes ou durante esse sync os torna diferentes. O verifier é o do engine (RFC 8 §4.1), que incorpora a loss generation do journal. Uma escrita estável responde com o verifier devolvido pela sua Write, nunca o do Commit, e com ErrDelay (DelayCommit) quando diferem, já que um cliente não consulta o verifier de uma resposta estável. SMB: o Flushed do open state faz o flush falhar com ErrLost uma vez para cada open que ficou aberto durante a perda de uma escrita confirmada e ainda não descarregada (RFC 14 §8.1). V25, V42. As entradas do verifier são o nó e a node epoch do primary, um ID de instância do processo, a encarnação do shard e a loss generation do journal (RFC 8 §4.1); a loss generation só sobe com loss events. Um verifier diferente faz o cliente reenviar suas escritas não estáveis (RFC 8 §4.1).",
+    "readNotes": "§5.2. O Read do engine resolve a residency e envia em streaming chunks verificados (RFC 8 §7.2); pode devolver n bytes verificados e depois ErrLost, ErrUnavailable, ErrCorrupt ou ErrIO para o chunk seguinte. ErrUnavailable é temporário e retido (§3.2). SEEK_DATA, SEEK_HOLE, os intervalos alocados de READ_PLUS e a consulta SMB de intervalos alocados vêm do Allocation do engine (RFC 8 §7.6); nenhum adapter os deriva de leituras. Seek a partir do fim ou além é ErrPastEnd; não pega lock de intervalo nem recolhe grant, então pode não ver bytes que outro cliente guarda em cache sob um grant de escrita.",
+    "verifierItems": [
+      "O verifier é construído a partir de vários números. Dois deles são a [[node-epoch|node epoch]], que sobe quando o nó reinicia, e a [[loss-generation|loss generation]] do journal, que sobe a cada [[loss-event|perda]].",
+      "`Write` lê o verifier antes de colocar os bytes em staging, e `Commit` o lê de novo depois do sync. Se os dois valores forem diferentes, uma perda pode ter levado a escrita nesse meio-tempo.",
+      "Depois de escritas não estáveis, um verifier diferente diz ao cliente para reenviá-las. Um cliente não confere o verifier de uma resposta estável, então uma escrita estável nesse caso recebe `ErrDelay` em vez de sucesso, e o cliente a envia de novo."
+    ]
   },
   "open": {
     "title": "Open, close e a sharing violation",
@@ -440,31 +461,39 @@
     "moments": [
       "Quando um unlink ou um rename deixa um arquivo sem nome e sem open.",
       "No último close de um arquivo sem nome, seja o cliente quem o fecha, seja a própria tabela de open state.",
-      "Depois do commit do release de um arquivo, para cada um dos seus named streams, que esse release deixou pendentes.",
-      "Na recuperação após um reinício, para cada release pendente, quando termina o [[grace-period]] do seu shard."
+      "Depois do commit do release de um arquivo, para cada um dos seus [[named-stream|named streams]], que esse release registrou como ainda a liberar.",
+      "Depois de um reinício, para cada [[pending-release|pending release]], quando termina o [[grace-period]] do seu shard. Um unlink registra o pending release na sua própria transação, então um crash antes do release não deixa nada órfão."
     ],
-    "notes": "§5.3 ('Delete on close is a mark and a deferred unlink', 'The service runs every release'), §5.4, V17, V28, V38. O unlink adiado pega o step do pai só depois de soltar o do arquivo, para não entrar em deadlock com um unlink de outro nome do mesmo arquivo. Um crash entre o unlink e o release não deixa nada órfão: o registro de pending release é escrito na transação do unlink. Um unlink cujo nome sumiu dá certo qualquer que seja a resposta do Delete do engine."
+    "notes": "§5.3 ('Delete on close is a mark and a deferred unlink', 'The service runs every release'), §5.4, V17, V28, V38. O unlink adiado pega o step do pai só depois de soltar o do arquivo, para não entrar em deadlock com um unlink de outro nome do mesmo arquivo. Um crash entre o unlink e o release não deixa nada órfão: o registro de pending release é escrito na transação do unlink. Um unlink cujo nome sumiu dá certo qualquer que seja a resposta do Delete do engine. Named streams: o release do arquivo escreve os pending releases deles, e cada um roda quando esse release faz commit (§5.3, RFC 7 §4.3). A recuperação roda todo pending release quando a tabela levanta GraceEnded para o shard (§2.5, §5.3)."
   },
   "quota": {
-    "title": "[[quota-reservation|Quota]]: um único fiscal, reserva antecipada",
+    "title": "[[quota|Quota]]: limites hard, soft e de aviso",
     "items": [
-      "Só o service recusa por quota; nem o metadata store nem o [[engine]] o fazem.",
-      "Uma escrita reserva o que acrescenta antes que qualquer coisa mude, e o seu existence commit libera a reserva.",
+      "Uma escrita separa uma [[quota-reservation|reserva]] para o que acrescenta, antes que qualquer coisa mude. O [[existence|existence commit]] que depois registra a escrita libera a reserva.",
       "Um único [[primary]] vê todas as reservas, então um limite hard é ultrapassado no máximo pelo que os commits em andamento no mesmo momento acrescentam.",
-      "Num cluster, quem escreve por `k` primaries pode ultrapassá-lo em no máximo mais `(k − 1)` × slack, onde slack = `min(S, f × Hard)` é quanto cada primary pode manter sem commit.",
+      "Num cluster, um primary vê só as próprias reservas. Por isso cada primary pode manter sem commit no máximo uma quantidade fixa, a sua margem (slack), e quem escreve por `k` primaries pode passar de um limite hard em no máximo mais `(k − 1)` × slack.",
       "Um create cobra do dono do novo arquivo, nunca do dono do diretório pai. Um chamador privilegiado também precisa respeitar o limite."
     ],
-    "footer": "Passar do limiar de aviso ou do limite soft gera um evento, mas não recusa nada. Quando o tempo de grace do limite soft se esgota, o limite soft passa a valer como o hard.",
-    "notes": "§5.6 e §5.5 (mudar dono ou grupo move a cobrança); V10, V37. Os escopos são verificados na ordem share, project, user, group; QuotaError nomeia o primeiro excedido. Uma reserva é volátil: depois de um crash o journal reaplica as escritas e sua cobrança. Ponytail: nenhuma margem enquanto todos os primaries de uma share forem um único nó. S e f são configurações do RFC 13; a derivação é do RFC 16 §4.4. 'Quota is not a permission' (§5.5)."
+    "footer": "O slack é o menor entre um tamanho fixo e uma fração fixa do limite hard, ambos escolhidos pelo operador na configuração.",
+    "notes": "§5.6, 'Soft limits', e os escopos de Reserve. Os escopos são verificados na ordem share, project, user, group; QuotaError nomeia o primeiro excedido. O metadata store registra quando o limite soft foi excedido pela primeira vez; passado o tempo de grace a partir daí, o limite soft passa a valer como o hard, e voltar para baixo dele apaga o registro. Cada passagem gera um evento de quota (§3.3). 'Quota is not a permission' (§5.5).",
+    "model": [
+      "Uma [[quota]] limita os bytes e arquivos que uma share, um projeto, um usuário ou um grupo pode usar. Cada uma tem um limite hard, e pode ter um limite soft e um limiar de aviso.",
+      "Uma escrita que passaria do limite hard é recusada na hora com `ErrQuota`.",
+      "Passar do limite soft não recusa nada no início. Quando o tempo de grace do limite soft se esgota, o limite soft passa a valer como o hard.",
+      "Passar do limiar de aviso, ou do limite soft, gera um evento e não recusa nada.",
+      "Só o service recusa por quota. Nem o metadata store nem o [[engine]] o fazem."
+    ],
+    "title2": "A [[quota-reservation|quota]] é reservada antes",
+    "notes2": "§5.6 e §5.5 (mudar dono ou grupo move a cobrança); V10, V37. O group commit registra existência e uso e libera a reserva (§5.1 passo 7). Uma reserva é volátil: depois de um crash o journal reaplica as escritas e sua cobrança. Limite de ultrapassagem e slack (cluster): §5.6. O slack é min(S, f × Hard), onde S e f são configurações do RFC 13 e a derivação é do RFC 16 §4.4; um primary além do seu slack responde ErrDelay (DelayCommit). Ponytail: nenhum slack enquanto todos os primaries de uma share forem um único nó."
   },
   "copy": {
     "title": "Copy e clone",
     "cloneTitle": "`Clone`: atômico",
-    "clone": "Um clone cobre um único [[extent]] e só responde quando termina. Um clone maior que `clone_max_len` é recusado com `ErrInvalid`. Num cluster, um clone entre dois shards recebe `ErrCross` e não muda nada, então o próprio cliente copia os bytes.",
+    "clone": "Um [[clone]] cobre um único [[extent]] e só responde quando termina. Um clone maior que o máximo configurado é recusado como inválido (`ErrInvalid`), tudo ou nada. Num cluster, um clone entre arquivos de dois [[shard|shards]] é recusado (`ErrCross`) e não muda nada, então o próprio cliente copia os bytes.",
     "copyTitle": "`Copy`: pode ser parcial",
     "copy": "Uma cópia avança em chunks limitados, cada um deles um pequeno clone atômico. No prazo, ela para depois do chunk atual e responde quantos bytes copiou, e o cliente continua dali. Uma cópia é sempre síncrona. Num cluster, entre shards, é o próprio service que copia os bytes.",
-    "hold": "Uma escrita num extent de onde ou para onde um clone está copiando espera, no máximo o quanto o [[adapter]] permite com `WithHold`, e depois recebe `ErrDelay` (`DelayClone`). Um intervalo de origem [[lost|Lost]] é copiado como Lost, nunca como zeros.",
-    "notes": "§5.9, V26, V30. Também recusados antes que algo mude: extents sobrepostos no mesmo arquivo (ErrInvalid), uma cópia entre namespaces (ErrCross, CrossNamespace), uma origem Incomplete (ErrIncomplete). O estado de cópia assíncrona do RFC 14 fica sem uso até que um cliente mostre precisar dele. Sem WithHold a resposta é ErrDelay na hora, o que custaria a um cliente NFSv3 sua pausa de retry de vários segundos."
+    "hold": "Uma escrita num extent de onde ou para onde um clone está copiando espera o clone terminar, mas só pelo tempo que o [[adapter]] permite para essa chamada. Depois disso, recebe `ErrDelay` (`DelayClone`). Um intervalo de origem [[lost|Lost]] é copiado como Lost, nunca como zeros.",
+    "notes": "§5.9, V26, V30. Também recusados antes que algo mude: extents sobrepostos no mesmo arquivo (ErrInvalid), uma cópia entre namespaces (ErrCross, CrossNamespace), uma origem Incomplete (ErrIncomplete). O estado de cópia assíncrona do RFC 14 fica sem uso até que um cliente mostre precisar dele. Sem WithHold a resposta é ErrDelay na hora, o que custaria a um cliente NFSv3 sua pausa de retry de vários segundos. O máximo configurado é clone_max_len (RFC 13); o adapter limita a espera por chamada com WithHold (§5.9)."
   },
   "locks": {
     "title": "Locks",
@@ -493,7 +522,7 @@
       ],
       [
         "serving",
-        "`Start` serve o [[open-state|open state]] de cada [[shard]], instala os opens persistentes e entra no [[grace-period|grace period]], depois abre as shares. Ou todos os passos dão certo, ou o filesystem fica como foi construído."
+        "`Start` serve o [[open-state|open state]] de cada [[shard]], reinstala os [[persistent-open|persistent opens]] guardados no metadata store e entra no [[grace-period|grace period]], depois abre as shares. Ou todos os passos dão certo, ou o filesystem fica como foi construído."
       ],
       [
         "draining",
@@ -504,8 +533,8 @@
         "`Stop` para os timers e não fecha nada do que recebeu."
       ]
     ],
-    "footer": "Na partida sobem primeiro o store, o open state, o [[engine]], o GC e a identidade, depois o filesystem, `Serve` e o gateway, depois o primeiro reconcile, e os [[adapter|adapters]] por último. A parada segue a ordem inversa. Nenhuma opção permite iniciar o filesystem com o grace já encerrado.",
-    "notes": "§2.5, V33, V34, V35. Start não espera o grace acabar. Drain é chamado quando todo adapter fez drain, e num cluster quando Serve parou, porque o drain de um adapter ainda entrega confirmações de break, CLOSEs e unlocks. Num cluster a ordem de parada entrega cada shard antes de Serve parar. Decisões: os métodos de ciclo de vida não ficam em vfs.Service, então um adapter não pode fazer drain do service por baixo do outro protocolo; nenhuma configuração pula o grace, o que deixaria um filesystem servir estado em conflito antes que os clientes o recuperem."
+    "footer": "Na partida sobem primeiro o store, o open state, o [[engine]], o [[gc|GC]] e o componente de identidade, depois o filesystem, `Serve` e o gateway, depois a primeira passagem que abre as shares configuradas, e os [[adapter|adapters]] por último. A parada segue a ordem inversa. Nenhuma opção permite iniciar o filesystem com o grace já encerrado.",
+    "notes": "§2.5, V33, V34, V35. Start não espera o grace acabar. Drain é chamado quando todo adapter fez drain, e num cluster quando Serve parou, porque o drain de um adapter ainda entrega confirmações de break, CLOSEs e unlocks. Num cluster a ordem de parada entrega cada shard antes de Serve parar. Decisões: os métodos de ciclo de vida não ficam em vfs.Service, então um adapter não pode fazer drain do service por baixo do outro protocolo; nenhuma configuração pula o grace, o que deixaria um filesystem servir estado em conflito antes que os clientes o recuperem. Os persistent opens são instalados pelo Recovery.ServeShard do RFC 14 antes de qualquer resposta (§2.5, passo 1 de Start). A primeira passagem é o primeiro reconcile do nó, que abre as shares (tabela de §2.5, linha 5; RFC 23 §2.2)."
   },
   "numbers": {
     "kicker": "Números concretos",
@@ -518,11 +547,11 @@
     "w3": "causas de [[retry-later|ErrDelay]]. A causa decide por quanto tempo um [[adapter]] retém uma requisição.",
     "n4": "(k − 1) × margem",
     "w4": "Num cluster, quanto quem escreve por `k` [[primary|primaries]] pode passar de uma quota hard, além do que commits concorrentes acrescentam",
-    "n5": "112",
-    "w5": "arquivos de adapter que importam `pkg/metadata` quando a allowlist começa. A lista só pode diminuir.",
+    "n5": "10⁴",
+    "w5": "intercalações de locks, escritas, opens e unlinks que os testes rodam toda noite",
     "n6": "0",
-    "w6": "alocações por operação no caminho dos dados, uma meta que os benchmarks verificam",
-    "notes": "5 verificações: §4.9. 35 s: §3.2, do RFC 14 §5.3. 7 causas: §4.3. (k − 1) × margem: §5.6. 112: §9, slice 0 ('112 today' quando o RFC foi escrito). 0 alocações: §8, Benchmarks."
+    "w6": "alocações de memória que o service pode acrescentar a uma leitura ou a uma escrita. Os benchmarks verificam essa meta.",
+    "notes": "5 verificações: §4.9. 35 s: §3.2, do RFC 14 §5.3. 7 causas: §4.3. (k − 1) × margem: §5.6. 10⁴ intercalações: §8, a execução noturna do tier de integração de um modelo de lock, write, open e unlink intercalados sob -race. 0 alocações: §8, Benchmarks ('0 allocations on the data path')."
   },
   "tests": {
     "kicker": "Testes",
@@ -564,8 +593,8 @@
         "só que a tradução está correta"
       ]
     ],
-    "footer": "Um teste de arquitetura falha se o gateway guarda um `*Filesystem`, se `internal/vfs` importa código de rede, ou se algo que não seja `authz` chama `Authorize`.",
-    "notes": "§8. A suíte de conformidade tem um arquivo por área mais crossproto.go e faults.go, conduzida por valores Call de protocolos diferentes sem adapter. Alvos de fuzzing: IDs, cursores, handles, nomes, sequências. A verificação de arquitetura traz uma violação proposital de cada regra. Nenhuma suíte roda ainda o nível multi-node, as longas execuções noturnas de modelo e fuzzing, ou os benchmarks."
+    "footer": "Um teste de arquitetura falha se o gateway guarda um `*Filesystem`, se `internal/vfs` importa código de rede, ou se algum pacote que não seja `authz` chama o [[chokepoint]].",
+    "notes": "§8. A suíte de conformidade tem um arquivo por área mais crossproto.go e faults.go, conduzida por valores Call de protocolos diferentes sem adapter. Alvos de fuzzing: IDs, cursores, handles, nomes, sequências. A verificação de arquitetura traz uma violação proposital de cada regra. Nenhuma suíte roda ainda o nível multi-node, as longas execuções noturnas de modelo e fuzzing, ou os benchmarks. Authorize é o ponto de entrada do chokepoint, e authz é o seu único chamador (§4.6)."
   },
   "whom": {
     "kicker": "O que muda",
@@ -575,7 +604,7 @@
     "storeTitle": "Quem escreve store e engine",
     "store": "O filesystem é o seu único chamador. O metadata store se reduz às operações de store propriamente ditas e continua substituível, e o [[chokepoint]] fica dentro dele.",
     "opsTitle": "Operadores e usuários",
-    "ops": "Os dois protocolos seguem uma única regra. Um grant revogado vale a partir da chamada seguinte. Os eventos de quota e de acesso vêm todos de um só caminho, então nenhum protocolo escapa do fluxo de auditoria.",
+    "ops": "Os dois protocolos seguem uma única regra. Um grant revogado vale a partir da chamada seguinte. O service emite toda decisão de acesso auditada e todo evento de quota por um só caminho, então nenhum protocolo escapa do fluxo de auditoria.",
     "notes": "Leitura do deck, a partir de §1, §2.1 (decisão: o service é uma camada nova, não um metadata store que cresceu), §3.3 (cada decisão é auditada uma vez), §4.6 e §9."
   },
   "rules": {
@@ -585,7 +614,7 @@
     "items": [
       "Um [[adapter]] **não deve** reconstruir o comportamento de um protocolo com chamadas mais fracas ao service.",
       "O [[primary]] **deve** ordenar uma verificação de conflitos e seu I/O para que nada seja concedido no meio.",
-      "Um [[callback]] **não deve** bloquear além do seu prazo, e um event hook **não deve** bloquear nem fazer a operação falhar.",
+      "Um [[callback]] **não deve** bloquear além do seu prazo, e entregar ao nó um evento de auditoria ou de quota **não deve** bloquear nem fazer a operação falhar.",
       "Uma recusa de roteamento **não deve** chegar a um adapter, e um adapter **não deve** interpretar [[handle|handles]].",
       "O service **não deve** acrescentar cópias no caminho dos dados."
     ],
@@ -595,9 +624,9 @@
       "avalia ele mesmo uma permissão de arquivo, mas pergunta ao [[chokepoint]];",
       "guarda cópias de metadados, [[open-state|open state]] ou conteúdo além da chamada, salvo caches indexados por versão e o [[pseudo-filesystem]];",
       "persiste nada de seu, nem importa um adapter;",
-      "conta as requisições que um adapter retém, nem encaminha um cliente para outra instalação."
+      "conta as requisições que um adapter retém, nem encaminha um cliente para outra [[installation|instalação]], isto é, outro conjunto de servidores."
     ],
-    "notes": "Regras: §4.1 (forma atômica, ou a operação não é suportada), §4.8, §3.2 e §3.3 (um event hook NÃO DEVE bloquear nem fazer a operação falhar), §4.3, §4.4 (um adapter NÃO DEVE construir, interpretar ou comparar handles), §4.5. Não-objetivos: §1.1, todos os itens; o que ele pode guardar se limita ao cache de admission (§4.9), ao cache de autorização (§4.6) e ao pseudo-filesystem, cada um indexado pelas versões que leu. Contar requisições retidas cabe ao RFC 20 §4.6 e ao RFC 24. Os números de linhas V removidas não são reutilizados. §6 lista os invariantes, de V3 a V42, cada um com o teste que pegaria um service errado mas plausível."
+    "notes": "Regras: §4.1 (forma atômica, ou a operação não é suportada), §4.8, §3.2 e §3.3 (um event hook NÃO DEVE bloquear nem fazer a operação falhar), §4.3, §4.4 (um adapter NÃO DEVE construir, interpretar ou comparar handles), §4.5. Não-objetivos: §1.1, todos os itens; o que ele pode guardar se limita ao cache de admission (§4.9), ao cache de autorização (§4.6) e ao pseudo-filesystem, cada um indexado pelas versões que leu. Contar requisições retidas cabe ao RFC 20 §4.6 e ao RFC 24. Os números de linhas V removidas não são reutilizados. §6 lista os invariantes, de V3 a V42, cada um com o teste que pegaria um service errado mas plausível. Eventos: o filesystem monta todo evento de acesso e de quota e o entrega ao sink de eventos do nó, que o enfileira (§3.3). Encaminhamentos: §1.1, uma share só é servida pela instalação que a detém."
   },
   "migration": {
     "title": "Introduzido em etapas",
@@ -608,7 +637,7 @@
       ],
       [
         "0",
-        "tipos e erros neutros passam para `pkg/vfs`, com uma allowlist de imports que só pode diminuir"
+        "tipos e erros neutros passam de `pkg/metadata` para `pkg/vfs`"
       ],
       [
         "1",
@@ -624,11 +653,11 @@
       ],
       [
         "4",
-        "`Write`, `Read` e `Commit`, para que as quatro cópias da sequência de escrita nos adapters virem uma só"
+        "`Write`, `Read` e `Commit`. Hoje os adapters têm quatro cópias separadas da sequência de escrita, que viram esta única."
       ]
     ],
     "footer": "O service é construído desde o início sobre o novo metadata store e o open state do RFC 14, não sobre o código de hoje. Os bugs em que as cópias dos adapters divergiram e que perdem dados ou abrem acesso são corrigidos já, no código de hoje.",
-    "notes": "A tabela e as decisões de §9. A delegação da etapa 1 ao metadata.Service de hoje e o shim da etapa 3 sobre o lock manager de hoje são pulados (decisão em §9), porque ambos são apagados quando o novo store chegar. Cada etapa edita o RFC no mesmo PR e chega com seus testes; os testes entre protocolos rodam em todo PR que possa quebrá-los.",
+    "notes": "A tabela e as decisões de §9. A delegação da etapa 1 ao metadata.Service de hoje e o shim da etapa 3 sobre o lock manager de hoje são pulados (decisão em §9), porque ambos são apagados quando o novo store chegar. Cada etapa edita o RFC no mesmo PR e chega com seus testes; os testes entre protocolos rodam em todo PR que possa quebrá-los. A etapa 0 não tem allowlist de imports: a decisão de §9 rejeita uma allowlist de imports dos adapters que encolhe, porque o plano do RFC 20 apaga os adapters v1 de uma vez. Etapa 4: 'the four copies of the write sequence become §5.1'.",
     "table2": [
       [
         "Etapa",
@@ -640,11 +669,11 @@
       ],
       [
         "6",
-        "locks com listas de intervalos, depois copy e clone"
+        "`Lock` e `Unlock` sobre vários intervalos de bytes numa só chamada, depois copy e clone"
       ],
       [
         "7 em diante",
-        "o resto das operações, depois o pipeline comum do RFC 20"
+        "o resto das operações, depois o tratamento de requisições comum aos adapters"
       ],
       [
         "cluster",
@@ -652,7 +681,7 @@
       ]
     ],
     "title2": "Introduzido em etapas (continuação)",
-    "notes2": "A tabela de §9, da etapa 5 ao cluster, e o item 'Drift bugs that lose data or open access are fixed now'. Os bugs de divergência estruturais são corrigidos pela sua etapa.",
+    "notes2": "A tabela de §9, da etapa 5 ao cluster, e o item 'Drift bugs that lose data or open access are fixed now'. Os bugs de divergência estruturais são corrigidos pela sua etapa. A etapa 6 são Lock e Unlock com listas de intervalos; a etapa 7 termina com o pipeline comum e as tabelas de erros do RFC 20.",
     "kicker": "Migração"
   },
   "openq": {
@@ -660,10 +689,10 @@
     "questions": [
       "Deve haver uma chamada em lote para compounds? Por enquanto não, porque só um benchmark num cluster poderia mostrar que vale a pena.",
       "Os layouts pNFS não ficam no service. É o [[adapter]] que responde que não são suportados.",
-      "As camadas de baixo têm duas lacunas. Os `Attrs` do RFC 7 não têm verifier para o create exclusivo, e o RFC 16 não oferece uma visão de leitura dos registros de quota.",
-      "Para um watch recursivo sobre diretórios espalhados por vários shards, o RFC ainda não diz quem deve registrá-lo."
+      "As camadas de baixo têm duas lacunas. Os atributos de arquivo definidos pela camada de metadados não têm campo para o token que um create exclusivo do NFS guarda, e o metadata store não oferece ao service um jeito de ler os registros de quota.",
+      "Um [[watch]] pode cobrir uma subárvore inteira. Quando os diretórios dela ficam em vários [[shard|shards]], ainda não está decidido quem registra o watch em cada um."
     ],
-    "notes": "§10 (itens 1, 2, 4, 5; o item 3, a largura dos IDs, está resolvido pelo RFC 14 §2.11).",
+    "notes": "§10 (itens 1, 2, 4, 5; o item 3, a largura dos IDs, está resolvido pelo RFC 14 §2.11). Item 4: os Attrs do RFC 7 não têm verifier para o create exclusivo, embora o RFC 7 §2.10 guarde um; o RFC 16 não declara uma visão de leitura dos registros de quota, exceto a do ControlPlane, que o filesystem não pode chamar. Item 5: um watch recursivo precisa ser registrado no primary de cada diretório (RFC 11 §2.2).",
     "kicker": "Ainda em aberto"
   },
   "quizRefuse": {
@@ -688,11 +717,11 @@
       "Dá certo, porque uma permissão para esse arquivo já está em cache."
     ],
     "why": [
-      "O [[chokepoint]] avalia de novo o grant de bob a cada chamada, e ter um [[handle]] não concede nada. Agora nenhum grant o admite.",
+      "A [[admission]] lê de novo o grant de bob a cada chamada e o [[chokepoint]] o aplica, então sem grant a chamada é recusada. Um [[handle]] não concede nada.",
       "O mount vira uma chamada `Root`, onde um cliente falha cedo, mas não é ali que o acesso é decidido. Toda chamada seguinte é admitida de novo.",
       "Uma permissão em cache tem na chave a versão da lista de grants da share. Remover o grant muda essa versão, então o cache não pode responder."
     ],
-    "notes": "'Start here · Scenarios', o cenário do próprio RFC; §4.6 (o share grant é verificado a cada chamada; um cache de resultados de autorização DEVE ter na chave a versão da lista de grants da share, que muda tanto quando um grant é alterado quanto quando é apagado; ter um handle não concede nada); §4.9 (Root é onde um cliente falha cedo, não onde o acesso é decidido; a admission roda a cada chamada)."
+    "notes": "'Start here · Scenarios', o cenário do próprio RFC; §4.6 (o share grant é verificado a cada chamada; um cache de resultados de autorização DEVE ter na chave a versão da lista de grants da share, que muda tanto quando um grant é alterado quanto quando é apagado; ter um handle não concede nada); §4.9 (Root é onde um cliente falha cedo, não onde o acesso é decidido; a admission roda a cada chamada). A admission lê o grant (§4.9 passo 4, sem recusar); Authorize o aplica como teto da share e recusa (§4.6)."
   },
   "quizHandleCaching": {
     "question": "Um open entra em conflito só com deny modes de opens que um [[lease]] com handle caching mantém vivos. O que o service faz?",
@@ -734,22 +763,22 @@
       "nodeA": "nó A — o nó gateway",
       "nodeB": "nó B — o primary do arquivo",
       "adapter": "adapter NFS",
-      "checked": "Service verificado",
+      "checked": "mesmas verificações de um envio",
       "ownFs": "o do próprio nó A",
       "decides": "decide a chamada",
-      "fenceDedup": "fence · dedup",
+      "fenceDedup": "verifica epoch · dedup",
       "envelope": "envelope",
       "sameId": "mesmo request ID",
       "markLocal": "primary: nó A",
-      "markFence": "epochs ok · hop 0",
+      "markFence": "epochs atualizadas",
       "markDedup": "resultado original",
       "markStale": "epoch antiga",
       "markNever": "não vê recusa",
       "steps": [
-        "Quando o próprio nó A é o primary do arquivo, a chamada vai para o filesystem do nó A, passando mesmo assim pelas verificações de `Serve`.",
-        "Quando o primary é o nó B, o gateway manda a chamada para lá com a sua [[route-envelope]]. `Serve` no nó B verifica as epochs, e quem decide é o filesystem do nó B.",
-        "Se a resposta se perde, o gateway reenvia a chamada com o mesmo request ID. `Serve` responde pela sua tabela de dedup, então a chamada é aplicada uma só vez.",
-        "Se o primary mudou, a chamada traz uma epoch velha e é recusada. O gateway a roteia de novo para o novo primary, e o [[adapter]] nunca vê a recusa."
+        "Quando o próprio nó A é o primary do arquivo, a chamada vai para o filesystem do nó A, passando mesmo assim por `Serve`, que aplica as mesmas verificações de uma chamada encaminhada.",
+        "Quando o primary é o nó B, o gateway manda a chamada para lá com a sua [[route-envelope]]. `Serve` no nó B verifica se as [[epoch|epochs]] da chamada estão atualizadas, e quem decide é o filesystem do nó B.",
+        "Se a resposta se perde, o gateway reenvia a chamada com o mesmo request ID. `Serve` responde pela sua [[dedup-table|tabela de dedup]], então a chamada é aplicada uma só vez.",
+        "Se um novo primary [[takeover|assumiu]], a epoch do shard subiu, então a chamada traz uma epoch velha e é recusada. O gateway a roteia de novo para o novo primary, e o [[adapter]] nunca vê a recusa."
       ]
     },
     "recall": {

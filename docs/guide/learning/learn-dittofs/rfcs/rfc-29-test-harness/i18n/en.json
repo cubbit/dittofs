@@ -17,9 +17,9 @@
     "knownLead": "RFC 29 builds on no other RFC, because it is about the test tooling rather than the server. The DittoFS terms below appear in it only in passing. Click one to read its definition.",
     "knownNotes": "The RFC index says RFC 29 builds on no other RFC, RFC 0 included. Share: a fixture's shares (§4.2). Adapter: the NFS and SMB adapters a fixture enables (§4.2). Lease: the fixture's NFSv4 lease (§4.2). The journal, syncer and engine appear only as example component groups (§4.9).",
     "newTitle": "New terms",
-    "newNotes": "RFC 29 has no glossary section; each term is defined where the RFC introduces it: dt (§3), registry, suite, option, group (§4.1), cell (§4.4), store profile and fixture (§4.2), needs and the dedicated host (§4.5), tier and blocking (§4.3), gate (§4.8), format, CTRF, grade (§4.6), known failure, expected skip, unexpected pass, quarantine, flaky, retry (§4.7), not run (§4.4, R10), the develop-red issue (§4.8). The glossary at the end adds matrix, shard and baseline.",
+    "newNotes": "RFC 29 has no glossary section; each term is defined where the RFC introduces it: dt (§3), registry, suite, option, group (§4.1), cell (§4.4), store profile and fixture (§4.2), needs, dtc and the dedicated host (§4.4, §4.5), the system scenarios (§1, §4.1), tier and blocking (§4.3), gate (§4.8), format, CTRF, grade (§4.6), known failure, expected skip, unexpected pass, quarantine, flaky, retry (§4.7), not run (§4.4, R10), the develop-red issue (§4.8). The glossary at the end adds matrix, shard and client lease.",
     "clashTitle": "Terms that clash",
-    "clashNotes": "Tier: DittoFS's storage tiers (RFC 0, RFC 4) versus RFC 29's test tiers (§4.3). Fixture: the usual test-code sense versus §4.2's whole server. Gate: the gate job (§4.8) versus the performance and allocation gates (§4.10) and the adapters' share gate. Store profile versus performance and coverage profiles (§4.1's unit suite writes a coverage profile). Baseline: smbtorture's baseline file, the knfsd comparison and a benchmark's baseline (§4.8, §4.10). Lease: the fixture's NFSv4 lease (§4.2)."
+    "clashNotes": "Tier: DittoFS's storage tiers (RFC 0, RFC 4) versus RFC 29's test tiers (§4.3). Fixture: the usual test-code sense versus §4.2's whole server. Gate: the gate job (§4.8) versus the performance and allocation gates (§4.10) and the adapters' share gate. Store profile versus performance and coverage profiles (§4.1's unit suite writes a coverage profile). Lease: the fixture's NFSv4 lease (§4.2)."
   },
   "problem": {
     "kicker": "The problem"
@@ -61,25 +61,25 @@
       ],
       [
         "WPTS BVT",
-        "70 of its 335 tests never ran, and they were counted as skips with no list of which skips are expected."
+        "WPTS is Microsoft's test suite for SMB, and BVT is its basic set. 70 of those 335 tests never ran, and they were counted as skips with no list of which skips are expected."
       ],
       [
-        "portmap system test",
+        "The Go integration test of portmap",
         "Its result did not come from a new run. It was replayed from Go's test cache."
       ]
     ],
     "footer": "On 2026-10-08, a check of every test workflow's latest green runs found 14 such cases, and each was filed as an issue. In every one, a setup problem, a missing tool or a skipped test was read as a pass.",
-    "notes": "§1, the table 'Green results that test nothing' (abridged), and the Summary. Others in the table: pynfs runs only its `all` flag (601 of 689 in 4.0, 184 of 266 in 4.1), the smb-client-compat Windows job, the performance gates skipping under -race and -short."
+    "notes": "§1, the table 'Green results that test nothing' (abridged), and the Summary. Others in the table: pynfs runs only its `all` flag (601 of 689 in 4.0, 184 of 266 in 4.1), the smb-client-compat Windows job, the performance gates skipping under -race and -short. WPTS is Microsoft's Windows Protocol Test Suites; its wpts entry runs the tests with TestCategory=BVT (§4.1). The portmap test is an option of the integration suite, built with the portmap_system tag (§4.1); §1 calls it the portmap system test."
   },
   "unheard": {
     "title": "Red that nobody heard",
     "items": [
       "The nightly conformance run has failed every night since 2026-09-10, but the job that summarises it stays green.",
-      "The AD-DC suite failed on every run on develop after one pull request broke it, and nobody was told.",
+      "The AD-DC suite, which tests DittoFS against an Active Directory domain controller, failed on every run on develop after one pull request broke it, and nobody was told.",
       "The alarm that warned when develop went red, an e-mail and an issue, was removed, because [[flaky]] smbtorture subtests set it off all the time.",
-      "The 42 system scenarios run twice a day, outside every CI job. About half fail on purpose, because they reproduce open bugs, but no list says which ones."
+      "The 42 [[system-scenario|system scenarios]], scripts that run a real server and real clients and often inject a fault, run twice a day on a dedicated host, outside every CI job. About half fail on purpose, because they reproduce open bugs, but no list says which ones."
     ],
-    "notes": "§1, 'Nobody hears when develop goes red' and 'Scenarios carry no signal'. The nightly failure: its baseline job pushes to develop and the ruleset refuses (#2997). AD-DC: one test still asked for the removed memory metadata store. The alarm (e-mail and issue) was added in #1170 and removed in #1705 (Appendix A)."
+    "notes": "§1, 'Nobody hears when develop goes red' and 'Scenarios carry no signal'. The nightly failure: its baseline job pushes to develop and the ruleset refuses (#2997). AD-DC: one test still asked for the removed memory metadata store. The alarm (e-mail and issue) was added in #1170 and removed in #1705 (Appendix A). The system scenarios: §4.1's system entry ('a real server in a container, real clients, faults injected'). AD-DC: an option of the integration suite, run against the AD-DC service container (§4.1, §3)."
   },
   "wrappers": {
     "title": "Wrappers around wrappers",
@@ -114,8 +114,8 @@
     "cliTitle": "A CLI, not a service",
     "cli": "A service that runs tests needs a host, authentication and a deployment, and a laptop would talk to it differently from CI. Other programs build on files instead: the [[registry]], the lists of known failures, the `summary.json` results and the exit code.",
     "goTitle": "Go from the start",
-    "go": "The bash `dt` was one 1,270-line script. What the RFC adds is data handling — YAML, results, grading — which in bash needs `yq` and `jq` and can't reasonably be tested. In Go it has tests and runs on Linux, macOS and Windows.",
-    "footer": "An earlier version of `dt` written in bash is not carried forward. It stays only as the reference for the commands people already use.",
+    "go": "An earlier `dt`, written in bash, was one 1,270-line script. What the RFC adds is data handling — YAML, results, grading — which in bash needs `yq` and `jq` and can't reasonably be tested. In Go it has tests and runs on Linux, macOS and Windows.",
+    "footer": "That bash version is not carried forward. It stays only as the reference for the commands people already use.",
     "notes": "§3 Decision: 'A CLI, not an API service' and 'In Go, from the start'. Go's dependencies are already in go.mod (gopkg.in/yaml.v3, cobra). Rejected alternatives in §6: an API service, bash first then Go. The other rejected alternatives (§6): a descriptor file per test, a suite per variant (the second draft's 30 suites), a result kind per tool, selecting suites by changed layer, keeping suites.json, keeping each suite's scripts and wrapping them, make or a Taskfile (named commands but no matrix, needs, fixtures or grading), commands as shell strings, Markdown known-failure lists, JUnit or a schema of our own, retrying on pull requests, an issue per failing test per run, a self-hosted runner on the dedicated host, a merge queue now."
   },
   "carries": {
@@ -124,12 +124,12 @@
       "The commands people use today stay as aliases, so `dt unit` means `dt run unit`.",
       "The rules of today's graders move into Go, and their test cases become test data for `dt`.",
       "Facts that only the scripts knew move too, each with a test. For example, pjdfstest needs NFSv4 delegations turned off, and NFSv4.0 callbacks need a server address that is not loopback.",
-      "The [[known-failure|known-failure]] lists carry over as data, and the scenarios' `setup.sh` and `dfsbench` are kept as well."
+      "The [[known-failure|known-failure]] lists carry over as data, and so do `dfsbench`, DittoFS's benchmark tool, and `setup.sh`, the script that runs the [[system-scenario|system scenarios]]."
     ],
     "goesTitle": "What goes",
     "goes": "35 of the 92 shell scripts under `test/` and `.github/scripts/` are deleted, about 8,860 lines. They are the dispatcher, each suite's setup, run and grading scripts, and the Makefile's `test-*` targets.",
-    "footer": "Shell stays where it fits by nature: the `dtc` container, the service containers and the scenario host. No suite gets a new script between `dt` and its test tool.",
-    "notes": "§3, 'What carries over', 'What goes' and 'What stays'. The full list of what the scripts know includes pynfs's 4.1 tree testing NFSv4.2 unless --minorversion is given, the 10-second settings watcher, pjdfstest's mount options and the Kerberos upcall details. nfstest's knfsd baseline stays, as a dispatch-only evidence job (§3)."
+    "footer": "Shell stays only where it fits by nature. That means the [[dtc|dtc container]], a Linux container with the pinned test tools in which `dt` can run, the containers that start test services, and the host that runs the system scenarios. No suite gets a new script between `dt` and its test tool.",
+    "notes": "§3, 'What carries over', 'What goes' and 'What stays'. The full list of what the scripts know includes pynfs's 4.1 tree testing NFSv4.2 unless --minorversion is given, the 10-second settings watcher, pjdfstest's mount options and the Kerberos upcall details. nfstest's knfsd baseline stays, as a dispatch-only evidence job (§3). dtc: §4.4 (--in host|container|auto) and §4.5's places table ('pinned Linux toolchain, privileged')."
   },
   "reg": {
     "kicker": "The registry"
@@ -180,11 +180,12 @@
       "A fixture is a `dfs` server built from the checkout and started on a [[store-profile|store profile]]: `memory`, `badger` or `badger-s3`.",
       "When the suite needs a mount, the fixture also mounts the share over NFS or SMB. Otherwise it only exports it.",
       "The fixture's [[share|shares]] and users come from data files and from fields of the suite's entry.",
-      "Its settings are fields too: squashing, delegations, the NFSv4 [[lease]], Kerberos and a reset of the share before each test."
+      "Its settings are fields too: squashing, delegations, Kerberos, a reset of the share before each test, and the NFSv4 [[client-lease|client lease]]."
     ],
     "noScriptTitle": "No setup scripts",
     "noScript": "There is no field for a setup script. A need the fields can't express becomes a new field in `dt`, with a test, so the setup stays in one place.",
-    "notes": "§4.2 Fixtures, the field table and the paragraph after it. dt sets the fixture up in Go before a cell's first test and removes it after the last. A fixture mounts over NFS or SMB, not both. Settings: a fixture sets only settings the server has; pjdfstest and pynfs use squash: none, so root keeps its privileges; pynfs keeps lease: 30s until the server drops the setting."
+    "notes": "§4.2 Fixtures, the field table and the paragraph after it. dt sets the fixture up in Go before a cell's first test and removes it after the last. A fixture mounts over NFS or SMB, not both. Settings: a fixture sets only settings the server has; pjdfstest and pynfs use squash: none, so root keeps its privileges; pynfs keeps lease: 30s until the server drops the setting. The lease: §4.2 'Settings' (the storage RFCs fix the NFSv4 lease at 90 s; pynfs keeps lease: 30s, so its lease-expiry tests each wait 30 s rather than 90). RFC 14 ('The lease period is fixed, not a setting', RFC 13) fixes the client lease at 90 s; RFC 29 §4.2 'Settings': fixtures use only settings the server has and change with it in the same pull request.",
+    "footer": "A fixture sets only settings the server has. By design the client lease is fixed at 90 s, but today's server still lets it be set, so pynfs's test server uses 30 s and each lease-expiry test waits 30 s rather than 90. When the server drops the setting, the fixture drops it in the same change."
   },
   "selfcheck": {
     "title": "Before the first test, it checks itself",
@@ -196,12 +197,12 @@
       "Every [[needs|need]] the suite declares is met."
     ],
     "rule": "If a check fails, the [[cell]] ends with exit 2, which means [[not-run|not run]] and is never a pass. A failed fixture step is never retried either, because DittoFS itself starts inside the fixture and a retry could hide a flaky server.",
-    "footer": "All of the fixture's own steps share one timeout, 5 minutes by default, so a stalled package mirror fails the cell within minutes instead of using up its whole time limit.",
-    "notes": "§4.2 (the self-check list; 'The silent passes in §1 are each a case of a missing check: the bucket, the NFS module, the Kerberos upcall'), §9 'Retrying a fixture's setup'. On 2026-10-07 a stalled mirror used up 15 jobs' whole timeouts. The 5-minute fixture timeout comes from #2977."
+    "footer": "The fixture's own steps, such as installing packages, pulling images, building the server and starting it, share one timeout, 5 minutes by default. So a stalled package mirror fails the cell within minutes instead of using up its whole time limit.",
+    "notes": "§4.2 (the self-check list; 'The silent passes in §1 are each a case of a missing check: the bucket, the NFS module, the Kerberos upcall'), §9 'Retrying a fixture's setup'. On 2026-10-07 a stalled mirror used up 15 jobs' whole timeouts. The 5-minute fixture timeout comes from #2977. The fixture's steps: §4.2 ('package installs, image pulls, building {bin}, the server's start')."
   },
   "bucket": {
     "title": "The bucket refuses writes",
-    "notes": "'Start here · Scenarios', the second; §4.2 (self-check, never retried), §4.4 (exit 2). Outcome: a cell that tested nothing shows as not run instead of green. The RFC says the fixture checks the bucket; it doesn't say which process makes the probe write, so the arrow from dfs is the deck's simplification."
+    "notes": "'Start here · Scenarios', the second; §4.2 (self-check, never retried), §4.4 (exit 2). Outcome: a cell that tested nothing shows as not run instead of green. The RFC says the fixture checks the bucket; it doesn't say which process makes the probe write, so the arrow from dfs is the deck's simplification. Localstack is the S3 emulator the badger-s3 cells use, started as a service (§1's table, §4.5 service:localstack)."
   },
   "quizKdc": {
     "question": "A [[cell]] uses Kerberos, and its KDC does not answer while the [[fixture]] starts. How does the cell end?",
@@ -230,7 +231,7 @@
       ],
       [
         "A developer's machine",
-        "its own system, or the `dtc` container",
+        "its own system, or the [[dtc|dtc container]]",
         "any suite whose needs the machine can meet"
       ],
       [
@@ -241,22 +242,22 @@
       [
         "[[dedicated-host|Dedicated host]]",
         "a large disk and room for long runs",
-        "the system scenarios, long runs and the nightly performance comparison"
+        "the [[system-scenario|system scenarios]], long runs and the nightly performance comparison"
       ]
     ],
-    "footer": "Each [[suite]] states its [[needs]], such as Linux, root, Docker, a service or disk space. When a need is unmet and the `dtc` container cannot meet it either, the suite is [[not-run|not run]] and the reason is given. On a laptop it is skipped, and with `--ci` it exits 2.",
-    "notes": "§4.5 Where a suite runs: the needs list, the places table, and 'For an unmet need, dt run either moves the whole run to the dtc container … or reports the suite as not run … It is never reported as passed.' In CI, dt plan gives each cell its place from its needs."
+    "footer": "Each [[suite]] states its [[needs]], such as Linux, root, Docker or disk space. When the machine lacks one, `dt` can move the whole run into `dtc`, for example a Linux-only suite on macOS. If neither can meet it, the suite is [[not-run|not run]], with the reason. Without `--ci` it is just skipped. With `--ci`, the flag CI runs `dt` with, it is an error and exits 2.",
+    "notes": "§4.5 Where a suite runs: the needs list, the places table, and 'For an unmet need, dt run either moves the whole run to the dtc container … or reports the suite as not run … It is never reported as passed.' In CI, dt plan gives each cell its place from its needs. --ci: §4.4's flags table ('non-interactive … a suite that can't run here is an error, not a skip'); §4.8, each run job is dt run CELL --tier T --ci. Moving to dtc: §4.4 --in auto, §4.5 ('macOS runs Linux-only suites in dtc')."
   },
   "dedicated": {
     "title": "The [[dedicated-host|dedicated host]] is not a runner",
     "items": [
       "GitHub's own guidance says self-hosted runners “should almost never be used for public repositories”.",
       "So the dedicated host, `ditto`, runs `dt` from cron instead, and its nightly run tests only the latest commit on develop.",
-      "That nightly run takes only the cells GitHub's hosted runners cannot hold, such as the long 9x scenarios, one of which grows a 30 GB file.",
-      "Every 10 minutes it also checks develop, `main` and `feat/storage-v2`. When one has a new commit and the host is idle, it runs the system scenarios on it and sets the commit status `system (dedicated)`.",
+      "That nightly run takes only the cells GitHub's hosted runners cannot hold, such as the long [[system-scenario|system scenarios]] whose file names start with 9, one of which grows a 30 GB file.",
+      "Every 10 minutes it also checks develop, `main` and a long-lived feature branch. When one has a new commit and the host is idle, it runs the system scenarios on it and sets the commit status `system (dedicated)`.",
       "Its GitHub token can write issues and commit statuses, and nothing else."
     ],
-    "notes": "§4.5 'The dedicated host is not a self-hosted runner'; §9 'The dedicated host' (ditto, a server Cubbit rents; cloud spot VMs are the alternative). It runs only when nothing else runs on the host; merges landing during a run are taken together by the next one. Only develop's new failures go to the develop-status issue."
+    "notes": "§4.5 'The dedicated host is not a self-hosted runner'; §9 'The dedicated host' (ditto, a server Cubbit rents; cloud spot VMs are the alternative). It runs only when nothing else runs on the host; merges landing during a run are taken together by the next one. Only develop's new failures go to the develop-status issue. The 9x scenarios: §4.5's places table (scenario 92 grows a 30 GB file) and §4.1's system entry (needs_by_test '9?-*.sh'). The branches the host watches are develop, main and feat/storage-v2 (§4.5). Scenario file names are <number>-<what>-<size>.sh; the long runs match 9?-*.sh (§4.1)."
   },
   "tiersK": {
     "kicker": "Tiers and the gate"
@@ -276,7 +277,7 @@
       ],
       [
         "`merge`",
-        "every push to develop, `main`, `feat/storage-v2`",
+        "every push to develop, `main` or a long-lived feature branch",
         "≤ 60 min"
       ],
       [
@@ -291,7 +292,7 @@
       ]
     ],
     "footer": "Each tier runs everything the smaller one runs: `merge` includes `pr`, and `nightly` runs all but the `manual` suites. A [[suite]] names the smallest tier that runs it. Moving it is a one-word change, made on the timings `dt history` has measured.",
-    "notes": "§4.3 Tiers (table and 'Budgets'); §9 'The tier budgets', adjusted on measured numbers. Today a PR waits 25–40 min. On 2026-10-12 a merge took a median of 33 minutes to its last check (§9). merge_group is listed too, if a merge queue ever becomes available."
+    "notes": "§4.3 Tiers (table and 'Budgets'); §9 'The tier budgets', adjusted on measured numbers. Today a PR waits 25–40 min. On 2026-10-12 a merge took a median of 33 minutes to its last check (§9). merge_group is listed too, if a merge queue ever becomes available. The merge tier runs on pushes to develop, main and feat/storage-v2 (§4.3)."
   },
   "whatruns": {
     "title": "What each pull request runs",
@@ -314,11 +315,11 @@
     ],
     "mergeTitle": "To merge into develop",
     "merge": [
-      "The `gate` check passes, and so do Go Checks, Repo Checks, ShellCheck, gitleaks and Analyze (go).",
+      "The `gate` check passes, and so do the lint checks Go Checks, Repo Checks and ShellCheck, and the security scans gitleaks and CodeQL, whose check is named Analyze (go).",
       "One reviewer has approved the pull request.",
       "The branch is up to date with develop."
     ],
-    "notes": "§4.8 CI, Jobs and Merging. Non-blocking cells run in a second matrix the gate doesn't wait for. The gate became required after the pr tier had been green for two weeks (§9), replacing Unit Tests and Integration Tests. A single gate that always runs avoids GitHub's path-filter trap. No merge queue: the repository is owned by a user account, so up-to-date branches stand in for it."
+    "notes": "§4.8 CI, Jobs and Merging. Non-blocking cells run in a second matrix the gate doesn't wait for. The gate became required after the pr tier had been green for two weeks (§9), replacing Unit Tests and Integration Tests. A single gate that always runs avoids GitHub's path-filter trap. No merge queue: the repository is owned by a user account, so up-to-date branches stand in for it. Required checks: §4.8 'Merging' and 'Lint'; gitleaks and CodeQL (Analyze (go)) stay GitHub actions (§4.8, §5)."
   },
   "prrun": {
     "title": "A pull request breaks one pjdfstest test",
@@ -370,8 +371,8 @@
         "fix the command or the registry file"
       ]
     ],
-    "footer": "A [[cell]] that has both a new failure and something not run exits 1, and its report lists both. The alert on develop treats exit 1 and exit 2 differently, and that difference is the main defence against another flood of alerts.",
-    "notes": "§4.4, the exit status table and the paragraph after it; R10. Exit 2 also covers a fixture that timed out, tests a cell's timeout left unstarted, and a test whose output stopped before its result without a crash of the code under test. 'Green' (§2): no new failures, no unexpected skips and no unexpected passes."
+    "footer": "A [[cell]] that has both a new failure and something not run exits 1, and its report lists both. On develop, exit 1 raises the alert from its first run, while exit 2, an environment problem or lost coverage, alerts only after 2 runs in a row. That difference is the main defence against another flood of alerts.",
+    "notes": "§4.4, the exit status table and the paragraph after it; R10. Exit 2 also covers a fixture that timed out, tests a cell's timeout left unstarted, and a test whose output stopped before its result without a crash of the code under test. 'Green' (§2): no new failures, no unexpected skips and no unexpected passes. The alert: §4.8 'Develop goes red' (a run whose cells have new failures or unexpected passes after the retry posts; exit 2 alerts only after two consecutive runs of the cell) and §4.4 ('the main defence against another flood')."
   },
   "formats": {
     "title": "Seven [[result-format|formats]], one reader each",
@@ -384,7 +385,7 @@
       [
         "`exit`",
         "the exit status",
-        "lint, operator, system, fio-verify, bench-smoke, cthon04"
+        "lint, operator, `system` (the [[system-scenario|system scenarios]]), fio-verify, bench-smoke, cthon04"
       ],
       [
         "`go-json`",
@@ -417,8 +418,8 @@
         "nfstest"
       ]
     ],
-    "footer": "For every format except `exit`, the outcome comes from the tool's own results, not from its exit status. Each reader keeps the rules of the grader its suite uses today.",
-    "notes": "§4.6 Formats (abridged). dt adds -json -count=1 after go test, so no result is replayed from Go's cache. A crash of the code under test fails the test (exit 1); a client that died before the result leaves it incomplete (exit 2). A cell whose tool wrote no results is not run."
+    "footer": "For every format except `exit`, the outcome comes from the tool's own results, not its exit status. Among the `exit` suites, `operator` tests the Kubernetes operator, `fio-verify` runs fio workloads on a mounted share, and `cthon04` and `nfstest` test what a kernel NFS client sees through a mount.",
+    "notes": "§4.6 Formats (abridged). dt adds -json -count=1 after go test, so no result is replayed from Go's cache. A crash of the code under test fails the test (exit 1); a client that died before the result leaves it incomplete (exit 2). A cell whose tool wrote no results is not run. The system suite runs the scenarios through setup.sh (§4.1). The suites: §4.1's registry (operator: make -C k8s/dittofs-operator test lint manifests-verify; fio-verify: dfsbench's workloads and the verify jobs, which read their data back; cthon04 and nfstest: what a kernel client sees through an untuned mount). Each reader keeps the rules of the grader its suite uses today (§4.6)."
   },
   "grades": {
     "title": "Every result gets a [[grade]]",
@@ -445,7 +446,7 @@
       ],
       [
         "`unexpected_pass`",
-        "the test is on a list, its entry is not `intermittent`, and it passed every time it ran in the cell",
+        "the test is on a list, its entry is not marked `intermittent` (failing on some runs only), and it passed every time it ran in the cell",
         "exit 1"
       ],
       [
@@ -464,7 +465,7 @@
         "exit 2"
       ]
     ],
-    "notes": "§4.6 'Grades in CTRF and JUnit' (abridged). Also: a pass with no entry has no grade and passes; `ungraded` is a skip in a suite without a known file (a Go suite until it opts in), and passes. A Go parent test whose failing subtests are all known is known too. In CTRF a known failure is written as skipped with rawStatus failed, so a reader counts as failed only what makes the cell exit 1."
+    "notes": "§4.6 'Grades in CTRF and JUnit' (abridged). Also: a pass with no entry has no grade and passes; `ungraded` is a skip in a suite without a known file (a Go suite until it opts in), and passes. A Go parent test whose failing subtests are all known is known too. In CTRF a known failure is written as skipped with rawStatus failed, so a reader counts as failed only what makes the cell exit 1. intermittent: §4.7's known.yaml example ('it fails on some runs only; a pass is reported, not failed')."
   },
   "knownfile": {
     "title": "A [[known-failure|known failure]] is data",
@@ -482,18 +483,18 @@
     "items": [
       "In a suite that keeps a known-failure file, a test that skips without being listed makes its [[cell]] exit 2.",
       "The Go suites contain 331 `Skip` calls, so they adopt this rule one package at a time, starting with e2e. Until a package adopts it, its skips are counted but not graded.",
-      "With this rule, WPTS's 70 tests, the 19 cross-protocol cases and the 11 Kerberos subtests would each have shown as lost coverage the day they started skipping.",
+      "With this rule, the 70 WPTS tests, the 11 SMB Kerberos subtests and 19 end-to-end error cases run across both NFS and SMB, which skipped as well, would each have shown as lost coverage the day they started skipping.",
       "The first lists of expected skips are written from today's runs, each entry with a reason, so a new skip stands out."
     ],
-    "notes": "§4.7 'Expected skips'; R10; §9 'Which Go suites grade their skips'. 71 test files also branch on testing.Short(). A run that names tests grades only those; a named test that skipped because of a test it depends on is not run (exit 2)."
+    "notes": "§4.7 'Expected skips'; R10; §9 'Which Go suites grade their skips'. 71 test files also branch on testing.Short(). A run that names tests grades only those; a named test that skipped because of a test it depends on is not run (exit 2). The 19 cross-protocol error cases: §1's table, e2e row."
   },
   "honest": {
     "title": "A list must keep telling the truth",
     "passTitle": "Unexpected pass",
     "pass": "When a [[known-failure|known failure]] passes, the [[cell]] fails with exit 1, because the list no longer says what the server does. So a fix removes its own entry. If any test the entry matches still fails, the entry stays known. An entry marked `intermittent: true` reports such a pass instead of failing.",
     "msgTitle": "Failing for the right reason",
-    "msg": "An entry may give a `message:`, text that the failure must contain. A test listed while it fails on a stub, with `message: \"stub:\"`, turns red as soon as it fails for any other reason.",
-    "notes": "§4.7 'Unexpected pass' and 'Failing for the right reason'. An expected skip that runs and passes is an unexpected pass too; one that runs and fails is a new failure, unless a known-failure entry covers it. A flaky test with no entry belongs in quarantine, not under intermittent."
+    "msg": "An entry may give a `message:`, text that the failure must contain. Say a test fails because the code it calls is a stub, a placeholder whose error starts with “stub:”. Listed with `message: \"stub:\"`, it turns red as soon as it fails for any other reason.",
+    "notes": "§4.7 'Unexpected pass' and 'Failing for the right reason'. An expected skip that runs and passes is an unexpected pass too; one that runs and fails is a new failure, unless a known-failure entry covers it. A flaky test with no entry belongs in quarantine, not under intermittent. The stub example: §4.7 'Failing for the right reason' ('so a known failure can't hide a second one'). What a stub is, is the deck's gloss."
   },
   "flakes": {
     "title": "[[flaky|Flaky]] tests: quarantine and retry",
@@ -502,7 +503,7 @@
       "A quarantine entry names the suite, the test and an issue, and expires at most 90 days ahead.",
       "The test still runs and its result is recorded, but its failure never fails a run or raises an alert.",
       "A crash or a hang is still graded `new`, even in quarantine.",
-      "Once an entry has expired it excuses nothing, and `dt doctor` fails."
+      "Once an entry has expired it excuses nothing, so its test fails as new. `dt doctor`, a check that every pull request runs, fails on the expired entry too."
     ],
     "rTitle": "[[retry|Retry]]",
     "r": [
@@ -511,7 +512,7 @@
       "A test that passes on retry is flaky. It raises no alert, and `dt history` counts it.",
       "A test that is flaky twice in a week on develop becomes a candidate for quarantine."
     ],
-    "notes": "§4.7 'Quarantine' and 'Retry'. The quarantine list is test/harness/quarantine.yaml; an entry names one test exactly, never a pattern. An expired entry is an error from dt doctor, which lint-repo runs (Repo Checks). The retry runs on the cell's own fixture, within the cell's limit; a test none of the naming rules can name isn't retried. The AD-DC keytab race (#2968) is what quarantine is for."
+    "notes": "§4.7 'Quarantine' and 'Retry'. The quarantine list is test/harness/quarantine.yaml; an entry names one test exactly, never a pattern. An expired entry is an error from dt doctor, which lint-repo runs (Repo Checks). The retry runs on the cell's own fixture, within the cell's limit; a test none of the naming rules can name isn't retried. The AD-DC keytab race (#2968) is what quarantine is for. Expiry: §4.7 ('its test fails as new and the gate goes red on that test and on Repo Checks'); dt doctor is one of lint-repo's commands (§4.1), and lint-repo is the Repo Checks job, which runs on every pull request (§4.8)."
   },
   "ctrf": {
     "title": "One result format: [[ctrf|CTRF]], with JUnit beside it",
@@ -586,11 +587,11 @@
     "items": [
       "GitHub's hosted runners share hardware, so their timings are too noisy to fail a pull request over a percentage drop.",
       "`bench-smoke` checks that the benchmarks still work. It does not block pull requests, but it does block the runs after a merge and at night.",
-      "`unit --nonrace` runs every night, so the throughput and allocation checks that skip under `-race` and `-short` finally run.",
-      "`perf-night` on the [[dedicated-host|dedicated host]] compares DittoFS with Samba. It flags a drop, but the flag fails nothing.",
-      "The numbers are recorded for `dt history`, and on their own they never decide whether a run passes."
+      "The throughput and allocation checks, also called gates, fail when a measurement crosses a threshold. They skip under Go's race detector (`-race`) and short mode (`-short`), which the `unit` suite uses, so no job ran them.",
+      "`unit --nonrace` now runs them every night without those flags. One that still trips after its retry turns the nightly run red, but it never fails a pull request.",
+      "`perf-night` on the [[dedicated-host|dedicated host]] compares DittoFS with Samba. It flags a drop, but the flag fails nothing. Numbers are recorded for `dt history` and never decide on their own whether a run passes."
     ],
-    "notes": "§4.10 Benchmarks and long runs; §4.6 Metrics. perf-night flags a point, an area or the night's figure below its 7-day median by more than its noise band; the cell fails when a step fails or times out, or the night can't be scored. A tripped nonrace gate on the retry turns the nightly run red and posts, and fails no PR."
+    "notes": "§4.10 Benchmarks and long runs; §4.6 Metrics. perf-night flags a point, an area or the night's figure below its 7-day median by more than its noise band; the cell fails when a step fails or times out, or the night can't be scored. A tripped nonrace gate on the retry turns the nightly run red and posts, and fails no PR. The gates skipping under -race and -short, with no job running them: §1's table, last row. The unit suite runs go test -race, with -short on pull requests; its nonrace option runs the two gate tests nightly (§4.1)."
   },
   "whom": {
     "kicker": "What changes for whom",
@@ -609,12 +610,12 @@
     "items": [
       "There is one entry point, and it runs the same way on a laptop and in CI.",
       "Adding a suite takes one line. Services, the matrix, fixtures, grading and reports need no code written for that suite.",
-      "What is already tested is kept, and what is not is replaced. A suite's scripts are deleted once `dt` gives the same results for it.",
+      "The tests and the rules of today's graders are kept, and each suite's scripts are replaced by a fixture. The scripts are deleted once `dt` gives the same results for that suite.",
       "A result that is [[not-run|not run]] is never reported as a pass.",
-      "Each component RFC names the suites that cover it, and `dt docs --check` checks those names against the registry."
+      "Every RFC names, in a paragraph of its own, the suites that test its component, and `dt docs --check` checks those names against the registry."
     ],
     "footer": "“Green” means no new failures, no unexpected skips and no unexpected passes.",
-    "notes": "§2 Requirements: R1, R3 and R5, R9, R10, R11 (abridged), and the definition of green under the table. Also R2 (a specified YAML registry), R4 (runs tracked by the harness), R6 (tiers, no selection by changed layer), R7 (an alert without a flood), R8 (external-tool suites first, and green)."
+    "notes": "§2 Requirements: R1, R3 and R5, R9, R10, R11 (abridged), and the definition of green under the table. Also R2 (a specified YAML registry), R4 (runs tracked by the harness), R6 (tiers, no selection by changed layer), R7 (an alert without a flood), R8 (external-tool suites first, and green). R9 ('keep what's tested, replace what isn't'; the graders' rules carry over, each suite's scripts give way to a fixture once its results match). R11 (every RFC under docs/internals/rfcs/ has a paragraph naming its suites, §4.9)."
   },
   "nochange": {
     "title": "What this doesn't change",
@@ -702,7 +703,7 @@
       "noRetry": "never retried",
       "steps": [
         "Before the first test runs, the [[fixture]] checks itself. First it finds that the server answers.",
-        "Next, the S3 bucket of the `badger-s3` profile must accept a write and a read. It refuses the write, so the check fails.",
+        "Next, the S3 bucket must accept a write and a read. In tests, localstack, a local stand-in for S3, serves the bucket of the `badger-s3` profile. It refuses the write, so the check fails.",
         "Because the check failed, no test runs. The [[cell]] exits with status 2, which means [[not-run|not run]] and is never counted as a pass.",
         "A failed fixture step is never retried automatically, so someone has to re-run the cell by hand."
       ]

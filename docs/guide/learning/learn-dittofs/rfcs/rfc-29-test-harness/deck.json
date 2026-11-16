@@ -22,7 +22,9 @@
       "store-profile",
       "fixture",
       "needs",
+      "dtc",
       "dedicated-host",
+      "system-scenario",
       "tier",
       "blocking",
       "gate",
@@ -43,7 +45,6 @@
       "fixture",
       "gate",
       "store-profile",
-      "baseline",
       "lease"
     ]
   }

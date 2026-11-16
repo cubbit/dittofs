@@ -7,7 +7,7 @@
   },
   "share": {
     "name": "share",
-    "short": "A file tree the server exports to clients. Each share has its own settings, snapshots and journal limits.",
+    "short": "A file tree the server offers to clients; NFS calls it an export. Each share has its own settings, snapshots and journal limits.",
     "long": "A file tree the server exports to clients, with its own settings, snapshots and journal limits. NFS calls it an export; NFS and SMB clients both reach the same shares."
   },
   "node": {
@@ -17,7 +17,7 @@
   },
   "primary": {
     "name": "primary",
-    "short": "The one node that orders and accepts a shard's writes. On a single node, that node is the primary of every share.",
+    "short": "The one node that orders and accepts the writes to a set of files, its [[shard]]. On a single node, that node is the primary of every share.",
     "long": "The one node that orders and accepts a shard's writes, as its shard record names. On a single node, that node is the primary of every share."
   },
   "gateway-node": {
@@ -32,7 +32,7 @@
   },
   "deny-mode": {
     "name": "deny mode",
-    "short": "The access an open refuses to every other open for as long as it is held. It is checked when an open is granted and on every anonymous read or write.",
+    "short": "The access an open refuses to every other open for as long as it is held. It is checked when an open is granted and on every [[anonymous-open|read or write made without an open]], such as an NFSv3 write.",
     "long": "The access an open refuses to every other open while it is held — SMB's deny-write, for example. Checked both ways when an open is granted, and on every [[anonymous-open|anonymous]] read or write.",
     "clash": "SMB spells it backwards: `ShareAccess` lists what other opens may do, and the deny mode is its complement over read, write and delete."
   },
@@ -40,7 +40,7 @@
     "name": "handle",
     "short": "What a client holds to name a file. It contains the share and the file's ID, never a path, and stays valid across restarts.",
     "long": "What a client holds to name a file. It contains the share and the file's ID, never a path, and stays valid across server restarts.",
-    "clash": "An NFS file handle names a file. An SMB **durable handle** is an open kept across a disconnect, and an SMB `FileId` names an open, not a file. In RFC 1, a journal `Handle` is one share's access to the journal, not a file handle."
+    "clash": "An NFS file handle names a file. An SMB **durable handle** is an open kept across a disconnect, and an SMB `FileId` names an open, not a file. The [[journal]]'s `Handle` is something else again: one share's access to the journal, not a file handle."
   },
   "caching-grant": {
     "name": "caching grant",
@@ -59,14 +59,15 @@
   },
   "admission": {
     "name": "admission",
-    "short": "The per-share checks every call passes before the permission check. They look at the share's state, the authentication methods it accepts, its client rules, identity squashing and the share's limit on request buffers.",
-    "long": "The per-share checks every call passes before the permission check: the share's state, its flavours, its client rules, squashing, then the share's cap on request buffers. The [[filesystem-service|service]]'s, never an adapter's."
+    "short": "The checks every call passes at its [[share]] before the file's own permissions: whether the share is serving, whether the caller signed in strongly enough and from an allowed address, which user it acts as there, and whether the share can take another request.",
+    "long": "The per-share checks every call passes before the permission check: the share's state, its flavours, its client rules, squashing, then the share's cap on request buffers. The [[filesystem-service|service]]'s, never an adapter's.",
+    "clash": "Not the adapter pipeline's admit stage, which only charges the connection's flow control (an SMB credit, an NFSv4.1 slot or a cap of 64 requests) before the request is decoded. Nor the [[admission-lock|admission lock]] or [[fold-admission|fold admission]]."
   },
   "adapter": {
     "name": "adapter",
     "short": "The code for one wire protocol, from the listening socket to the call into the filesystem service. It decides nothing about files.",
     "long": "The code for one wire protocol: framing, compounds, replay caches, error codes, and nothing else. It turns bytes into service calls and answers into bytes.",
-    "clash": "RFC 4 also calls a [[remote-block-store|remote block store]] \"one backend's adapter\" (S3, memory), and RFC 14's `Adapter` bytes are opaque data an adapter stores in open state. In RFC 20 it always means a protocol adapter."
+    "clash": "The [[remote-block-store|remote block store]] layer also calls each backend (S3, memory) an adapter, and [[adapter-bytes|Adapter bytes]] are opaque data a protocol adapter stores in [[open-state|open state]]. On its own, adapter always means a protocol adapter."
   },
   "core": {
     "name": "core",
@@ -82,7 +83,7 @@
     "name": "codec",
     "short": "Pure functions that turn bytes into a request's fields, and a reply's fields back into bytes. A codec does no I/O and never calls the service.",
     "long": "Pure functions that turn bytes into a request's fields and a reply's fields into bytes: no I/O, no service, no clock, no setting. That purity is what makes golden vectors and fuzzing possible.",
-    "clash": "RFC 16 uses the word for how one stored value is encoded, a [[value-codec|store codec]]: same idea of pure encoding, a different layer."
+    "clash": "The [[metadata-store|metadata store]] uses the word for how one stored value is encoded, a [[value-codec|store codec]]: the same idea of pure encoding, at a different layer."
   },
   "handler": {
     "name": "handler",
@@ -183,13 +184,13 @@
   },
   "lease": {
     "name": "lease",
-    "short": "A word for three different things: an SMB lease, which is a caching grant; a client lease; and a node lease.",
-    "long": "An SMB lease is a caching grant. A [[client-lease|client lease]] is how long the server keeps a silent client's state. A node lease (cluster) is the lease a node renews to keep serving.",
-    "clash": "SMB lease ≠ client lease ≠ node lease. RFC 20's lease breaks are SMB leases, which are caching grants. RFC 29's fixture `lease` is the NFSv4 client lease, which pynfs keeps at 30 s."
+    "short": "A word for three different things. An SMB lease lets a client cache a file. A [[client-lease|client lease]] is how long the server keeps a silent client's state, and a [[node-lease|node lease]] is what a node renews to keep serving.",
+    "long": "An SMB lease is a caching grant. A [[client-lease|client lease]] is how long the server keeps a silent client's state. A [[node-lease|node lease]] (cluster) is the lease a node renews to keep serving.",
+    "clash": "SMB lease ≠ client lease ≠ node lease. An SMB lease break is a caching grant being recalled."
   },
   "engine": {
     "name": "engine",
-    "short": "The content path of a node: it drives the journal, carver, syncer and block metadata, and decides their policy.",
+    "short": "The part of a node that handles file content. It drives the [[journal]], where writes land first, and the components that upload them to the [[remote-tier|remote tier]] and fetch them back, and it decides when each of those happens.",
     "long": "The content path of a node (RFC 8): it drives the [[journal]], [[carver]], [[syncer]] and block metadata and decides their policy, one per node with a [[storage-binding|storage binding]] per share. The journal's caller in normal running: it decides what to [[offload]], [[evict]] and [[repack]]."
   },
   "extent": {
@@ -214,12 +215,12 @@
   },
   "carver": {
     "name": "carver",
-    "short": "The component that cuts a stretch of a file's bytes into chunks and hashes each one. It works on the extents the journal offers for offload.",
+    "short": "The component that cuts a file's bytes waiting for upload into [[chunk|chunks]], names each one by a hash of its content and packs the chunks into [[block|blocks]].",
     "long": "The component (RFC 2) that cuts a stretch of bytes into content-defined [[chunk|chunks]], hashes each, and packs them into blocks. It runs over the extents the journal [[offer|offers]]."
   },
   "syncer": {
     "name": "syncer",
-    "short": "The component that moves blocks to and from the remote tier. Its uploader puts whole blocks, and its fetcher gets them back.",
+    "short": "The component that moves [[block|blocks]] to and from the [[remote-tier|remote tier]]. Its uploader puts whole blocks, and its fetcher gets them back.",
     "long": "The component (RFC 3) that moves [[block|blocks]] to and from the [[remote-tier]]: its uploader puts whole blocks, its fetcher gets chunks or blocks back. Despite the name, it is not what [[sync|syncs]] the journal."
   },
   "dirty": {
@@ -231,11 +232,11 @@
     "name": "durable",
     "short": "Kept where a crash cannot lose it. For the journal, that means on its local device after a sync.",
     "long": "Held where a crash cannot lose it: by a journal's device after a [[sync]], or by every replica's journal (cluster). Not the remote-tier sense.",
-    "clash": "Not an SMB **durable handle** or durable open, which keeps an open across a network disconnect (RFC 14). And not “safe in the bucket”: for the journal, durable means synced to its local device."
+    "clash": "Not an SMB **durable handle** or [[smb-durable-open|durable open]], which keeps an open across a network disconnect. And not “safe in the bucket”: for the journal, durable means synced to its local device."
   },
   "evict": {
     "name": "evict",
-    "short": "To drop the local copy of bytes that are already offloaded. That alone frees no disk space; it only makes the space reclaimable later.",
+    "short": "To drop the local copy of bytes that are already offloaded. That alone frees no disk space: the space comes back when [[repack]] copies the segment's live records elsewhere and deletes it.",
     "long": "Drop a local copy that is offloaded. Writes nothing to metadata and never touches the remote tier; frees no disk space by itself. The policy is the [[engine]]'s; the journal's mechanism for it is [[release]]."
   },
   "hole": {
@@ -255,14 +256,14 @@
   },
   "journal": {
     "name": "journal",
-    "short": "The local tier: one per device on a node. It holds recent writes until they are offloaded to the remote tier.",
+    "short": "The append-only store on a node's local disk where every write lands first, one per device. It keeps the bytes until they have been [[offload|offloaded]] to the [[remote-tier|remote tier]], and may keep them afterwards as a local copy.",
     "long": "The local tier (RFC 1): an append-only store on a fast local disk, one per device, shared by every share placed on it. Writes are acknowledged from it. It holds extents of files and knows nothing of chunks, blocks or the remote tier."
   },
   "record": {
     "name": "record",
     "short": "One write as the journal stores it in a segment: a header with the write's identity, length and checksum, followed by its bytes.",
     "long": "One framed run of bytes within a [[segment]] — one write, or one piece of a write that crossed a segment's end — with a header carrying its identity, length and checksum (RFC 28 §2.3). Releases, removals and losses are recorded too, as header-only records.",
-    "clash": "Not a metadata record, which is one key and its value in the KV store (RFC 16). And not a [[chunk]]: a record is whatever one write staged."
+    "clash": "Not a [[metadata-record|metadata record]], which is one key and its value in the metadata store. And not a [[chunk]]: a record is whatever one write staged."
   },
   "segment": {
     "name": "segment",
@@ -276,7 +277,7 @@
   },
   "offloaded-bit": {
     "name": "offloaded bit",
-    "short": "A mark per extent saying its bytes are safe in the remote tier. Only the engine's report, or a fill from the remote tier, sets it, and the journal releases nothing without it.",
+    "short": "A mark per extent saying its bytes are already in the remote tier. The engine's [[report]] sets it after an upload, and a [[fill]] sets it too, since fetched bytes came from the remote tier. The journal releases nothing without it.",
     "long": "The journal's per-extent mark that it was told the bytes are offloaded; set by a [[report]] or a [[fill]], and needed before [[release]]. Never consulted to answer a read. It can be wrong only in the safe direction: it can call offloaded bytes dirty, never dirty bytes offloaded."
   },
   "offer": {
@@ -286,14 +287,14 @@
   },
   "report": {
     "name": "report",
-    "short": "The engine telling the journal which offered extents are now offloaded. It is the only way the journal learns this.",
+    "short": "The engine telling the journal which [[offer|offered]] extents are now offloaded. It is the only way the journal learns this.",
     "long": "The engine's statement of which extents of an [[offer]] are now offloaded, the only way the journal learns it. Made once per committed block while the offer runs; it marks exactly what it names, and never a newer write over it."
   },
   "release": {
     "name": "release",
     "short": "(journal) To stop holding extents that are offloaded; this is how eviction is carried out. It is refused for any extent that is not offloaded.",
     "long": "The journal's mechanism of [[evict|eviction]]; the policy is the engine's. Refused whole if any named extent's [[offloaded-bit]] is unset. It frees no storage: the bytes become [[unreclaimed-bytes|unreclaimed]] until their segment is retired.",
-    "clash": "RFC 7 calls dropping a file's refs, journal content and records — once it has no name and no open — a release too. In RFC 1, release is only eviction. In RFC 8, a file's release is the engine's `Delete`, which calls the journal's `Delete`, never its `Release`."
+    "clash": "Dropping a whole file's content and records, once it has no name and no open, is also called a release: a [[file-release|file's release]]. The journal carries that out with its `Delete`, never with its `Release`, which is only eviction."
   },
   "fill": {
     "name": "fill",
@@ -325,7 +326,7 @@
     "name": "sync",
     "short": "To make records durable in the journal by forcing them onto the local device.",
     "long": "Make durable in the journal. Every record is synced by the next `Sync` naming its file or within a fixed bound after the write (1 s proposed), whichever comes first. A client's flush waits for its records to be synced.",
-    "clash": "RFC 0 also calls offloaded content “synced to the remote tier”, and the [[syncer]] moves blocks to the bucket. In RFC 1, sync means the local device only."
+    "clash": "Content that has been [[offload|offloaded]] is also said to be “synced to the remote tier”, and the [[syncer]] moves blocks to the bucket. For the journal, sync means its local device only."
   },
   "content-version": {
     "name": "content version",
@@ -335,7 +336,7 @@
   "change-version": {
     "name": "change version",
     "short": "The highest content version among all the changes to a file's extents. A read returns it, and a later fill checks it to make sure the file has not changed since.",
-    "long": "The highest content version of any operation that changed a file's extents: write, truncate, deallocate, delete, clone target. `ReadAt` returns it as `asOf`; a `Fill` with an older `asOf` writes nothing. A file with no entry is checked against one of 4,096 floor buckets."
+    "long": "The highest content version of any operation that changed a file's extents: write, truncate, deallocate, delete, clone target. `ReadAt` returns it as `asOf`; a `Fill` with an older `asOf` writes nothing. A file with no entry is checked against one of 4,096 [[floor-bucket|floor buckets]]."
   },
   "removal-marker": {
     "name": "removal marker",
@@ -381,22 +382,22 @@
     "name": "stability point",
     "short": "A moment when a client asks for its data to be safe: a flush (NFS `COMMIT`, SMB `FLUSH`, `fsync`) or a stable write. The journal then syncs the file, and an overwrite of already committed content also waits until metadata has recorded it.",
     "long": "Reaches the [[engine]] as `Commit`. The [[journal]] syncs the file; an overwrite of committed content also waits for its [[existence]] commit. Appends and hole fills are answered after the sync.",
-    "clash": "In RFC 8, “commit” alone usually means a metadata transaction landing — an existence commit, an offload commit. NFS `COMMIT` is one kind of stability point, and the engine's method for all of them is also called `Commit`."
+    "clash": "In the [[engine]], “commit” alone usually means a metadata transaction landing, such as an existence commit or an offload commit. NFS `COMMIT` is one kind of stability point, and the engine's method for all of them is also called `Commit`."
   },
   "existence": {
     "name": "existence",
-    "short": "The fact that a write happened: the file's size, its holes, which ranges were overwritten and its modification time. Metadata records it separately from the bytes.",
+    "short": "The fact that a write happened: the file's size, its holes, which ranges were overwritten and its modification time. Metadata records it separately from the bytes, in a transaction called the existence commit.",
     "long": "Recorded apart from the bytes: size, [[hole|holes]], the overwrite set and `mtime`. Committed across files in a [[group-commit]] within a bounded age (`existence_age`, proposal: 1 s). Until it is committed, the [[journal]] is its authority, and after a crash recovery re-applies it from the journal before the file is served."
   },
   "group-commit": {
     "name": "group commit",
     "short": "One metadata transaction that records the pending existence of many files of one journal at once. It has a size limit, and it is split up when a file in it conflicts.",
     "long": "Per [[journal]]: at most `G` files (proposal: 256) and the key budget `K` per transaction. A conflict delays only the failing file: retried alone at once when the store names the key, otherwise the batch is split in halves until it stands alone.",
-    "clash": "RFC 16 uses the same name for the store sharing one device sync among commits: see [[store-group-commit]]."
+    "clash": "The [[metadata-store|metadata store]] uses the same name for sharing one device sync among several commits: see [[store-group-commit]]."
   },
   "residency": {
     "name": "residency",
-    "short": "Where an extent's bytes are right now. The engine works it out on every read from what the journal and metadata say, and never stores it.",
+    "short": "Where an extent's bytes are right now: Absent (a hole, read as zeros), [[dirty|Dirty]] (only in the journal), Resident (in the journal and uploaded), Remote (only in the bucket) or [[lost|Lost]]. The engine works it out on every read and never stores it.",
     "long": "One of five classes (RFC 0 §4.2): **Absent** (a [[hole]] or a zero ref: zeros, no fetch), [[dirty|Dirty]] (only the journal holds it), **Resident** (held and offloaded), **Remote** (fetched and verified) and [[lost|Lost]] (written, and nowhere: the read fails). The [[engine]] computes it per request and keeps no copy."
   },
   "ref": {
@@ -428,7 +429,7 @@
     "name": "offload guard",
     "short": "A short lock on one file, held only while an offer is captured and while a commit runs, never during the upload.",
     "long": "Removals hold it across their journal step and their first metadata transaction, so no [[offer]] is captured between the two. It is an optimisation, not a fence: what orders commits is the [[metadata-store]]'s conflict on the file's fence records, and correctness must not depend on the guard.",
-    "clash": "Not RFC 16's **guard**, a transaction's claim on a key it does not write, which aborts its own transaction if that key changed."
+    "clash": "Not the metadata store's [[guard]], a transaction's claim on a key it does not write, which aborts its own transaction if that key changed."
   },
   "put-intent": {
     "name": "put intent",
@@ -437,7 +438,7 @@
   },
   "block-name": {
     "name": "block name",
-    "short": "A block's 32-byte identity. A new one is minted for each upload attempt, and it is never reused.",
+    "short": "A block's 32-byte identity. Each upload attempt mints a new one, which a retry inside that attempt keeps; a name is never used by a second attempt.",
     "long": "A hash of a domain, the [[namespace]], a fresh 16-byte nonce, the chain ID and the ordered chunk hashes. A retry within one attempt reuses it; a new attempt mints a new one, even over identical chunks."
   },
   "speculator": {
@@ -447,7 +448,7 @@
   },
   "pacing": {
     "name": "pacing",
-    "short": "Slowing writes down gradually once dirty and unreclaimed bytes pass half of the journal's limit, instead of stopping them all at once at the limit.",
+    "short": "Slowing writes down gradually once dirty and [[unreclaimed-bytes|unreclaimed]] bytes pass half of the journal's limit, instead of stopping them all at once at the limit.",
     "long": "The delay rises in a straight line, from zero at half the limit to the time the journal takes to drain the write at the limit. Clean held bytes do not count. A delay that would pass the caller's deadline returns [[retry-later]] at once."
   },
   "self-fence": {
@@ -469,7 +470,7 @@
     "name": "namespace",
     "short": "One prefix, like a folder, inside a bucket of the remote tier. Chunks are named and counted within one namespace, never across two.",
     "long": "One prefix, like a folder, inside a bucket of the [[remote-tier|remote tier]]: [[chunk|chunks]] are named and counted within it, never across two. Each [[share]] gets its own by default; a clone or a restore joins its source's, and during a re-home a share has two.",
-    "clash": "RFC 16 also lists a `Namespace` [[view]] — RFC 7's interface for names and directories — and NFSv4 speaks of a pseudo-filesystem namespace. Neither is a remote-tier namespace. RFC 7's **namespace metadata** is the file tree — names, directories, attributes — not a bucket prefix."
+    "clash": "Two other things share the word. The metadata store's `Namespace` [[view]] is its interface for names and directories, and namespace metadata is the file tree itself: names, directories, attributes. NFSv4 calls the tree joining every export the pseudo-filesystem namespace. None of them is a bucket prefix."
   },
   "remote-block-store": {
     "name": "remote block store",
@@ -518,8 +519,8 @@
   },
   "open-state-step": {
     "name": "open-state step",
-    "short": "The per-file order in which open-state calls run, one at a time. Each call takes the service's admission lock for the file, then the open-state table's entry lock.",
-    "long": "The per-file serialisation of every open-state call: the service's admission lock, held across a check and the I/O it admits, then the table's entry mutex. A step decides, persists, then applies."
+    "short": "The per-file order in which calls that use open state run, one at a time. Each call holds the file's [[admission-lock|admission lock]] across its check and the I/O that check allows.",
+    "long": "The per-file serialisation of every open-state call: the service's [[admission-lock|admission lock]], held across a check and the I/O it admits, then the table's entry mutex. A step decides, persists, then applies."
   },
   "client-lease": {
     "name": "client lease",
@@ -528,14 +529,14 @@
   },
   "lease-owner": {
     "name": "lease owner",
-    "short": "(cluster) The one node that renews a client's lease and decides when the client has expired. No primary expires a client on its own.",
+    "short": "(cluster) The one node that renews a client's [[client-lease|lease]] and decides when the client has expired. No primary expires a client on its own.",
     "long": "(cluster) The one node that renews and expires a [[client-id|client]]. Serving nodes report the client's activity to it at most once per renewal interval, 10 s (proposed); no [[primary]] expires a client alone."
   },
   "grace-period": {
     "name": "grace period",
-    "short": "A window after a primary loses its open state. During it, only clients that held state before may take state, and only by reclaiming what they had.",
+    "short": "A window after a primary loses its open state. During it, only clients that held state before may take state, and only by reclaiming what they had. Other requests for state get `ErrGrace`.",
     "long": "A window that opens after a [[primary]] loses its open state and lasts one [[client-lease|lease period]], 90 s. During it the primary refuses new open state and accepts only reclaims from clients it has a record of. It ends on its own, or early once all those clients have finished reclaiming.",
-    "clash": "Not the trash of garbage collection, which RFC 0 says is no grace period, and not the narrower move grace a namespace move runs (RFC 27)."
+    "clash": "Not the trash where garbage collection keeps blocks for a while before deleting them, which is no grace period, and not the narrower grace that a [[namespace-move|namespace move]] runs."
   },
   "grace-instance": {
     "name": "grace instance",
@@ -546,7 +547,7 @@
     "name": "reclaim (open state)",
     "short": "A client, during the grace period, taking back the opens, locks and grants it held before the loss, and never more than that.",
     "long": "During [[grace-period|grace]], a client taking back what it held: only if its durable record names the shard, never more than it held, after the permission checks of a new open. Two conflicting reclaims never both hold.",
-    "clash": "Not the journal's reclaim (RFC 0 §8.2), which recovers local disk space without changing content."
+    "clash": "Not the journal's reclaim, which gets back local disk space without changing any content."
   },
   "recall": {
     "name": "recall",
@@ -560,7 +561,7 @@
   },
   "oplock": {
     "name": "oplock",
-    "short": "SMB's older caching promise, held by one open. It comes in three levels: Level II (read), exclusive (read and write) and batch (read, write and handle).",
+    "short": "SMB's older caching promise, held by one open. It comes in three levels: Level II (read), exclusive (read and write) and batch (read, write and [[handle-caching|handle caching]]).",
     "long": "An opportunistic lock: a [[caching-grant]] held by one open. Level II is read, exclusive is read and write, batch is read, write and handle. Keyed by its open, so two opens of one client break each other, as oplocks always have. Since SMB 2.1 a client may ask for a lease instead."
   },
   "revoked-set": {
@@ -582,7 +583,7 @@
     "name": "SMB-durable open",
     "short": "An SMB open kept across a network disconnect until its timeout. It lives in memory only, so it does not survive a restart of its primary.",
     "long": "An SMB open kept across a lost connection for the `Timeout` it negotiated, with its locks, deny mode and lease. It lives only in the [[primary|primary's]] memory: a restart or failover loses it.",
-    "clash": "SMB's \"durable\" means kept across a disconnect, in memory. RFC 14's durable means written to the metadata store, and RFC 0's journal sense means synced to a journal's device. Of SMB's opens, only a [[persistent-open]] is durable in RFC 14's sense."
+    "clash": "SMB's \"durable\" means kept across a disconnect, in memory. For open state, durable means written to the [[metadata-store|metadata store]], and for the journal it means synced to the journal's device. Of SMB's opens, only a [[persistent-open]] is written to the metadata store."
   },
   "persistent-open": {
     "name": "persistent open",
@@ -617,7 +618,7 @@
   },
   "fence-records": {
     "name": "fence records",
-    "short": "Two records per file holding the shard and epoch that every commit of the file must carry. Two commits of the same file at once conflict on them, so only one succeeds.",
+    "short": "Two records per file holding the shard and its [[epoch|shard epoch]], which every commit of the file must carry. Two commits of the same file at once conflict on them, so only one succeeds.",
     "long": "Two records per file, `F_x` and `F_o`, each holding the (shard, epoch) the file's commits must carry; read and written by every commit of their path, so two concurrent commits of one file conflict. On a single node only the epoch comparison is moot (RFC 0, RFC 6 §5.4)."
   },
   "entity": {
@@ -627,9 +628,9 @@
   },
   "metadata-record": {
     "name": "record (metadata)",
-    "short": "One key and its value in the KV. Every key the store writes has a row in RFC 16's key table.",
+    "short": "One key and its value in the [[kv|KV]]. Every key the metadata store writes is listed, with its layout, in the store's one table of keys.",
     "long": "One key and its value in the [[kv|KV]]. Every key the store writes has a row in RFC 16's key table, which is exhaustive: a new record kind is a format bump (§4.2).",
-    "clash": "Not a journal [[record]], which is one write as stored in a segment (RFC 1). And not an [[entity]]: one entity may be read from several records."
+    "clash": "Not a journal [[record]], which is one write as stored in a segment. And not an [[entity]]: one entity may be read from several records."
   },
   "kv": {
     "name": "KV",
@@ -667,18 +668,18 @@
     "name": "group commit (store)",
     "short": "Commits that are ready at the same time share one sync of the device. None of them is acknowledged before that sync completes.",
     "long": "Commits ready at the same moment share one sync of the device, and none is acknowledged before it. The embedded backend MUST do it: one sync per commit caps a store at a few hundred commits a second.",
-    "clash": "Not the engine's [[group-commit]] of RFC 8, which batches many files' existence into one metadata transaction. This one shares a device sync among commits."
+    "clash": "Not the [[engine]]'s [[group-commit]], which batches many files' existence into one metadata transaction. This one shares a device sync among commits."
   },
   "store-time": {
     "name": "store time (Now)",
-    "short": "The time a transaction reads from the store. It never goes backwards from one commit to the next (on a store without an oracle, only within one node), and stays within a stated bound of real time.",
+    "short": "The time a transaction reads from the store. It never goes backwards from one commit to the next (on a store without a timestamp oracle, a service that hands out ordered commit times, only within one node), and stays within a stated bound of real time.",
     "long": "The time `Now` gives a transaction, used for every stored time compared later. Monotonic across commits in order, within a stated bound of real time; across nodes on a store without an oracle, readings may differ by up to σ (RFC 16 §4.1)."
   },
   "value-codec": {
     "name": "codec (store)",
     "short": "How one stored type is encoded: a version byte, then the fields in a fixed order. A version the binary does not know is refused, never guessed.",
     "long": "One per persisted type: a version byte, then a fixed field order. A binary writes only the versions the active format names, and refuses an unknown one rather than guess (RFC 16 §4.3).",
-    "clash": "Not an adapter's [[codec]], which turns wire bytes into a request's fields (RFC 20)."
+    "clash": "Not an [[adapter]]'s [[codec]], which turns wire bytes into a request's fields."
   },
   "principal": {
     "name": "principal",
@@ -692,7 +693,7 @@
   },
   "key-budget": {
     "name": "key budget (K)",
-    "short": "How many items one batch transaction may carry, including its conflict ranges. It is derived from the backend's limits.",
+    "short": "How many items, conflict ranges included, one transaction may carry when an operation over many refs, such as a removal, is split into batches. It is derived from the backend's limits.",
     "long": "The most items one batch transaction may carry, owned by RFC 6 and derived from `Limits`: a transaction's largest key and value, bytes, entries and age — backend properties, never settings (RFC 16 §4.1)."
   },
   "inspect": {
@@ -704,7 +705,7 @@
     "name": "filesystem (*vfs.Filesystem)",
     "short": "The implementation of the filesystem service that decides every call, at the file's primary.",
     "long": "The implementation of the [[filesystem-service]] that decides: it runs [[admission]], authorisation, the open-state check, quota and the [[engine]] call, in one order, at the file's [[primary]]. On a single node the adapters call it directly; in a cluster they call a gateway.",
-    "clash": "Not a filesystem in the kernel sense (ext4, XFS), and not the Linux kernel's VFS layer: RFC 17 names prior art like that only as the same idea. In RFC 17, \"filesystem\" with no qualifier means this type."
+    "clash": "Not a filesystem in the kernel sense (ext4, XFS), and not the Linux kernel's VFS layer, which share only the idea. In the filesystem service, \"filesystem\" with no qualifier means this type."
   },
   "chokepoint": {
     "name": "chokepoint",
@@ -724,18 +725,18 @@
   },
   "route-envelope": {
     "name": "route envelope",
-    "short": "(cluster) The routing information every forwarded call carries: the request ID, the shard and its epoch, the sending node and its node epoch, and a hop count.",
+    "short": "(cluster) The routing information every forwarded call carries: the request ID, the shard and its [[epoch]], the sending node and its [[node-epoch|node epoch]], and a hop count.",
     "long": "(cluster) What every call the gateway forwards carries: the request ID, the shard and its epoch, the sending node and its node epoch, and a hop count. `Serve` at the primary fences on it and answers a retry from its dedup table."
   },
   "lock-order": {
     "name": "lock order",
-    "short": "The one order in which every call takes its locks: first the open-state lock of each file it touches, then the locks on the directories it changes, then the per-file locks under which changes are applied. So no two calls can wait on each other forever.",
-    "long": "The one order every call takes what it needs: the admission (open-state) lock of each file it touches, then fold admission at the directories it changes, then the accept locks of the files it draws for — each in file-ID order. So no two calls each hold what the other waits for."
+    "short": "The one order in which every call takes its locks, so no two calls wait on each other forever. First the [[admission-lock|admission lock]] of each file it touches, then [[fold-admission|fold admission]] at each directory it changes, then the [[accept-lock|accept lock]] of each file it changes.",
+    "long": "The one order every call takes what it needs: the [[admission-lock|admission lock]] of each file it touches, then [[fold-admission|fold admission]] at the directories it changes, then the [[accept-lock|accept locks]] of the files it draws for — each in file-ID order. So no two calls each hold what the other waits for."
   },
   "wcc": {
     "name": "WCC",
     "short": "Weak cache consistency: one object's attributes just before and just after a change, captured together with the change itself.",
-    "long": "A pair `{Before, After}`: one object's attributes on either side of a change, read during a single hold of the file's accept lock, the per-file lock under which changes are applied. Every call that changes something returns it, so no adapter has to follow a change with a separate `GetAttr`. `Before` may be absent where it cannot be read atomically."
+    "long": "A pair `{Before, After}`: one object's attributes on either side of a change, read during a single hold of the file's [[accept-lock|accept lock]]. Every call that changes something returns it, so no adapter has to follow a change with a separate `GetAttr`. `Before` may be absent where it cannot be read atomically."
   },
   "quota-reservation": {
     "name": "quota reservation",
@@ -746,7 +747,7 @@
     "name": "release (of a file)",
     "short": "Dropping a file's content and records once it has no name left and no open.",
     "long": "Dropping a file's refs, its journal content and its records once it has no name and no open. The service runs every one, at the file's primary, through the engine's `Delete`; a pending-release record makes a crash in between leak nothing.",
-    "clash": "Not the journal's [[release]] (RFC 1), which only stops holding offloaded extents and is the mechanism of eviction."
+    "clash": "Not the [[journal]]'s own [[release]], which only stops holding offloaded extents and is the mechanism of eviction."
   },
   "dialect": {
     "name": "dialect",
@@ -777,7 +778,7 @@
     "name": "FileId (SMB)",
     "short": "The number that names one SMB open on the wire. Its persistent half is valid on any node; its volatile half only on the node that issued it.",
     "long": "Names an open, not a file. Its persistent half is derived from the [[open-state]] open's ID and names its shard, so any node can route a reconnect to the open's [[primary]]. Its volatile half names an entry in the gateway node's table and is invalid on any other node.",
-    "clash": "Not RFC 7's `FileID`, which a file [[handle]] carries and which never reaches the SMB wire, nor the numeric file id Windows is shown. And not an NFS file handle, which names a file, not an open."
+    "clash": "Not the internal ID that names a file inside DittoFS, which a file [[handle]] carries and which never reaches the SMB wire, nor the numeric file id Windows is shown. And not an NFS file handle, which names a file, not an open."
   },
   "lease-break": {
     "name": "break",
@@ -793,7 +794,7 @@
     "name": "durable handle",
     "short": "An SMB open that outlives a lost connection until a timeout, 60 s by default and at most 300 s. It does not survive the loss of its primary.",
     "long": "An SMB open kept across a network disconnect for its timeout, held in the [[primary|primary's]] memory: a planned handover carries it; a restart or failover of the primary does not, and its reconnect is then refused.",
-    "clash": "Not **durable** in RFC 0's sense, data synced to a journal: on a share that is not continuously available, writes through a durable handle may not be synced yet."
+    "clash": "Not **durable** in the journal's sense, data synced to the journal's disk: on a share that is not continuously available, writes through a durable handle may not be synced yet."
   },
   "persistent-handle": {
     "name": "persistent handle",
@@ -852,7 +853,7 @@
   },
   "cell": {
     "name": "cell",
-    "short": "One unit of a test run: a suite, or one of its options, at one combination of its matrix values.",
+    "short": "One unit of a test run: a suite, or one of its options, at one combination of the values in its [[matrix]].",
     "long": "What `dt plan` makes of a [[suite]]: one per combination of its [[matrix]] values, and per [[test-shard]], such as `pjdfstest/badger-s3/4.1`. Each has its own [[fixture]], results, exit status and CI job."
   },
   "matrix": {
@@ -864,7 +865,7 @@
     "name": "shard",
     "short": "A slice of a cell's tests, run in a CI job of its own to finish sooner.",
     "long": "A slice of a [[cell]]'s tests in a CI job of its own, the tests dealt in turn so long and short ones spread evenly. smbtorture runs on two shards, in every [[tier]].",
-    "clash": "Not the [[shard]] of RFC 0 — a set of files with one primary. Here a shard is a slice of a test run."
+    "clash": "Not a storage [[shard]], a set of files with one primary. Here a shard is a slice of a test run."
   },
   "store-profile": {
     "name": "store profile",
@@ -876,7 +877,7 @@
     "name": "fixture",
     "short": "The DittoFS server a suite's tests run against, built and checked by `dt` before the first test.",
     "long": "`dfs` built from the checkout, on a [[store-profile|store profile]], with its [[share|shares]] and users, mounted when the suite needs it. `dt` sets it up from the suite's fields (no setup script), checks it, and removes it after the last test.",
-    "clash": "In Go or pytest a fixture is a small piece of test setup, such as a file under `testdata`. In RFC 29 it is a whole running server, with stores, shares, users and a mount."
+    "clash": "In Go or pytest a fixture is a small piece of test setup, such as a file under `testdata`. In the test harness it is a whole running server, with stores, shares, users and a mount."
   },
   "needs": {
     "name": "needs",
@@ -892,7 +893,7 @@
     "name": "tier",
     "short": "When a suite runs: `pr` on every pull request, `merge` after each merge, `nightly`, or `manual`.",
     "long": "The set of [[suite|suites]] a run includes, by when it runs: `pr` (p90 ≤ 20 min), `merge` (≤ 60 min), `nightly` (≤ 4 h), `manual`. Each contains the one below it; a suite names the smallest tier that runs it.",
-    "clash": "Not a storage tier: DittoFS's remote tier is where offloaded content lives. A test tier says when tests run, not where data is stored."
+    "clash": "Not a storage tier: DittoFS's [[remote-tier|remote tier]] is where [[offload|offloaded]] content lives. A test tier says when tests run, not where data is stored."
   },
   "blocking": {
     "name": "blocking",
@@ -903,7 +904,7 @@
     "name": "gate",
     "short": "The one CI job that decides merges: it fails unless every blocking cell exited 0.",
     "long": "The `gate` job of `tests.yml`: it needs every job that runs a [[blocking]] [[cell]], always runs, joins their reports, and fails unless `plan` passed and each of them passed or was skipped. develop requires it.",
-    "clash": "Not the adapters' share gate (who may enter a share), nor the RFC's own “performance and allocation gates”, which are tests that fail on a measured threshold."
+    "clash": "Not the adapters' share gate (who may enter a share), nor the throughput and allocation gates: Go tests that fail on a measured threshold, run nightly, and never fail a pull request."
   },
   "result-format": {
     "name": "format",
@@ -962,9 +963,9 @@
   },
   "baseline": {
     "name": "baseline",
-    "short": "smbtorture's file of DittoFS's own results: a snapshot, written by hand with `dt known baseline`.",
+    "short": "A snapshot of DittoFS's own smbtorture results, kept in a file. A developer refreshes it through a pull request; no nightly job writes it.",
     "long": "`baseline-results.md`, a snapshot of DittoFS's own smbtorture results on `badger-s3`, written with `dt known baseline` and landed through a pull request. It replaces a nightly job that pushed it and failed every night.",
-    "clash": "Three things share the word: smbtorture's baseline file, the knfsd comparison run for pynfs, and a benchmark's baseline, the figure a performance gate compares against. None is a known-failure list."
+    "clash": "Three things share the word: smbtorture's baseline file; the same NFS tests run against the Linux kernel's own NFS server (knfsd), for comparison; and a benchmark's stored baseline, which reports a change but never fails a run. None is a known-failure list."
   },
   "control-plane": {
     "name": "control plane",
@@ -986,5 +987,127 @@
     "name": "dfsctl",
     "short": "The command-line client that manages a running DittoFS server through its REST API.",
     "long": "The command-line client of the [[management-api|management API]]: users, groups, shares, stores and adapters on a running `dfs`. It only calls the API and never opens a store or a journal (RFC 23 §7). Its credentials live in `~/.config/dfsctl/config.json`."
+  },
+  "epoch": {
+    "name": "epoch (shard epoch)",
+    "short": "A number in a [[shard]]'s record that rises whenever a change must stop an older [[primary]] from acting, such as a new primary taking over. A call or commit carrying an older epoch is refused. It is not the [[node-epoch|node epoch]], which counts a node's starts.",
+    "long": "A number in the shard record, raised by every change to it that must fence a sender: a takeover, a handover, a replica joining or removed, the start of a move of files. (cluster) A message carrying an older one is refused, and a commit is refused unless the file's [[fence-records|fence records]] hold exactly its (shard, epoch). Not the [[node-epoch|node epoch]] nor the [[shard-incarnation]]."
+  },
+  "node-epoch": {
+    "name": "node epoch",
+    "short": "A number raised for one [[node]] each time it starts and, in a cluster, each time it takes a new [[node-lease|node lease]]. It is one of the inputs of the [[write-verifier|write verifier]].",
+    "long": "Raised for one node at every start and, in a cluster, every new lease. A node whose lease lapsed takes a new one at a higher node epoch and is primary of nothing until it takes a shard over. The [[write-verifier]] takes it as an input, beside the journal's [[loss-generation|loss generation]]; it does not take the shard [[epoch]]."
+  },
+  "node-lease": {
+    "name": "node lease",
+    "short": "(cluster) The lease each [[node]] renews in the metadata store to keep serving. A node whose node lease has lapsed serves nothing.",
+    "long": "(cluster) The one lease each node renews in the [[metadata-store|metadata store]]. A node whose lease lapsed serves nothing; a [[handover|takeover]] marks its node record lapsed, and every commit on its shards checks that mark. Not a [[client-lease|client lease]], nor an SMB [[lease]]."
+  },
+  "handover": {
+    "name": "handover",
+    "short": "(cluster) A planned change of a [[shard]]'s [[primary]]. There is no wait for a lease to lapse and no grace period, because the old primary passes the shard's open state to the new one.",
+    "long": "(cluster) A planned change of primary, with no lease wait and no grace: the old primary ships the shard's open-state table, with its [[dedup-table|dedup]] entries, to the new one. If the old primary is lost before the new one holds the table, grace follows as after a [[takeover]]. It raises the shard's [[epoch]]."
+  },
+  "namespace-move": {
+    "name": "move (namespace)",
+    "short": "Handing a group of shares, with their metadata, to another DittoFS installation (a separate set of servers with its own metadata store) that uses the same bucket, so the stored blocks stay where they are. Each share is frozen while its last changes are copied over, so none is lost. It is not a move between the nodes of one cluster.",
+    "long": "Handing a namespace, with its shares' metadata, from one installation to another on the same bucket; the [[block|blocks]] stay where they are. While the last changes are carried over, the share is frozen, for at most `migration.freeze_timeout`, and calls on it are answered [[retry-later]]. Not a move of files between shards."
+  },
+  "clone": {
+    "name": "clone",
+    "short": "A copy that shares content instead of copying it. A clone of a share is a new writable share made from a [[snapshot]]; a clone of part of a file reuses its uploaded [[chunk|chunks]] and copies only the bytes not yet uploaded.",
+    "long": "(share) A new writable [[share]] made from a complete snapshot, in the snapshot's namespace. (file) A copy of an [[extent]] of a file that adopts its carved [[ref|refs]] and copies only the bytes still [[dirty]] in the journal; a server-side copy works the same way. A [[block]] leaves the bucket only when no file, snapshot or clone uses it."
+  },
+  "deduplication": {
+    "name": "deduplication",
+    "short": "Storing identical content once when several files carry it. The first release does not deduplicate across files: offload uploads every chunk it cuts.",
+    "long": "Storing content that several files carry only once. The first release does not deduplicate across files: offload never asks whether a [[chunk]] is already stored. Chunks stay named by a keyed hash of their content, and refcounts stay, because [[clone|clones]] and snapshots share chunks.",
+    "clash": "Not the [[dedup-table|dedup table]] of a forwarded call, which answers a retried request with its first result."
+  },
+  "dedup-table": {
+    "name": "dedup table",
+    "short": "(cluster) A table at the [[primary]] that keeps the result of each recent change by its request ID, so a call resent after a lost reply is answered with its first result instead of running twice.",
+    "long": "(cluster) Kept by `vfs.Serve` at the primary: recent mutations keyed by request ID alone, each held for at least the retry window, never under 600 s. A [[handover]] ships only the entries of open-state calls, with the table they apply to.",
+    "clash": "Not [[deduplication]] of content, which stores identical chunks once."
+  },
+  "sync-mark": {
+    "name": "sync mark",
+    "short": "What a journal [[sync]] returns for each append stream: how far its records are proven to be on the device. After a crash the journal cannot tell a synced record the device later lost from one the crash cut short, which it treats as never written. A mark recorded in the metadata store settles it, so a lost overwrite of committed content is counted as a loss.",
+    "long": "Per [[append-stream|append stream]]: the stream, the [[segment]], its synced-through offset, and the end and sequence number of the newest record the `Sync` named. The journal returns the marks and the caller owns them, recording them in the [[metadata-store|metadata store]] with the [[group-commit|group commit]]. A [[stability-point|stability point]] over committed content waits until a recorded mark covers what its `Sync` returned."
+  },
+  "adapter-bytes": {
+    "name": "Adapter bytes",
+    "short": "Opaque bytes, at most 4 KiB, that an [[adapter]] stores in an open-state record through the service, for protocol detail that must survive a lost connection or a restart. The open-state table stores and returns them, and never reads them.",
+    "long": "The `Adapter` field of a client record and of some other open-state records: a one-slot replay of a setup call, a callback address, an NLM host's notice address. Written with the change it belongs to, through the [[filesystem-service|service]], never by the adapter itself; at most 4 KiB, starting with the adapter's own version byte. In a cluster they travel opaque in the forwarded call."
+  },
+  "floor-bucket": {
+    "name": "floor bucket",
+    "short": "One of 4,096 version numbers the journal keeps, picked by a hash of the file ID. A [[fill]] for a file the journal holds nothing of is checked against that file's bucket, since the file has no version of its own there.",
+    "long": "The per-file [[change-version]] is bounded by a fixed table of 4,096 floor buckets, indexed by a hash of the `FileID`. Dropping a file's index entry raises its bucket to the entry's version, and at open every bucket starts at the highest version on disk. A file with no entry is compared against its bucket, so a stale fill is refused even once the entry is gone."
+  },
+  "version-limit": {
+    "name": "version limit",
+    "short": "The ceiling below which the journal may hand out [[content-version|versions]]. A version reaches clients, as a file's change attribute, before its record is synced, so the engine writes the ceiling durably ahead of need; after a crash the counter restarts above it and never hands a version out twice.",
+    "long": "The smallest durable per-share limit the caller wrote for the shares a journal serves (`SetVersionLimit`). A version is seen before its record syncs, so a counter rebuilt after a crash could issue it again; the limit prevents that. The engine raises it ahead by time. A change that would reach it is refused with `ErrNoSpace` naming the version limit."
+  },
+  "admission-lock": {
+    "name": "admission lock",
+    "short": "The service's per-file lock, taken first by every call that touches a file. The call holds it across a check, such as the open-state check, and the change or I/O that check allows.",
+    "long": "The outer level of the [[open-state-step|open-state step]], keyed by file ID whether or not the file has open state. The service holds it across a compound operation: a check and the I/O or change it admits. It comes first in the [[lock-order|lock order]]. Not share [[admission]]."
+  },
+  "fold-admission": {
+    "name": "fold admission",
+    "short": "The gate at a directory's [[primary]] that lets creates, removes and renames in that directory through. When the directory's pending count and time updates are due to be merged into its record (a [[delta-fold|fold]]), new changes wait until the fold commits.",
+    "long": "A fold rewrites the directory's record, which every create, link and rename into it guards, so the primary orders them in memory: once a fold is due, it stops admitting changes to the directory, waits for those in flight, folds, then admits the queue. A change needing several directories takes them in file-ID order within its deadline, or answers [[retry-later]]. Not share [[admission]]."
+  },
+  "accept-lock": {
+    "name": "accept lock",
+    "short": "A per-file lock at the file's [[primary]]. Every write, truncate or attribute change holds it while it draws its version and is applied, so the attributes captured before and after it ([[wcc|WCC]]) are exact.",
+    "long": "Taken by every write, truncate, attribute change and setuid clearing before it draws its `Version`: around `WriteAt` for a write, the engine's `Draw` for any other change. Never held across a [[sync]] or a [[group-commit|group commit]], so a stable overwrite does not hold back the file's other changes. Last in the [[lock-order|lock order]]; the journal and the engine take no such lock."
+  },
+  "not-yours": {
+    "name": "NotYours (ErrNotYours)",
+    "short": "The refusal a call gets when it uses an open, a lock or a [[caching-grant]] that belongs to another user or another client. An open can be used only by the user who opened it.",
+    "long": "Every call that uses an [[open]] (I/O through its reference, a lock under it, a downgrade, a close) is refused `ErrNotYours` unless the caller's principal is the open's. A grant that covers no open may be used only by its own client. A call without a [[session]] that presents state created on a session is refused too, whatever its principal."
+  },
+  "handle-caching": {
+    "name": "handle caching",
+    "short": "The part of an SMB [[caching-grant]] (a batch [[oplock]], or a [[lease]] with H) that lets a client keep a file open after its application has closed it, so it can reopen the file without asking the server.",
+    "long": "A client holding it keeps an open its application already closed, with that open's [[deny-mode|deny mode]]. So before the server refuses any request for a deny-mode conflict, it breaks handle caching on the opens that cause it and answers [[retry-later]]. A holder that kept the file open only in its cache closes it, and only a conflict that remains is refused."
+  },
+  "quota": {
+    "name": "quota",
+    "short": "A limit on the bytes and files that a share, a project (a directory tree), a user or a group may use. A write past the hard limit is refused; past the soft limit it is refused only once a grace time has run out; an advisory threshold refuses nothing.",
+    "long": "Each quota has a hard limit, refused beyond; a soft limit, allowed beyond for its grace time and then refused as hard; and an advisory threshold, never refused, whose crossing only emits a quota event. Usage is counted in logical bytes per file, holes excluded, even where a [[clone]] shares the content. Only the [[filesystem-service|service]] enforces it, through a [[quota-reservation]]."
+  },
+  "named-stream": {
+    "name": "named stream",
+    "short": "A second, named content of a file, such as SMB's `report.docx:summary`. It has its own file ID, but no name entry, owner or permissions of its own: it follows its file.",
+    "long": "A `File` of type `Stream`, its bytes in the journal like any file's. It has no entry and is reached only by listing its file's streams; every check on it is a check on its base file, and the file ID reported for it is its base file's. Its base file's [[file-release|release]] leaves it [[pending-release|pending]], and it is then released as a file of its own."
+  },
+  "dtc": {
+    "name": "dtc",
+    "short": "A Linux container with the pinned test tools, in which `dt` can run. A run moves into it when a suite needs something the host lacks, such as a Linux-only suite on macOS.",
+    "long": "`test/harness/bin/dtc`: a privileged container with a pinned Linux toolchain, which runs the same `dt` command with `--in host`. With `--in auto`, the default, `dt` moves a whole run there when Docker is present and a [[cell]] needs what the host lacks and the container gives. A need neither can meet is reported as not run, never as passed."
+  },
+  "system-scenario": {
+    "name": "system scenario",
+    "short": "One of 42 shell scripts in `test/scenarios/`. Each starts a real server in a container, drives real SMB and NFS clients against it, and often injects a fault such as an S3 outage or a crash.",
+    "long": "Run as the `system` [[suite]] through `test/scenarios/setup.sh`, on the [[dedicated-host|dedicated host]] only. Each is named `<number>-<what>-<size>.sh`: the first digit is its group, from 0x smoke tests to 7x outages and crashes, and the 9x scenarios are long runs, such as one that grows a 30 GB file."
+  },
+  "floating-address": {
+    "name": "floating address",
+    "short": "(cluster) A client-facing IP address that belongs to the cluster rather than to one node. When the node serving it is lost, a surviving node takes the address over, so clients reconnect to the same address.",
+    "long": "(cluster) A client-facing address the cluster owns and a surviving node takes over. SMB clients of a [[continuously-available|continuously available]] share learn of a move through [[witness|Witness]]; NFS clients on hard mounts simply retry against whichever node now answers the address."
+  },
+  "pending-release": {
+    "name": "pending release",
+    "short": "A record saying that a file has lost its last name and its content is still to be released. It keeps nothing alive, and after a restart recovery finishes each release it finds.",
+    "long": "Records that a file lost its last name and its content is still to be released. It keeps nothing alive. The [[file-release|release]] then runs at the file's [[primary]] through the engine's `Delete`, and after a restart recovery runs each pending release it finds, so a crash in between leaks nothing. A [[named-stream|named stream]] is left pending by its base file's release."
+  },
+  "takeover": {
+    "name": "takeover (failover)",
+    "short": "(cluster) An unplanned change of a [[shard]]'s [[primary]], often called a failover. The primary's [[node-lease|node lease]] has lapsed, so another node that holds a copy of the shard's writes becomes primary, and a grace period follows.",
+    "long": "(cluster) A replica, a node other than the primary whose journal holds a copy of every write to the shard, becoming [[primary]] after the primary's [[node-lease|node lease]] lapsed. The old primary's open state is lost, so a [[grace-period]] follows. It raises the shard's [[epoch]], so calls still aimed at the old primary are refused. A planned change is a [[handover]]."
   }
 }

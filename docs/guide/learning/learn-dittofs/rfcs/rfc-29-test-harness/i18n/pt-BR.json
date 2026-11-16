@@ -17,9 +17,9 @@
     "knownLead": "O RFC 29 não se apoia em nenhum outro RFC, porque trata das ferramentas de teste e não do servidor. Os termos do DittoFS abaixo só aparecem nele de passagem. Clique em um para ler a definição.",
     "knownNotes": "O índice de RFCs diz que o RFC 29 não se apoia em nenhum outro RFC, nem no RFC 0. Share: as shares de uma fixture (§4.2). Adapter: os adapters NFS e SMB que uma fixture habilita (§4.2). Lease: o lease NFSv4 da fixture (§4.2). Journal, syncer e engine aparecem só como exemplos de grupos de componentes (§4.9).",
     "newTitle": "Termos novos",
-    "newNotes": "O RFC 29 não tem glossário; cada termo é definido onde o RFC o apresenta: dt (§3), registry, suíte, opção, grupo (§4.1), cell (§4.4), store profile e fixture (§4.2), needs e host dedicado (§4.5), tier e blocking (§4.3), gate (§4.8), formato, CTRF, avaliação (§4.6), known failure, expected skip, unexpected pass, quarentena, flaky, retry (§4.7), not run (§4.4, R10), a issue develop-red (§4.8). O glossário no fim acrescenta matriz, shard e baseline.",
+    "newNotes": "O RFC 29 não tem glossário; cada termo é definido onde o RFC o apresenta: dt (§3), registry, suíte, opção, grupo (§4.1), cell (§4.4), store profile e fixture (§4.2), needs, dtc e host dedicado (§4.4, §4.5), os cenários de sistema (§1, §4.1), tier e blocking (§4.3), gate (§4.8), formato, CTRF, avaliação (§4.6), known failure, expected skip, unexpected pass, quarentena, flaky, retry (§4.7), not run (§4.4, R10), a issue develop-red (§4.8). O glossário no fim acrescenta matriz, shard e client lease.",
     "clashTitle": "Termos que conflitam",
-    "clashNotes": "Tier: os tiers de armazenamento do DittoFS (RFC 0, RFC 4) contra os tiers de teste do RFC 29 (§4.3). Fixture: o sentido habitual em código de teste contra o servidor inteiro do §4.2. Gate: o job gate (§4.8) contra os gates de desempenho e alocação (§4.10) e o share gate dos adapters. Store profile contra perfis de desempenho e de cobertura (a suíte unit do §4.1 grava um coverage profile). Baseline: o arquivo baseline do smbtorture, a comparação com o knfsd e a baseline de um benchmark (§4.8, §4.10). Lease: o lease NFSv4 da fixture (§4.2)."
+    "clashNotes": "Tier: os tiers de armazenamento do DittoFS (RFC 0, RFC 4) contra os tiers de teste do RFC 29 (§4.3). Fixture: o sentido habitual em código de teste contra o servidor inteiro do §4.2. Gate: o job gate (§4.8) contra os gates de desempenho e alocação (§4.10) e o share gate dos adapters. Store profile contra perfis de desempenho e de cobertura (a suíte unit do §4.1 grava um coverage profile). Lease: o lease NFSv4 da fixture (§4.2)."
   },
   "problem": {
     "kicker": "O problema"
@@ -61,25 +61,25 @@
       ],
       [
         "WPTS BVT",
-        "70 dos seus 335 testes nunca rodavam, e contavam como skips sem nenhuma lista de quais skips eram esperados."
+        "O WPTS é a suíte de testes da Microsoft para SMB, e BVT é o seu conjunto básico. 70 desses 335 testes nunca rodavam, e contavam como skips sem nenhuma lista de quais skips eram esperados."
       ],
       [
-        "Teste de sistema do portmap",
+        "O teste de integração Go do portmap",
         "O resultado não vinha de uma execução nova, e sim da cache de testes do Go."
       ]
     ],
     "footer": "Em 2026-10-08, uma verificação das últimas execuções verdes de cada workflow de teste encontrou 14 casos assim, e cada um virou uma issue. Em todos, um problema de setup, uma ferramenta ausente ou um teste pulado era lido como pass.",
-    "notes": "§1, a tabela 'Green results that test nothing' (resumida), e o Summary. Outros na tabela: o pynfs roda só a flag `all` (601 de 689 no 4.0, 184 de 266 no 4.1), o job Windows do smb-client-compat, os gates de desempenho pulados com -race e -short."
+    "notes": "§1, a tabela 'Green results that test nothing' (resumida), e o Summary. Outros na tabela: o pynfs roda só a flag `all` (601 de 689 no 4.0, 184 de 266 no 4.1), o job Windows do smb-client-compat, os gates de desempenho pulados com -race e -short. WPTS são as Windows Protocol Test Suites da Microsoft; a entrada wpts roda os testes com TestCategory=BVT (§4.1). O teste do portmap é uma opção da suíte integration, compilado com a tag portmap_system (§4.1); o §1 o chama de portmap system test."
   },
   "unheard": {
     "title": "O vermelho que ninguém ouviu",
     "items": [
       "A execução noturna de conformance falha toda noite desde 2026-09-10, mas o job que a resume continua verde.",
-      "A suíte AD-DC falhou em toda execução na develop depois que um pull request a quebrou, e ninguém foi avisado.",
+      "A suíte AD-DC, que testa o DittoFS contra um domain controller do Active Directory, falhou em toda execução na develop depois que um pull request a quebrou, e ninguém foi avisado.",
       "O alarme que avisava quando a develop ficava vermelha, um e-mail e uma issue, foi removido, porque subtestes [[flaky]] do smbtorture o disparavam o tempo todo.",
-      "Os 42 cenários de sistema rodam duas vezes por dia, fora de qualquer job de CI. Cerca de metade falha de propósito, porque reproduz bugs ainda abertos, mas nenhuma lista diz quais."
+      "Os 42 [[system-scenario|cenários de sistema]], scripts que rodam um servidor real e clientes reais e muitas vezes injetam uma falha, rodam duas vezes por dia num host dedicado, fora de qualquer job de CI. Cerca de metade falha de propósito, porque reproduz bugs ainda abertos, mas nenhuma lista diz quais."
     ],
-    "notes": "§1, 'Nobody hears when develop goes red' e 'Scenarios carry no signal'. A falha noturna: o job de baseline faz push na develop e o ruleset recusa (#2997). AD-DC: um teste ainda pedia o metadata store memory removido. O alarme (e-mail e issue) foi adicionado no #1170 e removido no #1705 (Apêndice A)."
+    "notes": "§1, 'Nobody hears when develop goes red' e 'Scenarios carry no signal'. A falha noturna: o job de baseline faz push na develop e o ruleset recusa (#2997). AD-DC: um teste ainda pedia o metadata store memory removido. O alarme (e-mail e issue) foi adicionado no #1170 e removido no #1705 (Apêndice A). Os cenários de sistema: a entrada system do §4.1 ('a real server in a container, real clients, faults injected'). AD-DC: uma opção da suíte integration, rodada contra o container do serviço AD-DC (§4.1, §3)."
   },
   "wrappers": {
     "title": "Wrappers dentro de wrappers",
@@ -114,8 +114,8 @@
     "cliTitle": "Uma CLI, não um serviço",
     "cli": "Um serviço que roda testes precisa de host, autenticação e deploy, e um notebook falaria com ele de um jeito diferente da CI. Os outros programas se apoiam em arquivos: o [[registry]], as listas de known failures, os resultados em `summary.json` e o exit code.",
     "goTitle": "Go desde o início",
-    "go": "O `dt` em bash era um único script de 1.270 linhas. O que o RFC acrescenta é manipulação de dados — YAML, resultados, avaliação — que em bash exige `yq` e `jq` e não dá para testar de forma razoável. Em Go tem testes e roda em Linux, macOS e Windows.",
-    "footer": "Uma versão anterior do `dt` escrita em bash não é levada adiante. Ela fica só como referência dos comandos que o pessoal já usa.",
+    "go": "Um `dt` anterior, escrito em bash, era um único script de 1.270 linhas. O que o RFC acrescenta é manipulação de dados — YAML, resultados, avaliação — que em bash exige `yq` e `jq` e não dá para testar de forma razoável. Em Go tem testes e roda em Linux, macOS e Windows.",
+    "footer": "Essa versão em bash não é levada adiante. Ela fica só como referência dos comandos que o pessoal já usa.",
     "notes": "§3 Decision: 'A CLI, not an API service' e 'In Go, from the start'. As dependências Go já estão no go.mod (gopkg.in/yaml.v3, cobra). Alternativas rejeitadas no §6: um serviço de API, primeiro bash depois Go. As demais alternativas rejeitadas (§6): um arquivo descritor por teste, uma suíte por variante (as 30 suítes do segundo rascunho), um tipo de resultado por ferramenta, escolher suítes pela camada alterada, manter o suites.json, manter os scripts de cada suíte e embrulhá-los, make ou um Taskfile (comandos com nome, mas sem matriz, needs, fixtures ou avaliação), comandos como strings de shell, listas de known failures em Markdown, JUnit ou um schema próprio, retry em pull requests, uma issue por teste com falha a cada execução, um runner self-hosted no host dedicado, uma merge queue agora."
   },
   "carries": {
@@ -124,12 +124,12 @@
       "Os comandos usados hoje continuam como aliases, então `dt unit` quer dizer `dt run unit`.",
       "As regras dos graders de hoje passam para Go, e os casos de teste deles viram dados de teste do `dt`.",
       "O que só os scripts sabiam também vai junto, cada item com um teste. Por exemplo, o pjdfstest precisa das delegations NFSv4 desligadas, e os callbacks NFSv4.0 precisam de um endereço de servidor que não seja loopback.",
-      "As listas de [[known-failure|known failures]] passam como dados, e o `setup.sh` dos cenários e o `dfsbench` também ficam."
+      "As listas de [[known-failure|known failures]] passam como dados, e também ficam o `dfsbench`, a ferramenta de benchmark do DittoFS, e o `setup.sh`, o script que roda os [[system-scenario|cenários de sistema]]."
     ],
     "goesTitle": "O que sai",
     "goes": "São apagados 35 dos 92 scripts shell em `test/` e `.github/scripts/`, cerca de 8.860 linhas. São o dispatcher, os scripts de setup, execução e avaliação de cada suíte e os targets `test-*` do Makefile.",
-    "footer": "O shell fica onde ele cabe por natureza: o container `dtc`, os containers de serviço e o host dos cenários. Nenhuma suíte ganha um script novo entre o `dt` e a sua ferramenta de teste.",
-    "notes": "§3, 'What carries over', 'What goes' e 'What stays'. A lista completa do que os scripts sabem inclui a árvore 4.1 do pynfs testando NFSv4.2 se não houver --minorversion, o watcher de configurações a cada 10 segundos, as opções de mount do pjdfstest e os detalhes do upcall Kerberos. A baseline knfsd do nfstest fica, como job de evidência disparado só manualmente (§3)."
+    "footer": "O shell fica só onde ele cabe por natureza. Isso vale para o [[dtc|container dtc]], um container Linux com as ferramentas de teste em versões fixadas onde o `dt` pode rodar, para os containers que sobem os serviços de teste e para o host que roda os cenários de sistema. Nenhuma suíte ganha um script novo entre o `dt` e a sua ferramenta de teste.",
+    "notes": "§3, 'What carries over', 'What goes' e 'What stays'. A lista completa do que os scripts sabem inclui a árvore 4.1 do pynfs testando NFSv4.2 se não houver --minorversion, o watcher de configurações a cada 10 segundos, as opções de mount do pjdfstest e os detalhes do upcall Kerberos. A baseline knfsd do nfstest fica, como job de evidência disparado só manualmente (§3). dtc: §4.4 (--in host|container|auto) e a tabela de lugares do §4.5 ('pinned Linux toolchain, privileged')."
   },
   "reg": {
     "kicker": "O registry"
@@ -180,11 +180,12 @@
       "Uma fixture é um servidor `dfs` compilado a partir do checkout e iniciado num [[store-profile|store profile]]: `memory`, `badger` ou `badger-s3`.",
       "Quando a suíte precisa de um mount, a fixture também monta a share via NFS ou SMB. Caso contrário, só a exporta.",
       "As [[share|shares]] e os usuários da fixture vêm de arquivos de dados e de campos da entrada da suíte.",
-      "As configurações dela também são campos: o squash, as delegations, o [[lease]] NFSv4, o Kerberos e um reset da share antes de cada teste."
+      "As configurações dela também são campos: o squash, as delegations, o Kerberos, um reset da share antes de cada teste e o [[client-lease|client lease]] NFSv4."
     ],
     "noScriptTitle": "Sem scripts de setup",
     "noScript": "Não existe campo para um script de setup. Uma necessidade que os campos não conseguem expressar vira um campo novo no `dt`, com um teste, e o setup fica num lugar só.",
-    "notes": "§4.2 Fixtures, a tabela de campos e o parágrafo seguinte. O dt prepara a fixture em Go antes do primeiro teste de uma cell e a remove depois do último. Uma fixture monta via NFS ou via SMB, não os dois. Configurações: uma fixture usa só configurações que o servidor tem; pjdfstest e pynfs usam squash: none, para que o root mantenha seus privilégios; o pynfs mantém lease: 30s até o servidor abandonar essa configuração."
+    "notes": "§4.2 Fixtures, a tabela de campos e o parágrafo seguinte. O dt prepara a fixture em Go antes do primeiro teste de uma cell e a remove depois do último. Uma fixture monta via NFS ou via SMB, não os dois. Configurações: uma fixture usa só configurações que o servidor tem; pjdfstest e pynfs usam squash: none, para que o root mantenha seus privilégios; o pynfs mantém lease: 30s até o servidor abandonar essa configuração. O lease: §4.2 'Settings' (os RFCs de armazenamento fixam o lease NFSv4 em 90 s; o pynfs mantém lease: 30s, então cada teste de expiração do lease espera 30 s em vez de 90). O RFC 14 fixa o client lease em 90 s, sem ser configuração (RFC 13); RFC 29 §4.2 'Settings': as fixtures só usam configurações que o servidor tem e mudam junto com ele na mesma pull request.",
+    "footer": "Uma fixture só usa configurações que o servidor tem. Por projeto o client lease é fixo em 90 s, mas o servidor de hoje ainda deixa configurá-lo, então o servidor de teste do pynfs usa 30 s e cada teste de expiração do lease espera 30 s em vez de 90. Quando o servidor tirar a configuração, a fixture a tira na mesma mudança."
   },
   "selfcheck": {
     "title": "Antes do primeiro teste, ela se verifica",
@@ -196,12 +197,12 @@
       "Todo [[needs|need]] que a suíte declara é atendido."
     ],
     "rule": "Se uma verificação falha, a [[cell]] termina com exit 2, que quer dizer [[not-run|not run]] e nunca é um pass. Um passo da fixture que falha também nunca é repetido, porque o próprio DittoFS sobe dentro da fixture e um retry poderia esconder um servidor instável.",
-    "footer": "Todos os passos da própria fixture dividem um único timeout, 5 minutos por padrão, então um mirror de pacotes travado derruba a cell em minutos em vez de gastar todo o tempo limite dela.",
-    "notes": "§4.2 (a lista da autoverificação; 'The silent passes in §1 are each a case of a missing check: the bucket, the NFS module, the Kerberos upcall'), §9 'Retrying a fixture's setup'. Em 2026-10-07 um mirror travado consumiu o timeout inteiro de 15 jobs. O timeout de 5 minutos da fixture vem do #2977."
+    "footer": "Os passos da própria fixture, como instalar pacotes, baixar imagens, compilar o servidor e iniciá-lo, dividem um único timeout, 5 minutos por padrão. Assim um mirror de pacotes travado derruba a cell em minutos em vez de gastar todo o tempo limite dela.",
+    "notes": "§4.2 (a lista da autoverificação; 'The silent passes in §1 are each a case of a missing check: the bucket, the NFS module, the Kerberos upcall'), §9 'Retrying a fixture's setup'. Em 2026-10-07 um mirror travado consumiu o timeout inteiro de 15 jobs. O timeout de 5 minutos da fixture vem do #2977. Os passos da fixture: §4.2 ('package installs, image pulls, building {bin}, the server's start')."
   },
   "bucket": {
     "title": "O bucket recusa escritas",
-    "notes": "'Start here · Scenarios', o segundo; §4.2 (autoverificação, nunca repetida), §4.4 (exit 2). Resultado: uma cell que não testou nada aparece como not run em vez de verde. O RFC diz que a fixture verifica o bucket; não diz qual processo faz a escrita de teste, então a seta a partir do dfs é uma simplificação do deck."
+    "notes": "'Start here · Scenarios', o segundo; §4.2 (autoverificação, nunca repetida), §4.4 (exit 2). Resultado: uma cell que não testou nada aparece como not run em vez de verde. O RFC diz que a fixture verifica o bucket; não diz qual processo faz a escrita de teste, então a seta a partir do dfs é uma simplificação do deck. O localstack é o emulador de S3 que as cells badger-s3 usam, iniciado como serviço (tabela do §1, §4.5 service:localstack)."
   },
   "quizKdc": {
     "question": "Uma [[cell]] usa Kerberos, e o KDC dela não responde enquanto a [[fixture]] sobe. Como a cell termina?",
@@ -230,7 +231,7 @@
       ],
       [
         "A máquina de quem desenvolve",
-        "o próprio sistema, ou o container `dtc`",
+        "o próprio sistema, ou o [[dtc|container dtc]]",
         "qualquer suíte cujos needs a máquina consegue atender"
       ],
       [
@@ -241,22 +242,22 @@
       [
         "[[dedicated-host|Host dedicado]]",
         "um disco grande e espaço para execuções longas",
-        "os cenários de sistema, as execuções longas e a comparação noturna de desempenho"
+        "os [[system-scenario|cenários de sistema]], as execuções longas e a comparação noturna de desempenho"
       ]
     ],
-    "footer": "Cada [[suite|suíte]] declara seus [[needs]], como Linux, root, Docker, um serviço ou espaço em disco. Quando um need não é atendido e nem o container `dtc` consegue atendê-lo, a suíte fica [[not-run|not run]], com o motivo. No notebook ela é pulada, e com `--ci` sai com 2.",
-    "notes": "§4.5 Where a suite runs: a lista de needs, a tabela de lugares, e 'For an unmet need, dt run either moves the whole run to the dtc container … or reports the suite as not run … It is never reported as passed.' Na CI, o dt plan atribui a cada cell o seu lugar a partir dos needs."
+    "footer": "Cada [[suite|suíte]] declara seus [[needs]], como Linux, root, Docker ou espaço em disco. Quando falta um à máquina, o `dt` pode levar a execução inteira para o `dtc`, por exemplo uma suíte só Linux no macOS. Se nenhum dos dois o atende, a suíte fica [[not-run|not run]], com o motivo. Sem `--ci` ela só é pulada. Com `--ci`, a flag com que a CI roda o `dt`, é um erro e sai com 2.",
+    "notes": "§4.5 Where a suite runs: a lista de needs, a tabela de lugares, e 'For an unmet need, dt run either moves the whole run to the dtc container … or reports the suite as not run … It is never reported as passed.' Na CI, o dt plan atribui a cada cell o seu lugar a partir dos needs. --ci: a tabela de flags do §4.4 ('non-interactive … a suite that can't run here is an error, not a skip'); §4.8, cada job run é dt run CELL --tier T --ci. A passagem para o dtc: §4.4 --in auto, §4.5 ('macOS runs Linux-only suites in dtc')."
   },
   "dedicated": {
     "title": "O [[dedicated-host|host dedicado]] não é um runner",
     "items": [
       "A própria orientação do GitHub diz que runners self-hosted “should almost never be used for public repositories”.",
       "Por isso o host dedicado, o `ditto`, roda o `dt` via cron, e a execução noturna dele testa só o último commit da develop.",
-      "Essa execução noturna pega só as cells que os runners hospedados pelo GitHub não comportam, como os longos cenários 9x, um dos quais faz um arquivo crescer até 30 GB.",
-      "A cada 10 minutos ele também confere develop, `main` e `feat/storage-v2`. Quando um deles tem um commit novo e o host está livre, roda os cenários de sistema nele e define o commit status `system (dedicated)`.",
+      "Essa execução noturna pega só as cells que os runners hospedados pelo GitHub não comportam, como os longos [[system-scenario|cenários de sistema]] cujo nome de arquivo começa com 9, um dos quais faz um arquivo crescer até 30 GB.",
+      "A cada 10 minutos ele também confere develop, `main` e um branch de feature de longa duração. Quando um deles tem um commit novo e o host está livre, roda os cenários de sistema nele e define o commit status `system (dedicated)`.",
       "O token GitHub dele pode escrever issues e commit status, e nada mais."
     ],
-    "notes": "§4.5 'The dedicated host is not a self-hosted runner'; §9 'The dedicated host' (ditto, um servidor que a Cubbit aluga; a alternativa são VMs spot na nuvem). Ele só roda quando nada mais roda no host; merges que chegam durante uma execução são pegos juntos pela seguinte. Só as falhas novas da develop vão para a issue de status da develop."
+    "notes": "§4.5 'The dedicated host is not a self-hosted runner'; §9 'The dedicated host' (ditto, um servidor que a Cubbit aluga; a alternativa são VMs spot na nuvem). Ele só roda quando nada mais roda no host; merges que chegam durante uma execução são pegos juntos pela seguinte. Só as falhas novas da develop vão para a issue de status da develop. Os cenários 9x: a tabela de lugares do §4.5 (o cenário 92 faz um arquivo crescer até 30 GB) e a entrada system do §4.1 (needs_by_test '9?-*.sh'). Os branches que o host confere são develop, main e feat/storage-v2 (§4.5). Os nomes de arquivo dos cenários são <número>-<o quê>-<tamanho>.sh; as execuções longas casam com 9?-*.sh (§4.1)."
   },
   "tiersK": {
     "kicker": "Tiers e o gate"
@@ -276,7 +277,7 @@
       ],
       [
         "`merge`",
-        "todo push na develop, `main`, `feat/storage-v2`",
+        "todo push na develop, na `main` ou num branch de feature de longa duração",
         "≤ 60 min"
       ],
       [
@@ -291,7 +292,7 @@
       ]
     ],
     "footer": "Cada tier roda tudo o que o menor roda: `merge` inclui `pr`, e `nightly` roda tudo menos as suítes `manual`. Uma [[suite|suíte]] indica o menor tier que a roda. Mudá-la de tier é trocar uma palavra, com base nos tempos medidos pelo `dt history`.",
-    "notes": "§4.3 Tiers (tabela e 'Budgets'); §9 'The tier budgets', ajustados com números medidos. Hoje um PR espera 25–40 min. Em 2026-10-12 um merge levou uma mediana de 33 minutos até o último check (§9). merge_group também está listado, caso uma merge queue um dia fique disponível."
+    "notes": "§4.3 Tiers (tabela e 'Budgets'); §9 'The tier budgets', ajustados com números medidos. Hoje um PR espera 25–40 min. Em 2026-10-12 um merge levou uma mediana de 33 minutos até o último check (§9). merge_group também está listado, caso uma merge queue um dia fique disponível. O tier merge roda nos pushes na develop, main e feat/storage-v2 (§4.3)."
   },
   "whatruns": {
     "title": "O que cada pull request roda",
@@ -314,11 +315,11 @@
     ],
     "mergeTitle": "Para fazer merge na develop",
     "merge": [
-      "O check `gate` passa, e também Go Checks, Repo Checks, ShellCheck, gitleaks e Analyze (go).",
+      "O check `gate` passa, e também os checks de lint Go Checks, Repo Checks e ShellCheck, e as varreduras de segurança gitleaks e CodeQL, cujo check se chama Analyze (go).",
       "Um revisor aprovou a pull request.",
       "O branch está atualizado em relação à develop."
     ],
-    "notes": "§4.8 CI, Jobs e Merging. As cells não bloqueantes rodam numa segunda matriz que o gate não espera. O gate virou obrigatório depois de duas semanas de tier pr verde (§9), no lugar de Unit Tests e Integration Tests. Um gate único que sempre roda evita a armadilha dos filtros de caminho do GitHub. Sem merge queue: o repositório pertence a uma conta de usuário, então branches atualizados fazem esse papel."
+    "notes": "§4.8 CI, Jobs e Merging. As cells não bloqueantes rodam numa segunda matriz que o gate não espera. O gate virou obrigatório depois de duas semanas de tier pr verde (§9), no lugar de Unit Tests e Integration Tests. Um gate único que sempre roda evita a armadilha dos filtros de caminho do GitHub. Sem merge queue: o repositório pertence a uma conta de usuário, então branches atualizados fazem esse papel. Checks exigidos: §4.8 'Merging' e 'Lint'; gitleaks e CodeQL (Analyze (go)) continuam como actions do GitHub (§4.8, §5)."
   },
   "prrun": {
     "title": "Um pull request quebra um teste do pjdfstest",
@@ -370,8 +371,8 @@
         "é preciso corrigir o comando ou o arquivo do registry"
       ]
     ],
-    "footer": "Uma [[cell]] que tem ao mesmo tempo uma falha nova e algo que não rodou sai com 1, e o relatório dela lista as duas coisas. O alerta da develop trata exit 1 e exit 2 de jeitos diferentes, e essa diferença é a principal defesa contra outra enxurrada de alertas.",
-    "notes": "§4.4, a tabela de exit status e o parágrafo seguinte; R10. O exit 2 cobre também uma fixture que estourou o tempo, testes que o timeout de uma cell deixou de fora, e um teste cuja saída parou antes do resultado sem crash do código em teste. 'Verde' (§2): nenhuma falha nova, nenhum skip inesperado e nenhum pass inesperado."
+    "footer": "Uma [[cell]] que tem ao mesmo tempo uma falha nova e algo que não rodou sai com 1, e o relatório dela lista as duas coisas. Na develop, o exit 1 dispara o alerta já na primeira execução, enquanto o exit 2, um problema de ambiente ou cobertura perdida, só dispara depois de 2 execuções seguidas. Essa diferença é a principal defesa contra outra enxurrada de alertas.",
+    "notes": "§4.4, a tabela de exit status e o parágrafo seguinte; R10. O exit 2 cobre também uma fixture que estourou o tempo, testes que o timeout de uma cell deixou de fora, e um teste cuja saída parou antes do resultado sem crash do código em teste. 'Verde' (§2): nenhuma falha nova, nenhum skip inesperado e nenhum pass inesperado. O alerta: §4.8 'Develop goes red' (publica uma execução cujas cells têm, depois do retry, falhas novas ou unexpected passes; o exit 2 só alerta depois de duas execuções consecutivas da cell) e §4.4 ('the main defence against another flood')."
   },
   "formats": {
     "title": "Sete [[result-format|formatos]], um leitor cada",
@@ -384,7 +385,7 @@
       [
         "`exit`",
         "o exit status",
-        "lint, operator, system, fio-verify, bench-smoke, cthon04"
+        "lint, operator, `system` (os [[system-scenario|cenários de sistema]]), fio-verify, bench-smoke, cthon04"
       ],
       [
         "`go-json`",
@@ -417,8 +418,8 @@
         "nfstest"
       ]
     ],
-    "footer": "Em todo formato menos `exit`, o resultado vem dos próprios resultados da ferramenta, não do exit status dela. Cada leitor mantém as regras do grader que a sua suíte usa hoje.",
-    "notes": "§4.6 Formats (resumido). O dt acrescenta -json -count=1 depois do go test, para que nenhum resultado venha do cache do Go. Um crash do código em teste reprova o teste (exit 1); um cliente que morreu antes do resultado o deixa incomplete (exit 2). Uma cell cuja ferramenta não gravou resultados é not run."
+    "footer": "Em todo formato menos `exit`, o resultado vem dos próprios resultados da ferramenta, não do exit status dela. Entre as suítes `exit`, a `operator` testa o operator do Kubernetes, a `fio-verify` roda cargas do fio numa share montada, e a `cthon04` e a `nfstest` testam o que um cliente NFS do kernel vê por um mount.",
+    "notes": "§4.6 Formats (resumido). O dt acrescenta -json -count=1 depois do go test, para que nenhum resultado venha do cache do Go. Um crash do código em teste reprova o teste (exit 1); um cliente que morreu antes do resultado o deixa incomplete (exit 2). Uma cell cuja ferramenta não gravou resultados é not run. A suíte system roda os cenários pelo setup.sh (§4.1). As suítes: o registry do §4.1 (operator: make -C k8s/dittofs-operator test lint manifests-verify; fio-verify: as cargas do dfsbench e os jobs de verify, que releem os próprios dados; cthon04 e nfstest: o que um cliente do kernel vê por um mount sem ajustes). Cada leitor mantém as regras do grader que a sua suíte usa hoje (§4.6)."
   },
   "grades": {
     "title": "Todo resultado recebe uma [[grade|avaliação]]",
@@ -445,7 +446,7 @@
       ],
       [
         "`unexpected_pass`",
-        "o teste está numa lista, a entrada dele não é `intermittent`, e ele passou todas as vezes que rodou na cell",
+        "o teste está numa lista, a entrada dele não é `intermittent` (falha só às vezes), e ele passou todas as vezes que rodou na cell",
         "exit 1"
       ],
       [
@@ -464,7 +465,7 @@
         "exit 2"
       ]
     ],
-    "notes": "§4.6 'Grades in CTRF and JUnit' (resumido). Além disso: um pass sem entrada não tem avaliação e passa; `ungraded` é um skip numa suíte sem arquivo known (uma suíte Go até aderir), e passa. Um teste Go pai cujos subtestes com falha são todos known também é known. No CTRF uma known failure é gravada como skipped com rawStatus failed, então quem lê conta como falha só o que faz a cell sair com 1."
+    "notes": "§4.6 'Grades in CTRF and JUnit' (resumido). Além disso: um pass sem entrada não tem avaliação e passa; `ungraded` é um skip numa suíte sem arquivo known (uma suíte Go até aderir), e passa. Um teste Go pai cujos subtestes com falha são todos known também é known. No CTRF uma known failure é gravada como skipped com rawStatus failed, então quem lê conta como falha só o que faz a cell sair com 1. intermittent: o exemplo de known.yaml do §4.7 ('it fails on some runs only; a pass is reported, not failed')."
   },
   "knownfile": {
     "title": "Uma [[known-failure|known failure]] é um dado",
@@ -482,18 +483,18 @@
     "items": [
       "Numa suíte que tem um arquivo de known failures, um teste pulado sem estar na lista faz a sua [[cell]] sair com 2.",
       "As suítes Go têm 331 chamadas a `Skip`, então adotam essa regra um pacote por vez, começando pelo e2e. Até um pacote adotá-la, os skips dele são contados, mas não avaliados.",
-      "Com essa regra, os 70 testes do WPTS, os 19 casos cross-protocol e os 11 subtestes Kerberos teriam aparecido como cobertura perdida no mesmo dia em que começaram a ser pulados.",
+      "Com essa regra, os 70 testes do WPTS, os 11 subtestes Kerberos de SMB e 19 casos de erro end-to-end rodados tanto em NFS quanto em SMB, que também eram pulados, teriam aparecido como cobertura perdida no mesmo dia em que começaram a ser pulados.",
       "As primeiras listas de expected skips são escritas a partir das execuções de hoje, cada entrada com o seu motivo, então um skip novo chama a atenção."
     ],
-    "notes": "§4.7 'Expected skips'; R10; §9 'Which Go suites grade their skips'. Além disso, 71 arquivos de teste dependem de testing.Short(). Uma execução que nomeia testes avalia só esses; um teste nomeado que foi pulado por depender de outro teste é not run (exit 2)."
+    "notes": "§4.7 'Expected skips'; R10; §9 'Which Go suites grade their skips'. Além disso, 71 arquivos de teste dependem de testing.Short(). Uma execução que nomeia testes avalia só esses; um teste nomeado que foi pulado por depender de outro teste é not run (exit 2). Os 19 casos de erro cross-protocol: a tabela do §1, linha e2e."
   },
   "honest": {
     "title": "Uma lista precisa continuar dizendo a verdade",
     "passTitle": "Unexpected pass",
     "pass": "Quando uma [[known-failure|known failure]] passa, a [[cell]] falha com exit 1, porque a lista já não diz o que o servidor faz. Por isso uma correção remove a própria entrada. Se algum teste que a entrada cobre ainda falha, a entrada continua known. Uma entrada marcada `intermittent: true` reporta esse pass em vez de falhar.",
     "msgTitle": "Falhar pelo motivo certo",
-    "msg": "Uma entrada pode indicar um `message:`, um texto que a falha precisa conter. Um teste listado enquanto falha num stub, com `message: \"stub:\"`, fica vermelho assim que falha por qualquer outro motivo.",
-    "notes": "§4.7 'Unexpected pass' e 'Failing for the right reason'. Um expected skip que roda e passa também é unexpected pass; um que roda e falha é falha nova, a menos que uma entrada de known failure o cubra. Um teste flaky sem entrada vai para a quarentena, não para intermittent."
+    "msg": "Uma entrada pode indicar um `message:`, um texto que a falha precisa conter. Digamos que um teste falhe porque o código que ele chama é um stub, um código provisório cujo erro começa com “stub:”. Listado com `message: \"stub:\"`, ele fica vermelho assim que falha por qualquer outro motivo.",
+    "notes": "§4.7 'Unexpected pass' e 'Failing for the right reason'. Um expected skip que roda e passa também é unexpected pass; um que roda e falha é falha nova, a menos que uma entrada de known failure o cubra. Um teste flaky sem entrada vai para a quarentena, não para intermittent. O exemplo do stub: §4.7 'Failing for the right reason' ('so a known failure can't hide a second one'). O que é um stub é uma explicação do deck."
   },
   "flakes": {
     "title": "Testes [[flaky]]: quarentena e retry",
@@ -502,7 +503,7 @@
       "Uma entrada de quarentena indica a suíte, o teste e uma issue, e vence em no máximo 90 dias.",
       "O teste continua rodando e o resultado é registrado, mas a falha dele nunca derruba uma execução nem dispara alerta.",
       "Um crash ou um travamento continua recebendo a avaliação `new`, mesmo em quarentena.",
-      "Uma entrada vencida não justifica mais nada, e o `dt doctor` falha."
+      "Uma entrada vencida não justifica mais nada, então o teste dela falha como novo. O `dt doctor`, uma verificação que roda em toda pull request, também falha por causa da entrada vencida."
     ],
     "rTitle": "[[retry|Retry]]",
     "r": [
@@ -511,7 +512,7 @@
       "Um teste que passa no retry é flaky. Ele não dispara alerta, e o `dt history` o conta.",
       "Um teste que sai flaky duas vezes numa semana na develop vira candidato à quarentena."
     ],
-    "notes": "§4.7 'Quarantine' e 'Retry'. A lista de quarentena é test/harness/quarantine.yaml; uma entrada nomeia exatamente um teste, nunca um padrão. Uma entrada vencida é erro do dt doctor, que o lint-repo roda (Repo Checks). O retry roda na própria fixture da cell, dentro do limite da cell; um teste que nenhuma regra de nome consegue indicar não é repetido. A race do keytab do AD-DC (#2968) é o caso para o qual a quarentena existe."
+    "notes": "§4.7 'Quarantine' e 'Retry'. A lista de quarentena é test/harness/quarantine.yaml; uma entrada nomeia exatamente um teste, nunca um padrão. Uma entrada vencida é erro do dt doctor, que o lint-repo roda (Repo Checks). O retry roda na própria fixture da cell, dentro do limite da cell; um teste que nenhuma regra de nome consegue indicar não é repetido. A race do keytab do AD-DC (#2968) é o caso para o qual a quarentena existe. Vencimento: §4.7 ('its test fails as new and the gate goes red on that test and on Repo Checks'); o dt doctor é um dos comandos do lint-repo (§4.1), e o lint-repo é o job Repo Checks, que roda em toda pull request (§4.8)."
   },
   "ctrf": {
     "title": "Um formato só: [[ctrf|CTRF]], com JUnit ao lado",
@@ -586,11 +587,11 @@
     "items": [
       "Os runners hospedados pelo GitHub compartilham hardware, então os tempos deles são ruidosos demais para reprovar uma pull request por uma queda percentual.",
       "O `bench-smoke` verifica se os benchmarks ainda funcionam. Ele não barra pull requests, mas barra as execuções depois de um merge e as noturnas.",
-      "O `unit --nonrace` roda toda noite, então finalmente rodam as verificações de throughput e de alocação que são puladas com `-race` e `-short`.",
-      "O `perf-night` no [[dedicated-host|host dedicado]] compara o DittoFS com o Samba. Ele sinaliza uma queda, mas o sinal não reprova nada.",
-      "Os números são registrados para o `dt history`, e sozinhos nunca decidem se uma execução passa."
+      "As verificações de throughput e de alocação, também chamadas de gates, falham quando uma medida passa de um limite. Elas são puladas com o race detector do Go (`-race`) e no modo short (`-short`), que a suíte `unit` usa, então nenhum job as rodava.",
+      "Agora o `unit --nonrace` as roda toda noite sem essas flags. Uma que ainda dispara depois do retry deixa a execução noturna vermelha, mas nunca reprova uma pull request.",
+      "O `perf-night` no [[dedicated-host|host dedicado]] compara o DittoFS com o Samba. Ele sinaliza uma queda, mas o sinal não reprova nada. Os números são registrados para o `dt history` e sozinhos nunca decidem se uma execução passa."
     ],
-    "notes": "§4.10 Benchmarks and long runs; §4.6 Metrics. O perf-night sinaliza um ponto, uma área ou o número da noite abaixo da mediana de 7 dias por mais do que a sua faixa de ruído; a cell falha quando um passo falha ou estoura o tempo, ou quando a noite não pode ser avaliada. Um gate nonrace que dispara de novo no retry deixa a execução noturna vermelha e publica, e não reprova nenhum PR."
+    "notes": "§4.10 Benchmarks and long runs; §4.6 Metrics. O perf-night sinaliza um ponto, uma área ou o número da noite abaixo da mediana de 7 dias por mais do que a sua faixa de ruído; a cell falha quando um passo falha ou estoura o tempo, ou quando a noite não pode ser avaliada. Um gate nonrace que dispara de novo no retry deixa a execução noturna vermelha e publica, e não reprova nenhum PR. Os gates pulados com -race e -short, que nenhum job rodava: tabela do §1, última linha. A suíte unit roda go test -race, com -short nas pull requests; a opção nonrace dela roda à noite os dois testes de gate (§4.1)."
   },
   "whom": {
     "kicker": "O que muda para quem",
@@ -609,12 +610,12 @@
     "items": [
       "Existe um só ponto de entrada, e ele roda do mesmo jeito no notebook e na CI.",
       "Adicionar uma suíte leva uma linha. Serviços, matriz, fixtures, avaliação e relatórios não precisam de código escrito para essa suíte.",
-      "O que já é testado fica, e o resto é substituído. Os scripts de uma suíte são apagados quando o `dt` dá os mesmos resultados para ela.",
+      "Os testes e as regras dos graders de hoje ficam, e os scripts de cada suíte são substituídos por uma fixture. Os scripts são apagados quando o `dt` dá os mesmos resultados para aquela suíte.",
       "Um resultado [[not-run|not run]] nunca é reportado como pass.",
-      "Cada RFC de componente indica as suítes que o cobrem, e o `dt docs --check` confere esses nomes com o registry."
+      "Todo RFC indica, num parágrafo próprio, as suítes que testam o seu componente, e o `dt docs --check` confere esses nomes com o registry."
     ],
     "footer": "“Verde” quer dizer nenhuma falha nova, nenhum skip inesperado e nenhum pass inesperado.",
-    "notes": "§2 Requirements: R1, R3 e R5, R9, R10, R11 (resumidos), e a definição de verde abaixo da tabela. Também R2 (um registry YAML especificado), R4 (execuções acompanhadas pelo próprio harness), R6 (tiers, sem seleção pela camada alterada), R7 (um alarme sem enxurrada), R8 (primeiro as suítes com ferramentas externas, e verdes)."
+    "notes": "§2 Requirements: R1, R3 e R5, R9, R10, R11 (resumidos), e a definição de verde abaixo da tabela. Também R2 (um registry YAML especificado), R4 (execuções acompanhadas pelo próprio harness), R6 (tiers, sem seleção pela camada alterada), R7 (um alarme sem enxurrada), R8 (primeiro as suítes com ferramentas externas, e verdes). R9 ('keep what's tested, replace what isn't'; as regras dos graders passam, os scripts de cada suíte dão lugar a uma fixture quando os resultados batem). R11 (todo RFC em docs/internals/rfcs/ tem um parágrafo que nomeia as suas suítes, §4.9)."
   },
   "nochange": {
     "title": "O que isto não muda",
@@ -702,7 +703,7 @@
       "noRetry": "nunca repetido",
       "steps": [
         "Antes de o primeiro teste rodar, a [[fixture]] se verifica. Primeiro, ela confirma que o servidor responde.",
-        "Em seguida, o bucket S3 do perfil `badger-s3` precisa aceitar uma escrita e uma leitura. Ele recusa a escrita, então a verificação falha.",
+        "Em seguida, o bucket S3 precisa aceitar uma escrita e uma leitura. Nos testes, quem serve o bucket do perfil `badger-s3` é o localstack, um substituto local do S3. Ele recusa a escrita, então a verificação falha.",
         "Como a verificação falhou, nenhum teste roda. A [[cell]] sai com status 2, que quer dizer [[not-run|not run]] e nunca conta como pass.",
         "Um passo da fixture que falha nunca é repetido automaticamente, então alguém precisa rodar a cell de novo à mão."
       ]

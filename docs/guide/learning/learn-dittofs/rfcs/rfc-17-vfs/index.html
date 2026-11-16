@@ -239,27 +239,54 @@
     <div class="kicker" data-i18n="orch.kicker"></div>
     <h2 data-i18n="lockorder.title"></h2>
     <ol data-i18n-list="lockorder.levels"></ol>
-    <div class="card accent"><h3 data-i18n="lockorder.heldTitle"></h3><p class="small" data-i18n="lockorder.held"></p></div>
+    <p class="muted small" data-i18n="lockorder.order"></p>
     <aside class="notes" data-i18n="lockorder.notes"></aside>
+  </section>
+
+  <section id="lockheld">
+    <div class="kicker" data-i18n="orch.kicker"></div>
+    <h2 data-i18n="lockorder.heldTitle"></h2>
+    <p data-i18n="lockorder.held"></p>
+    <div class="card warn-card"><p class="small" data-i18n="lockorder.heldWhy"></p></div>
+    <aside class="notes" data-i18n="lockorder.heldNotes"></aside>
   </section>
 
   <section id="write">
     <div class="kicker" data-i18n="orch.kicker"></div>
     <h2 data-i18n="write.title"></h2>
     <table data-i18n-table="write.table"></table>
-    <p class="muted small" data-i18n="write.footer"></p>
+    <p class="muted small" data-i18n="write.lead"></p>
     <aside class="notes" data-i18n="write.notes"></aside>
+  </section>
+
+  <section id="write2">
+    <div class="kicker" data-i18n="orch.kicker"></div>
+    <h2 data-i18n="write.title2"></h2>
+    <table data-i18n-table="write.table2"></table>
+    <p class="muted small" data-i18n="write.footer"></p>
+    <aside class="notes" data-i18n="write.notes2"></aside>
   </section>
 
   <section id="stable">
     <div class="kicker" data-i18n="orch.kicker"></div>
     <h2 data-i18n="stable.title"></h2>
-    <div class="cols">
-      <div class="card"><h3 data-i18n="stable.writeTitle"></h3><ul class="small" data-i18n-list="stable.write"></ul></div>
-      <div class="card"><h3 data-i18n="stable.readTitle"></h3><ul class="small" data-i18n-list="stable.read"></ul></div>
-    </div>
-    <p class="small" data-i18n="stable.verifier"></p>
+    <ul data-i18n-list="stable.write"></ul>
     <aside class="notes" data-i18n="stable.notes"></aside>
+  </section>
+
+  <section id="verifier">
+    <div class="kicker" data-i18n="orch.kicker"></div>
+    <h2 data-i18n="stable.verifierTitle"></h2>
+    <ul data-i18n-list="stable.verifierItems"></ul>
+    <div class="card"><p class="small" data-i18n="stable.smb"></p></div>
+    <aside class="notes" data-i18n="stable.verifierNotes"></aside>
+  </section>
+
+  <section id="read">
+    <div class="kicker" data-i18n="orch.kicker"></div>
+    <h2 data-i18n="stable.readTitle"></h2>
+    <ul data-i18n-list="stable.read"></ul>
+    <aside class="notes" data-i18n="stable.readNotes"></aside>
   </section>
 
   <section id="open">
@@ -286,9 +313,16 @@
   <section id="quota">
     <div class="kicker" data-i18n="orch.kicker"></div>
     <h2 data-i18n="quota.title"></h2>
+    <ul data-i18n-list="quota.model"></ul>
+    <aside class="notes" data-i18n="quota.notes"></aside>
+  </section>
+
+  <section id="quota2">
+    <div class="kicker" data-i18n="orch.kicker"></div>
+    <h2 data-i18n="quota.title2"></h2>
     <ul data-i18n-list="quota.items"></ul>
     <p class="muted small" data-i18n="quota.footer"></p>
-    <aside class="notes" data-i18n="quota.notes"></aside>
+    <aside class="notes" data-i18n="quota.notes2"></aside>
   </section>
 
   <section id="copy">
