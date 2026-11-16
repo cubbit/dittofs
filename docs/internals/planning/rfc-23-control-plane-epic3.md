@@ -118,9 +118,9 @@ and title and not copied.
 | rule 6, known failures shrink | none | no test lands red and no suite here keeps a `known.yaml` |
 | rule 7, v2 ignores v1 | T3.9 | nothing of v1 is read; the one touch is refusing its database file before the store opens |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T3.3, T3.4, T3.6, T3.9 | a resumed deletion and a resumed operation restart a node over the same Badger and journal directories; listeners are real, on `127.0.0.1:0`; `dfs start` runs as a child process |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T3.1–T3.6 | RFC 23's notes at their sites: §2.1's two `decision:` notes at `New` and `Start`, §2.5's at the metrics listener, §2.1's and §2.4's `ponytail:` notes at `New` and the status writer; RFC 23's plan's §4.3 `ponytail:` notes (every namespace held, the runner's missing claim, the health registry's reach); D5's, D6's, D7's and D8's markers |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T3.1–T3.6 | RFC 23's notes at their sites: §2.1's two `decision:` notes at `New` and `Start`, and T3.1's two at `New` (another installation's KV, one build per metrics registry), §2.5's at the metrics listener, §2.1's and §2.4's `ponytail:` notes at `New` and the status writer; RFC 23's plan's §4.3 `ponytail:` notes (every namespace held, the runner's missing claim, the health registry's reach); D5's, D6's, D7's and D8's markers |
 | rule 10, a test must be able to fail | all | each test names the requirement it catches; where the code holds a requirement by construction, or another epic's test holds it, the row names that |
-| rule 11, a symbol is exported only if RFC 23's interface uses it | all | `internal/node` keeps E1's five exports, which its pin holds; `internal/node/api` exports `New` and `Deps`, whose fields E4 adds to; `nodetest` is the harness RFC 23 names; `pkg/health` gains RFC 25 §8.2's `Source` and evaluator and the watchdog the node and the API share; `internal/node/step` exports the three step types outside steps need (D7); `pkg/openstate` gains the engine's `CloneHold` adapter (D12) |
+| rule 11, a symbol is exported only if RFC 23's interface uses it | all | `internal/node` keeps E1's five exports, which its pin holds; `internal/node/api` exports `New`, `Deps`, whose fields E4 adds to, and `Server` with `Start` and `Stop`, pinned by an export test; `nodetest` is the harness RFC 23 names; `pkg/health` gains RFC 25 §8.2's `Source` and evaluator and the watchdog the node and the API share; `internal/node/step` exports the three step types outside steps need (D7); `pkg/openstate` gains the engine's `CloneHold` adapter (D12) and `pkg/block/engine` `JournalOf` (D17) |
 | rule 12, each subtask creates only what it declares | all | each package lands with its first `_test.go`, which `lint-repo`'s new-package check requires; no remote client, factory or settings package is built for a consumer outside this epic (D5, D9) |
 
 ## 3. Requirements and invariants
@@ -148,7 +148,7 @@ that subtasks and tests can cite them.
 | R9 | The node exports `New`, `Start` and `Stop` only, and is not restartable: a second `Start` is an error | MUST | RFC 23 §2.1 (its decision) | T3.3 |
 | R10 | The root refuses to add a share whose configuration names no remote block store, with an error naming the share, and reports it refused | MUST | RFC 8 §2.1; RFC 23 §2.4 | T3.5 |
 | R48 | Start refuses a missing or foreign installation as `metadata.Open` reads the format record; a start creates no installation | MUST | RFC 23 §2.2 (step 1); RFC 13 §2.2 | T3.1 |
-| R49 | No package under `internal/node` but `node` itself imports a component's implementation | MUST NOT | RFC 23 CP16; RFC 23 plan §1.3 | T3.2 |
+| R49 | No package under `internal/node` but `node` itself imports a component's implementation; the allow-list is D3's, which holds data and wire types and not `nodetest` | MUST NOT | RFC 23 CP16; RFC 23 plan §1.3; D3 | T3.2 |
 | R50 | `internal/node/api` reaches the store's writes only through `Write`, so every change commits with its audit record | invariant | RFC 23 CP12; RFC 23 plan §1.3 | T3.2 |
 
 **Start and stop**
@@ -194,11 +194,11 @@ that subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R34 | `/health/live` answers `200` with `live` while the watchdog holds and `503` otherwise; `/health/ready` answers `200` when ready and `503` when not, with one of `ready`, `starting`, `draining`, `not_ready`; neither asks for authentication | MUST | RFC 23 §2.5 | T3.2 |
+| R34 | `/health/live` answers `200` with `live` while the watchdog holds and `503` with `stalled` otherwise; `/health/ready` answers `200` when ready and `503` when not, with one of `ready`, `starting`, `draining`, `not_ready`; any other path answers `404` with `not_found`; neither asks for authentication | MUST | RFC 23 §2.5; D3 | T3.2 |
 | R35 | The unauthenticated endpoints carry nothing but that one word | MUST NOT | RFC 23 §2.5; CP13 | T3.2 |
 | R36 | The metrics listener has an address of its own, separate from the API's, asks for no token, and opens at start step 2 | MUST | RFC 23 §2.5 | T3.2, T3.3 |
 | R37 | Liveness fails only when a watched loop has neither completed a turn nor reported idle within 60 s; a waiting loop reports at least every 30 s; liveness reads no condition, store, network or disk. Watched here: reconcile, the runner, the sweep and the status writer, each bounding its store calls under 30 s | MUST | RFC 25 §3.5 | T3.2, T3.5 |
-| R38 | The engine's `Stats` reach the health evaluator as conditions and the metrics registry as series | MUST | RFC 23 plan §5 epic 3; RFC 8 §2.6 | T3.2 |
+| R38 | The engine's `Stats` reach the health evaluator as conditions and the metrics registry as series; T3.2 delivers the engine's adapter, tested, and the evaluator's wiring lands with its first reader | MUST | RFC 23 plan §5 epic 3; RFC 8 §2.6 | T3.2, T3.3, T3.7 |
 | R51 | A stalled watchdog makes the node neither live nor ready | MUST | RFC 25 §3.6 | T3.2 |
 
 **Operations and deletions**
@@ -227,8 +227,11 @@ that subtasks and tests can cite them.
 - **D1, the node reads no bootstrap file until the start command does.** The user's decision.
   `node.Config.Bootstrap` takes `pkg/bootstrap`'s type from the RFC 13 plan's epic 1, which holds
   RFC 13 §2.2's facts (the node's identity, the store, the devices, the listen addresses) and
-  names the default API address `:8080`. E3 adds no field to the loader. Tests fill `node.Config`
-  directly, so only T3.9 reads a file and waits for that epic; X1 gates only T3.10. No marker.
+  names the default API address `:8080`. Until that loader reads them, E3 adds two host-set fields
+  to the bootstrap type, `Node` and `Devices`, tagged so the file loader never reads them, with a
+  `ponytail:` naming the RFC 13 plan's loader as their reader; the host sets both before it builds
+  the node. Tests fill `node.Config` directly, so only T3.9 reads a file and waits for that epic;
+  X1 gates only T3.10.
 - **D2, one production clock, in the start command.** No production `engine.Clock` exists: tests
   use `sim.TestClock`. T3.9 adds `systemClock` in `cmd/dfs/commands`, `time.Now`, a monotonic
   origin and `time.After`, where RFC 23 §2's sketch builds one. No marker.
@@ -238,7 +241,11 @@ that subtasks and tests can cite them.
   elsewhere; E4 adds `Deps` fields, TLS, the local socket and every route. The two architecture
   rules over the package (R49, R50) land with it; `internal/node/nodetest`, which imports Badger,
   kvstore and the journal to build an installation, is the harness RFC 23 names and is outside
-  R49's tree, as `node` is. No marker. Prior art: none needed.
+  R49's tree, as `node` is. R49's allow-list is `pkg/health`, `pkg/metrics`, `pkg/metadata/entity`
+  and `pkg/node/apiv1`, since data and wire types are not implementations, and the packages under
+  `internal/node` but `nodetest`. A stalled watchdog answers `/health/live` `503` with `stalled`,
+  and every other path `404` with `not_found`, one word as the probes' others are. No marker.
+  Prior art: none needed.
 - **D4, `pkg/health` takes RFC 25 §8.2's shape; readiness and liveness are functions.**
   `pkg/health` gains `Condition`, the `Source` interface (`Conditions(dst []Condition)
   []Condition`) and an `Evaluator` with `Add(Source)` and `Remove(Source)`, which reads every
@@ -339,11 +346,20 @@ that subtasks and tests can cite them.
   too. No marker. Prior art: read-your-writes in session-consistent stores, such as MongoDB's
   causal sessions (from memory).
 
+- **D17, `engine.JournalOf` has one copy, in `pkg/block/engine`.** The node's journal opener
+  returns `journal.Open`'s journal as the engine's `Journal`, which `enginetest`'s adapter did; for
+  D12's reason, a test fixture importing `testing`, it moves to `pkg/block/engine`'s `JournalOf`,
+  which the node and `enginetest` both call. No marker.
+
 ## 5. Target tree
 
 ```text
 pkg/openstate/
   engineholds.go                           T3.1  EngineHolds, moved from enginetest (D12)
+pkg/block/engine/
+  journalof.go                             T3.1  JournalOf, moved from enginetest (D17)
+pkg/config/
+  config.go                                T3.1  the bootstrap's host-set Node and Devices (D1)
 internal/node/
   node.go                                  T3.1  New: opens the store, builds the services empty
   node_test.go                             T3.1  package node_test
@@ -360,6 +376,7 @@ internal/node/step/
   reconcile_bench_test.go                  T3.11 the 10⁴-share benchmark
 internal/node/api/
   server.go, health.go, server_test.go     T3.2  the listener and the two health rows (D3)
+  export_test.go                           T3.2  the export pin (rule 11)
 internal/node/nodetest/
   harness.go, harness_test.go              T3.1  New, WithNew, Watch, Restart, Node, Clock, Store
 pkg/health/
@@ -383,12 +400,19 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Covers:** R4, R6, R7, R8, R48.
 - **Deliverables:**
   - `New` opens the metadata store with `kvstore.Open` over `cfg.KV`, then builds open state,
-    the engine (`Node`, `Devices`, the journal opener over `journal.Open`, the store's
+    the engine (`Node`, `Devices`, from the bootstrap's host-set fields (D1), the journal opener
+    over `journal.Open` and `engine.JournalOf` (D17), the store's
     `Existence`, `Content` and `Lifecycle`, `openstate.EngineHolds`, `cfg.Clock`, a no-op
     `Tracer`, `cfg.Logger`) and `*vfs.Filesystem`, each from its own `Deps`, and starts nothing.
-    A missing or foreign installation is refused by `kvstore.Open`. RFC 23 §2.1's `ponytail:` at
-    `New`;
-  - `openstate.EngineHolds`, `enginetest.Holds`' adapter moved unchanged (D12);
+    A missing installation is refused by `kvstore.Open`. Another installation's KV is not
+    refused by `New`, since nothing in `Config` names the installation to expect: `Start` refuses
+    it when the engine opens a journal and `journal.Open` checks the journal's identity against the
+    one the store records, a `decision:` at `New` naming the bootstrap's installation ID as the
+    upgrade. A node is built once per metrics registry, since `Stop` does not unregister the
+    filesystem's collectors, a `decision:` at `New` naming unregistering in `Stop` as the upgrade.
+    RFC 23 §2.1's `ponytail:` at `New`;
+  - `openstate.EngineHolds`, `enginetest.Holds`' adapter moved unchanged (D12), and
+    `engine.JournalOf`, `enginetest`'s journal adapter moved (D17);
   - `internal/node/nodetest.New(t, opts...) *Harness`: an installation initialised with
     `kvstore.Init` and `journal.Init` under `t.TempDir()`, its journals recorded (E5's subtask
     that creates `internal/install` switches it to `install.Run`, which does what `dfs init` does,
@@ -403,7 +427,10 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
     Consumed by every later subtask, E5, E6 and E7.
 - **Acceptance criteria:**
   - After `New`, the store is open and no journal, goroutine or listener exists.
-  - `New` over a KV with no installation, or another installation's, refuses and opens nothing.
+  - `New` over a KV with no installation refuses and opens nothing; over another installation's,
+    `Start` refuses when it opens a journal (the `decision:` at `New`).
+  - A second `New` on one metrics registry is refused as a duplicate registration; the harness
+    gives each build its own registry.
 - **Tests:** in `node_test`, watched: `New` then `Stop` with no `Start`, the leak check passing
   (catches a component started by `New`, R4, R7); `New` over an empty KV refused (R48); in
   `openstate`, a clone's hold taken and released through `EngineHolds` against the real table
@@ -459,24 +486,26 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
     `Watchdog` on its own clock
     interface, `Loop(name)` with `Turn()` and `Idle()`, `Live()`, 60 s and 30 s, with RFC 23's
     plan's §4.3 `ponytail:` (D4);
-  - `internal/node/api`: `New(Deps{Ready, Live, Addr, MetricsAddr, Metrics, Logger})`, `Start`
-    opening both listeners and reporting their bound addresses, `Stop`; `/health/live` and
-    `/health/ready` writing one word; every other path `404`; the metrics listener serving
+  - `internal/node/api`: `New(Deps{Ready, Live, Addr, MetricsAddr, Metrics, Logger}) *Server`,
+    `(*Server).Start` opening both listeners and reporting their bound addresses, `(*Server).Stop`,
+    the three exports pinned by an export test (rule 11); `/health/live` and `/health/ready` writing
+    one word, `stalled` for a stalled watchdog; every other path `404` `not_found` (D3); the metrics listener serving
     `(*metrics.Metrics).Handler()`; RFC 23 §2.5's `decision:` at it (D3);
-  - the engine's `Stats` registered in `Config.Metrics` as a collector read at scrape, and its
-    conditions read through a `Source` the evaluator holds;
+  - the engine's adapter, its `Stats` as a collector read at scrape and its conditions as a
+    `Source`, tested here; the adapter's registration in `Config.Metrics` and in the evaluator lands
+    with the evaluator's first reader, T3.3's readiness or T3.7's status, whichever comes first;
   - in `internal/node/arch_test.go`, two rules beside E1's: no package under `internal/node` but
-    `node` and `nodetest` imports a component's implementation (R49), and no type `internal/node/api`
+    `node` and `nodetest` imports a component's implementation, on D3's allow-list (R49), and no type `internal/node/api`
     uses has a method that writes the store but `Write` (R50), each over the module and a planted
     violation. Consumed by T3.3 and E4.
 - **Acceptance criteria:**
   - Each readiness word answers its status; a watched loop silent for 61 s turns live to `503`
     and ready to `not_ready`; one reporting idle every 30 s keeps both.
   - The bodies hold one word, with no header but `Content-Type` and `Content-Length`.
-- **Tests:** in `api`'s `server_test.go`, over listeners on `127.0.0.1:0`: each word and status
-  (R34); the body and headers compared byte for byte, with a condition naming a share set in the
-  registry (catches a name leaked, R35, CP13); the metrics listener on its own port with no token,
-  answering the engine's series (R36, R38); the watchdog on `sim.TestClock`, advanced, never slept
+- **Tests:** in `api`'s `server_test.go`, over listeners on `127.0.0.1:0`: each word and status,
+  `stalled` and `not_found` included (R34); the export pin; the body and headers compared byte for byte, with a condition naming a share set in the
+  registry (catches a name leaked, R35, CP13); the metrics listener on its own port with no token
+  (R36); the engine's adapter answering the engine's series and conditions (R38); the watchdog on `sim.TestClock`, advanced, never slept
   (R37, R51); each architecture rule over its planted violation (R49, R50).
 
 ### T3.3 Start and stop
@@ -484,7 +513,7 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 **Subtask T3.3 estimate: 4.5 man-days.**
 
 - **Track:** A. **Depends on:** T3.2, T3.4.
-- **Covers:** R5, R6, R9, R11, R13, R14, R15, R17, R19, R20, R21, R22, R23, R36.
+- **Covers:** R5, R6, R9, R11, R13, R14, R15, R17, R19, R20, R21, R22, R23, R36, R38.
 - **Deliverables:** `Start`: step 1 nothing more than `New` did (T3.10 adds the node identity);
   step 2 the API and metrics listeners; step 3 `Nodes.RegisterNode` with the bound addresses; step
   4 the counters and records read, then `apply`, whose first call hands the engine RFC 13 Appendix
@@ -497,7 +526,9 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   listener and the store, raises `start_failed`, and sets readiness `not_ready`. `Stop`: readiness
   `draining`, then the reverse, each step bounded on `cfg.Clock.After` (D14), a missed one leaving
   its dependents open and named in the error; the health listener closed just before the store,
-  then the KV (D13). A second `Start` refused. RFC 23 §2.1's `decision:` at `Start`.
+  then the KV (D13). A second `Start` refused. RFC 23 §2.1's `decision:` at `Start`. T3.2's engine
+  adapter registered in `Config.Metrics` and the evaluator if this subtask's readiness reads the
+  evaluator; otherwise T3.7 registers it (R38).
 - **Acceptance criteria:**
   - The order of starts and stops is RFC 23 §2.2's for every component built.
   - A failure injected at each step a fault can reach leaves nothing open but the health listener
@@ -587,14 +618,16 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 **Subtask T3.7 estimate: 2.5 man-days.**
 
 - **Track:** A. **Depends on:** T3.5.
-- **Covers:** R30, R31, R32, R33.
+- **Covers:** R30, R31, R32, R33, R38.
 - **Deliverables:** the status built from the reconciled positions, the refused and
   restart-pending sets and the evaluator's conditions, compared by its canonical bytes and written
   through `Nodes.PutNodeStatus` at most once a second and only on a change, the last written moved
   only after a commit; RFC 23 §2.4's `ponytail:`; the `node_` series,
   `config_generation_lag_seconds{kind}` from the time a counter was first read above the reconciled
-  position, and `config_generation_behind` raised when that lag passes 5 s; its watchdog `Loop`.
-  Consumed by E4's `applied` and E7.
+  position, and `config_generation_behind` raised when that lag passes 5 s; its watchdog `Loop`;
+  T3.2's engine adapter registered in `Config.Metrics` and the evaluator, unless T3.3 did (R38),
+  the engine's series read from the registry and its conditions in the status. Consumed by E4's
+  `applied` and E7.
 - **Acceptance criteria:**
   - Ten turns with nothing changed write the status once; a change writes it within the next turn.
   - A frozen apply raises `config_generation_behind` after 5 s on the clock and clears it once the
