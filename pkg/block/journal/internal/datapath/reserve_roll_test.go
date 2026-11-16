@@ -296,11 +296,23 @@ func TestReserveAhead_CopyBesideARollingWriter(t *testing.T) {
 	// refusals — a run where the copy and the other writer seldom
 	// meet is still valid, and one where they meet must refuse the unreserved
 	// write alone.
-	// The hold is back at the reservation's remaining need: every spare the
-	// copy's interleaved rolls spent was replaced, and no roll of its own took
-	// a replacement it did not need.
-	if held, need := c.pool.Counters().Held, int64(r.NeedsSpares()); held != need {
-		t.Fatalf("the pool owes %d spares after the copy, want its remaining need of %d: a roll was replaced wrongly or not at all", held, need)
+	// The hold covers at least the reservation's remaining need — every spare
+	// an interleaved roll spent was replaced — and at most one spare past it.
+	// An exact landing is not promised, because the stream cannot say whose
+	// fill forced a roll, the admission's own ceiling (the replacement rule's
+	// decision marker in write.go): a replacement may fire one roll the copy's
+	// own bytes forced, and a copy write that lands on room the other writer
+	// left takes no spare while its draw still lowered the need figure.
+	// Whichever falls late in the copy, no further draw ever takes the
+	// stranded spare back down, so the hold can end one above the need — the
+	// over-hold the marker accepts, bounded by what Reserve took, returned
+	// whole at Release, failing closed.
+	held, need := c.pool.Counters().Held, int64(r.NeedsSpares())
+	if held < need {
+		t.Fatalf("the pool owes %d spares after the copy, want at least the reservation's remaining need of %d: an interleaved roll was not replaced", held, need)
+	}
+	if held > need+1 {
+		t.Fatalf("the pool owes %d spares after the copy, want at most the reservation's remaining need of %d plus one: a replacement was taken for a roll that needed none, one stray too many", held, need)
 	}
 	// Every piece the copy published is inside the reservation's draw: the
 	// index holds one entry a piece and no piece of it was refused.
