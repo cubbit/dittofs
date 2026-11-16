@@ -122,6 +122,8 @@ docker-compose.override.yml
 # graphify hook copies are machine-local (they embed an absolute interpreter path)
 .githooks/post-commit
 .githooks/post-checkout
+.githooks/post-merge
+.githooks/post-rewrite
 .rfc-png/
 
 # Obsidian vault settings
