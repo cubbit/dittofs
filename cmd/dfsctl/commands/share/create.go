@@ -64,11 +64,6 @@ Examples:
 	createCmd.Flags().Bool("streams-disabled", false, "Reject SMB2 Alternate Data Stream opens with STATUS_OBJECT_NAME_INVALID on this share (mirrors Samba 'smbd:streams = no').")
 	createCmd.Flags().Bool("continuous-availability", false, "Advertise SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY and allow SMB3 persistent durable handles on this share.")
 	createCmd.Flags().Bool("allow-mfsymlink", false, "Convert 1067-byte XSym (Minshall+French) symlink files written by macOS/Windows SMB clients into real symlinks on CLOSE. Off by default (XSym files are stored as regular files).")
-	createCmd.Flags().Bool("enable-trash", false, "Enable the per-share recycle bin so deletes move to #recycle instead of being permanent.")
-	createCmd.Flags().Int("trash-retention-days", 0, "Days to retain recycled items before the reaper purges them (0 = keep forever).")
-	createCmd.Flags().Bool("trash-restrict-empty-to-admin", false, "Restrict emptying the recycle bin to admins.")
-	createCmd.Flags().Int64("trash-max-size", 0, "Max bytes the recycle bin may hold before the reaper evicts oldest items (0 = unbounded).")
-	createCmd.Flags().StringSlice("trash-exclude", nil, "Glob patterns whose deletions bypass the recycle bin (repeatable).")
 	_ = createCmd.MarkFlagRequired("block-store")
 	return createCmd
 }

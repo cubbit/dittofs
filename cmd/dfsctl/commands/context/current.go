@@ -3,8 +3,8 @@ package context
 import (
 	"fmt"
 
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/internal/cli/credentials"
-	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/spf13/cobra"
 )
 
@@ -55,29 +55,5 @@ func runContextCurrent(cmd *cobra.Command, args []string) error {
 		LoggedIn:  ctx.AccessToken != "" && !ctx.IsExpired(),
 	}
 
-	w := cmd.OutOrStdout()
-	f, _ := cmd.Flags().GetString("output")
-	format, err := output.ParseFormat(f)
-	if err != nil {
-		return err
-	}
-
-	// Print output
-	switch format {
-	case output.FormatJSON:
-		return output.PrintJSON(w, info)
-	case output.FormatYAML:
-		return output.PrintYAML(w, info)
-	default:
-		_, _ = fmt.Fprintf(w, "Current context: %s\n", contextName)
-		_, _ = fmt.Fprintf(w, "  Server:    %s\n", ctx.ServerURL)
-		_, _ = fmt.Fprintf(w, "  User:      %s\n", ctx.Username)
-		if info.LoggedIn {
-			_, _ = fmt.Fprintf(w, "  Status:    Logged in\n")
-		} else {
-			_, _ = fmt.Fprintf(w, "  Status:    Not logged in\n")
-		}
-	}
-
-	return nil
+	return cmdutil.PrintOutput(cmd, info, false, "", ContextList{info})
 }

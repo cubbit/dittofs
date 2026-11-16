@@ -19,8 +19,8 @@ Examples:
   # First login to a local server (prompts for password)
   dfsctl login --server http://localhost:8080 --username admin
 
-  # Login to a remote server with mutual TLS
-  dfsctl login --server https://dfs.example.com --username admin --cacert ca.pem --client-cert client.pem --client-key client.key
+  # Login to a remote server whose certificate a private CA signs
+  dfsctl login --server https://dfs.example.com --username admin --cacert ca.pem
 
   # Login passing password on the command line (less secure; avoid in shared environments)
   dfsctl login --server http://localhost:8080 -u admin -p secret
@@ -33,8 +33,5 @@ Examples:
 	loginCmd.Flags().StringP("password", "p", "", "Password")
 	loginCmd.Flags().StringP("context", "c", "", "Context name (defaults to current or auto-generated)")
 	loginCmd.Flags().String("cacert", "", "Path to a PEM CA bundle trusted for the server certificate")
-	loginCmd.Flags().String("client-cert", "", "Path to a PEM client certificate for mutual TLS")
-	loginCmd.Flags().String("client-key", "", "Path to the PEM client private key for mutual TLS")
-	loginCmd.Flags().Bool("tls-skip-verify", false, "Disable TLS certificate verification (insecure)")
 	return loginCmd
 }

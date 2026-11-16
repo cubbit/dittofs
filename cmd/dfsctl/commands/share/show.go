@@ -13,8 +13,7 @@ func newShowCmd() *cobra.Command {
 
 Unlike 'share list', which shows summary columns, 'share show' displays every
 attribute of the share: store IDs, read-only state, ACL settings, retention
-policy and TTL, cache size overrides, quota, trash (recycle bin) settings, and
-creation/update timestamps. Use this command when debugging a misconfigured
+policy and TTL, cache size overrides, quota, and creation/update timestamps. Use this command when debugging a misconfigured
 share or before editing it.
 
 Examples:

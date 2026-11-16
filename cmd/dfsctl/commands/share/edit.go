@@ -66,10 +66,5 @@ Examples:
 	editCmd.Flags().String("quota-bytes", "", "Per-share byte quota (e.g., '10GiB'). 0 = remove quota")
 	editCmd.Flags().String("acl-canonicalize-inherited", "", "When false, preserves the SE_DACL_AUTO_INHERITED control bit verbatim on SET_INFO Security instead of applying MS-DTYP §2.5.3.4.2 canonicalization (Samba \"acl flag inherited canonicalization = no\"). Default true matches Windows. Takes effect on adapter restart.")
 	editCmd.Flags().String("access-based-enumeration", "", "Enable/disable Windows access-based enumeration (true|false). Takes effect on adapter restart.")
-	editCmd.Flags().String("enable-trash", "", "Enable/disable the per-share recycle bin (true|false). Applied live; disabling auto-empties the bin.")
-	editCmd.Flags().Int("trash-retention-days", -1, "Days to retain recycled items before the reaper purges them (0 = keep forever). -1 leaves unchanged.")
-	editCmd.Flags().String("trash-restrict-empty-to-admin", "", "Restrict emptying the recycle bin to admins (true|false).")
-	editCmd.Flags().Int64("trash-max-size", -1, "Max bytes the recycle bin may hold before the reaper evicts oldest items (0 = unbounded). -1 leaves unchanged.")
-	editCmd.Flags().StringSlice("trash-exclude", nil, "Glob patterns whose deletions bypass the recycle bin (repeatable).")
 	return editCmd
 }

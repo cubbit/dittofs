@@ -6,7 +6,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Cmd is the context subcommand.
+// New returns the context subcommand.
 func New(env cmdutil.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "context",

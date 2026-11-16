@@ -100,6 +100,22 @@ func TestRemovedCommandsAbsent(t *testing.T) {
 			t.Errorf("global flag --%s: got it defined, want it absent", f)
 		}
 	}
+	trash := []string{"enable-trash", "trash-retention-days", "trash-restrict-empty-to-admin", "trash-max-size", "trash-exclude"}
+	for path, flags := range map[string][]string{
+		"login":        {"client-cert", "client-key", "tls-skip-verify"},
+		"share create": trash,
+		"share edit":   trash,
+	} {
+		c, _, err := root.Find(strings.Fields(path))
+		if err != nil {
+			t.Fatalf("dfsctl %s: %v", path, err)
+		}
+		for _, f := range flags {
+			if c.Flags().Lookup(f) != nil {
+				t.Errorf("dfsctl %s --%s: got the flag defined, want it absent", path, f)
+			}
+		}
+	}
 }
 
 // Run prints a failed invocation's error to Env.Err and returns status 1,
