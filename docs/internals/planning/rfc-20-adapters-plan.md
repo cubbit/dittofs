@@ -884,7 +884,8 @@ RFC sections: §6.10's codec and pipeline rows.
 4. **RFC 24 has no plan.** Epic 3 builds its minimal slice; a future RFC 24 plan starts from
    `pkg/resources` as epic 3 leaves it.
 5. **RFC 20 §4.4 as an RFC of its own.** The owner expects `gss` to become a separate RFC.
-   Until one exists, `gss` sits with the RFC 22 plan, whose SMB sign-in needs it first.
+   Until one exists, `gss` sits with the RFC 22 plan, whose SMB sign-in needs it first, but for
+   RFC 4121's `Wrap` and `Unwrap`, which no SMB handler calls (§6.2).
 6. **NFS XDR, generated or by hand.** Epic 6 writes the RPC header's XDR by hand; whether every
    program's codecs are generated (RFC 20 §5.1) is RFC 21's plan's call.
 7. **`pkg/discovery/mdns` and `wsd` are deleted in epic 1** with the other packages v1 alone
@@ -901,8 +902,9 @@ RFC sections: §6.10's codec and pipeline rows.
    trivial real sidecar is part of T4.9. `memory.New` and `Faults` are RFC 17 plan piece 12's,
    estimated there.
 10. **The first milestone needs two pieces.** An SMB mount with AD sign-in needs `gss` (risk 5)
-   and the authenticator behind `SignIn` (keytab, PAC, NTLMv2, NETLOGON, LDAP), which goes to
-   RFC 18's plan (#4058).
+   and the authenticator behind `SignIn` (keytab, PAC, NTLMv2, NETLOGON, LDAP), which RFC 18's
+   plan (#4058) builds: its S2 for NTLM, its E5 to E7 for Kerberos, the PAC, the directory and
+   pass-through. The RFC 22 plan builds no half of it (its §6.2, point 1).
 
 ### 6.2 Deferral ledger
 
@@ -923,11 +925,13 @@ decision to drop it (its issue closed as not planned).
 | SMB transform header, signing, encryption, credits, message-ID window, multichannel session registry, `Caps` | stage state machines, no driver here | RFC 22 plan | with `NEGOTIATE` and `SESSION_SETUP` |
 | SMB callbacks (lease break, change notify, lock wait, revoked) | need sessions and handlers | RFC 22 plan | with leases |
 | `IPC$`, `dcerpc`, srvsvc share listing, lsarpc lookups | handlers | RFC 22 plan | with `TREE_CONNECT` |
-| `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, RFC 4121 tokens, `gsstest` | no handshake to drive it | the RFC 22 plan, until its own RFC (risk 5) | first `SESSION_SETUP` or GSS `INIT` |
-| `translate` (ACLs, access masks, times, attributes, `Fit`) | no handler calls it | RFC 21/22 plans | their first handler epic |
+| `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, `gsstest` | no handshake to drive it | the RFC 22 plan (E4), until its own RFC (risk 5) | first `SESSION_SETUP` |
+| `gss`: RFC 4121 MIC token (`Context.MIC`) | no handshake to drive it | the RFC 22 plan (E4), until its own RFC (risk 5): SPNEGO's mechanism-list MIC over Kerberos | first `SESSION_SETUP` |
+| `gss`: RFC 4121 `Wrap`, `Unwrap` | no SMB consumer | RFC 21 plan | RFC 21's first RPCSEC_GSS `INIT` handler |
+| `translate` (ACLs, access masks, times, attributes, `Fit`) | no handler calls it | the RFC 22 plan for what SMB calls (its E7, E8, E12); RFC 21 plan for what NFS calls, RFC 19 §5.1's NFSv4 functions included | their first handler epic |
 | each protocol's error-table rows and its totality test (RFC 20 §7.3), with the helper it calls | rows are protocol choices, and the helper has no caller before a table must be total | rows and tests: RFC 21/22 plans; the one helper, in `core`'s `errors.go` (RFC 20 §4.5): the RFC 22 plan's T3.8, which builds it on `develop` (#3911) and reaches this branch with its next sync, and which the RFC 21 plan's tables call too | with their handlers |
 | `memory.New`, `vfstest.Faults`, and `Faults`' fault that holds a call until the test releases it, on which epic 2's held and parked requests rest | the service's test doubles are RFC 17's | RFC 17 plan, piece 12 | before epic 2's T2.3, whose import test needs `Memory` |
-| handler tests on `memory.New` and `vfstest.Faults` (§7.2), the one-call rule read per handler from `memory.New`'s record of mutating calls | no handlers | RFC 21/22 plans | every handler epic |
+| handler tests on `memory.New` and `vfstest.Faults` (§7.2), the one-call rule read per handler from `vfstest.Mutations`' record of mutating calls, which `memory.New` embeds, each call exempted by its request, never by its operation alone (RFC 20 §7.2) | no handlers | RFC 21/22 plans | every handler epic |
 | operation codecs, their golden vectors from reference captures, 0-allocation gates for `READ`, `WRITE`, `GETATTR`, `QUERY_INFO` | no handlers | RFC 21/22 plans | with those operations |
 | import test: entry-method call sites (§4.10, §7.1) and the 800-line allowlist (§2.5) | vacuous with no handlers | RFC 21/22 plans | first handler epic |
 | scripted client (§8.2) and a shared golden helper | first consumers are wire tests and benchmarks | RFC 21/22 plans | first wire-test or benchmark epic |
@@ -935,7 +939,7 @@ decision to drop it (its issue closed as not planned).
 | end-to-end rows (§7.5): drain under `tar`, slow client, reconnect, cancel, order, Kerberos and AD, TLS | need kernel clients | RFC 21/22 plans | their e2e epics |
 | wire tests against Samba and knfsd (§8) | need handlers | RFC 21/22 plans | their wire-test epics |
 | end-to-end benchmark and nightly benchmark tracking (§6.10); a `core` soak under real traffic | need a mountable protocol | RFC 21/22 plans | their E2E green |
-| the authenticator: keytab, PAC, NTLMv2, NETLOGON, LDAP, consolidated as `internal/identity` | RFC 18's | RFC 18's plan (#4058) | before RFC 22's sign-in epic |
+| the authenticator: keytab, PAC, NTLMv2, NETLOGON, LDAP, consolidated as `internal/identity` | RFC 18's | RFC 18's plan (#4058), its S2 and E5 to E7 (risk 10) | before RFC 22's sign-in epic |
 | RFC 24's turns, `Reclaim`, `ShareCap`, `Detect`, `Split` | no consumer here | RFC 24 plan | when the node budgets memory |
 | a cap on parks' reply reservations per client key, `Park`'s `TryGet` refusing once one key's parks hold a share of `Ceiling()` (epic 5's D9) | parks are bounded per connection by `MaxPending` and across connections only by the reply pool | RFC 24 plan, with the turns | RFC 22's first command that parks, or the first `reply_wait` close counted while requests are parked, whichever comes first |
 | close reasons for the pipeline's own closes, `decode`, `unwrap`, `walk` and `wiring`, a wiring fault logged at error (epic 5's review) | only `reply_wait` names a close the pipeline asks for; the others close with no reason | epic 4's breakdown, with the connection's close count | epic 4's breakdown |
@@ -945,7 +949,7 @@ decision to drop it (its issue closed as not planned).
 | concrete sidecars: mDNS, WS-Discovery (`pkg/discovery`), port mapper, rpcbind registration | need serving protocols | cutover | stage 7 |
 | `/api/v1/adapters`, `dfsctl adapter` and the settings watcher (deleted in T1.2) | built on the Runtime | RFC 23's plan (#4050): the adapter and settings routes in its epic 4, the `adapter` and `setting` commands in its epic 6; the watcher becomes reconcile on `settings.Diff`, RFC 13's plan's epic 5 (#4059) | those epics |
 | the persisted `NFSAdapterSettings` and `SMBAdapterSettings` rows and the share adapter config (D4 of `rfc-20-adapters-epic1.md`), never mapped onto `pkg/adapter/settings` | RFC 23's plan has no migration tool and refuses a v1 database at start (#4050, its transition policy and epic 3) | unowned: dropped with v1's database by #4050's fresh-installs-only policy | none; a fresh install writes v2's settings records |
-| the `/clients` and `/mounts` listings and their registries (deleted in T1.2: nothing can add a record), the `/durable-handles` listing, empty once T1.1 deletes its producers; `dfsctl client` (deleted in T1.2) | read v1's connection and handle state | RFC 23's plan (#4050, D12), RFC 22 plan (durable handles) | with their records |
+| the `/clients` and `/mounts` listings and their registries (deleted in T1.2: nothing can add a record), the `/durable-handles` listing, empty once T1.1 deletes its producers; `dfsctl client` (deleted in T1.2) | read v1's connection and handle state | RFC 23's plan (#4050, D12); the `/durable-handles` listing the RFC 22 plan's, its §6.5 carrying the row | with their records; the listing when RFC 23 adds an endpoint for it |
 | RFC 20 §10.1's `adapter_translation_refused_total`, `adapter_record_decode_failures_total` and `adapter_record_replays_total` | their producers, the translations and the client record, are not built | RFC 21/22 plans, neither of which names them yet: each with its `translate` and client-record subtasks | with `translate` and the client record |
 | netgroup CRUD under `/api/v1/adapters/{type}/netgroups` (deleted in T1.2) | a control-plane record (RFC 23 §3.5) | RFC 23's plan (#4050, D12) | with RFC 23's records |
 | client eviction: `DELETE /api/v1/clients/{id}`, `dfsctl client evict` (`Runtime.DisconnectClient` → `ForceCloseClientConnection`, deleted in T1.2) | RFC 23 §4.2 makes v2's connection listing read-only, so nothing brings it back | an RFC adding an eviction call; until then the account is disabled (RFC 23's plan, #4050, O9) | that RFC |
