@@ -50,6 +50,18 @@ func TestWireBodies(t *testing.T) {
 		{"target", op.Target, new(Ref), []string{"id", "kind"}},
 		{"account", op.Account, new(Principal), []string{"id", "kind"}},
 		{"version", Version{Majors: []string{"v1"}}, new(Version), []string{"majors"}},
+		{"sign-in", SignIn{Name: "alice", Password: "pw"}, new(SignIn), []string{"name", "password"}},
+		{"tokens", Tokens{Access: "a.b.c", Refresh: "r1"}, new(Tokens), []string{"access_token", "refresh_token"}},
+		{"refresh", Refresh{Token: "r1"}, new(Refresh), []string{"refresh_token"}},
+		{"password change", PasswordChange{Current: "old", New: "new"}, new(PasswordChange),
+			[]string{"current_password", "new_password"}},
+		{"set password", SetPassword{Password: "pw"}, new(SetPassword), []string{"password"}},
+		{"API token spec", APITokenSpec{Expires: at.AddDate(1, 0, 0)}, new(APITokenSpec), []string{"expires"}},
+		{"created API token", APITokenStatus{Created: at, Token: "t1"}, new(APITokenStatus),
+			[]string{"created", "token"}},
+		{"listed API token", APITokenStatus{Created: at}, new(APITokenStatus), []string{"created"}},
+		{"session", SessionStatus{Created: at, Expires: at.Add(12 * time.Hour)}, new(SessionStatus),
+			[]string{"created", "expires"}},
 	} {
 		b, err := json.Marshal(tc.in)
 		if err != nil {

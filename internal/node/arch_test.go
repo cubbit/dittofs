@@ -383,19 +383,27 @@ func TestImportRules(t *testing.T) {
 	}
 }
 
-// componentAllowed reports whether a package under internal/node but node
-// and nodetest may import the module's package rel: none it allows is a
+// componentAllowed reports whether the package in dir, a slash path relative
+// to internal/node, may import the module's package rel: none it allows is a
 // component's implementation, the entity and wire packages holding data
 // types only, the metadata store's and filesystem's packages of error values,
 // which the API answers by name, and KV, of which errorsOnly admits only the
 // error values; nodetest, which imports Badger, is not allowed. Everything
 // else it reaches through an interface it declares or a value the node hands
 // it.
-func componentAllowed(rel string) bool {
+//
+// decision: the API's auth package alone may also import identity and the
+// secrets package, because signing in calls identity's sign-in interface and
+// password hashing, and the signing key is sealed and opened through secrets;
+// neither holds a store, so auth still reaches the store only through the
+// node. Withdraw the exemption if either package comes to import a store.
+func componentAllowed(dir, rel string) bool {
 	switch rel {
 	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1",
 		"pkg/metadata/errors", "pkg/metadata/kv", "pkg/vfs/vfserr":
 		return true
+	case "pkg/identity", "pkg/secrets":
+		return dir == "api/auth"
 	}
 	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest")
 }
@@ -469,7 +477,7 @@ func componentImports(root string) ([]string, error) {
 				}
 				continue
 			}
-			if std || inModule && componentAllowed(rel) || slices.Contains(libraries, p) {
+			if std || inModule && componentAllowed(filepath.ToSlash(filepath.Dir(r)), rel) || slices.Contains(libraries, p) {
 				continue
 			}
 			bad = append(bad, filepath.ToSlash(r)+" imports "+p)
@@ -480,7 +488,8 @@ func componentImports(root string) ([]string, error) {
 }
 
 // No package under internal/node but node and nodetest imports a component's
-// implementation; a planted package importing the engine is caught.
+// implementation; a planted package importing the engine is caught, as is
+// one other than auth importing identity, beside auth importing it.
 func TestNoComponentImports(t *testing.T) {
 	for _, tc := range []struct {
 		root string
@@ -489,6 +498,7 @@ func TestNoComponentImports(t *testing.T) {
 		{".", nil},
 		{"testdata/arch/component-import", []string{
 			"api/allowed.go imports github.com/dgraph-io/badger/v4",
+			"api/identity.go imports github.com/cubbit/dittofs/pkg/identity",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.KV",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.Counting",
 			"api/server.go imports github.com/cubbit/dittofs/pkg/block/engine",

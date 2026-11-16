@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -118,42 +119,59 @@ func TestDecodeWrongTypeInJSONTerms(t *testing.T) {
 
 // What decode accepts, encoding/json's own lenient decoding reads alike, and
 // re-encoded it decodes strictly to the same value; what it refuses is a
-// *fieldError, never a panic.
+// *fieldError, never a panic. It holds for a sample of every field shape and
+// for each credential call's body.
 func FuzzDecode(f *testing.F) {
-	for _, s := range []string{`{"name":"a","size":18446744073709551615,"tags":["x"],"sub":{"on":true}}`, `{"x":1}`, `{}`, ``, `{"size":-1}`, `null`,
+	for _, s := range []string{
+		`{"name":"a","size":18446744073709551615,"tags":["x"],"sub":{"on":true}}`, `{"x":1}`, `{}`, ``, `{"size":-1}`, `null`,
+		`{"name":"alice","password":"pw"}`, `{"refresh_token":"r1"}`,
+		`{"current_password":"old","new_password":"new"}`, `{"password":"pw"}`,
+		`{"expires":"2027-11-16T09:30:00+01:00"}`,
 		strings.Repeat("[", maxDepth+1) + strings.Repeat("]", maxDepth+1),
-		strings.Repeat(`{"sub":`, maxDepth+1) + "null" + strings.Repeat("}", maxDepth+1)} {
+		strings.Repeat(`{"sub":`, maxDepth+1) + "null" + strings.Repeat("}", maxDepth+1),
+	} {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
-		var got sample
-		err := decode(bytes.NewReader(b), &got)
-		if err != nil {
-			var fe *fieldError
-			if !errors.As(err, &fe) {
-				t.Fatalf("refused with %T %v, want a *fieldError", err, err)
-			}
-			return
-		}
-		if len(bytes.TrimSpace(b)) == 0 {
-			return
-		}
-		var lenient sample
-		if err := json.Unmarshal(b, &lenient); err != nil {
-			t.Fatalf("decode accepted %q, encoding/json refuses it: %v", b, err)
-		}
-		if !reflect.DeepEqual(got, lenient) {
-			t.Fatalf("decode read %+v, encoding/json %+v", got, lenient)
-		}
-		out, err := json.Marshal(got)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var again sample
-		if err := decode(bytes.NewReader(out), &again); err != nil || !reflect.DeepEqual(again, got) {
-			t.Fatalf("re-encoded %s decodes to %+v (%v), want %+v", out, again, err, got)
-		}
+		decodeAgrees[sample](t, b)
+		decodeAgrees[apiv1.SignIn](t, b)
+		decodeAgrees[apiv1.Refresh](t, b)
+		decodeAgrees[apiv1.PasswordChange](t, b)
+		decodeAgrees[apiv1.SetPassword](t, b)
+		decodeAgrees[apiv1.APITokenSpec](t, b)
 	})
+}
+
+// decodeAgrees checks FuzzDecode's property for b read as a T.
+func decodeAgrees[T any](t *testing.T, b []byte) {
+	t.Helper()
+	var got T
+	err := decode(bytes.NewReader(b), &got)
+	if err != nil {
+		var fe *fieldError
+		if !errors.As(err, &fe) {
+			t.Fatalf("%T: refused with %T %v, want a *fieldError", got, err, err)
+		}
+		return
+	}
+	if len(bytes.TrimSpace(b)) == 0 {
+		return
+	}
+	var lenient T
+	if err := json.Unmarshal(b, &lenient); err != nil {
+		t.Fatalf("%T: decode accepted %q, encoding/json refuses it: %v", got, b, err)
+	}
+	if !reflect.DeepEqual(got, lenient) {
+		t.Fatalf("decode read %+v, encoding/json %+v", got, lenient)
+	}
+	out, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again T
+	if err := decode(bytes.NewReader(out), &again); err != nil || !reflect.DeepEqual(again, got) {
+		t.Fatalf("re-encoded %s decodes to %+v (%v), want %+v", out, again, err, got)
+	}
 }
 
 // RFC 7396's own examples (its Appendix A) whose patch is an object, each
