@@ -1,12 +1,13 @@
 {
+  "title": "RFC 1 — the journal",
   "glossaryKicker": "Glossary",
   "glossaryTitle": "Every term in this deck",
   "cover": {
     "kicker": "Learn DittoFS · RFC 1",
     "title": "The [[journal|journal]]",
     "lead": "The journal is the local disk where every write lands first. This deck explains how it works, and why it answers “[[missing]]” instead of returning zeros.",
-    "built": "Built from RFC 1 at 8d55e52",
-    "notes": "Source: docs/internals/rfcs/rfc-1-journal.md, commit 8d55e52. The RFC specifies behaviour, not the current code. Its on-disk format and its recovery after a crash are RFC 28, not covered here. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
+    "built": "Built from RFC 1 at a34d0b8",
+    "notes": "Source: docs/internals/rfcs/rfc-1-journal.md, commit a34d0b8. The RFC specifies behaviour, not the current code. Its on-disk format and its recovery after a crash are RFC 28, not covered here. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
   },
   "intro": {
     "kicker": "Before we start",
@@ -14,7 +15,7 @@
     "two": "The [[journal]] is the fast local disk that every write lands on and is acknowledged from, appending each write as a [[record]] at the end of a [[segment]] file, keeping it through a crash and serving reads of the bytes it still holds. It knows nothing about [[chunk|chunks]] or the bucket, because the [[engine]] does the uploading and then [[report|reports]] which bytes are [[offload|offloaded]], and only those bytes may be dropped to make room.",
     "twoNotes": "From 'Start here · In plain words' and §1 Purpose. The journal answers exactly one question: do I hold these bytes, at what offset, and which version of them?",
     "knownTitle": "Terms you already know",
-    "knownLead": "These terms come from RFC 0's glossary and from the RFCs this one builds on (2, 3, 6, 8 and 17). Click one to see its definition.",
+    "knownLead": "These terms come from RFC 0's glossary and from the RFCs this one builds on (2, 3, 6 and 8). Click one to see its definition.",
     "knownNotes": "Every definition restates RFC 0's glossary row, which is the definition of record.",
     "newTitle": "New terms",
     "newNotes": "From 'Start here · The words you need', plus missing (§3.2), change version (§3.2, §3.4), removal marker (§3.6), placement index (§4), headroom (§6), unreclaimed bytes (§3.5, §7.1) and loss event (§3.8). The glossary at the end adds append stream, share tag and sequence number.",
@@ -34,9 +35,9 @@
       "A read never returns zeros for bytes the [[journal|journal]] does not hold. It lists exactly those ranges as [[missing]] and leaves the caller's buffer untouched for them.",
       "The journal never releases bytes the engine has not reported as [[offload|offloaded]]. A [[release]] that asks for any such bytes is refused as a whole, and nothing is released."
     ],
-    "footer": "After a crash, the journal rebuilds what it held by reading its own files on the local disk, and nothing else. This step, run when the journal opens again, is called recovery.",
+    "footer": "After a crash, the journal rebuilds what it held from its own files on the local disk. This step, run when the journal opens again, is called recovery. It checks the files against a few facts the engine keeps for the journal, such as how far the writes had been synced.",
     "notes": "'Start here · What this RFC promises', which cites §3.1, §3.2, §3.4, §3.5, §3.6, §5.2, §6 and RFC 28 §3. The fifth promise is about writes; removals and releases draw on reserved space instead (§6). The 1 s bound is a proposal (§5.2, 'proposal: 1 s'); the slide gives it as an example.",
-    "notes2": "Deck framing: the fill and limit promises of 'Start here · What this RFC promises' (§3.4, §6). The fifth promise is about writes; removals and releases draw on reserved space instead (§6). The footer: 'Start here · What this RFC promises' (the journal rebuilds itself from its own files alone) and §4 (the placement index is built at recovery). How recovery reads the files is RFC 28 §3, which this deck does not cover.",
+    "notes2": "Deck framing: the fill and limit promises of 'Start here · What this RFC promises' (§3.4, §6). The fifth promise is about writes; removals and releases draw on reserved space instead (§6). The footer: 'Start here · What this RFC promises' (the journal rebuilds itself from its own files alone) and §4 (the placement index is built at recovery). How recovery reads the files is RFC 28 §3, which this deck does not cover. Recovery checks the files against what the caller passes to Open (§3): the version floor, and per stream the sync mark of its last recorded sync, against which a lost synced tail is detected (RFC 28 §3.3).",
     "items2": [
       "A [[fill]], which puts bytes fetched from the bucket back, never overwrites bytes the journal holds. It is refused if the file changed after the read that found the bytes missing.",
       "A write that would go over a limit is refused at once, with an error that names the limit. It never waits for space and never goes over."
@@ -67,9 +68,9 @@
     "c2": "The bytes were [[offload|offloaded]] to the bucket, then [[release|released]] from the journal to make room.",
     "c3Title": "[[lost|Lost]]",
     "c3": "The bytes were written, but they have been lost since.",
-    "rule": "The journal **MUST** report all three in the same way, as [[missing]], and leave the caller's buffer untouched. Telling them apart is the [[engine]]'s job.",
+    "rule": "The journal reports all three in the same way, as [[missing]], and leaves the caller's buffer untouched. Telling them apart is the [[engine]]'s job.",
     "exact": "The `missing` list is exact. It is never widened to a whole [[segment|segment]], [[record|record]] or [[block|block]], because the caller pays for a remote transfer for every entry in it. Zeros would be worse: if the file is a virtual disk that Windows mounts, such as a profile kept in a `.vhdx` file, they would hand Windows a corrupt disk that looks valid.",
-    "notes": "§2 (the gaps carry no explanation), §3.2 (ReadAt), §1.1 (non-goals). The Windows remark is from 'Start here · The problem': alice's profile is `ODFC_alice.vhdx`, a 30 GB virtual disk, and step 5 says zeros would hand Windows a corrupt disk that looks valid. The rule that telling the three apart is the engine's job is RFC 0 §6.1."
+    "notes": "§2 (the gaps carry no explanation), §3.2 (ReadAt), §1.1 (non-goals). The Windows remark is from 'Start here · The problem': alice's profile is `ODFC_alice.vhdx`, a 30 GB virtual disk, and step 5 says zeros would hand Windows a corrupt disk that looks valid. The rule that telling the three apart is the engine's job is RFC 0 §6.1. The slide's rule is §2's MUST."
   },
   "placement": {
     "title": "Where the bytes sit on disk",
@@ -113,11 +114,11 @@
     "boundsTitle": "Bounded",
     "bounds": [
       "The engine passes each call a size limit, and one offer never holds more dirty bytes than that.",
-      "Every [[segment|segment]] an offer reads is pinned: it stays on disk, and [[repack]] can neither move nor free it until the engine's callback returns. The proposed caps are 64 pinned segments for one offer and 256 for all offers together. At a cap the offer stops, and the rest waits for a later offer.",
+      "Every [[segment|segment]] an offer reads is pinned: [[repack]] can neither move nor free it until the engine's callback returns. An offer stops adding extents at 64 pinned segments, or at 256 across all offers, though its first extent always fits. The rest waits for a later offer.",
       "Every byte is checked against its [[record|record]]'s checksum before it is handed out."
     ],
     "example": "For example, one pass offers 64 MiB, which the engine carves into 16 blocks of 4 MiB. Block 3 commits first, and its 4 MiB can be evicted at once. Then block 9 fails, and everything reported before that stays marked.",
-    "notes": "§3.3 Offload: what an offer is, report block by block, 'limit bounds the dirty bytes one call offers' (the engine chooses it, RFC 8 §6.2), 'An offer pins a bounded number of segments' (every segment holding an offered record stays on disk, unmoved, until fn returns; repack cannot retire it meanwhile, §7.2), 'Offered returns no unverified byte'. The 64 and 256 bounds carry a decision marker: constants, not measured. They are 'proposals' in §3.3 and §10 question 4. When the next extent would pass a cap, the offer stops adding extents and offers the rest in a later call; the first extent always fits, so an offer is never empty (§3.3)."
+    "notes": "§3.3 Offload: what an offer is, report block by block, 'limit bounds the dirty bytes one call offers' (the engine chooses it, RFC 8 §6.2), 'An offer pins a bounded number of segments' (every segment holding an offered record stays on disk, unmoved, until fn returns; repack cannot retire it meanwhile, §7.2), 'Offered returns no unverified byte'. The 64 and 256 bounds carry a decision marker: constants, not measured. They are 'proposals' in §3.3 and §10 question 4. When the next extent would pass a cap, the offer stops adding extents and offers the rest in a later call; the first extent always fits, so an offer is never empty (§3.3). Pinned segments are therefore bounded by the journal-wide bound plus one per running offer (§3.3)."
   },
   "repack": {
     "title": "Space comes back in whole [[segment|segments]]",
@@ -153,13 +154,13 @@
         "the version the metadata recorded with the copy in the bucket"
       ],
       [
-        "[[repack|Repack]] copy",
+        "[[repack|Repack]] copy of content",
         "a new one",
         "the original's, unchanged"
       ]
     ],
-    "footer": "For every byte of a file, the newest content version the journal has applied is the one a read gets. A read never looks at sequence numbers, which are used to order records during recovery. When bytes are uploaded, the metadata that records them keeps their content version, so bytes fetched back from the bucket come with the version they had.",
-    "notes": "§4.3 Versions (the table, abridged), §2 (the newest version applied wins), §4 (a lookup must be unambiguous without sequence numbers). Versions are assigned inside the file's serialised append (§3.1). Fill's version: §3.4, 'v is the content version of the ref the bytes were fetched from: its newest (RFC 6 §2.1)'; the filled record carries it."
+    "footer": "For every byte of a file, the newest content version the journal has applied is the one a read gets. A read never uses sequence numbers to choose its bytes. It only checks that the record it finds carries the number the journal expects. Sequence numbers order records during recovery. When bytes are uploaded, the metadata that records them keeps their content version, so bytes fetched back from the bucket come with the version they had.",
+    "notes": "§4.3 Versions (the table, abridged), §2 (the newest version applied wins), §4 (a lookup must be unambiguous without sequence numbers). Versions are assigned inside the file's serialised append (§3.1). Fill's version: §3.4, 'v is the content version of the ref the bytes were fetched from: its newest (RFC 6 §2.1)'; the filled record carries it. A read and sequence numbers: §4, 'The entry carries its record's sequence number only so a read can compare it with the header it finds and so a record that does not verify can be named'. The repack row is §4.3's 'a repack copy of content'; a header-only record that repack carries forward keeps both its numbers (§4.3, §7.2), which the slide leaves out."
   },
   "race": {
     "kicker": "When things race"
@@ -175,7 +176,7 @@
       "A [[fill]] for such a file is checked instead against one of 4,096 [[floor-bucket|floor buckets]], picked by a hash of the file's ID. When the journal stops tracking a file, it raises the file's bucket to the file's last change version, so an older fill is still refused.",
       "The table has a fixed size, so it does not grow with the number of files the journal once held. The cost is that a change to one file can refuse fills of the other files in its bucket, about one file in 4,096. Such a needless refusal costs only a cache miss."
     ],
-    "notes": "§3.4 Fill, floor buckets: 'The per-file change version is bounded by floor buckets: a fixed table of 4,096 versions, indexed by a hash of the FileID'; a file's entry is dropped when it holds no extent and no removal marker (after a Delete, or once everything it held was released), and dropping it raises the file's bucket to the entry's version; a file with no entry is compared against its bucket; at open every bucket starts at the highest version on disk. The decision marker: one bucket confines a delete's needless refusals to about one file in 4,096; 'a needless refusal costs only a cache miss'."
+    "notes": "§3.4 Fill, floor buckets: 'The per-file change version is bounded by floor buckets: a fixed table of 4,096 versions, indexed by a hash of the FileID'; a file's entry is dropped when it holds no extent and no removal marker (after a Delete, or once everything it held was released), and dropping it raises the file's bucket to the entry's version; a file with no entry is compared against its bucket; at open every bucket starts at the highest content version on disk or in the floor, whichever is higher. Share raises every bucket to its floor before it returns the handle (§3, §3.4), so attaching a share can needlessly refuse the fills in flight of every file with no entry; attaches are rare, and such a refusal costs a cache miss. The decision marker: one bucket confines a delete's needless refusals to about one file in 4,096; 'a needless refusal costs only a cache miss'."
   },
   "fillwrite": {
     "title": "[[fill|Fill]] is not a write",
@@ -206,8 +207,8 @@
         "set, because it is offloaded already"
       ]
     ],
-    "footer": "The two **SHOULD** share the code that appends records, but they **MUST NOT** be one entry point with a parameter choosing between them. A wrong value would discard a client's write, or make content that is in no bucket evictable, and nothing would fail at the time.",
-    "notes": "§3.4 Fill, and its subsection 'Fill is not a write'. Fill is as safety-critical as Release: bytes passed to it become content the journal will release."
+    "footer": "The two can share the code that appends records, but they are never one entry point with a parameter choosing between them. A wrong value would discard a client's write, or make content that is in no bucket evictable, and nothing would fail at the time.",
+    "notes": "§3.4 Fill, and its subsection 'Fill is not a write'. Fill is as safety-critical as Release: bytes passed to it become content the journal will release. The RFC's words: an implementation SHOULD share their append machinery and MUST NOT expose them as one entry point selected by a parameter."
   },
   "quizFill": {
     "question": "A read finds a range [[missing]] at v50. Before the fetch returns, a client writes 4 KiB into it. What does `Fill` do?",
@@ -221,7 +222,7 @@
       "A [[fill]] does leave held bytes alone, but a file that changed after the read gets no fill at all. Not even the bytes around the new 4 KiB are written.",
       "A [[fill]] never overwrites bytes the [[journal]] holds. Putting the bucket's older bytes over the new write would lose the client's data."
     ],
-    "notes": "§3.4 Fill: 'A Fill older than the file is refused' (if the file's change version is newer than asOf, Fill MUST write nothing and return a distinct error); Fill MUST NOT overwrite any part of a held extent. 'Start here · Scenarios', the fetch that races a write."
+    "notes": "§3.4 Fill: 'A Fill older than the file is refused': if the file's change version is newer than asOf, Fill writes nothing and returns a distinct error (a MUST in the RFC); Fill never overwrites any part of a held extent (a MUST NOT). 'Start here · Scenarios', the fetch that races a write."
   },
   "fail": {
     "kicker": "When things fail"
@@ -234,8 +235,8 @@
     "c2": "A record that was not yet synced does not survive the loss of the host. A client that never flushes can lose at most the writes it made within one time bound before the failure.",
     "c3Title": "After a flush or the time bound",
     "c3": "Synced records survive a host crash and a power loss. One sync serves every writer waiting on the same stream.",
-    "footer": "No setting can declare a [[journal|journal]] not [[durable|durable]]. At restart, a half-written record at the end of a segment is cut off as a torn tail, and is not reported as damage.",
-    "notes": "'Start here · Scenarios' (the power fails half a second after a write nobody flushed); §5.1 ordering rules; §5.2 Syncing (sync bound, group commit, 'no setting declares a journal not durable'); RFC 28 §3.3 (torn tail)."
+    "footer": "No setting can declare a [[journal|journal]] not [[durable|durable]]. At restart, a half-written record at the end of a stream's newest segment is cut off as a torn tail, and is not reported as damage. A record that was already synced is never cut off this way: if it is damaged, the damage is reported.",
+    "notes": "'Start here · Scenarios' (the power fails half a second after a write nobody flushed); §5.1 ordering rules; §5.2 Syncing (sync bound, group commit, 'no setting declares a journal not durable'); RFC 28 §3.3 (torn tail). RFC 28 §3.3: a torn tail exists only in the newest segment of a stream, the only one that could have been open for append at a crash; damage to records proven synced, by a later record's synced-through offset or by a sync mark the engine recorded, is corruption and is reported, never cut off as a torn tail."
   },
   "failedsync": {
     "title": "A failed [[sync|sync]] is not a slow one",
@@ -297,7 +298,7 @@
     "notes": "'Start here · Scenarios', the journal is full while a large copy streams in (step 2: the engine answers retry-later; step 5: the engine retries within the client's deadline); §3.5, §6, §7.2. Who retries: RFC 8 §10.2 has the engine repack or evict and retry, answering ErrDelay while it is still refused; RFC 0's glossary row for retry-later and its 'journal at capacity' row: NFS answers NFS4ERR_DELAY / NFS3ERR_JUKEBOX and the client retries, SMB holds the request pending with an interim response."
   },
   "quizSync": {
-    "question": "A [[sync]] of a [[segment]] fails, then a second sync of it succeeds. What of the writes the failed sync should have covered?",
+    "question": "A [[sync]] of a [[segment]] fails with the I/O error `EIO`, then a second sync of it succeeds. What of the writes the failed sync should have covered?",
     "options": [
       "The second sync covers them, so from then on they count as durable.",
       "They are appended again in a new segment, or failed as loss events.",
@@ -306,9 +307,9 @@
     "why": [
       "After a failed [[sync]] the OS may have marked pages clean without writing them. So a later success proves nothing about writes made before the failure.",
       "Those writes count as not [[durable]]. The [[journal]] appends their [[record|records]] again in a new [[segment]], or fails them as [[loss-event|loss events]].",
-      "One failed sync only moves the stream to a new [[segment]]. The [[journal]] turns read-only on `EROFS`, or when that new segment fails too before a sync succeeds in it."
+      "A sync that fails with `EIO` only moves the stream to a new [[segment]]. The [[journal]] turns read-only on `EROFS`, or when that new segment fails too before a sync succeeds in it."
     ],
-    "notes": "§5.3 A failed sync: everything written since the segment's last successful sync is not durable, and the window is re-appended to the new segment or failed as loss events (unless the journal has turned read-only). §5.1: a failed sync MUST NOT satisfy, by a later success, a Sync for writes made before the failure. §5.4: read-only on EROFS, or when the spare a stream moved to also fails before any sync in it has succeeded."
+    "notes": "§5.3 A failed sync: everything written since the segment's last successful sync is not durable, and the window is re-appended to the new segment or failed as loss events (unless the journal has turned read-only). §5.1: a failed sync never satisfies (MUST NOT), by a later success, a Sync for writes made before the failure. §5.4: read-only on EROFS, or when the spare a stream moved to also fails before any sync in it has succeeded. The question names EIO so that §5.4's read-only transition, which an EROFS would trigger, does not apply."
   },
   "index": {
     "title": "Two indexes, easy to confuse",
@@ -455,27 +456,27 @@
     "kicker": "Rules and non-goals",
     "title": "The rules, in plain words",
     "items": [
-      "A read **MUST NOT** zero-fill or short-read what it does not hold, and `missing` **MUST** be exact.",
-      "`Release` **MUST** refuse an [[extent|extent]] not reported [[offload|offloaded]], and make no partial progress.",
-      "`Fill` **MUST NOT** overwrite held bytes, and what it writes is marked offloaded.",
-      "The [[journal|journal]] **MUST** mark exactly the reported extents, and never a newer write made over them.",
-      "A write **MUST** reserve before accepting bytes, and fail rather than exceed a limit.",
-      "A failed [[sync|sync]] **MUST NOT** be satisfied by a later success. A failed [[segment|segment]] is never appended to again."
+      "A read never fills with zeros or cuts short what it does not hold, and its `missing` list is exact.",
+      "`Release` refuses an [[extent|extent]] not reported [[offload|offloaded]], and a refused release frees nothing at all.",
+      "`Fill` never overwrites held bytes, and what it writes is marked offloaded.",
+      "The [[journal|journal]] marks exactly the reported extents, and never a newer write made over them.",
+      "A write reserves space before accepting bytes, and fails rather than go over a limit.",
+      "A later successful [[sync|sync]] never makes up for a failed one. A failed [[segment|segment]] is never appended to again."
     ],
     "footer": "The journal depends only on the standard library and the OS file interface, and an import test enforces that.",
-    "notes": "§3.2, §3.5, §3.4, §3.3, §3.1 and §6, §5.1 and §5.3; §1.1 for the import test."
+    "notes": "Each rule is a MUST or MUST NOT in the RFC: §3.2, §3.5, §3.4, §3.3, §3.1 and §6, §5.1 and §5.3; §1.1 for the import test."
   },
   "nongoals": {
-    "title": "What the [[journal|journal]] must not do",
+    "title": "What the [[journal|journal]] never does",
     "items": [
-      "It must not decide whether bytes it does not hold are a [[hole|hole]], [[evict|evicted]] or [[lost|lost]].",
-      "It must not return zeros for bytes it does not hold.",
-      "It must not know what a [[chunk|chunk]] or a [[block|block]] is. A [[record|record]] is not a chunk.",
-      "It must not know which [[remote-tier|remote tier]] exists, nor speak to one.",
-      "It must not import another component, such as the metadata store, the [[syncer|syncer]] or the [[carver|carver]]."
+      "It never decides whether bytes it does not hold are a [[hole|hole]], [[evict|evicted]] or [[lost|lost]].",
+      "It never returns zeros for bytes it does not hold.",
+      "It knows nothing of what a [[chunk|chunk]] or a [[block|block]] is. A [[record|record]] is not a chunk.",
+      "It does not know which [[remote-tier|remote tier]] exists, and never speaks to one.",
+      "It imports no other component, such as the metadata store, the [[syncer|syncer]] or the [[carver|carver]]."
     ],
     "footer": "Policy, such as what to [[evict|evict]] and when to [[repack|repack]], belongs to the [[engine]]. The journal supplies the mechanism.",
-    "notes": "§1.1 Non-goals (MUST NOT), §1.2. The footer: §3.5 ('the mechanism of eviction; the policy is the engine's') and §7.2 (the engine calls Repack with a budget and a scope)."
+    "notes": "§1.1 Non-goals (each a MUST NOT), §1.2. The footer: §3.5 ('the mechanism of eviction; the policy is the engine's') and §7.2 (the engine calls Repack with a budget and a scope)."
   },
   "open": {
     "kicker": "Still open",

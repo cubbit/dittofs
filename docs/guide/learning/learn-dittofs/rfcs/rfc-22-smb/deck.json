@@ -3,7 +3,7 @@
     "number": 22,
     "title": "SMB",
     "path": "docs/internals/rfcs/rfc-22-smb.md",
-    "commit": "bc7aa998636cd2b1080d934496893911facc7ba2",
+    "commit": "b0d540b2db9c5b2358e7f838ef07960fb6f612b0",
     "status": "draft"
   },
   "terms": {

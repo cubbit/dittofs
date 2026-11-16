@@ -14,7 +14,13 @@
   },
   "chrome": {
     "start": "Back to the first slide",
-    "home": "All sections"
+    "home": "All sections",
+    "motion": "Animations",
+    "motionModes": {
+      "loop": "loop",
+      "once": "once",
+      "off": "off"
+    }
   },
   "quiz": {
     "kicker": "Check yourself",

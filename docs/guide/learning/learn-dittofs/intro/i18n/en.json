@@ -6,8 +6,8 @@
     "kicker": "Learn DittoFS · Introduction",
     "title": "DittoFS, from the outside in",
     "lead": "DittoFS is a file server for NFS and SMB clients that keeps its files in a bucket. This introduction shows who uses it, what runs inside it, and how one write travels from a client to the bucket.",
-    "built": "Built from DittoFS's design documents and code overview, at commit 562b578",
-    "notes": "The one deck not tied to a single RFC. Sources: docs/internals/rfcs/rfc-0-data-lifecycle.md ('Start here', Glossary, §1 Scope, §4.2, §5, §10) for the design, docs/internals/architecture.md for today's code, and README.md for what DittoFS is. Commit 562b578. The RFCs specify the target design; slides that describe today's code say so. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition. The badge's sources: RFC 0 and docs/internals/architecture.md at 562b578."
+    "built": "Built from DittoFS's design documents and code overview, at commit bc7aa99",
+    "notes": "The one deck not tied to a single RFC. Sources: docs/internals/rfcs/rfc-0-data-lifecycle.md ('Start here', Glossary, §1 Scope, §4.2, §5, §10) for the design, docs/internals/architecture.md for today's code, and README.md for what DittoFS is. Commit bc7aa99. The RFCs specify the target design; one slide near the end compares today's code with the design. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition. The badge's sources: RFC 0 and docs/internals/architecture.md at bc7aa99."
   },
   "learn": {
     "kicker": "Before we start",
@@ -143,8 +143,8 @@
       "They turn the service's neutral errors into their protocol's status codes, with one table per protocol.",
       "Permissions, locks and file operations are never decided here."
     ],
-    "footer": "Today they live in `internal/adapter/nfs` and `internal/adapter/smb`. The Adapters section explains them in depth.",
-    "notes": "RFC 0 §1.3 (adapters: framing, compounds, replay, error codes); RFC 20 (the adapter model). The rule 'protocol handlers handle only protocol concerns' is also the first architecture invariant in CLAUDE.md for today's code. Protocol versions from README.md 'Features'."
+    "footer": "The Adapters section explains them in depth.",
+    "notes": "RFC 0 §1.3 (adapters: framing, compounds, replay, error codes); RFC 20 (the adapter model). The rule 'protocol handlers handle only protocol concerns' is also the first architecture invariant in CLAUDE.md for today's code. Protocol versions from README.md 'Features'. Today's code: pkg/adapter/nfs and pkg/adapter/smb, with their handlers under internal/adapter (shown nowhere on the slides; the differs slide compares behaviour, not paths)."
   },
   "service": {
     "title": "The [[filesystem-service|filesystem service]] decides in one place",
@@ -157,8 +157,7 @@
       "**Quota** — the space is reserved before anything changes.",
       "**Engine** — only at the end is the content read or written."
     ],
-    "footer": "Today the adapters call the [[runtime|Runtime]] and `pkg/metadata` instead.",
-    "notes": "RFC 0 §1.3 (the filesystem service decides and orders every client operation at the primary); RFC 17 'Start here' (the six steps of every call) — the step names follow the RFC 17 deck's scene. The today line: architecture.md 'Core Abstraction Layers' (adapters go through the Runtime and pkg/metadata). Route: RFC 0 'Start here · The same system as a cluster' and §1.3 (each shard has one primary; on one node it is that node)."
+    "notes": "RFC 0 §1.3 (the filesystem service decides and orders every client operation at the primary); RFC 17 'Start here' (the six steps of every call) — the step names follow the RFC 17 deck's scene. Today's code, on the slide on where it differs: architecture.md 'Core Abstraction Layers' (adapters go through the Runtime and pkg/metadata). Route: RFC 0 'Start here · The same system as a cluster' and §1.3 (each shard has one primary; on one node it is that node)."
   },
   "below": {
     "title": "Below the service: three parts",
@@ -186,7 +185,7 @@
       ],
       [
         "[[segment]]",
-        "about 256 MiB",
+        "fixed; 256 MiB in the examples",
         "a file on the journal's disk that holds many records"
       ],
       [
@@ -205,23 +204,20 @@
         "a set of files that one node owns at a time"
       ]
     ],
-    "footer": "Today's code cuts bigger chunks — 1 to 16 MiB, 4 MiB on average — and packs them into 4 MiB blocks.",
-    "notes": "RFC 0 'The shared cast · Units' and Glossary 'Units at a glance'. The namespace (a prefix in the bucket) is left out here. Today: architecture.md 'Carve: local → remote' (FastCDC min 1 MiB / avg 4 MiB / max 16 MiB, packed into 4 MiB blocks by default)."
+    "notes": "RFC 0 'The shared cast · Units' and Glossary 'Units at a glance'. The namespace (a prefix in the bucket) is left out here. Today: architecture.md 'Carve: local → remote' (FastCDC min 1 MiB / avg 4 MiB / max 16 MiB, packed into 4 MiB blocks by default). The segment's size: RFC 0 Glossary 'Units at a glance' (fixed, not a setting; its value is open, RFC 28 §5 question 2; 256 MiB in the examples). Today's chunk sizes are on the differs slide."
   },
   "control": {
     "title": "Beside it: the [[control-plane|control plane]]",
     "items": [
       "`dfs` is the server: it runs the adapters and serves a REST API.",
-      "[[dfsctl]] is its command-line client, for managing users, groups, shares, stores and adapters.",
-      "Today the [[runtime|Runtime]] is the single entrypoint, and both the adapters and the API go through it.",
-      "Today settings live in a database of their own, either SQLite or PostgreSQL."
+      "[[dfsctl]] is its command-line client, for managing users, groups, shares, stores and adapters."
     ],
-    "designTitle": "In the design",
+    "designTitle": "Settings are records",
     "design": "Every setting is a record in the [[metadata-store|metadata store]]. The [[management-api|management API]] writes records; each [[node]] reads them and makes its components match.",
-    "notes": "README.md (the two binaries); architecture.md 'Key Interfaces' 1 and 2 (Runtime, Control Plane Store: SQLite single-node, PostgreSQL distributed) and 'Control Plane Pattern'. The design: RFC 0 Glossary 'control plane'; RFC 23 'Start here · In plain words'. RFC 23 Appendix B lists where today's code differs, e.g. API handlers call the Runtime directly after writing the database."
+    "notes": "README.md (the two binaries); architecture.md 'Key Interfaces' 1 and 2 (Runtime, Control Plane Store: SQLite single-node, PostgreSQL distributed) and 'Control Plane Pattern'. The design: RFC 0 Glossary 'control plane'; RFC 23 'Start here · In plain words'. RFC 23 Appendix B lists where today's code differs, e.g. API handlers call the Runtime directly after writing the database. Today's settings database and the Runtime are on the differs slide."
   },
   "quizRefuse": {
-    "question": "build01 writes over NFS to a file alice-pc holds open over SMB with a [[deny-mode|deny mode]] against writers. Where is it refused?",
+    "question": "In the design, build01 writes over NFS to a file alice-pc holds open over SMB with a [[deny-mode|deny mode]] against writers. Where is it refused?",
     "options": [
       "In the NFS adapter, which looks up the file's SMB opens before passing it on.",
       "In the SMB adapter, which holds alice-pc's open and turns other writers away.",
@@ -232,7 +228,7 @@
       "The NFS write never reaches the SMB adapter. Opens are kept in [[open-state|open state]], below the service, and no adapter decides who may write.",
       "The [[filesystem-service|filesystem service]] runs every call through the same steps, and its open-state step finds alice-pc's deny mode and refuses the write."
     ],
-    "notes": "RFC 17 'Start here' (the six steps of every call, in one order for both protocols: build01's NFSv3 write is refused at step 4 by alice's deny mode as ErrShareViolation, which the NFS adapter turns into an NFS error; if each adapter assembled the steps itself, the SMB adapter would check deny modes and the NFS adapter would not). RFC 0 §1.3 (adapters decide nothing; the filesystem service decides and orders every client operation; open state sits in the layer below it). RFC 14 §7 (conflicts across protocols). This is the design: today this state lives in each adapter plus a shared lock manager, as a later slide says."
+    "notes": "RFC 17 'Start here' (the six steps of every call, in one order for both protocols: build01's NFSv3 write is refused at step 4 by alice's deny mode as ErrShareViolation, which the NFS adapter turns into an NFS error; if each adapter assembled the steps itself, the SMB adapter would check deny modes and the NFS adapter would not). RFC 0 §1.3 (adapters decide nothing; the filesystem service decides and orders every client operation; open state sits in the layer below it). RFC 14 §7 (conflicts across protocols). This is the design: today this state lives in each adapter plus a shared lock manager, as the slide on where today's code differs says."
   },
   "follow": {
     "kicker": "Follow a write"
@@ -263,7 +259,7 @@
   },
   "residency": {
     "title": "Two sources, five answers",
-    "lead": "For each [[extent]], a read asks both the [[journal]] and the [[metadata-store|metadata store]]. Together, their two answers give the extent's [[residency]].",
+    "lead": "For each [[extent]], a read asks the [[journal]] first, and the [[metadata-store|metadata store]] only about what the journal does not hold. Together, their answers give the extent's [[residency]].",
     "table": [
       [
         "Journal",
@@ -303,7 +299,7 @@
       ]
     ],
     "footer": "The journal alone cannot tell \"never written\" from \"written, then lost\": in both cases it simply does not hold the bytes. The metadata store can, because it records that each write happened (the file's size, its holes, the ranges that were overwritten) separately from the bytes themselves. So a read returns zeros only where the metadata store records that nothing was ever written, or a hole, for example after a truncate. Residency is computed on every read and never stored.",
-    "notes": "RFC 0 §4.2, simplified: the RFC's table has nine rows. Left out here: a write past EOF before its existence commit (metadata says hole, journal holds it: Dirty), an overwrite of offloaded content whose chunk is now stale (Dirty while held, Lost if dropped — never the older chunk), and an offloaded all-zero extent (Absent, no fetch). Existence is group-committed within existence_age (proposal: 1 s); until then the journal is its authority (RFC 0 Glossary, 'existence'). If the journal device is lost in that window, an append or a hole fill leaves no trace and the file reads as it did before that write, shorter or a hole; an overwrite of committed content has already waited for its existence commit at its stability point, so it reads Lost (RFC 0 §10, 'Journal device lost'; §4.2)."
+    "notes": "RFC 0 §4.2, simplified: the RFC's table has nine rows. Left out here: a write past EOF before its existence commit (metadata says hole, journal holds it: Dirty), an overwrite of offloaded content whose chunk is now stale (Dirty while held, Lost if dropped — never the older chunk), and an offloaded all-zero extent (Absent, no fetch). Existence is group-committed within existence_age (proposal: 1 s); until then the journal is its authority (RFC 0 Glossary, 'existence'). If the journal device is lost in that window, an append or a hole fill leaves no trace and the file reads as it did before that write, shorter or a hole; an overwrite of committed content has already waited for its existence commit at its stability point, so it reads Lost (RFC 0 §10, 'Journal device lost'; §4.2). The lead: RFC 0 §6.1 (the journal is asked first; metadata only for the extents it does not hold)."
   },
   "quizLost": {
     "question": "The [[journal]] no longer holds an extent, which metadata records as written with no current chunk. What does a read do?",
@@ -343,11 +339,11 @@
       "alice-pc keeps writing. The [[journal]] stores each write on local disk and answers her as usual.",
       "No upload succeeds, so nothing written since the bucket stopped can be [[evict|evicted]] from the journal.",
       "A read of content whose only copy is in the bucket fails with an error. It never returns zeros.",
-      "If the journal fills up, new writes are answered with [[retry-later]]. Clients wait and try again, and no answered write is dropped.",
+      "If the journal fills up, new writes wait. NFS clients are answered [[retry-later]] and try again. SMB holds each request pending, and answers disk full only if it is still waiting at its pending timeout. No answered write is dropped.",
       "When the bucket answers again, offload uploads the backlog on its own, with no operator step."
     ],
     "footer": "While uploads keep failing, the share reports a health condition, not just a line in a log.",
-    "notes": "RFC 0 'Scenarios · The bucket stops answering for an afternoon', steps 1–6, and §10 'Remote tier unavailable', 'Journal at capacity, remote unavailable'. NFS clients retry; SMB holds the request pending up to smb_pending_cap. Outcome: no acknowledged write is dropped to make room; clients wait instead."
+    "notes": "RFC 0 'Scenarios · The bucket stops answering for an afternoon', steps 1–6, and §10 'Remote tier unavailable', 'Journal at capacity, remote unavailable'. NFS clients retry; SMB holds the request pending up to adapters.smb.pending_timeout, and only there answers STATUS_DISK_FULL (§10 'Journal at capacity, remote available', §10.3). Outcome: no acknowledged write is dropped to make room; clients wait instead."
   },
   "failures": {
     "title": "Every failure has one behaviour",
@@ -366,7 +362,7 @@
       ],
       [
         "metadata can't be written",
-        "writes are still staged in the journal, but after 30 s with no metadata commit they are refused, while reads go on"
+        "writes are still staged in the journal, but after 30 s with no metadata commit they are answered [[retry-later]] until a commit succeeds, while reads go on"
       ],
       [
         "the process crashes",
@@ -378,7 +374,7 @@
       ]
     ],
     "footer": "Every condition clears on its own once its cause is gone, except three that wait for an operator: a lost journal disk, a lost metadata store, and a node started from a copied or restored disk image, because the copy and the original could both serve and answer clients as one server.",
-    "notes": "RFC 0 §10, simplified, and §10.2. The full row is 'Journal at capacity, remote available'; repack is RFC 1 §7.2. The 30 s row is the self-fence (§1.4). A lost journal device: after the operator's acknowledgement, content never offloaded whose existence was committed reads as Lost. The three exceptions (§10.2, 'What this RFC promises'): a lost journal device on a share no other journal holds, a lost metadata store (an operator starts a recovery import from the newest catalog backup), and a node started from a copied or restored image. Why a copied image waits: RFC 0 §10.2, the decision on a node started from a copied image (two copies that both resume would answer clients as one server). Repack is what returns journal space (RFC 0 §8.2; evict alone frees none, §8.1). The footer's first exception is stated for one node: on a single node no other journal holds a share's content; in a cluster a replica's journal can take the shard over with no operator (§10 'Journal device lost')."
+    "notes": "RFC 0 §10, simplified, and §10.2. The full row is 'Journal at capacity, remote available'; repack is RFC 1 §7.2. The 30 s row is the self-fence (§1.4; §10 'Metadata store stalled or erroring': writes and stability points answer retry-later, reads continue, and the node resumes when a write commits). A lost journal device: after the operator's acknowledgement, content never offloaded whose existence was committed reads as Lost. The three exceptions (§10.2, 'What this RFC promises'): a lost journal device on a share no other journal holds, a lost metadata store (an operator starts a recovery import from the newest catalog backup), and a node started from a copied or restored image. Why a copied image waits: RFC 0 §10.2, the decision on a node started from a copied image (two copies that both resume would answer clients as one server). Repack is what returns journal space (RFC 0 §8.2; evict alone frees none, §8.1). The footer's first exception is stated for one node: on a single node no other journal holds a share's content; in a cluster a replica's journal can take the shard over with no operator (§10 'Journal device lost')."
   },
   "quizFull": {
     "question": "The bucket has been down for hours and N1's [[journal]] is full. What happens to build01's next NFS write?",
@@ -406,8 +402,7 @@
       "An NFS lock is advisory, so it refuses only other locks, never reads or writes.",
       "A [[caching-grant|caching grant]] that conflicts with a request is [[recall|recalled]] before the request goes ahead."
     ],
-    "footer": "Today each adapter keeps its own protocol's opens and caching grants, and byte-range locks live in one lock manager that both adapters share.",
-    "notes": "RFC 14 'In plain words', 'A scenario: an NFS build tool and an SMB editor share one file' and §7 'Conflicts across protocols'. A caching grant is an SMB lease or oplock, or an NFSv4 delegation; it is recalled in the holder's own protocol, whatever protocol caused the conflict. Today: RFC 14 Appendix B (NFSv4 state in the NFS adapter, SMB leases in the SMB lease manager, locks in pkg/metadata/lock); README.md lists bidirectional lease/delegation breaks between SMB and NFS as working. Today line: RFC 14 Appendix B (NFSv4 state in the NFS adapter, SMB leases in the SMB lease manager, byte-range locks in pkg/metadata/lock)."
+    "notes": "RFC 14 'In plain words', 'A scenario: an NFS build tool and an SMB editor share one file' and §7 'Conflicts across protocols'. A caching grant is an SMB lease or oplock, or an NFSv4 delegation; it is recalled in the holder's own protocol, whatever protocol caused the conflict. Today: RFC 14 Appendix B (NFSv4 state in the NFS adapter, SMB leases in the SMB lease manager, locks in pkg/metadata/lock); README.md lists bidirectional lease/delegation breaks between SMB and NFS as working. Today's split is on the differs slide."
   },
   "identity": {
     "title": "Who you are, checked in one place",
@@ -417,8 +412,7 @@
       "The user's [[share-grant|share grant]] sets a ceiling, and within it the file's mode or ACL decides.",
       "File permissions are decided in a single [[chokepoint]], with one ACL model for NFS and SMB alike."
     ],
-    "footer": "Today each adapter attaches a description of the caller to every operation, one shared function squashes identities for both protocols, and the metadata layer checks permissions.",
-    "notes": "RFC 17 (admission, authorisation, the chokepoint), RFC 18 (identity and squashing), RFC 19 (one ACL model, the share ceiling). AUTH_SYS only claims an identity; Kerberos and NTLM prove one — the neutral Identity records which. Today: CLAUDE.md architecture invariant 2 (every operation carries a *metadata.AuthContext; Runtime.ApplyIdentityMapping squashes in one place for both adapters; permission checks belong in pkg/metadata). Squashing: RFC 18 'Start here · In plain words' ('squash: replacing the caller's principal with the share's anonymous one') and its root-squash example. Today line in plain words: the description of the caller is metadata.AuthContext, the shared squashing function is Runtime.ApplyIdentityMapping, and the metadata layer is pkg/metadata."
+    "notes": "RFC 17 (admission, authorisation, the chokepoint), RFC 18 (identity and squashing), RFC 19 (one ACL model, the share ceiling). AUTH_SYS only claims an identity; Kerberos and NTLM prove one — the neutral Identity records which. Today: CLAUDE.md architecture invariant 2 (every operation carries a *metadata.AuthContext; Runtime.ApplyIdentityMapping squashes in one place for both adapters; permission checks belong in pkg/metadata). Squashing: RFC 18 'Start here · In plain words' ('squash: replacing the caller's principal with the share's anonymous one') and its root-squash example. Today's code in plain words, as the differs slide puts it: the description of the caller is metadata.AuthContext, the shared squashing function is Runtime.ApplyIdentityMapping, and the metadata layer is pkg/metadata."
   },
   "horizon": {
     "kicker": "Scope, and today's code"
@@ -455,22 +449,22 @@
       ],
       [
         "Adapters call",
-        "the [[runtime|Runtime]] and `pkg/metadata`",
-        "one [[filesystem-service|filesystem service]]"
+        "the [[runtime|Runtime]], which squashes identities, and `pkg/metadata`, which checks permissions",
+        "one [[filesystem-service|filesystem service]], which does both"
       ],
       [
         "[[open-state|Open state]]",
-        "in each adapter, plus a lock manager",
+        "opens and caching grants in each adapter, locks in one shared lock manager",
         "one table per file, at its [[primary]]"
       ],
       [
         "Settings",
-        "the control plane's own database",
-        "records in the [[metadata-store|metadata store]]"
+        "a control-plane database, SQLite or PostgreSQL",
+        "records in the [[metadata-store|metadata store]], applied by each [[node]]"
       ]
     ],
-    "footer": "With deduplication, offload skips a chunk it is told is already stored, and its local copy can then be dropped. One wrong answer would leave those bytes stored nowhere, so the design leaves deduplication out of the first release. The section decks explain the design, and the repository's architecture guide, `docs/internals/architecture.md`, describes the code as it is.",
-    "notes": "Today: architecture.md 'Per-Share Block Store Isolation' and 'Block Store — Local Journal Tier' (one journal directory per share), 'Carve' (FastCDC 1/4/16 MiB, dedup against the SyncedHashStore), 'Key Interfaces'; RFC 14 and RFC 23 Appendix B. Design: RFC 0 §1 and RFC 1 (one journal per device), Glossary 'chunk' and §3.1 (the first release does not deduplicate across files), §1.3, RFC 14 §3, RFC 0 Glossary 'control plane'. The footer's reason: RFC 0 §3.1, the decision that cross-file deduplication is off in the first release (its oracle is the one component where a single wrong answer, a chunk reported stored that is stored nowhere, loses data). The chain: with deduplication, offload references an already-stored chunk instead of uploading it, and the extent is then reported offloaded and becomes evictable; RFC 8 §6.5 names a chunk reported stored that is stored nowhere as the one wrong answer that loses data."
+    "footer": "With deduplication, offload skips a chunk it is told is already stored, and its local copy can then be dropped. One wrong answer would leave those bytes stored nowhere, so the design leaves deduplication out of the first release. The section decks explain the design, and `docs/internals/architecture.md` describes the code as it is.",
+    "notes": "Today: architecture.md 'Per-Share Block Store Isolation' and 'Block Store — Local Journal Tier' (one journal directory per share), 'Carve' (FastCDC 1/4/16 MiB, dedup against the SyncedHashStore), 'Key Interfaces'; RFC 14 and RFC 23 Appendix B. Design: RFC 0 §1 and RFC 1 (one journal per device), Glossary 'chunk' and §3.1 (the first release does not deduplicate across files), §1.3, RFC 14 §3, RFC 0 Glossary 'control plane'. The footer's reason: RFC 0 §3.1, the decision that cross-file deduplication is off in the first release (its oracle is the one component where a single wrong answer, a chunk reported stored that is stored nowhere, loses data). The chain: with deduplication, offload references an already-stored chunk instead of uploading it, and the extent is then reported offloaded and becomes evictable; RFC 8 §6.5 names a chunk reported stored that is stored nowhere as the one wrong answer that loses data. Rows 3–5, today: architecture.md 'Core Abstraction Layers' and 'Key Interfaces' 1 and 2 (Runtime; Control Plane Store, SQLite single-node or PostgreSQL distributed); CLAUDE.md architecture invariant 2 (Runtime.ApplyIdentityMapping squashes for both adapters; permission checks in pkg/metadata); RFC 14 Appendix B (NFSv4 state in the NFS adapter, SMB leases in the SMB lease manager, byte-range locks in pkg/metadata/lock); RFC 23 Appendix B (API handlers call the Runtime after writing the database). Design: RFC 17 'Start here' (admit and authorise in the service), RFC 23 'Start here' (each node reads the records and applies them). The Settings row leaves out that today the REST API writes the database and then calls the Runtime (RFC 23 Appendix B)."
   },
   "next": {
     "kicker": "Where to go next",
@@ -510,7 +504,7 @@
         "`dt`, one command that runs every test suite"
       ]
     ],
-    "notes": "The home page's sections, in decks.json order. RFC 0 'A guided tour of the set' lists every RFC by what it teaches; RFC 2 (carver), 3 (syncer), 4 (remote tier), 6 (block metadata), 7 (namespace) and 9 (GC) have no deck yet."
+    "notes": "The home page's sections, in decks.json order. RFC 0 'A guided tour of the set' lists every RFC by what it teaches; only the RFCs in this list have a deck so far."
   },
   "scenes": {
     "map": {
@@ -520,7 +514,7 @@
       "fs": "filesystem",
       "fsSub": "service",
       "cp": "management API",
-      "cpSub": "REST API today",
+      "cpSub": "writes records",
       "open": "open state",
       "meta": "metadata store",
       "engine": "engine",

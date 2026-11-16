@@ -3,7 +3,7 @@
     "number": 0,
     "title": "the data lifecycle",
     "path": "docs/internals/rfcs/rfc-0-data-lifecycle.md",
-    "commit": "562b5787e050aa5d8749b8161a5c55de9cdb3060",
+    "commit": "bc7aa998636cd2b1080d934496893911facc7ba2",
     "status": "draft"
   },
   "sources": [

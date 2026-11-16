@@ -3,7 +3,7 @@
     "number": 20,
     "title": "the adapter model",
     "path": "docs/internals/rfcs/rfc-20-adapters.md",
-    "commit": "f7e4d96f7bceb79bc4d9aa9f30c426291ef7cd56",
+    "commit": "b0d540b2db9c5b2358e7f838ef07960fb6f612b0",
     "status": "draft"
   },
   "terms": {
@@ -15,7 +15,7 @@
       "adapter", "core", "pipeline", "codec",
       "handler", "operation-table", "error-table", "compound",
       "connection-state", "client-held-name", "held-request", "callback",
-      "auxiliary-service", "sidecar", "recording-service", "reference-server"
+      "auxiliary-service", "sidecar", "in-memory-service", "recording-service", "reference-server"
     ],
     "conflicts": ["adapter", "session", "rpc", "lease", "handle", "filesystem-service"]
   }

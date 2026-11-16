@@ -6,8 +6,8 @@
     "kicker": "Impara DittoFS · Introduzione",
     "title": "DittoFS, da fuori a dentro",
     "lead": "DittoFS è un file server per client NFS e SMB che conserva i file in un bucket. Questa introduzione racconta chi lo usa, cosa gira al suo interno e il percorso di una scrittura dal client fino al bucket.",
-    "built": "Tratto dai documenti di design di DittoFS e dalla panoramica del codice, al commit 562b578",
-    "notes": "L'unico deck non legato a un solo RFC. Fonti: docs/internals/rfcs/rfc-0-data-lifecycle.md ('Start here', Glossary, §1 Scope, §4.2, §5, §10) per il design, docs/internals/architecture.md per il codice di oggi, e README.md per cos'è DittoFS. Commit 562b578. Gli RFC specificano il design obiettivo; le slide che descrivono il codice di oggi lo dicono. Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per la definizione. Le fonti del badge: RFC 0 e docs/internals/architecture.md al commit 562b578."
+    "built": "Tratto dai documenti di design di DittoFS e dalla panoramica del codice, al commit bc7aa99",
+    "notes": "L'unico deck non legato a un solo RFC. Fonti: docs/internals/rfcs/rfc-0-data-lifecycle.md ('Start here', Glossary, §1 Scope, §4.2, §5, §10) per il design, docs/internals/architecture.md per il codice di oggi, e README.md per cos'è DittoFS. Commit bc7aa99. Gli RFC specificano il design obiettivo; una slide verso la fine confronta il codice di oggi con il design. Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per la definizione. Le fonti del badge: RFC 0 e docs/internals/architecture.md al commit bc7aa99."
   },
   "learn": {
     "kicker": "Prima di iniziare",
@@ -143,8 +143,8 @@
       "Traducono gli errori neutri del servizio nei codici di stato del loro protocollo, con una tabella per protocollo.",
       "Permessi, lock e operazioni sui file non si decidono mai qui."
     ],
-    "footer": "Oggi si trovano in `internal/adapter/nfs` e `internal/adapter/smb`. La sezione Adapter li spiega nel dettaglio.",
-    "notes": "RFC 0 §1.3 (adapter: framing, compound, replay, codici di errore); RFC 20 (il modello degli adapter). La regola 'gli handler di protocollo trattano solo questioni di protocollo' è anche il primo invariante di architettura in CLAUDE.md per il codice di oggi. Versioni dei protocolli da README.md 'Features'."
+    "footer": "La sezione Adapter li spiega nel dettaglio.",
+    "notes": "RFC 0 §1.3 (adapter: framing, compound, replay, codici di errore); RFC 20 (il modello degli adapter). La regola 'gli handler di protocollo trattano solo questioni di protocollo' è anche il primo invariante di architettura in CLAUDE.md per il codice di oggi. Versioni dei protocolli da README.md 'Features'. Il codice di oggi: pkg/adapter/nfs e pkg/adapter/smb, con gli handler sotto internal/adapter (non compare nelle slide; la slide sulle differenze confronta comportamenti, non percorsi)."
   },
   "service": {
     "title": "Il [[filesystem-service|filesystem service]] decide in un solo punto",
@@ -157,8 +157,7 @@
       "**Quota** — lo spazio viene riservato prima che cambi qualcosa.",
       "**Engine** — solo alla fine il contenuto viene letto o scritto."
     ],
-    "footer": "Oggi gli adapter chiamano invece il [[runtime|Runtime]] e `pkg/metadata`.",
-    "notes": "RFC 0 §1.3 (il filesystem service decide e ordina ogni operazione dei client al primary); RFC 17 'Start here' (i sei passi di ogni chiamata) — i nomi dei passi seguono la scena del deck dell'RFC 17. La riga su oggi: architecture.md 'Core Abstraction Layers' (gli adapter passano dal Runtime e da pkg/metadata). Instradamento: RFC 0 'Start here · The same system as a cluster' e §1.3 (ogni shard ha un solo primary; su un nodo è quel nodo)."
+    "notes": "RFC 0 §1.3 (il filesystem service decide e ordina ogni operazione dei client al primary); RFC 17 'Start here' (i sei passi di ogni chiamata) — i nomi dei passi seguono la scena del deck dell'RFC 17. Il codice di oggi, nella slide sulle differenze: architecture.md 'Core Abstraction Layers' (gli adapter passano dal Runtime e da pkg/metadata). Instradamento: RFC 0 'Start here · The same system as a cluster' e §1.3 (ogni shard ha un solo primary; su un nodo è quel nodo)."
   },
   "below": {
     "title": "Sotto il servizio: tre parti",
@@ -186,7 +185,7 @@
       ],
       [
         "[[segment]]",
-        "circa 256 MiB",
+        "fissa; 256 MiB negli esempi",
         "un file sul disco del journal che contiene molti record"
       ],
       [
@@ -205,23 +204,20 @@
         "un insieme di file che appartiene a un solo nodo alla volta"
       ]
     ],
-    "footer": "Il codice di oggi taglia chunk più grandi — da 1 a 16 MiB, 4 MiB in media — e li impacchetta in blocchi da 4 MiB.",
-    "notes": "RFC 0 'The shared cast · Units' e Glossary 'Units at a glance'. Il namespace (un prefisso nel bucket) qui è omesso. Oggi: architecture.md 'Carve: local → remote' (FastCDC min 1 MiB / media 4 MiB / max 16 MiB, impacchettati in blocchi da 4 MiB di default)."
+    "notes": "RFC 0 'The shared cast · Units' e Glossary 'Units at a glance'. Il namespace (un prefisso nel bucket) qui è omesso. Oggi: architecture.md 'Carve: local → remote' (FastCDC min 1 MiB / media 4 MiB / max 16 MiB, impacchettati in blocchi da 4 MiB di default). La dimensione del segment: RFC 0 Glossary 'Units at a glance' (fissa, non è un'impostazione; il valore è aperto, RFC 28 §5 domanda 2; 256 MiB negli esempi). Le dimensioni dei chunk di oggi sono nella slide sulle differenze."
   },
   "control": {
     "title": "Accanto: il [[control-plane|control plane]]",
     "items": [
       "`dfs` è il server: esegue gli adapter e serve una REST API.",
-      "[[dfsctl]] è il suo client a riga di comando, con cui si gestiscono utenti, gruppi, share, store e adapter.",
-      "Oggi il [[runtime|Runtime]] è l'unico punto d'ingresso, e sia gli adapter sia l'API passano da lì.",
-      "Oggi le impostazioni stanno in un database a parte, SQLite oppure PostgreSQL."
+      "[[dfsctl]] è il suo client a riga di comando, con cui si gestiscono utenti, gruppi, share, store e adapter."
     ],
-    "designTitle": "Nel design",
+    "designTitle": "Le impostazioni sono record",
     "design": "Ogni impostazione è un record nel [[metadata-store|metadata store]]. La [[management-api|management API]] scrive i record; ogni [[node|nodo]] li legge e adegua i suoi componenti.",
-    "notes": "README.md (i due binari); architecture.md 'Key Interfaces' 1 e 2 (Runtime, Control Plane Store: SQLite a nodo singolo, PostgreSQL distribuito) e 'Control Plane Pattern'. Il design: RFC 0 Glossary 'control plane'; RFC 23 'Start here · In plain words'. L'Appendice B dell'RFC 23 elenca dove il codice di oggi differisce, per esempio gli handler dell'API chiamano il Runtime direttamente dopo aver scritto il database."
+    "notes": "README.md (i due binari); architecture.md 'Key Interfaces' 1 e 2 (Runtime, Control Plane Store: SQLite a nodo singolo, PostgreSQL distribuito) e 'Control Plane Pattern'. Il design: RFC 0 Glossary 'control plane'; RFC 23 'Start here · In plain words'. L'Appendice B dell'RFC 23 elenca dove il codice di oggi differisce, per esempio gli handler dell'API chiamano il Runtime direttamente dopo aver scritto il database. Il database delle impostazioni di oggi e il Runtime sono nella slide sulle differenze."
   },
   "quizRefuse": {
-    "question": "build01 scrive via NFS su un file che alice-pc tiene aperto via SMB con un [[deny-mode|deny mode]] contro chi scrive. Chi la rifiuta?",
+    "question": "Nel design, build01 scrive via NFS su un file che alice-pc tiene aperto via SMB con un [[deny-mode|deny mode]] contro chi scrive. Chi la rifiuta?",
     "options": [
       "L'adapter NFS, che controlla gli open SMB del file prima di inoltrarla.",
       "L'adapter SMB, che tiene l'open di alice-pc e respinge chi altro vuole scrivere.",
@@ -232,7 +228,7 @@
       "La scrittura NFS non arriva mai all'adapter SMB. Gli open stanno nell'[[open-state|open state]], sotto il servizio, e nessun adapter decide chi può scrivere.",
       "Il [[filesystem-service|filesystem service]] fa passare ogni chiamata per gli stessi passi, e quello dell'open state trova il deny mode di alice-pc e rifiuta la scrittura."
     ],
-    "notes": "RFC 17 'Start here' (i sei passi di ogni chiamata, nello stesso ordine per entrambi i protocolli: la scrittura NFSv3 di build01 viene rifiutata al passo 4 dal deny mode di alice come ErrShareViolation, che l'adapter NFS traduce in un errore NFS; se ogni adapter componesse i passi da sé, l'adapter SMB controllerebbe i deny mode e quello NFS no). RFC 0 §1.3 (gli adapter non decidono nulla; il filesystem service decide e ordina ogni operazione dei client; l'open state sta nello strato sotto). RFC 14 §7 (conflitti tra protocolli). Questo è il design: oggi questo stato vive in ogni adapter più un lock manager condiviso, come dice una slide più avanti."
+    "notes": "RFC 17 'Start here' (i sei passi di ogni chiamata, nello stesso ordine per entrambi i protocolli: la scrittura NFSv3 di build01 viene rifiutata al passo 4 dal deny mode di alice come ErrShareViolation, che l'adapter NFS traduce in un errore NFS; se ogni adapter componesse i passi da sé, l'adapter SMB controllerebbe i deny mode e quello NFS no). RFC 0 §1.3 (gli adapter non decidono nulla; il filesystem service decide e ordina ogni operazione dei client; l'open state sta nello strato sotto). RFC 14 §7 (conflitti tra protocolli). Questo è il design: oggi questo stato vive in ogni adapter più un lock manager condiviso, come dice la slide sulle differenze con il codice di oggi."
   },
   "follow": {
     "kicker": "Segui una scrittura"
@@ -251,7 +247,7 @@
       "Un [[block|blocco]] esce dal bucket solo quando nessun file, [[snapshot|snapshot]] o [[clone]] lo usa."
     ],
     "footer": "Il metadata store registra entro circa un secondo che ogni scrittura è avvenuta. Un flush lo aspetta solo quando copre una sovrascrittura, perché fino ad allora il metadata store punta ancora ai byte vecchi. Una scrittura che allungava soltanto un file o ne riempiva un buco, se va persa prima, lascia il file com'era, più corto o con il buco.",
-    "notes": "RFC 0 'What this RFC promises' punti 1, 3 e 4; §5.1 (il contenuto NON DEVE essere tagliato, hashato o trasferito nel percorso di scrittura; l'existence è confermata in group commit entro existence_age, proposta 1 s, e uno stability point aspetta il commit dell'existence delle sovrascritture pendenti di contenuto confermato). Il punto 5 semplifica 'un blocco è cancellato solo quando nessun file, snapshot o clone fa riferimento a un chunk il cui record lo colloca lì'. Il quarto punto: 'mai dedotto dalla fine di un trasferimento o dal tempo che passa'. Punti 1 e 3 su morte del processo e calo di corrente: RFC 1 'What this RFC promises' punto 1. Il motivo nel piè di pagina: RFC 0 'What this RFC promises' punto 2 (un extent la cui scrittura ha raggiunto lo stability point non si legge mai come il contenuto più vecchio che ha sostituito; se i byte non ci sono più la lettura fallisce) e §10 'Local content corrupt'. Clone e snapshot: RFC 0 Glossary 'Snapshots and backups'. Il caso di allungamento o buco: RFC 0 §10 'Journal device lost' (un append o un riempimento di buco la cui existence era ancora in sospeso non lascia traccia, e il file si legge com'era prima di quella scrittura, più corto o con un buco, non come zeri su dati scritti)."
+    "notes": "RFC 0 'What this RFC promises' punti 1, 3 e 4; §5.1 (il contenuto MUST NOT essere tagliato, hashato o trasferito nel percorso di scrittura; l'existence è confermata in group commit entro existence_age, proposta 1 s, e uno stability point aspetta il commit dell'existence delle sovrascritture pendenti di contenuto confermato). Il punto 5 semplifica 'un blocco è cancellato solo quando nessun file, snapshot o clone fa riferimento a un chunk il cui record lo colloca lì'. Il quarto punto: 'mai dedotto dalla fine di un trasferimento o dal tempo che passa'. Punti 1 e 3 su morte del processo e calo di corrente: RFC 1 'What this RFC promises' punto 1. Il motivo nel piè di pagina: RFC 0 'What this RFC promises' punto 2 (un extent la cui scrittura ha raggiunto lo stability point non si legge mai come il contenuto più vecchio che ha sostituito; se i byte non ci sono più la lettura fallisce) e §10 'Local content corrupt'. Clone e snapshot: RFC 0 Glossary 'Snapshots and backups'. Il caso di allungamento o buco: RFC 0 §10 'Journal device lost' (un append o un riempimento di buco la cui existence era ancora in sospeso non lascia traccia, e il file si legge com'era prima di quella scrittura, più corto o con un buco, non come zeri su dati scritti)."
   },
   "read": {
     "title": "Una lettura a freddo",
@@ -259,11 +255,11 @@
   },
   "partial": {
     "title": "Una lettura a metà: journal e bucket",
-    "notes": "RFC 0 §6.1 (si chiede prima al journal, che restituisce i byte che tiene e gli extent che non tiene; i metadati si interrogano solo su quelli), §6.2 (un fill NON DEVE sovrascrivere un extent che il journal tiene; è facoltativo). RFC 8 §7.1 (metadati solo per ciò che il journal non tiene), §7.2 (nessun byte di un chunk si copia prima che il chunk intero sia verificato; la risposta è in ordine di file), §7.3 (il fill è una decisione), §7.8 (proposta: solo i chunk coperti se i byte mancanti sono al massimo un quarto del blocco e la lettura non è sequenziale; altrimenti il blocco intero). Chunk da circa 256 KiB sono la dimensione del design (RFC 0); disegno non in scala. Oggi una lettura a freddo è una GET a range del blocco impacchettato, verificata con BLAKE3 (architecture.md 'Block Reads'). Il passo 3 dice a parole la regola di §7.8; l'RFC 8 indica il quarto come una proposta fissa, presa dalla letteratura. I quattro chunk sono disegnati a partire dall'offset della lettura; la slide li colloca a metà di K1 perché valga la condizione 'non sequenziale' di §7.8, che l'esempio dell'RFC lascia aperta."
+    "notes": "RFC 0 §6.1 (si chiede prima al journal, che restituisce i byte che tiene e gli extent che non tiene; i metadati si interrogano solo su quelli), §6.2 (un fill MUST NOT sovrascrivere un extent che il journal tiene; è facoltativo). RFC 8 §7.1 (metadati solo per ciò che il journal non tiene), §7.2 (nessun byte di un chunk si copia prima che il chunk intero sia verificato; la risposta è in ordine di file), §7.3 (il fill è una decisione), §7.8 (proposta: solo i chunk coperti se i byte mancanti sono al massimo un quarto del blocco e la lettura non è sequenziale; altrimenti il blocco intero). Chunk da circa 256 KiB sono la dimensione del design (RFC 0); disegno non in scala. Oggi una lettura a freddo è una GET a range del blocco impacchettato, verificata con BLAKE3 (architecture.md 'Block Reads'). Il passo 3 dice a parole la regola di §7.8; l'RFC 8 indica il quarto come una proposta fissa, presa dalla letteratura. I quattro chunk sono disegnati a partire dall'offset della lettura; la slide li colloca a metà di K1 perché valga la condizione 'non sequenziale' di §7.8, che l'esempio dell'RFC lascia aperta."
   },
   "residency": {
     "title": "Due fonti, cinque risposte",
-    "lead": "Per ogni [[extent]], una lettura interroga sia il [[journal]] sia il [[metadata-store|metadata store]]. Le due risposte, messe insieme, danno la [[residency]] dell'extent.",
+    "lead": "Per ogni [[extent]], una lettura interroga prima il [[journal]], e il [[metadata-store|metadata store]] solo su ciò che il journal non ha. Le due risposte, messe insieme, danno la [[residency]] dell'extent.",
     "table": [
       [
         "Journal",
@@ -303,7 +299,7 @@
       ]
     ],
     "footer": "Da solo, il journal non sa distinguere un dato mai scritto da uno scritto e poi perso: in entrambi i casi i byte non li ha. Il metadata store invece lo sa, perché registra che ogni scrittura è avvenuta (la dimensione del file, i suoi buchi, gli intervalli sovrascritti) separatamente dai byte. Per questo una lettura restituisce zeri solo dove il metadata store registra che non è mai stato scritto nulla, o che c'è un buco, per esempio dopo un truncate. La residency si calcola a ogni lettura e non viene mai salvata.",
-    "notes": "RFC 0 §4.2, semplificato: la tabella dell'RFC ha nove righe. Omesse qui: una scrittura oltre EOF prima del commit della sua existence (i metadati dicono buco, il journal la tiene: Dirty), una sovrascrittura di contenuto già in offload il cui chunk è ormai vecchio (Dirty finché tenuta, Lost se scartata — mai il chunk vecchio), e un extent tutto a zero già in offload (Absent, nessun recupero). L'existence è registrata in group commit entro existence_age (proposta: 1 s); fino ad allora l'autorità è il journal (RFC 0 Glossary, 'existence'). Se il disco del journal si perde in quella finestra, un append o il riempimento di un buco non lascia traccia e il file si legge com'era prima di quella scrittura, più corto o con un buco; una sovrascrittura di contenuto confermato ha già aspettato il commit della sua existence al suo stability point, quindi si legge Lost (RFC 0 §10, 'Journal device lost'; §4.2)."
+    "notes": "RFC 0 §4.2, semplificato: la tabella dell'RFC ha nove righe. Omesse qui: una scrittura oltre EOF prima del commit della sua existence (i metadati dicono buco, il journal la tiene: Dirty), una sovrascrittura di contenuto già in offload il cui chunk è ormai vecchio (Dirty finché tenuta, Lost se scartata — mai il chunk vecchio), e un extent tutto a zero già in offload (Absent, nessun recupero). L'existence è registrata in group commit entro existence_age (proposta: 1 s); fino ad allora l'autorità è il journal (RFC 0 Glossary, 'existence'). Se il disco del journal si perde in quella finestra, un append o il riempimento di un buco non lascia traccia e il file si legge com'era prima di quella scrittura, più corto o con un buco; una sovrascrittura di contenuto confermato ha già aspettato il commit della sua existence al suo stability point, quindi si legge Lost (RFC 0 §10, 'Journal device lost'; §4.2). L'introduzione: RFC 0 §6.1 (si chiede prima al journal; ai metadati solo per gli extent che non ha)."
   },
   "quizLost": {
     "question": "Il [[journal]] non ha più un extent che i metadati registrano come scritto, senza chunk corrente. Cosa fa una lettura?",
@@ -343,11 +339,11 @@
       "alice-pc continua a scrivere. Il [[journal]] salva ogni scrittura su disco locale e le risponde come sempre.",
       "Nessun upload va a buon fine, quindi niente di ciò che è stato scritto da quando il bucket si è fermato può subire [[evict]] dal journal.",
       "Una lettura di contenuti la cui unica copia è nel bucket fallisce con un errore. Non restituisce mai zeri.",
-      "Se il journal si riempie, le nuove scritture ricevono [[retry-later]]. I client aspettano e riprovano, e nessuna scrittura già confermata va persa.",
+      "Se il journal si riempie, le nuove scritture aspettano. I client NFS ricevono [[retry-later]] e riprovano. SMB tiene ogni richiesta in sospeso, e risponde disco pieno solo se è ancora in attesa allo scadere del suo timeout. Nessuna scrittura già confermata va persa.",
       "Quando il bucket torna a rispondere, l'offload smaltisce l'arretrato da solo, senza interventi dell'operatore."
     ],
     "footer": "Finché gli upload continuano a fallire, la share segnala una condizione di salute, non solo una riga di log.",
-    "notes": "RFC 0 'Scenarios · The bucket stops answering for an afternoon', passi 1–6, e §10 'Remote tier unavailable', 'Journal at capacity, remote unavailable'. I client NFS ritentano; SMB tiene la richiesta in pending fino a smb_pending_cap. Esito: nessuna scrittura confermata viene scartata per fare spazio; i client invece aspettano."
+    "notes": "RFC 0 'Scenarios · The bucket stops answering for an afternoon', passi 1–6, e §10 'Remote tier unavailable', 'Journal at capacity, remote unavailable'. I client NFS ritentano; SMB tiene la richiesta in pending fino a adapters.smb.pending_timeout, e solo lì risponde STATUS_DISK_FULL (§10 'Journal at capacity, remote available', §10.3). Esito: nessuna scrittura confermata viene scartata per fare spazio; i client invece aspettano."
   },
   "failures": {
     "title": "Ogni guasto ha un comportamento preciso",
@@ -366,7 +362,7 @@
       ],
       [
         "i metadati non si possono scrivere",
-        "le scritture restano in coda nel journal, ma dopo 30 s senza commit dei metadati vengono rifiutate, mentre le letture continuano"
+        "le scritture restano in coda nel journal, ma dopo 30 s senza commit dei metadati ricevono [[retry-later]] finché un commit non riesce, mentre le letture continuano"
       ],
       [
         "il processo va in crash",
@@ -378,7 +374,7 @@
       ]
     ],
     "footer": "Ogni condizione si risolve da sola quando la sua causa sparisce, tranne tre che aspettano un operatore: un disco del journal perso, un metadata store perso e un nodo avviato da un'immagine disco copiata o ripristinata, perché la copia e l'originale potrebbero servire entrambi e rispondere ai client come un unico server.",
-    "notes": "RFC 0 §10, semplificato, e §10.2. La riga completa è 'Journal at capacity, remote available'; il repack è l'RFC 1 §7.2. La riga dei 30 s è il self-fence (§1.4). Disco del journal perso: dopo la presa d'atto dell'operatore, il contenuto mai andato in offload la cui existence era confermata si legge come Lost. Le tre eccezioni (§10.2, 'What this RFC promises'): un dispositivo del journal perso su una share che nessun altro journal tiene, un metadata store perso (un operatore avvia un recovery import dal catalog backup più recente) e un nodo avviato da un'immagine copiata o ripristinata. Perché un'immagine copiata aspetta: RFC 0 §10.2, la decisione sul nodo avviato da un'immagine copiata (due copie che ripartono entrambe risponderebbero ai client come un unico server). È il repack a restituire spazio al journal (RFC 0 §8.2; l'evict da solo non ne libera, §8.1). La prima eccezione del piè di pagina vale per un nodo singolo: lì nessun altro journal ha i contenuti di una share; in un cluster il journal di una replica può prendere la shard senza operatore (§10 'Journal device lost')."
+    "notes": "RFC 0 §10, semplificato, e §10.2. La riga completa è 'Journal at capacity, remote available'; il repack è l'RFC 1 §7.2. La riga dei 30 s è il self-fence (§1.4; §10 'Metadata store stalled or erroring': scritture e stability point ricevono retry-later, le letture continuano e il nodo riprende quando una scrittura va in commit). Disco del journal perso: dopo la presa d'atto dell'operatore, il contenuto mai andato in offload la cui existence era confermata si legge come Lost. Le tre eccezioni (§10.2, 'What this RFC promises'): un dispositivo del journal perso su una share che nessun altro journal tiene, un metadata store perso (un operatore avvia un recovery import dal catalog backup più recente) e un nodo avviato da un'immagine copiata o ripristinata. Perché un'immagine copiata aspetta: RFC 0 §10.2, la decisione sul nodo avviato da un'immagine copiata (due copie che ripartono entrambe risponderebbero ai client come un unico server). È il repack a restituire spazio al journal (RFC 0 §8.2; l'evict da solo non ne libera, §8.1). La prima eccezione del piè di pagina vale per un nodo singolo: lì nessun altro journal ha i contenuti di una share; in un cluster il journal di una replica può prendere la shard senza operatore (§10 'Journal device lost')."
   },
   "quizFull": {
     "question": "Il bucket non risponde da ore e il [[journal]] di N1 è pieno. Cosa succede alla prossima scrittura NFS di build01?",
@@ -406,8 +402,7 @@
       "Un lock NFS è solo consultivo, quindi rifiuta altri lock ma mai letture o scritture.",
       "Un [[caching-grant|caching grant]] in conflitto con una richiesta subisce un [[recall]] prima che la richiesta prosegua."
     ],
-    "footer": "Oggi ogni adapter gestisce da sé gli open e i caching grant del suo protocollo, e i lock sui byte stanno in un unico lock manager condiviso dai due adapter.",
-    "notes": "RFC 14 'In plain words', 'A scenario: an NFS build tool and an SMB editor share one file' e §7 'Conflicts across protocols'. Un caching grant è un lease o oplock SMB, o una delegation NFSv4; il recall avviene nel protocollo di chi lo tiene, qualunque protocollo abbia causato il conflitto. Oggi: RFC 14 Appendice B (stato NFSv4 nell'adapter NFS, lease SMB nel lease manager SMB, lock in pkg/metadata/lock); README.md elenca come funzionanti i break bidirezionali di lease/delegation tra SMB e NFS. La riga su oggi: RFC 14 Appendice B (lo stato NFSv4 nell'adapter NFS, i lease SMB nel lease manager SMB, i lock sui byte in pkg/metadata/lock)."
+    "notes": "RFC 14 'In plain words', 'A scenario: an NFS build tool and an SMB editor share one file' e §7 'Conflicts across protocols'. Un caching grant è un lease o oplock SMB, o una delegation NFSv4; il recall avviene nel protocollo di chi lo tiene, qualunque protocollo abbia causato il conflitto. Oggi: RFC 14 Appendice B (stato NFSv4 nell'adapter NFS, lease SMB nel lease manager SMB, lock in pkg/metadata/lock); README.md elenca come funzionanti i break bidirezionali di lease/delegation tra SMB e NFS. La divisione di oggi è nella slide sulle differenze."
   },
   "identity": {
     "title": "Chi sei, verificato in un unico punto",
@@ -417,8 +412,7 @@
       "Lo [[share-grant|share grant]] dell'utente fissa un tetto, e al suo interno decidono il mode o l'ACL del file.",
       "I permessi dei file si decidono in un solo [[chokepoint]], con un unico modello di ACL per NFS e SMB."
     ],
-    "footer": "Oggi ogni adapter allega a ogni operazione una descrizione del chiamante, un'unica funzione condivisa applica lo squashing per entrambi i protocolli, e i permessi li controlla lo strato dei metadati.",
-    "notes": "RFC 17 (admission, autorizzazione, il chokepoint), RFC 18 (identità e squashing), RFC 19 (un solo modello di ACL, il tetto della share). AUTH_SYS dichiara soltanto un'identità; Kerberos e NTLM la dimostrano — l'Identity neutra registra quale dei due. Oggi: l'invariante di architettura 2 in CLAUDE.md (ogni operazione porta un *metadata.AuthContext; Runtime.ApplyIdentityMapping fa lo squashing in un solo posto per entrambi gli adapter; i controlli dei permessi stanno in pkg/metadata). Squashing: RFC 18 'Start here · In plain words' ('squash: sostituire il principal del chiamante con quello anonimo della share') e il suo esempio di root squash. La riga su oggi a parole: la descrizione del chiamante è metadata.AuthContext, la funzione condivisa di squashing è Runtime.ApplyIdentityMapping e lo strato dei metadati è pkg/metadata."
+    "notes": "RFC 17 (admission, autorizzazione, il chokepoint), RFC 18 (identità e squashing), RFC 19 (un solo modello di ACL, il tetto della share). AUTH_SYS dichiara soltanto un'identità; Kerberos e NTLM la dimostrano — l'Identity neutra registra quale dei due. Oggi: l'invariante di architettura 2 in CLAUDE.md (ogni operazione porta un *metadata.AuthContext; Runtime.ApplyIdentityMapping fa lo squashing in un solo posto per entrambi gli adapter; i controlli dei permessi stanno in pkg/metadata). Squashing: RFC 18 'Start here · In plain words' ('squash: sostituire il principal del chiamante con quello anonimo della share') e il suo esempio di root squash. Il codice di oggi a parole, come lo riassume la slide sulle differenze: la descrizione del chiamante è metadata.AuthContext, la funzione condivisa di squashing è Runtime.ApplyIdentityMapping e lo strato dei metadati è pkg/metadata."
   },
   "horizon": {
     "kicker": "L'ambito, e il codice di oggi"
@@ -455,22 +449,22 @@
       ],
       [
         "Gli adapter chiamano",
-        "il [[runtime|Runtime]] e `pkg/metadata`",
-        "un solo [[filesystem-service|filesystem service]]"
+        "il [[runtime|Runtime]], che applica lo squashing delle identità, e `pkg/metadata`, che controlla i permessi",
+        "un solo [[filesystem-service|filesystem service]], che fa entrambe le cose"
       ],
       [
         "[[open-state|Open state]]",
-        "in ogni adapter, più un lock manager",
+        "open e caching grant in ogni adapter, lock in un unico lock manager condiviso",
         "una tabella per file, sul suo [[primary]]"
       ],
       [
         "Impostazioni",
-        "un database a parte, del control plane",
-        "record nel [[metadata-store|metadata store]]"
+        "un database a parte del control plane, SQLite o PostgreSQL",
+        "record nel [[metadata-store|metadata store]], applicati da ogni [[node|nodo]]"
       ]
     ],
-    "footer": "Con la deduplica, l'offload salta un chunk che risulta già salvato, e poi la copia locale si può scartare. Una sola risposta sbagliata lascerebbe quei byte senza alcuna copia, perciò il design esclude la deduplica dalla prima release. I deck delle sezioni spiegano il design, mentre la guida all'architettura del repository, `docs/internals/architecture.md`, descrive il codice com'è.",
-    "notes": "Oggi: architecture.md 'Per-Share Block Store Isolation' e 'Block Store — Local Journal Tier' (una directory di journal per share), 'Carve' (FastCDC 1/4/16 MiB, dedup contro il SyncedHashStore), 'Key Interfaces'; Appendice B degli RFC 14 e 23. Design: RFC 0 §1 e RFC 1 (un journal per dispositivo), Glossary 'chunk' e §3.1 (la prima release non deduplica tra file), §1.3, RFC 14 §3, RFC 0 Glossary 'control plane'. Il motivo nel piè di pagina: RFC 0 §3.1, la decisione che esclude la deduplica tra file dalla prima release (il suo oracolo è l'unico componente in cui una sola risposta sbagliata, un chunk dato per salvato che non è salvato da nessuna parte, fa perdere dati). La catena: con la deduplica l'offload fa riferimento a un chunk già salvato invece di caricarlo, poi l'extent risulta in offload e diventa scartabile; RFC 8 §6.5 indica un chunk dato per salvato che non è salvato da nessuna parte come l'unica risposta sbagliata che fa perdere dati."
+    "footer": "Con la deduplica, l'offload salta un chunk che risulta già salvato, e poi la copia locale si può scartare. Una sola risposta sbagliata lascerebbe quei byte senza alcuna copia, perciò il design esclude la deduplica dalla prima release. I deck delle sezioni spiegano il design, mentre `docs/internals/architecture.md` descrive il codice com'è.",
+    "notes": "Oggi: architecture.md 'Per-Share Block Store Isolation' e 'Block Store — Local Journal Tier' (una directory di journal per share), 'Carve' (FastCDC 1/4/16 MiB, dedup contro il SyncedHashStore), 'Key Interfaces'; Appendice B degli RFC 14 e 23. Design: RFC 0 §1 e RFC 1 (un journal per dispositivo), Glossary 'chunk' e §3.1 (la prima release non deduplica tra file), §1.3, RFC 14 §3, RFC 0 Glossary 'control plane'. Il motivo nel piè di pagina: RFC 0 §3.1, la decisione che esclude la deduplica tra file dalla prima release (il suo oracolo è l'unico componente in cui una sola risposta sbagliata, un chunk dato per salvato che non è salvato da nessuna parte, fa perdere dati). La catena: con la deduplica l'offload fa riferimento a un chunk già salvato invece di caricarlo, poi l'extent risulta in offload e diventa scartabile; RFC 8 §6.5 indica un chunk dato per salvato che non è salvato da nessuna parte come l'unica risposta sbagliata che fa perdere dati. Righe 3–5, oggi: architecture.md 'Core Abstraction Layers' e 'Key Interfaces' 1 e 2 (Runtime; Control Plane Store, SQLite a nodo singolo o PostgreSQL distribuito); l'invariante di architettura 2 in CLAUDE.md (Runtime.ApplyIdentityMapping fa lo squashing per entrambi gli adapter; i permessi si controllano in pkg/metadata); RFC 14 Appendice B (stato NFSv4 nell'adapter NFS, lease SMB nel lease manager SMB, lock sui byte in pkg/metadata/lock); RFC 23 Appendice B (gli handler dell'API chiamano il Runtime dopo aver scritto il database). Design: RFC 17 'Start here' (admission e autorizzazione nel servizio), RFC 23 'Start here' (ogni nodo legge i record e li applica). La riga Impostazioni tralascia che oggi la REST API scrive il database e poi chiama il Runtime (RFC 23 Appendice B)."
   },
   "next": {
     "kicker": "Dove andare dopo",
@@ -510,7 +504,7 @@
         "`dt`, un comando che esegue tutte le suite di test"
       ]
     ],
-    "notes": "Le sezioni della home page, nell'ordine di decks.json. RFC 0 'A guided tour of the set' elenca ogni RFC per ciò che insegna; gli RFC 2 (carver), 3 (syncer), 4 (remote tier), 6 (block metadata), 7 (namespace) e 9 (GC) non hanno ancora un deck."
+    "notes": "Le sezioni della home page, nell'ordine di decks.json. RFC 0 'A guided tour of the set' elenca ogni RFC per ciò che insegna; per ora hanno un deck solo gli RFC di questo elenco."
   },
   "scenes": {
     "map": {
@@ -520,7 +514,7 @@
       "fs": "filesystem",
       "fsSub": "service",
       "cp": "management API",
-      "cpSub": "oggi REST API",
+      "cpSub": "scrive i record",
       "open": "open state",
       "meta": "metadata store",
       "engine": "engine",

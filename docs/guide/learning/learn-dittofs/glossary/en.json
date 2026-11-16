@@ -71,8 +71,8 @@
   },
   "core": {
     "name": "core",
-    "short": "The adapter package shared by every protocol. It holds what is the same everywhere, written once: listeners, connections, the pipeline, drain and buffers.",
-    "long": "`internal/adapter/core`: what is the same for every protocol, written once — listeners, connections, the pipeline, the compound runner, [[held-request|held requests]], middleware, buffers, the error-table type."
+    "short": "The adapter package shared by every protocol. It holds what is the same everywhere, written once: listeners, connections, the pipeline and drain.",
+    "long": "`internal/adapter/core`: what is the same for every protocol, written once — listeners, connections, the pipeline, the compound runner, [[held-request|held requests]], middleware, the error-table type. Pooled buffers are not core's: they belong to `pkg/resources` (RFC 24)."
   },
   "pipeline": {
     "name": "pipeline",
@@ -136,14 +136,14 @@
     "long": "Something the node runs beside one or more adapters that reaches no service and holds no client state — mDNS, WS-Discovery, the port mapper, rpcbind registration. Its failure fails only itself."
   },
   "recording-service": {
-    "name": "recording service",
-    "short": "A fake filesystem service that records the calls a handler makes, so a test can check the translation.",
-    "long": "A fake of the filesystem service that records each call and returns scripted answers. Handler tests use it to prove the right call, with the right arguments, is made."
+    "name": "recording wrapper",
+    "short": "A test wrapper around the [[in-memory-service|in-memory service]] that records each call and passes it through, never answering in its place. Handler tests read its record to check that a request made one mutating call.",
+    "long": "Lives in `vfstest`, around the real `*vfs.Filesystem` of the in-memory service. It keeps each call with its reference and its answer and passes it through, so a test asserts on what reached the service: a handler test fails when a request leaves more than one mutating call. Error answers come from a separate fault wrapper."
   },
   "null-service": {
     "name": "null service",
-    "short": "A filesystem service that does nothing, so tests and benchmarks measure the adapter alone.",
-    "long": "A filesystem service that does nothing, so `core`'s tests and the benchmarks measure the adapter's own cost and behaviour, not a store's."
+    "short": "A filesystem service that answers every call at once from memory. Only the allocation gate and the benchmarks use it, to measure the adapter's own cost; nothing checks its answers.",
+    "long": "A `vfs.Service` that answers every call at once, so the pipeline benchmarks and the allocation gate measure the adapter's own cost per request, with no storage underneath. It is a load, not a test double: nothing asserts on its answers. The `core` layer's tests run on the [[in-memory-service|in-memory service]] instead."
   },
   "reference-server": {
     "name": "reference server",
@@ -158,7 +158,7 @@
   "drain": {
     "name": "drain",
     "short": "Stopping gently. The server accepts no new connections, lets the requests in flight finish, then closes every connection.",
-    "long": "While a node drains, it accepts no new connection. Requests that have already reached the service run until they are answered, and other new requests get the protocol's signal to move elsewhere. Draining ends when no request is left, or at the drain deadline."
+    "long": "While a node drains, it accepts no new connection but keeps reading the open ones. Requests that release or flush state run, and so do those already handed to the service. Any other new request gets a move signal only when the service names another node for its share; otherwise it gets no reply (over SMB, an interim `STATUS_PENDING` that returns its credits), and the client sends it again after it reconnects. Draining ends when no request is left, or at the drain deadline."
   },
   "identity": {
     "name": "Identity",
@@ -267,7 +267,7 @@
   },
   "segment": {
     "name": "segment",
-    "short": "An append-only journal file of records. It has a size cap and is sealed when full, and its disk space comes back only when the whole segment is freed.",
+    "short": "An append-only journal file of records. It has a fixed size, is sealed when full, and its disk space comes back only when the whole segment is freed.",
     "long": "A local append-only file of [[record|records]], capped at a fixed size (256 MiB in the RFC's examples) and sealed when full. Its space returns only when the whole segment is deleted or recycled as a spare: by [[repack]], after copying its live records forward, or by the journal itself once nothing in it is live."
   },
   "held-extent": {
@@ -277,8 +277,8 @@
   },
   "offloaded-bit": {
     "name": "offloaded bit",
-    "short": "A mark per extent saying its bytes are already in the remote tier. The engine's [[report]] sets it after an upload, and a [[fill]] sets it too, since fetched bytes came from the remote tier. The journal releases nothing without it.",
-    "long": "The journal's per-extent mark that it was told the bytes are offloaded; set by a [[report]] or a [[fill]], and needed before [[release]]. Never consulted to answer a read. It can be wrong only in the safe direction: it can call offloaded bytes dirty, never dirty bytes offloaded."
+    "short": "A mark per extent saying its bytes are already in the remote tier. The engine's [[report]] sets it after an upload, a [[fill]] sets it, since fetched bytes came from the remote tier, and `MarkOffloaded` sets it when the engine reseeds the bits after a restart. The journal releases nothing without it.",
+    "long": "The journal's per-extent mark that it was told the bytes are offloaded; set by a [[report]], a [[fill]] or `MarkOffloaded`, and needed before [[release]]. Never consulted to answer a read. It can be wrong only in the safe direction: it can call offloaded bytes dirty, never dirty bytes offloaded."
   },
   "offer": {
     "name": "offer",
@@ -371,7 +371,7 @@
   "sequence-number": {
     "name": "sequence number",
     "short": "The order in which this journal appended its records. The number means nothing outside this journal.",
-    "long": "The order this journal appended its records in. Nearly every append takes a new one, a repack copy included; a record re-appended after a failed sync keeps its own. It orders records at recovery, never during a read."
+    "long": "The order this journal appended its records in. Nearly every append takes a new one, a repack copy of content included; a record re-appended after a failed sync, or a header-only record that repack carries forward, keeps its own. It orders records at recovery; a read only checks it against the record it finds."
   },
   "storage-binding": {
     "name": "storage binding",
@@ -417,7 +417,7 @@
   },
   "work-queue": {
     "name": "work queue",
-    "short": "An in-memory queue, one per device journal, that turns events into work: offload passes, batches of removals, and prunes of settled removal records.",
+    "short": "An in-memory queue, one per device journal, that turns events into work: offload passes, batches of removals, and prunes of a file's superseded overwrite records.",
     "long": "Fed by `Dirty` events, the age tick, capacity pressure and pending removals, and fair between [[share|shares]] by budget. Posting never blocks, one key is in at most one run, and nothing is stored: it is rebuilt from the [[journal]], the [[put-intent|put intents]] and the metadata records whenever the node gains a shard."
   },
   "offload-pipeline": {
@@ -484,8 +484,8 @@
   },
   "shard-incarnation": {
     "name": "shard incarnation",
-    "short": "A number in the shard record, raised every time a node begins serving the shard as primary.",
-    "long": "A number in the shard record raised each time a node begins serving the shard as [[primary]], every start included. It fences nothing; it feeds the [[write-verifier|write verifier]] and names the [[grace-instance]]."
+    "short": "A number in the shard record, raised each time a node or a journal begins serving the shard as primary: every node start and every journal attach, though not an in-place reopen.",
+    "long": "A number in the shard record raised each time a node or a journal begins serving the shard as [[primary]]: every node start, a re-claim and every journal attach, though not an in-place reopen of the journal. It fences nothing; it feeds the [[write-verifier|write verifier]] and names the [[grace-instance]]."
   },
   "client-id": {
     "name": "client (client ID)",
@@ -505,7 +505,7 @@
   "byte-range-lock": {
     "name": "byte-range lock",
     "short": "A lock on a range of a file, held by a lock owner. SMB locks are mandatory, NFS locks advisory.",
-    "long": "A lock on a range [offset, last] of a file, over 64 bits, held by a [[lock-owner]]. SMB locks are mandatory: they refuse I/O across the range. NFS locks are advisory: they refuse only other locks."
+    "long": "A lock on a range [offset, last] of a file, over 64 bits, held by a [[lock-owner]]. SMB locks are mandatory: they refuse the reads and writes across their range that the lock forbids. NFS locks are advisory: they refuse only other locks."
   },
   "lock-waiter": {
     "name": "lock waiter",
@@ -524,8 +524,8 @@
   },
   "client-lease": {
     "name": "client lease",
-    "short": "How long the server keeps the state of a client it no longer hears from: 90 s, renewed by every request.",
-    "long": "How long the server keeps a silent client's state: 90 s, fixed, renewed by every request. Silent for a whole period, the client is gone and all it held is released. Not a node lease, nor an SMB [[lease]]."
+    "short": "How long the server keeps the state of a client it no longer hears from: 90 s, renewed by every request. Not every client has one: an NLM host has none.",
+    "long": "How long the server keeps a silent client's state: 90 s, fixed, renewed by every request. Silent for a whole period, the client is gone and all it held is released. Not every client has one: an NLM host has none, and an SMB-durable open's `Timeout` plays that part for a client without one. Not a node lease, nor an SMB [[lease]]."
   },
   "lease-owner": {
     "name": "lease owner",
@@ -571,7 +571,7 @@
   },
   "grant-budget": {
     "name": "grant budget",
-    "short": "Each primary gives one client at most 4,096 caching grants. When the client reaches that, it is asked to keep no more than 2,048.",
+    "short": "Each primary gives one client at most 4,096 caching grants. At that number the client is offered no new grant and, where its protocol can ask, is asked to give grants back down to 2,048.",
     "long": "Each [[primary]] keeps a client's caching grants within 4,096. At the budget no new grant is offered and, where the protocol allows, the client is asked to return grants down to 2,048. Volatile."
   },
   "delete-pending": {
@@ -618,8 +618,8 @@
   },
   "fence-records": {
     "name": "fence records",
-    "short": "Two records per file holding the shard and its [[epoch|shard epoch]], which every commit of the file must carry. Two commits of the same file at once conflict on them, so only one succeeds.",
-    "long": "Two records per file, `F_x` and `F_o`, each holding the (shard, epoch) the file's commits must carry; read and written by every commit of their path, so two concurrent commits of one file conflict. On a single node only the epoch comparison is moot (RFC 0, RFC 6 §5.4)."
+    "short": "Two records per file holding the shard and its [[epoch|shard epoch]] that the file's commits must carry, one for the existence path and one for the offload path. Every commit checks its path's record; only commits that must exclude each other write it.",
+    "long": "Two records per file, `F_x` for the existence path and `F_o` for the offload path, each holding the (shard, epoch) its commits must carry. Every commit [[guard|guards]] its path's fence, so it fails if the epoch moved. Only commits that must exclude each other write it: a primary under a new epoch, removals and releases, and, for `F_o`, every offload commit. On a single node only the epoch comparison is moot (RFC 0, RFC 6 §5.4)."
   },
   "entity": {
     "name": "entity",
@@ -667,7 +667,7 @@
   "store-group-commit": {
     "name": "group commit (store)",
     "short": "Commits that are ready at the same time share one sync of the device. None of them is acknowledged before that sync completes.",
-    "long": "Commits ready at the same moment share one sync of the device, and none is acknowledged before it. The embedded backend MUST do it: one sync per commit caps a store at a few hundred commits a second.",
+    "long": "Commits ready at the same moment share one sync of the device, and none is acknowledged before it. The embedded backend does it, because one sync per commit would cap a store at a few hundred commits a second.",
     "clash": "Not the [[engine]]'s [[group-commit]], which batches many files' existence into one metadata transaction. This one shares a device sync among commits."
   },
   "store-time": {
@@ -740,7 +740,7 @@
   },
   "quota-reservation": {
     "name": "quota reservation",
-    "short": "Bytes or inodes a call sets aside against every quota before it changes anything. The reservation is released when the call commits.",
+    "short": "Bytes or inodes a call sets aside against every quota before it changes anything. The reservation is released when the commit recording its charge lands, or when the call fails.",
     "long": "What a write, a create or a copy sets aside against each quota scope before anything changes: the bytes it adds, or one inode. Held in the primary's memory, and released exactly once, however its bytes end (committed, committed from a loss record, or dropped), or when the call fails."
   },
   "file-release": {
@@ -803,8 +803,8 @@
   },
   "continuously-available": {
     "name": "continuously available (CA)",
-    "short": "A share setting that promises handles outlive the loss of a server. On such a share DittoFS grants persistent handles, serves Witness, and makes every write stable.",
-    "long": "A [[share]] marked continuously available says so to SMB 3.x clients at tree connect. There [[persistent-handle|persistent handles]] are granted, [[witness|Witness]] is served, and every write on the share, through any open, is synced before it is acknowledged."
+    "short": "A share setting that promises handles outlive the loss of a server. On such a share DittoFS grants persistent handles and makes every write stable, and in a cluster it also serves Witness.",
+    "long": "A [[share]] marked continuously available says so to SMB 3.x clients at tree connect. There [[persistent-handle|persistent handles]] are granted, and every write on the share, through any open, is synced before it is acknowledged. In a cluster [[witness|Witness]] is served too; a single node serves none."
   },
   "client-guid": {
     "name": "ClientGuid",
@@ -838,7 +838,7 @@
   },
   "suite": {
     "name": "suite",
-    "short": "A command that runs many tests, such as pjdfstest or the Go unit tests. DittoFS has 15.",
+    "short": "A command that runs many tests, such as pjdfstest or the Go unit tests. `test/suites.yaml` lists every one.",
     "long": "A command that runs many tests: `go test`, pjdfstest through `prove`, pynfs, smbtorture, the system scenarios. The suite finds its own tests, so adding a test is adding a file, not a line in the [[registry]]."
   },
   "suite-option": {
@@ -938,8 +938,8 @@
   },
   "not-run": {
     "name": "not run",
-    "short": "Exit status 2, meaning something did not run, for example because a need was unmet, the fixture failed or a test skipped without being listed. It never counts as a pass.",
-    "long": "The result of a [[cell]] that didn't test what it claims: an unmet need under `--ci`, a [[fixture]] that failed its check or timed out, nothing ran, tests a timeout left unstarted, an incomplete result, an unlisted skip. Exit 2, never a pass."
+    "short": "Exit status 2, meaning something did not run: for example a need was unmet under `--ci`, the fixture failed, or, in a suite with a known-failure list, a test skipped without being listed. It never counts as a pass.",
+    "long": "The result of a [[cell]] that didn't test what it claims: an unmet need under `--ci`, a [[fixture]] that failed its check or timed out, nothing ran, tests a timeout left unstarted, an incomplete result, or, in a suite with a known-failure list, an unlisted skip. Exit 2, never a pass."
   },
   "quarantine": {
     "name": "quarantine",
@@ -953,8 +953,8 @@
   },
   "retry": {
     "name": "retry",
-    "short": "`--retry 1` runs only the new failures again, on develop and on scheduled runs, and never on pull requests.",
-    "long": "Running a [[cell]]'s new failures again, on its own [[fixture]]: `--retry 1` on develop and the schedule, never on a pull request or a dispatch, so a PR can't merge a [[flaky]] test it introduced. A fixture's setup is never retried."
+    "short": "`--retry 1` runs only the new failures again, after merges and on scheduled runs, and never on pull requests.",
+    "long": "Running a [[cell]]'s new failures again, on its own [[fixture]]: `--retry 1` after merges and on the schedule, never on a pull request or a dispatch, so a PR can't merge a [[flaky]] test it introduced. A fixture's setup is never retried."
   },
   "develop-red": {
     "name": "develop-red issue",
@@ -1043,7 +1043,7 @@
   "floor-bucket": {
     "name": "floor bucket",
     "short": "One of 4,096 version numbers the journal keeps, picked by a hash of the file ID. A [[fill]] for a file the journal holds nothing of is checked against that file's bucket, since the file has no version of its own there.",
-    "long": "The per-file [[change-version]] is bounded by a fixed table of 4,096 floor buckets, indexed by a hash of the `FileID`. Dropping a file's index entry raises its bucket to the entry's version, and at open every bucket starts at the highest version on disk. A file with no entry is compared against its bucket, so a stale fill is refused even once the entry is gone."
+    "long": "The per-file [[change-version]] is bounded by a fixed table of 4,096 floor buckets, indexed by a hash of the `FileID`. Dropping a file's index entry raises its bucket to the entry's version. At open every bucket starts at the higher of the highest version on disk and the floor the engine passes, and attaching a share raises every bucket to that floor. A file with no entry is compared against its bucket, so a stale fill is refused even once the entry is gone."
   },
   "version-limit": {
     "name": "version limit",
@@ -1109,5 +1109,10 @@
     "name": "takeover (failover)",
     "short": "(cluster) An unplanned change of a [[shard]]'s [[primary]], often called a failover. The primary's [[node-lease|node lease]] has lapsed, so another node that holds a copy of the shard's writes becomes primary, and a grace period follows.",
     "long": "(cluster) A replica, a node other than the primary whose journal holds a copy of every write to the shard, becoming [[primary]] after the primary's [[node-lease|node lease]] lapsed. The old primary's open state is lost, so a [[grace-period]] follows. It raises the shard's [[epoch]], so calls still aimed at the old primary are refused. A planned change is a [[handover]]."
+  },
+  "in-memory-service": {
+    "name": "in-memory service",
+    "short": "The real filesystem service running over memory stores (`memory.New`), held to the same conformance suite as the production one. Handler tests run against it and check the state it holds afterwards.",
+    "long": "`memory.New`: the real `*vfs.Filesystem` over memory stores, passing the service's conformance suite. A handler test checks the encoded reply and the state the service holds afterwards: an SMB `CREATE` whose deny mode is dropped still opens the file, but a second, conflicting open that succeeds shows the field is missing. Error answers come from a fault wrapper around it that fails a named method on cue."
   }
 }

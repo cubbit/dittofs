@@ -44,28 +44,49 @@
   const sections = await loadJSON('decks.json');
   let lang = pickLang();
 
+  // Only the UI strings are fetched: the cards show section names, blurbs,
+  // part names and the RFC number, all of which are there or in decks.json.
+  // A deck's own strings are fetched only for a part the UI strings do not
+  // name, and a deck that fails to load costs only its own title.
+  const uiCache = new Map();
+  const uiStrings = (l) => {
+    if (!uiCache.has(l)) {
+      uiCache.set(l, Promise.all([
+        loadJSON(`i18n/${l}.json`, { optional: true }).catch(() => null),
+        loadJSON(`i18n/${SOURCE_LANG}.json`),
+      ]).then(([own, en]) => new Strings(own, en), (err) => { uiCache.delete(l); throw err; }));
+    }
+    return uiCache.get(l);
+  };
+  const deckTitle = async (d) => {
+    try {
+      const own = await loadJSON(`${d.path}i18n/${lang}.json`, { optional: true });
+      const en = own ? null : await loadJSON(`${d.path}i18n/${SOURCE_LANG}.json`);
+      return renderPlain(new Strings(own, en).get('cover.title').value ?? d.path, (id) => id);
+    } catch {
+      return d.path;
+    }
+  };
+
   async function render() {
     document.documentElement.lang = lang;
-    const ui = new Strings(await loadJSON(`i18n/${lang}.json`, { optional: true }), await loadJSON(`i18n/${SOURCE_LANG}.json`));
+    const ui = await uiStrings(lang);
     const t = (k) => ui.get(k).value ?? k;
     document.querySelectorAll('[data-ui]').forEach((el) => { el.textContent = t(el.dataset.ui); });
     document.title = t('catalogue.title');
     // A section built on more than one RFC names its sources itself.
-    const source = (meta, sec) => escapeHtml(ui.get(`sections.${sec}.from`).value ?? t('catalogue.from').replace('{n}', meta.rfc.number));
+    const source = (d, sec) => escapeHtml(ui.get(`sections.${sec}.from`).value ?? t('catalogue.from').replace('{n}', d.rfc));
     const items = await Promise.all(sections.map(async (sec) => {
-      const decks = await Promise.all(sec.decks.map(async (d) => {
-        const strings = new Strings(await loadJSON(`${d.path}i18n/${lang}.json`, { optional: true }), await loadJSON(`${d.path}i18n/${SOURCE_LANG}.json`));
-        return { ...d, meta: await loadJSON(`${d.path}deck.json`), title: renderPlain(strings.get('cover.title').value ?? '', (id) => id) };
-      }));
       const head = `<div class="t">${escapeHtml(t(`sections.${sec.section}.name`))}</div>
         <div class="d">${escapeHtml(t(`sections.${sec.section}.blurb`))}</div>`;
-      if (decks.length === 1) {
-        const d = decks[0];
-        return `<li><a class="card" href="${d.path}?lang=${lang}">${head}<div class="s">${source(d.meta, sec.section)}</div></a></li>`;
+      if (sec.decks.length === 1) {
+        const d = sec.decks[0];
+        return `<li><a class="card" href="${d.path}?lang=${lang}">${head}<div class="s">${source(d, sec.section)}</div></a></li>`;
       }
-      const parts = decks.map((d, i) => `<a class="part" href="${d.path}?lang=${lang}">
-        <div class="pt">${i + 1} · ${escapeHtml(ui.get(`sections.${sec.section}.parts`).value?.[i] ?? d.title)}</div><div class="s">${source(d.meta, sec.section)}</div></a>`).join('');
-      return `<li><div class="card">${head}<div class="parts">${parts}</div></div></li>`;
+      const names = ui.get(`sections.${sec.section}.parts`).value || [];
+      const parts = await Promise.all(sec.decks.map(async (d, i) => `<a class="part" href="${d.path}?lang=${lang}">
+        <div class="pt">${i + 1} · ${escapeHtml(names[i] ?? await deckTitle(d))}</div><div class="s">${source(d, sec.section)}</div></a>`));
+      return `<li><div class="card">${head}<div class="parts">${parts.join('')}</div></div></li>`;
     }));
     document.querySelector('.decks').innerHTML = items.join('');
   }
@@ -81,7 +102,7 @@
       lang = l.id;
       rememberLang(lang);
       bar.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-      await render();
+      await render().catch((err) => console.error(err));
     });
     bar.appendChild(b);
   }

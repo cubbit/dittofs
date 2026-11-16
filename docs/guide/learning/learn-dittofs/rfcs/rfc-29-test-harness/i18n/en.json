@@ -1,12 +1,13 @@
 {
+  "title": "RFC 29 — the test harness",
   "glossaryKicker": "Glossary",
   "glossaryTitle": "Every term in this deck",
   "cover": {
     "kicker": "Learn DittoFS · RFC 29",
     "title": "One [[dt|test harness]]",
     "lead": "One command runs every test suite from one list and reports in one result format, and a run that tested nothing can never come out green.",
-    "built": "Built from RFC 29 at a0a540b",
-    "notes": "Source: docs/internals/rfcs/rfc-29-test-harness.md, commit a0a540b. The RFC describes the harness the project wants to end up with; this deck follows its fifth revision. Keys: → next, S speaker notes. Click any underlined term for its definition."
+    "built": "Built from RFC 29 at 06b1e48",
+    "notes": "Source: docs/internals/rfcs/rfc-29-test-harness.md, commit 06b1e48. The RFC describes the harness the project wants to end up with; this deck follows its fifth revision. Keys: → next, S speaker notes. Click any underlined term for its definition."
   },
   "intro": {
     "kicker": "Before we start",
@@ -25,20 +26,20 @@
     "kicker": "The problem"
   },
   "ways": {
-    "title": "Every [[suite]] runs its own way",
+    "title": "Before [[dt]] (October 2026), every [[suite]] ran its own way",
     "n1": "15",
-    "w1": "test suites, and each one is started and reports its results in its own way",
+    "w1": "test suites, and each one was started and reported its results in its own way",
     "n2": "18",
-    "w2": "CI workflows, which start about 30 jobs for every pull request that changes more than documentation",
+    "w2": "CI workflows, which started about 30 jobs for every pull request that changed more than documentation",
     "n3": "35",
-    "w3": "glue scripts, about 8,900 lines in all, sit between CI and the test tools",
+    "w3": "glue scripts, about 8,900 lines in all, sat between CI and the test tools",
     "n4": "5+",
-    "w4": "places where the same server setup is written out again",
+    "w4": "places where the same server setup was written out again",
     "n5": "25–40 min",
-    "w5": "is how long a pull request waits for its slowest workflow to finish",
+    "w5": "was how long a pull request waited for its slowest workflow to finish",
     "n6": "4",
-    "w6": "kinds of check can block a merge: unit tests, integration tests, lint and security scans",
-    "notes": "Summary and §1 Why. The script count: 35 of the 92 shell scripts under test/ and .github/scripts/; the Summary says about 8,900 lines, §3 and Appendix A about 8,860. Server setup written in at least five places: the two bootstrap.sh, setup-posix.sh and two jobs of smb-client-compat.yml. PR times: 2026-10-07, 300 PR workflow runs; Conformance Suites 23 min median and 39 at p90. Required checks: lint and security only until 2026-10-08, then Unit and Integration Tests too."
+    "w6": "kinds of check could block a merge: unit tests, integration tests, lint and security scans",
+    "notes": "Summary and §1 Why. The script count: 35 of the 92 shell scripts under test/ and .github/scripts/; the Summary says about 8,900 lines, §3 and Appendix A about 8,860. Server setup written in at least five places: the two bootstrap.sh, setup-posix.sh and two jobs of smb-client-compat.yml. PR times: 2026-10-07, 300 PR workflow runs; Conformance Suites 23 min median and 39 at p90. Required checks: lint and security only until 2026-10-08, then Unit and Integration Tests too. These figures are the RFC's own measurements from October 2026, taken before dt: they show the problem the RFC answers, not the state of CI after it."
   },
   "silent": {
     "title": "Green that tested nothing",
@@ -74,12 +75,12 @@
   "unheard": {
     "title": "Red that nobody heard",
     "items": [
-      "The nightly conformance run has failed every night since 2026-09-10, but the job that summarises it stays green.",
+      "The nightly conformance run had failed every night since 2026-09-10, while the job that summarised it stayed green.",
       "The AD-DC suite, which tests DittoFS against an Active Directory domain controller, failed on every run on develop after one pull request broke it, and nobody was told.",
       "The alarm that warned when develop went red, an e-mail and an issue, was removed, because [[flaky]] smbtorture subtests set it off all the time.",
-      "The 42 [[system-scenario|system scenarios]], scripts that run a real server and real clients and often inject a fault, run twice a day on a dedicated host, outside every CI job. About half fail on purpose, because they reproduce open bugs, but no list says which ones."
+      "In October 2026, the 42 [[system-scenario|system scenarios]], scripts that run a real server and real clients and often inject a fault, ran twice a day on a dedicated host, outside every CI job. About half failed on purpose, because they reproduce open bugs, but no list said which ones."
     ],
-    "notes": "§1, 'Nobody hears when develop goes red' and 'Scenarios carry no signal'. The nightly failure: its baseline job pushes to develop and the ruleset refuses (#2997). AD-DC: one test still asked for the removed memory metadata store. The alarm (e-mail and issue) was added in #1170 and removed in #1705 (Appendix A). The system scenarios: §4.1's system entry ('a real server in a container, real clients, faults injected'). AD-DC: an option of the integration suite, run against the AD-DC service container (§4.1, §3)."
+    "notes": "§1, 'Nobody hears when develop goes red' and 'Scenarios carry no signal'. The nightly failure: its baseline job pushes to develop and the ruleset refuses (#2997). AD-DC: one test still asked for the removed memory metadata store. The alarm (e-mail and issue) was added in #1170 and removed in #1705 (Appendix A). The system scenarios: §4.1's system entry ('a real server in a container, real clients, faults injected'). AD-DC: an option of the integration suite, run against the AD-DC service container (§4.1, §3). The slide describes October 2026, before dt. A gate that needs every blocking job is what stops a failing job from hiding behind a green summary, as the nightly's baseline job did (§4.8)."
   },
   "wrappers": {
     "title": "Wrappers around wrappers",
@@ -127,9 +128,9 @@
       "The [[known-failure|known-failure]] lists carry over as data, and so do `dfsbench`, DittoFS's benchmark tool, and `setup.sh`, the script that runs the [[system-scenario|system scenarios]]."
     ],
     "goesTitle": "What goes",
-    "goes": "35 of the 92 shell scripts under `test/` and `.github/scripts/` are deleted, about 8,860 lines. They are the dispatcher, each suite's setup, run and grading scripts, and the Makefile's `test-*` targets.",
+    "goes": "35 of the 92 shell scripts under `test/` and `.github/scripts/` are deleted, about 8,860 lines. They are the dispatcher, each suite's setup, run and grading scripts, the runners around `go test`, the NFS `sec=krb5` conformance job, and the Makefile's `test-*` targets.",
     "footer": "Shell stays only where it fits by nature. That means the [[dtc|dtc container]], a Linux container with the pinned test tools in which `dt` can run, the containers that start test services, and the host that runs the system scenarios. No suite gets a new script between `dt` and its test tool.",
-    "notes": "§3, 'What carries over', 'What goes' and 'What stays'. The full list of what the scripts know includes pynfs's 4.1 tree testing NFSv4.2 unless --minorversion is given, the 10-second settings watcher, pjdfstest's mount options and the Kerberos upcall details. nfstest's knfsd baseline stays, as a dispatch-only evidence job (§3). dtc: §4.4 (--in host|container|auto) and §4.5's places table ('pinned Linux toolchain, privileged')."
+    "notes": "§3, 'What carries over', 'What goes' and 'What stays'. The full list of what the scripts know includes pynfs's 4.1 tree testing NFSv4.2 unless --minorversion is given, the 10-second settings watcher, pjdfstest's mount options and the Kerberos upcall details. nfstest's knfsd baseline stays, as a dispatch-only evidence job (§3). dtc: §4.4 (--in host|container|auto) and §4.5's places table ('pinned Linux toolchain, privileged'). What goes also lists the runners around go test (run-e2e.sh and the run.sh of ad-dc, kerberos and portmap) and the NFS sec=krb5 conformance job, whose mounts the e2e suite's Kerberos tests cover (§3)."
   },
   "reg": {
     "kicker": "The registry"
@@ -165,11 +166,11 @@
       ]
     ],
     "items": [
-      "`dt plan` makes one cell for each combination of the matrix values. Each cell has its own [[fixture]], its own results and its own exit status, and in CI it runs as a job of its own.",
+      "`dt plan` makes one cell for each combination of the matrix values. Each cell has its own results and exit status, and its own [[fixture]] when the suite has one. In CI each cell runs as a job of its own, except those the [[dedicated-host|dedicated host]] runs itself.",
       "A cell's name joins, with slashes, the suite, its [[suite-option|option]], its matrix values and last its [[test-shard|shard]], as in `smbtorture/badger-s3/shard-2`.",
       "`dt run` also accepts the start of a name, so `dt run pjdfstest/badger-s3` runs all three cells above."
     ],
-    "notes": "§4.1 (matrix field), §4.4 'Cells'. The prefix rule: 'dt run … runs every cell whose name begins with those segments' (§4.4); the pjdfstest example is this deck's application of it. CI turns dt plan --json into its matrix (§4.8)."
+    "notes": "§4.1 (matrix field), §4.4 'Cells'. The prefix rule: 'dt run … runs every cell whose name begins with those segments' (§4.4); the pjdfstest example is this deck's application of it. CI turns dt plan --json into its matrix (§4.8). A fixture is optional: the system suite has none (§4.2). CI's plan keeps every cell but the dedicated host's, which that host runs itself (§4.5, §4.8)."
   },
   "fix": {
     "kicker": "Fixtures"
@@ -198,7 +199,7 @@
     ],
     "rule": "If a check fails, the [[cell]] ends with exit 2, which means [[not-run|not run]] and is never a pass. A failed fixture step is never retried either, because DittoFS itself starts inside the fixture and a retry could hide a flaky server.",
     "footer": "The fixture's own steps, such as installing packages, pulling images, building the server and starting it, share one timeout, 5 minutes by default. So a stalled package mirror fails the cell within minutes instead of using up its whole time limit.",
-    "notes": "§4.2 (the self-check list; 'The silent passes in §1 are each a case of a missing check: the bucket, the NFS module, the Kerberos upcall'), §9 'Retrying a fixture's setup'. On 2026-10-07 a stalled mirror used up 15 jobs' whole timeouts. The 5-minute fixture timeout comes from #2977. The fixture's steps: §4.2 ('package installs, image pulls, building {bin}, the server's start')."
+    "notes": "§4.2 (the self-check list; 'The silent passes in §1 are each a case of a missing check: the bucket, the NFS module, the Kerberos upcall'), §9 'Retrying a fixture's setup'. On 2026-10-07 (#2977) a stalled mirror used up 15 jobs' whole timeouts; the fixture's own 5-minute timeout (§4.2) ends such a stall early. The fixture's steps: §4.2 ('package installs, image pulls, building {bin}, the server's start')."
   },
   "bucket": {
     "title": "The bucket refuses writes",
@@ -292,7 +293,7 @@
       ]
     ],
     "footer": "Each tier runs everything the smaller one runs: `merge` includes `pr`, and `nightly` runs all but the `manual` suites. A [[suite]] names the smallest tier that runs it. Moving it is a one-word change, made on the timings `dt history` has measured.",
-    "notes": "§4.3 Tiers (table and 'Budgets'); §9 'The tier budgets', adjusted on measured numbers. Today a PR waits 25–40 min. On 2026-10-12 a merge took a median of 33 minutes to its last check (§9). merge_group is listed too, if a merge queue ever becomes available. The merge tier runs on pushes to develop, main and feat/storage-v2 (§4.3)."
+    "notes": "§4.3 Tiers (table and 'Budgets'); §9 'The tier budgets', adjusted on measured numbers. Before dt (October 2026) a PR waited 25–40 min. On 2026-10-12 a merge took a median of 33 minutes to its last check (§9). The pr tier also runs on merge_group: tests.yml maps that event to pr. RFC 29 on develop still says this applies 'if a merge queue is ever available' (§4.3, §4.8); the RFC is being corrected, so the slide names only pull requests. The merge tier runs on pushes to develop, main and feat/storage-v2 (§4.3)."
   },
   "whatruns": {
     "title": "What each pull request runs",
@@ -300,10 +301,10 @@
       "In every [[tier]], the conformance suites run only on `badger-s3`, the [[store-profile|store profile]] that production uses.",
       "Tests are not chosen by which layer a change touched, because the components depend on each other too much for “only NFS changed” to be safe.",
       "The exceptions are narrow suites that list `paths`. On a pull request they run only if it touches those paths, as e2e's Kerberos run does.",
-      "A pull request that changes only documentation plans no [[cell|cells]], so the [[gate]] passes with nothing to wait for.",
+      "A pull request that changes only documentation plans no [[cell|cells]], so the [[gate]] waits only for the lint jobs.",
       "smbtorture alone took 21–23 minutes on a pull request, so its tests are split into two [[test-shard|shards]] on two runners."
     ],
-    "notes": "§4.3 'Conformance runs the production profile only', 'No selection by changed layer' (the second exception: cross-protocol e2e while the adapters move onto the VFS service, RFC 17 §9); §4.8 'Docs-only PRs'; §9 'The PR budget against smbtorture' (23 min on memory, 21 on badger). Note: §4.4 and §4.8 also let the unit cell on PRs test only the Go packages a change touched (--changed); the merge run tests them all."
+    "notes": "§4.3 'Conformance runs the production profile only', 'No selection by changed layer' (the second exception: cross-protocol e2e while the adapters move onto the VFS service, RFC 17 §9); §4.8 'Docs-only PRs'; §9 'The PR budget against smbtorture' (23 min on memory, 21 on badger). Note: §4.4 and §4.8 also let the unit cell on PRs test only the Go packages a change touched (--changed); the merge run tests them all. The gate needs plan, run and the three lint jobs, and the lint jobs don't wait for plan, so a docs-only change still has its commits and suite tables checked (§4.8 'Lint')."
   },
   "gate": {
     "title": "One [[gate]] decides merges",
@@ -317,9 +318,9 @@
     "merge": [
       "The `gate` check passes, and so do the lint checks Go Checks, Repo Checks and ShellCheck, and the security scans gitleaks and CodeQL, whose check is named Analyze (go).",
       "One reviewer has approved the pull request.",
-      "The branch is up to date with develop."
+      "Before it lands, the pull request is tested again on top of the latest develop."
     ],
-    "notes": "§4.8 CI, Jobs and Merging. Non-blocking cells run in a second matrix the gate doesn't wait for. The gate became required after the pr tier had been green for two weeks (§9), replacing Unit Tests and Integration Tests. A single gate that always runs avoids GitHub's path-filter trap. No merge queue: the repository is owned by a user account, so up-to-date branches stand in for it. Required checks: §4.8 'Merging' and 'Lint'; gitleaks and CodeQL (Analyze (go)) stay GitHub actions (§4.8, §5)."
+    "notes": "§4.8 CI, Jobs and Merging. Non-blocking cells run in a second matrix the gate doesn't wait for. The gate became required after the pr tier had been green for two weeks (§9), replacing Unit Tests and Integration Tests. A single gate that always runs avoids GitHub's path-filter trap. The last condition is phrased to hold either way: RFC 29 §4.8 on develop still requires up-to-date branches and says a merge queue can't be enabled on a user-owned repository, while tests.yml already runs the pr tier on merge_group; the RFC text is being corrected. Required checks: §4.8 'Merging' and 'Lint'; gitleaks and CodeQL (Analyze (go)) stay GitHub actions (§4.8, §5)."
   },
   "prrun": {
     "title": "A pull request breaks one pjdfstest test",
@@ -334,10 +335,10 @@
     ],
     "why": [
       "No [[retry]] runs on a pull request, so the test is graded `new` and its [[cell]] exits 1. A [[blocking]] cell that did not exit 0 makes the [[gate]] fail.",
-      "In CI, a retry runs only on develop and on scheduled runs. On a pull request nothing is retried, so a PR cannot merge a [[flaky]] test it introduced.",
+      "In CI, a retry runs only after a merge and on scheduled runs. On a pull request nothing is retried, so a PR cannot merge a [[flaky]] test it introduced.",
       "Exit 2 is for a test that did not run. This one ran and failed with no list entry, so it is a new failure and its [[cell]] exits 1."
     ],
-    "notes": "'Start here · Scenarios', the first: graded a new failure, exit 1 (§4.4); no retry on a pull request (§4.7 Retry: 'None on pull requests … so a PR can't merge a flaky test it introduced. On develop and the schedule, --retry 1 …'); the gate fails because a blocking cell did not exit 0 (§4.8). Exit 2 means not run (§4.4)."
+    "notes": "'Start here · Scenarios', the first: graded a new failure, exit 1 (§4.4); no retry on a pull request (§4.7 Retry: 'None on pull requests … so a PR can't merge a flaky test it introduced. On develop and the schedule, --retry 1 …'); the gate fails because a blocking cell did not exit 0 (§4.8). Exit 2 means not run (§4.4). The RFC says 'on develop and the schedule'; tests.yml retries on every push and on the schedule, and the RFC is being corrected, so the slide says 'after a merge'."
   },
   "grading": {
     "kicker": "Results and grading"
@@ -362,7 +363,7 @@
       ],
       [
         "2",
-        "something did not run: a need was unmet, the [[fixture]] failed, no test ran, or a test skipped without being listed",
+        "something did not run: a need was unmet under `--ci`, the [[fixture]] failed, no test ran, or, in a suite with a known-failure list, a test skipped without being listed",
         "[[not-run|not run]]: something that should have been tested was not"
       ],
       [
@@ -475,7 +476,7 @@
       "`where` limits an entry to some matrix values, [[tier|tiers]], options or operating systems.",
       "A single matcher in `dt` reads every list. It accepts exact names, a name ending in `.*`, and shell globs."
     ],
-    "footer": "One YAML file per [[suite]] replaces today's Markdown lists, and `dt known import` converts them once.",
+    "footer": "One YAML file per [[suite]] replaces the old Markdown lists, and `dt known import` converts them once.",
     "notes": "§4.7 'Known failures and expected skips' (the example entry is §4.7's own, its reason shortened here: 'NFSv4 silly rename: unlinking an open file renames it, so its link count stays 1'). Categories: bug, feature, env, proto, permanent. Today most rows name no issue (Appendix A)."
   },
   "skips": {
@@ -508,11 +509,11 @@
     "rTitle": "[[retry|Retry]]",
     "r": [
       "Tests are never retried on a pull request, so a PR cannot merge a flaky test it introduced.",
-      "On develop and on scheduled runs, `--retry 1` runs each new failure once more, and nothing else.",
+      "After a merge and on scheduled runs, `--retry 1` runs each new failure once more, and nothing else.",
       "A test that passes on retry is flaky. It raises no alert, and `dt history` counts it.",
       "A test that is flaky twice in a week on develop becomes a candidate for quarantine."
     ],
-    "notes": "§4.7 'Quarantine' and 'Retry'. The quarantine list is test/harness/quarantine.yaml; an entry names one test exactly, never a pattern. An expired entry is an error from dt doctor, which lint-repo runs (Repo Checks). The retry runs on the cell's own fixture, within the cell's limit; a test none of the naming rules can name isn't retried. The AD-DC keytab race (#2968) is what quarantine is for. Expiry: §4.7 ('its test fails as new and the gate goes red on that test and on Repo Checks'); dt doctor is one of lint-repo's commands (§4.1), and lint-repo is the Repo Checks job, which runs on every pull request (§4.8)."
+    "notes": "§4.7 'Quarantine' and 'Retry'. The quarantine list is test/harness/quarantine.yaml; an entry names one test exactly, never a pattern. An expired entry is an error from dt doctor, which lint-repo runs (Repo Checks). The retry runs on the cell's own fixture, within the cell's limit; a test none of the naming rules can name isn't retried. The AD-DC keytab race (#2968) is what quarantine is for. Expiry: §4.7 ('its test fails as new and the gate goes red on that test and on Repo Checks'); dt doctor is one of lint-repo's commands (§4.1), and lint-repo is the Repo Checks job, which runs on every pull request (§4.8). The RFC says 'on develop and the schedule'; tests.yml retries on every push and on the schedule, and the RFC is being corrected, so the slide says 'after a merge'."
   },
   "ctrf": {
     "title": "One result format: [[ctrf|CTRF]], with JUnit beside it",
@@ -588,10 +589,10 @@
       "GitHub's hosted runners share hardware, so their timings are too noisy to fail a pull request over a percentage drop.",
       "`bench-smoke` checks that the benchmarks still work. It does not block pull requests, but it does block the runs after a merge and at night.",
       "The throughput and allocation checks, also called gates, fail when a measurement crosses a threshold. They skip under Go's race detector (`-race`) and short mode (`-short`), which the `unit` suite uses, so no job ran them.",
-      "`unit --nonrace` now runs them every night without those flags. One that still trips after its retry turns the nightly run red, but it never fails a pull request.",
+      "`unit --nonrace` runs them every night without those flags. One that still trips after its retry turns the nightly run red, but it never fails a pull request.",
       "`perf-night` on the [[dedicated-host|dedicated host]] compares DittoFS with Samba. It flags a drop, but the flag fails nothing. Numbers are recorded for `dt history` and never decide on their own whether a run passes."
     ],
-    "notes": "§4.10 Benchmarks and long runs; §4.6 Metrics. perf-night flags a point, an area or the night's figure below its 7-day median by more than its noise band; the cell fails when a step fails or times out, or the night can't be scored. A tripped nonrace gate on the retry turns the nightly run red and posts, and fails no PR. The gates skipping under -race and -short, with no job running them: §1's table, last row. The unit suite runs go test -race, with -short on pull requests; its nonrace option runs the two gate tests nightly (§4.1)."
+    "notes": "§4.10 Benchmarks and long runs; §4.6 Metrics. perf-night flags a point, an area or the night's figure below its 7-day median by more than its noise band; the cell fails when a step fails or times out, or the night can't be scored. A tripped nonrace gate on the retry turns the nightly run red and posts, and fails no PR. The gates skipping under -race and -short, with no job running them: §1's table, last row. The unit suite runs go test -race, with -short on pull requests; its nonrace option runs the two gate tests nightly (§4.1). After every merge, a step also runs the benchmarks of the components that name one and compares them with their stored baseline using benchstat. A change beyond benchstat's noise band is posted, never a failed run, and a baseline is replaced only through a pull request (§4.10, 'Comparison against a stored baseline')."
   },
   "whom": {
     "kicker": "What changes for whom",
@@ -599,7 +600,7 @@
     "devTitle": "Developers",
     "dev": "One command, `dt run NAME`, the same as CI's. `dt doctor` says what the machine lacks and how to get it. `dt` runs as you, and calls `sudo -n` only for steps that need root.",
     "revTitle": "Reviewers and maintainers",
-    "rev": "They wait for one [[gate]] only. A red PR names the failing test, and a red develop shows up as one issue rather than a storm of e-mails.",
+    "rev": "The [[gate]] is the one test check they wait for, beside the lint and security checks. A red PR names the failing test, and a red develop shows up as one issue rather than a storm of e-mails.",
     "authTitle": "Suite authors",
     "auth": "They write no setup script: a need becomes a new [[fixture]] field, with a test. Every expected failure and skip is listed with a reason, and a bug also gets an issue.",
     "notes": "This slide is the deck's framing, from §3 ('Getting dt', sudo), §4.4 (dt doctor), §4.8, §4.2 and §4.7."
@@ -616,6 +617,25 @@
     ],
     "footer": "“Green” means no new failures, no unexpected skips and no unexpected passes.",
     "notes": "§2 Requirements: R1, R3 and R5, R9, R10, R11 (abridged), and the definition of green under the table. Also R2 (a specified YAML registry), R4 (runs tracked by the harness), R6 (tiers, no selection by changed layer), R7 (an alert without a flood), R8 (external-tool suites first, and green). R9 ('keep what's tested, replace what isn't'; the graders' rules carry over, each suite's scripts give way to a fixture once its results match). R11 (every RFC under docs/internals/rfcs/ has a paragraph naming its suites, §4.9)."
+  },
+  "doubles": {
+    "title": "Test doubles: three kinds, and no stubs",
+    "lead": "A test runs against the real code that the code under test talks to. A stand-in for that code, called a test double, is allowed in three kinds only.",
+    "okTitle": "Allowed",
+    "ok": [
+      "An injected clock or a seeded random source, because time and chance are inputs to the code.",
+      "An in-memory version that passes the same conformance tests as the real one. The in-memory block store passes the same tests as the S3 store.",
+      "A wrapper around a real part that fails, delays or crashes on cue, such as a store that fails its third write."
+    ],
+    "badTitle": "Banned",
+    "bad": [
+      "A canned stub written for one test, like a fake S3 client that always returns one error.",
+      "A fake that counts calls so that a test can check which calls were made.",
+      "Any double that no conformance tests hold to the real code.",
+      "Swapping a package-level variable to change what the code does."
+    ],
+    "footer": "An error a test needs comes from a fault wrapper, never from a stub. External systems, such as S3 or a Kerberos KDC, are tested for real in the integration suite.",
+    "notes": "§4.11 Test doubles. The three kinds: inputs (an injected clock, a seeded random source); a verified in-memory implementation that lives with the package owning the interface and passes the same conformance suite as the production one; fault injection, a wrapper around a real implementation or a kind 2 that fails, delays, tears or crashes on cue ('An error answer a test needs is given this way, by a fault wrapper, not by a stub'). Also allowed: a wrapper that records each call and passes it through, when the call reaching a dependency is itself the requirement. Not doubles at all: a sink that keeps what the code delivered, a per-OS table (data), a tunable passed through the constructor, a Null service used as a load, a hook set per instance from export_test.go. Banned: 'a canned stub written for one test; a recording or counting fake used to check which calls were made; a double that no conformance suite holds to the real one; swapping a package-level variable'. External systems (a KDC, a domain controller, an LDAP directory, S3) are tested for real in integration; a stand-in runs in unit only as a kind 2 whose conformance suite also runs against the real system. Every RFC's test strategy is bound by it, and CLAUDE.md's 'Writing tests' repeats it for every contributor. The examples are the deck's own: the in-memory block store is pkg/block/remote/memory, held with the S3 store to blockstoretest.RemoteBlockStoreConformance; the fake S3 client and the third-write fault are illustrations."
   },
   "nochange": {
     "title": "What this doesn't change",
@@ -675,8 +695,8 @@
       "green": "green?",
       "oneCmd": "calls the tool itself",
       "steps": [
-        "Today a CI job runs `run.sh`, which runs the suite's own scripts, and only those scripts run the test tool.",
-        "The code that sets up the DittoFS server is copied from script to script, in at least five places, and those copies are where the passes that tested nothing came from.",
+        "Before `dt`, a CI job ran `run.sh`, which ran the suite's own scripts, and only those scripts ran the test tool.",
+        "The code that set up the DittoFS server was copied from script to script, in at least five places, and those copies are where the passes that tested nothing came from.",
         "With RFC 29, CI runs `dt`, which builds the server itself as a [[fixture]] and calls the test tool directly, with no script in between."
       ]
     },

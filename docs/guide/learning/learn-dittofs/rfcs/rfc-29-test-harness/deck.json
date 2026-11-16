@@ -3,7 +3,7 @@
     "number": 29,
     "title": "the test harness",
     "path": "docs/internals/rfcs/rfc-29-test-harness.md",
-    "commit": "a0a540bb461d2e214be1eb43a3cc90d2595ad9e3",
+    "commit": "06b1e484a4fc37a72576af5343cf3a79fe47bb33",
     "status": "reviewed"
   },
   "terms": {

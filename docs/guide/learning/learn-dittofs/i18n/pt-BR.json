@@ -14,7 +14,13 @@
   },
   "chrome": {
     "start": "Voltar ao primeiro slide",
-    "home": "Todas as seções"
+    "home": "Todas as seções",
+    "motion": "Animações",
+    "motionModes": {
+      "loop": "em loop",
+      "once": "uma vez",
+      "off": "desligadas"
+    }
   },
   "quiz": {
     "kicker": "Teste-se",

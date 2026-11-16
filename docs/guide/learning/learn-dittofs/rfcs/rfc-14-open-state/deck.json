@@ -3,7 +3,7 @@
     "number": 14,
     "title": "open state and locks",
     "path": "docs/internals/rfcs/rfc-14-open-state.md",
-    "commit": "a0a540bb461d2e214be1eb43a3cc90d2595ad9e3",
+    "commit": "b0d540b2db9c5b2358e7f838ef07960fb6f612b0",
     "status": "draft"
   },
   "terms": {

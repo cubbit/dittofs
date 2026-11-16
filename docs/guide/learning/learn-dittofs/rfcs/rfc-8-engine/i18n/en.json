@@ -1,12 +1,13 @@
 {
+  "title": "RFC 8 — the engine",
   "glossaryKicker": "Glossary",
   "glossaryTitle": "Every term in this deck",
   "cover": {
     "kicker": "Learn DittoFS · RFC 8",
     "title": "The [[engine|engine]]",
     "lead": "The engine is a coordinator that holds no bytes of its own. For every share on a node, it decides when new content is acknowledged, when it is uploaded, when its local copy is evicted and when it is fetched back.",
-    "built": "Built from RFC 8 at a0a540b",
-    "notes": "Source: docs/internals/rfcs/rfc-8-engine.md, commit a0a540b. The RFC specifies behaviour, not the current code: the engine it describes is built fresh, beside today's, which it replaces rather than fixes. A choice it labels proposal is not decided: it names the measurement that would overturn it. Rows marked (cluster) are not in the first release and are left out here. Keys: → next, S speaker notes. Click any underlined term for its definition."
+    "built": "Built from RFC 8 at e22639d",
+    "notes": "Source: docs/internals/rfcs/rfc-8-engine.md, commit e22639d. The RFC specifies behaviour, not the current code: the engine it describes is built fresh, beside today's, which it replaces rather than fixes. A choice it labels proposal is not decided: it names the measurement that would overturn it. Rows marked (cluster) are not in the first release and are left out here. Keys: → next, S speaker notes. Click any underlined term for its definition."
   },
   "intro": {
     "kicker": "Before we start",
@@ -38,7 +39,7 @@
   },
   "journey": {
     "title": "alice-pc's 64 KiB, from write to read",
-    "notes": "'Start here · The problem, with one example', steps 1–5: single-node install N1, journal on NVMe, bucket dfs-data, share profiles, file profiles/alice/ODFC_alice.vhdx over SMB. Step 2: the overwrite waits for the next existence commit, one transaction shared with every other file of that journal; a flush of a file with only appends and hole fills is answered after the sync alone (§5.1). B1 is the deck's label for the block. Committed content: below the committed size and outside the committed holes (§5.1)."
+    "notes": "'Start here · The problem, with one example', steps 1–5: single-node install N1, journal on NVMe, bucket dfs-data, share profiles, file profiles/alice/ODFC_alice.vhdx over SMB. Step 2: the overwrite waits for the next existence commit, one transaction shared with every other file of that journal; a flush of a file with no committed content yet, only appends and hole fills, is answered after the sync; one whose extent covers committed content also waits for its sync marks to be recorded (§5.1). B1 is the deck's label for the block. Committed content: below the committed size and outside the committed holes (§5.1)."
   },
   "promises": {
     "title": "What the RFC promises",
@@ -50,7 +51,7 @@
       "One [[share]] cannot stall another. Background work is shared fairly per journal, and a request for one file never waits on a lock that another file holds during slow I/O."
     ],
     "footer": "And no byte of a [[chunk]] reaches the client before the whole chunk has been checked against its hash.",
-    "notes": "'Start here · What this RFC promises', citing §4.1, §5.1, §6.8, §7.1, §7.2, §7.5, §2.5, §3.3 and §1.1. A failed upload is retried for as long as this node serves the shard (§6, O2). The three shared points are on the next slides but one (§1.1). The last item is the outcome of §1.1's rule: the engine MUST NOT hold a lock or queue shared by more than one file across I/O or a wait on the request path; the bounded exceptions are on the library slide."
+    "notes": "'Start here · What this RFC promises', citing §4.1, §5.1, §6.8, §7.1, §7.2, §7.5, §2.5, §3.3 and §1.1. A failed upload is retried for as long as this node serves the shard (§6, O2). The four shared points are on the next slides but one (§1.1). The last item is the outcome of §1.1's rule: the engine MUST NOT hold a lock or queue shared by more than one file across I/O or a wait on the request path; the bounded exceptions are on the library slide."
   },
   "order": {
     "title": "Ask the [[journal|journal]] first",
@@ -64,11 +65,11 @@
     "items": [
       "**A library, not a service.** Each node runs its own [[engine]] inside its own process and reaches it with a function call, so there is no engine server that could go down.",
       "**No copy of the bytes.** The bytes flow from the [[journal]] through the [[carver]] to the [[syncer]]. The engine puts those calls in order, but keeps no copy of what passes through them.",
-      "**Only three shared points, each bounded.** Requests for different files meet only at the journal's append stream and [[sync]], where every write to a device's journal is appended in order, at its [[group-commit|group commit]], which only a flush over an overwrite waits for, and at the counter that reserves journal space for each write without a lock.",
+      "**Only four shared points, each bounded.** Requests for different files meet only at the journal's append stream and [[sync]], at its [[group-commit|group commit]], which only a flush over an overwrite waits for, and at lock-free counters: one reserves journal space for each write, and the others tell when to raise the [[version-limit|version limit]].",
       "**[[takeover|Takeover]] is not its job.** The engine keeps its state in memory by design. When a node dies, another node takes over its [[shard|shards]], and that node's engine starts correctly from nothing."
     ],
     "footer": "The engine keeps the shares it serves in one table, which it copies whole, up to 10⁴ entries, each time a share is added or removed. In exchange, every request can read it without taking a lock.",
-    "notes": "§1.1's four rules. Rule 3: the engine MUST NOT hold a lock, a queue or any other serialisation point shared by more than one file, or more than one share, across I/O or a wait on the path of a write, a read or a commit. The three exceptions: the journal's append stream and its sync (RFC 1 §5); the group existence commit, bounded at G files and split on conflict (§5.1, §5.2); the capacity reservation, an atomic counter taken without a lock (RFC 1 §6). E37. Failover belongs to RFC 10 and RFC 11 (cluster). The share table is copy-on-write (a decision marker in §1.1, overturned if share churn is measured in changes per second). The slide says takeover rather than failover, which is not an RFC term: a node taking over a dead node's shards is RFC 10 and RFC 11's (cluster). The table of shares is the engine's share table of storage bindings (§2.3), copy-on-write (§1.1). The append stream and sync: RFC 1 §5; the capacity counter: the capacity reservation, an atomic counter taken without a lock (RFC 1 §6). The RFC has since added a fourth point, the version limit trigger's per-journal counters (§1.1, §2.7), after the commit this deck was built from."
+    "notes": "§1.1's four rules. Rule 3: the engine MUST NOT hold a lock, a queue or any other serialisation point shared by more than one file, or more than one share, across I/O or a wait on the path of a write, a read or a commit. The four exceptions: the journal's append stream and its sync (RFC 1 §5); the group existence commit, bounded at G files and split on conflict (§5.1, §5.2); the capacity reservation, an atomic counter taken without a lock (RFC 1 §6); and the version limit trigger's per-journal counters, atomics taken without a lock (§2.7). E37. Failover belongs to RFC 10 and RFC 11 (cluster). The share table is copy-on-write (a decision marker in §1.1, overturned if share churn is measured in changes per second). The slide says takeover rather than failover, which is not an RFC term: a node taking over a dead node's shards is RFC 10 and RFC 11's (cluster). The table of shares is the engine's share table of storage bindings (§2.3), copy-on-write (§1.1). The append stream and sync: RFC 1 §5; the capacity counter: the capacity reservation, an atomic counter taken without a lock (RFC 1 §6)."
   },
   "binding": {
     "title": "One engine per node, one [[storage-binding|binding]] per share",
@@ -81,7 +82,7 @@
     "items": [
       "Background work runs per journal, not per share. A node serving 10⁴ shares runs one set of background loops per device, not 10⁴ sets.",
       "Shares are kept apart by their budgets and by fair scheduling, not by separate engines. Adding or removing a share changes one binding and never restarts the engine.",
-      "Every [[share]] **MUST** have a remote block store. There is no local-only share, and no code path for one."
+      "Every [[share]] has a remote block store: a node refuses to add a share whose configuration names none. There is no local-only share, and no code path for one."
     ],
     "notes": "§2.3 One engine per node; a share is a storage binding (the binding is copied from the share record at Bind, never stored, and rebuilt by Start; it is needed on a single node serving a single share — it is not a scaling device). §2.1: the root MUST refuse to add a share whose configuration names no remote block store, with an error naming the share (E5). The decision marker in §2.3: a journal record carries only the share's tag, never its store, namespace or credential. Budgets: 'its share of journal capacity, transfers and pacing' (§2.3). The slide names two of the states; the full list is adding, serving, quiesced, closing or removing (RFC 16 §2.3.2), or fenced, a binding-only state for a namespace whose claim says the node started from a copied image: reads only, writes ErrNoSpace (§11.2, §12.1's ShareState)."
   },
@@ -119,13 +120,18 @@
         "the [[journal]], which reserves space for the write or refuses it"
       ],
       [
+        "How to answer a refusal from the journal",
+        "the refusal table, in `capacity.go`",
+        "the journal's `Repack`, `Release` and `Sync`"
+      ],
+      [
         "What to read ahead or pre-warm",
         "the [[speculator]]",
         "the [[syncer]]'s fetcher"
       ]
     ],
-    "footer": "The five [[policy-component|policy functions]], every row but the last, are pure. They do no I/O, hold no reference to a component, and are each tested alone against a table of cases. They **MUST NOT** be merged into one evaluator, and none of them calls another.",
-    "notes": "§3.1's table, abridged: it also lists the block assembler (a fold, not a policy), the uploader (no decision) and health. The three modules — work queue, offload pipeline, speculator — MAY hold memory state and call mechanisms, MUST NOT persist anything, and MUST be testable with each component replaced by a stub of its whole interface. 'A threshold that lives in a component's configuration is engine policy absorbed by that component.' The five policy functions are §3.1's offloadDue, evict, repackDue, fill and admit; the speculator is one of §3.1's three modules ('Policy decides; modules act'). admit is carried out by the journal's capacity: WriteAt reserves its record bytes before accepting them, or is refused (RFC 1 §6)."
+    "footer": "The five [[policy-component|policy functions]], in the first five rows, are pure. They do no I/O, hold no reference to a component, and are each tested alone against a table of cases. They are never merged into one evaluator, and none of them calls another.",
+    "notes": "§3.1's table, abridged: it also lists the block assembler (a fold, not a policy), the uploader (no decision) and health. The three modules — work queue, offload pipeline, speculator — MAY hold memory state and call mechanisms, MUST NOT persist anything, and MUST be testable with each component replaced by a verified in-memory implementation of its whole interface (RFC 29 §4.11). 'A threshold that lives in a component's configuration is engine policy absorbed by that component.' The five policy functions are §3.1's offloadDue, evict, repackDue, fill and admit; the speculator is one of §3.1's three modules ('Policy decides; modules act'). admit is carried out by the journal's capacity: WriteAt reserves its record bytes before accepting them, or is refused (RFC 1 §6). The refusal row is §3.1's: the refusal path in capacity.go answers a refusal the journal returned, through the journal's Repack, Release and Sync (§10.2). admit acts only before the journal call and is never given a refusal (§3.1, §10.2), and the refusal table is not one of the five functions."
   },
   "safe": {
     "title": "Policy never makes an action safe",
@@ -133,13 +139,13 @@
     "mech": [
       "`Release` refuses an extent whose [[offloaded-bit]] is not set.",
       "`Fill` refuses to write over bytes the journal already holds.",
-      "An offloaded bit is set only when the bytes are in the bucket, by an offload [[report]] after the commit or by a [[fill]] of fetched bytes."
+      "An offloaded bit is set only once the bytes are in the bucket: by an offload [[report]] after the commit, by a [[fill]], or by `MarkOffloaded` after a restart."
     ],
     "testTitle": "The test",
     "test": "Switch off every policy gate: evict as eagerly as possible, fill everything, offload all the time. Every test for lost or wrong content still passes.",
-    "memory": "Policy state — access patterns, dirty ages, backoff, read-ahead frontiers, the queue, health — **MUST** live in memory. A restart **MAY** lose all of it, and the [[engine]] **MUST** behave correctly from empty.",
+    "memory": "Policy state — access patterns, dirty ages, backoff, read-ahead frontiers, the queue, health — lives in memory only. A restart can lose all of it, and the [[engine]] still behaves correctly from empty.",
     "capabilities": "Each capability the engine needs from another component, such as uploading to the bucket or looking a chunk up in metadata, is passed in when the engine is built. It is never guessed at run time from what a component happens to support. If one is missing, the build or the construction fails and names it, instead of producing a share that quietly works wrong.",
-    "notes": "§3.2 (the Group A checks, §15.1's first row; E3), §3.3, §2.2 and §2.1 (an absent capability MUST fail the build or construction with an error naming it; E2). §2.2's examples: an assertion failing on the remote tier would disable offload, on a transform chain upload plaintext, on a lookup make every cold read linear — each with a working share and no error. The capability examples on the slide are §2.2's: an assertion failing on the remote tier or on a lookup. §3.2 says the bit is set only on an offload report; RFC 0's glossary and RFC 1 §2 add the fill, which the slide follows."
+    "notes": "§3.2 (the Group A checks, §15.1's first row; E3), §3.3, §2.2 and §2.1 (an absent capability MUST fail the build or construction with an error naming it; E2). §2.2's examples: an assertion failing on the remote tier would disable offload, on a transform chain upload plaintext, on a lookup make every cold read linear — each with a working share and no error. The capability examples on the slide are §2.2's: an assertion failing on the remote tier or on a lookup. §3.2 says the bit is set only on an offload report; RFC 0's glossary and RFC 1 §2 add the fill, and §2.5 step 7's reseed, after a restart, sets it through MarkOffloaded (RFC 28 §3.2) on every held extent a committed ref covers. The slide follows those. §3.3: policy state MUST live in memory, and a restart MAY lose all of it."
   },
   "write": {
     "kicker": "Write and flush",
@@ -153,7 +159,7 @@
     ],
     "exampleTitle": "Example",
     "example": "File `f` is empty. A client writes 4 KiB at offset 1 MiB, and the journal stages the write as version 7. A `GETATTR` right after already reports a size of 1 MiB + 4 KiB, because the journal's pending changes are applied over the file's record. Nothing in the metadata store has changed yet.",
-    "rule": "A write **MUST NOT** wait for a metadata transaction, an [[offload]] or the [[remote-tier]]. It waits only for admission and for the journal.",
+    "rule": "A write never waits for a metadata transaction, an [[offload]] or the [[remote-tier]]. It waits only for admission and for the journal.",
     "notes": "§4.1 rules, steps and example. Only the filesystem service calls Write, after authorising it and checking open state and quota (RFC 17 §5.1); an adapter MUST NOT perform its steps. Until the next stability point the journal is the authority for the write: Read and Allocation apply its uncommitted operations, Overlay returns them alone (§12.1). Changes stored outside the journal (chmod, rename…) take their version from Draw. A stable write is a Write followed by a Commit over its extent. The version is the journal's content version, which orders a file's writes and removals (RFC 1 §4.3)."
   },
   "verifier": {
@@ -226,15 +232,15 @@
     "title": "[[offload|Offload]] must never get stuck",
     "lead": "If an offload fails at any step, its bytes are neither offloaded nor evictable. A journal that cannot evict fills up and starts refusing writes. That is why three rules hold:",
     "items": [
-      "every [[dirty]] extent **MUST** be offered again by the [[primary]] until it is reported offloaded;",
-      "every failure **MUST** end with the extent either reported offloaded, or still Dirty with its file put back in the queue;",
-      "every wait **MUST** have a deadline, and a file that cannot be offloaded **MUST** be reported by name."
+      "every [[dirty]] extent is offered again by the [[primary]] until it is reported offloaded;",
+      "every failure ends with the extent either reported offloaded, or still Dirty with its file put back in the queue;",
+      "every wait has a deadline, and a file that cannot be offloaded is reported by name."
     ],
     "whenTitle": "When a file is offered",
     "when": "A file is offered when its dirty bytes reach the block target, when its oldest dirty byte reaches the maximum age set by `offload.max_age`, or when the journal is under capacity pressure. A client's flush does **not** start an offload.",
     "queueTitle": "The [[work-queue|work queue]]",
     "queue": "Each journal has one work queue, shared fairly between its shares. Posting to it never blocks, and the same piece of work never runs twice at once. The queue stores nothing: after a restart it is rebuilt from durable state.",
-    "notes": "§6 introduction (the four MUSTs); §6.2 (proposal: a threshold of one block target, offload.max_age from RFC 13; a pass offers at most upload_workers block targets of dirty bytes); §6.1 rules: one queue per journal, posting never blocks or grows with bytes, a key in at most one run (E41), only shards this node is primary of post, not durable — rebuilt whenever the node gains a shard (E23). Events: Dirty, AgeTick every quarter of offload.max_age, Pressure on and off, RemovalPending."
+    "notes": "§6 introduction (the four MUSTs); §6.2 (proposal: a threshold of one block target, offload.max_age from RFC 13; a pass offers at most upload_workers block targets of dirty bytes); §6.1 rules: one queue per journal, posting never blocks or grows with bytes, a key in at most one run (E41), only shards this node is primary of post, not durable — rebuilt whenever the node gains a shard (E23). Events: Dirty, AgeTick every quarter of offload.max_age, Pressure on and off, RemovalPending. The three rules are §6's four MUSTs, the last two joined."
   },
   "pipeline": {
     "title": "The [[offload-pipeline|offload pipeline]]",
@@ -419,7 +425,7 @@
     "noSpaceTitle": "No space (`ErrNoSpace`), at once",
     "noSpace": "This is the answer when only an operator can clear the cause, for example when the bucket's quota is full, its credential is refused, a store setting reads back different from the one configured, an operator's retention pin keeps a share's bytes from eviction, or the device itself is full.",
     "footer": "A journal that fills during a remote outage therefore answers retry-later. Turning that into “no space” at the deadline would make a two-minute outage into a write error that clients treat as fatal.",
-    "notes": "§10.2 steps 1–4 and the refusal table, which every other RFC cites; its decision marker (the one criterion: whether the system clears the cause by itself); 'the deadline ends the wait, never the cause's class'. Other rows: the version limit (ErrDelay until the raise commits), the index bound, a roll with no spare ready (ErrDelay), a logical quota (ErrQuota, from the filesystem service before the engine). Suspect and unread bytes count as permanent only after a failed bounded retry. E33. 'A store setting reads back different' is ErrDrift (RFC 3 §1.3); 'an operator has pinned the bytes' is an operator's retention pin (§10.2's table). §10.4: an operator's retention pin MAY exclude a share from eviction."
+    "notes": "§10.2 steps 1–4 and the refusal table, which every other RFC cites; its decision marker (the one criterion: whether the system clears the cause by itself); 'the deadline ends the wait, never the cause's class'. Other rows: the version limit (ErrDelay until the raise commits, or, for a limit the journal refused, until it is opened again), the index bound, a roll with no spare ready (ErrDelay), a logical quota (ErrQuota, from the filesystem service before the engine). Suspect and unread bytes count as permanent only after a failed bounded retry. E33. 'A store setting reads back different' is ErrDrift (RFC 3 §1.3); 'an operator has pinned the bytes' is an operator's retention pin (§10.2's table). §10.4: an operator's retention pin MAY exclude a share from eviction. The refusal table, in capacity.go, decides; admit acts only before the journal call and is never given a refusal (§10.2)."
   },
   "outage": {
     "title": "The bucket stops answering for an hour",
@@ -438,9 +444,9 @@
     "beforeTitle": "Meanwhile",
     "before": "Writes are still staged in the journal and acknowledged. A flush over an overwrite waits for its [[existence]] commit until the client's deadline runs out, then answers [[retry-later]], never success.",
     "fenceTitle": "After 30 s: the [[self-fence|self-fence]]",
-    "fence": "Once a metadata write transaction has been pending or failing for 30 s with none committing, the node fences itself. Writes and flushes answer retry-later, reads go on, and a health condition names the store. The first commit lifts the fence.",
+    "fence": "Once a metadata write transaction has been pending or failing for 30 s with none committing, the node fences itself. Writes and flushes answer retry-later, reads go on, and a health condition names the store. The first commit lifts the fence, and so does the moment no write transaction is still pending or failing.",
     "watch": "An operator can watch, per share, the dirty bytes, the drain rate and the time to drain. The engine also reports the age of the oldest extent not yet offloaded, alerts past a bound, and raises conditions such as `offload_stalled`, `file_offload_failing` and `journal_full`.",
-    "notes": "§11.2 'Metadata unwritable, or stalled' and the self-fence row (30 s is the default request deadline, RFC 17 §4.3), E38. §11.3: a metadata conflict never reaches a client as an I/O error; unresolved at the deadline it is ErrDelay with DelayConflict. §11.4: dirty bytes, drain rate, WaitOffloaded; the oldest-unoffloaded age catches a single stuck file that the sums hide. §11.1's condition list; §14's metrics."
+    "notes": "§11.2 'Metadata unwritable, or stalled' and the self-fence row (30 s is the default request deadline, RFC 17 §4.3), E38. §11.3: a metadata conflict never reaches a client as an I/O error; unresolved at the deadline it is ErrDelay with DelayConflict. §11.4: dirty bytes, drain rate, WaitOffloaded; the oldest-unoffloaded age catches a single stuck file that the sums hide. §11.1's condition list; §14's metrics. E38: the fence clears on the next commit, or once no write transaction is outstanding or failing."
   },
   "quizOutage": {
     "question": "The bucket is down for an hour and the journal is full of bytes not yet uploaded. What does alice-pc's next write get?",
@@ -471,17 +477,17 @@
     "kicker": "Rules and non-goals",
     "title": "The rules, in plain words",
     "items": [
-      "A read **MUST** ask the [[journal]] before the metadata store, and **MUST NOT** return zeros for anything but a [[hole]] or a zero ref, which stands for an all-zero chunk.",
-      "An offload pass **MUST** [[report]] to the journal exactly the extents whose commits succeeded, and **MUST NOT** report any other.",
-      "A write **MUST NOT** wait for metadata, an [[offload]] or the remote tier. A flush **MUST NOT** wait for an offload.",
-      "A policy gate **MUST NOT** be the only thing standing between the system and data loss.",
-      "Locks, deny modes, delegations, opens and snapshots **MUST NOT** make an extent unevictable. Only an operator's retention pin **MAY** keep a share from eviction."
+      "A read asks the [[journal]] before the metadata store, and returns zeros only for a [[hole]] or a zero ref, which stands for an all-zero chunk.",
+      "An offload pass [[report|reports]] to the journal exactly the extents whose commits succeeded, and no other.",
+      "A write never waits for metadata, an [[offload]] or the remote tier, and a flush never waits for an offload.",
+      "A policy gate is never the only thing standing between the system and data loss.",
+      "Locks, deny modes, delegations, opens and snapshots never make an extent unevictable. Only an operator's retention pin can keep a share from eviction."
     ],
-    "footer": "And when a node is assembled, every [[share]] **MUST** have a remote block store, and every capability the engine calls on another component **MUST** be supplied as the engine is built.",
-    "notes": "§7.1, §6.8, §4.1, §5.1, §3.2, §10.4, §2.1; the invariants E1–E42 are §13's table. The offload pass's report is §6.8's offload callback, which runs inside the journal's Offload and reports through report. §10.4 for the retention pin."
+    "footer": "And when a node is assembled, every [[share]] has a remote block store, and every capability the engine calls on another component is supplied as the engine is built. A missing one is an error that names it, never a share that quietly works wrong.",
+    "notes": "§7.1, §6.8, §4.1, §5.1, §3.2, §10.4, §2.1; the invariants E1–E42 are §13's table. The offload pass's report is §6.8's offload callback, which runs inside the journal's Offload and reports through report. §10.4 for the retention pin. Each item restates a rule the RFC words as MUST, MUST NOT or MAY; the footer is §2.1's two MUSTs (E2, E5)."
   },
   "nongoals": {
-    "title": "What the [[engine|engine]] must not do",
+    "title": "What the [[engine|engine]] never does",
     "items": [
       "Define a format, an encoding or an algorithm, including how [[chunk|chunks]] are packed into [[block|blocks]].",
       "Move bytes to or from the [[remote-tier]] itself. That is the [[syncer]]'s job.",
@@ -489,7 +495,7 @@
       "Persist anything. Every durable fact belongs to the component that owns it.",
       "Decide when a file stops existing, or schedule [[gc|GC]]."
     ],
-    "footer": "Cross-file deduplication is not in the first release, so offload uploads every chunk it cuts. Bringing deduplication back is left to a later RFC.",
+    "footer": "Cross-file deduplication is not in the first release, so offload uploads every chunk it cuts, except an all-zero chunk, which becomes a zero ref. Bringing deduplication back is left to a later RFC.",
     "notes": "§1.2 Non-goals (MUST NOT); §10.5 (GC is one service per remote namespace and schedules itself); §6.5 V1 and E7 (an all-zero chunk becomes a zero ref); §12.3 (the engine writes no residency)."
   },
   "open": {

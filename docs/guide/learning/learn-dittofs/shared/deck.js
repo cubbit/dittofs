@@ -1,15 +1,16 @@
 // Boots a deck: loads its strings and the glossary in the chosen language,
 // expands generated slides (term lists, glossary), renders every string,
-// starts reveal and the scenes, and offers the language switch and ?check=1.
+// starts reveal and the scenes, and offers the animation mode, the language
+// switch and ?check=1.
 //
 // A deck's index.html calls boot({ scenes }) from its own folder, beside its
 // deck.json and i18n/.
 
-import Reveal from '../vendor/reveal.js-5.2.1/reveal.esm.js';
-import Notes from '../vendor/reveal.js-5.2.1/plugin/notes/notes.esm.js';
+import Reveal from '../third-party/reveal.js-5.2.1/reveal.esm.js';
+import Notes from '../third-party/reveal.js-5.2.1/plugin/notes/notes.esm.js';
 import { LANGS, SOURCE_LANG, Strings, loadJSON, pickLang, rememberLang, collectTerms, renderPlain, escapeHtml } from './i18n.js';
 import { Glossary, TermPopover } from './glossary.js';
-import { SceneDirector } from './scene.js';
+import { MOTION_MODES, SceneDirector, motionMode } from './scene.js';
 
 const SHARED = new URL('../', import.meta.url); // learn-dittofs/
 const WIDTH = 1280;
@@ -79,8 +80,10 @@ function fillGenerated(section, ids, glossary, lang, ui) {
 // A quiz slide is `<section data-quiz="key" data-answer="a|b|c">`: the
 // question, the three options and one explanation per option come from the
 // deck's strings under `key`; the right letter sits in the HTML, so no
-// translation can move it. The body is rebuilt on every render, and the
-// pick lives on the section (data-picked), so a language switch keeps it.
+// translation can move it. The question and options are rebuilt on every
+// render, and the pick lives on the section (data-picked), so a language
+// switch keeps it. The verdict is a live region created once per quiz and only
+// ever changes its text, so a screen reader announces the result of a pick.
 const QUIZ_LETTERS = ['a', 'b', 'c'];
 
 function renderQuiz(section, strings, missing, glossary, ui, plain) {
@@ -101,8 +104,11 @@ function renderQuiz(section, strings, missing, glossary, ui, plain) {
   if (!body) {
     body = document.createElement('div');
     body.className = 'quiz-body';
+    body.innerHTML = '<div class="quiz-content"></div><p class="quiz-verdict" aria-live="polite"></p>';
     section.prepend(body);
   }
+  const content = body.querySelector(':scope > .quiz-content');
+  const live = body.querySelector(':scope > .quiz-verdict');
   body.classList.toggle('i18n-missing', fellBack);
   const picked = section.dataset.picked;
   const verdict = !picked ? ui('quiz.hint')
@@ -110,16 +116,16 @@ function renderQuiz(section, strings, missing, glossary, ui, plain) {
       : ui('quiz.wrong').replace('{answer}', answer.toUpperCase());
   // Options render as plain text: a term link inside a button would nest
   // one control in another. The question and the explanations carry links.
-  body.innerHTML = `<div class="kicker">${escapeHtml(ui('quiz.kicker'))}</div>`
+  content.innerHTML = `<div class="kicker">${escapeHtml(ui('quiz.kicker'))}</div>`
     + `<h2>${glossary.html(question || '')}</h2>`
     + `<ol class="quiz-options">${options.map((o, i) => {
       const l = QUIZ_LETTERS[i];
       const cls = [l === answer ? 'right' : 'wrong', l === picked ? 'picked' : ''].join(' ');
       return `<li class="quiz-option ${cls}" data-option="${l}">`
-        + `<button type="button"${picked ? ' aria-disabled="true"' : ''}><span class="letter">${l.toUpperCase()}</span><span class="text">${escapeHtml(plain(o))}</span></button>`
+        + `<button type="button"${picked ? ' aria-disabled="true"' : ''}${l === picked ? ' aria-pressed="true"' : ''}><span class="letter">${l.toUpperCase()}</span><span class="text">${escapeHtml(plain(o))}</span></button>`
         + `<p class="why">${glossary.html(why[i] || '')}</p></li>`;
-    }).join('')}</ol>`
-    + `<p class="quiz-verdict" aria-live="polite">${escapeHtml(verdict)}</p>`;
+    }).join('')}</ol>`;
+  if (live.textContent !== verdict) live.textContent = verdict;
   section.classList.toggle('quiz-answered', Boolean(picked));
   section.classList.toggle('quiz-correct', picked === answer);
 }
@@ -186,10 +192,17 @@ function render(ctx) {
 const icon = (d) => `<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
 const ICON_START = icon('M3 3v10M13 3 7 8l6 5z');
 const ICON_HOME = icon('M2.5 7.5 8 3l5.5 4.5M4 6.5V13h3v-3.5h2V13h3V6.5');
+// The animation modes: replay, play once then stop, still.
+const ICON_MOTION = {
+  loop: icon('M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5'),
+  once: icon('M3.5 3.5v9l6.5-4.5zM12.5 3.5v9'),
+  off: icon('M4.5 4.5h7v7h-7z'),
+};
 
-// The top-right bar: back to the first slide, back to the home page, and the
-// language switch. relabel() retitles the two links in a new language.
-function chrome(current, onPick, { onStart, ui }) {
+// The top-right bar: back to the first slide, back to the home page, the
+// animation mode and the language switch. The returned function marks the
+// pressed buttons and relabels the bar in a new language.
+function chrome({ lang, motion, ui, onStart, onLang, onMotion }) {
   const bar = document.createElement('div');
   bar.className = 'deck-chrome';
   bar.setAttribute('role', 'group');
@@ -202,31 +215,54 @@ function chrome(current, onPick, { onStart, ui }) {
   const home = document.createElement('a');
   home.className = 'nav';
   home.innerHTML = ICON_HOME;
-  const sep = document.createElement('span');
-  sep.className = 'sep';
-  bar.append(start, home, sep);
-  const relabel = (lang, label) => {
-    start.title = label('chrome.start');
-    home.title = label('chrome.home');
-    start.setAttribute('aria-label', start.title);
-    home.setAttribute('aria-label', home.title);
-    home.href = `${new URL('../', import.meta.url).pathname}?lang=${lang}`;
-  };
-  relabel(current, ui);
+  const sep = () => Object.assign(document.createElement('span'), { className: 'sep' });
+  bar.append(start, home, sep());
+
+  // A three-way switch, like the language one: each mode is a button, the
+  // current one pressed.
+  const motionGroup = document.createElement('span');
+  motionGroup.className = 'motion';
+  motionGroup.setAttribute('role', 'group');
+  for (const m of MOTION_MODES) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'icon';
+    b.dataset.motion = m;
+    b.innerHTML = ICON_MOTION[m];
+    b.addEventListener('click', () => onMotion(m));
+    motionGroup.appendChild(b);
+  }
+  bar.append(motionGroup, sep());
+
   for (const l of LANGS) {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = l.label;
     b.dataset.lang = l.id;
-    b.setAttribute('aria-pressed', String(l.id === current));
-    b.addEventListener('click', () => onPick(l.id));
+    b.addEventListener('click', () => onLang(l.id));
     bar.appendChild(b);
   }
   document.body.appendChild(bar);
-  return (lang, label) => {
-    bar.querySelectorAll('button[data-lang]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.lang === lang)));
-    relabel(lang, label);
+
+  const current = { lang, motion, ui };
+  const update = (next = {}) => {
+    Object.assign(current, next);
+    const label = current.ui;
+    start.title = label('chrome.start');
+    home.title = label('chrome.home');
+    start.setAttribute('aria-label', start.title);
+    home.setAttribute('aria-label', home.title);
+    home.href = `${new URL('../', import.meta.url).pathname}?lang=${current.lang}`;
+    motionGroup.setAttribute('aria-label', label('chrome.motion'));
+    motionGroup.querySelectorAll('button').forEach((b) => {
+      b.title = `${label('chrome.motion')}: ${label(`chrome.motionModes.${b.dataset.motion}`)}`;
+      b.setAttribute('aria-label', b.title);
+      b.setAttribute('aria-pressed', String(b.dataset.motion === current.motion));
+    });
+    bar.querySelectorAll('button[data-lang]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.lang === current.lang)));
   };
+  update();
+  return update;
 }
 
 // Measures every slide in the current language: content taller or wider than
@@ -294,7 +330,13 @@ export async function boot({ scenes = {} } = {}) {
   };
   let c = ctx();
   let missing = render(c);
-  document.title = renderPlain(loaded.deck.get('title').value || document.title, (id) => c.glossary.name(id));
+  // The tab's title follows the language; the <title> in the HTML is only
+  // what shows before the strings load.
+  const htmlTitle = document.title;
+  const retitle = () => {
+    document.title = renderPlain(loaded.deck.get('title').value || htmlTitle, (id) => c.glossary.name(id));
+  };
+  retitle();
 
   const checkMode = new URLSearchParams(location.search).has('check');
   if (checkMode) document.documentElement.classList.add('check-mode');
@@ -307,16 +349,16 @@ export async function boot({ scenes = {} } = {}) {
     if (section.dataset.picked) return;
     section.dataset.picked = option.dataset.option;
     renderQuiz(section, c.strings, missing, c.glossary, c.ui, (src) => renderPlain(src, (id) => c.glossary.name(id)));
-    section.querySelector(`.quiz-option[data-option="${section.dataset.picked}"] button`)?.focus();
+    section.querySelector(`.quiz-option[data-option="${section.dataset.picked}"] > button`)?.focus();
   };
   document.addEventListener('click', (e) => {
-    const button = e.target.closest('.reveal .quiz-option button');
+    const button = e.target.closest('.reveal .quiz-option > button');
     if (button) pick(button);
   });
   // Enter and Space answer the focused option; reveal would otherwise also
   // read Space as "next slide".
   document.addEventListener('keydown', (e) => {
-    const button = e.target.closest && e.target.closest('.reveal .quiz-option button');
+    const button = e.target.closest && e.target.closest('.reveal .quiz-option > button');
     if (button && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
       e.stopPropagation();
@@ -338,30 +380,91 @@ export async function boot({ scenes = {} } = {}) {
   });
   await reveal.initialize();
 
-  const goToGlossary = (id) => {
+  // "Open in the glossary" jumps far ahead, so it leaves a way back: the
+  // slide it left becomes a history entry of its own, and the browser's Back
+  // returns to it (reveal follows the hash change). Ordinary navigation still
+  // only replaces the current entry, as reveal's hash mode does.
+  let jumpedFrom = null;
+  const goToGlossary = (id, fromTerm) => {
     const target = document.querySelector(`section[data-glossary] [data-glossary-term="${id}"]`);
     const section = target && target.closest('section');
-    if (section) reveal.slide(reveal.getSlides().indexOf(section));
+    if (!section) return;
+    // reveal rewrites the hash at most once a second, so the URL may still
+    // name an earlier slide, or name the glossary only later: both entries
+    // are written here, the way reveal names a slide (its id, else its index).
+    const url = (slide) => {
+      const u = new URL(location.href);
+      u.hash = `/${slide.id || reveal.getSlides().indexOf(slide)}`;
+      return u;
+    };
+    history.replaceState(null, '', url(reveal.getCurrentSlide()));
+    history.pushState(null, '', url(section));
+    // Kept as a position, not the element: a language switch re-renders it.
+    const fromSlide = fromTerm?.closest('.slides > section');
+    jumpedFrom = fromSlide ? { slide: fromSlide, nth: [...fromSlide.querySelectorAll('.term')].indexOf(fromTerm) } : null;
+    reveal.slide(reveal.getSlides().indexOf(section));
+    target.querySelector('.term')?.focus({ preventScroll: true });
   };
+  window.addEventListener('popstate', () => {
+    // reveal follows a hashchange, but Chrome fires none when the entry was
+    // replaced since (a language switch replaces it), so the slide the entry
+    // names is shown here; reveal ignores a hashchange for the slide on screen.
+    const name = decodeURIComponent(location.hash.replace(/^#\/?/, ''));
+    const slides = reveal.getSlides();
+    const named = name && document.getElementById(name);
+    const index = named ? slides.indexOf(named.closest('.slides > section')) : Number(name || 0);
+    if (index >= 0 && index < slides.length && index !== reveal.getIndices().h) reveal.slide(index);
+    // An entry pushed before a language switch still names the old language:
+    // the page keeps the one on screen and says so in the URL.
+    if (new URL(location.href).searchParams.get('lang') !== lang) rememberLang(lang);
+    const from = jumpedFrom;
+    jumpedFrom = null;
+    if (from && reveal.getCurrentSlide() === from.slide) from.slide.querySelectorAll('.term')[from.nth]?.focus({ preventScroll: true });
+  });
   const popover = new TermPopover({ glossary: c.glossary, ui: c.ui, onGoToGlossary: goToGlossary, inGlossary: (id) => usedTerms.has(id) });
 
   const plain = (key) => renderPlain(loaded.deck.get(key).value ?? key, (id) => c.glossary.name(id));
   const director = new SceneDirector(reveal, scenes, (_scene, key) => plain(key));
   director.sync();
 
-  const setPressed = chrome(lang, async (next) => {
-    if (next === lang) return;
+  // A language is switched to only once its strings have loaded: a failed
+  // load keeps the language on screen, and its buttons, as they were.
+  let wanted = lang;
+  const switchLang = async (next) => {
+    if (next === lang && wanted === lang) return;
+    wanted = next;
+    let fresh;
+    try {
+      fresh = await loadLang(next);
+    } catch (err) {
+      console.error(`language ${next}: ${err}`);
+      if (wanted === next) wanted = lang;
+      return;
+    }
+    if (wanted !== next) return; // a later click won
     lang = next;
-    loaded = await loadLang(lang);
+    loaded = fresh;
     c = ctx();
     missing = render(c);
+    retitle();
     popover.setGlossary(c.glossary, c.ui);
     director.relabel();
     rememberLang(lang);
-    setPressed(lang, c.ui);
+    updateChrome({ lang, ui: c.ui });
     reveal.layout();
     if (checkMode) window.deckCheckResult = check(reveal, missing);
-  }, { onStart: () => reveal.slide(0), ui: c.ui });
+  };
+  const updateChrome = chrome({
+    lang,
+    motion: motionMode(),
+    ui: c.ui,
+    onStart: () => reveal.slide(0),
+    onLang: switchLang,
+    onMotion: (mode) => {
+      director.setMotion(mode);
+      updateChrome({ motion: motionMode() });
+    },
+  });
   rememberLang(lang);
 
   window.deck = { reveal, check: () => check(reveal, missing), lang: () => lang };

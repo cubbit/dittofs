@@ -7,9 +7,10 @@
   --surface-2: #f1efe9;
   --ink: #1d1f24;
   --ink-2: #4a4f59;
-  --ink-3: #7a808b;
+  --ink-3: #62676f;
   --line: #d9d6cd;
   --accent: #2357c6;
+  --on-accent: #ffffff;
   --accent-soft: #e3ebfb;
   --good: #1d7a46;
   --good-soft: #def3e6;
@@ -34,6 +35,7 @@
     --ink-3: #868c99;
     --line: #363b46;
     --accent: #7ea6ff;
+    --on-accent: var(--bg);
     --accent-soft: #233150;
     --good: #5fcf8e;
     --good-soft: #193526;
@@ -56,6 +58,7 @@
   --ink-3: #868c99;
   --line: #363b46;
   --accent: #7ea6ff;
+  --on-accent: var(--bg);
   --accent-soft: #233150;
   --good: #5fcf8e;
   --good-soft: #193526;
@@ -204,13 +207,16 @@ html, body { background: var(--bg); color: var(--ink); }
 }
 .reveal table th { color: var(--ink-2); font-weight: 650; font-size: 18px; }
 
-/* Glossary terms. Only a term's first use on a slide is marked. */
-.reveal .term {
+/* Glossary terms. Only a term's first use on a slide is marked. A term is a
+   span with role="button" (see renderInline), so it wraps like the text
+   around it. */
+.reveal .term, .term-pop .term {
   color: var(--term);
   border-bottom: 2px dotted var(--term);
   cursor: pointer;
 }
-.reveal .term:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.reveal .term:focus-visible, .term-pop .term:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.term-pop .term { border-bottom-width: 1px; }
 .reveal .term.term-quiet { color: inherit; border-bottom: none; }
 /* In a title a term keeps the title's colour: a big blue word reads as a
    heading of its own. The underline still says it is clickable. */
@@ -236,17 +242,23 @@ html, body { background: var(--bg); color: var(--ink); }
    wrong and shows each one's explanation. Print and the check measure the
    answered state, the tallest one. */
 .reveal .quiz-body { display: flex; flex-direction: column; gap: 14px; }
+/* The re-rendered part of a quiz, laid out as if it were not there: the
+   verdict after it is a live region that outlives every render. */
+.reveal .quiz-content { display: contents; }
 .reveal .quiz-body h2 { font-size: 34px; line-height: 1.2; }
 .reveal ol.quiz-options { list-style: none; padding: 0; gap: 12px; }
 .reveal .quiz-option { display: flex; flex-direction: column; gap: 4px; }
-.reveal .quiz-option button {
+.reveal .quiz-option > button {
   display: flex; align-items: center; gap: 14px;
   width: 100%; text-align: left;
   font: inherit; font-size: 24px; color: var(--ink);
   background: var(--surface); border: 2px solid var(--line); border-radius: 10px;
   padding: 10px 16px; cursor: pointer;
 }
-.reveal .quiz-option button:hover, .reveal .quiz-option button:focus-visible { border-color: var(--accent); outline: none; }
+.reveal .quiz-option > button:hover { border-color: var(--accent); }
+/* The focus ring is an outline, which no right/wrong/picked state sets, so
+   it shows on an answered option too. */
+.reveal .quiz-option > button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .reveal .quiz-option .letter {
   flex: none; width: 34px; height: 34px; border-radius: 50%;
   display: grid; place-items: center;
@@ -255,19 +267,19 @@ html, body { background: var(--bg); color: var(--ink); }
 .reveal .quiz-option .why { display: none; font-size: 19px; line-height: 1.35; color: var(--ink-2); padding-left: 66px; }
 .reveal .quiz-verdict { font-size: 20px; color: var(--ink-3); }
 
-.reveal .quiz-answered .quiz-option button { cursor: default; }
-.reveal .quiz-answered .quiz-option.right button { border-color: var(--good); background: var(--good-soft); }
+.reveal .quiz-answered .quiz-option > button { cursor: default; }
+.reveal .quiz-answered .quiz-option.right > button { border-color: var(--good); background: var(--good-soft); }
 .reveal .quiz-answered .quiz-option.right .letter { background: var(--good); color: var(--surface); }
-.reveal .quiz-answered .quiz-option.wrong.picked button { border-color: var(--bad); background: var(--bad-soft); }
+.reveal .quiz-answered .quiz-option.wrong.picked > button { border-color: var(--bad); background: var(--bad-soft); }
 .reveal .quiz-answered .quiz-option.wrong.picked .letter { background: var(--bad); color: var(--surface); }
-.reveal .quiz-answered .quiz-option.wrong:not(.picked) button { opacity: 0.75; }
+.reveal .quiz-answered .quiz-option.wrong:not(.picked) > button { opacity: 0.75; }
 .reveal .quiz-answered .quiz-option .why { display: block; }
 .reveal .quiz-answered.quiz-correct .quiz-verdict { color: var(--good); font-weight: 650; }
 .reveal .quiz-answered:not(.quiz-correct) .quiz-verdict { color: var(--bad); font-weight: 650; }
 
 .quiz-measure .reveal .quiz-option .why,
 .print-pdf .reveal .quiz-option .why { display: block; }
-.print-pdf .reveal .quiz-option.right button { border-color: var(--good); background: var(--good-soft); }
+.print-pdf .reveal .quiz-option.right > button { border-color: var(--good); background: var(--good-soft); }
 .print-pdf .reveal .quiz-verdict { display: none; }
 
 /* A string that fell back to English, visible only in check mode. */
@@ -294,6 +306,8 @@ html, body { background: var(--bg); color: var(--ink); }
 .reveal .scene .captions li.done { color: var(--ink-2); }
 .reveal .scene .captions li.active { color: var(--ink); border-left-color: var(--accent); }
 .reveal .scene .scene-step { display: none; }
+/* off: nothing moves, the CSS fades and pulses included. */
+:root[data-motion="off"] .scene * { transition: none !important; animation: none !important; }
 /* one: captions written as full sentences, too long to list side by side.
    They share one grid cell, sized by the tallest, and only the current step's
    shows, so the drawing does not jump as the steps change. */
@@ -368,7 +382,11 @@ html, body { background: var(--bg); color: var(--ink); }
   padding: 5px 10px;
   cursor: pointer;
 }
-.deck-chrome button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.deck-chrome button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+.deck-chrome button:focus-visible, .deck-chrome .nav:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.deck-chrome .motion { display: inline-flex; gap: 2px; }
+.deck-chrome button.icon { line-height: 0; padding: 5px 8px; display: inline-flex; align-items: center; }
+.deck-chrome button.icon:not([aria-pressed="true"]):hover { background: var(--line); color: var(--ink); }
 .deck-chrome .nav {
   font: 600 15px var(--font);
   color: var(--ink-2);

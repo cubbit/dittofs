@@ -148,7 +148,7 @@
     "target": ["internal/sidecar"]
   },
   "recording-service": {
-    "source": "docs/internals/rfcs/rfc-20-adapters.md#72-handlers-against-a-recording-service",
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#72-handlers-against-a-verified-service",
     "sourceLabel": "RFC 20 §7.2",
     "rfcs": ["rfc-20"],
     "target": ["pkg/vfs/vfstest"]
@@ -1210,5 +1210,11 @@
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-10", "rfc-14", "rfc-17", "rfc-8"]
+  },
+  "in-memory-service": {
+    "source": "docs/internals/rfcs/rfc-20-adapters.md#72-handlers-against-a-verified-service",
+    "sourceLabel": "RFC 20 §7.2",
+    "rfcs": ["rfc-20", "rfc-17", "rfc-29"],
+    "target": ["pkg/vfs/vfstest"]
   }
 }

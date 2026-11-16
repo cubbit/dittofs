@@ -71,8 +71,8 @@
   },
   "core": {
     "name": "core",
-    "short": "O pacote de adapters compartilhado por todos os protocolos. Reúne, escrito uma única vez, o que é igual em todos: listeners, conexões, o pipeline, o drain e os buffers.",
-    "long": "`internal/adapter/core`: o que é igual para todo protocolo, escrito uma vez — listeners, conexões, a pipeline, o compound runner, as [[held-request|requisições retidas]], o middleware, os buffers, o tipo da error table."
+    "short": "O pacote de adapters compartilhado por todos os protocolos. Reúne, escrito uma única vez, o que é igual em todos: listeners, conexões, o pipeline e o drain.",
+    "long": "`internal/adapter/core`: o que é igual para todo protocolo, escrito uma vez — listeners, conexões, a pipeline, o compound runner, as [[held-request|requisições retidas]], o middleware, o tipo da error table. Os buffers em pool não são do core: ficam em `pkg/resources` (RFC 24)."
   },
   "pipeline": {
     "name": "pipeline",
@@ -136,14 +136,14 @@
     "long": "Algo que o nó executa ao lado de um ou mais adapters, que não alcança o service e não guarda estado de cliente — mDNS, WS-Discovery, o port mapper, o registro no rpcbind. Se falhar, falha só ele."
   },
   "recording-service": {
-    "name": "recording service",
-    "short": "Um filesystem service falso que registra as chamadas de um handler, para que um teste verifique a tradução.",
-    "long": "Um fake do filesystem service que registra cada chamada e devolve respostas pré-programadas. Os testes de handler o usam para provar que a chamada certa é feita, com os argumentos certos."
+    "name": "recording wrapper",
+    "short": "Um wrapper de teste em volta do [[in-memory-service|in-memory service]] que registra cada chamada e a deixa passar, sem nunca responder no lugar dele. Os testes de handler leem o registro dele para conferir que uma requisição fez uma única chamada que altera.",
+    "long": "Fica em `vfstest`, em volta do `*vfs.Filesystem` real do in-memory service. Guarda cada chamada com sua referência e sua resposta e a deixa passar, então um teste verifica o que chegou ao service: um teste de handler falha quando uma requisição deixa mais de uma chamada que altera. As respostas de erro vêm de um fault wrapper separado."
   },
   "null-service": {
     "name": "null service",
-    "short": "Um filesystem service que não faz nada, para que testes e benchmarks meçam só o adapter.",
-    "long": "Um filesystem service que não faz nada, para que os testes do `core` e os benchmarks meçam o custo e o comportamento do próprio adapter, não os de um store."
+    "short": "Um filesystem service que responde na hora a toda chamada a partir da memória. Só o allocation gate e os benchmarks o usam, para medir o custo do próprio adapter; ninguém confere as respostas dele.",
+    "long": "Um `vfs.Service` que responde na hora a toda chamada, para que os benchmarks da pipeline e o allocation gate meçam o custo por requisição do próprio adapter, sem armazenamento por baixo. É uma carga, não um test double: ninguém confere as respostas dele. Os testes da camada `core` rodam no [[in-memory-service|in-memory service]]."
   },
   "reference-server": {
     "name": "reference server",
@@ -158,7 +158,7 @@
   "drain": {
     "name": "drain",
     "short": "Parar com cuidado. O servidor não aceita novas conexões, deixa terminar as requisições em andamento e depois fecha todas as conexões.",
-    "long": "Enquanto um nó faz drain, ele não aceita conexões novas. As requisições que já chegaram ao service seguem até receber resposta, e as outras novas recebem o sinal do protocolo para irem para outro lugar. O drain termina quando não sobra nenhuma requisição, ou no drain deadline."
+    "long": "Enquanto um nó faz drain, ele não aceita conexões novas, mas continua lendo as abertas. As requisições que liberam ou descarregam estado rodam, e também as que já foram entregues ao service. Qualquer outra requisição nova recebe um sinal de mudança só quando o service indica outro nó para a share dela; senão, fica sem resposta (no SMB, um `STATUS_PENDING` provisório que devolve os seus credits), e o cliente a reenvia depois de se reconectar. O drain termina quando não sobra nenhuma requisição, ou no drain deadline."
   },
   "identity": {
     "name": "Identity",
@@ -196,7 +196,7 @@
   "extent": {
     "name": "extent",
     "short": "Uma região contígua dos bytes de um arquivo, dada por um offset e um comprimento. Descreve um intervalo; não é algo armazenado.",
-    "long": "Uma região contígua `(offset, tamanho)` dos bytes de um arquivo, e o único termo para ela. Diz quais bytes do arquivo — nunca onde ficam no disco, nem que conteúdo têm."
+    "long": "Uma região contígua `(offset, length)` dos bytes de um arquivo, e o único termo para ela. Diz quais bytes do arquivo — nunca onde ficam no disco, nem que conteúdo têm."
   },
   "chunk": {
     "name": "chunk",
@@ -267,7 +267,7 @@
   },
   "segment": {
     "name": "segment",
-    "short": "Um arquivo do journal onde os records só são acrescentados no fim. Tem tamanho máximo, é selado quando enche, e seu espaço em disco só volta quando o segment inteiro é liberado.",
+    "short": "Um arquivo do journal onde os records só são acrescentados no fim. Tem tamanho fixo, é selado quando enche, e seu espaço em disco só volta quando o segment inteiro é liberado.",
     "long": "Um arquivo local append-only de [[record|records]], com tamanho máximo fixo (256 MiB nos exemplos do RFC) e selado quando cheio. Seu espaço só volta quando o segment inteiro é apagado ou reciclado como spare: pelo [[repack]], depois de copiar os records vivos para outro lugar, ou pelo próprio journal quando nada nele está vivo."
   },
   "held-extent": {
@@ -277,8 +277,8 @@
   },
   "offloaded-bit": {
     "name": "offloaded bit",
-    "short": "Uma marca por extent dizendo que seus bytes já estão no remote tier. O [[report]] do engine a liga depois de um envio, e um [[fill]] também, porque os bytes buscados vieram do remote tier. Sem ela o journal não libera nada.",
-    "long": "A marca por extent com que o journal lembra que lhe disseram que os bytes passaram por offload; marcada por um [[report]] ou um [[fill]], e necessária antes do [[release]]. Nunca é consultada para responder a uma leitura. Só pode errar na direção segura: pode chamar de dirty bytes que já passaram por offload, nunca o contrário."
+    "short": "Uma marca por extent dizendo que seus bytes já estão no remote tier. O [[report]] do engine a liga depois de um envio, um [[fill]] a liga, porque os bytes buscados vieram do remote tier, e `MarkOffloaded` a liga quando o engine refaz as marcas depois de um reinício. Sem ela o journal não libera nada.",
+    "long": "A marca por extent com que o journal lembra que lhe disseram que os bytes passaram por offload; marcada por um [[report]], um [[fill]] ou `MarkOffloaded`, e necessária antes do [[release]]. Nunca é consultada para responder a uma leitura. Só pode errar na direção segura: pode chamar de dirty bytes que já passaram por offload, nunca o contrário."
   },
   "offer": {
     "name": "offer",
@@ -371,7 +371,7 @@
   "sequence-number": {
     "name": "sequence number",
     "short": "A ordem em que este journal acrescentou seus records. Fora deste journal o número não significa nada.",
-    "long": "A ordem em que este journal anexou seus records. Quase todo append recebe um novo, inclusive uma cópia do repack; um record reanexado depois de um sync falho mantém o seu. Ordena os records na recuperação, nunca durante uma leitura."
+    "long": "A ordem em que este journal anexou seus records. Quase todo append recebe um novo, inclusive a cópia de conteúdo feita pelo repack; um record reanexado depois de um sync falho, ou um record só de cabeçalho que o repack leva adiante, mantém o seu. Ordena os records na recuperação; uma leitura só o confere com o record que encontra."
   },
   "storage-binding": {
     "name": "storage binding",
@@ -417,7 +417,7 @@
   },
   "work-queue": {
     "name": "work queue",
-    "short": "Uma fila em memória, uma por journal de dispositivo, que transforma eventos em trabalho: passadas de offload, lotes de remoções e a poda dos records de remoção já resolvidos.",
+    "short": "Uma fila em memória, uma por journal de dispositivo, que transforma eventos em trabalho: passadas de offload, lotes de remoções e a poda dos records de sobrescrita superados de um arquivo.",
     "long": "Alimentada por eventos `Dirty`, pelo tick de idade, pela pressão de capacidade e pelas remoções pendentes, e justa entre as [[share|shares]] conforme o orçamento. Enfileirar nunca bloqueia, uma chave está em no máximo uma execução, e nada é gravado: ela é reconstruída a partir do [[journal]], dos [[put-intent|put intents]] e dos registros de metadados sempre que o nó assume um shard."
   },
   "offload-pipeline": {
@@ -484,8 +484,8 @@
   },
   "shard-incarnation": {
     "name": "shard incarnation",
-    "short": "Um número no shard record, aumentado toda vez que um nó começa a servir o shard como primary.",
-    "long": "Um número no shard record aumentado toda vez que um nó começa a servir o shard como [[primary]], toda partida inclusive. Não serve de fence: entra no [[write-verifier|write verifier]] e dá nome à [[grace-instance]]."
+    "short": "Um número no shard record, aumentado toda vez que um nó ou um journal começa a servir o shard como primary: a cada início do nó e a cada attach de um journal, mas não numa reabertura no lugar.",
+    "long": "Um número no shard record aumentado toda vez que um nó ou um journal começa a servir o shard como [[primary]]: a cada início do nó, numa nova reivindicação e a cada attach de um journal, mas não numa reabertura do journal no lugar. Não serve de fence: entra no [[write-verifier|write verifier]] e dá nome à [[grace-instance]]."
   },
   "client-id": {
     "name": "cliente (client ID)",
@@ -505,7 +505,7 @@
   "byte-range-lock": {
     "name": "byte-range lock",
     "short": "Um lock sobre um intervalo de um arquivo, mantido por um lock owner. Locks SMB são obrigatórios; locks NFS, consultivos.",
-    "long": "Um lock sobre um intervalo [offset, last] de um arquivo, em 64 bits, mantido por um [[lock-owner]]. Locks SMB são obrigatórios: recusam I/O no intervalo. Locks NFS são consultivos: recusam só outros locks."
+    "long": "Um lock sobre um intervalo [offset, last] de um arquivo, em 64 bits, mantido por um [[lock-owner]]. Locks SMB são obrigatórios: recusam as leituras e escritas no intervalo que o lock proíbe. Locks NFS são consultivos: recusam só outros locks."
   },
   "lock-waiter": {
     "name": "lock waiter",
@@ -524,8 +524,8 @@
   },
   "client-lease": {
     "name": "client lease",
-    "short": "Por quanto tempo o servidor guarda o estado de um cliente que parou de dar sinal: 90 s, renovados a cada requisição.",
-    "long": "Por quanto tempo o servidor guarda o estado de um cliente silencioso: 90 s, fixos, renovados por toda requisição. Calado por um período inteiro, o cliente é dado como perdido e tudo o que tinha é liberado. Não é node lease nem [[lease]] SMB."
+    "short": "Por quanto tempo o servidor guarda o estado de um cliente que parou de dar sinal: 90 s, renovados a cada requisição. Nem todo cliente tem um: um host NLM não tem.",
+    "long": "Por quanto tempo o servidor guarda o estado de um cliente silencioso: 90 s, fixos, renovados por toda requisição. Calado por um período inteiro, o cliente é dado como perdido e tudo o que tinha é liberado. Nem todo cliente tem um: um host NLM não tem, e para um cliente sem lease o `Timeout` de um open SMB-durable faz esse papel. Não é node lease nem [[lease]] SMB."
   },
   "lease-owner": {
     "name": "lease owner",
@@ -571,7 +571,7 @@
   },
   "grant-budget": {
     "name": "grant budget",
-    "short": "Cada primary concede a um cliente no máximo 4.096 caching grants. Quando o cliente chega a esse número, pede-se que ele fique com no máximo 2.048.",
+    "short": "Cada primary concede a um cliente no máximo 4.096 caching grants. Nesse número não se oferece grant novo ao cliente e, onde o protocolo dele permite pedir, pede-se que ele devolva grants até ficar com 2.048.",
     "long": "Cada [[primary]] mantém os caching grants de um cliente dentro de 4.096. No limite não oferece grant novo e, se o protocolo permitir, pede ao cliente que devolva grants até ficar com 2.048. Volátil."
   },
   "delete-pending": {
@@ -618,8 +618,8 @@
   },
   "fence-records": {
     "name": "fence records",
-    "short": "Dois records por arquivo que guardam o shard e a sua [[epoch|shard epoch]], que todo commit do arquivo precisa carregar. Dois commits simultâneos do mesmo arquivo entram em conflito neles, e só um tem sucesso.",
-    "long": "Dois records por arquivo, `F_x` e `F_o`, cada um com o par (shard, epoch) que os commits do arquivo devem levar; todo commit do seu caminho os lê e os escreve, então dois commits concorrentes do mesmo arquivo conflitam. Em um único nó só a comparação do epoch perde o sentido (RFC 0, RFC 6 §5.4)."
+    "short": "Dois records por arquivo que guardam o shard e a sua [[epoch|shard epoch]] que os commits do arquivo precisam carregar, um para o caminho da existência e outro para o do offload. Todo commit confere o record do seu caminho; só os commits que precisam se excluir mutuamente o gravam.",
+    "long": "Dois records por arquivo, `F_x` para o caminho da existência e `F_o` para o do offload, cada um com o par (shard, epoch) que os seus commits precisam carregar. Todo commit faz [[guard]] sobre o fence do seu caminho, então falha se a epoch mudou. Só os commits que precisam se excluir mutuamente o gravam: um primary com uma nova epoch, as remoções e os releases e, no caso de `F_o`, todo commit de offload. Em um único nó só a comparação da epoch perde o sentido (RFC 0, RFC 6 §5.4)."
   },
   "entity": {
     "name": "entidade",
@@ -667,7 +667,7 @@
   "store-group-commit": {
     "name": "group commit (store)",
     "short": "Commits prontos ao mesmo tempo dividem um único sync do dispositivo. Nenhum deles é confirmado antes de esse sync terminar.",
-    "long": "Commits prontos no mesmo momento dividem um único sync do dispositivo, e nenhum é confirmado antes. O backend embarcado DEVE fazer isso: um sync por commit limita o store a algumas centenas de commits por segundo.",
+    "long": "Commits prontos no mesmo momento dividem um único sync do dispositivo, e nenhum é confirmado antes. O backend embarcado faz isso porque um sync por commit limitaria o store a algumas centenas de commits por segundo.",
     "clash": "Não é o [[group-commit]] do [[engine]], que junta a existência de muitos arquivos numa só transação de metadados. Este faz vários commits dividirem um único sync do dispositivo."
   },
   "store-time": {
@@ -740,7 +740,7 @@
   },
   "quota-reservation": {
     "name": "quota reservation",
-    "short": "Bytes ou inodes que uma chamada reserva em cada cota antes de alterar qualquer coisa. A reserva é liberada quando a chamada faz o commit.",
+    "short": "Bytes ou inodes que uma chamada reserva em cada cota antes de alterar qualquer coisa. A reserva é liberada quando se completa o commit que registra a sua cobrança, ou quando a chamada falha.",
     "long": "O que uma write, uma create ou uma copy separa em cada escopo de quota antes de mudar algo: os bytes que acrescenta, ou um inode. Fica na memória do primary e é liberada uma única vez, como quer que terminem seus bytes (com commit, com commit de um loss record ou descartados), ou quando a chamada falha."
   },
   "file-release": {
@@ -803,8 +803,8 @@
   },
   "continuously-available": {
     "name": "continuously available (CA)",
-    "short": "Uma configuração da share que promete que os handles sobrevivam à perda de um servidor. Numa share assim o DittoFS concede persistent handles, oferece o Witness e torna estável toda escrita.",
-    "long": "Uma [[share]] marcada como continuamente disponível avisa os clientes SMB 3.x no tree connect. Nela são concedidos [[persistent-handle|persistent handles]], o [[witness|Witness]] é servido e toda escrita na share, por qualquer open, é sincronizada antes da confirmação."
+    "short": "Uma configuração da share que promete que os handles sobrevivam à perda de um servidor. Numa share assim o DittoFS concede persistent handles e torna estável toda escrita, e num cluster também oferece o Witness.",
+    "long": "Uma [[share]] marcada como continuously available avisa os clientes SMB 3.x no tree connect. Nela são concedidos [[persistent-handle|persistent handles]], e toda escrita na share, por qualquer open, é sincronizada antes da confirmação. Num cluster o [[witness|Witness]] também é servido; um nó único não o serve."
   },
   "client-guid": {
     "name": "ClientGuid",
@@ -838,12 +838,12 @@
   },
   "suite": {
     "name": "suíte",
-    "short": "Um comando que roda muitos testes, como o pjdfstest ou os testes unitários em Go. O DittoFS tem 15.",
+    "short": "Um comando que roda muitos testes, como o pjdfstest ou os testes unitários em Go. O `test/suites.yaml` lista todas.",
     "long": "Um comando que roda muitos testes: `go test`, o pjdfstest via `prove`, o pynfs, o smbtorture, os cenários de sistema. A suíte encontra seus próprios testes, então adicionar um teste é adicionar um arquivo, não uma linha no [[registry]]."
   },
   "suite-option": {
     "name": "opção",
-    "short": "Uma variante de uma suíte, rodada como `dt run SUITE --OPCAO`, em vez de uma suíte própria.",
+    "short": "Uma variante de uma suíte, rodada como `dt run SUITE --OPTION`, em vez de uma suíte própria.",
     "long": "Uma variante nomeada de uma [[suite|suíte]], como `integration --kerberos` ou `unit --windows`: uma cópia da suíte em que cada campo que ela define substitui o original por inteiro. Roda como [[cell|cells]] próprias."
   },
   "suite-group": {
@@ -882,7 +882,7 @@
   "needs": {
     "name": "needs",
     "short": "O que uma máquina precisa oferecer para rodar uma suíte: Linux, root, Docker, um serviço, disco livre.",
-    "long": "O que uma [[suite|suíte]] exige: uma plataforma, `root` (sudo sem senha), um container engine, ferramentas, `disk:<GB>`, `port:<n>`, `host:dedicated`, `service:<nome>`. O `dt doctor` diz quais são atendidos; se o `dtc` não o atende, um não atendido dá [[not-run|not run]], nunca um pass."
+    "long": "O que uma [[suite|suíte]] exige: uma plataforma, `root` (sudo sem senha), um container engine, ferramentas, `disk:<GB>`, `port:<n>`, `host:dedicated`, `service:<name>`. O `dt doctor` diz quais são atendidos; se o `dtc` não o atende, um não atendido dá [[not-run|not run]], nunca um pass."
   },
   "dedicated-host": {
     "name": "host dedicado",
@@ -938,8 +938,8 @@
   },
   "not-run": {
     "name": "not run",
-    "short": "O status de saída 2, que quer dizer que algo não rodou, por exemplo porque faltou um requisito, o fixture falhou ou um teste foi pulado sem estar na lista. Nunca conta como sucesso.",
-    "long": "O resultado de uma [[cell]] que não testou o que diz: um need não atendido com `--ci`, uma [[fixture]] que falhou na verificação ou estourou o tempo, nenhum teste rodado, testes que um timeout deixou de fora, um resultado incompleto, um skip não listado. Exit 2, nunca um pass."
+    "short": "O status de saída 2, que quer dizer que algo não rodou: por exemplo, faltou um requisito com `--ci`, o fixture falhou ou, numa suíte com uma lista de known failures, um teste foi pulado sem estar na lista. Nunca conta como sucesso.",
+    "long": "O resultado de uma [[cell]] que não testou o que diz: um need não atendido com `--ci`, uma [[fixture]] que falhou na verificação ou estourou o tempo, nenhum teste rodado, testes que um timeout deixou de fora, um resultado incompleto ou, numa suíte com uma lista de known failures, um skip não listado. Exit 2, nunca um pass."
   },
   "quarantine": {
     "name": "quarentena",
@@ -953,8 +953,8 @@
   },
   "retry": {
     "name": "retry",
-    "short": "`--retry 1` roda de novo só as falhas novas, no develop e nas execuções agendadas, nunca em pull requests.",
-    "long": "Rodar de novo as falhas novas de uma [[cell]], na mesma [[fixture]]: `--retry 1` na develop e nas execuções agendadas, nunca num pull request ou dispatch, para que um PR não faça merge de um teste [[flaky]] que introduziu. O setup de uma fixture nunca é repetido."
+    "short": "`--retry 1` roda de novo só as falhas novas, depois dos merges e nas execuções agendadas, nunca em pull requests.",
+    "long": "Rodar de novo as falhas novas de uma [[cell]], na mesma [[fixture]]: `--retry 1` depois dos merges e nas execuções agendadas, nunca num pull request ou dispatch, para que um PR não faça merge de um teste [[flaky]] que introduziu. O setup de uma fixture nunca é repetido."
   },
   "develop-red": {
     "name": "issue develop-red",
@@ -1043,7 +1043,7 @@
   "floor-bucket": {
     "name": "floor bucket",
     "short": "Um dos 4.096 números de versão que o journal mantém, escolhido por um hash do file ID. Um [[fill]] para um arquivo do qual o journal não tem nada é comparado com o bucket desse arquivo, já que ali o arquivo não tem versão própria.",
-    "long": "A [[change-version]] por arquivo é limitada por uma tabela fixa de 4.096 floor buckets, indexada por um hash do `FileID`. Quando a entrada de um arquivo sai do índice, o bucket dele sobe para a versão da entrada, e na abertura todo bucket começa na versão mais alta encontrada no disco. Um arquivo sem entrada é comparado com o seu bucket, então um fill desatualizado é recusado mesmo depois que a entrada sumiu."
+    "long": "A [[change-version]] por arquivo é limitada por uma tabela fixa de 4.096 floor buckets, indexada por um hash do `FileID`. Quando a entrada de um arquivo sai do índice, o bucket dele sobe para a versão da entrada. Na abertura todo bucket começa na maior entre a versão mais alta do disco e o floor passado pelo engine, e o attach de uma share eleva todo bucket a esse floor. Um arquivo sem entrada é comparado com o seu bucket, então um fill desatualizado é recusado mesmo depois que a entrada sumiu."
   },
   "version-limit": {
     "name": "version limit",
@@ -1093,7 +1093,7 @@
   "system-scenario": {
     "name": "system scenario",
     "short": "Um dos 42 scripts shell em `test/scenarios/`. Cada um sobe um servidor real num container, põe clientes SMB e NFS reais para trabalhar nele e muitas vezes injeta uma falha, como uma queda do S3 ou um crash.",
-    "long": "Rodam como a [[suite|suíte]] `system` por meio de `test/scenarios/setup.sh`, só no [[dedicated-host|host dedicado]]. Cada um se chama `<número>-<o que faz>-<duração>.sh`: o primeiro dígito é o grupo, dos smoke tests 0x às quedas e crashes 7x, e os cenários 9x são execuções longas, como a que faz um arquivo crescer até 30 GB."
+    "long": "Rodam como a [[suite|suíte]] `system` por meio de `test/scenarios/setup.sh`, só no [[dedicated-host|host dedicado]]. Cada um se chama `<number>-<what>-<size>.sh` (número, o que faz, duração): o primeiro dígito é o grupo, dos smoke tests 0x às quedas e crashes 7x, e os cenários 9x são execuções longas, como a que faz um arquivo crescer até 30 GB."
   },
   "floating-address": {
     "name": "floating address",
@@ -1109,5 +1109,10 @@
     "name": "takeover (failover)",
     "short": "(cluster) Uma troca não planejada do [[primary]] de um [[shard]], muitas vezes chamada de failover. O [[node-lease|node lease]] do primary expirou, então outro nó que tem uma cópia das escritas do shard vira primary, e em seguida vem um grace period.",
     "long": "(cluster) Uma réplica, isto é, um nó diferente do primary cujo journal tem uma cópia de toda escrita do shard, que se torna [[primary]] depois que o [[node-lease|node lease]] do primary expirou. O open state do primary antigo se perde, então vem um [[grace-period]]. Ela aumenta a [[epoch]] do shard, e as chamadas ainda dirigidas ao primary antigo são recusadas. Uma troca planejada é um [[handover]]."
+  },
+  "in-memory-service": {
+    "name": "in-memory service",
+    "short": "O filesystem service real rodando sobre stores em memória (`memory.New`), sujeito à mesma suíte de conformidade do de produção. Os testes de handler rodam contra ele e conferem o estado que ele guarda depois.",
+    "long": "`memory.New`: o `*vfs.Filesystem` real sobre stores em memória, aprovado na suíte de conformidade do service. Um teste de handler confere a resposta codificada e o estado que o service guarda depois: um `CREATE` SMB que perde o deny mode no caminho ainda abre o arquivo, mas um segundo open em conflito que dá certo mostra que o campo falta. As respostas de erro vêm de um fault wrapper em volta dele, que faz falhar um método indicado na hora certa."
   }
 }

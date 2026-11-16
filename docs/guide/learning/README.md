@@ -22,8 +22,10 @@ PORT=9000 docs/guide/learning/serve.sh
 ```
 
 It is `python3 -m http.server` rooted at `docs/guide/learning/`, bound to
-`0.0.0.0` unless `BIND` says otherwise. A server is required rather than opening the file: decks load their
-strings and glossary with `fetch`, which browsers refuse over `file://`.
+`127.0.0.1`, so only this machine can open the decks. To serve them to other
+machines, opt in with `BIND=0.0.0.0 docs/guide/learning/serve.sh`. A server is
+required rather than opening the file: decks load their strings and glossary
+with `fetch`, which browsers refuse over `file://`.
 
 ## Layout
 
@@ -40,7 +42,7 @@ docs/guide/learning/
     │   ├── i18n.js            string loading, [[term]] expansion, language switch
     │   ├── glossary.js        term popovers and the glossary slide
     │   └── scene.js           animation kit: nodes, links, packets, steps
-    ├── vendor/                pinned third-party libraries, committed
+    ├── third-party/           pinned third-party libraries, committed
     │   ├── reveal.js-<ver>/
     │   └── anime-<ver>/
     ├── i18n/                  UI chrome strings (buttons, labels)
@@ -58,7 +60,7 @@ docs/guide/learning/
             ├── index.html     slide structure, no prose
             ├── deck.json      metadata: RFC path, the RFC commit it was built from
             ├── i18n/{en,it,pt-BR}.json
-            └── scenes/*.js    one file per animation
+            └── scenes/index.js  every scene the deck animates
 ```
 
 A **deck** explains one RFC. A **course** (later) is an ordered list of decks
@@ -81,21 +83,34 @@ the RFC-specific opening (two sentences, known, new and clashing terms).
   1280×720 canvas scaled to the window, keyboard navigation, `#/7` links to a
   slide, fragments, speaker notes (`S`) and PDF export (`?print-pdf`).
   `shared/deck.js` adds a top-right bar: back to the first slide, back to the
-  home page, and the language switch.
+  home page, the animation mode and the language switch.
 - **Animations: [anime.js](https://animejs.com/) (MIT)** driving inline SVG.
   Only where a step-by-step picture beats a static Mermaid-style diagram.
-- **Vendored, pinned, no CDN.** Libraries live in `vendor/` at an exact
+- **Pinned, committed, no CDN.** Libraries live in `third-party/` at an exact
   version, so the decks work offline and do not change under us.
 - No build step. Plain HTML, CSS, ES modules and JSON.
 
 ### Animations
 
-- **Stepped, then looping.** Each scene is a list of steps driven by reveal
-  fragments: → advances one step, ← rewinds. Every step highlights the
-  sentence it illustrates, so picture and text move together. The step on
-  screen replays after a pause while its slide is shown, and only that step:
-  nothing advances on its own, the last step included.
-  `prefers-reduced-motion` and PDF export show the final state, still.
+- **Stepped.** Each scene is a list of steps driven by reveal fragments:
+  → advances one step, ← rewinds. Every step highlights the sentence it
+  illustrates, so picture and text move together. Nothing advances on its
+  own, the last step included.
+- **The reader picks how much moves**, with the three-way switch in the
+  top-right bar, beside the language switch:
+  - **loop** replays the step on screen after a pause, for as long as its
+    slide is shown, and only that step;
+  - **once** plays the step on screen once, then holds its end state;
+  - **off** moves nothing: each step is drawn at its end state at once.
+
+  The choice applies at once to the slide on screen and to every deck, and is
+  kept in `localStorage` (`learn-dittofs.motion`). Without one, the mode is
+  **once**, since a picture that never stops moving distracts from the text
+  beside it (WCAG 2.2.2), or **off** under `prefers-reduced-motion`. PDF export
+  is always still and shows each scene's last step.
+- **Read aloud, not looked at.** The drawing is hidden from screen readers:
+  the captions carry what it shows, and the caption of the step that becomes
+  current is announced (the captions list is a polite live region).
 - **Declared, not drawn by hand.** A scene declares nodes, links and steps
   in the deck's `scenes/index.js`; `scene.js` renders and animates them. The
   full shape is documented at the top of `shared/scene.js`: nodes have a
@@ -106,8 +121,9 @@ the RFC-specific opening (two sentences, known, new and clashing terms).
   keys; a label starting with `=` is a literal (wire names, stage names, code)
   and is not translated. A deck needing a new primitive adds it to `scene.js`
   rather than to the deck, so every deck looks the same.
-- An animation must also make sense when frozen at its last step, which is
-  what PDF export and `prefers-reduced-motion` show.
+- An animation must also make sense frozen: each step at its end state, as
+  **off** and `prefers-reduced-motion` show it, and the whole scene at its
+  last step, as PDF export prints it.
 
 ## Languages
 
@@ -225,7 +241,10 @@ is defined once.
 - **Clickable everywhere.** Every `[[term]]` renders as a term that opens a
   popover with `short` and links to the glossary slide. Only the first use
   on a slide is marked, to keep slides readable; in a title it keeps the
-  title's colour and is only underlined.
+  title's colour and is only underlined. A term is reachable with Tab and
+  opens with Enter or Space; focus moves into the popover and Esc returns it
+  to the term. "Open in the glossary" leaves a history entry behind, so the
+  browser's Back returns to the slide the reader left.
 - **Link on every slide, not once per deck.** A reader jumps around, so a
   technical term is linked on each slide it appears on, titles, tables and
   scene captions included. Link it only where it carries its glossary sense:

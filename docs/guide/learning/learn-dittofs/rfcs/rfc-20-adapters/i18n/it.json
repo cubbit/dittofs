@@ -6,8 +6,8 @@
     "kicker": "Impara DittoFS · RFC 20",
     "title": "Il modello degli [[adapter]]",
     "lead": "Come il codice di un protocollo di rete parla con il filesystem, e perché non deve fare altro che tradurre.",
-    "built": "Basata sull'RFC 20, commit f7e4d96",
-    "notes": "Fonte: docs/internals/rfcs/rfc-20-adapters.md, commit f7e4d96. L'RFC specifica il comportamento, non il codice attuale; la sua Appendice B dice dove il codice differisce. Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per la sua definizione."
+    "built": "Basata sull'RFC 20, commit b0d540b",
+    "notes": "Fonte: docs/internals/rfcs/rfc-20-adapters.md, commit b0d540b. L'RFC specifica il comportamento, non il codice attuale; la sua Appendice B dice dove il codice differisce. Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per la sua definizione."
   },
   "intro": {
     "kicker": "Prima di iniziare",
@@ -18,7 +18,7 @@
     "knownLead": "Termini degli RFC su cui questo si basa, definiti nel glossario comune. Se uno ti è nuovo, cliccalo per la definizione.",
     "knownNotes": "Ogni definizione riformula in modo semplice la riga del glossario dell'RFC 0, che resta la definizione ufficiale.",
     "newTitle": "Termini nuovi",
-    "newNotes": "Da 'Start here · The words you need' (RFC 20), più core, operation table, compound, callback, error table, held request e recording service da §2.5, §4.2, §4.3, §3.3, §4.5, §4.6 e §7.2.",
+    "newNotes": "Da 'Start here · The words you need' (RFC 20), più core, operation table, compound, callback, error table, held request, in-memory service e recording wrapper da §2.5, §4.2, §4.3, §3.3, §4.5, §4.6 e §7.2.",
     "clashTitle": "Termini in conflitto",
     "clashNotes": "Adapter: la riga del glossario dell'RFC 0 sul remote block store lo chiama l'adapter di un backend; l'RFC 20 §2.4 usa gli Adapter bytes. RPC: §3.1 dice che DCE/RPC condivide solo il nome con ONC RPC. Lease: l'RFC 0 distingue client lease, node lease e lease SMB. Handle e FileId: RFC 0 e §2.2."
   },
@@ -121,11 +121,11 @@
     "title": "Cosa un [[adapter]] può importare, e cosa mai",
     "mayTitle": "Può importare soltanto:",
     "may": [
-      "`pkg/vfs`, cioè l'interfaccia del service e i suoi tipi, e i package condivisi per le impostazioni, i buffer e le metriche",
+      "`pkg/vfs` (il service) e la superficie pubblica dell'adapter: `pkg/adapter` per contratto e impostazioni, `pkg/resources` per budget e buffer, e `pkg/metrics`",
       "i propri codec e il proprio codice di sessione e di connessione",
       "[[core]], il codice comune a tutti gli adapter",
       "un package di traduzione condiviso, come la traduzione delle ACL che serve a entrambi gli adapter",
-      "la libreria standard e le librerie per i formati di rete che non fanno I/O su file"
+      "la libreria standard, l'API di tracing, `internal/tlsconfig` per i certificati e le librerie di formati di rete senza I/O su file"
     ],
     "neverTitle": "Non deve mai importare:",
     "never": [
@@ -136,7 +136,7 @@
       "un altro adapter"
     ],
     "test": "Un test legge il grafo degli import di ogni package degli adapter e fallisce indicando il package e l'import vietato. Una regola che nessuno controlla viene aggirata la prima settimana in cui qualcuno ha fretta.",
-    "notes": "§2.3 (cosa un adapter può importare), §7.1 (il test sugli import) e invariante A1. I tipi di identità che un adapter usa gli arrivano come alias di pkg/vfs; né pkg/identity né internal/identity possono essere importati. Il package di traduzione condiviso importa a sua volta solo tipi neutri. L'attuale §2.3 ammette anche pkg/adapter e pkg/adapter/config (contratto, Deps, impostazioni), pkg/resources (budget e buffer in pool di RFC 24), pkg/metrics e internal/tlsconfig. Topologia e routing: RFC 15; componente di identità: RFC 18 (pkg/identity, internal/identity); store della configurazione: RFC 13."
+    "notes": "§2.3 (cosa un adapter può importare), §7.1 (il test sugli import) e invariante A1. pkg/adapter contiene il contratto che il nodo guida e Deps, pkg/adapter/config le forme delle impostazioni (§2.5, §3.4, §3.6). pkg/resources sono i budget e i buffer in pool di RFC 24, condivisi da tutti i componenti (§6.8); pkg/metrics è il registry che Deps porta con sé (§10). internal/tlsconfig è il codice condiviso che carica e ricarica i certificati (§5.5), e l'API di tracing è quella nominata da Deps.Tracer. I tipi di identità che un adapter usa gli arrivano come alias di pkg/vfs; né pkg/identity né internal/identity possono essere importati. Vietato anche il package della salute: la liveness arriva a un adapter come Deps.Watch (§3.7). Il package di traduzione condiviso importa a sua volta solo tipi neutri. Topologia e routing: RFC 15; componente di identità: RFC 18 (pkg/identity, internal/identity); store della configurazione: RFC 13."
   },
   "quizBoundary": {
     "question": "Un client SMB si riconnette e presenta il suo durable handle, che nessun client NFS vede mai. Dove deve stare l'open a cui si riferisce?",
@@ -155,7 +155,7 @@
   "lifecycle": {
     "kicker": "Ciclo di vita",
     "title": "Un solo ciclo di vita per ogni [[adapter]]",
-    "notes": "§3.1 e §3.4. Il nodo guida gli stati (RFC 23 §2.3) tramite Start, Reconfigure e Stop. Il nodo avvia un adapter per ultimo, dopo che la prima riconciliazione ha aperto le share, così nessuna richiesta arriva prima che il service possa rispondere. La deadline del contesto di Stop è la drain deadline."
+    "notes": "§3.1, §3.4 e §3.6. Il nodo guida gli stati (RFC 23 §2.3) tramite Start, Reconfigure e Stop. Il nodo avvia un adapter per ultimo, dopo che la prima riconciliazione ha aperto le share, così nessuna richiesta arriva prima che il service possa rispondere. La deadline del contesto di Stop è la drain deadline. Un adapter fermato non riparte mai: il nodo ne costruisce uno nuovo con New (§3.4). Ogni impostazione dell'adapter si cambia a caldo tranne port; se cambia la porta, il nodo costruisce un nuovo adapter con New, poi ferma il vecchio e avvia il nuovo (§3.6, RFC 23 §2.3). Gli indirizzi di ascolto non sono impostazioni: li passa il nodo, e Reconfigure ne aggiunge o ne toglie uno solo per il rilascio di un namespace move o per il takeover di un floating address (§3.6). Una connessione legge le impostazioni una volta sola, all'accept, e una sessione al setup (§3.6, invariante A20)."
   },
   "fail": {
     "kicker": "Quando qualcosa va storto"
@@ -164,12 +164,16 @@
     "title": "Un [[drain]] durante un `tar`",
     "lead": "build01 sta scompattando un tarball sul suo mount NFS, con decine di richieste in corso, quando un operatore fa il drain del [[node|nodo]] per aggiornarlo.",
     "steps": [
-      "L'adapter non accetta nuove connessioni ma continua a leggere quelle aperte. Un nuovo `CREATE` o `WRITE` non viene eseguito. NFSv4 risponde `NFS4ERR_MOVED` quando un altro nodo può servire la share, altrimenti la richiesta non riceve risposta e il client la rimanda dopo essersi riconnesso.",
-      "Continua invece a servire le richieste che chiudono qualcosa che il service sta aspettando, come la conferma di un [[lease]], un flush o un `CLOSE`.",
+      "L'adapter non accetta nuove connessioni ma continua a leggere quelle aperte. Un nuovo `CREATE` o `WRITE` non viene eseguito. NFSv4 risponde `NFS4ERR_MOVED` quando un altro nodo può servire la share. Altrimenti la richiesta non riceve risposta (su SMB, solo uno `STATUS_PENDING` provvisorio che restituisce i suoi credit), e il client la rimanda dopo essersi riconnesso.",
+      "Continua invece a servire le richieste che chiudono qualcosa che il service sta aspettando, come la conferma di un [[lease]], un flush o un `CLOSE`, e quelle che impostano solo il contesto o leggono attributi, come `SEQUENCE`, `PUTFH` e `GETATTR`, così passa anche un `CLOSE` mandato dietro di loro. Una richiesta già in attesa, come un lock che aspetta che un altro client sblocchi, viene chiusa subito invece che alla deadline."
+    ],
+    "endTitle": "Come finisce il [[drain]]",
+    "end": [
       "Le richieste già passate al service arrivano fino alla risposta, che viene inviata: un `WRITE` di cui il client ha visto la conferma è stato davvero applicato.",
       "Poi ogni connessione viene chiusa. I client NFS con mount hard ritentano finché un nodo non risponde di nuovo all'indirizzo del server, questo dopo il riavvio oppure, in un cluster, un altro che ha preso il [[floating-address|floating address]]. I client SMB si riconnettono e recuperano i loro durable open."
     ],
-    "notes": "'Start here · Scenarios', lo scenario del tar, e §3.1 sul draining. Il segnale di spostamento è NFS4ERR_MOVED con fs_locations, oppure prima Witness CLIENT_MOVE per SMB; se il protocollo non ne ha uno, la richiesta non viene letta. Le richieste che chiudono uno stato atteso dal service: la conferma di un break o di un lease, DELEGRETURN, la risposta a una callback, CLOSE, un unlock e le scritture che svuotano una cache richiamata. RFC attuale §3.1: ErrMoved, quando MoveTarget del service indica un altro nodo gateway, diventa NFS4ERR_MOVED con fs_locations (prima Witness CLIENT_MOVE per SMB, in cluster); ErrMoved ed ErrDraining altrove (NFSv3, MOUNT, NLM, SMB) diventano nessuna risposta, e SMB manda uno STATUS_PENDING provvisorio senza risposta finale. L'indirizzo ripreso è il floating address (RFC 21 §6.1, RFC 27 §2.2)."
+    "notes": "'Start here · Scenarios', lo scenario del tar, e §3.1 sul draining. Ciò che una richiesta fa allo stato (il suo Role, §4.7) decide se viene eseguita. Servite: una richiesta che rilascia uno stato atteso dal service (la conferma di un break o di un lease, DELEGRETURN, la risposta a una callback, CLOSE, un unlock) o lo svuota (le scritture che svuotano una cache richiamata), e una che imposta il contesto di un compound o legge solo attributi (SEQUENCE, PUTFH, GETATTR, un RENEW di NFSv4.0), così il CLOSE o il DELEGRETURN che Linux manda dietro un GETATTR viene eseguito e un client spostato può leggere fs_locations (la decisione di §3.1). Ogni altra nuova richiesta riceve ErrMoved quando MoveTarget del service indica un altro nodo gateway per la sua share, altrimenti ErrDraining; finché la topologia di RFC 15 non esiste, MoveTarget non ne indica nessuno. ErrMoved diventa NFS4ERR_MOVED con fs_locations dove l'operazione può portarlo (RFC 21 §7.4; prima Witness CLIENT_MOVE per SMB, in cluster). Dove l'operazione non ha un segnale di spostamento, o il service non indica un altro nodo, la richiesta viene letta e non riceve risposta (NFSv3, MOUNT, NLM, SMB); SMB manda uno STATUS_PENDING provvisorio che restituisce i credit della richiesta, senza risposta finale, così il client può ancora mandare i rilasci e i flush che il drain serve (RFC 22 §16.5). Un errore sarebbe definitivo per l'applicazione, mentre una richiesta senza risposta viene rimandata dopo la riconnessione (la decisione di §3.1). Un COMPOUND NFSv4 con un'operazione rifiutata dal drain non ne esegue nessuna (§4.7). Una richiesta parcheggiata (un lock in attesa, una notifica di modifica) viene annullata quando il drain comincia e riceve la risposta che la sua tabella dà all'errore del drain, o successo se ha avuto effetto (Park, §4.7).",
+    "endNotes": "'Start here · Scenarios', lo scenario del tar, passi 2 e 3, e §3.1 (draining e stopped). Il draining finisce quando non resta alcuna richiesta o alla drain deadline, quale arriva prima; poi ogni connessione viene chiusa, il suo stato scartato, e Disconnect viene chiamato per ogni sessione SMB terminata. I client NFS con mount hard ritentano verso il nodo che risponde per primo all'indirizzo; l'indirizzo ripreso è il floating address (RFC 21 §6.1, RFC 27 §2.2). I client SMB si riconnettono e recuperano i loro durable open (RFC 14 §8). Il limite della decisione di §3.1 di non rispondere: quando si ferma l'unico nodo, un open SMB non persistente non sopravvive al riavvio (RFC 14 §8.1), quindi una scrittura rifiutata su di esso e rimandata dopo non trova l'open, a meno che il client non riapra il file per nome."
   },
   "abandon": {
     "title": "Cosa garantisce il [[drain]], e dove si ferma",
@@ -233,7 +237,7 @@
       "Non decide mai se l'operazione è permessa in base a mode, ACL o tipo del file. Quella decisione spetta al service."
     ],
     "caption": "Questo è l'intero handler `WRITE` di NFSv3. Non cerca nessuna [[share]], non controlla permessi, non verifica lock e non chiama mai l'[[engine]].",
-    "notes": "§4.3, l'handler di esempio: codice identico, commenti accorciati; e invariante A5. Gli attributi pre e post operazione vengono dal risultato della write stessa (il suo WCC), mai da un GetAttr successivo, che potrebbe includere la write di un altro client. Il service è un campo dell'insieme di handler, passato una volta da node.New."
+    "notes": "§4.3, l'handler di esempio: codice identico, commenti accorciati; e invariante A5. Gli attributi pre e post operazione vengono dal risultato della write stessa (il suo WCC), mai da un GetAttr successivo, che potrebbe includere la write di un altro client. Il service è un campo dell'insieme di handler, passato una volta da node.New. §4.3 mette alcune chiamate fuori dalla regola della chiamata unica: SignIn e Find nelle richieste che ne hanno bisogno, le chiamate sul record del client durante il setup di una sessione (Connect, AddSession, Disconnect), il ritiro di un waiter il cui Park è stato rifiutato (CancelLock, Unwatch) e FreeState dopo una risposta Revoked. Ognuna autentica, apre una sessione, oppure annulla o libera uno stato, e non cambia alcun file; il test di §7.2 le esenta in base alla richiesta da cui vengono, mai solo in base all'operazione. Un handler che compone fallisce il test su import e call site (§7.1) o un test di handler contro l'in-memory service (§7.2)."
   },
   "compound": {
     "title": "[[compound|Compound]]: una sequenza di [[handler]]",
@@ -266,13 +270,13 @@
       "Non traduce mai un utente in ID numerici o SID, non applica lo squash, cioè non scambia un utente come un root remoto con uno senza privilegi, e non decide chi è privilegiato. Lo fa il service, per ogni [[share]].",
       "A un handshake fallito risponde con un logon failure, e non lo trasforma mai in una [[session|sessione]] guest o anonima."
     ],
-    "authTitle": "Un solo package `auth` per entrambi",
+    "authTitle": "Un solo package `gss` per entrambi",
     "auth": "Entrambi gli adapter eseguono gli scambi Kerberos, NTLM e SPNEGO con un solo package, `internal/adapter/gss`. Quando un handshake ha bisogno di una keytab, di un hash NT o di un server di directory, l'adapter chiama `SignIn` del service, così nessun adapter legge una keytab o parla da sé con una directory.",
-    "notes": "§4.4 e invariante A12. Proof: None < Claimed < Secret < Ticket. Protection: None < Integrity < Privacy. Una Identity è ricostruita per ogni richiesta, e ogni cache con chiave sull'identità include tutti i campi. Niente in un adapter apre una connessione a un KDC, a un domain controller o a un server LDAP, né legge una keytab. Mappatura, squash e privilegi sono del service, per share, secondo la risoluzione di RFC 18 §6. SignIn: §4.4, delegato all'interfaccia di autenticazione di RFC 18 §3.1. Il package comune è internal/adapter/gss (§4.4)."
+    "notes": "§4.4 e invariante A12. Proof: None < Claimed < Secret < Ticket. Protection: None < Integrity < Privacy. Una Identity è ricostruita per ogni richiesta, e ogni cache con chiave sull'identità include tutti i campi. Niente in un adapter apre una connessione a un KDC, a un domain controller o a un server LDAP, né legge una keytab. Mappatura, squash e privilegi sono del service, per share, secondo la risoluzione di RFC 18 §6. SignIn: §4.4, delegato all'interfaccia di autenticazione di RFC 18 §3.1. internal/adapter/gss è solo il lato di rete e non tiene segreti: la keytab, il PAC e NETLOGON restano all'autenticatore dietro SignIn, internal/identity (RFC 18 §2.7). Con una credenziale scaduta gira solo ciò che rilascia uno stato, rifà l'autenticazione o chiude la sessione (§4.4, RFC 18 §3.8)."
   },
   "callbacks": {
     "title": "[[callback|Callback]]: il service chiama il client",
-    "lead": "A volte il service ha bisogno che un client faccia qualcosa che il client non ha chiesto. Per questo, quando un client si connette, l'[[adapter]] passa al service un valore `Callbacks`, attraverso cui il service raggiunge il client.",
+    "lead": "A volte il service ha bisogno che un client faccia qualcosa che non ha chiesto. Così, quando un client si registra presso il service (il suo `Connect`, non l'accept TCP), l'[[adapter]] gli passa un valore `Callbacks` con cui raggiungerlo.",
     "table": [
       [
         "Callback",
@@ -306,7 +310,7 @@
       ]
     ],
     "footer": "Una callback ritorna appena il suo messaggio è in coda, entro la deadline che le dà il service, anche se il client non risponde mai. La risposta del client arriva più tardi, come una normale richiesta.",
-    "notes": "§3.3. Esiste anche RecallAny: CB_RECALL_ANY su NFSv4.1 quando un client arriva a 4096 delegation su un primary; niente su SMB. NFSv4.0 non ha un percorso di callback. Le callback NLM sono RPC che il server fa verso il servizio NLM dell'host. Il service tratta una callback fallita come un client che non risponde. Riga Revoked: il lease di build01 è scaduto (il client lease, RFC 14), un amministratore ne ha revocato il client, la share è stata rimossa o spostata (uno spostamento di namespace, RFC 27 §2.2; RevokedShare con Addr). Una callback DEVE ritornare entro la deadline del suo context, che il client risponda o no."
+    "notes": "§3.3, e §3.2: il service viene a sapere di un client nel momento proprio del protocollo, il suo Connect, non all'accept, perché l'identità di un client NFS attraversa più connessioni e quella di un client SMB più sessioni. Esiste anche RecallAny: CB_RECALL_ANY su NFSv4.1 quando un client arriva a 4096 delegation su un primary; niente su SMB. NFSv4.0 non ha un percorso di callback. Le callback NLM sono RPC che il server fa verso il servizio NLM dell'host. Il service tratta una callback fallita come un client che non risponde. Riga Revoked: il lease di build01 è scaduto (il client lease, RFC 14), un amministratore ne ha revocato il client, la share è stata rimossa o spostata (uno spostamento di namespace, RFC 27 §2.2; RevokedShare con Addr). Una callback DEVE ritornare entro la deadline del suo context, che il client risponda o no."
   },
   "errors": {
     "title": "Una [[error-table]] per protocollo",
@@ -323,9 +327,9 @@
       "Quando il service risponde [[retry-later]] con una causa che SMB aspetta, come un [[recall]] in corso, o una chiamata è ancora senza risposta dopo un breve intervallo, è un timer dell'[[adapter]] a inviare al client uno `STATUS_PENDING` provvisorio.",
       "A riprovare la richiesta è poi il codice in `core/hold.go`, non l'handler. Risolve di nuovo gli ID di rete e concede a ogni tentativo una nuova deadline di 30 s.",
       "Tra un tentativo e l'altro, una richiesta trattenuta è solo un timer con i suoi argomenti decodificati, e non occupa alcun worker.",
-      "Ogni connessione può sempre trattenere fino a 256 richieste e 32 MiB di dati di scrittura. Oltre, le richieste trattenute attingono al pool condiviso del [[node|nodo]]."
+      "Ogni connessione può trattenere da sola fino a 256 richieste e 32 MiB di dati di scrittura. Oltre, le richieste trattenute attingono al pool condiviso del [[node|nodo]], e al massimo 511 richieste di una connessione possono attendere insieme."
     ],
-    "heldNotes": "§4.6 (richieste trattenute) e §6.4. Una richiesta che né la soglia della connessione né il pool di hold possono accogliere riceve subito STATUS_INSUFFICIENT_RESOURCES. Un CANCEL del client o la chiusura della connessione pone fine all'hold. Quanto a lungo si trattiene una richiesta dipende dal limite del protocollo per la causa del ritardo, applicato dalla pipeline. Quali cause vengono trattenute lo dice RFC 22 §16.5: un break o un recall in corso è trattenuto finché non finisce."
+    "heldNotes": "§4.6 (richieste trattenute) e §6.4. La soglia conta le richieste trattenute nel service con WithHold o tra un nuovo tentativo e l'altro, non un lock in attesa o una notifica di modifica parcheggiati, che non tengono dati di scrittura né worker. Ogni richiesta in sospeso su una connessione, trattenuta oltre la risposta provvisoria o parcheggiata, conta per un unico tetto, Stages.MaxPending, 511 per SMB (RFC 22 §3.3); oltre, una richiesta riceve subito ErrTooManyPending. Una richiesta il cui hold parte da un errore restituito dal service, e che né la soglia né il pool di hold possono accogliere, riceve subito STATUS_INSUFFICIENT_RESOURCES; una chiamata ancora nel service quando parte la sua risposta provvisoria viene contata e mai rifiutata. Un CANCEL del client o la chiusura della connessione pone fine all'hold. Quanto a lungo si trattiene una richiesta lo dice il Hold della sua riga nella error table, che SMB costruisce sulle impostazioni dell'adapter modificabili a caldo (pending_timeout, recall_timeout), così una richiesta trattenuta segue il limite più recente e non la copia delle impostazioni della sua connessione (la decisione di §4.6). Quali cause vengono trattenute lo dice RFC 22 §16.5: un break o un recall in corso è trattenuto finché non finisce."
   },
   "concurrency": {
     "kicker": "Concorrenza"
@@ -375,7 +379,7 @@
     "w5": "il massimo di [[adapter-bytes|Adapter bytes]] che un [[adapter]] può affidare al service perché li conservi in un record di [[open-state]]",
     "n6": "500 righe",
     "w6": "la dimensione sotto cui dovrebbe restare un file dell'adapter, test esclusi. Oltre le 800 righe un test fallisce, a meno che il file non sia in una allowlist.",
-    "notes": "30 s: §6.4. Break deadline di 35 s: §3.1. 64: §6.3 (con un marker ponytail). 256 e 32 MiB: §4.6. 4 KiB: §2.4, Across nodes. 500 e 800 righe: §2.5, con una allowlist che può solo ridursi. La deadline del drain è almeno la deadline del break più quella della richiesta, così una richiesta trattenuta su un break può finire (§3.1). Gli Adapter bytes sono affidati al service e salvati dall'open state (§2.4, RFC 14 §2.1)."
+    "notes": "30 s: §6.4. Break deadline di 35 s: §3.1. 64: §6.3 (con un marker ponytail). 256 e 32 MiB: §4.6, accanto al tetto di 511 richieste in sospeso per connessione (§4.6, RFC 22 §3.3). 4 KiB: §2.4, Across nodes. 500 e 800 righe: §2.5, con una allowlist che può solo ridursi. La deadline del drain è almeno la deadline del break più quella della richiesta, così una richiesta trattenuta su un break può finire (§3.1); drain_timeout vale 90 s per default (§3.6). Gli Adapter bytes sono affidati al service e salvati dall'open state (§2.4, RFC 14 §2.1)."
   },
   "sidecar": {
     "title": "Auxiliary service o sidecar?",
@@ -418,18 +422,18 @@
     "kicker": "Test",
     "title": "Test a strati, dal più economico",
     "layers": [
-      "**[[codec]]** — dai byte ai campi e ritorno, con golden vector (byte fissi presi dalla specifica o da un reference server), round trip e fuzzing",
+      "**[[codec]]** — dai byte ai campi e ritorno, con golden vector (byte fissi dalla specifica o da un reference server), round trip e fuzzing",
       "**stage** — ogni stage del protocollo testato da solo, senza socket",
-      "**[[core]]** — ciclo di vita, drain e flow control, su NFSv3 sopra il [[null-service]]",
-      "**[[handler]]** — la chiamata giusta al service per ogni richiesta, contro un [[recording-service]]",
-      "**confine** — import, [[error-table]] complete, la regola della chiamata unica",
+      "**[[core]]** — ciclo di vita, drain e flow control, su un protocollo di test sopra l'[[in-memory-service|in-memory service]]",
+      "**[[handler]]** — la chiamata giusta e la regola della chiamata unica, contro l'[[in-memory-service|in-memory service]] vero",
+      "**confine** — import ed [[error-table]] complete",
       "**in-process** — un adapter sul service vero, con store in memoria",
       "**conformance** — suite di test scritte da altri, come pynfs per NFS, e smbtorture e WPTS di Microsoft per SMB",
       "**end to end** — client del kernel contro un [[node|nodo]] vero",
       "**wire diff** — un confronto notturno con un [[reference-server]]"
     ],
-    "recording": "Un [[recording-service]] scopre ciò che un service vero nasconde. Se un handler perde il [[deny-mode]] mentre costruisce `OpenRequest`, un service vero apre comunque il file e ogni test con un solo client passa. Solo la chiamata registrata mostra che il campo manca.",
-    "notes": "§7, la tabella degli strati. Ogni strato trova qualcosa che quelli sopra non possono. Lo strato core usa NFSv3, il protocollo più semplice, sul null service, così un bug di drain trovato lì è di core ed entrambi gli adapter condividono la correzione. Un test di handler fissa esattamente la chiamata mutante e quelle di sola lettura solo per nome. Golden vector: §5.4, byte fissi presi dagli esempi delle specifiche o dalle catture del reference server, mai solo dal codec sotto test. Suite di conformance: §7 (pynfs, cthon04, nfstest, smbtorture, WPTS, pjdfstest)."
+    "recording": "I test degli handler girano sull'[[in-memory-service|in-memory service]] vero. Se un handler perde il [[deny-mode]] costruendo `OpenRequest`, il file si apre, ma un secondo open in conflitto che riesce mostra che il campo manca. Un [[recording-service|recording wrapper]] lascia passare ogni chiamata e conta quelle che cambiano lo stato.",
+    "notes": "§7, la tabella degli strati. Ogni strato trova qualcosa che quelli sopra non possono. Lo strato core usa un protocollo solo per i test (adaptertest/testproto: frame con prefisso di lunghezza, un echo, un ritardo, un'operazione che va in panic, una che viene trattenuta) sopra l'in-memory service, così un bug di drain trovato lì è di core, non di uno store né di un protocollo, ed entrambi gli adapter condividono la correzione; core è verificato prima che esista un adapter. Il null service serve solo all'allocation gate e ai benchmark (§6.10); nessuno controlla le sue risposte. §7.2: l'in-memory service è memory.New, il vero *vfs.Filesystem su store in memoria, che passa la suite di conformance del service (RFC 17 §8); risposte di errore e casi limite delle risposte vengono dal fault wrapper di vfstest, che fa fallire un metodo indicato a comando (RFC 29 §4.11). Un test di handler controlla la risposta codificata e lo stato che il service tiene dopo. La regola della chiamata unica si legge da un recording wrapper attorno al filesystem, che registra ogni chiamata e la lascia passare, senza mai rispondere al suo posto; le chiamate di sola lettura non vengono controllate. Golden vector: §5.4, byte fissi presi dagli esempi delle specifiche o dalle catture del reference server, mai solo dal codec sotto test. Suite di conformance: §7 (pynfs, cthon04, nfstest, smbtorture, WPTS, pjdfstest)."
   },
   "wire": {
     "title": "[[wire-test|Wire test]]: confronto con un [[reference-server]]",
@@ -504,7 +508,7 @@
       "steps": [
         "**configured:** l'adapter ha validato le impostazioni ma non ha ancora aperto alcun socket. Un'impostazione che non può applicare lo fa fallire qui, non alla prima richiesta.",
         "**serving:** `Start` riesce solo quando tutti i listener configurati sono in ascolto. Se uno non riesce a fare il bind, l'avvio fallisce e chiude i listener già aperti.",
-        "Mentre l'adapter è in servizio, **Reconfigure** aggiunge o toglie listener e cambia le impostazioni modificabili a caldo, senza riavvio.",
+        "Mentre l'adapter è in servizio, **Reconfigure** aggiunge o toglie listener e ne cambia le impostazioni, senza riavvio. Solo una nuova porta fa eccezione: il nodo costruisce un nuovo adapter, fa il drain del vecchio e avvia il nuovo.",
         "**[[drain|draining]]:** dopo `Stop` l'adapter non accetta più nuove connessioni, e le richieste già passate al service arrivano fino alla risposta.",
         "**stopped:** tutte le connessioni sono chiuse, e lo stato che l'adapter teneva per ciascuna viene scartato."
       ]
@@ -518,7 +522,7 @@
         "**Solo protocollo.** L'adapter legge un messaggio, ne decodifica l'header, lo decifra o ne verifica la firma, e lo conta nel [[flow-control]] della connessione. Quel conteggio è lo stage chiamato admit, e non è l'[[admission]] del service. Poi controlla che non sia una ripetizione, decodifica gli argomenti e traduce gli ID di rete in valori del service. Niente di tutto questo tocca un file.",
         "**La chiamata.** L'[[handler]] fa la sua unica chiamata al service, dove girano i controlli di [[admission]] del service stesso. È l'unico stage che arriva a un file.",
         "**La risposta.** L'adapter traduce l'eventuale errore nello status del protocollo, codifica la risposta, la firma o la cifra e la passa al writer della connessione, che la invia.",
-        "Una richiesta i cui argomenti non si possono decodificare viene rifiutata con `GARBAGE_ARGS` prima di qualunque chiamata al service, quindi non lascia traccia sul [[primary]]."
+        "Una richiesta i cui argomenti non si possono decodificare viene rifiutata con la risposta del protocollo (`GARBAGE_ARGS` su RPC, `STATUS_INVALID_PARAMETER` su SMB) prima di qualunque chiamata al service, quindi non lascia traccia sul [[primary]]."
       ]
     },
     "slow": {

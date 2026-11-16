@@ -44,6 +44,9 @@ export class Strings {
   }
 }
 
+// The id of the popover every term opens; glossary.js gives it to its element.
+export const TERM_POPOVER_ID = 'term-pop';
+
 const INLINE = /\[\[([a-z0-9-]+)(?:\|([^\]]+))?\]\]|\*\*(.+?)\*\*|`([^`]+)`/g;
 
 // Renders one string to HTML. termName(id) gives a term's display name in the
@@ -57,7 +60,16 @@ export function renderInline(src, termName) {
     out += escapeHtml(src.slice(last, m.index));
     if (m[1]) {
       const text = m[2] ?? termName(m[1]);
-      out += `<span class="term" data-term="${m[1]}" tabindex="0" role="button">${escapeHtml(text)}</span>`;
+      // A button to assistive technology and the keyboard (glossary.js handles
+      // Enter and Space), but a span in the layout. decision: not a <button>,
+      // because a button is an atomic inline box: a term of several words can
+      // no longer break across lines, which re-wrapped and overflowed slides
+      // in most decks. display: contents would let it wrap, but makes the
+      // button unfocusable in the Chromium the checks run on. Revisit when
+      // focusable display: contents buttons are in every supported browser.
+      // It controls the one shared popover (TermPopover), which sets
+      // aria-expanded.
+      out += `<span class="term" data-term="${m[1]}" role="button" tabindex="0" aria-expanded="false" aria-controls="${TERM_POPOVER_ID}">${escapeHtml(text)}</span>`;
     } else if (m[3]) {
       out += `<strong>${renderInline(m[3], termName)}</strong>`;
     } else {

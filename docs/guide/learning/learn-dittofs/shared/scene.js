@@ -18,11 +18,22 @@
 // }
 // Captions are a string array at the scene's caption key, one per step.
 //
-// The step on screen replays in a loop while its slide is shown: after a pause
-// its packets run again. A step never advances on its own, the last included:
-// replaying the whole scene from the last step read as the scene moving on.
+// How the step on screen moves is the reader's choice, one of MOTION_MODES,
+// kept in localStorage for every deck:
+//   loop  the step replays while its slide is shown: after a pause its
+//         packets run again;
+//   once  the step plays once, then holds its end state;
+//   off   nothing moves: each step is drawn at its end state at once.
+// Without a stored choice the mode is once, or off under
+// prefers-reduced-motion. PDF export is always off and shows the last step.
+// A step never advances on its own, the last included: replaying the whole
+// scene from the last step read as the scene moving on.
+//
+// The drawing is aria-hidden: the captions say what it shows. The captions
+// list is a polite live region, and the caption of the step that becomes
+// current is re-inserted (see captions()), so a screen reader announces it.
 
-import { animate } from '../vendor/anime-4.5.0/anime.esm.min.js';
+import { animate } from '../third-party/anime-4.5.0/anime.esm.min.js';
 
 const SVG = 'http://www.w3.org/2000/svg';
 const el = (name, attrs = {}, parent) => {
@@ -37,8 +48,30 @@ const LOOP_PAUSE = 2200; // ms before a step or a scene plays again
 // The CSS transitions in deck.css are scaled to match by hand.
 const PACE = 2;
 
-const reducedMotion = () =>
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches || /print-pdf/.test(location.search);
+export const MOTION_MODES = ['loop', 'once', 'off'];
+const MOTION_KEY = 'learn-dittofs.motion';
+const printing = () => /print-pdf/.test(location.search);
+
+// The mode in force: PDF export, then the stored choice, then the default.
+export function motionMode() {
+  if (printing()) return 'off';
+  try {
+    const saved = localStorage.getItem(MOTION_KEY);
+    if (MOTION_MODES.includes(saved)) return saved;
+  } catch { /* storage unavailable: fall through */ }
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'off' : 'once';
+}
+
+// Stores a choice and marks the page with it, for the CSS transitions that
+// off also stops. The caller replays the slide on screen (SceneDirector.sync).
+export function rememberMotion(mode) {
+  try { localStorage.setItem(MOTION_KEY, mode); } catch { /* not persisted */ }
+  markMotion();
+}
+
+export function markMotion() {
+  document.documentElement.dataset.motion = motionMode();
+}
 
 // Where the segment from a rect's centre towards (tx, ty) leaves the rect.
 function edgePoint(n, tx, ty) {
@@ -67,7 +100,7 @@ export class Scene {
 
   draw() {
     const [w, h] = this.spec.viewBox;
-    this.svg = el('svg', { viewBox: `0 0 ${w} ${h}`, role: 'img', preserveAspectRatio: 'xMidYMid meet' });
+    this.svg = el('svg', { viewBox: `0 0 ${w} ${h}`, 'aria-hidden': 'true', focusable: 'false', preserveAspectRatio: 'xMidYMid meet' });
     const defs = el('defs', {}, this.svg);
     const marker = el('marker', {
       id: `arrow-${this.host.dataset.scene}`, viewBox: '0 0 10 10', refX: 9, refY: 5,
@@ -214,12 +247,27 @@ export class Scene {
     t.textContent = text;
   }
 
+  // Marks the current caption. A class change alone is not announced, so
+  // when the current step changes its caption's content is replaced by a copy
+  // of itself: new content in the live region, read whole (aria-atomic).
+  // Rendering the same caption again, as a replay does, announces nothing; a
+  // language switch rebuilds the captions, so it announces the current one
+  // in the new language.
   captions(upto) {
-    const items = this.host.querySelectorAll('.captions > li');
+    const list = this.host.querySelector('.captions');
+    if (!list) return;
+    list.setAttribute('aria-live', 'polite');
+    const items = list.querySelectorAll(':scope > li');
     items.forEach((li, i) => {
       li.classList.toggle('active', i === upto);
       li.classList.toggle('done', i < upto);
+      li.setAttribute('aria-atomic', 'true');
     });
+    const current = items[upto];
+    if (current && this.announced !== current) {
+      current.replaceChildren(...[...current.childNodes].map((n) => n.cloneNode(true)));
+    }
+    this.announced = current || null;
   }
 
   stop() {
@@ -244,14 +292,16 @@ export class Scene {
     });
   }
 
-  // Advance to a step, moving its packets before its marks appear, then keep
-  // replaying that step alone until stopped.
+  // Advance to a step, moving its packets before its marks appear, then, in
+  // loop mode, keep replaying that step alone until stopped.
   async play(step) {
-    if (reducedMotion() || step < 0) return this.set(step);
+    const mode = motionMode();
+    if (mode === 'off' || step < 0) return this.set(step);
     this.stop();
     const token = this.token;
     this.step = step;
     if (!(await this.run(step, token))) return;
+    if (mode !== 'loop') return;
     const s = this.spec.steps[step];
     // A step with nothing moving would only blink its marks.
     if (!(s.packets || []).length && !(s.show || []).length) return;
@@ -345,6 +395,7 @@ export class Scene {
 export class SceneDirector {
   constructor(reveal, registry, text) {
     this.reveal = reveal;
+    markMotion();
     this.scenes = new Map();
     document.querySelectorAll('.reveal .scene[data-scene]').forEach((host) => {
       const spec = registry[host.dataset.scene];
@@ -380,7 +431,7 @@ export class SceneDirector {
       const current = reveal.getCurrentSlide();
       for (const [host, s] of this.scenes) {
         const shown = host.querySelectorAll('.scene-step.visible').length;
-        if (/print-pdf/.test(location.search)) s.set(s.spec.steps.length - 1);
+        if (printing()) s.set(s.spec.steps.length - 1);
         else if (current && current.contains(host)) s.play(shown - 1);
         else s.set(shown - 1);
       }
@@ -392,5 +443,11 @@ export class SceneDirector {
 
   relabel() {
     for (const s of this.scenes.values()) s.relabel();
+  }
+
+  // Applies a new motion mode to the slide on screen at once.
+  setMotion(mode) {
+    rememberMotion(mode);
+    this.sync();
   }
 }

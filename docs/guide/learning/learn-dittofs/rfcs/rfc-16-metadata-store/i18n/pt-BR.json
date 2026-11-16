@@ -1,12 +1,13 @@
 {
+  "title": "RFC 16 — o metadata store",
   "glossaryKicker": "Glossário",
   "glossaryTitle": "Todos os termos do deck",
   "cover": {
     "kicker": "Learn DittoFS · RFC 16",
     "title": "O [[metadata-store|metadata store]]",
     "lead": "Onde o DittoFS lembra de tudo menos dos bytes — e por que as criações numa pasta movimentada continuam rodando em paralelo.",
-    "built": "Gerado a partir do RFC 16 no commit a0a540b",
-    "notes": "Fonte: docs/internals/rfcs/rfc-16-metadata-store.md, commit a0a540b. O RFC especifica comportamento, não o código atual. O que cada record significa é definido pelo RFC 6 (conteúdo), RFC 7 (arquivos e nomes) e RFC 14 (open state); este deck explica como eles são guardados juntos. Regras marcadas (cluster) só valem quando um segundo nó pode servir uma share. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique em um termo sublinhado para ver a definição."
+    "built": "Gerado a partir do RFC 16 no commit e22639d",
+    "notes": "Fonte: docs/internals/rfcs/rfc-16-metadata-store.md, commit e22639d. O RFC especifica comportamento, não o código atual. O que cada record significa é definido pelo RFC 6 (conteúdo), RFC 7 (arquivos e nomes) e RFC 14 (open state); este deck explica como eles são guardados juntos. Regras marcadas (cluster) só valem quando um segundo nó pode servir uma share. Teclas: → avançar, S notas do apresentador, ? ajuda. Clique em um termo sublinhado para ver a definição."
   },
   "intro": {
     "kicker": "Antes de começar",
@@ -14,7 +15,7 @@
     "two": "O [[metadata-store|metadata store]] é o único banco de dados transacional do DittoFS para tudo o que não é conteúdo de arquivo: arquivos e nomes, para onde foi o conteúdo, o [[open-state|open state]] durável, usuários, [[share|shares]], nós e configurações. O RFC 16 define as [[entity|entidades]] lidas por quem chama, a [[view]] restrita que cada um recebe, e como ambas viram chaves atrás de uma pequena interface transacional, o [[kv|KV]].",
     "twoNotes": "De 'Start here · In plain words' e §1 Purpose. O RFC se apresenta como o único lugar onde se lê a camada de metadados inteira de uma vez. Ela é dona das regras do §1.2, do mapa de entidades, das entidades de identidade e do control plane, das views que nenhuma RFC mais específica tem, do contrato KV, do layout de chaves, dos codecs, dos contadores e do formato do store, além de testes, benchmarks e observabilidade.",
     "knownTitle": "Termos que você já conhece",
-    "knownLead": "Estes termos vêm do glossário do RFC 0 e dos RFCs em que este se apoia (1, 6, 7, 11, 12 e 14). Clique num termo para ver a definição.",
+    "knownLead": "Estes termos vêm do glossário do RFC 0 e dos RFCs 1, 6, 7, 11, 12 e 14, que os definem. Clique num termo para ver a definição.",
     "knownNotes": "Cada definição reformula a linha do glossário do RFC 0, que é a definição oficial. O RFC 16 depende dos RFCs 0, 6, 7, 13, 14 e 15 (front matter).",
     "newTitle": "Termos novos",
     "newNotes": "De 'Start here · The words you need' (entidade, record, KV, guard, delta e fold, view, format record), mais group commit, store time, change sequence e key budget (§4.1), o codec do store (§4.3), a fold rule (§4.6), principal (§2.2) e Inspect (§3.1).",
@@ -35,12 +36,12 @@
     "title": "O que o RFC promete",
     "items": [
       "Um único banco de dados guarda todo tipo de metadado, então só existe uma coisa para operar, fazer backup, replicar e testar.",
-      "Ler os atributos de um arquivo sempre exige o mesmo pequeno número de leituras, por mais que o arquivo ou o seu diretório cresçam. Nenhum record guarda uma lista que cresce com eles: cada entrada de um diretório, por exemplo, é um record próprio.",
+      "Ler os atributos de um arquivo custa uma única leitura, por mais que o arquivo ou o seu diretório cresçam. Um diretório soma só as mudanças recentes nos seus tempos ainda não consolidadas. Nenhum record guarda uma lista que cresce: cada entrada de um diretório é um record próprio.",
       "Nenhum contador é um valor único que cada gravação precisa reescrever na sua vez. O espaço usado e os tempos de diretório são gravados como pequenos [[delta-fold|records de delta]], então criações paralelas no mesmo diretório não precisam esperar umas pelas outras.",
       "Quando duas transações entram em conflito, a que perde é repetida dentro do prazo de quem a chamou. O conflito nunca é devolvido como erro.",
       "Um store só abre com um binário que conhece o seu formato e as suas [[fold-rule|fold rules]]. Um valor gravado numa versão de [[value-codec|codec]] que o binário não conhece é recusado, sem tentar adivinhar."
     ],
-    "notes": "'Start here · What this RFC promises', apoiada no §2.3 (um banco), no §4.2 e na regra 2 do §1.2 (leituras limitadas: os atributos de um arquivo são um só record e as entradas de um diretório são records próprios, então nenhuma leitura cresce com o diretório), no §4.4 (contadores), no §4.1 (repetições segundo o RFC 0 §9.2), no §4.3 e no §4.6 (codecs e formato). O RFC formula a segunda promessa como 'costs what §4.2 states'; a disposição das chaves vem depois, em 'Onde fica cada chave'."
+    "notes": "'Start here · What this RFC promises', apoiada no §2.3 (um banco), no §4.2 e na regra 2 do §1.2 (leituras limitadas: os atributos de um arquivo são um só record e as entradas de um diretório são records próprios, então nenhuma leitura cresce com o diretório), no §4.4 (contadores), no §4.1 (repetições segundo o RFC 0 §9.2), no §4.3 e no §4.6 (codecs e formato). O RFC formula a segunda promessa como 'costs what §4.2 states'; a disposição das chaves vem depois, em 'Onde fica cada chave'. Os atributos de um diretório também exigem uma varredura dos seus deltas de tempo não consolidados (consequências da regra 2 do §1.2: Files.Get custa uma leitura da única chave do File e, para um diretório, uma varredura dos seus deltas de tempo não consolidados; RFC 7 §2.5)."
   },
   "model": {
     "kicker": "O modelo"
@@ -54,7 +55,7 @@
     "c1Title": "Uma [[entity|entidade]] não é um record",
     "c1": "Uma leitura devolve um File inteiro, mas é a operação que decide quais records uma escrita toca. Não existe `Put(File)`. Escritas são operações como `SetAttrs`, `Truncate` ou `Rename`, e cada uma indica os campos que muda.",
     "c2Title": "Coleções são iteradores",
-    "c2": "Nenhuma entidade tem um campo de lista como `File.Refs` ou `Directory.Entries`, porque esses dados são lidos por um iterador. Uma lista dentro de uma entidade é uma leitura O(N) escondida numa struct, e cada mudança na lista a relê e a regrava inteira.",
+    "c2": "Nenhuma entidade guarda uma lista que cresce com o seu arquivo ou o seu diretório, como `File.Refs` ou `Directory.Entries`. Esses dados são lidos por um iterador. Uma lista dentro de uma entidade é uma leitura O(N) escondida numa struct, e cada mudança na lista a relê e a regrava inteira.",
     "c3Title": "Interfaces seguem os consumidores",
     "c3": "Quem chama declara a [[view]] restrita de que precisa. Não há interface CRUD por entidade, nem interface com um método por record.",
     "notes": "§1.2, regras 1–3. O motivo da regra 1: quem pudesse escrever a struct inteira faria ler-modificar-escrever, e toda escrita conflitaria com toda mudança de atributo. A regra 2 cita o RFC 6 §5.2. A regra 3 cita o RFC 0 §1.2 (autonomia dos componentes). O caso medido da regra 2, uma escrita sequencial de 160 GB que ficou lenta porque cada commit regravava a lista inteira de refs do arquivo, está dois slides adiante (Start here · The problem, in one example)."
@@ -62,7 +63,7 @@
   "example": {
     "kicker": "Exemplo condutor",
     "title": "A manhã da alice, chave por chave",
-    "notes": "'Start here · The problem, in one example' e a figura rfc16-keys. Nó N1; share profiles; a pasta da alice profiles/alice/ é o diretório d1, o seu disco de perfil ODFC_alice.vhdx é o arquivo f7. A escrita em si não toca metadados: só o journal a guarda. O flush espera a sua transação porque sobrescreve conteúdo já confirmado; um append teria ficado para o próximo group commit. A chave da entry é o digest com chave do nome após o fold, depois o próprio nome após o fold, e guarda o original 'Downloads'. Fences: records (shard, epoch) sob guard, para que uma tomada de posse depois do snapshot faça a transação falhar. As legendas são curtas; a sequência completa: o flush reescreve o único record File de f7 (tempos, contador de mudanças; tamanho igual), move a sua entrada de version floor para o novo contador, acrescenta um overwrite record e põe guard no fence record de f7 e no node record de N1. O offload commit escreve o ref, o chunk record, o block record e as entradas de índice ao lado. O mkdir escreve o File de d9, uma Entry sob d1 com chave o digest do nome após o fold, um delta para os tempos de d1 e um delta de uso, e põe guard no record de d1. Acréscimos para a leitura a frio: o índice de versões é S‖id‖vf do §4.2 (uma entrada por File na sua Version, movida por toda transação que a eleva) e o §8.3 do RFC 6 (o journal abre com o floor, então não reemite uma versão que os metadados já têm; é um índice, nunca um contador que todo commit regrava). O guard no record de N1: §4.1 'Every fenced commit guards its primary's node record' (recusado se o record não tiver a node epoch do commit, sem marca; um takeover a marca). Put intent: I‖ns‖name do §4.2 e §7.6 do RFC 6 (registrado antes de todo put; o commit que cria o record do block o apaga e falha sem ele; nenhum objeto indicado por um intent é apagado; um início abandona os intents da execução anterior). Ref reverso: CR‖ns‖hash‖ShareID‖FileID‖offset‖died do §4.2 e §6.1 do RFC 6 (o índice de refs reversos é a autoridade, o refcount o seu cache). O fold posterior dos deltas de tempo de d1: §4.4. As chaves, para referência: F‖profiles‖f7 (File, ov‖start, ref‖offset, fx e fo), F‖profiles‖d1 (e‖digest‖downloads, t‖unique), F‖profiles‖d9, S‖profiles‖vf‖…, S‖profiles‖ud‖…, N‖N1, I‖ns‖name, C‖ns‖hash, B‖ns‖name, CR‖…."
+    "notes": "'Start here · The problem, in one example' e a figura rfc16-keys. Nó N1; share profiles; a pasta da alice profiles/alice/ é o diretório d1, o seu disco de perfil ODFC_alice.vhdx é o arquivo f7. A escrita em si não toca metadados: só o journal a guarda. O flush espera a sua transação porque sobrescreve conteúdo já confirmado; um append teria ficado para o próximo group commit. A chave da entry é o digest com chave do nome após o fold, depois o próprio nome após o fold, e guarda o original 'Downloads'. Fences: records (shard, epoch) sob guard, para que uma tomada de posse depois do snapshot faça a transação falhar. As legendas são curtas; a sequência completa: o flush reescreve o único record File de f7 (tempos, contador de mudanças; tamanho igual), move a sua entrada de version floor para o novo contador, acrescenta um overwrite record e põe guard no fence record de f7 e no node record de N1. O offload commit escreve o ref, o chunk record, o block record e as entradas de índice ao lado. O mkdir escreve o File de d9, uma Entry sob d1 com chave o digest do nome após o fold, um delta para os tempos de d1 e um delta de uso, e põe guard no record de d1. Acréscimos para a leitura a frio: o índice de versões é S‖id‖vf do §4.2 (uma entrada por File na sua Version, movida por toda transação que a eleva) e o §8.3 do RFC 6 (o journal abre com o floor, então não reemite uma versão que os metadados já têm; é um índice, nunca um contador que todo commit regrava). O guard no record de N1: §4.1 'Every fenced commit guards its primary's node record' (recusado se o record não tiver a node epoch do commit, sem marca; um takeover a marca). Put intent: I‖ns‖name do §4.2 e §7.6 do RFC 6 (registrado antes de todo put; o commit que cria o record do block o apaga e falha sem ele; nenhum objeto indicado por um intent é apagado; um início abandona os intents da execução anterior). Ref reverso: CR‖ns‖hash‖ShareID‖FileID‖offset‖died do §4.2 e §6.1 do RFC 6 (o índice de refs reversos é a autoridade, o refcount o seu cache). O fold posterior dos deltas de tempo de d1: §4.4. As chaves, para referência: F‖profiles‖f7 (File, ov‖start, ref‖offset, fx e fo), F‖profiles‖d1 (e‖digest‖downloads, t‖unique), F‖profiles‖d9, S‖profiles‖vf‖…, S‖profiles‖ud‖…, N‖N1, I‖ns‖name, C‖ns‖hash, B‖ns‖name, CR‖…. Qual fence: o flush é um existence commit, então põe guard só em F_x(f7) (RFC 6 §5.4, 'Existence commits check F_x(file)'); o offload commit grava F_o(f7), o que serializa os offload commits de um arquivo (tabela do §5.4 do RFC 6)."
   },
   "measured": {
     "title": "Dois desenhos que o RFC evita, ambos medidos",
@@ -142,7 +143,7 @@
         "As duas fazem commit, e W fica ordenada depois de G"
       ],
       [
-        "Duas transações põem um guard na mesma chave, em qualquer ordem",
+        "Duas transações põem um guard na mesma chave e não gravam nada que a outra rastreia, em qualquer ordem",
         "As duas fazem commit"
       ],
       [
@@ -150,8 +151,8 @@
         "G aborta"
       ]
     ],
-    "footer": "Nenhuma regra pode supor que W falha. Quando W decide algo com base no que G gravou, a própria W precisa ler uma chave que G grava, com um `Get` ou um guard, para que o seu commit falhe se essa chave tiver mudado. Um guard numa transação que não grava nada não garante nada, e quem chama **NÃO DEVE** contar com ele.",
-    "notes": "§4.1 'Guards bind their own transaction, and are shared' e §5 decisão 10. Um backend em que o guard é um lock compartilhado, de modo que um guard tomado depois do commit de outra transação com guard falha, não cumpre a regra: medido, colocava em fila as criações num diretório a 26–85/s. A suíte de conformidade KV faz commit de dois guards nas duas ordens (§6.1). A leitura rastreada do rodapé é a regra de isolamento do §4.1 (todo Get, Guard e chave sob um GuardRange se registra, e o commit aborta se outra transação a gravou depois do snapshot), mostrada dois slides adiante."
+    "footer": "Nenhuma regra supõe que W falha. Quando W decide algo com base no que G gravou, a própria W lê uma chave que G grava, com um `Get` ou um guard, para que o seu commit falhe se essa chave tiver mudado. Um guard numa transação que não grava nada não garante nada, então ninguém que chama conta com ele.",
+    "notes": "§4.1 'Guards bind their own transaction, and are shared' e §5 decisão 10. Um backend em que o guard é um lock compartilhado, de modo que um guard tomado depois do commit de outra transação com guard falha, não cumpre a regra: medido, colocava em fila as criações num diretório a 26–85/s. A suíte de conformidade KV faz commit de dois guards nas duas ordens (§6.1). A leitura rastreada do rodapé é a regra de isolamento do §4.1 (todo Get, Guard e chave sob um GuardRange se registra, e o commit aborta se outra transação a gravou depois do snapshot), mostrada dois slides adiante. Linha 3: §4.1, 'Two transactions that guard one key, and write nothing the other tracks, both commit'. As regras do rodapé são MUST e MUST NOT no §4.1."
   },
   "quizGuards": {
     "question": "No mesmo instante, alice-pc cria `notes.txt` e build01 cria `build.log` no diretório d1. O que acontece?",
@@ -175,12 +176,12 @@
       "Assim, um lost update (as duas leem e gravam a mesma chave) ou um write skew (cada uma lê a chave que a outra grava) aborta a transação que faz commit em segundo lugar, e `Update` a repete.",
       "`Scan`, que lista as chaves sob um prefixo, e `Before`, que acha a última chave antes de uma dada, não são rastreados. Então uma leitura de intervalo não percebe uma chave que outra transação acrescenta a esse intervalo."
     ],
-    "rule": "Uma decisão tomada sobre um intervalo, como “o diretório está vazio, então pode ser removido”, **DEVE** fazer cada lado rastrear uma chave que o outro grava. É por isso que a remoção de um diretório chama `GuardRange` sobre as suas entries.",
-    "notes": "§4.1 'Isolation: snapshot isolation plus conflict-tracked reads' e 'Where the store's own transactions fall short, the backend supplies the rest' (um store embarcado cujas transações rastreiam menos mantém o seu próprio log das chaves confirmadas recentemente e o verifica no commit). RFC 7 §3.6 para a remoção de diretório. Aqui 'snapshot' é a visão consistente de leitura da transação, não um snapshot de share. Before é definido no Reader do §4.1: o último record sob um prefixo cuja chave vem antes de uma chave dada, não rastreado, como Scan."
+    "rule": "Uma decisão tomada sobre um intervalo, como “o diretório está vazio, então pode ser removido”, só é segura se cada lado rastreia uma chave que o outro grava. É por isso que a remoção de um diretório chama `GuardRange` sobre as suas entries.",
+    "notes": "§4.1 'Isolation: snapshot isolation plus conflict-tracked reads' e 'Where the store's own transactions fall short, the backend supplies the rest' (um store embarcado cujas transações rastreiam menos mantém o seu próprio log das chaves confirmadas recentemente e o verifica no commit). RFC 7 §3.6 para a remoção de diretório. Aqui 'snapshot' é a visão consistente de leitura da transação, não um snapshot de share. Before é definido no Reader do §4.1: o último record sob um prefixo cuja chave vem antes de uma chave dada, não rastreado, como Scan. A regra sobre intervalos é um MUST no §4.1."
   },
   "durable": {
     "title": "Confirmado só quando não pode mais se perder",
-    "footer": "Um `Update` que devolveu erro **pode** ter feito commit mesmo assim, então quem chama trata o resultado como desconhecido, nunca como uma recusa. Um store replicado devolve sucesso quando um quorum das suas réplicas guardou a escrita de forma durável.",
+    "footer": "Um `Update` que devolveu erro pode ter feito commit mesmo assim, então quem chama trata o resultado como desconhecido, nunca como uma recusa. Um store replicado devolve sucesso quando um quorum das suas réplicas guardou a escrita de forma durável.",
     "notes": "§4.1 'A commit is reported only once durable' e 'The embedded store shares one sync among concurrent commits'; 'Start here · Scenarios', a queda de energia. Com um sync por commit, um store chega só a algumas centenas de commits/s num NVMe de consumo (cerca de 400 medidos, §5 decisão 10). Um modo que confirma antes do sync não é suportado em nenhuma configuração, porque o que o journal libera e o GC apaga com base num Update não tem volta. O journal pode já ter liberado bytes com base num Update confirmado; isso é seguro porque esse commit não pode se perder."
   },
   "time": {
@@ -230,7 +231,7 @@
   "fold": {
     "title": "Quem consolida, e como se lê o total",
     "items": [
-      "A chave de um delta **DEVE** ser única entre todos os writers. Ela é formada pelo ID do nó do primary que grava e pela sua [[node-epoch|node epoch]], seguidos de um número de sequência. Um delta gravado sob a chave de outro o substituiria, e um dos dois se perderia.",
+      "A chave de cada delta é única entre todos os writers. Ela é formada pelo ID do nó do primary que grava e pela sua [[node-epoch|node epoch]], seguidos de um número de sequência. Um delta gravado sob a chave de outro o substituiria, e um dos dois se perderia.",
       "O [[primary]] de cada [[shard]] consolida em lotes os deltas do seu shard em totais guardados por shard, então dois folds nunca gravam a mesma chave.",
       "Quem lê, como `statfs` ou uma checagem de quota, soma os totais de cada shard e os deltas ainda não consolidados.",
       "Os tempos de diretório também são gravados como deltas, e o primary os consolida no próprio record do diretório. Toda criação, link ou rename para o diretório põe um guard nesse record, então um fold só começa quando nenhuma está em andamento, e as novas esperam o seu commit. Isso é a [[fold-admission|fold admission]].",
@@ -239,7 +240,7 @@
     "notes": "§4.4. Um fold põe guard em SH‖shard, então o fold de um ex-primary conflita com a tomada de posse. metadata_unfolded_deltas é o alerta quando o fold fica para trás. Marcadores ponytail: uma leitura de uso percorre um total por shard (O(shards)); a vazão do fold limita o ritmo sustentado de transações que mudam a cobrança, por shard. Um delta de tempo de diretório também leva o cut depois do qual foi escrito, para que os snapshots vejam os tempos certos. A parte única da chave de um delta é o ID do nó do primary e a sua epoch, depois uma sequência (§4.4, e §4.2.1: NodeID, node epoch e sequência de quem grava, 32 bytes). Folds dos tempos de diretório e a sua admissão: §4.4 'Directory times are the same problem' e RFC 7 §9.2."
   },
   "quizFold": {
-    "question": "Muitas transações acabaram de mudar o uso de uma share, e o [[primary]] ainda não consolidou os deltas delas. O que o `statfs` mostra?",
+    "question": "Algumas transações acabaram de mudar o uso de uma share, e o [[primary]] ainda não consolidou os deltas delas. O que o `statfs` mostra?",
     "options": [
       "O uso sem essas mudanças, até o próximo fold do primary somá-las.",
       "O uso com essas mudanças, pelos totais por shard mais os deltas não consolidados.",
@@ -331,7 +332,7 @@
   },
   "shares": {
     "title": "Nomes, caminhos e estado das shares",
-    "lead": "Os nomes de share são comparados sem diferenciar maiúsculas de minúsculas, precisam ser únicos e têm no máximo 80 caracteres. As shares são árvores disjuntas, então o caminho de uma [[share]] não pode ficar dentro do caminho de outra.",
+    "lead": "Os nomes de share são comparados sem diferenciar maiúsculas de minúsculas, são únicos e têm no máximo 80 caracteres. As shares são árvores disjuntas, então o caminho de uma [[share]] nunca fica dentro do caminho de outra.",
     "table": [
       [
         "Estado",
@@ -361,7 +362,7 @@
     "kicker": "Quando as coisas somem",
     "title": "Remover uma [[share]]: some na hora",
     "steps": [
-      "Se o cut de um snapshot estiver em andamento, `DeleteShare` responde [[retry-later|tente mais tarde]]. Se a share tiver [[snapshot|snapshots]], o pedido precisa dizer se eles serão apagados ou desanexados, o que os mantém depois que a share deixa de existir.",
+      "Se o cut de um snapshot estiver em andamento, `DeleteShare` responde [[retry-later|tente mais tarde]]. Se a share tiver [[snapshot|snapshots]], o pedido diz se eles serão apagados ou desanexados, o que os mantém depois que a share deixa de existir.",
       "Senão, uma transação marca a share como `being removed` e libera o seu nome e caminho.",
       "A partir desse commit, toda chamada à share recebe `ErrStale`, e uma nova share pode usar o nome.",
       "O resto da limpeza roda em segundo plano. Cada passo dela é idempotente e registrado, então depois de um crash a remoção retoma de onde o registro diz que parou."
@@ -439,8 +440,8 @@
     "c1": "A suíte de **conformidade do KV** roda em todo backend. Ela verifica guards confirmados nas duas ordens, lost updates, write skew, limites, tempo, e se um `Update` que retornou sobrevive a uma queda de energia. A suíte de **conformidade das entidades** roda o store sobre cada [[kv|KV]] real, passando só pelas views, e nunca lê uma chave.",
     "c2Title": "Além delas",
     "c2": "Um modelo de referência feito de maps simples de Go executa as mesmas operações aleatórias que o store, e os dois precisam concordar depois de cada passo. Vetores golden fixam a codificação de cada codec e de cada chave. Um KV que injeta falhas faz as chamadas falharem, as atrasa e perde as respostas.",
-    "footer": "Um wrapper do KV que conta as chaves faz falhar qualquer método que toque mais chaves do que o limite declarado.",
-    "notes": "§6.1–§6.4 e §7.3. O modelo verifica Nlink, refcounts, uso, leituras de snapshot e entidades liberadas depois de cada sequência, e com clientes concorrentes exige uma explicação serial. A remoção de uma share é morta depois de cada um dos sete passos e retomada. As métricas são internas ao store, sob metadata_*, sem rótulo de share nas métricas por operação (§8.1)."
+    "footer": "O KV em memória registra as chaves que cada transação lê e grava, e a suíte faz falhar qualquer método que passe do limite declarado.",
+    "notes": "§6.1–§6.4 e §7.3. O modelo verifica Nlink, refcounts, uso, leituras de snapshot e entidades liberadas depois de cada sequência, e com clientes concorrentes exige uma explicação serial. A remoção de uma share é morta depois de cada um dos sete passos e retomada. As métricas são internas ao store, sob metadata_*, sem rótulo de share nas métricas por operação (§8.1). Limites de custo: §6.3, o KV em memória mantém o seu próprio registro das chaves que cada transação leu e gravou, os seus Counts, e a suíte falha quando um método passa do limite; passar na suíte de conformidade do KV faz dele uma implementação em memória verificada, que os testes unitários de outras suítes podem usar (§6.1, RFC 29 §4.11)."
   },
   "footprint": {
     "kicker": "Números concretos",
@@ -464,24 +465,24 @@
     "kicker": "Regras e não-objetivos",
     "title": "As regras, em palavras simples",
     "items": [
-      "`Update` **DEVE** devolver sucesso só quando as escritas da transação estão duráveis.",
-      "O backend embarcado **DEVE** agrupar os commits prontos num único sync, e **NÃO DEVE** confirmar nenhum antes dele.",
-      "Um [[guard]] **DEVE** abortar a própria transação se outra gravou a chave depois do seu snapshot. Dois guards **NÃO DEVEM** conflitar, seja qual for a ordem dos commits.",
-      "Um backend **DEVE** rodar cada `Update` sobre um único snapshot e detectar todo conflito write-write, escritas cegas incluídas.",
-      "Ao abrir um store, o binário **DEVE** ler o [[format-record|format record]] antes de qualquer outra chave, e recusar um formato fora da faixa que suporta."
+      "`Update` só devolve sucesso quando as escritas da transação estão duráveis.",
+      "O backend embarcado agrupa os commits prontos num único sync, e não confirma nenhum deles antes desse sync.",
+      "Um [[guard]] aborta a própria transação se outra gravou a chave depois do seu snapshot. Dois guards nunca conflitam, seja qual for a ordem dos commits.",
+      "Um backend roda cada `Update` sobre um único snapshot e detecta todo conflito write-write, escritas cegas incluídas.",
+      "Ao abrir um store, o binário lê o [[format-record|format record]] antes de qualquer outra chave, e recusa um formato fora da faixa que suporta."
     ],
     "footer": "Duas configurações não são suportadas, com nenhum ajuste: um store embarcado com o sync desligado, e um store replicado que responde da memória do seu líder.",
-    "notes": "§4.1 (durabilidade, group commit, guards, isolamento), §4.6 (formato). Outros DEVE: a chave única de um delta é única entre os escritores (§4.4); um import recusa nomes em colisão (§2.3.1); um store copiado recebe um novo ID de instalação (§2.3)."
+    "notes": "§4.1 (durabilidade, group commit, guards, isolamento), §4.6 (formato). Outros MUST: a chave única de um delta é única entre os escritores (§4.4); um import recusa nomes em colisão (§2.3.1); um store copiado recebe um novo ID de instalação (§2.3). O RFC formula cada uma como MUST ou MUST NOT."
   },
   "nongoals": {
-    "title": "O que o RFC 16 não deve fazer",
+    "title": "O que o RFC 16 deixa para outros",
     "items": [
-      "Não deve redefinir o que uma [[entity|entidade]] significa. O File é definido pelo RFC 7, o ChunkRef pelo RFC 6 e o Open pelo RFC 14.",
-      "Não deve citar um produto de armazenamento nas suas regras. O contrato do [[kv|KV]] é o que um backend precisa cumprir.",
-      "Não deve definir autorização, mapeamento de identidades nem o comportamento da management API. Isso cabe aos RFCs 19, 18 e 23, e este RFC só guarda as suas entidades."
+      "Não redefine o que uma [[entity|entidade]] significa. O File é definido pelo RFC 7, o ChunkRef pelo RFC 6 e o Open pelo RFC 14.",
+      "Não cita nenhum produto de armazenamento nas suas regras. O contrato do [[kv|KV]] é o que um backend precisa cumprir.",
+      "Não define autorização, mapeamento de identidades nem o comportamento da management API. Isso cabe aos RFCs 19, 18 e 23, e este RFC só guarda as suas entidades."
     ],
     "footer": "Nenhuma entidade tem um método `Save` ou `Reload`, nem um ponteiro de volta para o store. Entidades são valores simples, que podem ser copiados e impressos livremente.",
-    "notes": "§1.1 Non-goals (NÃO DEVE). O rodapé: §2.4."
+    "notes": "§1.1 Non-goals (MUST NOT). O rodapé: §2.4."
   },
   "open": {
     "kicker": "Ainda em aberto",
@@ -527,7 +528,7 @@
       "fileF7": "atributos de f7",
       "overwrite": "overwrite record",
       "ref": "ref",
-      "fence": "fence records",
+      "fence": "fence de existência",
       "fileD1": "record de d1",
       "newDir": "nova pasta",
       "entry": "“Downloads” → d9",
@@ -544,7 +545,7 @@
       "steps": [
         "**Flush.** alice-pc sobrescreve 64 KiB do disco de perfil da alice, o arquivo f7, e faz flush. Uma transação regrava o record File de f7, com os seus tempos e o contador de mudanças, e acrescenta um overwrite record dizendo quais 64 KiB foram substituídos.",
         "A mesma transação move a entrada de f7 no índice de versões da share para o novo valor do contador. O índice tem uma entrada por arquivo, então quando o [[journal]] abre ele consegue achar o maior contador entre todos os arquivos, e nunca entrega um que já foi usado.",
-        "A transação também põe um [[guard]] nos [[fence-records|fence records]] de f7 e no record do nó N1, que guarda a [[node-epoch|node epoch]] de N1. Se outro nó assumiu o arquivo nesse meio-tempo, um desses records mudou, e a transação falha.",
+        "A transação também põe um [[guard]] no fence de existência de f7, aquele dos seus dois [[fence-records|fence records]] que um flush verifica, e no record do nó N1, que guarda a [[node-epoch|node epoch]] de N1. Se outro nó assumiu o arquivo nesse meio-tempo, um desses records mudou, e a transação falha.",
         "**Upload.** Alguns minutos depois, os bytes novos são enviados ao bucket como um novo [[block]]. Logo antes do envio, um [[put-intent|put intent]] registra o nome do block. O GC nunca apaga um objeto que um intent indica, e se o nó cair antes do commit seguinte, ele abandona o intent ao reiniciar, para que o objeto possa ser apagado.",
         "**Offload commit.** Terminado o envio, uma transação grava um [[ref]] dizendo qual [[chunk]] agora contém esses bytes de f7, um record do chunk dizendo em que block ele está, e o record do próprio block. Na mesma transação ela apaga o put intent.",
         "Ela grava também um ref reverso, uma chave arquivada sob o chunk que indica f7 e o offset. Os refs reversos dizem quais arquivos usam um chunk, e a contagem de referências do chunk é um resumo deles em cache. Nada disso toca o record File de f7, então os envios e as escritas da alice nunca disputam uma chave.",
@@ -554,7 +555,7 @@
       "groupDir": "pastas d1 e d9",
       "overwriteSub": "64 KiB substituídos",
       "refSub": "bytes → chunk",
-      "fenceSub": "shard e epoch",
+      "fenceSub": "F_x: shard e epoch",
       "timeDeltaSub": "para os tempos de d1",
       "versionFloorSub": "última mudança de f7",
       "usageDeltaSub": "espaço usado",
