@@ -45,3 +45,32 @@ func TestBasicStoryRunsToQuit(t *testing.T) {
 		t.Errorf("story: the verify beat (at %d) did not run after the stub answer (at %d):\n%s", verifyAt, stubAt, screen)
 	}
 }
+
+func TestBeatFramingCarriesBannerHintAndChecks(t *testing.T) {
+	// The polished beat: a step banner, the look-for hints before the
+	// Enter, and after the run the same list confirmed by facts measured
+	// from the journal's own stats — ordered as the room sees them.
+	script := strings.Repeat("\n\n", 3) // beats 1–3
+	base := t.TempDir()
+	d, out := newTestDemo(t, filepath.Join(base, "journal"), script)
+	if err := d.run(); err != nil {
+		t.Fatalf("run: %v (out %q)", err, out.String())
+	}
+	screen := out.String()
+
+	for _, want := range []string{
+		"· STEP 3 OF 12 ·",
+		"look for:",      // the hints, before the Enter
+		"one held entry", // beat 3's hint prose
+		"✓ index +1 entry",
+		"✓ dirty +11 B",
+		"✓ files +1",
+	} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("framing: screen lacks %q:\n%s", want, screen)
+		}
+	}
+	if strings.Index(screen, "look for:") > strings.Index(screen, "✓ index +1 entry") {
+		t.Errorf("framing: the confirmation came before the hint it confirms:\n%s", screen)
+	}
+}

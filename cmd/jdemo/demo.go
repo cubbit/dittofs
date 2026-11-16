@@ -98,10 +98,13 @@ func (d *demo) run() error {
 	if err := d.open(ctx); err != nil {
 		return err
 	}
-	defer d.j.Close()
-	d.out.Write([]byte("\n--- jdemo: the journal, live ---\n\n"))
-	for _, b := range stories[d.storyID] {
-		d.beat(b)
+	defer func() { _ = d.j.Close() }()
+	story := stories[d.storyID]
+	c := coloursFor(d.out)
+	d.printf("\n%s: the journal, live — %d beats, Enter runs each, i s f d + between them\n\n",
+		c.dim("jdemo"), len(story))
+	for n, b := range story {
+		d.beat(n+1, len(story), b)
 		if d.quit {
 			break
 		}
@@ -221,14 +224,45 @@ func dirEmpty(dir string) (bool, error) {
 	return len(entries) == 0, nil
 }
 
-// beat shows what it is about to do, waits for the presenter's Enter, runs
-// it, and then offers the views until an Enter moves the story on. An ended
-// stdin still runs the beat — a piped, ended script deserves the full story
-// — and then the story ends.
-func (d *demo) beat(b beat) {
-	d.printf("%s\n%s\n\n", b.title, b.caption)
-	if d.waitEnter() {
-		b.run(d)
+// beat shows what it is about to do — where it stands in the story, its
+// title, its caption, what the room is told to look for — waits for the
+// presenter's Enter, runs it, confirms the watched facts with measured
+// deltas, and then offers the views until an Enter moves the story on. An
+// ended stdin still runs the beat — a piped, ended script deserves the
+// full story — and then the story ends. A real terminal clears between
+// beats so one step fills the screen; a piped one draws a rule.
+func (d *demo) beat(n, total int, b beat) {
+	c := coloursFor(d.out)
+	if n > 1 {
+		if c.on {
+			d.printf("\x1b[2J\x1b[H")
+		} else {
+			d.printf("──────────────────────────────────────────────\n\n")
+		}
+	}
+	d.printf("%s STEP %d OF %d %s\n\n", c.dim("·"), n, total, c.dim("·"))
+	d.printf("%s\n%s\n", c.green(b.title), c.dim(b.caption))
+	if len(b.watch) > 0 {
+		d.printf("\n  %s ", c.dim("look for:"))
+		for i, w := range b.watch {
+			if i > 0 {
+				d.printf(" %s ", c.dim("·"))
+			}
+			d.printf("%s", c.dim(w.hint))
+		}
+	}
+	d.printf("\n")
+	if !d.waitEnter() {
+		return
+	}
+	before := d.j.Stats()
+	b.run(d)
+	if len(b.watch) > 0 {
+		after := d.j.Stats()
+		d.printf("\n")
+		for _, w := range b.watch {
+			d.printf("  %s\n", w.confirmed(before, after))
+		}
 	}
 	d.printf("\n")
 	if d.quit {

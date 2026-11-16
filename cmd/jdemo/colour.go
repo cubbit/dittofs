@@ -13,6 +13,11 @@ type colour struct {
 	yellow func(string) string // a changed row
 	red    func(string) string // a removed row
 	dim    func(string) string // context: unchanged rows, captions
+
+	// on answers whether this is the real-terminal path at all; the plain
+	// path shares neither bytes nor habits with the coloured one, so a
+	// caller with no row in hand can still ask.
+	on bool
 }
 
 // noColours is the plain path: identity functions, zero escape bytes.
@@ -37,6 +42,7 @@ func coloursFor(w io.Writer) colour {
 		return noColours()
 	}
 	return colour{
+		on:     true,
 		green:  func(s string) string { return "\x1b[32m" + s + "\x1b[0m" },
 		yellow: func(s string) string { return "\x1b[33m" + s + "\x1b[0m" },
 		red:    func(s string) string { return "\x1b[31m" + s + "\x1b[0m" },
