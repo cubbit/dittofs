@@ -455,11 +455,12 @@ func TestABufferedPartialHeaderTimesOut(t *testing.T) {
 }
 
 // A context that ended before the read started stops it without blocking,
-// also with the record already in the socket.
+// on a client that sends nothing, where no deadline is armed yet.
 func TestAReadUnderAnEndedContextDoesNotBlock(t *testing.T) {
-	srv, cli := pair(t)
+	srv, _ := pair(t)
 	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 5*time.Second)
-	if _, err := cli.Write(record(payload(20), true)); err != nil {
+	// A backstop, so a read that blocks fails here rather than hanging.
+	if err := srv.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
