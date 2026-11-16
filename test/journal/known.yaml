@@ -409,12 +409,12 @@
   message: 'stub: Offload'
 
 - test: TestRFC1C_CancelledCallChangesNothingOrCompletes/a_cancelled_sync_still_reports_the_failure
-  status: fail
+  status: skip
   fix: planned
   category: feature
-  reason: 'The journal opens and the leg''s cancelled sync answers the context''s error; the leg stops at Inspect.File, still a stub, before it can check what the cancelled call left and what the failed one still reports.'
+  reason: 'The inspector reads real entries, so the leg runs past the stub to its own rule — and the failed window''s re-append from the copy kept in memory answers the second sync whole, the leg''s own condition for no failure being owed. The entry lists the skip so the cell grades it expected; the leg exercises its rule again when a failure is owed.'
   issue: '#3379'
-  message: 'the Sync after the cancelled one returned <nil>, want the failure it raced'
+  message: 'the journal re-appended the window from a copy kept in memory, so no failure is owed and the leg''s rule goes unexercised'
 
 - test: TestRFC1C_CloneTargetSurvivesCrash
   status: fail
