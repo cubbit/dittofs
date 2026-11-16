@@ -99,6 +99,7 @@ func newHistory() *cobra.Command {
 			}
 			return table(out, rows)
 		},
+		ValidArgsFunction: completeSuite,
 	}
 	historyFlags(cmd, &ci, &last)
 	return cmd
@@ -240,6 +241,7 @@ func newKnownPrune() *cobra.Command {
 			}
 			return nil
 		},
+		ValidArgsFunction: completeKnownSuite,
 	}
 	historyFlags(cmd, &ci, &last)
 	return cmd

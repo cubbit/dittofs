@@ -75,5 +75,6 @@ func newKnownBaseline() *cobra.Command {
 			}
 			return os.WriteFile(filepath.Join(root, baselineFile), data, 0o644)
 		},
+		ValidArgsFunction: completeBaseline,
 	}
 }

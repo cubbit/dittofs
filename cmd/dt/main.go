@@ -41,8 +41,10 @@ func main() {
 
 func newRoot(out io.Writer) *cobra.Command {
 	root := &cobra.Command{
-		Use:           "dt",
-		Short:         "Run DittoFS's test suites from test/suites.yaml",
+		Use:   "dt",
+		Short: "Run DittoFS's test suites from test/suites.yaml",
+		Long: "Run DittoFS's test suites from test/suites.yaml.\n\n" +
+			"To complete dt's arguments in the shell: alias dt=\"$PWD/test/harness/bin/dt\" from the checkout's root, then source <(dt completion zsh), or bash.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -137,6 +139,7 @@ func newList() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&tier, "tier", "", "only the suites tier T runs")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	_ = cmd.RegisterFlagCompletionFunc("tier", fixed(registry.Tiers...))
 	return cmd
 }
 
@@ -208,6 +211,7 @@ func newPlan() *cobra.Command {
 	cmd.Flags().BoolVar(&estimating, "estimate", false, "give each cell its p50 over the runs dt history reads, and the tier's runner-minutes, their sum")
 	historyFlags(cmd, &ci, &last)
 	_ = cmd.MarkFlagRequired("tier")
+	_ = cmd.RegisterFlagCompletionFunc("tier", fixed(registry.Tiers...))
 	return cmd
 }
 

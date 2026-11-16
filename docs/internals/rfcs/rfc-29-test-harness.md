@@ -1059,6 +1059,7 @@ dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with 
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
    [--tier T] [--only A,B] [--skip A,B] [--parallel N] [--base REF] [--changed]
    [--packages P,...]                          overrides both: only these packages, in every cell that takes {packages}
+   [--json] [--no-color]                       the run on stdout as `dt report --format json` prints it; no colors
 dt run --tier T --place P                      the cells of tier T that dt plan gives place P (the dedicated host)
 dt report [RUN] [--format text|md|json]        show a run; CI appends --format md to the job summary
 dt report [RUN...] --failures                  only the new failures; --post CELL,... posts them, given a tier
@@ -1071,6 +1072,7 @@ dt known import FILE.md KNOWN.yaml             convert a Markdown known-failure 
    [--where AXIS=V,...]                        --where sets where its entries apply
 dt known baseline SUITE/CELL [RUN]             write a cell's results as its baseline file (smbtorture's)
 dt docs [--check]                              write the documentation's suite tables, or check them; check the RFCs' suites paragraphs
+dt completion bash|zsh                         the shell's script that completes dt's arguments and flag values
 ```
 
 The environment commands stay as they are: `dt services`, `dt stack`, `dt cleanup`, `dt hooks`,
@@ -1148,6 +1150,29 @@ scenarios, as after a merge. A name that gives matrix values runs those values w
 keeps, so `dt run pynfs/badger` runs both of `badger`'s cells. In CI every `dt run` passes the tier
 of the workflow run it belongs to, the fixed-name jobs (§4.8) included, so a push to develop runs
 `unit` without `-short`, as today.
+
+**What a run prints.** Each command's output passes through as it comes, and each cell's result as
+the cell ends, as `[dt] CELL: RESULT NOTE`. Then come a table of the cells, each with its result,
+time and note, the run's directory, as `results: DIR`, and a last line that counts the cells by
+result, and all of them, with the run's time: `cells: 1 failed, 2 passed, 1 skipped, 4 total in 1m12s`.
+On a terminal the results, in the table and in that line, are in color: passed green, failed red,
+not run yellow. `--no-color`, or `NO_COLOR` set to anything but empty, turns the colors off, and
+output that goes anywhere but a terminal, as a CI log, has none. With `--json`, `dt run` prints on
+stdout, once the run ends, what `dt report --format json` prints of the run, and the rest on
+stderr, so stdout holds the JSON alone, as with `dt list --json` and `dt plan --json`; the exit status
+is the run's, and a run whose `summary.json` couldn't be written prints none. A run sent to `dtc`
+passes both flags on, and `dtc` passes `NO_COLOR` into the container; there, on a terminal, stderr
+joins stdout, so pipe stdout to keep it pure JSON.
+
+**Completion.** `dt completion zsh`, or `bash`, prints the script that completes `dt`'s words in
+that shell, from the registry and the results: `dt run`'s target (a group, a suite, or a suite's
+cells by the first segments of their names, at any tier and with every matrix value), then the
+options of the suite it names, as flags, and its `--tier`, `--in`, `--only` and `--skip`; the
+`--tier` of `dt list` and `dt plan`; `dt report`'s runs and `--format`; `dt history`'s suite;
+`dt known prune`'s, one with a known file; and `dt known baseline`'s cell and run. Since `dt` runs
+as `test/harness/bin/dt`, the shell knows it by an alias: `alias dt="$PWD/test/harness/bin/dt"`
+from the checkout's root, then `source <(dt completion zsh)`. Bash's script needs the
+bash-completion package.
 
 **Posting failures.** `dt report --failures --post` opens a GitHub issue for each new failure, or
 comments on the one already open for it, and lists them in the develop-status issue (§4.8). It
