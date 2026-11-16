@@ -49,7 +49,7 @@ guesses a source or an account gets.
 
 ### 1.1 In scope
 
-The rights this epic's routes need, added to `auth`'s role table; RFC 23's own settings section in
+The rights this epic's routes need, which `auth`'s role table already holds from E4; RFC 23's own settings section in
 `internal/node/api/apisettings`; the wire types of sign-in, tokens, sessions and password changes;
 throttling; sessions, access tokens, refresh and sign-out; `Deps.Authenticate`, the per-call
 account check, `last_admin` and the role-raise rule; password changes and `:set-password`; API
@@ -283,7 +283,7 @@ pkg/node/apiv1/
 internal/node/api/apisettings/
   settings.go settings_test.go             T5.1  Settings, defaults, Validate (D4)
 internal/node/api/auth/
-  rights.go                                T5.1  this epic's rights added to E4's table
+  rights.go                                T5.1  E4's table, already holding this epic's rights; unchanged
   throttle.go throttle_test.go             T5.2  decide, settle, takeBack, sourceOf; the store side
   tokens.go tokens_test.go                 T5.3  the signing key's versions, issue, verify
   signin.go signin_test.go bench_test.go   T5.5  Service, Authenticate, sign-in, refresh, sign-out
@@ -311,16 +311,18 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 - **Covers:** R4, R20, R46.
 - **Deliverables:** in `pkg/node/apiv1`'s `auth.go`, the bodies R46 names, standard library only,
   their seeds in E4's strict-decoder fuzz target; `internal/node/api/apisettings` (D4) with its
-  test; this epic's rights in `auth`'s table: own password, own tokens and sign-out for every role;
-  accounts with a role, roles, others' service tokens and the signing key's rotation for `admin`;
+  test; this epic's rights confirmed in `auth`'s table, where E4's `auth.Allowed` already holds
+  them, so T5.1 adds none: `Self` (own password, own tokens and sign-out) for every role,
+  `Accounts` (accounts with a role, roles, others' service tokens) and `Installation` (the signing
+  key's rotation among it) for `admin`;
   E4's import rule's allow-list gaining `apisettings`, an explicit edit. No `SessionStatus`, since
   no route answers with one, and no sign-out body, since sign-out takes its session from the access
   token. `pkg/identity` joins the allow-list for `auth` in T5.5, the first subtask that imports it;
   `pkg/secrets` needs no edit, since E4's D20 allows it for the whole API. Consumed by T5.5–T5.9, E6 (the bodies) and E3's sweep (the retention).
 - **Acceptance criteria:**
-  - Each right of RFC 23 §5.2 this epic adds answers per role as the table says.
+  - Each right of RFC 23 §5.2 this epic's routes need answers per role as the table says.
   - `go list -deps ./pkg/node/apiv1` names only standard-library packages.
-- **Tests:** a table test of the added rights per role, a role's right removed failing its row
+- **Tests:** a table test of this epic's rights per role in E4's table, a role's right removed failing its row
   (R4); `Validate` at 89 and 90 days, and the defaults (R20); each body's JSON names by key (R46).
 
 ### T5.2 Throttling
