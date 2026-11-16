@@ -3,14 +3,16 @@ package nodetest
 import (
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
-// The harness's installation is a real one: the journal the store records
-// for the node's device is the journal in that device, and opens.
+// The harness's installation is a real one, in memory too: the journal the
+// store records for the node's device is the journal in that device, and
+// opens.
 func TestTheRecordedJournalOpens(t *testing.T) {
-	h := New(t, Watch())
+	h := New(t, Watch(), InMemory())
 	dev := h.cfg.Bootstrap.Devices[0]
 	id, err := h.Store().Lifecycle().JournalID(t.Context(), h.cfg.Bootstrap.Node, entity.JournalDir(dev))
 	if err != nil || id == ([16]byte{}) {
@@ -26,14 +28,19 @@ func TestTheRecordedJournalOpens(t *testing.T) {
 }
 
 // Restart builds a new node over the same installation: the store read
-// after it holds the installation read before it.
+// after it holds the installation and the journal recorded before it,
+// which only the old directory holds.
 func TestRestartKeepsTheInstallation(t *testing.T) {
 	h := New(t, Watch())
 	before, err := h.Store().Installation(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := h.Node
+	dev := entity.JournalDir(h.cfg.Bootstrap.Devices[0])
+	jBefore, err := h.Store().Lifecycle().JournalID(t.Context(), nodeID, dev)
+	if err != nil {
+		t.Fatal(err)
+	}
 	h.Restart(t)
 	after, err := h.Store().Installation(t.Context())
 	if err != nil {
@@ -42,7 +49,28 @@ func TestRestartKeepsTheInstallation(t *testing.T) {
 	if after.ID != before.ID || after.Instance != before.Instance {
 		t.Errorf("Installation after the restart: got ID %x instance %x, want %x, %x", after.ID, after.Instance, before.ID, before.Instance)
 	}
-	if h.Node == first {
-		t.Error("Restart kept the node it stopped, want a new one")
+	jAfter, err := h.Store().Lifecycle().JournalID(t.Context(), nodeID, dev)
+	if err != nil || jAfter != jBefore {
+		t.Errorf("JournalID of the device after the restart: got %x, %v; want %x", jAfter, err, jBefore)
+	}
+}
+
+// New and Restart both build through the constructor WithNew hands them,
+// and Node is the one built last.
+func TestRestartBuildsThroughWithNew(t *testing.T) {
+	var built []*node.Node
+	h := New(t, Watch(), WithNew(func(cfg node.Config) (*node.Node, error) {
+		n, err := node.New(cfg)
+		if err == nil {
+			built = append(built, n)
+		}
+		return n, err
+	}))
+	h.Restart(t)
+	if len(built) != 2 {
+		t.Fatalf("nodes built through WithNew's constructor: got %d, want 2", len(built))
+	}
+	if h.Node() != built[1] {
+		t.Errorf("Node after Restart: got %p, want the second node %p, not the first %p", h.Node(), built[1], built[0])
 	}
 }
