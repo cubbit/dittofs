@@ -85,6 +85,8 @@ type Framer interface {
 	BodyLen(hdr []byte) (n int, last bool, err error)
 
 	MaxRecord() (bytes, fragments int)
+
+	Frame(dst []byte, body int) []byte
 }
 
 type Handler[Req, Rep any] func(ctx context.Context, r *Request, req *Req) (*Rep, error)
@@ -199,6 +201,7 @@ type Server struct{}
 type Stages struct {
 	Header     HeaderCodec
 	Router     Router
+	Errors     *ErrorTable
 	Security   Security
 	Flow       FlowControl
 	Replay     ReplayCache

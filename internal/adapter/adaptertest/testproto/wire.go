@@ -19,7 +19,7 @@
 //
 //	offset  size  field
 //	0       4     next: the next message's offset in the body, 0 for the last
-//	4       1     flags: 1 related, 2 pend, 4 reply, 8 interim
+//	4       1     flags: 1 related, 2 pend, 4 reply, 8 interim, 16 clear, 32 signed
 //	5       1     version: 1 or 2
 //	6       2     credits: charged by a request, granted by a reply
 //	8       4     operation
@@ -38,13 +38,16 @@
 // parked request carry its message ID with the top bit set. A reply never
 // carries an all-ones session: it carries the one its request resolved to.
 //
-// Under a session s other than 0, a message is sealed. Its arguments are
+// Under a session s other than 0, a message is sealed, unless it is flagged
+// clear, as a client that skips the seal sends it, or a reply is flagged
+// signed, as a refusal whose seal failed is answered. Its arguments are
 // XORed with the session's key, byte i of them with byte i mod 4 of s times
 // 0x01000193, big-endian. Its checksum is then the sum of its bytes as sent,
 // header and arguments, with the checksum field read as zero, plus s times
-// 0x01000193, modulo 2^32. A member whose session field is all ones is sealed
-// under the session it inherits. Under session 0 nothing is XORed and the
-// field is 0.
+// 0x01000193, modulo 2^32. A signed reply's arguments are not XORed; its
+// checksum is the same sum. A member whose session field is all ones is
+// sealed under the session it inherits. Under session 0, and on a message
+// flagged clear, nothing is XORed and the field is 0.
 //
 // The arguments, by operation:
 //
@@ -86,6 +89,8 @@ const (
 	flagPend
 	flagReply
 	flagInterim
+	flagClear  // a request sent neither sealed nor checksummed under its session
+	flagSigned // a reply checksummed under its session and its arguments left clear
 )
 
 // The header's field offsets.
@@ -136,6 +141,12 @@ var (
 type framer struct{}
 
 func (framer) HeaderLen() int { return lengthLen }
+
+// Frame appends the 4-byte length of a record whose body is body bytes, its
+// fragment flag clear: this protocol writes one fragment per record.
+func (framer) Frame(dst []byte, body int) []byte {
+	return binary.BigEndian.AppendUint32(dst, uint32(body))
+}
 
 // BodyLen reads a fragment's length and whether it ends the record. The prefix's
 // top bit set means more fragments follow.
@@ -189,14 +200,15 @@ func (h *header) checksum() uint32 { return binary.BigEndian.Uint32(h[offChecksu
 type final struct{ header }
 
 // headerAt is the header at off in body, checked to lie inside it with a next
-// that is 0 or leaves room for a whole header after this one.
+// that is 0 or leaves room for a whole header after this one; a bad next
+// comes back with the header.
 func headerAt(body []byte, off int) (*header, error) {
 	if off < 0 || off > len(body)-headerLen {
 		return nil, errShort
 	}
 	h := (*header)(body[off : off+headerLen])
 	if next := h.Next(); next != 0 && (next < off+headerLen || next > len(body)-headerLen) {
-		return nil, errNext
+		return h, errNext
 	}
 
 	return h, nil
@@ -243,9 +255,14 @@ func xorKey(b []byte, session uint32) {
 // counting, as Bare does.
 type headerCodec struct{ flow *flow }
 
-// Decode returns the header at off in the record.
+// Decode returns the header at off in the record. A header whose fields
+// decoded and whose next is bad comes back with its error, so its refusal
+// can be addressed; one that runs past the record, with none.
 func (headerCodec) Decode(rec *resources.Buf, off int) (core.Header, error) {
 	h, err := headerAt(rec.B, off)
+	if errors.Is(err, errNext) {
+		return h, err
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +271,8 @@ func (headerCodec) Decode(rec *resources.Buf, off int) (core.Header, error) {
 }
 
 // Encode appends to out the header of the reply to h with status s: h's
-// operation, version, IDs and sequence, the reply flag, and a grant of the
+// operation, version, IDs and sequence, the reply flag and h's signed flag,
+// which Unwrap's verdict set, and a grant of the
 // credits h charged, at least one, so a client that charges nothing still
 // earns credit; a header from HoldCodec.Final grants exactly what it carries.
 // The grant stops at the connection's credit target. Its checksum is left
@@ -276,7 +294,7 @@ func (c headerCodec) Encode(h core.Header, s core.Status, out *resources.Buf) er
 	if c.flow != nil {
 		grant = c.flow.grant(grant)
 	}
-	rep[offFlags] = flagReply
+	rep[offFlags] = flagReply | req.flags()&flagSigned
 	binary.BigEndian.PutUint16(rep[offCredits:], grant)
 	binary.BigEndian.PutUint32(rep[offStatus:], uint32(s))
 	binary.BigEndian.PutUint32(rep[offChecksum:], 0)

@@ -2,6 +2,7 @@ package testproto
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"testing"
 
@@ -79,9 +80,32 @@ func TestUnwrapRefusesAChangedByte(t *testing.T) {
 		}
 		body := bytes.Clone(sealed)
 		body[i] ^= 0x01
-		if _, err := unwrapAll(t, body); !errors.Is(err, errChecksum) {
+		rec := &resources.Buf{B: body}
+		h, err := headerCodec{}.Decode(rec, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, err := security{}.Unwrap(h, rec, nil)
+		if !errors.Is(err, errChecksum) {
 			t.Fatalf("byte %d changed: Unwrap = %v, want a checksum refusal", i, err)
 		}
+		// The refusal comes back with its header, signed under the session
+		// the header names and not sealed: RFC 20 §5.5's verdict for a
+		// failed seal.
+		hd, ok := u.(*header)
+		if !ok || hd.flags()&flagSigned == 0 || hd.session() != binary.BigEndian.Uint32(body[offSession:]) {
+			t.Fatalf("byte %d changed: Unwrap returned %v, want the header flagged signed under its session", i, u)
+		}
+	}
+	clear := Append(nil, Msg{Op: OpCreate, Version: 2, ID: 9, Session: 5, Tree: 1, Credits: 1, Name: "name", Clear: true})[lengthLen:]
+	rec := &resources.Buf{B: bytes.Clone(clear)}
+	h, err := headerCodec{}.Decode(rec, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := security{}.Unwrap(h, rec, nil)
+	if hd, ok := u.(*header); !errors.Is(err, errChecksum) || !ok || hd.session() != 0 || hd.flags()&flagSigned != 0 {
+		t.Errorf("a message sent clear under session 5: Unwrap = %v, %v; want a refusal under session 0, not signed", u, err)
 	}
 	if _, err := unwrapAll(t, bytes.Clone(sealed)); err != nil {
 		t.Fatalf("the unchanged message: %v", err)
@@ -428,6 +452,53 @@ func TestReplayStoresItsOwnCopyPerSessionAndSequence(t *testing.T) {
 	for _, other := range []Msg{{Op: OpCreate, Version: 1, Seq: 8, Session: 3}, {Op: OpCreate, Version: 1, Seq: 7, Session: 2}, {Op: OpCreate, Version: 1, Seq: 7}} {
 		if buf, err := r.Lookup(t.Context(), headerOf(t, other)); buf != nil || err != nil {
 			t.Errorf("Lookup of sequence %d under session %d = %v, %v; want nothing", other.Seq, other.Session, buf, err)
+		}
+	}
+}
+
+// A refusal is answered as Unwrap's verdict says: a failed seal signed under
+// its session with its arguments clear, a message sent clear neither signed
+// nor sealed, and a request Unwrap passed sealed.
+func TestARefusalIsAnsweredAsItsVerdictSays(t *testing.T) {
+	answer := func(m Msg, change int) Reply {
+		t.Helper()
+		body := bytes.Clone(Append(nil, m)[lengthLen:])
+		if change >= 0 {
+			body[change] ^= 0x01
+		}
+		rec := &resources.Buf{B: body}
+		h, err := headerCodec{}.Decode(rec, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, _ := security{}.Unwrap(h, rec, nil)
+		out := &resources.Buf{B: make([]byte, 0, 2*headerLen)}
+		if err := (headerCodec{}).Encode(u, StatusChecksum, out); err != nil {
+			t.Fatal(err)
+		}
+		out.B = append(out.B, "body"...)
+		if err := (security{}).Wrap(u, out); err != nil {
+			t.Fatal(err)
+		}
+		replies, err := openReplies(out.B)
+		if err != nil || len(replies) != 1 {
+			t.Fatalf("the reply did not open: %v, %v", replies, err)
+		}
+		return replies[0]
+	}
+	m := Msg{Op: OpEcho, Version: 2, ID: 3, Session: 5, Credits: 1}
+	for _, c := range []struct {
+		name           string
+		r              Reply
+		session        uint32
+		signed, summed bool
+	}{
+		{"a bad checksum", answer(m, headerLen), 5, true, true},
+		{"a message sent clear", answer(Msg{Op: OpEcho, Version: 2, ID: 3, Session: 5, Credits: 1, Clear: true}, -1), 0, false, false},
+		{"a request Unwrap passed", answer(m, -1), 5, false, true},
+	} {
+		if c.r.Session != c.session || c.r.Signed != c.signed || (c.r.Checksum != 0) != c.summed || string(c.r.Body) != "body" {
+			t.Errorf("%s: answered %+v; want session %d, signed %v, checksummed %v, its body read back", c.name, c.r, c.session, c.signed, c.summed)
 		}
 	}
 }

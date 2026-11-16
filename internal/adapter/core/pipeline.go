@@ -18,7 +18,8 @@ import (
 )
 
 // shared is what every connection of one server shares: the request path's
-// series, resolved once per server, its clock, its logger and its tracer.
+// series, resolved once per server, its reply pool, its clock, its logger
+// and its tracer.
 //
 // decision: the series are kept here, never in a table: two servers may
 // share a table, and a node's servers share its one registry. A table's are
@@ -38,13 +39,15 @@ type shared struct {
 	clock    clock
 	log      *slog.Logger
 	tracer   trace.Tracer // nil: no spans
+	reply    *resources.BufPool
 }
 
-// newShared is a server's shared state, its vectors registered on
-// d.Metrics, or recording nothing without one, on the runtime's clock,
-// d.Logger, or a logger that discards, and d.Tracer.
-func newShared(d adapter.Deps) *shared {
-	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, panics: map[[2]string]*lineLimiter{}}
+// newShared is a server's shared state over reply, the pool every reply
+// buffer is taken from: its vectors registered on d.Metrics, or recording
+// nothing without one, on the runtime's clock, d.Logger, or a logger that
+// discards, and d.Tracer.
+func newShared(d adapter.Deps, reply *resources.BufPool) *shared {
+	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, reply: reply, panics: map[[2]string]*lineLimiter{}}
 	if sh.log == nil {
 		sh.log = slog.New(slog.DiscardHandler)
 	}
@@ -99,12 +102,13 @@ func (c capped) Admit(ctx context.Context, _ Header) (release func(), err error)
 	}, nil
 }
 
-// reserveReply takes a reply buffer of bound bytes from pool for key, waiting
-// within ctx, the attempt's. A wait that ends at ctx's deadline is the
-// adapter's own refusal for a node memory pool, ErrDelay of DelayResources
-// (RFC 20 §6.3), and a charge past the pool's ceiling, which the pool refuses
-// at once under any ctx, is ErrReplyTooBig (RFC 20 §4.3); a cancellation, and
-// any other error, is returned as it is. On an error nothing is reserved.
+// reserveReply takes a reply buffer of bound bytes from the reply pool for
+// key, waiting within ctx, the attempt's. A wait that ends at ctx's deadline
+// is the adapter's own refusal for a node memory pool, ErrDelay of
+// DelayResources (RFC 20 §6.3), and a charge past the pool's ceiling, which
+// the pool refuses at once under any ctx, is ErrReplyTooBig (RFC 20 §4.3); a
+// cancellation, and any other error, is returned as it is. On an error
+// nothing is reserved.
 //
 // ponytail: every reply is reserved from the reply pool, the small class
 // included, so a small request is charged 12 KiB twice while it runs and at
@@ -112,8 +116,8 @@ func (c capped) Admit(ctx context.Context, _ Header) (release func(), err error)
 // unreserved small buffer, or set one aside per connection at accept for its
 // statuses, when the reply budget is shown to bind before the receive budget
 // does.
-func reserveReply(ctx context.Context, pool *resources.BufPool, key netip.Addr, bound int) (*resources.Buf, error) {
-	buf, err := pool.Get(ctx, key, bound)
+func (sh *shared) reserveReply(ctx context.Context, key netip.Addr, bound int) (*resources.Buf, error) {
+	buf, err := sh.reply.Get(ctx, key, bound)
 	switch {
 	case err == nil:
 		return buf, nil
@@ -141,9 +145,9 @@ var errReplyWait = errors.New("core: no reply buffer for a status within " + sta
 // with errReplyWait. It returns nil, with nothing reserved, when the wait
 // ended. Its caller keeps the request's record, and so its receive charge,
 // until the status goes out or the wait ends (RFC 24 §6.1).
-func reserveStatus(ctx context.Context, pool *resources.BufPool, key netip.Addr, close func(error)) *resources.Buf {
+func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, close func(error)) *resources.Buf {
 	// A status is encoded by appending to B[:0], within the small class.
-	if buf, ok := pool.TryGet(key, 0); ok {
+	if buf, ok := sh.reply.TryGet(key, 0); ok {
 		return buf
 	}
 	// decision: the wait is bounded, and past it the connection closes,
@@ -161,7 +165,7 @@ func reserveStatus(ctx context.Context, pool *resources.BufPool, key netip.Addr,
 	// parks' reply reservations are capped per client.
 	wait, cancel := context.WithTimeout(ctx, statusWait)
 	defer cancel()
-	buf, err := pool.Get(wait, key, 0)
+	buf, err := sh.reply.Get(wait, key, 0)
 	if err != nil {
 		if ctx.Err() == nil {
 			close(errReplyWait)

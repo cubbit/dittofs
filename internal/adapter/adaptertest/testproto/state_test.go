@@ -346,7 +346,6 @@ var exempt = map[string]string{
 	"Server":     "the adapter NewServer returns",
 	"Listener":   "handed to NewServer by whoever builds the adapter",
 	"Errors":     "read by a real protocol's totality test",
-	"ErrorTable": "built with NewErrorTable; the type is named by core alone",
 	"Call":       "a middleware's type; the pipeline builds the chain",
 	"Middleware": "the pipeline's",
 	"Handler":    "named through Bind's type parameters, never written out",

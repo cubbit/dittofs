@@ -120,7 +120,7 @@ func TestDeadlineCountsFromTheAttemptStart(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			clk := newManualClock()
-			sh := core.NewShared(adapter.Deps{})
+			sh := core.NewShared(adapter.Deps{}, nil)
 			core.SetClock(sh, clk)
 			call := sh.Deadline(func(ctx context.Context, _ *core.Request) error {
 				if at, ok := ctx.Deadline(); !ok || !at.Equal(t0.Add(c.want)) {
@@ -152,7 +152,7 @@ func TestDeadlineCountsFromTheAttemptStart(t *testing.T) {
 // parent's cancel reaches it.
 func TestDeadlineEndsWithTheCall(t *testing.T) {
 	clk := newManualClock()
-	sh := core.NewShared(adapter.Deps{})
+	sh := core.NewShared(adapter.Deps{}, nil)
 	core.SetClock(sh, clk)
 	var seen context.Context
 	if err := sh.Deadline(func(ctx context.Context, _ *core.Request) error { seen = ctx; return nil })(context.Background(), nil); err != nil {
@@ -192,7 +192,7 @@ func TestDeadlineSpentOrCancelledShowsAtOnce(t *testing.T) {
 		{"a parent past its own deadline", expired, context.DeadlineExceeded},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			sh := core.NewShared(adapter.Deps{})
+			sh := core.NewShared(adapter.Deps{}, nil)
 			core.SetClock(sh, newManualClock())
 			_ = sh.Deadline(func(ctx context.Context, _ *core.Request) error {
 				select {
@@ -214,7 +214,7 @@ func TestDeadlineSpentOrCancelledShowsAtOnce(t *testing.T) {
 func TestDeadlineContextStartsNoGoroutine(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		clk := newManualClock()
-		sh := core.NewShared(adapter.Deps{})
+		sh := core.NewShared(adapter.Deps{}, nil)
 		core.SetClock(sh, clk)
 		_ = sh.Deadline(func(ctx context.Context, _ *core.Request) error {
 			synctest.Wait()
@@ -242,7 +242,7 @@ func TestDeadlineContextStartsNoGoroutine(t *testing.T) {
 func TestRecoveryAnswersAPanic(t *testing.T) {
 	var logged bytes.Buffer
 	m := metrics.New("v", "c")
-	sh := core.NewShared(adapter.Deps{Metrics: m, Logger: slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))})
+	sh := core.NewShared(adapter.Deps{Metrics: m, Logger: slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))}, nil)
 	tb := routed(t)[0]
 	ts, err := sh.Table(tb)
 	if err != nil {
@@ -287,7 +287,7 @@ func TestRecoveryAnswersAPanic(t *testing.T) {
 // counted.
 func TestRecoveryPassesAnErrorThrough(t *testing.T) {
 	var logged bytes.Buffer
-	sh := core.NewShared(adapter.Deps{Logger: slog.New(slog.NewJSONHandler(&logged, nil))})
+	sh := core.NewShared(adapter.Deps{Logger: slog.New(slog.NewJSONHandler(&logged, nil))}, nil)
 	tb := routed(t)[0]
 	ts, err := sh.Table(tb)
 	if err != nil {
@@ -410,7 +410,7 @@ func newTraced(t *testing.T, tracing bool) traced {
 	if tracing {
 		d.Tracer = tr.tracer
 	}
-	tr.sh = core.NewShared(d)
+	tr.sh = core.NewShared(d, nil)
 	core.SetClock(tr.sh, tr.clk)
 	tb := routed(t)[0]
 	members := tb.Ops[testproto.OpCompound].Members
@@ -629,7 +629,7 @@ func (d deadlineOnly) Deadline() (time.Time, bool) { return d.at, true }
 // stopped, so a connection's or a held request's context gains nothing per
 // call.
 func TestADeadlineStopsWatchingItsParent(t *testing.T) {
-	sh := core.NewShared(adapter.Deps{})
+	sh := core.NewShared(adapter.Deps{}, nil)
 	core.SetClock(sh, newManualClock())
 	left := -2
 	outer := sh.Deadline(func(ctx context.Context, r *core.Request) error {

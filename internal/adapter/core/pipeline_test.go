@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
+	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
@@ -142,7 +143,7 @@ type reserving struct {
 
 func startReserving(ctx context.Context, pool *resources.BufPool, bound int) *reserving {
 	r := &reserving{}
-	r.started = start(func() { r.buf, r.err = core.ReserveReply(ctx, pool, peer, bound) })
+	r.started = start(func() { r.buf, r.err = core.NewShared(adapter.Deps{}, pool).ReserveReply(ctx, peer, bound) })
 	return r
 }
 
@@ -240,7 +241,9 @@ func TestReserveStatusWaitsAtMost30s(t *testing.T) {
 				var closed []error
 				var buf *resources.Buf
 				begin := time.Now()
-				s := start(func() { buf = core.ReserveStatus(conn, pool, peer, func(err error) { closed = append(closed, err) }) })
+				s := start(func() {
+					buf = core.NewShared(adapter.Deps{}, pool).ReserveStatus(conn, peer, func(err error) { closed = append(closed, err) })
+				})
 				synctest.Wait()
 				if s.returned() {
 					t.Fatal("reserveStatus on a full budget returned, want it waiting")

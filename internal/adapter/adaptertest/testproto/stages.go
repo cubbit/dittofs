@@ -48,6 +48,12 @@ type security struct{}
 // Unwrap resolves the session a related member inherits from prev, checks the
 // message's checksum under it, opens its arguments in place, and writes the
 // session it resolved into the header, so every later stage reads a real one.
+// A refusal comes back with the header and RFC 20 §5.5's verdict in it: a bad
+// checksum keeps the session it resolved and is flagged signed, since the
+// check that failed is the seal's, so its answer is signed and not sealed; a
+// message sent clear under a session gets session 0, so its answer is
+// neither. A related member with no session to inherit comes back with no
+// header, which closes the connection.
 func (security) Unwrap(h core.Header, rec *resources.Buf, prev core.Header) (core.Header, error) {
 	hd, ok := h.(*header)
 	if !ok {
@@ -65,10 +71,16 @@ func (security) Unwrap(h core.Header, rec *resources.Buf, prev core.Header) (cor
 		}
 		s = ph.session()
 	}
+	if s != 0 && hd.flags()&flagClear != 0 {
+		binary.BigEndian.PutUint32(hd[offSession:], 0)
+		return hd, errChecksum
+	}
 	if s != 0 {
 		args := arguments(rec.B, off, hd)
 		if checksum(rec.B[off:off+headerLen+len(args)], s) != hd.checksum() {
-			return nil, errChecksum
+			binary.BigEndian.PutUint32(hd[offSession:], s)
+			hd[offFlags] |= flagSigned
+			return hd, errChecksum
 		}
 		xorKey(args, s)
 	}
@@ -77,8 +89,9 @@ func (security) Unwrap(h core.Header, rec *resources.Buf, prev core.Header) (cor
 	return hd, nil
 }
 
-// Wrap seals every reply in reply under its session, in place: once for a
-// chain, since a second pass would XOR the arguments back and sum them clear.
+// Wrap seals every reply in reply under its session, in place, and a reply
+// flagged signed only checksums: once for a chain, since a second pass would
+// XOR the arguments back and sum them clear.
 func (security) Wrap(_ core.Header, reply *resources.Buf) error {
 	for off := 0; ; {
 		h, err := headerAt(reply.B, off)
@@ -87,7 +100,9 @@ func (security) Wrap(_ core.Header, reply *resources.Buf) error {
 		}
 		if s := h.session(); s != 0 && s != inherited {
 			args := arguments(reply.B, off, h)
-			xorKey(args, s)
+			if h.flags()&flagSigned == 0 {
+				xorKey(args, s)
+			}
 			binary.BigEndian.PutUint32(h[offChecksum:], checksum(reply.B[off:off+headerLen+len(args)], s))
 		}
 		if off = h.Next(); off == 0 {

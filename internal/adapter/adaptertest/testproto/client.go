@@ -30,16 +30,20 @@ type Msg struct {
 	Name    string     // OpCreate, OpPark
 	Target  uint64     // OpNotify, OpCancel: the message ID of the request it names; a Cancel carries it as its own ID, and its ID is ignored
 	Payload []byte     // OpEcho
+	Clear   bool       // sent neither sealed nor checksummed under its session
 	Members []Msg      // OpCompound
 }
 
 // Reply is one reply message, as a test reads it.
 type Reply struct {
-	ID      uint64 // the request's; with the top bit set on the interim and final replies to a held or parked request
-	Status  core.Status
-	Interim bool
-	Credits uint16 // granted by this reply
-	Body    []byte
+	ID       uint64 // the request's; with the top bit set on the interim and final replies to a held or parked request
+	Status   core.Status
+	Interim  bool
+	Credits  uint16 // granted by this reply
+	Session  uint32 // the session it came under
+	Signed   bool   // checksummed under it and not sealed
+	Checksum uint32 // 0: neither signed nor sealed
+	Body     []byte
 }
 
 // Append appends one record carrying msgs to b, chained when several.
@@ -58,10 +62,10 @@ func Append(b []byte, msgs ...Msg) []byte {
 		if m.Session != inherited {
 			session = m.Session
 		}
-		if session != 0 {
+		if session != 0 && !m.Clear {
 			xorKey(b[at+headerLen:], session)
+			binary.BigEndian.PutUint32(b[at+offChecksum:], checksum(b[at:], session))
 		}
-		binary.BigEndian.PutUint32(b[at+offChecksum:], checksum(b[at:], session))
 	}
 	binary.BigEndian.PutUint32(b[start:], uint32(len(b)-body))
 
@@ -76,6 +80,9 @@ func appendHeader(b []byte, m Msg) []byte {
 	}
 	if m.Pend {
 		flags |= flagPend
+	}
+	if m.Clear {
+		flags |= flagClear
 	}
 	b = binary.BigEndian.AppendUint32(b, 0)
 	b = append(b, flags, uint8(m.Version))
@@ -189,8 +196,8 @@ func (c *Client) Recv() ([]Reply, error) {
 	return replies, err
 }
 
-// openReplies reads a record's replies, checking and opening each one sealed
-// under a session.
+// openReplies reads a record's replies, checking each one under its session,
+// and opening the sealed ones; a reply with a zero checksum is read clear.
 func openReplies(body []byte) ([]Reply, error) {
 	var replies []Reply
 	for off := 0; ; {
@@ -199,18 +206,24 @@ func openReplies(body []byte) ([]Reply, error) {
 			return replies, err
 		}
 		args := arguments(body, off, h)
-		if s := h.session(); s != 0 && s != inherited {
+		signed := h.flags()&flagSigned != 0
+		if s := h.session(); s != 0 && s != inherited && h.checksum() != 0 {
 			if checksum(body[off:off+headerLen+len(args)], s) != h.checksum() {
 				return replies, fmt.Errorf("%w: the reply to message %d", errChecksum, h.id())
 			}
-			xorKey(args, s)
+			if !signed {
+				xorKey(args, s)
+			}
 		}
 		replies = append(replies, Reply{
-			ID:      h.id(),
-			Status:  core.Status(h.status()),
-			Interim: h.flags()&flagInterim != 0,
-			Credits: h.credits(),
-			Body:    args,
+			ID:       h.id(),
+			Status:   core.Status(h.status()),
+			Interim:  h.flags()&flagInterim != 0,
+			Credits:  h.credits(),
+			Session:  h.session(),
+			Signed:   signed,
+			Checksum: h.checksum(),
+			Body:     args,
 		})
 		if off = h.Next(); off == 0 {
 			return replies, nil

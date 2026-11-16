@@ -267,8 +267,14 @@ func TestDecodeRefusesAHeaderOrNextOutsideTheRecord(t *testing.T) {
 		{"a next that leaves no room for a header", body(headerLen+1, 2*headerLen), 0, errNext},
 		{"a next past the end", body(1<<31, 2*headerLen), 0, errNext},
 	} {
-		if _, err := (headerCodec{}).Decode(c.rec, c.off); !errors.Is(err, c.want) {
+		h, err := (headerCodec{}).Decode(c.rec, c.off)
+		if !errors.Is(err, c.want) {
 			t.Errorf("%s: Decode = %v, want %v", c.name, err, c.want)
+		}
+		// A header that decoded comes back with a bad next, so its refusal
+		// can be addressed; one that runs short comes back with none.
+		if (h != nil) != (c.want == errNext) {
+			t.Errorf("%s: Decode returned the header %v with %v", c.name, h, err)
 		}
 	}
 	if _, err := (headerCodec{}).Decode(body(headerLen, 2*headerLen), 0); err != nil {
@@ -612,5 +618,15 @@ func fuzzCompound(t *testing.T, body []byte) {
 			t.Fatalf("a member took %d of the %d bytes left", took+used, len(rest))
 		}
 		rest = rest[took+used:]
+	}
+}
+
+// Frame writes the length BodyLen reads back, as a record's one fragment.
+func TestFrameWritesTheLengthBodyLenReads(t *testing.T) {
+	for _, n := range []int{0, 1, headerLen, maxBody} {
+		prefix := framer{}.Frame([]byte("x"), n)[1:]
+		if got, last, err := (framer{}).BodyLen(prefix); err != nil || got != n || !last || len(prefix) != (framer{}).HeaderLen() {
+			t.Errorf("Frame of %d bytes reads back as %d, last %v (%v), %d bytes long", n, got, last, err, len(prefix))
+		}
 	}
 }

@@ -138,11 +138,15 @@ func Watches(ctx context.Context) int {
 // NewCapped is the FlowControl a connection gets where its protocol has none.
 func NewCapped() FlowControl { return newCapped() }
 
-var (
-	ReserveReply  = reserveReply
-	ReserveStatus = reserveStatus
-	ErrReplyWait  = errReplyWait
-)
+var ErrReplyWait = errReplyWait
+
+func (sh *shared) ReserveReply(ctx context.Context, key netip.Addr, bound int) (*resources.Buf, error) {
+	return sh.reserveReply(ctx, key, bound)
+}
+
+func (sh *shared) ReserveStatus(ctx context.Context, key netip.Addr, close func(error)) *resources.Buf {
+	return sh.reserveStatus(ctx, key, close)
+}
 
 // TestReader is one connection's record cut, reached by the reader's tests.
 type TestReader struct{ r *reader }

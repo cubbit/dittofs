@@ -21,7 +21,9 @@ type Protocol interface {
 	NewConn(c *Conn) Stages // at accept; c is what the stages send on (callbacks)
 }
 
-// Framer finds a record's length from its header.
+// Framer finds a record's length from its header, and writes a reply
+// record's: the writer frames each record after Wrap, so reply buffers hold
+// the body alone.
 type Framer interface {
 	HeaderLen() int
 	// BodyLen reads a record's header: the length of the body that follows it,
@@ -33,6 +35,9 @@ type Framer interface {
 	// MaxRecord is the protocol's record cap and the most fragments a record
 	// may come in, 1 where every header ends its record.
 	MaxRecord() (bytes, fragments int)
+	// Frame appends to dst the HeaderLen-byte header of a record whose body is
+	// body bytes.
+	Frame(dst []byte, body int) []byte
 }
 
 // Stages are a protocol's implementations of the pipeline's stages for one
@@ -42,6 +47,7 @@ type Framer interface {
 type Stages struct {
 	Header     HeaderCodec               // required: decode the request header, encode the reply's
 	Router     Router                    // required: the version's table and the Request
+	Errors     *ErrorTable               // required: maps, with no operation, a refusal before Route returns a table: Unwrap's, Admit's, Lookup's, a header's
 	Security   Security                  // nil: messages pass unchanged
 	Flow       FlowControl               // nil: the fixed cap of 64
 	Replay     ReplayCache               // nil: no replay check
