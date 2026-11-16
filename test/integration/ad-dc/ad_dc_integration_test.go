@@ -32,6 +32,11 @@ const (
 	adRealm  = "DITTOFS.AD"
 	adDomain = "DITTOFS"
 
+	// adDCHostname is the DC's fixed host name, given to its container, and
+	// adDCHost its DNS name, which the DC's TLS certificate names in a SAN.
+	adDCHostname = "dc1"
+	adDCHost     = adDCHostname + ".dittofs.ad"
+
 	adUserAlice = "alice"
 	adUserPass  = "TestPassword01!"
 
@@ -168,6 +173,8 @@ func setupADDC(t *testing.T) (dcIP, keytabPath, krb5ConfPath string, cleanup fun
 		"--name", container,
 		"--label", adNamePrefix,
 		"--network", network,
+		"--hostname", adDCHostname,
+		"--network-alias", adDCHost,
 		adNamePrefix,
 	); err != nil {
 		t.Fatalf("docker run failed: %v\n%s", err, out)
@@ -214,6 +221,17 @@ func setupADDC(t *testing.T) (dcIP, keytabPath, krb5ConfPath string, cleanup fun
 	}
 
 	return dcIP, keytabPath, krb5ConfPath, cleanup
+}
+
+// copyADCA copies the fixture CA, which issued the DC's TLS certificate, out
+// of the running DC and returns its path.
+func copyADCA(t *testing.T) string {
+	t.Helper()
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	if out, err := adDockerCombined("cp", adContainerName+":/keytabs/ca.pem", caPath); err != nil {
+		t.Fatalf("copy the fixture CA: %v\n%s", err, out)
+	}
+	return caPath
 }
 
 func findADDockerfileDir(t *testing.T) string {

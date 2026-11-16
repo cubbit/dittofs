@@ -82,7 +82,7 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 
 	// Online-join config: create DITTOJOIN$ over StartTLS against the DC's LDAP,
 	// binding as the domain Administrator (which can create computer objects).
-	// The DC's self-signed cert is accepted via InsecureSkipVerify (lab fixture).
+	// The DC's certificate is verified against the fixture CA.
 	cfg := netlogon.OnlineConfig{
 		AccountName: onlineJoinMachineName + "$",
 		Workstation: onlineJoinMachineName,
@@ -98,7 +98,7 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 			MachineName:  onlineJoinMachineName,
 			DNSHostName:  fmt.Sprintf("%s.%s", onlineJoinMachineName, "dittofs.ad"),
 			SPNs:         []string{"HOST/" + onlineJoinMachineName + ".dittofs.ad"},
-			TLS:          netlogon.JoinTLSConfig{InsecureSkipVerify: true},
+			TLS:          netlogon.JoinTLSConfig{CACertFile: copyADCA(t)},
 		},
 	}
 
