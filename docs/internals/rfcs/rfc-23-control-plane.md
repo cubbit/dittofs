@@ -662,7 +662,17 @@ engine, GC, the adapters and the sidecars — the values it reads.
 The node learns of changes the way RFC 13 and RFC 18 already require — by
 reading the four counters (the settings generation, the share list version,
 the principals generation and the claim generation) once a second — and never from the API request that
-made them. A record that does not
+made them: a request hands the node no change. The node that wrote a setting
+or a principal **MUST** still apply it at once, so that an operator's own next
+call sees it ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)): once the write commits, the node
+reads the counters, wakes its reconcile, and answers once its reconciled-through
+positions (§2.4) cover the values it read. Only a pass that read the counters
+after the commit can raise them that far, so the write **MUST NOT** answer on a
+pass already running when it woke reconcile. It waits no longer than the call
+lasts and at most one second, the bound
+[RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)
+sets for every node; a write whose wait ends first answers as every committed
+write does (§4.3), and its resource's status (§2.4) says where it is applied. A record that does not
 validate when the component is built stops only what it configures
 ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)), and the node reports it refused.
 
@@ -681,7 +691,8 @@ when a value changed:
 - the **settings generation**, **share list version** and **principals
   generation** it has reconciled through: the highest value of each counter
   such that it has acted on every change up to it — applied it, refused it, or
-  marked it restart-pending;
+  marked it restart-pending; the node's own write waits on these positions as
+  the node holds them, not on this record (§2.3);
 - the records it refused, each with the generation and the error;
 - the records whose restart-class field has changed since it started — its
   restart-pending set;

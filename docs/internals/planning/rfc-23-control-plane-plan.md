@@ -68,7 +68,7 @@ database or configuration refuses and names it. No migration tool.
 - dashboards: none;
 - the bootstrap file keeps its path, with a flag to name another (D6, the RFC 13 plan's).
 
-**RFC amendments in this pull request.** The user agreed to seven, all on draft RFCs:
+**RFC amendments in this pull request.** The user agreed to eight, all on draft RFCs:
 
 - **A1. An adapter's port becomes an adapter setting**, `adapters.<protocol>.port`, at installation
   scope with a node override, restart-class. The listen addresses stay the host's bootstrap facts,
@@ -126,6 +126,16 @@ database or configuration refuses and names it. No migration tool.
   last failure and cleared by the break-glass reset, with a `decision:` for a shared source; a `429`
   has the code `throttled`. This touches RFC 23 §4.7, §5.3, §6, §7 and its "§5.3 throttling" row,
   RFC 13 §2.2 and Appendix B, RFC 18 §8.1, and RFC 16 §2.3, §3 and §4.2.
+- **A8. The node that wrote a change waits for its own reconcile to apply it.** RFC 18 §2.6 and
+  §7.2 have the writing node apply a change at once, and RFC 23 §2.3 had the node learn of changes
+  "never from the API request that made them". After a commit that raised the principals or
+  settings generation, the writing node reads the counters, wakes its reconcile, and answers once
+  its reconciled-through positions (§2.4) cover them; the change is still learned from the
+  counters, never handed over by the request, and a pass already running, which may have read the
+  counters before the commit, is never joined. The wait ends with the call and after at most one
+  second, RFC 18 §7.2's bound; a write whose wait ends first answers as every committed write
+  does, its resource's status saying where it is applied. This touches RFC 23 §2.3 and §2.4, and
+  is what the RFC 18 plan's epic 8's T8.3 calls through `api.Deps.Applied`.
 
 ## 1. Introduction
 
@@ -390,14 +400,14 @@ registers no suite and no group, and changes no `lint-go` tag.
 | E1 ⛔ | Delete v1, declare the surface | v1 deleted with the tests that drive it, harness fixed, landed first; the node's surface and the shared wire types; the new `cmd/dfs` skeleton; architecture tests | 6 | 12.25 | team | every epic; the RFC 13 plan (#4059) and the RFC 18 plan (#4058) |
 | E2 | Store records | the view's signatures with `expect`; the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry; the namespace record and its store index | 13 | 35.5 | C | E5; partly E3, E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059, `Node`, `NodeStatus`); the RFC 18 plan's epics 2 and 3 (#4058, the principals generation) |
 | E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition with RFC 8's root duties, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven, RFC 23's own settings section, the harness | 11 | 29.5 | A | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the `apply` slot); the RFC 18 plan's epics 2 and 7 (#4058, the runner) |
-| E4 | The management API | server, route table, typed handlers (D14), write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5), each resource's wire types, the client | 11 | 36 | B | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the write path's `Check` slot) |
+| E4 | The management API | server, route table, typed handlers (D14), write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5), each resource's wire types, the client | 11 | 36.5 | B | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the write path's `Check` slot) |
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 10 | 25.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
 | E6 | The CLI | `login` and the rebuilt `dfsctl` on epic 4's client, generated reference | 6 | 12 | A | E7 |
 | E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 7 | 11.5 | team | E8 (partly) |
 | E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **64** | **162.25** | | |
+| | **Total** | | **64** | **162.75** | | |
 
-**Plan estimate: 64 subtasks, 162.25 man-days, not counting epic 8.**
+**Plan estimate: 64 subtasks, 162.75 man-days, not counting epic 8.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -971,6 +981,7 @@ func (h *handlers) putSetting(w http.ResponseWriter, r *http.Request) {
 			}
 			return tx.PutSetting(metadata.Setting{Scope: scope, Key: key, Value: value}, expect)
 		})
+	h.applied(r.Context(), err) // A8: after a commit raising CFGGEN, Deps.Applied waits, at most 1 s
 	h.answer(w, r, err) // the problem table (RFC 23 §4.7); ErrIdempotentReplay writes the recorded answer
 }
 
@@ -1283,7 +1294,7 @@ and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 
 ### Epic 4 — The management API
 
-**Epic 4 estimate: 11 subtasks, 36 man-days.**
+**Epic 4 estimate: 11 subtasks, 36.5 man-days.**
 
 The API server answers every in-scope resource and action, writes only records, and maps every
 error to a status.

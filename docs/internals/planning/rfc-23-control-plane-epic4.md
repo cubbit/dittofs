@@ -7,16 +7,17 @@ among them), §3.2 (a share), §3.3 (stores and namespaces, without the deferred
 §5.3 (Transport), §6 (the write and the read), §7 (the client's transport and core), §9 (discovery
 and the client rules), §11 (the `api_` series), and §10's CP2, CP5, CP6, CP8, CP11, CP12 and CP16
 on the API's side; [RFC 13](../rfcs/rfc-13-configuration.md) §6 and §7 as a caller;
-[RFC 23's plan](rfc-23-control-plane-plan.md) D2, D5 and D14.
+[RFC 23's plan](rfc-23-control-plane-plan.md) D2, D5 and D14, and its amendment A8 to RFC 23 §2.3
+(the writing node's wait).
 **Track:** B.
-**Epic 4 estimate: 11 subtasks, 36 man-days.**
+**Epic 4 estimate: 11 subtasks, 36.5 man-days.**
 **Depends on:** S1 (E1 merged): the shared wire types in `pkg/node/apiv1` and the node's surface. E2:
 `ControlPlane.Write` with `entity.WriteMeta` and `entity.ControlPlaneTx`, `expect` on every write,
 the idempotency, audit and operation records with their errors in `entity`, the operation record's
 running index, the node view and its statuses, and the namespace record `NS‖ns‖info` with its index
 `NSR‖store‖ns`: `Namespaces`, `PutNamespace` and `DeleteNamespace` on the view, and the tracked
-reads `Namespace(id)` and `StoreNamed(store)` on `entity.ControlPlaneTx`. E3: `internal/node/api` with `New(Deps)`, its listener and health rows, `Deps.Ready` and
-`Deps.Live`, the two architecture rules over the package, the operation runner, and
+reads `Namespace(id)` and `StoreNamed(store)` on `entity.ControlPlaneTx`. E3: `internal/node/api` with `New(Deps)`, its listener and health rows, `Deps.Ready`,
+`Deps.Live` and the node's `Deps.Applied` (A8), the two architecture rules over the package, the operation runner, and
 `internal/node/nodetest`. T4.11's success paths also wait on the RFC 18 plan's epics 6 and 7 for
 identity's directory and join calls and their in-memory doubles, and on X1's `pkg/secrets`.
 **Blocks:** E5, which fills `Deps.Authenticate` from `internal/node/api/auth`, adds its rights to the
@@ -122,7 +123,7 @@ and title and not copied.
 | rule 6, known failures shrink | none | no test lands red and no suite here keeps a `known.yaml` |
 | rule 7, v2 ignores v1 | none | v1's API was deleted at S1; nothing here reads it |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T4.3, T4.4 | TLS on a real listener with a generated certificate; the all-or-nothing commit on Badger on disk with the commit faulted through `kvtest`'s `FaultKV` |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T4.2–T4.4, T4.6, T4.7, T4.9 | RFC 23's notes at their sites: §4.3's `ponytail:` at the call bound and its pre-write `decision:` at the step, §4.1's and §4.4's `decision:` at the route table and the precondition check, §3.2's at share create; D6's `decision:` at the cursor, D7's `ponytail:` at the parked polls, D11's `decision:` at a remote store's location |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T4.2–T4.4, T4.6, T4.7, T4.9 | RFC 23's notes at their sites: §4.3's `ponytail:` at the call bound and its pre-write `decision:` at the step, §4.1's and §4.4's `decision:` at the route table and the precondition check, §3.2's at share create; D6's `decision:` at the cursor, D7's `ponytail:` at the parked polls, D11's `decision:` at a remote store's location, D22's at the writer's wait |
 | rule 10, a test must be able to fail | all | each test names the requirement it breaks on; a row held by construction or by an E2 or E3 test names it |
 | rule 11, a symbol is exported only if RFC 23's interface uses it | all | `internal/node/api` exports `New` and `Deps` only; `internal/node/api/auth` gains `Caller` and `CallerFrom`, internal by rule 11; exported additions are `apiv1.Role`, each resource's wire types and `pkg/apiclient`'s client |
 | rule 12, each subtask creates only what it declares | all | each wire type lands with the route that serves it; `auth` lands with its first consumer, the adapters; the client with its first consumer, T4.8's tests |
@@ -164,6 +165,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | R22 | `join-domain`, online or offline, carries no `Idempotency-Key`, one being refused `400`, and keeps no idempotency record | MUST NOT | RFC 23 §4.5, §3.5 | T4.11 |
 | R23 | A node runs at most 64 API calls at once and answers the next `503` with `Retry-After`; a long poll holds no call slot while parked, at most 256 are parked, and the next is `503`; API calls draw on none of the data path's pools | bound | RFC 23 §4.3 | T4.3, T4.5 |
 | R64 | A step that needs a running component runs before the transaction and enters it as an input; one that fails refuses the write before anything is written, with the component's error | MUST | RFC 23 §4.3 (as amended here) | T4.4, T4.9, T4.11 |
+| R68 | A write whose commit raised the principals or settings generation answers only once the node that served it has applied it, its reconciled-through positions covering the counters read after the commit, never on a pass already running; the wait ends with the call or after 1 s on the API's clock, and the answer is then the write's own, committed | MUST, MUST NOT | RFC 23 §2.3 (as amended by A8); RFC 18 §2.6, §7.2 | T4.4 |
 
 **Operations**
 
@@ -364,6 +366,18 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
 - **D19, the problem writer reads `Retry-After` from the error.** An error implementing
   `RetryAfter() time.Duration` sets the header: the call bound, `starting`, a store unreachable, and
   E5's `429` `throttled`. No marker.
+- **D22, the writer's wait is the write adapter's, after the commit, and never changes the answer**
+  (RFC 23 §2.3 as A8 amends it). A write row says whether its commit raises the principals or
+  settings generation (a setting, a user, a group, a membership or a spelling); after such a row's
+  commit the adapter calls `Deps.Applied` under a context that ends with the request or after 1 s
+  on `Deps.Clock`, the bound RFC 18 §7.2 sets, whichever comes first, and then answers what the
+  commit recorded (D9), whatever `Applied` returned. RFC 23 gives a committed write no answer but
+  its own, and §2.4's `status.applied` says where it is applied, so no new status code. A replay
+  (R20) and a refused write do not wait. Nil, as `api.New` over a harness that hands none, answers
+  at commit: unlike D13's interfaces, which run before the transaction and so refuse, this one
+  runs after the write is durable and has nothing left to refuse. A `decision:` marker at the call
+  names the 1 s and its overturn: a pass on a healthy node that regularly outlasts it. Prior art:
+  read-your-writes in session-consistent stores, such as MongoDB's causal sessions (from memory).
 
 ## 5. Target tree
 
@@ -439,6 +453,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   Clock        clock        // Now, After (D18)
   Health       conditions   // E3's health.Evaluator (RFC 25 §8.2's Source set), read whole by GET /api/v1/health (T4.6)
   Progress     func(apiv1.OpKind, []byte) apiv1.Progress // E3's runner table (T4.6)
+  Applied      func(ctx context.Context) error // declared and filled by E3's T3.5 (A8); nil answers at commit (D22)
   // Directory, Joins and Sealer land with T4.9 and T4.11
   ```
   `auth/caller.go` (`Caller`, `CallerFrom`); `apiv1.Role`; `rights.go`, the role table's rights
@@ -485,15 +500,17 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 ### T4.4 The write path
 
-**Subtask T4.4 estimate: 4 man-days.**
+**Subtask T4.4 estimate: 4.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.2.
 - **Covers:** R2, R10, R11, R12, R14, R15, R16, R17, R19, R20, R21, R24, R27, R52, R54, R60, R61,
-  R62, R63, R64.
+  R62, R63, R64, R68.
 - **Deliverables:** `write.go`: the order of checks — the body decoded, then in `Write` the recorded
   key (`422` on another digest, a replay answered whole), then `428` and the preconditions, then
   `Check` and the handler; `If-Match` and `If-None-Match: *` to `expect`; a status field refused;
   the operation written when the row carries an `OpKind`; the answer serialized inside `fn` (D9);
+  after a commit raising the principals or settings generation, `Deps.Applied` under D22's bound
+  and its `decision:`;
   `prepare.go`: the pre-write step (D17); `audit.go`: the audit record and a refusal's own `Write`
   (D12); `api_precondition_failures_total`, `api_idempotent_replays_total`,
   `api_idempotency_records_written_total` and `audit_records_total`; E3's write rule extended: an
@@ -519,7 +536,18 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   naming it (R27); a pre-write step failing, nothing written and the step's error answered, and a
   conflict retry not running the step again (R64); the write rule over planted cases, a store write
   outside `Write`, a type assertion on `Deps.Store` reaching `PutUser`, a `Write` from a resource
-  handler, and one from `auth` with no `Audit` other than the count (R62, R54, R61).
+  handler, and one from `auth` with no `Audit` other than the count (R62, R54, R61). In
+  `internal/node`'s `node_test`, over `nodetest` with a real node, `Deps.Applied` E3's and the clock
+  never advanced but where named: a user created through T4.10's route once it lands (it raises
+  `PGEN`) answers only once the node's reconciled-through principals position, read through E3's
+  `export_test.go` accessor as soon as the answer arrives, is at least the `PGEN` read back through
+  `Nodes.Counters` (catches an answer at commit: with the clock still, no pass runs unless the
+  write wakes one, R68; a pass already running is E3's T3.5's case); with reconcile held after its
+  counters read by E3's per-node pause from `export_test.go`, the same create parked until
+  `Pending` on the clock counts its wait, then the clock advanced 1 s: the answer is the create's own `201`, the user read back committed, and the
+  position still below it (catches an unbounded wait, or a committed write answered as refused,
+  R68); a grant written while reconcile is held answered with the clock untouched (catches a wait
+  on a write that raised neither generation, R68). Doubles: the injected clock (kind 1).
 
 ### T4.5 Reads, listings and long polls
 
