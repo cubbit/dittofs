@@ -2170,7 +2170,7 @@ type TokenClaims struct {
 // NewHashes derives what a new password is stored as: the password hash and,
 // only while ntlm is on and u holds file spellings and is not a directory
 // principal, the NT hash (§3.5). It is pure: it reads and writes nothing. The
-// API writes the result with the record, conditional on ntlm.Revision still
+// API writes the result with the record, conditional on ntlm.Generation still
 // being current; for a directory principal it fails ErrInvalid.
 func NewHashes(u metadata.User, password []byte, ntlm NTLMSetting) (PasswordHashes, error)
 
@@ -2179,10 +2179,10 @@ func NewHashes(u metadata.User, password []byte, ntlm NTLMSetting) (PasswordHash
 type PasswordHashes struct{ Password, NTHash []byte }
 
 // NTLMSetting is identity.ntlm as a password set read it: whether it is on,
-// and the revision the write is conditional on (§3.5).
+// and the setting's generation the write is conditional on (§3.5).
 type NTLMSetting struct {
-	On       bool
-	Revision uint64
+	On         bool
+	Generation uint64
 }
 ```
 
