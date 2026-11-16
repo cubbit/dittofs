@@ -152,7 +152,7 @@ func (r *refusal) Error() string { return string(r.code) + ": " + r.detail }
 // table names err: an error it does not name is a 500, which the caller
 // counts. A *fieldError also names the refused field.
 func problemOf(err error) (apiv1.Problem, bool) {
-	a, ok := answer(err)
+	a, ok := lookup(err)
 	if !ok {
 		a = answerOf{status: http.StatusInternalServerError}
 	}
@@ -170,7 +170,7 @@ func problemOf(err error) (apiv1.Problem, bool) {
 	return p, ok
 }
 
-func answer(err error) (answerOf, bool) {
+func lookup(err error) (answerOf, bool) {
 	var r *refusal
 	if errors.As(err, &r) {
 		a, ok := own[r.code]

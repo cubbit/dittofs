@@ -152,7 +152,7 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10
 	github.com/subosito/gotenv v1.6.0 // indirect
-	go.opentelemetry.io/otel v1.44.0 // indirect
+	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
@@ -167,5 +167,6 @@ require (
 	github.com/apple/foundationdb/bindings/go v0.0.0-20260416192139-3ea44ce1d900
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/stretchr/testify v1.12.1
+	go.opentelemetry.io/otel/sdk v1.44.0
 	gopkg.in/yaml.v3 v3.0.1
 )
