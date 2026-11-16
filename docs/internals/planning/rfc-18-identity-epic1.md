@@ -347,7 +347,9 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
     only, never for the server, except `internal/identity/identitymem`, whose one
     importer E3's T3.6 restricts to `pkg/vfs/vfstest/memory`; `internal/node/nodetest` is
     allowed beside `internal/node`, since it builds a real installation as `node` does (RFC 23's
-    plan's epic 3, D3), and no package below either is; `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use
+    epic 3 breakdown, its D3), and no package below either is. The allowance is a ceiling, not a
+    need: E8's D4 hands identity's seams to `nodetest.WithNew` from `internal/node`'s
+    `export_test.go`, so `nodetest` itself imports nothing of identity; `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use
     the real server (RFC 18 §10). `pkg/vfs/vfstest/memory`, the verified in-memory
     `vfs.Service`, needs the real server too once E3's T3.6 makes `vfs.New` require it; it
     reaches it through `internal/identity/identitymem` (E3's T3.6), one of identity's own
