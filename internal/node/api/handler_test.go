@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -25,10 +26,11 @@ import (
 // served is the API over a harness's store, serving the test rows beside the
 // production table, its series in reg and its spans in spans.
 type served struct {
-	url   string
-	reg   *metrics.Registry
-	spans *tracetest.SpanRecorder
-	store kvstore.ControlPlane
+	url    string
+	client *http.Client
+	reg    *metrics.Registry
+	spans  *tracetest.SpanRecorder
+	store  kvstore.ControlPlane
 }
 
 func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error)) *served {
@@ -51,11 +53,14 @@ func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error)) 
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := srv.Stop(t.Context()); err != nil {
+		// The test's own context has ended by now.
+		if err := srv.Stop(context.Background()); err != nil {
 			t.Errorf("Stop: %v", err)
 		}
 	})
-	s.url = "http://" + addr.String()
+	tr := &http.Transport{}
+	t.Cleanup(tr.CloseIdleConnections)
+	s.url, s.client = "http://"+addr.String(), &http.Client{Transport: tr}
 	return s
 }
 
@@ -78,7 +83,7 @@ func (s *served) do(t *testing.T, method, path, body string) reply {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
