@@ -345,7 +345,7 @@ internal/node/step/
 internal/node/api/
   server.go, health.go, server_test.go     T3.2  the listener and the two health rows (D3)
 internal/node/nodetest/
-  harness.go, harness_test.go              T3.1  New, Watch, Restart, Clock, Store
+  harness.go, harness_test.go              T3.1  New, WithNew, Watch, Restart, Node, Clock, Store
 pkg/health/
   evaluator.go, watchdog.go                T3.2  sources, conditions and loops (D4)
 internal/vfs/
@@ -379,7 +379,11 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
     so the harness's installation is a real one), over Badger in
     memory or on disk, `sim.TestClock`, a `metrics.Registry`, a logger, the API and metrics
     addresses on `127.0.0.1:0`; `Watch()` for top-level tests; `Restart(t)`, which stops the node
-    and builds a new one over a new KV on the same directories (D13); its own `harness_test.go`.
+    and builds a new one over a new KV on the same directories (D13); `WithNew(func(node.Config)
+    (*node.Node, error))`, the constructor `New` and `Restart` build the node through, `node.New`
+    when none is given, so a `node_test` test can hand it a constructor from `internal/node`'s
+    `export_test.go` while `Config` stays at five fields; `Node()`, which returns the node built
+    last, the new one after `Restart`; its own `harness_test.go`.
     Consumed by every later subtask, E5, E6 and E7.
 - **Acceptance criteria:**
   - After `New`, the store is open and no journal, goroutine or listener exists.
@@ -387,8 +391,10 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Tests:** in `node_test`, watched: `New` then `Stop` with no `Start`, the leak check passing
   (catches a component started by `New`, R4, R7); `New` over an empty KV refused (R48); in
   `openstate`, a clone's hold taken and released through `EngineHolds` against the real table
-  (R8), the engine's own tests running unchanged through `enginetest.Holds`. R6's "closes what it
-  built" is T3.3's.
+  (R8), the engine's own tests running unchanged through `enginetest.Holds`; in `nodetest`, a
+  constructor handed to `WithNew` that calls `node.New` and keeps the nodes it returned, `Restart`
+  building through it a second time and `Node()` returning that second node, not the first. R6's
+  "closes what it built" is T3.3's.
 
 ### T3.4 The operation runner and the principals' deletion
 
@@ -693,7 +699,9 @@ A suggestion only: one pull request per subtask works as well.
   `ContinueDelete`, `ContinueRemoval`, `ContinueShardRemoval` and `RecordShardRemoval`.
 - The least certain estimates: T3.3, whose undo and stop bounds cross components whose `Stop`
   semantics differ, and T3.6, whose step 3 joins a share that is still serving.
-- `nodetest.WithStep`, so another package's step runs through the real runner in the harness, is
-  not built: `Config` and `New` are frozen at five fields and no harness reaches the unexported
-  step table. A step's owner tests its function over a real store, and through the runner once its
-  registering epic (the RFC 18 plan's epic 8, E5) puts it in `New`.
+- `nodetest.WithStep` is not built. A `node_test` test runs another package's step through the
+  real runner in the harness by handing `WithNew` a constructor from `internal/node`'s
+  `export_test.go` that adds the step to the unexported table, so `Config` stays at five fields.
+  The step's own package cannot reach that file, so its owner tests the function over a real
+  store, and through the runner once its registering epic (the RFC 18 plan's epic 8, E5) puts it
+  in `New`.
