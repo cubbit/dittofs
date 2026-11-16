@@ -2079,6 +2079,16 @@ type OpTable struct {
 	// and how many bytes it took: NFSv4's argop. Set on a table that is a
 	// compound row's Members; nil elsewhere.
 	ReadOp func(b []byte) (op uint32, n int, err error)
+	// EncodeResult writes, before a member's own Encode appends its body, what
+	// the protocol puts ahead of each result: NFSv4's resop and status. Set
+	// with ReadOp; nil elsewhere.
+	EncodeResult func(out *resources.Buf, op uint32, s Status, v Version) error
+	// EncodeHead writes the compound reply's head, ahead of its results:
+	// NFSv4's status, the request's tag and the count of results. Its size
+	// MUST NOT depend on s or n, so the runner writes it once before the
+	// members run and again, over its own bytes, once their status and count
+	// are known. Set with ReadOp; nil elsewhere.
+	EncodeHead func(out *resources.Buf, s Status, n int, v Version) error
 }
 
 type Op struct {
@@ -2292,7 +2302,11 @@ the `Request`; for an SMB chain it also repeats `Decode`, `Unwrap`, `Admit` and
 `Lookup` per member, since each is signed over its own bytes and charged
 credits on its own. It hands `Unwrap` and `Route` the member before a related
 one, so the IDs it inherits are resolved before its signature is checked and
-its handles carry over. It encodes each member's reply, joins them with
+its handles carry over. A compound row's reply is one buffer: the runner
+writes `Members.EncodeHead` first, then each member's result as
+`Members.EncodeResult` followed by that member's `Encode`, and last writes the
+head again over its own bytes with the compound's status and the count of
+results, so no result is copied. A chain encodes each member's reply, joins them with
 `HeaderCodec.Chain`, and calls `Wrap` once on the joined record: SMB's `Wrap`
 signs each member over its own bytes, `NextCommand` and padding included, and
 encrypts the record once.

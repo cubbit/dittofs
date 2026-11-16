@@ -429,6 +429,7 @@ func NewBufPool(b *WaitBudget) *BufPool // RFC 20 §6.8's buffers in §3.1's cla
 // Reservation cannot become.
 func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)
 func (p *BufPool) Ceiling() int64 // its budget's ceiling, what one charge is bounded by (RFC 20 §4.3)
+func (p *BufPool) Charge(n int) int64 // the charge Get would take for n bytes: n's class plus the per-request overhead
 ```
 
 - Whether a pool waits or refuses is fixed by its row (§2.3), so it is a type:
