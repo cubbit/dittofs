@@ -24,3 +24,9 @@ func revoke(ctx context.Context, s store) error {
 func forget(ctx context.Context, s store) error {
 	return s.Write(ctx, entity.WriteMeta{Audit: nil}, func(entity.ControlPlaneTx) error { return nil })
 }
+
+// drop writes with an audit record held in a variable, here nil.
+func drop(ctx context.Context, s store) error {
+	var rec *entity.AuditRecord
+	return s.Write(ctx, entity.WriteMeta{Audit: rec}, func(entity.ControlPlaneTx) error { return nil })
+}
