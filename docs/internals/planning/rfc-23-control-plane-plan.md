@@ -68,7 +68,8 @@ database or configuration refuses and names it. No migration tool.
 - dashboards: none;
 - the bootstrap file keeps its path, with a flag to name another (D6, the RFC 13 plan's).
 
-**RFC amendments in this pull request.** The user agreed to eight, all on draft RFCs:
+**RFC amendments in this pull request.** The user agreed to eight, all on draft RFCs, and to A9
+and A10 after it merged:
 
 - **A1. An adapter's port becomes an adapter setting**, `adapters.<protocol>.port`, at installation
   scope with a node override, restart-class. The listen addresses stay the host's bootstrap facts,
@@ -136,6 +137,16 @@ database or configuration refuses and names it. No migration tool.
   second, RFC 18 §7.2's bound; a write whose wait ends first answers as every committed write
   does, its resource's status saying where it is applied. This touches RFC 23 §2.3 and §2.4, and
   is what the RFC 18 plan's epic 8's T8.3 tests over identity, through `api.Deps.Applied`.
+- **A9. RFC 16's `MachineJoin` gains three fields** (the RFC 18 plan's epic 7, its D6): `Names
+  []string`, the computer account's service names with `sPNMappings` applied; `LastRotation.Version
+  uint64`, the secret version the last join or rotation confirmed; and `LastRotation.Confirmed
+  time.Time`, the store time of that confirm. A failed rotation leaves both as they were. Epic 2
+  stores them, and epic 4's keytab route reads `Names`. This touches RFC 16 §2.3.
+- **A10. An operation can be started by a schedule** (the RFC 18 plan's epic 7, its D11). Identity's
+  own loop creates the scheduled `rotate-machine-password`, which no `202` call started: it carries
+  the zero `Account`, read as "the schedule", and the `Write` that creates it carries an audit
+  record whose actor is the schedule. This touches RFC 23 §4.6 and §6, RFC 16 §2.3's `Operation.Account` and `AuditRecord.Actor` (zero for the schedule), epic 2's R4 and R8, and
+  epic 4's R50 and its operation reads.
 
 ## 1. Introduction
 
@@ -398,16 +409,16 @@ registers no suite and no group, and changes no `lint-go` tag.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | Delete v1, declare the surface | v1 deleted with the tests that drive it, harness fixed, landed first; the node's surface and the shared wire types; the new `cmd/dfs` skeleton; architecture tests | 6 | 12.25 | team | every epic; the RFC 13 plan (#4059) and the RFC 18 plan (#4058) |
-| E2 | Store records | the view's signatures with `expect`; the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry; the namespace record and its store index | 13 | 35.5 | C | E5; partly E3, E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059, `Node`, `NodeStatus`); the RFC 18 plan's epics 2 and 3 (#4058, the principals generation) |
+| E2 | Store records | the view's signatures with `expect`; the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry; the namespace record and its store index | 13 | 35.75 | C | E5; partly E3, E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059, `Node`, `NodeStatus`); the RFC 18 plan's epics 2 and 3 (#4058, the principals generation) |
 | E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition with RFC 8's root duties, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven, RFC 23's own settings section, the harness | 11 | 30 | A | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the `apply` slot); the RFC 18 plan's epics 2 and 7 (#4058, the runner) |
 | E4 | The management API | server, route table, typed handlers (D14), write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5), each resource's wire types, the client | 11 | 37 | B | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the write path's `Check` slot) |
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 10 | 25.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
 | E6 | The CLI | `login` and the rebuilt `dfsctl` on epic 4's client, generated reference | 6 | 11.5 | A | E7 |
 | E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 7 | 12 | team | E8 (partly) |
 | E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **64** | **163.75** | | |
+| | **Total** | | **64** | **164** | | |
 
-**Plan estimate: 64 subtasks, 163.75 man-days, not counting epic 8.**
+**Plan estimate: 64 subtasks, 164 man-days, not counting epic 8.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -1180,7 +1191,7 @@ RFC 23 CP14 and CP16, as architecture tests.
 
 ### Epic 2 — Store records
 
-**Epic 2 estimate: 13 subtasks, 35.5 man-days.**
+**Epic 2 estimate: 13 subtasks, 35.75 man-days.**
 
 The metadata store gains every record and field RFC 16 declares for RFC 23, the one transaction an
 API write commits in, and a share's removal steps past the mark.
@@ -1670,6 +1681,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | A second host refused on a copied `node-id` (§4.3's `ponytail:`) | a copy is a name, not a credential | RFC 15, with the cluster rows | the node lease exists |
 | A faster sign-in path than two commits per checked attempt (§4.3's `ponytail:`) | a `429` commits nothing, so only checked attempts commit, bounded per source, loopback included, by the wait, and on the local socket by the account's count; the faster path RFC 23 §5.3 would have to allow first | unowned | epic 5's benchmark of checked sign-ins beside metadata commits shows them slowing those commits |
 | OpenID Connect sign-in (RFC 23 §5.5) and `dfsctl login`'s `--oidc` (header, O2, §7) | needs RFC 18 §8.2's `VerifyToken` | unowned; the RFC 18 plan (#4058) defers it too | a plan takes RFC 18 §8.2 |
+| `TokenVerifier.VerifyToken`, identity's check of an OpenID Connect ID token for sign-in (RFC 23 §5.5, RFC 18 §8.2) | identity's, and the API's OpenID Connect sign-in waits on it | the RFC 18 plan's OpenID Connect epic, which it has not yet added: its ledger holds `TokenVerifier` unowned | that epic |
 | The keytab import command, a `dfsctl` command sealing a keytab as a `Secret` version of `identity.keytab`, and a `user update` flag writing a user's Kerberos name (epic 6's §1.2) | RFC 23 §7 names neither; the keytab's check waits on the RFC 18 plan's epic 5's D3, and the Kerberos name's write is epic 4's T4.11 `krb` link | unowned | the RFC 18 plan's epic 5's T5.2 and this plan's epic 4's T4.11 land |
 | The provisioning file (RFC 23 §3.6) and `reload-provisioning` (header, O2) | needs RFC 13 §2.4's loader | unowned; the RFC 13 plan (#4059) defers it too | a plan takes RFC 13 §2.4 |
 | `rehome`, `accept-copy` and the move resource; the "§4.4 background field" row (header, O2, §1.4) | RFC 27 has no implementation | RFC 27's plan | that plan adds the verbs as route-table rows and runner kinds |
