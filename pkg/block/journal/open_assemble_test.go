@@ -714,7 +714,7 @@ func TestReopenAssembled_EqualityOfFiles(t *testing.T) {
 	for _, tag := range []ShareTag{1, 2} {
 		if !maps.Equal(before.sets[tag], after.sets[tag]) {
 			t.Fatalf("share %d's file set after the reopen = %v, want %v: the rebuild dropped or added a file of the share",
-				tag, maps.Keys(after.sets[tag]), maps.Keys(before.sets[tag]))
+				tag, after.sets[tag], before.sets[tag])
 		}
 	}
 	if after.files != before.files {
@@ -737,7 +737,7 @@ func TestReopenAssembled_EqualityOfDirtyFiles(t *testing.T) {
 	for _, tag := range []ShareTag{1, 2} {
 		if !maps.Equal(before.dirtySets[tag], after.dirtySets[tag]) {
 			t.Fatalf("share %d's dirty-file set after the reopen = %v, want %v: the dirty seed missed or added a file",
-				tag, maps.Keys(after.dirtySets[tag]), maps.Keys(before.dirtySets[tag]))
+				tag, after.dirtySets[tag], before.dirtySets[tag])
 		}
 	}
 	if !after.dirtyZeroOfShare {
