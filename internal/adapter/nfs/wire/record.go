@@ -6,15 +6,18 @@ import (
 	"fmt"
 )
 
+// MaxFragments is the most fragments one record comes in (RFC 21 section 2.3).
+const MaxFragments = 64
+
 // MaxRecord is the most a record may be: the transfer class's capacity, 1 MiB
 // and its 4 KiB of header room, its fragments together (RFC 21 section 2.3).
 const MaxRecord = 1<<20 + 4<<10
 
-// markLen is the record mark's size, and lastFragment its last-fragment bit
-// (RFC 5531 section 11).
+// RecordMarkLen is the record mark's size, and lastFragment its last-fragment
+// bit (RFC 5531 section 11).
 const (
-	markLen      = 4
-	lastFragment = 1 << 31
+	RecordMarkLen = 4
+	lastFragment  = 1 << 31
 )
 
 var (
@@ -26,7 +29,7 @@ var (
 // it ends the record. A mark shorter than four bytes is refused, and so is a
 // length past MaxRecord, past which the connection closes (RFC 20 section 5.2).
 func Fragment(mark []byte) (n int, last bool, err error) {
-	if len(mark) < markLen {
+	if len(mark) < RecordMarkLen {
 		return 0, false, fmt.Errorf("nfs/wire: %w: %d bytes", errShortMark, len(mark))
 	}
 	m := binary.BigEndian.Uint32(mark)

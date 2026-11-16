@@ -1,0 +1,14 @@
+# An NFSv4.0 COMPOUND with a tag of five bytes, written from RFC 5531 section 9 and RFC 20
+# section 4.7: the tag's padding is what a reader must skip.
+8000003c  # record mark: last fragment, 60 bytes
+55667788  # xid
+00000000  # CALL
+00000002  # RPC version 2
+000186a3  # program NFS
+00000004  # version 4
+00000001  # procedure COMPOUND
+00000000 00000000  # credential: AUTH_NONE, no body
+00000000 00000000  # verifier: AUTH_NULL, no body
+00000005 6162636465 000000  # the COMPOUND's tag "abcde", 5 bytes and its padding
+00000001  # minor version 1: a parse that stops at the tag's five bytes reads 0 here
+00000000  # no operations

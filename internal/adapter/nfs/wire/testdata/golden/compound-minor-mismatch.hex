@@ -1,2 +1,2 @@
-# An NFSv4.0 COMPOUND reply for NFS4ERR_MINOR_VERS_MISMATCH, its tag "abc" and no results: the tag pads to four (RFC 20 section 4.7).
-00002725 00000003 61626300 00000000
+# An NFSv4.0 COMPOUND reply for NFS4ERR_MINOR_VERS_MISMATCH, the five-byte tag echoed and no results (RFC 20 section 4.7).
+00002725 00000005 6162636465 000000 00000000

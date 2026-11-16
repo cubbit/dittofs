@@ -5,9 +5,9 @@ import (
 	"fmt"
 )
 
-// AuthSys is RFC 5531 Appendix A's authsys_parms: its machine name and group
-// list in fixed arrays, so decoding one allocates nothing.
-type AuthSys struct {
+// AuthSysParms is RFC 5531 Appendix A's authsys_parms: its machine name and
+// group list in fixed arrays, so decoding one allocates nothing.
+type AuthSysParms struct {
 	Stamp   uint32
 	Machine [255]byte
 	NameLen int
@@ -18,17 +18,17 @@ type AuthSys struct {
 }
 
 // MachineName is the machine name's bytes.
-func (a AuthSys) MachineName() []byte { return a.Machine[:a.NameLen] }
+func (a AuthSysParms) MachineName() []byte { return a.Machine[:a.NameLen] }
 
 // Groups is the credential's group list.
-func (a AuthSys) Groups() []uint32 { return a.GIDs[:a.NGIDs] }
+func (a AuthSysParms) Groups() []uint32 { return a.GIDs[:a.NGIDs] }
 
 // DecodeAuthSys reads an AUTH_SYS credential's body: the stamp, the machine
 // name, the uid and gid, and the group list (RFC 5531 section 8.2, Appendix A).
-// It refuses a machine name over 255 bytes, more than 16 groups, a body cut
-// before any of their bytes, and bytes after the last group.
-func DecodeAuthSys(body []byte) (AuthSys, error) {
-	var a AuthSys
+// It refuses a machine name over 255 bytes, more than 16 groups, and a body cut
+// before any of their bytes.
+func DecodeAuthSys(body []byte) (AuthSysParms, error) {
+	var a AuthSysParms
 	r := reader{b: body}
 	stamp, ok := r.u32()
 	if !ok {
@@ -72,9 +72,6 @@ func DecodeAuthSys(body []byte) (AuthSys, error) {
 	for i := range a.NGIDs {
 		a.GIDs[i] = binary.BigEndian.Uint32(r.b[r.off:])
 		r.off += 4
-	}
-	if r.off != len(r.b) {
-		return a, fmt.Errorf("nfs/wire: %d bytes after AUTH_SYS's last group", len(r.b)-r.off)
 	}
 	return a, nil
 }

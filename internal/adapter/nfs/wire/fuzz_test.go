@@ -35,7 +35,7 @@ func FuzzRecord(f *testing.F) {
 		if len(r) < 4 || binary.BigEndian.Uint32(r) != c.XID() {
 			t.Fatalf("the reply to %#x does not begin with its transaction ID", c.XID())
 		}
-		if fl, cred := c.Credential(); fl == wire.AuthUnix {
+		if fl, cred := c.Credential(); fl == wire.AuthSys {
 			_, _ = wire.DecodeAuthSys(cred)
 		}
 	})

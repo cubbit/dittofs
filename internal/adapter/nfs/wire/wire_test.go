@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"os"
 	"runtime"
 	"strings"
@@ -65,8 +66,8 @@ func TestFragment(t *testing.T) {
 		{"empty", 0, true, true},
 		{"4 KiB", 4 << 10, true, true},
 		{"1 MiB", 1 << 20, true, true},
-		{"the cap", wire.MaxRecord, true, true},
-		{"one past the cap", wire.MaxRecord + 1, true, false},
+		{"the cap", 1052672, true, true},
+		{"one past the cap", 1052673, true, false},
 		{"a body that does not end the record", 1024, false, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -145,6 +146,46 @@ func TestParseCaptured(t *testing.T) {
 	})
 }
 
+// ParseCall allocates nothing: the call is a view over the record (RFC 20
+// section 5).
+func TestParseCallAllocatesNothing(t *testing.T) {
+	for _, name := range []string{"nfsv4-null-call", "nfsv4-compound-call", "mount-v3-null-call", "nfs-v3-getattr-call"} {
+		rec := body(t, name)
+		if n := testing.AllocsPerRun(1000, func() { _, _ = wire.ParseCall(rec) }); n != 0 {
+			t.Errorf("%s: ParseCall allocates %v per call", name, n)
+		}
+	}
+}
+
+// A COMPOUND whose tag is not a multiple of four parses to it, and its minor
+// version is read past the tag's padding; the version is 1 so a parse that
+// stops at the tag's five bytes reads 0 rather than the same value.
+func TestParseShortTagCompound(t *testing.T) {
+	c, err := wire.ParseCall(body(t, "nfsv4-compound-short-tag"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	minor, ok := c.MinorVersion()
+	if string(c.Tag()) != "abcde" || !ok || minor != 1 {
+		t.Errorf("the tag is %q, minor %d (%v)", c.Tag(), minor, ok)
+	}
+}
+
+// An NFS version 3 call has no COMPOUND prefix: the same procedure number is
+// not read as one.
+func TestParseV3Proc1(t *testing.T) {
+	c, err := wire.ParseCall(body(t, "nfs-v3-getattr-call"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Version() != 3 || c.Procedure() != 1 || c.Program() != 100003 {
+		t.Errorf("the call parses as %d %d %d", c.Program(), c.Version(), c.Procedure())
+	}
+	if _, ok := c.MinorVersion(); ok || c.Tag() != nil {
+		t.Error("an NFS version 3 call carries a COMPOUND's tag or minor version")
+	}
+}
+
 // A hand-written NULL call to MOUNT version 3 under AUTH_SYS parses too, with
 // no minor version read.
 func TestParseMountCall(t *testing.T) {
@@ -156,8 +197,15 @@ func TestParseMountCall(t *testing.T) {
 	if c.XID() != 0x11223344 || c.Program() != 100005 || c.Version() != 3 || c.Procedure() != 0 {
 		t.Errorf("the MOUNT call parses as %#x %d %d %d", c.XID(), c.Program(), c.Version(), c.Procedure())
 	}
-	if fl != wire.AuthUnix || len(cred) != 28 {
-		t.Errorf("the credential is %d/%d bytes, want AUTH_SYS of 28", fl, len(cred))
+	if fl != wire.AuthSys || len(cred) != 28 {
+		t.Fatalf("the credential is %d/%d bytes, want AUTH_SYS of 28", fl, len(cred))
+	}
+	a, err := wire.DecodeAuthSys(cred)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Stamp != 0 || string(a.MachineName()) != "host" || a.UID != 1000 || a.GID != 100 || a.NGIDs != 1 || a.GIDs[0] != 27 {
+		t.Errorf("the MOUNT credential is %+v", a)
 	}
 	if _, ok := c.MinorVersion(); ok {
 		t.Error("a MOUNT call carries a COMPOUND's minor version")
@@ -202,6 +250,13 @@ func TestParseRefusals(t *testing.T) {
 			b = binary.BigEndian.AppendUint32(b, 1)
 			return append(b, 0x7f)
 		}()},
+		{"a verifier's padding past the record", func() []byte {
+			b := head(100003, 4, 0)
+			b = append(b, 0, 0, 0, 0, 0, 0, 0, 0) // AUTH_NONE, no body
+			b = binary.BigEndian.AppendUint32(b, 1)
+			b = binary.BigEndian.AppendUint32(b, 1)
+			return append(b, 0x7f) // one byte and no padding
+		}()},
 		{"a COMPOUND's minor version past the record", func() []byte {
 			b := head(100003, 4, 1)
 			b = append(b, make([]byte, 16)...)
@@ -213,23 +268,41 @@ func TestParseRefusals(t *testing.T) {
 			if err == nil {
 				t.Fatal("accepted")
 			}
-			if call == nil || call.XID() != 0x11223344 {
-				t.Errorf("the refusal comes back with %v", call)
+			if len(call) == 0 || call.XID() != 0x11223344 {
+				t.Errorf("the refusal comes back with %x", []byte(call))
 			}
 		})
 	}
+	t.Run("an RPC version other than two, its credential past the record", func(t *testing.T) {
+		b := binary.BigEndian.AppendUint32(nil, 0x11223344)
+		for _, v := range []uint32{0, 3, 100003, 4, 0} {
+			b = binary.BigEndian.AppendUint32(b, v)
+		}
+		// The credential's length claims a body the record does not hold; a
+		// version other than 2 stops the parse before it, so the router can
+		// answer RPC_MISMATCH (RFC 21 section 11.4).
+		b = binary.BigEndian.AppendUint32(b, 1)
+		b = binary.BigEndian.AppendUint32(b, 400)
+		call, err := wire.ParseCall(b)
+		if err != nil {
+			t.Fatalf("RPC version 3: %v, want no error", err)
+		}
+		if call.RPCVersion() != 3 {
+			t.Errorf("the RPC version reads %d", call.RPCVersion())
+		}
+	})
 	t.Run("a message of seven bytes", func(t *testing.T) {
 		call, err := wire.ParseCall(make([]byte, 7))
-		if call != nil || err != wire.ErrUnaddressable {
-			t.Errorf("a seven-byte record comes back with %v, %v", call, err)
+		if len(call) != 0 || !errors.Is(err, wire.ErrUnaddressable) {
+			t.Errorf("a seven-byte record comes back with %x, %v", []byte(call), err)
 		}
 	})
 	t.Run("a reply", func(t *testing.T) {
 		b := binary.BigEndian.AppendUint32(nil, 0x11223344)
 		b = binary.BigEndian.AppendUint32(b, 1)
 		call, err := wire.ParseCall(b)
-		if call == nil || err != wire.ErrNotCall {
-			t.Errorf("a reply comes back with %v, %v", call, err)
+		if len(call) == 0 || !errors.Is(err, wire.ErrNotCall) {
+			t.Errorf("a reply comes back with %x, %v", []byte(call), err)
 		}
 	})
 }
@@ -301,7 +374,8 @@ func TestReplies(t *testing.T) {
 		{"deny-rpc-mismatch", wire.AppendDenied(nil, 0x33b50de8, true, 0)},
 		{"deny-auth-badcred", wire.AppendDenied(nil, 0x33b50de8, false, wire.AuthBadCred)},
 		{"deny-auth-badverf", wire.AppendDenied(nil, 0x33b50de8, false, wire.AuthBadVerf)},
-		{"compound-minor-mismatch", wire.AppendCompoundHead(nil, 10021, []byte("abc"), 0)},
+		{"compound-minor-mismatch", wire.AppendCompoundStatus(nil, 10021, []byte("abcde"), 0)},
+		{"compound-two-results", wire.AppendCompoundStatus(nil, 0, []byte("abcde"), 2)},
 	} {
 		t.Run(c.golden, func(t *testing.T) {
 			if want := readGolden(t, c.golden); !bytes.Equal(c.got, want) {

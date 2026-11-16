@@ -4,6 +4,18 @@
 // no clock (RFC 20 section 2.5).
 package wire
 
+// The programs, and the versions and procedures whose calls carry more than a
+// header (RFC 5531 Appendix A, RFC 21 section 2.1).
+const (
+	ProgNFS   uint32 = 100003
+	ProgMount uint32 = 100005
+	ProgNLM   uint32 = 100021
+	ProgNSM   uint32 = 100024
+
+	VersNFS4     uint32 = 4
+	ProcCompound uint32 = 1
+)
+
 // The message types, reply states, accept states, reject states, auth stats
 // and flavours are RFC 5531's section 9 and Appendix A, and RFC 2203's.
 const (
@@ -35,9 +47,11 @@ const (
 	AuthBadVerf uint32 = 3
 
 	rpcVersion uint32 = 2 // the only RPC version
-	authNone   uint32 = 0 // AUTH_NULL
-	// AuthUnix is AUTH_SYS.
-	AuthUnix uint32 = 1
+
+	// AuthNone is AUTH_NONE, the verifier's flavour and the anonymous credential's.
+	AuthNone uint32 = 0
+	// AuthSys is AUTH_SYS.
+	AuthSys uint32 = 1
 	// AuthGSS is RPCSEC_GSS (RFC 2203).
 	AuthGSS uint32 = 6
 
