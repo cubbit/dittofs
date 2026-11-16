@@ -348,7 +348,7 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 **Subtask T6.4 estimate: 2 man-days.**
 
 - **Track:** A. **Depends on:** T6.3; E4 (shares, export policies, grants, quotas); the RFC 18
-  plan's epic 6's T6.4 and T6.9, its epic 7's `resolve-principal` kind, and its epic 8's T8.1 and
+  plan's epic 6's in-memory directory and its `Find`, its epic 7's `resolve-principal` kind, and its epic 8's T8.1 and
   T8.2.
 - **Covers:** R3, R16, R18.
 - **Deliverables:** `share create|list|get|update|delete|quiesce|resume`, `share export-policy
@@ -391,8 +391,8 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 **Subtask T6.6 estimate: 2.25 man-days.**
 
 - **Track:** A. **Depends on:** T6.3; E4 (stores, namespaces, secrets, adapters, settings, nodes, the
-  audit, the domain's routes, `GET /api/v1/health`); the RFC 18 plan's epic 6's T6.4 and T6.9, its
-  epic 7's `resolve-principal` and `test-directory` kinds, and its epic 8's T8.1 and T8.2.
+  audit, the domain's routes, `GET /api/v1/health`); the RFC 18 plan's epic 6's in-memory directory and its
+  `Find`, its epic 7's `resolve-principal` and `test-directory` kinds, and its epic 8's T8.1 and T8.2.
 - **Covers:** R3, R17.
 - **Deliverables:** `store create|list|get|update|delete|set-credential` (the credential from a
   prompt or a file); `namespace create|list|get|delete`; `adapter list|get|set`;
