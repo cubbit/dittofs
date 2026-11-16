@@ -23,7 +23,7 @@ and §8.2's `Source`.
 (T6.5) and its ID range (T6.9), T2.5's `Spell` and `Find` (T6.9), T2.2's `Alloc` (T6.9) and
 T2.6's `Clock.After` (T6.5, D7). **E3, partly**: T3.1's
 `Deps.Tracer`, for T6.7's spans, and T3.1's `Resolve`, T3.4's closure and T3.8's caller cache, for
-T6.11; the rest does not wait. **E4, partly**: T4.4's `kvstore.FoldName`, which T6.7's keys fold
+T6.11; the rest does not wait. **E2's D2**: `entity.FoldPrincipalName`, which T6.7's keys fold
 with. **#4059's S1** (the RFC 13
 plan's): `pkg/settings`' `Of`, for T6.3. **#4059's epic 3, partly**: its write check `Check` with
 tracked reads, for T6.13 alone. **RFC 23's plan's epic 3, partly**: `pkg/health`'s `Condition`,
@@ -113,7 +113,7 @@ directory step; the benchmarks; the NetBIOS cross-check and the section's write 
 - **E2**, principals and accounts: `Minter.Create`, the allocation behind `Alloc`, identity's settings section, `Spell`
   and `Find`, and `Clock.After` with its hashing bound's wait (T2.6).
 - **E3**, resolution: `Resolve`, the group closure, admission's caller cache, `Deps.Tracer`.
-- **E4**, local NTLMv2 sign-in, whose T4.4 exports E2's name fold as `kvstore.FoldName`.
+- **E4**, local NTLMv2 sign-in; its throttle and T6.7's cache keys share E2's name fold, `entity.FoldPrincipalName`.
 - **E5**, Kerberos and the PAC: §4.2's steps 1, 2 and 4, machine mints, `require_pac`.
 - **E6**, this epic.
 - **E7**, NETLOGON and the machine account: pass-through, the join, the runner kinds.
@@ -600,10 +600,10 @@ pkg/settings/
 
 **Subtask T6.7 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T6.5. E3's T3.1 (`Deps.Tracer`), E4's T4.4 (`kvstore.FoldName`).
+- **Track:** C. **Depends on:** T6.5. E3's T3.1 (`Deps.Tracer`), E2's `entity.FoldPrincipalName` (D2).
 - **Covers:** R7, R8, R14, R16, R25, R26, R27, R28, R29, R30, R31, R32, R33, R34, R35, R38.
 - **Deliverables:** the cache in `internal/identity`: one per `Server`, emptied with each new
-  client; keys per R29, names folded with `kvstore.FoldName`, E2's fold as E4's T4.4 exports it; a positive entry fresh 5 minutes, a negative
+  client; keys per R29, names folded with E2's `entity.FoldPrincipalName` (its D2); a positive entry fresh 5 minutes, a negative
   30 seconds, on the injected clock, and never served stale, since RFC 18 §5.4 forbids a cached
   negative answer as a fallback; misses through `x/sync/singleflight`'s `DoChan`; an error
   stored nowhere and leaving a positive entry in place; past the fresh window a failed query
@@ -841,7 +841,7 @@ flowchart TD
   T6_5 --> T6_6["T6.6 Groups, paging, ranges"]
   T6_5 --> T6_7["T6.7 The cache"]
   E3X(["E3: Tracer, closure, caller cache"]):::sync -. "T3.1" .-> T6_7
-  E4X(["E4 T4.4: kvstore.FoldName"]):::sync -. "fold" .-> T6_7
+  E4X(["E2: entity.FoldPrincipalName"]):::sync -. "fold" .-> T6_7
   T6_7 --> T6_8["T6.8 Outage mode"]
   X23(["RFC 23 epic 3: pkg/health"]):::sync -. "Condition" .-> T6_8
   T6_2 & T6_6 & T6_7 --> T6_9["T6.9 Directory principals"]
