@@ -300,7 +300,7 @@ rule. Assume `profiles` requires encryption and is continuously available.
    ([§4.1](#4.1%20Signing%20in)). Connecting to `\\dittofs\profiles`, it learns
    the share requires encryption and is continuously available
    ([§5.1](#5.1%20Share%20flags)). Because the share is continuously available,
-   it also registers with the Witness service on P2 ([§14](#14.%20Witness)).
+   it also registers with the Witness service on P2, **(cluster)** ([§14](#14.%20Witness)).
 2. **Attach the disk.** alice-pc opens `ODFC_alice.vhdx` for read and write,
    letting others read but not write, and asks for a read-write-handle (RWH)
    lease and a persistent handle ([§6.1](#6.1%20Opening%20a%20file),
@@ -328,7 +328,7 @@ rule. Assume `profiles` requires encryption and is continuously available.
    it re-sends because the reply was lost succeeds without being applied twice
    ([§6.5](#6.5%20Replay)).
 5. **P1 fails.** The floating address moves to P2, and Witness tells alice-pc
-   so ([§14](#14.%20Witness)). Its session is gone with P1, but no open state
+   so, **(cluster)** ([§14](#14.%20Witness)). Its session is gone with P1, but no open state
    was on P1, so there is no grace period
    ([§4.3](#4.3%20Reconnect%20after%20a%20node%20is%20lost)). alice-pc
    reconnects as in step 4, through P2.
@@ -1978,9 +1978,8 @@ A Windows file can carry named alternate data streams beside its main content.
   the request before open state is called; without `DELETE` it is answered as
   on any file. `FileDispositionInformation` or `FileDispositionInformationEx`
   through a stream's open is one `SetAttr` through that open, and the adapter
-  checks no access: open state refuses it `ErrInvalid` when the open holds
-  `DELETE` and `ErrAccess` when it does not, as on any file
-  ([RFC 14 §9.4](rfc-14-open-state.md#9.4%20Delete%20on%20close)). That
+  checks no access: the service refuses it as
+  [RFC 17 §5.4](rfc-17-vfs.md#5.4%20Remove%20and%20rename) says. That
   `ErrInvalid` is answered `STATUS_NOT_SUPPORTED` (§16.5), not as a malformed
   request, since the request is valid and declined, as an open by file ID is
   (§16.3).
@@ -2037,15 +2036,19 @@ SMB carries UTF-16. Three cases:
 
 A UTF-16 name with an unpaired surrogate is `STATUS_OBJECT_NAME_INVALID`.
 
-**Names SMB refuses to create.** A path component is split at its first `:`
-into a base name and a stream name before these checks (§12.1), which apply
-to each part. A name an SMB client sends to create or rename
+**Names SMB refuses to create.** A path component is split into its base
+name, stream name and stream type (§12.1) before these checks, which apply to
+the base name and the stream name; the device-name check applies to the base
+name alone, since NTFS allows a stream named `CON` and Windows reaches it
+through its file's path. A name an SMB client sends to create or rename
 to **MUST** be refused with `STATUS_OBJECT_NAME_INVALID` when it contains a
 character MS-FSCC 2.1.5.2 forbids in a component — a control character or one
 of `" * / : < > ? \ |` — or when it is a reserved device name, from the one
 list [RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)
 keeps: `CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9` or `LPT0`–`LPT9`, compared
-without case, alone or followed by a period and anything (`con.txt`). Windows clients cannot
+without case, alone or followed by a period and anything (`con.txt`); the list also holds
+`CONIN$`, `CONOUT$`, `COM¹` to `COM³` and `LPT¹` to `LPT³`, and spaces before the period
+(`CON .txt`) change nothing. Windows clients cannot
 open such a name through their own path parsing, so one made over SMB would
 be a file its own creator cannot reach. A name holding the private-use code
 points of Appendix B is not refused. **On a `posix` share** it is case 2's
@@ -2759,7 +2762,7 @@ name, a SID, a principal or a client address
 | §9.4 loss reaches `FLUSH` | Two opens of one file on a share that is not continuously available; write unstable through the first, fail the sync window holding it. Assert the next `FLUSH` on each open is `STATUS_UNEXPECTED_IO_ERROR` and the one after succeeds; drop the network, reconnect the first open durable before flushing, and assert its next `FLUSH` still fails once. Fail several sync windows on installation A so its loss sequence is high, then move a continuously available share holding a persistent open to B and lose one window there: assert the reconnected open's next `FLUSH` at B fails. | a loss reported to no SMB client, or reported on every later flush |
 | §10 FSCTLs | smbtorture `smb2.ioctl` (copychunk, sparse, zero data, allocated ranges, duplicate extents). Duplicate extents and copychunk from a file onto an overlapping range of itself: assert `STATUS_INVALID_PARAMETER` and the file unchanged. Write into the source range of a running 512 MiB duplicate-extents: assert an interim `STATUS_PENDING`, the write answered success only after the clone, and the clone equal to the source before the write. Duplicate-extents one byte over `clone_max_len`: assert `STATUS_INVALID_PARAMETER`. Copy a 4 GiB file with copychunk while writing its source: assert no source write waits longer than one chunk. Copy in Explorer between two shares in different namespaces: assert copychunk is `STATUS_NOT_SUPPORTED` and the copy completes by reading and writing. | an overlapping or over-length clone run, a cross-namespace copy attempted, a copy freezing its whole source, or a clone reading a source that changed under it |
 | §11 SACL | As an administrator, set a SACL with an audit entry, access the file; assert an access event and that `GETATTR` of `sacl` over NFS, as an administrator, shows it. As the file's owner who is not one, ask for `ACCESS_SYSTEM_SECURITY` over SMB and for `sacl` over NFS; assert `STATUS_PRIVILEGE_NOT_HELD` and `NFS4ERR_ACCESS`. | the SACL open to the file's owner in either protocol |
-| §12.3 names | On a `posix` share, create over NFS a non-UTF-8 name and `a:b`; list over SMB. Assert the first absent, the second shown with U+F022 and openable. On a `windows` share, assert the non-UTF-8 NFS create refused as an invalid name, and `a:b` created, listed over SMB as `a` U+F022 `b` and openable. Create `x?` over SMB: assert `STATUS_OBJECT_NAME_INVALID`. On a `posix` share, create `x` followed by U+F025 over SMB and see `x?` over NFS; on a `windows` share, the same create succeeds and NFS sees the U+F025 code point itself. Create `CON`, `con.txt` and `LPT1` over SMB: assert each `STATUS_OBJECT_NAME_INVALID`; on a `posix` share, create `CON` over NFS and open it over SMB. | an escape that collides, a forbidden character accepted from SMB, a device name created from SMB, or NFS's `a:b` refused on a `windows` share |
+| §12.3 names | On a `posix` share, create over NFS a non-UTF-8 name and `a:b`; list over SMB. Assert the first absent, the second shown with U+F022 and openable. On a `windows` share, assert the non-UTF-8 NFS create refused as an invalid name, and `a:b` created, listed over SMB as `a` U+F022 `b` and openable. Create `x?` over SMB: assert `STATUS_OBJECT_NAME_INVALID`. On a `posix` share, create `x` followed by U+F025 over SMB and see `x?` over NFS; on a `windows` share, the same create succeeds and NFS sees the U+F025 code point itself. Create `CON`, `con.txt`, `CON .txt`, `CONIN$`, `LPT1` and `a:s*t` over SMB: assert each `STATUS_OBJECT_NAME_INVALID`; create `a:s:$DATA`, `a:s:$data` and `a:CON`: assert each created. On a `posix` share, create U+F029 U+F029 over SMB, which converts back to `..`: assert it refused, as `..` is; on a `posix` share, create `CON` over NFS and open it over SMB. | an escape that collides, a forbidden character accepted from SMB, a device name created from SMB, or NFS's `a:b` refused on a `windows` share |
 | §12.4 symlink targets | Over NFS, create links to `../a/b` and `/srv/x`; query each over SMB. Assert `..\a\b` with `SYMLINK_FLAG_RELATIVE` set and `\srv\x` with it clear. Set a relative target `c\d` over SMB; assert NFS `READLINK` returns `c/d`. | targets shown with `/`, or every target marked absolute |
 | §13 rename | smbtorture `smb2.rename`, `smb2.sharemode`; rename a directory with a file below it open over NFS. | |
 | §14 Witness | **(cluster)** smbtorture `rpc.witness`; drain a node and assert a registered client receives `CLIENT_MOVE` and moves. | |

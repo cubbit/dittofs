@@ -92,8 +92,8 @@ and E5 to E8, for sign-in (§3.2).
 - **A5. RFC 20 §4.3, §7.2 and §9's A5, RFC 17 §3.1: sign-in, principal lookups and session
   setup's client record are outside the one-call rule.** RFC 20 §4.3 leaves out the `Principals`
   calls where a request needs them (`SignIn` in `SESSION_SETUP`, `Find` in a request carrying a
-  SID, a principal's name or a security descriptor) and session setup's client-record calls
-  (`Connect`, `AddSession`, the
+  SID, a principal's name or a security descriptor) and the client-record calls of
+  `SESSION_SETUP` and NFSv4.1's `CREATE_SESSION` (`Connect`, `AddSession`, SMB's
   `Disconnect` a `PreviousSessionId` runs as the session registry's cleanup, and the `Disconnect`
   with `Last` a `Connect`'s decision sends), and a `Disconnect` with `Last` repeated at a newer
   `Gen`, in any handler. §7.2's record keeps them, with the calls §4.3 already exempts, and its
@@ -120,7 +120,10 @@ and E5 to E8, for sign-in (§3.2).
   as RFC 22 Appendix B's code points, at a create, a link, a rename's target and every lookup after
   `.` and `..` are resolved, so an NFS client lists that spelling, finds the entry by either and
   gets `ErrExist` creating one beside the other; a device name stays refused, and from any other
-  protocol a reserved character stays refused. A `posix` share is unchanged and makes no promise
+  protocol a reserved character stays refused. No migration: v2 starts from a fresh store, and
+  v1's rule refused these names; a name a Mac stored with the code points is reachable from NFS
+  by that spelling, by design. RFC 21 §7.3 says what an NFS client lists. A `posix` share is
+  unchanged and makes no promise
   across protocols. T2.4 (the service's half), T8.1; plan gaps 27 and 28.
 
 ## 1. Introduction
@@ -539,8 +542,8 @@ holds its S4 and its epic 7.
   waits for no sign-in but for T6.1's guest flag (plan gap 19), and its signed one (S4b) for RFC
   18's plan's S2 (S6a). E9 needs E7's `CREATE` and E6's `TREE_CONNECT`, which tracks C and B finish
   well before. At 70 man-days this is the longest track and the workload's critical path.
-- **Track B: E2's T2.4, E4 but T4.3, E6's T6.1 to T6.4, T4.3, T6.5, E12, E14, and T2.5 after
-  S2b.** The service's halves of the amendments, then
+- **Track B: E2's T2.4, E4 but T4.3, E6's T6.1 to T6.4, T4.3, T6.5, E12, E14, and T2.5 as soon
+  as S2b lands.** The service's halves of the amendments, then
   authentication, then trees and the RPC services, then security descriptors, then the wire tests.
   T2.4 comes first, beside E3: it gates only T6.1, T8.1, T8.5 and the rows of plan gaps 23 and 25,
   and ends at S2 + 3.5, before track C reaches E8 at S2 + 21; T2.5, plan gaps 23 and 25's
@@ -553,8 +556,9 @@ holds its S4 and its epic 7.
   in-process rows (T16.1, T16.2) as S5 and their epics allow.
 - **Track C: E7, E8, E13, E11.** The data path, then file information and names, then control codes,
   then locks and notification, all on the open E7 resolves. E13 goes before E11 because E11 waits
-  partly on E9 (track A, about man-day 57) and E13, with Previous Versions parked (§6.5), on
-  nothing outside the track: E11 then starts about man-day 52 instead of 43. Within E8,
+  partly on E9 (track A, about man-day 57 of the tracks, which start at S2) and E13, with
+  Previous Versions parked (§6.5), on nothing outside the track: E11 then starts about man-day
+  52 of the tracks instead of 43. Within E8,
   `QUERY_INFO` and `SET_INFO`, the end of file included, come before directories, reparse points
   and streams. At 66 man-days.
 - **The team.** E1 and E2 but T2.4 and T2.5 before the tracks, which start at S2 without them; E15
@@ -740,7 +744,12 @@ sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`).
   every name it looks up or stores (A7), tested on `memory.New` as RFC 7's §3.8 names row says:
   the listing shows the spelling, both spellings find the one entry, a create of one beside the
   other is `ErrExist`, the same name created by an SMB call is `ErrInvalid`, and a `..` lookup from
-  NFS finds the parent, since `..` is resolved before the spelling; `Root`'s `MaximalAccess`
+  NFS finds the parent, since `..` is resolved before the spelling. The spelling is done in
+  `internal/vfs`, before the store's `entity.ValidateName` (`pkg/metadata/entity/names.go`,
+  called from `kvstore/namespace.go`), which takes no protocol and never rewrites a name; the
+  device check runs on the NFS name before the spelling, since `reservedDevice` cuts at the first
+  `.` and `CON` U+F029 would pass it, and gains RFC 7 §3.8's added names; the `NamesWindows`
+  comment and `names_test.go` change with it. `Root`'s `MaximalAccess`
   computed for `ForOpen(false)` (RFC 17 §3.0); open state's `CheckChange` refusing a rename
   through a named stream's open (RFC 14 §9.4). Tests: a privileged admin's
   `Root` over SMB; on `memory.New`, the refusals A3 leaves to the service, a maximal open refused
@@ -756,8 +765,8 @@ sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`).
   looked up (RFC 17 §5.4). Tests: a
   caching grant asked on a directory granted none; an open naming a stream the file lacks never
   answered with the base file; a `SetAttr` setting `DeleteOnClose` through a named stream's open
-  refused `ErrInvalid`, the base file kept. `Rename`'s own refusal through a stream's open is then
-  testable: RFC 22 §18's §12.1 row in T8.8 is its test.
+  refused `ErrInvalid`, the base file kept; a `Rename` through a named stream's open refused
+  `ErrInvalid` on `memory.New`, before T8.8's wire row.
 
 ### Epic 3 - Negotiation and the connection's stages
 
@@ -977,7 +986,9 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
   T2.5's field as plan gap 25 settles; a stream's delete refused before the call, from the request
   alone (§12.1); the reply's `MaximalAccess` and `QFid`; §16.5's read-only narrowing
   (`ErrReadOnly`, T3.8's row); §18's generic-rights and delete-through-the-parent rows on
-  `memory.New`. E7 owns the dispatch from the `CREATE`, `READ` and `WRITE` rows to a pipe on `IPC$`
+  `memory.New`; while T13.4 is parked, the `TWrp` context decoded into `OpenRequest.Snapshot`, so
+  such an open fails closed (`internal/vfs/opens.go` refuses a snapshot open) rather than reaching
+  the live file. E7 owns the dispatch from the `CREATE`, `READ` and `WRITE` rows to a pipe on `IPC$`
   or a file; E6 supplies the pipe endpoints (T6.3).
 - T7.6 `READ` and `WRITE`: payloads as slices of pooled buffers, replies gathered; stable from
   `SMB2_WRITEFLAG_WRITE_THROUGH` or the open's `FILE_WRITE_THROUGH`; persistent and continuously
@@ -1003,9 +1014,11 @@ Appendix F's reparse codes; RFC 20 §4.9's `Fit`, §6.10's `QUERY_INFO` gate.
   `windows` shares, hidden names, unpaired surrogates, forbidden characters and device names
   refused on create and rename; on `memory.New`, a name with a reserved character that a call over
   NFS made on a `windows` share shown over SMB in its private-use spelling (A7); a component
-  split at its first `:` before §12.3's checks, which apply to each part (`CON:s` and `a:s*t`
-  refused, a stream name of 300 characters refused); a trailing space or period sent over SMB
-  stored on a `posix` share and refused on a `windows` one.
+  split into base, stream and type before §12.3's checks, which apply to the base and the stream
+  (`a:s:$DATA`, `a:s:$data` and a stream named `CON` pass; `CON:s` and `a:s*t` refused, a stream
+  name of 300 characters refused); a trailing space or period sent over SMB stored on a `posix`
+  share and refused on a `windows` one; `CONIN$` and `CON .txt` refused; on a `posix` share,
+  U+F029 U+F029, which converts back to `..`, refused.
 - T8.2 Information-class codecs (Appendix E), with the `QUERY_INFO` 0-allocation gate.
 - T8.3 `QUERY_INFO`, file and file-system classes: §16.3's attribute bits and times, allocation from
   `Charged`, derived file IDs never the `FileID`, the volume serial, `NTFS` and Appendix E.2's
@@ -1270,7 +1283,9 @@ SMB rows.
   the kernel client and turns encryption off on the adapter (its line 161), so the step drives the
   scripted client against each target's port directly, with the target's encryption allowed for
   the step, and score.py compares the two targets as it does the other steps; a run at a credit
-  target of 512 with 8 MiB `READ` and `WRITE`, the figures RFC 22 §3.3's `ponytail:` rests on. A
+  target of 512 with 8 MiB `READ` and `WRITE`, and one of many connections at full credits
+  against the hold pool, reading `adapter_hold_refusals_total`, the figures and the ceiling RFC
+  22 §3.3's `ponytail:` rests on. A
   night of one repeat takes about 1 h 30 min of `perf-night`'s 3 h, measured without this step,
   so the step is held to 60 minutes across both targets, each run's length set to fit, and the
   night still ends inside `STOP_AFTER`'s 2 h 55 min; the profile-container soak is a cell of its
@@ -1287,8 +1302,9 @@ SMB rows.
 
 Each is a finding for an RFC, raised on [#3615](https://github.com/cubbit/dittofs/issues/3615)
 for a pull request to the RFC named. The exceptions are the amendments in this pull request: A1
-settles gap 3's first-release half and gap 8's wording, A2 settles gap 14, A7 settles gap 27 and
-gap 28's half on a `windows` share. A gap the RFCs have since
+settles gap 3's first-release half and gap 8's wording, A2 settles gap 14, A6 settles who
+refuses a stream's rename, which gap 25 asked, and A7 settles gap 27 and gap 28's half on a
+`windows` share. A gap the RFCs have since
 settled keeps its number, with what settled it.
 
 1. **How `core` learns what SMB holds, and for how long** (RFC 20 §4.6, §4.7; RFC 22 §16.5).
@@ -1408,14 +1424,16 @@ settled keeps its number, with what settled it.
     but `XattrMode` is `Create`, `Replace` or `Either`, with no folding. Folded in the adapter it
     is a read, a decision and a set, a race an NFS client can observe, and two calls when the
     stored case differs. Proposed: a mode that matches without case, so the service decides in
-    one call. Epic 8.
+    one call, under the share's fold, the set replacing the one stored entry that fold matches.
+    Epic 8.
 21. **Lease-reconnect name matching** (RFC 22 §6.4; RFC 17 §3.0's `OpenRequest`). `pkg/vfs`'s
     `OpenRequest` leaves a lease reconnect's file name unmatched by the service, the adapter
     comparing the name its request carries with the open's before calling, but nothing gives the
     adapter the open's name: `OpenResult` carries none, and a reconnect comes after the
     connection, and its `FileId` table, are gone. RFC 22 §6.4's reconnect checks name no file
     name either. Proposed: the service matches the name with the rest of a reconnect's match,
-    since a comparison after the call would come after the open was reattached. Epic 10.
+    since a comparison after the call would come after the open was reattached, under the share's
+    fold as a lookup compares. Epic 10.
 22. **The durable grant** (RFC 14 §8.1; RFC 22 §6.4; RFC 17 §3.0's `OpenResult`). RFC 22 §6.4
     grants a durable handle only beside a batch oplock or a lease with handle caching, while
     RFC 14 §8.1 sets durability per open from its create request, and `OpenResult` does not
@@ -1442,8 +1460,8 @@ settled keeps its number, with what settled it.
     `OpenRequest` carries the stream's name, which T2.5 adds to `pkg/vfs` and `memory.New` once it
     settles (S2b). Who refuses a stream's rename is settled by A6: `renameAt` refuses it first,
     `ErrAccess` from the open's grant, else open state's `ErrInvalid` (RFC 17 §5.4, RFC 14 §9.4);
-    the same pull request writes that branch of RFC 17 §5.4's sketch, a comment until `OpenRequest`
-    names the stream, and fixes §3.0's `openLocked` sketch, which drops `Rights`' errors
+    the same pull request turns RFC 17 §5.4's comment for that branch into code once `OpenRequest`
+    names the stream, and fixes §5.3's `openLocked` sketch, which drops `Rights`' errors
     (`g, _ :=`, `max, _ :=`) where `internal/vfs/opens.go` returns `storeErr`, and calls `Rights`
     a third time where the code reuses the first result. Epics 2, 7 and 8.
 26. **An exact-name `QUERY_DIRECTORY` pattern** (RFC 22 Appendix G's `QUERY_DIRECTORY` row; §5.1,
@@ -1452,7 +1470,8 @@ settled keeps its number, with what settled it.
     review (Simone, 13 Nov): the row resolves such a pattern by `Lookup`, with RFC 19 §3.7's filter
     applied to its answer on an access-based enumeration share, and a property test holds that
     `Lookup` and the scan return the same entry, over names known to trouble SMB clients, a list
-    Simone offers for it. For the RFC pull request: Appendix G's row says so. Epic 8 (T8.6).
+    Simone offers for it; a pattern holding `<`, `>` or `"`, MS-FSCC's DOS wildcards, scans as
+    any wildcard does. For the RFC pull request: Appendix G's row says so. Epic 8 (T8.6).
 27. **A mid-name private-use space or dot** (RFC 22 §12.3, Appendix B). On a `posix` share a
     mid-name U+F028 or U+F029 is stored as the space or dot, and only a trailing one maps back, so
     `a` U+F028 `b` lists as `a b`, a name another client's file may hold. Settled by A7 (Simone,
@@ -1472,8 +1491,8 @@ settled keeps its number, with what settled it.
     and neither caps the adapter's memory per client. Settled in review (Simone, 13 Nov): one
     global cap on buffered notifications, about 5% of available memory, rather than one per
     client; past it the next request completes `STATUS_NOTIFY_ENUM_DIR`, as §8 already answers an
-    overflow. For the RFC pull request: §8 says so, the cap read against RFC 24's node budget.
-    Epic 11 (T11.4).
+    overflow, with no share per client under it. For the RFC pull request: §8 says so, the cap
+    read against RFC 24's node budget. Epic 11 (T11.4).
 30. **An unknown create context** (RFC 22 Appendix D, §6.1, §16; rule 8). Appendix D lists the known
     tags and never says what an unknown one gets, while rule 8's "named refusal, never a default"
     reads as a refusal; macOS sends `AAPL`, and MS-SMB2's product behaviour notes Windows servers
@@ -1619,6 +1638,9 @@ What this plan knowingly does not build. Each row cites the section that defers 
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
+| The rows that need a Windows runner: `clients/windows` and the profile-container run (§6.2, point 8) | no Windows runner serves `feat/storage-v2` | unowned: the test infrastructure's | a Windows runner joined to the test domain |
+| §6.3's namespace-move rows, RFC 22 §18's move rows (§6.2, point 10) | a move between installations needs RFC 27's move | RFC 27's plan, not written yet | RFC 27's move is built |
+| A `Find` in `SET_INFO` minting a principal record before `SetACL` is authorised (A5): a `Find` that does not mint, or a `decision:` naming the directory's size as the ceiling | RFC 18 §4.1 mints on `Find`, and A5 keeps the call where the request needs it | the RFC 18 plan (#4058) | before T12.4's `SetACL` row |
 | Witness, RFC 22 §14 (amendment A1; §6.2, point 13) | **(cluster)**: one node has no other node to move a client to | the cluster stage | a share served by more than one node |
 | `/durable-handles`, v1's listing of durable opens, which RFC 20's plan's ledger gives this plan (plan gap 13, §6.4) | RFC 23 defines no endpoint or record for it, and RFC 23's plan (#4050) builds none | unowned | RFC 23 adds an endpoint over RFC 14 §8.1's durable opens |
 | T13.4, Previous Versions, with §18's §15 rows (E13; §6.2, point 9) | `Snapshots` answers an empty list until RFC 12's store view, which #3119 leaves for later; kept in E13, it would stall track C on RFC 12 | the stage that builds RFC 12's store view, running T13.4 as written here | RFC 12's store view answers `Snapshots` |

@@ -846,8 +846,9 @@ it, so the adapters' one-call check reads it from one place; the calls
 RFC 20 §4.3 leaves outside the rule are true for it, and the check exempts
 them by the request's context.
 `Propose` is on the list because its record is volatile and nothing reads it
-but the confirm. The calls SMB's `SESSION_SETUP` makes outside the one-call rule are
-those RFC 20 §4.3 lists: the `Principals` calls and session setup's client-record
+but the confirm. The calls a request that sets up a session makes outside the
+one-call rule, SMB's `SESSION_SETUP` and NFSv4.1's `CREATE_SESSION`, are those
+RFC 20 §4.3 lists: the `Principals` calls and session setup's client-record
 calls. `Spell` is on it because an NFSv4 `GETATTR` asking `owner`
 and `owner_group` makes two `Spell` calls and no mutation; `Find` is not,
 since it may mint a directory principal. `Read` is on it although the store may advance access time;
