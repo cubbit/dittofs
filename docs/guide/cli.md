@@ -36,7 +36,6 @@ Flags:
 
 ```
       --config string   config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
-  -h, --help            help for dfs
 ```
 
 ### `dfs completion`
@@ -78,12 +77,6 @@ dfs completion powershell | Out-String | Invoke-Expression
 dfs completion powershell > dfs.ps1
 ```
 
-Flags:
-
-```
-  -h, --help   help for completion
-```
-
 Global flags:
 
 ```
@@ -103,12 +96,6 @@ edit      Open configuration in editor
 validate  Validate configuration file
 show      Display current configuration
 schema    Generate JSON schema for IDE/validation
-```
-
-Flags:
-
-```
-  -h, --help   help for config
 ```
 
 Global flags:
@@ -137,12 +124,6 @@ dfs config edit
 
 # Edit specific config file
 dfs config edit --config /etc/dittofs/config.yaml
-```
-
-Flags:
-
-```
-  -h, --help   help for edit
 ```
 
 Global flags:
@@ -182,7 +163,6 @@ dfs config schema --output config.schema.json
 Flags:
 
 ```
-  -h, --help            help for schema
   -o, --output string   Output file (default: stdout)
 ```
 
@@ -220,7 +200,6 @@ dfs config show --config /etc/dittofs/config.yaml
 Flags:
 
 ```
-  -h, --help            help for show
   -o, --output string   Output format (yaml|json) (default "yaml")
 ```
 
@@ -252,12 +231,6 @@ dfs config validate
 dfs config validate --config /etc/dittofs/config.yaml
 ```
 
-Flags:
-
-```
-  -h, --help   help for validate
-```
-
 Global flags:
 
 ```
@@ -282,12 +255,6 @@ dfs init [flags]
 dfs init
 ```
 
-Flags:
-
-```
-  -h, --help   help for init
-```
-
 Global flags:
 
 ```
@@ -310,12 +277,6 @@ dfs reset-admin [flags]
 ```bash
 # Reset the administrator of the installation the default configuration names
 dfs reset-admin
-```
-
-Flags:
-
-```
-  -h, --help   help for reset-admin
 ```
 
 Global flags:
@@ -350,12 +311,6 @@ DITTOFS_LOGGING_LEVEL=DEBUG dfs start
 dfs start --config /etc/dittofs/config.yaml
 ```
 
-Flags:
-
-```
-  -h, --help   help for start
-```
-
 Global flags:
 
 ```
@@ -388,7 +343,6 @@ dfs version --short
 Flags:
 
 ```
-  -h, --help    help for version
       --short   Show only version number
 ```
 
@@ -530,7 +484,6 @@ Flags:
       --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
       --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
       --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-  -h, --help                 help for dfsctl
       --no-color             Disable colored output
   -o, --output string        Output format (table|json|yaml) (default "table")
       --server string        Server URL (overrides stored credential)
@@ -578,12 +531,6 @@ dfsctl completion powershell | Out-String | Invoke-Expression
 dfsctl completion powershell > dfsctl.ps1
 ```
 
-Flags:
-
-```
-  -h, --help   help for completion
-```
-
 Global flags:
 
 ```
@@ -620,12 +567,6 @@ dfsctl context current
 
 # Remove a context that is no longer needed
 dfsctl context remove staging
-```
-
-Flags:
-
-```
-  -h, --help   help for context
 ```
 
 Global flags:
@@ -667,7 +608,6 @@ dfsctl context current --output json
 Flags:
 
 ```
-  -h, --help            help for current
   -o, --output string   Output format (table|json|yaml) (default "table")
 ```
 
@@ -704,12 +644,6 @@ dfsctl context list
 
 # List contexts as JSON for scripting
 dfsctl context list -o json
-```
-
-Flags:
-
-```
-  -h, --help   help for list
 ```
 
 Global flags:
@@ -752,7 +686,6 @@ Flags:
 
 ```
   -f, --force   Skip confirmation
-  -h, --help    help for remove
 ```
 
 Global flags:
@@ -791,12 +724,6 @@ dfsctl context rename default production
 dfsctl context rename dev local-dev
 ```
 
-Flags:
-
-```
-  -h, --help   help for rename
-```
-
 Global flags:
 
 ```
@@ -831,12 +758,6 @@ dfsctl context use production
 
 # Switch to a local development server context
 dfsctl context use local-dev
-```
-
-Flags:
-
-```
-  -h, --help   help for use
 ```
 
 Global flags:
@@ -887,12 +808,6 @@ dfsctl group remove-user editors alice
 dfsctl group remove editors
 ```
 
-Flags:
-
-```
-  -h, --help   help for group
-```
-
 Global flags:
 
 ```
@@ -930,12 +845,6 @@ dfsctl group add-user admins bob
 
 # Verify membership after adding
 dfsctl group get editors
-```
-
-Flags:
-
-```
-  -h, --help   help for add-user
 ```
 
 Global flags:
@@ -983,7 +892,6 @@ Flags:
 ```
       --description string   Group description
       --gid uint32           Group ID (auto-generated if not set)
-  -h, --help                 help for create
       --name string          Group name (required)
 ```
 
@@ -1035,7 +943,6 @@ Flags:
 ```
       --description string   Group description
       --gid uint32           Group ID
-  -h, --help                 help for edit
 ```
 
 Global flags:
@@ -1081,12 +988,6 @@ dfsctl group get editors -o json
 dfsctl group get editors -o yaml
 ```
 
-Flags:
-
-```
-  -h, --help   help for get
-```
-
 Global flags:
 
 ```
@@ -1124,12 +1025,6 @@ dfsctl group list -o json
 
 # Output as YAML
 dfsctl group list -o yaml
-```
-
-Flags:
-
-```
-  -h, --help   help for list
 ```
 
 Global flags:
@@ -1174,7 +1069,6 @@ Flags:
 
 ```
   -f, --force   Skip confirmation prompt
-  -h, --help    help for remove
 ```
 
 Global flags:
@@ -1216,12 +1110,6 @@ dfsctl group remove-user admins bob
 dfsctl group get editors
 ```
 
-Flags:
-
-```
-  -h, --help   help for remove-user
-```
-
 Global flags:
 
 ```
@@ -1255,12 +1143,6 @@ dfsctl identity-provider get ldap
 
 # Test an LDAP configuration without saving it
 dfsctl identity-provider test ldap --config '{"enabled":true,"url":"ldap://dc.corp.example:389","base_dn":"DC=corp,DC=example","bind_dn":"CN=svc,DC=corp,DC=example","bind_password":"s3cret","idmap":"rfc2307"}'
-```
-
-Flags:
-
-```
-  -h, --help   help for identity-provider
 ```
 
 Global flags:
@@ -1307,7 +1189,6 @@ Flags:
 
 ```
       --dc-address stringArray        Domain controller address (repeatable; pass once per address)
-  -h, --help                          help for configure
       --machine-account-enabled       Enable machine-account authentication for NETLOGON
       --machine-account-name string   Machine account name (e.g. MYHOST$)
       --machine-keytab string         Path to the machine-account keytab file
@@ -1350,12 +1231,6 @@ dfsctl identity-provider get ldap
 dfsctl identity-provider get kerberos -o json
 ```
 
-Flags:
-
-```
-  -h, --help   help for get
-```
-
 Global flags:
 
 ```
@@ -1390,12 +1265,6 @@ dfsctl identity-provider list
 
 # Get identity provider status as JSON
 dfsctl identity-provider list -o json
-```
-
-Flags:
-
-```
-  -h, --help   help for list
 ```
 
 Global flags:
@@ -1437,7 +1306,6 @@ Flags:
 
 ```
       --config string   configuration as a JSON string, or @file to read from a file (required)
-  -h, --help            help for set
 ```
 
 Global flags:
@@ -1480,7 +1348,6 @@ Flags:
 
 ```
       --config string   configuration to test as a JSON string, or @file (required)
-  -h, --help            help for test
 ```
 
 Global flags:
@@ -1531,12 +1398,6 @@ dfsctl idmap add --provider ad --principal 'CORP\alice' --username alice
 dfsctl idmap remove --principal alice@EXAMPLE.COM
 ```
 
-Flags:
-
-```
-  -h, --help   help for idmap
-```
-
 Global flags:
 
 ```
@@ -1584,7 +1445,6 @@ dfsctl idmap add --principal admin@CORP.COM --username admin
 Flags:
 
 ```
-  -h, --help               help for add
       --principal string   External identity (e.g., alice@EXAMPLE.COM)
       --provider string    Identity provider (e.g., kerberos, oidc, ad) (default "kerberos")
       --username string    DittoFS username
@@ -1636,7 +1496,6 @@ dfsctl idmap list -o yaml
 Flags:
 
 ```
-  -h, --help              help for list
       --provider string   Filter by identity provider (e.g., kerberos, oidc, ad)
 ```
 
@@ -1685,7 +1544,6 @@ Flags:
 
 ```
   -f, --force              Skip confirmation prompt
-  -h, --help               help for remove
       --principal string   External identity to remove
       --provider string    Identity provider (e.g., kerberos, oidc, ad) (default "kerberos")
 ```
@@ -1731,12 +1589,6 @@ dfsctl idmap sid list -o json
 dfsctl idmap sid remove S-1-5-21-111-222-333-1107
 ```
 
-Flags:
-
-```
-  -h, --help   help for sid
-```
-
 Global flags:
 
 ```
@@ -1776,12 +1628,6 @@ dfsctl idmap sid list -o json
 
 # Output as YAML
 dfsctl idmap sid list -o yaml
-```
-
-Flags:
-
-```
-  -h, --help   help for list
 ```
 
 Global flags:
@@ -1828,7 +1674,6 @@ Flags:
 
 ```
   -f, --force   Skip confirmation prompt
-  -h, --help    help for remove
 ```
 
 Global flags:
@@ -1882,7 +1727,6 @@ Flags:
       --client-cert string   Path to a PEM client certificate for mutual TLS
       --client-key string    Path to the PEM client private key for mutual TLS
   -c, --context string       Context name (defaults to current or auto-generated)
-  -h, --help                 help for login
   -p, --password string      Password
       --server string        Server URL (default "http://localhost:8080")
       --tls-skip-verify      Disable TLS certificate verification (insecure)
@@ -1921,12 +1765,6 @@ dfsctl logout
 
 # Logout then immediately log back in as a different user
 dfsctl logout && dfsctl login --username operator
-```
-
-Flags:
-
-```
-  -h, --help   help for logout
 ```
 
 Global flags:
@@ -1968,12 +1806,6 @@ dfsctl netlogon status
 dfsctl netlogon rotate
 ```
 
-Flags:
-
-```
-  -h, --help   help for netlogon
-```
-
 Global flags:
 
 ```
@@ -2011,12 +1843,6 @@ dfsctl netlogon rotate [flags]
 dfsctl netlogon rotate
 ```
 
-Flags:
-
-```
-  -h, --help   help for rotate
-```
-
 Global flags:
 
 ```
@@ -2052,12 +1878,6 @@ dfsctl netlogon status
 
 # Show status as JSON
 dfsctl netlogon status -o json
-```
-
-Flags:
-
-```
-  -h, --help   help for status
 ```
 
 Global flags:
@@ -2103,12 +1923,6 @@ dfsctl quota set /archive --scope group --id 2000 --limit-bytes 50GiB --soft-byt
 dfsctl quota remove /archive --scope user --id 1000
 ```
 
-Flags:
-
-```
-  -h, --help   help for quota
-```
-
 Global flags:
 
 ```
@@ -2149,12 +1963,6 @@ dfsctl quota list /archive -o json
 
 # List as YAML
 dfsctl quota list /archive -o yaml
-```
-
-Flags:
-
-```
-  -h, --help   help for list
 ```
 
 Global flags:
@@ -2202,7 +2010,6 @@ Flags:
 
 ```
   -f, --force          Skip confirmation prompt
-  -h, --help           help for remove
       --id int         Identity id (uid for user, gid for group). Required for user/group; omit for default-user. (default -1)
       --scope string   Quota scope (user|group|default-user) (required)
 ```
@@ -2254,7 +2061,6 @@ Flags:
 
 ```
       --grace-seconds int    Seconds usage may exceed a soft threshold before it is enforced as hard. 0 = grace disabled.
-  -h, --help                 help for set
       --id int               Identity id (uid for user, gid for group). Required for user/group; omit for default-user. (default -1)
       --limit-bytes string   Hard byte ceiling (e.g., '10GiB', '500MiB'). 0/empty = unlimited.
       --limit-files int      Hard inode (file-count) ceiling. 0 = unlimited.
@@ -2298,12 +2104,6 @@ dfsctl settings get logging.level
 dfsctl settings set logging.level DEBUG
 ```
 
-Flags:
-
-```
-  -h, --help   help for settings
-```
-
 Global flags:
 
 ```
@@ -2338,12 +2138,6 @@ dfsctl settings get logging.level
 
 # Get the setting as JSON for scripting
 dfsctl settings get logging.level -o json
-```
-
-Flags:
-
-```
-  -h, --help   help for get
 ```
 
 Global flags:
@@ -2382,12 +2176,6 @@ dfsctl settings list
 dfsctl settings list -o json
 ```
 
-Flags:
-
-```
-  -h, --help   help for list
-```
-
 Global flags:
 
 ```
@@ -2422,12 +2210,6 @@ dfsctl settings set logging.level DEBUG
 
 # Reset logging to the default level
 dfsctl settings set logging.level INFO
-```
-
-Flags:
-
-```
-  -h, --help   help for set
 ```
 
 Global flags:
@@ -2483,12 +2265,6 @@ dfsctl share remove /archive
 
 # Grant permission
 dfsctl share permission grant /archive --user alice --level read-write
-```
-
-Flags:
-
-```
-  -h, --help   help for share
 ```
 
 Global flags:
@@ -2563,7 +2339,6 @@ Flags:
       --description string              Share description
       --enable-trash                    Enable the per-share recycle bin so deletes move to #recycle instead of being permanent.
       --encrypt-data                    Require SMB3 encryption for this share
-  -h, --help                            help for create
       --journal-size string             Per-share journal size override (e.g., 10GiB, 500MiB)
       --metadata string                 Metadata store name (required)
       --name string                     Share name/path (required)
@@ -2623,12 +2398,6 @@ dfsctl share disable /archive
 
 # Emit the updated Share record as JSON
 dfsctl share disable /archive -o json
-```
-
-Flags:
-
-```
-  -h, --help   help for disable
 ```
 
 Global flags:
@@ -2709,7 +2478,6 @@ Flags:
       --description string                     Share description
       --enable-trash string                    Enable/disable the per-share recycle bin (true|false). Applied live; disabling auto-empties the bin.
       --encrypt-data string                    Require SMB3 encryption (true|false)
-  -h, --help                                   help for edit
       --journal-size string                    Per-share journal size override (e.g., 10GiB, 500MiB)
       --quota-bytes string                     Per-share byte quota (e.g., '10GiB'). 0 = remove quota
       --read-buffer-size string                Per-share read buffer size override (e.g., 2GiB, 256MiB)
@@ -2759,12 +2527,6 @@ dfsctl share enable /archive
 
 # Emit the updated Share record as JSON
 dfsctl share enable /archive -o json
-```
-
-Flags:
-
-```
-  -h, --help   help for enable
 ```
 
 Global flags:
@@ -2817,12 +2579,6 @@ dfsctl share list -o json
 dfsctl share list -o yaml
 ```
 
-Flags:
-
-```
-  -h, --help   help for list
-```
-
 Global flags:
 
 ```
@@ -2861,12 +2617,6 @@ dfsctl share list-mounts /export
 
 # Short alias
 dfsctl share mounts
-```
-
-Flags:
-
-```
-  -h, --help   help for list-mounts
 ```
 
 Global flags:
@@ -2931,9 +2681,8 @@ mkdir -p ~/mnt/dittofs && dfsctl share mount /export --protocol smb ~/mnt/dittof
 Flags:
 
 ```
-      --dir-mode string      Directory permissions for SMB mount (octal) (default "0755")
-      --file-mode string     File permissions for SMB mount (octal) (default "0755")
-  -h, --help                 help for mount
+      --dir-mode string      Directory permissions for SMB mount (octal; default 0755 on Linux, 0777 on macOS)
+      --file-mode string     File permissions for SMB mount (octal; default 0755 on Linux, 0777 on macOS)
       --nfs-version string   NFS protocol version for NFS mounts (3, 4, 4.0, 4.1, 4.2). v4 carries locking in-protocol; v3 locking needs the server UDP transport + portmapper (default "3")
   -P, --password string      Password for SMB mount (will prompt if not provided)
   -p, --protocol string      Protocol to use (nfs or smb) (required)
@@ -2978,12 +2727,6 @@ dfsctl share nfs-config set /export --netgroup office-network
 
 # Remove the netgroup association (allow all clients)
 dfsctl share nfs-config set /export --netgroup ""
-```
-
-Flags:
-
-```
-  -h, --help   help for nfs-config
 ```
 
 Global flags:
@@ -3038,7 +2781,6 @@ Flags:
 
 ```
       --allow-auth-sys string     Allow AUTH_SYS flavor (true|false)
-  -h, --help                      help for set
       --netgroup string           Netgroup name to associate (empty string clears the association)
       --require-kerberos string   Require Kerberos auth (true|false)
       --squash string             Squash mode (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest)
@@ -3082,12 +2824,6 @@ dfsctl share nfs-config show /export
 dfsctl share nfs-config show /export -o json
 ```
 
-Flags:
-
-```
-  -h, --help   help for show
-```
-
 Global flags:
 
 ```
@@ -3125,12 +2861,6 @@ dfsctl share permission revoke /archive --user alice
 
 # List permissions on a share
 dfsctl share permission list /archive
-```
-
-Flags:
-
-```
-  -h, --help   help for permission
 ```
 
 Global flags:
@@ -3197,7 +2927,6 @@ Flags:
 
 ```
       --group string   Group to grant permission to (local name, AD name, or SID)
-  -h, --help           help for grant
       --level string   Permission level (none|read|read-write|admin)
       --sid string     Raw Windows SID to grant permission to (e.g. S-1-5-21-...)
       --user string    User to grant permission to (local name, AD name, or SID)
@@ -3243,12 +2972,6 @@ dfsctl share permission list /archive -o json
 
 # Emit as YAML
 dfsctl share permission list /archive -o yaml
-```
-
-Flags:
-
-```
-  -h, --help   help for list
 ```
 
 Global flags:
@@ -3300,7 +3023,6 @@ Flags:
 
 ```
       --group string   Group to revoke permission from (local name, AD name, or SID)
-  -h, --help           help for revoke
       --sid string     Raw Windows SID to revoke permission from
       --user string    User to revoke permission from (local name, AD name, or SID)
 ```
@@ -3355,7 +3077,6 @@ Flags:
 
 ```
   -f, --force   Skip confirmation prompt
-  -h, --help    help for remove
 ```
 
 Global flags:
@@ -3401,12 +3122,6 @@ dfsctl share show /archive -o json
 dfsctl share show /archive -o yaml
 ```
 
-Flags:
-
-```
-  -h, --help   help for show
-```
-
 Global flags:
 
 ```
@@ -3448,12 +3163,6 @@ dfsctl share snapshot remove /archive snap-abc123
 # Restore a snapshot onto a disabled share
 dfsctl share disable /archive
 dfsctl share snapshot restore /archive snap-abc123
-```
-
-Flags:
-
-```
-  -h, --help   help for snapshot
 ```
 
 Global flags:
@@ -3503,7 +3212,6 @@ dfsctl share snapshot create /archive --retry snap-prev123
 Flags:
 
 ```
-  -h, --help           help for create
       --name string    Human-readable name for the snapshot
       --no-verify      Skip the remote-durability verify step
       --no-wait        Return immediately instead of waiting for completion
@@ -3553,7 +3261,6 @@ dfsctl share snapshot list /archive -o json
 Flags:
 
 ```
-  -h, --help                 help for list
       --name-prefix string   Filter by name prefix
       --no-relative          Print absolute timestamps instead of relative
       --state string         Filter by state (creating|ready|failed)
@@ -3596,8 +3303,7 @@ dfsctl share snapshot remove /archive snap-abc123 --yes
 Flags:
 
 ```
-  -h, --help   help for remove
-      --yes    Skip confirmation prompt
+      --yes   Skip confirmation prompt
 ```
 
 Global flags:
@@ -3647,7 +3353,6 @@ Flags:
 
 ```
       --force   Allow restoring a snapshot that is not remotely durable
-  -h, --help    help for restore
       --yes     Skip confirmation prompt
 ```
 
@@ -3694,12 +3399,6 @@ dfsctl share snapshot show /archive 3f2a1b4c-0000-0000-0000-000000000001
 dfsctl share snapshot show /archive snap-abc1 -o json
 ```
 
-Flags:
-
-```
-  -h, --help   help for show
-```
-
 Global flags:
 
 ```
@@ -3741,12 +3440,6 @@ dfsctl share snapshot-policy run /archive
 
 # Remove a share's policy
 dfsctl share snapshot-policy remove /archive
-```
-
-Flags:
-
-```
-  -h, --help   help for snapshot-policy
 ```
 
 Global flags:
@@ -3791,12 +3484,6 @@ dfsctl share snapshot-policy list -o json
 dfsctl share snapshot-policy list -o yaml
 ```
 
-Flags:
-
-```
-  -h, --help   help for list
-```
-
 Global flags:
 
 ```
@@ -3839,8 +3526,7 @@ dfsctl share snapshot-policy remove /archive --yes
 Flags:
 
 ```
-  -h, --help   help for remove
-      --yes    Skip confirmation prompt
+      --yes   Skip confirmation prompt
 ```
 
 Global flags:
@@ -3880,12 +3566,6 @@ dfsctl share snapshot-policy run /archive
 
 # Trigger and then confirm the snapshot was created
 dfsctl share snapshot-policy run /archive && dfsctl share snapshot list /archive --state ready
-```
-
-Flags:
-
-```
-  -h, --help   help for run
 ```
 
 Global flags:
@@ -3931,7 +3611,6 @@ Flags:
 
 ```
       --disabled             Create the policy disabled (no automatic snapshots)
-  -h, --help                 help for set
       --interval string      Snapshot cadence: Go duration or @hourly/@daily/@weekly (required)
       --keep-last int        Keep only the newest N scheduled snapshots (0 = unlimited)
       --name-prefix string   Name prefix for scheduler-created snapshots (default "scheduled")
@@ -3975,12 +3654,6 @@ dfsctl share snapshot-policy show /archive
 
 # Emit the policy record as JSON
 dfsctl share snapshot-policy show /archive -o json
-```
-
-Flags:
-
-```
-  -h, --help   help for show
 ```
 
 Global flags:
@@ -4029,7 +3702,6 @@ Flags:
 
 ```
   -f, --force   Force unmount even if busy
-  -h, --help    help for unmount
 ```
 
 Global flags:
@@ -4075,12 +3747,6 @@ dfsctl status -o json
 dfsctl status --server http://dfs.example.com:8080
 ```
 
-Flags:
-
-```
-  -h, --help   help for status
-```
-
 Global flags:
 
 ```
@@ -4120,12 +3786,6 @@ dfsctl store block list
 dfsctl store block add --name s3-store --type s3 --config '{"bucket":"my-bucket"}'
 ```
 
-Flags:
-
-```
-  -h, --help   help for store
-```
-
 Global flags:
 
 ```
@@ -4162,12 +3822,6 @@ dfsctl store block add --name s3-store --type s3 --bucket my-bucket --region us-
 
 # Add a memory block store (for testing)
 dfsctl store block add --name test-store --type memory
-```
-
-Flags:
-
-```
-  -h, --help   help for block
 ```
 
 Global flags:
@@ -4255,7 +3909,6 @@ Flags:
       --encryption-kmip-key string        KMIP client private key (kind=kmip)
       --encryption-kmip-key-uid string    KMIP managed symmetric key UID (kind=kmip)
       --endpoint string                   Custom S3 endpoint (for S3-compatible stores)
-  -h, --help                              help for add
       --name string                       Store name (required)
       --parallel-uploads int              Max parallel chunk uploads to this remote (0 = adaptive: auto-tune to saturate the uplink)
       --prefix string                     Key prefix within the bucket (for s3)
@@ -4312,12 +3965,6 @@ dfsctl store block audit-refcounts myshare
 dfsctl store block audit-refcounts myshare -o json
 ```
 
-Flags:
-
-```
-  -h, --help   help for audit-refcounts
-```
-
 Global flags:
 
 ```
@@ -4368,7 +4015,6 @@ Flags:
       --bucket string          S3 bucket name (for s3)
       --config string          Store configuration as JSON
       --endpoint string        Custom S3 endpoint
-  -h, --help                   help for edit
       --name string            Rename the block store (names must be unique)
       --parallel-uploads int   Max parallel chunk uploads to this remote (0 = adaptive: auto-tune to saturate the uplink)
       --region string          AWS region (for s3)
@@ -4452,7 +4098,6 @@ Flags:
 ```
       --dry-run                 Run mark + sweep enumeration but skip deletes; print candidate keys
       --grace-period duration   Override the sweep grace for this run (e.g. 30m, 0 to reap immediately); bypasses the server's 5m floor. Unset = server default
-  -h, --help                    help for gc
       --no-wait                 Start the job and print its id without waiting for completion
       --reconcile               Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep
 ```
@@ -4500,12 +4145,6 @@ dfsctl store block gc-status myshare -o json
 dfsctl store block gc-status myshare -o yaml
 ```
 
-Flags:
-
-```
-  -h, --help   help for gc-status
-```
-
 Global flags:
 
 ```
@@ -4546,7 +4185,6 @@ dfsctl store block health --name s3-store -o json
 Flags:
 
 ```
-  -h, --help          help for health
       --name string   Block store name (required)
 ```
 
@@ -4592,12 +4230,6 @@ dfsctl store block list -o json
 
 # List as YAML
 dfsctl store block list -o yaml
-```
-
-Flags:
-
-```
-  -h, --help   help for list
 ```
 
 Global flags:
@@ -4658,7 +4290,6 @@ Flags:
 
 ```
       --dry-run   Report the records that would be reclaimed without deleting anything
-  -h, --help      help for reclaim
 ```
 
 Global flags:
@@ -4716,12 +4347,6 @@ dfsctl store block reconcile
 dfsctl store block reconcile -o json
 ```
 
-Flags:
-
-```
-  -h, --help   help for reconcile
-```
-
 Global flags:
 
 ```
@@ -4768,7 +4393,6 @@ Flags:
 
 ```
   -f, --force   Skip confirmation prompt
-  -h, --help    help for remove
 ```
 
 Global flags:
@@ -4858,7 +4482,6 @@ dfsctl store check myshare --repair --yes
 Flags:
 
 ```
-  -h, --help            help for check
       --include-holes   list uncovered ranges that no file claims (legitimate for sparse files)
       --repair          list the findings the store can put back, and apply them once confirmed
       --yes             Skip confirmation prompt
@@ -4898,12 +4521,6 @@ dfsctl store metadata add --name persistent-meta --db-path /data/meta
 
 # Add an in-memory store
 dfsctl store metadata add --name scratch-meta --in-memory
-```
-
-Flags:
-
-```
-  -h, --help   help for metadata
 ```
 
 Global flags:
@@ -4956,7 +4573,6 @@ Flags:
 ```
       --config string    Store configuration as JSON (for advanced config)
       --db-path string   BadgerDB directory path
-  -h, --help             help for add
       --in-memory        Keep the store in RAM only (contents lost on restart)
       --name string      Store name (required)
       --type string      Store type (only badger is supported) (default "badger")
@@ -5007,7 +4623,6 @@ Flags:
 ```
       --config string    Store configuration as JSON
       --db-path string   BadgerDB directory path
-  -h, --help             help for edit
 ```
 
 Global flags:
@@ -5050,7 +4665,6 @@ dfsctl store metadata health --name fast-meta -o json
 Flags:
 
 ```
-  -h, --help          help for health
       --name string   Metadata store name (required)
 ```
 
@@ -5095,12 +4709,6 @@ dfsctl store metadata list -o json
 
 # List as YAML
 dfsctl store metadata list -o yaml
-```
-
-Flags:
-
-```
-  -h, --help   help for list
 ```
 
 Global flags:
@@ -5167,7 +4775,6 @@ Flags:
 
 ```
       --dry-run   Report which usage counters disagree with the file rows, and repair nothing
-  -h, --help      help for recompute-usage
 ```
 
 Global flags:
@@ -5215,7 +4822,6 @@ Flags:
 
 ```
   -f, --force   Skip confirmation prompt
-  -h, --help    help for remove
 ```
 
 Global flags:
@@ -5263,7 +4869,6 @@ dfsctl switch-user admin
 Flags:
 
 ```
-  -h, --help              help for switch-user
   -p, --password string   Password (will prompt if not provided)
 ```
 
@@ -5298,12 +4903,6 @@ runs automatically in the background and is also available on demand via
 ```bash
 # Wait for all in-flight uploads to finish (useful before benchmarking)
 dfsctl system drain-uploads
-```
-
-Flags:
-
-```
-  -h, --help   help for system
 ```
 
 Global flags:
@@ -5348,7 +4947,6 @@ dfsctl system drain-uploads -o json
 Flags:
 
 ```
-  -h, --help               help for drain-uploads
       --timeout duration   client-side wait for the drain (0 or negative uses the built-in default, 6m)
 ```
 
@@ -5388,12 +4986,6 @@ dfsctl trash restore myshare "#recycle/2026-06-01/report.txt" --to /archive/repo
 
 # Permanently empty the recycle bin
 dfsctl trash empty myshare --force
-```
-
-Flags:
-
-```
-  -h, --help   help for trash
 ```
 
 Global flags:
@@ -5436,7 +5028,6 @@ Flags:
 
 ```
       --force   Force empty, skipping server-side safety checks
-  -h, --help    help for empty
 ```
 
 Global flags:
@@ -5473,12 +5064,6 @@ dfsctl trash list myshare
 
 # Get the bin contents as JSON
 dfsctl trash list myshare -o json
-```
-
-Flags:
-
-```
-  -h, --help   help for list
 ```
 
 Global flags:
@@ -5520,7 +5105,6 @@ dfsctl trash restore myshare "#recycle/2026-06-01/report.txt" --to /archive/repo
 Flags:
 
 ```
-  -h, --help        help for restore
       --to string   Restore to this share-relative path instead of the original location
 ```
 
@@ -5558,12 +5142,6 @@ dfsctl trash status myshare
 
 # Get status as JSON for scripting
 dfsctl trash status myshare -o json
-```
-
-Flags:
-
-```
-  -h, --help   help for status
 ```
 
 Global flags:
@@ -5612,12 +5190,6 @@ dfsctl user password alice
 dfsctl user remove alice
 ```
 
-Flags:
-
-```
-  -h, --help   help for user
-```
-
 Global flags:
 
 ```
@@ -5660,7 +5232,6 @@ Flags:
 
 ```
   -c, --current string   Current password (prompts if not provided)
-  -h, --help             help for change-password
   -n, --new string       New password (prompts if not provided)
 ```
 
@@ -5717,7 +5288,6 @@ Flags:
       --enabled           Enable account (default true)
       --gid uint32        Unix primary group ID (auto-assigned if not specified)
       --groups string     Comma-separated list of groups
-  -h, --help              help for create
       --host-gid          Use current host user's GID (for NFS access)
       --host-uid          Use current host user's UID (for NFS access)
   -p, --password string   Password (prompts if not provided)
@@ -5780,7 +5350,6 @@ Flags:
       --enabled string        Enable/disable account (true|false)
       --gid uint32            Unix primary group ID
       --groups string         Comma-separated list of groups
-  -h, --help                  help for edit
       --role string           Role (user|admin)
       --uid uint32            Unix user ID
 ```
@@ -5828,12 +5397,6 @@ dfsctl user get alice -o json
 dfsctl user get alice -o yaml
 ```
 
-Flags:
-
-```
-  -h, --help   help for get
-```
-
 Global flags:
 
 ```
@@ -5872,12 +5435,6 @@ dfsctl user list -o json
 
 # Output as YAML
 dfsctl user list -o yaml
-```
-
-Flags:
-
-```
-  -h, --help   help for list
 ```
 
 Global flags:
@@ -5921,7 +5478,6 @@ dfsctl user password alice --password newsecret
 Flags:
 
 ```
-  -h, --help              help for password
   -p, --password string   New password (prompts if not provided)
 ```
 
@@ -5967,7 +5523,6 @@ Flags:
 
 ```
   -f, --force   Skip confirmation prompt
-  -h, --help    help for remove
 ```
 
 Global flags:
@@ -6010,7 +5565,6 @@ dfsctl version --short
 Flags:
 
 ```
-  -h, --help    help for version
       --short   Show only version number
 ```
 

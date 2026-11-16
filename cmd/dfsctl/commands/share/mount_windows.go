@@ -2,6 +2,5 @@
 
 package share
 
-func getDefaultModeForPlatform() (string, string) {
-	return "", "File permissions (not applicable on Windows)"
-}
+// defaultMode is empty: a Windows mount takes no file or directory mode.
+func defaultMode() string { return "" }

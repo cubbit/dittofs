@@ -61,10 +61,11 @@ func generate(out string) error {
 }
 
 // initHelpFlags adds the help flag to c and every descendant, as cobra does to
-// a command it executes, so the reference shows what --help shows and does not
-// depend on whether something else touched the tree first.
+// a command it executes, and hides it, so the reference lists no help row and
+// does not depend on whether something else touched the tree first.
 func initHelpFlags(c *cobra.Command) {
 	c.InitDefaultHelpFlag()
+	c.Flags().Lookup("help").Hidden = true
 	for _, k := range c.Commands() {
 		initHelpFlags(k)
 	}
