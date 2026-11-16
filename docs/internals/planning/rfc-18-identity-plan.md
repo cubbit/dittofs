@@ -147,7 +147,7 @@ that needs it.
     A15: the hash is put inside that write);
   - RFC 23 §3.3's rotation bullet no longer says the old version is deleted before its retention.
 - **A9. NTLM turned back on is refused while the NT-hash deletion runs** (RFC 18 §3.5 and §10's "NTLM
-  off" row; superseded by A16, and the rule's owner is RFC 23 §4.6, A17): the administrator retries
+  off" row; superseded by A16, and the rule's owner is RFC 23 §4.1, A17, A18): the administrator retries
   once it has finished, so no hash the deletion has not reached becomes valid again. This is the
   user's decision.
 - **A10. Fourth review's fixes** (RFC 18 §2.6, §3.1, §3.3, §3.4, §3.5, §4.6, §5.1, §7.3 and §10;
@@ -208,7 +208,7 @@ that needs it.
 - **A13. Sixth review's fixes** (RFC 18 §2.7, §3.5 and §10):
   - turning NTLM back on while the NT-hash deletion runs is refused by the API's settings route,
     since a section's validator reads no operation; A12's "at validation" is withdrawn (superseded
-    by A16, and the rule's owner is RFC 23 §4.6, A17);
+    by A16, and the rule's owner is RFC 23 §4.1, A17, A18);
   - the online join's administrator credential is held under the operation's ID before the write
     that creates the operation, so the join's first step never runs ahead of it;
   - "rogue domain controller" alters a real controller's server credential through a fault wrapper,
@@ -242,7 +242,7 @@ that needs it.
   - a rotation probes before every set and completes at a confirm whose number differs from the
     tag, reporting it;
   - a failed join keeps the one version it sent to a controller, as a failed rotation does, and
-    prunes the rest;
+    prunes the rest (superseded by A17: each version it sent, at most two);
   - turning NTLM on is refused until a deletion has completed since the last turn-off, and setting
     it off again starts a new one;
   - an offline join rotates twice, so the handed-over password is not the controller's previous one;
@@ -280,9 +280,17 @@ that needs it.
   - a rename takes a held name only on a definite answer about its holder, and one answer's renames
     raise the principals generation once;
   - RFC 18 §3.5 cites RFC 23 §4.6 as the one owner of the refusal of NTLM turned back on and its
-    stored state;
+    stored state (§4.1 since A18);
   - the plan: the Samba fixture's parts each counted once (E5's Kerberos part, E6's TLS part, E7's
     join part), and the keytab's and machine password's revocation report made with their prunes.
+- **A18. Eleventh review's fixes** (RFC 18 §3.5, §4.2 and §10):
+  - RFC 18 §3.5, epic 2 and O5 cite RFC 23 §4.1, where #4050 defines `Installation.NTLMOff` and the
+    refusal of NTLM turned back on; its §4.6 only refers back;
+  - the offline join's "plus two" is read on the pinned controller, and the guarantee is that
+    controller's: another one still accepts the handed-over password until the sets replicate;
+  - an operator's `krb` link takes the directory's SID from a fresh answer only, as a rename does;
+  - O3 records the tree kept across a guest or anonymous re-authentication, RFC 22's to close; O5
+    closes what #4050 now names; O9 records which `identity.directory` row is kept.
 
 ## 1. Introduction
 
@@ -532,7 +540,7 @@ proof"; the NFS halves of "disable takes effect" and "no file spelling"; and `Fu
 | E2 | Principals and accounts | the `Minter` on the store's ID counters, well-known principals with root's fixed ID, the `Machine` kind, the installation's domain SID, names, `Spell` and `Find`, `NewHashes` with two secrets, `APISignIn`, NT-hash deletion | 8 | 13 | C | E6; partly E3, E4, E5; RFC 23's plan's E5 |
 | E3 | Resolution | `admit`'s resolver moved into identity and completed: map, squash, groups, grant, flags; the `State`; the proof key and admission's caller cache | 7 | 12.5 | A | E7, E8; partly E5, E6 |
 | E4 | Local NTLMv2 sign-in | `SignIn` for NTLMv2 against a local NT hash, the MIC, key exchange, the throttle, anonymous sessions, re-authentication | 6 | 8 | B | E5; partly E7 |
-| E5 | Kerberos and the PAC | imported keytab through `Apply`, AES only, AP-REQ, the replay cache, PAC verification and binding, test and captured PACs, a Samba-issued ticket, machine principals, the Samba fixture rework | 10 | 21.5 | B | E8; partly E7 |
+| E5 | Kerberos and the PAC | imported keytab through `Apply`, AES only, AP-REQ, the replay cache, PAC verification and binding, test and captured PACs, a Samba-issued ticket, machine principals, the Samba fixture's Kerberos part | 10 | 21.5 | B | E8; partly E7 |
 | E6 | The directory | the LDAP provider lifted, paging, `tokenGroups`, the directory cache with stale grace, directory mints, the directory's domain SID, the `identity.directory` section, the in-memory directory and its suite | 8 | 22 | C | E8; partly E7 |
 | E7 | NETLOGON and the machine account | the secure channel moved and hardened, pass-through, online and offline join, the derived keytab, rotation, identity's runner kinds, status, the in-memory domain controller | 13 | 32 | A | E8 |
 | E8 | Integration | identity composed into the node, its `State` from reconcile, `identity.*` validators, the rows several epics meet in | 5 | 10.5 | team | E9 |
@@ -541,7 +549,7 @@ proof"; the NFS halves of "disable takes effect" and "no file spelling"; and `Fu
 
 **Plan estimate: 63 subtasks, 125.5 man-days, not counting epic 9.**
 
-The skill's estimate for RFC 18's 2,503 lines, with A1 to A17, is 6 middle epics (`round(2503 / 400)`),
+The skill's estimate for RFC 18's 2,516 lines, with A1 to A18, is 6 middle epics (`round(2516 / 400)`),
 as this plan has. Active Directory's two halves, the directory and NETLOGON, share no state: NETLOGON
 calls the directory's `Find`, its test call and its domain SID, and splitting them keeps Track A busy
 after resolution.
@@ -1178,8 +1186,8 @@ password and NT hash are derived, sealed and checked.
   the `identity.ntlm` condition refuses stores no NT hash (RFC 18 §3.5); and
   a password set's pruning of the previous NT hash version through #4059's `Prune`. The refusal of
   `identity.ntlm` turned on before a deletion has completed, and the state it reads, are RFC 23
-  §4.6's, the rule's one owner, which #4050's epic 4 builds and its epic 7 tests (RFC 18 §3.5,
-  A17); this epic's deletion reports its completion as that state needs.
+  §4.1's, the rule's one owner, which #4050's epic 4 builds and its epic 7 tests (RFC 18 §3.5,
+  A17, A18); this epic's deletion reports its completion as that state needs.
 - `identity.ntlm` and `identity.netbios_name` declared, the first epic that reads them: the deletion
   reads the one, the `qualified` spelling (RFC 18 §4.6) the other.
 - A local name holding `@` refused (RFC 18 §4.6).
@@ -1534,6 +1542,11 @@ This epic waits for an SMB adapter serving through the node (S3).
     `OpenPolicy`, `LookupSids` and `OpenPolicy3` (opnums 6, 15, 130, §5.2), which `develop` serves
     for `smbcacls` and Windows 11.
 
+  - a tree kept across a guest or anonymous re-authentication: on a share whose `MinProof` is
+    `None` and whose guest access is off, its new opens are decided for `Anonymous`, so everyone
+    grants reach them (RFC 18 §3.6, RFC 22 §4.1's decision). Closing it means dropping such trees
+    at a guest re-authentication, an RFC 22 change (§6.1).
+
   Settled by the RFCs, and raised on #3911 only for its plan to confirm: the `mechListMIC` is
   `gss`'s (RFC 20 §4.4), and an anonymous session holds no key (RFC 18 §3.6, RFC 22 §4.1).
 - **O4. Settled:** RFC 23's plan (#4050) deletes `pkg/identity` whole in its epic 1 (its §1.1
@@ -1548,15 +1561,18 @@ This epic waits for an SMB adapter serving through the node (S3).
     offline join's write sealing the password with `secrets.Meta{HandedOver: true}` (RFC 18 §3.5),
     as #4050's epic 4 does;
   - `identity.nt-hash-delete`, the `OpKind` NTLM-off's deletion runs as (D8), and the refusal of
-    `identity.ntlm` turned on before one has completed, which #4050 now names in its RFC 23 §4.1
-    and §4.6 and its plan's epics 4 and 7; RFC 23 §4.6 is that rule's one owner, with its stored
-    state, and RFC 18 §3.5 cites it (A17);
-  - the join's state, stored on the `Installation` record's `Join` (RFC 16 §2.3, A17), which
-    #4050's RFC 23 §3.5 still calls "the installation's status"; the secure channel's health a
-    node condition (RFC 23 §2.4);
-  - the edit of a user's `krb` spelling storing the directory SID the link is made for, asked of
-    the directory when written and refused when it cannot answer (RFC 18 §4.2, A17), which #4050
-    does not yet name;
+    `identity.ntlm` turned on before one has completed, which #4050 names in RFC 23 §4.1 and its
+    plan's epics 4 and 7; RFC 23 §4.1 is that rule's one owner, with `Installation.NTLMOff`, and
+    RFC 18 §3.5 cites it (A17, A18);
+    - RFC 23 §4.1 says only that the settings route enforces the rule, while RFC 18 §3.5 relies on
+      every write path it guards. RFC 13 §2.4's "as the API would" covers a provisioning apply, but
+      RFC 23 §4.1 should name the provisioning apply and a restore beside the settings route; a
+      follow-up to RFC 23;
+  - closed by #4050: the join's state stored on the `Installation` record's `Join` (RFC 16 §2.3,
+    A17), which RFC 23 §3.5 now names, the secure channel's health a node condition (RFC 23 §2.4);
+  - closed by #4050: the edit of a user's `krb` spelling storing the directory SID the link is made
+    for, asked of the directory when written and refused when it cannot answer (RFC 18 §4.2, A17),
+    which RFC 23 §3.5 now states;
   - a grant by name or SID as two calls, `resolve-principal`, which mints the principal in its own
     transaction, then `PUT /shares/{id}/grants/{principal}` by ID (RFC 23 §3.5, §4.3).
 
@@ -1593,6 +1609,11 @@ This epic waits for an SMB adapter serving through the node (S3).
   - a read of every version in force, each opened with its number and `Meta`, as `secrets.Version`,
     for identity's `State` (RFC 18 §2.6), where `Resolve` returns only the current one;
   - no in-place correction of a sealed version: a key version number is never changed (A10).
+
+  RFC 13 Appendix B's `identity.directory` row: this pull request and #4059 edited the same line,
+  and this pull request's row, with `require_pac` and the lower-case realm refusal for an `ad`
+  record only, is the one kept. #4059 merged it in that form, so `develop`'s row and this branch's
+  are identical and this pull request no longer changes it.
 - **O10. The upstream epics have no owner yet.** RFC 23's plan's epic 1 (S0, 16.5 man-days), its
   epic 2 (the principals generation), its epic 3 (the runner, 23 man-days) and its epic 4 (the
   domain's routes), and #4059's epics 3 and 4 (the write check, sealing) block this plan's epics as
@@ -1613,6 +1634,7 @@ What the plan knowingly does not build. Each row cites the section that defers i
 | --- | --- | --- | --- |
 | The CHALLENGE's AV pairs, `MsvAvNbComputerName` from `identity.netbios_name`, and the seam that hands `gss` those names | O3: an RFC 22 amendment | RFC 22 plan (#3911) | its session epic |
 | `lsarpc`'s `OpenPolicy`, `LookupSids` and `OpenPolicy3` (opnums 6, 15, 130) | O3: RFC 22 §5.2 | RFC 22 plan (#3911) | its IPC$ epic |
+| Dropping a tree kept across a guest or anonymous re-authentication, whose new opens on a share with `MinProof` `None` and guest access off are decided for `Anonymous` | O3: an RFC 22 change, RFC 22 §4.1's decision keeps the trees | RFC 22 plan (#3911) | its session epic |
 | RFC 20 §4.5's adapter rows for `ErrLogonFailure` and `ErrUnknownPrincipal`, which `Spell` and `Find` also return | O3, E1: SMB's in RFC 22's table, NFS's in RFC 21's | RFC 22 plan (#3911); RFC 21 plan | each plan's error-mapping epic |
 | `AUTH_SYS` and `AUTH_NONE` (RFC 18 §3.2) | NFS is v1.1 (header, O2) | RFC 21 plan | `post-v1`: RFC 21's plan starts |
 | uid and gid mapping and the mints a claimed uid triggers (RFC 18 §4.3, §5.5); until then a `Claimed` proof answers `ErrAccess` | header, O2, §4.3's `ponytail:` | RFC 21 plan | `post-v1`: RFC 21's plan starts |

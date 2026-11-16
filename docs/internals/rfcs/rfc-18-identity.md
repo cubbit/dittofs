@@ -965,7 +965,7 @@ conditional write ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), so a
 write the condition refuses stores no NT hash. Turning NTLM on again **MUST** be refused while
 a turn-off's deletion has not completed: a deletion that stopped part way
 leaves hashes it never reached, which turning NTLM on would make valid again.
-[RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations) is the
+[RFC 23 §4.1](rfc-23-control-plane.md#4.1%20Shape) is the
 one owner of that rule: the state that records a completed deletion, every
 write path it guards, how the refusal answers and how an administrator
 finishes a deletion that stopped are its, and this RFC restates none of them.
@@ -1050,12 +1050,14 @@ account's key version number from its pinned controller when it verifies the
 handed-over password, and records it with that step. The second rotation's
 confirm **MUST** find the controller accepting that rotation's version and
 read exactly the recorded number plus two; anything else fails the join,
-naming the number read. A creator who sets a password of its own between the
+naming the number read. The number is the pinned controller's, and so is the
+guarantee: a controller the two sets have not yet replicated to still accepts
+the handed-over password until they do. A creator who sets a password of its own between the
 two rotations, over a channel the handed-over password still authenticates as
 the previous one, raises the number a third time, and would otherwise leave
 that password the controller's previous one, a mismatch the ordinary confirm
 below only reports. After the second set the handed-over password is neither
-of the two a controller accepts, so no later set by the creator can follow it.
+of the two the pinned controller accepts, nor any other once the sets replicate, so no later set by the creator can follow it.
 Those rotations are the join's own last steps, not other operations: the join
 is done only once the second has confirmed its password, so a crash between
 storing and rotating resumes the rotations. A version marked `HandedOver` derives no
@@ -1311,7 +1313,8 @@ record whose own SID no PAC carries. A machine's mint stores its ticket's PAC
 user SID, or none when the ticket carried no PAC. An operator's link to a user
 or to root stores, for a name in the directory's realm, the SID the directory
 holds under the name's user part, asked of the directory (§5.1) when the link
-is written: a directory that cannot answer refuses the write `ErrUnavailable`,
+is written and taken from a fresh answer only, never one served stale (§5.3),
+as a rename's is: a directory that cannot answer refuses the write `ErrUnavailable`,
 and one that holds no such entry refuses it naming the name. A link in any
 other realm stores none. Moving a machine's `krb` spelling to a user (§2.4)
 keeps its SID. So the link follows the directory account, not its name: the
@@ -2355,7 +2358,7 @@ RFC 16's conformance suite's, not repeated here.
 | NetBIOS name and domain | 1 | A settings change giving `identity.netbios_name` the directory record's NetBIOS domain, and a directory record whose NetBIOS domain is `identity.netbios_name`, in another case: each refused at validation, naming the other. | one domain routing to both sources |
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
 | `ManageGIDs` | 2 | A user in 20 store groups calls over `AUTH_SYS`: a file whose ACL grants only the 20th group is granted. | groups capped at the credential's 16 |
-| NTLM off | 2 | Make a cache hit on a local NTLM session and on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: its write refused, and no `Secret` of kind nt-hash stored. While the deletion runs, after it fails part way through a fault wrapper around the store, and after it is cancelled, turning `identity.ntlm` on is refused as RFC 23 §4.6 rules; once a deletion has completed, it is accepted. | an NTLM context outliving the setting; a stray hash; hashes a failed deletion never reached made valid again |
+| NTLM off | 2 | Make a cache hit on a local NTLM session and on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: its write refused, and no `Secret` of kind nt-hash stored. While the deletion runs, after it fails part way through a fault wrapper around the store, and after it is cancelled, turning `identity.ntlm` on is refused as RFC 23 §4.1 rules; once a deletion has completed, it is accepted. | an NTLM context outliving the setting; a stray hash; hashes a failed deletion never reached made valid again |
 | NTLM MIC | 1 | An AUTHENTICATE with a corrupted MIC, and one with the MIC zeroed while `MsvAvFlags` marks it present: both `ErrLogonFailure`, locally and through pass-through. A pass-through reply whose `UserSessionKey` is all zero, or whose `LogonDomainID` is another domain's: `ErrLogonFailure`; with the directory's domain SID unread: `ErrUnavailable`. | the drop-the-MIC relay |
 | NTLM domain | 1 | A standalone installation's CHALLENGE advertises its own NetBIOS name; an AUTHENTICATE naming it in another case: verified locally. With pass-through configured, `alice@corp.example.com` with an empty domain, and `corp.example.com\alice`: both passed through. A domain matching nothing, and an installation name holding `K` sent with the Kelvin sign U+212A in its place: `ErrLogonFailure`, outcome `unknown_domain`. | every standalone login refused; UPN and DNS-domain sign-ins refused as a wrong password |
 | no local password for a directory user | 1 | `NewHashes` for a directory principal: `ErrInvalid`, nothing stored; a local NTLM sign-in naming one: refused. | two passwords for one principal |
