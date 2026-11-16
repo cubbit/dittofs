@@ -1,5 +1,5 @@
 // Package api is the node's HTTP surface: the API listener, which answers the
-// health probes, and the metrics listener.
+// health probes and the management API, and the metrics listener.
 package api
 
 import (
@@ -13,7 +13,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node/api/auth"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // Deps is what the API serves from.
@@ -30,6 +35,19 @@ type Deps struct {
 	Metrics *metrics.Registry
 	// Logger is where a listener that fails while serving is logged.
 	Logger *slog.Logger
+	// Authenticate answers who a request is; nil, every route but the
+	// public ones answers 401.
+	Authenticate func(*http.Request) (auth.Caller, error)
+	// Store is the metadata store's control plane; nil, a write answers 503.
+	Store controlPlane
+	// Tracer opens each call's span; nil, the no-op tracer.
+	Tracer trace.Tracer
+}
+
+// controlPlane is the metadata store's control plane as the API reaches it:
+// every change through Write, which commits it with its records.
+type controlPlane interface {
+	Write(ctx context.Context, meta entity.WriteMeta, fn func(entity.ControlPlaneTx) error) error
 }
 
 // Server is the node's two listeners.
@@ -38,10 +56,49 @@ type Server struct {
 	api, met *http.Server
 	serving  sync.WaitGroup
 	stopped  atomic.Bool
+
+	tracer   trace.Tracer
+	requests *prometheus.CounterVec
+	seconds  *prometheus.HistogramVec
+	unmapped prometheus.Counter
 }
 
 // New returns the server over d, listening on nothing until Start.
-func New(d Deps) *Server {
+func New(d Deps) *Server { return newServer(d, routes) }
+
+// requestBuckets is the request bucket set, in seconds.
+var requestBuckets = []float64{100e-6, 250e-6, 500e-6, 1e-3, 2.5e-3, 5e-3, 10e-3, 25e-3, 50e-3, 100e-3, 250e-3, 500e-3, 1, 2.5, 5, 10, 30, 60}
+
+// newServer is New over the route table rows.
+func newServer(d Deps, rows []route) *Server {
+	s := &Server{
+		d:      d,
+		tracer: d.Tracer,
+		requests: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dittofs_api_requests_total",
+			Help: "API calls, by op and outcome: ok or the problem's code."}, []string{"op", "outcome"}),
+		seconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "dittofs_api_request_seconds",
+			Help: "How long API calls take, by op.", Buckets: requestBuckets}, []string{"op"}),
+		unmapped: prometheus.NewCounter(prometheus.CounterOpts{Name: "dittofs_api_unmapped_errors_total",
+			Help: "API errors answered 500 because the problem table names none of them; zero on a healthy node."}),
+	}
+	if s.tracer == nil {
+		s.tracer = noop.NewTracerProvider().Tracer("")
+	}
+	d.Metrics.Registry().MustRegister(s.requests, s.seconds, s.unmapped)
+
+	api := http.NewServeMux()
+	api.HandleFunc("/", d.health)
+	api.HandleFunc("/api", d.health) // not redirected to /api/
+	api.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { s.handle(w, r, nil) })
+	groups := map[string][]route{}
+	for _, rt := range rows {
+		key := rt.method + " " + rt.pattern
+		groups[key] = append(groups[key], rt)
+	}
+	for key, g := range groups {
+		api.Handle(key, s.group(g))
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", d.Metrics.Handler())
 	// decision: the metrics listener asks for no token, because a scraper
@@ -51,11 +108,9 @@ func New(d Deps) *Server {
 	// Overturned if those names are themselves sensitive in a deployment,
 	// and then by binding the address to a management network or by
 	// requiring a token.
-	return &Server{
-		d:   d,
-		api: &http.Server{Handler: http.HandlerFunc(d.health), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second},
-		met: &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second},
-	}
+	s.api = &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
+	s.met = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
+	return s
 }
 
 // Start opens the API and the metrics listeners and serves both, returning
@@ -94,7 +149,7 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 // health answers the two health probes, each with one word and no header but
-// its type and length, and every other path 404. A stalled watchdog makes the
+// its type and length, and every other path outside /api/ 404. A stalled watchdog makes the
 // node neither live nor ready, whatever its readiness word.
 func (d Deps) health(w http.ResponseWriter, r *http.Request) {
 	live := d.Live()
