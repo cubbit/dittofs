@@ -1025,7 +1025,7 @@ func TestEachFailedStartStepLeavesItBuilt(t *testing.T) {
 			clock := sim.NewTestClock(time.Unix(0, 0))
 			tab, err := openstate.New(openstate.Deps{Records: fx.Store, Clock: clock, Rand: rand.Reader})
 			s, err2 := New(Deps{Meta: fx.Store, Open: tab, Engine: contentOver(clock, fx.Store, live.ID)})
-			if err := errors.Join(err, err2, errOf(cp.PutShare(ctx, live, 0)), cp.DeleteShare(ctx, fx.Share.ID, entity.SnapshotsRefuse, 1)); err != nil {
+			if err := errors.Join(err, err2, errOf(kvstoretest.CreateShare(t.Context(), cp, live)), cp.DeleteShare(ctx, fx.Share.ID, entity.SnapshotsRefuse, 1)); err != nil {
 				t.Fatal(err)
 			}
 			if err := tab.Start(ctx, s, s.Admission); err != nil {

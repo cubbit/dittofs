@@ -147,7 +147,7 @@ func testDeleteRemovesMembershipsAndGrants(t *testing.T, kvo Opener) {
 	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 	must(t, errOf(cp.PutGroup(ctx, g, 0, entity.Alloc{})))
 	must(t, errOf(cp.PutGroup(ctx, outer, 0, entity.Alloc{})))
-	must(t, errOf(cp.PutShare(ctx, sh, 0)))
+	must(t, errOf(CreateShare(ctx, cp, sh)))
 	must(t, cp.AddMember(ctx, entity.Membership{Group: g.Principal, Member: u.Principal}))
 	must(t, cp.AddMember(ctx, entity.Membership{Group: outer.Principal, Member: g.Principal}))
 	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: outer.Principal, Access: entity.AccessRead}, 0)))
@@ -194,7 +194,7 @@ func testShares(t *testing.T, kvo Opener) {
 		return v.Version
 	}
 	home := share("Home", "/home")
-	must(t, errOf(cp.PutShare(ctx, home, 0)))
+	must(t, errOf(CreateShare(ctx, cp, home)))
 	if list() != 1 {
 		t.Errorf("ShareList after create = %d", list())
 	}
@@ -205,9 +205,9 @@ func testShares(t *testing.T, kvo Opener) {
 		"ancestor path":       share("top", "/srv"),
 	} {
 		if name == "ancestor path" {
-			must(t, errOf(cp.PutShare(ctx, share("deep", "/srv/a/b"), 0)))
+			must(t, errOf(CreateShare(ctx, cp, share("deep", "/srv/a/b"))))
 			v := list()
-			if _, err := cp.PutShare(ctx, sh, 0); !isExist(err) {
+			if _, err := CreateShare(ctx, cp, sh); !isExist(err) {
 				t.Errorf("%s: %v", name, err)
 			}
 			if list() != v {
@@ -215,15 +215,15 @@ func testShares(t *testing.T, kvo Opener) {
 			}
 			continue
 		}
-		if _, err := cp.PutShare(ctx, sh, 0); !isExist(err) {
+		if _, err := CreateShare(ctx, cp, sh); !isExist(err) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := cp.PutShare(ctx, share("deeper", "/srv/a/b/c"), 0); !isExist(err) {
+	if _, err := CreateShare(ctx, cp, share("deeper", "/srv/a/b/c")); !isExist(err) {
 		t.Errorf("below a share: %v", err)
 	}
 	// /homes is not below /home.
-	must(t, errOf(cp.PutShare(ctx, share("homes", "/homes"), 0)))
+	must(t, errOf(CreateShare(ctx, cp, share("homes", "/homes"))))
 
 	// Rename and re-path: the old name and path are free, ShareList moves.
 	v := list()
@@ -232,7 +232,7 @@ func testShares(t *testing.T, kvo Opener) {
 	if list() != v+1 {
 		t.Errorf("ShareList after rename = %d, want %d", list(), v+1)
 	}
-	must(t, errOf(cp.PutShare(ctx, share("home", "/home"), 0)))
+	must(t, errOf(CreateShare(ctx, cp, share("home", "/home"))))
 	// A put that changes nothing raises nothing.
 	v = list()
 	must(t, errOf(cp.PutShare(ctx, home, 2)))
@@ -260,7 +260,7 @@ func testSetShareState(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	sh := share("photos", "/photos")
-	must(t, errOf(cp.PutShare(ctx, sh, 0)))
+	must(t, errOf(CreateShare(ctx, cp, sh)))
 	v, _ := cp.ShareList(ctx)
 	must(t, cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced))
 	if err := cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced); !merrs.IsConflictError(err) {
@@ -287,7 +287,7 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	sh := share("photos", "/photos")
 	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 	must(t, errOf(cp.PutGroup(ctx, g, 0, entity.Alloc{})))
-	must(t, errOf(cp.PutShare(ctx, sh, 0)))
+	must(t, errOf(CreateShare(ctx, cp, sh)))
 	must(t, cp.AddMember(ctx, entity.Membership{Group: g.Principal, Member: u.Principal}))
 	listVersion := func() uint64 {
 		t.Helper()
@@ -370,7 +370,7 @@ func testShareReadsPolicyAndGrantsTogether(t *testing.T, kvo Opener) {
 			s, h := heldStore(t, b)
 			cp, ix := s.ControlPlane(), s.ShareIndex()
 			sh, u := share("photos", "/photos"), user("alice")
-			must(t, errOf(cp.PutShare(ctx, sh, 0)))
+			must(t, errOf(CreateShare(ctx, cp, sh)))
 			must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 			must(t, errOf(cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashAll}, 0)))
 			must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0)))
@@ -412,7 +412,7 @@ func testQuotas(t *testing.T, kvo Opener) {
 	sh := share("photos", "/photos")
 	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 	must(t, errOf(cp.PutGroup(ctx, g, 0, entity.Alloc{})))
-	must(t, errOf(cp.PutShare(ctx, sh, 0)))
+	must(t, errOf(CreateShare(ctx, cp, sh)))
 	uq := entity.Quota{Share: sh.ID, Principal: u.Principal, Hard: entity.Limit{Bytes: 10 << 30}, Soft: entity.Limit{Bytes: 8 << 30},
 		Grace: 7 * 24 * time.Hour, Advisory: entity.Limit{Files: 5000}}
 	pq := entity.Quota{Share: sh.ID, Project: 7, Hard: entity.Limit{Files: 1000}}
@@ -546,7 +546,7 @@ func testExportPolicy(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	sh := share("photos", "/photos")
-	must(t, errOf(cp.PutShare(ctx, sh, 0)))
+	must(t, errOf(CreateShare(ctx, cp, sh)))
 	pol := entity.ExportPolicy{
 		Share:   sh.ID,
 		Flavors: []entity.AuthFlavor{entity.FlavorSys},
@@ -643,8 +643,8 @@ func testShareBoundSettings(t *testing.T, kvo Opener) {
 	cp := s.ControlPlane()
 	ci := share("docs", "/docs")
 	ci.Fold = entity.FoldUpcase
-	must(t, errOf(cp.PutShare(ctx, ci, 0)))
-	must(t, errOf(cp.PutShare(ctx, share("src", "/src"), 0)))
+	must(t, errOf(CreateShare(ctx, cp, ci)))
+	must(t, errOf(CreateShare(ctx, cp, share("src", "/src"))))
 	got := all(t, cp.Shares(ctx))
 	if got[0].Fold != entity.FoldUpcase || got[0].Names != entity.NamesWindows || got[0].DigestKey == ([32]byte{}) {
 		t.Errorf("case-insensitive share: %v %v", got[0].Fold, got[0].Names)
@@ -677,8 +677,8 @@ func testShareTags(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	a, b := share("a", "/a"), share("b", "/b")
-	must(t, errOf(cp.PutShare(ctx, a, 0)))
-	must(t, errOf(cp.PutShare(ctx, b, 0)))
+	must(t, errOf(CreateShare(ctx, cp, a)))
+	must(t, errOf(CreateShare(ctx, cp, b)))
 	tags := func() map[entity.ShareID]uint32 {
 		m := map[entity.ShareID]uint32{}
 		for _, sh := range all(t, cp.Shares(ctx)) {
@@ -695,7 +695,7 @@ func testShareTags(t *testing.T, kvo Opener) {
 	must(t, errOf(cp.PutShare(ctx, a, 1)))
 	must(t, cp.DeleteShare(ctx, b.ID, entity.SnapshotsRefuse, 1))
 	c := share("c", "/c")
-	must(t, errOf(cp.PutShare(ctx, c, 0)))
+	must(t, errOf(CreateShare(ctx, cp, c)))
 	after := tags()
 	if after[a.ID] != before[a.ID] {
 		t.Errorf("a put changed the tag %d -> %d", before[a.ID], after[a.ID])

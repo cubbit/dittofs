@@ -62,6 +62,7 @@ const (
 	KindAUX    byte = 0x46 // audit index: AUX‖tagged‖time‖auditID, empty
 	KindJD     byte = 0x48 // a node's journal device to its journal: JD‖node‖device
 	KindUA     byte = 0x4A // enabled-admin index: UA‖principal, empty
+	KindNSR    byte = 0x4B // remote store to namespace: NSR‖store‖ns, empty
 )
 
 // Sub-kinds under F‖id. The File itself has none.
@@ -129,6 +130,8 @@ const (
 	NSKey   byte = 0x04
 	NSBk    byte = 0x05
 	NSDrain byte = 0x06
+	NSInfo  byte = 0x0A // the namespace's own record
+	NSShare byte = 0x0B // namespace to share: NS‖ns‖share‖ShareID, empty
 
 	GcLease   byte = 0x01
 	GcRecheck byte = 0x02

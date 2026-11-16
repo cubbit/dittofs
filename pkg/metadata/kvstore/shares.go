@@ -77,7 +77,11 @@ func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
 // one whose generation expect names; its root never changes. It writes the
 // share's info record, raising its generation, and its name and path rows,
 // and raises ShareList when either moves. State is not its to write: a new
-// share starts enabled, and only SetShareState changes it after.
+// share starts enabled, and only SetShareState changes it after. A new
+// share is created in the one namespace its Namespaces names, whose record
+// is read tracked and must exist, so a share never lands in a namespace that
+// names no remote store; a change ignores Namespaces, which only a re-home
+// and an import write.
 //
 // No share's path is an ancestor of another's. An ancestor is found by a
 // point read of each of the path's prefixes, a descendant by a guarded scan
@@ -135,7 +139,11 @@ func (c controlTx) PutShare(s entity.Share, expect uint64) (uint64, error) {
 		return 0, err
 	}
 	if !existed {
-		if err := createShareRecords(c.tx, &s); err != nil {
+		ns, err := shareNamespace(c, s)
+		if err != nil {
+			return 0, err
+		}
+		if err := createShareRecords(c.tx, &s, ns); err != nil {
 			return 0, err
 		}
 	}
@@ -153,19 +161,15 @@ func (c controlTx) PutShare(s entity.Share, expect uint64) (uint64, error) {
 // its state, enabled; its one shard, a number no share of the installation
 // has had, with its shard record and its row in the share's shard list; its
 // root directory, in that shard; its numeric file id allocator, above the
-// root's number; and a namespace of its own, generation 1, that its content
-// is counted in.
+// root's number; and the namespace ns, generation 1, that its content is
+// counted in, with the share's key in that namespace's share index. The
+// root's key must be free, so a root ID that already names a file is refused
+// rather than overwritten.
 //
 // ponytail: a share has exactly one shard, made with it. Write a row and a
 // record per shard, in the transaction that creates each, once a share can
 // have more than one.
-//
-// decision: every share gets a fresh namespace. Shares sharing one, so that
-// their content deduplicates and clones across them, is a choice the
-// configuration makes; take the namespace from the share's settings once
-// they name one. The root's key must be free, so a root ID that
-// already names a file is refused rather than overwritten.
-func createShareRecords(tx kv.Txn, s *entity.Share) error {
+func createShareRecords(tx kv.Txn, s *entity.Share, ns entity.NamespaceID) error {
 	tag, err := nextTag(tx)
 	if err != nil {
 		return err
@@ -188,12 +192,14 @@ func createShareRecords(tx kv.Txn, s *entity.Share) error {
 		{root, encodeFile(rf)},
 		{floorKey(s.ID, s.Root, rf.Version), encodeEmpty()},
 		{numberKey(s.ID), encodeCounter(rootNumber + 1)},
-		{namespacesKey(s.ID), encodeNamespaces(shareNamespaces{
-			Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: entity.NewNamespaceID()}}, Write: 1})},
 	} {
 		if err := tx.Set(kvs[0], kvs[1]); err != nil {
 			return err
 		}
+	}
+	if err := putShareNamespaces(tx, s.ID, shareNamespaces{}, shareNamespaces{
+		Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: ns}}, Write: 1}); err != nil {
+		return err
 	}
 	return chargeFile(tx, s.ID, nil, &rf)
 }

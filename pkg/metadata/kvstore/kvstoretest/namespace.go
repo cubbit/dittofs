@@ -39,7 +39,7 @@ func setupFS(t *testing.T, s *kvstore.Store, c *kv.Counting, fold entity.FoldRul
 	cp := s.ControlPlane()
 	sh := share("data", "/data")
 	sh.Fold = fold
-	must(t, errOf(cp.PutShare(ctx, sh, 0)))
+	must(t, errOf(CreateShare(ctx, cp, sh)))
 	admin := user("admin")
 	must(t, errOf(cp.PutUser(ctx, admin, 0, entity.Alloc{})))
 	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0)))

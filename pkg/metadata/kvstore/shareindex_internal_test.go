@@ -25,7 +25,7 @@ func TestShareIndexFollowsRenameAndRemoval(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	must(errOf(cp.PutShare(ctx, sh, 0)))
+	must(errOf(createShare(cp, sh)))
 	if id, err := x.ByName(ctx, "DATA"); err != nil || id != sh.ID {
 		t.Errorf("ByName under the fold: %v, %v", id, err)
 	}

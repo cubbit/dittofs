@@ -127,7 +127,7 @@ func quotaVersion(t *testing.T, cp kvstore.ControlPlane, share entity.ShareID, t
 func (s *shares) addShare(t *testing.T, name, path string) entity.ShareID {
 	t.Helper()
 	sh := entity.Share{ID: entity.NewShareID(), Name: name, Path: path, Root: entity.NewFileID()}
-	s.must(t, errOf(s.cp.PutShare(t.Context(), sh, 0)))
+	s.must(t, errOf(kvstoretest.CreateShare(t.Context(), s.cp, sh)))
 	s.content.Bind(sh.ID)
 	return sh.ID
 }

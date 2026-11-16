@@ -80,4 +80,15 @@ type ControlPlaneTx interface {
 	PutSetting(s Setting, expect uint64) (uint64, error)
 	AddMember(m Membership) error
 	RemoveMember(m Membership) error
+
+	Namespace(id NamespaceID) (Namespace, bool, error)
+	// StoreNamed reports whether any namespace names the remote store,
+	// tracked over the store's whole index, so a namespace created on it
+	// concurrently conflicts.
+	StoreNamed(store [16]byte) (bool, error)
+	// NamespaceNamed reports whether any share names the namespace, tracked
+	// over the whole set, so a share created into it concurrently conflicts.
+	NamespaceNamed(ns NamespaceID) (bool, error)
+	PutNamespace(n Namespace, expect uint64) (uint64, error)
+	DeleteNamespace(id NamespaceID, expect uint64) error
 }

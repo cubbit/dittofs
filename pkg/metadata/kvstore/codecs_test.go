@@ -79,6 +79,7 @@ func codecCases() []codecCase {
 		Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{9}}, Before: 1, After: 2, Change: []byte("c"), Outcome: []byte("o")}
 	apos := auditPos(audit.Time, audit.ID)
 	idem := entity.IdempotencyRecord{Account: group, Key: "k", Digest: [32]byte{31: 1}, Answer: []byte("a"), Expires: time.Unix(8, 9).UTC()}
+	nsr := entity.Namespace{ID: entity.NamespaceID{15: 4}, Store: [16]byte{0: 0x5E}, Bound: []byte("b"), Generation: 3}
 	set := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "k", Value: []byte("v"), Generation: 6, Schema: 1}
 	return []codecCase{
 		{"user", user, encodeUser(user),
@@ -138,6 +139,9 @@ func codecCases() []codecCase {
 			func(b []byte) (any, error) {
 				return decodeJournal(b)
 			}},
+		{"namespace", nsr, encodeNamespace(nsr),
+			"01" + "5e000000000000000000000000000000" + "0162" + "0000000000000003",
+			func(b []byte) (any, error) { return decodeNamespace(nsr.ID, b) }},
 	}
 }
 
@@ -194,7 +198,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 	decoders := map[string]func([]byte) (any, error){}
 	for _, c := range append(codecCases(), fileCodecCases()...) {
 		switch c.name {
-		case "user", "group", "share", "quota", "installation", "audit", "idempotency":
+		case "user", "group", "share", "quota", "installation", "audit", "idempotency", "namespace":
 			decoders[c.name] = c.dec
 			f.Add(c.enc)
 			f.Add(c.enc[:len(c.enc)/2])
@@ -209,6 +213,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 		"installation": func(v any) []byte { return encodeInstallation(v.(entity.Installation)) },
 		"audit":        func(v any) []byte { return encodeAudit(v.(entity.AuditRecord)) },
 		"idempotency":  func(v any) []byte { return encodeIdempotency(v.(entity.IdempotencyRecord)) },
+		"namespace":    func(v any) []byte { return encodeNamespace(v.(entity.Namespace)) },
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
 		for name, dec := range decoders {

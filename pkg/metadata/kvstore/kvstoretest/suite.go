@@ -132,6 +132,12 @@ func Run(t *testing.T, open Opener) {
 		{"WriteNow", testWriteNow},
 		{"Idempotency", testIdempotency},
 		{"IdempotencyRace", testIdempotencyRace},
+		{"NamespaceStoreIndex", testNamespaceStoreIndex},
+		{"NamespaceRefusals", testNamespaceRefusals},
+		{"NamespaceFixedFields", testNamespaceFixedFields},
+		{"ShareNamesNamespace", testShareNamesNamespace},
+		{"StoreDeleteRacesNamespace", testStoreDeleteRacesNamespace},
+		{"NamespaceDeleteRacesShare", testNamespaceDeleteRacesShare},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}
