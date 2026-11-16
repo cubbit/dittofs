@@ -94,7 +94,12 @@ const (
 // that the expected k is 4: a burst of length D meets about b7Rate × D chmods,
 // each on a writer's file with chance 64 / N, so N = 64 × b7Rate × D / 4,
 // within [64, 100 000], with D the last burst's length and a warm-up burst,
-// not evaluated, to measure the first. Overturned if the measured k drifts far
+// not evaluated, to measure the first. The rate in it is the median of the
+// last three bursts' measured rates, and from the second burst on N stays
+// between half and twice the N before it: one burst whose chmods stalled
+// measured 21 chmods a second against 251 to 950 for the others, and a raw
+// rate swung N from 560 to 44 896 within a run, so k left 2 to 10 in more
+// than half the bursts. Overturned if the measured k drifts far
 // from 4 while D is steady (chmods outlasting a burst would push it up), or
 // when the key layout changes (the classifier must follow it).
 //
@@ -105,8 +110,9 @@ const (
 // slow box. A tick that finds every worker busy is skipped, so the storm never
 // passes 10³ chmods a second. A chmod takes seconds under the bursts' fsyncs,
 // so a fixed pool of 256 reached 23 to 165 chmods a second: before each burst
-// the pool is set to b7Rate × the last burst's mean chmod latency, from 1 up
-// to b7MaxWorkers, starting from b7WarmWorkers for the warm-up. Each burst
+// the pool is set to b7Rate × the median of the last three bursts' mean chmod
+// latencies, from 1 up to b7MaxWorkers, starting from b7WarmWorkers for the
+// warm-up. Each burst
 // reports its workers, its rate and its chmod latency, and a burst at the cap
 // still under b7Rate is counted. Overturned if bursts reach the cap and stay
 // well under 10³ (the cap, and the descriptors it costs, would have to grow),
@@ -449,20 +455,35 @@ func benchB7(b *testing.B) {
 
 		stormFrom := time.Now()
 
-		var last, lat time.Duration
+		var last time.Duration
 
-		measured := float64(b7Rate)
+		var (
+			rates []float64       // the last three bursts' measured rates
+			lats  []time.Duration // and their chmod latencies, none of them 0
+			prevN int64           // the N of the burst before, 0 before the first
+		)
 
 		// Burst -1 is the warm-up: it measures the first burst's length, and
 		// is not evaluated.
 		for k := -1; k < b5Bursts; k++ {
 			if k >= 0 {
-				s.pool.Store(stormPool(last, measured))
+				rate := float64(b7Rate)
+				if len(rates) > 0 {
+					rate = median(rates)
+				}
 
-				// A latency of 0 means no chmod returned in the window: keep the
-				// previous target rather than fall to one worker.
-				if lat > 0 {
-					s.setWorkers(workersFor(lat))
+				n := stormPool(last, rate)
+				if prevN > 0 {
+					n = min(max(n, prevN/2, benchWriters), 2*prevN, b7Files)
+				}
+
+				prevN = n
+				s.pool.Store(n)
+
+				// A latency of 0 means no chmod returned in the window: it is
+				// left out, and with none measured the target stays.
+				if len(lats) > 0 {
+					s.setWorkers(workersFor(median(lats)))
 				}
 			}
 
@@ -498,11 +519,15 @@ func benchB7(b *testing.B) {
 			now := time.Now()
 			touched := s.touched(from, now)
 			rate := float64(s.started(from, now)) / last.Seconds()
-			lat = s.latency(from, now)
+			lat := s.latency(from, now)
 			win := s.window(from, now)
 
 			if rate > 0 {
-				measured = min(rate, b7Rate)
+				rates = lastThree(append(rates, min(rate, b7Rate)))
+			}
+
+			if lat > 0 {
+				lats = lastThree(append(lats, lat))
 			}
 
 			if k >= 0 {
@@ -647,4 +672,22 @@ func stormPool(last time.Duration, rate float64) int64 {
 // milliseconds is d in milliseconds, as a metric value.
 func milliseconds(d time.Duration) float64 {
 	return float64(d) / float64(time.Millisecond)
+}
+
+// median is the middle of xs, or the mean of the two middle values when their
+// count is even; xs is not changed.
+func median[T float64 | time.Duration](xs []T) T {
+	sorted := slices.Sorted(slices.Values(xs))
+	m := len(sorted) / 2
+
+	if len(sorted)%2 == 0 {
+		return (sorted[m-1] + sorted[m]) / 2
+	}
+
+	return sorted[m]
+}
+
+// lastThree is the last three of xs, or all of them when fewer.
+func lastThree[T any](xs []T) []T {
+	return xs[max(len(xs)-3, 0):]
 }
