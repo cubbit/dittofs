@@ -117,7 +117,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	ms, at, code, err := members(row, inv, rest, v)
 	if at < 0 {
 		p.refused(tr, stageDecodeArgs)
-		p.finish(tr, h, tb, errs, row, Invocation{}, nil, err, release)
+		p.finish(tr, h, tb, errs, row, Invocation{}, nil, err, release, alone{p})
 		return
 	}
 	if p.draining.Load() {
@@ -127,7 +127,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		// the moved member and is answered there (§4.7).
 		if whole, handles := judge(ms, err == nil, r); !whole {
 			p.refused(tr, stageResolveIDs)
-			p.finish(tr, h, tb, errs, row, Invocation{}, nil, drainErr(ctx, handles), release)
+			p.finish(tr, h, tb, errs, row, Invocation{}, nil, drainErr(ctx, handles), release, alone{p})
 			return
 		}
 	}
@@ -149,7 +149,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 	// the session's reply size when the slots bring that limit.
 	if p.sh.reply.Charge(n) > p.sh.reply.Ceiling()/4 {
 		p.refused(tr, stageReplyTooBig)
-		p.finish(tr, h, tb, errs, row, Invocation{}, nil, fmt.Errorf("%w: a compound's reply of %d bytes", ErrReplyTooBig, n), release)
+		p.finish(tr, h, tb, errs, row, Invocation{}, nil, fmt.Errorf("%w: a compound's reply of %d bytes", ErrReplyTooBig, n), release, alone{p})
 		return
 	}
 	mts, serr := p.sh.table(row.Members)
@@ -164,7 +164,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		if st, ok := reservationStage(rerr); ok {
 			p.refused(tr, st)
 		}
-		p.finish(tr, h, tb, errs, row, Invocation{}, nil, rerr, release)
+		p.finish(tr, h, tb, errs, row, Invocation{}, nil, rerr, release, alone{p})
 		return
 	}
 	mts.observe(stageReplyWait, p.sh.clock.Now().Sub(start))
