@@ -98,12 +98,12 @@ func (t *ErrorTable) mapsEverywhere(err error) bool {
 // SUCCESS and STATUS_SUCCESS are all 0.
 //
 // decision: ErrDecode's and ErrCancelled's checks pass the bare sentinel,
-// which a protocol's typed row never matches, so that row still wins for its own value (§4.5) and goes
-// unchecked: a protocol may hold its own decode or cancel value, send no
-// reply for it, or answer it the fault or success, and only that protocol's
-// tests would see it. The ceiling is that protocol's own value; the
-// catch-all for the sentinel stays checked. Check typed rows too if a
-// protocol is found answering its own value that way.
+// which a protocol's typed row never matches, so that row still wins for its
+// own value (§4.5) and goes unchecked: a protocol may hold its own decode or
+// cancel value, send no reply for it, or answer it the fault or success, and
+// only that protocol's tests would see it. The ceiling is that protocol's own
+// value; the catch-all for the sentinel stays checked. Check typed rows too if
+// a protocol is found answering its own value that way.
 func (t *ErrorTable) badRow(err error) (ErrorRow, bool) {
 	for _, r := range t.rows {
 		if errors.Is(err, r.Err) && (r.NoReply || r.Hold != nil || r.Status == t.fault || r.Status == 0) {

@@ -235,11 +235,10 @@ func (p *Protocol) build() [2]*core.OpTable {
 //
 // decision: the tables are not total. They map core's refusals, the service's
 // ErrDelay and its DelayResources delay, a cancel and the two drain errors,
-// and nothing else, so a service
-// error no row maps is reachable and answered StatusFault. Totality is a real
-// protocol's property, checked on NFS's and SMB's tables. Withdraw it if a
-// core test needs a service error this table leaves unmapped to have a status
-// of its own.
+// and nothing else, so a service error no row maps is reachable and answered
+// StatusFault. Totality is a real protocol's property, checked on NFS's and
+// SMB's tables. Withdraw it if a core test needs a service error this table
+// leaves unmapped to have a status of its own.
 func errorRows(holds bool) []core.ErrorRow {
 	// decision: this row is testproto's only hold. A request is held because
 	// the service a test supplied answered ErrDelay, never because an
