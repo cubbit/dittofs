@@ -1237,34 +1237,45 @@ func TestRunCollectsForgetsByTheirGreatestSeq(t *testing.T) {
 // or stamp record that verifies — its header on the scan and its body read
 // whole here — and that no drop covers refuses the open with
 // ErrNotImplemented naming its kind and its segment, whatever the loss sink
-// (a nil one included) would have answered.
+// (a nil one included) would have answered. The boundary row plants the hold
+// at the seq just past a forget of its own tag — the first seq the forget
+// does not cover — and the refusal stands: a forget comparison that took one
+// seq too many would cover it, and the open would serve past a hold the
+// record on disk does cover.
 func TestRunRefusesAVerifiedHoldKindRecord(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		rec  raw.Record
+		// with plants extra records beside the write of segment 1.
+		with []raw.Record
 	}{
 		{"hold", rec(11, func(rc *raw.Record) {
 			rc.Offset, rc.Length = 0, 0
 			rc.Cut = &raw.CutBody{Cut: 3}
-		})},
+		}), nil},
 		{"unhold", rec(12, func(rc *raw.Record) {
 			rc.FileID = [16]byte{}
 			rc.Version = raw.Version{}
 			rc.Offset, rc.Length = 0, 0
 			rc.Cut = &raw.CutBody{Cut: 4}
-		})},
+		}), nil},
 		{"stamp", rec(13, func(rc *raw.Record) {
 			rc.Offset, rc.Length = 0, 0
 			rc.Cut = &raw.CutBody{Cut: 5}
-		})},
+		}), nil},
+		{"hold", rec(11, func(rc *raw.Record) { // the seq just past the forget
+			rc.Seq = 31
+			rc.Offset, rc.Length = 0, 0
+			rc.Cut = &raw.CutBody{Cut: 3}
+		}), []raw.Record{forgetRec(7, 30)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRig(t)
 			r.writeFormat()
-			r.plantSeg(1, buildSeg(1, rec(1, func(rc *raw.Record) {
+			r.plantSeg(1, buildSeg(1, append([]raw.Record{rec(1, func(rc *raw.Record) {
 				rc.Offset, rc.Length = 0, 16
 				rc.Write = &raw.WriteBody{MTime: 1, Payload: make([]byte, 16)}
-			})))
+			})}, tc.with...)...))
 			r.plantSeg(2, buildSeg(2, tc.rec))
 
 			st, err := r.asideRun(nil, nil)
