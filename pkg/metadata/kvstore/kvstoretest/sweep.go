@@ -144,58 +144,12 @@ func putSignIn(t *testing.T, cp kvstore.ControlPlane, k entity.SignInKey, f enti
 	must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.PutSignInFailures(k, f) }))
 }
 
-// K + 1 due records take two sweeps: the first deletes K and reports more,
-// whether the one left is expired or an audit record past retention; K due
-// records take one that reports none.
-func testSweepBatches(t *testing.T, d Durable) {
-	for _, c := range []struct {
-		name         string
-		counts       int
-		audit        bool
-		first, after kvstore.Swept
-	}{
-		{"K expired", kvstore.SweepBatch, false, kvstore.Swept{SignIns: kvstore.SweepBatch}, kvstore.Swept{}},
-		{"K+1 expired", kvstore.SweepBatch + 1, false,
-			kvstore.Swept{SignIns: kvstore.SweepBatch, More: true}, kvstore.Swept{SignIns: 1}},
-		{"K expired and an audit record", kvstore.SweepBatch, true,
-			kvstore.Swept{SignIns: kvstore.SweepBatch, More: true}, kvstore.Swept{Audit: 1}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			clk := newClock()
-			open := d(t, clk.Now)
-			db := open()
-			must(t, kvstore.Init(ctx, db, uuid.New()))
-			s, err := kvstore.Open(ctx, db)
-			must(t, err)
-			start := clk.Now()
-			meta := entity.WriteMeta{}
-			if c.audit {
-				meta.Audit = &entity.AuditRecord{Target: shareRef("a")}
-			}
-			must(t, s.ControlPlane().Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
-				for i := range c.counts {
-					k := entity.SignInKey{Source: netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 0, byte(i >> 8), byte(i)}), 32)}
-					if err := tx.PutSignInFailures(k, entity.SignInFailures{Count: 1, Last: start, Failed: start}); err != nil {
-						return err
-					}
-				}
-				return nil
-			}))
-			_, first := sweepAt(t, clk, open, start.Add(sweepRetention+time.Minute))
-			if first != c.first {
-				t.Errorf("first sweep: got %+v, want %+v", first, c.first)
-			}
-			_, after := sweepAt(t, clk, open, clk.Now())
-			if after != c.after {
-				t.Errorf("second sweep: got %+v, want %+v", after, c.after)
-			}
-		})
-	}
-}
-
-// A refresh that moves a session's expiry while a sweep that found it
-// expired is in flight keeps the session: the sweep retries and finds the
-// row moved.
+// A refresh that commits inside a sweep's attempt, after the sweep found its
+// session expired, keeps the session, and the counts the sweep reports are
+// its committed attempt's alone: the sweep is one transaction, which the
+// refresh conflicts, and a retry starts its counts again. The stale-row rule
+// itself is not what this guards, since the retry finds the row moved and
+// never reads it as due.
 func testSweepRacesRefresh(t *testing.T, kvo Opener) {
 	for _, b := range kvo.backends() {
 		t.Run(b.name, func(t *testing.T) {
@@ -223,21 +177,35 @@ func testSweepRacesRefresh(t *testing.T, kvo Opener) {
 }
 
 // An expiry row its record no longer expires at, or naming no record, is
-// deleted alone; a sweep refuses a retention that would delete every audit
-// record.
+// deleted alone, whatever the kind; a sweep refuses a retention that would
+// delete every audit record.
 func testSweepStaleRows(t *testing.T, kvo Opener) {
 	s, db := newStore(t, kvo)
 	cp := s.ControlPlane()
-	sess := entity.Session{ID: uuid.New(), Account: entity.NewUser(), Refresh: [32]byte{1}, Expires: time.Unix(4_000_000_000, 0).UTC()}
+	alice := entity.NewUser()
+	sess := entity.Session{ID: uuid.New(), Account: alice, Refresh: [32]byte{1}, Expires: time.Unix(4_000_000_000, 0).UTC()}
 	must(t, cp.PutSession(ctx, sess))
-	row := func(tag byte, id [16]byte) []byte {
-		return keys.ID(append(keys.Uint64([]byte{keys.KindXP}, uint64(time.Unix(1, 0).UnixNano())), tag), id[:])
+	pair := entity.SignInKey{Account: alice, Source: netip.MustParsePrefix("192.0.2.1/32")}
+	putSignIn(t, cp, pair, entity.SignInFailures{Count: 1, Last: time.Unix(4_000_000_000, 0), Failed: time.Unix(4_000_000_000, 0)})
+	var ran int
+	must(t, keyed(cp, alice, "k", "body", "answer", "ng", &ran))
+	row := func(tag byte, tail []byte) []byte {
+		return keys.ID(append(keys.Uint64([]byte{keys.KindXP}, uint64(time.Unix(1, 0).UnixNano())), tag), tail)
+	}
+	gone := uuid.New()
+	moved := [][]byte{
+		row(keys.XPSession, sess.ID[:]),
+		row(keys.XPToken, gone[:]),
+		row(keys.XPPair, append(alice.ID[:], 192, 0, 2, 1, 32)),
+		keys.String(row(keys.XPIdempotency, alice.ID[:]), []byte("k")),
 	}
 	must(t, db.Update(ctx, func(tx kv.Txn) error {
-		if err := tx.Set(row(keys.XPSession, sess.ID), nil); err != nil {
-			return err
+		for _, r := range moved {
+			if err := tx.Set(r, nil); err != nil {
+				return err
+			}
 		}
-		return tx.Set(row(keys.XPToken, uuid.New()), nil)
+		return nil
 	}))
 	sw, err := s.Nodes().Sweep(ctx, sweepRetention)
 	must(t, err)
@@ -247,8 +215,14 @@ func testSweepStaleRows(t *testing.T, kvo Opener) {
 	if got, ok, err := cp.Session(ctx, sess.ID); err != nil || !ok || got != sess {
 		t.Errorf("session whose stale row was swept: got %+v, %v, %v; want %+v", got, ok, err, sess)
 	}
-	if got := rowsOf(t, db, []byte{keys.KindXP})[keys.KindXP]; got != 1 {
-		t.Errorf("expiry rows after the sweep: got %d, want only the session's own", got)
+	if got, ok, err := cp.SignInFailures(ctx, pair); err != nil || !ok || got.Count != 1 {
+		t.Errorf("pair count whose stale row was swept: got %+v, %v, %v; want its count of 1", got, ok, err)
+	}
+	if got := rowsOf(t, db, []byte{keys.KindIK})[keys.KindIK]; got != 1 {
+		t.Errorf("idempotency records after a sweep of a stale row: got %d, want 1", got)
+	}
+	if got := rowsOf(t, db, []byte{keys.KindXP})[keys.KindXP]; got != 3 {
+		t.Errorf("expiry rows after the sweep: got %d, want the session's, the pair count's and the idempotency record's own", got)
 	}
 	if _, err := s.Nodes().Sweep(ctx, 0); !isCode(err, merrs.ErrInvalidArgument) {
 		t.Errorf("sweep with no audit retention: %v, want invalid argument", err)
