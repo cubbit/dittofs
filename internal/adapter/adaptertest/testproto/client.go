@@ -33,6 +33,7 @@ type Msg struct {
 	Payload []byte     // OpEcho
 	Clear   bool       // sent neither sealed nor checksummed under its session
 	Members []Msg      // OpCompound
+	Tag     []byte     // OpCompound: what its reply's head echoes
 }
 
 // Reply is one reply message, as a test reads it.
@@ -128,6 +129,8 @@ func appendArguments(b []byte, m Msg) []byte {
 		b = binary.BigEndian.AppendUint64(b, m.Target)
 	case OpCompound:
 		b = binary.BigEndian.AppendUint32(b, uint32(len(m.Members)))
+		b = binary.BigEndian.AppendUint32(b, uint32(len(m.Tag)))
+		b = append(b, m.Tag...)
 		for _, member := range m.Members {
 			b = binary.BigEndian.AppendUint32(b, member.Op)
 			at := len(b)
@@ -244,14 +247,24 @@ type Result struct {
 	Body   []byte
 }
 
-// Results reads a compound's reply body: its status and its results.
-func Results(body []byte) (core.Status, []Result, error) {
-	if len(body) < compoundHead {
-		return 0, nil, fmt.Errorf("testproto: a compound reply of %d bytes", len(body))
+// Head is a compound reply's head: its status and the tag it echoes.
+type Head struct {
+	Status core.Status
+	Tag    []byte
+}
+
+// Results reads a compound's reply body: its head and its results.
+func Results(body []byte) (Head, []Result, error) {
+	if len(body) < 12 {
+		return Head{}, nil, fmt.Errorf("testproto: a compound reply of %d bytes", len(body))
 	}
-	status := core.Status(binary.BigEndian.Uint32(body))
-	n := int(binary.BigEndian.Uint32(body[4:]))
-	body = body[compoundHead:]
+	tagLen := int(binary.BigEndian.Uint32(body[4:]))
+	if tagLen > len(body)-12 {
+		return Head{}, nil, fmt.Errorf("testproto: a compound's tag of %d bytes past its reply", tagLen)
+	}
+	status := Head{Status: core.Status(binary.BigEndian.Uint32(body)), Tag: body[8 : 8+tagLen]}
+	n := int(binary.BigEndian.Uint32(body[8+tagLen:]))
+	body = body[12+tagLen:]
 	var results []Result
 	for range n {
 		if len(body) < resultHead {
@@ -267,6 +280,9 @@ func Results(body []byte) (core.Status, []Result, error) {
 			Body:   body[resultHead : resultHead+length],
 		})
 		body = body[resultHead+length:]
+	}
+	if len(body) > 0 {
+		return status, results, fmt.Errorf("testproto: %d bytes after a compound's last result", len(body))
 	}
 
 	return status, results, nil

@@ -156,7 +156,7 @@ func (sh *shared) ReserveReply(ctx context.Context, key netip.Addr, bound int) (
 }
 
 func (sh *shared) ReserveStatus(ctx context.Context, key netip.Addr, close func(error)) *resources.Buf {
-	return sh.reserveStatus(ctx, key, close)
+	return sh.reserveStatus(ctx, key, 0, close)
 }
 
 // TestReader is one connection's record cut, reached by the reader's tests.

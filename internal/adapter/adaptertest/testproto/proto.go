@@ -193,7 +193,7 @@ func (rt *router) Route(h core.Header, prev *core.Request) (*core.OpTable, *core
 // and what the header's session and tree reach, and its credential ends when
 // the session's does.
 func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, error) {
-	hd, ok := h.(*header)
+	hd, ok := plain(h)
 	if !ok {
 		return nil, errors.New("testproto: route a header of another protocol")
 	}
@@ -250,7 +250,7 @@ func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, err
 func (p *Protocol) build() [2]*core.OpTable {
 	errs := core.NewErrorTable(StatusFault, errorRows(false)...)
 	members := core.NewOpTable(errs, false, memberRows(p.ops())...)
-	members.ReadOp, members.EncodeResult, members.EncodeHead = readOp, encodeResult, encodeHead
+	members.ReadOp, members.EncodeResult = readOp, encodeResult
 
 	tables := [2]*core.OpTable{
 		core.NewOpTable(errs, false, append(p.ops(), compound(members))...),

@@ -60,10 +60,15 @@ type Stages struct {
 // HeaderCodec decodes a request's header and encodes a reply's.
 type HeaderCodec interface {
 	Decode(rec *resources.Buf, off int) (Header, error) // the header at off in the record: 0, then each member's Next
+	// Encode writes the reply's header for s and, where s is a failure
+	// answered with a status alone, what such a reply needs: the whole reply
+	// of a request answered its status alone, before its arguments decoded or
+	// refused whole after, such as an NFSv4 COMPOUND's status, tag and empty
+	// results, the tag read with the header.
 	Encode(h Header, s Status, out *resources.Buf) error
 	Chain(out *resources.Buf, prev int) error // points the reply at prev to the one appended after it (SMB2's NextCommand, padded to 8); nil-op where nothing chains
 	Args(rec *resources.Buf, h Header) []byte // the arguments of the message h in rec, as Decode and Unwrap left it
-	ReplyLen(h Header) int                    // the most Encode writes for h, a status-alone body included, with Chain's padding and the transform Wrap adds in place: the pipeline reserves Bound() + ReplyLen(h)
+	ReplyLen(h Header) int                    // the most Encode writes for h, a status-alone body included, with Chain's padding and the transform Wrap adds in place: the pipeline reserves Bound() + ReplyLen(h); for a compound row's message it also covers the compound's head and one result's head
 }
 
 // Router chooses the version's table and builds the Request.

@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -133,7 +135,6 @@ func TestACompoundRowsTable(t *testing.T) {
 		m := core.NewOpTable(table(), false, &core.Op{Code: 1, Name: "Echo", Versions: one})
 		m.ReadOp = func([]byte) (uint32, int, error) { return 1, 1, nil }
 		m.EncodeResult = func(*resources.Buf, uint32, core.Status, core.Version) error { return nil }
-		m.EncodeHead = func(*resources.Buf, core.Status, int, core.Version) error { return nil }
 		return m
 	}
 	rows := func(extra ...core.ErrorRow) *core.ErrorTable {
@@ -150,7 +151,7 @@ func TestACompoundRowsTable(t *testing.T) {
 		{"no ErrReplyTooBig row", table(core.ErrorRow{Err: core.ErrTooLong, Status: 1}), core.Op{Code: 9, Name: "Compound", Versions: one, Members: members(), MaxMembers: 8}, "reply"},
 		{"an ErrReplyTooBig row naming an operation", table(core.ErrorRow{Err: core.ErrTooLong, Status: 1}, core.ErrorRow{Err: core.ErrReplyTooBig, Ops: []uint32{9}, Status: 2}), core.Op{Code: 9, Name: "Compound", Versions: one, Members: members(), MaxMembers: 8}, "reply"},
 		{"no ErrTooLong row", table(core.ErrorRow{Err: core.ErrReplyTooBig, Status: 2}), core.Op{Code: 9, Name: "Compound", Versions: one, Members: members(), MaxMembers: 8}, "cap"},
-		{"members with no encoders", rows(), core.Op{Code: 9, Name: "Compound", Versions: one, Members: core.NewOpTable(table(), false), MaxMembers: 8}, "EncodeHead"},
+		{"members with no encoders", rows(), core.Op{Code: 9, Name: "Compound", Versions: one, Members: core.NewOpTable(table(), false), MaxMembers: 8}, "EncodeResult"},
 		{"no compound row, and neither row", table(), core.Op{Code: 9, Name: "Read", Versions: one}, ""},
 	} {
 		row := c.row
@@ -198,9 +199,18 @@ func newServed(t *testing.T, reply int64, d adapter.Deps) *served {
 }
 
 // compound serves a version 1 compound of members, under the session and
-// tree.
+// tree, carrying the tag tagOf(id).
 func (s *served) compound(id uint64, members ...testproto.Msg) {
-	s.serve(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: id, Session: 7, Tree: 1, Members: members})
+	s.serve(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: id, Session: 7, Tree: 1, Members: members, Tag: tagOf(id)})
+}
+
+// tagOf is the tag the compound served with message ID id carries, which its
+// reply's head echoes.
+func tagOf(id uint64) []byte { return binary.BigEndian.AppendUint32(nil, 0x5eed0000|uint32(id)) }
+
+// headIs says whether hd is a head of status s echoing tag.
+func headIs(hd testproto.Head, s core.Status, tag []byte) bool {
+	return hd.Status == s && bytes.Equal(hd.Tag, tag)
 }
 
 // resultsWithOps reads the next reply as a compound's: its status and its
@@ -211,11 +221,14 @@ func (s *served) resultsWithOps() (core.Status, []testproto.Result) {
 	if r.Status != testproto.StatusOK {
 		s.t.Fatalf("the compound is answered %d in its header", r.Status)
 	}
-	st, rs, err := testproto.Results(r.Body)
+	hd, rs, err := testproto.Results(r.Body)
 	if err != nil {
 		s.t.Fatal(err)
 	}
-	return st, rs
+	if !bytes.Equal(hd.Tag, tagOf(r.ID)) {
+		s.t.Errorf("the compound's head echoes tag %x, want its own %x", hd.Tag, tagOf(r.ID))
+	}
+	return hd.Status, rs
 }
 
 // results reads the next reply as a compound's: its status and its results'
@@ -276,7 +289,8 @@ func TestACompoundRunsItsMembersInTurn(t *testing.T) {
 // A compound of 9 members is answered the too-long status with no member
 // read or run; one of 8 runs.
 func TestTheCapAtNineAndEight(t *testing.T) {
-	s := newServed(t, 1<<20, adapter.Deps{})
+	m := metrics.New("v", "c")
+	s := newServed(t, 1<<20, adapter.Deps{Metrics: m})
 	s.compound(1, slices.Repeat([]testproto.Msg{{Op: testproto.OpCreate, Name: "x"}}, 9)...)
 	r := s.read()
 	if r.Status != testproto.StatusTooLong || s.creates() != 0 {
@@ -284,8 +298,12 @@ func TestTheCapAtNineAndEight(t *testing.T) {
 	}
 	// A compound refused whole is still a compound's reply: its head, the
 	// status and a count of no results, is there for the client to read.
-	if st, rs, err := testproto.Results(r.Body); err != nil || st != testproto.StatusTooLong || len(rs) != 0 {
-		t.Errorf("a compound refused past its cap is answered %d with %v (%v), want its status and no results", st, rs, err)
+	if hd, rs, err := testproto.Results(r.Body); err != nil || !headIs(hd, testproto.StatusTooLong, tagOf(1)) || len(rs) != 0 {
+		t.Errorf("a compound refused past its cap is answered %+v with %v (%v), want its status, its tag and no results", hd, rs, err)
+	}
+	got, _ := scrape(t, m)
+	if k := "adapter_refusals_total{protocol=" + testproto.Name + ",stage="; got[k+"decode_args}"] != 1 || got[k+"route}"] != 0 {
+		t.Errorf("a compound past its cap counts %v under decode_args and %v under route, want 1 and 0", got[k+"decode_args}"], got[k+"route}"])
 	}
 	s.compound(2, slices.Repeat([]testproto.Msg{echo}, 8)...)
 	if st, rs := s.results(); st != testproto.StatusOK || len(rs) != 8 {
@@ -303,16 +321,16 @@ func TestTheQuarter(t *testing.T) {
 		quarter := pool.Charge(4 << 10) // the small class's charge
 		s := newServed(t, 4*quarter, adapter.Deps{})
 		// Each Echo's result is 12 bytes and its payload; the compound's
-		// header, head and one result head take 60.
-		fits := testproto.Msg{Op: testproto.OpEcho, Payload: make([]byte, 4<<10-60-12-1)}
-		over := testproto.Msg{Op: testproto.OpEcho, Payload: make([]byte, 4<<10-60-12+1)}
+		// header, head with its 4-byte tag and one result head take 68.
+		fits := testproto.Msg{Op: testproto.OpEcho, Payload: make([]byte, 4<<10-68-12-1)}
+		over := testproto.Msg{Op: testproto.OpEcho, Payload: make([]byte, 4<<10-68-12+1)}
 		s.compound(1, over)
 		r := s.read()
 		if r.Status != testproto.StatusReplyTooBig {
 			t.Errorf("a compound charged past a quarter is answered %d, want the too-big status", r.Status)
 		}
-		if st, rs, err := testproto.Results(r.Body); err != nil || st != testproto.StatusReplyTooBig || len(rs) != 0 {
-			t.Errorf("a compound refused past a quarter is answered %d with %v (%v), want its status and no results", st, rs, err)
+		if hd, rs, err := testproto.Results(r.Body); err != nil || !headIs(hd, testproto.StatusReplyTooBig, tagOf(r.ID)) || len(rs) != 0 {
+			t.Errorf("a compound refused past a quarter is answered %+v with %v (%v), want its status, its tag and no results", hd, rs, err)
 		}
 		s.compound(2, fits)
 		if st, _ := s.results(); st != testproto.StatusOK {
@@ -559,4 +577,94 @@ func FuzzRecordWalk(f *testing.F) {
 			t.Fatalf("the walk stopped at %d with %d decoded", at, n)
 		}
 	})
+}
+
+// A compound row whose Decode sets no head is a fault of the protocol's
+// wiring: the connection closes naming the row, and nothing is answered.
+func TestACompoundRowThatSetsNoHeadClosesTheConnection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		noHead := func(inv core.Invocation) core.Invocation {
+			inv.EncodeHead = nil
+			return inv
+		}
+		s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}), noHead, nil), 1<<20)
+		s.serve(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 1, Members: []testproto.Msg{echo}})
+		if err := <-s.closed; err == nil || !strings.Contains(err.Error(), "the Compound row's Decode sets no EncodeHead") {
+			t.Errorf("a compound row with no head closed the connection with %v, want the fault naming the row", err)
+		}
+		if !s.sentNothing() {
+			t.Error("a compound row with no head was answered")
+		}
+	})
+}
+
+// A compound refused at route, before its row decodes it, is answered its
+// status alone with its head: the tag its header's codec read, and no
+// results.
+func TestACompoundRefusedAtRouteEchoesItsTag(t *testing.T) {
+	off := testproto.Settings{Adapter: settings.Adapter{DisabledOperations: []string{"Compound"}}}
+	s := newSeamSet(t, testproto.New(adapter.Deps{}), 1<<20, adapter.Deps{}, off)
+	s.serve(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 3, Tag: tagOf(3), Members: []testproto.Msg{echo}})
+	r := s.read()
+	hd, rs, err := testproto.Results(r.Body)
+	if r.Status != testproto.StatusNotSupported || err != nil || !headIs(hd, testproto.StatusNotSupported, tagOf(3)) || len(rs) != 0 {
+		t.Errorf("a compound switched off is answered %d with head %+v and %v (%v), want not supported, its tag and no results", r.Status, hd, rs, err)
+	}
+}
+
+// A compound answered its status alone carries a head as long as its tag,
+// which its header's codec writes: the reply is reserved at its header's
+// ReplyLen, so its bytes lie within its own charge however long the tag. So
+// it is refused at route, after Run's own Decode; at Admit on the reader,
+// whose status's buffer is tried at once; and at Admit while the pool has no
+// room at once for that buffer, so the refusal waits for it.
+func TestAStatusAloneReplyIsReservedForItsHead(t *testing.T) {
+	tag := bytes.Repeat([]byte{'t'}, 5<<10)
+	small := resources.NewBufPool(resources.NewWaitBudget("probe", 1<<30)).Charge(0)
+	directory := resources.NewBufPool(resources.NewWaitBudget("probe", 1<<30)).Charge(len(tag) + 64)
+	for _, c := range []struct {
+		name    string
+		off     []string
+		credits uint16
+		reply   int64
+		want    core.Status
+		held    bool // a small buffer held, so the status's buffer does not fit at once
+	}{
+		{"at route", []string{"Compound"}, 0, 1 << 20, testproto.StatusNotSupported, false},
+		{"at admit", nil, 9, 1 << 20, testproto.StatusOverdraw, false},
+		{"at admit, waiting for room", nil, 9, directory + 4<<10, testproto.StatusOverdraw, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				off := testproto.Settings{Adapter: settings.Adapter{DisabledOperations: c.off}}
+				s := newSeamSet(t, testproto.New(adapter.Deps{}), c.reply, adapter.Deps{}, off)
+				var free func()
+				if c.held {
+					held, ok := s.reply.TryGet(peer, 0)
+					if !ok || s.budgets.Reply.Reserved() != small {
+						t.Fatal("the small buffer does not fit")
+					}
+					free = held.Release
+				}
+				var charge int64
+				var n int
+				s.sent = func(msg *resources.Buf) { charge, n = msg.Charge(), len(msg.B) }
+				s.serve(testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 5, Credits: c.credits, Tag: tag, Members: []testproto.Msg{echo}})
+				if free != nil {
+					synctest.Wait()
+					if n != 0 {
+						t.Fatal("the refusal went out before its buffer had room")
+					}
+					free()
+				}
+				r := s.read()
+				if hd, _, err := testproto.Results(r.Body); err != nil || !headIs(hd, c.want, tag) {
+					t.Fatalf("a compound with a %d-byte tag is answered %d, %v: want %d and its tag", len(tag), r.Status, err, c.want)
+				}
+				if want := s.reply.Charge(n); charge < want {
+					t.Errorf("a reply of %d bytes went out charged %d, under the %d its class costs", n, charge, want)
+				}
+			})
+		})
+	}
 }

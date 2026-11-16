@@ -57,11 +57,11 @@
 //	Create    the name
 //	Park      the name
 //	Notify    target (8 bytes), the message ID of the request it names
-//	Compound  count (4 bytes), then per member: operation (4), length (4), arguments
+//	Compound  count (4 bytes), tag length (4), the tag, then per member: operation (4), length (4), arguments
 //
 // Every other operation has none. A Cancel names its target by carrying the
 // target's message ID as its own. A reply's arguments are its body; a
-// compound's reply body is its status (4 bytes) and its count of results (4),
+// compound's reply body is its status (4 bytes), its tag's length (4), the tag and its count of results (4),
 // then per result: operation (4), status (4), length (4), body.
 package testproto
 
@@ -180,6 +180,36 @@ func (framer) MaxRecord() (int, int) { return maxBody, maxFragments }
 // is retained, which core does for a request's life. Withdraw it, and copy the
 // fields out, if core ever releases a record before its request ends.
 type header [headerLen]byte
+
+// tagged is a compound request's header once Unwrap has read the tag from
+// its arguments, clear by then: Encode echoes it in the head of a refusal
+// answered with its status alone, and ReplyLen counts it.
+type tagged struct {
+	*header
+	tag []byte
+}
+
+// plain is h as the header in its record: a request's own, or a compound's
+// under its tag.
+func plain(h core.Header) (*header, bool) {
+	switch h := h.(type) {
+	case *header:
+		return h, true
+	case *tagged:
+		return h.header, true
+	}
+
+	return nil, false
+}
+
+// tagOf is a compound request's tag, as Unwrap read it, or none.
+func tagOf(h core.Header) []byte {
+	if t, ok := h.(*tagged); ok {
+		return t.tag
+	}
+
+	return nil
+}
 
 func (h *header) Op() uint32            { return binary.BigEndian.Uint32(h[offOp:]) }
 func (h *header) Version() core.Version { return core.Version(h[offVersion]) }
@@ -300,6 +330,11 @@ func (c headerCodec) Encode(h core.Header, s core.Status, out *resources.Buf) er
 	binary.BigEndian.PutUint16(rep[offCredits:], grant)
 	binary.BigEndian.PutUint32(rep[offStatus:], uint32(s))
 	binary.BigEndian.PutUint32(rep[offChecksum:], 0)
+	if req.Op() == OpCompound && s != 0 {
+		// A compound answered a status alone carries its head, with the tag
+		// Unwrap read and no results.
+		out.B = appendHead(out.B, s, tagOf(h), 0)
+	}
 
 	return nil
 }
@@ -307,7 +342,7 @@ func (c headerCodec) Encode(h core.Header, s core.Status, out *resources.Buf) er
 // Args is the arguments of the message h in rec: from after its header to
 // the next message or the body's end; nil for a header not in rec.
 func (headerCodec) Args(rec *resources.Buf, h core.Header) []byte {
-	hd, ok := h.(*header)
+	hd, ok := plain(h)
 	if !ok {
 		return nil
 	}
@@ -325,7 +360,7 @@ func (headerCodec) Args(rec *resources.Buf, h core.Header) []byte {
 // decode, which its runner writes.
 func (headerCodec) ReplyLen(h core.Header) int {
 	if h.Op() == OpCompound {
-		return headerLen + compoundHead + resultHead
+		return headerLen + 12 + len(tagOf(h)) + resultHead
 	}
 
 	return headerLen

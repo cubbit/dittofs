@@ -37,11 +37,6 @@ type OpTable struct {
 	// member's own Encode appends its reply: NFSv4's nfs_resop4 head. Set on
 	// a compound row's Members; nil elsewhere.
 	EncodeResult func(out *resources.Buf, op uint32, s Status, v Version) error
-	// EncodeHead writes a compound's result head, its status and the count
-	// of its results, before the first result. Its size must not depend on s
-	// or n: the runner writes it first and then again in place, with the
-	// final status and count. Set on a compound row's Members; nil elsewhere.
-	EncodeHead func(out *resources.Buf, s Status, n int, v Version) error
 }
 
 // Op is one operation's row: its preconditions and versions are columns the
@@ -76,7 +71,8 @@ type Op struct {
 // Invocation is one decoded operation: closures over the decoded request and
 // its reply. A struct, not an interface. Bind produces it for every row but a
 // compound row, whose Decode the protocol writes and which builds its
-// Invocation directly, setting Count from the arguments it decoded.
+// Invocation directly, setting Count and EncodeHead from the arguments it
+// decoded.
 type Invocation struct {
 	Bound   func() int                                  // the reply bound
 	Resolve func(r *Request) error                      // wire IDs to service values
@@ -95,6 +91,13 @@ type Invocation struct {
 	// Count is a compound row's: the members its arguments say follow, set by
 	// that row's own Decode. 0 on every other row.
 	Count int
+	// EncodeHead is a compound row's, set by that row's own Decode over what
+	// it decoded: it writes the compound reply's head, ahead of its results,
+	// NFSv4's status, the request's tag and the count of results. Its size
+	// must not depend on s or n, so the runner writes it once before the
+	// members run and again, over its own bytes, once their status and count
+	// are known. nil on every other row.
+	EncodeHead func(out *resources.Buf, s Status, n int, v Version) error
 	// Role says what this request does to state: an SMB LOCK whose elements
 	// unlock releases it, a WRITE to an open under a break flushes it, an
 	// NFSv4 OPEN that claims a delegated open flushes it. It is called in two
@@ -196,8 +199,8 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 		if op.Members != nil && op.MaxMembers <= 0 {
 			panic(fmt.Sprintf("core: op table: %s has members and no MaxMembers", op.Name))
 		}
-		if m := op.Members; m != nil && (m.ReadOp == nil || m.EncodeResult == nil || m.EncodeHead == nil) {
-			panic(fmt.Sprintf("core: op table: %s's members table lacks ReadOp, EncodeResult or EncodeHead", op.Name))
+		if m := op.Members; m != nil && (m.ReadOp == nil || m.EncodeResult == nil) {
+			panic(fmt.Sprintf("core: op table: %s's members table lacks ReadOp or EncodeResult", op.Name))
 		}
 		t.Ops[op.Code] = op
 	}

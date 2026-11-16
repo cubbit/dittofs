@@ -100,6 +100,7 @@ type Header interface {
 
 type HeaderCodec interface {
 	Decode(rec *resources.Buf, off int) (Header, error)
+
 	Encode(h Header, s Status, out *resources.Buf) error
 	Chain(out *resources.Buf, prev int) error
 	Args(rec *resources.Buf, h Header) []byte
@@ -127,6 +128,8 @@ type Invocation struct {
 	Handle func() (vfs.Handle, bool)
 
 	Count int
+
+	EncodeHead func(out *resources.Buf, s Status, n int, v Version) error
 
 	Role func(r *Request) Role
 }
@@ -167,8 +170,6 @@ type OpTable struct {
 	ReadOp func(b []byte) (op uint32, n int, err error)
 
 	EncodeResult func(out *resources.Buf, op uint32, s Status, v Version) error
-
-	EncodeHead func(out *resources.Buf, s Status, n int, v Version) error
 }
 
 type Protocol interface {

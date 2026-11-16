@@ -144,16 +144,17 @@ const statusWait = 30 * time.Second
 // (RFC 20 §10.1).
 var errReplyWait = errors.New("core: no reply buffer for a status within " + statusWait.String())
 
-// reserveStatus takes the small-class reply buffer a status alone goes out
-// in, for key: at once when the pool has room with no waiter ahead, otherwise
+// reserveStatus takes the reply buffer a status alone goes out in, of n
+// bytes, its header's ReplyLen, for key: at once when the pool has room with
+// no waiter ahead, otherwise
 // waiting within ctx, the connection's, so that a close ends the wait at
 // once, for at most statusWait from when it starts. Past that it calls close
 // with errReplyWait. It returns nil, with nothing reserved, when the wait
 // ended. Its caller keeps the request's record, and so its receive charge,
 // until the status goes out or the wait ends (RFC 24 §6.1).
-func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, close func(error)) *resources.Buf {
-	// A status is encoded by appending to B[:0], within the small class.
-	if buf, ok := sh.reply.TryGet(key, 0); ok {
+func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, n int, close func(error)) *resources.Buf {
+	// A status is encoded by appending to B[:0], within n's class.
+	if buf, ok := sh.reply.TryGet(key, n); ok {
 		return buf
 	}
 	// decision: the wait is bounded, and past it the connection closes,
@@ -171,7 +172,7 @@ func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, close func(
 	// parks' reply reservations are capped per client.
 	wait, cancel := context.WithTimeout(ctx, statusWait)
 	defer cancel()
-	buf, err := sh.reply.Get(wait, key, 0)
+	buf, err := sh.reply.Get(wait, key, n)
 	if err != nil {
 		if ctx.Err() == nil {
 			close(errReplyWait)
@@ -445,7 +446,7 @@ func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err
 		}
 		return
 	}
-	if buf, ok := p.sh.reply.TryGet(p.l.remote, 0); ok {
+	if buf, ok := p.sh.reply.TryGet(p.l.remote, p.st.Header.ReplyLen(h)); ok {
 		p.answer(tr, rec, h, s, buf, wrap, closeAfter, err)
 		return
 	}
@@ -469,7 +470,7 @@ func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err
 	go func() {
 		defer p.done()
 		defer func() { <-p.status }()
-		if buf := p.sh.reserveStatus(p.ctx, p.l.remote, p.l.close); buf != nil {
+		if buf := p.sh.reserveStatus(p.ctx, p.l.remote, p.st.Header.ReplyLen(h), p.l.close); buf != nil {
 			p.answer(tr, rec, h, s, buf, wrap, closeAfter, err)
 			return
 		}
@@ -482,6 +483,7 @@ func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err
 // connection after where closeAfter.
 func (p *pipeline) answer(tr *track, rec *resources.Buf, h Header, s Status, buf *resources.Buf, wrap, closeAfter bool, cause error) {
 	defer rec.Release()
+	buf.B = buf.B[:0] // a buffer comes back as long as its reservation
 	if err := p.st.Header.Encode(h, s, buf); err != nil {
 		buf.Release()
 		p.end(tr, false, 0, 0, err)
@@ -665,7 +667,7 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 		return
 	}
 	if reply == nil {
-		if reply = p.sh.reserveStatus(ctx, p.l.remote, p.l.close); reply == nil {
+		if reply = p.sh.reserveStatus(ctx, p.l.remote, p.st.Header.ReplyLen(h), p.l.close); reply == nil {
 			release()
 			p.end(tr, false, 0, 0, err)
 			return
@@ -677,16 +679,6 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 		release()
 		p.drop(tr, nil, encErr)
 		return
-	}
-	if op != nil && op.Members != nil {
-		// A compound's reply carries its head even when the compound is
-		// refused whole: the status, and a count of no results.
-		if encErr := op.Members.EncodeHead(reply, s, 0, h.Version()); encErr != nil {
-			reply.Release()
-			release()
-			p.drop(tr, nil, encErr)
-			return
-		}
 	}
 	release()
 	if op != nil && op.Cacheable {
@@ -978,7 +970,7 @@ func (p *pipeline) send(h Header, reply *resources.Buf, key uint64) {
 // on the pool and leave the interim, and so the client's credits, behind it.
 func (p *pipeline) interim(ctx context.Context, h Header, buf *resources.Buf) {
 	if buf == nil {
-		if buf = p.sh.reserveStatus(ctx, p.l.remote, p.l.close); buf == nil {
+		if buf = p.sh.reserveStatus(ctx, p.l.remote, p.st.Header.ReplyLen(h), p.l.close); buf == nil {
 			return
 		}
 	}

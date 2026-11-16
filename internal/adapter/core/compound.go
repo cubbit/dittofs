@@ -95,17 +95,23 @@ func judge(ms []member, decoded bool, r *Request) (whole bool, handles []vfs.Han
 // bounds and the compound's header and head, refused past a quarter of the
 // reply pool's ceiling; then each member in turn, through the row's checks,
 // Resolve and its chain, carrying r between them, the first failure ending
-// the reply, and one a NoReply row maps leaving it unanswered. The head goes
-// first and again, in place, with the final status and count.
+// the reply, and one a NoReply row maps leaving it unanswered. The head, which
+// the compound's own Invocation encodes, goes first and again, in place, with
+// the final status and count. A compound refused whole is answered its
+// status alone, whose head, with no results, its header's codec writes.
 func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *Op, inv Invocation, rest []byte, release func()) {
 	ctx, v, errs := tr.ctx, h.Version(), tb.Errors
+	if inv.EncodeHead == nil {
+		// A compound row whose Decode sets no head is a fault of the
+		// protocol's wiring, since no reply could carry the compound's
+		// status: the connection closes naming the row (RFC 20 §4.7).
+		release()
+		p.drop(tr, nil, fmt.Errorf("core: the %s row's Decode sets no EncodeHead", row.Name))
+		return
+	}
 	ms, at, code, err := members(row, inv, rest, v)
 	if at < 0 {
-		st := stageDecodeArgs
-		if errors.Is(err, ErrTooLong) {
-			st = stageRoute
-		}
-		p.refused(tr, st)
+		p.refused(tr, stageDecodeArgs)
 		p.finish(tr, h, tb, errs, row, Invocation{}, nil, err, release)
 		return
 	}
@@ -163,7 +169,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		return
 	}
 	head := len(reply.B)
-	if encErr := mt.EncodeHead(reply, 0, 0, v); encErr != nil {
+	if encErr := inv.EncodeHead(reply, 0, 0, v); encErr != nil {
 		reply.Release()
 		release()
 		p.drop(tr, nil, encErr)
@@ -210,7 +216,7 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 		last, count = err, count+1
 	}
 	again := &resources.Buf{B: reply.B[head : head : head+headLen]}
-	if encErr := mt.EncodeHead(again, status, count, v); encErr != nil || len(again.B) != headLen {
+	if encErr := inv.EncodeHead(again, status, count, v); encErr != nil || len(again.B) != headLen {
 		reply.Release()
 		release()
 		p.drop(tr, nil, fmt.Errorf("core: a compound's head of %d bytes rewritten as %d (%v)", headLen, len(again.B), encErr))
