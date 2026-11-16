@@ -70,9 +70,13 @@ start and names the record that replaced it.
   when they supplied the roots. The row's text is the RFC 18 plan's pull request's, word for
   word, which carries this clause too, so the two merge cleanly in either order.
 - **A2. RFC 13 §7 names the provider's full surface**: below the interface #4050 amends, which
-  this plan leaves as #4050 writes it, one block declares every method with its kind, owner and
-  `Seal`'s `Meta`, with `Meta` and `Version`, so the surface the RFC 18 plan's O9 freezes lives in
-  the RFC rather than only here.
+  this plan leaves as #4050 writes it, one block declares the built-in provider's methods,
+  `Resolve`, `Seal` and `Versions` with their kind and owner and `Seal` with its `Meta`, and
+  `Meta` and `Version`, so the surface the RFC 18 plan's O9 freezes lives in the RFC rather than
+  only here. Editing #4050's lines now would conflict with it, so the two blocks fold on this
+  plan's rebase after #4050 merges: the upper block becomes the one `SecretProvider`, its `Seal`
+  taking `m Meta`, and the lower keeps only what the built-in provider adds, a
+  `RotatingProvider` embedding it with `Versions` and `Prune`, then `Meta` and `Version`.
 
 The amendments this plan relies on land with the plans that need them:
 - the adapter `port` row and the `node-id` files, in #4050;
@@ -283,8 +287,8 @@ Out of scope, each named in O1:
 | E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 8 | 14.5 | A | E5; RFC 23's epics 3 and 5 (its X1) |
 | E3 | Settings | a delete and a cross-scope read, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 8 | 18.5 | B | E5; partly RFC 18's plan's epics 2 and 6 |
 | E4 | Secrets | `keyprovider` moved, `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, deletion | 6 | 14 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
-| E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check | 4 | 12 | team | E6; RFC 23's integration epic (its X3) |
-| E6 | E2E green | initialise-if-empty; Compose and `docker/` on `dfs init`; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
+| E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule | 4 | 12 | team | E6; RFC 23's integration epic (its X3) |
+| E6 | E2E green | initialise-if-empty; Compose and `docker/` on `dfs init`, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
 | | **Total** | | **35** | **75** | | |
 
 **Plan estimate: 35 subtasks, 75 man-days.**
@@ -596,8 +600,8 @@ Each carries a `ponytail:` marker at the code site:
     a registered node lags, with RFC 15.
   - *Epic:* 2.
 - **The cross-component rule is not built.** RFC 13 §6's example relates `adapters.smb.pending_timeout`
-  to `migration.freeze_timeout`, which does not exist yet. RFC 13 §6's port rule is the exception,
-  built in epic 5.
+  to `migration.freeze_timeout`, which does not exist yet. RFC 13 §6's port rule is built, in
+  epic 5, as code naming its three keys rather than as this rule field.
   - *Ceiling:* none until the second setting exists.
   - *Upgrade path:* a rule field on a section naming the settings it relates.
   - *Epic:* 3, as a marker only.
@@ -1130,9 +1134,10 @@ node, rotating a bind credential, a kind a node keeps resolved and reports in
 `NodeStatus.Secrets`, which this epic writes) pass; the §1.4 scenarios assigned to epic 5 pass;
 a bad row in one section and a live change in another, reconciled together, leave the first
 reported refused and the second applied; a next-write change is read by the component's next write;
-an adapter or port-mapper port set to the API's or the metrics listener's port refuses that adapter
-or the port mapper on that node, reported refused, while 0 never clashes (RFC 23's plan's §6.1 row
-on RFC 13 §6's port rule).
+RFC 13 §6's port rule (RFC 23's plan's §6.1 row) holds at both ends: a write making two of a
+node's three ports equal, an installation value against a node's override included, is refused,
+and two set to 0 pass; and a start whose port equals the bootstrap's API or metrics port takes
+that adapter or the port mapper out on that node, as RFC 13 §6 says, reported, the rest serving.
 
 **Expected content:**
 - `internal/node/settings.go`, the one table, with the adapters' section and every other section
@@ -1158,11 +1163,13 @@ on RFC 13 §6's port rule).
   as its owner is" requires.
 - RFC 23's own section (its plan's epic 3) named in the table.
 - D3's Appendix B test.
-- RFC 13 §6's port rule, as #4050 amends it, checked on every node a write reaches: the effective
-  `adapters.nfs.port`, `adapters.smb.port` and `sidecars.portmap.port` differ unless 0, and one
-  equal to the bootstrap's API or metrics port refuses that adapter or the port mapper on that
-  node, as a port conflict does. RFC 23's plan hands this check here in its §6.1 ledger (its O7),
-  beside the cross-component check (§4.3).
+- RFC 13 §6's port rule, as #4050 amends it, the first cross-component rule built: code naming
+  its three keys in epic 3's write check, run in the write's own transaction with the other
+  ports, at both scopes and on every node the write reaches, read as tracked reads, the route the
+  NetBIOS cross-check takes (O3). A clash with the bootstrap's API or metrics port is found at the
+  node's start, and what it takes out is RFC 13 §6's: the adapter, or the port mapper, a sidecar
+  that fails alone (RFC 20 §3.5). RFC 23's plan hands this here in its §6.1 ledger (its O7). It
+  rides on the write-path subtask above, inside the epic's estimate.
 
 ### Epic 6 — E2E green
 
@@ -1182,9 +1189,12 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
 - "§7 no secret out";
 - "§2.2 explicit initialisation";
 - "§5.5 dead node" (single-node part);
-- "§5 propagation" (single-node part);
-- the image's `HEALTHCHECK` on `https://localhost:8080/health/ready` passes on its first run, with
-  the certificate and key it starts with (RFC 23's plan's D13 and its §6.1 row naming this epic).
+- "§5 propagation" (single-node part).
+
+Outside those rows, the built image's `HEALTHCHECK` on `https://localhost:8080/health/ready`
+reports healthy on its first run, with the certificate and key it starts with (RFC 23's plan's D13
+and its §6.1 row naming this epic). No `dt` suite builds the image, so it is checked by
+`docker compose up` on `docker-compose.yml` until a suite does (§6.1).
 
 **Expected content:**
 - Initialise-if-empty, a development and test option, off by default (RFC 13 §2.2), landing with its
@@ -1205,9 +1215,12 @@ RFC 13 §9's single-node rows run against a server `node.New` builds, through th
   installation, with its first password, through `dfs init` before `dfs start`, as epic 2 did for
   `dfsbench` (D7).
 - The certificate and key the image and the launchers start with, host bootstrap facts (RFC 13
-  §2.2) supplied on their first run, so the API, bound on a non-loopback address, serves over TLS
-  (RFC 23 §5.3) and the image's `HEALTHCHECK` answers. RFC 23's plan hands this here in its §6.1
-  ledger (its D13).
+  §2.2), so the API, bound on a non-loopback address, serves over TLS (RFC 23 §5.3): the image
+  takes the pair mounted, as it takes every bootstrap fact, and the repository's launchers
+  generate a self-signed pair for their own installation. The certificate names `localhost` as
+  well as its host, since the probe calls `localhost` and verifies it. RFC 23's plan hands this
+  here in its §6.1 ledger (its D13). It rides on the launchers' subtask, inside the epic's
+  estimate.
 
 ## 6. Risks and open points
 
@@ -1284,6 +1297,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | A per-role passphrase variable for key files (§4.3's `ponytail:`) | `keyprovider` reads one variable | unowned | two roles need distinct passphrases |
 | Appendix B sections no component has declared (D3, O4) | each section is its component's plan's | each component's plan | that plan declares the section |
 | "§5 adapter port" (O1, §1.4) | needs a serving adapter and its rebuild | RFC 20 plan, epic 7 | RFC 20's epic 7 lands |
+| The image's first-run `HEALTHCHECK` in a `dt` suite (epic 6's **Done when:**) | no suite builds the image | unowned | a suite builds the image |
 
 ## 7. RFC coverage
 
@@ -1305,7 +1319,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | RFC 13 §5.3 | the engine's (RFC 8); the node's table carries its keys (E5) |
 | RFC 13 §5.4 | E3 (refusal to advance), E2 (join refusal), single node; cluster O1 |
 | RFC 13 §5.5 | E2 (single node); the raise call and cluster O1 |
-| RFC 13 §6 | E3; E6 (rows); cross-component rule §4.3 above |
+| RFC 13 §6 | E3; E5 (the port rule); E6 (rows); cross-component rule §4.3 above |
 | RFC 13 §7 | E4; material bullets RFC 5's, O1; reseal and wrapping-key rotation §4.3 above, O1 |
 | RFC 13 §8 | E2, E3, E4 (series); E5 (as a whole); provisioning series O1 |
 | RFC 13 §9 | E2, E3, E4, E5, E6 (rows); out rows §1.4, O1 |
