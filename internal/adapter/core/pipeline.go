@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	crand "crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -44,7 +45,8 @@ type shared struct {
 	clock    clock
 	log      *slog.Logger
 	tracer   trace.Tracer // nil: no spans
-	ids      *traceIDs    // a request's trace ID where no tracer draws one
+	sample   uint64       // Deps.SampleRatio as sampled compares it
+	ids      *traceIDs    // every request's trace ID
 	reply    *resources.BufPool
 }
 
@@ -55,7 +57,7 @@ type shared struct {
 func newShared(d adapter.Deps, reply *resources.BufPool) *shared {
 	var seed [32]byte
 	_, _ = crand.Read(seed[:])
-	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, reply: reply, ids: &traceIDs{src: rand.NewChaCha8(seed)}, panics: map[[2]string]*lineLimiter{}}
+	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, sample: sampleBound(d.SampleRatio), reply: reply, ids: &traceIDs{src: rand.NewChaCha8(seed)}, panics: map[[2]string]*lineLimiter{}}
 	if sh.log == nil {
 		sh.log = slog.New(slog.DiscardHandler)
 	}
@@ -685,23 +687,20 @@ type track struct {
 	stage     stage // the stage that refused it
 }
 
-// begin opens a request's span as serve takes its record, named after the
-// connection's label until Route names its operation. With no tracer, or one
-// that draws no trace ID, as a no-op provider does where tracing is off, the
-// request still draws one, which its log lines carry (RFC 25 §5.3).
-//
-// ponytail: Start runs for every request, so an unsampled request pays what
-// the tracer's Start allocates, its span and context, against RFC 25 §6.3's
-// none. Sample before Start, with the sampler the provider holds, when the
-// request path's allocations are counted.
+// begin draws a request's trace ID as serve takes its record, which its log
+// lines carry (RFC 25 §5.3), and samples the request on it (RFC 20 §10.2).
+// Only a sampled request calls the tracer, so an unsampled one allocates
+// nothing for tracing (RFC 25 §6.3). Its span, named after the connection's
+// label until Route names its operation, takes the drawn ID through the
+// root's ID generator; with a provider that draws its own, the request's
+// lines carry the span's.
 func (p *pipeline) begin(rec *resources.Buf) *track {
-	tr := &track{ctx: p.ctx, label: p.label, protocol: p.st.Protocol, bytes: len(rec.B)}
-	if p.sh.tracer != nil {
-		tr.ctx, tr.span = p.sh.tracer.Start(p.ctx, p.name)
-		tr.id = tr.span.SpanContext().TraceID()
-	}
-	if !tr.id.IsValid() {
-		tr.id = p.sh.ids.next()
+	tr := &track{ctx: p.ctx, label: p.label, protocol: p.st.Protocol, bytes: len(rec.B), id: p.sh.ids.next()}
+	if p.sh.tracer != nil && sampled(tr.id, p.sh.sample) {
+		tr.ctx, tr.span = p.sh.tracer.Start(adapter.ContextWithTraceID(p.ctx, tr.id), p.name)
+		if id := tr.span.SpanContext().TraceID(); id.IsValid() {
+			tr.id = id
+		}
 	}
 	return tr
 }
@@ -834,7 +833,26 @@ func reservationStage(err error) (stage, bool) {
 	return 0, false
 }
 
-// traceIDs draws a request's trace ID on a server with no tracer.
+// sampleBound is ratio as sampled compares it: the tracing API's ratio rule
+// scaled to 2^63, every ID at 1 or more, none at 0 or less.
+func sampleBound(ratio float64) uint64 {
+	switch {
+	case ratio >= 1:
+		return 1 << 63
+	case ratio > 0:
+		return uint64(ratio * (1 << 63))
+	}
+	return 0
+}
+
+// sampled says whether the request whose trace ID is id is traced, by the
+// rule the tracing API's ratio sampler applies to the same ID: its low eight
+// bytes, shifted right by one, below bound.
+func sampled(id trace.TraceID, bound uint64) bool {
+	return binary.BigEndian.Uint64(id[8:])>>1 < bound
+}
+
+// traceIDs draws every request's trace ID.
 type traceIDs struct {
 	mu  sync.Mutex
 	src *rand.ChaCha8

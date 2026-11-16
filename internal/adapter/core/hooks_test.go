@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
@@ -225,3 +227,11 @@ func OnBatch(t *TestWriter, fn func(n int)) { t.w.onBatch = fn }
 // Pause is the writer's bound as the reader sees it: a channel closed once the
 // messages held fall below it, and whether they are at it.
 func Pause(t *TestWriter) (<-chan struct{}, bool) { return t.w.pause() }
+
+// Track opens and ends one request's tracking over rec, as serve and a
+// request that sent nothing do.
+func (p *pipeline) Track(rec *resources.Buf) { p.end(p.begin(rec), false, 0, 0, nil) }
+
+// Sampled is the pipeline's verdict on a request whose trace ID is id, under
+// a SampleRatio of ratio.
+func Sampled(id trace.TraceID, ratio float64) bool { return sampled(id, sampleBound(ratio)) }

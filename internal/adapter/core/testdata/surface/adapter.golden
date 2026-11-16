@@ -9,6 +9,10 @@ func (h Health) Ready() bool
 
 func (s State) String() string
 
+func ContextWithTraceID(ctx context.Context, id trace.TraceID) context.Context
+
+func TraceIDFromContext(ctx context.Context) (trace.TraceID, bool)
+
 type Adapter interface {
 	Start(ctx context.Context) error
 
@@ -36,7 +40,9 @@ type Deps struct {
 	Budgets *resources.Budgets
 	Metrics *metrics.Registry
 	Tracer  trace.Tracer
-	Logger  *slog.Logger
+
+	SampleRatio float64
+	Logger      *slog.Logger
 
 	Watch func(loop string) Loop
 

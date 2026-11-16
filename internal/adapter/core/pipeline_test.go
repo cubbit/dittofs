@@ -1104,7 +1104,7 @@ func TestTheTwoLabels(t *testing.T) {
 func TestEachRequestHasOneSpan(t *testing.T) {
 	spans := tracetest.NewSpanRecorder()
 	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
-	s := newSeamWith(t, testproto.New(adapter.Deps{}), 1<<20, adapter.Deps{Tracer: tracer})
+	s := newSeamWith(t, testproto.New(adapter.Deps{}), 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1})
 	echo := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("hi")})
 	s.serveBody(echo)
 	s.read()
@@ -1196,7 +1196,7 @@ func TestARefusalCarriesNoResult(t *testing.T) {
 	spans := tracetest.NewSpanRecorder()
 	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
 	spent := &vfs.Delay{Cause: vfs.DelayResources}
-	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Flow = refusingFlow{spent} }}, 1<<20, adapter.Deps{Tracer: tracer})
+	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Flow = refusingFlow{spent} }}, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1})
 	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
 	s.read()
 	s.finish()
@@ -1222,7 +1222,7 @@ func TestAReplayHitsSpanCarriesNoStatus(t *testing.T) {
 	cached := body(testproto.New(adapter.Deps{}).Framer(), testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 42})
 	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}).Bare(), func(st *core.Stages) {
 		st.Replay = cachedReplay{replyPool, cached}
-	}}, 1<<20, adapter.Deps{Tracer: tracer})
+	}}, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1})
 	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 42})
 	s.read()
 	s.finish()
@@ -1249,9 +1249,10 @@ func TestLogLinesCarryTheTraceID(t *testing.T) {
 		d    adapter.Deps
 		span bool
 	}{
-		"a tracer":               {adapter.Deps{Tracer: tracer}, true},
+		"a tracer":               {adapter.Deps{Tracer: tracer, SampleRatio: 1}, true},
 		"no tracer":              {adapter.Deps{}, false},
-		"a tracer drawing no ID": {adapter.Deps{Tracer: noop.NewTracerProvider().Tracer("test")}, false},
+		"a tracer drawing no ID": {adapter.Deps{Tracer: noop.NewTracerProvider().Tracer("test"), SampleRatio: 1}, false},
+		"a tracer sampling none": {adapter.Deps{Tracer: tracer}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			d := c.d
@@ -1266,6 +1267,11 @@ func TestLogLinesCarryTheTraceID(t *testing.T) {
 			}
 			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 3, ID: 3})
 			s.read()
+			s.finish()
+			traced := map[string]bool{}
+			for _, sp := range spans.Ended() {
+				traced[sp.SpanContext().TraceID().String()] = true
+			}
 			warns, debugs := logs.at(t, "WARN"), logs.at(t, "DEBUG")
 			if len(warns) != 1 {
 				t.Errorf("two refusals at Unwrap logged %d warnings, want one per connection", len(warns))
@@ -1280,6 +1286,9 @@ func TestLogLinesCarryTheTraceID(t *testing.T) {
 				id, has := rec["span_id"].(string)
 				if c.span && (!has || len(id) != 16) {
 					t.Errorf("a line logged under a span carries span ID %q", id)
+				}
+				if c.span && !traced[rec["trace_id"].(string)] {
+					t.Errorf("a line logged under a span carries trace ID %v, not its span's", rec["trace_id"])
 				}
 				if !c.span {
 					if _, ok := rec["span_id"]; ok {
