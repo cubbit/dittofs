@@ -304,7 +304,7 @@ pkg/vfs/vfstest/memory/memory.go  T3.6  Deps.Identity, Auth and Names from ident
 pkg/identity/arch_test.go         T3.6  only vfstest/memory imports identitymem, with its seed
 pkg/metadata/kvstore/
   principals.go       T3.5  Grant as RFC 16 §3 declares it
-  shares.go           T3.6  consumes ShareIndex.Share's GrantVersion (RFC 23 epic 2's T2.3)
+  shares.go           T3.6  consumes ShareIndex.Share's Share.GrantVersion (RFC 23 epic 2's T2.3)
   kvstoretest/        T3.5  rows for the grant read
 ```
 
@@ -459,9 +459,9 @@ pkg/metadata/kvstore/
 - **Track:** A. **Depends on:** T3.5. RFC 23's plan's epic 2's T2.3 (`S‖id‖gv` written); E8's T8.1 (identity in `node.New`).
 - **Covers:** R6, R27, R35, R38; D9's refusal.
 - **Deliverables:** the `SharePolicy` admission hands `Resolve`, built from the share and
-  policy `ShareIndex.Share` reads in one view, with the `GrantVersion` RFC 23's plan's epic 2's
-  T2.3 returns from the same read, so no call makes a second read and T3.6 adds no `Principals`
-  method; `S‖id‖gv` as RFC 23's plan's epic 2 writes it (T2.3 for `SetGrant` and
+  policy `ShareIndex.Share` reads in one view, keyed on the `entity.Share.GrantVersion` that read
+  returns (RFC 23's plan's epic 2's T2.3; `shareIn` reads `S‖id‖gv` in the same view), so no call
+  makes a second read and T3.6 adds no `Principals` method; `S‖id‖gv` as RFC 23's plan's epic 2 writes it (T2.3 for `SetGrant` and
   `DeleteGrant`, T2.11 in each deletion batch), so T3.6 depends on its T2.3; admission's
   step 4 calling `vfs.Deps.Identity.Resolve`, `vfs.New` refusing a `Deps` without it;
   `authz.Caller` rebuilt on `identity.Caller`, converted to `entity.Identity` for the
