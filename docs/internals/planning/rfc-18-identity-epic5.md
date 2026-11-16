@@ -97,7 +97,7 @@ ticket's sign-in, captured; `FuzzPAC` and `FuzzAPReq`.
   adapter's, as RFC 18 §6.1 says, with no second check at `Resolve` (E8's D7, pending).
 - The keytab's place in the node's `State`, read from `Versions` at each reconcile: E8. So is a
   live sign-in in `integration/ad-dc` through the node, the only package outside
-  `internal/identity` that may import the server (RFC 18 §2.7). Rebasing the fixture's branches
+  `internal/identity` that may import the server (RFC 18 §2.7). Moving the fixture's branches
   onto `feat/storage-v2` and the cell's place in its plan job's select: E6's T6.1 (§9).
 - The cross-epic clauses of "PAC bound to the record" (a reused name through step 3) and
   "disabled directory account" (at sign-in): E8's T8.5, on this epic's binding. The clauses E8
@@ -395,8 +395,10 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   fixture's domain controller issues for an AES-only service name), and it holds at the KDC the
   AES-only half of R2 and R6 that T5.11's ticket relies on.
 - **Deliverables:** built, not merged, on the branch `test/ad-dc-kerberos` (321c816bb, 6b541fa1d,
-  b1c51277b), stacked on `test/ad-dc-network-tls` (9207ec946, f86998cd3, 24073d347), both on GitHub
-  and both rebased onto `feat/storage-v2` by E6's T6.1: the `cifs/` and `nfs/` service names moved
+  b1c51277b), stacked on `test/ad-dc-network-tls` (9207ec946, f86998cd3, 24073d347); E6's T6.1
+  moved both onto `feat/storage-v2`, where they are open as `test/ad-dc-kerberos-v2` (#4421),
+  stacked on `test/ad-dc-network-tls-v2` (#4420). What is left is merging #4421 after #4420,
+  rebased on E7's #4422 if that merges first. The part: the `cifs/` and `nfs/` service names moved
   off Administrator onto an account of their own, `dittofs-svc`, with
   `msDS-SupportedEncryptionTypes` `0x18`, so the exported keytab holds no RC4 key (`entrypoint.sh`,
   `ad_dc_keytab_test.go`); `capture-pacs.sh`, which runs `TestADPACCapture` with
@@ -735,8 +737,9 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   only once `Versions` no longer lists it, else returns to try again. A node reports the version
   it now holds, the current one (RFC 13 §7; E8's report), so `Prune` drops the old version once
   every node reports the new. RFC 18 §3.3's `ponytail:` on the retention constant. Consumed by E8,
-  which registers it; by RFC 23's plan, whose action starts the operation; and by E7, whose
-  machine password prunes the same way.
+  which registers it; by RFC 23's plan, whose action starts the operation. E7's machine password
+  differs: its derived keys expire at this retention, and its secret is pruned at the next
+  rotation's first turn (E7's D14).
 - **Acceptance criteria:**
   - A retirement resumed after a restart waits out the retention from its recorded start, not
     from the restart.
@@ -825,7 +828,7 @@ domain controller's captured AP-REQ does.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T5.1 | 2 | — | the fixture's Kerberos part, built on its branch, not merged |
+| 1 | T5.1 | 2 | #4420 | the fixture's Kerberos part, open on `feat/storage-v2` as #4421 |
 | 2 | T5.8a | 0.75 | S1 | the field RFC 23's plan's epic 4's T4.11 writes, ahead of the PAC work |
 | 3 | T5.2, T5.3, T5.4 | 6 | E2's T2.4 | the keytab and the AP-REQ's checks, the surface E7 builds on |
 | 4 | T5.5, T5.6, T5.7 | 6.25 | PR 3, PR 1, E4's T4.5, E3's T3.5 | a Kerberos sign-in end to end, with its PAC verified and its SIDs filtered |
@@ -906,12 +909,10 @@ the version this document was written against.
   `Versions`) and, under D13's recommendation, on RFC 23's plan's epic 3; T5.8b waits on E6's T6.3
   (D14) and T5.9 on E6's T6.2 (D12).
 - The plan has the fixture's Kerberos part take `integration/ad-dc` out of the plan job's filter on
-  `feat/storage-v2`. The built part is on its branch, `test/ad-dc-kerberos`, cut from `develop`,
-  where no filter exists, and on
-  `feat/storage-v2` the cell's tests still drive v1's SMB path. E6's T6.1 owns the move: it rebases
-  `test/ad-dc-network-tls` and this part's `test/ad-dc-kerberos`, stacked on it, onto
-  `feat/storage-v2` once RFC 23's plan's epic 1 (#4334) has merged, and checks the cell in the
-  plan job's select in `tests.yml` there.
+  `feat/storage-v2`. The built part was cut from `develop`, where no filter exists. E6's T6.1 owns
+  the move: once RFC 23's plan's epic 1 (#4334) had merged, it moved `test/ad-dc-network-tls` and
+  this part's `test/ad-dc-kerberos`, stacked on it, onto `feat/storage-v2` as #4420 and #4421, and
+  #4420 lifts the `V2` skip that dropped the cell from the plan job's select in `tests.yml`.
 - The plan's **Done when:** runs alice's Samba-issued ticket in `integration/ad-dc`. A test there
   cannot reach `SignIn` before E8 composes the node, since only `internal/node` imports the
   server, so T5.11 replays a captured AP-REQ in `unit` and the live sign-in moves to E8, with
