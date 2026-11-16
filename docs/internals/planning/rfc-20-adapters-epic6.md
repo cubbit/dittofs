@@ -13,16 +13,17 @@ build), §6.10's codec micro row (the operation codecs' gates), RFC 22 §3.1 and
 (`NEGOTIATE` and credits), RFC 24 §3.1 (buffer classes); MS-SMB2 2.1, 2.2.1 and 2.2.2, and
 RFC 5531 §9, §11 and Appendix A, for the bytes.
 **Track:** C.
-**Epic 6 estimate: 6 subtasks, 12 man-days.**
+**Epic 6 estimate: 6 subtasks, 13.75 man-days.**
 **Depends on:** **S2, `testproto` and the import test in CI**: E1's frozen surface of `core`,
 `pkg/adapter/settings` and the two public `New` stubs; E2's import test with its `wire` rule,
 `adaptertest.CheckLeaks` and the `unit/adapter-allocs` cell; E5's T5.7 and T5.2a, which gave
-`NewErrorTable`, `NewOpTable` and `Map` their bodies and `ErrDecode`. **S3**, `core` serves
-`testproto` end to end, for the two subtasks that wire `New` to the real runner, T6.3b and
-T6.4b, and with it E5's T5.1a and T5.9, which add the `Stages.Errors`, `Stages.Protocol` and
-`OpTable.Protocol` that `NewConn` and the tables set. **The RFC amendment of §9's G1
-to G10**, for the parts each subtask names, and `core.Framer` and `core.HeaderCodec` as it
-amends them.
+`NewErrorTable`, `NewOpTable` and `Map` their bodies and `ErrDecode`. **E5's T5.1a**, which
+lands `HeaderCodec.Args` and `ReplyLen` and `Framer.Frame`, for T6.3a and T6.4a. **S3**, `core`
+serves `testproto` end to end, for the two subtasks that wire the framer and `New` to the real
+runner, T6.3b and T6.4b: E4's reader brings `Framer.BodyLen`'s `last` and `MaxRecord`, and E5's
+T5.1a and T5.9 the `Stages.Errors`, `Stages.Protocol` and `OpTable.Protocol` that `NewConn`
+and the tables set. **The RFC 20 amendment PR on `docs/rfc-20-e6-gaps`**, which settles §9's
+G1 to G10.
 **Blocks:** the RFC 22 plan: its epic 2, whose handler harness decodes T6.1's header and which
 starts at RFC 20's S2 with T6.1; its SMB scaffold point, which is RFC 20's S3 with T6.3b; its
 T1.2, which moves T6.3b's empty table to `smb/ops`; its T3.1, T3.4 and T3.6, which extend
@@ -77,16 +78,16 @@ same way against `nfs/wire` and T6.4b's tables.
 each with its tests; the bodies of `pkg/adapter/smb.New` and `pkg/adapter/nfs.New`, each a call
 into its implementation, and their tests moved from "not built" to a served adapter; each
 `wire` package's golden vectors and fuzz target; each header stage's allocation gate,
-registered in `unit/adapter-allocs`; the edits to the program's implementation plan and to the
-RFC 22 plan that §9 proposes.
+registered in `unit/adapter-allocs`. The edits §9 proposes to the program's implementation
+plan and to the RFC 22 plan are made by other pull requests, not this epic.
 
 ### 1.2 Out of scope
 
 - `NEGOTIATE`, its pick of the highest dialect offered inside `Conn.Settings()`'s `Dialects`,
   and the dialect and level a connection then carries: the RFC 22 plan's T3.2 and its epic 1's
-  request state (§9 proposes that T3.2 name the range). This epic answers `NEGOTIATE` not
-  supported, as every command, and an SMB connection, which never authenticates, closes at its
-  handshake deadline.
+  request state (§9 proposes that the RFC 22 plan's T3.2 name the range). This epic answers
+  `NEGOTIATE` not supported, as every command, and an SMB connection, which never
+  authenticates, closes at its handshake deadline.
 - SMB's `Security`, `Flow`, `Replay` and `HoldCodec`, the transform header, SMB1's
   multi-protocol negotiate and the first authenticated session's `Conn.Established`: the
   ledger's row "SMB transform header, signing, encryption, credits, message-ID window,
@@ -168,7 +169,7 @@ cited by number and title, and how it applies here or why it does not.
 | rule 6, nothing deferred is lost | T6.3b, T6.4a, T6.4b | the ledger rows §1.2 cites; the rows §9 proposes for each request's `Identity` and for the TLS row's wording |
 | rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | all | each decision of §4 leaves the marker it names at its code site. None of RFC 20's own notes that the rule lists is this epic's |
 | rule 8, a test must be able to fail ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests)) | all | each test in §6 names the change that fails it; a golden vector is written from the specification or cut from a reference capture, never produced by the codec under test |
-| rule 9, a symbol is exported only if RFC 20's interface uses it | all | the public surface does not change: `smb.golden` and `nfs.golden` keep their one line, and `core` gains nothing. Inside `internal/adapter/<protocol>`, `wire` exports what `protocol` calls, `protocol` exports `Protocol`, `New` and, for NFS, `Tables` (RFC 20 §4.8), which `smb.go` and `nfs.go` call, and each `New` returns the `*core.Server` its public `New` hands back. A `wire` accessor nothing here calls is exported by the RFC 21 or RFC 22 plan's subtask that first reads it |
+| rule 9, a symbol is exported only if RFC 20's interface uses it | all | the public surface does not change: `smb.golden` and `nfs.golden` keep their one line. `core` gains `Framer.Frame` and `HeaderCodec.Args` and `ReplyLen` with E5's T5.1a, and `Framer.BodyLen`'s `last` and `MaxRecord` with E4's reader, as RFC 20 §4.7 is amended; this epic implements them and exports nothing in `core`. Inside `internal/adapter/<protocol>`, `wire` exports what `protocol` calls, `protocol` exports `Protocol`, `New` and, for NFS, `Tables` (RFC 20 §4.8), which `smb.go` and `nfs.go` call, and each `New` returns the `*core.Server` its public `New` hands back. A `wire` accessor nothing here calls is exported by the RFC 21 or RFC 22 plan's subtask that first reads it |
 | rule 10, each subtask creates only what it declares | all | no `ops/`, `callbacks.go`, `gss/`, `translate/` or `dcerpc/`; no request encoder in `wire`, since nothing in this epic sends a request; the empty tables live in `smb.go` and `nfs.go`; each new package lands with a test that can fail, as `lint-repo`'s new-package check requires |
 
 ## 3. Requirements and invariants
@@ -179,10 +180,10 @@ cited by number and title, and how it applies here or why it does not.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | A record's length is read from its header and checked against the protocol's cap before anything is reserved for it; a length past the cap is refused, and the connection closes (the cap's figure: G4) | MUST | §4.1's frame row, §5.2; RFC 24 §3.2 | T6.1, T6.2, T6.3b, T6.4b |
+| R1 | A record's length is read from its header and checked against the protocol's cap, 1 MiB and 4 KiB for an RPC record and 8 MiB and 4 KiB for an SMB message, before anything is reserved for it; a length past it is refused, and the connection closes | MUST | §4.1's frame row, §5.2; RFC 24 §3.2; RFC 21 §2.3; RFC 22 §3.3 | T6.1, T6.2, T6.3b, T6.4b |
 | R2 | A broken NetBIOS header, MS-SMB2 2.1's Direct TCP header whose first byte is not zero, closes the connection | MUST | §5.2; MS-SMB2 2.1 | T6.1, T6.3b |
-| R3 | An RPC record mark gives one fragment's length and whether it is the last; a record in several fragments is reserved at the class of the protocol's largest request before its first fragment is read, and a fragment that would take its total past the cap closes the connection. The record mark's half is here; the reader's reservation, fragment count and deadline are E4's; how a `Framer` says a fragment is not the last is G3 | MUST | RFC 24 §3.2; §4.7 (`Framer`) | T6.2, T6.4a |
-| R4 | Every record sent carries its protocol's frame header: the Direct TCP header, or a record mark with its last-fragment bit set (who writes it: G1) | MUST | MS-SMB2 2.1; RFC 5531 §11 | T6.1, T6.2, T6.3b, T6.4b |
+| R3 | An RPC record mark gives one fragment's length and whether it ends the record (`Framer.BodyLen`), and a record comes in at most 64 fragments (`Framer.MaxRecord`); the reader reserves the class holding the cap before a fragment that does not end its record, counts the fragments and closes past either, which is E4's | MUST | RFC 24 §3.2; §4.7 (`Framer`); RFC 21 §2.3 | T6.2, T6.4b |
+| R4 | Every record sent carries its protocol's frame header, the Direct TCP header or a record mark with its last-fragment bit set, which `Framer.Frame` writes and the writer sends after `Wrap` | MUST | §4.7 (`Framer.Frame`), §6.2; MS-SMB2 2.1; RFC 5531 §11 | T6.1, T6.2, T6.3b, T6.4b |
 
 **Codecs**
 
@@ -193,13 +194,17 @@ cited by number and title, and how it applies here or why it does not.
 | R7 | Operation codes, status codes, flag bits and structure sizes are taken from the specification once, in one place per protocol, and every use names them | invariant | §5.1 | T6.1, T6.2 |
 | R8 | A decoder checks every length, count and offset against the bytes remaining and the protocol's cap before it allocates or reads: an RPC credential's or verifier's body (at most 400 bytes), an `AUTH_SYS` machine name (at most 255 bytes) and group list (at most 16), a `COMPOUND`'s tag, an SMB2 `NextCommand` | MUST | §5.2, §9 A8; RFC 21 §11.1; RFC 5531's `opaque_auth`; MS-SMB2 2.2.1 | T6.1, T6.2 |
 | R9 | A decoder refuses trailing bytes the protocol forbids and accepts those it allows: SMB's 8-byte alignment of a chained message, XDR's 4-byte padding of an opaque | invariant | §5.2 | T6.1, T6.2 |
-| R10 | A header that does not decode comes back with its error when enough decoded to address a reply, and is answered from the `ErrDecode` row; with no header, nothing is answered and the connection closes (which malformations the protocols' RFCs narrow to a close: G7) | MUST | §4.1's decode-header row, §4.7 (`HeaderCodec.Decode`) | T6.3a, T6.4a, T6.3b, T6.4b |
-| R11 | `HeaderCodec.Encode` writes the reply's header for its status, and what a reply carrying that status alone needs: for NFS's `PROG_MISMATCH`, the lowest and highest versions served, from the connection's range (SMB's error body and NFSv4's `COMPOUND` answer: G2, G5) | MUST | §4.7 (`HeaderCodec`, the decision on `PROG_MISMATCH`'s carrier), §4.8 | T6.3a, T6.4a |
+| R10 | A header that does not decode comes back with its error when enough decoded to address a reply, and is answered from the `ErrDecode` row; with no header, nothing is answered and the connection closes, as R39 and R40 list for each protocol | MUST | §4.1's decode-header row, §4.7 (`HeaderCodec.Decode`); RFC 22 §16.5; RFC 21 §11.5 | T6.3a, T6.4a, T6.3b, T6.4b |
+| R11 | `HeaderCodec.Encode` writes the reply's header for its status and, for a failure answered with a status alone, what that status needs: SMB's error response, `PROG_MISMATCH`'s and `RPC_MISMATCH`'s `mismatch_info`, an NFSv4 `COMPOUND`'s status, tag and empty results; a command's encoder writes the pairs RFC 22 §16.5 leaves to it | MUST | §4.7 (`HeaderCodec.Encode`, `Invocation.Encode`); RFC 22 §16.5; RFC 21 §11.5 | T6.3a, T6.4a |
 | R12 | `Chain` points a reply at the one appended after it, padded to 8 (SMB2's `NextCommand`), and does nothing where nothing chains (NFS) | MUST | §4.7 (`HeaderCodec.Chain`) | T6.1, T6.3a, T6.4a |
 | R13 | A decoded `Header` reports the code its table is keyed by, the version or dialect, the offset in the record of the next message chained after it (0 for the last, and for every NFS call), and whether it takes its handles from the member before it (never, for NFS) | MUST | §4.7 (`Header`, `HeaderCodec.Decode`) | T6.3a, T6.4a |
-| R14 | For NFSv4, a `COMPOUND`'s `Version` is its minor version, chosen before any argument is decoded (where it is read: G5) | invariant | §4.7 (`Version`, `Range`), §4.8 | T6.2, T6.4a |
+| R14 | For NFSv4, a `COMPOUND`'s `Version` is its minor version, read with its tag and the RPC header before any argument is decoded | invariant | §4.7 (`Version`, `Range`), §4.1's decode-header stage, §4.8 | T6.2, T6.4a |
 | R34 | `HeaderCodec.Args` gives the argument bytes of a message as `Decode` and `Unwrap` left them | MUST | §4.7 (`HeaderCodec`, the pipeline sketch) | T6.3a, T6.4a |
-| R35 | `HeaderCodec.ReplyLen` is the most a reply's header, and the transform `Wrap` adds, add to its arguments; the pipeline reserves the bound and it | MUST | §4.7 (`HeaderCodec`, `Invocation.Bound`, the pipeline sketch) | T6.3a, T6.4a |
+| R35 | `HeaderCodec.ReplyLen` is the most `Encode` writes for a message, a status-alone body included, with `Chain`'s padding and the transform `Wrap` adds; the pipeline reserves the operation's bound and it | MUST | §4.7 (`HeaderCodec`, `Invocation.Bound`, the pipeline sketch) | T6.3a, T6.4a |
+| R38 | A header refused for its own `NextCommand` reports, as `Next`, a step the walk refuses: the chain ends there, and the connection closes once the replies before it are sent | MUST | §4.7 (`HeaderCodec.Decode`); RFC 22 §16.5 | T6.3a, T6.3b |
+| R39 | A message shorter than the 64-byte SMB2 header, a command code MS-SMB2 2.2.1 does not define, and a protocol ID the server does not read close the connection with no error response | MUST | RFC 22 §16.5; MS-SMB2 3.3.5.2.6 | T6.1, T6.3b |
+| R40 | A record too short for an RPC call's transaction ID and message type closes the connection; a call whose later fields do not decode, a credential or verifier past the record or past 400 bytes among them, is answered `GARBAGE_ARGS` | MUST | RFC 21 §11.5, §11.1; RFC 5531 §8.2 | T6.2, T6.4a |
+| R41 | A procedure of NFS version 4 other than `COMPOUND` carries no minor version and has `Version` 0 | invariant | §4.7 (`Version`) | T6.4a |
 
 **Codec tests**
 
@@ -212,11 +217,13 @@ cited by number and title, and how it applies here or why it does not.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R17 | NFS: the router maps (program, version) to one table per pair; an unknown program is answered `PROG_UNAVAIL`, a known program's version not served `PROG_MISMATCH` naming the lowest and highest served, and a procedure its table lacks `PROC_UNAVAIL` (a known program with no version served: G6) | MUST | §4.8; RFC 21 §2.1 | T6.4a, T6.4b |
+| R17 | NFS: the router maps (program, version) to one table per pair; an unknown program, or one with no version served, is answered `PROG_UNAVAIL`, a known program's version not served `PROG_MISMATCH` naming the lowest and highest served, and a procedure its table lacks `PROC_UNAVAIL` | MUST | §4.8; RFC 21 §2.1 | T6.4a, T6.4b |
 | R18 | The range served is read from the connection's settings snapshot (`Conn.Settings`), never from `New`'s copy, so a connection keeps the range it was accepted with; NFSv3's table, MOUNT, NLM and NSM are served only when `"3"` is in the range | MUST | §4.8, §9 A20; RFC 21 §2.1 | T6.4a, T6.4b |
-| R19 | A `COMPOUND` whose minor version is not served is answered `NFS4ERR_MINOR_VERS_MISMATCH`, once, with no operation run (where the check runs: G5) | MUST | §4.8; RFC 21 §2.1, §11.5 | T6.4a, T6.4b |
+| R19 | A `COMPOUND` whose minor version is not served is answered `NFS4ERR_MINOR_VERS_MISMATCH`, once, with its tag and no operation run: the router refuses it with `ErrVersion` and the version 4 table | MUST | §4.8; RFC 21 §2.1, §11.5 | T6.4a, T6.4b |
 | R20 | The minor version is the client's choice per `COMPOUND`; none is remembered per client or per connection | MUST NOT | RFC 21 §2.1 | T6.4a |
-| R21 | A credential that does not decode, an `AUTH_SYS` credential over RFC 5531's limits, and every flavour but `AUTH_NONE`, `AUTH_SYS` and `RPCSEC_GSS` are rejected `AUTH_BADCRED` and run nothing; none is treated as anonymous (a credential whose body runs past the record, and where the check runs: G6) | MUST | RFC 21 §11.1 | T6.2, T6.4a, T6.4b |
+| R21 | A credential whose body does not decode inside its opaque, an `AUTH_SYS` credential over RFC 5531's limits, and every flavour but `AUTH_NONE`, `AUTH_SYS` and `RPCSEC_GSS` are rejected `AUTH_BADCRED` at route and run nothing; none is treated as anonymous | MUST | RFC 21 §11.1; §4.1's route row | T6.2, T6.4a, T6.4b |
+| R36 | A verifier other than an empty `AUTH_NONE` beside an `AUTH_NONE` or `AUTH_SYS` credential is rejected `AUTH_BADVERF` | MUST | RFC 21 §11.1; §4.1's route row | T6.4a |
+| R37 | A message that is not a call, and answers no callback sent on the connection, is dropped unanswered through a `NoReply` row | MUST | §4.1's route row | T6.4a |
 | R22 | NFS, MOUNT, NLM and NSM are served over TCP; NLM and NSM are served over UDP too while RFC 20 §11's question 3 stands, which the ledger's rows "`core`'s datagram listener" and "MOUNT, NLM, NSM, `SM_NOTIFY`; NLM and NSM over UDP" defer | MUST | RFC 21 §2.2 | T6.4b |
 | R23 | An NFS connection's first routed call ends its handshake deadline (`Conn.Established`); an SMB connection's first authenticated session does, the RFC 22 plan's | MUST | §4.7 (`Conn.Established`), §6.4 | T6.4a, T6.4b |
 | R24 | SMB has one table for every dialect | MUST | §4.8 | T6.3a, T6.3b |
@@ -263,7 +270,8 @@ reads, so every loopback test fails.
   may not import `core` (§2.5's purity, E2's import test), so the types that implement
   `core.Header` live in `protocol`, over `wire`'s accessors.
   - **SMB:** the header at offset 0 is a value holding one pointer to the record's first 64
-    bytes, which an interface holds with no allocation. A chained member past the first must
+    bytes, which an interface holds with no allocation; a message shorter than 64 bytes has no
+    header and closes the connection (RFC 22 §16.5). A chained member past the first must
     report the absolute offset of the next (`Header.Next`), while SMB2's `NextCommand` counts
     from its own header, so it carries its offset too: one allocation per member past the
     first. The other way, writing the offset into the checked protocol ID, allocates nothing
@@ -293,8 +301,7 @@ reads, so every loopback test fails.
   already in the repository.** MS-SMB2 and RFC 5531 give these headers no byte examples, so
   some vectors are written byte by byte from the field tables, each field commented with its
   section; the rest are cut, with `tshark`, from `test/pcap-corpus`: `smb-sd/reference.pcap`, a
-  client against Samba (frame 4, a `NEGOTIATE` request; frame 6, its response; frame 9, a
-  `SESSION_SETUP` response under `STATUS_MORE_PROCESSING_REQUIRED`), and
+  client against Samba (frame 4, a `NEGOTIATE` request; frame 6, its response), and
   `nfsv4-acl/reference.pcap`, a Linux client against the Linux kernel server (frame 4, an NFSv4
   `NULL` call under `AUTH_NONE`; frame 6, its reply; frame 8, a `COMPOUND` under `AUTH_SYS` of
   minor version 0). Each file names the capture and the frame. They live under each `wire`
@@ -304,8 +311,8 @@ reads, so every loopback test fails.
   least 1, up to the connection's target) needs the credit count that the RFC 22 plan's `Flow`
   (its T3.6) keeps. **`wire`'s reply encoder takes the grant as an argument; the header stage
   passes 1, which never takes a client past any target and keeps its balance above zero.**
-  `ponytail:` at the call, naming RFC 22 §3.3's rule and the ledger's row for credits as the
-  upgrade. No prior art sought.
+  `ponytail:` at the call, naming the grant RFC 22 §3.3 states, which needs the connection's
+  credit count, as the upgrade. No prior art sought.
 - **D5, `RPCSEC_GSS` is refused as a flavour not served, until the GSS stage.** With no
   `Security` stage for it, the router meets flavour 6 as any flavour it does not serve, and
   answers it `AUTH_BADCRED`, as RFC 21 §11.1 answers the others. The RFC 21 plan's GSS stage
@@ -317,8 +324,10 @@ reads, so every loopback test fails.
   `Conn.StartTLS` (the ledger's row "NFS-over-TLS"). **`New` loads the certificate files, as
   E1's stub does, so an unloadable file is refused naming it, and then refuses `opportunistic`
   and `require` with an error wrapping `errors.ErrUnsupported`.** E1's test of the files keeps
-  its meaning. `decision:` at the refusal, withdrawn by `StartTLS`. No prior art sought: the
-  rule is RFC 20 §3.4's.
+  its meaning. `decision:` at the refusal, withdrawn by `StartTLS`. A `Reconfigure` from `off`
+  to another mode is refused by the same rule, RFC 20 §3.6 having `Reconfigure` load the files
+  before the swap: that is E4's `Reconfigure`, and §9 proposes naming it in epic 4's
+  description and in the ledger's TLS row. No prior art sought: the rule is RFC 20 §3.4's.
 
 ## 5. Target tree
 
@@ -332,9 +341,9 @@ internal/adapter/smb/
     wire_test.go  fuzz_test.go
     testdata/golden/            hand-written vectors and frames of the Samba capture (D3)
   protocol/
-    stages.go                   T6.3a: framer, header stage and member header (D1), router
+    stages.go                   T6.3a: header stage and member header (D1), router
     stages_test.go              T6.3a: stage tests, the header stage's gate
-    protocol.go                 T6.3b: Protocol, New, NewConn
+    protocol.go                 T6.3b: framer, Protocol, New, NewConn
   smb.go                        T6.3b: New; the empty table and its error table
   smb_test.go                   T6.3b: the loopback tests, the test-only ECHO row
 pkg/adapter/smb/
@@ -352,10 +361,10 @@ internal/adapter/nfs/
   protocol/
     tables.go                   T6.4a: Tables
     served.go                   T6.4a: the served set, from settings.NFS
-    stages.go                   T6.4a: framer (G3), header stage (D1), router (G6, D5), the
-                                stages' error table
+    stages.go                   T6.4a: header stage (D1), router (D5), the stages' error
+                                table
     stages_test.go              T6.4a: stage tests, the gate
-    protocol.go                 T6.4b: Protocol, New, NewConn
+    protocol.go                 T6.4b: framer, Protocol, New, NewConn
   nfs.go                        T6.4b: New; the five empty tables and their error tables
   nfs_test.go                   T6.4b: the loopback tests, the test-only NULL row
 pkg/adapter/nfs/
@@ -366,71 +375,72 @@ test/suites.yaml                T6.3a, T6.4a: each protocol package added to
 
 Exported symbols added, all under `internal/adapter/`:
 
-- `smb/wire` (T6.1): `FrameHeaderLen`, `MaxRecord` (G4), `FrameLen(hdr []byte) (int, error)`,
-  and, per G1, the frame header's writer; `HeaderLen`; `type Header [64]byte` with the
-  accessors `protocol` reads (`Command`, `Flags`, `NextCommand`);
+- `smb/wire` (T6.1): `FrameHeaderLen`, `MaxRecord` (8 MiB and 4 KiB), `FrameLen(hdr []byte)
+  (int, error)`, `AppendFrame(dst []byte, n int) []byte`; `HeaderLen`; `type Header [64]byte`
+  with the accessors `protocol` reads (`Command`, `Flags`, `NextCommand`);
   `DecodeHeader(b []byte, off int) (*Header, error)`, its error saying whether the header can be
   addressed; `AppendReply(out []byte, req *Header, status uint32, credits uint16) []byte`;
   `AppendError(out []byte) []byte`; `Chain(out []byte, prev int) ([]byte, error)`; the
-  constants of `const.go`. Consumers: T6.3a; the RFC 22 plan's epic 2 harness and its T3.1,
-  T3.4 and T3.6.
+  constants of `const.go`. Consumers: T6.3a and T6.3b; the RFC 22 plan's epic 2 harness and
+  its T3.1, T3.4 and T3.6.
 - `smb/protocol` (T6.3b): `type Protocol`, `New(t *core.OpTable) *Protocol`, with `Framer` and
   `NewConn`, a concrete type as RFC 20 §2.5's patterns have an implementation return. `smb`
   (T6.3b): `New(d adapter.Deps, s settings.SMB) (*core.Server, error)`.
-- `nfs/wire` (T6.2): `RecordMarkLen`, `MaxRecord` (G4), `Fragment(hdr []byte) (n int, last
-  bool, err error)`, and, per G1, the record mark's writer; `type Call []byte`, with an
-  accessor per field, the credential and verifier as their flavour and a slice of the record,
-  and, per G5, the `COMPOUND`'s tag and minor version, and `ParseCall(b []byte) (Call, error)`,
-  which bounds every length first; `type AuthSys` (fixed arrays, nothing allocated) and
-  `DecodeAuthSys(body []byte) (AuthSys, error)`; `AppendAccepted`, `AppendDenied` and, per G5,
-  `AppendCompoundStatus`; the constants of `const.go`. Consumers: T6.4a; the RFC 21 plan's
-  codecs.
+- `nfs/wire` (T6.2): `RecordMarkLen`, `MaxRecord` (1 MiB and 4 KiB), `MaxFragments` (64),
+  `Fragment(hdr []byte) (n int, last bool, err error)`, `AppendRecordMark(dst []byte, n int)
+  []byte`; `type Call []byte`, with an accessor per field, the credential and verifier as their
+  flavour and a slice of the record, and a `COMPOUND`'s tag and minor version, and
+  `ParseCall(b []byte) (Call, error)`, which bounds every length first; `type AuthSys` (fixed
+  arrays, nothing allocated) and `DecodeAuthSys(body []byte) (AuthSys, error)`;
+  `AppendAccepted`, `AppendDenied` and `AppendCompoundStatus`; the constants of `const.go`.
+  Consumers: T6.4a and T6.4b; the RFC 21 plan's codecs.
 - `nfs/protocol`: `Tables` (T6.4a); `type Protocol`, `New(t Tables) *Protocol` (T6.4b). `nfs`
   (T6.4b): `New(d adapter.Deps, s settings.NFS) (*core.Server, error)`.
 
 Nothing else is exported, and `pkg/adapter` and `pkg/adapter/settings` do not change. `core`
-changes only where RFC 20 §4.7 is amended: `Framer.Frame` and `BodyLen`'s `last` (G1, G3), and
-`HeaderCodec.Args` and `ReplyLen` (G9, G10). They land with their first consumer, E5's T5.1a,
-with `testproto`'s stages and `core.golden`, or with T6.3a if it comes first.
+changes only where RFC 20 §4.7 is amended, and each change has one owner: `Framer.Frame` and
+`HeaderCodec.Args` and `ReplyLen` land with E5's T5.1a, and `Framer.BodyLen`'s `last` and
+`MaxRecord` with E4's reader, which loops on them, each with `testproto`'s stages and
+`core.golden`. T6.3a and T6.4a implement the header stage's two, T6.3b and T6.4b the
+framer's.
 
 ## 6. Subtasks
 
 ### T6.1 `smb/wire`: the frame, the SMB2 header and the error body
 
-**Subtask T6.1 estimate: 2.25 man-days.**
+**Subtask T6.1 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** S2. `MaxRecord`'s figure (G4) and the frame header's writer
-  (G1) follow the RFC amendment.
+- **Track:** C. **Depends on:** S2, and the RFC 20 amendment PR on `docs/rfc-20-e6-gaps`.
 - **Needs E4 or E5:** nothing.
 - **Covers:** R1 (the length and the cap), R2, R4 (the bytes), R5, R6, R7, R8, R9, R12 (the
-  padding and the pointer), R15, R16.
+  padding and the pointer), R15, R16, R39 (the decoder).
 - **Deliverables:** `internal/adapter/smb/wire/` as §5 lists it: `FrameLen` reads MS-SMB2 2.1's
-  four bytes, refusing a first byte not zero and a length past `MaxRecord`, and the writer of
-  those four bytes for a record of a given length (G1); `DecodeHeader` reads MS-SMB2 2.2.1's
-  sync and async forms in place, refusing as not addressable a header that runs past the
-  record or whose protocol ID is not `0xFE 'SMB'` (SMB1's and the transform's are added by the
-  RFC 22 plan's T3.1 and T3.4; compression is not offered, RFC 22 §3.2), and returning the
-  header with its error for a `StructureSize` other than 64 and for a `NextCommand` not a
-  multiple of 8 or leaving no room for a header before the record's end (RFC 22 §16.5,
-  G7); `AppendReply` writes the response header: the server-to-client flag set, the
-  request's command, message ID, credit charge, session and tree or async ID, its related and
-  async flags, `NextCommand` and signature zero, the status and the credits it is handed (D4);
-  `AppendError` writes MS-SMB2 2.2.2's body with no error data; `Chain` pads to 8 and sets the
-  previous reply's `NextCommand`. Golden vectors (D3), read by a helper in `wire_test.go`;
-  `FuzzRecord`.
-- **Consumers:** T6.3a; the RFC 22 plan's epic 2, whose harness decodes this header, and its
-  T3.1, T3.4 and T3.6, which extend the decoder and pass their grant.
+  four bytes, refusing a first byte not zero and a length past `MaxRecord`, 8 MiB and 4 KiB
+  (RFC 22 §3.3), and `AppendFrame` writes those four bytes for a record of a given length;
+  `DecodeHeader` reads MS-SMB2 2.2.1's sync and async forms in place, refusing as not
+  addressable a message shorter than the 64-byte header, a command code MS-SMB2 2.2.1 does not
+  define, and a protocol ID other than `0xFE 'SMB'` (SMB1's and the transform's are added by
+  the RFC 22 plan's T3.1 and T3.4), and returning the header with its error for a
+  `StructureSize` other than 64 and for a `NextCommand` not a multiple of 8 or leaving no room
+  for a header before the record's end (RFC 22 §16.5); `AppendReply` writes the response
+  header: the server-to-client flag set, the request's command, message ID, credit charge,
+  session and tree or async ID, its related and async flags, `NextCommand` and signature zero,
+  the status and the credits it is handed (D4); `AppendError` writes MS-SMB2 2.2.2's body with
+  no error data; `Chain` pads to 8 and sets the previous reply's `NextCommand`. Golden vectors
+  (D3), read by a helper in `wire_test.go`; `FuzzRecord`.
+- **Consumers:** T6.3a and T6.3b; the RFC 22 plan's epic 2, whose harness decodes this header,
+  and its T3.1, T3.4 and T3.6, which extend the decoder and pass their grant.
 - **Acceptance criteria:**
-  - `FrameLen` returns the length of a header whose first byte is 0 and whose length is within
-    the cap, and refuses a non-zero first byte, a length past the cap and fewer than 4 bytes,
-    each with its own error; the writer's four bytes read back through `FrameLen`.
+  - `FrameLen` returns the length of a header whose first byte is 0 and whose length is at most
+    8 MiB and 4 KiB, and refuses one byte more, a non-zero first byte and fewer than 4 bytes,
+    each with its own error; `AppendFrame`'s four bytes read back through `FrameLen`.
   - Each request vector decodes to its fields: a hand-written sync header, a hand-written async
     header, its async ID read where the sync form has its tree ID, two hand-written chained
     headers, the second at the first's `NextCommand`, and the Samba capture's `NEGOTIATE`
     request (frame 4).
-  - A header shorter than 64 bytes and the protocol IDs `0xFF 'SMB'`, `0xFD 'SMB'` and
-    `0xFC 'SMB'` return no header; a `StructureSize` of 65, a `NextCommand` of 68 and one past
-    the record return the header with an error.
+  - A message of 63 bytes, a command code of `0x0013`, and the protocol IDs `0xFF 'SMB'`,
+    `0xFD 'SMB'` and `0xFC 'SMB'` return no header; a `StructureSize` of 65, a `NextCommand` of
+    68 and one past the record return the header with an error.
   - `AppendReply` over the capture's request header, with frame 6's status and credits, gives
     frame 6's header byte for byte, but for any field the server chooses that the test lists
     with its reason; the hand-written async reply too. `AppendError` gives MS-SMB2 2.2.2's 9
@@ -443,41 +453,48 @@ with `testproto`'s stages and `core.golden`, or with T6.3a if it comes first.
   offset or in the wrong byte order, such as a big-endian message ID, and a tree ID read from
   an async header; the capture catches a misreading the hand-written vectors and the decoder
   share, both written from one table by one hand). The refusals with no header (catch a
-  decoder that reads SMB1 or an encrypted message as SMB2 and misreads every field after, and
-  one that addresses a reply to bytes that are not a header). Those with a header (catch a
-  malformed but addressable header refused as unaddressable, which closes a connection RFC 20
-  §4.1 keeps, and an unaligned or out-of-record `NextCommand` accepted, R9). The reply
-  vectors (catch a reply missing the server-to-client flag, which a client discards, an async
-  reply written in the sync form, and the frame header's length off by its own 4 bytes, R4).
-  `Chain` (catches padding to 4, or none). The claimed lengths (catch a buffer allocated before
-  its length is checked, R8). `FuzzRecord`, over a frame header and the headers of a chain (a
-  panic; a length past the cap or the record accepted; an accepted header whose reply, from
-  `AppendReply`, does not carry its command, message ID and session).
+  decoder that reads SMB1 or an encrypted message as SMB2 and misreads every field after, one
+  that answers an undefined command MS-SMB2 3.3.5.2.6 disconnects for, and one that addresses
+  a reply to bytes too short to be a header). Those with a header (catch a malformed but
+  addressable header refused as unaddressable, which closes a connection RFC 22 §16.5 keeps,
+  and an unaligned or out-of-record `NextCommand` accepted, R9). The cap, at its byte and one
+  past (catches a cap off by its header room). The reply vectors (catch a reply missing the
+  server-to-client flag, which a client discards, an async reply written in the sync form, and
+  the frame header's length off by its own 4 bytes, R4). `Chain` (catches padding to 4, or
+  none). The claimed lengths (catch a buffer allocated before its length is checked, R8).
+  `FuzzRecord`, over a frame header and the headers of a chain (a panic; a length past the cap
+  or the record accepted; an accepted header whose reply, from `AppendReply`, does not carry
+  its command, message ID and session).
 - **Rules:** rule 2: `FuzzRecord`; rule 7: D1's `decision:` is T6.3a's; rule 9: only what
   `protocol` reads is exported.
 
-### T6.3a `smb/protocol`: the framer, the header stage and the router
+### T6.3a `smb/protocol`: the header stage and the router
 
-**Subtask T6.3a estimate: 1 man-days.**
+**Subtask T6.3a estimate: 1.25 man-days.**
 
-- **Track:** C. **Depends on:** T6.1. The framer follows `core.Framer` as G1 and G3 amend it.
-- **Needs E5:** `core.Framer` and `core.HeaderCodec` as G1, G3, G9 and G10 amend them (§5),
-  unless this subtask lands them. **Needs E4:** nothing.
-- **Covers:** R10 (the stage's half), R11 (SMB's error body), R12, R13, R24, R25, R34, R35.
-- **Deliverables:** `internal/adapter/smb/protocol/stages.go`, all unexported: the framer over
-  `wire.FrameLen` and, per G1, its writer; the header stage, whose `Decode` returns D1's view at
-  offset 0 and a member carrying its offset elsewhere, `nil` with the error for a header `wire`
-  cannot address and the header with it for one it can, whose `Encode` calls `wire.AppendReply`
-  with one credit (D4) and appends `wire.AppendError`'s body after any status but success,
-  which every refusal of this epic is (G2), and whose `Chain` calls `wire.Chain`; the
-  `core.Header` methods (`Op` the command, `Version` 0, since no dialect is negotiated here,
-  `Next` the absolute offset or 0, `Related` the flag); the router, which returns the table it
-  is built with and a `Request` at `NeedsNothing`, version 0, with the connection and no state,
-  `decision:` at the router naming the RFC 22 plan's T3.2 and request state as what gives it a
-  dialect and a level; `Args`, a message's bytes past its 64-byte header to the next message or
-  the record's end, and `ReplyLen`, the 64 bytes of the header and the 9 of the error body (G9,
-  G10). `TestHeaderStageAllocs`; `./internal/adapter/smb/protocol/` added to
-  `unit/adapter-allocs`' command.
+- **Track:** C. **Depends on:** T6.1.
+- **Needs E5:** `core.HeaderCodec` with `Args` and `ReplyLen`, as RFC 20 §4.7 now states it,
+  which E5's T5.1a lands. **Needs E4:** nothing: the framer, whose `BodyLen` and `MaxRecord`
+  E4's reader brings, is T6.3b's.
+- **Covers:** R10 (the stage's half), R11 (SMB's error body), R12, R13, R24, R25, R34, R35, R38
+  (the stage's half).
+- **Deliverables:** `internal/adapter/smb/protocol/stages.go`, all unexported: the header
+  stage, whose `Decode` returns D1's view at offset 0 and a member carrying its offset
+  elsewhere, `nil` with the error for a header `wire` cannot address and the header with it for
+  one it can, a header refused for its `NextCommand` reporting as `Next` an offset past the
+  record's end, which the walk refuses (RFC 20 §4.7); whose `Encode` calls `wire.AppendReply`
+  with one credit (D4) and, for a failure answered with a status alone, appends
+  `wire.AppendError`'s body, every refusal of this epic being one (the pairs RFC 22 §16.5
+  leaves to a command's encoder are added here by the RFC 22 plan, with each command); whose
+  `Chain` calls `wire.Chain`; whose `Args` is a message's bytes past its 64-byte header to the
+  next message or the record's end; and whose `ReplyLen` is the 64 bytes of the header, the 9
+  of the error body and the 7 of `Chain`'s padding. The `core.Header` methods (`Op` the
+  command, `Version` 0, since no dialect is negotiated here, `Next` the absolute offset or 0,
+  `Related` the flag); the router, which returns the table it is built with and a `Request` at
+  `NeedsNothing`, version 0, with the connection and no state, `decision:` at the router naming
+  `NEGOTIATE`, which fixes a connection's dialect, and the session and tree a request reaches
+  as what give it a dialect and a level. `TestHeaderStageAllocs`;
+  `./internal/adapter/smb/protocol/` added to `unit/adapter-allocs`' command.
 - **Consumers:** T6.3b's `NewConn`; the RFC 22 plan's epic 1, which adds its request state to
   this package, and its T3.4, which adds the transform header to the header stage.
 - **Acceptance criteria:**
@@ -485,57 +502,61 @@ with `testproto`'s stages and `core.golden`, or with T6.3a if it comes first.
     false; in a chained record of three, `Decode` at each `Next` in turn reaches the second and
     third, the third's `Next` is 0, and a related member's `Related` is true.
   - A header `wire` cannot address returns no header; one it can, with an error, returns the
-    header and the error.
+    header and the error; a header whose `NextCommand` is 68 does, and its `Next` lies past the
+    record's end.
   - `Encode` of `STATUS_NOT_SUPPORTED` gives the reply header with one credit, then the 9-byte
     error body; of status 0, the header alone. Three replies encoded and chained lie at
     multiples of 8, each `NextCommand` pointing at the next.
   - `Args` of each member of the chain of three is its own arguments, none of the next
-    member's header; `Encode` of any status writes no more than `ReplyLen`.
+    member's header; `Encode` of any status, with `Chain`'s padding, writes no more than
+    `ReplyLen`.
   - `Route` returns the table it was built with for every command, with a `Request` at
     `NeedsNothing` and version 0 whose `Conn` is the one the router was built with.
   - The header stage's `Decode` and `Encode` of a single message, and `Decode` of each refusal
     with a header, allocate nothing; `Decode` of a chained member past the first allocates
     once.
-- **Tests:** stage tests in `stages_test.go`, in the package, through `core.Framer`,
-  `core.HeaderCodec` and `core.Router`. No test double. The chain of three (catches `Next`
-  returned as `NextCommand`, relative to its own header, which `core`'s walk would follow to the
-  wrong offset). The two refusals (catch a stage that drops the header of an addressable
-  refusal, closing the connection, or keeps one it cannot address). `Encode` of both statuses
-  (catches a refusal answered with no body, which a client cannot parse, and a success given
-  an error body). `Args` (catches a command handed the next member's header as its arguments).
-  `ReplyLen` against `Encode` (catches a reservation smaller than the status's reply, which the
-  error body then overruns). `Route` (catches a request routed to no table, or at a level that
-  would let a later row skip its `Needs`). `TestHeaderStageAllocs` (catches a header boxed by
-  value, which
-  allocates per request, a member allocated at offset 0, and an error built on a refusal's
-  path).
+- **Tests:** stage tests in `stages_test.go`, in the package, through `core.HeaderCodec` and
+  `core.Router`. No test double. The chain of three (catches `Next` returned as `NextCommand`,
+  relative to its own header, which `core`'s walk would follow to the wrong offset). The two
+  refusals (catch a stage that drops the header of an addressable refusal, closing the
+  connection, or keeps one it cannot address). The `NextCommand` of 68 (catches a refused
+  step reported as `off + 68`, which the walk would follow to a misaligned member, R38).
+  `Encode` of both statuses (catches a refusal answered with no body, which a client cannot
+  parse, and a success given an error body). `Args` (catches a command handed the next
+  member's header as its arguments). `ReplyLen` against `Encode` (catches a reservation
+  smaller than the status's reply, which the error body or the padding then overruns).
+  `Route` (catches a request routed to no table, or at a level that would let a later row skip
+  its `Needs`). `TestHeaderStageAllocs` (catches a header boxed by value, which allocates per
+  request, a member allocated at offset 0, and an error built on a refusal's path).
 - **Rules:** rule 4: the gate; rule 7: D1's `decision:` at the view and `ponytail:` at the
   member, D4's `ponytail:`; rule 9: nothing exported.
 
-### T6.3b `smb.New`: the protocol, the table and the server
+### T6.3b `smb.New`: the framer, the protocol, the table and the server
 
-**Subtask T6.3b estimate: 1.5 man-days.**
+**Subtask T6.3b estimate: 2 man-days.**
 
 - **Track:** C. **Depends on:** T6.3a.
-- **Needs E5:** its T5.1c, S3, after its T5.1a and T5.9, whose fields `NewConn` and the table
-  set. **Needs E4:** `Server`, `Start` binding each listener on each of the settings'
-  addresses at `Port`, `Stop`, accept, the reader, the writer and `Addrs`.
+- **Needs E5:** its T5.1c, S3, after its T5.1a (`Framer.Frame`, `Stages.Errors`) and T5.9
+  (`Stages.Protocol`, `OpTable.Protocol`). **Needs E4:** `Server`, `Start` binding each listener
+  on each of the settings' addresses at `Port`, `Stop`, accept, the reader with `Framer.BodyLen`'s
+  `last` and `MaxRecord`, the writer calling `Frame`, and `Addrs`.
 - **Covers:** R1, R2 and R4 (over loopback), R10 (over loopback), R24, R26, R27, R28, R30, R31,
-  R32 (SMB's rows), R33.
-- **Deliverables:** `protocol/protocol.go`: `Protocol`, `New(t *core.OpTable) *Protocol`,
-  `Framer`, and `NewConn`, which returns the stages with `Header`, `Router`, `Errors` (the
-  table's own) and `Protocol` `smb`, every other stage nil. `internal/adapter/smb/smb.go`:
-  `New`, which validates the settings, refuses a missing `Deps.VFS` or `Deps.Budgets` by name
-  (moved from the public stub), builds the error table (RFC 22 §16.5's rows for
-  `ErrNotSupported` and `ErrDecode`, fault `STATUS_INTERNAL_ERROR`, G8) and the empty
-  table that does not hold, labelled `smb`, and returns `core.NewServer` with one TCP listener
-  naming `smb` on `s.Port`, its `Protocol` `protocol.New(t)`. The empty table lives in
-  `smb.go`, not in the `ops/` RFC 20 §2.5 lays out, because rule 10 forbids an empty package; the
-  RFC 22 plan's T1.2 moves it there with its first rows, and a `decision:` at it says so.
-  `pkg/adapter/smb.New`, a call into it that returns a nil adapter with an error. Tests in
-  `internal/adapter/smb/smb_test.go`, with a helper that writes a request's header and reads a
-  reply's from MS-SMB2 2.2.1's layout, independent of `wire`; E1's two tests in
-  `pkg/adapter/smb/smb_test.go` moved to a served adapter.
+  R32 (SMB's rows), R33, R38 (over loopback), R39 (over loopback).
+- **Deliverables:** `protocol/protocol.go`: the framer, unexported, over `wire.FrameLen` and
+  `wire.AppendFrame`, its `BodyLen` always ending the record and its `MaxRecord` 8 MiB and 4 KiB
+  in one fragment; `Protocol`, `New(t *core.OpTable) *Protocol`, `Framer`, and `NewConn`, which
+  returns the stages with `Header`, `Router`, `Errors` (the table's own) and `Protocol` `smb`,
+  every other stage nil. `internal/adapter/smb/smb.go`: `New`, which validates the settings,
+  refuses a missing `Deps.VFS` or `Deps.Budgets` by name (moved from the public stub), builds
+  the error table (RFC 22 §16.5's rows for `ErrNotSupported` and `ErrDecode`, fault
+  `STATUS_INTERNAL_ERROR`) and the empty table that does not hold, labelled `smb`, and returns
+  `core.NewServer` with one TCP listener naming `smb` on `s.Port`, its `Protocol`
+  `protocol.New(t)`. The empty table lives in `smb.go`, not in the `ops/` RFC 20 §2.5 lays out,
+  because rule 10 forbids an empty package; the RFC 22 plan's T1.2 moves it there with its first
+  rows, and a `decision:` at it says so. `pkg/adapter/smb.New`, a call into it that returns a
+  nil adapter with an error. Tests in `internal/adapter/smb/smb_test.go`, with a helper that
+  writes a request's header and reads a reply's from MS-SMB2 2.2.1's layout, independent of
+  `wire`; E1's two tests in `pkg/adapter/smb/smb_test.go` moved to a served adapter.
 - **Consumers:** E7, which builds the adapter; the RFC 22 plan's SMB scaffold point, its
   loopback rows from there on, and its T1.2.
 - **Acceptance criteria:**
@@ -547,9 +568,11 @@ with `testproto`'s stages and `core.golden`, or with T6.3a if it comes first.
   - Over loopback, a `NEGOTIATE` is answered `STATUS_NOT_SUPPORTED` on its own message ID, in a
     record whose Direct TCP header carries its length, with the error body, one credit and the
     server-to-client flag; a header whose `StructureSize` is 65 is answered
-    `STATUS_INVALID_PARAMETER` (G7), and a `NEGOTIATE` after it on
-    the connection is answered; a record whose protocol ID is `0xFF 'SMB'` closes the
-    connection with nothing answered.
+    `STATUS_INVALID_PARAMETER`, and a `NEGOTIATE` after it on the connection is answered.
+  - A chained record of a `NEGOTIATE` and a member whose `NextCommand` is 68 is answered both,
+    `STATUS_NOT_SUPPORTED` then `STATUS_INVALID_PARAMETER`, and the connection then closes.
+  - A message of 63 bytes, a command code of `0x0013`, a protocol ID of `0xFC 'SMB'`, and a
+    Direct TCP header past the cap each close the connection with nothing answered.
   - A table of one row declared in the test file, an `ECHO` (MS-SMB2 2.2.28 and 2.2.29) joined
     with `core.Bind` and served through `protocol.New` and `core.NewServer`, answers an `ECHO`
     `STATUS_SUCCESS` with its 4-byte body after the header and no error body.
@@ -559,14 +582,16 @@ with `testproto`'s stages and `core.golden`, or with T6.3a if it comes first.
   and real budgets, the registry and server real. The `NEGOTIATE` (catches a table or stage
   left unwired, a refusal answered the fault status, a reply under another message ID, and a
   record sent without its frame header or with the wrong length, R4). The malformed header,
-  then `NEGOTIATE` (catches a header error that closes the connection). SMB1 (catches a nil
-  header answered rather than closed). The `ECHO` row (catches the success path broken between
-  the header stage and `core`: a body written before the header, an error body after a success,
-  a row lost in routing; and shows a command as one row file against this epic). The port
-  (catches `New` binding a fixed port, or binding at `New`, which a rebuild on a `port` change
-  would collide on). The label (catches a stage or table labelled other than `smb`, whose
-  series split from the rest). `pkg/adapter/smb`'s two tests (catch a typed nil server handed
-  back in the interface).
+  then `NEGOTIATE` (catches a header error that closes the connection). The refused
+  `NextCommand` (catches a chain walked on past it, or a connection kept open after it, R38).
+  The four closes (catch a framer that reads past its cap, and an undefined command, a short
+  message or an unread protocol ID answered rather than closed, R39). The `ECHO` row (catches
+  the success path broken between the header stage and `core`: a body written before the
+  header, an error body after a success, a row lost in routing; and shows a command as one row
+  file against this epic). The port (catches `New` binding a fixed port, or binding at `New`,
+  which a rebuild on a `port` change would collide on). The label (catches a stage or table
+  labelled other than `smb`, whose series split from the rest). `pkg/adapter/smb`'s two tests
+  (catch a typed nil server handed back in the interface).
 - **Rules:** rule 3: the label read back; rule 9: `smb.golden` unchanged; rule 10: the empty
   table in `smb.go`, and a test in each new package.
 
@@ -574,95 +599,95 @@ with `testproto`'s stages and `core.golden`, or with T6.3a if it comes first.
 
 **Subtask T6.2 estimate: 3 man-days.**
 
-- **Track:** C. **Depends on:** S2. `MaxRecord`'s figure (G4), the record mark's writer (G1)
-  and the `COMPOUND` prefix (G5) follow the RFC amendment.
+- **Track:** C. **Depends on:** S2, and the RFC 20 amendment PR on `docs/rfc-20-e6-gaps`.
 - **Needs E4 or E5:** nothing.
 - **Covers:** R1 (the length and the cap), R3 (the record mark's fields), R4 (the bytes), R5,
-  R6, R7, R8, R9, R14 (G5), R15, R16, R21 (the decoders).
+  R6, R7, R8, R9, R14, R15, R16, R21 (the decoders), R40 (the decoder).
 - **Deliverables:** `internal/adapter/nfs/wire/` as §5 lists it: `Fragment` reads RFC 5531
   §11's record mark, its last-fragment bit and its length, refusing a length past `MaxRecord`,
-  and the writer of a record mark with the last-fragment bit set (G1); `ParseCall` bounds RFC
-  5531 §9's call: the transaction ID, the message type, the RPC version, the program, version
-  and procedure, the credential and the verifier, each body at most 400 bytes and inside the
-  record with its padding, and, per G5, a `COMPOUND`'s tag and minor version; it refuses as not
-  addressable a message too short for its transaction ID and type, and returns the call with its
-  error for one whose later fields do not; `Call`'s accessors read each field at the offset the
-  parse bounded, with the few XDR readers they need written by hand, unexported;
-  `DecodeAuthSys` reads RFC 5531 Appendix A's `authsys_parms` into fixed arrays, refusing a
-  machine name over 255 bytes, more than 16 groups and a truncated body before reading past
-  them; the reply encoders: an accepted reply with an `AUTH_NONE` verifier and its state, with
-  `PROG_MISMATCH`'s two numbers; a denied one, `RPC_MISMATCH` with 2 and 2, or `AUTH_ERROR`
-  with its `auth_stat`; and, per G5, a `COMPOUND`'s status, tag and empty results. D2's
+  1 MiB and 4 KiB (RFC 21 §2.3), and `AppendRecordMark` writes one with the last-fragment bit
+  set; `ParseCall` bounds RFC 5531 §9's call: the transaction ID, the message type, the RPC
+  version, the program, version and procedure, the credential and the verifier, each body at
+  most 400 bytes (RFC 5531 §8.2) and inside the record with its padding, and a `COMPOUND`'s tag
+  and minor version for procedure 1 of program 100003 version 4 alone (RFC 20 §4.7); it refuses
+  as not addressable a message too short for its transaction ID and type, and returns the call
+  with its error for one whose later fields do not decode (RFC 21 §11.5); `Call`'s accessors
+  read each field at the offset the parse bounded, with the few XDR readers they need written
+  by hand, unexported, as RFC 20 §2.5 has the RPC header; `DecodeAuthSys` reads RFC 5531
+  Appendix A's `authsys_parms` into fixed arrays, refusing a machine name over 255 bytes, more
+  than 16 groups and a truncated body before reading past them; the reply encoders: an accepted
+  reply with an empty `AUTH_NONE` verifier and its state, with `PROG_MISMATCH`'s
+  `mismatch_info`; a denied one, `RPC_MISMATCH` with its `mismatch_info` of 2 and 2, or
+  `AUTH_ERROR` with its `auth_stat`; and a `COMPOUND`'s status, tag and empty results. D2's
   constants. Golden vectors (D3); `FuzzRecord`.
-- **Consumers:** T6.4a; the RFC 21 plan's codecs and its GSS stage.
+- **Consumers:** T6.4a and T6.4b; the RFC 21 plan's codecs and its GSS stage.
 - **Acceptance criteria:**
-  - `Fragment` returns the length and the last-fragment bit, and refuses a length past the cap
-    and fewer than 4 bytes; the writer's mark reads back with the bit set.
+  - `Fragment` returns the length and the last-fragment bit, accepts a length of 1 MiB and 4 KiB
+    and refuses one byte more, and refuses fewer than 4 bytes; `AppendRecordMark`'s mark reads
+    back with the bit set.
   - The knfsd capture's `NULL` call (frame 4) and `COMPOUND` (frame 8) parse to the fields
-    `tshark` reads in the same capture, the `COMPOUND`'s credential a slice of the record and,
-    per G5, its tag and minor version 0; a hand-written `NULL` call to MOUNT v3 under `AUTH_SYS`
-    parses too.
-  - A credential body of 401 bytes, a verifier and a tag each running past the record, and an
-    opaque whose padding runs past it return the call with an error; a message of 7 bytes
-    returns none.
+    `tshark` reads in the same capture, the `COMPOUND`'s credential a slice of the record, its
+    tag and its minor version 0; a hand-written `NULL` call to MOUNT v3 under `AUTH_SYS` parses
+    too, with no minor version read.
+  - A credential body of 401 bytes inside the record, a verifier and a tag each running past
+    the record, and an opaque whose padding runs past it return the call with an error; a
+    message of 7 bytes returns none.
   - `DecodeAuthSys` gives frame 8's credential's fields; 17 groups, a 256-byte machine name
     and a body cut inside its group list are each refused.
   - `AppendAccepted` of `SUCCESS` for frame 4's transaction ID gives frame 6's reply byte for
     byte; each hand-written reply vector is written byte for byte: `PROG_UNAVAIL`,
     `PROG_MISMATCH` 3 and 4, `PROC_UNAVAIL`, `GARBAGE_ARGS`, `SYSTEM_ERR`, `RPC_MISMATCH` 2 and
-    2, `AUTH_ERROR` `AUTH_BADCRED`, and, per G5, `NFS4ERR_MINOR_VERS_MISMATCH` with its tag and
-    no results.
+    2, `AUTH_ERROR` with `AUTH_BADCRED` and with `AUTH_BADVERF`, and
+    `NFS4ERR_MINOR_VERS_MISMATCH` with its tag and no results.
   - The refusals that claim a length (a credential, a tag and a group list each claiming more
     than 1 MiB) each add less than 4 KiB to `runtime.MemStats.TotalAlloc`.
 - **Tests:** in `wire_test.go` and `fuzz_test.go`, at `wire`'s API. No test double. The
   captured calls (catch a field read at the wrong offset, a flavour read as the credential's
   length, a body copied rather than sliced, and a misreading the hand-written vectors and the
-  parser share). The refusals with a call (catch a bound checked after the read or not at all,
-  R8, and padding not counted, R9); the one with none (catches a message too short to address
-  answered). `DecodeAuthSys`' refusals (catch RFC 5531's limits unchecked, which RFC 21 §11.1
-  must refuse). The replies (catch `PROG_MISMATCH` without its two numbers, a denial written as
-  an accepted reply, and a verifier left out, which shifts every field a client reads after
-  it; the captured reply catches a misreading shared with the hand-written ones). The claimed
-  lengths (catch a buffer allocated before its length is checked, R8). `FuzzRecord`, over a
-  record mark, a call, its `AUTH_SYS` body and the prefix (a panic; a length past the cap or
-  the record accepted; an accepted call whose `PROG_UNAVAIL` reply does not begin with its
-  transaction ID).
+  parser share). The cap, at its byte and one past (catches a cap off by its header room). The
+  refusals with a call (catch a body over RFC 5531's 400 bytes accepted, a bound checked after
+  the read or not at all, R8, and padding not counted, R9); the one with none (catches a
+  message too short to address answered). `DecodeAuthSys`' refusals (catch RFC 5531's limits
+  unchecked, which RFC 21 §11.1 must refuse). The replies (catch a `mismatch_info` left out, a
+  denial written as an accepted reply, and a verifier left out, which shifts every field a
+  client reads after it; the captured reply catches a misreading shared with the hand-written
+  ones). The claimed lengths (catch a buffer allocated before its length is checked, R8).
+  `FuzzRecord`, over a record mark, a call, its `AUTH_SYS` body and the prefix (a panic; a
+  length past the cap or the record accepted; an accepted call whose `PROG_UNAVAIL` reply does
+  not begin with its transaction ID).
 - **Rules:** rule 2: `FuzzRecord`; rule 7: D2's `decision:`; rule 10: the XDR readers
-  unexported, and §9's question on generated codecs.
+  unexported.
 
-### T6.4a `nfs/protocol`: the served set, the stages and the router
+### T6.4a `nfs/protocol`: the served set, the header stage and the router
 
 **Subtask T6.4a estimate: 2.75 man-days.**
 
-- **Track:** C. **Depends on:** T6.2. The framer follows `core.Framer` as G1 and G3 amend it;
-  the minor version and the router's refusals follow G5 and G6.
-- **Needs E5:** as T6.3a. **Needs E4:** nothing.
-- **Covers:** R3 (the framer's half, G3), R10 (the stage's half), R11, R12, R13,
-  R14, R17, R18 (the served set), R19, R20, R21, R23 (the call), R25, R26, R32 (the stages'
-  rows), R34, R35.
+- **Track:** C. **Depends on:** T6.2.
+- **Needs E5:** as T6.3a. **Needs E4:** nothing: the framer is T6.4b's.
+- **Covers:** R10 (the stage's half), R11, R12, R13, R14, R17, R18 (the served set), R19, R20,
+  R21, R23 (the call), R25, R26, R32 (the stages' rows), R34, R35, R36, R37, R40, R41.
 - **Deliverables:** in `internal/adapter/nfs/protocol/`: `Tables`, with the fields `V3`, `V4`,
   `Mount`, `NLM` and `NSM` (RFC 20 §4.8); the served set, built from `settings.NFS`'s
   `Versions`: which (program, version) pairs and minor versions are served, and each program's
-  lowest and highest version; unexported, in `stages.go`: the framer over `wire.Fragment`, its
-  `BodyLen` saying whether a fragment ends the record (G3) and its `Frame` (G1); the header
-  stage, whose `Decode` returns D1's view, `nil` with the error for a message `wire` cannot
-  address and the header with it for one it can, whose `Encode` writes the reply for D2's
-  status, `PROG_MISMATCH` with the served set's numbers for the header's program and, per G5, a
-  `COMPOUND`'s answer with the request's tag,
-  and whose `Chain` does nothing; the `core.Header` methods (`Op` the procedure; `Version` the
-  version, or, for a `COMPOUND`, the minor version (G5); `Next` 0; `Related` false);
-  the router, which refuses the RPC version, the credential, the verifier and a message that is
-  not a call as G6 settles (an `RPCSEC_GSS` credential as D5 says), a program with no version
-  served with an error `Stages.Errors` maps to `PROG_UNAVAIL` (G6), a version not
-  served with `ErrVersion` and no table, and, for a `COMPOUND` alone, a minor version not
-  served with `ErrVersion` and the `V4` table; otherwise it returns the pair's table and a
-  `Request` at `NeedsNothing` with the version and the connection, calling `Conn.Established`
-  on the connection's first routed call (on a nil `Conn` it calls nothing, as `testproto`'s
+  lowest and highest version; unexported, in `stages.go`: the header stage, whose `Decode`
+  returns D1's view, `nil` with the error for a message `wire` cannot address and the header
+  with it for one it can, whose `Encode` writes the reply for D2's status, `PROG_MISMATCH` with
+  the served set's numbers for the header's program, `RPC_MISMATCH` with 2 and 2, and a
+  `COMPOUND`'s answer with the request's tag, whose `Chain` does nothing, whose `Args` is the
+  call's bytes past its verifier, and whose `ReplyLen` is the RPC reply header with an empty
+  `AUTH_NONE` verifier and a `mismatch_info`, and for a `COMPOUND` its status, tag and results
+  count besides. The `core.Header` methods (`Op` the procedure; `Version` the version, the minor
+  version for a `COMPOUND`, and 0 for any other procedure of NFS version 4; `Next` 0; `Related`
+  false). The router: an RPC version other than 2 `RPC_MISMATCH`; a credential RFC 21 §11.1
+  refuses `AUTH_BADCRED`, an `RPCSEC_GSS` one as D5 says; a verifier other than an empty
+  `AUTH_NONE` `AUTH_BADVERF`; a message that is not a call dropped through a `NoReply` row; an
+  unknown program, or one with no version served, an error `Stages.Errors` maps to
+  `PROG_UNAVAIL`; a version not served `ErrVersion` and no table; for a `COMPOUND` alone, a
+  minor version not served `ErrVersion` and the `V4` table; otherwise the pair's table and a
+  `Request` at `NeedsNothing` with the version and the connection, calling `Conn.Established` on
+  the connection's first routed call (on a nil `Conn` it calls nothing, as `testproto`'s
   `Session` does). The stages' error table: those refusals' rows and `ErrDecode`'s,
-  `GARBAGE_ARGS` (RFC 21 §11.5), fault `SYSTEM_ERR` (G8). The header stage's `Args`, the call's
-  bytes past its verifier, and `ReplyLen`, the RPC reply header with an `AUTH_NONE` verifier
-  and `PROG_MISMATCH`'s two numbers, and for a `COMPOUND` its status, tag and results count
-  besides (G9, G10). `TestHeaderStageAllocs`;
+  `GARBAGE_ARGS` (RFC 21 §11.5), fault `SYSTEM_ERR` (RFC 21 §11.5). `TestHeaderStageAllocs`;
   `./internal/adapter/nfs/protocol/` added to `unit/adapter-allocs`' command.
 - **Consumers:** T6.4b's `NewConn`; the RFC 21 plan, whose tables replace the empty ones and
   whose GSS stage takes `RPCSEC_GSS` before `Route`.
@@ -672,61 +697,70 @@ with `testproto`'s stages and `core.golden`, or with T6.3a if it comes first.
     and NFS v3 under 4.0 to 4.2, are refused `ErrVersion` with no table, and `Encode` of the
     status `Stages.Errors` maps it to names the range's lowest and highest (3 and 4 under the
     default, 4 and 4 under 4.0 to 4.2); an unknown program, and MOUNT under 4.0 to 4.2, are
-    refused `PROG_UNAVAIL`, with no table (G6).
+    refused `PROG_UNAVAIL` with no table.
   - Under 4.0 to 4.1, a `COMPOUND` of minor version 2 is refused `ErrVersion` with the `V4`
     table, and `Encode` of `NFS4ERR_MINOR_VERS_MISMATCH` writes it with the request's tag and no
-    results; a `NULL` to NFS v4 under 4.1 to 4.1 is routed; two `COMPOUND`s on one connection,
-    of minor versions 1 then 0, are each routed at their own.
+    results; a `NULL` to NFS v4 under 4.1 to 4.1 is routed at version 0; two `COMPOUND`s on one
+    connection, of minor versions 1 then 0, are each routed at their own.
   - A call of RPC version 3, a truncated `AUTH_SYS` body, 17 groups, a 256-byte machine name,
-    `AUTH_DH`, flavour 99 and `RPCSEC_GSS` are each refused at route (G6), mapped to
-    `RPC_MISMATCH` 2 and 2 or to `AUTH_BADCRED`, with no table chosen.
-  - A call whose verifier runs past the record returns the header with its error, which the
-    stages' table maps to `GARBAGE_ARGS`; a message of 7 bytes returns none.
+    `AUTH_DH`, flavour 99 and `RPCSEC_GSS` are each refused with no table, mapped to
+    `RPC_MISMATCH` 2 and 2 or to `AUTH_BADCRED`; a verifier of `AUTH_SYS`, and an `AUTH_NONE`
+    one with a body, map to `AUTH_BADVERF`; an RPC reply message maps to a `NoReply` row,
+    answered nothing.
+  - A credential body of 401 bytes and a verifier running past the record return the header
+    with its error, which the stages' table maps to `GARBAGE_ARGS`; a message of 7 bytes
+    returns none.
   - `Args` of frame 8's `COMPOUND` begins at its tag, past the `AUTH_SYS` credential and the
     verifier; `Encode` of every status above writes no more than `ReplyLen`.
   - The header stage's `Decode`, `Route` and `Encode` of an `AUTH_SYS` call allocate nothing.
-- **Tests:** stage tests in `stages_test.go`, in the package, through `core.Framer`,
-  `core.HeaderCodec`, `core.Router` and the stages' `ErrorTable.Map`, each refusal followed to
-  the bytes `Encode` writes for its status. No test double: a settings value and the tables are
-  inputs. The table of ranges (catches a range read once for every connection rather than from
-  the one handed in, MOUNT served under 4.x only, and `PROG_MISMATCH` naming the program's
-  versions rather than the range's). The minor versions (catch the check made against the RPC
-  version, a refusal without the `V4` table, which `Stages.Errors` would answer `PROG_MISMATCH`,
-  an answer without its tag, a `NULL` checked for a minor version it does not have, and a minor
-  version kept from one `COMPOUND` for the next, R20). The credentials (catch a flavour admitted
-  as anonymous, a limit left to the handler, and a refusal raised where the pipeline's
-  `ErrDecode` wrapping turns it into `GARBAGE_ARGS`). The decode cases (catch an addressable
-  refusal dropped, and one with no header answered). `Args` (catches arguments taken from a
-  fixed offset, which a credential of any length but the vector's shifts). `ReplyLen` against
-  `Encode` (catches a `COMPOUND` reservation without room for its tag). `TestHeaderStageAllocs`
-  (catches the view replaced by a decoded copy, and the credential's groups grown in a slice).
+- **Tests:** stage tests in `stages_test.go`, in the package, through `core.HeaderCodec`,
+  `core.Router` and the stages' `ErrorTable.Map`, each refusal followed to the bytes `Encode`
+  writes for its status. No test double: a settings value and the tables are inputs. The table
+  of ranges (catches a range read once for every connection rather than from the one handed
+  in, MOUNT served under 4.x only or answered `PROG_MISMATCH`, and `PROG_MISMATCH` naming the
+  program's versions rather than the range's). The minor versions (catch the check made against
+  the RPC version, a refusal without the `V4` table, which `Stages.Errors` would answer
+  `PROG_MISMATCH`, an answer without its tag, a `NULL` read for a minor version it does not
+  have, R41, and a minor version kept from one `COMPOUND` for the next, R20). The credentials
+  and verifiers (catch a flavour admitted as anonymous, a limit left to the handler, a verifier
+  never checked, R36, and a refusal raised where the pipeline's `ErrDecode` wrapping turns it
+  into `GARBAGE_ARGS`). The reply message (catches a reply answered, which the client would
+  read as an answer to a call it never sent, R37). The decode cases (catch a body over 400
+  bytes admitted, an addressable refusal dropped, and one with no header answered, R40).
+  `Args` (catches arguments taken from a fixed offset, which a credential of any length but the
+  vector's shifts). `ReplyLen` against `Encode` (catches a `COMPOUND` reservation without room
+  for its tag). `TestHeaderStageAllocs` (catches the view replaced by a decoded copy, and the
+  credential's groups grown in a slice).
 - **Rules:** rule 4: the gate; rule 6: `RPCSEC_GSS`'s refusal points at the ledger's row (D5);
   rule 7: D1's, D2's and D5's markers.
 
-### T6.4b `nfs.New`: the protocol, the tables and the server
+### T6.4b `nfs.New`: the framer, the protocol, the tables and the server
 
-**Subtask T6.4b estimate: 1.5 man-days.**
+**Subtask T6.4b estimate: 2.25 man-days.**
 
 - **Track:** C. **Depends on:** T6.4a.
 - **Needs E5:** as T6.3b. **Needs E4:** as T6.3b, with `Conn.Settings`, `Conn.Established`
   and `Reconfigure`.
-- **Covers:** R1 and R4 (over loopback), R10 (over loopback), R17, R18, R19, R21, R22, R23, R26,
-  R27, R28, R29, R30, R31, R32 (the tables' rows), R33.
-- **Deliverables:** `protocol/protocol.go`: `Protocol`, `New(t Tables) *Protocol`, `Framer`,
-  and `NewConn`, which reads the connection's `settings.NFS` from `Conn.Settings()` into its
-  served set and returns the stages with `Header`, `Router`, `Errors` (the stages' table) and
-  `Protocol` `nfs3`, every other stage nil. `internal/adapter/nfs/nfs.go`: `New`, which
-  validates, refuses a missing `Deps` field by name and loads the TLS files (moved from the
-  public stub) and refuses a mode it cannot serve (D6), builds three error tables, each mapping
-  `ErrNotSupported` to `PROC_UNAVAIL` and `ErrDecode` to `GARBAGE_ARGS`: NFSv3's, fault
-  `NFS3ERR_SERVERFAULT`; the auxiliary programs', fault `SYSTEM_ERR`; and NFSv4's, fault
-  `NFS4ERR_SERVERFAULT`, adding `ErrVersion` to `NFS4ERR_MINOR_VERS_MISMATCH` (G8); and the
-  five empty tables RFC 20 §4.8's example names, `V4` labelled `nfs4` and the rest `nfs3`,
-  in `nfs.go` for the reason T6.3b gives; and returns `core.NewServer` with one TCP listener
-  naming `nfs`, `mount`, `nlm` and `nsm` on `s.Port`. `pkg/adapter/nfs.New`, a call into it
-  that returns a nil adapter with an error. Tests in `internal/adapter/nfs/nfs_test.go`, with a
-  helper that writes a call and reads a reply from RFC 5531's layout, independent of `wire`;
-  E1's three tests in `pkg/adapter/nfs/nfs_test.go` moved to a served adapter.
+- **Covers:** R1, R3 and R4 (over loopback), R10 (over loopback), R17, R18, R19, R21, R22, R23,
+  R26, R27, R28, R29, R30, R31, R32 (the tables' rows), R33.
+- **Deliverables:** `protocol/protocol.go`: the framer, unexported, over `wire.Fragment` and
+  `wire.AppendRecordMark`, its `BodyLen` passing the record mark's last-fragment bit, its
+  `MaxRecord` 1 MiB and 4 KiB in 64 fragments (RFC 21 §2.3); `Protocol`, `New(t Tables)
+  *Protocol`, `Framer`, and `NewConn`, which reads the connection's `settings.NFS` from
+  `Conn.Settings()` into its served set and returns the stages with `Header`, `Router`,
+  `Errors` (the stages' table) and `Protocol` `nfs3`, every other stage nil.
+  `internal/adapter/nfs/nfs.go`: `New`, which validates, refuses a missing `Deps` field by name
+  and loads the TLS files (moved from the public stub) and refuses a mode it cannot serve
+  (D6), builds three error tables, each mapping `ErrNotSupported` to `PROC_UNAVAIL` and
+  `ErrDecode` to `GARBAGE_ARGS`: NFSv3's, fault `NFS3ERR_SERVERFAULT`; the auxiliary programs',
+  fault `SYSTEM_ERR`; and NFSv4's, fault `NFS4ERR_SERVERFAULT`, adding `ErrVersion` to
+  `NFS4ERR_MINOR_VERS_MISMATCH` (RFC 21 §11.5); and the five empty tables RFC 20 §4.8's example
+  names, `V4` labelled `nfs4` and the rest `nfs3`, in `nfs.go` for the reason T6.3b gives; and
+  returns `core.NewServer` with one TCP listener naming `nfs`, `mount`, `nlm` and `nsm` on
+  `s.Port`. `pkg/adapter/nfs.New`, a call into it that returns a nil adapter with an error.
+  Tests in `internal/adapter/nfs/nfs_test.go`, with a helper that writes a call and reads a
+  reply from RFC 5531's layout, independent of `wire`; E1's three tests in
+  `pkg/adapter/nfs/nfs_test.go` moved to a served adapter.
 - **Consumers:** E7; the RFC 21 plan's first loopback rows.
 - **Acceptance criteria:**
   - `New` returns an adapter in `StateConfigured` with no address bound; E1's refusals and its
@@ -739,8 +773,9 @@ with `testproto`'s stages and `core.golden`, or with T6.3a if it comes first.
     length and its last-fragment bit; NFS v2, `PROG_MISMATCH` 3 and 4 from `Stages.Errors`; an
     `AUTH_SYS` credential with 17 groups, `AUTH_BADCRED`; a `COMPOUND` of minor version 3,
     `NFS4ERR_MINOR_VERS_MISMATCH` with its tag, from the `V4` table; a call whose verifier runs
-    past the record, `GARBAGE_ARGS`, and a `NULL` after it on the connection answered; a record
-    mark past the cap closes the connection.
+    past the record, `GARBAGE_ARGS`, and a `NULL` after it on the connection answered.
+  - A `NULL` sent in two fragments is answered; a record whose fragments pass 1 MiB and 4 KiB
+    in total, and one of 65 fragments, each close the connection.
   - A table of one row declared in the test file, `NULL` on `V4`, served through
     `protocol.New` and `core.NewServer`, answers the knfsd capture's `NULL` call (frame 4) with
     the capture's reply (frame 6), byte for byte.
@@ -748,7 +783,7 @@ with `testproto`'s stages and `core.golden`, or with T6.3a if it comes first.
     the second is closed at the handshake deadline, and the first then still answers a second
     `NULL`.
   - After `Reconfigure` to 4.0 to 4.2, a connection accepted after it is refused MOUNT
-    `PROG_UNAVAIL` and NFS v3 with `PROG_MISMATCH` 4 and 4, while one accepted before keeps 3 and 4;
+    `PROG_UNAVAIL` and NFS v3 `PROG_MISMATCH` 4 and 4, while one accepted before keeps 3 and 4;
     an adapter built at 4.0 to 4.2 and reconfigured to 3 to 4.2 answers a new connection's
     MOUNT `NULL` `PROC_UNAVAIL`.
   - Two adapters from `New`, one at 3 to 4.2 and one at 4.0 to 4.2, each answer by their own
@@ -759,36 +794,38 @@ with `testproto`'s stages and `core.golden`, or with T6.3a if it comes first.
   and real budgets. The answers, one per path (catch a stage or table left unwired, a router
   refusal mapped by the wrong table, the minor version's answer without its tag, and a reply
   without its record mark, R4). The bad verifier, then `NULL` (catches a header error that
-  closes the connection). The cap (catches a framer that reserves before checking). The `NULL`
-  row against the capture (catches the accepted path broken between the header stage and
-  `core`, which no refusal exercises, and shows a procedure as one row file). The two
-  connections (catch a router that never calls `Conn.Established`, which closes every NFS
-  connection at the deadline, R23, synchronised on the silent one's close rather than on
-  time). `Reconfigure` both ways (catch a range read from `New`'s copy or reread after accept,
-  R18, and `New` building only the tables in range, R27). The two adapters (catch a served set
-  kept in a package variable, R29). The port and the listener (catch `New` binding a fixed
-  port, and a program left off the TCP listener, R22, R30). The labels (catch `V4` labelled
-  `nfs3`, whose series merge with NFSv3's). `pkg/adapter/nfs`'s three tests (catch a typed nil
-  server).
+  closes the connection). The fragments (catch a framer that drops the last-fragment bit, so a
+  fragmented call is read as two, and limits the reader cannot see, R3). The `NULL` row against
+  the capture (catches the accepted path broken between the header stage and `core`, which no
+  refusal exercises, and shows a procedure as one row file). The two connections (catch a
+  router that never calls `Conn.Established`, which closes every NFS connection at the
+  deadline, R23, synchronised on the silent one's close rather than on time). `Reconfigure`
+  both ways (catch a range read from `New`'s copy or reread after accept, R18, and `New`
+  building only the tables in range, R27). The two adapters (catch a served set kept in a
+  package variable, R29). The port and the listener (catch `New` binding a fixed port, and a
+  program left off the TCP listener, R22, R30). The labels (catch `V4` labelled `nfs3`, whose
+  series merge with NFSv3's). `pkg/adapter/nfs`'s three tests (catch a typed nil server).
 - **Rules:** rule 3: the labels read back; rule 6: the TLS row's wording (§9); rule 7: D6's
-  `decision:`; rule 9: `nfs.golden` unchanged; rule 10: a test in each new package.
+  `decision:`; rule 9: `nfs.golden` unchanged; rule 10: a test in each new package. The 2.25
+  man-days are for its nine criteria over loopback, the fragment cases among them, which need
+  E4's reader and settings live, and the framer.
 
 ## 7. Order of work
 
 ```mermaid
 flowchart TD
   S2(["S2 testproto and the import test in CI"]):::sync --> T6_1["T6.1 smb/wire"]
-  A(["RFC 20, 21 and 22 amended: G1 to G10"]):::sync --> T6_1
+  A(["the RFC 20 amendment PR on docs/rfc-20-e6-gaps"]):::sync --> T6_1
   T6_1 --> C1(["after T6.1: the RFC 22 plan's harness can decode a header"]):::sync
-  T6_1 --> T6_3a["T6.3a smb/protocol stages"]
-  F(["core.Framer and core.HeaderCodec amended, with E5's T5.1a or T6.3a"]):::sync --> T6_3a
+  T6_1 --> T6_3a["T6.3a smb/protocol header stage and router"]
+  H(["E5's T5.1a: HeaderCodec.Args, ReplyLen, Framer.Frame"]):::sync --> T6_3a
   T6_3a --> T6_3b["T6.3b smb.New on the runner"]
-  S3(["S3, after E5's T5.1a and T5.9"]):::sync --> T6_3b
+  S3(["S3, after E4 and E5's T5.1c"]):::sync --> T6_3b
   T6_3b --> C2(["after T6.3b: the RFC 22 plan's SMB scaffold point"]):::sync
   S2 --> T6_2["T6.2 nfs/wire"]
   A --> T6_2
-  T6_2 --> T6_4a["T6.4a nfs/protocol stages and router"]
-  F --> T6_4a
+  T6_2 --> T6_4a["T6.4a nfs/protocol header stage and router"]
+  H --> T6_4a
   T6_4a --> T6_4b["T6.4b nfs.New on the runner"]
   S3 --> T6_4b
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -798,60 +835,61 @@ flowchart TD
 T6.1 to T6.4, and the RFC 23 plan and the epic 2 document cite T6.3 and T6.4, which keep their
 numbers. T6.3 and T6.4 are split by letter, and work mapped to either covers both parts. SMB
 goes first because the RFC 22 plan waits on it; no plan builds on NFS yet. Every subtask
-follows RFC 20, 21 and 22 as the amendment settling §9's G1 to G10 leaves them, which lands
-first.
+follows RFC 20, 21 and 22 as the RFC 20 amendment PR on `docs/rfc-20-e6-gaps` leaves them,
+which lands first.
 
 | When | Subtasks | Man-days |
 | --- | --- | --- |
-| from S2, needing neither E4 nor E5 | T6.1, T6.2 | 5.25 |
-| once `core.Framer` and `core.HeaderCodec` are amended, by E5's T5.1a or by T6.3a | T6.3a, T6.4a | 3.75 |
-| from S3, which needs E4's `Server`, `Start`, `Stop`, accept, reader, writer and `Addrs`, and E5's T5.1c after its T5.1a and T5.9; T6.4b also needs E4's `Conn.Settings`, `Conn.Established` and `Reconfigure` | T6.3b, T6.4b | 3 |
+| from S2, needing neither E4 nor E5 | T6.1, T6.2 | 5.5 |
+| once E5's T5.1a has landed `HeaderCodec.Args` and `ReplyLen`, needing nothing of E4 | T6.3a, T6.4a | 4 |
+| from S3, which needs E4's `Server`, `Start`, `Stop`, accept, reader (with `Framer.BodyLen`'s `last` and `MaxRecord`), writer and `Addrs`, and E5's T5.1c after its T5.1a and T5.9; T6.4b also needs E4's `Conn.Settings`, `Conn.Established` and `Reconfigure` | T6.3b, T6.4b | 4.25 |
 
-T6.3a and T6.4a need of E5 only the amended `core` interfaces, which they can land themselves;
-T6.3b and T6.4b need E4 and E5 through S3. **The critical path** to the RFC 22 plan's SMB
-scaffold point is T6.1, T6.3a and T6.3b, 4.75 man-days, of which only T6.3b's 1.5 waits for
-S3, which G1's `Frame` is on too, through E4's writer. T6.2 and T6.4a, 5.75 man-days, fill the
-wait for S3. The least certain subtasks are T6.2 and T6.4a (§9).
+T6.3a and T6.4a need only E5, its T5.1a; T6.3b and T6.4b need E4 and E5 through S3. **The
+critical path** to the RFC 22 plan's SMB scaffold point is T6.1, T6.3a and T6.3b, 5.75
+man-days, of which T6.3a waits for E5's T5.1a and T6.3b's 2 for S3. T6.2 and T6.4a, 5.75
+man-days, fill those waits. The least certain subtasks are T6.2, T6.4a and T6.4b (§9).
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T6.1, T6.3a | 3.25 | the RFC amendment | SMB's bytes and stages: what the RFC 22 plan's harness and stages build on |
-| 2 | T6.2, T6.4a | 5.75 | the RFC amendment, and the amended `core` interfaces | the RPC layer: framing, the call header, the credential, the router; open beside PR 1 |
-| 3 | T6.3b | 1.5 | PR 1, S3 | SMB served end to end, the RFC 22 plan's SMB scaffold point |
-| 4 | T6.4b | 1.5 | PR 2, S3 | NFS served end to end; open beside PR 3 |
+| 1 | T6.1, T6.3a | 3.75 | the RFC 20 amendment PR; E5's T5.1a for T6.3a | SMB's bytes and header stage: what the RFC 22 plan's harness and stages build on |
+| 2 | T6.2, T6.4a | 5.75 | the RFC 20 amendment PR; E5's T5.1a for T6.4a | the RPC layer: the call header, the credential, the router; open beside PR 1 |
+| 3 | T6.3b | 2 | PR 1, S3 | SMB's framer and server end to end, the RFC 22 plan's SMB scaffold point |
+| 4 | T6.4b | 2.25 | PR 2, S3 | NFS's framer and server end to end; open beside PR 3 |
 
 A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **RFC gaps, settled** as this document recommended them: one amendment of RFC 20, 21 and
-  22, in its own pull request, writes them, and lands before this epic's subtasks.
+- **RFC gaps, settled** as this document recommended them, by the RFC 20 amendment PR on
+  `docs/rfc-20-e6-gaps`, which also amends RFC 21, RFC 22 and RFC 13 and lands before this
+  epic's subtasks.
   - **G1, who writes a record's frame header:** RFC 20 §4.7's `Framer.Frame`, and §6.2.
   - **G2, a status-alone reply's body:** RFC 20 §4.7's `HeaderCodec.Encode` and
     `Invocation.Encode`; RFC 22 §16.5's "A status's body"; RFC 21 §11.5's "A reply carrying a
     status alone".
-  - **G3, a record in several fragments:** RFC 20 §4.7's `Framer.BodyLen`; the count, RFC 21
-    §2.3.
-  - **G4, the record caps:** RFC 21 §2.3, RFC 22 §3.3.
+  - **G3, a record in several fragments:** RFC 20 §4.7's `Framer.BodyLen` and `MaxRecord`; the
+    count, RFC 21 §2.3 and RFC 13 Appendix B.
+  - **G4, the record caps:** RFC 21 §2.3, RFC 22 §3.3, RFC 13 Appendix B.
   - **G5, NFSv4's minor version:** RFC 20 §4.7's `Version`, `Header.Version` and its decision on
     `ReadOp`, §4.1's decode-header stage, §4.8.
   - **G6, the RPC header's refusals:** RFC 20 §4.1's decode-header stage and its `route` row,
-    §4.8's table; RFC 21 §11.1's "Where they are judged".
-  - **G7, malformed headers:** RFC 20 §4.7's `HeaderCodec.Decode` and §4.1's table; RFC 22
-    §16.5's "Malformed headers", RFC 21 §11.5's "Malformed calls".
+    §4.8's table; RFC 21 §11.1's "Refused credentials" and "Where they are judged".
+  - **G7, malformed headers:** RFC 20 §4.7's `HeaderCodec.Decode` and `Security.Unwrap`, §4.1's
+    table, §5.5; RFC 22 §16.5's "Malformed headers", RFC 21 §11.5's "Malformed calls".
   - **G8, the fault status:** RFC 22 §16.5, RFC 21 §11.5.
   - **G9, a message's argument bytes:** RFC 20 §4.7's `HeaderCodec.Args`, and the pipeline
     sketch.
   - **G10, the reply header's room in the reservation:** RFC 20 §4.7's `HeaderCodec.ReplyLen`,
     `Invocation.Bound`, and the pipeline sketch.
-- **Open for the architect:** (a) whether this is the scope meant by "a single file called
-  open.go" (§1), left for him; (b) the RPC header's XDR is hand-written, as the program's
-  risk 6 says, unless RFC 20 §2.5 must change.
+  - **The RPC header's XDR:** hand-written, NFS's operation codecs generated: RFC 20 §2.5's
+    layout, §4.9's table and §5.1.
+- **Open for the architect:** does "a single file called open.go" mean `ops/open.go` with its
+  codec in `wire/open.go`, RFC 20 §2.5's split (§1), or a change to §2.5? Either way it is
+  reached at the RFC 22 plan's point where a session runs over loopback, after its epics 3 to
+  5, not by this epic alone.
 - **Findings for other documents, not edited here.**
-  - The epic 1 document's R55 and the program's §4.1 sketch restate `Framer` as it was before
-    G1 and G3; RFC 20 §4.7 is the one statement.
   - E5's T5.11 and RFC 20 §4.7's `Park`: `Park` releases the record's `Buf` (E5's D12) before
     `HoldCodec.Final` gives the final reply's header, and `testproto`'s `decision:` on its
     header view says to withdraw the view if `core` ever releases a record before its request
@@ -859,34 +897,39 @@ A suggestion only: one pull request per subtask works as well.
     before `Park` releases the record.
   - The RFC 22 plan's T3.2: it names the dialects but not RFC 20 §4.8's range,
     `Conn.Settings()`'s `Dialects`, inside which `NEGOTIATE` picks; the program's description
-    of T6.3 had the pick, which this document leaves to T3.2. An edit to T3.2 should name it.
-  - An SMB command code MS-SMB2 does not define: RFC 22 §16.5 maps `ErrNotSupported` to
-    `STATUS_NOT_SUPPORTED`, while Samba answers an unknown command `STATUS_INVALID_PARAMETER`
-    (from memory); a question for RFC 22.
+    of T6.3 had the pick, which this document leaves to the RFC 22 plan's T3.2. An edit to that
+    subtask should name it.
+  - The epic 1 document's R55 and the program's §4.1 sketch restated `Framer` as it was; the
+    amendment PR brings both to RFC 20 §4.7.
 - **Edits this document proposes to the program's implementation plan**, for the coordinator's
   pull request, not made here:
-  - epic 6's description, its row in §2 and its estimate line: 6 subtasks, 12 man-days,
+  - epic 6's description, its row in §2 and its estimate line: 6 subtasks, 13.75 man-days,
     T6.3 and T6.4 split by letter, the `NEGOTIATE` item of T6.3 moved to the RFC 22 plan's
-    T3.2, and "MS-SMB2's examples" and "RFC 5531's encodings" replaced by the field tables and
-    the reference captures (D3);
+    subtask T3.2, and "MS-SMB2's examples" and "RFC 5531's encodings" replaced by the field
+    tables and the reference captures (D3);
+  - rule 4's header codecs at 0 allocations: a chained SMB member past the first at one (D1);
   - a new ledger row: "each request's `vfs.Call` and its `Identity`, built from NFS's
     credential and SMB's session (RFC 20 §4.4, RFC 21 §11.1, RFC 22 §16.1)", why "no row reads
     `Request.Call` before the protocols' first handler", owners the RFC 21 and RFC 22 plans,
     trigger their first handler;
   - the NFS-over-TLS row's "E6 has no TLS" reads that `New` loads the files since epic 1 and,
-    until `StartTLS`, refuses a mode other than `off` (D6);
+    until `StartTLS`, refuses a mode other than `off`, and that E4's `Reconfigure` refuses one
+    the same way (D6);
   - the coverage table gains, for E6, RFC 21 §2.1, §2.2, §11.1's refused credentials and §11.5's
     `core` refusals, and RFC 22 §16.5's;
-  - G1 and G3 are named in epic 4's description, since E4's writer and reader implement them,
-    and G9 and G10 in epic 5's, whose pipeline calls them.
+  - epic 4's description names `Framer.BodyLen`'s `last` and `MaxRecord`, which its reader
+    loops on, `Framer.Frame`, which its writer calls, and D6's `Reconfigure` refusal; epic 5's
+    names `HeaderCodec.Args` and `ReplyLen`, which T5.1a lands with `Frame`.
 - **Against the epic's first description.** That description had four subtasks at 11.5
   man-days. The four ids stand for the same work. T6.3 and T6.4 are split by what needs a
-  socket: their stages are tested alone from S2, so the RFC 22 plan's epic 1 builds on a fixed
-  `smb/protocol`, and only `New` waits for S3. The total is 12: about 1.5 added, for NFS's
-  `Conn.Established` and its test, the frame header's writers (G1), `Args` and `ReplyLen` (G9,
-  G10), the claimed-length tests, the two test-only rows and D6's refusal, and about 1 saved,
-  by gating each protocol once at its header stage, cutting vectors from the reference
+  socket: their header stages and routers are tested alone once E5's T5.1a lands, and only the
+  framer and `New` wait for S3. The total is 13.75: about 3.25 added, for NFS's
+  `Conn.Established` and its test, the frame header's writers and the framers' `MaxRecord`
+  (G1, G3), `Args` and `ReplyLen` (G9, G10), the undefined SMB command, the refused
+  `NextCommand`'s close and the NFS verifier and reply message (R36 to R41), the claimed-length
+  tests, the two test-only rows, the fragment cases over loopback and D6's refusal, and about 1
+  saved, by gating each protocol once at its header stage, cutting vectors from the reference
   captures already in `test/pcap-corpus`, and fuzzing each `wire` package with one target.
-- **Least certain.** T6.2 and T6.4a, for the edge cases of the RPC header, a record in several
-  fragments and the order of the router's refusals (G3, G6); T6.3b and T6.4b, whose loopback
-  tests are written against E4's `Server`, `Reconfigure` and handshake deadline.
+- **Least certain.** T6.2, T6.4a and T6.4b, for the edge cases of the RPC header, a record in
+  several fragments and the order of the router's refusals; T6.3b and T6.4b, whose loopback
+  tests are written against E4's `Server`, reader, `Reconfigure` and handshake deadline.
