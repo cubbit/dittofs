@@ -313,7 +313,7 @@ test/harness/bin/dt run e2e                      # Linux, a kernel NFS client, p
 
 [docs/internals/testing.md](docs/internals/testing.md) is the guide: what each suite needs, how to
 run and read a run, the conformance suites and the Windows checklists. See also
-[test/e2e/](test/e2e/) and [test/e2e/BENCHMARKS.md](test/e2e/BENCHMARKS.md).
+[test/e2e/](test/e2e/) and [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Security
 
