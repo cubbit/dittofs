@@ -41,6 +41,7 @@ func Run(t *testing.T, open Opener) {
 		{"ReadCosts", testReadCosts},
 		{"ParallelCreatesInOneDirectory", testParallelCreatesInOneDirectory},
 		{"UserRenameAndIDsMoveTheirRows", testUserRenameAndIDsMoveTheirRows},
+		{"UserAPIFields", testUserAPIFields},
 		{"PrincipalUniqueness", testPrincipalUniqueness},
 		{"DeleteRemovesMembershipsAndGrants", testDeleteRemovesMembershipsAndGrants},
 		{"Shares", testShares},

@@ -52,7 +52,7 @@ func encodeQuota(q entity.Quota) []byte {
 	for _, l := range []entity.Limit{q.Hard, q.Soft, q.Advisory} {
 		w.Int64(l.Bytes).Int64(l.Files)
 	}
-	return w.Int64(int64(q.Grace)).Encode()
+	return w.Int64(int64(q.Grace)).Uint64(q.Version).Encode()
 }
 
 func decodeQuota(share entity.ShareID, suffix, b []byte) (entity.Quota, error) {
@@ -66,7 +66,7 @@ func decodeQuota(share entity.ShareID, suffix, b []byte) (entity.Quota, error) {
 	for _, l := range limits {
 		l.Bytes, l.Files = r.Int64(), r.Int64()
 	}
-	q.Grace = time.Duration(r.Int64())
+	q.Grace, q.Version = time.Duration(r.Int64()), r.Uint64()
 	if len(suffix) == 0 {
 		return q, errMalformed
 	}

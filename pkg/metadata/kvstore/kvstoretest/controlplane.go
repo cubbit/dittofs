@@ -684,3 +684,21 @@ func testProjects(t *testing.T, kvo Opener) {
 		t.Errorf("a file moved out of its project: %v", err)
 	}
 }
+
+// A user's management API fields read back as written, its not-before in
+// whole seconds.
+func testUserAPIFields(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	u := user("alice")
+	u.Email, u.Role, u.MustChange = "alice@example.com", entity.RoleOperator, true
+	u.NotBefore = time.Unix(1_800_000_000, 999_999_999)
+	must(t, s.ControlPlane().PutUser(ctx, u))
+	got, err := s.Principals().User(ctx, u.Principal)
+	must(t, err)
+	if got.Email != u.Email || got.Role != u.Role || !got.MustChange {
+		t.Errorf("email, role, must change: got %q %v %v, want %q %v true", got.Email, got.Role, got.MustChange, u.Email, u.Role)
+	}
+	if want := time.Unix(1_800_000_000, 0); !got.NotBefore.Equal(want) {
+		t.Errorf("not before: got %v, want %v", got.NotBefore, want)
+	}
+}
