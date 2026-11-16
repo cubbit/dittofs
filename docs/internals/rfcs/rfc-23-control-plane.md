@@ -1371,7 +1371,7 @@ type Progress struct {
   **(cluster)** A claim that lapses is taken by any node, which resumes from the
   record's last step. Each such kind **MUST** record its steps durably and make
   each idempotent, or it is not an operation.
-- **Scheduled work.** An operation no `202` call started, the weekly
+- **Scheduled work.** An operation no `202` call started, the scheduled
   `rotate-machine-password` that identity's own loop schedules
   ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)), carries the zero `Account`,
   read as "the schedule". The `Write` that creates it carries its audit record,

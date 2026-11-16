@@ -618,8 +618,8 @@ type MachineJoin struct {
 	Names        []string  // the account's service names, with the directory's sPNMappings applied
 	LastRotation struct {
 		At        time.Time // store time
-		Confirmed time.Time // store time of the last rotation confirmed; a failed rotation leaves it
-		Version   uint64    // the secret version the rotation sealed
+		Confirmed time.Time // store time of the last join or rotation confirmed; a failed rotation leaves it
+		Version   uint64    // the secret version the last join or rotation confirmed; a failed rotation leaves it
 		Failed    bool      // cleared only by a rotation completed
 		Tag       uint32    // the key version number sealed with the version
 		Read      uint32    // the number the confirm read; differs from Tag on a reported mismatch
@@ -785,7 +785,7 @@ type Operation struct { // RFC 23 §4.6
 	ID       OperationID // minted, 16 bytes
 	Kind     string      // "share.delete", "user.delete", "share.rehome", ...
 	Target   ResourceRef // kind and ID
-	Account  Principal
+	Account  Principal   // zero for an operation the schedule started (RFC 23 §4.6)
 	State    OpState     // pending, running, succeeded, failed, cancelling, cancelled
 	Claim    OpClaim     // for work the runner drives: node, node epoch, expiry; zero otherwise
 	Step     []byte      // the runner's last durable step; owner-driven work keeps its cursor in its own records
@@ -838,7 +838,7 @@ type SignInKey struct {
 type AuditRecord struct { // RFC 23 §6: append-only; deleted only past audit.retention
 	ID      [16]byte
 	Time    time.Time // store time of the commit
-	Actor   Principal // with the account name, session or token ID; the host for the break-glass reset
+	Actor   Principal // with the account name, session or token ID; the host for the break-glass reset; zero for the schedule (RFC 23 §4.6)
 	Node    NodeID
 	Source  string    // the client's address
 	Request []byte    // method, path, request ID, idempotency key

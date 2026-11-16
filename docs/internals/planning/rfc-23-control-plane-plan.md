@@ -143,9 +143,9 @@ and A10 after it merged:
   time.Time`, the store time of that confirm. A failed rotation leaves both as they were. Epic 2
   stores them, and epic 4's keytab route reads `Names`. This touches RFC 16 §2.3.
 - **A10. An operation can be started by a schedule** (the RFC 18 plan's epic 7, its D11). Identity's
-  own loop creates the weekly `rotate-machine-password`, which no `202` call started: it carries
+  own loop creates the scheduled `rotate-machine-password`, which no `202` call started: it carries
   the zero `Account`, read as "the schedule", and the `Write` that creates it carries an audit
-  record whose actor is the schedule. This touches RFC 23 §4.6 and §6, epic 2's R4 and R8, and
+  record whose actor is the schedule. This touches RFC 23 §4.6 and §6, RFC 16 §2.3's `Operation.Account` and `AuditRecord.Actor` (zero for the schedule), epic 2's R4 and R8, and
   epic 4's R50 and its operation reads.
 
 ## 1. Introduction

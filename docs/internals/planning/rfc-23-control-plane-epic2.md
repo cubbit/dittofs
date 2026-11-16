@@ -573,7 +573,8 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
     `FaultKV` delay commits first: the `Write` retries and sees the new value (catches an untracked
     read, R18);
   - an audit read by actor, by target, by taking node and by time range returns exactly the
-    records written, in store-time order (R26);
+    records written, in store-time order (R26), a record whose actor is the zero principal, the
+    schedule's, among them, found by a read by that actor (R8);
   - the last two enabled admins demoted by two concurrent `Write`s, the first held open by a
     `FaultKV` delay after its `EnabledAdmins` read so both read two, each refusing when it would
     leave none: exactly one commits, on Badger in memory and on disk (catches an untracked count,
@@ -612,9 +613,7 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   the key free (R23, CP6); one key used by two accounts, each its own record (R24); two `Write`s
   with one key, the first held open by a `FaultKV` delay after its read so both miss the record:
   exactly one commits and the other replays its answer (catches a record not re-read on the retry,
-  R23); the key read tracked, as a pass-through `kv.Counting` around the KV counts one tracked `Get`
-  for the key and no untracked read (R23: no race can show it, since two writes of one key already
-  conflict); the record and its `XP` row written together (R36); `fn` setting the answer after its writes, and the stored
+  R23); the key read tracked as RFC 16 asks, which no test can show, since the record's `Set` already conflicts with any concurrent write of the key: held by construction, with a `decision:` marker at the read (R23); the record and its `XP` row written together (R36); `fn` setting the answer after its writes, and the stored
   answer being that one (R19); golden vectors, refusal cases and a `FuzzControlPlaneValues` entry
   (R12, R13). No double.
 
