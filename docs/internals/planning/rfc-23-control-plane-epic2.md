@@ -611,8 +611,10 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 - **Tests:** at kvstore's conformance suite: the replay, the mismatch, and a refused `fn` leaving
   the key free (R23, CP6); one key used by two accounts, each its own record (R24); two `Write`s
   with one key, the first held open by a `FaultKV` delay after its read so both miss the record:
-  exactly one commits and the other replays its answer (catches an untracked read, R23); the record
-  and its `XP` row written together (R36); `fn` setting the answer after its writes, and the stored
+  exactly one commits and the other replays its answer (catches a record not re-read on the retry,
+  R23); the key read tracked, as a pass-through `kv.Counting` around the KV counts one tracked `Get`
+  for the key and no untracked read (R23: no race can show it, since two writes of one key already
+  conflict); the record and its `XP` row written together (R36); `fn` setting the answer after its writes, and the stored
   answer being that one (R19); golden vectors, refusal cases and a `FuzzControlPlaneValues` entry
   (R12, R13). No double.
 
