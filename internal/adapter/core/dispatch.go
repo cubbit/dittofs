@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
@@ -244,6 +246,7 @@ type Request struct {
 	invoke       Call
 	resolveStart time.Time
 	callEnd      time.Time
+	trace        trace.TraceID // every log line for the request carries it
 }
 
 // Park holds the request until done: core sends the interim, and answers

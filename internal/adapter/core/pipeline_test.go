@@ -1,12 +1,16 @@
 package core_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,9 +18,13 @@ import (
 	"testing/synctest"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
@@ -320,6 +328,13 @@ type seam struct {
 // newSeam builds a seam for proto's stages, its reply budget of reply bytes.
 func newSeam(t *testing.T, proto core.Protocol, reply int64) *seam {
 	t.Helper()
+	return newSeamWith(t, proto, reply, adapter.Deps{})
+}
+
+// newSeamWith is newSeam on a server whose Deps are d: its registry, logger
+// and tracer.
+func newSeamWith(t *testing.T, proto core.Protocol, reply int64, d adapter.Deps) *seam {
+	t.Helper()
 	s := &seam{
 		t:       t,
 		budgets: &resources.Budgets{Receive: resources.NewWaitBudget("receive", 64<<20), Reply: resources.NewWaitBudget("reply", reply)},
@@ -334,7 +349,7 @@ func newSeam(t *testing.T, proto core.Protocol, reply int64) *seam {
 	}
 	out, stop, conn, _ := newRecorder(s.f)
 	s.stop, s.client = stop, testproto.NewClient(conn)
-	s.p = core.NewPipeline(core.NewShared(adapter.Deps{}, s.reply), st, context.Background(), peer, out, func(err error) {
+	s.p = core.NewPipeline(core.NewShared(d, s.reply), st, context.Background(), peer, out, func(err error) {
 		select {
 		case s.closed <- err:
 		default:
@@ -873,6 +888,281 @@ func TestACancelIsAnsweredNothing(t *testing.T) {
 			t.Error("a Cancel was answered")
 		}
 	})
+}
+
+// refusingFlow is a Flow that refuses every request with err: an input.
+type refusingFlow struct{ err error }
+
+func (f refusingFlow) Admit(context.Context, core.Header) (func(), error) { return nil, f.err }
+
+var errUnmappable = errors.New("a refusal no row maps")
+
+// logSink is a logger whose records, from debug up, the test reads back.
+type logSink struct{ buf bytes.Buffer }
+
+func (l *logSink) logger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(&l.buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// at is the records logged at level.
+func (l *logSink) at(t *testing.T, level string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(l.buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("a log line %q: %v", line, err)
+		}
+		if rec["level"] == level {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// An error no row maps is answered the fault status, logged once at error
+// with the request's trace ID, and counted.
+func TestAnUnmappedErrorIsAnsweredTheFaultAndCounted(t *testing.T) {
+	m, logs := metrics.New("v", "c"), &logSink{}
+	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Flow = refusingFlow{errUnmappable} }}, 1<<20, adapter.Deps{Metrics: m, Logger: logs.logger()})
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+	if r := s.read(); r.Status != testproto.StatusFault {
+		t.Errorf("an unmapped refusal is answered %+v, want the fault status", r)
+	}
+	errs := logs.at(t, "ERROR")
+	if len(errs) != 1 || errs[0]["trace_id"] == "" || errs[0]["trace_id"] == strings.Repeat("0", 32) {
+		t.Errorf("logged at error %v, want one line with the request's trace ID", errs)
+	}
+	got, _ := scrape(t, m)
+	if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 1 {
+		t.Errorf("%s = %v, want 1", k, got[k])
+	}
+}
+
+// A service error a row answers counts under its name, here the reply
+// copy's delay that the stages' table maps, and logs at debug.
+func TestAMappedServiceErrorCountsUnderItsName(t *testing.T) {
+	m, logs := metrics.New("v", "c"), &logSink{}
+	spent := &vfs.Delay{Cause: vfs.DelayResources}
+	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Flow = refusingFlow{spent} }}, 1<<20, adapter.Deps{Metrics: m, Logger: logs.logger()})
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+	if r := s.read(); r.Status != testproto.StatusDelay {
+		t.Errorf("a mapped delay is answered %+v", r)
+	}
+	got, _ := scrape(t, m)
+	if k := "adapter_status_mapped_total{error=delay,protocol=" + testproto.Name + "}"; got[k] != 1 {
+		t.Errorf("%s = %v, want 1", k, got[k])
+	}
+	if d := logs.at(t, "DEBUG"); len(d) != 1 || len(logs.at(t, "ERROR")) != 0 {
+		t.Errorf("a mapped error logged %d debug lines and some at error, want one at debug", len(d))
+	}
+}
+
+// Each refusal counts under the stage that refused it (RFC 20 §10.1's
+// values).
+func TestEachRefusalCountsUnderItsStage(t *testing.T) {
+	m := metrics.New("v", "c")
+	s := newSeamWith(t, testproto.New(adapter.Deps{}), 64<<10, adapter.Deps{Metrics: m})
+	bad := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Session: 5})
+	bad[len(bad)-1] ^= 0x01
+	noRole := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 5})
+	for _, c := range []struct {
+		stage string
+		send  func()
+	}{
+		{"unwrap", func() { s.serveBody(bad) }},
+		{"admit", func() { s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Credits: 9}) }},
+		{"route", func() { s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 3, ID: 3}) }},
+		{"route", func() { s.serve(testproto.Msg{Op: 99, Version: 1, ID: 4}) }},
+		{"decode_args", func() { s.serveBody(noRole[:len(noRole)-1]) }},
+		{"reply_too_big", func() {
+			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 6, Payload: make([]byte, 100<<10)})
+		}},
+	} {
+		c.send()
+		s.read()
+	}
+	s.p.Drain()
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 7, Role: core.RoleNone})
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 8, Role: core.RoleContext})
+	s.read()
+	badNext := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 9})
+	binary.BigEndian.PutUint32(badNext, 39)
+	s.serveBody(badNext)
+	s.read()
+	if err := s.p.Wait(context.Background()); err != nil { // the drained Echo, answered nothing, has ended
+		t.Fatal(err)
+	}
+	got, _ := scrape(t, m)
+	for stage, want := range map[string]float64{"unwrap": 1, "admit": 1, "route": 2, "decode_args": 1, "reply_too_big": 1, "resolve_ids": 1, "decode_header": 1} {
+		if k := "adapter_refusals_total{protocol=" + testproto.Name + ",stage=" + stage + "}"; got[k] != want {
+			t.Errorf("%s = %v, want %v", k, got[k], want)
+		}
+	}
+}
+
+// adapter_requests_in_flight reads 64 when the 64th of 65 requests has been
+// admitted, and zero when all are answered.
+func TestInFlightFollowsTheRequests(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newSeamWith(t, testproto.New(adapter.Deps{}).Bare(), smallCharge, adapter.Deps{Metrics: m})
+		free := s.full()
+		all := start(func() {
+			for i := range 65 {
+				s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: uint64(i + 1)})
+			}
+		})
+		synctest.Wait()
+		k := "adapter_requests_in_flight{protocol=" + testproto.Name + "}"
+		if got, _ := scrape(t, m); got[k] != 64 {
+			t.Errorf("%s = %v with 64 admitted, want 64", k, got[k])
+		}
+		free()
+		for range 65 {
+			s.read()
+		}
+		<-all.done
+		synctest.Wait()
+		if got, _ := scrape(t, m); got[k] != 0 {
+			t.Errorf("%s = %v once all are answered, want 0", k, got[k])
+		}
+	})
+}
+
+// cachedReplay is a ReplayCache that answers every header from one copy: an
+// input.
+type cachedReplay struct {
+	pool  *resources.BufPool
+	reply []byte
+}
+
+func (c cachedReplay) Lookup(ctx context.Context, _ core.Header) (*resources.Buf, error) {
+	b, err := c.pool.Get(ctx, peer, len(c.reply))
+	if err != nil {
+		return nil, err
+	}
+	b.B = append(b.B[:0], c.reply...)
+	return b, nil
+}
+
+func (cachedReplay) Store(core.Header, *resources.Buf) {}
+
+// On stages and a table of different labels, a header the codec refuses and
+// a replay hit count under the stages', and a routed request's in-flight
+// count moves to its table's at Route, the stages' back at zero.
+func TestTheTwoLabels(t *testing.T) {
+	relabel := func(st *core.Stages) { st.Protocol = "stages" }
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newSeamWith(t, edited{testproto.New(adapter.Deps{}).Bare(), relabel}, smallCharge, adapter.Deps{Metrics: m})
+		free := s.full()
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+		synctest.Wait()
+		got, _ := scrape(t, m)
+		if got["adapter_requests_in_flight{protocol=stages}"] != 0 || got["adapter_requests_in_flight{protocol="+testproto.Name+"}"] != 1 {
+			t.Errorf("a routed request in flight: stages %v, table %v; want 0 and 1", got["adapter_requests_in_flight{protocol=stages}"], got["adapter_requests_in_flight{protocol="+testproto.Name+"}"])
+		}
+		free()
+		s.read()
+		badNext := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2})
+		binary.BigEndian.PutUint32(badNext, 39)
+		s.serveBody(badNext)
+		s.read()
+		if got, _ := scrape(t, m); got["adapter_refusals_total{protocol=stages,stage=decode_header}"] != 1 {
+			t.Errorf("a header the codec refused is not counted under the stages' label: %v", got)
+		}
+	})
+	m := metrics.New("v", "c")
+	replyPool := resources.NewBufPool(resources.NewWaitBudget("replay", 1<<20))
+	cached := body(testproto.New(adapter.Deps{}).Framer(), testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 42})
+	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}).Bare(), func(st *core.Stages) {
+		relabel(st)
+		st.Replay = cachedReplay{replyPool, cached}
+	}}, 1<<20, adapter.Deps{Metrics: m})
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 42})
+	s.read()
+	if got, _ := scrape(t, m); got["adapter_replay_hits_total{protocol=stages}"] != 1 {
+		t.Errorf("a replay hit is not counted under the stages' label: %v", got)
+	}
+}
+
+// Each request has one span, ended, named after its operation once routed,
+// with §10.2's keys alone: a served Echo its status, result and sizes, a
+// refusal at Unwrap the stage that refused it.
+func TestEachRequestHasOneSpan(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+	s := newSeamWith(t, testproto.New(adapter.Deps{}), 1<<20, adapter.Deps{Tracer: tracer})
+	echo := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("hi")})
+	s.serveBody(echo)
+	s.read()
+	bad := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Session: 5})
+	bad[len(bad)-1] ^= 0x01
+	s.serveBody(bad)
+	s.read()
+	s.finish()
+	ended := spans.Ended()
+	if len(ended) != 2 {
+		t.Fatalf("%d spans ended for two requests", len(ended))
+	}
+	attrs := func(i int) map[string]string {
+		a := map[string]string{}
+		for _, kv := range ended[i].Attributes() {
+			if !slices.Contains(spanKeys, string(kv.Key)) {
+				t.Errorf("span %q carries %s, outside §10.2's keys", ended[i].Name(), kv.Key)
+			}
+			a[string(kv.Key)] = kv.Value.String()
+		}
+		return a
+	}
+	served := attrs(0)
+	if ended[0].Name() != "adapter."+testproto.Name+".Echo" || served["op"] != "echo" || served["status"] != "0" || served["result"] != "ok" ||
+		served["request_bytes"] != strconv.Itoa(len(echo)) || served["reply_bytes"] != "42" || served["stage"] != "" {
+		t.Errorf("the served Echo's span is %q %v", ended[0].Name(), served)
+	}
+	refused := attrs(1)
+	if ended[1].Name() != "adapter."+testproto.Name || refused["stage"] != "unwrap" || refused["op"] != "" {
+		t.Errorf("the refused message's span is %q %v, want its stage and no operation", ended[1].Name(), refused)
+	}
+}
+
+// Every line logged for a request carries its trace ID, with a tracer or
+// none; a second refusal at Unwrap on one connection logs nothing more; a
+// mapped refusal logs at debug.
+func TestLogLinesCarryTheTraceID(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+	for name, d := range map[string]adapter.Deps{"a tracer": {Tracer: tracer}, "no tracer": {}} {
+		t.Run(name, func(t *testing.T) {
+			logs := &logSink{}
+			d.Logger = logs.logger()
+			s := newSeamWith(t, testproto.New(adapter.Deps{}), 1<<20, d)
+			for id := range uint64(2) {
+				bad := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: id, Session: 5})
+				bad[len(bad)-1] ^= 0x01
+				s.serveBody(bad)
+				s.read()
+			}
+			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 3, ID: 3})
+			s.read()
+			warns, debugs := logs.at(t, "WARN"), logs.at(t, "DEBUG")
+			if len(warns) != 1 {
+				t.Errorf("two refusals at Unwrap logged %d warnings, want one per connection", len(warns))
+			}
+			if len(debugs) != 1 {
+				t.Errorf("a mapped refusal logged %d debug lines, want one", len(debugs))
+			}
+			for _, rec := range append(warns, debugs...) {
+				if id, _ := rec["trace_id"].(string); len(id) != 32 || id == strings.Repeat("0", 32) {
+					t.Errorf("a line logged for a request carries trace ID %q", id)
+				}
+			}
+		})
+	}
 }
 
 // wrapped is a Router whose tables' rows hand each Invocation they decode to

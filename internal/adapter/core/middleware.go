@@ -168,9 +168,9 @@ func (sh *shared) recovery(op *Op, ts *tableSeries) Middleware {
 			defer func() {
 				if p := recover(); p != nil {
 					if ok, suppressed := line.take(sh.clock.Now()); ok {
-						sh.log.ErrorContext(ctx, "handler panicked", "op", op.Name, "panic_type", fmt.Sprintf("%T", p), "suppressed", suppressed, "stack", string(debug.Stack()))
+						sh.log.ErrorContext(ctx, "handler panicked", "op", op.Name, "panic_type", fmt.Sprintf("%T", p), "suppressed", suppressed, "stack", string(debug.Stack()), "trace_id", traceOf(r))
 					}
-					sh.log.DebugContext(ctx, "handler panicked", "op", op.Name, "panic", p)
+					sh.log.DebugContext(ctx, "handler panicked", "op", op.Name, "panic", p, "trace_id", traceOf(r))
 					ts.panicked(op)
 					err = errPanicked
 				}
@@ -321,4 +321,12 @@ func (c *clockCtx) end(err error) {
 	for _, f := range funcs {
 		go f()
 	}
+}
+
+// traceOf is r's trace ID, for a log line; empty for no request.
+func traceOf(r *Request) string {
+	if r == nil {
+		return ""
+	}
+	return r.trace.String()
 }
