@@ -53,6 +53,18 @@ type Node struct {
 // ponytail: the node both builds and drives its components. Split the
 // builder out when it gains dependencies a multi-node test cannot replace
 // cheaply.
+//
+// decision: New builds over another installation's KV, because nothing in
+// Config names the installation to expect. That KV is refused only at the
+// engine's Start, when it opens each journal and journal.Open checks the
+// journal's identity against the one the store records. Check the
+// installation here once the bootstrap carries its ID.
+//
+// decision: a node is built once per metrics registry. Stop does not
+// unregister the filesystem's collectors, so a second New on the same
+// registry is refused as a duplicate registration; the test harness gives
+// each build a fresh registry. Unregister in Stop when an in-process
+// rebuild on one registry is needed.
 func New(cfg Config) (*Node, error) {
 	if cfg.KV == nil {
 		return nil, errors.New("node: Config.KV is missing")
