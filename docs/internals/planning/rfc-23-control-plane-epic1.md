@@ -45,9 +45,10 @@ its drift test; the architecture tests that need no package this epic does not c
 - The behaviour behind the stubs: the node, and `dfs start` stopping on a termination signal (E3);
   the API server and its handlers (E4); accounts and sign-in (E5); the commands of `dfsctl` (E6).
 - The `ControlPlane` view's signatures (`expect` on every write, `DeleteGrant`, `PutOperation`,
-  `Write`), the records they name and `WriteMeta` and `ControlPlaneTx`, which go in the root
-  `pkg/metadata` beside RFC 16 §3's views: E2 declares and fills them together, so no stub of
-  them is frozen here. `Alloc` on `PutUser` and `PutGroup` comes with the RFC 18 plan's RID counter.
+  `Write`), the records they name and `WriteMeta` and `ControlPlaneTx`, which go in
+  `pkg/metadata/entity` (D3): E2 declares and fills them together, so no stub of
+  them is frozen here. E2 adds `Alloc` to `PutUser` and `PutGroup` (its D2), refusing
+  an allocation until the RFC 18 plan's counters land.
 - `pkg/apiclient`: the package goes with its v1 body (D6), and E4 lands it whole, one generic
   `Resource[Spec, Status]` with its core.
 - Each resource's spec and status types in `pkg/node/apiv1`: E4 for the resources its routes
@@ -63,8 +64,10 @@ its drift test; the architecture tests that need no package this epic does not c
   [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger).
 - The harness's server fixture on `dfs init` and `dfs start` (the integration epic), and the e2e
   helpers on the new client (E8).
-- The node view RFC 23 §2.1 sketches as `Records`, and the `Node` and `NodeStatus` records (E2,
-  E3): only the node calls them, and it holds kvstore's view directly (D2).
+- The node view RFC 23 §2.1 sketches as `Records`, and the `Node` and `NodeStatus` records: E2's
+  `Store.Nodes()` serves them, and the node holds kvstore's views directly (D2); an exported
+  `Records` interface is a row of
+  [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger).
 - The resource envelope's `managed` part: it waits with the provisioning file, a row of
   [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger) (D9).
 
@@ -191,7 +194,8 @@ that subtasks and tests can cite them.
   fills them together, with `WriteMeta` and `ControlPlaneTx` in `pkg/metadata/entity`, which kvstore
   and the API both already import. Not the root `pkg/metadata`: on `feat/storage-v2` it is still
   v1's metadata `Service`, and kvstore naming a type there would pull it into kvstore's closure and,
-  through kvstore, into the engine's, which `pkg/block/engine/imports_test.go` refuses. The two
+  through kvstore, into the engine's. `pkg/block/engine/imports_test.go` checks only direct
+  imports, so no test would fail: the reason is closure hygiene. The two
   types can move beside RFC 16 §3's views once that `Service` leaves the root package. A stub view frozen a
   whole epic before its bodies would pin signatures no test exercises. The user's decision. No
   marker.
@@ -416,7 +420,7 @@ internal/node/
     (`k8s/dittofs-operator/internal/controller/dittoserver_controller.go`), so its pods still start;
     `bench/ditto/night.sh`; `test/e2e/testdata/nlm/nlm_axis_interop.sh`;
     `test/scenarios/lib/tools/dfs-server`; `test/posix/setup-posix.sh`; and v1's `dfs init` in
-    `scripts/install.sh` and `test/scenarios/setup.sh`;
+    `scripts/install.sh`;
   - `cmd/gendocs/reference_test.go`, which generates the reference into `t.TempDir()` and fails
     when it differs from `docs/guide/cli.md`.
   Consumed by E6, whose command changes the reference test then holds to R8.
@@ -472,7 +476,9 @@ internal/node/
     one exemption RFC 23 names. `nodetest` does not exist until E3, so the rule's `testdata` tree
     plants both branches: an allowed file under a `nodetest` path, and a forbidden one under a
     look-alike (`nodetest2`), so an over-broad prefix match fails now rather than in E3;
-  - **the CLI's closure** (R11, R20): the transitive imports of `cmd/dfsctl/...` and
+  - **the CLI's closure** (R11, R20), over the binary's dependencies, `go list -deps ./cmd/dfsctl`
+    without `-test`, so a test's import of the harness is not counted: the transitive imports of
+    `cmd/dfsctl/...` and
     `pkg/node/apiv1`, and of `pkg/apiclient` once E4 lands it, stay, of this module, within
     `cmd/dfsctl/...`, `pkg/apiclient`, `pkg/node/apiv1` and `internal/cli/...`, and
     `pkg/node/apiv1`'s within the standard library;
@@ -515,21 +521,9 @@ its own (D1).
 
 ## 9. Open points
 
-Mismatches with RFC 23's plan these edits do not settle:
-
-- Plan §1.3 lists the API's `Deps` as a seam epic 1 exposes; D7 leaves the package, and so its
-  `Deps`, to E4 under rule 12.
-- RFC 23 §2.1 sketches `Records` as an exported interface of `node`; D2 does not declare it.
-
-Other open points:
-
 - The RFC 13 plan's epic 1 declares the settings view's delete and cross-scope read and the secrets
   view at its S0, which is now this epic's deletion; it builds on kvstore's view before E2 has put
-  `expect` on it (D3), so the two plans' view changes meet in E2 and that epic's breakdown settles
-  their order.
+  `expect` on it (D3), so the two plans' view changes meet in E2, whose D4 settles their order: whichever
+  lands second adds the other's transaction forms.
 - No check reads the `dfs start` invocations in Dockerfiles, the unit file, shell scripts or the
   operator's pod arguments; T1.4's `rg` is the only enforcer of R5 there.
-- The callers of the removed flags on `feat/storage-v2` differ from RFC 23's plan's D13 list:
-  `test/smbfuzz/fixture/fixture.go` and `test/crash/*.sh` no longer pass them, and
-  `test/posix/setup-posix.sh` and `docs/guide/configuration.md` do. T1.3 and T1.4 work from the
-  tests and the `rg`, not from either list.

@@ -678,7 +678,7 @@ internal/identity/netlogon/     secure channel, pass-through, join, rotation (gi
 internal/identity/testdata/     PACs captured from the Samba fixture, with their keys                  E5
 test/integration/ad-dc/         the Samba fixture, reworked part by part (§1.4)                        E5, E6, E7
 internal/vfs/                   SignIn, Spell, Find through Deps; admission's caller cache            E3, E4
-pkg/metadata/entity/            User.Secret renamed User.Password, + User.NTHash (A5), with the codec; User.Email; root's 0x0D; Machine     E2
+pkg/metadata/entity/            User.Secret renamed User.Password, + User.NTHash (A5), with the codec; root's 0x0D; Machine     E2
 pkg/metadata/kvstore/           + Minter on the IDS‖uid, gid and RID counters (RFC 16)                 E2
 ```
 
@@ -1092,7 +1092,7 @@ if h.NTHash != nil {
 // a tracked read of identity.ntlm, refused if its revision moved (§3.5), so
 // no NT hash lands after NTLM-off's deletion has scanned past its user. An
 // expect conflict on either PutSecret is ErrConflict: the caller seals again.
-err = store.Write(ctx, meta, func(tx metadata.ControlPlaneTx) error {
+err = store.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
 	s, _, err := tx.Setting(installation, "identity.ntlm") // tracked read
 	if err != nil || s.Generation != ntlm.Revision {
 		return orConflict(err)
@@ -1107,7 +1107,7 @@ err = store.Write(ctx, meta, func(tx metadata.ControlPlaneTx) error {
 		}
 		u.NTHash = nt.ID
 	}
-	return tx.PutUser(u, u.Generation, metadata.Alloc{})
+	return tx.PutUser(u, u.Generation, entity.Alloc{})
 })
 ```
 
@@ -1153,7 +1153,7 @@ password and NT hash are derived, sealed and checked.
 - RFC 18 §4.1, §4.4 and §4.6;
 - RFC 18 §3.5's NT-hash rules and NTLM-off deletion;
 - RFC 18 §8 and §8.1;
-- RFC 16 §3's `Minter`; RFC 16 §2.3's `User` fields (A5's two references, `Email`), root's fixed ID
+- RFC 16 §3's `Minter`; RFC 16 §2.3's `User` fields (A5's two references), root's fixed ID
   and the `Machine` kind.
 
 **Done when:**
@@ -1171,7 +1171,7 @@ password and NT hash are derived, sealed and checked.
 - Root and anonymous among the well-known principals (RFC 18 §2.1): root's fixed ID added to
   `entity`'s, whose `WellKnown()` accepts only `0x01` to `0x0C` today.
 - The `Machine` principal kind, which `entity.PrincipalKind` lacks today, and its record, for epic
-  5's mints (RFC 16 §2.3); `User.Email`.
+  5's mints (RFC 16 §2.3); `User.Email` is RFC 23's plan's epic 2's.
 - The installation's domain SID (RFC 18 §4.4) and name uniqueness under simple Unicode case folding
   (RFC 18 §4.6, D9).
 - `Spell` and `Find` over the stored schemes and the qualified name, with `FindOpts.Mint` set only
