@@ -48,8 +48,7 @@ const (
 const benchCreators = 32
 
 // benchDirEnv names a directory on the device under test. Without it the
-// benchmarks run in the test's temporary directory, which measures whatever
-// device holds it.
+// benchmarks skip: the temporary directory may be RAM, and measures no device.
 const benchDirEnv = "DITTOFS_BENCH_DIR"
 
 // benchInstall is the installation ID the benchmark's journal is created under.
@@ -509,7 +508,7 @@ func (c *wallClock) After(d time.Duration) <-chan struct{} {
 }
 
 // benchBase is a fresh directory under benchDirEnv, removed when the benchmark
-// ends, or the benchmark's temporary directory.
+// ends; the benchmark skips when benchDirEnv is unset.
 func benchBase(b *testing.B) string {
 	b.Helper()
 
@@ -682,7 +681,7 @@ func microseconds(d time.Duration) float64 {
 
 // benchBurstDeadline bounds one burst, and every other wait of a benchmark
 // on the code under test: a call stuck past it fails the benchmark with the
-// writers still running, rather than hanging it.
+// workers still running, rather than hanging it.
 const benchBurstDeadline = time.Minute
 
 // benchSetupDeadline bounds the creation of a composition's files: 100 000
@@ -694,7 +693,7 @@ const benchSetupDeadline = 10 * time.Minute
 // them: the calls between two of its barriers are one burst, and the return
 // of one call of together is the barrier the next one's writers start from. The first error
 // cancels the others' ctx; it returns that error, naming the writer, or, once
-// benchBurstDeadline passes, the writers still running.
+// benchBurstDeadline passes, the workers still running.
 func together(ctx context.Context, n int, fn func(ctx context.Context, i int) error) error {
 	return togetherWithin(ctx, n, benchBurstDeadline, fn)
 }
@@ -756,7 +755,7 @@ func togetherWithin(
 		for i, err := range errs {
 			if err != nil {
 				return fmt.Errorf(
-					"writer %d: %w; writers %v still running after %v",
+					"worker %d: %w; workers %v still running after %v",
 					i,
 					err,
 					stuck,
@@ -765,7 +764,7 @@ func togetherWithin(
 			}
 		}
 
-		return fmt.Errorf("writers %v still running after %v", stuck, deadline)
+		return fmt.Errorf("workers %v still running after %v", stuck, deadline)
 	}
 
 	for i, err := range errs {

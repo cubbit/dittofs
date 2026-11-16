@@ -146,6 +146,8 @@ suites:
   # with an on-disk store and the real clock; run by hand on the dedicated host, gating nothing.
   # Each iteration is one run of a workload, so -benchtime=1x -count=10 gives benchstat its
   # samples, written to {out}/bench.txt; ENGINE_BENCH_COUNT=1 in the environment takes one.
+  # DITTOFS_BENCH_DIR must name a directory on the device under test: without it every
+  # benchmark skips and go test passes, so the cell fails before running it.
   # No -race: it changes the latency they measure, and engine-conformance covers the races.
   # No -timeout either: go test applies none to benchmarks, so the cell's limit is the guard.
   # decision: format exit, not go-json: go test -json sends no pass event for a passing
@@ -153,7 +155,7 @@ suites:
   # which then names the command rather than the benchmark; its b.Fatalf line is in bench.txt.
   engine-bench:
     cmd:
-      - { sh: 'n=10; test -z "$ENGINE_BENCH_COUNT" || n=$ENGINE_BENCH_COUNT; case $n in ""|*[!0-9]*) echo "ENGINE_BENCH_COUNT must be a number" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -tags=engine_conformance,engine_bench -run ^$ -bench . ./internal/vfs/integration/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$ENGINE_BENCH_COUNT" || n=$ENGINE_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "ENGINE_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -tags=engine_conformance,engine_bench -run ^$ -bench . ./internal/vfs/integration/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
     timeout: { test: 300m, cell: 310m }
   # The adapters' specifications that wait on a stub, behind their own tag: each fails until the

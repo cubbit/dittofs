@@ -54,7 +54,6 @@ func benchB5Append(b *testing.B) {
 
 			before := c.committedSizes(b)
 			c.counts.TakeUpdates()
-			c.txns.take()
 
 			took := make([]time.Duration, benchWriters)
 			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
@@ -68,10 +67,10 @@ func benchB5Append(b *testing.B) {
 			}
 
 			updates := c.counts.TakeUpdates().Updates
-			engine, mixed := c.txns.take()
 
-			b.Logf("burst %d of run %d: %d store transactions, %d existence, %d mixed",
-				k+1, i+1, updates, engine, mixed)
+			// Not split into existence and mixed: txnRecord marks only an
+			// overwrite record, which an append never writes, so both read 0 here.
+			b.Logf("burst %d of run %d: %d store transactions", k+1, i+1, updates)
 
 			fsyncs = append(fsyncs, took...)
 

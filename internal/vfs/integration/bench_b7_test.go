@@ -86,8 +86,10 @@ const (
 // 7 of them, and a burst with k = 1 measured 7 transactions against its bound
 // of 7. The lower limit goes back to 1, and 0 is evaluated at 1, once the
 // group commit gathers a burst into one batch. Above 10 the bound passes the
-// 65 transactions of a batch committed file by file, so it cannot fail. B7
-// fails when fewer than half of its bursts are evaluated.
+// 65 transactions of a batch committed file by file, so it cannot fail. Burst
+// 1 is never evaluated: its N comes from the warm-up alone and is too small
+// (11 to 34 of the writers' files touched). B7 fails when fewer than half of
+// the other seven bursts of a run are evaluated, which is 4 of 7.
 //
 // The storm draws from the first N of the pool's 100 000 files, the writers'
 // 64 among them, all files of the same journal. N is set before each burst so
@@ -287,8 +289,10 @@ func (s *storm) started(from, to time.Time) int {
 	return n
 }
 
-// latency is the mean length of the chmods that started between from and to
-// and have returned; zero when none has.
+// latency is the mean length of the chmods that started between from and to.
+// One that has not returned by to counts as at least to - start long, so the
+// slowest chmods, the ones a stalled storm is made of, are not left out; zero
+// only when none started.
 func (s *storm) latency(from, to time.Time) time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -298,8 +302,13 @@ func (s *storm) latency(from, to time.Time) time.Duration {
 	n := 0
 
 	for _, c := range s.chmods {
-		if !c.start.Before(from) && c.start.Before(to) && !c.end.IsZero() {
-			sum, n = sum+c.end.Sub(c.start), n+1
+		if !c.start.Before(from) && c.start.Before(to) {
+			end := c.end
+			if end.IsZero() || end.After(to) {
+				end = to
+			}
+
+			sum, n = sum+end.Sub(c.start), n+1
 		}
 	}
 
@@ -480,7 +489,7 @@ func benchB7(b *testing.B) {
 				prevN = n
 				s.pool.Store(n)
 
-				// A latency of 0 means no chmod returned in the window: it is
+				// A latency of 0 means no chmod started in the window: it is
 				// left out, and with none measured the target stays.
 				if len(lats) > 0 {
 					s.setWorkers(workersFor(median(lats)))
@@ -592,7 +601,7 @@ func benchB7(b *testing.B) {
 				}
 			}
 
-			if k < 0 || touched < b7MinK || touched > b7MaxK {
+			if k < 1 || touched < b7MinK || touched > b7MaxK {
 				continue
 			}
 
@@ -647,10 +656,11 @@ func benchB7(b *testing.B) {
 	b.ReportMetric(slowest, "slowest-burst-chmods/s")
 	b.ReportMetric(float64(capped), "capped-slow-bursts")
 
-	if bursts := b.N * b5Bursts; 2*evaluated < bursts {
+	if bursts := b.N * (b5Bursts - 1); 2*evaluated < bursts {
 		b.Fatalf(
-			"%d of %d bursts evaluated, want at least half: the storm touched fewer than %d or "+
-				"more than %d of the writers' files during the rest, so the bound went unchecked",
+			"%d of %d bursts evaluated (burst 1 never is), want at least half: the storm touched "+
+				"fewer than %d or more than %d of the writers' files during the rest, so the bound "+
+				"went unchecked",
 			evaluated,
 			bursts,
 			b7MinK,
