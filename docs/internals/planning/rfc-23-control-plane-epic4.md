@@ -9,7 +9,7 @@ and the client rules), §11 (the `api_` series), and §10's CP2, CP5, CP6, CP8, 
 on the API's side; [RFC 13](../rfcs/rfc-13-configuration.md) §6 and §7 as a caller;
 [RFC 23's plan](rfc-23-control-plane-plan.md) D2, D5 and D14.
 **Track:** B.
-**Epic 4 estimate: 11 subtasks, 34.5 man-days.**
+**Epic 4 estimate: 11 subtasks, 35.5 man-days.**
 **Depends on:** S1 (E1 merged): the shared wire types in `pkg/node/apiv1` and the node's surface. E2:
 `ControlPlane.Write` with `entity.WriteMeta` and `entity.ControlPlaneTx`, `expect` on every write,
 the idempotency, audit and operation records with their errors in `entity`, the operation record's
@@ -241,6 +241,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | R58 | `GET /api/version` answers the major versions served, with no authentication and nothing else; `GET /api/v1/nodes` gives each node's binary version, for `viewer` | MUST | RFC 23 §9 | T4.2, T4.6 |
 | R59 | The client reaches a server named by a URL or by the local socket's path; resolves names to IDs with the list filters; echoes the `ETag` it read, opaque, in `If-Match`; generates one idempotency key per command and reuses it across that command's retries; stops on `412`; follows an operation with `?wait=`; ignores a response field it does not know; and refuses a server that serves no major version it speaks, naming both | MUST | RFC 23 §7, §9 | T4.8 |
 | R66 | `GET /api/v1/health` answers, for `viewer`, the node's readiness and its health conditions and those of the installation, each with its cause; it is the one `/api/v1` route that answers before the node is ready, and without a token it is `401`; `/health/live` and `/health/ready` stay one word and unauthenticated | MUST | RFC 23 §2.5, §12 ("§2.5 health") | T4.6 |
+| R67 | A call that carries or issues a credential (sign-in, refresh, sign-out, password change, API-token creation, `:set-password`, `join-domain`) is sent with no `Idempotency-Key`, and the client never retries it on a lost answer; any other request answered `401` is refreshed once and replayed with its body and the same key | MUST, MUST NOT | RFC 23 §4.5, §5.3, §7 | T4.8 |
 | R65 | Authorization is checked by the API per action against the caller's right; a caller without the right to read a resource gets `404`, one without the right to change it `403` | MUST | RFC 23 §5.2 | T4.2 |
 
 **Observability, layering and secrets**
@@ -353,6 +354,10 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
   component, and the key providers it seals under are built and handed in by the node, so
   `pkg/keyprovider`'s implementations stay off the list. The API's `Deps.Sealer` (D13) stays an
   interface so a nil one refuses. No marker beyond the count's.
+- **D21, the credential calls are the client's, their routes E5's.** `SignIn`, `Refresh`,
+  `SignOut` and `ChangePassword` sit in `pkg/apiclient` beside the core that sends them, since their
+  rule (no key, no transport retry) is the core's; E5's routes serve them and E5's tests drive them
+  end to end. No marker.
 - **D19, the problem writer reads `Retry-After` from the error.** An error implementing
   `RetryAfter() time.Duration` sets the header: the call bound, `starting`, a store unreachable, and
   E5's `429` `throttled`. No marker.
@@ -583,10 +588,10 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 ### T4.8 The client
 
-**Subtask T4.8 estimate: 2.5 man-days.**
+**Subtask T4.8 estimate: 3.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.7.
-- **Covers:** R21, R59.
+- **Covers:** R21, R59, R67.
 - **Deliverables:** `pkg/apiclient`:
   ```go
   func New(server string, opts ...Option) (*Client, error) // https URL, http on loopback, or the local socket's path
@@ -598,13 +603,30 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   func (r Resource[S, T]) Put(ctx context.Context, id string, spec S, etag string) (apiv1.Resource[S, T], error) // etag "*" creates
   func (r Resource[S, T]) Delete(ctx context.Context, id, etag string) (*apiv1.Operation, error)
   func (r Resource[S, T]) Action(ctx context.Context, id, verb string, body any, etag string, opts ...CallOption) (Result, error) // an operation or a resource
-  func WithoutIdempotencyKey() CallOption // for a call that refuses one, join-domain
+  func (r Resource[S, T]) Create(...)'s and Action's opts take WithoutIdempotencyKey()
+  func WithoutIdempotencyKey() CallOption // join-domain, API-token creation, :set-password
+
+  type TokenSource interface {
+  	Token(ctx context.Context) (string, error)
+  	Refresh(ctx context.Context, failed string) (string, error)
+  }
+  func WithTokenSource(ts TokenSource) Option // a 401 calls Refresh once and replays the request
+  func (c *Client) SignIn(ctx context.Context, name string, password []byte) (apiv1.Tokens, error)
+  func (c *Client) Refresh(ctx context.Context, refresh string) (apiv1.Tokens, error)
+  func (c *Client) SignOut(ctx context.Context) error
+  func (c *Client) ChangePassword(ctx context.Context, current, next []byte) (apiv1.Tokens, error)
   func (c *Client) Wait(ctx context.Context, op apiv1.Operation) (apiv1.Operation, error)
   ```
+  The credential calls are this epic's client methods; E5's routes serve them and E5 adds
+  `apiv1.Tokens` with its other sign-in types, so these four land with E5's first route (D21). Each
+  is sent with no `Idempotency-Key` and never retried by the transport: RFC 23 refuses a key `400`,
+  and a retried refresh revokes the session. A `401` on any other call, `Wait`'s polls included,
+  calls `Refresh` once and replays the request with its body and the same key, which is safe
+  because a `401` applied nothing.
   with the version check at first contact, `*apiv1.Problem` returned as the error with its code a
   string (CP14), one idempotency key per call reused across its transport retries, and the accessors
   of the resources served so far, each later route adding its own. A method lands only with a test
-  here; E6 adds the token option with `login`. E1's CLI-closure rule already names
+  here; E6 builds `login` and its stored token source on `WithTokenSource`. E1's CLI-closure rule already names
   `pkg/apiclient`. Consumed by every later subtask's tests, E5, E6 and E7.
 - **Acceptance criteria:**
   - A server serving no `v1` is refused at first contact, naming both versions.
@@ -614,7 +636,16 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   (kind 3), retried: one share and the same answer (R21, R59); `Put` with `*` creating and then `412`
   (R59); a `412` returned as the problem with no retry (R59); `Action` returning an operation and a
   resource, and one sent without a key (R59); a response with an unknown field decoded (R59); a
-  server with no `v1` refused (R59); `Wait` following an operation to its end (R59).
+  server with no `v1` refused (R59); `Wait` following an operation to its end (R59); with the
+  harness's `Authenticate` accepting only a second token and a token source of the test's own (an
+  input, returning a first token and the second on `Refresh`): a create answered `401` refreshed once
+  and replayed, one share and one idempotency record under the same key, and a `Wait` poll refreshed
+  the same way; a token source whose `Refresh` fails returning the `401`'s problem with no second
+  replay (R67); `Create` and `Action` with `WithoutIdempotencyKey` sending no key, read from a
+  pass-through wrapper on the listener that records each request's headers (a recording wrapper,
+  CLAUDE.md "Writing tests"), and a credential call's answer dropped by the fault wrapper returning
+  the error with no second request recorded (R67). The credential methods' answers through their
+  routes are E5's tests.
 
 ### T4.9 Stores, namespaces, secrets, adapters and settings
 
@@ -728,7 +759,7 @@ its commands on the client.
 | 1 | T4.1, T4.2 | 6 | — | the server's core, the seam E5 builds on |
 | 2 | T4.3, T4.4 | 6.5 | PR 1 | the transport and the write path |
 | 3 | T4.5, T4.6 | 5.5 | PR 1 | reads, operations, nodes and the audit |
-| 4 | T4.7, T4.8 | 6 | PR 2, PR 3 | shares and the client that first drives them |
+| 4 | T4.7, T4.8 | 7 | PR 2, PR 3 | shares and the client that first drives them |
 | 5 | T4.9, T4.10 | 6 | PR 4 | the remaining resources |
 | 6 | T4.11 | 4.5 | PR 5 | the domain |
 
