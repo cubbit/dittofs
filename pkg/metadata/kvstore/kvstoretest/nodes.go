@@ -1,6 +1,8 @@
 package kvstoretest
 
 import (
+	"bytes"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -163,16 +165,63 @@ func testListReconciledRecords(t *testing.T, kvo Opener) {
 		string(settings[1].Setting.Value) != "2" {
 		t.Errorf("settings listed: got %+v, want the installation's then the node's", settings)
 	}
+	if bytes.Compare(a.ID[:], b.ID[:]) > 0 {
+		a, b = b, a
+	}
 	shares := all(t, nodes.List(ctx, entity.ResourceShare, nil))
 	if len(shares) != 2 || shares[0].Share.ID != a.ID || shares[1].Share.ID != b.ID {
-		t.Fatalf("shares listed: got %+v, want a then b", shares)
+		t.Fatalf("shares listed: got %+v, want %v then %v, in share ID order", shares, a.ID, b.ID)
 	}
 	if rest := all(t, nodes.List(ctx, entity.ResourceShare, shares[0].After)); len(rest) != 1 || rest[0].Share.ID != b.ID {
-		t.Errorf("shares listed after a: got %+v, want b alone", rest)
+		t.Errorf("shares listed after %v: got %+v, want %v alone", a.ID, rest, b.ID)
+	}
+	must(t, cp.DeleteShare(ctx, a.ID, entity.SnapshotsRefuse, 1))
+	if rest := all(t, nodes.List(ctx, entity.ResourceShare, nil)); len(rest) != 1 || rest[0].Share.ID != b.ID {
+		t.Errorf("shares listed with %v being removed: got %+v, want %v alone", a.ID, rest, b.ID)
 	}
 	for _, err := range nodes.List(ctx, entity.ResourceUser, nil) {
 		if !invalid(err) {
 			t.Errorf("users listed by kind: %v, want invalid argument", err)
 		}
+	}
+}
+
+// A share renamed while a node pages through the shares, from a name that
+// sorts after the first page to one that sorts before it, is still listed
+// exactly once, as is every other share.
+func testListSharesAcrossRename(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	const n = 300 // more than one page
+	gens := map[entity.ShareID]uint64{}
+	var last entity.Share
+	for i := range n {
+		last = share(fmt.Sprintf("s%03d", i), fmt.Sprintf("/s%03d", i))
+		gen, err := CreateShare(ctx, cp, last)
+		must(t, err)
+		gens[last.ID] = gen
+	}
+	seen := map[entity.ShareID]int{}
+	for rec, err := range s.Nodes().List(ctx, entity.ResourceShare, nil) {
+		if err != nil {
+			t.Fatalf("shares listed: %v", err)
+		}
+		if len(seen) == 0 {
+			renamed := last
+			renamed.Name = "a"
+			must(t, errOf(cp.PutShare(ctx, renamed, gens[last.ID])))
+		}
+		seen[rec.Share.ID]++
+	}
+	if seen[last.ID] != 1 {
+		t.Errorf("share renamed mid-listing listed %d times, want once", seen[last.ID])
+	}
+	for id := range gens {
+		if seen[id] != 1 {
+			t.Errorf("share %v listed %d times, want once", id, seen[id])
+		}
+	}
+	if len(seen) != n {
+		t.Errorf("shares listed: got %d, want %d", len(seen), n)
 	}
 }

@@ -174,8 +174,9 @@ type Record struct {
 }
 
 // List lists every record of a reconciled kind, settings at every scope in
-// key order or shares in folded-name order, resuming after the After of the
-// last record read; nil starts from the first. Any other kind is refused.
+// key order or shares not being removed in share ID order, resuming after
+// the After of the last record read; nil starts from the first. Any other
+// kind is refused.
 func (n Nodes) List(ctx context.Context, kind entity.ResourceKind, after []byte) iter.Seq2[Record, error] {
 	switch kind {
 	case entity.ResourceSetting:
@@ -188,17 +189,72 @@ func (n Nodes) List(ctx context.Context, kind entity.ResourceKind, after []byte)
 			return Record{Setting: s, After: bytes.Clone(kvp.Key)}, err
 		})
 	case entity.ResourceShare:
-		return pages(ctx, n.s.kv, []byte{keys.KindNX, keys.NXShare}, after, func(r kv.Reader, kvp kv.KeyValue) (Record, error) {
-			id, err := decodeID(kvp.Value)
-			if err != nil {
-				return Record{}, err
-			}
-			s, err := shareIn(r, id)
-			return Record{Share: s, After: bytes.Clone(kvp.Key)}, err
-		})
+		return sharesByID(ctx, n.s.kv, after)
 	}
 	return func(yield func(Record, error) bool) {
 		yield(Record{}, merrs.NewInvalidArgumentError("only settings and shares are listed by kind"))
+	}
+}
+
+// sharesByID lists every share not being removed, in share ID order,
+// resuming after the After of the last one read. It walks the shares' own
+// rows, not the name index, so a share renamed between two pages is listed
+// once. A share's info row sorts first of its rows, so each share costs one
+// seek, and the next seek starts past every row of the share.
+//
+// ponytail: one scan per share, rows of a share without its info row
+// skipped one seek at a time. Keep an ID-keyed share index instead when a
+// profile shows the seeks.
+func sharesByID(ctx context.Context, db kv.KV, after []byte) iter.Seq2[Record, error] {
+	return func(yield func(Record, error) bool) {
+		for {
+			var page []Record
+			cursor := after
+			err := db.View(ctx, func(r kv.Reader) error {
+				page, cursor = page[:0], after
+				for len(page) < pageSize {
+					var key []byte
+					for kvp, err := range r.Scan([]byte{keys.KindS}, cursor) {
+						if err != nil {
+							return err
+						}
+						key = bytes.Clone(kvp.Key)
+						break
+					}
+					if key == nil {
+						return nil
+					}
+					if len(key) < 2+keys.IDLen {
+						return errMalformed
+					}
+					id := entity.ShareID(key[1 : 1+keys.IDLen])
+					if cursor = shareKey(id, 0xFF); key[1+keys.IDLen] != keys.SInfo {
+						continue
+					}
+					s, err := shareIn(r, id)
+					if err != nil {
+						return err
+					}
+					if s.State != entity.ShareRemoving && s.State != entity.ShareRetired {
+						page = append(page, Record{Share: s, After: cursor})
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				yield(Record{}, err)
+				return
+			}
+			for _, rec := range page {
+				if !yield(rec, nil) {
+					return
+				}
+			}
+			if len(page) < pageSize {
+				return
+			}
+			after = cursor
+		}
 	}
 }
 

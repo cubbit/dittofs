@@ -155,6 +155,7 @@ func Run(t *testing.T, open Opener) {
 		{"ZeroNodeRefused", testZeroNodeRefused},
 		{"NodeStatuses", testNodeStatuses},
 		{"ListReconciledRecords", testListReconciledRecords},
+		{"ListSharesAcrossRename", testListSharesAcrossRename},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}
