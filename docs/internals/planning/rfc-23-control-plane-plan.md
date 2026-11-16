@@ -222,7 +222,7 @@ tests of the epic that fills it in.
 - the CLI's dependency closure names no store or server package (RFC 23 §7, CP14);
 - nothing imports a deleted v1 path that never returns.
 
-Two more land with `internal/node/api` in epic 4, since rule 12 keeps that package out of epic 1:
+Two more land with `internal/node/api` in epic 3, since rule 12 keeps that package out of epic 1:
 no package under `internal/node` but `node` itself imports a component's implementation (CP16), and
 `internal/node/api` reaches `ControlPlane`'s writes only inside `Write`, so every change commits with
 its audit record (RFC 23 CP12).
@@ -466,8 +466,9 @@ flowchart TD
   adapters through their factories inside this node.
 - **🔀 X1, the RFC 13 plan's bootstrap and secrets.** Outside this plan: #4059's epic 2
   (`pkg/bootstrap`, the node identity) and epic 4 (`pkg/secrets`). Epic 3 builds its composition,
-  start and stop and reconcile before it, on a `node.Config` its tests fill in; `dfs start` reads
-  the bootstrap once it lands. Epic 5's `dfs init` and its signing key wait for it.
+  start and stop and reconcile before it, on a `node.Config` its tests fill in; of epic 3, X1
+  gates only the node identity at start (its T3.10), and `dfs start` reads the bootstrap from the
+  RFC 13 plan's epic 1. Epic 5's `dfs init` and its signing key wait for it.
 - **🔀 X2, the RFC 18 plan's sign-in interface.** Outside this plan: #4058's epic 2 (`APISignIn`,
   `NewHashes`). Epic 5 builds tokens, sessions, roles and throttling before it, over epic 2's
   records; sign-in, the first password and `set-password` wait for it. This plan's epic 5 is the
@@ -522,7 +523,7 @@ internal/node/                composition root, one package, one file per concer
                               23 §2.1), remotes, node status, the operation runner
                               (D8), the deletions driven past the mark, RFC 23's own
                               settings section
-internal/node/api/            the management API server, one package: server and        E4, E5
+internal/node/api/            the management API server, one package: server and        E3, E4, E5
                               listeners, health endpoints (RFC 23 §2.5), route table,
                               typed handlers (D14), write path, problems, decoding,
                               long polls, one file per resource
@@ -1193,7 +1194,7 @@ API write commits in, and a share's removal steps past the mark.
 
 ### Epic 3 — The node 🔀
 
-**Epic 3 estimate: 10 subtasks, 23 man-days.**
+**Epic 3 estimate: 11 subtasks, 29 man-days.**
 
 `node.New` composes what §1.1's dependency limits name, and the node starts, reconciles, reports
 and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
@@ -1227,10 +1228,9 @@ and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 - `node.New`: the node-level services of RFC 23 §2.1's table the journal-only engine uses (the
   metadata store, the journals, open state, the engine, identity and `*vfs.Filesystem`), each built
   empty from its own `Deps` (D11); the syncer, the remote clients and GC are not composed (§6.1).
-- The remote registry and the adapter factories that reconcile acquires instances through (D11).
-  The registry builds only the in-memory remote store, for a binding that names it: the MVP's
-  shares name it as their remote while nothing offloads (#4053), since the next bullet refuses a
-  share with none.
+- The engine's `CloneHold` adapter as `openstate.EngineHolds`, moved unchanged from
+  `enginetest.Holds`, which then calls it. No remote registry and no adapter factory: nothing in
+  the journal-only engine calls a remote client, and the adapters are RFC 20's plan's epic 7 (D12).
 - RFC 8's root duties: `addShare` refuses a share whose namespace names no remote block store
   (RFC 8 §2.1), reported refused (RFC 23 §2.4); and the engine's `Stats` adapted into RFC 25's
   registry as conditions and series.
@@ -1238,11 +1238,10 @@ and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 - Reconcile: the counters read once a second, the full reconcile, and `addShare`, `removeShare` and
   the `apply` slot (RFC 23 §2.3), with the namespace simplification of §4.3 above. The RFC 13 plan's
   epic 5 fills `apply` on `settings.Diff` and `Get` (X3).
-- RFC 23's own section, `api.session_lifetime`, `api.token_max_lifetime` and `audit.retention` (RFC
-  13 Appendix B), as a typed struct with defaults and `Validate` (the RFC 13 plan's D2): the node
-  starts epic 2's sweeper with its retentions, and epic 5's sessions and tokens read its lifetimes.
-  The table row naming it is the RFC 13 plan's epic 5's. The §5.5 rows wait with OpenID Connect
-  (O2).
+- The sweep, run with RFC 23 §6's 90-day audit retention as a constant until RFC 23's own section
+  lands (§6.1).
+- `internal/vfs`'s own removal join deleted, in the change that drives a share's removal from the
+  node.
 - The node-status writer, writing at most once a second and only when a value changed, and the
   `node_` series (RFC 23 §2.4, §11).
 - The health and readiness endpoints and the metrics listener, with RFC 25's registry and watchdog
