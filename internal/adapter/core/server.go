@@ -7,6 +7,7 @@ import (
 	"iter"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -54,12 +55,17 @@ type Listener struct {
 // NewServer returns the adapter New hands back: each listener bound on each
 // of the settings' Addrs, all or none at Start; Reconfigure binds them on an
 // added address the same way. s is the protocol's whole shape, which New was
-// given; core reads its Adapter. It refuses a listener naming no service, an
-// empty one or one twice, two listeners naming the same Socket or the same
-// network and nonzero port, and a listener on any network but tcp, with an
-// error wrapping errors.ErrUnsupported. It opens nothing: the server is
-// configured.
+// given; core reads its Adapter. It refuses an empty listener set, a listener
+// naming no service, an empty one or one twice, two listeners naming the same Socket or
+// the same network and nonzero port, and a listener on any network but tcp,
+// with an error wrapping errors.ErrUnsupported. It keeps its own copy of ls,
+// so a later change to the caller's leaves the server as checked. It opens
+// nothing: the server is configured.
 func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, error) {
+	ls = slices.Clone(ls)
+	for i := range ls {
+		ls[i].Services = slices.Clone(ls[i].Services)
+	}
 	if err := checkListeners(ls); err != nil {
 		return nil, fmt.Errorf("core: new server: %w", err)
 	}
@@ -74,6 +80,9 @@ func checkListeners(ls []Listener) error {
 	type port struct {
 		network string
 		n       uint16
+	}
+	if len(ls) == 0 {
+		return errors.New("no listener")
 	}
 	sockets, ports := map[adapter.Socket]int{}, map[port]int{}
 	for i, l := range ls {
@@ -188,8 +197,8 @@ func (s *Server) Stop(ctx context.Context) error {
 // as the settings name it, its port the one bound, so a port of 0 is
 // resolved and a wildcard such as 0.0.0.0 is reported as itself, never as
 // the [::] its socket reports; an address Reconfigure added included and
-// one it removed gone. It is empty before Start and after Stop. The node
-// builds each Serving from it.
+// one it removed gone. It is empty before Start, after Stop, and while
+// serving on an empty Addrs. The node builds each Serving from it.
 func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort {
 	s.mu.Lock()
 	defer s.mu.Unlock()

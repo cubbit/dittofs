@@ -90,9 +90,9 @@ func dialRefused(t *testing.T, a netip.AddrPort) {
 	}
 }
 
-// NewServer refuses each malformed set of listeners, naming the listener, and
-// a listener on udp as unsupported; a valid set, two listeners at port 0
-// among them, is a configured server bound nowhere.
+// NewServer refuses no listener, each malformed set of listeners, naming the
+// listener, and a listener on udp as unsupported; a valid set, two listeners
+// at port 0 among them, is a configured server bound nowhere.
 func TestNewServerRefusesMalformedListeners(t *testing.T) {
 	deps := newDeps()
 	adaptertest.CheckLeaks(t, deps.Budgets)
@@ -105,6 +105,7 @@ func TestNewServerRefusesMalformedListeners(t *testing.T) {
 		want        string // what the refusal names
 		unsupported bool   // wraps errors.ErrUnsupported
 	}{
+		{"no listener", nil, "no listener", false},
 		{"no service", []core.Listener{tcp(p, 0)}, "listener 0", false},
 		{"an empty service", []core.Listener{tcp(p, 0, "a", "")}, "listener 0", false},
 		{"a service twice", []core.Listener{tcp(p, 0, "a", "b", "a")}, "listener 0", false},
@@ -208,6 +209,78 @@ func TestStartBindsAWildcardOnItsFamilyAlone(t *testing.T) {
 	port := got[0].Port()
 	dialOK(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port))
 	dialRefused(t, netip.AddrPortFrom(netip.IPv6Loopback(), port))
+}
+
+// An IPv4-mapped address binds the IPv4 address it maps and is reported as
+// the settings name it, at the port bound.
+func TestStartBindsAMappedAddressAsIPv4(t *testing.T) {
+	deps := newDeps()
+	adaptertest.CheckLeaks(t, deps.Budgets)
+	p := testproto.New(deps)
+
+	srv, err := core.NewServer(deps, on("::ffff:127.0.0.1"), tcp(p, 0, "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatalf("Start on ::ffff:127.0.0.1: %v", err)
+	}
+
+	got := srv.Addrs()[key("a")]
+	if len(got) != 1 || got[0].Addr() != netip.MustParseAddr("::ffff:127.0.0.1") || got[0].Port() == 0 {
+		t.Fatalf("Addrs[a] %v, want ::ffff:127.0.0.1 as the settings name it, at the port bound", got)
+	}
+	dialOK(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), got[0].Port()))
+}
+
+// With no address, Start binds nothing and serves: the server is ready, and
+// Addrs is empty.
+func TestStartWithNoAddressServesBoundNowhere(t *testing.T) {
+	deps := newDeps()
+	adaptertest.CheckLeaks(t, deps.Budgets)
+	p := testproto.New(deps)
+
+	srv, err := core.NewServer(deps, on(), tcp(p, 0, "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatalf("Start with no address: %v, want it to serve", err)
+	}
+	if h := srv.Health(); h.State != adapter.StateServing || !h.Ready() {
+		t.Errorf("Health %+v with no address, want serving and ready", h)
+	}
+	if got := srv.Addrs(); len(got) != 0 {
+		t.Errorf("Addrs %v with no address, want empty", got)
+	}
+}
+
+// NewServer keeps its own copy of the listeners: what the caller changes in
+// its slice afterwards, a listener replaced or a service renamed in place,
+// reaches neither the check nor Addrs.
+func TestNewServerKeepsItsOwnListeners(t *testing.T) {
+	deps := newDeps()
+	adaptertest.CheckLeaks(t, deps.Budgets)
+	p := testproto.New(deps)
+
+	ls := []core.Listener{tcp(p, 0, "a"), tcp(p, 0, "b")}
+	srv, err := core.NewServer(deps, on("127.0.0.1"), ls...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	ls[0].Services[0] = "b" // now two listeners name b over tcp, which NewServer refuses
+	ls[1] = tcp(p, 0, "c")
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	got := srv.Addrs()
+	if len(got) != 2 || len(got[key("a")]) != 1 || len(got[key("b")]) != 1 {
+		t.Errorf("Addrs %v after the caller changed its listeners, want a and b at one address each, as NewServer checked them", got)
+	}
 }
 
 // A bind that fails fails Start, naming the listener and the address, and
