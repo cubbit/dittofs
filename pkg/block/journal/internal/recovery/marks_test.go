@@ -74,7 +74,8 @@ func TestMarksThroughProvesBelowIt(t *testing.T) {
 // TestMarksTornSlotAboveThroughIsTorn plants the same slot above the mark's
 // Through: the mark proves only up to Through, so the slot stays a torn
 // write, unreported and undropped, and the segment ends where the classing
-// cut it, at the slot the run's tail-cutting phases truncate.
+// cut it — its last verifying record's end, the offset the tail-cutting
+// phases truncate at.
 func TestMarksTornSlotAboveThroughIsTorn(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
@@ -118,6 +119,57 @@ func TestMarkCountsTornHeaderAsSynced(t *testing.T) {
 
 	wantDamaged(t, st, id)
 	wantFate(t, st, id, fateEnded, endAfter(tailRec(200, 0x4100)))
+}
+
+// TestMarkProvesARottedCloneTargetBelowThrough plants a segment whose only
+// record is a clone target whose header verifies and whose body fails — the
+// shape the classing reads as a torn tail, its header naming the record —
+// in a segment no successor names, with the mark's Through covering the
+// record: the sync reached it, so it is corruption its own header names, a
+// corrupt drop, never a refusal, and the segment joins the damaged set. The
+// same plant with the Through at the drop's own slot leaves the record torn:
+// a mark proves only up to it.
+func TestMarkProvesARottedCloneTargetBelowThrough(t *testing.T) {
+	for _, leg := range []struct {
+		name    string
+		through func(droppedAt, droppedEnd int64) int64
+		want    bool
+	}{
+		{"below the Through, corrupt", func(drop, dropEnd int64) int64 { return dropEnd }, true},
+		{"above the Through, torn", func(_, _ int64) int64 { return format.SegmentHeaderSize }, false},
+	} {
+		t.Run(leg.name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			id := core.SegmentID(2)
+			seg, droppedAt := appendClone(raw.SegmentHeader{Identity: journalID, ID: uint64(id)}.Bytes(), id,
+				func(int64) int64 { return 0 })
+			droppedEnd := int64(len(seg))
+			seg = append(seg, make([]byte, testCap-droppedEnd)...)
+			r.plantSeg(id, seg)
+			through := leg.through(droppedAt, droppedEnd)
+
+			st := runWithMarks(t, r, []core.SyncMark{
+				{Stream: 1, Segment: uint64(id), Through: through, Offset: through, Sequence: 200},
+			})
+
+			if got, want := len(st.Tails.Corrupt), map[bool]int{true: 1, false: 0}[leg.want]; got != want {
+				t.Fatalf("the %s leg holds %d corrupt drops, want %d: a record below the mark's Through %s", leg.name, got, want,
+					map[bool]string{true: "is corruption its header names", false: "was never proven synced"}[leg.want])
+			}
+			if leg.want {
+				if st.Tails.Corrupt[0].Segment != id {
+					t.Errorf("Corrupt got %+v, want the one drop of segment %d", st.Tails.Corrupt, id)
+				}
+				if got, want := st.Tails.Damaged, []core.SegmentID{id}; !slices.Equal(got, want) {
+					t.Errorf("Damaged got %v, want %v: a mark-proven dropped record is synced damage", got, want)
+				}
+			} else if len(st.Tails.Damaged) != 0 {
+				t.Errorf("Damaged got %v, want none: a drop above the mark's Through was never proven synced", st.Tails.Damaged)
+			}
+			wantFate(t, st, id, fateTornTail, format.SegmentHeaderSize)
+		})
+	}
 }
 
 // TestMarkWithheldSegment plants the record-less whole segment a mark names,
@@ -233,6 +285,22 @@ func TestPredecessorVerdictReachesTheSparesPhase(t *testing.T) {
 		}
 		if !slices.Contains(r.listing(), format.SegmentName(p)) {
 			t.Errorf("spares: the ended predecessor %s is gone from the directory, want it on disk until the emptying unlinks it", format.SegmentName(p))
+		}
+	})
+
+	t.Run("a predecessor no disk segment holds is gone", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		gone, take := core.SegmentID(99), core.SegmentID(3)
+		plantTake(r, take, gone)
+
+		st := runWithMarks(t, r, nil)
+
+		if f, ok := st.Marks.fates[gone]; !ok || f != predGone {
+			t.Errorf("marks: the absent predecessor %d got verdict %v (entry present %v), want %v: the map names every predecessor the topology did", gone, f, ok, predGone)
+		}
+		if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: take, Class: segment.Content}}; !slices.Equal(got, want) {
+			t.Errorf("spares: the take over the gone predecessor got %v, want %v: a name no file holds holds no take back", got, want)
 		}
 	})
 

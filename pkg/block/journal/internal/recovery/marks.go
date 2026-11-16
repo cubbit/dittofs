@@ -172,11 +172,15 @@ func runMarksRaise(ctx context.Context, _ Deps, _ *reader, st *State, _ core.Jou
 		if unverified[s] && m.Through >= format.SegmentHeaderSize {
 			markDamaged(st, s)
 		}
-		// The mark's record-less segment: nothing in it verifies, so
+		// The mark's record-less segment: no record header verifies
+		// anywhere in it — the record-less test the spare phase runs,
+		// RecordsEnd at the first record slot, a clone target whose header
+		// verified and whose body failed counted with the records — so
 		// nothing in it serves, and the emptying unlinks it. Offset zero
 		// keeps the cutting phases off it — there is no record to cut
-		// behind.
-		if sc.VerifiedEnd == format.SegmentHeaderSize {
+		// behind. A catalogued scan leaves RecordsEnd zero, naming a
+		// segment the footer read builds only over records.
+		if sc.RecordsEnd == format.SegmentHeaderSize {
 			endSegment(st, s)
 		}
 	}
@@ -193,7 +197,15 @@ func runMarksRaise(ctx context.Context, _ Deps, _ *reader, st *State, _ core.Jou
 	}
 	for _, seg := range st.Attached.Own {
 		p := seg.Header.Predecessor
-		if p == 0 || p == seg.ID || !onDisk[p] {
+		if p == 0 || p == seg.ID {
+			continue
+		}
+		// The map names every predecessor the topology did, the gone ones
+		// too: a name no file holds is part of the answer the emptying
+		// reads when it frees takes, and its entry frees the take by what
+		// it says, not by being absent.
+		if !onDisk[p] {
+			res.fates[p] = predGone
 			continue
 		}
 		res.fates[p] = onDiskVerdict(st, p)
