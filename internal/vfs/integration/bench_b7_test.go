@@ -388,12 +388,19 @@ func benchB7(b *testing.B) {
 
 		var last, lat time.Duration
 
+		measured := float64(b7Rate)
+
 		// Burst -1 is the warm-up: it measures the first burst's length, and
 		// is not evaluated.
 		for k := -1; k < b5Bursts; k++ {
 			if k >= 0 {
-				s.pool.Store(stormPool(last))
-				s.setWorkers(workersFor(lat))
+				s.pool.Store(stormPool(last, measured))
+
+				// A latency of 0 means no chmod returned in the window: keep the
+				// previous target rather than fall to one worker.
+				if lat > 0 {
+					s.setWorkers(workersFor(lat))
+				}
 			}
 
 			workers := s.target.Load()
@@ -429,6 +436,10 @@ func benchB7(b *testing.B) {
 			touched := s.touched(from, now)
 			rate := float64(s.started(from, now)) / last.Seconds()
 			lat = s.latency(from, now)
+
+			if rate > 0 {
+				measured = min(rate, b7Rate)
+			}
 
 			if k >= 0 {
 				slowest = min(slowest, rate)
@@ -480,6 +491,19 @@ func benchB7(b *testing.B) {
 				continue
 			}
 
+			// decision: badger retries a conflict inside Update, so the engine
+			// never splits a batch here and this bound cannot fail through the
+			// split; the split's bound rests on TestTheSplitIsBounded until a store surfaces
+			// conflicts to the engine. A zero count is a classifier that no
+			// longer sees the existence key, never a pass.
+			if engine == 0 {
+				b.Fatalf(
+					"burst %d of run %d: no existence transaction classified, want at least 1",
+					k+1,
+					i+1,
+				)
+			}
+
 			bound := 1 + touched*b7Log2G
 			if engine > bound {
 				b.Fatalf(
@@ -508,6 +532,7 @@ func benchB7(b *testing.B) {
 	}
 
 	b.StopTimer()
+	b.ReportMetric(0, "ns/op") // the run's wall time is not a latency: keep benchstat off it
 	b.ReportMetric(microseconds(percentile(fsyncs, 99)), "fsync-p99-µs")
 	b.ReportMetric(float64(most), "txn/stability-point")
 	b.ReportMetric(float64(evaluated), "evaluated-bursts")
@@ -530,10 +555,11 @@ func benchB7(b *testing.B) {
 }
 
 // stormPool is how many of the pool's files the storm draws from for a burst
-// expected to last as long as last did: enough that about b7WantK of the
+// expected to last as long as last did, with the storm running at rate chmods
+// a second as the burst before measured it: enough that about b7WantK of the
 // writers' files are touched.
-func stormPool(last time.Duration) int64 {
-	n := int64(float64(benchWriters*b7Rate) * last.Seconds() / b7WantK)
+func stormPool(last time.Duration, rate float64) int64 {
+	n := int64(float64(benchWriters) * rate * last.Seconds() / b7WantK)
 
 	return min(max(n, benchWriters), b7Files)
 }

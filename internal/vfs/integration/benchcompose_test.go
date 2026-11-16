@@ -512,7 +512,7 @@ func benchBase(b *testing.B) string {
 
 	root := os.Getenv(benchDirEnv)
 	if root == "" {
-		return b.TempDir()
+		b.Skipf("set %s to a directory on the device under test", benchDirEnv)
 	}
 
 	dir, err := os.MkdirTemp(root, "engine-bench-")
@@ -623,9 +623,9 @@ func mountOf(dir string) (source, fstype, options string) {
 	return source, fstype, options
 }
 
-// gitCommit is the checkout's HEAD, or "unknown" outside a checkout.
+// gitCommit is the checkout's HEAD, with "-dirty" after it when the tree has changes, or "unknown" outside a checkout.
 func gitCommit() string {
-	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	out, err := exec.Command("git", "describe", "--always", "--dirty").Output()
 	if err != nil {
 		return "unknown"
 	}

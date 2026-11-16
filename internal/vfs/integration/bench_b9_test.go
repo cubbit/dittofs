@@ -65,6 +65,7 @@ func benchB9(b *testing.B, s vfs.Stability) {
 
 	most, updates, bursts := 0, 0, 0
 
+	c.counts.TakeUpdates()
 	b.ResetTimer()
 
 	for range b.N {
@@ -72,7 +73,9 @@ func benchB9(b *testing.B, s vfs.Stability) {
 
 		flushed := time.Now()
 		for off := int64(0); time.Now().Before(end); off = (off + b9Write) % b9Size {
-			c.counts.TakeUpdates()
+			// What ran since the last burst, the flush's commits and any timer
+			// commit, belongs to the run's total, not to a burst.
+			updates += c.counts.TakeUpdates().Updates
 
 			took := make([]time.Duration, benchWriters)
 			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
@@ -108,11 +111,14 @@ func benchB9(b *testing.B, s vfs.Stability) {
 
 	b.StopTimer()
 
+	updates += c.counts.TakeUpdates().Updates
+
 	if s == vfs.FileSync && most > 1 {
 		b.Logf("stable writes cost up to %d store transactions per burst, over one per journal: "+
 			"the evidence for the write-intent upgrade", most)
 	}
 
+	b.ReportMetric(0, "ns/op") // the fixed 3 s loop is not a latency: keep benchstat off it
 	b.ReportMetric(microseconds(percentile(writes, 99)), "write-p99-µs")
 	b.ReportMetric(microseconds(total/time.Duration(max(len(writes), 1))), "write-mean-µs")
 	b.ReportMetric(float64(most), "txn/burst")
