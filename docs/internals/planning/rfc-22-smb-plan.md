@@ -111,7 +111,8 @@ and E5 to E8, for sign-in (§3.2).
   alone, whatever the open holds, and §18's §12.1 row and RFC 14's L36 follow. RFC 17 §5.4's
   `renameAt` refuses a stream's open before it looks up either name; RFC 22 §12.1 parses a rename
   target as a `CREATE` path, `$DATA` without case, and §18's §12.1 row adds an existing target, an
-  unlinked base name and the target's parse. T2.4 (the service's half), T8.4, T8.5; plan gaps 6
+  unlinked base name and the target's parse. T2.4 and T2.5 (the service's half), T8.4, T8.5;
+  plan gaps 6
   and 25.
 - **A7. RFC 7 §3.2 and §3.8, RFC 22 §12.3: on a `windows` share a reserved character from NFS is
   stored in its private-use spelling.** Simone's answer to plan gap 27, with the user's choices: in
@@ -583,8 +584,9 @@ user, comes before AD:
 
 - **First mount, NTLM with a local user:** E1 to E3, E4 but T4.3, E5, E7, T6.1 to T6.4, T8.1 to
   T8.6, and E15, T8.4's and T8.5's answers for a stream excepted: they wait for plan gaps 6 and
-  25, so the first mount ships the service's refusal of a stream's rename with no test that can
-  fail until then; T16.4's `mount.cifs` and `smbclient` rows signed in with NTLM, but RFC 20 §7.5's
+  25, so the first mount ships open state's refusal of a stream's rename, tested in
+  `pkg/openstate` (T2.4), and `renameAt`'s earlier refusal comes with T2.5; T16.4's `mount.cifs`
+  and `smbclient` rows signed in with NTLM, but RFC 20 §7.5's
   reconnect, cancel and order rows, which need E10, E11 and E9; sign-in at #4058's S2 and E8
   (S6a), and S7. About 117.5 man-days: the figures of E1 to E8 named, less about 14.5 for T2.5
   (1), T4.3 (4), T6.5 (3.5), T8.7 (3) and T8.8 (3), and not counting T16.4's rows or E15, planned
@@ -739,9 +741,8 @@ sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`).
   the listing shows the spelling, both spellings find the one entry, a create of one beside the
   other is `ErrExist`, the same name created by an SMB call is `ErrInvalid`, and a `..` lookup from
   NFS finds the parent, since `..` is resolved before the spelling; `Root`'s `MaximalAccess`
-  computed for `ForOpen(false)` (RFC 17 §3.0);
-  `Rename` through a named stream's open refused before either name is looked up (RFC 17 §5.4),
-  and open state's `CheckChange` refusing it (RFC 14 §9.4). Tests: a privileged admin's
+  computed for `ForOpen(false)` (RFC 17 §3.0); open state's `CheckChange` refusing a rename
+  through a named stream's open (RFC 14 §9.4). Tests: a privileged admin's
   `Root` over SMB; on `memory.New`, the refusals A3 leaves to the service, a maximal open refused
   for each of RFC 19 §3.4's two reasons, and a backup-intent maximal open (RFC 19 §3.5): an
   unprivileged caller's granted no right only privilege gives, an admin's answering a
@@ -750,7 +751,9 @@ sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`).
   in `pkg/openstate`.
 - T2.5 The service's changes of plan gaps 23 and 25, after S2b, before T9.2's directory row and
   T7.5's stream `CREATE`: open state granting no caching grant on a directory, and `pkg/vfs`'s
-  `OpenRequest` carrying a stream's name, which `memory.New` passes to open state. Tests: a
+  `OpenRequest` carrying a stream's name, which `memory.New` passes to open state, and with it
+  `renameAt`'s branch refusing a rename through a named stream's open before either name is
+  looked up (RFC 17 §5.4). Tests: a
   caching grant asked on a directory granted none; an open naming a stream the file lacks never
   answered with the base file; a `SetAttr` setting `DeleteOnClose` through a named stream's open
   refused `ErrInvalid`, the base file kept. `Rename`'s own refusal through a stream's open is then
