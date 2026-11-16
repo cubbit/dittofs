@@ -2686,11 +2686,7 @@ func TestRFC28C_APartlySupersededRecordIsStillChecked(t *testing.T) {
 	// loss record on disk that names R, whole — and reports nothing new,
 	// R withholds whole under it and the rotten rest confines nowhere on
 	// either reopen. The count stays over the directory's bytes.
-	seqs := map[uint64]bool{}
 	generation := s.LossGeneration
-	for _, ev := range s.Losses {
-		seqs[ev.SeqNum] = true
-	}
 	f.Reopen()
 	after := f.J.Stats()
 	if got := lossRecordsOver(t, f, 2, kept); got != 1 {
@@ -2699,10 +2695,13 @@ func TestRFC28C_APartlySupersededRecordIsStillChecked(t *testing.T) {
 	if after.LossGeneration != generation {
 		t.Fatalf("a second reopen raised the loss generation from %d to %d, appending another loss record for R", generation, after.LossGeneration)
 	}
-	for _, ev := range after.Losses {
-		if !seqs[ev.SeqNum] {
-			t.Fatalf("a second reopen reported the loss %+v as new; the first open's loss record for R answers for it", ev)
-		}
+	// The fresh instance numbers its own events from its own zero, so a
+	// re-report would carry the same SeqNum as the first open's and no
+	// comparison across the two rings can tell it apart: the second
+	// reopen's ring must hold nothing at all, the piece dedup answering
+	// the place the first open's loss record already took.
+	if len(after.Losses) != 0 {
+		t.Fatalf("a second reopen reported %+v as new; the first open's loss record for R answers for it", after.Losses)
 	}
 }
 
