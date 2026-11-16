@@ -139,7 +139,7 @@ green with the epic that makes it pass.
     and the secret references it holds with their kind);
   - the table, the snapshot, `Read`, `Get`, `Diff` and `Keep`;
   - the write-path check, its `Put` and `Delete` writes, and its errors; `Check` itself once RFC 23's
-    T2.4 declares the `ControlPlaneTx` it takes (§3.2). Whether the scope holds
+    T2.4 builds the `ControlPlaneTx` it takes, which RFC 16 §3 declares (§3.2). Whether the scope holds
     content is an input to the check, which its caller reads in the write's transaction, so
     `pkg/settings` declares no store interface.
 - **`pkg/secrets`' provider:** RFC 13 §7's `SecretProvider`, as A2 completes it: `Seal` with its kind, role, owner and
@@ -325,6 +325,9 @@ flowchart TD
   R2(["RFC 23 epic 2's Node and NodeStatus records"]):::sync
   R2 -. "Node record, for its ranges" .-> E2
   R2 -. "versions nodes hold" .-> E4
+  T24(["RFC 23's T2.4: Write, ControlPlaneTx and the audit record"]):::sync
+  T24 -. "Check" .-> E1
+  T24 -. "Check" .-> E3
   E4 -. "the move, the record, sealing" .-> S2(["S2 secrets sealed, for RFC 18"]):::sync
   E4 -. "sealed secrets, for two Check tests" .-> E3
   E3 -. "write check, tracked reads" .-> R18(["RFC 18's epic 6"]):::sync
@@ -352,8 +355,9 @@ flowchart TD
   `Delete` writes; `Seal` with its kind, role, owner and `Meta`, returning the `Secret` unwritten,
   `Resolve` with the expected kind, role and owner, `Versions`, and `Prune` and `Delete` with the
   expected kind and owner; the kvstore views'
-  delete, cross-scope read and secrets. `Check` is not frozen at S1: it takes RFC 23's
-  `ControlPlaneTx`, which RFC 23's T2.4 (#4362) declares, so its stub lands once that type exists.
+  delete, cross-scope read and secrets. `Check` is not frozen at S1: it takes the `ControlPlaneTx`
+  that RFC 16 §3 declares, which RFC 23's T2.4 (#4362) builds in code, so its stub lands once that
+  type exists.
   Unblocks epics 2, 3 and 4; with S2, the RFC 18 plan's epic 2, which
   adds `pkg/secrets` to identity's `Deps`.
 - **S2, secrets sealed.** A `Secret` seals, resolves and versions under each role's key. It is
@@ -374,7 +378,7 @@ flowchart TD
 | Epic | Blocks | Why |
 | --- | --- | --- |
 | E1 ⛔ | every epic | Every epic builds on the frozen surface. |
-| RFC 23's T2.4 (#4362) | E1 and E3, `Check` only | `Check` takes `entity.ControlPlaneTx`, which RFC 23's T2.4 declares; no stub of it is frozen before then, and E3's write check fills it after. |
+| RFC 23's T2.4 (#4362) | E1 and E3, `Check` only | `Check` takes `entity.ControlPlaneTx`, which RFC 16 §3 declares and RFC 23's T2.4 builds in code; no stub of it is frozen before then, and E3's write check fills it after. |
 | E2, E3, E4 | E5 | Integration wires all three into the node and the API. |
 | E1 | RFC 18's plan's epic 2 (S1) | Identity's `Deps` gain the frozen `pkg/secrets` surface there. |
 | E4 | RFC 18's plan's epic 2 (S2) | Identity seals and resolves its secrets here. |
@@ -1038,7 +1042,7 @@ the three packages and the views compile with stub bodies.
   and `WriteMissingNodeIDs`.
 - `pkg/settings`' types: classes, section and its options, table, snapshot, `Read`, `Get`, `Diff`,
   `Keep`, `Check` with its holds-content input and its `Put` and `Delete` writes, and their errors;
-  `Check` once RFC 23's T2.4 declares `ControlPlaneTx` (§3.2).
+  `Check` once RFC 23's T2.4 builds `ControlPlaneTx`, which RFC 16 §3 declares (§3.2).
 - `pkg/secrets`' provider (RFC 13 §7): `Seal` with its `Meta`, returning the `Secret` its caller's
   `Write` commits with `tx.PutSecret`, `Resolve`, `Versions`, `Prune` and `Delete` with the kind and
   owner they check, and their errors.
