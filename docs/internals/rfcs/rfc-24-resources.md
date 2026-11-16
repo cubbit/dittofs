@@ -550,7 +550,7 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(budgets.Receive, budget
 | --- | --- | --- | --- |
 | `Limit` | the root, first | the root | read once; never changes |
 | `Split` | the root, from `Limit` | the root, a value | recomputed only at the next start |
-| `Budgets`: receive, reply, connection state, hold | the root | shared by every adapter's `core` | none; checked at zero after the adapters stop |
+| `Budgets`: receive, reply, connection state, hold, and the `ConnLimit` count | the root | shared by every adapter's `core` | none; checked at zero after the adapters stop |
 | open-state `Budget` | the root | the open-state table; **(cluster)** also the dedup table | as above |
 | `ShareCap` | the root, over receive and reply | the service's admission, in `*vfs.Filesystem` | entries dropped at zero |
 | CPU tokens | the root, from `Split` | shared by background workers | none |
@@ -587,7 +587,7 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(budgets.Receive, budget
 pkg/resources/
   limit.go        Limit, Detect: the runtime limit, the control group, the host (§2.1)
   split.go        Split, SplitFor, Check: fractions, floors, the ceilings' sum, settings (§2.3, §2.4, §7)
-  budget.go       Budget, WaitBudget, Reservation, Budgets: counted pools and their turns (§2.5, §4.1)
+  budget.go       Budget, WaitBudget, Reservation, Budgets, ConnLimit: counted pools and their turns, and the connection count (§2.5, §4.1, §4.4)
   buf.go          Buf, BufPool, NewBufPool: §3.1's classes, a sync.Pool per class, reference counted, reserved before taken (RFC 20 §6.8)
   sharecap.go     ShareCap, WithCharge, ChargeOf (§4.2)
   fd.go           the open-file split and fd_limit_low (§6.3)
@@ -1121,7 +1121,7 @@ from here. The inventory, from the socket down:
 | requests read on one connection | its flow control: slots, credits, 64 | [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own), [§3.4](#3.4%20The%20per-connection%20cap%20for%20protocols%20without%20flow%20control) | not read |
 | readers waiting for receive bytes | one per connection | §3.2, §4.1 | turns |
 | requests waiting for reply bytes | the requests admitted | §3.3 | the call's deadline, then `DelayResources` |
-| the writer's queue | 64 messages for every protocol, [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own)'s default cap; its bytes by the reply pool, from which they were reserved | [RFC 20 §6.2](rfc-20-adapters.md#6.2%20The%20writer) | the reader stops; the write deadline closes |
+| the writer's queue | 64 messages for every protocol, [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own)'s default cap, where the reader stops; past it only the replies of requests already admitted or pending and callbacks, its bytes by the reply pool, from which they were reserved | [RFC 20 §6.2](rfc-20-adapters.md#6.2%20The%20writer) | the reader stops; queuing never blocks a worker; the write deadline closes |
 | datagram listeners (the port mapper, NLM and NSM over UDP) | a fixed queue | [RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states) | dropped; the client retries |
 | held SMB requests | the floor per connection, the hold pool | [RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests), [§4.3](#4.3%20Held%20requests%3A%20where%20their%20bytes%20go) | `STATUS_INSUFFICIENT_RESOURCES`, from the adapter, for a hold that starts on a returned `ErrDelay`; a call still in the service is never refused |
 | blocked lock waiters | 1,024 per client per primary, charged to the open-state pool | [RFC 14 §5.5](rfc-14-open-state.md#5.5%20A%20client%27s%20grants%20are%20bounded), [§4.6](#4.6%20Open%20state) | `DelayResources` |
@@ -1141,10 +1141,10 @@ A queue whose entries hold a reference rather than bytes — a transfer waiting
 for a worker, a work item — is bounded by count, and its memory is in the
 unpooled quarter. A queue whose entries hold bytes is bounded by a pool.
 
-> ponytail: the writer's queue holds a fixed 64 messages, where an SMB
+> ponytail: the reader stops at a fixed 64 queued messages, where an SMB
 > connection's credits or an NFSv4.1 session's slots may let more replies be
 > ready at once, so a client slow to read is paused before its credits or slots
-> run out. Bound the queue by the connection's flow-control bound, which
+> run out. Stop it at the connection's flow-control bound, which
 > `FlowControl` would then expose, when an SMB or NFSv4.1 benchmark on the
 > reference box shows readers paused at the writer's bound while the client
 > still reads.

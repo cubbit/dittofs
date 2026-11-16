@@ -758,16 +758,28 @@ The lower half of the drawing above:
    `Last` and the node entry's latest `Gen` when it was the node's last session
    of the client, repeating it within `OnClose`'s 30 s (§4.7); a newer `Gen` it
    returns is stored and the decision taken again, and `ErrStaleClient` counts
-   as success. One still failing then is handed to the node's retrier,
-   `Deps.Retry` (§3.4), outside `Stop`, which repeats it after a backoff from
-   1 s doubling to 30 s until it succeeds or the client record is released
-   (`ErrStaleClient`). So `Stop` stays bounded, and a primary that does not
-   answer still closes its share of the session, its durable opens' `Timeout`
-   started while the node's lease is live, as
-   [RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client) requires.
-   A `Connect` still in flight when its connection closes takes the same
-   decision when it returns, and sends that `Disconnect` itself
+   as success. A `Connect` still in flight when its connection closes takes the
+   same decision when it returns, and sends that `Disconnect` itself
    ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
+
+   **A `Disconnect` that keeps failing goes to the node.** Every `Disconnect`
+   still failing 30 s from the close, the one after a `Connect` in flight
+   included, is handed to the node's retrier, `Deps.Retry` (§3.4), outside
+   `Stop`, which repeats it after a backoff from 1 s doubling to 30 s until it
+   succeeds or the client record is released (`ErrStaleClient`). A newer `Gen`
+   it returns is decided again as above while its adapter serves; once its
+   adapter has stopped, a newer `Gen` ends the repeats, since a `Connect` since
+   then lists a session another adapter holds, whose registry the stopped one
+   cannot read. So `Stop` stays bounded, and a primary that does not answer
+   still closes its share of the session, its durable opens' `Timeout` started
+   while the node's lease is live, as RFC 14 §2.1 requires. The node stops
+   `Retry` after its adapters
+   ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), dropping
+   any `Disconnect` it still holds: **(cluster)** the primaries then time that
+   node's sessions' opens as disconnected from its node lease's lapse
+   ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)),
+   and its entry, listed under an older node epoch than its next start's, counts
+   as absent (RFC 14 §2.1).
 
 The service learns of a client at the protocol's own moment
 ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations) `Connect`) — not at accept, since
@@ -780,6 +792,9 @@ it was, its ID tables dropped — completes before a reconnect of the same sessi
 is served on another connection, so the reconnect never meets half-ended state.
 The wait is keyed by the session: one client's slow cleanup never delays another
 client's setup.
+A reconnect does not wait for a `Disconnect` handed to `Retry`: its `Connect`
+raises the entry's `Gen`, and the retrier's next attempt returns it and stops
+(RFC 14 §2.1).
 
 ### 3.3 Callbacks are the adapter's to deliver
 
@@ -1012,10 +1027,11 @@ type Deps struct {
 	DialClient func(ctx context.Context, network string, from netip.Addr, to netip.AddrPort) (net.Conn, error)
 	// Retry is the node's retrier, which outlives the adapter: it repeats
 	// call after a backoff from 1 s doubling to 30 s until call returns nil.
-	// An adapter hands it a Disconnect still failing when OnClose's context
-	// ends, whose call returns nil once it succeeds or the client record is
-	// released (§3.2, RFC 14 §2.1). nil runs the repeats on a goroutine of
-	// their own.
+	// An adapter hands it a Disconnect still failing 30 s from its
+	// connection's close, whose call returns nil once it succeeds, once the
+	// client record is released, or, after the adapter has stopped, once it
+	// returns a newer Gen (§3.2, RFC 14 §2.1). The node stops it after its
+	// adapters (RFC 23 §2.2). nil drops the call.
 	Retry func(call func(ctx context.Context) error)
 }
 
@@ -1327,6 +1343,16 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 	}
 	if err := next.Validate(); err != nil {
 		return err // refused; what is running is unchanged
+	}
+	if next.Common().Port != (*s.settings.Load()).Common().Port {
+		return adapter.ErrPortChanged // the node builds a new adapter instead
+	}
+	switch st := s.state(); st {
+	case adapter.StateDraining, adapter.StateStopped:
+		return fmt.Errorf("reconfigure while %s", st) // refused (§3.4)
+	case adapter.StateConfigured:
+		s.settings.Store(&next) // what Start will bind; nothing is bound now
+		return nil
 	}
 	addrs := next.Common().Addrs
 	if err := s.listeners.open(added(addrs)); err != nil {
@@ -1962,7 +1988,8 @@ type Protocol interface {
 	// (callbacks). NewServer also calls it once per listener with a nil c and
 	// keeps only Stages.Protocol, the label of a connection closed before its
 	// stages are built (§10.1), checking the stages as accept does, so a
-	// missing required field fails at configured.
+	// missing required field fails at configured. With a nil c it reads no
+	// setting.
 	NewConn(c *Conn) Stages
 }
 
@@ -1985,8 +2012,9 @@ type Stages struct {
 	Hold     HoldCodec   // §4.6; required where a table Holds, nil elsewhere
 	MaxPending int       // requests pending per connection, held and parked together (§4.6); 0: none pend
 	// OnClose drops the connection's state. ctx is not cancelled by the
-	// connection's close, and ends at the request deadline, 30 s (§6.4); a
-	// Disconnect still failing then goes to Deps.Retry (§3.2). nil: nothing.
+	// connection's close, and ends 30 s from the close, the request deadline
+	// (§6.4); a Disconnect still failing then goes to Deps.Retry (§3.2). nil:
+	// nothing.
 	OnClose  func(ctx context.Context)
 	Protocol string      // required: the label of what a request records before Route returns its table (§10.1)
 }
@@ -3156,6 +3184,14 @@ reply, so the client never sees an answer before the break it depends on. That
 is the only order the writer keeps between messages; every other reply goes out
 as it completes.
 
+**The queue's bound stops the reader, never a worker.** At 64 queued messages
+([RFC 24 §5.1](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded)) the
+reader stops reading the connection until the queue drains below it (§6.1).
+Queuing a message never blocks its caller: past the bound a reply, an interim
+or a callback is still queued, its bytes already reserved from the reply pool,
+so a worker hands its reply over and returns, and only the write deadline ends
+the wait (§6.4).
+
 ### 6.3 Flow control is the protocol's own
 
 The bound on requests in flight per connection is the protocol's own mechanism
@@ -3417,7 +3453,7 @@ The rules of §6.1–§6.6 come to a small set of mechanisms:
 | Concern | Mechanism | Ceiling, and what replaces it |
 | --- | --- | --- |
 | requests in flight per connection | a goroutine per admitted request, and per refused header waiting for its status's buffer, which keeps its record; the reader blocks in `Admit` (§4.7) on a slot, a credit or a counting semaphore of 64 | node-wide count bounded by the receive pool ([RFC 24 §6.1](rfc-24-resources.md#6.1%20Goroutines)) |
-| replies | one writer goroutine per connection reading a bounded channel; on each wake it drains every queued message into one `net.Buffers` and writes once | one system call per burst; a deeper queue only if a profile shows writers blocked with the socket idle |
+| replies | one writer goroutine per connection draining its queue, which never blocks the worker that queues (§6.2); on each wake it takes every queued message into one `net.Buffers` and writes once | one system call per burst; a deeper queue only if a profile shows writers blocked with the socket idle |
 | per-connection ID tables (`FileId`, stateid, tree ID) | a map under the connection's mutex, held for the lookup only, never across the service call | one connection's requests contend with each other only |
 | node-wide tables (sessions, connection registry) | a map under a read-write mutex, read without holding it across the service call | shard by session ID when a mutex profile shows it |
 | NFSv4.1 slots, SMB message IDs | owned by the session; each slot's entry is touched only by the request in that slot | none needed: the protocol serialises a slot |
@@ -3821,7 +3857,9 @@ close:
 - at accept, before any byte is read:
   [RFC 24 §10](rfc-24-resources.md#10.%20Observability)'s `pool`, `limit` and
   `per_address`;
-- by the client: `client`, the peer closed or reset the connection;
+- by the client: `client`, the peer closed or reset the connection, or a read
+  failed, as when keepalive or `TCP_USER_TIMEOUT` ends a peer that vanished
+  (§6.7);
 - at a deadline (§6.4): `handshake`, `read_timeout`, `idle`, `write_timeout`,
   and `reply_wait`, a reply carrying a status alone that found no reply buffer
   within 30 s
