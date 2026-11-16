@@ -508,6 +508,7 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 	Installation() (Installation, error) // tracked: NTLMOff for RFC 23 §4.1's rule
 	SetNTLMOff(gen uint64) error          // NTLMOff.Off, and clears Deleted on a turn-off, by E4's settings route alone
 	SetNTHashDeleted(op OperationID) error // sets NTLMOff.Deleted, by identity.nt-hash-delete's StepResult.End alone
+	SetMachineJoin(j MachineJoin) error // Join, by the RFC 18 plan's epic 7's join-domain and rotate-machine-password steps alone, in their Writes and StepResult.End
 	Now() time.Time // kv.Txn's Now: on feat/storage-v2 taken when the transaction starts, fixed for its life; a retry gets a new one
   	DeleteUser(p Principal, expect uint64) error // the mark
   	DeleteGroup(p Principal, expect uint64) error
