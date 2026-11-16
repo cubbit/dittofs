@@ -19,15 +19,6 @@ func parseFileID(s string) (journal.FileID, error) {
 	return journal.NewFileID(raw), nil
 }
 
-// parseShareID parses a 32-hex-char share id, the way parseFileID does.
-func parseShareID(s string) (journal.ShareID, error) {
-	raw, err := decodeHex16(s)
-	if err != nil {
-		return journal.ShareID{}, fmt.Errorf("share id %q: %w", s, err)
-	}
-	return journal.ShareID(raw), nil
-}
-
 // decodeHex16 decodes s into a 16-byte id; s must be exactly 32 hex chars.
 func decodeHex16(s string) ([16]byte, error) {
 	raw, err := hex.DecodeString(s)
@@ -62,12 +53,4 @@ func parseVersion(s string) (journal.Version, error) {
 		return journal.Version{}, bad
 	}
 	return journal.Version{Counter: counter}, nil
-}
-
-// fmtVersion renders v the way parseVersion reads it back.
-func fmtVersion(v journal.Version) string {
-	if v.Epoch != 0 {
-		return fmt.Sprintf("%d/%d", v.Epoch, v.Counter)
-	}
-	return strconv.FormatUint(v.Counter, 10)
 }

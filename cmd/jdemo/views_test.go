@@ -33,7 +33,7 @@ func TestFileSystemViewListsSegments(t *testing.T) {
 	if err := d.open(context.Background()); err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer d.j.Close()
+	defer func() { _ = d.j.Close() }()
 	h, err := d.j.Share(1, 0, journal.Version{})
 	if err != nil {
 		t.Fatalf("share: %v", err)

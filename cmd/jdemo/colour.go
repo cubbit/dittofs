@@ -32,9 +32,9 @@ func noColours() colour {
 // which hold contrast at a distance. The terminal's own theme has no say on
 // this path — a theme remapping ANSI-16 was what muted the first attempts.
 const (
-	rgbGreen  = "\x1b[38;2;63;185;80m"  // #3fb950
-	rgbYellow = "\x1b[38;2;227;179;65m" // #e3b341
-	rgbRed    = "\x1b[38;2;248;81;73m"  // #f85149
+	rgbGreen  = "\x1b[38;2;63;185;80m"   // #3fb950
+	rgbYellow = "\x1b[38;2;227;179;65m"  // #e3b341
+	rgbRed    = "\x1b[38;2;248;81;73m"   // #f85149
 	rgbGrey   = "\x1b[38;2;139;148;158m" // #8b949e
 	rgbCode   = "\x1b[38;2;121;192;255m" // #79c0ff
 	reset     = "\x1b[0m"

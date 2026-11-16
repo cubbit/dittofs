@@ -9,11 +9,19 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
 func main() {
 	os.Exit(runMain(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
+
+// mainOptions are extra journal options runMain opens with. Production
+// adds none — a real directory is judged by the real mount it lives on;
+// a test running through runMain sets the mount probe its host cannot
+// choose, the same way newTestDemo does for direct runs.
+var mainOptions []journal.Option
 
 // runMain is the binary: flags, the story, and the cleanup. The default
 // journal directory — six preallocated 256 MiB segments, about 1.5 GiB of
@@ -28,17 +36,20 @@ func runMain(args []string, in io.Reader, out, errw io.Writer) int {
 		return 2
 	}
 	if _, ok := stories[*story]; !ok {
-		fmt.Fprintf(errw, "jdemo: no such story %q (have: basic)\n", *story)
+		_, _ = fmt.Fprintf(errw, "jdemo: no such story %q (have: basic)\n", *story)
 		return 2
 	}
 	if flags.Lookup("dir").DefValue == *dir {
-		defer os.RemoveAll(filepath.Dir(*dir))
+		// A cleanup that reports nowhere: there is nowhere to report a
+		// failure to clean up on the way out of a failed cleanup.
+		defer func() { _ = os.RemoveAll(filepath.Dir(*dir)) }()
 	}
 
 	d := newDemo(*dir, in, out)
+	d.Options = mainOptions
 	d.storyID = *story
 	if err := d.run(); err != nil {
-		fmt.Fprintf(errw, "jdemo: %v\n", err)
+		_, _ = fmt.Fprintf(errw, "jdemo: %v\n", err)
 		return 1
 	}
 	return 0
