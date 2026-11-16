@@ -97,6 +97,9 @@ type RemoteSync struct {
 	// callers, so its counters always read zero.
 	completedSyncs atomic.Int64
 	failedSyncs    atomic.Int64
+	// putFailuresInARow counts the block uploads that failed since the last
+	// one that succeeded (notePutResult).
+	putFailuresInARow atomic.Int64
 
 	// uploadLimiter bounds concurrent block PUTs across the whole syncer: every
 	// flush pass shares it, holding one slot per block from submit until that

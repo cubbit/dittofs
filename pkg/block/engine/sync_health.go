@@ -11,6 +11,13 @@ import (
 	"github.com/cubbit/dittofs/pkg/block"
 )
 
+// defaultHealthCheckTimeout bounds one probe when the config names no bound.
+// It is RFC 3 §2.10's first-byte bound: a healthy service answers a bucket
+// probe in about a second, so ten leaves room for a slow link while a stalled
+// endpoint costs a share's start ten seconds, not the remote client's whole
+// retry budget.
+const defaultHealthCheckTimeout = 10 * time.Second
+
 // healthTransitionCallback is invoked when the health state changes.
 // The healthy parameter is true when transitioning to healthy, false when transitioning to unhealthy.
 type healthTransitionCallback func(healthy bool)
@@ -30,6 +37,7 @@ type HealthMonitor struct {
 	healthyInterval   time.Duration
 	unhealthyInterval time.Duration
 	failureThreshold  int32
+	probeTimeout      time.Duration
 
 	healthy             atomic.Bool
 	consecutiveFailures atomic.Int32
@@ -60,12 +68,17 @@ func NewHealthMonitor(probeFunc func(ctx context.Context) error, config RemoteSy
 	if threshold <= 0 {
 		threshold = 3
 	}
+	probeTimeout := config.HealthCheckTimeout
+	if probeTimeout <= 0 {
+		probeTimeout = defaultHealthCheckTimeout
+	}
 
 	hm := &HealthMonitor{
 		probeFunc:         probeFunc,
 		healthyInterval:   interval,
 		unhealthyInterval: unhealthyInterval,
 		failureThreshold:  threshold,
+		probeTimeout:      probeTimeout,
 		stopCh:            make(chan struct{}),
 	}
 	hm.healthy.Store(true)
@@ -84,7 +97,7 @@ func (hm *HealthMonitor) Start(ctx context.Context) {
 	}
 
 	// Eager probe: verify connectivity before assuming healthy.
-	if err := hm.probeFunc(ctx); err != nil {
+	if err := hm.probe(ctx); err != nil {
 		hm.healthy.Store(false)
 		hm.unhealthySince.Store(time.Now().UnixNano())
 		hm.consecutiveFailures.Store(1)
@@ -137,6 +150,16 @@ func (hm *HealthMonitor) OutageDuration() time.Duration {
 	return time.Since(time.Unix(0, since))
 }
 
+// probe runs one probe under its own deadline, so a stalled remote ends as a
+// failed probe instead of holding the caller (share start, the monitor loop,
+// Stop) for as long as the remote client is willing to wait (RFC 3 §2.8).
+func (hm *HealthMonitor) probe(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, hm.probeTimeout)
+	defer cancel()
+
+	return hm.probeFunc(ctx)
+}
+
 // monitorLoop runs the probe on a ticker, adjusting interval based on health state.
 func (hm *HealthMonitor) monitorLoop(ctx context.Context) {
 	ticker := time.NewTicker(hm.healthyInterval)
@@ -154,7 +177,7 @@ func (hm *HealthMonitor) monitorLoop(ctx context.Context) {
 				return
 			default:
 			}
-			err := hm.probeFunc(ctx)
+			err := hm.probe(ctx)
 			if err != nil {
 				// Don't count context cancellation as a health failure — we're shutting down.
 				if ctx.Err() != nil {

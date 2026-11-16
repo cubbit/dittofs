@@ -291,6 +291,12 @@ func addBlockStoreStats(dst *engine.BlockStoreStats, src engine.BlockStoreStats)
 	if src.HasRemote {
 		dst.HasRemote = true
 	}
+	// One share whose uploads fail makes the totals say so; the run shown is
+	// the longest, since runs on different shares do not add up to one.
+	if src.UploadsFailing {
+		dst.UploadsFailing = true
+	}
+	dst.ConsecutiveUploadFailures = max(dst.ConsecutiveUploadFailures, src.ConsecutiveUploadFailures)
 }
 
 // EvictBlockStore evicts block store data for the given share (or all shares if shareName is empty).

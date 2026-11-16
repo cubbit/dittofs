@@ -111,6 +111,7 @@ type RemoteSyncConfig struct {
 	HealthCheckInterval         time.Duration // Probe interval when healthy (default: 30s)
 	HealthCheckFailureThreshold int           // Consecutive failures to mark unhealthy (default: 3)
 	UnhealthyCheckInterval      time.Duration // Probe interval when unhealthy (default: 5s)
+	HealthCheckTimeout          time.Duration // Bound on one probe, failed when reached (default: 10s)
 
 	// ClaimTimeout lives on the engine-local config struct rather than being
 	// read from pkg/config, so a RemoteSync can be constructed by low-level
@@ -131,6 +132,7 @@ func DefaultConfig() RemoteSyncConfig {
 		HealthCheckInterval:         30 * time.Second,
 		HealthCheckFailureThreshold: 3,
 		UnhealthyCheckInterval:      5 * time.Second,
+		HealthCheckTimeout:          defaultHealthCheckTimeout,
 		// — match pkg/config defaults.
 		ClaimTimeout: 10 * time.Minute,
 	}

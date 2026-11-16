@@ -720,8 +720,13 @@ func (s *Store) HealthCheck(ctx context.Context) error {
 		return err
 	}
 
+	// One attempt: the caller decides health from consecutive probes, so a
+	// retry inside one probe only stretches it, and spends the retry quota the
+	// client shares with uploads and reads.
 	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
 		Bucket: aws.String(s.bucket),
+	}, func(o *s3.Options) {
+		o.Retryer = retry.AddWithMaxAttempts(o.Retryer, 1)
 	})
 	if err != nil {
 		return fmt.Errorf("S3 health check failed: %w", err)

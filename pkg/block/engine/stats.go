@@ -73,6 +73,14 @@ type BlockStoreStats struct {
 	// storage were lost before the syncer drains them.
 	UnsyncedBytes int64 `json:"unsynced_bytes"`
 
+	// UploadsFailing reports that the last ConsecutiveUploadFailures block
+	// uploads all failed, and that there were at least uploadsFailingThreshold
+	// of them. It is a report, separate from RemoteHealthy: a remote can answer
+	// its probe and still refuse every upload, and nothing is refused because
+	// of it.
+	UploadsFailing            bool `json:"uploads_failing"`
+	ConsecutiveUploadFailures int  `json:"consecutive_upload_failures"`
+
 	RemoteHealthy       bool    `json:"remote_healthy"`
 	EvictionSuspended   bool    `json:"eviction_suspended"`
 	OutageDurationSecs  float64 `json:"outage_duration_seconds"`
@@ -150,10 +158,11 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 	// Completed/failed carve counters and the in-flight upload count all come
 	// from the syncer. In local-only mode (no remote) nothing ever carves, so
 	// report zeros rather than reading counters no path advances.
-	var completed, failed, pendingUploads int
+	var completed, failed, pendingUploads, putFailuresInARow int
 	if bs.remote != nil {
 		completed, failed = bs.syncer.SyncCounts()
 		pendingUploads = bs.syncer.InFlightUploads()
+		putFailuresInARow = bs.syncer.UploadFailuresInARow()
 	}
 
 	remoteHealthy := bs.syncer.IsRemoteHealthy()
@@ -187,6 +196,9 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 		UnsyncedBytes:       bs.syncer.UnsyncedBytes(),
 		LocalDurable:        bs.LocalDurable(),
 		RemoteDurable:       bs.RemoteDurable(),
+
+		UploadsFailing:            putFailuresInARow >= uploadsFailingThreshold,
+		ConsecutiveUploadFailures: putFailuresInARow,
 	}
 
 	if withBlockCounts {

@@ -49,6 +49,9 @@ func TestBlockStoreStats_WireShapeRoundTrip(t *testing.T) {
 		EvictionSuspended:   true,
 		OutageDurationSecs:  1.5,
 		OfflineReadsBlocked: 17,
+
+		UploadsFailing:            true,
+		ConsecutiveUploadFailures: 18,
 	}
 
 	wire, err := json.Marshal(src)
