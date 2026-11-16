@@ -2,6 +2,7 @@ package kvstore
 
 import (
 	"errors"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
@@ -76,7 +77,24 @@ func readIDs(r *codec.Reader) entity.ProtocolIDs {
 func encodeUser(u entity.User) []byte {
 	w := codec.NewWriter(v1).String(u.Name)
 	putIDs(w, u.IDs)
-	return putPrincipal(w, u.Primary).Bool(u.Disabled).Fixed(u.Secret[:]).Encode()
+	putPrincipal(w, u.Primary).Bool(u.Disabled).Fixed(u.Secret[:]).String(u.Email).Uint8(uint8(u.Role))
+	return putSeconds(w, u.NotBefore).Bool(u.MustChange).Uint64(u.Generation).Encode()
+}
+
+// putSeconds writes t in whole seconds, the zero time as zero.
+func putSeconds(w *codec.Writer, t time.Time) *codec.Writer {
+	if t.IsZero() {
+		return w.Int64(0)
+	}
+	return w.Int64(t.Unix())
+}
+
+func readSeconds(r *codec.Reader) time.Time {
+	t := time.Unix(r.Int64(), 0).UTC()
+	if t.Unix() == 0 || t.IsZero() {
+		return time.Time{}
+	}
+	return t
 }
 
 func decodeUser(id entity.PrincipalID, b []byte) (entity.User, error) {
@@ -88,13 +106,23 @@ func decodeUser(id entity.PrincipalID, b []byte) (entity.User, error) {
 	u.Primary = readPrincipal(r)
 	u.Disabled = r.Bool()
 	copy(u.Secret[:], r.Fixed(16))
-	return u, r.Done()
+	u.Email, u.Role = r.String(), entity.APIRole(r.Uint8())
+	u.NotBefore, u.MustChange, u.Generation = readSeconds(r), r.Bool(), r.Uint64()
+	if err := r.Done(); err != nil {
+		return u, err
+	}
+	// A role this build does not know is refused rather than read as some
+	// role, so a record from a newer build grants no rights by accident.
+	if u.Role.String() == "" {
+		return u, errMalformed
+	}
+	return u, nil
 }
 
 func encodeGroup(g entity.Group) []byte {
 	w := codec.NewWriter(v1).String(g.Name)
 	putIDs(w, g.IDs)
-	return w.Encode()
+	return w.Uint64(g.Generation).Encode()
 }
 
 func decodeGroup(id entity.PrincipalID, b []byte) (entity.Group, error) {
@@ -103,6 +131,7 @@ func decodeGroup(id entity.PrincipalID, b []byte) (entity.Group, error) {
 		return entity.Group{}, err
 	}
 	g := entity.Group{Principal: entity.Principal{Kind: entity.PrincipalGroup, ID: id}, Name: r.String(), IDs: readIDs(r)}
+	g.Generation = r.Uint64()
 	return g, r.Done()
 }
 
@@ -148,7 +177,7 @@ func decodePrincipal(b []byte) (entity.Principal, error) {
 // encodeShareInfo writes the fields a share put owns; State is its own record.
 func encodeShareInfo(s entity.Share) []byte {
 	return codec.NewWriter(v1).String(s.Name).String(s.Path).Fixed(s.Root[:]).
-		Uint32(uint32(s.Fold)).Uint8(uint8(s.Names)).Fixed(s.DigestKey[:]).Uint32(s.Tag).Encode()
+		Uint32(uint32(s.Fold)).Uint8(uint8(s.Names)).Fixed(s.DigestKey[:]).Uint32(s.Tag).Uint64(s.Generation).Encode()
 }
 
 func decodeShareInfo(id entity.ShareID, b []byte) (entity.Share, error) {
@@ -161,7 +190,7 @@ func decodeShareInfo(id entity.ShareID, b []byte) (entity.Share, error) {
 	s.Fold = entity.FoldRule(r.Uint32())
 	s.Names = entity.NameRule(r.Uint8())
 	copy(s.DigestKey[:], r.Fixed(entity.DigestKeyLen))
-	s.Tag = r.Uint32()
+	s.Tag, s.Generation = r.Uint32(), r.Uint64()
 	return s, r.Done()
 }
 
@@ -294,7 +323,16 @@ func decodeNetgroup(name string, b []byte) (entity.Netgroup, error) {
 }
 
 func encodeInstallation(in entity.Installation) []byte {
-	return codec.NewWriter(v1).Fixed(in.ID[:]).Fixed(in.Instance[:]).Bytes(in.Generation).Encode()
+	w := codec.NewWriter(v1).Fixed(in.ID[:]).Fixed(in.Instance[:]).Bytes(in.Generation).
+		Uint64(in.NTLMOff.Off).Fixed(in.NTLMOff.Deleted[:]).Fixed(in.SigningKey[:])
+	j := in.Join
+	w.Bool(j.Joined).String(j.Account).Bytes(j.Owner).Bytes(j.Delegation).Len(len(j.Names))
+	for _, n := range j.Names {
+		w.String(n)
+	}
+	rot := j.LastRotation
+	putTime(w, rot.At).Bool(rot.Failed).Uint32(rot.Tag).Uint32(rot.Read).Uint64(rot.Version)
+	return putTime(w, rot.Confirmed).Encode()
 }
 
 func decodeInstallation(b []byte) (entity.Installation, error) {
@@ -308,6 +346,20 @@ func decodeInstallation(b []byte) (entity.Installation, error) {
 	if g := r.Bytes(); len(g) > 0 {
 		in.Generation = append([]byte(nil), g...)
 	}
+	in.NTLMOff.Off = r.Uint64()
+	copy(in.NTLMOff.Deleted[:], r.Fixed(16))
+	copy(in.SigningKey[:], r.Fixed(16))
+	j := &in.Join
+	j.Joined, j.Account, j.Owner, j.Delegation = r.Bool(), r.String(), cloneOrNil(r.Bytes()), cloneOrNil(r.Bytes())
+	if n := r.Len(); n > 0 {
+		j.Names = make([]string, n)
+		for i := range j.Names {
+			j.Names[i] = r.String()
+		}
+	}
+	rot := &j.LastRotation
+	rot.At, rot.Failed, rot.Tag, rot.Read, rot.Version = readTime(r), r.Bool(), r.Uint32(), r.Uint32(), r.Uint64()
+	rot.Confirmed = readTime(r)
 	return in, r.Done()
 }
 

@@ -46,6 +46,35 @@ func TestStoreConformanceOnDisk(t *testing.T) {
 	})
 }
 
+// The reopen and clock cases on disk, each reopen over the case's directory.
+func TestStoreDurableOnDisk(t *testing.T) {
+	if testing.Short() {
+		t.Skip("syncs every commit")
+	}
+	kvstoretest.RunDurable(t, func(tb testing.TB, clock func() time.Time) func() kv.KV {
+		dir := tb.TempDir()
+		var db *badgerkv.Store
+		return func() kv.KV {
+			if db != nil {
+				if err := db.Close(); err != nil {
+					tb.Fatal(err)
+				}
+			}
+			var err error
+			if db, err = badgerkv.Open(badgerkv.Options{Dir: dir, Clock: clock}); err != nil {
+				tb.Fatal(err)
+			}
+			last := db
+			tb.Cleanup(func() {
+				if err := last.Close(); err != nil {
+					tb.Error(err)
+				}
+			})
+			return db
+		}
+	})
+}
+
 func FuzzNamespace(f *testing.F) { kvstoretest.FuzzNamespace(f, badger(badgerkv.Options{})) }
 
 // The fuzz target's seeds on disk, every commit synced.

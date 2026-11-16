@@ -320,7 +320,7 @@ func TestLockingIsAdmittedOnEveryEntryPath(t *testing.T) {
 	s := newShares(t, nil, nil)
 	ctx := t.Context()
 	bob := s.user(t, "bob", "1000", s.share, entity.AccessReadWrite)
-	s.must(t, s.cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab", Members: []string{"10.0.0.0/24"}}))
+	s.must(t, errOf(s.cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab", Members: []string{"10.0.0.0/24"}}, 0)))
 	host := s.nfs41(t, "host", 1000, 1)
 	s.fs.Create(t, s.fs.Admin, s.fs.Root, "f", kvstore.Regular(0o644))
 	at := func(addr bool) vfs.Call {
@@ -395,7 +395,7 @@ func TestLockingIsAdmittedOnEveryEntryPath(t *testing.T) {
 			handles[name] = [2]vfs.Handle{h, f}
 		}
 		c.policy.Share = s.share
-		s.must(t, s.cp.PutExportPolicy(ctx, c.policy))
+		s.must(t, errOf(s.cp.PutExportPolicy(ctx, c.policy, policyVersion(t, s.cp, c.policy.Share))))
 		s.must(t, s.cp.SetShareState(ctx, s.share, entity.ShareEnabled, c.state))
 		for name, hs := range handles {
 			for op, call := range ops {
@@ -412,7 +412,7 @@ func TestLockingIsAdmittedOnEveryEntryPath(t *testing.T) {
 			}
 		}
 		s.must(t, s.cp.SetShareState(ctx, s.share, c.state, entity.ShareEnabled))
-		s.must(t, s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share}))
+		s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share}, policyVersion(t, s.cp, s.share))))
 	}
 
 	for _, op := range []string{"lock", "test-lock"} {
@@ -422,7 +422,7 @@ func TestLockingIsAdmittedOnEveryEntryPath(t *testing.T) {
 	}
 
 	bob.Disabled = true
-	s.must(t, s.cp.PutUser(ctx, bob))
+	s.must(t, errOf(s.cp.PutUser(ctx, bob, userGeneration(t, s.fs.Store, bob.Principal), entity.Alloc{})))
 	f, _, err := s.Lookup(ctx, proven(s.fs.Admin.Principal, inLab), s.fs.Root, []byte("f"))
 	s.must(t, err)
 	if err := ops["lock"](host, f); !errors.Is(err, vfs.ErrAccess) {
@@ -452,7 +452,7 @@ func TestARevokedCallerStillReleasesItsLocks(t *testing.T) {
 	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: nlm(host, "waits"), Ranges: span(20, 10, true), Wait: openstate.WaitCallback}); !errors.Is(err, vfs.ErrBlocked) {
 		t.Fatalf("the host's waiting lock: %v, want ErrBlocked", err)
 	}
-	s.must(t, s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: s.bob.Principal, Access: entity.AccessNone}))
+	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: s.bob.Principal, Access: entity.AccessNone}, grantVersion(t, s.cp, s.share, s.bob.Principal))))
 
 	if granted, err := s.CancelLock(ctx, host, vfs.Anonymous(h), nlm(host, "waits"), vfs.ByteRange{Offset: 20, Length: 10}); err != nil || granted {
 		t.Errorf("the revoked host's cancel: %v, %v; want cancelled", granted, err)
@@ -498,9 +498,9 @@ func TestAReleaseIsNotRefusedByClientRules(t *testing.T) {
 		t.Fatalf("the host's waiting lock: %v, want ErrBlocked", err)
 	}
 	ref := s.opener(t, pc, "f", entity.ReadData)
-	s.must(t, s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Clients: []entity.ClientRule{
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Clients: []entity.ClientRule{
 		{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("192.168.0.0/16")}, Access: entity.AccessReadWrite},
-	}}))
+	}}, 0)))
 
 	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: nlm(host, "new"), Ranges: span(40, 1, false)}); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("a lock by a client outside the rules: %v, want ErrAccess", err)
@@ -521,7 +521,7 @@ func TestAReleaseIsNotRefusedByClientRules(t *testing.T) {
 		t.Errorf("the close by a client outside the rules: %v", err)
 	}
 
-	s.must(t, s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share}))
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share}, policyVersion(t, s.cp, s.share))))
 	if _, err := s.Lock(ctx, other, vfs.Anonymous(h), vfs.LockReq{Owner: nlm(other, "o"), Ranges: span(0, 10, true)}); err != nil {
 		t.Errorf("another host's lock of the range the outside client unlocked: %v", err)
 	}
@@ -539,10 +539,10 @@ func TestAReleaseFailsClosedOnANetgroupReadError(t *testing.T) {
 	ctx := t.Context()
 	a := &attrs{shares: s, bob: s.user(t, "bob", "", s.share, entity.AccessReadWrite)}
 	h := a.file(t, "f", a.bob.Principal, 0o666)
-	s.must(t, s.cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab", Members: []string{"10.0.0.0/24"}}))
-	s.must(t, s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Clients: []entity.ClientRule{
+	s.must(t, errOf(s.cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab", Members: []string{"10.0.0.0/24"}}, 0)))
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Clients: []entity.ClientRule{
 		{Match: entity.ClientMatch{Netgroup: "lab"}, Access: entity.AccessReadWrite},
-	}}))
+	}}, 0)))
 	host, _ := s.connected(t, proven(a.bob.Principal, inLab), nlmHost("build01", 1))
 	o := vfs.LockOwner{Client: host.Client, Name: []byte("held")}
 	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: o, Ranges: span(0, 10, true)}); err != nil {
@@ -573,7 +573,7 @@ func TestASquashedOwnerIsDecidedAsReadData(t *testing.T) {
 	nobody := s.user(t, "nobody", "", s.share, entity.AccessReadWrite)
 	a := &attrs{shares: s}
 	h := a.file(t, "f", root.Principal, 0o600)
-	s.must(t, s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashRoot, Anonymous: nobody.Principal}))
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashRoot, Anonymous: nobody.Principal}, 0)))
 	host, _ := s.connected(t, claimed(0, inLab), nlmHost("root-host", 1))
 	o := vfs.LockOwner{Client: host.Client, Name: []byte("pid 1")}
 	if _, err := s.Lock(ctx, host, vfs.Anonymous(h), vfs.LockReq{Owner: o, Ranges: span(0, 1, true)}); !errors.Is(err, vfs.ErrAccess) {
@@ -607,7 +607,7 @@ func TestALockUnderNoOpenIsDecidedAsReadOrOwnership(t *testing.T) {
 		}
 	}
 
-	s.must(t, s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: s.alice.Principal, Access: entity.AccessNone}))
+	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: s.alice.Principal, Access: entity.AccessNone}, grantVersion(t, s.cp, s.share, s.alice.Principal))))
 	if _, err := s.Lock(ctx, alice, vfs.Anonymous(writeOnly), vfs.LockReq{Owner: o(alice), Ranges: span(10, 1, true)}); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("the owner's NLM lock with no share grant: %v, want ErrAccess", err)
 	}

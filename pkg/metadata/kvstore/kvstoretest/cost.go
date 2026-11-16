@@ -14,20 +14,22 @@ func testCosts(t *testing.T, kvo Opener) {
 	s, c := newStore(t, kvo)
 	cp := s.ControlPlane()
 	u := user("alice", uid("1000"))
-	must(t, cp.PutUser(ctx, u))
+	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 	sh := share("photos", "/photos")
-	must(t, cp.PutShare(ctx, sh))
+	must(t, errOf(CreateShare(ctx, cp, sh)))
 	c.Take()
 
 	u.Name = "alicia"
-	must(t, cp.PutUser(ctx, u))
+	gen := userGeneration(t, s, u.Principal)
+	c.Take()
+	must(t, errOf(cp.PutUser(ctx, u, gen, entity.Alloc{})))
 	// Read the record and the new name row; write both; delete the old row.
 	if got, want := c.Take(), (kv.Counts{Gets: 2, Sets: 2, Deletes: 1}); got != want {
 		t.Errorf("user rename: %+v, want %+v", got, want)
 	}
 
 	sh.Name = "pictures"
-	must(t, cp.PutShare(ctx, sh))
+	must(t, errOf(cp.PutShare(ctx, sh, 1)))
 	// Read the info and state records, the new name row and ShareList; write
 	// the info, the name row and ShareList; delete the old name row. The path
 	// did not change, so no path row is read.
@@ -35,9 +37,10 @@ func testCosts(t *testing.T, kvo Opener) {
 		t.Errorf("share rename: %+v, want %+v", got, want)
 	}
 
-	must(t, cp.PutShare(ctx, sh))
-	// The info and state records only.
-	if got, want := c.Take(), (kv.Counts{Gets: 2}); got != want {
+	must(t, errOf(cp.PutShare(ctx, sh, 2)))
+	// The info and state records, and the info written again with its
+	// generation raised.
+	if got, want := c.Take(), (kv.Counts{Gets: 2, Sets: 1}); got != want {
 		t.Errorf("unchanged share put: %+v, want %+v", got, want)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
@@ -29,6 +30,7 @@ func TestKeyGolden(t *testing.T) {
 		{"share info", shareKey(sid, keys.SInfo), "02" + s + "01"},
 		{"grant", grantKey(sid, gid), "02" + s + "04" + g},
 		{"grant rev", grantRevKey(gid, sid), "24" + g + s},
+		{"grant-list version", shareKey(sid, keys.SGv), "02" + s + "1e"},
 		{"setting, installation", settingKey(entity.SettingScope{Kind: entity.ScopeInstallation}, "k"), "3201" + "6b0001"},
 		{"setting, share", settingKey(entity.SettingScope{Kind: entity.ScopeShare, ID: sid}, "k"), "3205" + s + "6b0001"},
 		{"share list", shareListKey, "28"},
@@ -37,6 +39,17 @@ func TestKeyGolden(t *testing.T) {
 		{"journal", journalKey(gid), "2e" + g},
 		{"journal index", journalIndexKey(entity.NodeID(pid), "/j"), "48" + p + "2f6a0001"},
 		{"removal step", shardRemovalKey(7), "2d" + "0000000000000007" + "04"},
+		{"enabled admin", adminKey(pid), "4a" + p},
+		{"audit", auditKey(time.Unix(0, 1), [16]byte(gid)), "45" + "0000000000000001" + g},
+		{"audit by actor", auditActorPrefix(group), "4601" + g},
+		{"audit by target", auditTargetPrefix(entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{0}}), "4602" + "05" + "00ff0001"},
+		{"audit by node", auditNodePrefix(entity.NodeID(sid)), "4603" + s},
+		{"idempotency", idempotencyKey(group, "k"), "3e" + g + "6b0001"},
+		{"idempotency expiry", idempotencyExpiryKey(entity.IdempotencyRecord{Account: group, Key: "k", Expires: time.Unix(0, 2)}),
+			"3f" + "0000000000000002" + "01" + g + "6b0001"},
+		{"namespace", namespaceInfoKey(entity.NamespaceID(gid)), "17" + g + "0a"},
+		{"namespace share", namespaceShareKey(entity.NamespaceID(gid), sid), "17" + g + "0b" + s},
+		{"store index", storeIndexKey([16]byte(pid), entity.NamespaceID(gid)), "4b" + p + g},
 	} {
 		if got := hex.EncodeToString(c.key); got != c.want {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)

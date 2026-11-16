@@ -60,6 +60,9 @@ func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
 		s.Shard = entity.ShardID(shard)
 		break
 	}
+	if s.GrantVersion, err = counterIn(r, shareKey(id, keys.SGv)); err != nil {
+		return s, err
+	}
 	if b, ok, err := get(r, namespacesKey(id)); err != nil || !ok {
 		return s, err
 	} else if nss, err := decodeNamespaces(b); err != nil {
@@ -70,93 +73,103 @@ func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
 	return s, nil
 }
 
-// PutShare creates a share or changes its name or path; its root never
-// changes. It writes the share's info record and its name and path rows, and
-// raises ShareList. State is not its to write: a new share starts enabled,
-// and only SetShareState changes it after.
+// PutShare creates a share, expect zero, or changes the name or path of the
+// one whose generation expect names; its root never changes. It writes the
+// share's info record, raising its generation, and its name and path rows,
+// and raises ShareList when either moves. State is not its to write: a new
+// share starts enabled, and only SetShareState changes it after. A new
+// share is created in the one namespace its Namespaces names, whose record
+// is read tracked and must exist, so a share never lands in a namespace that
+// names no remote store; a change ignores Namespaces, which only a re-home
+// and an import write.
 //
 // No share's path is an ancestor of another's. An ancestor is found by a
 // point read of each of the path's prefixes, a descendant by a guarded scan
 // of the rows below it, so two shares created at once on nested paths cannot
 // both commit, in either order.
-func (c ControlPlane) PutShare(ctx context.Context, s entity.Share) error {
+func (c ControlPlane) PutShare(ctx context.Context, s entity.Share, expect uint64) (uint64, error) {
+	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutShare(s, expect) })
+}
+
+func (c controlTx) PutShare(s entity.Share, expect uint64) (uint64, error) {
 	if s.ID.IsZero() || s.Root.IsZero() {
-		return merrs.NewInvalidArgumentError("a share needs an ID and a root")
+		return 0, merrs.NewInvalidArgumentError("a share needs an ID and a root")
 	}
 	if !entity.ValidShareName(s.Name) {
-		return merrs.NewInvalidArgumentError("share name " + s.Name + " not valid")
+		return 0, merrs.NewInvalidArgumentError("share name " + s.Name + " not valid")
 	}
 	if !entity.ValidSharePath(s.Path) {
-		return merrs.NewInvalidArgumentError("share path " + s.Path + " not valid")
+		return 0, merrs.NewInvalidArgumentError("share path " + s.Path + " not valid")
 	}
 	if s.Fold != 0 && !slices.Contains(entity.FoldRules, s.Fold) || s.Names != 0 && s.Names.String() == "" {
-		return merrs.NewInvalidArgumentError("unknown fold or name rule")
+		return 0, merrs.NewInvalidArgumentError("unknown fold or name rule")
 	}
-	key := s.DigestKey
-	if key == ([entity.DigestKeyLen]byte{}) {
-		rand.Read(key[:])
+	info := shareKey(s.ID, keys.SInfo)
+	b, existed, err := get(c.tx, info)
+	if err != nil {
+		return 0, err
 	}
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		info := shareKey(s.ID, keys.SInfo)
-		b, existed, err := get(tx, info)
+	var old entity.Share
+	if existed {
+		if old, err = decodeShareInfo(s.ID, b); err != nil {
+			return 0, err
+		}
+		if err := liveShare(c.tx, s.ID); err != nil {
+			return 0, err
+		}
+	}
+	if err := expected(old.Generation, expect); err != nil {
+		return 0, err
+	}
+	if existed {
+		if old.Root != s.Root {
+			return 0, merrs.NewInvalidArgumentError("a share's root never changes")
+		}
+		if err := keepBound(&s, old); err != nil {
+			return 0, err
+		}
+	} else {
+		bindNew(&s)
+	}
+	moved := !existed || old.Name != s.Name || old.Path != s.Path
+	if err := claimShareName(c.tx, s, existed, old.Name); err != nil {
+		return 0, err
+	}
+	if err := claimSharePath(c.tx, s, existed, old.Path); err != nil {
+		return 0, err
+	}
+	if !existed {
+		ns, err := shareNamespace(c, s)
 		if err != nil {
-			return err
+			return 0, err
 		}
-		var old entity.Share
-		if existed {
-			if old, err = decodeShareInfo(s.ID, b); err != nil {
-				return err
-			}
-			if err := liveShare(tx, s.ID); err != nil {
-				return err
-			}
-			if old.Root != s.Root {
-				return merrs.NewInvalidArgumentError("a share's root never changes")
-			}
-			if err := keepBound(&s, old); err != nil {
-				return err
-			}
-			if old.Name == s.Name && old.Path == s.Path {
-				return nil
-			}
-		} else {
-			bindNew(&s, key)
+		if err := createShareRecords(c.tx, &s, ns); err != nil {
+			return 0, err
 		}
-		if err := c.claimShareName(tx, s, existed, old.Name); err != nil {
-			return err
-		}
-		if err := c.claimSharePath(tx, s, existed, old.Path); err != nil {
-			return err
-		}
-		if !existed {
-			if err := createShareRecords(tx, &s); err != nil {
-				return err
-			}
-		}
-		if err := tx.Set(info, encodeShareInfo(s)); err != nil {
-			return err
-		}
-		return raise(tx, shareListKey)
-	})
+	}
+	s.Generation = old.Generation + 1
+	if err := c.tx.Set(info, encodeShareInfo(s)); err != nil {
+		return 0, err
+	}
+	if !moved {
+		return s.Generation, nil
+	}
+	return s.Generation, raise(c.tx, shareListKey)
 }
 
 // createShareRecords writes what a new share starts with besides its info:
 // its state, enabled; its one shard, a number no share of the installation
 // has had, with its shard record and its row in the share's shard list; its
 // root directory, in that shard; its numeric file id allocator, above the
-// root's number; and a namespace of its own, generation 1, that its content
-// is counted in.
+// root's number; and the namespace ns, generation 1, that its content is
+// counted in, with the share's key in that namespace's share index. The
+// root's key must be free, so a root ID that already names a file is refused
+// rather than overwritten.
 //
 // ponytail: a share has exactly one shard, made with it. Write a row and a
 // record per shard, in the transaction that creates each, once a share can
 // have more than one.
-//
-// decision: every share gets a fresh namespace. Shares sharing one, so that
-// their content deduplicates and clones across them, is a choice the
-// configuration makes; take the namespace from the share's settings once
-// they name one. The root's key must be free, so a root ID that
-// already names a file is refused rather than overwritten.
-func createShareRecords(tx kv.Txn, s *entity.Share) error {
+func createShareRecords(tx kv.Txn, s *entity.Share, ns entity.NamespaceID) error {
 	tag, err := nextTag(tx)
 	if err != nil {
 		return err
@@ -179,12 +192,14 @@ func createShareRecords(tx kv.Txn, s *entity.Share) error {
 		{root, encodeFile(rf)},
 		{floorKey(s.ID, s.Root, rf.Version), encodeEmpty()},
 		{numberKey(s.ID), encodeCounter(rootNumber + 1)},
-		{namespacesKey(s.ID), encodeNamespaces(shareNamespaces{
-			Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: entity.NewNamespaceID()}}, Write: 1})},
 	} {
 		if err := tx.Set(kvs[0], kvs[1]); err != nil {
 			return err
 		}
+	}
+	if err := putShareNamespaces(tx, s.ID, shareNamespaces{}, shareNamespaces{
+		Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: ns}}, Write: 1}); err != nil {
+		return err
 	}
 	return chargeFile(tx, s.ID, nil, &rf)
 }
@@ -195,15 +210,9 @@ var ErrTagsExhausted = errors.New("kvstore: installation has no share tags left"
 // nextTag mints a journal tag no share of the installation has had: the
 // tag counter's next value, from 1, since a zero tag names no share.
 func nextTag(tx kv.Txn) (uint32, error) {
-	b, ok, err := get(tx, tagKey)
+	v, err := counterIn(tx, tagKey)
 	if err != nil {
 		return 0, err
-	}
-	var v uint64
-	if ok {
-		if v, err = decodeCounter(b); err != nil {
-			return 0, err
-		}
 	}
 	if v >= math.MaxUint32 {
 		return 0, ErrTagsExhausted
@@ -254,7 +263,7 @@ func liveShare(r kv.Reader, share entity.ShareID) error {
 // bindNew gives a new share its bound settings: the identity fold unless
 // one is named, the name rule that goes with its fold unless one is named,
 // and a digest key drawn at random unless one is given.
-func bindNew(s *entity.Share, key [entity.DigestKeyLen]byte) {
+func bindNew(s *entity.Share) {
 	if s.Fold == 0 {
 		s.Fold = entity.FoldIdentity
 	}
@@ -264,7 +273,9 @@ func bindNew(s *entity.Share, key [entity.DigestKeyLen]byte) {
 			s.Names = entity.NamesWindows
 		}
 	}
-	s.DigestKey = key
+	if s.DigestKey == ([entity.DigestKeyLen]byte{}) {
+		rand.Read(s.DigestKey[:])
+	}
 }
 
 // keepBound carries an existing share's bound settings into a put, a zero
@@ -278,7 +289,7 @@ func keepBound(s *entity.Share, old entity.Share) error {
 	return nil
 }
 
-func (c ControlPlane) claimShareName(tx kv.Txn, s entity.Share, existed bool, oldName string) error {
+func claimShareName(tx kv.Txn, s entity.Share, existed bool, oldName string) error {
 	key := nameKey(keys.NXShare, s.Name)
 	if existed && bytes.Equal(key, nameKey(keys.NXShare, oldName)) {
 		return nil // a change of case only: the row stays
@@ -292,7 +303,7 @@ func (c ControlPlane) claimShareName(tx kv.Txn, s entity.Share, existed bool, ol
 	return nil
 }
 
-func (c ControlPlane) claimSharePath(tx kv.Txn, s entity.Share, existed bool, oldPath string) error {
+func claimSharePath(tx kv.Txn, s entity.Share, existed bool, oldPath string) error {
 	if existed && s.Path == oldPath {
 		return nil
 	}
@@ -354,96 +365,141 @@ func claimShare(tx kv.Txn, key []byte, id entity.ShareID, taken string) error {
 // Removal is one-way and not this call's: only DeleteShare moves a share to
 // being removed, and a share being removed or retired is stale to it.
 func (c ControlPlane) SetShareState(ctx context.Context, share entity.ShareID, from, to entity.ShareState) error {
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.SetShareState(share, from, to) })
+}
+
+func (c controlTx) SetShareState(share entity.ShareID, from, to entity.ShareState) error {
 	switch {
 	case to.String() == "":
 		return merrs.NewInvalidArgumentError("unknown share state")
 	case to == entity.ShareRemoving || to == entity.ShareRetired:
 		return merrs.NewInvalidArgumentError("only DeleteShare removes a share")
 	}
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		key := shareKey(share, keys.SSt)
-		b, ok, err := get(tx, key)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return merrs.NewNotFoundError(share.String(), "share")
-		}
-		st, err := decodeState(b)
-		if err != nil {
-			return err
-		}
-		cur := st.State
-		if cur == entity.ShareRemoving || cur == entity.ShareRetired {
-			return entity.ErrStale
-		}
-		if cur != from {
-			return merrs.NewConflictError("set share state", "share is "+cur.String()+", not "+from.String())
-		}
-		if from == to {
-			return nil
-		}
-		if err := tx.Set(key, encodeState(shareState{State: to})); err != nil {
-			return err
-		}
-		return raise(tx, shareListKey)
-	})
+	key := shareKey(share, keys.SSt)
+	b, ok, err := get(c.tx, key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return merrs.NewNotFoundError(share.String(), "share")
+	}
+	st, err := decodeState(b)
+	if err != nil {
+		return err
+	}
+	cur := st.State
+	if cur == entity.ShareRemoving || cur == entity.ShareRetired {
+		return entity.ErrStale
+	}
+	if cur != from {
+		return merrs.NewConflictError("set share state", "share is "+cur.String()+", not "+from.String())
+	}
+	if from == to {
+		return nil
+	}
+	if err := c.tx.Set(key, encodeState(shareState{State: to})); err != nil {
+		return err
+	}
+	return raise(c.tx, shareListKey)
 }
 
-// SetGrant sets a principal's access to a share, raising the grant's
-// version. A grant of none is stored like any other and blocks the principal:
-// only RemoveGrant lets its groups, then the defaults, decide again. A grant
-// names a user, a group, or the share's defaults, authenticated users or
-// everyone, and a default grants at most read-write. Share and principal must
-// exist, read so that a deletion of either conflicts; a default always exists.
-//
-// ponytail: a grant change raises only the grant's own version; the
-// share's grant-list version is not kept. Write it here and in RemoveGrant
-// when the first cache of a share's grants keys on it.
-func (c ControlPlane) SetGrant(ctx context.Context, g entity.ShareGrant) error {
+// SetGrant sets a principal's access to a share, the grant's version
+// expect naming the one it replaces, zero for none. The grant's version and
+// the share's grant-list version both move to the writing commit's. A grant
+// of none is stored like any other and blocks the principal: only DeleteGrant
+// lets its groups, then the defaults, decide again. A grant names a user, a
+// group, or the share's defaults, authenticated users or everyone, and a
+// default grants at most read-write. Share and principal must exist, read so
+// that a deletion of either conflicts; a default always exists.
+func (c ControlPlane) SetGrant(ctx context.Context, g entity.ShareGrant, expect uint64) (uint64, error) {
+	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.SetGrant(g, expect) })
+}
+
+func (c controlTx) SetGrant(g entity.ShareGrant, expect uint64) (uint64, error) {
 	isDefault := g.Principal == entity.AuthenticatedUsers || g.Principal == entity.Everyone
 	if g.Access > entity.AccessAdmin || (g.Principal.Kind != entity.PrincipalUser && g.Principal.Kind != entity.PrincipalGroup && !isDefault) {
-		return merrs.NewInvalidArgumentError("a grant names a user, a group, authenticated users or everyone, and a known access")
+		return 0, merrs.NewInvalidArgumentError("a grant names a user, a group, authenticated users or everyone, and a known access")
 	}
 	if isDefault && g.Access > entity.AccessReadWrite {
-		return merrs.NewInvalidArgumentError("a default grant is at most read-write")
+		return 0, merrs.NewInvalidArgumentError("a default grant is at most read-write")
 	}
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		if _, ok, err := get(tx, shareKey(g.Share, keys.SInfo)); err != nil || !ok {
-			if err == nil {
-				err = merrs.NewNotFoundError(g.Share.String(), "share")
-			}
-			return err
+	if _, ok, err := get(c.tx, shareKey(g.Share, keys.SInfo)); err != nil || !ok {
+		if err == nil {
+			err = merrs.NewNotFoundError(g.Share.String(), "share")
 		}
-		if err := liveShare(tx, g.Share); err != nil {
-			return err
-		}
-		if _, ok, err := get(tx, principalKey(g.Principal)); !isDefault && (err != nil || !ok) {
-			return notFound(err, g.Principal)
-		}
-		key, rev := grantKey(g.Share, g.Principal.ID), grantRevKey(g.Principal.ID, g.Share)
-		old, _, err := grantIn(tx, g.Share, g.Principal.ID)
-		if err != nil {
-			return err
-		}
-		g.Version = nextVersion(tx, old.Version)
-		if err := tx.Set(key, encodeGrant(g)); err != nil {
-			return err
-		}
-		return tx.Set(rev, nil)
-	})
+		return 0, err
+	}
+	if err := liveShare(c.tx, g.Share); err != nil {
+		return 0, err
+	}
+	if _, ok, err := get(c.tx, principalKey(g.Principal)); !isDefault && (err != nil || !ok) {
+		return 0, notFound(err, g.Principal)
+	}
+	old, _, err := grantIn(c.tx, g.Share, g.Principal.ID)
+	if err != nil {
+		return 0, err
+	}
+	if err := expected(old.Version, expect); err != nil {
+		return 0, err
+	}
+	g.Version = nextVersion(c.tx, old.Version)
+	if err := c.tx.Set(grantKey(g.Share, g.Principal.ID), encodeGrant(g)); err != nil {
+		return 0, err
+	}
+	if err := c.tx.Set(grantRevKey(g.Principal.ID, g.Share), nil); err != nil {
+		return 0, err
+	}
+	return g.Version, moveGrantVersion(c.tx, g.Share)
 }
 
-// RemoveGrant removes a principal's grant on a share, with its reverse row:
-// its groups, then the defaults, decide its access again. Removing one that
-// does not exist is not an error.
-func (c ControlPlane) RemoveGrant(ctx context.Context, share entity.ShareID, p entity.Principal) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		if err := tx.Delete(grantKey(share, p.ID)); err != nil {
-			return err
-		}
-		return tx.Delete(grantRevKey(p.ID, share))
+// DeleteGrant removes a principal's grant on a share, its version expect,
+// with its reverse row, and moves the share's grant-list version: its
+// groups, then the defaults, decide its access again. Deleting a grant that
+// does not exist, expect zero, changes nothing.
+func (c ControlPlane) DeleteGrant(ctx context.Context, share entity.ShareID, p entity.Principal, expect uint64) error {
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteGrant(share, p, expect) })
+}
+
+func (c controlTx) DeleteGrant(share entity.ShareID, p entity.Principal, expect uint64) error {
+	if err := liveShare(c.tx, share); err != nil {
+		return err
+	}
+	old, ok, err := grantIn(c.tx, share, p.ID)
+	if err != nil {
+		return err
+	}
+	if err := expected(old.Version, expect); err != nil || !ok {
+		return err
+	}
+	if err := c.tx.Delete(grantKey(share, p.ID)); err != nil {
+		return err
+	}
+	if err := c.tx.Delete(grantRevKey(p.ID, share)); err != nil {
+		return err
+	}
+	return moveGrantVersion(c.tx, share)
+}
+
+// moveGrantVersion sets a share's grant-list version to the writing commit's,
+// above the one it replaces, read tracked.
+func moveGrantVersion(tx kv.Txn, share entity.ShareID) error {
+	key := shareKey(share, keys.SGv)
+	v, err := counterIn(tx, key)
+	if err != nil {
+		return err
+	}
+	return tx.Set(key, encodeCounter(nextVersion(tx, v)))
+}
+
+// ShareGrant is the stored grant naming p on a share, with the version a
+// write replacing or deleting it passes as expect; false when none does. It
+// is looked up by p's ID alone, so p's Kind is not checked.
+func (c ControlPlane) ShareGrant(ctx context.Context, share entity.ShareID, p entity.Principal) (g entity.ShareGrant, found bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		g, found, err = grantIn(r, share, p.ID)
+		return err
 	})
+	return g, found, err
 }
 
 // ExportPolicy reads a share's export policy; a share without one has
@@ -468,50 +524,56 @@ func defaultPolicy(share entity.ShareID) entity.ExportPolicy {
 	return entity.ExportPolicy{Share: share, Squash: entity.SquashRoot, Anonymous: entity.AnonymousPrincipal}
 }
 
-// PutExportPolicy replaces a share's export policy, raising its version. A
+// PutExportPolicy replaces a share's export policy, the version expect names
+// or zero for none stored, raising its version. A
 // policy naming no Anonymous names the anonymous principal: it is stored as
 // given and read back as naming it.
-func (c ControlPlane) PutExportPolicy(ctx context.Context, p entity.ExportPolicy) error {
+func (c ControlPlane) PutExportPolicy(ctx context.Context, p entity.ExportPolicy, expect uint64) (uint64, error) {
+	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutExportPolicy(p, expect) })
+}
+
+func (c controlTx) PutExportPolicy(p entity.ExportPolicy, expect uint64) (uint64, error) {
 	for _, f := range p.Flavors {
 		if f.String() == "" {
-			return merrs.NewInvalidArgumentError("unknown auth flavor")
+			return 0, merrs.NewInvalidArgumentError("unknown auth flavor")
 		}
 	}
 	for _, r := range p.Clients {
 		if !r.Valid() {
-			return merrs.NewInvalidArgumentError("a client rule names one CIDR or netgroup, and at most read-write")
+			return 0, merrs.NewInvalidArgumentError("a client rule names one CIDR or netgroup, and at most read-write")
 		}
 	}
 	if !p.Valid() {
-		return merrs.NewInvalidArgumentError("an export policy's protection floor needs a verified proof, and both are known values")
+		return 0, merrs.NewInvalidArgumentError("an export policy's protection floor needs a verified proof, and both are known values")
 	}
 	if p.Squash.String() == "" {
-		return merrs.NewInvalidArgumentError("unknown squash")
+		return 0, merrs.NewInvalidArgumentError("unknown squash")
 	}
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		if _, ok, err := get(tx, shareKey(p.Share, keys.SInfo)); err != nil || !ok {
-			if err == nil {
-				err = merrs.NewNotFoundError(p.Share.String(), "share")
-			}
-			return err
+	if _, ok, err := get(c.tx, shareKey(p.Share, keys.SInfo)); err != nil || !ok {
+		if err == nil {
+			err = merrs.NewNotFoundError(p.Share.String(), "share")
 		}
-		if err := liveShare(tx, p.Share); err != nil {
-			return err
+		return 0, err
+	}
+	if err := liveShare(c.tx, p.Share); err != nil {
+		return 0, err
+	}
+	key := shareKey(p.Share, keys.SXp)
+	b, ok, err := get(c.tx, key)
+	if err != nil {
+		return 0, err
+	}
+	var old entity.ExportPolicy
+	if ok {
+		if old, err = decodePolicy(p.Share, b); err != nil {
+			return 0, err
 		}
-		key := shareKey(p.Share, keys.SXp)
-		b, ok, err := get(tx, key)
-		if err != nil {
-			return err
-		}
-		var old entity.ExportPolicy
-		if ok {
-			if old, err = decodePolicy(p.Share, b); err != nil {
-				return err
-			}
-		}
-		p.Version = nextVersion(tx, old.Version)
-		return tx.Set(key, encodePolicy(p))
-	})
+	}
+	if err := expected(old.Version, expect); err != nil {
+		return 0, err
+	}
+	p.Version = nextVersion(c.tx, old.Version)
+	return p.Version, c.tx.Set(key, encodePolicy(p))
 }
 
 // ShareList is raised by every share create, rename, path change and state

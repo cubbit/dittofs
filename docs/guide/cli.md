@@ -113,7 +113,7 @@ Open the configuration file in your default editor.
 Uses the EDITOR environment variable, falling back to 'vi' if not set.
 
 ```
-dfs config edit
+dfs config edit [flags]
 ```
 
 **Examples:**
@@ -218,7 +218,7 @@ Validate the DittoFS configuration file.
 Checks for syntax errors, missing required fields, and invalid values.
 
 ```
-dfs config validate
+dfs config validate [flags]
 ```
 
 **Examples:**
@@ -245,7 +245,7 @@ Initialize a new DittoFS installation: its first administrator and its
 signing key, kept in the metadata store the server's configuration names.
 
 ```
-dfs init
+dfs init [flags]
 ```
 
 **Examples:**
@@ -269,7 +269,7 @@ Reset the credentials of the installation's administrator, on the host
 that holds its metadata store, for when no administrator can sign in.
 
 ```
-dfs reset-admin
+dfs reset-admin [flags]
 ```
 
 **Examples:**
@@ -295,7 +295,7 @@ The server runs until it is stopped. Run it under a process supervisor
 (systemd, Docker) to keep it in the background.
 
 ```
-dfs start
+dfs start [flags]
 ```
 
 **Examples:**
@@ -633,7 +633,7 @@ List all configured server contexts stored in the local credential file.
 Each row shows the context name, server URL, username, and login status. The active context is marked with an asterisk (*). Use this to identify which servers you have credentials for and which context is currently selected.
 
 ```
-dfsctl context list
+dfsctl context list [flags]
 ```
 
 **Examples:**
@@ -711,7 +711,7 @@ Rename an existing server context to a new name.
 All stored credentials and the active-context pointer are updated atomically; no re-authentication is needed. Use this after promoting a staging server to production, or simply to give a context a more descriptive name.
 
 ```
-dfsctl context rename <old-name> <new-name>
+dfsctl context rename <old-name> <new-name> [flags]
 ```
 
 **Examples:**
@@ -747,7 +747,7 @@ Switch the active context so that subsequent dfsctl commands target a different 
 The new active context is saved to the local credential file. Run 'context current' afterwards to confirm the switch, or 'context list' to see all available context names.
 
 ```
-dfsctl context use <name>
+dfsctl context use <name> [flags]
 ```
 
 **Examples:**
@@ -831,7 +831,7 @@ gain any permissions associated with that group on shares and other resources.
 Both the group name and the username are required positional arguments.
 
 ```
-dfsctl group add-user <group> <username>
+dfsctl group add-user <group> <username> [flags]
 ```
 
 **Examples:**
@@ -969,7 +969,7 @@ The output includes the group's GID, description, member list, and creation
 timestamp. Use -o json or -o yaml for machine-readable output.
 
 ```
-dfsctl group get <name|id>
+dfsctl group get <name|id> [flags]
 ```
 
 **Examples:**
@@ -1011,7 +1011,7 @@ shows each group's name, GID, member count, and description. Use -o json or
 -o yaml to get machine-readable output suitable for piping into other tools.
 
 ```
-dfsctl group list
+dfsctl group list [flags]
 ```
 
 **Examples:**
@@ -1094,7 +1094,7 @@ permissions that were derived solely from that group membership. Both the
 group name and the username are required positional arguments.
 
 ```
-dfsctl group remove-user <group> <username>
+dfsctl group remove-user <group> <username> [flags]
 ```
 
 **Examples:**
@@ -1218,7 +1218,7 @@ Show the current configuration of an identity provider with all secret fields re
 Use this to verify LDAP or Kerberos settings without exposing sensitive credentials. The output uses the same JSON schema accepted by 'identity-provider set', making it easy to copy-edit and resubmit.
 
 ```
-dfsctl identity-provider get <ldap|kerberos>
+dfsctl identity-provider get <ldap|kerberos> [flags]
 ```
 
 **Examples:**
@@ -1254,7 +1254,7 @@ List all identity providers configured on the DittoFS server and their current s
 Each row shows the provider type (ldap or kerberos), whether it has been configured, and whether it is enabled. Use 'identity-provider get <type>' to inspect the full configuration for a specific provider.
 
 ```
-dfsctl identity-provider list
+dfsctl identity-provider list [flags]
 ```
 
 **Examples:**
@@ -1614,7 +1614,7 @@ Use this command to audit which AD/LDAP principals have been seen by the server
 and what Unix IDs they were assigned.
 
 ```
-dfsctl idmap sid list
+dfsctl idmap sid list [flags]
 ```
 
 **Examples:**
@@ -1754,7 +1754,7 @@ you can re-authenticate quickly with dfsctl login. To switch between contexts
 or remove a context entirely, use the dfsctl context subcommand.
 
 ```
-dfsctl logout
+dfsctl logout [flags]
 ```
 
 **Examples:**
@@ -1833,7 +1833,7 @@ The offline/static provider owns no password lifecycle, so this command returns 
 error there; rotate that secret by updating the machine-account configuration.
 
 ```
-dfsctl netlogon rotate
+dfsctl netlogon rotate [flags]
 ```
 
 **Examples:**
@@ -1867,7 +1867,7 @@ realm / NetBIOS domain / DC binding, whether the account is joined, whether the
 secure channel is currently established, and the automatic-rotation schedule.
 
 ```
-dfsctl netlogon status
+dfsctl netlogon status [flags]
 ```
 
 **Examples:**
@@ -1949,7 +1949,7 @@ period. Use this to audit who has explicit limits before adjusting or removing
 them.
 
 ```
-dfsctl quota list <share>
+dfsctl quota list <share> [flags]
 ```
 
 **Examples:**
@@ -2127,7 +2127,7 @@ Get the current value of a single server setting by its dot-separated key.
 The default output prints key = value to stdout. Pass -o json or -o yaml to get a structured response including the setting description, useful for automation.
 
 ```
-dfsctl settings get <key>
+dfsctl settings get <key> [flags]
 ```
 
 **Examples:**
@@ -2163,7 +2163,7 @@ List all available server settings and their current values.
 The table shows each setting's key, current value, and a human-readable description. Use this command to discover what can be tuned with 'settings set'. Pass -o json to get the full list in machine-readable form.
 
 ```
-dfsctl settings list
+dfsctl settings list [flags]
 ```
 
 **Examples:**
@@ -2199,7 +2199,7 @@ Set the value of a server setting identified by its dot-separated key.
 The change is applied immediately at runtime without a server restart. Use 'settings list' to discover available keys and their expected value types.
 
 ```
-dfsctl settings set <key> <value>
+dfsctl settings set <key> <value> [flags]
 ```
 
 **Examples:**
@@ -2387,7 +2387,7 @@ lifecycle shutdown timeout fires). Exit code is 0 when the share has been
 marked disabled and all in-flight clients have been notified.
 
 ```
-dfsctl share disable <name>
+dfsctl share disable <name> [flags]
 ```
 
 **Examples:**
@@ -2516,7 +2516,7 @@ set by 'share disable'. Re-enabling is a deliberate operator act; no
 mid-restore safety check is performed — the operator owns the timing.
 
 ```
-dfsctl share enable <name>
+dfsctl share enable <name> [flags]
 ```
 
 **Examples:**
@@ -2560,7 +2560,7 @@ measured against. It is not a count of bytes on disk, and will not match one:
 blocks are deduplicated and compressed.
 
 ```
-dfsctl share list
+dfsctl share list [flags]
 ```
 
 **Examples:**
@@ -2603,7 +2603,7 @@ This command shows NFS and SMB mounts from localhost that are likely DittoFS sha
 Optionally filter by share name.
 
 ```
-dfsctl share list-mounts [share]
+dfsctl share list-mounts [share] [flags]
 ```
 
 **Examples:**
@@ -2681,8 +2681,8 @@ mkdir -p ~/mnt/dittofs && dfsctl share mount /export --protocol smb ~/mnt/dittof
 Flags:
 
 ```
-      --dir-mode string      Directory permissions for SMB mount (octal) (default "0755")
-      --file-mode string     File permissions for SMB mount (octal) (default "0755")
+      --dir-mode string      Directory permissions for SMB mount (octal; default 0755 on Linux, 0777 on macOS)
+      --file-mode string     File permissions for SMB mount (octal; default 0755 on Linux, 0777 on macOS)
       --nfs-version string   NFS protocol version for NFS mounts (3, 4, 4.0, 4.1, 4.2). v4 carries locking in-protocol; v3 locking needs the server UDP transport + portmapper (default "3")
   -P, --password string      Password for SMB mount (will prompt if not provided)
   -p, --protocol string      Protocol to use (nfs or smb) (required)
@@ -2811,7 +2811,7 @@ Displays the netgroup association, squash mode, and authentication settings
 settings before making changes with 'nfs-config set'.
 
 ```
-dfsctl share nfs-config show <name>
+dfsctl share nfs-config show <name> [flags]
 ```
 
 **Examples:**
@@ -2958,7 +2958,7 @@ per-principal overrides; clients without an explicit entry fall back to the
 share's default permission (see 'dfsctl share show').
 
 ```
-dfsctl share permission list <share>
+dfsctl share permission list <share> [flags]
 ```
 
 **Examples:**
@@ -3106,7 +3106,7 @@ creation/update timestamps. Use this command when debugging a misconfigured
 share or before editing it.
 
 ```
-dfsctl share show <name>
+dfsctl share show <name> [flags]
 ```
 
 **Examples:**
@@ -3383,7 +3383,7 @@ by 'share snapshot list'. Use this to investigate a failed or pending snapshot
 before deciding whether to retry or delete it.
 
 ```
-dfsctl share snapshot show <share> <id>
+dfsctl share snapshot show <share> <id> [flags]
 ```
 
 **Examples:**
@@ -3468,7 +3468,7 @@ and the next scheduled run time. Use this command to audit which shares have
 automatic snapshots active and when they last ran.
 
 ```
-dfsctl share snapshot-policy list
+dfsctl share snapshot-policy list [flags]
 ```
 
 **Examples:**
@@ -3555,7 +3555,7 @@ out-of-band snapshot before a maintenance window without changing the schedule
 or creating a permanent manual snapshot that will never be pruned.
 
 ```
-dfsctl share snapshot-policy run <share>
+dfsctl share snapshot-policy run <share> [flags]
 ```
 
 **Examples:**
@@ -3643,7 +3643,7 @@ policy to review its current configuration, or to confirm that a policy is
 active and when it is next scheduled to run.
 
 ```
-dfsctl share snapshot-policy show <share>
+dfsctl share snapshot-policy show <share> [flags]
 ```
 
 **Examples:**
@@ -3731,7 +3731,7 @@ detail (shares, stores) is fetched from the API and rendered as a
 color-coded table. Use -o json or -o yaml for machine-readable output.
 
 ```
-dfsctl status
+dfsctl status [flags]
 ```
 
 **Examples:**
@@ -3955,7 +3955,7 @@ Persists last-run summary at <localStore>/audit-state/last-inv02.json
 analogously to GC's last-run.json. Operator-invokable; no periodic schedule.
 
 ```
-dfsctl store block audit-refcounts <share>
+dfsctl store block audit-refcounts <share> [flags]
 ```
 
 **Examples:**
@@ -4129,7 +4129,7 @@ logs. Returns a non-zero exit if no run has been recorded yet (the share
 has never been GC'd or its local store has no persistent root).
 
 ```
-dfsctl store block gc-status <share>
+dfsctl store block gc-status <share> [flags]
 ```
 
 **Examples:**
@@ -4216,7 +4216,7 @@ running health checks against one, or to map the store IDs emitted by
 resolves them to names).
 
 ```
-dfsctl store block list
+dfsctl store block list [flags]
 ```
 
 **Examples:**
@@ -4334,7 +4334,7 @@ Each class reports an exact count plus a bounded sample of IDs (truncated is
 flagged when the full set is larger than the sample).
 
 ```
-dfsctl store block reconcile
+dfsctl store block reconcile [flags]
 ```
 
 **Examples:**
@@ -4695,7 +4695,7 @@ store IDs emitted by 'share show -o json' back to a store name ('share show'
 table output already resolves them to names).
 
 ```
-dfsctl store metadata list
+dfsctl store metadata list [flags]
 ```
 
 **Examples:**
@@ -5053,7 +5053,7 @@ List the recycled entries in a share's recycle bin.
 Each row shows the current path under #recycle, the original path before deletion, who deleted it, when, its size, and whether it is a file or directory subtree. Use -o json to get structured output for scripting.
 
 ```
-dfsctl trash list <share>
+dfsctl trash list <share> [flags]
 ```
 
 **Examples:**
@@ -5131,7 +5131,7 @@ Print a summary of a share's recycle bin: whether trash is enabled, the number o
 Use this command for a quick health check before deciding whether to empty the bin or restore items. Pass -o json for machine-readable output.
 
 ```
-dfsctl trash status <share>
+dfsctl trash status <share> [flags]
 ```
 
 **Examples:**
@@ -5378,7 +5378,7 @@ The output includes the user's role, UID, group memberships, account status,
 and last-login timestamp. Use -o json or -o yaml for machine-readable output.
 
 ```
-dfsctl user get <username|id>
+dfsctl user get <username|id> [flags]
 ```
 
 **Examples:**
@@ -5421,7 +5421,7 @@ the account is enabled. Use -o json or -o yaml to get machine-readable output
 suitable for piping into other tools.
 
 ```
-dfsctl user list
+dfsctl user list [flags]
 ```
 
 **Examples:**

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
@@ -281,6 +282,9 @@ type scanner struct {
 	// alone (read), so no read reaches a body. The window's fetch of
 	// already-held bytes keeps serving the search's zero-telling.
 	headerOnly bool
+	// examinedSlots counts the slots examine has read, the test's measure
+	// of a search's cost.
+	examinedSlots int
 	// searching is set while the forward search runs: a header-only refill
 	// goes wide there, for the bytes it crosses are no attached record's.
 	searching bool
@@ -296,6 +300,7 @@ type scanner struct {
 // tested cheap before any checksum is computed — and only then the
 // decoders, which is what makes a forward search cheap to run.
 func (sc *scanner) examine(off int64) slot {
+	sc.examinedSlots++
 	// A slot is first read as far as a seal marker reaches, and only a record
 	// prefix widens the read to the header's size, so a header-only walk makes
 	// no read past a marker's own bytes into the footer a sealed segment holds
@@ -511,6 +516,50 @@ func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err e
 			return p, found, zeroRun, err
 		}
 		zeroRun = zeroRun && slotZero
+		if slotZero {
+			// The zero consume: a run of zeros the window already holds, all
+			// the way to the first slot whose own first read crosses the
+			// window's end — every slot strictly between examines the same
+			// nothing this one does, for no record header and no marker
+			// verifies in bytes held all zero, and each of them is served
+			// its whole first read from the window, so stepping over them
+			// one at a time makes no read the reader ever sees. Crossing that
+			// first unserved slot is not: the stepping walk refills the window
+			// at it, so the search consumes the run and lands on it, and the
+			// reads the search starts — a refill's own offset, or the bytes a
+			// slot's narrow read asks — are the same reads stepping starts,
+			// a refusal asleep at one found by the same attempt either way.
+			wEnd := sc.cur + sc.have // the bytes in hand; never past the size
+			if wEnd > p+8 {
+				held := sc.window[p+8-sc.cur : wEnd-sc.cur]
+				if i := slices.IndexFunc(held, func(c byte) bool { return c != 0 }); i >= 0 {
+					// A zero run that ends inside the window: land on the
+					// first slot whose own first read reaches the first byte
+					// that is not zero — a torn or a failed large write leaves
+					// this shape — so the run is told once, not rescanned
+					// once per slot. The byte indexes held, which ends at
+					// wEnd, so the land never lies past the crossing slot:
+					// the stepping walk refills at it before any farther
+					// slot. The slots crossed are window hits over zero
+					// bytes: the same nothing each of them would examine.
+					p += 8 * max(int64(0), (int64(i)-24)/8)
+					continue
+				}
+				if wEnd >= sc.size {
+					// The window holds the rest of the segment and all of it is
+					// zero: no slot left to examine tells anything new, and
+					// end already stands at the size.
+					break
+				}
+				// The land is the first grid slot whose own first read
+				// crosses wEnd. It lies within the 31 bytes below wEnd, for
+				// a first read never asks more than a seal marker's own 32;
+				// the max keeps a short run, one that ends before the
+				// crossing, stepping as it always did.
+				pl := p + 8 + 8*max(int64(0), (wEnd-31-(p+8)+7)/8)
+				p = pl - 8
+			}
+		}
 	}
 	return end, found, zeroRun, nil
 }

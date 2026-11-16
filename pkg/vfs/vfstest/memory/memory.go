@@ -48,7 +48,10 @@ func New(t *testing.T) *Service {
 	// The administrator holds a uid, so that it signs in as itself rather
 	// than as the share's anonymous principal.
 	admin := entity.User{Principal: fs.Admin.Principal, Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}
-	must(t, fs.Store.ControlPlane().PutUser(t.Context(), admin))
+	stored, err := fs.Store.Principals().User(t.Context(), admin.Principal)
+	must(t, err)
+	_, err = fs.Store.ControlPlane().PutUser(t.Context(), admin, stored.Generation, entity.Alloc{})
+	must(t, err)
 	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Clock: clock, Rand: rand.Reader})
 	must(t, err)
 	content := contenttest.NewOver(wallClock{}, fs.Store)

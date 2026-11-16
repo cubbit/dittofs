@@ -229,7 +229,7 @@ cleanup_existing() {
     # Stop existing server
     if pgrep -f "dfs start" >/dev/null 2>&1; then
         log_info "Stopping existing DittoFS server"
-        "$DITTOFS_BIN" stop --force 2>/dev/null || pkill -f "dfs start" || true
+        pkill -f "dfs start" || true
         sleep 2
     fi
 
@@ -356,7 +356,7 @@ configure_via_api() {
             log_info "Checking that the server can reach the S3 bucket..."
             "$DITTOFSCTL_BIN" store block health --name default || {
                 log_error "Block store 'default' cannot reach bucket ${S3_BUCKET} at ${S3_ENDPOINT}."
-                "$DITTOFS_BIN" stop --force 2>/dev/null || pkill -f "dfs start" || true
+                pkill -f "dfs start" || true
                 exit 1
             }
             ;;

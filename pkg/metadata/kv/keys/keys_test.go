@@ -46,11 +46,12 @@ func TestCodesUnique(t *testing.T) {
 	for name, codes := range map[string][]byte{
 		"kind": {KindStore, KindF, KindS, KindC, KindCR, KindB, KindBR, KindBD, KindBC, KindI, KindNS,
 			KindU, KindG, KindM, KindMR, KindGR, KindNX, KindNP, KindNG, KindSL, KindIN, KindNSM, KindPX,
-			KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP, KindIDS, KindJD},
+			KindN, KindSH, KindJ, KindRS, KindMV, KindSLOT, KindCFG, KindCFGGEN, KindSEC, KindCL, KindCLO, KindTG, KindMKP, KindIDS, KindJD,
+			KindIK, KindXP, KindAU, KindAUX, KindUA, KindNSR},
 		"F": {FAcl, FX, FS, FE, FT, FH, FRm, FOv, FRef, FHis, FFx, FFo, FRel, FOp, FDp, HisFile},
 		"S": {SInfo, SSt, SNsg, SG, SXp, SSnap, SCut, SLive, SSc, SHd, SHr, SUse, SRh, SOr, SUt, SPu,
-			SPj, SUd, SQt, SQx, SVf, SFnc, SVl, SShs, SPr, SRr, SDo},
-		"NS": {NSGc, NSClaim, NSPk, NSKey, NSBk, NSDrain},
+			SPj, SUd, SQt, SQx, SVf, SFnc, SVl, SShs, SPr, SRr, SDo, SGv},
+		"NS": {NSGc, NSClaim, NSPk, NSKey, NSBk, NSDrain, NSInfo, NSShare},
 		"gc": {GcLease, GcRecheck, GcHold, GcSuspect, GcForward, GcPause, GcCursor},
 		"J":  {JOg, JSm},
 	} {
@@ -150,7 +151,7 @@ func TestDescribeNamesEveryCode(t *testing.T) {
 		}
 	}
 	for _, s := range []byte{SInfo, SSt, SNsg, SG, SXp, SSnap, SCut, SLive, SSc, SHd, SHr, SUse, SRh, SOr, SUt, SPu,
-		SPj, SUd, SQt, SQx, SVf, SFnc, SVl, SShs, SPr, SRr, SDo} {
+		SPj, SUd, SQt, SQx, SVf, SFnc, SVl, SShs, SPr, SRr, SDo, SGv} {
 		if _, ok := sSubNames[s]; !ok {
 			t.Errorf("share sub-kind 0x%02x has no name", s)
 		}

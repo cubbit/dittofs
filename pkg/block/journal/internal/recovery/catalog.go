@@ -214,14 +214,15 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 			// A read the bound did not clear is the open's refusal, answered
 			// as itself. None of these kinds carries a version in its body,
 			// so every other failure is the record's own damage.
-			if verr := asideBodyErr(rd, identity, h); verr != nil {
+			vb, verr := asideBody(rd, identity, h)
+			if verr != nil {
 				if !errors.Is(verr, core.ErrCorrupt) {
 					return sc, false, verr
 				}
 				sc.drop(e, h, verr)
 				continue
 			}
-			sc.Aside = append(sc.Aside, asideRecord{Header: h})
+			sc.Aside = append(sc.Aside, asideRecord{Header: h, Body: vb})
 		case e.Kind == format.KindForget:
 			// decision: a forget record is carried as the header its entry
 			// claims, its record not read back at open. A forget names only

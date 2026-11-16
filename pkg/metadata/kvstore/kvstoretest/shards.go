@@ -213,7 +213,7 @@ func testSharesGetTheirOwnShards(t *testing.T, kvo Opener) {
 		return sh.Shard
 	}
 	gone := share("gone", "/gone")
-	must(t, cp.PutShare(ctx, gone))
+	must(t, errOf(CreateShare(ctx, cp, gone)))
 	f := setupFS(t, s, c, entity.FoldIdentity)
 	if shardOf(gone.ID) == shardOf(f.share.ID) {
 		t.Errorf("two shares both in shard %d", shardOf(gone.ID))
@@ -221,9 +221,9 @@ func testSharesGetTheirOwnShards(t *testing.T, kvo Opener) {
 	if _, file := f.create(f.admin, f.root, "x", regular(0o644)); entity.ShardID(file.Shard) != shardOf(f.share.ID) {
 		t.Errorf("a file of the share in shard %d, want the share's %d", file.Shard, shardOf(f.share.ID))
 	}
-	must(t, cp.DeleteShare(ctx, gone.ID, entity.SnapshotsRefuse))
+	must(t, cp.DeleteShare(ctx, gone.ID, entity.SnapshotsRefuse, 1))
 	next := share("next", "/next")
-	must(t, cp.PutShare(ctx, next))
+	must(t, errOf(CreateShare(ctx, cp, next)))
 	if n := shardOf(next.ID); n == shardOf(gone.ID) || n == shardOf(f.share.ID) {
 		t.Errorf("a share created after a removal took shard %d, which an earlier share had", n)
 	}

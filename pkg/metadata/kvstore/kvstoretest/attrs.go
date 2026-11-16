@@ -195,7 +195,8 @@ func testModeBitRights(t *testing.T, kvo Opener) {
 	}
 }
 
-func errOf(_ entity.File, e error) error { return e }
+// errOf is a call's error alone, its other result dropped.
+func errOf[T any](_ T, e error) error { return e }
 
 // RFC 7 §12.1's client time row and §9.4's clamp: a time the client gives
 // is stored as given, earlier or later, and Change still advances.
@@ -420,8 +421,8 @@ func testPrivilegedReadOnlyGrant(t *testing.T, kvo Opener) {
 	must(t, errOf(f.s.Files().SetAttrs(ctx, f.admin, frozen, entity.Attrs{}.WithFlags(entity.FlagImmutable))))
 
 	u := user("rootro")
-	must(t, f.s.ControlPlane().PutUser(ctx, u))
-	must(t, f.s.ControlPlane().SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: u.Principal, Access: entity.AccessRead}))
+	must(t, errOf(f.s.ControlPlane().PutUser(ctx, u, 0, entity.Alloc{})))
+	must(t, errOf(f.s.ControlPlane().SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: u.Principal, Access: entity.AccessRead}, grantVersion(t, f.s.ControlPlane(), f.share.ID, u.Principal))))
 	ro := entity.Identity{Principal: u.Principal, Privileged: true}
 
 	if _, _, err := f.s.Namespace().Create(ctx, ro, pub, []byte("y"), regular(0o644)); !isDenied(err) {
