@@ -1111,7 +1111,7 @@ err = ids.VerifyPassword(ctx, p, password) // that principal's password; ErrLogo
 u, err := ids.Account(ctx, p)             // per call, under the generation (§7.2)
 
 // A password set (RFC 23 §3.5).
-h, err := identity.NewHashes(u, password, ntlm) // ntlm: NTLMSetting{On, Revision} as read; pure: NT hash only while on
+h, err := identity.NewHashes(u, password, ntlm) // ntlm: NTLMSetting{On, Generation} as read; pure: NT hash only while on
 // Seal wraps the next version and returns RFC 16's Secret, writing nothing;
 // both are committed inside the Write below, so a refused write stores neither.
 pw, err := secrets.Seal(ctx, storage, entity.SecretPassword, owner(u, "password"), u.Password, h.Password, secrets.Meta{}) // under storage (A5)
