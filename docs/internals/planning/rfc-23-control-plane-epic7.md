@@ -5,7 +5,7 @@ that need no mount and need more than one middle epic together; §8.1, the rows 
 here through the API; §3.3's bound fields; §10's CP7; Appendix B's rows for §2.1 and §2.3; RFC
 23's plan §1.4 (the scenario assigned to epic 7), §1.5 rule 3, D13 and §5 epic 7.
 **Track:** the team.
-**Epic 7 estimate: 7 subtasks, 11 man-days.**
+**Epic 7 estimate: 7 subtasks, 11.5 man-days.**
 **Depends on:** E3 (`dfs start`, `nodetest`, the runner), E4 (the routes and the client), E5
 (`install.Run`, signed-in callers), E6 (its suite's child-safe rows); outside RFC 23's plan, X3
 for T7.5, and X1 with the RFC 18 plan's epics 7 and 8 for T7.6.
@@ -144,7 +144,7 @@ it, in the part this epic owns.
 | --- | --- | --- | --- | --- |
 | R17 | `§2.3 reconcile`: a live share setting changed while the store is unreachable to the node's reads but not its writes applies at the next read, not at the next generation move | test row | RFC 23 §12 | T7.5 |
 | R18 | `§2.4 applied`, single-node: a node whose apply is frozen after a share setting changes is named behind in the resource's status, and after 5 s a health condition names it; a setting whose own generation is 2 while the settings generation stands at 100 reads not applied on a node frozen at 100; a node-scoped restart-class setting reads not applied until the node restarts, while a live one reads applied | test row | RFC 23 §12, §10 (CP3) | T7.5 |
-| R19 | `§4.1 NTLM back on`: turning `identity.ntlm` off answers `202` with one `identity.nt-hash-delete`; a second turn-off while it runs starts none; turning it on, or deleting the installation's `identity.ntlm` record, while it runs, after it failed and after it ended cancelled, answers `409` `operation_running` naming it; a turn-off after a failed or cancelled deletion starts a new one; once one completes and the sweep runs 8 days later, its operation record is gone and turning it on is accepted | test row | RFC 23 §12; RFC 23 plan §5 epic 7 | T7.5 |
+| R19 | `§4.1 NTLM back on`: turning `identity.ntlm` off answers `202` with one `identity.nt-hash-delete`; a second turn-off while it runs starts none; turning it on, or deleting the installation's `identity.ntlm` record, while it runs and after it failed, answers `409` `operation_running` naming it; a turn-off after a failed deletion starts a new one; a deletion has no cancel; once one completes and the sweep runs 8 days later, its operation record is gone and turning it on is accepted | test row | RFC 23 §12; RFC 23 plan §5 epic 7 | T7.5 |
 | R20 | `§5.2 roles`, A6's clause: an operator's write of `audit.retention`, `api.session_lifetime`, `api.token_max_lifetime`, `api.password_sign_in` or `identity.directory` is refused and commits nothing; an admin's `audit.retention` of 89 days is refused | test row | RFC 23 §12; RFC 23 plan §5 epic 7 | T7.5 |
 | R21 | A bound field is refused `409` `bound_setting` while content exists, naming the field; the settings, adapter, remote-store and namespace writes E4 and E6 refuse until X3 succeed through the API and the CLI once `Check` is wired | MUST | RFC 23 §3.3, §3.4; RFC 23 plan §5 epic 4 | T7.5 |
 
@@ -152,6 +152,7 @@ it, in the part this epic owns.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
+| R26 | Once a deletion has completed and NTLM is on again, an NTLM sign-in for a user whose password was not set since is refused, as no NT hash exists, and succeeds once the password is set | MUST | RFC 23 §4.1 | T7.6 |
 | R22 | `§4.5 idempotency`, its domain clauses: an offline `join-domain` retried while it runs answers `409` `operation_running` and writes no new version of the machine password's `Secret`; neither join keeps an idempotency record; the offline join's password is found only sealed, and the online join's administrator credential in no store record, operation record, audit record, log line or metric | test row | RFC 23 §12, §10 (CP6, CP11) | T7.6 |
 
 **The pages**
@@ -323,7 +324,7 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 - **Covers:** R17, R18, R19, R20, R21.
 - **Deliverables:** in `integration_test.go`: `§2.3 reconcile`, the `view` operation faulted while
   writes pass; `§2.4 applied` with D5's hold on the binding's commit; `§4.1 NTLM back on`, the
-  cancelled state written into the operation's record through the store, the sweep run after the
+  deletion failed by a `FaultKV` error on one of its batches, the sweep run after the
   clock passes 8 days and the operation's record read gone; A6's refusals; a bound field's `409`
   while content exists; E4's settings, adapter, remote-store and namespace success paths through
   the API, and E6's refusal rows for them flipped to success; D3's seeding moved onto the API and
@@ -336,16 +337,19 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 
 ### T7.6 The domain's clauses
 
-**Subtask T7.6 estimate: 0.5 man-days.**
+**Subtask T7.6 estimate: 1 man-days.**
 
 - **Track:** the team. **Depends on:** X1; the RFC 18 plan's epics 7 and 8; T7.3.
-- **Covers:** R22.
+- **Covers:** R22, R26.
 - **Deliverables:** in `integration_test.go`: the two `join-domain` clauses, over `identitytest`'s
-  directory and domain controller, the log captured and the metrics registry read.
+  directory and domain controller, the log captured and the metrics registry read; NTLM's
+  consumer after a completed deletion, through the composed node's `SignIn` (R26).
 - **Acceptance criteria:**
   - Neither join leaves an idempotency record, and neither credential is found raw where CP11
     names.
-- **Tests:** the clauses (catch a credential kept in a replay record, or written by a retry).
+- **Tests:** the clauses (catch a credential kept in a replay record, or written by a retry, R22);
+  an NTLMv2 AUTHENTICATE for a user whose password predates the deletion refused, then accepted
+  after `:set-password` (catches a rule that answers `409` but leaves a usable hash, R26).
 
 ### T7.7 The pages
 
@@ -392,13 +396,15 @@ T7.1 goes first: E8 waits on it and nothing else of this epic. The rows follow o
 | --- | --- | --- | --- | --- |
 | 1 | T7.1, T7.2 | 4 | — | the fixture and the rows that kill a child; unblocks E8 |
 | 2 | T7.3, T7.4 | 2.5 | PR 1 | everything a fully wired node and the CLI show before X3 |
-| 3 | T7.5, T7.6 | 2.5 | PR 2, X3, X1, the RFC 18 plan's epics 7 and 8 | the rows that wait on another plan |
+| 3 | T7.5, T7.6 | 3 | PR 2, X3, X1, the RFC 18 plan's epics 7 and 8 | the rows that wait on another plan |
 | 4 | T7.7 | 2 | — | the pages and the test that holds them |
 
 PR 4 can be open beside any other. A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
+- A consumer-side row for the `krb` link (a PAC-bearing ticket binding the linked local user, refused once the directory account is recreated) needs a Kerberos sign-in this unit tier cannot make; it belongs to the RFC 18 plan's epic 8 or E8's `e2e/kerberos`.
+- RFC 23's plan §5 epic 7 still says the cancelled state is written into the operation's record; RFC 23 §4.1 gives the deletion no cancel, so that clause goes when the plan is next revised.
 - E3's T3.9 stop-bound exit test may move to this epic's fixture (§1.2); E3 decides when T3.9
   lands.
 - The proposals to RFC 23's plan that this document leaves to a later pull request: §5 epic 7's
