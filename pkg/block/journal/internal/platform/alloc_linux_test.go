@@ -793,7 +793,7 @@ func TestAllocatedOnDisk(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := unix.Fallocate(int(pf.Fd()), 0, 0, n); err != nil {
-			pf.Close()
+			_ = pf.Close()
 			t.Fatalf("%s refuses to allocate without writing (fallocate: %v), so no unwritten prealloc exists to ask about", path, err)
 		}
 		if err := pf.Close(); err != nil {

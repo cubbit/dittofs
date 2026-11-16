@@ -109,7 +109,7 @@ func TestSparesPhaseUnlinksASpareWithAnAllocatedHole(t *testing.T) {
 		from,
 		testCap-from,
 	); err != nil {
-		punched.Close()
+		_ = punched.Close()
 		t.Skipf("%s does not support punching a hole (FALLOC_FL_PUNCH_HOLE: %v)", name, err)
 	}
 	if err = punched.Close(); err != nil {
