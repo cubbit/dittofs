@@ -236,8 +236,8 @@ func rebuildReaders(deps Deps) int {
 // marks are carried for the phases that consume them — floor for the
 // rebuild, and marks for the spares phase, which withholds every
 // candidate a mark names and each record-less take whose header names a
-// predecessor whose end is not yet proven, and for the marks and
-// tail-proof phases not yet built.
+// predecessor whose end is not yet proven; the marks phases' own reads
+// are not built yet.
 func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {
 	if err := ctx.Err(); err != nil {
 		return State{}, err
