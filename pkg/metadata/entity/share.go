@@ -20,6 +20,12 @@ var (
 	ErrInconsistent = errors.New("entity: nlink underflow")
 	// ErrCrossProject is a rename or link between two tree quotas.
 	ErrCrossProject = errors.New("entity: rename or link across tree quotas")
+	// ErrRehoming is a share whose namespace a re-home is moving.
+	ErrRehoming = errors.New("entity: share is being re-homed")
+	// ErrMoving is a share one of whose namespaces a move has paused.
+	ErrMoving = errors.New("entity: a namespace of the share is paused by a move")
+	// ErrTagsExhausted is an installation that has given every journal tag.
+	ErrTagsExhausted = errors.New("entity: installation has no share tags left")
 )
 
 // MaxShareName is the SMB share-name limit, in characters.
