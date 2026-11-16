@@ -47,6 +47,12 @@ func (m *Metrics) Gauge(s Spec) *prometheus.GaugeVec {
 // Histogram registers s as a histogram vector over its bucket set, or
 // returns the one registered under it already; a Spec with none panics,
 // since the client library would fill in its default set.
+//
+// ponytail: the bucket set is not compared. The client library's descriptor
+// holds the name, help and label names but no buckets, so a second Spec of
+// the same name with another set would get the first vector back. Request
+// is the only set, so no two Specs can differ there; compare the set here
+// when a second one is added.
 func (m *Metrics) Histogram(s Spec) *prometheus.HistogramVec {
 	if s.Buckets == None || int(s.Buckets) >= len(buckets) {
 		panic(fmt.Sprintf("metrics: histogram %s: no bucket set", s.Name))
