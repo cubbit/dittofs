@@ -4184,7 +4184,7 @@ measures only what happens before and after the service call.
 | --- | --- |
 | `stage` | §4.1's stages, each name with its spaces as underscores: `frame`, `decode_header`, `unwrap`, `admit`, `replay_check`, `decode_args`, `resolve_ids`, `call_service`, `map_error`, `encode`, `wrap`, `send`; and `route`, where `Route` chooses the table and the pipeline checks the operation's row (§4.2) |
 | `stage`, of a refusal | the stage that refused it (§4.1's table). `route`: an operation the table lacks or an operator switched off, a version outside the row's, a need not met, a compound past its cap, and a `Route` that finds no table. `resolve_ids`: an expired credential, checked once IDs are resolved. `replay_check`: the reply reservation's `ErrDelay` with `DelayResources`. `reply_too_big`: §4.3's compound |
-| `stage`, of `adapter_wire_seconds` | each stage from `decode_header` to `send` but `call_service`: `frame` mostly waits on the client, and the call's latency is the service's ([RFC 17 §7](rfc-17-vfs.md#7.%20Observability)) |
+| `stage`, of `adapter_wire_seconds` | each stage from `decode_header` to `send` but `call_service`: `frame` mostly waits on the client, and the call's latency is the service's ([RFC 17 §7](rfc-17-vfs.md#7.%20Observability)). The metrics middleware (§4.7) is the clock's hinge: as the call starts it observes `resolve_ids`, timed from that stage's start, which the pipeline keeps with the request; as the call returns or panics it marks the call's end, from which the pipeline times `map_error`. Each member's call in a compound does the same |
 | `error` | one value per sentinel of the service's closed error set ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)): its name without `Err`, in snake case, such as `not_found`, `exist` or `name_too_long`. A typed error counts under the sentinel it matches |
 | `op` | the operation's name in its table, lower-cased, such as `read` or `create_session` |
 
@@ -4269,12 +4269,16 @@ nfs4 COMPOUND                      request span: frame → send, opened by the p
   is made there, once, and travels with the context
   ([RFC 25 §6.3](rfc-25-observability.md#6.3%20Sampling%20and%20cost)).
 - **One child per operation** in a compound, opened by the trace middleware
-  (§4.7); a single-operation request has none. A handler opens no span.
+  (§4.7) and named `adapter.<protocol>.<operation>`, the operation's name as its
+  table gives it ([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)); a
+  single-operation request has none. A handler opens no span.
 - **A held request** (§4.6) keeps its request span across its re-drives, with
   one child per attempt, so the wait shows as the gaps between them.
-- **Attributes** are the closed-set fields: protocol, version or dialect,
-  operation, status, the neutral result the service returned, request and
-  reply bytes, the stage that refused. Never a
+- **Attributes** are the closed-set fields, under the keys §10.1's labels use:
+  `protocol`; `version`, the version or dialect; `op`; `status`; `result`, the
+  neutral result the service returned, `ok` or the closed error's name as the
+  `error` label writes it; `request_bytes` and `reply_bytes`; `stage`, the stage
+  that refused. Never a
   path, a name, a principal or a client address
   ([RFC 25 §5.4](rfc-25-observability.md#5.4%20What%20is%20never%20logged)).
 - **Unsampled costs nothing.** With tracing off or a request unsampled, the
