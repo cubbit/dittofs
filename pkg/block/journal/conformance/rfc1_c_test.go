@@ -1621,18 +1621,16 @@ func TestRFC1C_LossSurvivesRestart(t *testing.T) {
 	wantExtentMissing(t, f.Share(0), id, e)
 
 	generation := f.J.Stats().LossGeneration
-	seqs := map[uint64]bool{}
-	for _, x := range f.J.Stats().Losses {
-		seqs[x.SeqNum] = true
-	}
 	f.Reopen()
-	after := f.J.Stats().Losses
 	if got := f.J.Stats().LossGeneration; got != generation {
 		t.Fatalf("a second reopen raised the loss generation from %d to %d", generation, got)
 	}
-	for _, x := range after {
-		if !seqs[x.SeqNum] {
-			t.Fatalf("a second reopen reported the loss %+v as new", x)
-		}
+	// The fresh instance numbers its own ring from its own zero, so a
+	// re-report would carry the same SeqNum as the first instance's event
+	// and no comparison across the two rings can tell it apart: the second
+	// reopen's ring must hold nothing at all, the per-journal piece dedup
+	// answering for the loss the first instance's record already took.
+	if after := f.J.Stats().Losses; len(after) != 0 {
+		t.Fatalf("a second reopen reported %+v as new; the first open's loss record answers for the piece", after)
 	}
 }

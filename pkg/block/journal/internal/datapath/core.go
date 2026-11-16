@@ -405,6 +405,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		Index:    c.index,
 		Account:  c.Account,
 		Dir:      deps.Dir,
+		Identity: deps.Identity,
 		Counters: c.counters,
 		// The durability layer hands the delta Lose returns to Account itself.
 		MarkLoss: c.index.Lose,

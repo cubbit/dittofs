@@ -22,6 +22,14 @@ type Deps struct {
 	Tracer core.Tracer
 	Log    *slog.Logger
 
+	// Failed is the directory's failed list at open: the sequence numbers an
+	// earlier read-only journal on the same directory could not write the
+	// loss record for. It is data the open hands the rebuild — the durability
+	// layer's FailedFor answers it before any layer of the open is built —
+	// not a call the rebuild makes back into that layer; nil is no failed
+	// list.
+	Failed []core.Seq
+
 	// ExtentLimit is the index entry bound the rebuilt index carries into
 	// the journal's later writes. Zero is no bound. A rebuild over the bound
 	// still builds: the bound refuses later writes, never the open.
@@ -57,6 +65,11 @@ type State struct {
 	// Rebuilt is what the rebuild phase built: the index, its counters,
 	// every own segment's scan and the resync count.
 	Rebuilt rebuilt
+
+	// Kinds is the decoded state of the aside records the rebuild set
+	// aside: the loss and forget records it collected and the read-only
+	// drops the feed will find. The kinds pass fills it.
+	Kinds kindResults
 
 	// Tails is the torn-or-corrupt classing of every own and unverified
 	// segment: each one's fate, the damaged set and the corrupt drops.
@@ -102,9 +115,13 @@ func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 }
 
 // runRebuild is the rebuild phase: it scans the segments the attach pass
-// attached, through the same reader the open refuses on. The index carries
-// deps.ExtentLimit, no bound when it is unset; the builder never consults the
-// bound while rebuilding, so a directory past it still opens.
+// attached, through the same reader the open refuses on. The scans the
+// workers buffer are decoded, classed and fed inside the rebuild, in that
+// order — the kinds pass and the classing run before a single record is fed,
+// over the same scans — and the phase's answer fills the State's rebuilt,
+// kinds and tails fields. The index carries deps.ExtentLimit, no bound when
+// it is unset; the builder never consults the bound while rebuilding, so a
+// directory past it still opens.
 func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version) error {
 	limit := deps.ExtentLimit
 	if limit < 1 {
@@ -124,13 +141,14 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 	for _, id := range slices.Concat(st.Attached.Unverified, st.Attached.ZeroHeader) {
 		segs = append(segs, SegmentInfo{ID: id, Unverified: true})
 	}
-	out, err := rebuildIndex(ctx, rd, expect, segs, named, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan)
+	out, kinds, tl, err := rebuildIndex(ctx, rd, expect, segs, named, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan, deps.Failed, st.Attached)
 	if err != nil {
 		return err
 	}
 	st.Rebuilt = out
-	st.Tails, err = classifyTails(rd, expect, named, unverifiedSet(st.Attached), out.Scans)
-	return err
+	st.Kinds = kinds
+	st.Tails = tl
+	return nil
 }
 
 // rebuildReaders is the reader bound the rebuild runs under.

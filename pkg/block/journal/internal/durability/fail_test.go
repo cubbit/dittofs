@@ -94,11 +94,7 @@ func releaser(t *testing.T) (<-chan struct{}, func()) {
 func (r *rig) events() []core.LossEvent {
 	r.d.lmu.Lock()
 	defer r.d.lmu.Unlock()
-	out := make([]core.LossEvent, 0, r.d.count)
-	for i := range r.d.count {
-		out = append(out, r.d.ring[(r.d.head+i)%core.LossRingSize])
-	}
-	return out
+	return r.d.lossesLocked()
 }
 
 // lossRecordsOnDisk returns the durable loss records' bodies, in segment order.
