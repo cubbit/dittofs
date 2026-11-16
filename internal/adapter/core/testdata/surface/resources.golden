@@ -24,6 +24,8 @@ func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)
 
 func (r *Reservation) Release()
 
+func Join(n int, bufs ...*Buf) *Buf
+
 func NewBudget(name string, ceiling int64) *Budget
 
 func NewBufPool(b *WaitBudget) *BufPool

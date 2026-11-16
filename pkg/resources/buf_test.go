@@ -520,3 +520,76 @@ func TestChargeIsWhatGetReserves(t *testing.T) {
 		buf.Release()
 	}
 }
+
+// Join takes over its members' reservations: the budget reads the same
+// through the join and through each member's release, the record's charge
+// is theirs summed, and its last Release returns them all. It reserves
+// nothing, so it joins on a budget held full.
+func TestJoinTakesOverItsMembersCharges(t *testing.T) {
+	small := NewBufPool(NewWaitBudget("probe", 1<<30)).Charge(0)
+	b := NewWaitBudget("reply", 3*small)
+	p := NewBufPool(b)
+	key := netip.MustParseAddr("192.0.2.1")
+	x, okx := p.TryGet(key, 10)
+	y, oky := p.TryGet(key, 20)
+	full, okf := p.TryGet(key, 0)
+	if !okx || !oky || !okf {
+		t.Fatal("three small buffers do not fit a budget of three")
+	}
+	x.B = append(x.B[:0], "0123456789"...)
+	y.B = append(y.B[:0], "abcdefghijklmnopqrst"...)
+	rec := Join(30, x, y)
+	if got := b.Reserved(); got != 3*small {
+		t.Errorf("after the join the budget reads %d, want the %d it held", got, 3*small)
+	}
+	if rec.Charge() != 2*small || x.Charge() != 0 || y.Charge() != 0 {
+		t.Errorf("the record is charged %d and its members %d and %d, want %d and none", rec.Charge(), x.Charge(), y.Charge(), 2*small)
+	}
+	rec.B = append(rec.B, x.B...)
+	x.Release()
+	rec.B = append(rec.B, y.B...)
+	y.Release()
+	if got := b.Reserved(); got != 3*small {
+		t.Errorf("with the members released the budget reads %d, want %d", got, 3*small)
+	}
+	if string(rec.B) != "0123456789abcdefghijklmnopqrst" {
+		t.Errorf("the record holds %q", rec.B)
+	}
+	rec.Release()
+	if got := b.Reserved(); got != small {
+		t.Errorf("with the record released the budget reads %d, want the one buffer still held, %d", got, small)
+	}
+	full.Release()
+}
+
+// A Join of one buffer returns it unchanged; one past its members' charges,
+// or over two budgets or two keys, panics.
+func TestJoinOfOneAndItsRefusals(t *testing.T) {
+	p := NewBufPool(NewWaitBudget("reply", 1<<30))
+	q := NewBufPool(NewWaitBudget("other", 1<<30))
+	a, b := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")
+	one, _ := p.TryGet(a, 0)
+	if Join(10, one) != one || one.Charge() != p.Charge(0) {
+		t.Error("a Join of one buffer changed it")
+	}
+	one.Release()
+	for _, c := range []struct {
+		name string
+		n    int
+		bufs func() []*Buf
+	}{
+		{"room past the charges", int(2*p.Charge(0)) + 1, func() []*Buf { x, _ := p.TryGet(a, 0); y, _ := p.TryGet(a, 0); return []*Buf{x, y} }},
+		{"two budgets", 1, func() []*Buf { x, _ := p.TryGet(a, 0); y, _ := q.TryGet(a, 0); return []*Buf{x, y} }},
+		{"two keys", 1, func() []*Buf { x, _ := p.TryGet(a, 0); y, _ := p.TryGet(b, 0); return []*Buf{x, y} }},
+	} {
+		bufs := c.bufs()
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: Join did not panic", c.name)
+				}
+			}()
+			Join(c.n, bufs...)
+		}()
+	}
+}
