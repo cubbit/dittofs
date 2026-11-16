@@ -222,7 +222,13 @@ func (f *assembledJournal) tryReopen(t *testing.T, floor Version, set func(*Sett
 		return nil, err
 	}
 	j := newJournal(c)
-	if err := c.WaitSpares(context.Background()); err != nil {
+	// A backstop only, the same bound mustWaitSpares takes: the wait itself
+	// is the pool's settle, and a seam that drops what a row's fill needs
+	// must fail the row's own assertion rather than hang it to the runner's
+	// timeout.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	if err := c.WaitSpares(ctx); err != nil {
 		_ = j.Close()
 		return nil, err
 	}
@@ -922,10 +928,12 @@ func TestReopenAssembled_OffloadedRecordsDecideTheDirtyList(t *testing.T) {
 		t.Fatalf("the unmarked file %v is not in the dirty list, want the unmark above its offloaded record to leave the extent dirty", cleared)
 	}
 
-	// The byte counters themselves rise from the deltas of writes that land,
-	// and the open's seed applies no delta for them: the dirty list and the
-	// offloaded bits the entries report — both of which the rows above hold
-	// — are the figures the open's rebuild owns.
+	// Stats().DirtyBytes holds the two extents still dirty — the
+	// below-marked file's and the cleared file's, 64 bytes each — and
+	// excludes the over-marked file's extent the open's seed never lists.
+	if got := j.Stats().DirtyBytes; got != 128 {
+		t.Fatalf("Stats().DirtyBytes after the reopen = %d, want 128: the below-marked and cleared files' two 64-byte extents, the offloaded extent excluded", got)
+	}
 }
 
 // TestReopenAssembled_CloneTargetSurvivesAndUntilYieldsIt holds the clone

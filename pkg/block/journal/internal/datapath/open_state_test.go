@@ -246,20 +246,23 @@ func openedCore(t *testing.T) *Core {
 			t.Errorf("Close: %v", err)
 		}
 	})
-	awaitSpares(t, c, 0)
 	return c
 }
 
 // TestTheOpenPinsForgetsAndSpendsItsDroppableRegistrations holds the open's
-// own answers, read before any data path runs: the forget record's
-// registration keeps its segment answering held while its snapshot names a
-// segment of the set; the one OpenDone that closes the registration window
-// spends the release nothing on disk outranks, whose file the open itself
-// resolved, so its segment answers not held at once rather than waiting for
-// an event a file whose records all settled may never see; and the dirty
-// seed lists the written file the rebuild restored dirty with the zero
-// write time restored content carries, while the offloaded file never joins
-// it.
+// own answers, read the moment the open built them — before the retirement
+// worker's own rhythm can claim the segments it answer-pins: the forget
+// record's registration keeps its segment answering held while its snapshot
+// names a segment of the set; the one OpenDone that closes the registration
+// window spends the release nothing on disk outranks, whose file the open
+// itself resolved, so its segment answers not held at once rather than
+// waiting for an event a file whose records all settled may never see; and
+// the dirty seed lists the written file the rebuild restored dirty with the
+// zero write time restored content carries, while the offloaded file never
+// joins it. The bound the read runs under is the worker's own: the withheld
+// write's segment — the forget's one holder — answers held until the
+// worker's claim of it retires durable, which its first tick alone reaches,
+// and the read stays ahead of the tick.
 func TestTheOpenPinsForgetsAndSpendsItsDroppableRegistrations(t *testing.T) {
 	c := openedCore(t)
 
@@ -289,6 +292,12 @@ func TestTheOpenPinsForgetsAndSpendsItsDroppableRegistrations(t *testing.T) {
 // itself, for the worker never claims a segment the stream still owns.
 func TestTheOpenStartsTheRetirementWorkerOfAContinuedSet(t *testing.T) {
 	c := openedCore(t)
+
+	// The pool's fill is the wait this row takes, beside the worker's own
+	// claims below: the pool's spare making runs its own pace, and the row
+	// that reads the open's answers the moment the open built them — the row
+	// above — must not sit through it.
+	awaitSpares(t, c, 0)
 
 	gone(t, c, "the sealed segment the rebuild left held by nothing to be claimed by the worker", openHeldSeg)
 	gone(t, c, "the spent release's sealed segment to be claimed by the worker", openReleaseSeg)

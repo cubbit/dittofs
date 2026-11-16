@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"bytes"
 	"context"
 	"slices"
 	"testing"
@@ -323,15 +324,18 @@ func TestRunAssemblesAnEmptySetOverADirectoryWithNoSegments(t *testing.T) {
 	}
 }
 
-// TestRunAssemblesAFullSealAtItsCap holds the full word: a sealed segment
-// whose post-seal size is the cap — a full seal's own shape, the file
-// ending at the trailer the cap's last bytes hold — is seeded sealed and
-// full, the one shape a retirement recycles.
+// TestRunAssemblesAFullSealAtItsCap holds the full word: a named, sealed
+// segment whose catalogued footer puts its trailer in the cap's last 32
+// bytes — a full seal's own shape — is seeded sealed and full, the one
+// shape a retirement recycles. The successor naming the sealed segment is
+// planted beside it, for only a successor's claim sends the rebuild to the
+// footer that carries the word.
 func TestRunAssemblesAFullSealAtItsCap(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
 	sealed, _ := buildSealed(1, collectWrite(core.ShareTag(7), kindsFile(1), 60, 60, 0x600, 32))
 	r.plantSeg(1, sealed)
+	r.plantSeg(2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
 
 	d := r.runDeps()
 	d.SegmentCap = int64(len(sealed))
@@ -347,13 +351,85 @@ func TestRunAssemblesAFullSealAtItsCap(t *testing.T) {
 		t.Errorf("the sealed segment's seeded state got %v (%v), want Sealed", got, err)
 	}
 	if !st.Assembled.Set.SealedFull(1) {
-		t.Errorf("the sealed segment at its cap answers SealedFull false, want true: a post-seal size at the cap is a full seal")
+		t.Errorf("the sealed segment at its cap answers SealedFull false, want true: the footer its successor sent the rebuild to verified over the cap's last 32 bytes, the trailer a full seal alone puts there")
 	}
-	if c := st.Assembled.Set.Counters(); c.Sealed != 1 || c.Segments != 1 || c.UsedBytes != int64(len(sealed)) {
-		t.Errorf("the seeded ledger's counters got %+v, want one sealed segment at its %d cap", c, len(sealed))
+	if c := st.Assembled.Set.Counters(); c.Sealed != 1 || c.Segments != 2 || c.UsedBytes != 2*int64(len(sealed)) {
+		t.Errorf("the seeded ledger's counters got %+v, want the sealed segment at its %d cap beside the empty successor at the same cap", c, len(sealed))
 	}
 	if err := st.Assembled.Set.Check(); err != nil {
 		t.Errorf("the seed's Check got %v, want none", err)
+	}
+}
+
+// TestRunAssemblesACapSizedEarlySealAsNotFull holds the refused full word: a
+// named segment whose seal marker sits below the cap with the file still at
+// the cap — the shape an early seal's failed truncation leaves, the seal
+// writer's own trailer below the cap and the free tail the truncate never
+// cut on top — answers SealedFull false, for the bytes the cap's last 32
+// hold are the uncut tail, a footer no catalog read can verify there, so
+// the segment is seeded sealed but never a recycle candidate on its size
+// alone.
+func TestRunAssemblesACapSizedEarlySealAsNotFull(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	sealed, _ := buildSealed(1, collectWrite(core.ShareTag(7), kindsFile(1), 60, 60, 0x600, 32))
+	r.plantSeg(1, append(bytes.Clone(sealed), make([]byte, 256)...))
+	r.plantSeg(2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
+
+	d := r.runDeps()
+	d.SegmentCap = int64(len(sealed)) + 256 // the cap the truncate would have left the file at
+	st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if st.Assembled.Set == nil {
+		t.Fatalf("Run: Assembled.Set is nil, want the ledger seeded over the sealed segment")
+	}
+
+	if got, err := st.Assembled.Set.State(1); err != nil || got != segment.Sealed {
+		t.Errorf("the sealed segment's seeded state got %v (%v), want Sealed: its scan found the marker whatever the tail says", got, err)
+	}
+	if st.Assembled.Set.SealedFull(1) {
+		t.Errorf("the cap-sized segment whose seal marker sits below the cap answers SealedFull true, want false: the file's size is the truncate that never became durable, and the free tail it left holds no trailer the cap's own last bytes could name")
+	}
+	if rows := st.Assembled.Set.Snapshot(); len(rows) != 2 || rows[0].Size != d.SegmentCap {
+		t.Errorf("the sealed segment's accounted size got rows %+v, want it among the two segments at its %d cap: whatever the truncate failed to take off, the ledger accounts the whole file until the seal phase", rows, d.SegmentCap)
+	}
+}
+
+// TestRunAssemblesATornTailActiveAtItsCap holds the torn tail's seed: a
+// segment the classing gave a torn-tail fate stays Active — the one state a
+// seal takes, the state the later phase that cuts its torn end and seals it
+// needs — accounted at its cap until the cut, for a seed that classed it
+// Ended would leave the later seal a state it refuses to move and the
+// emptying a segment to unlink instead.
+func TestRunAssemblesATornTailActiveAtItsCap(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	torn := buildSeg(2, tailRec(200, 0x4100), tailRec(201, 0x8100))
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, torn[:len(torn)-5])
+	st := assembleRun(t, r, nil)
+
+	wantFate(t, st, 2, fateTornTail, endA)
+	if rows := st.Assembled.Set.Snapshot(); len(rows) != 1 || rows[0].State != segment.Active || rows[0].Size != testSegCap {
+		t.Errorf("the torn-tailed segment's seeded row got %+v, want the one segment Active at its %d cap until the cut the seal phase takes", rows, testSegCap)
+	}
+}
+
+// TestRunAssemblesAnEndedSegmentAsEndedAndCapped holds the ended fate's
+// seed: a segment whose fate the classing ended — a torn slot no proof
+// reaches, its tail whole — seeds Ended, still accounted at its cap until
+// it is unlinked.
+func TestRunAssemblesAnEndedSegmentAsEndedAndCapped(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, slotSeg(2, func(slot int64) int64 { return slot - 1 }))
+	st := assembleRun(t, r, nil)
+
+	wantFate(t, st, 2, fateEnded, 0)
+	if rows := st.Assembled.Set.Snapshot(); len(rows) != 1 || rows[0].State != segment.Ended || rows[0].Size != testSegCap {
+		t.Errorf("the ended segment's seeded row got %+v, want the one segment Ended at its %d cap until its unlink", rows, testSegCap)
 	}
 }
 

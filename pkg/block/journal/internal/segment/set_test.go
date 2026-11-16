@@ -1350,6 +1350,28 @@ func TestAdoptRebuiltRefusals(t *testing.T) {
 	}
 }
 
+// TestAdoptRebuiltRefusesAHeldSumThatWouldWrap: the adoption's charge check
+// runs as the sum accumulates, so charges no single one of which passes the
+// cap are refused together — the pair of cap-sized charges over a cap-sized
+// segment whose sum would wrap a checked-after accumulation to a negative
+// an after-the-fact comparison cannot catch.
+func TestAdoptRebuiltRefusesAHeldSumThatWouldWrap(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const tagA, tagB = core.ShareTag(1), core.ShareTag(2)
+	s := NewSet(noMax, nil)
+	if err := s.AdoptRebuilt(core.SegmentID(1), noMax, Active, false,
+		map[core.ShareTag]int64{tagA: noMax, tagB: noMax}, nil); !errors.Is(err, ErrBadSize) {
+		t.Fatalf("the adoption of two cap-sized charges over the cap-sized segment = %v, want ErrBadSize: the second tag's charge has no room the size less the first tag's charge leaves it", err)
+	}
+	if c := s.Counters(); c.Segments != 0 || c.UsedBytes != 0 {
+		t.Fatalf("after the refused wrap the counters got %+v, want no segment entered and no bytes moved", c)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("after the refused wrap: %v", err)
+	}
+}
+
 // TestAdoptRebuiltFollowsTheEventPaths: a rebuilt entry is a citizen of the
 // set the event paths know — the charged bytes the adoption entered are the
 // running bound a later AddRecord is refused past, a seal and a cut serve the

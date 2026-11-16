@@ -52,16 +52,17 @@ type Assembled struct {
 // number on the failed list, one the disk holds or not, never lowering one.
 // It seeds the segment ledger with one adopted entry per scanned segment,
 // the §7.3 accounted size over the scan's own facts: the cap for an active
-// or ended segment, and the post-seal size of a sealed one — the cap itself
-// where the seal closed full, for a sealed segment's file ends at the cap
-// deps.SegmentCap names and one above it is a shape the adoption refuses.
-// And it spells the registration lists the journal's open hands its
-// liveness tracker, each record keyed at the placement and with the tag,
-// file and numbers its own header says, paired with the holder facts the
-// feed collected.
+// or ended segment, and the post-seal size of a sealed one, a size past the
+// cap deps.SegmentCap names being a shape the adoption refuses. And it
+// spells the registration lists the journal's open hands its liveness
+// tracker, each record keyed at the placement and with the tag, file and
+// numbers its own header says, paired with the holder facts the feed
+// collected.
 //
-// The fates decide a segment's classed state: a fate that ends one — torn
-// tail or ended — seeds it Ended, a scan the seal marker closed seeds it
+// The fates decide a segment's classed state: a torn tail seeds it Active —
+// the one state a seal takes, for the later phase cuts the segment's torn end
+// and seals it, the segment accounted at its cap until the cut — a fate the
+// classing ended seeds it Ended, a scan the seal marker closed seeds it
 // Sealed, and every other scanned segment — fate or no fate — seeds it
 // Active, an empty own segment accounted at its cap beside the loaded ones.
 //
@@ -105,7 +106,7 @@ func runAssemble(_ context.Context, deps Deps, _ *reader, st *State, _ core.Jour
 	// refusal names the lowest segment the scan could not adopt.
 	ended := make(map[core.SegmentID]bool, len(st.Tails.Fates))
 	for _, f := range st.Tails.Fates {
-		ended[f.ID] = f.Kind == fateTornTail || f.Kind == fateEnded
+		ended[f.ID] = f.Kind == fateEnded
 	}
 	set := segment.NewSet(deps.SegmentCap, deps.Log)
 	scans := slices.Clone(st.Rebuilt.Scans)
@@ -116,7 +117,24 @@ func runAssemble(_ context.Context, deps Deps, _ *reader, st *State, _ core.Jour
 		switch {
 		case sc.Sealed:
 			state, size = segment.Sealed, sc.Size
-			full = sc.Size == deps.SegmentCap
+			// A full seal puts its trailer in the cap's last 32 bytes, and
+			// only the catalogued footer that verified under it names that
+			// shape: an early seal whose truncation failed keeps its trailer
+			// below the cap and a free tail on top, bytes the catalog read
+			// cannot verify, so the walk the demotion takes answers no full
+			// word whatever the file's size.
+			//
+			// decision: a full word is kept from every walk-scanned seal at
+			// the cap — a full seal a damaged or torn footer demoted, or one
+			// no successor names and whose footer is therefore never read,
+			// among them — so a recycle the mark alone admits is missed and
+			// never taken wrongly; and an early seal's marker ending exactly
+			// at the cap's trailer, the one shape no bytes on disk can tell
+			// from a full seal, takes the full word with it, for the segment
+			// it names is closed at its cap with no free tail to cut, the
+			// shape a recycle reuses as it stands. Overturned by a fact that
+			// separates the two shapes on the scan's own answer.
+			full = sc.Size == deps.SegmentCap && sc.SealedByCatalog
 		case ended[sc.ID]:
 			state = segment.Ended
 		}

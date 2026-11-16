@@ -92,6 +92,12 @@ func entriesFrom(es []index.Entry) []IndexEntry {
 // retained extent's length — while the dirty-file list's membership counts a
 // retained extent with the bit unset as dirty, exactly as the index's own
 // deltas do. It reads the index and mutates nothing.
+//
+// decision: at this stage only the reopen seam's rows call it. The journal's
+// own open — the step that runs the recovery, builds the core from what it
+// assembled and hands the seed's deltas to the core the way a running
+// journal's writes land — is the wiring that calls it in production and is
+// not built yet. Withdrawn when that open step lands.
 func dirtySeed(ix *index.Index) []index.HeldDelta {
 	var out []index.HeldDelta
 	for id, es := range ix.InspectAll() {

@@ -452,19 +452,16 @@ func (s *Set) AdoptRebuilt(id core.SegmentID, size int64, st State, full bool, t
 	var held int64
 	for _, n := range tags {
 		// Mirrors AddRecord's own bounds: a charge of no bytes is refused, so
-		// a zero key never sits in the shares' totals. A tag also cannot
-		// carry more than the cap — its bytes sit inside the segment — which
-		// is the bound that keeps the held sum below from wrapping past the
-		// size it is checked against.
-		if n <= 0 || n > s.cap {
+		// a zero key never sits in the shares' totals, and each tag's bytes
+		// sit inside the storage the size accounts for, as AddRecord's bound
+		// keeps an appended record inside the segment's accounted size. The
+		// sum is held under the size as it accumulates — each tag's charge
+		// must fit the size less what the tags before it took — so the sum
+		// never passes the size and can never wrap past the comparison.
+		if n <= 0 || n > size-held {
 			return ErrBadSize
 		}
 		held += n
-	}
-	// The charges sit inside storage the size accounts for, as AddRecord's
-	// bound keeps an appended record inside the segment's accounted size.
-	if held > size {
-		return ErrBadSize
 	}
 	// An overhead of zero is charged nowhere, as AddRecord charges none: the
 	// key is kept out of the entry's map and the totals' alike, so no figure
