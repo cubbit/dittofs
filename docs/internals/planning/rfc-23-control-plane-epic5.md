@@ -245,8 +245,9 @@ them.
 - **D6, the initialisation step is a package.** `internal/install.Run(ctx, Deps) error` holds `dfs
   init`'s logic; `cmd/dfs` and `nodetest` both call it, so every harness installation, and so
   every signed-in caller, comes from a real initialisation. It sits outside `internal/node` because
-  it imports the store, the journal and identity, which the API's import rule forbids under that
-  tree. A crash point per instance, set from `export_test.go`, stops it after any write. No marker.
+  it imports the store and the journal, which the API's import rule forbids under that tree; for
+  identity it imports `pkg/identity` (`NewHashes`) only. A crash point per instance, set from
+  `export_test.go`, stops it after any write. No marker.
 - **D7, an installation is finished when its signing key is set.** The step's last `Write` commits
   the administrator, its password secret and `Installation.SigningKey` together; a rerun that finds
   `SigningKey` set refuses. A `decision:` at the check says that reading it as "an account named
@@ -403,7 +404,8 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 
 **Subtask T5.5 estimate: 3.5 man-days.**
 
-- **Track:** C. **Depends on:** T5.2, T5.4; E4 (the call adapter, `Deps.Authenticate`).
+- **Track:** C. **Depends on:** T5.2, T5.4; E4 (the call adapter, `Deps.Authenticate`); the RFC 18
+  plan's epic 8's T8.1 (identity composed in `node.New`).
 - **Covers:** R9, R10, R13, R14, R16, R25, R32, R33, R39, R40, R41, R47.
 - **Deliverables:** `auth.Service` and `Authenticate` (D1), `node.New` setting
   `Deps.Authenticate`; in `signin.go`: sign-in (`Lookup`, `reserve`, `VerifyPassword` on that
