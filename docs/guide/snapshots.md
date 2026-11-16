@@ -112,111 +112,12 @@ truth.
 
 ## 3. CLI walkthrough
 
-All snapshot operations live under `dfsctl share snapshot`. The five
-leaf commands are:
-
-```
-dfsctl share snapshot create <share>          # create a new snapshot
-dfsctl share snapshot list <share>            # list snapshots for a share
-dfsctl share snapshot show <share> <id>       # detail view for one snapshot
-dfsctl share snapshot remove <share> <id>     # remove a snapshot (Y/N prompt)
-dfsctl share snapshot restore <share> <id>    # restore a share from a snapshot
-```
-
-Every command accepts the global `--output, -o` flag (`table|json|yaml`).
-
-### Worked transcript: create
-
-```text
-$ dfsctl share snapshot create /photos
-Snapshot 7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0 queued on share /photos (state: creating)
-Snapshot 7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0 -> ready
-$
-```
-
-By default the command blocks until the snapshot reaches `ready` or
-`failed`. Use `--no-wait` to return immediately:
-
-```text
-$ dfsctl share snapshot create /photos --no-wait
-Snapshot 9f2dab17-1a8c-4e02-b6d4-0c2f7a91e3b5 queued on share /photos (state: creating)
-$ dfsctl share snapshot show /photos 9f2dab17-1a8c-4e02-b6d4-0c2f7a91e3b5
-ID              9f2dab17-1a8c-4e02-b6d4-0c2f7a91e3b5
-STATE           creating
-...
-```
-
-### Worked transcript: list
-
-```text
-$ dfsctl share snapshot list /photos
-ID         NAME            STATE    DURABLE  CREATED  SIZE
-7a3ec1b2   weekly-2026-05  ready    yes      2h ago   -
-9f2dab17   pre-cleanup     ready    yes      4d ago   -
-```
-
-JSON mode round-trips through the same DTO the REST API returns:
-
-```text
-$ dfsctl share snapshot list /photos -o json
-[
-  {
-    "id": "7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0",
-    "name": "weekly-2026-05",
-    "share": "/photos",
-    "state": "ready",
-    "remote_durable": true,
-    "created_at": "2026-05-27T18:14:22Z",
-    "updated_at": "2026-05-27T18:14:25Z"
-  },
-  ...
-]
-```
-
-### Worked transcript: show
-
-```text
-$ dfsctl share snapshot show /photos 7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0
-ID              7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0
-NAME            weekly-2026-05
-SHARE           /photos
-STATE           ready
-REMOTE DURABLE  yes
-MANIFEST COUNT  1842
-DUMP BYTES      4.1 MiB
-RETRY OF        -
-ERROR           -
-CREATED AT      2026-05-27T18:14:22Z
-UPDATED AT      2026-05-27T18:14:25Z
-```
-
-`show` requires the **full** snapshot UUID, not the 8-character
-prefix shown in `list` (see §5). It reports the manifest hash count
-(`MANIFEST COUNT`) and the human-readable dump size (`DUMP BYTES`);
-`list` omits them to keep the row count cheap.
-
-### Worked transcript: remove
-
-```text
-$ dfsctl share snapshot remove /photos 9f2dab17
-Remove snapshot 9f2dab17 from share /photos?
-Type 'y' to confirm: y
-Snapshot 9f2dab17 removed.
-$
-```
-
-Use `--yes` to skip the confirmation:
-
-```text
-$ dfsctl share snapshot remove /photos 9f2dab17 --yes
-Snapshot 9f2dab17 removed.
-```
+The CLI no longer has snapshot commands. They return with the snapshot API.
+The flags named on this page are those of the removed commands.
 
 ## 4. Creating a snapshot
 
-```
-dfsctl share snapshot create <share> [flags]
-```
+The removed `create` command took these flags:
 
 | Flag | Default | Description |
 |---|---|---|
@@ -290,112 +191,20 @@ snapshot row. The row's `state` flips back to `creating` while the
 retry runs. On success the original ID stays — there is no second
 snapshot record — and `remote_durable` reflects the retry's outcome.
 
-```text
-$ dfsctl share snapshot list /photos --state=failed
-ID         NAME       STATE    DURABLE  CREATED  SIZE
-4c19fbe0   nightly    failed   no       6h ago   -
-
-$ dfsctl share snapshot create /photos --retry 4c19fbe0-...-full-uuid
-Snapshot 4c19fbe0-...-full-uuid queued on share /photos (state: creating)
-Snapshot 4c19fbe0-...-full-uuid -> ready
-```
-
 Retry refuses if the target ID does not exist (`404`) or is not in
 `failed` state (`409 Conflict`).
 
 ## 5. Listing and inspecting
 
-```
-dfsctl share snapshot list <share> [flags]
-dfsctl share snapshot show <share> <id>
-```
-
-`list` flags:
-
-| Flag | Default | Description |
-|---|---|---|
-| `--state` | `""` | Filter by state. One of `creating`, `ready`, `failed`. |
-| `--name-prefix` | `""` | Filter by name prefix (case-sensitive). |
-| `--no-relative` | `false` | Render `CREATED` as ISO 8601 instead of relative ("2h ago"). |
-
-Filters AND together. There is no pagination flag — snapshot counts
-per share stay in the low hundreds in practice. There is no sort
-flag; the list is always newest-first.
-
-### Table columns
-
-| Column | Meaning |
-|---|---|
-| `ID` | First 8 characters of the snapshot UUID — **truncated for display only**. See the note below. |
-| `NAME` | Operator-set name from `--name`. Blank if unset. |
-| `STATE` | `creating` / `ready` / `failed`. |
-| `DURABLE` | `yes` if `remote_durable=true`; `no` otherwise. |
-| `CREATED` | Relative time by default; ISO with `--no-relative`. |
-| `SIZE` | Dump size, but always `-` in list mode — the list handler does not stat artifacts. Use `show` to see it. |
-
-> **The `ID` column is truncated to 8 characters for readability, but
-> `show`, `remove`, `restore`, and `create --retry` all require the
-> *full* snapshot UUID.** Passing the 8-character prefix returns
-> `404 ErrSnapshotNotFound` — the server matches snapshot IDs exactly
-> and does not resolve prefixes. Get the full UUID from `list -o json`
-> (the `id` field is never truncated).
-
-The `SIZE` column is `-` in `list` because populating it would
-require one `stat` per row (the manifest lives on disk, not in the
-database). `show` resolves it on demand for a single record:
-
-```text
-$ dfsctl share snapshot show /photos 7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0
-ID              7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0
-...
-MANIFEST COUNT  1842
-DUMP BYTES      4.1 MiB
-...
-```
-
-If `show` cannot stat the manifest or the dump (artifact missing,
-permissions error), the corresponding field renders as `-` rather
-than failing the command — the snapshot row may still be useful for
-operator triage even when its artifacts are corrupt.
-
-### JSON and YAML modes
-
-`-o json` and `-o yaml` return the full DTO including disk fields
-(populated for `show`, omitted for `list`):
-
-```text
-$ dfsctl share snapshot show /photos 7a3ec1b2 -o yaml
-id: 7a3ec1b2-9c5e-4ab8-bd31-7f60c2e814a0
-name: weekly-2026-05
-share: /photos
-state: ready
-remote_durable: true
-manifest_count: 1842
-dump_bytes: 4302848
-created_at: 2026-05-27T18:14:22Z
-updated_at: 2026-05-27T18:14:25Z
-```
+The CLI no longer has commands to list or show snapshots. They return with the
+snapshot API.
 
 ## 6. Deleting a snapshot
 
-```
-dfsctl share snapshot remove <share> <id> [--yes]
-```
-
-`remove` removes the snapshot row, wipes the on-disk directory
+Deleting a snapshot removes the snapshot row, wipes the on-disk directory
 (`<localStoreDir>/snapshots/<share>/<id>/`), and releases the GC
-hold for any block referenced only by this snapshot.
-
-By default the command prompts `Y/N`:
-
-```text
-$ dfsctl share snapshot remove /photos 9f2dab17
-Remove snapshot 9f2dab17 from share /photos?
-Type 'y' to confirm: n
-Aborted.
-```
-
-`--yes` skips the prompt. Use it from scripts only.
+hold for any block referenced only by this snapshot. The CLI no longer
+has a command to delete one; it returns with the snapshot API.
 
 ### Safety snapshots are not special
 
@@ -411,13 +220,11 @@ snapshot.
 
 ### GC reclamation timing
 
-Block-store GC runs on its own schedule (`dfsctl store block gc
-<share>`). Deleting a snapshot releases the hold immediately, but
-the underlying blocks remain in the block store until the next GC
-sweep enumerates them as unreferenced. The window between `remove`
-and reclamation is bounded only by your GC cadence; if you need to
-reclaim space immediately, follow `remove` with an on-demand
-`dfsctl store block gc <share>`.
+Block-store GC runs on its own schedule. Deleting a snapshot releases
+the hold immediately, but the underlying blocks remain in the block
+store until the next GC sweep enumerates them as unreferenced. The
+window between `remove` and reclamation is bounded only by your GC
+cadence.
 
 If a block is referenced by another snapshot or by a live file in
 the share, GC will still skip it — the hold semantics are union,
@@ -436,57 +243,23 @@ creates a `pre-restore-*` safety snapshot first.
 ```
 1. Stop traffic. Ensure no clients are writing to the share.
 2. dfsctl share disable /<share>
-3. dfsctl share snapshot restore /<share> <snap-id>
-      (interactive Y/N; --yes to skip)
+3. Restore the snapshot. The CLI no longer has a restore
+   command; it returns with the snapshot API.
 4. Verify data integrity (sample files, check timestamps,
    compare known checksums).
 5. dfsctl share enable /<share>
 6. Verify the safety snap exists, then delete it after the
-   grace period you set internally:
-      dfsctl share snapshot remove /<share> <safety-snap-id>
+   grace period you set internally.
 ```
 
 ### Why the share must be disabled first
 
-The restore handler refuses on an enabled share:
-
-```text
-$ dfsctl share snapshot restore /photos 7a3ec1b2
-share /photos is enabled; run 'dfsctl share disable /photos' first
-$ echo $?
-1
-```
+The restore handler refuses on an enabled share.
 
 There is no auto-disable / auto-enable wrapper around restore. The
 explicit disable step exists so the operator unambiguously owns the
 "this share is going down" decision; auto-enable would silently
 return the share to service before integrity has been validated.
-
-### Worked transcript: happy path
-
-```text
-$ dfsctl share disable /photos
-Share /photos disabled.
-
-$ dfsctl share snapshot restore /photos 7a3ec1b2
-Restore snapshot 7a3ec1b2 into share /photos?
-A safety snapshot of the current share state will be created first.
-Type 'y' to confirm: y
-Restored snapshot 7a3ec1b2 into share /photos.
-Safety snap: c12e8d4f (remove with
-'dfsctl share snapshot remove /photos c12e8d4f' after verifying).
-
-$ # Sample some files to confirm the restore brought back what you expect.
-$ ls /mnt/photos/2024/      # (after a temp mount or via another client)
-...
-
-$ dfsctl share enable /photos
-Share /photos enabled.
-
-$ # After validation, remove the safety snap:
-$ dfsctl share snapshot remove /photos c12e8d4f --yes
-Snapshot c12e8d4f removed.
-```
 
 ### Restore steps (what the server actually does)
 
@@ -515,17 +288,6 @@ to the safety snapshot** — see [§8.1](#81-automatic-crash-recovery).
 
 ### `--force` for non-durable snapshots
 
-```text
-$ dfsctl share snapshot restore /photos 9f2dab17
-Snapshot 9f2dab17 is not remotely durable. Re-run with --force to restore anyway.
-$ echo $?
-1
-
-$ dfsctl share snapshot restore /photos 9f2dab17 --force --yes
-Restored snapshot 9f2dab17 into share /photos.
-Safety snap: e0a2b15c (remove with ...).
-```
-
 `--force` maps to `RestoreSnapshotOpts.AllowNonDurable=true` and
 corresponds to `allow_non_durable=true` in the REST request body.
 The verify gate's HEAD-probes are skipped on the source snapshot's
@@ -548,18 +310,8 @@ accepted but later found to have brought back the wrong state — for
 example, the operator picked the wrong snapshot ID, or a downstream
 service expected post-snapshot data that the restore overwrote.
 
-To roll back:
-
-```text
-$ dfsctl share disable /photos
-$ dfsctl share snapshot restore /photos <safety-snap-id>
-Restore snapshot c12e8d4f into share /photos?
-A safety snapshot of the current share state will be created first.
-Type 'y' to confirm: y
-Restored snapshot c12e8d4f into share /photos.
-Safety snap: 88d40a73 (remove with ...).
-$ dfsctl share enable /photos
-```
+To roll back, disable the share, restore the safety snapshot, and enable
+the share again.
 
 Two important properties:
 
@@ -691,8 +443,8 @@ Concretely:
 A `failed` snapshot whose orchestration crashed partway through may
 have a partial manifest file. GC still respects it as a hold — better
 to retain an extra block than to delete one a recovery might need.
-Run `dfsctl share snapshot remove` to release the hold once the
-failed snapshot is no longer useful.
+Deleting the failed snapshot releases the hold once it is no longer
+useful.
 
 ### Delete-vs-GC race window
 
@@ -741,8 +493,7 @@ restore.
 list. Often a typo, occasionally a snapshot that was deleted out
 from under the operator.
 
-**Recovery.** Run `dfsctl share snapshot list <share>` to find the
-correct ID.
+**Recovery.** List the share's snapshots to find the correct ID.
 
 ### snapshot-not-durable
 
@@ -768,8 +519,7 @@ with a verify error, fall back to the safety snap.
 cleanup, disk failure, lost share data directory). The snapshot row
 still exists in the database but its replay artifact does not.
 
-**Recovery.** The snapshot is unrestorable. Delete it
-(`dfsctl share snapshot remove`) and restore from another snapshot
+**Recovery.** The snapshot is unrestorable. Delete it and restore from another snapshot
 if available. If no other usable snapshot exists, this is a real
 data-loss event — restore from off-cluster backups (out of scope
 for this subsystem).
@@ -886,20 +636,8 @@ policies on a configurable interval.
 
 ### CLI
 
-```bash
-# Daily snapshots, keep the newest 7, drop anything older than 30 days
-dfsctl share snapshot-policy set /archive --interval @daily --keep-last 7 --ttl 720h
-
-# Inspect / list
-dfsctl share snapshot-policy show /archive
-dfsctl share snapshot-policy list
-
-# Manual override: run the policy now, ignoring the interval
-dfsctl share snapshot-policy run /archive
-
-# Stop scheduling (existing snapshots are kept)
-dfsctl share snapshot-policy remove /archive
-```
+The CLI no longer has snapshot policy commands. They return with the
+snapshot API.
 
 The scheduler feeds the same snapshot pool as on-demand creation, so
 policy-created snapshots list, show, and restore exactly like manual ones.
@@ -912,8 +650,7 @@ policy-created snapshots list, show, and restore exactly like manual ones.
   governs how often a share is actually snapshotted.
 - `snapshot.scheduler_disabled` (default `false`,
   `DITTOFS_SNAPSHOT_SCHEDULER_DISABLED`) — turn the scheduler off
-  entirely. Policies are still stored and can be run manually with
-  `snapshot-policy run`.
+  entirely. Policies are still stored.
 
 ### Kubernetes operator
 
@@ -957,8 +694,6 @@ spec:
 
 For background on these decisions, see
 [ARCHITECTURE.md — Share Snapshots](../internals/architecture.md#share-snapshots).
-For the CLI surface, see
-[CLI.md — Share Snapshots](cli.md#dfsctl-share-snapshot).
 
 ## 14. REST API reference
 

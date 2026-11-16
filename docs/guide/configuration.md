@@ -285,9 +285,10 @@ Related glossary terms: [TLS / mTLS](glossary.md#authentication).
 ### 6. Block Store Configuration
 
 Every share references exactly **one block store** — the durable home for its
-content. Block stores are created with `dfsctl store block …` and attached to a
-share with `dfsctl share create/edit --block-store <name>`. Valid types are `s3`
-and `memory`.
+content. A share names its block store with
+`dfsctl share create/edit --block-store <name>`. Valid types are `s3` and
+`memory`. Today's CLI has no command to create a block store: remote stores
+return as resource commands of the v2 management API.
 
 > **No content store is wired yet.** The data path is being moved onto the new
 > engine (`pkg/block/engine`), served through the filesystem service. Until that
@@ -345,17 +346,9 @@ connections stops helping. It backs off only on upload errors or a real
 throughput collapse — never on the latency rise that healthy concurrency itself
 causes. No configuration is required to saturate the uplink.
 
-To **pin** a fixed concurrency instead (disabling auto-tuning), set
-`--parallel-uploads N` on the remote:
-
-```bash
-dfsctl store block add --name r1 --type s3 \
-  --bucket … --region … --endpoint … \
-  --parallel-uploads 32          # fixed window of 32; 0 (default) = adaptive
-```
-
-`dfsctl store block edit r1 --parallel-uploads 0` returns a remote
-to adaptive mode. Observe the live window via the Prometheus gauge
+A remote store can **pin** a fixed concurrency instead, which disables
+auto-tuning; 0, the default, is adaptive. Today's CLI has no command to set it.
+Observe the live window via the Prometheus gauge
 `dittofs_datapath_upload_window` (target concurrency) alongside
 `dittofs_datapath_uploads_inflight` (actual in-flight uploads); see
 [Metrics](#metrics-prometheus).
@@ -385,8 +378,8 @@ gc:
                               # than half dead.
   auto_enabled: true          # Run background GC automatically so you
                               # don't have to invoke the CLI. Default
-                              # true. Set false to require manual
-                              # `dfsctl store block gc`.
+                              # true. Set false to turn background
+                              # GC off.
   auto_interval: 15m          # Period between background GC runs.
                               # Default 15m. Values in (0, 1m) are
                               # REJECTED. Ignored when auto_enabled is
@@ -399,10 +392,7 @@ gc:
   `auto_interval`) and reclaims orphaned blocks on **both** the local
   and remote tiers. Disable it (`auto_enabled: false`) only if you want
   to drive GC entirely on demand or via external scheduling.
-- You can still run GC on demand at any time:
-  `dfsctl store block gc <share>` (add `--dry-run` to preview, capped by
-  `gc.dry_run_sample_size`; add `--reconcile` to also reap rows leaked by
-  older versions).
+- Today's CLI has no command to run GC on demand.
 - `gc.grace_period` MUST be longer than your worst-case
   metadata-commit latency after a successful PUT. The default 1h is
   comfortable for any commit path that completes in seconds.
@@ -415,8 +405,7 @@ directly):
 `DITTOFS_GC_AUTO_INTERVAL`.
 
 See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
-for the full mark-sweep design and [CLI.md](cli.md) for the on-demand
-`dfsctl store block gc` command.
+for the full mark-sweep design.
 
 #### Background integrity scan
 
@@ -431,7 +420,7 @@ what finds it.
 integrity:
   auto_enabled: true          # Run the structural manifest scan
                               # automatically. Default true. Set false to
-                              # require manual `dfsctl store check`.
+                              # turn the scan off.
   auto_interval: 24h          # Period between scans. Default 24h. Values
                               # in (0, 5m) are REJECTED — a scan is a full
                               # metadata walk of every share. Ignored when
@@ -465,8 +454,8 @@ Findings surface in three places:
   stay that way indefinitely.
 - The server log, at `WARN`, for any share with damaged payloads.
 
-Run `dfsctl store check <share>` for the per-file detail behind a finding,
-and `--repair` to act on it.
+Today's CLI has no command that shows the per-file detail behind a finding
+or repairs it.
 
 The schedule restarts from zero on server start, so a box restarted more
 often than `auto_interval` never completes a scan. Lower the interval on a
@@ -482,7 +471,7 @@ The recycle bin is configured **per share** via `dfsctl share create` /
 `dfsctl share edit` (or the REST share create/update body), not the
 server config file. When enabled, deleting a file or directory moves it
 into a visible `#recycle` directory at the share root instead of
-destroying it; it can be restored over the mount or with `dfsctl trash`.
+destroying it; it can be restored over the mount.
 
 | Setting (`dfsctl` flag) | REST field | Type | Default | Meaning |
 |---|---|---|---|---|
@@ -508,8 +497,8 @@ file's content is not recycled (only unlink and replace-overwrite are).
   --trash-exclude '*.tmp' --trash-exclude '*.cache'
 ```
 
-See [CLI.md](cli.md#dfsctl-trash) for the `dfsctl trash`
-management commands and [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
+The CLI no longer has trash management commands; they return with their own
+API. See [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
 for the recycle-trap design.
 
 #### Remote block-level compression (opt-in)
@@ -519,13 +508,8 @@ decompress on download. The plaintext BLAKE3 hash remains the CAS key,
 so dedup and GC are unaffected. The decorator is per-remote: every
 share that references the remote inherits its compression policy.
 
-Add a `compression` block to the remote store's `config` JSON when
-creating it:
-
-```bash
-./dfsctl store block add --name prod-s3 --type s3 \
-  --config '{"region":"us-east-1","bucket":"dfs-production","compression":{"algo":"zstd"}}'
-```
+Add a `compression` block to the remote store's `config` JSON, for example
+`"compression":{"algo":"zstd"}`.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -608,14 +592,12 @@ to it instead of AWS. The store reads exactly these config keys (see
 > (`127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, link-local, ULA) as an
 > SSRF guard; the cloud metadata address (`169.254.169.254`) is always blocked.
 > Self-hosted gateways normally live on exactly those networks, so add
-> `"allow_private_endpoint": true` to their `--config` to permit them, as the
-> MinIO and Ceph recipes below do.
+> `"allow_private_endpoint": true` to their config to permit them.
 
-Credentials live in the store's own config (the `--config` blob below, or the
-equivalent `--access-key` / `--secret-key` flags) — they are not read from the
-`DITTOFS_*` server-config environment. Each recipe is a
-`dfsctl store block add` invocation; attach the resulting store to a
-share with `dfsctl share create … --block-store <name>`.
+Credentials live in the store's own config (`access_key_id`,
+`secret_access_key`) — they are not read from the `DITTOFS_*` server-config
+environment. Attach a store to a share with
+`dfsctl share create … --block-store <name>`.
 
 ##### Verified providers
 
@@ -628,20 +610,6 @@ exercised by the e2e suite where an emulator exists:
 | MinIO | **e2e emulator** | `http://minio.example:9000` | `us-east-1` | auto-on | Self-hosted; HTTP fine on a trusted network. |
 | LocalStack | **e2e emulator** | `http://localstack:4566` | `us-east-1` | auto-on | Test/CI only; not a production target. |
 | Ceph RGW | documented | `https://rgw.example:7480` | `us-east-1` | auto-on | RGW ignores region; any non-empty value is accepted. |
-
-```bash
-# MinIO  (verified by e2e emulator)
-dfsctl store block add --name minio-store --type s3 \
-  --config '{"endpoint":"http://minio.example:9000","bucket":"dittofs","region":"us-east-1","access_key_id":"minioadmin","secret_access_key":"minioadmin","allow_private_endpoint":true}'
-
-# LocalStack  (verified by e2e emulator)
-dfsctl store block add --name localstack-store --type s3 \
-  --config '{"endpoint":"http://localstack:4566","bucket":"dittofs","region":"us-east-1","access_key_id":"test","secret_access_key":"test","allow_private_endpoint":true}'
-
-# Ceph RGW (RADOS Gateway)
-dfsctl store block add --name ceph-store --type s3 \
-  --config '{"endpoint":"https://rgw.example:7480","bucket":"dittofs","region":"us-east-1","access_key_id":"ACCESS","secret_access_key":"SECRET","allow_private_endpoint":true}'
-```
 
 ##### Documented-only providers
 
@@ -660,44 +628,6 @@ compatibility guide. The per-provider column flags the one gotcha that bites.
 | Tencent Cloud COS | `https://cos.ap-guangzhou.myqcloud.com` | `ap-guangzhou` | auto-on | Bucket name must include the AppID suffix (`name-1250000000`); endpoint carries the region. |
 | Oracle Cloud (OCI) Object Storage | `https://<namespace>.compat.objectstorage.us-ashburn-1.oraclecloud.com` | `us-ashburn-1` | auto-on | Endpoint contains your tenancy **namespace**; generate a **Customer Secret Key** for S3 compat. |
 | Storj (S3 gateway) | `https://gateway.storjshare.io` | `us-east-1` | auto-on | Use S3-gateway access keys (`uplink share --register`), not the API access grant. |
-
-```bash
-# Cubbit DS3 (DittoFS sponsor) — geo-distributed, S3-compatible object storage
-dfsctl store block add --name ds3-store --type s3 \
-  --config '{"endpoint":"https://s3.cubbit.eu","bucket":"dittofs","region":"eu-west-1","access_key_id":"DS3_ACCESS_KEY","secret_access_key":"DS3_SECRET_KEY"}'
-
-# Google Cloud Storage — note force_path_style:false (GCS wants virtual-hosted)
-dfsctl store block add --name gcs-store --type s3 \
-  --config '{"endpoint":"https://storage.googleapis.com","bucket":"dittofs","region":"us-east-1","access_key_id":"GOOG_HMAC_KEY","secret_access_key":"GOOG_HMAC_SECRET","force_path_style":false}'
-
-# Backblaze B2 — region is baked into the endpoint host
-dfsctl store block add --name b2-store --type s3 \
-  --config '{"endpoint":"https://s3.us-west-004.backblazeb2.com","bucket":"dittofs","region":"us-west-004","access_key_id":"B2_KEY_ID","secret_access_key":"B2_APP_KEY"}'
-
-# Wasabi
-dfsctl store block add --name wasabi-store --type s3 \
-  --config '{"endpoint":"https://s3.us-east-1.wasabisys.com","bucket":"dittofs","region":"us-east-1","access_key_id":"ACCESS","secret_access_key":"SECRET"}'
-
-# DigitalOcean Spaces
-dfsctl store block add --name spaces-store --type s3 \
-  --config '{"endpoint":"https://nyc3.digitaloceanspaces.com","bucket":"dittofs","region":"us-east-1","access_key_id":"SPACES_KEY","secret_access_key":"SPACES_SECRET"}'
-
-# Alibaba Cloud OSS
-dfsctl store block add --name oss-store --type s3 \
-  --config '{"endpoint":"https://oss-us-west-1.aliyuncs.com","bucket":"dittofs","region":"us-west-1","access_key_id":"ACCESS","secret_access_key":"SECRET"}'
-
-# Tencent Cloud COS — bucket name carries the AppID suffix
-dfsctl store block add --name cos-store --type s3 \
-  --config '{"endpoint":"https://cos.ap-guangzhou.myqcloud.com","bucket":"dittofs-1250000000","region":"ap-guangzhou","access_key_id":"SECRET_ID","secret_access_key":"SECRET_KEY"}'
-
-# Oracle Cloud (OCI) Object Storage — endpoint embeds your namespace
-dfsctl store block add --name oci-store --type s3 \
-  --config '{"endpoint":"https://my-namespace.compat.objectstorage.us-ashburn-1.oraclecloud.com","bucket":"dittofs","region":"us-ashburn-1","access_key_id":"OCI_ACCESS","secret_access_key":"OCI_SECRET"}'
-
-# Storj (S3-compatible gateway)
-dfsctl store block add --name storj-store --type s3 \
-  --config '{"endpoint":"https://gateway.storjshare.io","bucket":"dittofs","region":"us-east-1","access_key_id":"STORJ_ACCESS","secret_access_key":"STORJ_SECRET"}'
-```
 
 All of the above accept the same optional knobs as AWS S3 —
 `prefix`, `compression`, `encryption`, and `durable` (see the preceding
@@ -807,7 +737,7 @@ two block stores share a name
   "archive" is used by more than one block store
 
 Block stores no longer have a kind, so their names must be unique.
-Rename one of each pair with `dfsctl store block edit`, then restart.
+Rename one of each pair, then restart.
 ```
 
 Names used to be unique per `(name, kind)`, so a local `archive` and a remote
@@ -816,9 +746,8 @@ automatically would break the operator's scripts at some later point; deleting o
 would orphan any share referencing it.
 
 **Action:** give one store of each colliding pair a different name, then restart.
-`dfsctl store block edit <name> --name <new name>` renames a store, but it talks
-to a running server and this collision stops the server from starting — so break
-the tie in the control-plane database first, with the server stopped:
+This collision stops the server from starting, so break the tie in the
+control-plane database, with the server stopped:
 
 ```sql
 UPDATE block_store_configs SET name = 'archive-local' WHERE id = '<the row to rename>';
@@ -844,8 +773,8 @@ was matching on the old name.
 
 ### 7. Metadata Configuration
 
-Metadata store instances are created through `dfsctl`; the server config file
-contains the global BadgerDB cache settings below. `badger` is the only metadata
+The CLI creates no metadata store; the server config file contains the global
+BadgerDB cache settings below. `badger` is the only metadata
 store type: on disk for single-node deployments, or fully in memory for tests. A
 distributed transactional key-value store — TiKV is the preferred one — is the
 planned backend for multi-node deployments; it is not implemented yet.
@@ -917,8 +846,8 @@ If you still see `hit-ratio` below ~0.8 or `sets-rejected` in the Badger logs,
 the cache is undersized for the working set — raise `block_cache_mb` first.
 
 These global sizes apply to every BadgerDB metadata store on the node. A single
-store can be overridden via its config-map keys when it is created (see below):
-`--config '{"path":"...","block_cache_mb":2048,"index_cache_mb":1024}'`.
+store can override them with the `block_cache_mb` and `index_cache_mb` keys of
+its own config.
 
 #### `relaxed_durability`
 
@@ -929,11 +858,8 @@ attribute-only `setattr`) commit without an inline flush; a background syncer
 makes them durable within ~100 ms. Writes paired with file data commit
 synchronously either way, so this is bounded loss, never corruption.
 
-```bash
-# Strict: fsync every namespace commit (roughly a third of the create throughput)
-./dfsctl store metadata add --name badger-strict --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata","relaxed_durability":false}'
-```
+Setting `"relaxed_durability": false` in a store's config fsyncs every
+namespace commit, at roughly a third of the create throughput.
 
 Only an event that takes the kernel down — power loss, kernel panic, hypervisor
 reset — can lose that window. Killing the `dfs` process (`SIGKILL`, OOM-kill,
@@ -941,33 +867,9 @@ panic) loses nothing at either setting, because an acknowledged write is already
 in the kernel page cache. See
 [Durability → Namespace durability](durability.md#namespace-durability-relaxed_durability).
 
-#### Metadata Store Instances (CLI)
+#### Metadata Store Instances
 
-Metadata stores are managed at runtime via `dfsctl` and persisted in the control plane database:
-
-```bash
-# In-memory BadgerDB for tests and throwaway servers (no path; lost on restart)
-./dfsctl store metadata add --name memory-fast --in-memory
-
-# BadgerDB for persistent metadata
-./dfsctl store metadata add --name badger-main --type badger \
-  --config '{"path":"/tmp/dittofs-metadata-main"}'
-
-# BadgerDB with explicit per-store cache sizes (MiB). Omit either key (or set 0)
-# to auto-size that cache from available RAM. See "BadgerDB cache sizing" above.
-./dfsctl store metadata add --name badger-big --type badger \
-  --config '{"path":"/tmp/dittofs-metadata-big","block_cache_mb":2048,"index_cache_mb":1024}'
-
-# Separate BadgerDB instance for isolated shares
-./dfsctl store metadata add --name badger-isolated --type badger \
-  --config '{"path":"/tmp/dittofs-metadata-isolated"}'
-
-# List all metadata stores
-./dfsctl store metadata list
-
-# Remove a metadata store
-./dfsctl store metadata remove memory-fast
-```
+The CLI no longer creates, lists or removes metadata stores.
 
 > **Persistence Options** (`badger` config keys: `path`, `in_memory`,
 > `block_cache_mb`, `index_cache_mb`, `relaxed_durability`):
@@ -1349,20 +1251,13 @@ identity:
   machine_sid: "S-1-5-21-1111111111-2222222222-3333333333"
 ```
 
-Map an authenticated Kerberos principal to an existing user through the
-control-plane identity mapping API. For the `editor` account created above:
-
-```bash
-dfsctl idmap add --principal editor@EXAMPLE.COM --username editor
-```
-
-This complements the Kerberos setup above; it does not enable Kerberos by itself.
+The CLI no longer maps a Kerberos principal to a user.
 
 ### 14. Snapshot Scheduler
 
 Controls the background scheduler that drives per-share snapshot policies
-(schedule + retention). Policies themselves are configured per share via
-`dfsctl share snapshot-policy` or the REST API — see
+(schedule + retention). Policies themselves are configured per share. The CLI
+no longer has snapshot commands; they return with the snapshot API. See
 [SNAPSHOTS.md §12](snapshots.md#12-scheduled-snapshots-policies). These
 knobs only tune the daemon-wide scheduler loop.
 
@@ -1371,8 +1266,7 @@ snapshot:
   # How often the daemon scans for due policies. The per-share policy
   # interval (not this knob) controls how often a share is snapshotted.
   scheduler_poll_interval: 1m   # default 1m
-  # Turn the scheduler off entirely. Policies are still stored and can be
-  # run manually with `dfsctl share snapshot-policy run`.
+  # Turn the scheduler off entirely. Policies are still stored.
   scheduler_disabled: false     # default false
   # Per-request budget for the synchronous restore endpoint.
   restore_http_timeout: 30m     # default 30m
@@ -1442,7 +1336,7 @@ ldap:
 | `ldap.tls.insecure_skip_verify` | `DITTOFS_LDAP_TLS_INSECURE_SKIP_VERIFY` | `false` |
 | `ldap.tls.min_version` | `DITTOFS_LDAP_TLS_MIN_VERSION` | `1.2` |
 
-Admin-configured identity links (`dfsctl idmap add`) take precedence over the
+Admin-configured identity links take precedence over the
 directory query: a link for an `ldap` external ID resolves to the mapped local
 user before any LDAP search is issued.
 
@@ -1469,8 +1363,7 @@ editing files:
 changes hot-reload the live resolver**; **Kerberos changes take effect on the
 next server restart** (the NFS/SMB adapters bind it at startup). The bind
 password is write-only — submit `********` (or omit it) on `PUT` to keep the
-stored secret. Equivalent CLI: `dfsctl identity-provider {list,get,set,test}`
-(see [CLI.md](cli.md)).
+stored secret. The CLI has no equivalent.
 
 ## Migration
 
@@ -1679,7 +1572,7 @@ groups:
         for: 15m
         labels: { severity: critical }
         annotations:
-          summary: "DittoFS share {{ $labels.share }} has damaged payloads; run dfsctl store check"
+          summary: "DittoFS share {{ $labels.share }} has damaged payloads"
 
       # The integrity scan has not completed in 48h. A last-scan value of 0
       # means never scanned since process start, which this expression catches
@@ -1815,10 +1708,8 @@ export DITTOFS_CONTROLPLANE_PPROF_BLOCK_RATE_NS=1000000
 DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 ```
 
-Store instances are managed through the control-plane API and `dfsctl`; their
-settings are persisted in the database. After logging in, use
-`dfsctl store metadata add` to create a metadata store. See the
-[CLI reference](cli.md) for supported settings and update flags.
+Store instances are managed through the control-plane API; their settings are
+persisted in the database. Today's CLI creates none of them.
 
 ## Configuration Precedence
 
@@ -1848,11 +1739,9 @@ logging:
   level: INFO
 ```
 
-Then create stores and shares via CLI:
+Then create the share via CLI:
 
 ```bash
-./dfsctl store metadata add --name default --in-memory
-./dfsctl store block add --name default-blocks --type memory
 ./dfsctl share create --name /export --metadata default --block-store default-blocks
 ```
 
@@ -1867,8 +1756,6 @@ logging:
 ```
 
 ```bash
-./dfsctl store metadata add --name dev-memory --in-memory
-./dfsctl store block add --name dev-blocks --type memory
 ./dfsctl share create --name /export --metadata dev-memory --block-store dev-blocks
 ```
 
@@ -1890,15 +1777,9 @@ metrics:
   port: 9090
 ```
 
-Then create stores and shares via CLI:
+Then create the share via CLI:
 
 ```bash
-# Create stores
-./dfsctl store metadata add --name prod-badger --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata"}'
-./dfsctl store block add --name prod-s3 --type s3 \
-  --config '{"region":"us-east-1","bucket":"dfs-production"}'
-
 # Create share and grant permissions
 ./dfsctl share create --name /export --metadata prod-badger --block-store prod-s3
 ./dfsctl share permission grant /export --user alice --level read-write
@@ -1909,17 +1790,7 @@ Then create stores and shares via CLI:
 Different shares using different storage backends:
 
 ```bash
-# Create metadata stores
-./dfsctl store metadata add --name fast-memory --in-memory
-./dfsctl store metadata add --name persistent-badger --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata"}'
-
-# Create block stores
-./dfsctl store block add --name cloud-s3 --type s3 \
-  --config '{"region":"us-east-1","bucket":"my-dfs-bucket"}'
-
 # Create shares with different backends
-./dfsctl store block add --name mem-blocks --type memory
 ./dfsctl share create --name /temp --metadata fast-memory --block-store mem-blocks
 ./dfsctl share create --name /cloud --metadata persistent-badger --block-store cloud-s3
 ./dfsctl share create --name /public --metadata persistent-badger --block-store cloud-s3
@@ -1934,16 +1805,6 @@ Different shares using different storage backends:
 Multiple shares sharing the same metadata database:
 
 ```bash
-# Create shared metadata store
-./dfsctl store metadata add --name shared-badger --type badger \
-  --config '{"path":"/var/lib/dittofs/shared-metadata"}'
-
-# Create block stores
-./dfsctl store block add --name s3-production --type s3 \
-  --config '{"region":"us-east-1","bucket":"prod-bucket"}'
-./dfsctl store block add --name s3-archive --type s3 \
-  --config '{"region":"us-east-1","bucket":"archive-bucket"}'
-
 # Both shares use the same metadata store, different block stores
 ./dfsctl share create --name /prod --metadata shared-badger --block-store s3-production
 ./dfsctl share create --name /archive --metadata shared-badger --block-store s3-archive

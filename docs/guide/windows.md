@@ -189,7 +189,7 @@ SMB3 encryption and signing, change notifications, durable handles, and server-s
 | Symptom | Cause | Solution |
 |---------|-------|----------|
 | Explorer shows blank Security tab | SD query failed or returned malformed data | Check DittoFS logs for SD synthesis errors |
-| Explorer shows "Everyone: Full Control" | SD synthesis not returning proper owner/DACL | Verify machine SID is initialized (`dfsctl settings list`); ensure share has an assigned user |
+| Explorer shows "Everyone: Full Control" | SD synthesis not returning proper owner/DACL | Verify machine SID is initialized; ensure share has an assigned user |
 | `icacls` shows unexpected permissions | POSIX-to-DACL translation differs from NTFS semantics | Expected; DittoFS synthesizes DACLs from Unix mode bits |
 | `Set-Acl` returns an error | Best-effort ACL mapping | DittoFS translates SMB SET_INFO ACL changes to Unix mode bits; complex ACLs may not map cleanly |
 

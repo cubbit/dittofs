@@ -107,17 +107,8 @@ that absorbs writes before they reach the block store; it is provisioned automat
 under `blockstore.journal.path` and is not a store you create. Not sure which to pick?
 See [Choosing stores](choosing-stores.md).
 
-```bash
-# Metadata: badger (durable, single-node default)
-dfsctl store metadata add --name default --type badger
-
-# Block: the durable S3 store behind each share's journal
-dfsctl store block add --name s3-remote --type s3
-```
-
-> **Want zero dependencies for a quick test?** Create the metadata store with
-> `--in-memory` and the block store with `--type memory`. Everything is then in-RAM and ephemeral — perfect
-> for a smoke test, useless for real data.
+The CLI has no command to create either store today. The CLI creates no metadata store,
+and block stores return as resources of the v2 management API.
 
 ## 6. Create a share and grant access
 

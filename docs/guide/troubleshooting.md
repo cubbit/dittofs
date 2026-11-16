@@ -313,11 +313,9 @@ ls: cannot access 'file.txt': Stale file handle
    sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
    ```
 
-2. **For persistent handles, use an on-disk BadgerDB store (not `--in-memory`):**
+2. **For persistent handles, back the share with an on-disk BadgerDB store (not in-memory).**
+   The CLI no longer creates metadata stores.
    ```bash
-   ./dfsctl store metadata add --name persistent --type badger \
-     --config '{"path":"/var/lib/dittofs/metadata"}'
-   ./dfsctl store block add --name persistent-blocks --type memory
    ./dfsctl share create --name /export --metadata persistent \
      --block-store persistent-blocks
    ```
@@ -350,17 +348,6 @@ tail -f ~/.local/state/dittofs/dittofs.log | grep -i "slow\|timeout"
        filesystem_capabilities:
          max_read_size: 1048576   # 1MB
          max_write_size: 1048576  # 1MB
-   ```
-
-2. **Use an in-memory metadata store for development:**
-   ```bash
-   ./dfsctl store metadata add --name fast --in-memory
-   ```
-
-3. **For S3, verify configuration:**
-   ```bash
-   ./dfsctl store block add --name s3-store --type s3 \
-     --config '{"region":"us-east-1","bucket":"my-bucket"}'
    ```
 
 ### High memory usage
@@ -630,13 +617,9 @@ dfsctl share nfs-config set /export --allow-auth-sys true --require-kerberos fal
 
 **Cause:** Share references a non-existent metadata store.
 
-**Solution:** Ensure stores exist before creating the share:
+**Solution:** Ensure both stores exist before creating the share. The CLI no
+longer creates stores.
 ```bash
-# Create the stores first — a share needs both
-./dfsctl store metadata add --name my-store --in-memory
-./dfsctl store block add --name my-blocks --type memory
-
-# Then create the share referencing them
 ./dfsctl share create --name /export --metadata my-store --block-store my-blocks
 ```
 

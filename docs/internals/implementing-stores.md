@@ -569,8 +569,8 @@ name alone.
 
 ### Selecting the store
 
-Create it with `dfsctl store block add --name <name> --type <type>` and attach it
-to a share with `dfsctl share create/edit --block-store <name>`. The journal has
+The CLI no longer creates block stores: they return as resource commands of the
+v2 management API. Attach one to a share with `dfsctl share create/edit --block-store <name>`. The journal has
 no equivalent — it is not a named entity the CLI can create.
 
 ## Additional Resources

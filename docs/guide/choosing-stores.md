@@ -9,8 +9,8 @@ the exact config keys and CLI flags, see [Configuration](configuration.md).
 > | Layer | What it holds | Choices | Configured by |
 > |-------|---------------|---------|---------------|
 > | Control-plane database | Users, shares, permissions, policies | `sqlite`, `postgres` | `database.*` in config |
-> | Metadata store (per share) | Inodes, names, attrs, ACLs, dedup index | `badger` (on disk or `in_memory`) | `dfsctl store metadata add` |
-> | Block store (per share) | File content (chunks) | `s3`, `memory` | `dfsctl store block …` |
+> | Metadata store (per share) | Inodes, names, attrs, ACLs, dedup index | `badger` (on disk or `in_memory`) | not created from the CLI |
+> | Block store (per share) | File content (chunks) | `s3`, `memory` | no CLI command today; returns as a resource of the v2 management API |
 > | Journal (per share) | Writes not yet offloaded to the block store | none — always on disk | `blockstore.journal.path` in config |
 
 ## Metadata store (per share)
@@ -57,7 +57,7 @@ absorbs writes, and hands them to an async syncer that offloads them to the bloc
 - DittoFS speaks the **S3 API**, so [Cubbit DS3](https://www.cubbit.io/) (a DittoFS sponsor),
   MinIO, Ceph RGW, GCS (set `force_path_style: false`), Backblaze B2, Wasabi, DigitalOcean
   Spaces, Alibaba OSS, Oracle OCI, Storj, etc. all work —
-  see the verified endpoint snippets in [Configuration § Block Store](configuration.md#6-block-store-configuration).
+  see the provider tables in [Configuration § Block Store](configuration.md#6-block-store-configuration).
 - Dedup happens automatically across files in a share; identical content is stored once.
 - Pick a **commit acknowledgement** per share (`journal` or `block-store`; see the
   [durability guide](durability.md)) — it sets how far a write must land before an NFS
@@ -80,8 +80,6 @@ One per server, holds users/shares/permissions/policies — **not** file data.
 
 ```bash
 # Durable single-node share: badger metadata, S3 backing
-dfsctl store metadata add --name default     --type badger
-dfsctl store block add --name s3-remote --type s3
 dfsctl share create --name /export --metadata default --block-store s3-remote
 ```
 

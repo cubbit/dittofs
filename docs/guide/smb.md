@@ -487,15 +487,8 @@ the server falls back to NTLM:
   same UID/GID across NFS-krb5, SMB-krb5, and SMB-NTLM.
 
 **Machine account requirement**: NETLOGON passthrough requires an offline-provisioned machine
-account (`DITTOFS$`) and its shared secret:
-
-```bash
-dfsctl identity-provider configure kerberos \
-  --machine-account-enabled \
-  --machine-account-name DITTOFS$ \
-  --machine-secret <secret> \
-  --dc-address <dc>
-```
+account (`DITTOFS$`) and its shared secret. The CLI no longer configures them, and the v2 CLI
+does not rebuild that command.
 
 The secret is stored at-rest and is write-only / redacted in API responses.
 

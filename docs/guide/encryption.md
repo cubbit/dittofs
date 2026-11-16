@@ -20,31 +20,13 @@ Encryption does **not** protect:
 
 ## Enabling encryption
 
-Encryption is enabled per block store by setting an `encryption` block in the store's config. Add it via `dfsctl` at store-creation time:
+Encryption is enabled per block store by setting an `encryption` block in the store's config (see [Configuration reference](#configuration-reference)). The CLI has no command to create a block store today; block stores return as resources of the v2 management API.
 
 ```bash
 # Generate a passphrase-protected key file.
 # DittoFS derives the file-encryption key with Argon2id,
 # so high passphrase entropy gives high real entropy.
 read -srp 'passphrase: ' DITTOFS_ENCRYPTION_PASSPHRASE; export DITTOFS_ENCRYPTION_PASSPHRASE
-
-# Local-file provider
-dfsctl store block add \
-  --name s3-encrypted --type s3 --bucket prod-data \
-  --encryption-aead aes-256-gcm \
-  --encryption-key-kind local \
-  --encryption-key-file /etc/dittofs/keys/share.key
-
-# KMIP provider (HSM-backed master key)
-dfsctl store block add \
-  --name s3-hsm --type s3 --bucket regulated-data \
-  --encryption-aead aes-256-gcm \
-  --encryption-key-kind kmip \
-  --encryption-kmip-endpoint kms.example.com:5696 \
-  --encryption-kmip-cert /etc/dittofs/kmip/client.pem \
-  --encryption-kmip-key  /etc/dittofs/kmip/client.key \
-  --encryption-kmip-ca   /etc/dittofs/kmip/ca.pem \
-  --encryption-kmip-key-uid 12345-abcde-...
 ```
 
 Generate a fresh key file (no dedicated subcommand — call the Go helper directly):
