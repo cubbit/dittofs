@@ -1357,50 +1357,65 @@ func TestSpareCandidatesHoldsATakeOnlyOverAnUnprovenEnd(t *testing.T) {
 
 // TestTheHeldTakesCountAheadOfTheAdoptedClasses runs the phase itself over
 // the state a real open builds and the one hand-stamp the open cannot: the
-// predecessor's proof pressed away, the missing-end verdict the refused
-// opens of today keep from reaching the phase and the later phases will
-// carry — so the take is held, and held takes stand in the headroom ahead of
-// the classes the adopted spares draw. Over one held take and a headroom
-// target of one, the first adopted spare — his worked example — takes the
-// reserve, never the headroom slot the held take occupies, and the spare
-// past it takes content.
+// predecessor's proof pressed away, the missing-end verdict the refused opens
+// of today keep from reaching the phase and the later phases will carry —
+// so the takes are held, and held takes stand in the headroom ahead of the
+// classes the adopted spares draw, bounded by the headroom's own target: a
+// hold past the headroom's slots consumes no further class, for the pool
+// fills no slot it stands in. One held take over the worked example's
+// targets turns the first adopted spare's headroom into the reserve; a
+// second hold spills past the one-slot headroom without charging the spares
+// a deeper class.
 func TestTheHeldTakesCountAheadOfTheAdoptedClasses(t *testing.T) {
-	r := newRig(t)
-	r.writeFormat()
-	r.plantSeg(1, markerRottedSealed(1))
-	plantTake(r, 2, 1) // W: the held take, its predecessor's proof pressed away below
-	r.write(format.SegmentName(5), make([]byte, testCap))
-	r.write(format.SegmentName(6), make([]byte, testCap))
+	for _, leg := range []struct {
+		name    string
+		heldIDs []core.SegmentID // the takes planted naming P, pressed away below
+		spare   core.SegmentID   // the one whole record-less spare adopted beside them
+		want    []AdoptedSpare
+	}{
+		{"one held take occupies the headroom's only slot", []core.SegmentID{2}, 5,
+			[]AdoptedSpare{{ID: 5, Class: segment.Reserve}}},
+		{"a hold past the headroom consumes no deeper class", []core.SegmentID{2, 3}, 6,
+			[]AdoptedSpare{{ID: 6, Class: segment.Reserve}}},
+	} {
+		t.Run(leg.name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			r.plantSeg(1, markerRottedSealed(1))
+			for _, id := range leg.heldIDs {
+				plantTake(r, id, 1) // each names P, its proof pressed away below
+			}
+			r.write(format.SegmentName(leg.spare), make([]byte, testCap))
 
-	deps := r.runDeps()
-	deps.SpareTargets = segment.Targets{Content: 2, Headroom: 1, Reserve: 1}
-	ctx := context.Background()
-	rd := newReader(ctx, r.seam.FS(), r.clk, nil)
-	st := State{}
-	if err := runAttach(ctx, deps, rd, &st, journalID, core.Version{}, nil); err != nil {
-		t.Fatalf("attach: %v", err)
-	}
-	if err := runRebuild(ctx, deps, rd, &st, journalID, core.Version{}, nil); err != nil {
-		t.Fatalf("rebuild: %v", err)
-	}
-	// The stamp the open cannot reach: the classing proved P's end (its
-	// trailer), the phase holds W only where it did not — the state the
-	// refused missing-end verdicts will hand the phase once the later phases
-	// defer them instead of refusing.
-	for i := range st.Tails.Fates {
-		if st.Tails.Fates[i].ID == 1 {
-			st.Tails.Fates[i].Kind = fateTornTail
-		}
-	}
+			deps := r.runDeps()
+			deps.SpareTargets = segment.Targets{Content: 2, Headroom: 1, Reserve: 1}
+			ctx := context.Background()
+			rd := newReader(ctx, r.seam.FS(), r.clk, nil)
+			st := State{}
+			if err := runAttach(ctx, deps, rd, &st, journalID, core.Version{}, nil); err != nil {
+				t.Fatalf("attach: %v", err)
+			}
+			if err := runRebuild(ctx, deps, rd, &st, journalID, core.Version{}, nil); err != nil {
+				t.Fatalf("rebuild: %v", err)
+			}
+			// The stamp the open cannot reach: the classing pressed P's proof
+			// away, the state the refused missing-end verdicts will hand the
+			// phase once the later phases defer them instead of refusing.
+			for i := range st.Tails.Fates {
+				if st.Tails.Fates[i].ID == 1 {
+					st.Tails.Fates[i].Kind = fateTornTail
+				}
+			}
 
-	if err := runSpares(ctx, deps, rd, &st, journalID, core.Version{}, nil); err != nil {
-		t.Fatalf("spares: the phase over a held take: %v", err)
-	}
-	if got, want := st.Spares.Held, []core.SegmentID{2}; !slices.Equal(got, want) {
-		t.Fatalf("spares: the take over the pressed proof got held %v, want %v", got, want)
-	}
-	wantAdopted := []AdoptedSpare{{ID: 5, Class: segment.Reserve}, {ID: 6, Class: segment.Content}}
-	if got := st.Spares.Adopted; !slices.Equal(got, wantAdopted) {
-		t.Errorf("spares: with one held take standing in the headroom the adoptions got %v, want %v: the held take occupies the headroom's slot, the first adopted spare takes the reserve, the next content", got, wantAdopted)
+			if err := runSpares(ctx, deps, rd, &st, journalID, core.Version{}, nil); err != nil {
+				t.Fatalf("spares: the phase over a held take: %v", err)
+			}
+			if got, want := st.Spares.Held, leg.heldIDs; !slices.Equal(got, want) {
+				t.Fatalf("spares: the takes over the pressed proof got held %v, want %v", got, want)
+			}
+			if got := st.Spares.Adopted; !slices.Equal(got, leg.want) {
+				t.Errorf("spares: with %d held takes standing in the headroom the adoptions got %+v, want %+v: the holds sit in the headroom's slots ahead of the spares, a hold past the target consuming no deeper class", len(leg.heldIDs), got, leg.want)
+			}
+		})
 	}
 }

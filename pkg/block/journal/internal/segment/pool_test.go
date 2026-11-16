@@ -2489,3 +2489,51 @@ func TestPoolHoldTakenStandsInTheHeadroom(t *testing.T) {
 		p.Stop()
 	})
 }
+
+// TestPoolAWaitReadsTheHeadroomTheHoldsFill: the wait answers by the same
+// accounting the refill fills to. With one held take standing in a
+// one-spare headroom, the refill's own pass makes nothing — the slot is
+// occupied — and the settled pool the wait then reads is exactly at that
+// filled-to target: the wait returns satisfied, never a refusal over a
+// headroom its own refill will not fill. A wait that read the ready
+// spares alone would refuse a pool holding exactly what its refill fills
+// to once the hold is set.
+func TestPoolAWaitReadsTheHeadroomTheHoldsFill(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Headroom: 1}, noMax, 0, nil)
+	p.HoldTaken(1)
+	p.Start()
+	defer p.Stop()
+
+	// The pass has run once the kick it owed has drained and a yield had
+	// it: over a held take it makes nothing, moves no counter and leaves
+	// only its end behind.
+	creates := seam.Calls(kit.OpCreate)
+	for range 1 << 20 {
+		if !p.KickQueuedForTest() && !p.FillingForTest() {
+			for range 16 {
+				runtime.Gosched()
+			}
+			break
+		}
+		runtime.Gosched()
+	}
+	if got, want := seam.Calls(kit.OpCreate), creates; got != want {
+		t.Fatalf("the pool made %d new files over a held take, want %d: the headroom's slot is occupied", got, want)
+	}
+
+	// A settled pool, no pass running or queued, answering the wait.
+	if p.FillingForTest() || p.KickQueuedForTest() {
+		t.Fatal("the pool still owes a pass; the wait below would park on it, not read the settled state")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := p.WaitSpares(ctx); err != nil {
+		var ns *core.NoSpaceError
+		if errors.As(err, &ns) {
+			t.Fatalf("WaitSpares refused a pool holding exactly what its refill fills to, naming %d missing: the one held take stands in the headroom's only slot", ns.Missing)
+		}
+		t.Fatalf("WaitSpares: %v, want nil over a pool whose held take fills the headroom the refill leaves empty", err)
+	}
+}

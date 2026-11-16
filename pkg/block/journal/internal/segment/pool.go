@@ -824,7 +824,10 @@ func (p *Pool) WaitSpares(ctx context.Context) error {
 // recycle's, or a pass's — answers whatever moved. The caller holds mu.
 func (p *Pool) readyShortLocked() bool {
 	switch {
-	case len(p.ready[Headroom]) < p.t.Headroom:
+	case len(p.ready[Headroom])+p.holdTaken < p.t.Headroom:
+		// The held takes count exactly as the refill's own headroom gate
+		// counts them: a wait answers by the accounting the pool fills to,
+		// never by ready spares the holds already stand in.
 		return true
 	case len(p.ready[Reserve]) < p.t.Reserve:
 		return true
@@ -838,7 +841,10 @@ func (p *Pool) readyShortLocked() bool {
 // across its classes, counted as the refill chooses them. The caller holds mu.
 func (p *Pool) shortAtLocked() int64 {
 	var missing int64
-	if d := p.t.Headroom - len(p.ready[Headroom]); d > 0 {
+	// The held takes count in the same headroom term the wait's own shortness
+	// reads, so a refusal's missing number never counts a headroom the
+	// holds already fill.
+	if d := p.t.Headroom - len(p.ready[Headroom]) - p.holdTaken; d > 0 {
 		missing += int64(d)
 	}
 	if d := p.t.Reserve - len(p.ready[Reserve]); d > 0 {

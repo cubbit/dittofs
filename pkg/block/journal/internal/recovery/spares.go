@@ -389,11 +389,13 @@ func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.Jou
 		}
 	}
 	// The held takes stand in the headroom first, ahead of the classes the
-	// re-adopted spares draw: their prefix of the fill order is what keeps a
-	// held take's slot from being handed to a spare that would double-fill
-	// it.
-	all := deps.SpareTargets.AdoptClasses(len(held) + len(adopted))
-	classes := all[len(held):]
+	// re-adopted spares draw — bounded by the headroom's own target, for
+	// the pool makes and takes no slot a hold stands in: a hold past the
+	// headroom's slots consumes no deeper class, exactly as the refill
+	// would make none there.
+	lead := min(len(held), deps.SpareTargets.Headroom)
+	all := deps.SpareTargets.AdoptClasses(lead + len(adopted))
+	classes := all[lead:]
 	for i := range adopted {
 		adopted[i].Class = classes[i] // candidates ascend, so the i-th class is the i-th id's
 	}
