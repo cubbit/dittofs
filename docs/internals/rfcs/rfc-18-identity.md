@@ -509,7 +509,7 @@ type State struct {
 	Settings   config.Identity // the identity.* settings and the directory record
 	Keytab     []secrets.Version // the keytab's versions in force, opened, current first (§3.3)
 	Machine    []secrets.Version // the machine password's versions in force, opened, current first, each with its KeyVersion and HandedOver mark (RFC 16 §2.3); empty when not joined (§3.3, §3.5)
-	NTLM       Revision        // the identity.ntlm setting's revision (§3.5)
+	NTLM       uint64          // the identity.ntlm setting's generation (§3.5)
 }
 ```
 
@@ -969,8 +969,8 @@ other ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20th
 session from the `Apply` that delivers the setting — within a second of its
 commit (§7.2) — and deletes every stored NT hash, as an operation in bounded
 batches ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)).
-A password set derives its NT hash under the `identity.ntlm` revision it read,
-and the API's write of it is conditional on that revision still being current,
+A password set derives its NT hash under the `identity.ntlm` generation it read,
+and the API's write of it is conditional on that generation still being current,
 so no NT hash is written after the deletion has passed its user. Sealing
 wraps the hash and commits nothing; the sealed version is put in that same
 conditional write ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), so a

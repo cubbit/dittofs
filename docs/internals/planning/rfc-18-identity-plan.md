@@ -350,7 +350,7 @@ What replaces what:
 | config keys `kerberos.*`, `ldap.*`, `identity.machine_sid`; `DITTOFS_KERBEROS_*`, `DITTOFS_LDAP_*` | `identity.*` settings and `Secret` records (RFC 13 Appendix B, §7) | refused by the RFC 13 plan's bootstrap loader |
 | `test/integration/ad-dc`'s tests importing `pkg/identity/ldap` and `internal/auth/netlogon` | the directory's and domain controller's suites against real AD | rewritten in epics 6 and 7 |
 | `dfs netlogon test` | RFC 23's `test-directory` action and the secure channel's health in node status (§6 O5) | deleted with `cmd/dfs`'s v1 bodies by RFC 23's plan's epic 1 |
-| `dfsctl idmap` and `dfsctl identity-provider` | `Spell`, `Find` and grants by principal (RFC 18 §4.1); the `identity.directory` record | deleted with `cmd/dfsctl`'s v1 bodies by RFC 23's plan's epic 1; not rebuilt |
+| `dfsctl idmap` and `dfsctl identity-provider` | `Spell`, `Find` and grants by principal (RFC 18 §4.1); the `identity.directory` record | deleted with `cmd/dfsctl`'s v1 bodies by RFC 23's plan's epic 6 (T6.1); not rebuilt |
 | `feat/storage-v2`'s local user names holding `@` (`users.go` accepts `alice@corp`) | refused `ErrInvalid` (RFC 18 §4.6), so an NTLM name with `@` is never local | dropped in epic 2 |
 | develop's join options `ou`, `spns`, `dns_host_name` | `ou` and `dns_host_name` as the online join's parameters (RFC 18 §3.5); RFC 18 §3.3's fixed `cifs/` and `host/` names | `spns` dropped: another name keeps an imported keytab (RFC 18 §3.3) |
 | develop's `kerberos.machine_account.account_name` and `dc_address` | `identity.netbios_name` (A2); the directory record's domain controller address (A3) | refused by the RFC 13 plan's bootstrap loader |
@@ -369,7 +369,7 @@ What replaces what:
 | develop's foreign-SID→uid table (`handlers/sid_mappings.go`) | a directory SID minted as a principal (RFC 18 §4.4); another domain's SID is `ErrUnknownPrincipal` | dropped |
 | develop's SID-keyed share grants with no local user (`models/sid_share_permission.go`) | a grant names a principal by ID; a directory SID resolves first through `resolve-principal` (RFC 23 §3.5) | dropped |
 | develop's netgroups (`dfsctl netgroup`) | RFC 16's `Netgroup` records in a share's export policy (RFC 23 §3.2) | kept, by RFC 23's plan; NFS-side, so this plan builds nothing for them |
-| `dfsctl netlogon status`, `dfsctl netlogon rotate` | the secure channel's health in node status; RFC 23's `rotate-machine-password` (§6 O5) | deleted with `cmd/dfsctl`'s v1 bodies by RFC 23's plan's epic 1 |
+| `dfsctl netlogon status`, `dfsctl netlogon rotate` | the secure channel's health in node status; RFC 23's `rotate-machine-password` (§6 O5) | deleted with `cmd/dfsctl`'s v1 bodies by RFC 23's plan's epic 6 (T6.1) |
 | develop's NFS RPCSEC_GSS Kerberos | RFC 18 §3.3 over RFC 21 §10 | deferred with the NFS side (§6 O2) |
 | `docs/guide/identity.md` and `windows-ad-setup.md`: `msDS-SupportedEncryptionTypes` `0x1F`, an exported keytab with RC4 keys; `configuration.md`'s `kerberos.*` and `DITTOFS_KERBEROS_*`; `smb.md`'s machine account and map-to-guest; `security.md` | `0x18` and AES keys only (A4); the join and the derived keytab (A3); `identity.*` (RFC 13 Appendix B); no map to guest (RFC 18 §3.6) | rewritten in epic 7, but `configuration.md`, which #4059's epic 2 rewrites and epic 7 adds identity's section to (#4059's O8) |
 
@@ -1127,12 +1127,12 @@ if h.NTHash != nil {
 	}
 }
 // The conditional write is #4050's Write, RFC 16 §3's one API transaction:
-// a tracked read of identity.ntlm, refused if its revision moved (§3.5), so
+// a tracked read of identity.ntlm, refused if its generation moved (§3.5), so
 // no NT hash lands after NTLM-off's deletion has scanned past its user. An
 // expect conflict on either PutSecret is ErrConflict: the caller seals again.
 err = store.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
 	s, _, err := tx.Setting(installation, "identity.ntlm") // tracked read
-	if err != nil || s.Generation != ntlm.Revision {
+	if err != nil || s.Generation != ntlm.Generation {
 		return orConflict(err)
 	}
 	if err := tx.PutSecret(pw, pw.Version-1); err != nil {
