@@ -16,7 +16,7 @@ and `SetEmail`, `MintBatch`, `Alloc`); [RFC 23](../rfcs/rfc-23-control-plane.md)
 `test-directory`; [RFC 25](../rfcs/rfc-25-observability.md) §3.9's `directory_unreachable` row
 and §8.2's `Source`.
 **Track:** C.
-**Epic 6 estimate: 13 subtasks, 26.5 man-days.**
+**Epic 6 estimate: 13 subtasks, 27 man-days.**
 **Depends on:** **E1** (S1): `pkg/identity`'s `Identities`, `FindOpts`, `Spelling`, `Caller`;
 `internal/identity`'s `Server`, `Deps`, `State`, `Apply`, `Start`. **E2**: T2.3's `Minter.Create`
 (T6.2), T2.4's `Settings`, `State.Settings` and `Apply`'s refusal (T6.3), its `Deps.Secrets`
@@ -33,14 +33,15 @@ T2.6's `PGEN` raise and positions, for T6.10's `Rename` and `SetEmail`.
 `require_pac` to T6.3's record and reads its schema and realm; T6.9's step 3 joins E5's Kerberos
 branch, called by whichever of T6.9 and E5's T5.5 lands second. **E7**, partly: `resolve-principal`
 wraps T6.9's `Find`, `test-directory` wraps T6.5's test call, and pass-through compares the
-`LogonDomainID` with T6.5's domain SID. **E8**: "directory deadline", "disabled directory account"
-and "deny-only lookup error" run on this epic's directory; E8 adds T6.8's source to the node's
-health evaluator through `Add`, lists T6.3's section in the node's settings table, reads a directory account's enabled
-state at a Kerberos sign-in through T6.11's cache read (its T8.5, D6 pending), and hands T6.9's
-`KerberosLinkSID` to RFC 23's API as `Deps.Directory`. **RFC 23's plan's epic 4**, its T4.11's
-success paths: T6.9's `KerberosLinkSID` and T6.4's in-memory directory with its suite. **RFC 23's
-plan's epic 6**, its T6.4 and T6.6: T6.4's in-memory directory and T6.9's `Find`, for the grant by
-directory name and `domain resolve`/`domain test`.
+`LogonDomainID` with T6.5's domain SID, and its T7.6 and T7.7 add the computer account's functions
+to `internal/identity/directory` over T6.4's `DialTLS`. **E8**: "directory deadline" and "disabled
+directory account" run on this epic's directory; E8 adds T6.8's source to the node's health
+evaluator through `Add`, lists T6.3's section in the node's settings table, reads a directory
+account's enabled state at a Kerberos sign-in through T6.11's cache read (its T8.5, D6 pending), and
+hands T6.9's `KerberosLinkSID` to RFC 23's API as `Deps.Directory`. **RFC 23's plan's epic 4**, its
+T4.11's success paths: T6.9's `KerberosLinkSID` and T6.4's in-memory directory with its suite. **RFC
+23's plan's epic 6**, its T6.4 and T6.6: T6.4's in-memory directory and T6.9's `Find`, for the grant
+by directory name and `domain resolve`/`domain test`.
 
 ---
 
@@ -97,9 +98,12 @@ directory step; the benchmarks; the NetBIOS cross-check and the section's write 
   §5.1): E7. A join refused against an `rfc2307` record: E7.
 - The `resolve-principal` and `test-directory` runner kinds: E7, wrapping T6.9's `Find` and
   T6.5's test call.
-- The rows "directory deadline", "disabled directory account", "deny-only lookup error", "PAC
-  bound to the record" and "no local password for a directory user": E8. This epic builds the
-  bound and the reads they check (T6.9, T6.11).
+- The computer account's LDAP: E7's T7.6 moves v1's join code into this epic's
+  `internal/identity/directory` and T7.7 completes it, as concrete functions over `DialTLS`
+  outside `Conn` (E7's D3), so `Conn` and the in-memory directory gain nothing.
+- The rows "directory deadline", "disabled directory account", "PAC bound to the record" and "no
+  local password for a directory user": E8. This epic builds the bound and the reads they check
+  (T6.9, T6.11). "deny-only lookup error": E3's T3.4 and E5's T5.7.
 - A directory account's enabled state read at a Kerberos sign-in (RFC 18 §3.4, §3.7): E8's T8.5,
   through T6.11's cache read (E8's D6, pending). R57 is held here at resolution.
 - The node composing identity, filling `State.Directory` from the store and adding T6.8's source to
@@ -146,7 +150,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T6.1, T6.4, T6.6 | the directory's suite runs against the Samba domain controller in `integration/ad-dc`, reached by its host name with its certificate verified against the fixture's CA; a test that needs real AD's nesting or paging runs there, never on the in-memory one alone |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T6.4, T6.5, T6.7, T6.8, T6.9 | RFC 18's notes at their sites: §5.1's `ponytail:` (one directory) at the client, §5.2's two `ponytail:` notes (constant TTLs, one cache per node) at the cache, §5.3's `decision:` (stale then closed) and `ponytail:` (recovery burst) at the cache's grace, §5.5's `ponytail:` (no NT hash read) at the client's attribute list, §4.4's `decision:` (no mint for an unauthenticated lookup) at `Find`; this document's D1 to D13 markers at theirs |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | each R row's test is named in its subtask with the bug it catches; R6's write role is held by #4059's write check, run on this section (T6.13) |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T6.3, T6.4, T6.5, T6.8, T6.9 | the exports are `internal/identity/directory`'s `Record`, `Conn`, `Request`, `Entry`, `Dialer` and `DialTLS`, which `internal/node` and `identitytest` call, its `Client`, `NewClient` and question methods, which `internal/identity` calls, `State.Directory` and `Deps.Directory`, `Server.Conditions` for the node's health evaluator, `Server.KerberosLinkSID` for the API's link write, and `identitytest`'s directory, fault wrapper and suite; the cache and the mint path stay unexported |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T6.3, T6.4, T6.5, T6.8, T6.9 | the exports are `internal/identity/directory`'s `Record`, `Conn`, `Request`, `Entry`, `Dialer` and `DialTLS`, which `internal/node` and `identitytest` call, its `Client`, `NewClient` and question methods, which `internal/identity` calls, `State.Directory` and `Deps.Directory`, `Server.Conditions` for the node's health evaluator, `Server.KerberosLinkSID` for the API's link write, and `identitytest`'s directory, fault wrapper and suite; the cache and the mint path stay unexported; E7's T7.6 and T7.7 add the computer account's functions to the package, outside `Conn` |
 | rule 12, each subtask creates only what it declares | all | each deliverable names its consumer; `Deps.Directory` lands with the client (T6.5), `State.Directory` with `Apply`'s check (T6.3), `Settings.DirectoryStaleGrace` with the cache (T6.7), the fault wrapper with the in-memory directory it wraps (T6.4), first used in T6.6; `Clock.After` is E2's T2.6's (D7) and the record's `RequirePAC` E5's T5.8's |
 
 ## 3. Requirements and invariants
@@ -366,6 +370,8 @@ internal/identity/directory/
   groups.go                   T6.6  closures (D10), SIDs in pages, paging, range retrieval
   rangeattr.go                T6.6  the member;range=<lo>-<hi|*> parser
   fuzz_test.go                T6.6  FuzzRangeAttr
+  computer.go                 E7's T7.6, T7.7  the computer account's create, reset and read,
+                                    outside Conn (E7's D3)
 pkg/identity/identitytest/
   directory.go                T6.4  the in-memory directory; T6.6 tokenGroups, chains, paging, ranges
   filter.go                   T6.4  its RFC 4515 parser and evaluator
@@ -382,9 +388,9 @@ pkg/settings/
 
 ### T6.1 The fixture's TLS part
 
-**Subtask T6.1 estimate: 1 man-days.**
+**Subtask T6.1 estimate: 1.5 man-days.**
 
-- **Track:** C. **Depends on:** none.
+- **Track:** C. **Depends on:** none; the rebase waits for RFC 23's plan's epic 1 (#4334) to merge.
 - **Covers:** R9, R23.
 - **Deliverables:** built, not merged, on the branch `test/ad-dc-network-tls` (9207ec946,
   f86998cd3, 24073d347), on GitHub:
@@ -395,10 +401,21 @@ pkg/settings/
   addresses, and exports the CA as `/keytabs/ca.pem`; `InsecureSkipVerify` and the
   `x509negativeserial` godebug are gone; `docs/guide/identity.md` describes the network and the
   CA. Consumed by T6.4's and T6.6's suite runs in `integration/ad-dc`, and by E5's and E7's
-  fixture parts.
+  fixture parts. This subtask is also the one owner of moving the fixture to `feat/storage-v2`,
+  which E5's T5.1 and E7's T7.2 cite: once #4334 has merged, `test/ad-dc-network-tls` and the two
+  branches stacked on it, E5's `test/ad-dc-kerberos` and E7's `test/ad-dc-join` (not ancestors of
+  each other), rebased onto `feat/storage-v2` and opened there; and the `integration/ad-dc` cell's
+  place in the plan job's select in `.github/workflows/tests.yml` checked on `feat/storage-v2`. The
+  cell is in the select, and the `V2` skip beside it drops it while its tests drive v1's SMB
+  adapter (its `decision:`). The pull request lifts the skip for the cell, or names in its
+  description the v1 tests that keep it skipped and the subtask that deletes each (E7's T7.6 the
+  three NETLOGON tests, E8's T8.4 `TestADGroupSIDsFromPAC`); until it is lifted, no fixture test
+  runs on `feat/storage-v2`.
 - **Acceptance criteria:**
   - No test under `test/integration/ad-dc` sets `InsecureSkipVerify`.
   - Two runs on one Docker host use disjoint names.
+  - The three fixture branches build on `feat/storage-v2`, and the cell's skip is lifted or its
+    remaining v1 tests named.
 - **Tests:** `TestADFixture/ldaps_verified_by_host_name`: an LDAPS handshake to `dc1.dittofs.ad`
   verifies against the exported CA alone with Go's default verification (catches a certificate
   whose SAN misses the host name, or a CA not exported, R9). No test double.
@@ -877,7 +894,7 @@ a directory principal resolves end to end.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T6.1 | 1 | — | the fixture's TLS part, built on its branch, not merged; may be open beside PR 2 |
+| 1 | T6.1 | 1.5 | #4334 | the fixture's TLS part, built on its branch, rebased onto `feat/storage-v2` with the two stacked on it; may be open beside PR 2 |
 | 2 | T6.2, T6.3 | 2.75 | — | the mint path E5 waits for, and the record every later subtask reads |
 | 3 | T6.4, T6.5, T6.6 | 8.25 | PR 1, PR 2 | the LDAP side whole: connection, in-memory directory and suite, client, groups, held to Samba |
 | 4 | T6.7, T6.8 | 4.5 | PR 3 | the cache and its outage mode, one review of the grace |
@@ -891,14 +908,14 @@ A suggestion only: one pull request per subtask works as well.
 The sources are RFC 18 as #4058 merged it (83232b441), whose text in the sections cited here is
 the version this document was written against.
 
-The RFC 18 plan's figure for this epic is 8 subtasks, 22 man-days; this document's is 13
-subtasks, 26.5 man-days: the mint path (T6.2) and `Minter.Rename` and `SetEmail` (in T6.10),
-which E2's document hands to this epic, add 2.25; the outage mode as its own subtask and the
-suite's second run in `integration/ad-dc` add most of the rest; `FuzzRangeAttr` (T6.6),
-`KerberosLinkSID` (T6.9) and the records' `Generation` raise (T6.10) add 0.25 each. The fixture's TLS part (T6.1) keeps its
-1 man-day although it is already built, since it has not merged. T6.5 and T6.10 are the least
-certain: how much of v1's client survives D4 and D10, and the swap's ordering inside one
-transaction.
+The RFC 18 plan's figure for this epic is 8 subtasks, 22 man-days; this document's is 13 subtasks,
+27 man-days: the mint path (T6.2) and `Minter.Rename` and `SetEmail` (in T6.10), which E2's document
+hands to this epic, add 2.25; the outage mode as its own subtask and the suite's second run in
+`integration/ad-dc` add most of the rest; `FuzzRangeAttr` (T6.6), `KerberosLinkSID` (T6.9) and the
+records' `Generation` raise (T6.10) add 0.25 each. The fixture's TLS part (T6.1) keeps its 1 man-day
+although it is already built, since it has not merged, and gains 0.5 for rebasing the three fixture
+branches onto `feat/storage-v2` and the cell's skip there. T6.5 and T6.10 are the least certain: how
+much of v1's client survives D4 and D10, and the swap's ordering inside one transaction.
 
 **Pending the user's answer** (the recommended option is written in place):
 
@@ -961,5 +978,5 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
   import rule forbids importing `internal/identity` outside `internal/node` and its own packages;
   it names the server's package, not the directory's, so the rule needs no change, but T6.4
   checks it.
-- The fixture branch is cut from `develop`; it reaches `feat/storage-v2` with the rest of the
-  cell, through the cherry-pick the programme uses for `test/integration`.
+- The fixture branches are cut from `develop`; T6.1 rebases all three onto `feat/storage-v2` once
+  #4334 has merged, as asked in review, and opens them there.
