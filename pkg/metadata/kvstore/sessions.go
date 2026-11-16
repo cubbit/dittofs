@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"iter"
+	"net/netip"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -23,6 +24,10 @@ import (
 // tail after its own tag, so the sweep finds the count from the row.
 
 // How long a sign-in count is kept after the time its expiry follows.
+//
+// decision: each is baked into the XP rows already written, so changing one
+// between releases strands the rows written under the old value where the
+// sweep looks for the new; a change needs a migration that moves them.
 const (
 	sourceCountLife = 15 * time.Minute
 	pairCountLife   = 24 * time.Hour
@@ -58,11 +63,6 @@ func accountTokenKey(account entity.Principal, id [16]byte) []byte {
 	return keys.ID(accountTokensPrefix(account), id[:])
 }
 
-// expiryKey is a row of the expiry index: at, then the tagged record.
-func expiryKey(at time.Time, tag byte, tail []byte) []byte {
-	return keys.ID(append(keys.Uint64([]byte{keys.KindXP}, uint64(at.UnixNano())), tag), tail)
-}
-
 func sessionExpiryKey(s entity.Session) []byte { return expiryKey(s.Expires, keys.XPSession, s.ID[:]) }
 
 func tokenExpiryKey(t entity.APIToken) []byte { return expiryKey(t.Expires, keys.XPToken, t.ID[:]) }
@@ -72,8 +72,11 @@ func tokenExpiryKey(t entity.APIToken) []byte { return expiryKey(t.Expires, keys
 // terminator.
 func signInTail(k entity.SignInKey) (byte, []byte, error) {
 	var addr []byte
-	if k.Source.IsValid() {
-		p := k.Source.Masked()
+	if p := k.Source; p.IsValid() {
+		if p.Addr().Is4In6() && p.Bits() >= 96 {
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
+		p = p.Masked()
 		addr = append(p.Addr().AsSlice(), byte(p.Bits()))
 	}
 	switch account := k.Account != (entity.Principal{}); {
@@ -162,20 +165,57 @@ func (c controlTx) SessionByRefresh(hash [32]byte) (entity.Session, bool, error)
 	return sessionByRefreshIn(c.tx, hash)
 }
 
-func (c controlTx) PutSession(s entity.Session) error {
-	if s.Account.Kind != entity.PrincipalUser || s.Expires.IsZero() {
-		return merrs.NewInvalidArgumentError("a session needs a user account and an expiry")
+// beforeEpoch reports a time the expiry index cannot order, the zero time
+// among them.
+func beforeEpoch(t time.Time) bool { return t.Before(time.Unix(0, 0)) }
+
+// hashFree refuses a hash indexed under key to an ID other than id, whose
+// index row deleting that ID would then delete.
+func hashFree(r kv.Reader, key []byte, id [16]byte) error {
+	b, ok, err := get(r, key)
+	if err != nil || !ok {
+		return err
 	}
+	if other, err := decodeID(b); err != nil || other != id {
+		if err == nil {
+			err = merrs.NewAlreadyExistsError("hash")
+		}
+		return err
+	}
+	return nil
+}
+
+func (c controlTx) PutSession(s entity.Session) error {
+	if _, found, err := sessionIn(c.tx, s.ID); err != nil || found {
+		if found {
+			err = merrs.NewAlreadyExistsError("session")
+		}
+		return err
+	}
+	return c.writeSession(s, nil)
+}
+
+func (c controlTx) UpdateSession(s entity.Session) error {
 	old, found, err := sessionIn(c.tx, s.ID)
 	if err != nil {
 		return err
 	}
-	var oldExpiry []byte
-	if found {
-		if old.Account != s.Account {
-			return merrs.NewInvalidArgumentError("a session keeps its account")
-		}
-		oldExpiry = sessionExpiryKey(old)
+	if !found {
+		return merrs.NewNotFoundError("session", "session")
+	}
+	if old.Account != s.Account {
+		return merrs.NewInvalidArgumentError("a session keeps its account")
+	}
+	return c.writeSession(s, sessionExpiryKey(old))
+}
+
+// writeSession writes s, moving its expiry row from oldExpiry.
+func (c controlTx) writeSession(s entity.Session, oldExpiry []byte) error {
+	if s.Account.Kind != entity.PrincipalUser || beforeEpoch(s.Expires) {
+		return merrs.NewInvalidArgumentError("a session needs a user account and an expiry after 1970")
+	}
+	if err := hashFree(c.tx, refreshKey(s.Refresh), s.ID); err != nil {
+		return err
 	}
 	for _, kvp := range []kv.KeyValue{
 		{Key: sessionKey(s.ID), Value: encodeSession(s)},
@@ -211,18 +251,23 @@ func (c controlTx) DeleteSession(id [16]byte) error {
 	return nil
 }
 
+func (c controlTx) APIToken(id [16]byte) (entity.APIToken, bool, error) { return tokenIn(c.tx, id) }
+
 func (c controlTx) APITokenByHash(hash [32]byte) (entity.APIToken, bool, error) {
 	return tokenByHashIn(c.tx, hash)
 }
 
 func (c controlTx) PutAPIToken(t entity.APIToken) error {
-	if t.Account.Kind != entity.PrincipalUser || t.Expires.IsZero() {
-		return merrs.NewInvalidArgumentError("a token needs a user account and an expiry")
+	if t.Account.Kind != entity.PrincipalUser || beforeEpoch(t.Expires) {
+		return merrs.NewInvalidArgumentError("a token needs a user account and an expiry after 1970")
 	}
 	if _, found, err := tokenIn(c.tx, t.ID); err != nil || found {
 		if found {
 			err = merrs.NewAlreadyExistsError("api token")
 		}
+		return err
+	}
+	if err := hashFree(c.tx, tokenHashKey(t.Hash), t.ID); err != nil {
 		return err
 	}
 	for _, kvp := range []kv.KeyValue{
@@ -251,14 +296,7 @@ func (c controlTx) DeleteAPIToken(id [16]byte) error {
 	return nil
 }
 
-// SignInFailures reads a count tracked, so a sign-in raising it conflicts
-// with any other that commits between its read and its commit.
-//
-// decision: no test can observe the tracking, since the raise's Set already
-// conflicts with any concurrent write of the count, the kv contract
-// conflicting blind writes; a raise read untracked passes the race case as
-// well. The tracked read decides only on a backend that stops conflicting
-// blind writes.
+// SignInFailures reads a count tracked, so concurrent raises of it conflict.
 func (c controlTx) SignInFailures(k entity.SignInKey) (entity.SignInFailures, bool, error) {
 	tag, tail, err := signInTail(k)
 	if err != nil {
@@ -280,6 +318,9 @@ func (c controlTx) PutSignInFailures(k entity.SignInKey, f entity.SignInFailures
 	tag, tail, err := signInTail(k)
 	if err != nil {
 		return err
+	}
+	if tag == keys.SFSource && beforeEpoch(f.Failed) || tag == keys.SFPair && beforeEpoch(f.Last) {
+		return merrs.NewInvalidArgumentError("a count's expiry follows a time after 1970")
 	}
 	old, found, err := signInIn(c.tx, tag, tail)
 	if err != nil {
@@ -308,6 +349,19 @@ func (c controlTx) DeleteSignInFailures(k entity.SignInKey) error {
 		return err
 	}
 	return moveRow(c.tx, signInExpiryKey(tag, tail, old), nil)
+}
+
+// SignInFailures reads a count untracked, for a refusal that writes nothing.
+func (c ControlPlane) SignInFailures(ctx context.Context, k entity.SignInKey) (f entity.SignInFailures, found bool, err error) {
+	tag, tail, err := signInTail(k)
+	if err != nil {
+		return f, false, err
+	}
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		f, found, err = signInIn(r, tag, tail)
+		return err
+	})
+	return f, found, err
 }
 
 // Session reads one session: the per-call check of an access token's.
@@ -342,16 +396,35 @@ func (c ControlPlane) Sessions(ctx context.Context, account entity.Principal) it
 	})
 }
 
-// PutSession writes a session, keeping every refresh hash it had before
-// findable beside its new one.
+// PutSession creates a session.
 func (c ControlPlane) PutSession(ctx context.Context, s entity.Session) error {
 	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.PutSession(s) })
 }
 
+// UpdateSession rewrites an existing session, keeping every refresh hash it
+// had before findable beside its new one.
+func (c ControlPlane) UpdateSession(ctx context.Context, s entity.Session) error {
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.UpdateSession(s) })
+}
+
 // DeleteSession deletes a session, its account's index row and every
 // refresh hash it had, in one transaction.
+//
+// ponytail: the transaction deletes every hash the session was ever given,
+// about 48 rows for a 12 h session refreshed every 15 min, growing with the
+// session lifetime. Delete only the current hash and let the sweep reap the
+// rest if a long lifetime makes this transaction large.
 func (c ControlPlane) DeleteSession(ctx context.Context, id [16]byte) error {
 	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteSession(id) })
+}
+
+// APIToken reads one token.
+func (c ControlPlane) APIToken(ctx context.Context, id [16]byte) (t entity.APIToken, found bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		t, found, err = tokenIn(r, id)
+		return err
+	})
+	return t, found, err
 }
 
 // APITokenByHash finds the token a presented token's hash names.

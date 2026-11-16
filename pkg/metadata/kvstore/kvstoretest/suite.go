@@ -139,6 +139,8 @@ func Run(t *testing.T, open Opener) {
 		{"StoreDeleteRacesNamespace", testStoreDeleteRacesNamespace},
 		{"NamespaceDeleteRacesShare", testNamespaceDeleteRacesShare},
 		{"SessionRefreshIndex", testSessionRefreshIndex},
+		{"SessionTxReads", testSessionTxReads},
+		{"SessionRefusals", testSessionRefusals},
 		{"APITokens", testAPITokens},
 		{"SignInFailures", testSignInFailures},
 		{"SignInFailuresRace", testSignInFailuresRace},

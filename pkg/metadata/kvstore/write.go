@@ -114,11 +114,15 @@ func idempotencyKey(account entity.Principal, key string) []byte {
 	return keys.String(keys.ID([]byte{keys.KindIK}, account.ID[:]), []byte(key))
 }
 
+// expiryKey is a row of the expiry index: at, then the tagged record.
+func expiryKey(at time.Time, tag byte, tail []byte) []byte {
+	return keys.ID(append(keys.Uint64([]byte{keys.KindXP}, uint64(at.UnixNano())), tag), tail)
+}
+
 // idempotencyExpiryKey is the record's row in the expiry index: its expiry,
 // then its tag, account and key.
 func idempotencyExpiryKey(i entity.IdempotencyRecord) []byte {
-	k := keys.Uint64([]byte{keys.KindXP}, uint64(i.Expires.UnixNano()))
-	return keys.String(keys.ID(append(k, keys.XPIdempotency), i.Account.ID[:]), []byte(i.Key))
+	return keys.String(expiryKey(i.Expires, keys.XPIdempotency, i.Account.ID[:]), []byte(i.Key))
 }
 
 func encodeIdempotency(i entity.IdempotencyRecord) []byte {
