@@ -7,17 +7,18 @@ NTLM-off deletion, §3.7's marked-deleted account, §4.1 (but its mint, §1.2), 
 password for a directory user" (its `NewHashes` half), its Fuzz and Unit paragraphs, and §12 item 1,
 as pull request #4058 merged them (83232b441); [RFC 16](../rfcs/rfc-16-metadata-store.md) §2.2
 (root's fixed ID, uid and gid 0 and 65534), §2.3 (`User`'s `Password` and `NTHash`, the machine
-record, `Installation.NTLMOff`), §3 (`Minter.Create`, `Alloc`, `MintBatch`, `ControlPlane.PutUser`
+record), §3 (`Minter.Create`, `Alloc`, `MintBatch`, `ControlPlane.PutUser`
 and `PutGroup`, and `DeleteUser`'s secret deletion) and §4.2's `NX‖kind‖name`, `PGEN`, `CFGGEN`,
 `IN` and `IDS‖kind` rows; [RFC 13](../rfcs/rfc-13-configuration.md) §7's "a user's secrets go with
 the user"; [RFC 23](../rfcs/rfc-23-control-plane.md) §4.1 and §4.6, for the
 `identity.nt-hash-delete` operation; RFC 13 Appendix B's `identity.id_range`, `identity.ntlm` and
 `identity.netbios_name` rows; RFC 23's epic 2 document (pull request #4326), D2, T2.3 and T2.4,
 which declare `entity.Alloc` on `PutUser` and `PutGroup` and refuse an ID until this epic's
-counters land, T2.6 (positions and the `PGEN` raise), and D8 and T2.11 (`DeleteUser`'s mark,
-batches and secret deletion).
+counters land, T2.2 (`Installation.NTLMOff`, its R54), T2.6 (positions and the `PGEN` raise), and
+D8 and T2.11 (`DeleteUser`'s mark, batches and secret deletion); RFC 23's epic 3 document (pull
+request #4336), D7 and T3.4 (the runner's `StepResult`, `Step` and `Progress`).
 **Track:** C.
-**Epic 2 estimate: 8 subtasks, 13.75 man-days.**
+**Epic 2 estimate: 8 subtasks, 13.5 man-days.**
 **Depends on:** **S1**, epic 1's identity surface frozen. **#4059's S1 and S2**: `pkg/settings`
 and `pkg/secrets` frozen, with `Seal` taking the kind, the owner and `secrets.Meta`, the kvstore
 secrets view (`Secret`, `PutSecret`, `PruneSecret`) on the view and on `ControlPlaneTx`, and
@@ -26,8 +27,10 @@ secrets sealed and resolved under each role's key (T2.4, T2.6, T2.7). **RFC 23's
 on the view and on `ControlPlaneTx`, refused until T2.2 lands, its D2); T2.3 for its T2.6 (the
 once-per-transaction `PGEN` raise and the records' `Position`); T2.8 for its T2.11 (`DeleteUser`'s
 mark and batches, whose last batch deletes the secrets the record references, its D8); T2.7 for
-its T2.7 (`PutOperation`); everything else starts before it. **RFC 23's plan's epic 3**, for
-T2.7 only: the operation runner, with a slot for the `identity.nt-hash-delete` kind. RFC 23's
+its T2.6 (the `PGEN` helper) and T2.7 (`PutOperation`), and for `ControlPlaneTx.SetNTHashDeleted`,
+which RFC 23's epic 2 adds through #4336; everything else starts before it. **RFC 23's plan's
+epic 3**, for T2.7 only: its T3.4, the runner whose `StepResult` E8 adapts this epic's step into,
+registering it in `node.New`. RFC 23's
 plan's epic 1 (#4314, D1) deletes v1 first, which S1 already waits on.
 **Blocks:** **E6**, whose T6.2 is identity's one mint path over T2.3's `Create`, and which also
 waits for T2.4 (T6.3, T6.5; T6.9 reads the range), T2.2 and T2.5 (T6.9) and T2.6's `Clock.After`
@@ -37,9 +40,9 @@ anonymous already exists) and whose `ntlm_off` refusal reads the `NTLM` key of T
 `State.Settings`; **E4**, partly, whose local check reads T2.1's `NTHash`, finds a user by name
 through T2.5's `Find`, signs in against T2.6's `NewHashes` and resolves through T2.4's
 `Deps.Secrets`, and whose routing reads T2.4's `identity.netbios_name`; and RFC 23's plan's epic
-5, which builds its accounts on T2.6's `NewHashes` and `APISignIn` and its user and group writes
-on T2.2's counters behind `Alloc`, and whose password writes (its T5.7 and T5.10), the first code
-to store an NT hash, wait for T2.8.
+5, which builds its accounts on T2.6's `NewHashes` and `APISignIn`, and whose password writes (its
+T5.7 and T5.10), the first code to store an NT hash, wait for T2.8; and RFC 23's plan's epic 4,
+whose user and group creates (its T4.10) draw IDs through `Alloc` from T2.2's counters.
 
 ---
 
@@ -72,12 +75,11 @@ a password is derived and checked, and while NTLM is off it is never kept as an 
 `entity`'s root ID, `PrincipalMachine`, `SchemeDir`, `User.Password` and `User.NTHash`; kvstore's
 refusals of a well-known principal, of uid and gid 0 and 65534, of a malformed machine record, of a
 SID change and of a file principal without its uid or gid and SID; the name fold and the `@` rule;
-the `IDS‖uid`, `IDS‖gid` and `IDS‖rid` counters and the installation's domain SID; the allocation
+the `IDS‖0x04` (uid), `IDS‖0x05` (gid) and `IDS‖0x06` (RID) counters and the installation's domain SID; the allocation
 behind `Alloc` on `PutUser` and `PutGroup`; `Minter.Create`; identity's settings section,
 `State.Settings`, `Apply`'s refusal and `Deps.Secrets`; `Scheme.Stored()`, `Spell` and `Find`;
 `FuzzSID`; `NewHashes`, `Lookup`, `VerifyPassword` and `Account`; `NTHash` among the secrets
-`DeleteUser` deletes; `Installation.NTLMOff` unless RFC 23's plan's epic 2 adds it (§9); the
-`identity.nt-hash-delete` step function and its store calls.
+`DeleteUser` deletes; the `identity.nt-hash-delete` step, its progress and its store call.
 
 ### 1.2 Out of scope
 
@@ -95,13 +97,17 @@ behind `Alloc` on `PutUser` and `PutGroup`; `Minter.Create`; identity's settings
   matters: E6. Setting `FindOpts.Mint` from the call's proof is the filesystem's, E3's T3.2
   (RFC 18 §4.1). In this epic `Find` never mints, and reads no `FindOpts`.
 - The password set's write, which seals both hashes and puts them inside the API's conditional
-  `Write` with `tx.PutSecret`, and the pruning of the replaced versions: RFC 23's plan's epic 5, the
-  route's owner (D5, §9).
+  `Write` with `tx.PutSecret`, and the pruning of the replaced versions: RFC 23's plan's epic 5,
+  its T5.7 and R37 (D5).
 - The refusal of `identity.ntlm` turned back on, and the write that sets `Installation.NTLMOff.Off`:
-  RFC 23 §4.1, built by RFC 23's plan's epics 4 and 7. "NTLM off"'s password-set half: E8.
+  RFC 23 §4.1, built by RFC 23's plan's epics 4 and 7. "NTLM off"'s password-set half: RFC 23's
+  plan's epic 5, T5.7's API test (a change held across an NTLM-off is refused and resealed with no
+  NT hash); E8 keeps the end-to-end row.
 - The group closure, the cap, squash and grants: E3. "An API role grants nothing on files" (RFC
   18 §8) is resolution's, E3's.
 - `identity.netbios_name` against the directory record's NetBIOS domain: E6.
+- Registering the deletion's step in `node.New`, adapting it into `node.StepResult`, and the
+  runner's own resume across a restart: E8, and RFC 23's plan's epic 3 (its T3.4, R52).
 - `State.NTLM`, the `identity.ntlm` revision (RFC 18 §2.6): no code of this epic reads it (D6, §9).
   The on-or-off value is another thing: it is the `NTLM` key of T2.4's `State.Settings`, which E3's
   T3.10 reads to refuse `Secret` callers.
@@ -147,7 +153,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no external system is reached |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T2.1, T2.2, T2.4, T2.5, T2.6, T2.7 | RFC 18's `decision:` notes of §2.1 (root) at root's ID, §2.3 (a missing uid is allocated) at `Alloc`, §3.5 (NTLM on by default) at the setting's default, §4.4 (a deleted principal is the null SID) at `Spell`, §8 (one `User` record) at `Account`; D1's, D3's and D8's `decision:` markers, D2's and D4's `ponytail:` markers, and the NT-hash cost marker at `NewHashes`; epic 1's stub `ponytail:` markers removed from each body this epic fills |
 | rule 10, a test must be able to fail | all | each R-row's test is named in its subtask with the bug it catches; R24's purity, R27's constant-time compare and R33's single writer are held by the code's shape, each named as such |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T2.1, T2.2, T2.4, T2.5 | the exports are `entity`'s and kvstore's fields and methods RFC 16 declares, `Scheme.Stored()` (RFC 18 §2.2), identity's settings struct and `Deps.Secrets`; the deletion's step is unexported |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T2.1, T2.2, T2.4, T2.5 | the exports are `entity`'s and kvstore's fields and methods RFC 16 declares, `Scheme.Stored()` (RFC 18 §2.2), `entity.FoldPrincipalName` (D2), identity's settings struct, `Deps.Secrets`, and the deletion's step and its progress as plain-typed methods on `*Server` (cursor in; next cursor, done and the end write out), which E8 adapts into `node.StepResult`, since `internal/node` imports identity and identity cannot import `node` |
 | rule 12, each subtask creates only what it declares | all | each deliverable names its consumer; `SchemeDir` lands with `Stored()` and `NewHashes`, `Rename` and `SetEmail` with E6, the mint path with E6's T6.2 |
 
 ## 3. Requirements and invariants
@@ -210,9 +216,9 @@ spells it `merrs.NewInvalidArgumentError`, as RFC 23's plan's epic 2 does (its D
 | --- | --- | --- | --- | --- |
 | R24 | `NewHashes` is pure, reading and writing nothing; it derives the argon2id password hash and, only while `ntlm` is on and the user holds file spellings and is not a directory principal, the NT hash; for a directory principal it fails `ErrInvalid`; it is the one place the NT-hash rule is applied | MUST | §3.5, §8.1, §10 "no local password for a directory user", §10 Unit | T2.6 |
 | R25 | `Lookup` resolves a name to its account's principal by the user part, without its domain or realm, folded as §4.6 folds names; the zero principal for a user part with no account; it reads the store only, never queries a directory, never mints | MUST | §8.1 | T2.6 |
-| R26 | `VerifyPassword` fails `ErrLogonFailure` alike for a wrong password, the zero principal, a disabled or deleted account, one marked deleted whose deletion is still running, and an account with no password, and `ErrUnavailable` when the store cannot answer | MUST | §3.7, §8.1 | T2.6 |
+| R26 | `VerifyPassword` fails `ErrLogonFailure` alike for a wrong password, the zero principal, a disabled or deleted account, one marked deleted whose deletion is still running, and an account with no password, and `ErrUnavailable` when the store cannot answer | MUST | §3.7, §8.1 | T2.6, T2.8 |
 | R27 | `VerifyPassword` compares in constant time, and the zero principal does the same work as a wrong password, a verification against a fixed dummy hash | MUST | §8.1 | T2.6 |
-| R28 | `Account` returns p's current record, `ErrLogonFailure` if disabled, deleted or marked deleted | MUST | §3.7, §8.1 | T2.6 |
+| R28 | `Account` returns p's current record, `ErrLogonFailure` if disabled, deleted or marked deleted | MUST | §3.7, §8.1 | T2.6, T2.8 |
 
 **Settings and NTLM off**
 
@@ -222,7 +228,8 @@ spells it `merrs.NewInvalidArgumentError`, as RFC 23's plan's epic 2 does (its D
 | R30 | `identity.netbios_name` is at most 15 bytes of `[A-Z0-9-]`, default `DITTOFS`; `identity.ntlm` defaults on; `identity.id_range` as R11 | MUST | RFC 13 Appendix B; §3.5 | T2.4 |
 | R31 | Turning NTLM off deletes every stored NT hash, as an operation in bounded batches | MUST | §3.5; RFC 23 §4.1, §4.6 | T2.7 |
 | R32 | The deletion records each step durably and makes each idempotent, so a restart resumes it from its record | MUST | RFC 23 §4.6 | T2.7 |
-| R33 | The deletion's last step sets `Installation.NTLMOff.Deleted` in the transaction that ends it, and nothing else of identity writes `NTLMOff` | invariant | RFC 16 §2.3, §4.2 `IN`; RFC 23 §4.1 | T2.7 |
+| R35 | `Apply` swaps `State` whole now that it holds `Settings` beside `Generation`: no reader sees one `Apply`'s `Generation` with another's `Settings` (epic 1's R12, which one field could not test) | invariant | §2.6 | T2.4 |
+| R33 | The deletion's last step sets `Installation.NTLMOff.Deleted` in the transaction that ends it, through its `End` calling RFC 23's `ControlPlaneTx.SetNTHashDeleted(op)`, and nothing else of identity writes `NTLMOff` | invariant | RFC 16 §2.3, §4.2 `IN`; RFC 23 §4.1; RFC 23 epic 3's R52 | T2.7 |
 
 **Deleting a user**
 
@@ -250,10 +257,12 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   cycles through, so two names equal under `strings.EqualFold` share a key and the Kelvin sign
   folds with `k`; the row's value keeps the name as written (RFC 16 §4.2). Not `entity.FoldUpcase`,
   the share-name fold. Go's fold tables follow the Unicode version each release ships, so a stored
-  key could drift: a `ponytail:` at `nameFold` names that ceiling, and a toolchain upgrade that
+  key could drift: a `ponytail:` at `FoldPrincipalName` names that ceiling, and a toolchain upgrade that
   changes a fold needs a re-key of `NX‖user` and `NX‖group`. Prior art: Go's `strings.EqualFold` is
   simple Unicode case folding; Windows compares account names case-insensitively (from memory).
-  E4's T4.4 exports it as `kvstore.FoldName`, for its own throttle keys and E6's T6.7 cache keys.
+  It is `entity.FoldPrincipalName`, exported beside `entity.FoldShareName`, whose precedent
+  `kvstore/keys.go` already calls, so E4's throttle keys and E6's T6.7 cache keys import it from
+  `entity`.
 - **D3, a record's shape is checked on every write.** kvstore refuses, with
   `merrs.NewInvalidArgumentError`, on `Minter.Create` and on
   `PutUser` and `PutGroup`, a well-known principal, a `Machine` record with a `Name`, a scheme other
@@ -261,25 +270,24 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   and SID, so no path writes a shape R1, R3 or R5 forbids. An absent `ProtocolIDs` entry is not a
   zero one: only an entry present with value zero is refused. `decision:` marker at the check.
   Prior art: none found.
-- **D4, the NT-hash deletion's store calls, pending the user's answer (§9).** RFC 16 §3 declares no
+- **D4, the NT-hash deletion's store call, pending the user's answer (§9).** RFC 16 §3 declares no
   call that lists or deletes secrets by kind, RFC 18 §2.6 says the `Minter`'s are identity's only
-  writes, and RFC 16 says the `Minter` never overwrites. The deletion needs two calls:
+  writes, and RFC 16 says the `Minter` never overwrites. The deletion needs one call:
   `DropNTHashes(ctx, after SecretRef, n int) (next SecretRef, done bool, err error)`, deleting every
   version of up to `n` `Secret`s of kind nt-hash after `after` and zeroing each owner's
   `User.NTHash`, raising its `Generation` so a `PutUser` holding the old one is refused, in one
-  transaction that raises `PGEN` and `CFGGEN`; and `EndNTHashDelete(op)`, a write on the
-  transaction the runner ends the operation in, setting `NTLMOff.Deleted`. `n` is 256, a constant
-  under the KV's per-transaction limit, with a `ponytail:` naming it. Both need amendments to RFC
-  16 §3 and RFC 18 §2.6, and RFC 23's runner must hand a step its ending transaction. Prior art:
-  RFC 16 §3's `DeleteUser`, whose batches resume from a mark the same way.
+  `kv.Update` that raises `PGEN` once through RFC 23's epic 2 T2.6 helper, writing each record's
+  `Position` (its R28), and raises `CFGGEN`. The end is not a kvstore call: the step's `End` calls
+  RFC 23's `ControlPlaneTx.SetNTHashDeleted(op)`, which sets `NTLMOff.Deleted` in the transaction
+  that ends the operation (RFC 23 epic 3's R52). `n` is 256, a constant under the KV's
+  per-transaction limit, with a `ponytail:` naming it. It needs amendments to RFC 16 §3 and RFC 18
+  §2.6. Prior art: RFC 16 §3's `DeleteUser`, whose batches resume from a mark the same way.
 - **D5, the password set's write stays the API's.** RFC 18 §8.1 makes `NewHashes` pure and says
-  the API writes the result with the record, conditional on the `identity.ntlm` revision. The API
-  seals both hashes with #4059's `Seal` before its `Write` and puts them with `tx.PutSecret`, which
-  #4059's secrets view carries on `ControlPlaneTx`, then `tx.PutUser` with RFC 23's plan's
-  `entity.Alloc`. So the
-  replaced NT hash's prune is that route's too, beside the password hash's. Identity exports no
-  password-set helper (rule 11). Pending the user's answer, since the RFC 18 plan's list for this
-  epic names the write and the prune (§9). Prior art: none found.
+  the API writes the result with the record, conditional on the `identity.ntlm` revision. RFC 23's
+  plan's epic 5 does so in its T5.7: it seals both hashes with #4059's `Seal` before its `Write`,
+  puts them with `tx.PutSecret`, prunes the previous versions of both with `tx.PruneSecret` (its
+  R37) and updates the user with `tx.PutUser`, an update that names no `Alloc` (R12). Identity
+  exports no password-set helper (rule 11). Prior art: none found.
 - **D6, `Deps.Secrets` and `State.Settings` keep RFC 18 §2.6's names, with the types that exist.**
   `Deps.Secrets` is `SecretProvider`, an interface `internal/identity` declares with the one method
   it calls, #4059's `Resolve`, which `*secrets.Provider` implements; `State.Settings` is
@@ -329,19 +337,17 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
 ```text
 pkg/metadata/entity/
   id.go             T2.1  RootPrincipal (0x0D), WellKnown up to 0x0D, PrincipalMachine
+  fold.go           T2.1  FoldPrincipalName (D2), beside FoldShareName
   control.go        T2.1  User.Password, User.NTHash (User.Secret renamed), SchemeDir (D7)
                     T2.2  IDRange, Alloc.Range (D1)
-                    T2.7  Installation.NTLMOff, unless RFC 23's epic 2 adds it (§9)
 pkg/metadata/kvstore/
   users.go          T2.1  shape checks (D3), the @ rule, cross-kind uniqueness
                     T2.2  the allocation behind Alloc on PutUser and PutGroup, SID immutable
                     T2.8  NTHash among the references DeleteUser's last batch deletes (R34)
-  alloc.go          T2.2  IDS‖uid, IDS‖gid, IDS‖rid; the installation's domain SID
-  keys.go           T2.1  nameFold (D2), exported as FoldName by E4's T4.4
+  alloc.go          T2.2  IDS‖0x04 uid, IDS‖0x05 gid, IDS‖0x06 RID; the installation's domain SID
   minter.go         T2.3  Minter, Create
-  nthash.go         T2.7  DropNTHashes, EndNTHashDelete (D4)
+  nthash.go         T2.7  DropNTHashes (D4)
   codecs.go         T2.1  User's two references, the machine record
-                    T2.7  Installation.NTLMOff, unless RFC 23's epic 2 adds it (§9)
   kvstoretest/principals.go  T2.1–T2.3  the conformance rows
 pkg/auth/sid/
   sid_fuzz_test.go  T2.5  FuzzSID, seeds in testdata/fuzz/FuzzSID
@@ -355,7 +361,7 @@ internal/identity/
                     T2.6  Clock.After (D8)
   names.go          T2.5  Spell, Find
   account.go        T2.6  Lookup, VerifyPassword, Account, the hashing semaphore
-  ntlmoff.go        T2.7  the identity.nt-hash-delete step function
+  ntlmoff.go        T2.7  NTHashDeleteStep, NTHashDeleteProgress
 ```
 
 ## 6. Subtasks
@@ -372,13 +378,13 @@ internal/identity/
     `User.Password` and `User.NTHash` added, with kvstore's codec; `NTHash`'s deletion with its
     user is T2.8's (R34), which lands before the first code that stores an NT hash;
   - in `PutUser` and `PutGroup`: D3's shape checks but the file-principal one (T2.2's), uid or gid
-    0 or 65534 refused, a name holding `@` refused, and the fold `nameFold` (D2) keying `NX‖user`
+    0 or 65534 refused, a name holding `@` refused, and the fold `entity.FoldPrincipalName` (D2) keying `NX‖user`
     and `NX‖group`, the value keeping the name as written.
   - `PrincipalMachine` named `machine` in `principalKinds`, so `PrincipalKind.MarshalText` and
     `Principal.MarshalText` accept a machine principal.
   Consumed by T2.2, T2.3, T2.5 to T2.8, by E3's T3.10 (root; anonymous already exists), E4 (`NTHash`), E5 (`Machine`) and E6.
 - **Acceptance criteria:**
-  - Root's ID is fifteen zero bytes then `0x0D`, and every caller of `WellKnown()` builds.
+  - Root's ID is fifteen zero bytes then `0x0D`.
   - A lookup by name finds the record under any case of it, and reads back the name as written.
 - **Tests:** in kvstore's conformance suite, on the memory KV and Badger: a `Special`-kind user
   refused (R1); uid 0 and 65534 on a user, gid 0 and 65534 on a group, each refused, no `PX` row
@@ -401,7 +407,8 @@ internal/identity/
   `PutUser` and `PutGroup`, on the view and on `ControlPlaneTx`, its D2).
 - **Covers:** R2, R5, R10, R11, R12, R13, R14.
 - **Deliverables:**
-  - `IDS‖uid`, `IDS‖gid` and `IDS‖rid`, each read and raised in the transaction that writes the
+  - `IDS‖0x04` (uid), `IDS‖0x05` (gid) and `IDS‖0x06` (RID), RFC 16 §4.2's kinds beside
+    `numbers.go`'s 0x07 (shard) and 0x08 (node epoch), each read and raised in the transaction that writes the
     record, as `kvstore/numbers.go`'s shard counter is, never reserved in ranges; a uid or gid drawn
     from `Alloc.Range`, skipping one a `PX` row shows held and 0 and 65534; a RID appended to the
     installation's domain SID, derived from `Installation`'s ID with the three lines lifted from
@@ -413,7 +420,7 @@ internal/identity/
     with an update (`expect` non-zero) refused with `merrs.NewInvalidArgumentError`, since RFC 16
     §3 applies it only to a create (§9);
   - kvstore refusing a SID change, and a file principal without its uid or gid and SID (D3).
-  Consumed by T2.3, by RFC 23's plan's epic 5 (the API's user and group writes), and by E6's T6.9
+  Consumed by T2.3, by RFC 23's plan's epic 4 (T4.10, the API's user and group writes), and by E6's T6.9
   (a SID-less directory entry's local SID).
 - **Acceptance criteria:**
   - Two creates naming `Alloc{UID: true}` get different uids, both inside the range.
@@ -470,10 +477,10 @@ internal/identity/
 
 ### T2.4 Identity's settings, `State` and `Deps.Secrets`
 
-**Subtask T2.4 estimate: 1 man-days.**
+**Subtask T2.4 estimate: 1.25 man-days.**
 
 - **Track:** C. **Depends on:** S1. #4059's S1 and S2.
-- **Covers:** R11, R29, R30.
+- **Covers:** R11, R29, R30, R35.
 - **Deliverables:** `internal/identity.Settings{IDRange entity.IDRange; NTLM bool; NetBIOSName
   string}` with RFC 13 Appendix B's defaults and `Validate`, declared through `pkg/settings`'s `Of`,
   with RFC 18 §3.5's `decision:` (NTLM on by default) at the default; `State.Settings`; `Apply`
@@ -490,7 +497,10 @@ internal/identity/
   the first kept (catches an invalid setting applied, R29); a section with no rows yields `NTLM`
   on, `NetBIOSName` `DITTOFS` and the default range (R30); `Validate` table: 16 bytes, lower case,
   `_`, empty, each refused, `DITTOFS` and `NAS-01` accepted; an `IDRange` with `Lo > Hi` refused
-  (R30, R11). No test double.
+  (R30, R11); concurrent `Apply`s of matched `{Generation, Settings}` pairs, each `Settings`
+  naming its `Generation` in `NetBIOSName`, and a reader through `export_test.go` asserting every
+  `State` it reads is one of the pairs (catches `State` written field by field, R35; it can fail
+  without `-race`). No test double.
 
 ### T2.5 `Spell`, `Find` and `FuzzSID`
 
@@ -524,7 +534,7 @@ internal/identity/
 
 ### T2.6 `NewHashes` and the API's sign-in interface
 
-**Subtask T2.6 estimate: 2.25 man-days.**
+**Subtask T2.6 estimate: 2 man-days.**
 
 - **Track:** C. **Depends on:** T2.1, T2.2, T2.4.
 - **Covers:** R4, R24, R25, R26, R27, R28.
@@ -554,60 +564,67 @@ internal/identity/
   - At `Server`, over the memory KV store with #4059's provider over `keyprovider`'s local
     provider, users seeded through `NewHashes` and a sealed `Secret`: the four spellings above, and
     `Lookup("nobody")` the zero principal (R25); a wrong password, the zero principal, a disabled
-    user, a deleted one, one marked deleted through `ControlPlaneTx.DeleteUser` whose batches have
-    not run, and one with no password, each `ErrLogonFailure` (R26, RFC 18 §3.7); through `kvtest`'s
+    user and one with no password, each `ErrLogonFailure` (R26; the deleted and marked-deleted
+    cases are T2.8's, since only RFC 23's T2.11 makes the mark); through `kvtest`'s
     fault wrapper failing the user's read, then the secret's read: `ErrUnavailable` each (catches an
     outage answered as a wrong password, R26); the zero principal's call reaching the argon2id
     verification, observed through an `export_test.go` hook that delivers the hash verified
     (catches a short-cut for an unknown name, R27; the comparison itself is held by
-    `subtle.ConstantTimeCompare`, rule 10); `Account` of a deleted user, of one marked deleted
-    whose batches have not run, and of one disabled after an `Apply`: `ErrLogonFailure` (catches
-    `Account` returning a marked record to an API token issued before the delete, R28, RFC 18 §3.7);
+    `subtle.ConstantTimeCompare`, rule 10); `Account` of a user disabled after an `Apply`:
+    `ErrLogonFailure` (R28);
     the semaphore's slots held through the hook and the injected clock advanced past 5 s:
     `ErrUnavailable`, no goroutine left (D8).
   - Doubles: `kvtest`'s fault wrapper (kind 3), the injected clock (kind 1).
 
 ### T2.7 The `identity.nt-hash-delete` step
 
-**Subtask T2.7 estimate: 2.75 man-days.**
+**Subtask T2.7 estimate: 2.25 man-days.**
 
-- **Track:** C. **Depends on:** T2.1, T2.2. #4059's S1 and S2; RFC 23's plan's epic 2's T2.7
-  (`PutOperation`) and its epic 3's runner; RFC 16 §3's amendment (D4).
+- **Track:** C. **Depends on:** T2.1, T2.2. #4059's S1 and S2; RFC 23's plan's epic 2's T2.6
+  (the `PGEN` raise and `Position`, for each user `DropNTHashes` zeroes) and T2.7 (`PutOperation`),
+  its `ControlPlaneTx.SetNTHashDeleted` (added through #4336), and its epic 3's T3.4 (the runner's
+  `StepResult`); RFC 16 §3's amendment (D4).
 - **Covers:** R4, R31, R32, R33.
-- **Deliverables:** `Installation.NTLMOff` (RFC 16 §2.3), its field and its codec change with a
-  golden vector, unless RFC 23's plan's epic 2 adds them first (pending, §9); kvstore's
-  `DropNTHashes` and `EndNTHashDelete` (D4), with their `ponytail:` on
-  the batch size; identity's step function for the runner's `identity.nt-hash-delete` slot, its
-  step a cursor of the last `SecretRef` dropped, `Progress` counting secrets with `Total` -1, its
-  last step calling `EndNTHashDelete` on the ending transaction. Consumed by RFC 23's plan's epic 4,
-  whose settings route starts the operation, and by E8's "NTLM off" row.
+- **Deliverables:** kvstore's `DropNTHashes` (D4), with its `ponytail:` on the batch size;
+  identity's step and progress as plain-typed methods on `*Server`, since `internal/node` imports
+  identity: `NTHashDeleteStep(ctx, op entity.OperationID, cursor []byte) (next []byte, done bool,
+  end func(entity.ControlPlaneTx) error, err error)`, its cursor the last `SecretRef` dropped and
+  the count dropped so far, its `end`, set with `done`, calling `tx.SetNTHashDeleted(op)`, and
+  every error it returns plain, so the runner retries it; `NTHashDeleteProgress(cursor []byte)
+  (done, total int64)`, the count read from the cursor with `total` -1. Consumed by E8, which
+  adapts both into `node.StepResult` and `node.Progress` and registers the row in `node.New`, by
+  RFC 23's plan's epic 4, whose settings route starts the operation, and by E8's "NTLM off" row.
 - **Acceptance criteria:**
-  - After the operation succeeds, no `Secret` of kind nt-hash exists and every user's `NTHash` is
+  - After the loop below ends, no `Secret` of kind nt-hash exists and every user's `NTHash` is
     zero, while their `Password` is untouched.
-  - `NTLMOff.Deleted` names the operation, and `EndNTHashDelete` is the one writer of `NTLMOff` in
+  - `NTLMOff.Deleted` names the operation, and the step's `end` is the one writer of `NTLMOff` in
     identity (R33's single writer, held by the code's shape and named as such, rule 10).
-- **Tests:** through RFC 23's runner over the memory KV store and Badger, NT hashes sealed through
-  #4059's provider: 600 users, run to completion: none left, `NTLMOff.Deleted` set, and each
-  recorded `Progress` step at most 256 more than the last (R31, R33); `kvtest`'s fault wrapper
-  failing the third batch's commit, then a restart of the runner: the operation resumes from its
-  recorded cursor and completes, and no batch's users lost their `Password` (catches a cursor
-  recorded before its batch committed, R32); a `PutUser` holding a generation read before a batch
-  zeroed its `NTHash`: refused, the reference stays zero (catches a stale reference written back,
-  R4); the run failed before its last step: `NTLMOff.Deleted` still zero (catches a completion
-  written early, R33); the installation codec's golden vector with `NTLMOff` set (catches a field
-  the codec drops). Doubles: `kvtest`'s fault wrapper (kind 3).
+- **Tests:** calling the step in a loop over the memory KV store and Badger, NT hashes sealed
+  through #4059's provider, feeding each turn's `next` back in and committing the last turn's
+  `end` through `ControlPlane.Write`: 600 users, run to `done`: none left, `NTLMOff.Deleted` set,
+  and each turn's progress at most 256 more than the last (R31, R33); `kvtest`'s fault wrapper
+  failing the third batch's commit, the store reopened and the loop resumed from the last returned
+  `next`: it completes, and no batch's users lost their `Password` (catches a cursor that runs
+  ahead of its batch's commit, R32); a `PutUser` holding a generation read before a batch zeroed
+  its `NTHash`: refused, the reference stays zero (catches a stale reference written back, R4); a
+  `done` turn whose `end` is not committed: `NTLMOff.Deleted` still zero (catches a completion
+  written by the step itself rather than by `end`, R33). The runner's own resume and its commit of
+  `end` with `succeeded` are RFC 23's epic 3 T3.4's tests (its R52). Doubles: `kvtest`'s fault
+  wrapper (kind 3).
 
-### T2.8 A deleted user leaves no NT hash
+### T2.8 A deleted user leaves no NT hash, and signs in nowhere
 
-**Subtask T2.8 estimate: 0.75 man-days.**
+**Subtask T2.8 estimate: 1 man-days.**
 
 - **Track:** C. **Depends on:** T2.6. RFC 23's plan's epic 2's T2.11 (`DeleteUser`'s mark
   and batches, its D8).
-- **Covers:** R34.
+- **Covers:** R26, R28, R34.
 - **Deliverables:** `User.NTHash` added to the references whose every version the last batch of
   RFC 23's plan's `DeleteUser` deletes, in the transaction that deletes the record (its T2.11,
-  D8), beside `Password`. Consumed by every caller of `DeleteUser`, and by RFC 23's plan's epic 5,
-  whose password writes wait for it.
+  D8), beside `Password`; `VerifyPassword`'s and `Account`'s deleted and marked-deleted cases,
+  moved here from T2.6 because only T2.11 makes the mark. Consumed by every caller of
+  `DeleteUser`, by RFC 23's plan's epic 5, whose password writes wait for it, and by E4, whose
+  sign-in tests need no marked user (its R14).
 - **Acceptance criteria:**
   - No build stores an NT hash that `DeleteUser` leaves behind. `NewHashes` is pure and stores
     nothing (R24), and the first code that stores an `NTHash` is RFC 23's plan's epic 5's password
@@ -619,6 +636,10 @@ internal/identity/
     sealed through #4059's provider, each at two versions, then `DeleteUser` run to completion
     through RFC 23's `ContinueDelete`: no version of either `Secret` left (catches a reference
     list holding `Password` only, or a deletion of the current version only, R34).
+  - At `Server`, over the memory KV store with #4059's provider: `VerifyPassword` and `Account` of
+    a deleted user and of one marked deleted through `ControlPlaneTx.DeleteUser` whose batches have
+    not run, each `ErrLogonFailure` (catches `Account` returning a marked record to an API token
+    issued before the delete, R26, R28, RFC 18 §3.7).
   - Doubles: none.
 
 ## 7. Order of work
@@ -639,7 +660,7 @@ flowchart TD
   X23c(["RFC 23 epic 2 T2.11: DeleteUser's batches"]):::sync --> T2_8["T2.8 NT hash deleted with its user"]
   T2_6 --> T2_8
   T2_8 --> C3(["after T2.8: RFC 23's password writes store an NT hash"]):::sync
-  X23d(["RFC 23 epic 2 T2.7 and epic 3: PutOperation, runner"]):::sync --> T2_7["T2.7 NT-hash deletion"]
+  X23d(["RFC 23 epic 2 T2.6, T2.7, SetNTHashDeleted; epic 3 T3.4: PGEN helper, PutOperation, StepResult"]):::sync --> T2_7["T2.7 NT-hash deletion"]
   T2_1 & T2_2 & X59 --> T2_7
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
@@ -653,10 +674,10 @@ RFC 23's user deletion; after T2.8 RFC 23's plan's epic 5's password writes may 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T2.1, T2.2, T2.3 | 4.75 | — | principals in the store: the records, the name fold, allocation and `Create`, one review of kvstore |
-| 2 | T2.4, T2.5 | 3.25 | PR 1 | identity's settings and the naming it serves |
-| 3 | T2.6 | 2.25 | PR 2 | the accounts RFC 23's plan's epic 5 and E4 wait for |
-| 4 | T2.7 | 2.75 | PR 1 | the NT-hash deletion, once RFC 23's runner lands; may be open beside PR 2 and PR 3 |
-| 5 | T2.8 | 0.75 | PR 3 | the NT hash's deletion with its user, once RFC 23's plan's epic 2's T2.11 lands, and before RFC 23's plan's epic 5's password write |
+| 2 | T2.4, T2.5 | 3.5 | PR 1 | identity's settings and the naming it serves |
+| 3 | T2.6 | 2 | PR 2 | the accounts RFC 23's plan's epic 5 and E4 wait for |
+| 4 | T2.7 | 2.25 | PR 1 | the NT-hash deletion, once RFC 23's `StepResult` and `SetNTHashDeleted` land; may be open beside PR 2 and PR 3 |
+| 5 | T2.8 | 1 | PR 3 | the NT hash's deletion with its user and the marked-deleted sign-in cases, once RFC 23's plan's epic 2's T2.11 lands, and before RFC 23's plan's epic 5's password write |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -667,10 +688,10 @@ the version this document was written against. RFC 18 §8.1 declares `Lookup` an
 principal-based `VerifyPassword`, which epic 1 freezes.
 
 The plan's figure for this epic is 8 subtasks, 13 man-days; this document's is 8 subtasks,
-13.75 man-days: the mint path goes to E6's T6.2 (below); the allocation behind RFC 23's
+13.5 man-days: the mint path goes to E6's T6.2 (below); the allocation behind RFC 23's
 `entity.Alloc` on `PutUser` and `PutGroup` comes in (T2.2), which RFC 23's plan's epic 2 refuses
-until it lands (its D2), as do `NTHash` among the secrets `DeleteUser` deletes, which the plan lists
-nowhere (T2.8, R34), and `Installation.NTLMOff`, unless RFC 23's plan's epic 2 takes it (T2.7).
+until it lands (its D2), as does `NTHash` among the secrets `DeleteUser` deletes, which the plan lists
+nowhere (T2.8, R34); `Installation.NTLMOff` is RFC 23's plan's epic 2's (its T2.2, R54).
 
 **Pending the user's answer** (the recommended option is written in place):
 
@@ -680,19 +701,12 @@ nowhere (T2.8, R34), and `Installation.NTLMOff`, unless RFC 23's plan's epic 2 t
   row in the write's transaction.
 - **The NT-hash deletion's store calls (D4).** RFC 16 §3 has no call that drops secrets by kind,
   RFC 18 §2.6 says the `Minter`'s are identity's only writes, and zeroing `User.NTHash` overwrites a
-  record. Recommended: `DropNTHashes` and `EndNTHashDelete`, with amendments to RFC 16 §3 and RFC 18
-  §2.6, and RFC 23's runner handing a step its ending transaction.
-- **The password set's write and the NT hash's prune (D5).** The RFC 18 plan's list for this epic
-  names them; RFC 18 §8.1 gives the write to the API, and RFC 23's plan's epic 5 prunes only the
-  password hash. Recommended: both stay in RFC 23's plan's epic 5, whose list gains the NT hash's
-  prune.
+  record. Recommended: `DropNTHashes`, with amendments to RFC 16 §3 and RFC 18 §2.6; the end is
+  the step's `End` calling RFC 23's `ControlPlaneTx.SetNTHashDeleted(op)`.
 - **The mint path (§1.2).** The RFC 18 plan gives this epic RFC 18 §4.1, but nothing here mints:
   machines are E5's and directory principals E6's. Recommended: the re-run loop and
   `identity_mints_total` are E6's T6.2, and E5's T5.9 mints through it; this epic delivers
   `Create`.
-- **`Installation.NTLMOff`'s field and codec (T2.7).** RFC 16 §2.3 declares it, and no epic did;
-  the review of RFC 23's plan's epic 2 (#4326) asked it to take them or name an owner. Recommended:
-  T2.7 adds them unless RFC 23's plan's epic 2 does, which drops them from T2.7.
 - **`State.NTLM` (D6).** No code of this epic or of E3 reads the revision; epic 1's document
   first assigned it here and now leaves it to this answer. Recommended: it lands with its first
   reader, and RFC 18 §2.6 says who that is, or drops it.
@@ -720,9 +734,11 @@ nowhere (T2.8, R34), and `Installation.NTLMOff`, unless RFC 23's plan's epic 2 t
 
 **Other:**
 
-- **T2.8 before the first stored NT hash.** RFC 23's plan's epic 5 document (#4338) gives its
-  T5.7 and T5.10 the RFC 18 plan's sign-in interface (its X2) as their identity dependency; T2.8
-  joins it there, since T5.7's password write is the first code to store an NT hash.
+- **`ControlPlaneTx.SetNTHashDeleted(op)`.** RFC 23's epic 2 declares `Installation()` on
+  `ControlPlaneTx` as a read only; it adds one setter per writer of `NTLMOff` (`SetNTLMOff(gen)`,
+  `SetNTHashDeleted(op)`) through #4336. T2.7's `end` waits for it.
+- **RFC 23's epic 2 PR table.** Its PR 5 row says T2.11 is what "the RFC 18 plan's epic 2 T2.6
+  waits for"; since the marked-deleted cases moved to T2.8, it reads T2.8, in a follow-up to #4326.
 
 - `tx.PutSecret`, which the API's password write uses (D5), is #4059's secrets view on
   `ControlPlaneTx`; whichever of the RFC 13 plan's view changes and RFC 23's plan's epic 2 lands
