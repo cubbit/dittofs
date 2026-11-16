@@ -25,7 +25,12 @@ func syncFailed(f *enginetest.Fixture) bool {
 // is re-appended raises none, and a restart over the loss record on disk
 // raises none for the loss found at open.
 func TestRFC8B_JournalSyncFailed(t *testing.T) {
-	f := enginetest.New(t)
+	// The row's few writes hone each journal to barely a record's depth, so
+	// its segment cap holds them all with room for the failed window's rolls;
+	// it is named for the restart's known refusal alone, whose open walks
+	// what the directory holds, and the format's own segments would make
+	// that walk read the better part of a gigabyte of preallocated zeros.
+	f := enginetest.New(t, enginetest.WithSegmentCap(1<<22))
 	_, id := f.File("a")
 
 	// First, as FailNextWindow's stale reads last for the fixture's life.

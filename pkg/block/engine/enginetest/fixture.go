@@ -459,6 +459,15 @@ func WithSpares(n int) Option {
 	return func(f *Fixture) { f.settings.SpareTarget = n }
 }
 
+// WithSegmentCap has every open of the journal in Dir give its segments a
+// cap of n bytes instead of the format's own, so the preallocated tail a
+// row reopens over is as small as the row chooses. A row whose writes stay
+// far below the cap pays nothing for it; a row that would roll under it
+// names none.
+func WithSegmentCap(n int64) Option {
+	return func(f *Fixture) { journaltest.SetSegmentCap(&f.settings, n) }
+}
+
 // journalOnly fails a control that acts on the journal in Dir, which
 // WithFakeJournal leaves unread.
 func (f *Fixture) journalOnly(what string) {
