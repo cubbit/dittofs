@@ -29,7 +29,7 @@ const (
 	StatusExpired                    // core.ErrExpired
 	StatusNotLast                    // core.ErrNotLast
 	StatusTooManyPending             // core.ErrTooManyPending
-	StatusDelay                      // vfs.ErrDelay: at once in version 1, once its hold passes in version 2
+	StatusDelay                      // vfs.ErrDelay: at once in version 1, once its hold passes in version 2; of DelayResources, at once in both
 	StatusCancelled                  // core.ErrCancelled: a parked or held request its client cancelled
 	StatusDecode                     // core.ErrDecode: a record or arguments it cannot decode
 )
@@ -234,16 +234,18 @@ func (p *Protocol) build() [2]*core.OpTable {
 // holds.
 //
 // decision: the tables are not total. They map core's refusals, the service's
-// ErrDelay, a cancel and the two drain errors, and nothing else, so a service
-// error no row maps is reachable and answered StatusFault. Totality is a real
-// protocol's property, checked on NFS's and SMB's tables. Withdraw it if a
-// core test needs a service error this table leaves unmapped to have a status
-// of its own.
+// ErrDelay and its DelayResources delay, a cancel and the two drain errors,
+// and nothing else, so a service error no row maps is reachable and answered
+// StatusFault. Totality is a real protocol's property, checked on NFS's and
+// SMB's tables. Withdraw it if a core test needs a service error this table
+// leaves unmapped to have a status of its own.
 func errorRows(holds bool) []core.ErrorRow {
-	// decision: this row is testproto's only delay and only hold. A request is
-	// delayed or held because the service a test supplied answered ErrDelay,
-	// never because an operation here waits or answers an error itself.
-	// Withdraw it if core gains a hold that no service error can cause.
+	// decision: this row is testproto's only hold. A request is held because
+	// the service a test supplied answered ErrDelay, never because an
+	// operation here waits or answers an error itself; ErrDelay of
+	// DelayResources, a node pool's refusal, is answered at once by its typed
+	// row in both tables, as a table that holds must (RFC 20 §6.3). Withdraw
+	// it if core gains a hold that no service error can cause.
 	delay := core.ErrorRow{Err: vfs.ErrDelay, Status: StatusDelay}
 	if holds {
 		delay.Hold = func(_ error, start time.Time) time.Time { return start.Add(HoldFor) }
@@ -261,6 +263,7 @@ func errorRows(holds bool) []core.ErrorRow {
 		{Err: core.ErrNotLast, Status: StatusNotLast},
 		{Err: core.ErrTooManyPending, Status: StatusTooManyPending},
 		delay,
+		{Err: &vfs.Delay{Cause: vfs.DelayResources}, Status: StatusDelay},
 		{Err: core.ErrDecode, Status: StatusDecode},
 		{Err: core.ErrCancelled, Status: StatusCancelled},
 		{Err: core.ErrDraining, NoReply: true},

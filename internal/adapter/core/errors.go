@@ -97,13 +97,13 @@ func (t *ErrorTable) mapsEverywhere(err error) bool {
 // zero Status is success in every protocol here: NFS3_OK, NFS4_OK, RPC's
 // SUCCESS and STATUS_SUCCESS are all 0.
 //
-// decision: err is the bare sentinel, which a protocol's typed row never
-// matches, so that row still wins for its own value (§4.5) and goes
-// unchecked: a protocol may hold its own decode or cancel value, send no
-// reply for it, or answer it the fault or success, and only that protocol's
-// tests would see it. The ceiling is that protocol's own value; the
-// catch-all for the sentinel stays checked. Check typed rows too if a
-// protocol is found answering its own value that way.
+// decision: ErrDecode's and ErrCancelled's checks pass the bare sentinel,
+// which a protocol's typed row never matches, so that row still wins for its
+// own value (§4.5) and goes unchecked: a protocol may hold its own decode or
+// cancel value, send no reply for it, or answer it the fault or success, and
+// only that protocol's tests would see it. The ceiling is that protocol's own
+// value; the catch-all for the sentinel stays checked. Check typed rows too if
+// a protocol is found answering its own value that way.
 func (t *ErrorTable) badRow(err error) (ErrorRow, bool) {
 	for _, r := range t.rows {
 		if errors.Is(err, r.Err) && (r.NoReply || r.Hold != nil || r.Status == t.fault || r.Status == 0) {
@@ -111,6 +111,13 @@ func (t *ErrorTable) badRow(err error) (ErrorRow, bool) {
 		}
 	}
 	return ErrorRow{}, false
+}
+
+// typedOnly is t with its typed rows alone, for a check of a typed value that
+// also matches a sentinel's row.
+func (t *ErrorTable) typedOnly() *ErrorTable {
+	rows := slices.DeleteFunc(slices.Clone(t.rows), func(r ErrorRow) bool { return !r.typed() })
+	return &ErrorTable{fault: t.fault, rows: rows}
 }
 
 // Map is err's status for op at v; reply false is a NoReply row.
@@ -146,7 +153,7 @@ func (r ErrorRow) matches(err error, op *Op, v Version) bool {
 // sentinel's, then Ops and Versions, Ops, Versions, neither.
 func rank(r ErrorRow) int {
 	n := 0
-	if _, typed := r.Err.(interface{ Is(error) bool }); !typed {
+	if !r.typed() {
 		n = 4
 	}
 	switch {
@@ -159,6 +166,12 @@ func rank(r ErrorRow) int {
 		n += 3
 	}
 	return n
+}
+
+// typed reports whether r's Err is a typed value: one with an Is method.
+func (r ErrorRow) typed() bool {
+	_, ok := r.Err.(interface{ Is(error) bool })
+	return ok
 }
 
 // overlap reports whether two rows of one rank can match one error,
