@@ -389,7 +389,7 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R55 | A segment under a name this journal produces, whose header slot is zeros, does not verify, or verifies naming this journal (with its file's segment id or another), in which no record header and no seal marker verifies, which no successor names and in which no read failed, is re-adopted as a spare, counted toward the headroom, the repack reserve or a stream's next segment, and never treated as an orphan; a segment whose id a sync mark names is never re-adopted; a record-less take whose header names a predecessor still on disk is held, not re-adopted and never zeroed or unlinked, until a phase writes the open's verdict on that predecessor before the spares phase runs — at most one held segment per stream, withdrawn once the loss-record and reconcile phases precede the spares phase | MUST | RFC 28 §3.1 | T7.7, T7.10 |
+| R55 | A segment under a name this journal produces, whose header slot is zeros, does not verify, or verifies naming this journal (with its file's segment id or another), in which no record header and no seal marker verifies, which no successor names and in which no read failed, is re-adopted as a spare, counted toward the headroom, the repack reserve or a stream's next segment, and never treated as an orphan; a segment whose id a sync mark names is never re-adopted; a record-less take whose header names a predecessor still on disk is held, not re-adopted and never zeroed or unlinked, until a phase writes the open's verdict on that predecessor before the spares phase runs; a held take is re-adopted at a later open once its predecessor's marker verifies or the predecessor is unlinked, and counts toward the headroom; the exception is withdrawn once the loss-record and reconcile phases precede the spares phase | MUST | RFC 28 §3.1 | T7.7, T7.10 |
 | R56 | The identity in a segment header is checked before the record-less test, so a foreign segment is never re-adopted or zeroed | invariant | RFC 28 §3.1 | T7.7 |
 | R57 | A re-adopted spare's size is checked against the cap and, where the platform reports it, that no extent is unallocated or unwritten; one that fails is unlinked and made again | invariant | RFC 28 §3.1 | T7.7 |
 | R58 | A re-adopted spare whose header slot or trailer slot is not zeros has both zeroed and synced before a stream may take it | invariant | RFC 28 §3.1, §2.2 | T7.7 |
@@ -423,7 +423,7 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
 | R71 | RFC 28 §4.2 C "synced damage is not a torn tail", "truncated sealed segment" (its newest-segment half); the scan half of "segment header and seal marker"; A "a zero slot is not the end" (its reopen half) | test row | RFC 28 §4.2 A, C | T7.4 |
 | R72 | RFC 1 §9.4 C "a loss survives restart", "forget leaves nothing to settle", "header-only records are re-appended outside a read-only journal" (its reopen half); RFC 1 §9.4 "removals survive to `Since`" (its reopen half); RFC 28 §4.2 C "a bad copy does not mask a good one", "a partly superseded record is still checked" | test row | RFC 1 §9.4 C, RFC 28 §4.2 C | T7.5 |
 | R73 | RFC 1 §9.4 C "monotonicity", "epoch half is zero", "clone target survives a crash", "unclaimed tag reported", "unclaimed tags are the caller's to name", "a file is its share's" (its planted half), "a cancelled call changes nothing or completes" (its reopen half); RFC 28 §4.2 C "version floor" (its first half), A "write carries its mtime" (its reopen half) | test row | RFC 1 §9.4 C, RFC 28 §4.2 A, C | T7.6 |
-| R74 | RFC 28 §4.2 C "spares are re-adopted", A "directory entry survives", "unreadable is not empty" (its first half), and the open halves of C "a spare is whole or absent" and "retired segments are recycled" | test row | RFC 28 §4.2 A, C | T7.7 |
+| R74 | RFC 28 §4.2 C "spares are re-adopted" (the held take with its slot-zeroing assertion included), A "directory entry survives", "unreadable is not empty" (its first half), and the open halves of C "a spare is whole or absent" and "retired segments are recycled" | test row | RFC 28 §4.2 A, C | T7.7 |
 | R75 | RFC 28 §4.2 A "unproven tail verified at open", C "a seal marker only the cache holds" | test row | RFC 28 §4.2 A, C | T7.9, T7.11 |
 | R76 | RFC 28 §4.2 C "rebuild", "torn tail cut off", "a recycled segment's old catalog is never read", "an open at an exhausted headroom"; RFC 1 §9.4 D "metrics are reachable" (the torn tail) | test row | RFC 28 §4.2 C, RFC 1 §9.4 D | T7.12 |
 | R77 | RFC 28 §4.2 C "an ended segment is emptied once", the ended-segment half of "an open at an exhausted headroom", and the failed-append reopen of "a recycled segment's old catalog is never read" | test row | RFC 28 §4.2 C | T7.13 |
@@ -877,7 +877,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   the test (R55).
 - **Acceptance criteria:**
   - Crashed with every spare untaken, and after a stream took one but before its first sync, the
-    reopen re-adopts every record-less segment, the headroom and the repack reserve are whole with
+    reopen holds the record-less take whose header names an on-disk predecessor with no slot of it zeroed, re-adopts every other record-less segment, and the headroom and repack reserve are whole with
     no new allocation, and nothing is reported as an orphan or as damage.
   - A recycle crashed between its rename and its zeroing sync is re-adopted with both slots zeroed
     before any stream takes it, and no record of its old life is attached.
@@ -887,7 +887,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   - A spare short of the cap is unlinked and made again.
   - With the open's directory sync failing at the seam, the open fails, no spare is taken or
     unlinked, and a later open with the fault cleared succeeds with its reserves whole.
-- **Tests:** the rows of R74 (`TestRFC28C_SparesAreReAdopted`, `TestRFC28A_DirectoryEntrySurvives`, and the first half of "unreadable is not empty"); the foreign record-less segment (catches the record-less test run
+- **Tests:** the rows of R74 (`TestRFC28C_SparesAreReAdopted`, `TestRFC28A_DirectoryEntrySurvives`, and the first half of "unreadable is not empty"); the record-less take naming a predecessor still on disk (catches the held-exclusion zeroing what the open must leave standing, R55); the foreign record-less segment (catches the record-less test run
   before the identity check, R56); the unreadable segment (catches an I/O error read as zeros,
   which would zero acknowledged writes, R46); the failing directory sync (catches a spare taken
   whose name is not durable); a punched hole in a spare on Linux (catches a size-only check where
@@ -975,7 +975,11 @@ proof, which would trust the cache).
   catalog does not verify is a range that names no record (R35, R36, R44, D14); the next
   sequence number and the segment-id allocator raised above every mark's `Sequence` and `Segment`
   (R6, R30); a segment holding no verifying record whose id a mark names withheld from T7.7's
-  spare test and ended for T7.13's emptying (R55, R61). After T7.9's proof and before anything is
+  spare test and ended for T7.13's emptying (R55, R61); the attach-and-rebuild pass
+  decides each predecessor's fate — sealed, ended by this open, or gone — before the spares
+  phase runs, and a take is held only when its predecessor survives the open, so a
+  predecessor the open ends frees its take for the emptying's spares, which the
+  no-spare refusal would otherwise make on a usable segment (R53). After T7.9's proof and before anything is
   appended, zeroed or taken from the pool: the lost-tail check of R62, which needs only the marks,
   the verifying records and the set of records T7.9 will have T7.11 re-append (D13); a mark whose
   segment is not on disk is read as retired, with RFC 28 §3.3's `ponytail:` on that reading; a
