@@ -36,6 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The journal's open proves its unproven tail on the device.** A seal marker
+  only the live view serves no longer seals at open: the marker is re-read on
+  the device before it counts. Each tail record no sync or seal proved is
+  read whole, and one that reached only the cache is re-appended from the copy
+  the open kept, while one whose bytes never verify is dropped as never
+  written — its marker goes with it, so a removal the crash tore is never
+  reported.
+- **A sync that fails while the open proves the tail is a failed window.** The
+  records whose first read verified are handed to the re-append the same way
+  as lost ones, so the open still succeeds and the journal repairs itself
+  without operator action.
 - **The journal's open tells a crash's torn tail from damage.** A record that
   fails its checksum no longer refuses the open on the spot: it is dropped and
   reported as corrupt where a sync or a seal proved it whole, and cut as a torn
