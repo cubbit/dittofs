@@ -53,6 +53,7 @@ suites:
       # on pushes too, since planning commits reach develop without a pull request.
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
+      - test/go-cache-push-only.sh             # only a push run saves to the Actions cache
       - go test ./test/harness/...              # dt's own tests
       - go test ./test/journal/                 # every journal RFC row maps to a test or an owner
   # Every shell script: the *.sh files, and the executables without an extension whose first
