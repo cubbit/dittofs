@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -62,8 +63,8 @@ func TestBudgetRefusesPastItsCeiling(t *testing.T) {
 	if _, err := b.Reserve(4); err != nil || b.Reserved() != 10 {
 		t.Errorf("Reserve(4) over 6 of 10 = %v with %d reserved, want 10: the ceiling itself fits", err, b.Reserved())
 	}
-	if _, err := b.Reserve(-1); err == nil || b.Reserved() != 10 {
-		t.Errorf("Reserve(-1) = %v with %d reserved, want a refusal and 10", err, b.Reserved())
+	if _, err := b.Reserve(-1); err == nil || !strings.Contains(err.Error(), "cannot be negative") || b.Reserved() != 10 {
+		t.Errorf("Reserve(-1) = %v with %d reserved, want a refusal naming the negative charge and 10", err, b.Reserved())
 	}
 }
 
@@ -424,8 +425,7 @@ func TestWaitBudgetCancelRacingGrant(t *testing.T) {
 		"cancel then grant": {func(b *WaitBudget, _ Reservation, cancel func()) {
 			b.c.mu.Lock()
 			cancel()
-			b.c.lowerLocked(10)
-			b.grantLocked()
+			b.releaseLocked(10)
 			b.c.mu.Unlock()
 		}, context.Canceled},
 	}
@@ -473,8 +473,8 @@ func TestWaitBudgetRefusesAChargePastItsCeiling(t *testing.T) {
 				if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					t.Errorf("Reserve(11) of 10 = %v, want an error that matches no context error", err)
 				}
-				if _, err := b.Reserve(ctx, client, -1); err == nil {
-					t.Error("Reserve(-1) was granted")
+				if _, err := b.Reserve(ctx, client, -1); err == nil || !strings.Contains(err.Error(), "cannot be negative") {
+					t.Errorf("Reserve(-1) = %v, want a refusal naming the negative charge", err)
 				}
 				if got, queued := b.Reserved(), b.waiters.Len(); got != 0 || queued != 0 {
 					t.Errorf("after the refusals %d reserved and %d queued, want 0 and 0", got, queued)

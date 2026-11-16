@@ -169,14 +169,14 @@ func NewWaitBudget(name string, ceiling int64) *WaitBudget {
 // otherwise refuses at once.
 func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Reservation, error) {
 	c := &b.c
+	if n < 0 {
+		return Reservation{}, negative(c, n)
+	}
 	// decision: a charge that can never fit is refused at once, under any ctx,
 	// with an error that matches no context error: waiting could not grant it,
 	// it would hold every waiter behind it, and the caller must read it as a
 	// fault of configuration, not as a delay to retry. Withdraw it if a caller
 	// is found that must queue a charge larger than its budget.
-	if n < 0 {
-		return Reservation{}, negative(c, n)
-	}
 	if n > c.ceiling {
 		return Reservation{}, fmt.Errorf("resources: reserve %d bytes from %s: its ceiling is %d", n, c.name, c.ceiling)
 	}
@@ -207,12 +207,12 @@ func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Rese
 	case <-w.ready:
 		// A release granted it before the lock was taken: the bytes go back,
 		// which may be the room the next waiter needs.
-		past, first = c.lowerLocked(n)
+		past, first = b.releaseLocked(n)
 	default:
 		// If it was the head, those it held back may fit now.
 		b.waiters.Remove(elem)
+		b.grantLocked()
 	}
-	b.grantLocked()
 	c.mu.Unlock()
 	if past {
 		c.reportPastZero(first)
@@ -243,17 +243,25 @@ func (b *WaitBudget) Reserved() int64 {
 func (b *WaitBudget) release(n int64) {
 	c := &b.c
 	c.mu.Lock()
-	past, first := c.lowerLocked(n)
-	b.grantLocked()
+	past, first := b.releaseLocked(n)
 	c.mu.Unlock()
 	if past {
 		c.reportPastZero(first)
 	}
 }
 
+// releaseLocked lowers the count by n and grants each waiter that then fits,
+// under the mutex. Release and a cancelled waiter giving back its grant both
+// call it, so the two stay one code.
+func (b *WaitBudget) releaseLocked(n int64) (past, first bool) {
+	past, first = b.c.lowerLocked(n)
+	b.grantLocked()
+	return past, first
+}
+
 // Reservation is bytes charged to one budget of either kind, for one key on
-// a WaitBudget. It is a value, moved and never copied, so a Reserve that
-// does not wait allocates nothing.
+// a WaitBudget. It is a value, moved and never copied, so a grant that does
+// not wait allocates nothing.
 type Reservation struct {
 	b *Budget
 	w *WaitBudget
