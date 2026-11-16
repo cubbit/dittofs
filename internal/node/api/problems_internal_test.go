@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -17,13 +18,15 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/vfs"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // covered are the packages whose every declared error, or code, the problem
 // table names: the directory, the name problems.go imports it as, and the
-// prefix of what it declares. Identity's package joins this list, and its
-// errors the table, once it declares them.
+// prefix of what it declares.
 var covered = []struct{ dir, alias, prefix string }{
 	{"../../../pkg/node/apiv1", "apiv1", "Code"},
 	{"../../../pkg/metadata/entity", "entity", "Err"},
@@ -75,7 +78,8 @@ func TestProblemTableIsTotal(t *testing.T) {
 
 // A component's error reaches the body by its name, wrapped or typed: a
 // share being removed answers 409 stale, a store code its name, and a typed
-// vfs error the sentinel it is.
+// vfs error the sentinel it is. A store error's cause answers before its
+// code, and an ended request 503 unavailable, whatever else it carries.
 func TestProblemCodeIsTheComponentsName(t *testing.T) {
 	for _, tc := range []struct {
 		err    error
@@ -89,6 +93,13 @@ func TestProblemCodeIsTheComponentsName(t *testing.T) {
 		{&vfs.Delay{Cause: vfs.DelayFrozen}, http.StatusConflict, "delay"},
 		{&fieldError{field: "spec.name", detail: "unknown field"}, http.StatusBadRequest, "invalid"},
 		{&refusal{code: "password_change_required"}, http.StatusForbidden, "password_change_required"},
+		{entity.ErrMoving, http.StatusConflict, "moving"},
+		{context.Canceled, http.StatusServiceUnavailable, "unavailable"},
+		{fmt.Errorf("list: %w", context.DeadlineExceeded), http.StatusServiceUnavailable, "unavailable"},
+		{&merrs.StoreError{Code: merrs.ErrIOError, Message: "read", Cause: context.DeadlineExceeded}, http.StatusServiceUnavailable, "unavailable"},
+		{errors.Join(context.Canceled, &merrs.StoreError{Code: merrs.ErrNotFound}), http.StatusServiceUnavailable, "unavailable"},
+		{&merrs.StoreError{Code: merrs.ErrIOError, Message: "read", Cause: errors.New("disk")}, http.StatusInternalServerError, "io_error"},
+		{kv.ErrConflict, http.StatusServiceUnavailable, "unavailable"},
 	} {
 		p, _ := problemOf(tc.err)
 		if p.Status != tc.status || string(p.Code) != tc.code {
@@ -97,6 +108,63 @@ func TestProblemCodeIsTheComponentsName(t *testing.T) {
 	}
 	if p, _ := problemOf(&fieldError{field: "spec.name", detail: "unknown field"}); p.Field != "spec.name" {
 		t.Errorf("a refused field: problem's field %q, want spec.name", p.Field)
+	}
+}
+
+// Only a refusal's or a refused field's text reaches the detail: a mapped
+// component error's text, and an unnamed error's, which may carry anything,
+// stay out of the body, an unnamed one answering "internal error".
+func TestProblemDetail(t *testing.T) {
+	const secret = "s3cr3t-7a1f"
+	for _, tc := range []struct {
+		err    error
+		detail string
+	}{
+		{errors.New(secret), "internal error"},
+		{fmt.Errorf("open %s: %w", secret, vfserr.ErrNotFound), ""},
+		{merrs.NewInvalidArgumentError(secret), ""},
+		{&refusal{code: apiv1.CodeForbidden, detail: "no"}, "no"},
+		{fmt.Errorf("%s: %w", secret, &fieldError{field: "name", detail: "unknown field"}), "unknown field"},
+	} {
+		p, _ := problemOf(tc.err)
+		if p.Detail != tc.detail || strings.Contains(fmt.Sprint(p), secret) {
+			t.Errorf("%v: problem %+v, want detail %q and no %q", tc.err, p, tc.detail, secret)
+		}
+	}
+}
+
+// Every row answers a status in 400–599, each code one status and one
+// retryable flag across both tables, and the flag is RFC 23's: a 429 or a
+// 503 may succeed later unchanged, a refused value, a missing or refused
+// caller, a failed precondition and a server fault may not; a 409 may be
+// either, by the state that refuses it.
+func TestProblemStatuses(t *testing.T) {
+	byCode := map[apiv1.Code]answerOf{}
+	check := func(name string, a answerOf) {
+		if a.status < 400 || a.status > 599 {
+			t.Errorf("%s: status %d, want 400–599", name, a.status)
+		}
+		switch a.status {
+		case http.StatusTooManyRequests, http.StatusServiceUnavailable:
+			if !a.retryable {
+				t.Errorf("%s: %d not retryable, want retryable", name, a.status)
+			}
+		case http.StatusConflict:
+		default:
+			if a.retryable {
+				t.Errorf("%s: %d retryable, want not", name, a.status)
+			}
+		}
+		if b, ok := byCode[a.code]; ok && (b.status != a.status || b.retryable != a.retryable) {
+			t.Errorf("%s: code %q answers %d retryable %v, another row %d retryable %v", name, a.code, a.status, a.retryable, b.status, b.retryable)
+		}
+		byCode[a.code] = a
+	}
+	for code, a := range own {
+		check(string(code), a)
+	}
+	for _, c := range components {
+		check(c.err.Error(), c.answerOf)
 	}
 }
 

@@ -9,13 +9,11 @@ import (
 )
 
 // Caller is the account a request authenticated as: its principal, its
-// role, whether it must change its password before anything else, and
-// whether it called on the node's local socket.
+// role, and whether it must change its password before anything else.
 type Caller struct {
 	Principal  entity.Principal
 	Role       entity.APIRole
 	MustChange bool
-	Local      bool
 }
 
 type callerKey struct{}
