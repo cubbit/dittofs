@@ -10,11 +10,11 @@ cache); [RFC 16](../rfcs/rfc-16-metadata-store.md) §3 (`Principals.Grant`,
 `Principals.SharePolicy`) and §4.2's `S‖id‖gv`; [RFC 23](../rfcs/rfc-23-control-plane.md)
 §3.2, for one scenario.
 **Track:** A.
-**Epic 3 estimate: 10 subtasks, 15.75 man-days.**
+**Epic 3 estimate: 10 subtasks, 16 man-days.**
 **Depends on:** **S1**: E1's `pkg/identity` (`Identity`, `Evidence`, `Caller`,
 `ReadOnlyCause`, `Resolver`, `Identities`, `FindOpts`), `entity.SharePolicy`, `internal/identity`'s
 `Server` with `Apply` and a stubbed `Resolve`, and `vfs.Deps`' `Identity` and `Names`. **E2,
-partly**: T3.10 alone waits, for E2's T2.1 (root and anonymous as well-known principals) and
+partly**: T3.10 alone waits, for E2's T2.1 (root as a well-known principal; anonymous already exists) and
 T2.4 (`State.Settings`, whose `NTLM` key it reads); T3.2's routing lands before E2's T2.5 fills
 `Spell` and `Find`, and answers what they answer. **RFC 23's plan's epic 2, partly**: it raises the principals
 generation, `PGEN`, on every principal write. No subtask reads `PGEN` and each test hands
@@ -103,7 +103,7 @@ number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | identity's tests drive `Resolve` over the memory KV store, the store's errors and delays from `pkg/metadata/kv/kvtest`'s fault wrapper, the clock injected; `vfs`'s use the real identity server (RFC 18 §10, "Who stands in for what"); T3.2's one recording wrapper passes every call through to the real server, as `CLAUDE.md` allows when the call reaching a dependency is the requirement |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | identity's tests drive `Resolve` over the memory KV store, the store's errors and delays from `pkg/metadata/kv/kvtest`'s fault wrapper, the clock injected; `vfs`'s use the real identity server (RFC 18 §10, "Who stands in for what"); T3.1's and T3.2's recording wrappers pass every call through to the real store or server, as `CLAUDE.md` allows when the call reaching a dependency is the requirement |
 | rule 2, fuzz every decoder of untrusted bytes | none | resolution decodes nothing; `Key()` encodes, and T3.7 tests its encoding against collisions |
 | rule 3, observability follows RFC 25 | T3.1, T3.4, T3.10 | `identity_resolution_refusals_total` with `disabled`, `store_unavailable` (T3.1), `group_cap`, `anonymous_missing` (T3.4) and `ntlm_off` (T3.10); the `identity.resolve` span on a miss (T3.1); no label or attribute carries a name or SID |
 | rule 4, profiling | T3.8 | the cache's tests, single flight included, run under the leak check; RFC 18 names no allocation budget |
@@ -169,7 +169,7 @@ tests can cite them. Sources are RFC 18 unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R25 | There is one cache of resolved callers, admission's; identity keeps none | invariant | §7.1; RFC 17 §4.9 | T3.8 |
+| R25 | There is one cache of resolved callers, admission's; identity keeps none | invariant | §7.1; RFC 17 §4.9 | T3.1, T3.8 |
 | R26 | The key holds the proof key, `Identity.Key()`: a collision-resistant digest of every field of the `Identity` but `Client`, the proof kind, the protection, the bound principal, the verified name, each SID with whether it is deny-only, and every claimed uid and gid | MUST | §6.1, §7.1, §9.1 ID1 | T3.7 |
 | R27 | The key holds the share, `ExportPolicy.Version` and the share's grant-list version, read on every call | MUST | §6.4, §7.1; RFC 16 §3, §4.2 (`S‖id‖gv`); RFC 17 §4.9 | T3.6, T3.8 |
 | R28 | The key holds the `State` the caller was built under; a caller stamped with an older one is neither stored nor served | MUST | §7.1, §7.2 | T3.3, T3.8 |
@@ -186,11 +186,12 @@ tests can cite them. Sources are RFC 18 unless named.
 | --- | --- | --- | --- | --- |
 | R35 | Admission's step 4 is `Resolve` through `vfs.Deps.Identity`, `*vfs.Filesystem` its only caller, with the share's policy read in one snapshot | invariant | §2.6, §6.1; RFC 17 §2.3, §4.9; RFC 16 §3 (`SharePolicy`) | T3.6 |
 | R36 | `*vfs.Filesystem`'s `Spell` and `Find` pass through to `vfs.Deps.Names`, `FindOpts.Mint` set only for a call whose `Identity` is `Secret` or above | invariant | §2.6, §4.1, §4.4 | T3.2 |
-| R40 | The grant-list version a cache entry is keyed on is read before the grants that entry was built from, so no older grant is cached under a newer version | MUST | RFC 16 §3 (`Grant`), §4.2 (`S‖id‖gv`) | T3.6 |
-| R37 | A new share is reachable by nobody until an operator grants it: an NTLM user on a share with no grant is refused | test row | RFC 23 §3.2 | T3.6 |
-| R41 | A well-known principal, anonymous or root, has no user record: resolution reads none for it, so neither is refused as disabled or deleted | invariant | RFC 16 §3 (`User`); §2.1 | T3.10 |
-| R38 | Each refusal counts in `identity_resolution_refusals_total{reason}`: `disabled`, `group_cap`, `store_unavailable`, `anonymous_missing`, `ntlm_off` | invariant | §9.2 | T3.1, T3.4, T3.10 |
-| R39 | A miss opens `identity.resolve`, a child of the service-call span, with the proof kind, the outcome and the principal's ID, never a name or SID | invariant | §9.2 | T3.1 |
+| R37 | The grant-list version a cache entry is keyed on is read before the grants that entry was built from, so no older grant is cached under a newer version | MUST | RFC 16 §3 (`Grant`), §4.2 (`S‖id‖gv`) | T3.6, T3.8 |
+| R38 | A new share is reachable by nobody until an operator grants it: an NTLM user on a share with no grant is refused | test row | RFC 23 §3.2 | T3.6 |
+| R39 | A well-known principal, anonymous or root, has no user record: resolution reads none for it, so neither is refused as disabled or deleted | invariant | RFC 16 §3 (`User`); §2.1 | T3.10 |
+| R40 | Each refusal counts in `identity_resolution_refusals_total{reason}`: `disabled`, `group_cap`, `store_unavailable`, `anonymous_missing`, `ntlm_off` | invariant | §9.2 | T3.1, T3.4, T3.10 |
+| R41 | A miss opens `identity.resolve`, a child of the service-call span, with the proof kind, the outcome and the principal's ID, never a name or SID | invariant | §9.2 | T3.1 |
+| R42 | A share whose policy names no `Anonymous` squashes to the well-known anonymous principal | invariant | §6.2, §2.1 | T3.10 |
 
 Which test holds each row is in its subtask's **Tests**. R1 is §10's "forwarded identity" unit
 row; R12 and R13 its "group cap"; R23 its "steady raises"; R34 its "in-flight disable".
@@ -219,11 +220,16 @@ row; R12 and R13 its "group cap"; R23 its "steady raises"; R34 its "in-flight di
   answer (§9).** RFC 18 §7.2 says a caller stamped with an older `State` is neither stored nor
   served, but `Resolver` declares only `Resolve`, so admission has no way to learn the current
   `State`. `Current() uint64` is one atomic load. Changing it once E5 to E7 build on the
-  frozen surface costs every implementer of `Resolver`, `*Server` alone today.
-- **D4, `Key()` digests the whole `Identity` on each call.** SHA-256 over `encoding/json` of a copy
-  with `Client` zeroed, whose quoting keeps adjacent strings apart and which picks up a new
-  exported field by itself, and no digest is
-  kept in `Evidence`: an unexported field set at sign-in is lost when the value crosses a node
+  frozen surface costs every implementer of `Resolver`, `*Server` alone today. A `decision:`
+  marker at `Current()`. Prior art: none found.
+- **D4, `Key()` digests the whole `Identity` on each call, through an encoding of its own.**
+  SHA-256 over a hand-written, length-prefixed encoding of every field but `Client`: each
+  fixed-width field written as itself, each string and slice with its length first, and a
+  principal's `Kind` and `ID` as raw bytes. Not `encoding/json`: `entity.Principal.MarshalText`
+  answers `ErrSyntax` for a `Kind` with no name, the zero one among them, and a `None`
+  identity's evidence carries the zero principal, so `Key()` would have no value to return. A
+  field added to `Identity` or `Evidence` is therefore an edit to `Key()`, which T3.7's
+  reflection test enforces (R30). No digest is kept in `Evidence`: an unexported field set at sign-in is lost when the value crosses a node
   channel, and recomputing costs microseconds. A `ponytail:` marker names the upgrade: compute
   the evidence's digest once at sign-in, as RFC 18 §3.1's sketch does, when a profile shows
   `Key()` in admission's cost. Prior art (from memory): Linux's sunrpc auth cache hashes the
@@ -284,6 +290,9 @@ internal/vfs/
   opens.go            T3.6  a delete-on-close marker's admission through Deps.Identity
   shares.go           T3.2  Spell and Find through Deps.Names
 internal/vfs/admit/resolve.go     T3.1  removed
+internal/identity/identitymem/    T3.6  the real server over a given store, for vfstest/memory
+pkg/vfs/vfstest/memory/memory.go  T3.6  Deps.Identity, Auth and Names from identitymem
+pkg/identity/arch_test.go         T3.6  only vfstest/memory imports identitymem, with its seed
 pkg/metadata/kvstore/
   principals.go       T3.5  Grant as RFC 16 §3 declares it
                       T3.6  SharePolicy
@@ -298,7 +307,7 @@ pkg/metadata/kvstore/
 **Subtask T3.1 estimate: 2.5 man-days.**
 
 - **Track:** A. **Depends on:** S1.
-- **Covers:** R1, R2, R3, R4, R5, R6, R38, R39.
+- **Covers:** R1, R2, R3, R4, R5, R6, R25, R40, R41.
 - **Deliverables:** `internal/vfs/admit/resolve.go` moved with `git mv` into
   `internal/identity`, filling E1's stubbed `(*Server).Resolve(ctx, identity.Identity,
   entity.SharePolicy, readOnly bool) (*identity.Caller, error)`: the forwarded check first
@@ -307,8 +316,8 @@ pkg/metadata/kvstore/
   disabled or deleted user refused `ErrAccess`; a zero share stops after the map step (D5);
   `Fresh` from `Expires` (D6). `Deps.Tracer`, the first code that reads it (E1's D4), and the
   `identity.resolve` span; `identity_resolution_refusals_total` with `disabled` and
-  `store_unavailable`. `admit.Check` stays in `internal/vfs/admit`. Consumed by T3.3, T3.4,
-  T3.6, E5, E6, E7.
+  `store_unavailable`. `admit.Check` stays in `internal/vfs/admit`; no table of callers is
+  kept in identity (R25). Consumed by T3.3, T3.4, T3.6, E5, E6, E7.
 - **Acceptance criteria:**
   - `Resolve` of an `Identity` whose evidence names a principal at `Claimed`, or none at
     `Ticket`, is `ErrInvalid` before any store read.
@@ -321,8 +330,11 @@ pkg/metadata/kvstore/
   `ErrUnavailable` and a nil `Caller` (catches an error mapped to anonymous, R5); a user
   renamed after sign-in still resolves by the bound principal (catches a map by name, R2);
   a zero share answers `Mapped` and no grant read, held by the fault wrapper failing grant
-  reads (R6); the counter's value per reason after each refusal (R38). R39's span is checked
-  with OpenTelemetry's in-memory span recorder, a sink of outputs.
+  reads (R6); the counter's value per reason after each refusal (R40); two `Resolve` calls of
+  one identity both reach the store's user read, through a pass-through wrapper that records
+  each call, allowed because the call reaching the store is the requirement (catches a table of
+  callers kept in identity, R25). R41's span is checked with OpenTelemetry's in-memory span
+  recorder, a sink of outputs.
 - **Rules:** rule 7 (`git mv`), rule 9 (D5, D6, D7's markers).
 
 ### T3.2 `Spell` and `Find` routed to `Names`
@@ -359,17 +371,19 @@ pkg/metadata/kvstore/
 - **Tests:** at `Resolve`: an `Apply` of an equal `State` leaves `Current()` unchanged, one
   with a raised generation raises it (catches a serial raised per `Apply` or never, R28); a
   `State` differing only in a setting needs E2's `State.Settings`, so T3.10's test holds that
-  case (R24); bob's user read held by the fault wrapper on the `view` itself, outside any
-  transaction so no retry re-reads it, while bob is disabled and `Apply` raises the serial:
+  case (R24); bob's user read run by a fault wrapper (kind 3) on the `view` itself, outside any
+  transaction so no retry re-reads it, which runs the real read, returning bob enabled, and
+  holds that answer until released; meanwhile bob is disabled and `Apply` raises the serial:
   released, the call is refused `ErrAccess` (catches a `State` read after the store reads, or
-  a stale caller answered, R22, R23). The cache's half of R23 and R28 is T3.8's.
+  a stale caller answered: removing the re-resolve, or reading the `State` after the store
+  reads, fails on the assertion, R22, R23). The cache's half of R23 and R28 is T3.8's.
 
 ### T3.4 Squash, the group closure and its cap
 
 **Subtask T3.4 estimate: 2 man-days.**
 
 - **Track:** A. **Depends on:** T3.1.
-- **Covers:** R3, R5, R8, R9, R10, R11, R12, R13, R14, R38.
+- **Covers:** R3, R5, R8, R9, R10, R11, R12, R13, R14, R40.
 - **Deliverables:** squash per RFC 18 §6.2's table for `none` and `all` (root's row is
   T3.10's); the closure of the store's memberships, `kvstore`'s existing cycle-safe walk
   (`groupsOf`), unioned with the closures of the
@@ -385,12 +399,15 @@ pkg/metadata/kvstore/
   - A membership cycle resolves, each group listed once.
 - **Tests:** at `Resolve` over the memory KV store: §10's "group cap", 1 025 groups refused
   and none resolved with fewer, a nested read failed by the fault wrapper refusing the call,
-  a cycle resolved (R12, R13), the refusal's log line read from a `slog` handler that keeps
+  a cycle resolved (R12, R13), `identity_resolution_refusals_total{reason="group_cap"}` read
+  as 1 after the cap's refusal (R40), the refusal's log line read from a `slog` handler that keeps
   what it is given, holding the count (R13); alice in `Accounts`, inside `Finance`, with an
   evidence SID mapping to `Payroll`, inside `Ops`: `Groups` is exactly those four, sorted
   (R11); `Squash = all` on a caller whose evidence SIDs map to
   `Finance` gives no `Finance` in `Groups` (catches a squash keeping SIDs, R9); a deleted
-  `Anonymous` refuses a squashed call (R10); a deny-only SID mapping to `Finance` puts it in
+  `Anonymous` refuses a squashed call, the `anonymous_missing` count read as 1 (R10, R40); a
+  deny-only SID no principal holds: the call resolves, with no error and nothing added to
+  `DenyOnly` or `Groups` (catches an unmapped deny-only SID refused or mapped, R14); a deny-only SID mapping to `Finance` puts it in
   `DenyOnly` and none of `Finance`'s parents in `Groups`, and a fault on the `sid` index while
   mapping it refuses the call (catches a deny dropped, R14). The file-level half of R9 is
   T3.6's test.
@@ -424,10 +441,10 @@ pkg/metadata/kvstore/
 
 ### T3.6 Admission resolves through identity
 
-**Subtask T3.6 estimate: 2.25 man-days.**
+**Subtask T3.6 estimate: 2.5 man-days.**
 
 - **Track:** A. **Depends on:** T3.5.
-- **Covers:** R6, R27, R35, R37, R40.
+- **Covers:** R6, R27, R35, R38, R37 (its `kvstoretest` rows); D9's refusal.
 - **Deliverables:** the `SharePolicy` admission hands `Resolve`, built from the share and
   policy `ShareIndex.Share` already reads in one view, which gains the `S‖id‖gv` read, so no
   call makes a second read (RFC 16 §3's `Principals.SharePolicy` waits for a consumer with no
@@ -438,20 +455,32 @@ pkg/metadata/kvstore/
   chokepoint, D9's refusal and marker at the conversion, and a caller whose `Access` is
   `none` refused there too, since the chokepoint reads a zero `Access` as "read the grants"
   and would read the squashed principal's (the moved resolver's `decision:` keeps saying so); `clients.go` through `Resolve` (D5) and `opens.go`'s marker admission through
-  `Resolve`; `vfs`'s tests that admit a claimed identity moved to proven ones (D7).
+  `Resolve`; `vfs`'s tests that admit a claimed identity moved to proven ones (D7);
+  `internal/identity/identitymem`, one function that builds the real identity server over a
+  given `*kvstore.Store`, applies its first `State`, starts it and stops it when the test ends,
+  so `pkg/vfs/vfstest/memory`, the adapters' verified in-memory `vfs.Service`, passes the value
+  it returns as `Deps.Identity`, `Auth` and `Names`, as RFC 18 §10 "Who stands in for what"
+  says, and never imports `internal/identity`: E1's T1.5 rule allows only `internal/node` and
+  identity's own packages, `identitymem` among them, and keeps no exception; T1.5's
+  `arch_test.go` gains the rule that no non-test package but `pkg/vfs/vfstest/memory` imports
+  `identitymem`, with a seeded violation, so the helper is no way around that rule.
   Consumed by T3.8, S2, E5 to E9.
 - **Acceptance criteria:**
   - `go build ./...` with `internal/vfs/admit/resolve.go` gone and `vfs`'s tests green on the
     real identity server.
   - Every grant write and principal deletion moves the share's `S‖id‖gv`.
+  - `pkg/vfs/vfstest/memory` builds on the real identity server and imports no
+    `internal/identity`.
 - **Tests:** at `vfs.Service`, over the real identity server and memory store: a `Squash =
   all` caller whose evidence maps to `Finance` reads a file whose ACL grants `Finance` only:
   refused, `Squash = none` granted (catches a squash keeping SIDs at the chokepoint, rule 5,
   R9's consumer half); a disabled user's next call refused (R4's consumer); RFC 23 §3.2's
-  scenario, an NTLM (`Secret`) user on a share with no grant refused (R37); a client record
-  created by a call naming no share owned by the mapped principal (R6); a grant written by an
-  `export_test.go` hook between admission's share read and `Resolve`'s grant reads: the next
-  call sees the new grant (catches the version read after the grants, R40). `kvstoretest`
+  scenario, an NTLM (`Secret`) user on a share with no grant refused (R38); a client record
+  created by a call naming no share owned by the mapped principal (R6); a `Secret` caller whose
+  evidence carries a deny-only SID mapping to `Finance`, on a file whose ACL denies `Finance`
+  and allows everyone: refused at admission (catches D9's refusal removed, which lets the read
+  through, fail-open); the arch test's seed of a non-test package importing `identitymem`
+  reported. `kvstoretest`
   rows: `Share` reads the policy and `S‖id‖gv` from one commit, and `SetGrant`, `RemoveGrant`,
   `DeleteUser` and `DeleteGroup` each raise `S‖id‖gv` (catches a grant change a cache keyed on
   misses, R27).
@@ -469,7 +498,10 @@ pkg/metadata/kvstore/
     changing `Client` does not.
 - **Tests:** in `pkg/identity`, a reflection walk over `Identity` and `Evidence`, recursively
   into slices and `Principal`, `time.Time`, `netip.Addr` and `SID` taken as leaves, that sets each field in turn to a non-zero value and asserts
-  `Key()` moves, so a field added later fails until `Key()` covers it (R30); a deny-only SID
+  `Key()` moves, so a field added later fails until `Key()` covers it (R30); `Key()` of
+  `Identity{}` and of a `None` identity, whose evidence holds the zero principal, each returns
+  a value, and both differ from a `Ticket` one's (catches an encoding that refuses the zero
+  principal, R26); a deny-only SID
   moved into `SIDs` changes `Key()` (catches a key that drops the deny-only bit, R26);
   two identities of one principal, one `Secret`, one `Ticket`,
   differ (ID1).
@@ -479,7 +511,7 @@ pkg/metadata/kvstore/
 **Subtask T3.8 estimate: 3 man-days.**
 
 - **Track:** A. **Depends on:** T3.3, T3.6, T3.7, RFC 23's plan's epic 2.
-- **Covers:** R23, R25, R27, R28, R29, R30, R31, R32, R33, R34.
+- **Covers:** R23, R25, R27, R28, R29, R30, R31, R32, R33, R34, R37.
 - **Deliverables:** `internal/vfs`'s `callerKey{proof identity.ProofKey; policy
   entity.SharePolicy; readOnly bool; client netip.Addr; built uint64}` with
   D1's marker; the cache: a map with a `container/list` LRU, bounded at 262 144 entries and
@@ -502,9 +534,13 @@ pkg/metadata/kvstore/
   input dropped while the key is built fails (R27, R28, R29, R30); the warm caller's own grant
   set to `none`: its next call refused (R27 at the consumer, RFC 18 §6.4); two hosts admitted
   read-write by one client rule each miss once, since the address is in the key wherever a
-  rule decided (R29); §10's "in-flight disable", bob's user read held on the fault wrapper's
-  `view`, the disable written and its `State` applied, the read released: nothing stored,
-  and bob's next call refused (R34); §10's "steady raises" on the injected clock, the serial
+  rule decided (R29); a grant written by an `export_test.go` hook in admission that fires
+  after `Resolve` returns, its grant reads done, and before the entry is stored: the next call
+  misses and sees the new grant (catches the version read after the grants, which would key
+  the old grants under the new version and serve them, R37); §10's "in-flight disable", bob's
+  user read run by the fault wrapper on the `view`, which runs the real read, returning bob
+  enabled, and holds that answer until released; meanwhile the disable is written and its
+  `State` applied; released: nothing stored, and bob's next call refused (R34); §10's "steady raises" on the injected clock, the serial
   raised during every resolution: each call served after at most two, the second stored only
   when no raise came during it (R23); 32 calls of one key with the first resolution's `view`
   held until an `export_test.go` hook has reported all 32 waiting: one span, and a first
@@ -512,8 +548,7 @@ pkg/metadata/kvstore/
   `Expires` on the injected clock misses (R32); a cache of bound 2 evicts the least recently
   used and the eviction counter reads 1 (R33). R30's other half is the key holding `Resolve`'s
   arguments whole, built beside its one call, so a field added to `SharePolicy` is keyed with
-  no edit. R25 is the one row no test holds: `internal/identity` keeps no table of callers
-  after T3.1, which only review can see.
+  no edit. R25's identity half is T3.1's test.
 
 ### T3.9 The cache's benchmark
 
@@ -535,10 +570,10 @@ pkg/metadata/kvstore/
 **Subtask T3.10 estimate: 1 man-days.**
 
 - **Track:** A. **Depends on:** T3.8, T2.1, T2.4.
-- **Covers:** R8, R24, R38, R41.
+- **Covers:** R8, R24, R40, R39, R42.
 - **Deliverables:** `Squash = root` replacing a caller mapped to E2's well-known root;
-  root unsquashed `Privileged`; a share's `Anonymous` defaulting to E2's well-known
-  anonymous where its policy names none; no user record read for a well-known principal; every
+  root unsquashed `Privileged`; a share's `Anonymous` defaulting to the well-known anonymous
+  (`entity.AnonymousPrincipal`, 0x0C) where its policy names none; no user record read for a well-known principal; every
   `Secret` identity refused while `State.Settings`' `NTLM` key, `identity.ntlm`, is off, reason
   `ntlm_off`.
 - **Acceptance criteria:**
@@ -551,9 +586,11 @@ pkg/metadata/kvstore/
   caller served from the cache, then `Apply` of a `State` differing only in `identity.ntlm`:
   its next call refused `ErrAccess` and the `ntlm_off` count 1, while a `Ticket` caller is
   still served (catches a cached NTLM session outliving the setting, and a serial bound to the
-  generation alone, R24, R38); a squashed
+  generation alone, R24, R40); a squashed
   call on a share whose `Anonymous` is the well-known one is served, the fault wrapper failing
-  every user read of it (catches a user read for a principal that has none, R41).
+  every user read of it (catches a user read for a principal that has none, R39); a `None`
+  caller on a share whose policy names no `Anonymous`: `Principal` is anonymous (0x0C) and its
+  access the everyone grant (catches a zero `Anonymous` left unresolved, R42).
 
 ## 7. Order of work
 
@@ -568,7 +605,7 @@ flowchart TD
   X1(["RFC 23 plan epic 2: PGEN raised"]):::sync --> T3_8
   T3_3 & T3_6 & T3_7 --> T3_8["T3.8 Caller cache"]
   T3_8 --> T3_9["T3.9 Benchmark"]
-  E2(["E2's T2.1 and T2.4: well-known principals, State.Settings"]):::sync --> T3_10["T3.10 Root, anonymous, NTLM off"]
+  E2(["E2's T2.1 and T2.4: root, State.Settings"]):::sync --> T3_10["T3.10 Root, anonymous, NTLM off"]
   T3_8 --> T3_10
   T3_5 --> C1(["after T3.5: resolution whole at identity's layer"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -582,7 +619,7 @@ is reached once T3.2 and T3.6 have landed; the cache follows without changing wh
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T3.1, T3.2, T3.3 | 4 | — | the resolver in identity with its `State`, and `vfs`'s naming calls routed |
-| 2 | T3.4, T3.5, T3.6 | 6.25 | PR 1 | the rest of resolution and admission calling it: one review of what a caller acts as |
+| 2 | T3.4, T3.5, T3.6 | 6.5 | PR 1 | the rest of resolution and admission calling it: one review of what a caller acts as |
 | 3 | T3.7, T3.8, T3.9 | 4.5 | PR 2 | the key, the cache built on it and its measurement |
 | 4 | T3.10 | 1 | PR 3, E2's T2.1 and T2.4 | what E2's principals and setting bring to resolution |
 
@@ -615,8 +652,8 @@ the version this document was written against.
   `identityGen()`; RFC 18 §3.5 and §7.1 need a `State` change with no principal change
   (`identity.ntlm`) to drop cached callers, so `Built` is D2's serial.
 - RFC 18 §2.6 places the caller cache in the identity server; §7.1, RFC 17 §4.9 and the plan's
-  D2 place it in admission. This document follows §7.1; §2.6's sentence needs the same fix in
-  #4058.
+  D2 place it in admission. This document follows §7.1; §2.6's sentence needs an RFC 18 §2.6
+  amendment.
 - RFC 18 §7.1 says the cache holds the `Caller` "with the result of steps 1–3", resolution's
   map, squash and collect, so grants and flags would run per call; D1 caches all five with
   the grant-list version in the key, a superset the sentence should allow.
@@ -647,18 +684,7 @@ the version this document was written against.
 - `S‖id‖gv` is not kept on `feat/storage-v2` (`shares.go`'s `ponytail:`); T3.6 writes it.
   RFC 16 §3 renames `RemoveGrant` to `DeleteGrant` with `expect`, which RFC 23's plan's epic 2 builds; whichever lands
   second keeps the write.
-- The estimate is 10 subtasks, 15.75 man-days, against the plan's 7 subtasks, 12.5 man-days:
-  3.25 man-days more for the store reads and `S‖id‖gv` (T3.5,
-  T3.6) that `feat/storage-v2` lacks, moving `vfs`'s claimed-identity tests (D7), the serial
-  (D2) and the benchmark as its own subtask. T3.8 is the least certain.
-- The simplification pass's cuts are in: the existing closure walk (T3.4), the share view
-  admission already reads (T3.6), `encoding/json` under `Key()` (T3.7) and a key test that
-  could not fail (T3.8). The adversarial pass's findings are in: tests that could not fail
-  rewritten (T3.3, T3.5, T3.8), R40 and R41 added, R25 left as review's. Kept against the
-  simplification pass: RFC 16 §3's `Grant` shape, which the RFC declares;
-  the group-reference bound, without which 262 144 callers of 1 024 groups are unbounded in
-  practice; the benchmark, which RFC 18 §7.2's `ponytail:` names as its evidence (A11).
-- The surface was designed twice: an independent architect pass proposed the same tree and
-  key, with `readOnly` as `Resolve`'s bool and the whole `SharePolicy` in it, both adopted;
-  it put deny-only principals into `entity.Identity` (D9's option (b)) and named the cache's
-  wait on `PGEN`, adopted above.
+- The estimate is 10 subtasks, 16 man-days, against the plan's 7 subtasks, 12.5 man-days:
+  3.5 man-days more for the store reads and `S‖id‖gv` (T3.5, T3.6) that `feat/storage-v2`
+  lacks, the in-memory service's identity server (T3.6), moving `vfs`'s claimed-identity tests
+  (D7), the serial (D2) and the benchmark as its own subtask. T3.8 is the least certain.
