@@ -490,6 +490,7 @@ func FuzzLifecycleValues(f *testing.F) {
 	for _, seed := range [][]byte{
 		nil, {1}, {1, 0}, {1, 1}, {1, 2}, {1, 3}, {1, 4}, {1, 5}, {1, 6}, {2, 1},
 		{1, 4, 0, 0, 0, 0, 0, 0, 0, 7}, // step 4 with a cursor after it
+		{1, 4, 2, 0x01, 0x07},          // step 4 with its cursor, as the drop writes it
 	} {
 		f.Add(seed)
 	}
@@ -524,6 +525,12 @@ func FuzzLifecycleValues(f *testing.F) {
 		if id, err := decodeJournalIndex(b); err == nil {
 			if again, err := decodeJournalIndex(encodeJournalIndex(id)); err != nil || again != id {
 				t.Errorf("JD %x: %x, written again %x, %v", b, id, again, err)
+			}
+		}
+
+		if step, cursor, err := decodeShardStep(b); err == nil {
+			if s, c, err := decodeShardStep(encodeShardStep(step, cursor)); err != nil || s != step || !bytes.Equal(c, cursor) {
+				t.Errorf("rm row %x: step %d cursor %x, written again step %d cursor %x, %v", b, step, cursor, s, c, err)
 			}
 		}
 	})
