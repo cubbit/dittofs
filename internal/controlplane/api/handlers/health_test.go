@@ -105,6 +105,30 @@ func TestLiveness_ReturnsOK(t *testing.T) {
 	}
 }
 
+// dfs start tells the server it launched from one already on the port by
+// comparing started_at with the launch time, so started_at keeps the fraction.
+func TestLiveness_StartedAtKeepsSubSecond(t *testing.T) {
+	handler := NewHealthHandler(nil)
+	handler.startTime = time.Date(2026, 1, 2, 3, 4, 5, 250_000_000, time.UTC)
+	w := httptest.NewRecorder()
+
+	handler.Liveness(w, httptest.NewRequest("GET", "/health", nil))
+
+	var resp Response
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data is %T, want a map", resp.Data)
+	}
+
+	if got, want := data["started_at"], "2026-01-02T03:04:05.25Z"; got != want {
+		t.Fatalf("started_at = %v, want %s", got, want)
+	}
+}
+
 func TestLiveness_WithRegistry_ReturnsDBReachable(t *testing.T) {
 	// Create a real in-memory SQLite store for the control plane DB
 	cpStore, err := store.New(&store.Config{

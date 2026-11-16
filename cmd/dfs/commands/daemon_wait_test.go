@@ -64,7 +64,12 @@ func TestHealthReadyFunc(t *testing.T) {
 		want      bool
 	}{
 		{"server started after the launch", 200, "2026-01-02T03:04:06Z", true},
-		{"server started in the same second as the launch", 200, "2026-01-02T03:04:05Z", true},
+		{"server started later in the launch second", 200, "2026-01-02T03:04:05.9Z", true},
+		{"server started at the launch instant", 200, "2026-01-02T03:04:05.7Z", true},
+		{"server started earlier in the launch second", 200, "2026-01-02T03:04:05.2Z", false},
+		// A server built before started_at carried the fraction reports whole
+		// seconds, never after its real start.
+		{"older server sending whole seconds, launch second", 200, "2026-01-02T03:04:05Z", false},
 		// A server already bound to the port answers /health, but it is not the
 		// one that was just launched.
 		{"server that was already running", 200, "2026-01-02T03:00:00Z", false},
