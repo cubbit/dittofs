@@ -57,8 +57,10 @@ type Node struct {
 // decision: New builds over another installation's KV, because nothing in
 // Config names the installation to expect. That KV is refused only at the
 // engine's Start, when it opens each journal and journal.Open checks the
-// journal's identity against the one the store records. Check the
-// installation here once the bootstrap carries its ID.
+// journal's identity against the one the store records. By then Start has
+// already written to that KV (the node's record and its epoch come before
+// the engine), so Start must check the installation before its first write.
+// Check it here instead once the bootstrap carries its ID.
 //
 // decision: a node is built once per metrics registry. Stop does not
 // unregister the filesystem's collectors, so a second New on the same
