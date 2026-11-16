@@ -47,6 +47,9 @@ func TestKeyGolden(t *testing.T) {
 		{"idempotency", idempotencyKey(group, "k"), "3e" + g + "6b0001"},
 		{"idempotency expiry", idempotencyExpiryKey(entity.IdempotencyRecord{Account: group, Key: "k", Expires: time.Unix(0, 2)}),
 			"3f" + "0000000000000002" + "01" + g + "6b0001"},
+		{"namespace", namespaceInfoKey(entity.NamespaceID(gid)), "17" + g + "0a"},
+		{"namespace share", namespaceShareKey(entity.NamespaceID(gid), sid), "17" + g + "0b" + s},
+		{"store index", storeIndexKey([16]byte(pid), entity.NamespaceID(gid)), "4b" + p + g},
 	} {
 		if got := hex.EncodeToString(c.key); got != c.want {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)

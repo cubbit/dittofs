@@ -16,7 +16,7 @@ func testCosts(t *testing.T, kvo Opener) {
 	u := user("alice", uid("1000"))
 	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 	sh := share("photos", "/photos")
-	must(t, errOf(cp.PutShare(ctx, sh, 0)))
+	must(t, errOf(createShare(cp, sh)))
 	c.Take()
 
 	u.Name = "alicia"

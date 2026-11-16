@@ -65,7 +65,7 @@ func shareWithID(t *testing.T, s *Store, name string, id entity.ShareID) entity.
 		Root: entity.NewFileID(),
 	}
 
-	if _, err := s.ControlPlane().PutShare(ctx, sh, 0); err != nil {
+	if _, err := createShare(s.ControlPlane(), sh); err != nil {
 		t.Fatal(err)
 	}
 

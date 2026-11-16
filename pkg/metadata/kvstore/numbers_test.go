@@ -19,7 +19,7 @@ import (
 func newShare(t *testing.T, s *Store) entity.ShareID {
 	t.Helper()
 	sh := entity.Share{ID: entity.NewShareID(), Name: "s", Path: "/s", Root: entity.NewFileID()}
-	if _, err := s.ControlPlane().PutShare(context.Background(), sh, 0); err != nil {
+	if _, err := createShare(s.ControlPlane(), sh); err != nil {
 		t.Fatal(err)
 	}
 	return sh.ID
@@ -103,7 +103,7 @@ func TestNumbersReserveAlone(t *testing.T) {
 	s := openStoreOver(t, func(db kv.KV) kv.KV { st.KV = db; return st })
 	a := newShare(t, s)
 	bs := entity.Share{ID: entity.NewShareID(), Name: "t", Path: "/t", Root: entity.NewFileID()}
-	if _, err := s.ControlPlane().PutShare(ctx, bs, 0); err != nil {
+	if _, err := createShare(s.ControlPlane(), bs); err != nil {
 		t.Fatal(err)
 	}
 	b := bs.ID
@@ -173,13 +173,13 @@ func TestShardNumbersStopAtTheShardSpace(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := entity.Share{ID: entity.NewShareID(), Name: "last", Path: "/last", Root: entity.NewFileID()}
-	if _, err := s.ControlPlane().PutShare(ctx, last, 0); err != nil {
+	if _, err := createShare(s.ControlPlane(), last); err != nil {
 		t.Fatal(err)
 	}
 	if sh, _, err := s.ShareIndex().Share(ctx, last.ID); err != nil || sh.Shard != entity.ShardLimit-1 {
 		t.Errorf("the last share: shard %d, %v; want %d", sh.Shard, err, entity.ShardLimit-1)
 	}
-	_, err := s.ControlPlane().PutShare(ctx, entity.Share{ID: entity.NewShareID(), Name: "over", Path: "/over", Root: entity.NewFileID()}, 0)
+	_, err := createShare(s.ControlPlane(), entity.Share{ID: entity.NewShareID(), Name: "over", Path: "/over", Root: entity.NewFileID()})
 	var se *merrs.StoreError
 	if !errors.As(err, &se) || se.Code != merrs.ErrNoSpace {
 		t.Errorf("a share past the shard space: %v, want no space", err)
@@ -188,3 +188,14 @@ func TestShardNumbersStopAtTheShardSpace(t *testing.T) {
 
 // errOf is a write's error alone, its returned generation dropped.
 func errOf[T any](_ T, err error) error { return err }
+
+// createShare creates sh in a namespace of its own, put first, as a share's
+// create names a namespace that names a remote store.
+func createShare(cp ControlPlane, sh entity.Share) (uint64, error) {
+	ns := entity.Namespace{ID: entity.NewNamespaceID(), Store: [16]byte{15: 1}}
+	if _, err := cp.PutNamespace(context.Background(), ns, 0); err != nil {
+		return 0, err
+	}
+	sh.Namespaces = []entity.NamespaceGen{{Generation: 1, Namespace: ns.ID}}
+	return cp.PutShare(context.Background(), sh, 0)
+}

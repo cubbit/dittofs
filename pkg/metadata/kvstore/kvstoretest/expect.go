@@ -23,7 +23,7 @@ type versioned struct {
 // records of its own in s.
 func versionedKinds(t *testing.T, s *kvstore.Store) []versioned {
 	cp, c := s.ControlPlane(), s.Capacity()
-	sh, u, g := share("photos", "/photos"), user("alice"), group("staff")
+	sh, u, g := inNamespace(t, cp, share("photos", "/photos")), user("alice"), group("staff")
 	inst := entity.SettingScope{Kind: entity.ScopeInstallation}
 	q := entity.Quota{Principal: u.Principal, Hard: entity.Limit{Files: 10}}
 	return []versioned{
@@ -218,7 +218,7 @@ func testWritesToRemovedShare(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	sh, u := share("photos", "/photos"), user("alice")
-	must(t, errOf(cp.PutShare(ctx, sh, 0)))
+	must(t, errOf(createShare(cp, sh)))
 	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0)))
 	v := grantVersion(t, cp, sh.ID, u.Principal)

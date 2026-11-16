@@ -39,7 +39,7 @@ func FuzzHandles(f *testing.F) {
 	open := entity.Share{ID: entity.NewShareID(), Name: "open", Path: "/a/open", Root: entity.NewFileID()}
 	closed := entity.Share{ID: entity.NewShareID(), Name: "closed", Path: "/closed", Root: entity.NewFileID()}
 	for _, err := range []error{
-		errOf(cp.PutUser(ctx, admin, 0, entity.Alloc{})), errOf(cp.PutShare(ctx, open, 0)), errOf(cp.PutShare(ctx, closed, 0)),
+		errOf(cp.PutUser(ctx, admin, 0, entity.Alloc{})), errOf(createShare(cp, open)), errOf(createShare(cp, closed)),
 		errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: open.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0)),
 		errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: closed.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0)),
 		errOf(cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: closed.ID, Clients: []entity.ClientRule{

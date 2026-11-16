@@ -12,7 +12,7 @@ func testDeleteShareMark(t *testing.T, kvo Opener) {
 	f := newFS(t, kvo, entity.FoldIdentity)
 	cp := f.s.ControlPlane()
 	other := share("other", "/other")
-	must(t, errOf(cp.PutShare(ctx, other, 0)))
+	must(t, errOf(createShare(cp, other)))
 	before, _ := cp.ShareList(ctx)
 	if got, err := f.s.ShareIndex().Removing(ctx); err != nil || len(got) != 0 {
 		t.Errorf("shares being removed before any removal: %v, %v", got, err)
@@ -30,7 +30,7 @@ func testDeleteShareMark(t *testing.T, kvo Opener) {
 		t.Errorf("a share being removed is listed: %+v", got)
 	}
 	// The name and path are free at once.
-	must(t, errOf(cp.PutShare(ctx, share("data", "/data"), 0)))
+	must(t, errOf(createShare(cp, share("data", "/data"))))
 
 	// Removal is one-way, and the share is stale to every caller.
 	for name, err := range map[string]error{
@@ -94,8 +94,8 @@ func testDeleteShareRacesRename(t *testing.T, kvo Opener) {
 					t.Fatalf("index after both: %+v", got)
 				}
 				// Both names are free.
-				must(t, errOf(cp.PutShare(ctx, share("data", "/x"), 0)))
-				must(t, errOf(cp.PutShare(ctx, share("renamed", "/y"), 0)))
+				must(t, errOf(createShare(cp, share("data", "/x"))))
+				must(t, errOf(createShare(cp, share("renamed", "/y"))))
 			})
 		}
 	}

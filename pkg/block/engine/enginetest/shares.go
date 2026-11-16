@@ -33,13 +33,18 @@ func ShareOf(tb testing.TB, s *kvstore.Store, id entity.ShareID, limit int64) en
 func AddShare(tb testing.TB, s *kvstore.Store, name string, limit int64) engine.Share {
 	tb.Helper()
 
+	ns := entity.Namespace{ID: entity.NewNamespaceID(), Store: [16]byte{15: 1}}
 	sh := entity.Share{
-		ID:   entity.NewShareID(),
-		Name: name,
-		Path: "/" + name,
-		Root: entity.NewFileID(),
+		ID:         entity.NewShareID(),
+		Name:       name,
+		Path:       "/" + name,
+		Root:       entity.NewFileID(),
+		Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: ns.ID}},
 	}
 
+	if _, err := s.ControlPlane().PutNamespace(tb.Context(), ns, 0); err != nil {
+		tb.Fatalf("enginetest: create namespace of share %s: %v", name, err)
+	}
 	if _, err := s.ControlPlane().PutShare(tb.Context(), sh, 0); err != nil {
 		tb.Fatalf("enginetest: create share %s: %v", name, err)
 	}
