@@ -37,8 +37,8 @@ RUN set -eu; \
 
 COPY --chmod=0755 entrypoint.sh /entrypoint.sh
 
-# 88 = Kerberos KDC, 389 = LDAP, 464 = kpasswd. The tests map 88 or 389 to a
-# random host port and wait on it while the domain provisions.
+# 88 = Kerberos KDC, 389 = LDAP, 464 = kpasswd. The tests publish none of them:
+# they reach the DC on its IP on a Docker network of its own.
 EXPOSE 88/tcp 88/udp 389/tcp 464/tcp 464/udp
 
 ENTRYPOINT ["/entrypoint.sh"]
