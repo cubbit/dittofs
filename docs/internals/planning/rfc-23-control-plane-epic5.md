@@ -175,7 +175,7 @@ them.
 | R34 | A password change presents the current password, must-change or not | MUST | RFC 23 §5.4 | T5.7 |
 | R35 | Until a must-change password is changed, the session permits only `POST /auth/password` and sign-out; every other call is refused `403` `password_change_required` | MUST | RFC 23 §5.4, §4.7 | T5.6, T5.7 |
 | R36 | A password change answers a new session created in its own write, whose creation time is the not-before that write sets; the session that made the change refreshes no more | MUST | RFC 23 §5.3 | T5.7 |
-| R37 | A password set prunes the previous version of its hash at once | MUST | RFC 23 plan §5 epic 5 | T5.7 |
+| R37 | A password set prunes the previous version of the password hash and of the NT hash at once | MUST | RFC 23 plan §5 epic 5; the RFC 18 plan's epic 2, D5 | T5.7 |
 
 **Credential calls**
 
@@ -408,15 +408,19 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   `Deps.Authenticate`; in `signin.go`: sign-in (`Lookup`, `reserve`, `VerifyPassword` on that
   principal, then one `Write` with the settlement, the session on a success, its `Created` from
   `tx.Now()` raised to `NotBefore`, and the audit record in its `WriteMeta`, D8; then `issue`);
-  refresh through `Session(id)`, an invalidated token revoking the session with `DeleteSession`;
+  refresh through `Session(id)`, reading the account through `APISignIn.Account` as `Authenticate`
+  does, an invalidated token revoking the session with `DeleteSession`;
   sign-out; the two series; RFC 23 §4.5's `decision:` at the credential routes; `bench_test.go`,
   checked sign-ins from many sources beside metadata commits, in the manual tier. Consumed by T5.6
   and E6's `login`.
 - **Acceptance criteria:**
   - A refresh presenting an already-rotated token revokes its session.
   - A checked sign-in makes exactly two `Update`s.
-- **Tests:** over the harness and the real identity, the clock injected: sign-in, refresh, the old
-  refresh refused and the session gone (R16); a session past `api.session_lifetime` refused (R16);
+- **Tests:** over the harness and the real identity, the clock injected: a sign-in answering both
+  tokens through `Lookup` and `VerifyPassword` (R9); sign-in, refresh, the old refresh refused and
+  the session gone (R16); an account marked through `ControlPlaneTx.DeleteUser`, its batches not
+  run, its sign-in, its refresh and a call with its access token each refused, the sign-in's
+  refusal byte-equal to a wrong password's (R10, R13); a session past `api.session_lifetime` refused (R16);
   a disabled and a deleted account's refusals byte-equal (R10; the equal work is the RFC 18 plan's
   `VerifyPassword` test); a session created right after a `NotBefore` raise, refreshed and not
   refused (catches a node clock in place of the store's, R14); `kv.Counting` reading two `Update`s
@@ -451,12 +455,13 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 
 **Subtask T5.7 estimate: 3 man-days.**
 
-- **Track:** C. **Depends on:** T5.6.
+- **Track:** C. **Depends on:** T5.6; the RFC 18 plan's epic 2, T2.8 (an NT hash deleted with its
+  user).
 - **Covers:** R8, R14, R29, R31, R32, R34, R35, R36, R37, R39.
 - **Deliverables:** in `password.go`, the RFC 18 plan's password write: `POST /auth/password`, its
   current-password check through `reserve` and settled as a sign-in's; `NewHashes` on the
-  `identity.ntlm` read, the password sealed under the storage role and the NT hash, when NTLM is
-  on, under the protocol role, both before one `Write` that reads `identity.ntlm` tracked and
+  `identity.ntlm` read, the password sealed under the storage role and the NT hash, when `NewHashes`
+  returns one, under the protocol role, both before one `Write` that reads `identity.ntlm` tracked and
   refuses a moved revision, puts both versions, prunes the previous ones with `tx.PruneSecret`,
   raises `NotBefore` from `tx.Now()`, clears must-change and creates the answered session;
   `:set-password` with the same write and `resetAccount`; no other route writes a hash. Consumed by
@@ -468,7 +473,8 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   and an API-token call made before the change refused after it (R14); no current password refused
   (R34); a must-change account changing its password and then reaching other routes (R35); three
   failed current-password checks and two sign-ins from one address, the next of either `429` (R31,
-  R32); `:set-password` resetting a raised count (R29); the old hash's version gone (R37); the
+  R32); `:set-password` resetting a raised count (R29); the old password hash's and the old NT hash's versions gone, for a user holding a file spelling
+  with NTLM on (R37); the
   change held after reading `identity.ntlm` by a blocking fault while an NTLM-off commits, then
   refused and resealed with no NT hash (R8's hash rule, the RFC 18 plan's §3.5); the store's raw
   keys and the captured log holding neither password (R39); an operator setting an admin's
@@ -512,7 +518,7 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 
 **Subtask T5.10 estimate: 2 man-days.**
 
-- **Track:** C. **Depends on:** T5.2, T5.4; X1, X2.
+- **Track:** C. **Depends on:** T5.2, T5.4; X1, X2; the RFC 18 plan's epic 2, T2.8.
 - **Covers:** R29, R30, R45.
 - **Deliverables:** `dfs`'s `reset-admin` filling E1's stub: the bootstrap loaded, the store opened,
   refused by Badger's directory lock while a node holds it; the account chosen as D10 says, with
