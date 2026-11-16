@@ -140,6 +140,14 @@ func (fs *files) inspect(id core.FileID) []Entry {
 	return out
 }
 
+// InspectAll yields every file's entries, one file at a time, in FileID
+// order: the bulk read-out the journal's inspection answers from. It
+// mutates nothing, stops nothing and holds no file's lock across a yield,
+// each file's slice is the caller's, and a file holding no entry is skipped.
+// Each file is read out under its own lock, so the pass is not a snapshot of
+// the index; writers of every file proceed throughout.
+func (ix *Index) InspectAll() iter.Seq2[core.FileID, []Entry] { return ix.fs.inspectAll() }
+
 // compareFileIDs orders two FileIDs by their bytes.
 func compareFileIDs(a, b core.FileID) int {
 	x, y := a.Bytes(), b.Bytes()

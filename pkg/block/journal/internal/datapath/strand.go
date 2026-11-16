@@ -21,7 +21,7 @@ func (c *Core) Strand(tag core.ShareTag) error {
 	}
 	c.strandMu.Lock()
 	defer c.strandMu.Unlock()
-	if c.closed() {
+	if c.Closed() {
 		return core.ErrClosed
 	}
 	var set []core.ShareTag
@@ -47,7 +47,8 @@ func (c *Core) Stranded(tag core.ShareTag) bool {
 	return slices.Contains(*p, tag)
 }
 
-// closed reports whether the core's Close has begun.
-func (c *Core) closed() bool {
-	return c.closedFlag.Load()
-}
+// Closed reports whether the core's Close has begun. It reads the flag
+// alone, so it never waits on the close itself: a reader over the core —
+// the journal's inspection — refuses from the moment Close begins, as
+// Stats does from the journal's own flag.
+func (c *Core) Closed() bool { return c.closedFlag.Load() }
