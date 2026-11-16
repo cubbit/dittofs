@@ -153,6 +153,13 @@ func TestPolicyUnknownMatchTag(t *testing.T) {
 	}
 }
 
+func TestUserUnknownRole(t *testing.T) {
+	b := encodeUser(entity.User{Name: "u", Role: entity.APIRole(200)})
+	if _, err := decodeUser(entity.PrincipalID{}, b); !errors.Is(err, errMalformed) {
+		t.Errorf("user with role byte 200: %v, want %v", err, errMalformed)
+	}
+}
+
 // Each control-plane decoder, on any bytes, either decodes a value that is
 // written again to bytes decoding to the same value, or fails with a named
 // error.

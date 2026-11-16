@@ -108,7 +108,15 @@ func decodeUser(id entity.PrincipalID, b []byte) (entity.User, error) {
 	copy(u.Secret[:], r.Fixed(16))
 	u.Email, u.Role = r.String(), entity.APIRole(r.Uint8())
 	u.NotBefore, u.MustChange, u.Generation = readSeconds(r), r.Bool(), r.Uint64()
-	return u, r.Done()
+	if err := r.Done(); err != nil {
+		return u, err
+	}
+	// A role this build does not know is refused rather than read as some
+	// role, so a record from a newer build grants no rights by accident.
+	if u.Role.String() == "" {
+		return u, errMalformed
+	}
+	return u, nil
 }
 
 func encodeGroup(g entity.Group) []byte {
