@@ -627,8 +627,7 @@ func newFixture(t *testing.T, wrap func(kv.KV) kv.KV, opts ...Option) *Fixture {
 		o(f)
 	}
 
-	if f.Journal, err = journal.Init(t.Context(), dir, fixtureInstall,
-		append(f.journalOptions(), journal.WithClock(clock))...); err != nil {
+	if f.Journal, err = journal.Init(t.Context(), dir, fixtureInstall, f.journalOptions()...); err != nil {
 		t.Fatalf("fixture: journal init: %v", err)
 	}
 
@@ -708,8 +707,7 @@ func (f *Fixture) Reinit() journal.JournalID {
 		f.t.Fatalf("fixture: make the journal directory: %v", err)
 	}
 
-	id, err := journal.Init(f.t.Context(), f.Dir, fixtureInstall,
-		append(f.journalOptions(), journal.WithClock(f.Clock))...)
+	id, err := journal.Init(f.t.Context(), f.Dir, fixtureInstall, f.journalOptions()...)
 	if err != nil {
 		f.t.Fatalf("fixture: journal init: %v", err)
 	}
@@ -800,7 +798,8 @@ func (f *Fixture) Committed(h entity.Handle) entity.File {
 
 // start builds the open-state table and the engine over the fixture's
 // journal directory and store, and the composed service over both when one
-// is asked for, then starts them in that order.
+// is asked for, then starts them in that order. It wraps a composed Deps
+// field, never replaces it, so what production composes runs in every row.
 func (f *Fixture) start() {
 	t := f.t
 	t.Helper()
@@ -820,6 +819,9 @@ func (f *Fixture) start() {
 	}
 	f.Opens = opens
 	open := d.Open
+	// decision: the refuse and fake-journal branches answer without the
+	// composed opener, as fault injection: rows that run them test the fake,
+	// not the shipped opener. Every other open goes through it.
 	d.Open = func(ctx context.Context, dir string, floor journal.Version, expect journal.JournalID) (engine.Journal, error) {
 		if f.refuse.Load() {
 			return nil, fmt.Errorf(
@@ -844,7 +846,12 @@ func (f *Fixture) start() {
 	d.Existence = fencedExistence{Existence: d.Existence, crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate, commitGate: &f.commitGate}
 	d.Content = fencedContent{Content: d.Content, crashed: f.crashed}
 	d.Lifecycle = gatedLifecycle{Lifecycle: d.Lifecycle, startGate: &f.startGate}
-	d.Tracer = f.Trace
+	trace := d.Tracer
+	d.Tracer = func(ctx context.Context, name string, attrs ...slog.Attr) (context.Context, func(error)) {
+		ctx, end := trace(ctx, name, attrs...)
+		ctx, mine := f.Trace(ctx, name, attrs...)
+		return ctx, func(err error) { mine(err); end(err) }
+	}
 
 	e, err := engine.New(d)
 	if err != nil {
@@ -885,9 +892,9 @@ func (f *Fixture) start() {
 
 // journalOptions are the options every journal of the fixture's directory
 // opens or initialises with: a mount taken as suitable, reached through the
-// crash-simulating seam.
+// crash-simulating seam, reading the fixture's clock.
 func (f *Fixture) journalOptions() []journal.Option {
-	return []journal.Option{journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS())}
+	return []journal.Option{journaltest.SuitableMount(), journal.WithStorage(f.Seam.FS()), journal.WithClock(f.Clock)}
 }
 
 // closeDeadline bounds the fixture's engine close. The fixture closes over a
@@ -983,12 +990,6 @@ func (s *Sink) ClosedCalls() []Closed {
 
 // noOrder takes no admission lock: the fixture has no service holding one.
 func noOrder(entity.FileID) func() { return func() {} }
-
-// Holds adapts t, over the store's durable opens, to the engine's
-// CloneHold, as the composition root does: open state's EngineHolds.
-func Holds(t *openstate.Table, records openstate.OpenRecords) engine.CloneHold {
-	return openstate.EngineHolds(t, records)
-}
 
 // errCrashed answers a store change the crashed process's engine makes.
 var errCrashed = errors.New("fixture: the process crashed: its engine commits nothing")

@@ -764,7 +764,7 @@ func TestTheFixturesHoldTellsADroppedShareFromNoOpen(t *testing.T) {
 	var rec entity.OpenRecord
 	u.until(t, "the clone's open record", func() bool { var ok bool; rec, ok = u.cloneRecord(t, src, dst); return ok })
 	held := engine.CloneSrc{Share: u.share.ID, Shard: u.share.Shard, File: src, Dst: dst, AsOf: rec.CloneVersion}
-	fixture := enginetest.Holds(tb, u.fs.Store.Opens())
+	fixture := openstate.EngineHolds(tb, u.fs.Store.Opens())
 	none := held
 	none.Dst = entity.NewFileID()
 	if _, err := fixture.Hold(t.Context(), none); !errors.Is(err, entity.ErrStale) {

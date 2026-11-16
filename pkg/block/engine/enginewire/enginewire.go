@@ -24,6 +24,13 @@ type Params struct {
 	Logger  *slog.Logger
 	// Journal are the options each device's journal opens with, after one
 	// reading Clock.
+	//
+	// decision: the journal's settings arrive here, as journal.WithSettings,
+	// because Engine.Apply takes only the engine's own settings and forwards
+	// none to the journal; the node passes none, so its journals open on the
+	// defaults. Move the journal's settings to Apply, and narrow this to
+	// storage and mount options, when the node first applies configured
+	// journal settings.
 	Journal []journal.Option
 }
 
@@ -31,6 +38,11 @@ type Params struct {
 // Deps: each device's journal opened by journal.Open, the store's views, open
 // state's hold on a clone's source, and a Tracer that starts no span. It
 // opens and starts nothing; the caller passes the Deps to engine.New.
+//
+// decision: Compose shares construction only. Starting and stopping, the
+// table started before the engine and stopped after it, is still sequenced
+// by each caller; share it the same way when the node's Start lands, so the
+// fixture runs the order the node ships.
 func Compose(p Params) (*openstate.Table, engine.Deps, error) {
 	open, err := openstate.New(openstate.Deps{Records: p.Store, Clock: p.Clock, Rand: rand.Reader, Logger: p.Logger})
 	if err != nil {
