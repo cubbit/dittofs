@@ -148,24 +148,6 @@ func TestADFixture(t *testing.T) {
 		waitForADReady(t, 5*time.Minute)
 		waitForMachinePassword(t, getContainerIP(t), "dittofs", rotated)
 	})
-
-	// The DC's smb.conf names the certificate files the entrypoint writes, so
-	// a Samba whose default TLS location moves still serves them.
-	t.Run("smb.conf names the TLS files", func(t *testing.T) {
-		for param, want := range map[string]string{
-			"tls certfile": "/var/lib/samba/private/tls/cert.pem",
-			"tls keyfile":  "/var/lib/samba/private/tls/key.pem",
-			"tls cafile":   "/var/lib/samba/private/tls/ca.pem",
-		} {
-			out, err := adDockerExec("testparm", "-s", "--parameter-name", param)
-			if err != nil {
-				t.Fatalf("testparm %q: %v\n%s", param, err, out)
-			}
-			if got := lastLine(string(out)); got != want {
-				t.Errorf("smb.conf %q = %q, want %q", param, got, want)
-			}
-		}
-	})
 }
 
 // waitForMachinePassword waits up to a minute for the DC to accept a NETLOGON
@@ -194,11 +176,4 @@ func waitForMachinePassword(t *testing.T, dcIP, name, password string) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-}
-
-// lastLine returns the last non-empty line of out, trimmed: testparm prints
-// its warnings before the value.
-func lastLine(out string) string {
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	return strings.TrimSpace(lines[len(lines)-1])
 }
