@@ -157,6 +157,7 @@ func basicStory() []beat {
 		{
 			title:   "settle the removal",
 			caption: "Settle says metadata has recorded the truncation: the marker goes, the superseded ranges go with it — Since narrows to what is still owed",
+			mutates: true,
 			run: func(d *demo) {
 				h := d.h[d.tag]
 				d.printf("    h.Settle(FILE, journal.Version{Counter: %d})   // the truncate's version\n", d.version.Counter)

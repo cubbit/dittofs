@@ -26,6 +26,33 @@ const (
 	dumpRecordHeaderSize  = 96 // record.go: RecordHeaderSize
 )
 
+// endState is how a segment's walk ended: the three tails a demo audience
+// must never read as one another.
+type endState uint8
+
+const (
+	// endUntaken: the slot past the last record is zeros (an unwritten
+	// tail) or the file was never taken as a segment (a spare). Not damage.
+	endUntaken endState = iota
+	// endSealed: a DJS1 seal marker ends the records the walk decoded.
+	endSealed
+	// endTorn: bytes that are none of those — a torn write, a place
+	// mismatch, a record the transcription cannot step over.
+	endTorn
+)
+
+func (e endState) String() string {
+	switch e {
+	case endUntaken:
+		return "untaken"
+	case endSealed:
+		return "sealed"
+	case endTorn:
+		return "torn"
+	}
+	return "unknown"
+}
+
 // dumpRecord is one record as the walk read it.
 type dumpRecord struct {
 	kind    uint8
@@ -90,7 +117,7 @@ func bodySize(kind uint8, length int64) int64 {
 		return 8 + length
 	case 2: // fill
 		return length
-	case 10, 15: // loss, reconcile
+	case 10, 16: // loss, reconciled
 		return 16
 	case 7: // clone
 		return 56
@@ -103,30 +130,60 @@ func bodySize(kind uint8, length int64) int64 {
 
 // scanSegment walks one segment file record by record: the 48-byte segment
 // header (segheader.go), then each record at its 8-aligned pitch
-// (record.go: (96 + body + 7) &^ 7). A header that does not decode — the
-// trailing tail of an active segment, a seal footer, a torn write — stops
-// the walk; answer what walked, torn true, and never an error for that.
-// The two checksum slots are read but not verified (see the file note).
-func scanSegment(path string) ([]dumpRecord, bool, error) {
+// (record.go: (96 + body + 7) &^ 7). A file whose first bytes are not the
+// DJH1 magic was never taken as a segment — a spare — and nothing walks.
+// Each record must name the segment the header names and its own offset
+// where the walk reads it (DecodeRecordHeader's place rules), so a recycled
+// segment's stale bytes stop the walk instead of reading as live records.
+// An untaken zero tail ends a healthy walk; a DJS1 slot is a seal; anything
+// else is torn. The two checksum slots are read but not verified (see the
+// file note).
+func scanSegment(path string) ([]dumpRecord, endState, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false, err
+		return nil, endTorn, err
 	}
+	if len(b) < dumpSegmentHeaderSize {
+		return nil, endUntaken, nil
+	}
+	if string(b[0:4]) != "DJH1" { // segheader.go: the segment magic
+		return nil, endUntaken, nil
+	}
+	segID := binary.LittleEndian.Uint64(b[24:32]) // segheader.go: the id column
+
 	var recs []dumpRecord
-	torn := false
+	end := endUntaken
 	off := int64(dumpSegmentHeaderSize)
 	for {
 		if off+dumpRecordHeaderSize > int64(len(b)) {
-			torn = off < int64(len(b)) // a trailing partial slot
+			// A trailing partial slot: an unwritten zero tail is one more
+			// untaken slot even when it is shorter than a header; anything
+			// else is torn.
+			end = endUntaken
+			if off < int64(len(b)) && !allZero(b[off:]) {
+				end = endTorn
+			}
 			break
 		}
 		h := b[off : off+dumpRecordHeaderSize]
-		if string(h[0:4]) != "DJR1" { // record.go: the record magic
-			torn = true
-			break
+		switch {
+		case allZero(h): // scan.go: an untaken slot, not damage
+			end = endUntaken
+			goto done
+		case string(h[0:4]) == "DJS1": // seal.go: the seal marker's magic
+			end = endSealed
+			goto done
+		case string(h[0:4]) != "DJR1": // record.go: the record magic
+			end = endTorn
+			goto done
+		}
+		kind := h[4]
+		if kind < 1 || kind > 16 { // kinds.go: known()
+			end = endTorn
+			goto done
 		}
 		r := dumpRecord{
-			kind:    h[4],
+			kind:    kind,
 			file:    [16]byte(h[16:32]),
 			off:     int64(binary.LittleEndian.Uint64(h[32:40])),
 			length:  int64(binary.LittleEndian.Uint64(h[40:48])),
@@ -136,22 +193,34 @@ func scanSegment(path string) ([]dumpRecord, bool, error) {
 			tag:     binary.LittleEndian.Uint32(h[72:76]),
 			recOff:  off,
 		}
-		if h[4] < 1 || h[4] > 16 { // kinds.go: known()
-			torn = true
-			break
+		// The place rules first: a record naming another segment, or its
+		// own offset somewhere else, was written somewhere else.
+		if binary.LittleEndian.Uint64(h[8:16]) != segID || int64(binary.LittleEndian.Uint32(h[88:92])) != off {
+			end = endTorn
+			goto done
 		}
-		body := bodySize(r.kind, r.length)
-		pitch := (dumpRecordHeaderSize + body + 7) &^ 7
-		if off+dumpRecordHeaderSize+body > int64(len(b)) {
-			torn = true
-			break
+		body := bodySize(kind, r.length)
+		if r.length < 0 || body < 0 || off+dumpRecordHeaderSize+body > int64(len(b)) {
+			end = endTorn
+			goto done
 		}
 		r.body = b[off+dumpRecordHeaderSize : off+dumpRecordHeaderSize+body]
 		r.bodyOff = off + dumpRecordHeaderSize
 		recs = append(recs, r)
-		off += pitch
+		off += (dumpRecordHeaderSize + body + 7) &^ 7
 	}
-	return recs, torn, nil
+done:
+	return recs, end, nil
+}
+
+// allZero answers whether every byte of b is zero — a never-taken slot.
+func allZero(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // viewDump is the (d) view: every record of every segment, decoded, with
@@ -176,9 +245,13 @@ func (d *demo) viewDump() {
 	}
 	rows := 0
 	for _, name := range segs {
-		recs, torn, err := scanSegment(filepath.Join(d.dir, name))
+		recs, end, err := scanSegment(filepath.Join(d.dir, name))
 		if err != nil {
 			d.printf("%s: %v\n", name, err)
+			continue
+		}
+		if len(recs) == 0 && end == endUntaken {
+			d.printf("  %s: spare, never taken\n", name)
 			continue
 		}
 		for _, r := range recs {
@@ -190,8 +263,18 @@ func (d *demo) viewDump() {
 				d.hexdump(r.body, 8+8) // 16 lanes
 			}
 		}
-		if torn {
-			d.printf("  %s: tail torn (or sealed) at the next slot; %d records before it\n", name, len(recs))
+		switch end {
+		case endUntaken: // an active segment's unwritten tail: not a note
+			if len(recs) == 0 {
+				d.printf("  %s: spare, never taken\n", name)
+			}
+		case endSealed:
+			if len(recs) == 0 {
+				d.printf("  %s: sealed empty\n", name)
+			}
+			d.printf("  %s: sealed here; %d records before it\n", name, len(recs))
+		case endTorn:
+			d.printf("  %s: tail torn at the next slot; %d records before it\n", name, len(recs))
 		}
 	}
 	if rows == 0 {

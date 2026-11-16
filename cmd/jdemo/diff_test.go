@@ -64,7 +64,7 @@ func TestRenderViewDiffIsTransformed(t *testing.T) {
 	}
 }
 
-func TestFirstLookAndMarkStale(t *testing.T) {
+func TestFirstLookThenDiffsSurviveBetweenBeats(t *testing.T) {
 	d, _ := diffDemo(t)
 	screen := d.renderView("v", []viewRow{{key: "a", text: "one"}})
 	if !strings.Contains(screen, "(first look)") {
@@ -79,11 +79,14 @@ func TestFirstLookAndMarkStale(t *testing.T) {
 		t.Errorf("unchanged second render carries a marker:\n%s", screen)
 	}
 
-	// A mutating beat clears the snapshots: the next render is a fresh
-	// look, not a diff against stale rows.
-	d.markStale()
-	screen = d.renderView("v", []viewRow{{key: "a", text: "one"}})
-	if !strings.Contains(screen, "(first look)") || strings.Contains(screen, "~") {
-		t.Errorf("render after markStale is not a fresh look:\n%s", screen)
+	// The spec's whole point: a change between one view's consecutive
+	// looks — what a mutating beat is — IS the diff shown, not wiped.
+	// The look after the change marks the turned row as changed.
+	screen = d.renderView("v", []viewRow{{key: "a", text: "ONE!"}, {key: "b", text: "two"}})
+	if !strings.Contains(screen, "~ ONE!") || !strings.Contains(screen, "+ two") {
+		t.Errorf("look after a change lacks its +/~ marks — the diff layer is not diffing:\n%s", screen)
+	}
+	if strings.Contains(screen, "(first look)") {
+		t.Errorf("look after a change reset to a first look — snapshots must survive between looks:\n%s", screen)
 	}
 }
