@@ -387,7 +387,7 @@ func TestLostTailRefusesTheOpen(t *testing.T) {
 		t.Errorf("the refused open changed the directory %v, want the names it held %v", r.listing(), wantListing)
 	}
 	if got := r.fileBytes(name); !slices.Equal(got, segBytes) {
-		t.Errorf("the refused open changed the lost segment's bytes, got %x..., want the bytes it held", got[:format.SegmentHeaderSize])
+		t.Errorf("the refused open changed the lost segment's bytes, got %x, want %x the bytes it held", got, segBytes)
 	}
 	if got, want := r.seam.Calls(kit.OpRemove), removes; got != want {
 		t.Errorf("the refused open removed something, got %d removes, want %d, the count before the run", got, want)
@@ -503,6 +503,78 @@ func TestLostTailWithACopyElsewhereIsNotLost(t *testing.T) {
 	if !st.Kinds.MarkedOnDisk[200] {
 		t.Errorf("the feed left the mark's sequence 200 unraised, so a record the walks attached carrying it went unseen")
 	}
+}
+
+// TestLostTailOverAConfinedCopyRefuses holds the confined copy out of the
+// checks' one question: a copy the remainder pass confined — its kept run
+// failed the very read an open makes of a payload — verifies nowhere, so it
+// may not answer "does the record verify anywhere" for a mark. The shape is
+// the reviewer's: a lost tail on the marked segment, and across it the mark's
+// sequence number surviving only as the rotted kept run of a copy a synced
+// superseded loss partly dropped — the record feeds nothing, so the open
+// refuses over the mark as over any lost tail, and no confined copy of the
+// number raises the map.
+func TestLostTailOverAConfinedCopyRefuses(t *testing.T) {
+	// planted builds the shape over a fresh directory: the marked segment,
+	// ended at its synced A with the mark naming C past its end, and C's
+	// only copy anywhere — a write of sequence 200 whose synced superseded
+	// loss drops [0,64), its kept run [64,128) rotted — beside the loss.
+	planted := func(t *testing.T) (r *rig, id core.SegmentID, endC int64, file core.FileID) {
+		t.Helper()
+		r = newRig(t)
+		r.writeFormat()
+		id = core.SegmentID(2)
+		endA := endAfter(seqSyncedRec(199, 0x4100, 0))
+		r.plantSeg(id, buildSeg(id, seqSyncedRec(199, 0x4100, endA)))
+		endC = endA + int64(len(seqSyncedRec(200, 0x8100, endA).Bytes()))
+		file = kindsFile(1)
+		confined := buildSeg(4, writeRec(200, 5, 0, 128))
+		confined[format.SegmentHeaderSize+format.RecordHeaderSize+8+70] ^= 0xff // the kept run [64,128), rotted
+		r.plantSeg(4, confined)
+		r.plantSeg(6, buildSeg(6, plantLossRec(file, 200, 210, 5, 0, 64, 1|4<<8)))
+		return r, id, endC, file
+	}
+
+	t.Run("the confined copy answers nowhere, the open refuses", func(t *testing.T) {
+		r, id, endC, _ := planted(t)
+
+		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endC))
+
+		if !errors.Is(err, core.ErrNotImplemented) {
+			t.Fatalf("the lost tail over a confined copy answered err %v, want ErrNotImplemented: a record the open itself read and found rotten verifies nowhere", err)
+		}
+		for _, want := range [3]string{
+			fmt.Sprintf("segment %d", id),
+			fmt.Sprintf("sequence %d", 200),
+			fmt.Sprintf("ending at %d", endC),
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal %q does not name %s, the mark's own fact", err.Error(), want)
+			}
+		}
+		if !reflect.DeepEqual(st, State{}) {
+			t.Errorf("the refused open returned state %+v, want the zero State: a refusal serves nothing", st)
+		}
+	})
+
+	t.Run("the confined copy raises nothing and feeds nothing", func(t *testing.T) {
+		r, _, _, file := planted(t)
+
+		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(42, 200, 4096))
+
+		if err != nil {
+			t.Fatalf("the retired mark answered err %v, want the open that pins the confined copy's facts to proceed", err)
+		}
+		if st.Kinds.MarkedOnDisk[200] {
+			t.Errorf("the feed raised the confined copy's sequence 200, want it quiet: its kept run failed the read that would prove it")
+		}
+		if _, ok := st.Rebuilt.Index.Lookup(file, 64); ok {
+			t.Errorf("the index holds the confined copy's kept run [64,128), want a miss: a confined record feeds nothing")
+		}
+		if !slices.Contains(st.Tails.Damaged, 4) {
+			t.Errorf("Damaged got %v, want segment 4 among it: the open read the confined copy and judged it", st.Tails.Damaged)
+		}
+	})
 }
 
 // TestMarklessSegmentIsRetired plants one ordinary segment and a mark whose

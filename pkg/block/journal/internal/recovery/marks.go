@@ -276,12 +276,13 @@ func runMarksLostTail(ctx context.Context, _ Deps, _ *reader, st *State, _ core.
 }
 
 // seqVerifies answers whether a copy of the record carrying seq verifies
-// anywhere: the feed's map — raised for every walk-attached copy wherever
-// it sits, withheld copies among them, so the converted records of every
-// segment answer by it — the aside headers the scans keep, for an aside
-// kind never feeds, and the records the tail's proof verified at their
-// first reads and handed to the re-append, which the re-append phase will
-// write back.
+// anywhere: the feed's map — raised for every walk-attached copy save one
+// the remainder pass confined, whose kept run failed the one read an open
+// makes of a payload, so the converted records of every segment answer by
+// it wherever they sit, rule-withheld copies among them — the aside headers
+// the scans keep, for an aside kind never feeds, and the records the
+// tail's proof verified at their first reads and handed to the re-append,
+// which the re-append phase will write back.
 func seqVerifies(st *State, seq core.Seq) bool {
 	if st.Kinds.MarkedOnDisk[seq] {
 		return true

@@ -131,12 +131,16 @@ type kindResults struct {
 
 	// MarkedOnDisk holds one entry per sequence number a caller's sync mark
 	// names, false until the feed met a record the walks attached that
-	// carries the number and true then, withheld copies included: a copy a
-	// rule withheld from the index still verifies on disk as any fed one
-	// does, wherever it sits. The lost-tail check reads it as the answer to
-	// whether the number names a copy that verifies anywhere; the aside
-	// kinds never feed, so their headers the check answers from the scans
-	// themselves. Nil until the rebuild is run under marks.
+	// carries the number and true then — save one the remainder pass
+	// confined, which raises nothing: its kept run failed the very read
+	// that would prove it, so it verifies nowhere. Rule-withheld copies
+	// raise, for a record the failed list, a loss or a forget withheld is
+	// as sound as any fed one, judged by the header the walk verified. The
+	// lost-tail check reads the map, with the aside headers and the
+	// re-append set, as the answer to whether the number names a copy that
+	// verifies anywhere; the aside kinds never feed, so their headers the
+	// check answers from the scans themselves. Nil until the rebuild is
+	// run under marks.
 	MarkedOnDisk map[core.Seq]bool
 }
 
@@ -950,12 +954,15 @@ func appendSeg(segs []core.SegmentID, id core.SegmentID) []core.SegmentID {
 //
 // Before any rule decides anything, the record raises the marks' own note:
 // a walk-attached copy carrying a sequence number a caller's sync mark names
-// sets that number's entry, for a withheld copy verifies on disk exactly as a
-// fed one does and the lost-tail check reads the mark's whole question —
-// does the record verify anywhere — from the map alone.
+// sets that number's entry, save where the remainder pass confined this
+// copy — its kept run failed the one read an open makes of a payload, so the
+// record verifies nowhere and no mark may lean on it. A rule-withheld copy
+// raises like a fed one, for its bytes are as sound as any attached
+// record's judged by every check the format makes at open.
 func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
 	f.note(rec)
-	if _, named := f.marked[rec.Numbers.Seq]; named {
+	if _, named := f.marked[rec.Numbers.Seq]; named &&
+		!f.ks.confined[index.RecordAt{Segment: rec.Segment, Offset: rec.At}] {
 		f.marked[rec.Numbers.Seq] = true
 	}
 	ks := f.ks
