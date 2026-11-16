@@ -70,7 +70,7 @@ alone, or both together (the full AD-joined deployment).
 > Windows Server license. **It is not a file server, is not a DittoFS component,
 > and is not managed by the dittofs-operator.** In production you install **no**
 > Samba — you point DittoFS at your existing enterprise AD. Port 445 (SMB) is
-> deliberately not exposed by the fixture; DittoFS owns 445.
+> deliberately not published on the host; DittoFS owns 445.
 
 The provisioning logic below lives in `test/integration/ad-dc/entrypoint.sh`. It
 provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
@@ -81,6 +81,9 @@ provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
 - groups `engineering` and `devs` (with `devs` nested under `engineering`).
 - a combined keytab at `/keytabs/dittofs.keytab` holding the `cifs/` and `nfs/`
   SPNs.
+- a CA, exported as `/keytabs/ca.pem`, that issues the DC's TLS certificate for
+  its host name (`dc1.dittofs.ad` when the container runs with `--hostname dc1`)
+  and its IPs.
 
 ### What the provisioning does
 
