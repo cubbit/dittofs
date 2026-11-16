@@ -437,7 +437,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   Nodes        nodeStatuses // declared here (E2)
   Settings     checker      // D4
   Clock        clock        // Now, After (D18)
-  Health       conditions   // E3's health.Registry, read whole by GET /api/v1/health (T4.6)
+  Health       conditions   // E3's health.Evaluator (RFC 25 §8.2's Source set), read whole by GET /api/v1/health (T4.6)
   Progress     func(apiv1.OpKind, []byte) apiv1.Progress // E3's runner table (T4.6)
   // Directory, Joins and Sealer land with T4.9 and T4.11
   ```
