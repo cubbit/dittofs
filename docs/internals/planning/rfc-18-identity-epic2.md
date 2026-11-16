@@ -19,14 +19,16 @@ operation; [RFC 13](../rfcs/rfc-13-configuration.md) Appendix B's `identity.id_r
 and `pkg/secrets` frozen, with `Seal` taking the kind, the owner and `secrets.Meta`, the kvstore
 secrets view (`Secret`, `PutSecret`, `PruneSecret`) on the view and on `ControlPlaneTx`, and
 secrets sealed and resolved under each role's key (T2.4, T2.6, T2.7). **RFC 23's plan's epic 2**,
-partly: the `PGEN` counter `Minter.Create` raises (T2.3) and `Installation.NTLMOff` (T2.7);
-everything else starts before it. **RFC 23's plan's epic 3**, for T2.7 only: the operation runner,
-with a slot for the `identity.nt-hash-delete` kind. RFC 23's plan's epic 1 (#4314, its D1) lands
-the deletion of v1 first, which S1 already waits on, and gives `PutUser` and `PutGroup` their
-`expect` and `ControlPlaneTx`, without `Alloc`, which it leaves to this epic (T2.2).
+partly: the `ControlPlane` signatures and `ControlPlaneTx` (T2.2), the `PGEN` counter
+`Minter.Create` raises (T2.3) and `Installation.NTLMOff` (T2.7); everything else starts before
+it. **RFC 23's plan's epic 3**, for T2.7 only: the operation runner, with a slot for the
+`identity.nt-hash-delete` kind. RFC 23's plan's epic 1 (#4314, D1) deletes v1 first, which S1
+already waits on. RFC 23's plan's epic 2 gives `PutUser` and `PutGroup` their
+`expect` and declares `ControlPlaneTx` (#4314 §1.2, D3), without `Alloc`, which #4314 §1.2 leaves
+to the RFC 18 plan (T2.2).
 **Blocks:** E6 and E5, partly, which mint directory and machine principals through T2.3's `Create`;
-E3, partly, whose T3.10 needs root and anonymous (T2.1) and whose `ntlm_off` refusal reads the
-`NTLM` key of T2.4's `State.Settings`;
+E3, partly, whose T3.10 needs root (T2.1; anonymous already exists) and whose `ntlm_off`
+refusal reads the `NTLM` key of T2.4's `State.Settings`;
 E4, partly, whose local check reads T2.1's `NTHash` and whose routing reads T2.4's
 `identity.netbios_name`; and RFC 23's plan's epic 5, which builds its accounts on T2.6's
 `NewHashes` and `APISignIn`, and its user and group writes on T2.2's `Alloc`.
@@ -102,8 +104,8 @@ and its store calls.
 
 - **E1**, the contract and the server's surface: `pkg/identity`, `internal/identity`'s lifecycle.
 - **E2**, this epic.
-- **E3**, resolution: the `Resolver`, the serial `Apply` stamps each `State` with, admission's
-  caller cache.
+- **E3**, resolution: the `Resolver`, the serial `Apply` raises, which each `Caller` is stamped
+  with, admission's caller cache.
 - **E4**, local NTLMv2 sign-in.
 - **E5**, Kerberos and the PAC, which mints machine principals.
 - **E6**, the directory, which mints directory principals.
@@ -259,9 +261,11 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   `Deps.Secrets` is `SecretProvider`, an interface `internal/identity` declares with the one method
   it calls, #4059's `Resolve`, which `*secrets.Provider` implements; `State.Settings` is
   `identity.Settings`, the section's struct, since RFC 18 §2.6's `config.Identity` names a package
-  that RFC 13's plan does not build. Both land in T2.4 because this epic reads them first:
-  `VerifyPassword` the provider, the `qualified` spelling `identity.netbios_name`. The section
-  is one struct, so its `NTLM` key lands with it; its first reader is E3's T3.10, which refuses
+  that RFC 13's plan does not build. Both land in T2.4, the epic's first subtask that needs the
+  provider built: `Apply` reads `State.Settings`, and T2.5 and T2.6 read `netbios_name` and
+  `Deps.Secrets`. `New` does not require `Secrets`: while it is unset, `VerifyPassword` answers
+  `ErrUnavailable` (fail closed), as epic 1's D4 rules, so no earlier caller of `New` changes.
+  The section is one struct, so its `NTLM` key lands with it; its first reader is E3's T3.10, which refuses
   `Secret` callers while it is off, and E4's sign-in. `State.NTLM`, the revision, is a separate
   field with no reader in this epic or in E3: the conditional write that uses it is the API's
   (D5), which reads the setting itself, so it lands with its first reader, as epic 1's D4 rules,
@@ -305,7 +309,7 @@ pkg/metadata/entity/
 pkg/metadata/kvstore/
   users.go          T2.1  shape checks (D3), the @ rule, cross-kind uniqueness
                     T2.2  Alloc on PutUser and PutGroup, SID immutable
-  write.go          T2.2  Alloc on ControlPlaneTx's PutUser and PutGroup
+  ControlPlaneTx    T2.2  Alloc on its PutUser and PutGroup, where RFC 23's epic 2 puts it
   alloc.go          T2.2  IDS‖uid, IDS‖gid, IDS‖rid; the installation's domain SID
   keys.go           T2.1  nameFold (D2)
   minter.go         T2.3  Minter, Create
@@ -341,7 +345,9 @@ internal/identity/
   - in `PutUser` and `PutGroup`: D3's shape checks but the file-principal one (T2.2's), uid or gid
     0 or 65534 refused, a name holding `@` refused, and the fold `nameFold` (D2) keying `NX‖user`
     and `NX‖group`, the value keeping the name as written.
-  Consumed by T2.2, T2.3, T2.5 to T2.7, by E3's T3.10 (root and anonymous), E4 (`NTHash`), E5 (`Machine`) and E6.
+  - `PrincipalMachine` named `machine` in `principalKinds`, so `PrincipalKind.MarshalText` and
+    `Principal.MarshalText` accept a machine principal.
+  Consumed by T2.2, T2.3, T2.5 to T2.7, by E3's T3.10 (root; anonymous already exists), E4 (`NTHash`), E5 (`Machine`) and E6.
 - **Acceptance criteria:**
   - Root's ID is fifteen zero bytes then `0x0D`, and every caller of `WellKnown()` builds.
   - A lookup by name finds the record under any case of it, and reads back the name as written.
@@ -354,14 +360,15 @@ internal/identity/
   name, each refused, and uid 1500 beside gid 1500 accepted (R6); §10's "name case" row, `Alice`
   then `aLICE` refused, `bob@example.com` refused on create and on rename (R7, R8, R9); `Kelvin`
   with U+212A in place of `K` colliding with `kelvin` (catches an ASCII-only or `ToLower` fold, R7);
-  a group `finance` beside a user `finance`, both accepted (catches a fold across kinds, R7). No
-  test double.
+  a group `finance` beside a user `finance`, both accepted (catches a fold across kinds, R7); in
+  `entity`, a machine principal round-tripping through `MarshalText` and `ParsePrincipal`
+  (catches `PrincipalMachine` left out of `principalKinds`, R3). No test double.
 
 ### T2.2 The ID counters, `Alloc` and the domain SID
 
 **Subtask T2.2 estimate: 2 man-days.**
 
-- **Track:** C. **Depends on:** T2.1.
+- **Track:** C. **Depends on:** T2.1. RFC 23's plan's epic 2 for `expect` and `ControlPlaneTx`.
 - **Covers:** R2, R5, R10, R11, R12, R13, R14.
 - **Deliverables:**
   - `IDS‖uid`, `IDS‖gid` and `IDS‖rid`, each read and raised in the transaction that writes the
@@ -431,7 +438,8 @@ internal/identity/
   and `Deps.Secrets` (D6). Consumed by T2.5 (`identity.netbios_name`), T2.6 (`Deps.Secrets`), E3's T3.10 (the `NTLM` key),
   E4, E6, the first minting epic (the range) and E8, which lists the section in the node's table.
 - **Acceptance criteria:**
-  - `New` refuses a `Deps` without `Secrets`.
+  - A `nil` `Secrets` makes `VerifyPassword` answer `ErrUnavailable` (fail closed); `New` does not
+    require it, so no earlier caller changes.
 - **Tests:** over the memory KV store, under the leak check: `Apply` of a valid `State`, then of one
   with `NetBIOSName` `"dittofs.lab"`, then reading the current `State` through `export_test.go`:
   the first kept (catches an invalid setting applied, R29); a section with no rows yields `NTLM`
@@ -473,7 +481,7 @@ internal/identity/
 
 **Subtask T2.6 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T2.1, T2.4.
+- **Track:** C. **Depends on:** T2.1, T2.2, T2.4.
 - **Covers:** R4, R24, R25, R26, R27, R28.
 - **Deliverables:**
   - `NewHashes`'s body: argon2id per D10 and the NT hash, MD4 over the password's UTF-16LE form,
@@ -514,7 +522,7 @@ internal/identity/
 
 **Subtask T2.7 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T2.1. #4059's S1 and S2; RFC 23's plan's epics 2 and 3; RFC 16
+- **Track:** C. **Depends on:** T2.1, T2.2. #4059's S1 and S2; RFC 23's plan's epics 2 and 3; RFC 16
   §3's amendment (D4).
 - **Covers:** R4, R31, R32, R33.
 - **Deliverables:** kvstore's `DropNTHashes` and `EndNTHashDelete` (D4), with their `ponytail:` on
@@ -548,10 +556,11 @@ flowchart TD
   X59(["#4059 S1 and S2"]):::sync --> T2_4["T2.4 Settings, State, Secrets"]
   S1 --> T2_4
   T2_3 & T2_4 --> T2_5["T2.5 Spell, Find, FuzzSID"]
-  T2_1 & T2_4 --> T2_6["T2.6 NewHashes, APISignIn"]
+  T2_1 & T2_2 & T2_4 --> T2_6["T2.6 NewHashes, APISignIn"]
   T2_6 --> C2(["after T2.6: RFC 23's accounts epic signs in"]):::sync
-  X23(["RFC 23 epics 2 and 3: NTLMOff, runner"]):::sync --> T2_7["T2.7 NT-hash deletion"]
-  T2_1 & X59 --> T2_7
+  X23(["RFC 23 epics 2 and 3: view signatures, NTLMOff, runner"]):::sync --> T2_7["T2.7 NT-hash deletion"]
+  T2_1 & T2_2 & X59 --> T2_7
+  X23 --> T2_2
   X23 -. "PGEN" .-> T2_3
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
@@ -614,6 +623,9 @@ and `PutGroup`, which #4314 hands to this epic and the plan lists nowhere, comes
 - **An API-only account given a file spelling.** RFC 18 §2.4 allocates the spellings it lacks "in
   the same transaction", but RFC 16 §3 applies `Alloc` only to a create. T2.2 follows RFC 16 and
   refuses `Alloc` on an update; RFC 18 §2.4 or RFC 16 §3 needs an amendment.
+- **`Alloc` on an update (R12).** R12 refuses `Alloc` on an update where RFC 16 §3 says it
+  allocates nothing. The refusal is the stricter reading, and the amendment D1 asks for should
+  state it.
 - **A cancelled deletion.** RFC 18 §10's "NTLM off" row turns NTLM on "after it is cancelled", while
   RFC 23 §4.1 says a deletion has no cancel. T2.7 builds no cancel; the row needs mending.
 - **Root's SID (D9).** Neither RFC 18 §2.1 nor RFC 22 §16.3 gives root one (Samba uses
@@ -623,7 +635,7 @@ and `PutGroup`, which #4314 hands to this epic and the plan lists nowhere, comes
 **Other:**
 
 - `tx.PutSecret`, which the API's password write uses (D5), is #4059's secrets view on
-  `ControlPlaneTx`; `PutUser` and `PutGroup` gain `Alloc` in T2.2, so their signatures move after
-  #4314's S1, as #4314's §9 notes.
+  `ControlPlaneTx`. #4314 §9 leaves the order of the RFC 13 and RFC 23 view changes to RFC 23's
+  epic 2; T2.2 adds `Alloc` after it.
 - §12 item 1, whether case-insensitive uniqueness holds for every directory, stays open; T2.1's fold
   is the RFC's rule until a directory shows case-distinct names.
