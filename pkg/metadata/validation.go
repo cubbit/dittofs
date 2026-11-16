@@ -198,13 +198,12 @@ func NormalizeShareName(name string) string {
 // and an escaped leading slash is the one a caller can always supply:
 // "%2Fa%252Fb" names "/a%2Fb" while the same name with that slash stripped —
 // "a%252Fb" — names "/a/b". Escaping the name with one leading slash intact is
-// therefore the spelling to use, and pkg/apiclient produces it.
+// therefore the spelling a client should use.
 //
 // Nothing has to be switched on for that to hold: the router prefers the escaped
 // path whenever there is one, with no opt-in and no middleware. Read a grep for
 // such an opt-in as evidence of nothing — this is behaviour of the router's own
-// dispatch, and TestShareNameSpellingsReachTheShareTheyName drives the built
-// router rather than restating it here. Taking the condition away altogether
+// dispatch. Taking the condition away altogether
 // would mean routing every request on its escaped path, which hands every other
 // path parameter in the API its encoded form; do that only if a caller ever has
 // to be free of spelling around it.

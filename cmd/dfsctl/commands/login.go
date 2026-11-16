@@ -22,12 +22,9 @@ var loginCmd = &cobra.Command{
 	Short: "Authenticate with DittoFS server",
 	Long: `Authenticate with a DittoFS server and store credentials locally.
 
-Contacts the control-plane API at the given server URL, exchanges credentials
-for an access/refresh token pair, and saves them to ~/.config/dfsctl/config.json
-under a named context (default: auto-derived from the server URL). Subsequent
-commands reuse the stored token and refresh it automatically when it expires.
-TLS client certificates and a custom CA bundle can be pinned at login time and
-are persisted into the context for later commands.
+Not available until the CLI is rebuilt on the v2 API: signing in returns with
+that API's accounts. Credentials are kept in ~/.config/dfsctl/config.json under
+a named context, which the context subcommand manages.
 
 Examples:
   # First login to a local server (prompts for password)

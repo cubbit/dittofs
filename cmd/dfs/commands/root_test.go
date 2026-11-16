@@ -38,7 +38,10 @@ func TestStartNamesTheStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	rootCmd.SetArgs([]string{"start", "--config", path})
-	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		_ = rootCmd.PersistentFlags().Set("config", "") // resets cfgFile for the next test
+	})
 	err := rootCmd.Execute()
 	if !errors.Is(err, errors.ErrUnsupported) || !strings.HasPrefix(err.Error(), "starting the node: ") {
 		t.Errorf("dfs start: %v, want the node's start step refused", err)

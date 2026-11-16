@@ -26,8 +26,7 @@ import (
 // without a ChunkReader behind it, so the chunk cannot be served from its
 // packed block. Every RemoteStore implements ChunkReader, so this is reachable
 // only through a wrapper holding a RemoteStore that is nil or was built from a
-// narrower type; the one such wrapper is nonClosingRemote in
-// pkg/controlplane/runtime/shares.
+// narrower type.
 var ErrChunkReadUnsupported = errors.New("remote: wrapped store does not support block reads")
 
 // RemoteStore is the production remote block storage interface. Implemented by

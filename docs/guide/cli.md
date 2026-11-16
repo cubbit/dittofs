@@ -472,11 +472,9 @@ DittoFS Control - Remote management client
 
 dfsctl is the command-line client for managing DittoFS servers remotely.
 
-It communicates with the DittoFS control-plane REST API (default port 8080) and
-persists credentials in ~/.config/dfsctl/config.json. Run dfsctl login first to
-authenticate, then use the subcommands to manage users, groups, shares, stores
-and server settings. Multiple server contexts are supported via the
-context subcommand.
+Its commands for users, groups, shares, stores and server settings return with
+the server's v2 API; until then each refuses. The context subcommand manages
+the server contexts kept in ~/.config/dfsctl/config.json.
 
 Use "dfsctl [command] --help" for more information about a command.
 
@@ -1698,12 +1696,9 @@ Authenticate with DittoFS server
 
 Authenticate with a DittoFS server and store credentials locally.
 
-Contacts the control-plane API at the given server URL, exchanges credentials
-for an access/refresh token pair, and saves them to ~/.config/dfsctl/config.json
-under a named context (default: auto-derived from the server URL). Subsequent
-commands reuse the stored token and refresh it automatically when it expires.
-TLS client certificates and a custom CA bundle can be pinned at login time and
-are persisted into the context for later commands.
+Not available until the CLI is rebuilt on the v2 API: signing in returns with
+that API's accounts. Credentials are kept in ~/.config/dfsctl/config.json under
+a named context, which the context subcommand manages.
 
 ```
 dfsctl login [flags]
