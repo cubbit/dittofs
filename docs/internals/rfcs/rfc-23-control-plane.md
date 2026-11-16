@@ -956,7 +956,7 @@ them and decides nothing about identity:
   access ([RFC 18 §8.2](rfc-18-identity.md#8.2%20OpenID%20Connect%20sign-in)),
   and audited as a change of the user (§6);
 - **a password is write-only**. It is set by `POST /users/{id}:set-password`,
-  its hashes derived by identity's `APISignIn.Hashes`
+  its hashes derived by identity's `NewHashes`
   ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)) and sealed as RFC 13 §7
   requires, and never returned. It is refused for a directory principal, which
   signs in only through the directory's own paths
@@ -1342,7 +1342,7 @@ type Operation struct {
 	ID       OperationID
 	Kind     OpKind     // closed set (§4.1): "share.delete", "user.delete", "share.rehome", "namespace.rebuild-index", "namespace.accept-copy", ...
 	Target   ResourceRef
-	Account  Principal  // who started it
+	Account  Principal  // who started it; zero for an operation no call started, read as the schedule
 	State    OpState    // pending, running, succeeded, failed, cancelling, cancelled
 	Progress Progress   // read from the owner's cursor, never estimated by the API
 	Started  time.Time  // store time
@@ -1371,6 +1371,12 @@ type Progress struct {
   **(cluster)** A claim that lapses is taken by any node, which resumes from the
   record's last step. Each such kind **MUST** record its steps durably and make
   each idempotent, or it is not an operation.
+- **Scheduled work.** An operation no `202` call started, the scheduled
+  `rotate-machine-password` that identity's own loop schedules
+  ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)), carries the zero `Account`,
+  read as "the schedule". The `Write` that creates it carries its audit record,
+  whose actor is the schedule (§6), so a rotation nobody asked for is still
+  found in the audit.
 - **Reading.** `GET /operations/{id}` on any node answers from the store.
   `?wait=30s` returns when the state or phase changes, or after the wait
   (at most 60 s), whichever is first, so a client polls without a loop of its own.
@@ -1683,7 +1689,7 @@ protocol can carry the token
   `storage` wrapping key ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)),
   sent only to the issuer's token endpoint, over TLS.
 - **Verification is identity's.** The API passes the ID token the issuer
-  returned to `APISignIn.VerifyToken` and gets back the linked principal and
+  returned to `TokenVerifier.VerifyToken` and gets back the linked principal and
   its claims ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)). It then
   checks the account as for a password sign-in and issues **its own** access
   and refresh tokens (§5.3). Revocation, hash-only storage and the per-call
@@ -1726,7 +1732,7 @@ Every management action leaves an **audit record**:
 | Field | Holds |
 | --- | --- |
 | time | store time of the commit |
-| actor | the account's principal and name, the session or token ID; for the break-glass reset, the host |
+| actor | the account's principal and name, the session or token ID; for the break-glass reset, the host; for an operation no call started, the schedule (§4.6) |
 | node, source | the node that took the request; the client's address |
 | request | method, path, the request ID, the idempotency key |
 | target | the resource's kind and ID, and the generation before and after |
