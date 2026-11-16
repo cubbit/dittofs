@@ -23,7 +23,8 @@ serves `testproto` end to end, for the two subtasks that wire the framer and `Ne
 runner, T6.3b and T6.4b: E4's reader brings `Framer.BodyLen`'s `last` and `MaxRecord`, and E5's
 T5.1a and T5.9 the `Stages.Errors`, `Stages.Protocol` and `OpTable.Protocol` that `NewConn`
 and the tables set. **The RFC 20 amendment, #4478**, which settles §9's
-G1 to G10.
+G1 to G10. **The RFC 20 amendment #4533**, whose G7 has `Validate` refuse a TLS mode other than
+off until `StartTLS`, for T6.4b.
 **Blocks:** the RFC 22 plan: its epic 2, whose handler harness decodes T6.1's header and which
 starts at RFC 20's S2 with T6.1; its SMB scaffold point, which is RFC 20's S3 with T6.3b; its
 T1.2, which moves T6.3b's empty table to `smb/ops`; its T3.1, T3.4 and T3.6, which extend
@@ -99,8 +100,9 @@ plan and to the RFC 22 plan are made by other pull requests, not this epic.
   connection, which receives RPC replies: the ledger's row "NFS callbacks".
 - `core`'s datagram listener, and NLM and NSM over UDP: the ledger's rows "`core`'s datagram
   listener" and "MOUNT, NLM, NSM, `SM_NOTIFY`; NLM and NSM over UDP". NFS over TLS's
-  `Conn.StartTLS`: the ledger's row "NFS-over-TLS"; until it, `nfs.New` loads the certificate
-  files and refuses a mode it cannot serve (D6).
+  `Conn.StartTLS`: the ledger's row "NFS-over-TLS"; until it, `settings.NFS`'s `Validate`
+  refuses a TLS mode other than off (RFC 20 §3.6, as #4533 settles it), so `nfs.New` loads no
+  certificate file.
 - Building each request's `vfs.Call` and its `Identity` from the credential or the session
   (RFC 20 §4.4, RFC 21 §11.1, RFC 22 §16.1): no row reads `Request.Call` before the protocols'
   first handler; §9 proposes a ledger row for it.
@@ -165,8 +167,8 @@ cited by number and title, and how it applies here or why it does not.
 | rule 2, fuzz tests where relevant | T6.1, T6.2 | one record-level target per `wire` package, which runs every decoder of a peer's bytes in turn: the Direct TCP header and the SMB2 headers of a chain; the record mark, the RPC call header, its credential and verifier, the `AUTH_SYS` body and the `COMPOUND` prefix. Seeded with the golden vectors and the reference captures. The property: accepted or refused, never a panic, never a length past the cap or the record accepted, and an accepted header's reply carries its IDs |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T6.3b, T6.4b | protocol code records nothing; it names the labels `core` records under: `Stages.Protocol` `smb` and `nfs3`, `OpTable.Protocol` `smb`, `nfs3` and `nfs4` (RFC 20 §10.1). Each loopback test reads one series `core` records under the label it expects |
 | rule 4, leaks and allocations | T6.3a, T6.4a, T6.3b, T6.4b | each protocol's header stage, the header codec `core` calls, decodes and encodes at 0 allocations, a chained SMB member past the first at one (D1), NFS's gate covering `Route`'s credential check too; each gate registered in `unit/adapter-allocs` by the subtask that writes it. Every loopback test ends with `CheckLeaks` |
-| rule 5, v2 ignores v1 | all | nothing is lifted: RFC 20 Appendix B marks none of v1's framing, headers or routing keep. E1's TLS loading in `nfs.New` is v2's and stays |
-| rule 6, nothing deferred is lost | T6.3b, T6.4a, T6.4b | the ledger rows §1.2 cites; the rows §9 proposes for each request's `Identity` and for the TLS row's wording |
+| rule 5, v2 ignores v1 | all | nothing is lifted: RFC 20 Appendix B marks none of v1's framing, headers or routing keep. E1's TLS loading in `nfs.New` goes with the public stub: until `StartTLS`, `Validate` refuses every mode but off (RFC 20 §3.6), so there is nothing to load (T6.4b) |
+| rule 6, nothing deferred is lost | T6.3b, T6.4a, T6.4b | the ledger rows §1.2 cites; the row §9 proposes for each request's `Identity`; the TLS row as #4496 rewords it for #4533's G7 |
 | rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | all | each decision of §4 leaves the marker it names at its code site. None of RFC 20's own notes that the rule lists is this epic's |
 | rule 8, a test must be able to fail ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests)) | all | each test in §6 names the change that fails it; a golden vector is written from the specification or cut from a reference capture, never produced by the codec under test |
 | rule 9, a symbol is exported only if RFC 20's interface uses it | all | the public surface does not change: `smb.golden` and `nfs.golden` keep their one line. `core` gains `Framer.Frame` and `HeaderCodec.Args` and `ReplyLen` with E5's T5.1a, and `Framer.BodyLen`'s `last` and `MaxRecord` with E4's reader, as RFC 20 §4.7 is amended; this epic implements them and exports nothing in `core`. Inside `internal/adapter/<protocol>`, `wire` exports what `protocol` calls, `protocol` exports `Protocol`, `New` and, for NFS, `Tables` (RFC 20 §4.8), which `smb.go` and `nfs.go` call, and each `New` returns the `*core.Server` its public `New` hands back. A `wire` accessor nothing here calls is exported by the RFC 21 or RFC 22 plan's subtask that first reads it |
@@ -319,15 +321,11 @@ reads, so every loopback test fails.
   takes it in `Unwrap`, before `Route`. `decision:` at the flavour check, withdrawn by that
   stage. Prior art: the Linux kernel's RPC server answers a flavour it has no handler for
   `AUTH_BADCRED` (from memory).
-- **D6, `nfs.New` refuses a TLS mode it cannot serve.** RFC 20 §3.4 has `New` fail at
-  configured on a setting the adapter cannot apply, and no connection can be upgraded until
-  `Conn.StartTLS` (the ledger's row "NFS-over-TLS"). **`New` loads the certificate files, as
-  E1's stub does, so an unloadable file is refused naming it, and then refuses `opportunistic`
-  and `require` with an error wrapping `errors.ErrUnsupported`.** E1's test of the files keeps
-  its meaning. `decision:` at the refusal, withdrawn by `StartTLS`. A `Reconfigure` from `off`
-  to another mode is refused by the same rule, RFC 20 §3.6 having `Reconfigure` load the files
-  before the swap: that is E4's `Reconfigure`, and §9 proposes naming it in epic 4's
-  description and in the ledger's TLS row. No prior art sought: the rule is RFC 20 §3.4's.
+- **D6, withdrawn.** It had `nfs.New` load the certificate files and refuse a mode it could
+  not serve. The RFC 20 amendment #4533 settles it in the RFC instead (its G7): until
+  `Conn.StartTLS`, `settings.NFS`'s `Validate` refuses a TLS mode other than off (RFC 20 §3.6,
+  §5.5), so `New` loads no file, and neither does `Reconfigure`, which runs the same
+  `Validate`. T6.4b removes the stub's loading and makes `Validate` refuse.
 
 ## 5. Target tree
 
@@ -368,7 +366,9 @@ internal/adapter/nfs/
   nfs.go                        T6.4b: New; the five empty tables and their error tables
   nfs_test.go                   T6.4b: the loopback tests, the test-only NULL row
 pkg/adapter/nfs/
-  nfs.go  nfs_test.go           T6.4b: New, one call into internal/adapter/nfs; E1's three tests
+  nfs.go  nfs_test.go           T6.4b: New, one call into internal/adapter/nfs; E1's two tests
+pkg/adapter/settings/
+  settings.go  settings_test.go T6.4b: NFS.Validate refuses a TLS mode other than off
 test/suites.yaml                T6.3a, T6.4a: each protocol package added to
                                 unit/adapter-allocs' command
 ```
@@ -397,7 +397,8 @@ Exported symbols added, all under `internal/adapter/`:
 - `nfs/protocol`: `Tables` (T6.4a); `type Protocol`, `New(t Tables) *Protocol` (T6.4b). `nfs`
   (T6.4b): `New(d adapter.Deps, s settings.NFS) (*core.Server, error)`.
 
-Nothing else is exported, and `pkg/adapter` and `pkg/adapter/settings` do not change. `core`
+Nothing else is exported, and `pkg/adapter` and `pkg/adapter/settings` export nothing new:
+T6.4b changes only `NFS.Validate`'s body. `core`
 changes only where RFC 20 §4.7 is amended, and each change has one owner: `Framer.Frame` and
 `HeaderCodec.Args` and `ReplyLen` land with E5's T5.1a, and `Framer.BodyLen`'s `last` and
 `MaxRecord` with E4's reader, which loops on them, each with `testproto`'s stages and
@@ -749,9 +750,9 @@ framer's.
   *Protocol`, `Framer`, and `NewConn`, which reads the connection's `settings.NFS` from
   `Conn.Settings()` into its served set and returns the stages with `Header`, `Router`,
   `Errors` (the stages' table) and `Protocol` `nfs3`, every other stage nil.
-  `internal/adapter/nfs/nfs.go`: `New`, which validates, refuses a missing `Deps` field by name
-  and loads the TLS files (moved from the public stub) and refuses a mode it cannot serve
-  (D6), builds three error tables, each mapping `ErrNotSupported` to `PROC_UNAVAIL` and
+  `internal/adapter/nfs/nfs.go`: `New`, which validates, refuses a missing `Deps` field by name,
+  loads no TLS file (the public stub's loading removed, since `Validate` refuses every mode but
+  off until `StartTLS`, RFC 20 §3.6), builds three error tables, each mapping `ErrNotSupported` to `PROC_UNAVAIL` and
   `ErrDecode` to `GARBAGE_ARGS`: NFSv3's, fault `NFS3ERR_SERVERFAULT`; the auxiliary programs',
   fault `SYSTEM_ERR`; and NFSv4's, fault `NFS4ERR_SERVERFAULT`, adding `ErrVersion` to
   `NFS4ERR_MINOR_VERS_MISMATCH` (RFC 21 §11.5); and the five empty tables RFC 20 §4.8's example
@@ -759,13 +760,16 @@ framer's.
   returns `core.NewServer` with one TCP listener naming `nfs`, `mount`, `nlm` and `nsm` on
   `s.Port`. `pkg/adapter/nfs.New`, a call into it that returns a nil adapter with an error.
   Tests in `internal/adapter/nfs/nfs_test.go`, with a helper that writes a call and reads a
-  reply from RFC 5531's layout, independent of `wire`; E1's three tests in
-  `pkg/adapter/nfs/nfs_test.go` moved to a served adapter.
+  reply from RFC 5531's layout, independent of `wire`; E1's first two tests in
+  `pkg/adapter/nfs/nfs_test.go` moved to a served adapter, and its third,
+  `TestNewLoadsTheTLSFiles`, removed with the loading. In `pkg/adapter/settings`, `NFS.Validate`
+  refuses `opportunistic` and `require`, naming `TLS.Mode`, and `TestTLSModesWithFilesAccepted`
+  becomes the test of that refusal (RFC 20 §3.6, #4533's G7).
 - **Consumers:** E7; the RFC 21 plan's first loopback rows.
 - **Acceptance criteria:**
-  - `New` returns an adapter in `StateConfigured` with no address bound; E1's refusals and its
-    loading of the TLS files still hold, a mode of `require` with files that load being refused
-    with `errors.ErrUnsupported` (D6).
+  - `New` returns an adapter in `StateConfigured` with no address bound; E1's refusals still
+    hold, and a mode of `opportunistic` or `require` is refused by `Validate` naming
+    `TLS.Mode`, with files that load and with files that do not exist alike.
   - With `Port` 0, `Addrs` reports `nfs`, `mount`, `nlm` and `nsm` over TCP at one port the
     system picked, neither 2049 nor 12049.
   - Over loopback, under the default range, one call per path a refusal can take: a `NULL` to
@@ -804,9 +808,11 @@ framer's.
   building only the tables in range, R27). The two adapters (catch a served set kept in a
   package variable, R29). The port and the listener (catch `New` binding a fixed port, and a
   program left off the TCP listener, R22, R30). The labels (catch `V4` labelled `nfs3`, whose
-  series merge with NFSv3's). `pkg/adapter/nfs`'s three tests (catch a typed nil server).
-- **Rules:** rule 3: the labels read back; rule 6: the TLS row's wording (§9); rule 7: D6's
-  `decision:`; rule 9: `nfs.golden` unchanged; rule 10: a test in each new package. The 2.25
+  series merge with NFSv3's). `pkg/adapter/nfs`'s two tests (catch a typed nil server). The TLS
+  modes, with missing files (catch a mode other than off accepted, and a file read before the
+  refusal, whose error would name the file).
+- **Rules:** rule 3: the labels read back; rule 6: the TLS row as #4496 rewords it; rule 9:
+  `nfs.golden` unchanged; rule 10: a test in each new package. The 2.25
   man-days are for its nine criteria over loopback, the fragment cases among them, which need
   E4's reader and settings live, and the framer.
 
@@ -912,13 +918,12 @@ A suggestion only: one pull request per subtask works as well.
     credential and SMB's session (RFC 20 §4.4, RFC 21 §11.1, RFC 22 §16.1)", why "no row reads
     `Request.Call` before the protocols' first handler", owners the RFC 21 and RFC 22 plans,
     trigger their first handler;
-  - the NFS-over-TLS row's "E6 has no TLS" reads that `New` loads the files since epic 1 and,
-    until `StartTLS`, refuses a mode other than `off`, and that E4's `Reconfigure` refuses one
-    the same way (D6);
+  - the NFS-over-TLS row: reworded by #4496 for #4533's G7, which replaces this document's
+    withdrawn D6;
   - the coverage table gains, for E6, RFC 21 §2.1, §2.2, §11.1's refused credentials and §11.5's
     `core` refusals, and RFC 22 §16.5's;
   - epic 4's description names `Framer.BodyLen`'s `last` and `MaxRecord`, which its reader
-    loops on, `Framer.Frame`, which its writer calls, and D6's `Reconfigure` refusal; epic 5's
+    loops on, and `Framer.Frame`, which its writer calls; epic 5's
     names `HeaderCodec.Args` and `ReplyLen`, which T5.1a lands with `Frame`.
 - **Against the epic's first description.** That description had four subtasks at 11.5
   man-days. The four ids stand for the same work. T6.3 and T6.4 are split by what needs a
@@ -927,7 +932,8 @@ A suggestion only: one pull request per subtask works as well.
   `Conn.Established` and its test, the frame header's writers and the framers' `MaxRecord`
   (G1, G3), `Args` and `ReplyLen` (G9, G10), the undefined SMB command, the refused
   `NextCommand`'s close and the NFS verifier and reply message (R36 to R41), the claimed-length
-  tests, the two test-only rows, the fragment cases over loopback and D6's refusal, and about 1
+  tests, the two test-only rows, the fragment cases over loopback and the TLS modes' refusal in
+`Validate`, and about 1
   saved, by gating each protocol once at its header stage, cutting vectors from the reference
   captures already in `test/pcap-corpus`, and fuzzing each `wire` package with one target.
 - **Least certain.** T6.2, T6.4a and T6.4b, for the edge cases of the RPC header, a record in
