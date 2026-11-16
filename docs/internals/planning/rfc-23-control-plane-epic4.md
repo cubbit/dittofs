@@ -9,7 +9,7 @@ and the client rules), §11 (the `api_` series), and §10's CP2, CP5, CP6, CP8, 
 on the API's side; [RFC 13](../rfcs/rfc-13-configuration.md) §6 and §7 as a caller;
 [RFC 23's plan](rfc-23-control-plane-plan.md) D2, D5 and D14.
 **Track:** B.
-**Epic 4 estimate: 11 subtasks, 34 man-days.**
+**Epic 4 estimate: 11 subtasks, 34.5 man-days.**
 **Depends on:** S1 (E1 merged): the shared wire types in `pkg/node/apiv1` and the node's surface. E2:
 `ControlPlane.Write` with `entity.WriteMeta` and `entity.ControlPlaneTx`, `expect` on every write,
 the idempotency, audit and operation records with their errors in `entity`, the operation record's
@@ -73,7 +73,9 @@ span per call; RFC 23 §4.3's amendment for the pre-write step.
   hands the table in; until then the empty table refuses (D4). The success paths of the routes it
   backs run in E7.
 - The runner's steps for the domain's kinds and for `identity.nt-hash-delete`, and the wiring of
-  identity into `Deps`: the RFC 18 plan's epics 2 and 7. The runner itself, the deletions it drives
+  identity into `Deps`: the RFC 18 plan's epics 2 and 7 for the steps, its epic 7 for
+  `HoldJoinCredential`, and its epic 8, which composes identity into `node.New` and hands it to the
+  API. The runner itself, the deletions it drives
   past the mark, the health rows and the two architecture rules: E3.
 - `GET /nodes/{id}/connections`: its producer, each adapter's `Connections()`, is wired into the
   node by RFC 20's plan's epic 7, so the route lands with it; a row of
@@ -217,9 +219,9 @@ this epic, numbered so that subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R49 | An offline `join-domain` writes the password as a new version of the machine password's `Secret`, marked `HandedOver`, in its own write audited as a `set` of the reference and committed before the operation, refused `409` `operation_running` while a `join-domain` or `rotate-machine-password` runs; an online one never puts the administrator credential in the operation's record: the route picks the operation's ID and hands the credential to identity under it before the write that creates the operation, and the hold ends with the request when that write is refused | MUST | RFC 23 §3.5, §4.5 | T4.11 |
+| R49 | An offline `join-domain` writes the password as a new version of the machine password's `Secret`, marked `HandedOver`, in its own write audited as a `set` of the reference and committed before the operation, refused `409` `operation_running` while a `join-domain` or `rotate-machine-password` runs; an online one never puts the administrator credential in the operation's record: the route picks the operation's ID and hands the credential to identity under it before the write that creates the operation, and the hold ends with the request when that write is refused, by the release the hold returned | MUST | RFC 23 §3.5, §4.5 | T4.11 |
 | R50 | `resolve-principal`, `test-directory`, `join-domain` and `rotate-machine-password` are operations the runner drives through identity; the API writes their records only | MUST | RFC 23 §3.5, §4.1 | T4.11 |
-| R51 | Turning `identity.ntlm` on is refused `409` `operation_running` while `Installation.NTLMOff` records a turn-off and no completed `identity.nt-hash-delete`; turning it off starts a deletion unless one runs, and while already off starts one only when none has completed since and none runs; the settings route reads `NTLMOff` and the running index tracked in the write's transaction, and a write starting one answers `202`, its target the installation | MUST | RFC 23 §4.1 | T4.11 |
+| R51 | A write turning `identity.ntlm` off from on sets `Installation.NTLMOff`'s `Off` to the settings generation and clears `Deleted`, and one setting it off while already off changes neither; the settings route is the only writer of `Off`. Turning it on (a put of on, or the delete of the installation's `identity.ntlm` record) is refused `409` `operation_running` while `Off` is set and `Deleted` is zero, naming the deletion running or the last one failed. Turning it off starts an `identity.nt-hash-delete` unless one runs, and while already off starts one only when `Deleted` is zero and none runs. The route reads `NTLMOff` and the running index tracked in the write's transaction, and a write starting one answers `202`, its target the installation | MUST | RFC 23 §4.1 | T4.11 |
 
 **The audit**
 
@@ -258,7 +260,9 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
   takes `context.Context`, from which `auth.CallerFrom` reads the caller, and its decoded request:
   - **read** and **list**: `func(ctx, req) (Resp, error)` and a page;
   - **write**: `func(ctx, req, in Input, tx entity.ControlPlaneTx) (Resp, error)`, where `Input` is
-    the pre-write step's result (D17); a row carrying an `OpKind` makes the same adapter write the
+    the pre-write step's result (D17), which may pick the operation's ID, kept across a conflict
+    retry and used by the adapter (`join-domain`'s does, D13); a row carrying an `OpKind` makes the
+    same adapter write the
     operation record in the transaction and answer `202` with its `Location`;
   - **call**: `func(ctx, req) (Answer, error)` with `Answer{Status, Header, Body}` and no
     transaction of the adapter's, for E5's sign-in, refresh and password change, which keep no
@@ -316,8 +320,10 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
 - **D12, a refusal's audit record is a second `Write` holding only it**, with no idempotency key. A
   failure to write it is logged at `Error` and does not change the answer. No marker.
 - **D13, the domain's calls into identity are interfaces the API declares, failing closed.**
-  `Deps.Directory` (the SID a Kerberos name is linked for), `Deps.Joins` (`HoldJoinCredential`) and
-  `Deps.Sealer` (`Seal`) are filled by the RFC 18 plan's epic 7 and X1 in `node.New`; nil, the route
+  `Deps.Directory` (the SID a Kerberos name is linked for), `Deps.Joins`
+  (`HoldJoinCredential(id entity.OperationID, cred JoinCredential) (release func())`, the signature
+  the RFC 18 plan's epic 7 shares) and `Deps.Sealer` (`Seal`) are filled in `node.New` by the RFC 18
+  plan's epic 8, which composes identity and hands it to the API, and by X1; nil, the route
   refuses `503` `unavailable`, or the RFC's own refusal where it names one. No marker.
 - **D14, the `identity.ntlm` rule is one function of the write's transaction**, called by the
   settings route; a provisioning apply calls the same function once the provisioning file exists (a
@@ -422,6 +428,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   Settings     checker      // D4
   Clock        clock        // Now, After (D18)
   Health       conditions   // E3's health.Registry, read whole by GET /api/v1/health (T4.6)
+  Progress     func(apiv1.OpKind, []byte) apiv1.Progress // E3's runner table (T4.6)
   // Directory, Joins and Sealer land with T4.9 and T4.11
   ```
   `auth/caller.go` (`Caller`, `CallerFrom`); `apiv1.Role`; `rights.go`, the role table's rights
@@ -532,7 +539,9 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 - **Track:** B. **Depends on:** T4.5.
 - **Covers:** R3, R24, R25, R26, R53, R58, R60, R66.
 - **Deliverables:** `GET /operations` (by state) and `/operations/{id}` with `?wait=` (at most 60 s),
-  `:cancel` answering `409` `not_cancellable`; `GET /nodes` and `/nodes/{id}` with the binary
+  `:cancel` answering `409` `not_cancellable`, its `Progress` filled by
+  `Deps.Progress(kind, next)`, the per-kind `func(next []byte) Progress` E3's runner registers with
+  each step, from the operation's recorded `Step`; `GET /nodes` and `/nodes/{id}` with the binary
   version; `GET /api/v1/health` (`viewer`, answering before ready): the word from `Deps.Ready()`
   and every condition `Deps.Health` holds, node and installation, each with its cause, as
   `apiv1.Health`; `GET /api/v1/audit` (`admin`) by time range, actor and target; the operations collector
@@ -657,7 +666,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 ### T4.11 The domain's routes and the `identity.ntlm` rule
 
-**Subtask T4.11 estimate: 4 man-days.**
+**Subtask T4.11 estimate: 4.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.9, T4.10; its success paths on the RFC 18 plan's epics 6 and 7
   (identity's calls and `pkg/identity/identitytest`'s in-memory directory and domain controller)
@@ -667,8 +676,9 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   the transaction (D17); `resolve-principal`, `test-directory`, `join-domain` (online and offline,
   no idempotency record) and `rotate-machine-password` as operation kinds; the offline join's version
   sealed before the transaction and written in its own audited write, refused while a join or
-  rotation runs; the online join's `Deps.Joins.HoldJoinCredential` under the operation's ID before
-  the write, the hold ended when that write is refused; each refusing `503` `unavailable` while its
+  rotation runs; the online join's pre-write step picking the operation's ID and calling
+  `Deps.Joins.HoldJoinCredential` under it, the write using that ID, and the returned release called
+  when the write is refused; each refusing `503` `unavailable` while its
   interface is nil (D13); `ntlm.go`, the rule (D14), called by the settings route; the
   installation's wire type; the import rule extended with identity's interface package. Consumed by
   the RFC 18 plan's epic 7 and E7.
@@ -681,9 +691,13 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   `join-domain` refused `400`, and no idempotency record for either join read raw (R22); the offline
   retry `409` with no new version, its password found raw in no audit record (the `set`, the 409's
   refusal record), log line, problem body or metric (R49, R63); the online join's credential found
-  nowhere, and its hold ended after a refused creating write (R49, R63); each kind's operation
+  nowhere (R49, R63); that the hold ends after a refused creating write cannot be observed here
+  without a recording double, so it is the RFC 18 plan's epic 8's test, which builds both sides: a
+  join started, its creating write refused, and no credential held after; each kind's operation
   record written with its target (R50); the `identity.ntlm` rule as a function of a transaction over
-  the store, each case of R51 (R51; its `202` and `409` through the route in E7, once X3 is in).
+  the store: a turn-off from on setting `Off` to the generation and clearing `Deleted`; a second
+  turn-off changing neither and starting no deletion while one runs; a turn-on refused while a fresh
+  deletion runs after an older `Deleted` mark was cleared; and each other case of R51 (R51; its `202` and `409` through the route in E7, once X3 is in).
 
 ## 7. Order of work
 
@@ -716,7 +730,7 @@ its commands on the client.
 | 3 | T4.5, T4.6 | 5.5 | PR 1 | reads, operations, nodes and the audit |
 | 4 | T4.7, T4.8 | 6 | PR 2, PR 3 | shares and the client that first drives them |
 | 5 | T4.9, T4.10 | 6 | PR 4 | the remaining resources |
-| 6 | T4.11 | 4 | PR 5 | the domain |
+| 6 | T4.11 | 4.5 | PR 5 | the domain |
 
 PR 2 and PR 3 can be open at once. A suggestion only: one pull request per subtask works as well.
 
@@ -736,6 +750,15 @@ Other open points:
 - The RFC 13 plan's write-path sketch calls `node.Settings.Check` from the API, which would import
   `node` (a cycle, and outside the export pin); it should read `deps.Settings.Check`, the table the
   node hands in (D4).
+- **The keytab.** RFC 18 §3.3 refuses a keytab holding DES or RC4 keys whole. The RFC 18 plan's
+  epic 5 proposes `pkg/identity.CheckKeytab(b []byte) error`, a pure function; once it is settled
+  there, T4.9's secret route calls it in the keytab's pre-write step before `Seal`, and
+  `pkg/identity` joins D20's import allow-list. Until then the check is that epic's, and this
+  epic's route seals what it is given. A keytab version's retention (RFC 23 §3.3) has no route here:
+  if the RFC 18 plan's proposed `retire-keytab-version` action is accepted, its route row and
+  `OpKind` are this epic's and its step RFC 18's; until then it is the ledger row proposed below.
+- RFC 23's plan, proposed and not made: a deferral-ledger row for a keytab version's retention,
+  owner the RFC 18 plan, trigger its retirement action decided.
 - What this epic reads from E3: `internal/node/api` and `New(Deps)`, `Deps.Ready` and `Deps.Live`,
   its two architecture rules, the harness, and the runner's pickup of a new operation.
 - The least certain estimates: T4.4, whose order of checks and audit diff cross every resource, and
