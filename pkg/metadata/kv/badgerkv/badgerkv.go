@@ -27,6 +27,10 @@ type Options struct {
 	NodeID [keys.IDLen]byte
 	// Clock is the node's clock; nil is time.Now.
 	Clock func() time.Time
+	// MemTableSize is Badger's memtable size in bytes; 0 is Badger's
+	// default. It sets the batch limits, so Limits' TxnEntries and TxnBytes
+	// scale with it.
+	MemTableSize int64
 }
 
 // Store is a kv.KV on Badger. Every commit is synced to the device before
@@ -62,6 +66,9 @@ func Open(opts Options) (*Store, error) {
 	bo := badger.DefaultOptions(opts.Dir).WithLogger(nil).WithSyncWrites(false)
 	if opts.Dir == "" {
 		bo = bo.WithInMemory(true)
+	}
+	if opts.MemTableSize > 0 {
+		bo = bo.WithMemTableSize(opts.MemTableSize)
 	}
 	db, err := badger.Open(bo)
 	if err != nil {
