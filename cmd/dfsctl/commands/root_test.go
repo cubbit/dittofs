@@ -32,7 +32,7 @@ func TestV1CommandsRefuse(t *testing.T) {
 			if c == root && kept[sub.Name()] {
 				continue
 			}
-			if sub.Runnable() {
+			if sub.Runnable() && !sub.HasSubCommands() {
 				refused++
 				if sub.RunE == nil {
 					t.Errorf("%s: no RunE, want the refusal", sub.CommandPath())
@@ -66,9 +66,8 @@ func TestV1CommandRefusesThroughExecute(t *testing.T) {
 }
 
 // The commands no API serves are not in the tree at all: running one is an
-// unknown command, not a refusal.
+// unknown command, not a refusal, and so is an unknown verb under a kept noun.
 func TestRemovedCommandsAbsent(t *testing.T) {
-	root, _ := newTestRoot()
 	for _, path := range []string{
 		"switch-user",
 		"share unmount",
@@ -84,21 +83,61 @@ func TestRemovedCommandsAbsent(t *testing.T) {
 		"netlogon",
 		"trash",
 		"system",
+		"user bogus",
+		"context bogus",
+		"share permission bogus",
 	} {
-		if c, _, err := root.Find(strings.Fields(path)); err == nil && c.CommandPath() == "dfsctl "+path {
-			t.Errorf("dfsctl %s: got the command in the tree, want it absent", path)
+		root, _ := newTestRoot()
+		root.SetArgs(strings.Fields(path))
+		if err := root.Execute(); err == nil || !strings.HasPrefix(err.Error(), "unknown command ") {
+			t.Errorf("dfsctl %s: got %v, want an unknown command error", path, err)
 		}
+	}
+
+	root, _ := newTestRoot()
+	for _, f := range []string{"token", "client-cert", "client-key", "tls-skip-verify"} {
+		if root.PersistentFlags().Lookup(f) != nil {
+			t.Errorf("global flag --%s: got it defined, want it absent", f)
+		}
+	}
+}
+
+// Run prints a failed invocation's error to Env.Err and returns status 1,
+// leaving Env.Out empty.
+func TestRunPrintsErrorToEnvErr(t *testing.T) {
+	var out, errOut bytes.Buffer
+	status := Run(cmdutil.Env{In: strings.NewReader(""), Out: &out, Err: &errOut}, []string{"share", "unmount"})
+	if status != 1 {
+		t.Errorf("status: got %d, want 1", status)
+	}
+	if want := "Error: unknown command \"unmount\" for \"dfsctl share\"\n"; errOut.String() != want {
+		t.Errorf("stderr: got %q, want %q", errOut.String(), want)
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout: got %q, want nothing", out.String())
+	}
+}
+
+// A command's output lands in the Env the root was built with.
+func TestVersionWritesToEnvOut(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if status := Run(cmdutil.Env{In: strings.NewReader(""), Out: &out, Err: &errOut}, []string{"version", "--short"}); status != 0 {
+		t.Fatalf("dfsctl version --short: got status %d (stderr %q), want 0", status, errOut.String())
+	}
+	if out.String() != Version+"\n" {
+		t.Errorf("stdout: got %q, want %q", out.String(), Version+"\n")
 	}
 }
 
 // No package under cmd/dfsctl keeps state in a package variable, so two roots
 // built in one process share nothing; the build's version is the exception.
 func TestNoPackageState(t *testing.T) {
-	// The variables -ldflags sets: lower case in main, where the linker writes
-	// them, and exported in commands, which main copies them into.
-	buildVars := map[string]bool{
-		"version": true, "commit": true, "date": true,
-		"Version": true, "Commit": true, "Date": true,
+	// The variables -ldflags sets, by the directory allowed to declare them:
+	// lower case in main, where the linker writes them, and exported in
+	// commands, which main copies them into.
+	buildVars := map[string]map[string]bool{
+		"..":                            {"version": true, "commit": true, "date": true},
+		filepath.Join("..", "commands"): {"Version": true, "Commit": true, "Date": true},
 	}
 	fset := token.NewFileSet()
 	scanned := 0
@@ -118,7 +157,7 @@ func TestNoPackageState(t *testing.T) {
 			}
 			for _, spec := range gen.Specs {
 				for _, name := range spec.(*ast.ValueSpec).Names {
-					if !buildVars[name.Name] {
+					if !buildVars[filepath.Dir(path)][name.Name] {
 						t.Errorf("%s: package-level var %s, want none but the build's version", fset.Position(name.Pos()), name.Name)
 					}
 				}
