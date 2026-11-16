@@ -34,13 +34,14 @@ func NewWatchdog(clock Clock) *Watchdog {
 }
 
 // Loop returns the watched loop named name, counted as reported now when it
-// is new. A second call with the same name returns the same loop.
+// is new. A second call with the same name returns the same loop, until it is
+// closed.
 func (w *Watchdog) Loop(name string) *Loop {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	l, ok := w.loops[name]
 	if !ok {
-		l = &Loop{clock: w.clock}
+		l = &Loop{w: w, name: name}
 		l.Turn()
 		w.loops[name] = l
 	}
@@ -63,14 +64,25 @@ func (w *Watchdog) Live() bool {
 
 // Loop is one watched loop.
 type Loop struct {
-	clock Clock
-	last  atomic.Int64 // the clock's Elapsed at the last report
+	w    *Watchdog
+	name string
+	last atomic.Int64 // the clock's Elapsed at the last report
 }
 
 // Turn reports a turn completed.
-func (l *Loop) Turn() { l.last.Store(int64(l.clock.Elapsed())) }
+func (l *Loop) Turn() { l.last.Store(int64(l.w.clock.Elapsed())) }
 
 // Idle reports the loop waiting with nothing to do. A waiting loop repeats it
 // at least every IdleEvery, so a loop that wakes and stalls before its turn
 // misses its next report.
-func (l *Loop) Idle() { l.last.Store(int64(l.clock.Elapsed())) }
+func (l *Loop) Idle() { l.Turn() }
+
+// Close reports the loop gone: liveness no longer counts it. Closing it twice,
+// or after another loop took its name, does nothing.
+func (l *Loop) Close() {
+	l.w.mu.Lock()
+	defer l.w.mu.Unlock()
+	if l.w.loops[l.name] == l {
+		delete(l.w.loops, l.name)
+	}
+}

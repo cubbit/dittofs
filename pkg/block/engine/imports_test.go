@@ -24,6 +24,7 @@ const module = "github.com/cubbit/dittofs/"
 // tests', which run a clone's hold over the real table.
 var allowed = map[string][]string{
 	module + "pkg/block/journal":    {"*"},
+	module + "pkg/health":           {"*"},
 	module + "pkg/metadata/entity":  {"*"},
 	module + "pkg/metadata/kvstore": {"*"},
 	module + "pkg/openstate":        {"enginetest", unitTests},

@@ -5,16 +5,17 @@ import (
 	"sync"
 )
 
-// Name is a condition's name, as RFC 25's condition table spells it.
-type Name string
-
 // Scope is the kind of thing a condition is about.
 type Scope uint8
 
+// The scopes, in RFC 25's order.
 const (
-	ScopeJournal Scope = iota + 1 // a journal device: ID its identity, Name its directory
-	ScopeNode                     // this node: ID its identity
-	ScopeShare                    // a share: ID its identity
+	ScopeStore        Scope = iota + 1 // a remote store
+	ScopeNamespace                     // a namespace
+	ScopeJournal                       // a journal device: ID its identity, Name its directory
+	ScopeShare                         // a share: ID its identity
+	ScopeNode                          // this node: ID its identity
+	ScopeInstallation                  // the installation
 )
 
 // Subject is what a condition is about.
@@ -26,7 +27,7 @@ type Subject struct {
 // Condition is one health condition a component raises. It is derived, never
 // latched: a condition its source no longer returns is cleared.
 type Condition struct {
-	Name    Name
+	Name    string // as RFC 25's condition table spells it
 	Subject Subject
 	Cause   error  // the error or reason that raised it
 	Detail  string // a constant message and the figures that matter

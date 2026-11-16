@@ -17,7 +17,11 @@ func TestWatchdogLive(t *testing.T) {
 		want bool
 	}{
 		{"silent 60 s", func(c *sim.TestClock, _ *health.Loop) { c.Advance(60 * time.Second) }, true},
-		{"silent 61 s", func(c *sim.TestClock, _ *health.Loop) { c.Advance(61 * time.Second) }, false},
+		{"silent 60 s and 1 ns", func(c *sim.TestClock, _ *health.Loop) { c.Advance(60*time.Second + time.Nanosecond) }, false},
+		{"closed, then silent an hour", func(c *sim.TestClock, l *health.Loop) {
+			l.Close()
+			c.Advance(time.Hour)
+		}, true},
 		{"idle every 30 s for an hour", func(c *sim.TestClock, l *health.Loop) {
 			for range 120 {
 				c.Advance(health.IdleEvery)
@@ -52,6 +56,21 @@ func TestWatchdogLoopByName(t *testing.T) {
 	w.Loop("sweep").Idle()
 	if !w.Live() {
 		t.Error("Live after the named loop reported again: got false, want true")
+	}
+}
+
+// Closing a loop whose name a new loop has since taken leaves the new one
+// watched.
+func TestWatchdogCloseOldLoop(t *testing.T) {
+	c := sim.NewTestClock(time.Unix(0, 0))
+	w := health.NewWatchdog(c)
+	old := w.Loop("runner")
+	old.Close()
+	w.Loop("runner")
+	old.Close()
+	c.Advance(61 * time.Second)
+	if w.Live() {
+		t.Error("Live with the new runner loop silent 61 s: got true, want false")
 	}
 }
 
@@ -90,7 +109,7 @@ func names(cs []health.Condition) string {
 		if i > 0 {
 			s += ","
 		}
-		s += string(c.Name)
+		s += c.Name
 	}
 	return s
 }

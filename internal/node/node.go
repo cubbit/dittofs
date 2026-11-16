@@ -14,7 +14,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/config"
-	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
@@ -44,7 +43,6 @@ type Node struct {
 	open   *openstate.Table
 	engine *engine.Engine
 	fs     *vfs.Filesystem
-	health health.Evaluator
 }
 
 // New opens the metadata store over cfg.KV, refusing a KV that holds no
@@ -101,7 +99,6 @@ func build(cfg Config) (*Node, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
-	n.health.Add(engineConditions{n.engine.Stats})
 	var reg prometheus.Registerer
 	if cfg.Metrics != nil {
 		reg = cfg.Metrics.Registry()

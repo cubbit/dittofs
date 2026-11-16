@@ -2,8 +2,8 @@ package node
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,32 +14,57 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// The engine's series are read from its Stats at each scrape, not copied
-// once: a figure that moved between two scrapes shows at the second.
+// The engine's series, each of its kind and with its labels, are read from
+// its Stats at each scrape, not copied once: a figure that moved between two
+// scrapes shows at the second.
 func TestEngineSeriesReadAtScrape(t *testing.T) {
-	s := engine.Stats{SelfFences: 1, Reads: map[string]int64{"hit": 3}}
+	s := engine.Stats{Reads: map[string]int64{}, RemovalRuns: map[string]int64{}}
 	c := engineSeries{func() engine.Stats { return s }}
-	names := []string{"dittofs_engine_self_fences_total", "dittofs_engine_reads_total", "dittofs_engine_read_seconds"}
-	scrape := func(fences, hits, count, sum int) string {
-		return fmt.Sprintf(`
+	scrape := func(n int) string {
+		return strings.ReplaceAll(`# HELP dittofs_engine_group_commit_splits_total Group commit batches split.
+# TYPE dittofs_engine_group_commit_splits_total counter
+dittofs_engine_group_commit_splits_total N
+# HELP dittofs_engine_lock_wait_seconds Contended takes of a lock.
+# TYPE dittofs_engine_lock_wait_seconds histogram
+dittofs_engine_lock_wait_seconds_bucket{area="file_state",le="+Inf"} N
+dittofs_engine_lock_wait_seconds_sum{area="file_state"} N
+dittofs_engine_lock_wait_seconds_count{area="file_state"} N
+# HELP dittofs_engine_pending_existence_ops Operations the existence commits committed.
+# TYPE dittofs_engine_pending_existence_ops counter
+dittofs_engine_pending_existence_ops N
 # HELP dittofs_engine_read_seconds Time reads took.
-# TYPE dittofs_engine_read_seconds summary
-dittofs_engine_read_seconds_sum %d
-dittofs_engine_read_seconds_count %d
+# TYPE dittofs_engine_read_seconds histogram
+dittofs_engine_read_seconds_bucket{le="+Inf"} N
+dittofs_engine_read_seconds_sum N
+dittofs_engine_read_seconds_count N
 # HELP dittofs_engine_reads_total Reads, by their outcome.
 # TYPE dittofs_engine_reads_total counter
-dittofs_engine_reads_total{class="hit"} %d
+dittofs_engine_reads_total{class="hole"} N
+# HELP dittofs_engine_removal_runs_total Removal runs, by their result.
+# TYPE dittofs_engine_removal_runs_total counter
+dittofs_engine_removal_runs_total{result="done"} N
 # HELP dittofs_engine_self_fences_total Times the node fenced for a store that committed no write transaction.
 # TYPE dittofs_engine_self_fences_total counter
-dittofs_engine_self_fences_total{reason="store"} %d
-`, sum, count, hits, fences)
+dittofs_engine_self_fences_total{reason="store"} N
+# HELP dittofs_engine_stability_points_total Stability points the engine reached.
+# TYPE dittofs_engine_stability_points_total counter
+dittofs_engine_stability_points_total N
+# HELP dittofs_engine_write_refusals_total Writes the engine refused.
+# TYPE dittofs_engine_write_refusals_total counter
+dittofs_engine_write_refusals_total N
+`, "N", strconv.Itoa(n))
 	}
-	if err := testutil.CollectAndCompare(c, strings.NewReader(scrape(1, 3, 0, 0)), names...); err != nil {
-		t.Errorf("first scrape: %v", err)
+	set := func(n int64) {
+		s.SelfFences, s.StabilityPoints, s.WriteRefusals, s.PendingExistenceOps, s.GroupCommitSplits = n, n, n, n, n
+		s.Reads["hole"], s.RemovalRuns["done"] = n, n
+		s.ReadSeconds = engine.Series{Count: n, Total: time.Duration(n) * time.Second}
+		s.FileStateLockWaits = s.ReadSeconds
 	}
-	s.SelfFences, s.Reads["hit"], s.ReadSeconds = 2, 5, engine.Series{Count: 4, Total: 2 * time.Second}
-	if err := testutil.CollectAndCompare(c, strings.NewReader(scrape(2, 5, 4, 2)), names...); err != nil {
-		t.Errorf("second scrape after the figures moved: %v", err)
+	for _, n := range []int64{1, 2} {
+		set(n)
+		if err := testutil.CollectAndCompare(c, strings.NewReader(scrape(int(n)))); err != nil {
+			t.Errorf("scrape with every figure at %d: %v", n, err)
+		}
 	}
 }
 
