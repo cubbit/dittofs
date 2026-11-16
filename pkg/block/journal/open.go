@@ -304,7 +304,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// .spare.tmp unlinks and the classes it sorts the segments into. A
 		// read the device never completed refuses the open on its ranges;
 		// a pass that ran answers ErrNotImplemented below.
-		failed, err := durability.FailedFor(dir)
+		failed, err := durability.FailedFor(dir, ff.Identity)
 		if err != nil {
 			return nil, err
 		}

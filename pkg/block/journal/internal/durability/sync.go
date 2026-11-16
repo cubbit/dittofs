@@ -37,8 +37,15 @@ type Config struct {
 	// when a sync completes. It is required.
 	Index *index.Index
 
-	// Dir is the journal's directory, the key of its per-process loss state.
+	// Dir is the journal's directory, half the key of its per-process loss
+	// state: an identity keys the other half.
 	Dir string
+
+	// Identity is the journal the per-process loss state belongs to. A path
+	// this process emptied and Init'd a new journal at must not inherit the
+	// dead journal's failed list, taken pieces or generation, and its new
+	// identity re-reaches the sequence numbers the dead one issued.
+	Identity core.JournalID
 
 	// Counters issue the loss record's sequence number. It is required.
 	Counters *index.Counters
@@ -458,7 +465,7 @@ func New(cfg Config) (*Durability, error) {
 	if cfg.Counters == nil || cfg.MarkLoss == nil {
 		panic("durability: the layer needs its counters and loss marker")
 	}
-	dir, err := stateFor(cfg.Dir)
+	dir, err := stateFor(cfg.Dir, cfg.Identity)
 	if err != nil {
 		return nil, err
 	}

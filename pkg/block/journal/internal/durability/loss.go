@@ -374,7 +374,7 @@ func (d *Durability) EndDeferral(seg core.SegmentID, l Loss) bool {
 // seq, to this instance's ring. It appends nothing, raises nothing and
 // counts nothing: the counters are of drops this run made, and the record
 // is already on disk. A piece (seq and ev.Extent) already taken by a Lose
-// or a Place on the directory — through whichever Durability, the previous
+// or a Place of the same journal identity — through whichever Durability, the previous
 // open's included — publishes nothing, so a later open does not report the
 // same loss record as new, while another piece of the same record is
 // placed on its own; the piece is the directory's, the published events

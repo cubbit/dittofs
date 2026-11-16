@@ -27,7 +27,7 @@ func TestFailedForAnswersBeforeAnyDurabilityIsBuilt(t *testing.T) {
 	r.d.Enter(syscall.EROFS)
 	_ = mustReturn(t, "Sync", r.syncAsync(context.Background(), f))
 
-	got, err := FailedFor(dir)
+	got, err := FailedFor(dir, rigIdentity)
 	if err != nil {
 		t.Fatalf("FailedFor: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestFailedForAnswersBeforeAnyDurabilityIsBuilt(t *testing.T) {
 			t.Errorf("FailedFor = %v, missing seq %d", got, seq)
 		}
 	}
-	if other, err := FailedFor(t.TempDir()); err != nil || len(other) != 0 {
+	if other, err := FailedFor(t.TempDir(), rigIdentity); err != nil || len(other) != 0 {
 		t.Errorf("FailedFor on an untouched directory = %v, %v, want none and no error", other, err)
 	}
 }
