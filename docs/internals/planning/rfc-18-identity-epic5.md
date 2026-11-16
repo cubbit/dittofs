@@ -97,8 +97,8 @@ ticket's sign-in, captured; `FuzzPAC` and `FuzzAPReq`.
   adapter's, as RFC 18 §6.1 says, with no second check at `Resolve` (E8's D7, pending).
 - The keytab's place in the node's `State`, read from `Versions` at each reconcile: E8. So is a
   live sign-in in `integration/ad-dc` through the node, the only package outside
-  `internal/identity` that may import the server (RFC 18 §2.7), with `integration/ad-dc` taken
-  out of the plan job's filter on `feat/storage-v2` unless E6 or E7 has done so (§9).
+  `internal/identity` that may import the server (RFC 18 §2.7). Rebasing the fixture's branches
+  onto `feat/storage-v2` and the cell's place in its plan job's select: E6's T6.1 (§9).
 - The cross-epic clauses of "PAC bound to the record" (a reused name through step 3) and
   "disabled directory account" (at sign-in): E8's T8.5, on this epic's binding. The clauses E8
   cites are held by this epic's own tests: "PAC bound to the record"'s client name (T5.6) and
@@ -395,11 +395,11 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   fixture's domain controller issues for an AES-only service name), and it holds at the KDC the
   AES-only half of R2 and R6 that T5.11's ticket relies on.
 - **Deliverables:** built, not merged, on the branch `test/ad-dc-kerberos` (321c816bb, 6b541fa1d,
-  b1c51277b), stacked on `test/ad-dc-network-tls` (9207ec946, f86998cd3, 24073d347), both on
-  GitHub: the `cifs/` and `nfs/` service names moved off
-  Administrator onto an account of their own, `dittofs-svc`, with
-  `msDS-SupportedEncryptionTypes` `0x18`, so the exported keytab holds no RC4 key
-  (`entrypoint.sh`, `ad_dc_keytab_test.go`); `capture-pacs.sh`, which runs `TestADPACCapture` with
+  b1c51277b), stacked on `test/ad-dc-network-tls` (9207ec946, f86998cd3, 24073d347), both on GitHub
+  and both rebased onto `feat/storage-v2` by E6's T6.1: the `cifs/` and `nfs/` service names moved
+  off Administrator onto an account of their own, `dittofs-svc`, with
+  `msDS-SupportedEncryptionTypes` `0x18`, so the exported keytab holds no RC4 key (`entrypoint.sh`,
+  `ad_dc_keytab_test.go`); `capture-pacs.sh`, which runs `TestADPACCapture` with
   `DITTOFS_AD_DC_PAC_OUT` set and writes `tgt.pac` with `krbtgt.keytab` and `service.pac` with
   `service.keytab`; `docs/guide/identity.md`'s account of the fixture. The fixture's TLS part is
   E6's and its join part E7's.
@@ -463,7 +463,9 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   `ErrInvalid`, every refusal `ErrLogonFailure`; `Keys.Session` and `Keys.APRep`, the AP-REP
   lifted from `develop`'s `BuildMutualAuth`, with no subkey (R12); RFC 18 §3.3's `ponytail:` on
   the skew constant; D1's and D4's markers; `FuzzAPReq`. Consumed by T5.4, T5.5, T5.6 (the key that
-  decrypted) and E7.
+  decrypted) and E7's T7.9: for a name the computer account holds whose key version number no held
+  key carries, the key selection calls T7.9's fallback across the held derived keys, which T7.9
+  adds.
 - **Acceptance criteria:**
   - A ticket from the test realm for `cifs/nas.test` verifies with `SignInStep.Service` CIFS, and
     its `Keys.Session` is the authenticator's subkey when it has one, else the ticket's session
@@ -613,7 +615,8 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   memberships, extra SIDs and resource groups; `Evidence.DenyOnly`, D7's order; D8's filter with
   each dropped SID counted in `identity_pac_sids_dropped_total{reason}`; the well-known SIDs kept
   only for everyone, authenticated users and network (RFC 22 §16.3). No PAC field reaches a
-  record. Consumed by T5.8b, and by E3's resolution through the evidence.
+  record. Consumed by T5.8b, by E3's resolution through the evidence, and by E7's T7.11, whose
+  pass-through applies the same filter and counter to the domain controller's reply.
 - **Acceptance criteria:**
   - A PAC carrying alice's SID, `Finance`, an `S-1-5-32-544`, a SID of the installation's domain,
     a SID of another domain and a deny-only `Payroll` gives `SIDs` alice then `Finance`,
@@ -905,8 +908,10 @@ the version this document was written against.
 - The plan has the fixture's Kerberos part take `integration/ad-dc` out of the plan job's filter on
   `feat/storage-v2`. The built part is on its branch, `test/ad-dc-kerberos`, cut from `develop`,
   where no filter exists, and on
-  `feat/storage-v2` the cell's tests still drive v1's SMB path; so the first v2 test in the cell
-  takes it out, E6's, E7's or E8's, with the fixture cherry-picked onto `feat/storage-v2` first.
+  `feat/storage-v2` the cell's tests still drive v1's SMB path. E6's T6.1 owns the move: it rebases
+  `test/ad-dc-network-tls` and this part's `test/ad-dc-kerberos`, stacked on it, onto
+  `feat/storage-v2` once RFC 23's plan's epic 1 (#4334) has merged, and checks the cell in the
+  plan job's select in `tests.yml` there.
 - The plan's **Done when:** runs alice's Samba-issued ticket in `integration/ad-dc`. A test there
   cannot reach `SignIn` before E8 composes the node, since only `internal/node` imports the
   server, so T5.11 replays a captured AP-REQ in `unit` and the live sign-in moves to E8, with
@@ -929,8 +934,9 @@ the version this document was written against.
 - `identity_mints_total` and the mint path's re-run are E6's T6.2 (D12), as E2's §1.2 names
   them.
 - RFC 23's plan's epic 6 has no command that imports a keytab and no flag for a user's Kerberos
-  name: neither is in RFC 23's plan's epic 6 as merged; until a later epic adds them, the keytab
-  and the `krb` link are written through the API alone.
+  name: both are RFC 23's plan's §6.1 deferral ledger row "The keytab import command" (added by
+  #4408), unowned; until that row's trigger brings them back, the keytab and the `krb` link are
+  written through the API alone.
 - The surface was designed twice. The independent architect pass proposed the same tree
   (gokrb5's decryption with identity's checks, a key ring at `Apply`, the PAC walked over raw
   bytes, `ProtocolID`'s linked SID, `State.Keytab` the only new server field) and these
