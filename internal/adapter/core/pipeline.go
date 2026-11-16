@@ -348,13 +348,16 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		return
 	}
 	// Admit tries once under a context close ended, and may still grant: a
-	// request admitted after close is not run.
+	// request admitted after close is not run. It counts as running before
+	// close is checked, so a wait entered after a close, from any goroutine,
+	// either waits for it or never sees it start.
+	p.add()
 	if p.ctx.Err() != nil {
+		p.done()
 		release()
 		rec.Release()
 		return
 	}
-	p.add()
 	go p.run(rec, u, release)
 }
 
