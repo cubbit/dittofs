@@ -1,9 +1,14 @@
 # RFC 18 identity: inventory of the v1 code it replaces
 
-- Date: 2026-11-14
+- Date: 2026-11-14, rechecked 2026-11-16
 - Sources read: `origin/feat/storage-v2` at `a727ee02e`, `origin/develop` at `9a3f2e00c`; RFC 18 and
   its plan from PR #4058's head `f7e0fbd13` (`docs/internals/rfcs/rfc-18-identity.md`,
-  `docs/internals/planning/rfc-18-identity-plan.md`).
+  `docs/internals/planning/rfc-18-identity-plan.md`). Rechecked against `feat/storage-v2` at
+  `89977f3d4`, `develop` at `a63178815` and #4058 at `4e23c54a6`: every v1 path below is still
+  present on both branches, so S0 (RFC 23's plan's epic 1 deleting `pkg/identity` and
+  `sid/mapper.go`) has not happened. On `feat/storage-v2` `pkg/identity` is imported only by
+  `pkg/identity/ldap` and `test/integration/ad-dc`, and RFC 20's adapter import test already
+  seeds an adapter importing it (`internal/adapter/adaptertest/testdata/imports/internal/adapter/nfs/identity.go`).
 - Line counts: `cat <non-test *.go> | wc -l` per package directory, non-recursive (raw lines,
   comments and blanks included), excluding `*_test.go`. Test counts are files / raw lines of
   `*_test.go` in the same directory. "unit" means no build tag.
@@ -106,11 +111,11 @@ All of these exist identically on develop (handlers within a few dozen lines).
 
 ## What this means for the epics
 
-**Shrink.** E7 (25 md, the largest) starts from 2,283 lines that already do the secure channel,
+**Shrink.** E7 (31 md at #4058's `4e23c54a6`, the largest) starts from 2,283 lines that already do the secure channel,
 `SamLogon` pass-through, rotation, DNS discovery and an online join, plus a working Samba AD DC
 fixture that already exercises join and pass-through; the work left is the RFC's join semantics
 (seal first, resume, offline join, retention, `KeyVersion`/`HandedOver`) and replacing fake-based
-tests. E6 (18 md) starts from a 1,300-line LDAP provider with nested groups and SID lookups, and
+tests. E6 (21.5 md) starts from a 1,300-line LDAP provider with nested groups and SID lookups, and
 the same fixture already has RFC2307 and non-RFC2307 users. E5 gets AP-REQ, replay cache, AP-REP and
 PAC parsing from develop with tests already built the way plan rule 1 wants (test-realm keys, no KDC).
 E4 gets MS-NLMP-vector-tested NTLMv2 crypto. E3 starts from `admit`, which is already v2-shaped.
