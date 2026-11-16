@@ -507,7 +507,7 @@ pkg/vfs/                    the service interface (RFC 17)
 pkg/vfs/vfstest/            the in-memory service, its fault wrapper, the null service
 pkg/resources/              RFC 24's budgets and pooled buffers, shared by every component (§6.8)
 pkg/adapter/                the public surface, as pkg/vfs is the service's:
-  adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, Sidecar, Serving, Socket, Loop (§3.4, §3.5)
+  adapter.go                the contract the node drives: Adapter, State, Health, ConnInfo, ErrPortChanged, Sidecar, Serving, Socket, Loop (§3.4, §3.5)
   deps.go                   Deps (§3.4)
   settings/                 the settings shapes, their defaults and Settings (§3.6): a leaf
   nfs/  smb/                New: one public constructor each, a call into the implementation
@@ -624,12 +624,16 @@ Every adapter runs through the same four states, driven by the node
   is cancelled as draining begins and answered as its table answers the drain's
   error, or success if it took effect, so none waits for the deadline (§4.7's
   `Park`). Draining ends when none is left
-  or at the drain deadline, whichever is first; the drain deadline is at least
-  the break deadline (35 s) plus the request deadline, so a request held on a
-  break can finish.
+  or at the drain deadline, whichever is first. The drain deadline is the
+  earlier of `Stop`'s context deadline and `drain_timeout` from the drain's
+  start; `drain_timeout` is at least the break deadline (35 s) plus the request
+  deadline, so a request held on a break can finish.
 - **stopped** — every connection closed, every connection's state dropped,
   `Disconnect` called for each SMB session that ended
-  ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)).
+  ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)). `Stop` returns once every
+  connection's `OnClose` has returned, each under a context that ends at the
+  request deadline (§4.7's `Stages.OnClose`), so at most 30 s past the drain
+  deadline.
 
 > decision: while draining, a request that sets a compound's context or only
 > reads attributes is served though it ends no state. Linux sends `SEQUENCE`,
@@ -671,7 +675,15 @@ rules apply.
 address closes its listener and every connection accepted on it — exactly what
 a namespace move's release asks of an adapter
 ([RFC 17 §3.2](rfc-17-vfs.md#3.2%20Callbacks), [RFC 27 §2.2](rfc-27-namespace-migration.md#2.2%20The%20move%2C%20step%20by%20step)) — and
-leaves the others serving.
+leaves the others serving. It returns once the removed listeners are closed
+and their connections torn down, so the node's `Sync` after it (§3.5)
+advertises nothing stale. While configured it binds nothing and
+replaces the settings `Start` will bind; while draining or stopped it is
+refused.
+
+**Other transitions.** `Stop` on a configured adapter moves it to stopped,
+with nothing to drain. `Start` from any state but configured is refused with an
+error naming the state.
 
 **Auxiliary services are part of their adapter.** An auxiliary service
 answers client requests beside the adapter's main protocol. Today they are
@@ -744,8 +756,15 @@ The lower half of the drawing above:
    every request still in progress on the connection, drops the connection's
    state, and, for the last channel of an SMB session, calls `Disconnect`, with
    `Last` and the node entry's latest `Gen` when it was the node's last session
-   of the client, repeating it until it succeeds; a newer `Gen` it returns is
-   stored and the decision taken again, and `ErrStaleClient` counts as success.
+   of the client, repeating it within `OnClose`'s 30 s (§4.7); a newer `Gen` it
+   returns is stored and the decision taken again, and `ErrStaleClient` counts
+   as success. One still failing then is handed to the node's retrier,
+   `Deps.Retry` (§3.4), outside `Stop`, which repeats it after a backoff from
+   1 s doubling to 30 s until it succeeds or the client record is released
+   (`ErrStaleClient`). So `Stop` stays bounded, and a primary that does not
+   answer still closes its share of the session, its durable opens' `Timeout`
+   started while the node's lease is live, as
+   [RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client) requires.
    A `Connect` still in flight when its connection closes takes the same
    decision when it returns, and sends that `Disconnect` itself
    ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
@@ -836,9 +855,11 @@ reaches the client its own way:
   ([RFC 21 §6.1](rfc-21-nfs.md#6.1%20NLM)), its port looked up through the
   host's port mapper (`GETPORT` for NLM version 4 over TCP), and keeps one
   connection per host while that host has a grant or reply to send, closing it
-  after. NSM's `SM_NOTIFY` goes out the same way
-  ([RFC 21 §6.2](rfc-21-nfs.md#6.2%20NSM)). A host it cannot reach is a
-  callback that failed.
+  after. NSM's `SM_NOTIFY` goes out from the floating address too, but by UDP,
+  as statd listens for it ([RFC 21 §6.2](rfc-21-nfs.md#6.2%20NSM)):
+  `DialClient` over `"udp"` (§3.4), to the port the host's port mapper names
+  for NSM version 1 over UDP. A host it cannot reach is a callback that
+  failed.
 - **NFSv4.0** has no callback path: none is ever opened
   ([RFC 21 §4.1](rfc-21-nfs.md#4.1%20SETCLIENTID%20and%20the%20callback%20path)).
 
@@ -878,24 +899,33 @@ package adapter // pkg/adapter
 // implements it for every protocol.
 type Adapter interface {
 	// Start moves configured to serving: every listener bound, or none, and
-	// the error names what failed. Start after Stop is refused: a stopped
-	// adapter is never started again, and the node builds a new one with New.
+	// the error names what failed. Start from any other state is refused with
+	// an error naming it: a stopped adapter is never started again, and the
+	// node builds a new one with New.
 	Start(ctx context.Context) error
 
 	// Reconfigure adds and removes listeners and applies live settings to
 	// connections set up after it returns (§3.1). s is the adapter's own
 	// protocol's shape, settings.NFS or settings.SMB; the other protocol's is
 	// refused with an error (§3.6). Every adapter setting is live but `port`,
-	// which never reaches Reconfigure: the node builds a new adapter (§3.6).
+	// which never reaches Reconfigure: the node builds a new adapter (§3.6),
+	// and a changed port is refused with ErrPortChanged. It returns once the
+	// removed addresses' listeners are closed and their connections torn
+	// down. While configured it binds nothing and replaces what Start will
+	// bind; while draining or stopped it is refused.
 	Reconfigure(ctx context.Context, s settings.Settings) error
 
-	// Stop moves serving to draining to stopped. ctx's deadline is the drain
-	// deadline; requests still running at it are abandoned (§3.1). A request
+	// Stop moves serving to draining to stopped, and configured to stopped.
+	// The drain deadline is the earlier of ctx's deadline and drain_timeout;
+	// requests still running at it are abandoned (§3.1). A request
 	// refused while draining gets ErrMoved when the service names another
 	// gateway node for its share (RFC 15 §5.3), as RFC 21 §7.4's
 	// fs_locations does, and ErrDraining otherwise; core asks the service's
-	// MoveTarget per request (§3.1). Stop is idempotent: a second call
-	// returns once the adapter is stopped.
+	// MoveTarget per request (§3.1). Stop returns once every connection's
+	// OnClose has returned, at most 30 s past the drain deadline (§4.7); a
+	// Disconnect still failing then is Deps.Retry's, which Stop does not wait
+	// for (§3.2). It is idempotent: a second call returns once the adapter is
+	// stopped.
 	Stop(ctx context.Context) error
 
 	// Addrs is every address each listener is bound on now, by service and
@@ -941,11 +971,17 @@ func (h Health) Ready() bool
 
 // ConnInfo is one open connection.
 type ConnInfo struct {
-	Protocol string         // "nfs", "smb"
+	Protocol string         // the first service its listener names (§4.7's Listener): "nfs", "smb"
 	Remote   netip.AddrPort // the client's address
-	Session  string         // the protocol's session the connection carries, as text; empty where none
-	Since    time.Time      // accepted at
+	// Session is the protocol's session the connection carries, as text,
+	// named through a Conn call RFC 21 and RFC 22 add with their sessions;
+	// empty until then, and where none.
+	Session string
+	Since   time.Time // accepted at
 }
+
+// ErrPortChanged is what Reconfigure refuses a changed port with (§3.6).
+var ErrPortChanged = errors.New("adapter: port changed")
 ```
 
 What an adapter is built from:
@@ -959,7 +995,7 @@ package adapter // pkg/adapter
 // missing one by name; every other field has a working zero value.
 type Deps struct {
 	VFS     vfs.Service         // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
-	Budgets *resources.Budgets  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold
+	Budgets *resources.Budgets  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold, and the node's connection count (§3.6)
 	Metrics *metrics.Registry   // RFC 25 §8.2; nil registers nothing
 	Tracer  trace.Tracer        // RFC 25 §8.1: spans; nil is the no-op tracer
 	Logger  *slog.Logger        // nil discards
@@ -968,12 +1004,19 @@ type Deps struct {
 	// accept loop at its accept deadline), Close unregisters it at unbind.
 	// RFC 25's health loop satisfies Loop as it is. nil watches nothing.
 	Watch func(loop string) Loop
-	// DialClient opens a connection back to a client, for a callback (an
-	// NFSv4.0 recall, NLM's GRANTED), from the local address the client
-	// reached, so a floating address keeps working after a takeover (§3.3).
-	// nil is a net.Dialer bound to that address; a test supplies one
-	// returning a pipe.
-	DialClient func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+	// DialClient opens a connection back to a client, for a callback (NLM's
+	// GRANTED over "tcp", NSM's SM_NOTIFY over "udp"), from the local address
+	// the client reached, so a floating address keeps working after a
+	// takeover (§3.3). network is "tcp" or "udp". nil is a net.Dialer bound to
+	// that address, dialing network; a test supplies one returning a pipe.
+	DialClient func(ctx context.Context, network string, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+	// Retry is the node's retrier, which outlives the adapter: it repeats
+	// call after a backoff from 1 s doubling to 30 s until call returns nil.
+	// An adapter hands it a Disconnect still failing when OnClose's context
+	// ends, whose call returns nil once it succeeds or the client record is
+	// released (§3.2, RFC 14 §2.1). nil runs the repeats on a goroutine of
+	// their own.
+	Retry func(call func(ctx context.Context) error)
 }
 
 // Loop is one watched loop (RFC 25 §3.5).
@@ -1061,7 +1104,10 @@ type Socket struct {
   withdrawn while the adapter still answers.
 - **A failing sidecar fails only itself.** It raises `sidecar_failed` naming it
   (§3.7); the adapters keep serving. A client that cannot find the server by
-  discovery can still be given its address.
+  discovery can still be given its address. The node calls a failed sidecar's
+  `Sync` again with the last set it was to be synced with, after a backoff from
+  1 s doubling to 30 s, until one succeeds, and `sidecar_failed` names it until
+  then.
 - **Enabled is a live setting** of each sidecar
   ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)):
   a disabled one is synced with the empty set.
@@ -1127,11 +1173,16 @@ Four kinds of change, and only two reach the adapter:
 | live adapter setting | NFS version range, SMB dialect range, idle timeout | connections and sessions set up afterwards | `Reconfigure` |
 | restart-class adapter setting | `port` alone; every other adapter row of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table is live (below) | after that adapter alone drains and starts | `New`, then the old one's `Stop` and the new one's `Start` ([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)) |
 
-`connection_limit` is a node's, not an adapter's: the node hands each adapter
-its share of it (§6.4,
-[RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)), so it is no field of
-the shapes below. A sidecar's enabled flag is not an adapter setting either:
-the node applies it by `Sync`, with the serving adapters or with none (§3.5,
+`connection_limit` is a node's, not an adapter's, so it is no field of the
+shapes below. The node keeps one count of every adapter's connections,
+`Deps.Budgets.Conns`
+([RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)),
+and sets its limit when the setting changes, live for connections accepted
+afterwards; each adapter's accept takes from it and the connection's teardown
+gives back, so the limit and an address's quarter of it span NFS and SMB
+(§6.4, [RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)). A sidecar's
+enabled flag is not an adapter setting either: the node applies it by `Sync`,
+with the serving adapters or with none (§3.5,
 [RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)).
 
 > decision: a share's encryption requirement is read at tree connect and held
@@ -1246,18 +1297,21 @@ type Settings interface {
   the control plane, which has none of its own
   ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). It reads no file,
   since the control plane runs it when a record is written, on a host that
-  may not hold the serving node's certificates. The TLS certificate files are
-  loaded by `New`, at configured, and by `Reconfigure` before the snapshot
-  swap, so an unloadable certificate fails at configured or is refused by
-  `Reconfigure`, never at the first handshake (§3.1). It does not see
+  may not hold the serving node's certificates. Until `Conn.StartTLS` is added
+  (§5.5), `settings.NFS`'s `Validate` refuses a `tls.mode` other than off, so
+  no certificate file is loaded. With `StartTLS`, the files are loaded before a
+  handshake uses them, so an unloadable certificate fails at configured or is
+  refused by `Reconfigure`, never at the first handshake (§3.1); how
+  `Reconfigure`, which reads only `Common`, reaches them is RFC 21's to state
+  with its `NULL` handler. It does not see
   migration settings, so the rule that `pending_timeout` exceed
   `migration.freeze_timeout` plus the break deadline is the control plane's
   cross-component check (RFC 13 §6). The package stays a leaf, importing
   nothing under `internal/`.
 - **Every adapter setting is live but `port`**; RFC 13 Appendix B records
-  each one's class. `Reconfigure` refuses a changed `port` with a sentinel
-  error, a one-field comparison, since the node applies it by building a new
-  adapter and never calls `Reconfigure` for it.
+  each one's class. `Reconfigure` refuses a changed `port` with
+  `adapter.ErrPortChanged` (§3.4), a one-field comparison, since the node
+  applies it by building a new adapter and never calls `Reconfigure` for it.
 
 **Inside the adapter, settings are one immutable snapshot.**
 
@@ -1904,7 +1958,12 @@ package core
 // per datagram.
 type Protocol interface {
 	Framer() Framer
-	NewConn(c *Conn) Stages // at accept; c is what the stages send on (callbacks)
+	// NewConn builds a connection's stages at accept; c is what they send on
+	// (callbacks). NewServer also calls it once per listener with a nil c and
+	// keeps only Stages.Protocol, the label of a connection closed before its
+	// stages are built (§10.1), checking the stages as accept does, so a
+	// missing required field fails at configured.
+	NewConn(c *Conn) Stages
 }
 
 type Framer interface {
@@ -1925,7 +1984,10 @@ type Stages struct {
 	Replay   ReplayCache // nil: no replay check
 	Hold     HoldCodec   // §4.6; required where a table Holds, nil elsewhere
 	MaxPending int       // requests pending per connection, held and parked together (§4.6); 0: none pend
-	OnClose  func(ctx context.Context) // drop the connection's state; nil: nothing
+	// OnClose drops the connection's state. ctx is not cancelled by the
+	// connection's close, and ends at the request deadline, 30 s (§6.4); a
+	// Disconnect still failing then goes to Deps.Retry (§3.2). nil: nothing.
+	OnClose  func(ctx context.Context)
 	Protocol string      // required: the label of what a request records before Route returns its table (§10.1)
 }
 
@@ -2553,8 +2615,9 @@ func Errors() []error
 // of the settings' Addrs, all or none at Start (§3.1); Reconfigure binds them
 // on an added address the same way (§3.6). s is the protocol's whole shape,
 // which New was given; core reads its Adapter. It refuses a listener naming
-// no service, an empty one or one twice, and two listeners naming the same
-// Socket or the same network and nonzero port.
+// no service, an empty one or one twice, two listeners naming the same
+// Socket or the same network and nonzero port, and a listener whose
+// Protocol's NewConn(nil) returns stages accept would refuse.
 func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, error)
 
 // Listener is one protocol on one port, bound on each of the settings' Addrs.
@@ -3034,6 +3097,10 @@ adapters:
 | `mode: off` | no TLS, the default; `cert_file`, `key_file` or `client_ca` set with it is refused | live, as above |
 | `mode: require` | any call before the upgrade but the `AUTH_TLS` probe is refused and the connection closed | as above |
 
+Until `StartTLS` is added, `Validate` refuses `opportunistic` and `require`,
+so `off` is the only mode accepted and no certificate file is loaded (§3.6);
+the classes above apply once it is.
+
 The certificate loading and reload are the shared `tlsconfig` code the control
 plane's own listener uses ([RFC 23](rfc-23-control-plane.md)); the adapter adds
 none.
@@ -3137,12 +3204,12 @@ the statuses are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors
 | Limit | Applies to | On expiry |
 | --- | --- | --- |
 | request deadline | each attempt of every service call: a fixed 30 s from arrival, set by the pipeline and carried in the context ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). A held request (§4.6) is bounded in total by its cause's hold bound — SMB's `recall_timeout` on a recall, `pending_timeout` for a transient refusal — and each re-drive is a fresh 30 s attempt inside it; a waiting lock and an SMB `CHANGE_NOTIFY` have none | the service's answer at the deadline is mapped as any other; a drain or closed connection cancels |
-| read timeout, `read_timeout` | the rest of a request once its first byte has arrived | connection closed: a client that trickles a request holds a receive reservation (§4.1) |
+| read timeout, `read_timeout` | the rest of a request once its first byte has arrived: from the record's first byte, stopped while the reader waits for its receive reservation ([RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)), and a full `read_timeout` again once the reservation is granted | connection closed: a client that trickles a request holds a receive reservation (§4.1) |
 | idle timeout, `idle_timeout` | a connection with no request and no held state | closed |
-| write timeout, `write_timeout` | the writer, per message | connection closed |
+| write timeout, `write_timeout` | each gathered write of the writer (§6.6), from its start | connection closed |
 | handshake timeout, `handshake_timeout` | negotiate and authenticate | connection closed |
 | connection limit | per node, `connection_limit`, and a quarter of it per address ([RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)) | new connections closed at accept, never left in the listen backlog |
-| accept failure | an `Accept` error the listener can recover from, such as no file descriptor left | retried after a backoff from 10 ms doubling to 1 s; failing for 60 s raises `adapter_listener_lost` (§3.7) |
+| accept failure | every `Accept` error but the listener's own close (`net.ErrClosed`), which ends its accept loop | retried after a backoff from 10 ms doubling to 1 s; 60 s from the first failure with no connection accepted since raises `adapter_listener_lost` (§3.7), cleared at the next accepted connection |
 | drain timeout, `drain_timeout` | draining (§3.1) | remaining requests abandoned |
 | status buffer wait | a reply carrying a status alone that holds no reply reservation, keeping its record's receive charge meanwhile ([RFC 24 §6.1](rfc-24-resources.md#6.1%20Goroutines)): 30 s from when it starts waiting ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)) | connection closed, counted under `reply_wait` (§10.1) |
 
@@ -3319,11 +3386,13 @@ func (b *Buf) Charge() int64                                 // RFC 24 §4.3: th
   queueing until the bytes are on the socket. Whoever is last returns it.
 - **Reading.** Each connection reads through one small-class buffer (§3.1),
   so a burst of small requests — a `GETATTR` storm — costs one system call for
-  many records. A record that fits in what was read is cut from it; for a
-  larger one the reader copies the part already read into a buffer of the
-  record's class and reads the rest straight into it with `io.ReadFull`, so a
-  `WRITE`'s payload is never copied past its first few kilobytes. A `WRITE`'s
-  data is a sub-slice of `B`, decoded in place.
+  many records. A record that fits in what was read is copied from it into a
+  receive buffer of its class, since a `Buf` holds its own reservation and is
+  never a slice of another; for a larger one the reader copies the part
+  already read into a buffer of the record's class and reads the rest straight
+  into it with `io.ReadFull`, so a `WRITE`'s payload is never copied past its
+  first few kilobytes. A `WRITE`'s data is a sub-slice of `B`, decoded in
+  place.
 - **Writing.** A reply is a small header buffer plus, for a `READ`, the buffer
   the service filled. The writer sends both, and the padding, as one
   `net.Buffers` write — `writev` — with no copy into a combined buffer.
@@ -3746,12 +3815,30 @@ measures only what happens before and after the service call.
 
 `adapter_wire_seconds` takes the `request` bucket set
 ([RFC 25 §2.6](rfc-25-observability.md#2.6%20Histogram%20buckets)). The
-`reason` of `adapter_connection_closes_total` is a closed set that includes
-[RFC 24 §10](rfc-24-resources.md#10.%20Observability)'s `pool`, `limit` and
-`per_address` for connections closed at accept, and `reply_wait` for one whose
-reply carrying a status alone found no reply buffer within 30 s
-([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)). No metric carries a client,
-principal, share or path label.
+`reason` of `adapter_connection_closes_total` is a closed set, one value per
+close:
+
+- at accept, before any byte is read:
+  [RFC 24 §10](rfc-24-resources.md#10.%20Observability)'s `pool`, `limit` and
+  `per_address`;
+- by the client: `client`, the peer closed or reset the connection;
+- at a deadline (§6.4): `handshake`, `read_timeout`, `idle`, `write_timeout`,
+  and `reply_wait`, a reply carrying a status alone that found no reply buffer
+  within 30 s
+  ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits));
+- by `core`: `write`, a failed write; `frame`, a framing error; `decode`, a
+  header that did not decode far enough to address a reply; `unwrap`, an
+  `Unwrap` that returned no header; `walk`, a chain member's `Next` that is not
+  a valid step; `wiring`, stages refused at accept (§4.7);
+- by protocol code: `violation`, a `Conn.Close` (§4.7);
+- by the adapter: `removed`, its address removed by `Reconfigure` (§3.1);
+  `drain`, closed at the drain's end with a request still running, which is
+  abandoned; `stop`, closed as the adapter stops with nothing left running.
+
+The `state` of `adapter_connections` is `handshake` until `Conn.Established`,
+then `established`. A connection's series take its `Stages.Protocol`; one
+closed before its stages are built takes its listener's, which `NewServer`
+reads (§4.7). No metric carries a client, principal, share or path label.
 
 `adapter_record_decode_failures_total` is zero on a node of one release; any
 increase is an alert, and raises `adapter_record_unreadable` (§3.7).
@@ -3818,6 +3905,13 @@ so a line joins its trace when one was kept. Expected refusals log at debug,
 unexpected errors at error (§4.5); a misbehaving client is logged once per
 connection, not once per request
 ([RFC 25 §5.2](rfc-25-observability.md#5.2%20Volume%20is%20bounded%20per%20incident%2C%20not%20per%20request)).
+
+A connection's close is logged once, at its reason's level (§10.1): debug for
+`client`, `idle`, `drain`, `removed` and `stop`; error for `wiring`; warning
+for every other. A close at accept names a noisy subject, so its line is
+rate-limited as RFC 25 §5.2 says: once a minute per reason, and for
+`per_address` per address
+([RFC 24 §10](rfc-24-resources.md#10.%20Observability)).
 
 ## 11. Open questions
 
