@@ -2324,7 +2324,10 @@ head again over its own bytes with the compound's status and the count of
 results, so no result is copied. A chain encodes each member's reply, joins them with
 `HeaderCodec.Chain`, and calls `Wrap` once on the joined record: SMB's `Wrap`
 signs each member over its own bytes, `NextCommand` and padding included, and
-encrypts the record once.
+encrypts the record once. The joined record is one buffer, RFC 24 §2.5's
+`Join` of the members' reply buffers, which takes over their reservations: the
+runner appends each reply to it, `Chain` pointing the one before at it, and the
+members' bounds summed hold it, since `ReplyLen` counts `Chain`'s padding.
 
 A chain member is admitted only once the reply of the one before it is
 encoded, and that one's admission is released first, so a chain holds one place
@@ -3371,10 +3374,11 @@ allocator only avoids allocating it again.
 package resources // pkg/resources (RFC 24 §2.8): shared by every component
 
 // Buf is one pooled buffer, shared by reference count. Its reservation is
-// released with its bytes, so no byte a holder has is uncharged.
+// released with its bytes, so no byte a holder has is uncharged but a chain
+// member's between Join and its release (RFC 24 §2.5).
 type Buf struct {
-	B []byte // len is the record's or reply's; cap is the class's capacity (RFC 24 §3.1)
-	// unexported: its class, its reference count and its Reservation
+	B []byte // len is the record's or reply's; cap is the class's capacity (RFC 24 §3.1), or a joined record's n
+	// unexported: its class, its reference count and its Reservation, or the several a joined record took over
 }
 
 var ErrTooLarge error // RFC 24 §2.5: what a WaitBudget's Reserve, and so Get, wraps when it refuses a charge past the ceiling at once
@@ -3384,6 +3388,7 @@ func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) 
 func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)    // RFC 24 §2.5: Get's charge taken only when it fits with no waiter ahead; otherwise false at once
 func (p *BufPool) Ceiling() int64                               // its budget's ceiling, what one charge is bounded by (§4.3)
 func (p *BufPool) Charge(n int) int64                           // RFC 24 §2.5: the charge Get would take for n bytes, n's class plus the per-request overhead; §4.3's quarter compares it with Ceiling()/4
+func Join(n int, bufs ...*Buf) *Buf                             // RFC 24 §2.5: a chain's record (§4.7), an empty buffer with room for n that takes over bufs' reservations: no new charge, no wait
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
 func (b *Buf) Recharge(to *Budget) error                     // RFC 24 §4.3: the whole charge moved to a reservation from to; refused, nothing changes
