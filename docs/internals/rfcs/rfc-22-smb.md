@@ -557,9 +557,20 @@ one gateway node's memory; a client that loses the node signs in again.
   `STATUS_ACCESS_DENIED`. A request whose signature fails verification is
   answered `STATUS_ACCESS_DENIED` on its message ID too, and the connection
   stays open (MS-SMB2 3.3.5.2.4): it is never dropped unanswered, which would
-  leave the client waiting out its timeout. A message that fails decryption,
+  leave the client waiting out its timeout. That refusal is signed only for a
+  message ID inside the window and unused, which it consumes: the window is
+  checked first (MS-SMB2 3.3.5.2.3), and a message ID outside it, or already
+  used, closes the connection with nothing signed, since a second message
+  signed under one message ID reuses AES-GMAC's nonce (MS-SMB2 3.1.4.1). A message that fails
+  decryption,
   and a second `NEGOTIATE` on a connection, are not answered: the connection
-  is closed (MS-SMB2 3.3.5.2.1.1, 3.3.5.4; RFC 20 §4.7's `Conn.Close`). There is no per-share signing setting: SMB2 cannot
+  is closed (MS-SMB2 3.3.5.2.1.1, 3.3.5.4; RFC 20 §4.7's `Conn.Close`). An
+  encrypted message's inner headers are checked at unwrap: a malformed one is
+  `STATUS_INVALID_PARAMETER`, encrypted, and the connection stays open; one too
+  short to be a header, misaligned, or, for an unrelated member, naming another
+  session than the transform header closes it (MS-SMB2 3.3.5.2.1.1, 3.3.5.2.6;
+  [RFC 20 §5.5](rfc-20-adapters.md#5.5%20Message%20transforms)). There is no
+  per-share signing setting: SMB2 cannot
   tell a client that one share needs signing and another does not, so a
   per-share requirement could only refuse an unsigned client's every request on
   that share.
@@ -2571,8 +2582,13 @@ pends ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%2
 `Errors()`) map as: `ErrNotSupported` and `ErrVersion` to `STATUS_NOT_SUPPORTED`;
 `ErrNoSession` to `STATUS_USER_SESSION_DELETED`; `ErrNoTree` to
 `STATUS_NETWORK_NAME_DELETED`; `ErrExpired` to `STATUS_NETWORK_SESSION_EXPIRED`;
-`ErrNotLast` to `STATUS_INTERNAL_ERROR`; `ErrTooManyPending` to
-`STATUS_INSUFFICIENT_RESOURCES`; `ErrDraining` and `ErrMoved` to an interim
+`ErrNotLast`, and `ErrReplyTooBig`, which never reaches SMB since a chain
+sends early rather than refuse, to `STATUS_INTERNAL_ERROR`; `ErrTooManyPending`
+to `STATUS_INSUFFICIENT_RESOURCES`; `ErrDecode` to `STATUS_INVALID_PARAMETER`,
+in a row naming no command or dialect, which RFC 20 §4.7's `NewErrorTable`
+demands of every table; `ErrCancelled` to `STATUS_CANCELLED` (MS-SMB2
+3.3.5.16), in a row naming no command or dialect, which its `NewOpTable`
+demands of a table that holds; `ErrDraining` and `ErrMoved` to an interim
 `STATUS_PENDING` that grants the request's credits, and the credits of the
 chain members after it, which do not run and of which `core` reads only the
 headers (`HoldCodec.Interim`'s `after`), and that no final response ever
@@ -2707,7 +2723,7 @@ name, a SID, a principal or a client address
 | Requirement | Check | Fails without the rule |
 | --- | --- | --- |
 | §3.1 dialects | An SMB1-only and a 2.0.2-only negotiate are refused; a 3.1.1 client gets SHA-512 and its first shared cipher. | an SMB1 fallback left in |
-| §4.1 signing | Negotiate from 2.1, 3.0 and 3.1.1 clients; assert `SMB2_NEGOTIATE_SIGNING_REQUIRED` in every response. After session setup, send an unsigned, unencrypted request; assert `STATUS_ACCESS_DENIED`. Set up a null session and a guest one: assert each `TREE_CONNECT` to `IPC$` succeeds and to a data share without the guest flag is `STATUS_ACCESS_DENIED`. Set the share's guest flag: assert the guest's `TREE_CONNECT` succeeds unsigned and the null session's is still `STATUS_ACCESS_DENIED`; set the share to encrypt as well: assert the guest refused. Re-authenticate a signed session as guest: assert it succeeds and its trees remain. Send a signed request with one signature byte flipped; assert `STATUS_ACCESS_DENIED` on its message ID and the next request on the connection served. | a per-share signing flag, unsigned requests accepted, a null session or a guest without the share's flag reaching data, a guest on an encrypting share, or a bad signature dropped unanswered |
+| §4.1 signing | Negotiate from 2.1, 3.0 and 3.1.1 clients; assert `SMB2_NEGOTIATE_SIGNING_REQUIRED` in every response. After session setup, send an unsigned, unencrypted request; assert `STATUS_ACCESS_DENIED`. Replay a message ID already answered, with a bad signature: assert the connection closed and no second signed response for that ID. Set up a null session and a guest one: assert each `TREE_CONNECT` to `IPC$` succeeds and to a data share without the guest flag is `STATUS_ACCESS_DENIED`. Set the share's guest flag: assert the guest's `TREE_CONNECT` succeeds unsigned and the null session's is still `STATUS_ACCESS_DENIED`; set the share to encrypt as well: assert the guest refused. Re-authenticate a signed session as guest: assert it succeeds and its trees remain. Send a signed request with one signature byte flipped; assert `STATUS_ACCESS_DENIED` on its message ID and the next request on the connection served. | a per-share signing flag, unsigned requests accepted, a null session or a guest without the share's flag reaching data, a guest on an encrypting share, or a bad signature dropped unanswered |
 | §4.4 client record | From one machine, sign in as alice and then bob on two connections with one `ClientGuid`: assert both sessions succeed under one client record, and that bob's durable reconnect naming alice's FileId is refused. | a principal kept on the SMB client record, or opens checked against it |
 | §4.1, §5.1 encryption | A 3.1.1 session that does not encrypt connects to an encrypting share: assert the tree connect reply is unencrypted and carries `SMB2_SHAREFLAG_ENCRYPT_DATA`, the next request is accepted only encrypted, and an unencrypted one is `STATUS_ACCESS_DENIED`. A 3.1.1 client sharing no cipher, and a 2.1 client, are refused at tree connect. | a session refused at tree connect for not encrypting, or an unencrypted request accepted on an encrypting share |
 | §4.1 ticket addresses | Sign in with Kerberos tickets carrying no addresses, a NetBIOS address only, the connection's IPv4 address, and another IPv4 address only: assert the first three accepted and the last refused. | addresses ignored, or a NetBIOS entry treated as a restriction |

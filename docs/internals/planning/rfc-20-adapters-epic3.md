@@ -266,7 +266,8 @@ E1 froze them. The gates skip under the race detector and the poison read withou
   `TestConformanceBudgetsHeldNamesEachCharged` and the two of
   `TestConformanceCheckLeaksReadsBudgets`.
 - **Consumers:** T3.2's `Get`; E4's accept (the connection budget); E5's reply reservation,
-  holds, and `Park`, which reserves under a context already past its deadline; E2's
+  holds, and `Park`, which takes its small reply buffer with `BufPool.TryGet` when the
+  request's own is larger (E5's D9); E2's
   `CheckLeaks`.
 - **Acceptance criteria:**
   - On a `Budget`, a `Reserve` that fits raises `Reserved` by n; one that would pass the
