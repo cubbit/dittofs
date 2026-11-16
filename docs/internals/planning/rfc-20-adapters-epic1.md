@@ -224,14 +224,14 @@ which epic owns the rest.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R35 | Three shapes: `config.Adapter`, and `config.NFS` and `config.SMB` embedding it; `config.Settings` is `{Validate() error; Common() Adapter}`, which both implement, `Common` promoted from `Adapter`; `Reconfigure` refuses another protocol's shape or any other type (D15) | MUST | §3.4, §3.6 | T1.5 |
-| R36 | Every field names its key with a `json:"…"` tag; every key is `adapters.<protocol>.<field>`; every adapter setting is live, RFC 13's table recording each one's class (D6, D28) | MUST | §2.5, §3.6; RFC 13 §5, Appendix B | T1.5 |
+| R36 | Every field names its key with a `json:"…"` tag; every key is `adapters.<protocol>.<field>`; every adapter setting is live but `port`, restart-class by RFC 23's plan's A1, RFC 13's table recording each one's class (D6, D28); the `port` field is epic 2's (its D20), its refusal epic 4's (T4.6) and its binding epic 6's (T6.3, T6.4) | MUST | §2.5, §3.6; RFC 13 §5, Appendix B | T1.5 |
 | R37 | `config.Adapter.Addrs` holds the listen addresses the node supplies from the host's bootstrap and the addresses it took over, never from the settings record (`json:"-"`); it is live, with §3.6's `decision:` marker at the field | MUST | §3.6 (and decision); RFC 13 §2.2; rule 7 | T1.5 |
 | R38 | The adapter settings RFC 13 lists are fields with their stated defaults: `drain_timeout` 90 s, `idle_timeout` 15 min, `write_timeout` 60 s, `handshake_timeout` 30 s, `read_timeout` 30 s, `disabled_operations` none; NFS's `tls` (`config.TLS{Mode, CertFile, KeyFile, ClientCA}`, `mode` `off` by default, `opportunistic` or `require`; TLS 1.3 fixed) and `versions` (`config.VersionRange{Min, Max}`, `3` to `4.2`); SMB's `dialects` (the same `VersionRange`, `2.1` to `3.1.1`), `pending_timeout` (10 min) and `recall_timeout` (60 s), read by SMB's `Hold` closures from the live settings rather than the connection's snapshot (D27). Not a field: `connection_limit` is node-wide, and the node hands each adapter its share (E4 enforces it, E7 hands it) | MUST | RFC 13 Appendix B; RFC 20 §3.6, §4.2, §6.4 | T1.5 |
 | R39 | Every default is in `DefaultNFS` or `DefaultSMB`, stated in its RFC, or the setting is required; the code fills in no unreviewed default | MUST | RFC 13 §4.2; RFC 20 §3.6 | T1.5 |
 | R40 | A value out of range or of the wrong type is refused with an error naming the field and the rule; never clamped, rounded or replaced by a default | MUST, MUST NOT | RFC 13 §6 | T1.5 |
 | R41 | The validator is the component's own, `(NFS) Validate() error` and `(SMB) Validate() error`, run by `New`, by `Reconfigure` (E4) and by the control plane (E7, cutover), which has none of its own; it reads no file, and the rule relating `pending_timeout` to `migration.freeze_timeout` is the control plane's cross-component check | MUST | RFC 13 §6; RFC 20 §3.6 | T1.5 |
 | R42 | `drain_timeout` is at least the break deadline (35 s) plus the request deadline (30 s); `recall_timeout` exceeds the break deadline | bound | RFC 20 §3.1, §3.6; RFC 13 Appendix B | T1.5 |
-| R43 | withdrawn: every adapter setting is live, so there is no restart-only comparison or sentinel to supply; the first restart-only setting brings both (D6). Was: a restart-only change refused with a restart-required sentinel | MUST | — | — |
+| R43 | withdrawn: every adapter setting is live but `port`, so there is no other restart-only comparison or sentinel to supply (D6). Since amended by RFC 23's plan's A1: `port` is that setting, and its comparison and sentinel are epic 4's (T4.6). Was: a restart-only change refused with a restart-required sentinel | MUST | — | — |
 | R44 | A share's policy and its encryption requirement are not adapter settings: the shapes carry neither | invariant | §3.6 | T1.5 |
 
 **Resources surface: `pkg/resources`**
@@ -320,11 +320,16 @@ which epic owns the rest.
   deleted `dfsctl` commands go (`GraceStatus`, `ForceEndGrace`, `ListClients`,
   `DisconnectClient`, `ListSessions`, `ForceDestroySession`, and those with no caller today).
   `dfsctl share mount` stops calling `ListAdapterPorts` and uses each protocol's default port.
-- **D6, no restart machinery.** Every adapter setting is live, and RFC 13 Appendix B records
-  each one's class, so `pkg/adapter/config` has no restart tag, comparison or sentinel. A
-  `decision:` marker at `Reconfigure` says the first restart-only setting brings a sentinel
-  error and a one-field comparison there, and names the evidence (a setting a connection
-  accepted after `Reconfigure` cannot pick up).
+  RFC 23's plan's epic 1 (`rfc-23-control-plane-plan.md`) overrides this decision when it deletes
+  v1: the adapter and netgroup methods go with the e2e helpers they serve, its epics 6 and 8
+  rebuild the client and the helpers on the new API, and its epic 6 has `share mount` read the
+  adapter's `port` from its record.
+- **D6, no restart machinery.** Every adapter setting is live but `port`, and RFC 13 Appendix B
+  records each one's class, so `pkg/adapter/config` has no restart tag. Amended by RFC 23's
+  plan's A1: `port` is restart-class (RFC 20 §3.6), the node applies it by building a new
+  adapter, and `Reconfigure`'s refusal of a changed `port`, with a sentinel error and a one-field
+  comparison, is epic 4's (T4.6); the field is epic 2's (its D20) and its binding epic 6's (T6.3,
+  T6.4); no other restart machinery exists.
 - **D7, the allocation cell lands with its first gate.** The `unit/adapter-allocs` cell and
   its fixed `dt run` step in the unit job would run nothing at S1. They land with E3's
   `BufPool` gate, the first test the cell runs. A cell with nothing behind it would be a
@@ -485,7 +490,7 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 - **Deliverables:** one pull request to `feat/storage-v2` amending RFC 20
   (and RFC 24, RFC 13 and RFC 23 where named), settling each point the frozen surface cannot
   be written without:
-  - D6's statement that every adapter setting is live, and no restart machinery;
+  - D6's statement that every adapter setting is live but `port`, and no other restart machinery;
   - D15's `config.Settings`, `Common`, `Validate`, `Conn.Settings`, and
     `Reconfigure`'s and `NewServer`'s new parameter;
   - D16's per-request service call for the drain's target, and the pipeline's drain with no argument;
