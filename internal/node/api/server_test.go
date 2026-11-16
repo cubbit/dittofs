@@ -162,16 +162,29 @@ func TestMetricsListener(t *testing.T) {
 }
 
 // A metrics address that cannot be bound fails Start and leaves the API
-// listener closed: the watch finds no descriptor left open.
+// listener closed: its address can be bound again at once.
 func TestStartLeavesNothingOpen(t *testing.T) {
 	prof.Watch(t, prof.Options{})
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := free.Addr().String()
+	if err := free.Close(); err != nil {
+		t.Fatal(err)
+	}
 	held, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = held.Close() }()
-	s := api.New(api.Deps{Addr: "127.0.0.1:0", MetricsAddr: held.Addr().String(), Metrics: metrics.New("test", "test")})
+	s := api.New(api.Deps{Addr: addr, MetricsAddr: held.Addr().String(), Metrics: metrics.New("test", "test")})
 	if _, _, err := s.Start(); err == nil {
 		t.Fatal("Start on a held metrics address: got nil, want an error")
 	}
+	again, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("bind the API address after the failed Start: %v, want it free", err)
+	}
+	_ = again.Close()
 }
