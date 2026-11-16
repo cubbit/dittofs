@@ -90,9 +90,25 @@ type kindResults struct {
 	// placement its own slot spells, withheld copies included: every copy's
 	// bytes keep its own segment held until its own release, whatever rule
 	// withheld the record from the index. The aside kinds' own registrations
-	// — a loss record, a forget — are the assembly's to derive from the
-	// decoded asides beside these.
+	// — a loss record, a forget — sit in LossRecs and ForgetRecs beside
+	// these.
 	Records []reclaim.Rec
+
+	// LossRecs holds one Rec per attached loss record no rule covers,
+	// filled by the decode pass per copy — the pieces it delivered once
+	// each collect twice, for the two copies carry the record between them
+	// — spelled from the record's own header and body the way the append
+	// path registers the record it lands: the flags pick the loss's own
+	// drop rule, and the placement names where the loss record's own bytes
+	// sit, so a registration and its release key the same whole record.
+	LossRecs []reclaim.Rec
+
+	// ForgetRecs holds one Rec per attached forget record no rule covers,
+	// per copy, spelled from the record's own header at the placement its
+	// own slot gives: the tag is the one field its caller must spell out,
+	// and a carried-forward forget registers in its own segment like any
+	// other record.
+	ForgetRecs []reclaim.Rec
 
 	// Charging holds, per segment, per share tag, the record bytes of every
 	// record the scans attached: each record's whole size and the same less
@@ -262,8 +278,17 @@ func decodeAsides(rd *reader, identity core.JournalID, failed []core.Seq, scs []
 		if !effForget[i] {
 			continue
 		}
-		if f, ok := ks.forget[df[i].h.Tag]; !ok || df[i].h.Seq > f {
-			ks.forget[df[i].h.Tag] = df[i].h.Seq
+		h := df[i].h
+		ks.ForgetRecs = append(ks.ForgetRecs, reclaim.Rec{
+			Kind: format.KindForget,
+			Seg:  h.Segment,
+			Pair: index.Numbers{Seq: h.Seq},
+			Seq:  h.Seq,
+			Tag:  h.Tag,
+			Loc:  segment.Location{Segment: h.Segment, Off: h.Offset, Len: h.Size()},
+		})
+		if f, ok := ks.forget[h.Tag]; !ok || h.Seq > f {
+			ks.forget[h.Tag] = h.Seq
 		}
 	}
 	for i := range dl {
@@ -285,6 +310,23 @@ func decodeAsides(rd *reader, identity core.JournalID, failed []core.Seq, scs []
 			continue
 		}
 		d := dl[i]
+		// One registration per attached copy, before the piece it names is
+		// delivered once: a carried-forward copy's bytes keep its own segment
+		// held exactly as the record the copy carries does.
+		ks.LossRecs = append(ks.LossRecs, reclaim.Rec{
+			Kind:  format.KindLoss,
+			File:  d.h.File,
+			Seg:   d.h.Segment,
+			Ext:   d.h.Extent,
+			Pair:  index.Numbers{Version: d.h.Version, Seq: d.h.Seq},
+			Seq:   d.h.Seq,
+			Named: d.l.Dropped,
+			Tag:   d.h.Tag,
+			// The flags that pick the loss's own drop rule.
+			Synced:     d.l.Synced,
+			Superseded: d.l.Reason == format.LossSuperseded,
+			Loc:        segment.Location{Segment: d.h.Segment, Off: d.h.Offset, Len: d.h.Size()},
+		})
 		piece := lossPiece{seq: d.l.Dropped, ext: d.h.Extent}
 		if ks.pieces[piece] {
 			continue // the piece is delivered: a carried-forward copy reports once

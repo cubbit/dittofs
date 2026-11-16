@@ -315,6 +315,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			Log:         cfg.Logger,
 			Failed:      failed,
 			ExtentLimit: s.ExtentLimit,
+			SegmentCap:  core.SegmentCapOf(s),
 		}, floor, expect, marks); err != nil {
 			return nil, err
 		}
