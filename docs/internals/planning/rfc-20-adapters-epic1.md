@@ -320,6 +320,10 @@ which epic owns the rest.
   deleted `dfsctl` commands go (`GraceStatus`, `ForceEndGrace`, `ListClients`,
   `DisconnectClient`, `ListSessions`, `ForceDestroySession`, and those with no caller today).
   `dfsctl share mount` stops calling `ListAdapterPorts` and uses each protocol's default port.
+  RFC 23's plan's epic 1 (`rfc-23-control-plane-plan.md`) overrides this decision when it deletes
+  v1: the adapter and netgroup methods go with the e2e helpers they serve, its epics 6 and 8
+  rebuild the client and the helpers on the new API, and its epic 6 has `share mount` read the
+  adapter's `port` from its record.
 - **D6, no restart machinery.** Every adapter setting is live but `port`, and RFC 13 Appendix B
   records each one's class, so `pkg/adapter/settings` has no restart tag. Since amended: `port`
   is restart-class (RFC 20 §3.6), and the node applies it by building a new adapter, so

@@ -1009,7 +1009,7 @@ a file. Each is tied to the adapters it serves:
 | --- | --- | --- |
 | mDNS advertiser | `nfs` or `smb` is serving | one responder per node, advertising `_nfs._tcp` and `_smb._tcp` for whichever of them is serving |
 | WS-Discovery responder | `smb` is serving | answers Windows network-browse probes |
-| port mapper | `nfs` is serving, on a host without its own rpcbind | answers `GETPORT` over UDP and TCP with the ports of NFS and its auxiliary services |
+| port mapper | `nfs` is serving, on a host without its own rpcbind | answers `GETPORT` over UDP and TCP, on `sidecars.portmap.port` ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), with the ports of NFS and its auxiliary services |
 | system rpcbind registration | `nfs` is serving, on a host that runs its own rpcbind | registers the NFS auxiliary services' ports, and unregisters them before the adapter drains |
 
 The node runs sidecars, not an adapter: it already knows which adapters are
@@ -1111,7 +1111,7 @@ sequenceDiagram
     end
     R->>A: Reconfigure(ctx, settings at G)
   else restart-class setting
-    R->>A: Stop (drain), New, Start — this adapter only
+    R->>A: New, then Stop (drain) the old and Start the new, this adapter only
   end
   R->>S: Sync(serving adapters)
   R->>M: node status: G applied, or refused with the error
@@ -1124,7 +1124,7 @@ Four kinds of change, and only two reach the adapter:
 | share policy | its grants, read-only, netgroups | the next request | the service, which reads the share list by version per request ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); no adapter is touched |
 | share encryption requirement | encryption required | the next tree connect; a tree holds the flag it connected with for its life | the service, at `TreeConnect` |
 | live adapter setting | NFS version range, SMB dialect range, idle timeout | connections and sessions set up afterwards | `Reconfigure` |
-| restart-class adapter setting | `port` alone; every other adapter row of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table is live (below) | after that adapter alone drains and starts | `Stop`, `New`, `Start` |
+| restart-class adapter setting | `port` alone; every other adapter row of [RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s table is live (below) | after that adapter alone drains and starts | `New`, then the old one's `Stop` and the new one's `Start` ([RFC 23 §2.3](rfc-23-control-plane.md#2.3%20The%20node%20reconciles%3B%20it%20does%20not%20take%20orders)) |
 
 `connection_limit` is a node's, not an adapter's: the node hands each adapter
 its share of it (§6.4,
@@ -2657,10 +2657,10 @@ func New(d adapter.Deps, s settings.NFS) (adapter.Adapter, error) {
 		NLM:   nlm.Table(&nlm.Handlers{VFS: d.VFS}),
 		NSM:   nsm.Table(&nsm.Handlers{VFS: d.VFS}),
 	}
-	// Addrs reports nfs, mount, nlm and nsm over TCP, and nlm and nsm over UDP, all at 2049.
+	// Addrs reports nfs, mount, nlm and nsm over TCP, and nlm and nsm over UDP, all on s.Port: 12049 unless set (RFC 13 Appendix B).
 	return core.NewServer(d, s,
-		core.Listener{Services: []string{"nfs", "mount", "nlm", "nsm"}, Network: "tcp", Port: 2049, Protocol: protocol.New(t)},
-		core.Listener{Services: []string{"nlm", "nsm"}, Network: "udp", Port: 2049,
+		core.Listener{Services: []string{"nfs", "mount", "nlm", "nsm"}, Network: "tcp", Port: s.Port, Protocol: protocol.New(t)},
+		core.Listener{Services: []string{"nlm", "nsm"}, Network: "udp", Port: s.Port,
 			Protocol: protocol.New(protocol.Tables{NLM: t.NLM, NSM: t.NSM})})
 }
 

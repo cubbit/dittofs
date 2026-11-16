@@ -1700,11 +1700,21 @@ package identity // pkg/identity
 
 // APISignIn is the API's account check (RFC 23 §5.3).
 type APISignIn interface {
-	// VerifyPassword checks name's password against its stored hash and returns
-	// the account's principal. A wrong password, an unknown name, a disabled or
-	// deleted account, and an account with no password all fail
-	// ErrLogonFailure, alike; ErrUnavailable when the store cannot answer.
-	VerifyPassword(ctx context.Context, name string, password []byte) (metadata.Principal, error)
+	// Lookup resolves a name as presented to its account's principal by the
+	// name's user part, without its domain or realm, folded as §4.6 folds names,
+	// as §3.1's throttle keys a name (as the RFC 18 plan amends it), so every
+	// spelling of one account, whichever domain qualifies it, gives one
+	// principal; the zero principal for a user part with no account. It reads
+	// the store only: it never queries a directory and never mints a principal,
+	// so the step before the API counts the attempt costs no outside call. The
+	// API counts an attempt against what it returns before VerifyPassword runs,
+	// and VerifyPassword checks that principal (RFC 23 §5.3).
+	Lookup(ctx context.Context, name string) (metadata.Principal, error)
+	// VerifyPassword checks p's password against its stored hash. A wrong
+	// password, the zero principal, a disabled or deleted account, and an
+	// account with no password all fail ErrLogonFailure, alike; ErrUnavailable
+	// when the store cannot answer.
+	VerifyPassword(ctx context.Context, p metadata.Principal, password []byte) error
 	// Account returns p's current record for the API's per-call check, under
 	// the principals generation (§7.2); ErrLogonFailure if disabled or deleted.
 	Account(ctx context.Context, p metadata.Principal) (metadata.User, error)
@@ -1733,9 +1743,9 @@ type TokenClaims struct {
 func NewHashes(u metadata.User, password []byte, ntlm NTLMSetting) (PasswordHashes, error)
 ```
 
-- `VerifyPassword` compares in constant time, and an unknown name does the same
-  work as a wrong password — a hash verification against a fixed dummy — so
-  timing does not tell the two apart.
+- `VerifyPassword` compares in constant time, and the zero principal, an
+  unknown name's, does the same work as a wrong password — a hash
+  verification against a fixed dummy — so timing does not tell the two apart.
 - Tokens, sessions, roles, the not-before time and the API's sign-in throttle
   stay RFC 23's: `Account` returns the record and the API reads its role and
   `NotBefore` itself.
