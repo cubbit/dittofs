@@ -20,6 +20,7 @@ import (
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
 	"github.com/cubbit/dittofs/internal/adapter/core"
@@ -1111,29 +1112,130 @@ func TestEachRequestHasOneSpan(t *testing.T) {
 	bad[len(bad)-1] ^= 0x01
 	s.serveBody(bad)
 	s.read()
+	// A record whose header does not decode at all names no version, no
+	// operation and no status: it is dropped rather than refused, and the
+	// connection is closed, so no reply comes back.
+	s.serveBody([]byte{0x01})
 	s.finish()
 	ended := spans.Ended()
-	if len(ended) != 2 {
-		t.Fatalf("%d spans ended for two requests", len(ended))
+	if len(ended) != 3 {
+		t.Fatalf("%d spans ended for three requests", len(ended))
 	}
-	attrs := func(i int) map[string]string {
-		a := map[string]string{}
-		for _, kv := range ended[i].Attributes() {
+	// The spans are found by what they carry, not by the order they ended in:
+	// a request's span ends on its own goroutine, after its reply is queued.
+	names, attrs := make([]string, len(ended)), make([]map[string]string, len(ended))
+	for i, sd := range ended {
+		names[i], attrs[i] = sd.Name(), map[string]string{}
+		for _, kv := range sd.Attributes() {
 			if !slices.Contains(spanKeys, string(kv.Key)) {
-				t.Errorf("span %q carries %s, outside §10.2's keys", ended[i].Name(), kv.Key)
+				t.Errorf("span %q carries %s, outside §10.2's keys", sd.Name(), kv.Key)
 			}
-			a[string(kv.Key)] = kv.Value.String()
+			attrs[i][string(kv.Key)] = kv.Value.String()
 		}
-		return a
 	}
-	served := attrs(0)
-	if ended[0].Name() != "adapter."+testproto.Name+".Echo" || served["op"] != "echo" || served["status"] != "0" || served["result"] != "ok" ||
+	used := make([]bool, len(ended))
+	pick := func(what string, match func(i int) bool) (string, map[string]string) {
+		t.Helper()
+		for i := range ended {
+			if !used[i] && match(i) {
+				used[i] = true
+				return names[i], attrs[i]
+			}
+		}
+		t.Fatalf("no span %s among %v", what, names)
+		return "", nil
+	}
+	echoed := "adapter." + testproto.Name + ".Echo"
+	name, served := pick("named after its Echo", func(i int) bool { return names[i] == echoed })
+	if name != echoed || served["op"] != "echo" || served["version"] != "1" || served["status"] != "0" || served["result"] != "ok" ||
 		served["request_bytes"] != strconv.Itoa(len(echo)) || served["reply_bytes"] != "42" || served["stage"] != "" {
-		t.Errorf("the served Echo's span is %q %v", ended[0].Name(), served)
+		t.Errorf("the served Echo's span is %q %v", name, served)
 	}
-	refused := attrs(1)
-	if ended[1].Name() != "adapter."+testproto.Name || refused["stage"] != "unwrap" || refused["op"] != "" {
-		t.Errorf("the refused message's span is %q %v, want its stage and no operation", ended[1].Name(), refused)
+	name, refused := pick("refused at unwrap", func(i int) bool { return attrs[i]["stage"] == "unwrap" })
+	if name != "adapter."+testproto.Name || refused["op"] != "" || refused["result"] != "" {
+		t.Errorf("the refused message's span is %q %v, want its stage and no operation or result", name, refused)
+	}
+	// A header that does not decode is dropped, not refused: no operation, no
+	// version and no status, which only a reply carries.
+	name, undecoded := pick("dropped", func(i int) bool { return true })
+	if name != "adapter."+testproto.Name || undecoded["version"] != "" || undecoded["op"] != "" || undecoded["status"] != "" {
+		t.Errorf("the undecodable header's span is %q %v, want no version, op or status", name, undecoded)
+	}
+}
+
+// A reply whose reservation waits is timed under reply_wait, between
+// decode_args and resolve_ids: the wait's own sample, not the request's, and
+// its length the time it waited.
+func TestAReplyWaitIsTimed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newSeamWith(t, testproto.New(adapter.Deps{}).Bare(), smallCharge, adapter.Deps{Metrics: m})
+		free := s.full()
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+		synctest.Wait()
+		// The request is blocked in its reservation; the clock moves while it
+		// waits, so a sample that says how long it waited says 50ms.
+		time.Sleep(50 * time.Millisecond)
+		free()
+		s.read()
+		got, _ := scrape(t, m)
+		k := "adapter_wire_seconds{protocol=" + testproto.Name + ",stage=reply_wait}"
+		if got[k] != 1 {
+			t.Errorf("a reservation that waited observed %v reply_wait samples, want one", got[k])
+		}
+		if sum := got["adapter_wire_seconds_sum{protocol="+testproto.Name+",stage=reply_wait}"]; sum < 0.049 || sum > 0.051 {
+			t.Errorf("the wait's samples sum to %v seconds, want 0.05", sum)
+		}
+	})
+}
+
+// A refusal before the service carries no result, even where its error is one
+// the service's closed set names: the pipeline raised it, the service did not
+// (RFC 20 §10.2).
+func TestARefusalCarriesNoResult(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+	spent := &vfs.Delay{Cause: vfs.DelayResources}
+	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Flow = refusingFlow{spent} }}, 1<<20, adapter.Deps{Tracer: tracer})
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+	s.read()
+	s.finish()
+	ended := spans.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("%d spans ended for one refused request", len(ended))
+	}
+	got := map[string]string{}
+	for _, kv := range ended[0].Attributes() {
+		got[string(kv.Key)] = kv.Value.String()
+	}
+	if got["stage"] != "admit" || got["status"] == "" || got["result"] != "" {
+		t.Errorf("a delay refused at admit carries %v, want its stage and status and no result", got)
+	}
+}
+
+// A replay hit's span carries the sizes but no status and no result: the
+// pipeline sends a copy whose status it never read, and no operation ran.
+func TestAReplayHitsSpanCarriesNoStatus(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+	replyPool := resources.NewBufPool(resources.NewWaitBudget("replay", 1<<20))
+	cached := body(testproto.New(adapter.Deps{}).Framer(), testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 42})
+	s := newSeamWith(t, edited{testproto.New(adapter.Deps{}).Bare(), func(st *core.Stages) {
+		st.Replay = cachedReplay{replyPool, cached}
+	}}, 1<<20, adapter.Deps{Tracer: tracer})
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 42})
+	s.read()
+	s.finish()
+	ended := spans.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("%d spans ended for one replay hit", len(ended))
+	}
+	got := map[string]string{}
+	for _, kv := range ended[0].Attributes() {
+		got[string(kv.Key)] = kv.Value.String()
+	}
+	if got["reply_bytes"] == "" || got["status"] != "" || got["result"] != "" || got["op"] != "" {
+		t.Errorf("a replay hit's span is %v, want its reply's size alone", got)
 	}
 }
 
@@ -1143,8 +1245,16 @@ func TestEachRequestHasOneSpan(t *testing.T) {
 func TestLogLinesCarryTheTraceID(t *testing.T) {
 	spans := tracetest.NewSpanRecorder()
 	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
-	for name, d := range map[string]adapter.Deps{"a tracer": {Tracer: tracer}, "no tracer": {}} {
+	for name, c := range map[string]struct {
+		d    adapter.Deps
+		span bool
+	}{
+		"a tracer":               {adapter.Deps{Tracer: tracer}, true},
+		"no tracer":              {adapter.Deps{}, false},
+		"a tracer drawing no ID": {adapter.Deps{Tracer: noop.NewTracerProvider().Tracer("test")}, false},
+	} {
 		t.Run(name, func(t *testing.T) {
+			d := c.d
 			logs := &logSink{}
 			d.Logger = logs.logger()
 			s := newSeamWith(t, testproto.New(adapter.Deps{}), 1<<20, d)
@@ -1166,6 +1276,15 @@ func TestLogLinesCarryTheTraceID(t *testing.T) {
 			for _, rec := range append(warns, debugs...) {
 				if id, _ := rec["trace_id"].(string); len(id) != 32 || id == strings.Repeat("0", 32) {
 					t.Errorf("a line logged for a request carries trace ID %q", id)
+				}
+				id, has := rec["span_id"].(string)
+				if c.span && (!has || len(id) != 16) {
+					t.Errorf("a line logged under a span carries span ID %q", id)
+				}
+				if !c.span {
+					if _, ok := rec["span_id"]; ok {
+						t.Errorf("a line logged with no span carries span_id %q", id)
+					}
 				}
 			}
 		})

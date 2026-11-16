@@ -344,7 +344,7 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		p.drop(tr, rec, fmt.Errorf("%w: %v", ErrDecode, err))
 		return
 	}
-	tr.version = h.Version()
+	tr.version, tr.versioned = h.Version(), true
 	if err != nil {
 		// The refusal of a header that failed Decode is not passed to Wrap:
 		// nothing proved the session it names, so a signature under that
@@ -517,6 +517,7 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 	cached, err := p.st.Replay.Lookup(ctx, h)
 	if cached != nil {
 		tr.label.replayHit()
+		tr.cached = true
 		release()
 		n := len(cached.B)
 		p.send(h, cached, 0)
@@ -576,14 +577,17 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		// ponytail: ctx is the connection's, which has no deadline, so the
 		// reservation can wait as long as the pool stays full. Wait under the
 		// attempt's deadline once the request context lands.
+		start := p.sh.clock.Now()
 		if reply, err = p.sh.reserveReply(ctx, p.l.remote, inv.Bound()+p.st.Header.ReplyLen(h)); err != nil {
 			if st, ok := reservationStage(err); ok {
 				p.refused(tr, st)
 			}
+		} else {
+			r.resolveStart = p.sh.clock.Now()
+			ts.observe(stageReplyWait, r.resolveStart.Sub(start))
 		}
 	}
 	if err == nil {
-		r.resolveStart = p.sh.clock.Now()
 		if err = inv.Resolve(r); err != nil {
 			p.refused(tr, stageResolveIDs)
 		}
@@ -608,6 +612,7 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 	}
 	if err == nil {
 		r.invoke = inv.Call
+		tr.ran = true
 		err = ts.chains[op.Code](ctx, r)
 	}
 
@@ -663,31 +668,41 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 // lines and its counts, from serve taking its record to its reply going to
 // out or being dropped.
 type track struct {
-	ctx      context.Context // carries the request span, where there is one
-	span     trace.Span      // nil on a server with no tracer
-	id       trace.TraceID   // drawn even when the request is not traced
-	label    *labelSeries
-	table    *tableSeries // from Route on
-	protocol string       // the label it records under: the stages', then the table's
-	flight   bool         // counted in flight
-	bytes    int          // the record's
-	version  Version
-	op       *Op
-	refused  bool
-	stage    stage // the stage that refused it
+	ctx       context.Context // carries the request span, where there is one
+	span      trace.Span      // nil on a server with no tracer
+	id        trace.TraceID   // drawn even when the request is not traced
+	label     *labelSeries
+	table     *tableSeries // from Route on
+	protocol  string       // the label it records under: the stages', then the table's
+	flight    bool         // counted in flight
+	bytes     int          // the record's
+	version   Version      // its header's, where one decoded
+	versioned bool
+	cached    bool // a replay hit, whose copy's status the pipeline never reads
+	ran       bool // the service's call started, so its result is the span's
+	op        *Op
+	refused   bool
+	stage     stage // the stage that refused it
 }
 
 // begin opens a request's span as serve takes its record, named after the
-// connection's label until Route names its operation. With no tracer the
-// request still draws a trace ID, which its log lines carry (RFC 25 §5.3).
+// connection's label until Route names its operation. With no tracer, or one
+// that draws no trace ID, as a no-op provider does where tracing is off, the
+// request still draws one, which its log lines carry (RFC 25 §5.3).
+//
+// ponytail: Start runs for every request, so an unsampled request pays what
+// the tracer's Start allocates, its span and context, against RFC 25 §6.3's
+// none. Sample before Start, with the sampler the provider holds, when the
+// request path's allocations are counted.
 func (p *pipeline) begin(rec *resources.Buf) *track {
 	tr := &track{ctx: p.ctx, label: p.label, protocol: p.st.Protocol, bytes: len(rec.B)}
-	if p.sh.tracer == nil {
-		tr.id = p.sh.ids.next()
-		return tr
+	if p.sh.tracer != nil {
+		tr.ctx, tr.span = p.sh.tracer.Start(p.ctx, p.name)
+		tr.id = tr.span.SpanContext().TraceID()
 	}
-	tr.ctx, tr.span = p.sh.tracer.Start(p.ctx, p.name)
-	tr.id = tr.span.SpanContext().TraceID()
+	if !tr.id.IsValid() {
+		tr.id = p.sh.ids.next()
+	}
 	return tr
 }
 
@@ -742,10 +757,16 @@ func (p *pipeline) mapped(tr *track, errs *ErrorTable, err error, op *Op, v Vers
 	return s, reply
 }
 
-// attrs is a request's log line's keys: its trace ID, its protocol and
-// operation, and err.
+// attrs is a request's log line's keys: its trace ID, its span ID where a
+// span has one (RFC 25 §5.3), its protocol and operation, and err.
 func (tr *track) attrs(err error) []slog.Attr {
-	a := []slog.Attr{slog.String("trace_id", tr.id.String()), slog.String("protocol", tr.protocol)}
+	a := []slog.Attr{slog.String("trace_id", tr.id.String())}
+	if tr.span != nil {
+		if id := tr.span.SpanContext().SpanID(); id.IsValid() {
+			a = append(a, slog.String("span_id", id.String()))
+		}
+	}
+	a = append(a, slog.String("protocol", tr.protocol))
 	if tr.op != nil {
 		a = append(a, slog.String("op", tr.op.Name))
 	}
@@ -766,16 +787,25 @@ func (p *pipeline) end(tr *track, sent bool, s Status, reply int, err error) {
 	if tr.span.IsRecording() {
 		a := []attribute.KeyValue{
 			attribute.String("protocol", tr.protocol),
-			attribute.Int64("version", int64(tr.version)),
 			attribute.Int("request_bytes", tr.bytes),
+		}
+		if tr.versioned {
+			a = append(a, attribute.Int64("version", int64(tr.version)))
 		}
 		if tr.op != nil {
 			a = append(a, attribute.String("op", strings.ToLower(tr.op.Name)))
 		}
 		if sent {
-			a = append(a, attribute.Int64("status", int64(s)), attribute.Int("reply_bytes", reply))
+			a = append(a, attribute.Int("reply_bytes", reply))
+			if !tr.cached {
+				a = append(a, attribute.Int64("status", int64(s)))
+			}
 		}
-		if i := serviceError(err); err == nil || i >= 0 {
+		// A result is the service's: the call ran, and returned ok or an error
+		// its closed set names. A refusal before it, a cancel, a replay hit
+		// and a request admitted after close ran nothing, whatever error they
+		// carry.
+		if i := serviceError(err); tr.ran && (err == nil || i >= 0) {
 			result := "ok"
 			if err != nil {
 				result = serviceErrors[i].name

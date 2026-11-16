@@ -81,6 +81,9 @@ func TestNewOpTableChecksItsRows(t *testing.T) {
 		{"a table that holds whose DelayResources row answers the fault status", table(delay, cancel, core.ErrorRow{Err: resources, Status: fault}), true, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, badSpent("")},
 		{"a table that holds whose DelayResources row naming an operation holds, beside one naming neither", table(delay, cancel, spent, core.ErrorRow{Err: resources, Ops: []uint32{7}, Hold: hold, Status: delayed}), true, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, badSpent(" ops [7]")},
 		{"a table that does not hold, with no ErrCancelled or DelayResources row", plain, false, []*core.Op{{Code: 7, Name: "Read", Versions: one}}, ""},
+		{"a name in another case, lower-cased to a label value", plain, false, []*core.Op{{Code: 7, Name: "Create_Session", Versions: one}}, ""},
+		{"a name with a space", plain, false, []*core.Op{{Code: 7, Name: "Read All", Versions: one}}, "is not lower-case letters, digits and underscores alone"},
+		{"a name that is empty", plain, false, []*core.Op{{Code: 7, Name: "", Versions: one}}, "is not lower-case letters, digits and underscores alone"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p := opTablePanic(c.errs, c.holds, c.ops...)

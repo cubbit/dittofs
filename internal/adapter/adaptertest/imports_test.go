@@ -29,6 +29,7 @@ var outsideTests = []string{
 	"github.com/pmezard/go-difflib/difflib",        // the frozen surface's test prints a diff against its golden files
 	"go.opentelemetry.io/otel/sdk/trace",           // the tracing SDK, whose provider records the spans a test reads
 	"go.opentelemetry.io/otel/sdk/trace/tracetest", // the SDK's span recorder, the sink those spans end in
+	"go.opentelemetry.io/otel/trace/noop",          // a tracer drawing no trace ID, as tracing off does
 }
 
 // fileIO is the standard library a wire package may not import, each with the

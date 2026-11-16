@@ -90,6 +90,17 @@ func valuesOf(got map[string]float64, name, label string) []string {
 
 func sortedValues(m map[int]string) []string { return slices.Sorted(maps.Values(m)) }
 
+// orderedValues is m's values in its keys' order: a stage value's key is its
+// place in §10.1's list.
+func orderedValues(m map[int]string) []string {
+	keys := slices.Sorted(maps.Keys(m))
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		out[i] = m[k]
+	}
+	return out
+}
+
 // Each record method moves its own series, under its own labels: the
 // in-flight count from the connection's label to the table's at Route.
 func TestSeriesRecordEachIntoItsOwnSeries(t *testing.T) {
@@ -180,17 +191,6 @@ func TestSeriesRecordEachIntoItsOwnSeries(t *testing.T) {
 			t.Errorf("%s = %v after one record of each, want %v", k, got[k], v)
 		}
 	}
-}
-
-// orderedValues is m's values in its keys' order: a stage value's key is its
-// place in §10.1's list.
-func orderedValues(m map[int]string) []string {
-	keys := slices.Sorted(maps.Keys(m))
-	out := make([]string, len(keys))
-	for i, k := range keys {
-		out[i] = m[k]
-	}
-	return out
 }
 
 // Every series carries only the labels §10.1 gives it, and each label only
