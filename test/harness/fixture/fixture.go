@@ -35,6 +35,11 @@ const stopGrace = 10 * time.Second
 // Server is a DittoFS fixture's mounts and clients: the share it mounts, over
 // NFS or SMB, and the namespaced clients it mounts it from. dt starts no
 // DittoFS server to hold them until its fixture is rebuilt (ErrNoServer).
+//
+// decision: Server and the helpers on it (the NFS and SMB mounts, the
+// namespaced clients, the KDC, the S3 bucket) stay, though nothing starts a
+// DittoFS server, because the fixture's rebuild on dfs init and dfs start
+// reuses them. Delete them if that rebuild lands without them.
 type Server struct {
 	f       registry.Fixture
 	data    string

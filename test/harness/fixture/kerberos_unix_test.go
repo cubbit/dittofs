@@ -83,30 +83,19 @@ func TestStartKDC(t *testing.T) {
 			if tc.fail {
 				t.Setenv("FAKE_KDC_FAIL", "1")
 			}
-			l, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			port := l.Addr().(*net.TCPAddr).Port
-			_ = l.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
+			// Port 0 is one no dial reaches, so a KDC on it never answers.
+			// A KDC that answers is a listener the test holds open from the
+			// start, so no other process can take its port meanwhile.
+			port := 0
 			if tc.answers {
-				// The KDC answers once the fake has started: its port is
-				// then bound, as the real KDC's is.
-				go func() {
-					if waitFile(filepath.Join(state, "port")) == "" {
-						return
-					}
-					l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-					if err != nil {
-						return
-					}
-					go func() { <-ctx.Done(); _ = l.Close() }()
-					for conn, err := l.Accept(); err == nil; conn, err = l.Accept() {
-						_ = conn.Close()
-					}
-				}()
+				l, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = l.Close() })
+				port = l.Addr().(*net.TCPAddr).Port
 			} else if !tc.fail {
 				// The bounded wait is the assertion: a KDC that never
 				// answers is removed when ctx ends.
@@ -134,6 +123,9 @@ func TestStartKDC(t *testing.T) {
 				if got := k.principal(); got != "cifs/kdc-host.test" {
 					t.Errorf("principal %q, want cifs/kdc-host.test", got)
 				}
+				// The listener answers before the fake runs; stop it once it
+				// has, as a real KDC answers only then.
+				waitFile(filepath.Join(state, "pid"))
 				k.stop()
 			} else if !errors.Is(err, context.Canceled) {
 				t.Fatalf("startKDC: %v, want %v", err, context.Canceled)

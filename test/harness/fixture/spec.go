@@ -11,11 +11,6 @@ import (
 // ErrNoServer refuses a fixture whose server is DittoFS: dt starts none
 // until its fixture is rebuilt on the server's new control plane, with dfs
 // init and dfs start.
-//
-// decision: the refusal is the fixture's start, not Unsupported, so a cell
-// that asks for a DittoFS server is not run with this reason while dt's own
-// tests of a fixture's lifecycle, which start a fake server, still run. Move
-// it into Unsupported if a listing must show such cells as not runnable.
 var ErrNoServer = errors.New("dt starts no DittoFS server until its fixture is rebuilt on the new control plane")
 
 // Unsupported says what of fixture f dt doesn't set up yet on platform goos,

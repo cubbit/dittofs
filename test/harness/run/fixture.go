@@ -34,6 +34,15 @@ var startFixture = func(ctx context.Context, f registry.Fixture, services []stri
 		}
 		return k, nil
 	}
+	// decision: a DittoFS fixture is refused here, after {bin} and the KDC's
+	// image are built, not before them in runCell. dt's own tests of a
+	// fixture's lifecycle (its reset, its stop, a server that ends, the KDC's
+	// image, its mounts) drive this path through a fake start, and a refusal
+	// ahead of the build would leave every one of them unreachable. The cost is
+	// a cached build for a cell whose server never starts; every such cell is
+	// already filtered where dfs serves nothing. Move the refusal ahead of the
+	// build if a cell that asks for one runs anywhere before the fixture is
+	// rebuilt on dfs init and dfs start.
 	return nil, fixture.ErrNoServer
 }
 
