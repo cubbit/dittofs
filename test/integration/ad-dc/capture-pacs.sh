@@ -12,4 +12,4 @@ out="${1:?usage: $0 <output dir>}"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 cd "$(dirname "$0")"
-DITTOFS_AD_DC_PAC_OUT="$out" exec go test -tags=ad_dc -count=1 -v -run '^TestADPACCapture$' .
+DITTOFS_AD_DC_PAC_OUT="$out" exec go test -tags=ad_dc -timeout=20m -count=1 -v -run '^TestADPACCapture$' .
