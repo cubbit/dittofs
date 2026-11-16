@@ -469,9 +469,10 @@ flowchart TD
   start and stop and reconcile before it, on a `node.Config` its tests fill in; `dfs start` reads
   the bootstrap once it lands. Epic 5's `dfs init` and its signing key wait for it.
 - **🔀 X2, the RFC 18 plan's sign-in interface.** Outside this plan: #4058's epic 2 (`APISignIn`,
-  `NewHashes`). Epic 5 builds tokens, sessions, roles and throttling before it, over epic 2's
-  records; sign-in, the first password and `set-password` wait for it. This plan's epic 5 is the
-  one place the API is wired onto it.
+  `NewHashes`), served by identity composed in `node.New` (#4058's epic 8's T8.1). Epic 5 builds
+  tokens, sessions, roles and throttling before it, over epic 2's records; sign-in, the first
+  password and `set-password` wait for it. This plan's epic 5 is the one place the API is wired onto
+  it.
 - **🔀 X3, the RFC 13 plan's wiring.** Outside this plan: #4059's epic 5 puts reconcile's `apply`
   on `settings.Diff` and `Get` and the write path on `Check`, in the slots epics 3 and 4 leave, and
   names RFC 23's own section in the node's table. It waits for epics 3 and 4; integration waits for
