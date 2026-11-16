@@ -302,6 +302,24 @@ func (c headerCodec) Encode(h core.Header, s core.Status, out *resources.Buf) er
 	return nil
 }
 
+// Args is the arguments of the message h in rec: from after its header to
+// the next message or the body's end; nil for a header not in rec.
+func (headerCodec) Args(rec *resources.Buf, h core.Header) []byte {
+	hd, ok := h.(*header)
+	if !ok {
+		return nil
+	}
+	off, ok := offsetOf(rec.B, hd)
+	if !ok {
+		return nil
+	}
+
+	return arguments(rec.B, off, hd)
+}
+
+// ReplyLen is a reply header's 40 bytes: Wrap adds none.
+func (headerCodec) ReplyLen(core.Header) int { return headerLen }
+
 // Chain points the reply at prev in out to the one appended after it, which
 // starts at out's end.
 func (headerCodec) Chain(out *resources.Buf, prev int) error {

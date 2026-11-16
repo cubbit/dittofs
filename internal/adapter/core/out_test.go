@@ -222,7 +222,7 @@ func (r *recorder) write() {
 		_, err := bufs.WriteTo(r.conn)
 		q.msg.Release()
 		if err != nil {
-			r.close(err)
+			r.shut()
 		}
 	}
 }
@@ -235,7 +235,16 @@ func (r *recorder) drop() {
 	r.queue = nil
 }
 
+// close shuts the recorder and returns once its writer has released every
+// message it held.
 func (r *recorder) close(error) {
+	r.shut()
+	<-r.done
+}
+
+// shut refuses out from here on, closes the connection, which ends a write in
+// progress, and wakes the writer to discard the rest.
+func (r *recorder) shut() {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()

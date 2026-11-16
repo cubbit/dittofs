@@ -163,3 +163,22 @@ func (t *TestReader) Read(ctx context.Context) (*resources.Buf, error) { return 
 // ErrFrame is the framing refusal every record-level error wraps, so a close
 // can name its reason.
 var ErrFrame = errFrame
+
+// The pipeline at its seam: a test builds one over a link of its own parts
+// and hands serve the records a reader would.
+type Pipeline = pipeline
+
+var (
+	WithDefaults = withDefaults
+	ErrChain     = errChain
+	ErrNoHold    = errNoHold
+)
+
+func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, out func(*resources.Buf, uint64, uint64) error, close func(error)) *Pipeline {
+	return newPipeline(sh, st, link{ctx: ctx, remote: remote, out: out, close: close})
+}
+
+func (p *pipeline) Serve(rec *resources.Buf)       { p.serve(rec) }
+func (p *pipeline) Drain()                         { p.drain() }
+func (p *pipeline) Wait(ctx context.Context) error { return p.wait(ctx) }
+func (p *pipeline) Close()                         { p.close() }

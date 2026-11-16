@@ -174,3 +174,427 @@ func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, close func(
 	}
 	return buf
 }
+
+// link is what the pipeline reads of its connection, handed to newPipeline at
+// accept and never read from Conn: the connection's context, which every
+// request's derives from; the remote address, the budgets' key; the writer's
+// enqueue; and Conn.Close, which the pipeline calls where a stage says close. out never blocks its caller, takes
+// msg's reference whatever it returns, fails only once the connection is
+// closed, and sends a message handed with before ahead of the reply of that
+// key; key is the request's HoldCodec.Key in a table that holds, else 0.
+type link struct {
+	ctx    context.Context
+	remote netip.Addr
+	out    func(msg *resources.Buf, key, before uint64) error
+	close  func(err error)
+}
+
+// The stages a protocol leaves nil, filled once at accept so the pipeline
+// never checks for nil.
+type (
+	passSecurity struct{} // messages pass unchanged
+	noReplay     struct{} // no replay check
+	noHold       struct{} // cancels nothing; a table that holds is never run on it
+)
+
+func (passSecurity) Unwrap(h Header, _ *resources.Buf, _ Header) (Header, error) { return h, nil }
+func (passSecurity) Wrap(Header, *resources.Buf) error                           { return nil }
+
+func (noReplay) Lookup(context.Context, Header) (*resources.Buf, error) { return nil, nil }
+func (noReplay) Store(Header, *resources.Buf)                           {}
+
+func (noHold) Key(Header) uint64                                    { return 1 << 63 }
+func (noHold) Interim(Header, bool, []Header, *resources.Buf) error { return errNoHold }
+func (noHold) Final(h Header, _ bool) Header                        { return h }
+func (noHold) Cancels(Header) (uint64, bool)                        { return 0, false }
+func (noHold) Pends(Header, error) bool                             { return false }
+
+// errNoHold closes a connection whose stages had no Hold when Route returns a
+// table that holds: the protocol's wiring is at fault, and nothing could key
+// the request's hold.
+var errNoHold = errors.New("core: a table that holds, on stages with no Hold")
+
+// withDefaults fills st's nil stages: Security passes messages unchanged,
+// Replay checks nothing, Flow is the fixed cap of 64, Hold cancels nothing
+// and OnClose does nothing. It refuses stages without Header, Router, Errors
+// or Protocol, naming the field, and accept then closes the connection before
+// it reads.
+func withDefaults(st Stages) (Stages, error) {
+	for _, req := range []struct {
+		name string
+		nil  bool
+	}{{"Header", st.Header == nil}, {"Router", st.Router == nil}, {"Errors", st.Errors == nil}, {"Protocol", st.Protocol == ""}} {
+		if req.nil {
+			return Stages{}, fmt.Errorf("core: stages without %s", req.name)
+		}
+	}
+	if st.Security == nil {
+		st.Security = passSecurity{}
+	}
+	if st.Flow == nil {
+		st.Flow = newCapped()
+	}
+	if st.Replay == nil {
+		st.Replay = noReplay{}
+	}
+	if st.Hold == nil {
+		st.Hold = noHold{}
+	}
+	if st.OnClose == nil {
+		st.OnClose = func(context.Context) {}
+	}
+	return st, nil
+}
+
+// pipeline is one connection's request pipeline: what serve runs on, and
+// what drain, wait and close act on.
+//
+// decision: a Conn holds one pipeline, which is handed everything it reads of
+// its connection through link and reads no field of Conn, so the connection
+// (its reader, writer and Conn) and the pipeline are built and tested apart,
+// joined by the suite of out every writer passes. Overturned if a stage the
+// pipeline runs comes to need the connection itself.
+type pipeline struct {
+	sh     *shared
+	st     Stages
+	l      link
+	noHold bool // st.Hold is the default: a table that holds closes the connection
+
+	ctx    context.Context // l.ctx's, ended by close
+	cancel context.CancelFunc
+
+	draining atomic.Bool
+	status   chan struct{} // the one wait for a status's buffer a connection has
+
+	mu   sync.Mutex
+	runs int           // requests running and statuses waiting
+	idle chan struct{} // closed while runs is 0
+}
+
+// newPipeline builds a connection's pipeline over stages withDefaults filled.
+func newPipeline(sh *shared, st Stages, l link) *pipeline {
+	p := &pipeline{sh: sh, st: st, l: l, status: make(chan struct{}, 1), idle: make(chan struct{})}
+	_, p.noHold = st.Hold.(noHold)
+	p.ctx, p.cancel = context.WithCancel(l.ctx)
+	close(p.idle)
+	return p
+}
+
+// serve takes one record, whose one reference it owns and releases exactly
+// once, on every path. On the reader it decodes the first header, unwraps it,
+// asks whether it cancels a hold, and admits it, blocking in Admit, so a
+// connection at its bound is not read; the request runs on a goroutine of its
+// own from there.
+//
+// decision: a record is served by its first message alone. One whose first
+// header names a next, a chain, closes the connection, and one whose next is
+// not a valid step is answered as a decode error and then closes it, since
+// nothing past it can be read. The ceiling: a client that chains is
+// disconnected. Withdraw it when the chain runner serves every member.
+func (p *pipeline) serve(rec *resources.Buf) {
+	h, err := p.st.Header.Decode(rec, 0)
+	if h == nil {
+		rec.Release()
+		p.l.close(fmt.Errorf("%w: %v", ErrDecode, err))
+		return
+	}
+	if err != nil {
+		// The refusal of a header that failed Decode is not passed to Wrap:
+		// nothing proved the session it names, so a signature under that
+		// session would hand a peer a valid checksum under a key it does not
+		// hold (§5.5).
+		p.refuse(rec, h, fmt.Errorf("%w: %v", ErrDecode, err), false, h.Next() != 0)
+		return
+	}
+	if h.Next() != 0 {
+		rec.Release()
+		p.l.close(errChain)
+		return
+	}
+	u, err := p.st.Security.Unwrap(h, rec, nil)
+	if u == nil {
+		rec.Release()
+		p.l.close(err)
+		return
+	}
+	if err != nil {
+		p.refuse(rec, u, err, true, false)
+		return
+	}
+	if _, ok := p.st.Hold.Cancels(u); ok {
+		rec.Release()
+		return
+	}
+	release, err := p.st.Flow.Admit(p.ctx, u)
+	if err != nil {
+		p.refuse(rec, u, err, true, false)
+		return
+	}
+	p.add()
+	go p.run(rec, u, release)
+}
+
+// errChain closes a connection whose record chains more than one message.
+var errChain = errors.New("core: a record of more than one message")
+
+// refuse answers on the reader a refusal before Route, as the stages' table
+// maps it, under h, wrapped where wrap, and closes the connection after where
+// closeAfter. Its status's buffer is tried at once; when the pool has no room
+// it waits on a goroutine of its own, which keeps rec, and so its receive
+// charge, until the status goes out, and a connection has one such wait at a
+// time: a second refusal waits here, on the reader, for the first to end.
+func (p *pipeline) refuse(rec *resources.Buf, h Header, err error, wrap, closeAfter bool) {
+	s, send := p.st.Errors.Map(err, nil, h.Version())
+	if !send {
+		rec.Release()
+		if closeAfter {
+			p.l.close(err)
+		}
+		return
+	}
+	if buf, ok := p.sh.reply.TryGet(p.l.remote, 0); ok {
+		p.answer(rec, h, s, buf, wrap, closeAfter, err)
+		return
+	}
+	select {
+	case p.status <- struct{}{}:
+	case <-p.ctx.Done():
+		rec.Release()
+		return
+	}
+	p.add()
+	go func() {
+		defer p.done()
+		defer func() { <-p.status }()
+		if buf := p.sh.reserveStatus(p.ctx, p.l.remote, p.l.close); buf != nil {
+			p.answer(rec, h, s, buf, wrap, closeAfter, err)
+			return
+		}
+		rec.Release()
+	}()
+}
+
+// answer sends a refusal's status in buf, then releases rec, and closes the
+// connection after where closeAfter.
+func (p *pipeline) answer(rec *resources.Buf, h Header, s Status, buf *resources.Buf, wrap, closeAfter bool, cause error) {
+	defer rec.Release()
+	if err := p.st.Header.Encode(h, s, buf); err != nil {
+		buf.Release()
+		p.l.close(err)
+		return
+	}
+	if !wrap {
+		p.out(buf, 0)
+	} else {
+		p.send(h, buf, 0)
+	}
+	if closeAfter {
+		p.l.close(cause)
+	}
+}
+
+// out hands a message to the writer, which takes its reference, or, once the
+// pipeline is closed, drops it: a closed connection's replies are not sent.
+func (p *pipeline) out(msg *resources.Buf, key uint64) {
+	if p.ctx.Err() != nil {
+		msg.Release()
+		return
+	}
+	_ = p.l.out(msg, key, 0)
+}
+
+// run is one admitted request from the replay check to out, on its own
+// goroutine, in §4.7's order. A refusal is mapped by the stages' table until
+// Route returns one, and by that table after.
+func (p *pipeline) run(rec *resources.Buf, h Header, release func()) {
+	defer p.done()
+	defer rec.Release()
+	ctx := p.ctx
+	cached, err := p.st.Replay.Lookup(ctx, h)
+	if cached != nil {
+		release()
+		p.send(h, cached, 0)
+		return
+	}
+	errs := p.st.Errors
+	var (
+		tb  *OpTable
+		ts  *tableSeries
+		r   *Request
+		op  *Op
+		inv Invocation
+	)
+	if err == nil {
+		tb, r, err = p.st.Router.Route(h, nil)
+	}
+	if tb != nil {
+		var serr error
+		if ts, serr = p.sh.table(tb); serr == nil && tb.Holds && p.noHold {
+			serr = errNoHold
+		}
+		if serr != nil {
+			release()
+			p.l.close(serr)
+			return
+		}
+		errs = tb.Errors
+	}
+	if err == nil {
+		if op = tb.Ops[h.Op()]; op == nil {
+			err = ErrNotSupported
+		}
+	}
+	if err == nil {
+		if inv, _, err = op.Decode(p.st.Header.Args(rec, h), h.Version()); err != nil {
+			err = fmt.Errorf("%w: %v", ErrDecode, err)
+		}
+	}
+	var reply *resources.Buf
+	if err == nil {
+		reply, err = p.sh.reserveReply(ctx, p.l.remote, inv.Bound()+p.st.Header.ReplyLen(h))
+	}
+	if err == nil {
+		r.resolveStart = p.sh.clock.Now()
+		err = inv.Resolve(r)
+	}
+	if err == nil && p.draining.Load() {
+		role := op.Role
+		if inv.Role != nil {
+			role = inv.Role(r)
+		}
+		if role == RoleNone {
+			err = drainErr(ctx, r, inv)
+		}
+	}
+	if err == nil {
+		r.invoke = inv.Call
+		err = ts.chains[op.Code](ctx, r)
+	}
+
+	var s Status
+	send := true
+	switch {
+	case errors.Is(err, errPanicked):
+		s = errs.fault
+	case err != nil:
+		s, send = errs.Map(err, op, h.Version())
+	}
+	if !send {
+		if reply != nil {
+			reply.Release()
+		}
+		if tb != nil && tb.Holds {
+			p.interim(h)
+		}
+		release()
+		return
+	}
+	if reply == nil {
+		if reply = p.sh.reserveStatus(ctx, p.l.remote, p.l.close); reply == nil {
+			release()
+			return
+		}
+	}
+	reply.B = reply.B[:0] // a buffer comes back as long as its reservation, for a read
+	if err := p.encode(h, s, reply, inv); err != nil {
+		reply.Release()
+		release()
+		p.l.close(err)
+		return
+	}
+	release()
+	if op != nil && op.Cacheable {
+		p.st.Replay.Store(h, reply)
+	}
+	var key uint64
+	if tb != nil && tb.Holds {
+		key = p.st.Hold.Key(h)
+	}
+	p.send(h, reply, key)
+}
+
+// encode appends the reply header with status s and, where the arguments
+// decoded, the row's reply, which encodes the status alone for a request
+// refused before its call.
+func (p *pipeline) encode(h Header, s Status, reply *resources.Buf, inv Invocation) error {
+	if err := p.st.Header.Encode(h, s, reply); err != nil {
+		return err
+	}
+	if inv.Encode != nil {
+		return inv.Encode(reply, h.Version())
+	}
+	return nil
+}
+
+// send wraps reply under h and hands it to out.
+func (p *pipeline) send(h Header, reply *resources.Buf, key uint64) {
+	if err := p.st.Security.Wrap(h, reply); err != nil {
+		reply.Release()
+		p.l.close(err)
+		return
+	}
+	p.out(reply, key)
+}
+
+// interim sends the interim a NoReply row gets in a table that holds, which
+// grants the request's credits back; with no buffer for it at once, none.
+func (p *pipeline) interim(h Header) {
+	buf, ok := p.sh.reply.TryGet(p.l.remote, 0)
+	if !ok {
+		return
+	}
+	if err := p.st.Hold.Interim(h, true, nil, buf); err != nil {
+		buf.Release()
+		p.l.close(err)
+		return
+	}
+	p.send(h, buf, 0)
+}
+
+// drainErr is what a request the drain does not serve is refused with.
+//
+// decision: ErrDraining, the service's answer while no topology names a
+// target for the request's share; asking the service for a move target, and
+// answering ErrMoved where it names one, comes with the drain. Withdraw it
+// then.
+func drainErr(context.Context, *Request, Invocation) error { return ErrDraining }
+
+// drain begins the connection's drain: from here on a request whose role is
+// none is refused with drainErr.
+func (p *pipeline) drain() { p.draining.Store(true) }
+
+// wait returns nil once nothing runs and no status waits, or ctx's error.
+func (p *pipeline) wait(ctx context.Context) error {
+	p.mu.Lock()
+	idle := p.idle
+	p.mu.Unlock()
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// close starts the teardown and returns at once, so it may be entered from a
+// handler's own goroutine and from the reader: it ends the pipeline's
+// context, which ends every wait a request or a status is in.
+func (p *pipeline) close() { p.cancel() }
+
+// add counts a request or a status wait starting; done, one ending.
+func (p *pipeline) add() {
+	p.mu.Lock()
+	if p.runs == 0 {
+		p.idle = make(chan struct{})
+	}
+	p.runs++
+	p.mu.Unlock()
+}
+
+func (p *pipeline) done() {
+	p.mu.Lock()
+	if p.runs--; p.runs == 0 {
+		close(p.idle)
+	}
+	p.mu.Unlock()
+}

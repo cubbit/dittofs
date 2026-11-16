@@ -630,3 +630,30 @@ func TestFrameWritesTheLengthBodyLenReads(t *testing.T) {
 		}
 	}
 }
+
+// Args is a message's own arguments, wherever it lies in the record, and
+// ReplyLen is what Encode appends for a reply header.
+func TestArgsAndReplyLen(t *testing.T) {
+	body := Append(nil, Msg{Op: OpEcho, Version: 1, Payload: []byte("first")}, Msg{Op: OpEcho, Version: 1, Payload: []byte("second")})[lengthLen:]
+	rec := &resources.Buf{B: body}
+	first, err := headerCodec{}.Decode(rec, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := headerCodec{}.Decode(rec, first.Next())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for h, want := range map[core.Header]string{first: "\x00first", second: "\x00second"} {
+		if got := (headerCodec{}).Args(rec, h); string(got) != want {
+			t.Errorf("Args = %q, want %q", got, want)
+		}
+	}
+	out := &resources.Buf{}
+	if err := (headerCodec{}).Encode(first, 0, out); err != nil {
+		t.Fatal(err)
+	}
+	if n := (headerCodec{}).ReplyLen(first); n != len(out.B) {
+		t.Errorf("ReplyLen = %d, Encode appended %d", n, len(out.B))
+	}
+}

@@ -102,6 +102,8 @@ type HeaderCodec interface {
 	Decode(rec *resources.Buf, off int) (Header, error)
 	Encode(h Header, s Status, out *resources.Buf) error
 	Chain(out *resources.Buf, prev int) error
+	Args(rec *resources.Buf, h Header) []byte
+	ReplyLen(h Header) int
 }
 
 type HoldCodec interface {
