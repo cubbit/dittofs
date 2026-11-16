@@ -291,7 +291,7 @@ Out of scope, each named in O1:
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 4 | 6 | team | every epic |
 | E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 8 | 14.5 | A | E5; RFC 23's epics 3 and 5 (its X1) |
-| E3 | Settings | a delete and a cross-scope read, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 8 | 18.5 | B | E5; partly RFC 18's plan's epics 2 and 6 |
+| E3 | Settings | a delete and a cross-scope read, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 8 | 18.5 | B | E5; partly RFC 18's plan's epic 6 |
 | E4 | Secrets | `keyprovider` moved, `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, deletion | 6 | 14 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
 | E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule | 4 | 12 | team | E6; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty; Compose and `docker/` on `dfs init`, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
@@ -328,7 +328,7 @@ flowchart TD
   R2 -. "versions nodes hold" .-> E4
   E4 -. "the move, the record, sealing" .-> S2(["S2 secrets sealed, for RFC 18"]):::sync
   E4 -. "sealed secrets, for two Check tests" .-> E3
-  E3 -. "write check, tracked reads" .-> R18(["RFC 18's epics 2 and 6"]):::sync
+  E3 -. "write check, tracked reads" .-> R18(["RFC 18's epic 6"]):::sync
   S3(["S3 RFC 23's node reconciles and its write path exists: its epics 3 and 4"]):::sync
   R2 --> S3
   E2 & E3 & E4 --> E5["E5 Integration"]
@@ -376,7 +376,7 @@ flowchart TD
 | E2, E3, E4 | E5 | Integration wires all three into the node and the API. |
 | E1 | RFC 18's plan's epic 2 (S1) | Identity's `Deps` gain the frozen `pkg/secrets` surface there. |
 | E4 | RFC 18's plan's epic 2 (S2) | Identity seals and resolves its secrets here. |
-| E3 | RFC 18's plan's epics 2 and 6, partly | `identity.ntlm`'s validator and the NetBIOS cross-check are tracked reads through `Check`; the rest of both does not wait. |
+| E3 | RFC 18's plan's epic 6, partly | The NetBIOS cross-check is a tracked read through `Check`; the rest does not wait. Turning `identity.ntlm` back on is refused by #4050's settings route, not by a validator (RFC 18 plan's A13). |
 | E4 | E3, partly | Two of `Check`'s tests, D9's credential reference repointed at a freshly sealed `remote credential` and D10's reference to a secret of another kind or owner, need sealed secrets; the rest of E3 does not wait. |
 | E5 | E6 | E2E green runs the wired server. |
 | RFC 23's epic 2 (outside) | E2 and E4, partly | The version gate adds a node's ranges to RFC 23's `Node` record, `WriteMissingNodeIDs` reads RFC 16's `JournalID`, and `Prune` reads the versions a node holds from its `NodeStatus`. Everything else in both epics starts at S1. |
@@ -1316,8 +1316,11 @@ and its §6.1 row naming this epic). No `dt` suite builds the image, so it is ch
   their own pieces: the strip of `pkg/config`, the node, the API's routes and `dfs init`.
 - **O3. The RFC 18 plan's epic 2 waits for this plan's S1 and S2.** Identity adds the frozen
   `pkg/secrets` surface to its `Deps` in that epic, not its first, and seals its NT hashes there;
-  its keytab and machine password wait for epic 4 too. Its epic 2's `identity.ntlm` validator and
-  its epic 6's NetBIOS cross-check are tracked reads through epic 3's write check.
+  its keytab and machine password wait for epic 4 too. Its epic 6's NetBIOS cross-check is a
+  tracked read through epic 3's write check. `identity.ntlm` has no validator refusal: a section's
+  validator reads no operation, so #4050's settings route refuses turning NTLM on until an NT-hash
+  deletion has completed since the last turn-off, and a write turning it off again starts a new
+  deletion (the RFC 18 plan's A13).
 - **O4. The components' sections.** Each component's settings package and its Appendix B rows are
   its own plan's. Epic 5 wires the sections declared by then; D3 reports every other Appendix B
   section until its plan declares it.
