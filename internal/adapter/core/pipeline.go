@@ -32,6 +32,12 @@ func newCapped() capped { return make(capped, flowCap) }
 // already ended it tries once: it takes a free place, and otherwise returns
 // ctx's error at once. Its release frees the place once, however often it is
 // called.
+//
+// ponytail: each admission allocates twice, the release closure and the flag
+// it captures. One allocation is the floor while release stays idempotent
+// after its place is reused: give each place a generation the closure captures
+// by value and compares and swaps. Do that when the pipeline's allocation count
+// is lowered past these two.
 func (c capped) Admit(ctx context.Context, _ Header) (release func(), err error) {
 	select {
 	case c <- struct{}{}:
@@ -83,7 +89,7 @@ const statusWait = 30 * time.Second
 // errReplyWait is what a connection is closed with when a status found no
 // reply buffer within statusWait; its close is counted as reply_wait
 // (RFC 20 §10.1).
-var errReplyWait = errors.New("core: no reply buffer for a status within 30 s")
+var errReplyWait = errors.New("core: no reply buffer for a status within " + statusWait.String())
 
 // reserveStatus takes the small-class reply buffer a status alone goes out
 // in, for key: at once when the pool has room with no waiter ahead, otherwise
