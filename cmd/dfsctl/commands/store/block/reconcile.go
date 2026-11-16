@@ -1,15 +1,9 @@
 package block
 
 import (
-	"fmt"
-	"os"
-	"strings"
-
 	"github.com/spf13/cobra"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/output"
-	blockgc "github.com/cubbit/dittofs/pkg/block/gc"
 )
 
 // reconcileCmd reports orphaned block storage across all remote-backed shares
@@ -44,69 +38,5 @@ Examples:
 
   # As JSON for scripting
   dfsctl store block reconcile -o json`,
-	Args: cobra.NoArgs,
-	RunE: runBlockStoreReconcile,
-}
-
-func runBlockStoreReconcile(cmd *cobra.Command, args []string) error {
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	report, err := client.BlockStoreReconcileReport()
-	if err != nil {
-		return fmt.Errorf("failed to fetch reconcile report: %w", err)
-	}
-
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	switch format {
-	case output.FormatJSON:
-		return output.PrintJSON(os.Stdout, report)
-	case output.FormatYAML:
-		return output.PrintYAML(os.Stdout, report)
-	default:
-		pairs := [][2]string{
-			{"Zero-ref records", classSummary(report.ZeroRefRecords)},
-			{"Leaked blocks", classSummary(report.LeakedBlocks)},
-			{"Orphan remote objects", classSummary(report.OrphanRemoteObjects)},
-			{"Block records scanned", fmt.Sprintf("%d", report.BlockRecordsScanned)},
-			{"Remote objects scanned", fmt.Sprintf("%d", report.RemoteObjectsScanned)},
-			{"Grace period", report.GracePeriod.String()},
-		}
-		if err := output.SimpleTable(os.Stdout, pairs); err != nil {
-			return err
-		}
-		printSample(os.Stdout, "Zero-ref records", report.ZeroRefRecords)
-		printSample(os.Stdout, "Leaked blocks", report.LeakedBlocks)
-		printSample(os.Stdout, "Orphan remote objects", report.OrphanRemoteObjects)
-		return nil
-	}
-}
-
-// classSummary renders one class's count + bytes for the summary table.
-func classSummary(c blockgc.ReconcileClass) string {
-	s := fmt.Sprintf("%d", c.Count)
-	if c.Bytes > 0 {
-		s += " (" + formatBytes(c.Bytes) + ")"
-	}
-	return s
-}
-
-// printSample lists a class's sampled IDs, noting truncation.
-func printSample(w *os.File, label string, c blockgc.ReconcileClass) {
-	if len(c.Sample) == 0 {
-		return
-	}
-	suffix := ""
-	if c.Truncated {
-		suffix = fmt.Sprintf(" (showing %d of %d)", len(c.Sample), c.Count)
-	}
-	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintf(w, "%s sample%s:\n", label, suffix)
-	_, _ = fmt.Fprintf(w, "  %s\n", strings.Join(c.Sample, "\n  "))
+	Args: cobra.NoArgs, RunE: cmdutil.Unavailable,
 }

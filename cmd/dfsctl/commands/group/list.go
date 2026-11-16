@@ -1,12 +1,7 @@
 package group
 
 import (
-	"fmt"
-	"os"
-	"strings"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
 
@@ -25,43 +20,5 @@ Examples:
   dfsctl group list -o json
 
   # Output as YAML
-  dfsctl group list -o yaml`,
-	RunE: runList,
-}
-
-// GroupList is a list of groups for table rendering.
-type GroupList []apiclient.Group
-
-// Headers implements TableRenderer.
-func (gl GroupList) Headers() []string {
-	return []string{"NAME", "ID", "GID", "MEMBERS", "DESCRIPTION"}
-}
-
-// Rows implements TableRenderer.
-func (gl GroupList) Rows() [][]string {
-	rows := make([][]string, 0, len(gl))
-	for _, g := range gl {
-		members := cmdutil.EmptyOr(strings.Join(g.Members, ", "), "-")
-		description := cmdutil.EmptyOr(g.Description, "-")
-		gidStr := "-"
-		if g.GID != nil {
-			gidStr = fmt.Sprintf("%d", *g.GID)
-		}
-		rows = append(rows, []string{g.Name, g.ID, gidStr, members, description})
-	}
-	return rows
-}
-
-func runList(cmd *cobra.Command, args []string) error {
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	groups, err := client.ListGroups()
-	if err != nil {
-		return fmt.Errorf("failed to list groups: %w", err)
-	}
-
-	return cmdutil.PrintOutput(os.Stdout, groups, len(groups) == 0, "No groups found.", GroupList(groups))
+  dfsctl group list -o yaml`, RunE: cmdutil.Unavailable,
 }

@@ -1,8 +1,6 @@
 package idmap
 
 import (
-	"fmt"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
@@ -26,26 +24,9 @@ Examples:
 
   # Remove without confirmation (for automated cleanup scripts)
   dfsctl idmap sid remove S-1-5-21-111-222-333-1107 --force`,
-	Args: cobra.ExactArgs(1),
-	RunE: runSidRemove,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
 	sidRemoveCmd.Flags().BoolVarP(&sidRemoveForce, "force", "f", false, "Skip confirmation prompt")
-}
-
-func runSidRemove(cmd *cobra.Command, args []string) error {
-	sid := args[0]
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	return cmdutil.RunDeleteWithConfirmation("SID mapping", sid, sidRemoveForce, func() error {
-		if err := client.RemoveSIDMapping(sid); err != nil {
-			return fmt.Errorf("failed to remove SID mapping: %w", err)
-		}
-		return nil
-	})
 }

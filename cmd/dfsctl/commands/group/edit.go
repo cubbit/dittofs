@@ -1,12 +1,7 @@
 package group
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/prompt"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
 
@@ -35,107 +30,10 @@ Examples:
 
   # Update both GID and description in one command
   dfsctl group edit editors --gid 1002 --description "Senior content editors"`,
-	Args: cobra.ExactArgs(1),
-	RunE: runEdit,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
 	editCmd.Flags().Uint32Var(&editGID, "gid", 0, "Group ID")
 	editCmd.Flags().StringVar(&editDescription, "description", "", "Group description")
-}
-
-func runEdit(cmd *cobra.Command, args []string) error {
-	name := args[0]
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	// Check if any flags were provided
-	hasFlags := cmd.Flags().Changed("gid") || cmd.Flags().Changed("description")
-
-	// If no flags provided, run interactive mode
-	if !hasFlags {
-		return runEditInteractive(client, name)
-	}
-
-	req := &apiclient.UpdateGroupRequest{}
-	hasUpdate := false
-
-	if cmd.Flags().Changed("gid") {
-		req.GID = &editGID
-		hasUpdate = true
-	}
-
-	if editDescription != "" {
-		req.Description = &editDescription
-		hasUpdate = true
-	}
-
-	if !hasUpdate {
-		return fmt.Errorf("no fields specified. Use --gid or --description")
-	}
-
-	group, err := client.UpdateGroup(name, req)
-	if err != nil {
-		return fmt.Errorf("failed to update group: %w", err)
-	}
-
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, group, fmt.Sprintf("Group '%s' updated successfully", group.Name))
-}
-
-func runEditInteractive(client *apiclient.Client, name string) error {
-	// Fetch current group
-	current, err := client.GetGroup(name)
-	if err != nil {
-		return fmt.Errorf("failed to get group: %w", err)
-	}
-
-	fmt.Printf("Editing group: %s\n", current.Name)
-	fmt.Println("Press Enter to keep current value, or enter a new value.")
-	fmt.Println("Press Ctrl+C to abort.")
-	fmt.Println()
-
-	req := &apiclient.UpdateGroupRequest{}
-	hasUpdate := false
-
-	// GID
-	currentGIDStr := ""
-	if current.GID != nil {
-		currentGIDStr = fmt.Sprintf("%d", *current.GID)
-	}
-	newGIDStr, err := prompt.Input("GID", currentGIDStr)
-	if err != nil {
-		return cmdutil.HandleAbort(err)
-	}
-	if newGIDStr != currentGIDStr {
-		var newGID uint32
-		if _, err := fmt.Sscanf(newGIDStr, "%d", &newGID); err == nil {
-			req.GID = &newGID
-			hasUpdate = true
-		}
-	}
-
-	// Description
-	newDescription, err := prompt.Input("Description", current.Description)
-	if err != nil {
-		return cmdutil.HandleAbort(err)
-	}
-	if newDescription != current.Description {
-		req.Description = &newDescription
-		hasUpdate = true
-	}
-
-	if !hasUpdate {
-		fmt.Println("No changes made.")
-		return nil
-	}
-
-	group, err := client.UpdateGroup(name, req)
-	if err != nil {
-		return fmt.Errorf("failed to update group: %w", err)
-	}
-
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, group, fmt.Sprintf("Group '%s' updated successfully", group.Name))
 }

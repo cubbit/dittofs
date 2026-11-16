@@ -1,14 +1,9 @@
 package trash
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/spf13/cobra"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/bytesize"
-	"github.com/cubbit/dittofs/internal/cli/output"
 )
 
 // statusCmd prints the recycle-bin roll-up for a share.
@@ -25,44 +20,5 @@ Examples:
 
   # Get status as JSON for scripting
   dfsctl trash status myshare -o json`,
-	Args: cobra.ExactArgs(1),
-	RunE: runTrashStatus,
-}
-
-func runTrashStatus(cmd *cobra.Command, args []string) error {
-	share := args[0]
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	status, err := client.TrashStatus(share)
-	if err != nil {
-		return fmt.Errorf("failed to read trash status: %w", err)
-	}
-
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	switch format {
-	case output.FormatJSON:
-		return output.PrintJSON(os.Stdout, status)
-	case output.FormatYAML:
-		return output.PrintYAML(os.Stdout, status)
-	default:
-		oldest := "-"
-		if status.Oldest != nil {
-			oldest = status.Oldest.Format("2006-01-02T15:04:05Z07:00")
-		}
-		pairs := [][2]string{
-			{"Enabled", fmt.Sprintf("%v", status.Enabled)},
-			{"Items", fmt.Sprintf("%d", status.ItemCount)},
-			{"Total Size", bytesize.ByteSize(status.TotalBytes).String()},
-			{"Oldest", oldest},
-		}
-		return output.SimpleTable(os.Stdout, pairs)
-	}
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }

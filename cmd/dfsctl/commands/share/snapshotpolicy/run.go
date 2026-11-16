@@ -1,8 +1,7 @@
 package snapshotpolicy
 
 import (
-	"fmt"
-
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
 
@@ -22,22 +21,5 @@ Examples:
 
   # Trigger and then confirm the snapshot was created
   dfsctl share snapshot-policy run /archive && dfsctl share snapshot list /archive --state ready`,
-	Args: cobra.ExactArgs(1),
-	RunE: runRun,
-}
-
-func runRun(cmd *cobra.Command, args []string) error {
-	share := args[0]
-
-	client, err := getClient()
-	if err != nil {
-		return err
-	}
-
-	resp, err := client.RunSnapshotPolicy(share)
-	if err != nil {
-		return fmt.Errorf("failed to run snapshot policy: %w", err)
-	}
-	fmt.Printf("Snapshot %s queued on share %s (state: creating)\n", resp.SnapshotID, resp.Share)
-	return nil
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }

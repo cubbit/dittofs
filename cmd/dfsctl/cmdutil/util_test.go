@@ -2,17 +2,10 @@ package cmdutil
 
 import (
 	"bytes"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/cubbit/dittofs/internal/cli/credentials"
 	"github.com/cubbit/dittofs/internal/cli/output"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 func TestParseCommaSeparatedList(t *testing.T) {
@@ -247,83 +240,6 @@ func TestIsVerbose(t *testing.T) {
 	}
 }
 
-// seedExpiredContext writes a config.json with one expired-but-refreshable
-// context pointing at serverURL, using an isolated config dir. credentials.Store
-// reads APPDATA on Windows and XDG_CONFIG_HOME elsewhere.
-func seedExpiredContext(t *testing.T, serverURL string) {
-	t.Helper()
-	dir := t.TempDir()
-	if runtime.GOOS == "windows" {
-		t.Setenv("APPDATA", dir)
-	} else {
-		t.Setenv("XDG_CONFIG_HOME", dir)
-	}
-	store, err := credentials.NewStore()
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	ctx := &credentials.Context{
-		ServerURL:    serverURL,
-		Username:     "admin",
-		AccessToken:  "stale-access",
-		RefreshToken: "valid-refresh",
-		ExpiresAt:    time.Now().Add(-time.Hour),
-	}
-	if err := store.SetContext("test-ctx", ctx); err != nil {
-		t.Fatalf("set context: %v", err)
-	}
-	if err := store.UseContext("test-ctx"); err != nil {
-		t.Fatalf("use context: %v", err)
-	}
-}
-
-// newRefreshServer answers /api/v1/auth/refresh with the given response.
-func newRefreshServer(t *testing.T, resp apiclient.TokenResponse) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/auth/refresh" || r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-}
-
-// clearGlobalFlags prevents state bleed between tests that mutate Flags.
-func clearGlobalFlags(t *testing.T) {
-	t.Helper()
-	orig := *Flags
-	Flags.ServerURL = ""
-	Flags.Token = ""
-	t.Cleanup(func() { *Flags = orig })
-}
-
-func TestGetAuthenticatedClient_RefreshRejectsEmptyRefreshToken(t *testing.T) {
-	// Server refreshes access but omits the new refresh token — if we let this
-	// through, store.UpdateTokens would wipe out the caller's existing refresh.
-	server := newRefreshServer(t, apiclient.TokenResponse{
-		AccessToken:  "new-access",
-		RefreshToken: "",
-		TokenType:    "Bearer",
-		ExpiresIn:    900,
-		ExpiresAt:    time.Now().Add(time.Hour),
-	})
-	defer server.Close()
-
-	clearGlobalFlags(t)
-	seedExpiredContext(t, server.URL)
-
-	_, err := GetAuthenticatedClient()
-	if err == nil {
-		t.Fatal("expected error when refresh returns empty refresh_token, got nil")
-	}
-	if !strings.Contains(err.Error(), "incomplete tokens") {
-		t.Errorf("error should mention incomplete tokens, got: %v", err)
-	}
-}
-
 func TestConfirmDestructive_YesShortCircuits(t *testing.T) {
 	var inCalls, outBuf bytes.Buffer
 	origIn, origOut := ConfirmInput, ConfirmOutput
@@ -388,26 +304,5 @@ func TestConfirmDestructive_YesWord(t *testing.T) {
 	ok, err := ConfirmDestructive("delete?", false)
 	if err != nil || !ok {
 		t.Fatalf("YES (uppercase) must confirm; got (%v,%v)", ok, err)
-	}
-}
-
-func TestGetAuthenticatedClient_RefreshRejectsEmptyAccessToken(t *testing.T) {
-	server := newRefreshServer(t, apiclient.TokenResponse{
-		AccessToken:  "",
-		RefreshToken: "new-refresh",
-		TokenType:    "Bearer",
-		ExpiresIn:    900,
-	})
-	defer server.Close()
-
-	clearGlobalFlags(t)
-	seedExpiredContext(t, server.URL)
-
-	_, err := GetAuthenticatedClient()
-	if err == nil {
-		t.Fatal("expected error when refresh returns empty access_token, got nil")
-	}
-	if !strings.Contains(err.Error(), "incomplete tokens") {
-		t.Errorf("error should mention incomplete tokens, got: %v", err)
 	}
 }

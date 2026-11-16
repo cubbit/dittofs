@@ -1,12 +1,7 @@
 package user
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/prompt"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
 
@@ -45,8 +40,7 @@ Examples:
   dfsctl user create --username alice --password secret --host-uid --host-gid
 
   # Create a user with an explicit UID, GID, and email
-  dfsctl user create --username bob --password secret --uid 1000 --gid 1001 --email bob@example.com`,
-	RunE: runCreate,
+  dfsctl user create --username bob --password secret --uid 1000 --gid 1001 --email bob@example.com`, RunE: cmdutil.Unavailable,
 }
 
 func init() {
@@ -63,130 +57,4 @@ func init() {
 	createCmd.MarkFlagsMutuallyExclusive("uid", "host-uid")
 	createCmd.MarkFlagsMutuallyExclusive("gid", "host-gid")
 	createCmd.Flags().BoolVar(&createEnabled, "enabled", true, "Enable account")
-}
-
-func runCreate(cmd *cobra.Command, args []string) error {
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	// Check if running interactively (no flags provided)
-	interactive := !cmd.Flags().Changed("username")
-
-	username := createUsername
-	if username == "" {
-		username, err = prompt.InputRequired("Username")
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-	}
-
-	password := createPassword
-	if password == "" {
-		password, err = prompt.PasswordWithConfirmation("Password", "Confirm password", 8)
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-	}
-
-	// Prompt for optional fields if running interactively
-	email := createEmail
-	if interactive && !cmd.Flags().Changed("email") {
-		email, err = prompt.InputOptional("Email")
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-	}
-
-	role := createRole
-	if interactive && !cmd.Flags().Changed("role") {
-		role, err = prompt.Select("Role", []prompt.SelectOption{
-			{Label: "user", Value: "user", Description: "Regular user with standard permissions"},
-			{Label: "admin", Value: "admin", Description: "Administrator with full access"},
-		})
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-	}
-
-	groups := createGroups
-	if interactive && !cmd.Flags().Changed("groups") {
-		groups, err = prompt.Input("Groups (comma-separated)", "users")
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-	}
-
-	// UID - use host-uid, explicit uid, or prompt if interactive
-	var uid *uint32
-	if createHostUID {
-		hostUID := os.Getuid()
-		if hostUID < 0 {
-			return fmt.Errorf("--host-uid is not supported on this platform")
-		}
-		hostUIDUint32 := uint32(hostUID)
-		uid = &hostUIDUint32
-	} else if cmd.Flags().Changed("uid") {
-		uid = &createUID
-	} else if interactive {
-		uidInput, err := prompt.InputOptional("UID (leave empty for auto-assign, or use --host-uid)")
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-		if uidInput != "" {
-			var uidVal uint32
-			if _, err := fmt.Sscanf(uidInput, "%d", &uidVal); err == nil {
-				uid = &uidVal
-			}
-		}
-	}
-
-	// GID - use host-gid, explicit gid, or prompt if interactive (mirrors UID).
-	var gid *uint32
-	if createHostGID {
-		hostGID := os.Getgid()
-		if hostGID < 0 {
-			return fmt.Errorf("--host-gid is not supported on this platform")
-		}
-		hostGIDUint32 := uint32(hostGID)
-		gid = &hostGIDUint32
-	} else if cmd.Flags().Changed("gid") {
-		gid = &createGID
-	} else if interactive {
-		gidInput, err := prompt.InputOptional("GID (leave empty for auto-assign, or use --host-gid)")
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-		if gidInput != "" {
-			var gidVal uint32
-			if _, err := fmt.Sscanf(gidInput, "%d", &gidVal); err == nil {
-				gid = &gidVal
-			}
-		}
-	}
-
-	req := &apiclient.CreateUserRequest{
-		Username: username,
-		Password: password,
-		Email:    email,
-		Role:     role,
-		UID:      uid,
-		GID:      gid,
-		Groups:   cmdutil.ParseCommaSeparatedList(groups),
-		Enabled:  &createEnabled,
-	}
-
-	user, err := client.CreateUser(req)
-	if err != nil {
-		return fmt.Errorf("failed to create user: %w", err)
-	}
-
-	// Surface any server-side warnings (e.g. a share_permissions entry that was
-	// skipped) so a create is not silently a partial no-op.
-	for _, warning := range user.Warnings {
-		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
-	}
-
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, user, fmt.Sprintf("User '%s' created successfully", user.Username))
 }

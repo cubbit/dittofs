@@ -1,8 +1,6 @@
 package idmap
 
 import (
-	"fmt"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
@@ -30,8 +28,7 @@ Examples:
   dfsctl idmap remove --provider ad --principal CORP\\alice
 
   # Remove a mapping non-interactively (for scripts)
-  dfsctl idmap remove --principal alice@EXAMPLE.COM --force`,
-	RunE: runRemove,
+  dfsctl idmap remove --principal alice@EXAMPLE.COM --force`, RunE: cmdutil.Unavailable,
 }
 
 func init() {
@@ -39,18 +36,4 @@ func init() {
 	removeCmd.Flags().StringVar(&removePrincipal, "principal", "", "External identity to remove")
 	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false, "Skip confirmation prompt")
 	_ = removeCmd.MarkFlagRequired("principal")
-}
-
-func runRemove(cmd *cobra.Command, args []string) error {
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	return cmdutil.RunDeleteWithConfirmation("Identity mapping", removePrincipal, removeForce, func() error {
-		if err := client.RemoveIdentityMapping(removeProvider, removePrincipal); err != nil {
-			return fmt.Errorf("failed to remove identity mapping: %w", err)
-		}
-		return nil
-	})
 }

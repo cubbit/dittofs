@@ -2,8 +2,8 @@ package share
 
 import (
 	"fmt"
-	"strings"
 
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
 
@@ -36,56 +36,9 @@ because a single share can be mounted to multiple local paths; the
 			return fmt.Errorf("accepts 1 arg, received %d", len(args))
 		}
 		return nil
-	},
-	RunE: runUnmount,
+	}, RunE: cmdutil.Unavailable,
 }
 
 func init() {
 	unmountCmd.Flags().BoolVarP(&unmountForce, "force", "f", false, "Force unmount even if busy")
-}
-
-func runUnmount(cmd *cobra.Command, args []string) error {
-	mountPoint := args[0]
-
-	if err := validateUnmountPoint(mountPoint); err != nil {
-		return err
-	}
-
-	if !isMountPoint(mountPoint) {
-		return fmt.Errorf("path is not a mount point: %s\nHint: The path does not appear to be a mounted filesystem", mountPoint)
-	}
-
-	if err := checkUnmountPrivileges(mountPoint); err != nil {
-		return err
-	}
-
-	if err := performUnmount(mountPoint, unmountForce); err != nil {
-		return err
-	}
-
-	fmt.Printf("Unmounted %s\n", mountPoint)
-	return nil
-}
-
-func formatUnmountError(err error, output string, forceAttempted bool) error {
-	combined := strings.ToLower(output + " " + err.Error())
-
-	if strings.Contains(combined, "not currently mounted") ||
-		strings.Contains(combined, "not mounted") ||
-		strings.Contains(combined, "no mount point") {
-		return fmt.Errorf("unmount failed: %w\nOutput: %s\nHint: The path does not appear to be a mount point", err, output)
-	}
-
-	if strings.Contains(combined, "busy") {
-		if forceAttempted {
-			return fmt.Errorf("unmount failed: %w\nOutput: %s\nHint: Some process is using the mount. Check with 'lsof +D %s'", err, output, output)
-		}
-		return fmt.Errorf("unmount failed: %w\nOutput: %s\nHint: Files may be in use. Close applications and try again, or use --force", err, output)
-	}
-
-	if strings.Contains(combined, "permission denied") || strings.Contains(combined, "operation not permitted") {
-		return fmt.Errorf("unmount failed: %w\nOutput: %s\nHint: Unmount may require sudo privileges", err, output)
-	}
-
-	return fmt.Errorf("unmount failed: %w\nOutput: %s", err, output)
 }

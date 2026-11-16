@@ -7,12 +7,10 @@ import (
 	"io"
 	"os"
 	"strings"
-	"sync"
 
-	"github.com/cubbit/dittofs/internal/cli/credentials"
 	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/cubbit/dittofs/internal/cli/prompt"
-	"github.com/cubbit/dittofs/pkg/apiclient"
+	"github.com/spf13/cobra"
 )
 
 // ConfirmInput is the source ConfirmDestructive reads its Y/N answer from.
@@ -66,119 +64,17 @@ type GlobalFlags struct {
 	TLSSkipVerifySet bool
 }
 
-// skipVerifyWarnOnce ensures the man-in-the-middle warning is printed at most
-// once per process, even though TLSClientOptions may be called several times
-// per command (e.g. token refresh followed by the final client build).
-var skipVerifyWarnOnce sync.Once
-
-// TLSClientOptions translates resolved TLS parameters into apiclient options.
-// It also emits the man-in-the-middle warning (once per process) when
-// verification is disabled. Empty parameters produce no options (default
-// transport behavior).
-func TLSClientOptions(caCert, clientCert, clientKey string, skipVerify bool) []apiclient.ClientOption {
-	var opts []apiclient.ClientOption
-	if caCert != "" {
-		opts = append(opts, apiclient.WithCACert(caCert))
-	}
-	if clientCert != "" || clientKey != "" {
-		opts = append(opts, apiclient.WithClientCert(clientCert, clientKey))
-	}
-	if skipVerify {
-		skipVerifyWarnOnce.Do(func() {
-			_, _ = fmt.Fprintln(os.Stderr,
-				"WARNING: TLS certificate verification disabled (--tls-skip-verify); "+
-					"the connection is vulnerable to man-in-the-middle attacks")
-		})
-		opts = append(opts, apiclient.WithInsecureSkipVerify(true))
-	}
-	return opts
-}
-
-// GetAuthenticatedClient returns an API client configured from the current context.
-// It uses the --server and --token flags if provided, otherwise falls back to stored credentials.
-// If the access token is expired but a refresh token exists, it will automatically refresh.
-func GetAuthenticatedClient() (*apiclient.Client, error) {
-	// Check for explicit flags first
-	if Flags.ServerURL != "" && Flags.Token != "" {
-		opts := TLSClientOptions(Flags.CACert, Flags.ClientCert, Flags.ClientKey, Flags.TLSSkipVerify)
-		return apiclient.New(Flags.ServerURL, opts...).WithToken(Flags.Token), nil
-	}
-
-	// Load credential store
-	store, err := credentials.NewStore()
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize credential store: %w", err)
-	}
-
-	// Get current context
-	ctx, err := store.GetCurrentContext()
-	if err != nil {
-		return nil, fmt.Errorf("not logged in. Run 'dfsctl login' first")
-	}
-
-	// Use flag overrides if provided
-	url := ctx.ServerURL
-	if Flags.ServerURL != "" {
-		url = Flags.ServerURL
-	}
-
-	if url == "" {
-		return nil, fmt.Errorf("no server URL configured. Run 'dfsctl login --server <url>' first")
-	}
-
-	tok := ctx.AccessToken
-	if Flags.Token != "" {
-		tok = Flags.Token
-	}
-
-	// Resolve TLS material: stored context is the baseline; root override flags
-	// take precedence when present.
-	caCert := ctx.CACert
-	if Flags.CACert != "" {
-		caCert = Flags.CACert
-	}
-	clientCert := ctx.ClientCert
-	if Flags.ClientCert != "" {
-		clientCert = Flags.ClientCert
-	}
-	clientKey := ctx.ClientKey
-	if Flags.ClientKey != "" {
-		clientKey = Flags.ClientKey
-	}
-	skipVerify := ctx.TLSSkipVerify
-	if Flags.TLSSkipVerifySet {
-		skipVerify = Flags.TLSSkipVerify
-	}
-	tlsOpts := TLSClientOptions(caCert, clientCert, clientKey, skipVerify)
-
-	// Check if token is expired and try to refresh
-	if ctx.IsExpired() && ctx.HasRefreshToken() {
-		client := apiclient.New(url, tlsOpts...)
-		newTokens, err := client.RefreshToken(ctx.RefreshToken)
-		if err != nil {
-			// Refresh failed, user needs to re-login
-			return nil, fmt.Errorf("session expired. Run 'dfsctl login' to re-authenticate")
-		}
-
-		// If either token is missing, UpdateTokens would overwrite the stored
-		// refresh token with "" and poison the next refresh cycle.
-		if newTokens == nil || newTokens.AccessToken == "" || newTokens.RefreshToken == "" {
-			return nil, fmt.Errorf("token refresh succeeded but server returned incomplete tokens; run 'dfsctl login' to re-authenticate")
-		}
-
-		// Save new tokens
-		if err := store.UpdateTokens(newTokens.AccessToken, newTokens.RefreshToken, newTokens.ExpiresAt); err != nil {
-			return nil, fmt.Errorf("failed to save refreshed tokens: %w", err)
-		}
-
-		tok = newTokens.AccessToken
-	}
-
-	if tok == "" {
-		return nil, fmt.Errorf("no access token. Run 'dfsctl login' first")
-	}
-
-	return apiclient.New(url, tlsOpts...).WithToken(tok), nil
+// Unavailable is the body of every v1 command dfsctl still lists: it refuses,
+// naming the command, and the command exits non-zero.
+//
+// decision: dfsctl keeps v1's command tree, its names, arguments and flags,
+// after the server those commands spoke to is gone, with each body refusing.
+// Deleting the commands would leave every invocation of them in the docs and
+// in Go strings naming a command that does not exist, and the CLI's rebuild
+// on the v2 API rewrites those invocations anyway, command by command. A
+// command stops calling this when it is rebuilt; once none does, delete it.
+func Unavailable(cmd *cobra.Command, _ []string) error {
+	return fmt.Errorf("%s: not available until the CLI is rebuilt on the v2 API", cmd.CommandPath())
 }
 
 // GetOutputFormatParsed returns the parsed output format.

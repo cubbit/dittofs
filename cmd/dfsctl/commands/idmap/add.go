@@ -1,9 +1,6 @@
 package idmap
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
@@ -34,8 +31,7 @@ Examples:
   dfsctl idmap add --provider oidc --principal sub:abc123 --username bob
 
   # Map a Kerberos admin principal to the local admin account
-  dfsctl idmap add --principal admin@CORP.COM --username admin`,
-	RunE: runAdd,
+  dfsctl idmap add --principal admin@CORP.COM --username admin`, RunE: cmdutil.Unavailable,
 }
 
 func init() {
@@ -44,19 +40,4 @@ func init() {
 	addCmd.Flags().StringVar(&addUsername, "username", "", "DittoFS username")
 	_ = addCmd.MarkFlagRequired("principal")
 	_ = addCmd.MarkFlagRequired("username")
-}
-
-func runAdd(cmd *cobra.Command, args []string) error {
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	mapping, err := client.CreateIdentityMapping(addProvider, addPrincipal, addUsername)
-	if err != nil {
-		return fmt.Errorf("failed to create identity mapping: %w", err)
-	}
-
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, mapping,
-		fmt.Sprintf("Identity mapping created: %s -> %s", mapping.Principal, mapping.Username))
 }

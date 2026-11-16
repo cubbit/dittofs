@@ -1,11 +1,7 @@
 package permission
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/spf13/cobra"
 )
 
@@ -37,50 +33,11 @@ Examples:
 
   # Revoke a direct AD/SID grant
   dfsctl share permission revoke /archive --sid S-1-5-21-1111-2222-3333-1104`,
-	Args: cobra.ExactArgs(1),
-	RunE: runRevoke,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
 	revokeCmd.Flags().StringVar(&revokeUser, "user", "", "User to revoke permission from (local name, AD name, or SID)")
 	revokeCmd.Flags().StringVar(&revokeGroup, "group", "", "Group to revoke permission from (local name, AD name, or SID)")
 	revokeCmd.Flags().StringVar(&revokeSID, "sid", "", "Raw Windows SID to revoke permission from")
-}
-
-func runRevoke(cmd *cobra.Command, args []string) error {
-	shareName := args[0]
-
-	kind, value, _, target, err := selectPrincipal(revokeUser, revokeGroup, revokeSID)
-	if err != nil {
-		return err
-	}
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	switch kind {
-	case principalSID:
-		err = client.RemoveSIDSharePermission(shareName, value)
-	case principalUserName:
-		err = client.RemoveUserSharePermission(shareName, value)
-	case principalGroupName:
-		err = client.RemoveGroupSharePermission(shareName, value)
-	}
-	if err != nil {
-		return fmt.Errorf("failed to revoke permission: %w", err)
-	}
-
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	if format == output.FormatTable {
-		printer := output.NewPrinter(os.Stdout, !cmdutil.IsColorDisabled())
-		printer.Success(fmt.Sprintf("Revoked permission from %s on '%s'", target, shareName))
-	}
-
-	return nil
 }

@@ -1,13 +1,7 @@
 package share
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/prompt"
-	"github.com/cubbit/dittofs/pkg/apiclient"
-	"github.com/cubbit/dittofs/pkg/controlplane/models"
 	"github.com/spf13/cobra"
 )
 
@@ -75,8 +69,7 @@ Examples:
   dfsctl share create --name /limited --metadata default --block-store s3-store --quota-bytes 10GiB
 
   # Create an export that does not squash root (e.g. for root-mounted/benchmark clients)
-  dfsctl share create --name /export --metadata default --block-store s3-store --squash none`,
-	RunE: runCreate,
+  dfsctl share create --name /export --metadata default --block-store s3-store --squash none`, RunE: cmdutil.Unavailable,
 }
 
 func init() {
@@ -108,150 +101,4 @@ func init() {
 	createCmd.Flags().Int64Var(&createTrashMaxSize, "trash-max-size", 0, "Max bytes the recycle bin may hold before the reaper evicts oldest items (0 = unbounded).")
 	createCmd.Flags().StringSliceVar(&createTrashExclude, "trash-exclude", nil, "Glob patterns whose deletions bypass the recycle bin (repeatable).")
 	_ = createCmd.MarkFlagRequired("block-store")
-}
-
-func runCreate(cmd *cobra.Command, args []string) error {
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	name := createName
-	if name == "" {
-		name, err = prompt.InputRequired("Share name (e.g., /export)")
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-	}
-
-	metadata := createMetadata
-	if metadata == "" {
-		metadata, err = prompt.InputRequired("Metadata store name")
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-	}
-
-	blockStore := createBlockStore
-	if blockStore == "" {
-		blockStore, err = prompt.InputRequired("Block store name")
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-	}
-
-	defaultPerm := createDefaultPermission
-	if !cmd.Flags().Changed("default-permission") && createName == "" {
-		// Interactive mode - ask for default permission
-		permOptions := []string{"read-write", "read", "admin", "none"}
-		selectedPerm, err := prompt.SelectString("Default permission", permOptions)
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-		defaultPerm = selectedPerm
-	}
-
-	req := &apiclient.CreateShareRequest{
-		Name:              name,
-		MetadataStoreID:   metadata,
-		BlockStore:        blockStore,
-		ReadOnly:          createReadOnly,
-		EncryptData:       createEncryptData,
-		DefaultPermission: defaultPerm,
-		Owner:             createOwner,
-		Description:       createDescription,
-	}
-	if createRetention != "" {
-		req.RetentionPolicy = createRetention
-	}
-	if createRetentionTTL != "" {
-		req.RetentionTTL = createRetentionTTL
-	}
-	if createJournalSize != "" {
-		req.JournalSize = createJournalSize
-	}
-	if createCommitAck != "" {
-		req.CommitAck = createCommitAck
-	}
-	// Only sent when named, so an unset flag keeps the server default rather
-	// than asserting false over it.
-	if cmd.Flags().Changed("relaxed-metadata-commit") {
-		v := createRelaxedMetaCommit
-		req.RelaxedMetadataCommit = &v
-	}
-	if createReadBufferSize != "" {
-		req.ReadBufferSize = createReadBufferSize
-	}
-	if createQuotaBytes != "" {
-		req.QuotaBytes = createQuotaBytes
-	}
-	// Refs #514: only send when explicitly set so the server applies its
-	// own default (true) on unset.
-	if cmd.Flags().Changed("acl-canonicalize-inherited") {
-		v := createAclCanonicalize
-		req.AclFlagInheritedCanonicalization = &v
-	}
-	// Refs #532: same pattern — only forward when the operator set it.
-	if cmd.Flags().Changed("access-based-enumeration") {
-		v := createAccessBasedEnum
-		req.AccessBasedEnumeration = &v
-	}
-	if cmd.Flags().Changed("change-notify-disabled") {
-		v := createChangeNotifyOff
-		req.ChangeNotifyDisabled = &v
-	}
-	if cmd.Flags().Changed("streams-disabled") {
-		v := createStreamsDisabled
-		req.StreamsDisabled = &v
-	}
-	if cmd.Flags().Changed("continuous-availability") {
-		v := createContinuousAvail
-		req.ContinuousAvailability = &v
-	}
-	if cmd.Flags().Changed("allow-mfsymlink") {
-		v := createAllowMFsymlink
-		req.AllowMFsymlink = &v
-	}
-	// Per-share recycle-bin policy (#190): only forward flags the operator
-	// set so the server applies its own defaults (trash disabled, zero
-	// limits) on unset.
-	if cmd.Flags().Changed("enable-trash") {
-		v := createEnableTrash
-		req.TrashEnabled = &v
-	}
-	if cmd.Flags().Changed("trash-retention-days") {
-		v := createTrashRetention
-		req.TrashRetentionDays = &v
-	}
-	if cmd.Flags().Changed("trash-restrict-empty-to-admin") {
-		v := createTrashRestrictAdm
-		req.TrashRestrictToAdmin = &v
-	}
-	if cmd.Flags().Changed("trash-max-size") {
-		v := createTrashMaxSize
-		req.TrashMaxBytes = &v
-	}
-	if cmd.Flags().Changed("trash-exclude") {
-		req.TrashExcludePatterns = createTrashExclude
-	}
-
-	// Squash lives on the NFS adapter config endpoint, not the share record.
-	// Validate up front so we don't create a share and then fail to apply a
-	// bogus squash mode, leaving it half-configured.
-	if cmd.Flags().Changed("squash") && !models.SquashMode(createSquash).IsValid() {
-		return fmt.Errorf("--squash: invalid value %q, must be one of none|root_to_admin|root_to_guest|all_to_admin|all_to_guest", createSquash)
-	}
-
-	share, err := client.CreateShare(req)
-	if err != nil {
-		return fmt.Errorf("failed to create share: %w", err)
-	}
-
-	if cmd.Flags().Changed("squash") {
-		if _, err := client.PatchShareNFSConfig(share.Name, &apiclient.PatchShareNFSConfigRequest{Squash: &createSquash}); err != nil {
-			return fmt.Errorf("share '%s' created, but failed to set NFS squash mode: %w", share.Name, err)
-		}
-	}
-
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, share, fmt.Sprintf("Share '%s' created successfully", share.Name))
 }

@@ -1,8 +1,6 @@
 package metadata
 
 import (
-	"fmt"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
@@ -27,26 +25,9 @@ Examples:
 
   # Verify the store is gone afterward
   dfsctl store metadata list`,
-	Args: cobra.ExactArgs(1),
-	RunE: runRemove,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
 	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false, "Skip confirmation prompt")
-}
-
-func runRemove(cmd *cobra.Command, args []string) error {
-	name := args[0]
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	return cmdutil.RunDeleteWithConfirmation("Metadata store", name, removeForce, func() error {
-		if err := client.RemoveMetadataStore(name); err != nil {
-			return fmt.Errorf("failed to remove metadata store: %w", err)
-		}
-		return nil
-	})
 }

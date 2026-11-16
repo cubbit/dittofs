@@ -1,8 +1,6 @@
 package quota
 
 import (
-	"fmt"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
@@ -31,8 +29,7 @@ Examples:
 
   # Remove a per-group quota (gid 2000) without prompting
   dfsctl quota remove /archive --scope group --id 2000 --force`,
-	Args: cobra.ExactArgs(1),
-	RunE: runRemove,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
@@ -40,34 +37,4 @@ func init() {
 	removeCmd.Flags().Int64Var(&removeID, "id", -1, "Identity id (uid for user, gid for group). Required for user/group; omit for default-user.")
 	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false, "Skip confirmation prompt")
 	_ = removeCmd.MarkFlagRequired("scope")
-}
-
-func runRemove(cmd *cobra.Command, args []string) error {
-	share := args[0]
-
-	if !isValidScope(removeScope) {
-		return fmt.Errorf("invalid --scope %q (want user|group|default-user)", removeScope)
-	}
-
-	id, err := resolveID(removeScope, removeID)
-	if err != nil {
-		return err
-	}
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	label := fmt.Sprintf("%s/%s", share, removeScope)
-	if id != nil {
-		label = fmt.Sprintf("%s/%d", label, *id)
-	}
-
-	return cmdutil.RunDeleteWithConfirmation("Quota", label, removeForce, func() error {
-		if err := client.RemoveQuota(share, removeScope, id); err != nil {
-			return fmt.Errorf("failed to remove quota: %w", err)
-		}
-		return nil
-	})
 }

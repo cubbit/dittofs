@@ -1,14 +1,9 @@
 package block
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/spf13/cobra"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/output"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 // reclaimCmd deletes orphaned block storage (zero-ref + leaked records and
@@ -43,60 +38,9 @@ Examples:
 
   # As JSON for scripting
   dfsctl store block reclaim -o json`,
-	Args: cobra.NoArgs,
-	RunE: runBlockStoreReclaim,
+	Args: cobra.NoArgs, RunE: cmdutil.Unavailable,
 }
 
 func init() {
 	reclaimCmd.Flags().Bool("dry-run", false, "Report the records that would be reclaimed without deleting anything")
-}
-
-func runBlockStoreReclaim(cmd *cobra.Command, args []string) error {
-	dryRun, err := cmd.Flags().GetBool("dry-run")
-	if err != nil {
-		return err
-	}
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	report, err := client.BlockStoreReclaim(&apiclient.BlockStoreReclaimRequest{DryRun: dryRun})
-	if err != nil {
-		return fmt.Errorf("failed to reclaim orphaned block storage: %w", err)
-	}
-
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	switch format {
-	case output.FormatJSON:
-		return output.PrintJSON(os.Stdout, report)
-	case output.FormatYAML:
-		return output.PrintYAML(os.Stdout, report)
-	default:
-		verb := "Reclaimed"
-		if report.DryRun {
-			verb = "Would reclaim"
-		}
-		pairs := [][2]string{
-			{verb + " zero-ref records", classSummary(report.Reclaimed)},
-			{verb + " leaked records", classSummary(report.LeakedReclaimed)},
-			{verb + " orphan objects", classSummary(report.OrphanObjectsReclaimed)},
-			{"Block records scanned", fmt.Sprintf("%d", report.BlockRecordsScanned)},
-			{"Remote objects scanned", fmt.Sprintf("%d", report.RemoteObjectsScanned)},
-			{"Errors", fmt.Sprintf("%d", report.Errors)},
-			{"Dry run", fmt.Sprintf("%t", report.DryRun)},
-		}
-		if err := output.SimpleTable(os.Stdout, pairs); err != nil {
-			return err
-		}
-		printSample(os.Stdout, verb+" zero-ref", report.Reclaimed)
-		printSample(os.Stdout, verb+" leaked", report.LeakedReclaimed)
-		printSample(os.Stdout, verb+" orphan object", report.OrphanObjectsReclaimed)
-		return nil
-	}
 }

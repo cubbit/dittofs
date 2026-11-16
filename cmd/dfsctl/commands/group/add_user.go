@@ -1,11 +1,7 @@
 package group
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/spf13/cobra"
 )
 
@@ -25,32 +21,5 @@ Examples:
 
   # Verify membership after adding
   dfsctl group get editors`,
-	Args: cobra.ExactArgs(2),
-	RunE: runAddUser,
-}
-
-func runAddUser(cmd *cobra.Command, args []string) error {
-	groupName := args[0]
-	username := args[1]
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	if err := client.AddGroupMember(groupName, username); err != nil {
-		return fmt.Errorf("failed to add user to group: %w", err)
-	}
-
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	if format == output.FormatTable {
-		printer := output.NewPrinter(os.Stdout, !cmdutil.IsColorDisabled())
-		printer.Success(fmt.Sprintf("User '%s' added to group '%s'", username, groupName))
-	}
-
-	return nil
+	Args: cobra.ExactArgs(2), RunE: cmdutil.Unavailable,
 }

@@ -4,12 +4,7 @@
 package netlogon
 
 import (
-	"fmt"
-	"os"
-	"strings"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
 
@@ -58,58 +53,7 @@ Examples:
 
   # Show status as JSON
   dfsctl netlogon status -o json`,
-	Args: cobra.NoArgs,
-	RunE: runStatus,
-}
-
-// statusRenderer renders a NetlogonStatus as a key/value table.
-type statusRenderer struct {
-	s *apiclient.NetlogonStatus
-}
-
-// Headers implements output.TableRenderer.
-func (r statusRenderer) Headers() []string { return []string{"FIELD", "VALUE"} }
-
-// Rows implements output.TableRenderer.
-func (r statusRenderer) Rows() [][]string {
-	s := r.s
-	rows := [][]string{
-		{"Enabled", cmdutil.BoolToYesNo(s.Enabled)},
-		{"Provider", cmdutil.EmptyOr(s.Provider, "-")},
-		{"Account", cmdutil.EmptyOr(s.AccountName, "-")},
-		{"Realm", cmdutil.EmptyOr(s.Realm, "-")},
-		{"NetBIOS domain", cmdutil.EmptyOr(s.NetBIOSDomain, "-")},
-		{"DC addresses", cmdutil.EmptyOr(strings.Join(s.DCAddresses, ", "), "(discover via DNS SRV)")},
-		{"Channel connected", cmdutil.BoolToYesNo(s.ChannelConnected)},
-	}
-	// "Joined" is only meaningful for the online-join provider (the offline
-	// provider has no provisioning step), so present it as n/a otherwise.
-	if s.Provider == "online-join" {
-		rows = append(rows, []string{"Joined", cmdutil.BoolToYesNo(s.Joined)})
-		rows = append(rows, []string{"Rotation enabled", cmdutil.BoolToYesNo(s.RotationEnabled)})
-		if s.RotationEnabled {
-			rows = append(rows,
-				[]string{"Rotation interval", cmdutil.EmptyOr(s.RotationInterval, "-")},
-				[]string{"Next rotation", cmdutil.EmptyOr(s.NextRotation, "-")},
-			)
-		}
-		rows = append(rows, []string{"Last rotation", cmdutil.EmptyOr(s.LastRotation, "never")})
-	} else {
-		rows = append(rows, []string{"Joined", "n/a (offline provider)"})
-	}
-	return rows
-}
-
-func runStatus(cmd *cobra.Command, args []string) error {
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-	status, err := client.GetNetlogonStatus()
-	if err != nil {
-		return fmt.Errorf("failed to get netlogon status: %w", err)
-	}
-	return cmdutil.PrintOutput(os.Stdout, status, false, "", statusRenderer{s: status})
+	Args: cobra.NoArgs, RunE: cmdutil.Unavailable,
 }
 
 // --- rotate ---
@@ -128,19 +72,5 @@ error there; rotate that secret by updating the machine-account configuration.
 Examples:
   # Rotate the machine password now
   dfsctl netlogon rotate`,
-	Args: cobra.NoArgs,
-	RunE: runRotate,
-}
-
-func runRotate(cmd *cobra.Command, args []string) error {
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-	result, err := client.RotateNetlogon()
-	if err != nil {
-		return fmt.Errorf("failed to rotate machine password: %w", err)
-	}
-	cmdutil.PrintSuccess("Machine-account password rotated.")
-	return cmdutil.PrintOutput(os.Stdout, result.Status, false, "", statusRenderer{s: &result.Status})
+	Args: cobra.NoArgs, RunE: cmdutil.Unavailable,
 }
