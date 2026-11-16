@@ -152,8 +152,15 @@ func TestAnItemStallsAfterFiveFailures(t *testing.T) {
 		t.Fatal("not stalled after five failures")
 	}
 	step()
-	if !strings.Contains(log.String(), "removal_stalled cleared") {
-		t.Errorf("the run that finished it logged no clearing: %s", log.String())
+	// The step returns once the finishing run has answered, and the loop logs
+	// the clearing after that, on its own goroutine: wait for the log line.
+	const cleared = "removal_stalled cleared"
+	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(log.String(), cleared); {
+		if time.Now().After(deadline) {
+			t.Fatalf("the run that finished it logged no clearing: %s", log.String())
+		}
+
+		time.Sleep(time.Millisecond)
 	}
 }
 
