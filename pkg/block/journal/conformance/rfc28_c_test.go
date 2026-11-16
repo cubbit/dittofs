@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
@@ -1100,26 +1101,23 @@ func retire(t *testing.T, f *journaltest.Fixture, seg journal.SegmentID) retired
 	return retirement(t, f, segmentName(seg), files)
 }
 
-// awaitSpare runs roll, a write whose roll takes a spare, and returns once
-// the journal has made the spare that replaces it: it waits at the directory
-// sync that follows the new spare's rename into place, the one directory
-// sync a take leads to, and checks that the directory gained a segment file
-// by then. The hold is released however it returns, a failure included, so
-// a fixture whose lifetime ends before the test's never closes on it.
+// awaitSpare runs roll and returns once the journal has made the spare that
+// replaces the take roll makes: it waits at the directory sync that follows
+// the new spare's rename into place, the one directory sync a take leads
+// to, and checks that the directory gained a segment file by then. The hold
+// is released however it returns, a failure included, so a fixture whose
+// lifetime ends before the test's never closes on it.
 //
-// The pool settles before the hold goes up. A take can sit between the
-// fixture's own open-time wait and this one — a row's earlier write starting
-// a stream takes, for the first segment of the stream is a roll — and its
-// refill rides a directory sync that the hold parks forever, so a roll that
-// finds the spare the take left the pool short of would wait on the held
-// refill: the write is refused again and again, bounded yields at a time,
-// where before the hold the same refill lands a moment later. Settled, every
-// spare the roll needs is ready, and the sync the hold parks is the
-// refill of the take the roll itself makes.
+// The helper settles no pool. A caller can hold, while it runs, the very
+// spare-making call its roll releases — the crossing shape, whose roll is
+// the release of a hold the pool's refill parks on — and a settle first
+// would park on that held call until the roll it waits for released it: the
+// row would hang to its timeout. A roll that writes takes its spare after
+// the hold is up, so its caller awaits through awaitSettledSpare, which
+// closes the take-and-refill window the write would otherwise race.
 func awaitSpare(t *testing.T, f *journaltest.Fixture, roll func()) {
 	t.Helper()
 
-	f.WaitSpares()
 	before := segmentFiles(t, f)
 	held := f.Seam.Hold(t, kit.OpSyncDir, "*")
 	defer held.Release()
@@ -1129,6 +1127,46 @@ func awaitSpare(t *testing.T, f *journaltest.Fixture, roll func()) {
 
 	if after := segmentFiles(t, f); len(after) != len(before)+1 {
 		t.Fatalf("the directory sync was reached with %d segment files, want one more than %d: not the sync after a spare's rename", len(after), len(before))
+	}
+}
+
+// awaitSettledSpare awaits a roll that writes: the roll's take happens after
+// the helper's hold is up, so every spare the take needs must be ready
+// before it — settled — or the take waits on the refill of a take between
+// the fixture's own open-time wait and this one, whose directory sync rides
+// the hold: a row's earlier write starting a stream takes, for the first
+// segment of a stream is a roll, and the write is refused over yields the
+// held refill cannot rescue. The settle parks on no seam call and takes no
+// clock, for it waits on the pool's own settle event.
+func awaitSettledSpare(t *testing.T, f *journaltest.Fixture, roll func()) {
+	t.Helper()
+
+	f.WaitSpares()
+	awaitSpare(t, f, roll)
+}
+
+// TestAwaitSpareWhoseRollReleasesAHeldCreate pins the helper's settle-free
+// contract at its one caller built around the shape: a row whose roll
+// releases the hold a parked refill waits on — the crossing leg's release as
+// roll. The pool is a spare short with its refill parked at the held create
+// when the helper runs, so a helper that settled first would park on the
+// very create the roll it waits for releases, and the row would hang to the
+// run's own timeout. The bounded wait below is the assertion, for the park
+// sits in a goroutine no clock can reach and only the roll releases.
+func TestAwaitSpareWhoseRollReleasesAHeldCreate(t *testing.T) {
+	f := journaltest.NewUnwatched(t)
+	held := f.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
+	writeSynced(t, f, 0, 0, 0, journaltest.FixtureSegmentCap) // the roll parks the refill's create
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		awaitSpare(t, f, held.Release)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("awaitSpare never returned: a settle would park on the held create its roll releases, want the release free of any settle")
 	}
 }
 
@@ -1223,7 +1261,7 @@ func TestRFC28C_SparesAreReAdopted(t *testing.T) {
 	// at its target as the open counts it and no spare-making is in flight
 	// when the pool is read.
 	f := journaltest.New(t)
-	awaitSpare(t, f, func() { writeSynced(t, f, 0, 2, 0, journaltest.FixtureSegmentCap) })
+	awaitSettledSpare(t, f, func() { writeSynced(t, f, 0, 2, 0, journaltest.FixtureSegmentCap) })
 	f.Reopen()
 	before := poolNow(t, f)
 	f.Crash()
@@ -1568,7 +1606,7 @@ func TestRFC28C_RetiredSegmentsAreRecycled(t *testing.T) {
 	// At target: the roll's spare is replaced before the retirement, which
 	// then unlinks.
 	g := journaltest.NewUnwatched(t)
-	awaitSpare(t, g, func() { recs, seg = fillSegment(t, g, 0, 0, size) })
+	awaitSettledSpare(t, g, func() { recs, seg = fillSegment(t, g, 0, 0, size) })
 	syncFiles(t, g.Share(0), recs[0].id)
 	g.Reopen()
 	releaseRecs(t, g, recs)

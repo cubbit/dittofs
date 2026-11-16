@@ -160,7 +160,7 @@ func newFixture(tb testing.TB, fault sim.Fault, watch bool, segCap int64, set fu
 	}
 
 	f.open(true)
-	f.awaitSpares()
+	f.WaitSpares()
 	return f
 }
 
@@ -591,23 +591,26 @@ func (f *Fixture) Allocated() int64 {
 	return n
 }
 
-// awaitSpares blocks until the journal the fixture just opened has made every
-// spare its open targeted, or reports why it stopped filling. Open returns
-// before the pool's first spares are made — a write that rolls is refused,
-// naming the spare limit, until one is ready — so the journal the fixture
-// hands its checks would otherwise race a background fill. The wait is the
-// pool's own settle event, handed over by the open, so the fixture parks on
-// no clock, polls nothing, and a pool that cannot fill answers its refusal
-// here, in the fixture whose settings built it, rather than in the check.
+// WaitSpares blocks until the pool of the journal the fixture opened last has
+// made every spare it is short of and settled. Open returns before the
+// pool's first spares are made — a write that rolls is refused, naming the
+// spare limit, until one is ready — so a check that runs soon after an open,
+// or one that holds the seam's syncs and so parks a refill mid-flight, races
+// a background fill unless it waits here first; a row's own earlier writes
+// can also leave the pool short between waits, for writes take, and the
+// wait serves at any point of the journal's life, the fixture's first open
+// included. It relies on the pool's own settle events, parks on no clock,
+// polls nothing, and a pool that cannot fill answers its refusal here, in
+// the fixture whose settings built it, rather than in the check.
 //
-// decision: only a fresh open runs this — an open of a journal that has run
-// is refused with ErrNotImplemented, so the wait sits once at the fixture's
-// start, never under a fault a check armed later. The one construction-time
-// fault the fixture takes fails at Init, before any open, so no fault is
-// under the wait at all. Withdrawn together with the callback that carries
-// it, by a Stats that reports the ready spares or a write that waits: either
-// end takes the wait.
-func (f *Fixture) awaitSpares() {
+// decision: only a fresh open runs this unbidden — an open of a journal that
+// has run is refused with ErrNotImplemented, so nothing asks a design change
+// to run the wait under a fault a check armed later. The one
+// construction-time fault the fixture takes fails at Init, before any open,
+// so no fault is under the wait at all. Withdrawn together with the callback
+// that carries it, by a Stats that reports the ready spares or a write that
+// waits: either end takes the wait.
+func (f *Fixture) WaitSpares() {
 	f.tb.Helper()
 
 	if f.spares == nil {
@@ -617,18 +620,4 @@ func (f *Fixture) awaitSpares() {
 	if err := f.spares.WaitSpares(f.tb.Context()); err != nil {
 		f.tb.Fatalf("fixture: the journal's pool did not reach its spares: %v", err)
 	}
-}
-
-// WaitSpares waits until the pool of the journal the fixture opened last has
-// made every spare it is short of and settled — a check whose next steps take
-// no seam call, or hold the seam's syncs and so park a refill mid-flight,
-// then finds every spare its roll needs ready there, none still owed to a
-// take the check's own earlier writes made. The wait relays on the pool's
-// settle events, so it serves at any point of the journal's life, the
-// fixture's first open included, and a pool that cannot fill answers its
-// refusal rather than parking forever.
-func (f *Fixture) WaitSpares() {
-	f.tb.Helper()
-
-	f.awaitSpares()
 }
