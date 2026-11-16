@@ -655,6 +655,10 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 				return rebuilt{}, kindResults{}, tails{}, ferr
 			}
 		}
+		// The aside headers charge their own slots beside the records the
+		// feed charged, before the scan keeps only what the later phases
+		// read — the header of an aside is the one placement its bytes have.
+		filter.chargeAsides(sc)
 		// The index buffer holds what the record said; the scan keeps only
 		// what the later phases read, so a journal of millions of records
 		// does not hold every converted record twice.
