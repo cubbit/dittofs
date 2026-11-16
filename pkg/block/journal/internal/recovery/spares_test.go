@@ -9,6 +9,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
@@ -1088,5 +1089,95 @@ func TestSparesPhaseUnlinksACandidateTheQueryAnswersNotWhole(t *testing.T) {
 	}
 	if got := r.seam.Calls(kit.OpSyncDir); got != dirSyncs+1 {
 		t.Errorf("spares: the open spent %d directory syncs, want exactly %d beside the fixture's %d: the one for the spare staged beside the not-whole one", got, dirSyncs+1, dirSyncs)
+	}
+}
+
+// TestSparesPhaseACancelledOpenWithNoTakeUnlinksNothing plants a single short
+// record-less candidate — no whole spare, so the phase stages nothing to
+// take — and cancels the open under the spares phase's own span: the
+// context check the phase makes past its staging guards the removals too,
+// not only the adoptions, so the cancelled open answers the context's error
+// and the short spare keeps its name — nothing zeroed, nothing synced,
+// nothing unlinked.
+func TestSparesPhaseACancelledOpenWithNoTakeUnlinksNothing(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	short := core.SegmentID(4)
+	r.write(format.SegmentName(short), make([]byte, testCap/2))
+	removes := r.seam.Calls(kit.OpRemove)
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	tracer := func(tctx context.Context, op core.SpanOp, _ ...slog.Attr) (context.Context, func(error)) {
+		if op == core.SpanOpenSpares {
+			cancel()
+		}
+		return tctx, func(error) {}
+	}
+	_, err := Run(ctx, r.runDepsWithTracer(tracer), core.Version{}, journalID, nil)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("spares: the open cancelled under the phase's own span, staging nothing, answered err %v, want context.Canceled before the removals", err)
+	}
+	if !slices.Contains(r.listing(), format.SegmentName(short)) {
+		t.Errorf("spares: the cancelled open unlinked the short spare %s; the directory holds %v, want it kept: the phase's context check guards the removals too", format.SegmentName(short), r.listing())
+	}
+	if got := r.seam.Calls(kit.OpRemove); got != removes {
+		t.Errorf("spares: the cancelled open removed something, got %d removes, want %d, the count before the run", got, removes)
+	}
+	if got := r.seam.Calls(kit.OpSyncDir); got != dirSyncs {
+		t.Errorf("spares: the cancelled open synced the directory, got %d syncs, want %d, the count before the run", got, dirSyncs)
+	}
+}
+
+// TestSparesPhaseACancelledPastItsStagingWithNoTakeUnlinksNothing plants a
+// single cap-sized record-less candidate whose allocation query the seam
+// answers not whole, and cancels the open while that query is held: the
+// staging then reaches its end having staged nothing to take — the phase's
+// context check past it is the last thing standing before the unlink loop,
+// and a cancellation delivered under the query is what it answers. The
+// cancelled open takes the candidate's un-unlinked presence and answers the
+// context's error: nothing zeroed, nothing synced, nothing unlinked — the
+// shape a phase whose past-staging check guarded only its adoptions would
+// unlink, running the removals of a cancelled open.
+func TestSparesPhaseACancelledPastItsStagingWithNoTakeUnlinksNothing(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	holed := core.SegmentID(6)
+	r.write(format.SegmentName(holed), make([]byte, testCap))
+	removes := r.seam.Calls(kit.OpRemove)
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+	if err := r.seam.Schedule(kit.NotWhole(format.SegmentName(holed), 1)); err != nil {
+		t.Fatalf("fixture: schedule the not-whole answer: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	held := r.seam.HoldFirst(t, kit.OpAllocated, format.SegmentName(holed))
+	done := make(chan error, 1)
+	go func() {
+		_, err := Run(ctx, r.runDeps(), core.Version{}, journalID, nil)
+		done <- err
+	}()
+
+	<-held.Reached()
+	cancel()
+	held.Release()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("spares: the open cancelled past the phase's staging, staging nothing, answered err %v, want context.Canceled before the removals", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("spares: the cancelled open never answered; the open is parked somewhere")
+	}
+	if !slices.Contains(r.listing(), format.SegmentName(holed)) {
+		t.Errorf("spares: the cancelled open unlinked the not-whole candidate %s; the directory holds %v, want it kept: the phase's context check guards the removals too", format.SegmentName(holed), r.listing())
+	}
+	if got := r.seam.Calls(kit.OpRemove); got != removes {
+		t.Errorf("spares: the cancelled open removed something, got %d removes, want %d, the count before the run", got, removes)
+	}
+	if got := r.seam.Calls(kit.OpSyncDir); got != dirSyncs {
+		t.Errorf("spares: the cancelled open synced the directory, got %d syncs, want %d, the count before the run", got, dirSyncs)
 	}
 }

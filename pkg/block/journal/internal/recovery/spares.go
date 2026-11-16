@@ -155,9 +155,10 @@ type AdoptedSpare struct {
 // resurrect a short spare, which is harmless — the next open re-reads the
 // same bytes, decides the same and unlinks it again.
 //
-// The phase checks its context before the first write and before the
-// directory sync, so a cancellation under it leaves nothing done: no
-// candidate is zeroed, taken or unlinked past the cancellation.
+// The phase checks its context before the first write and again, past its
+// staging, before the whole write-and-unlink pass — the directory sync, the
+// zeroing and the removals alike — so a cancellation under it leaves nothing
+// done: no candidate is zeroed, taken or unlinked past the cancellation.
 //
 // The phase is the open's first writing one, so it refuses first, before
 // any candidate is touched; each slot is read through the open's reader, so
@@ -237,10 +238,14 @@ func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.Jou
 		// i-th id's below.
 		take = append(take, id)
 	}
+	// The context is checked again where the phase begins to act, so the
+	// check guards the whole write-and-unlink pass whatever it decided —
+	// adoptions staged or only removals collected: a cancellation here
+	// leaves nothing zeroed, nothing synced and nothing unlinked.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(take) > 0 {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
 		// A process that died may have left a spare's directory entry without
 		// the sync its own rename was owed: a spare taken before this sync
 		// could lose its name — and the records a later open re-appends into
