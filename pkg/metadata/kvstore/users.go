@@ -66,59 +66,109 @@ func byIndex(r kv.Reader, row kv.KeyValue, key func(entity.PrincipalID) []byte) 
 // ID would hold everyone's grant.
 func fixedID(id entity.PrincipalID) bool { return [15]byte(id[:15]) == [15]byte{} }
 
-func (c ControlPlane) PutUser(ctx context.Context, u entity.User) error {
+// PutUser creates a user, expect zero, or changes the one whose generation
+// expect names, raising its generation.
+func (c ControlPlane) PutUser(ctx context.Context, u entity.User, expect uint64, a entity.Alloc) error {
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return putUser(tx, u, expect, a) })
+}
+
+func putUser(tx kv.Txn, u entity.User, expect uint64, a entity.Alloc) error {
 	if u.Principal.Kind != entity.PrincipalUser || fixedID(u.Principal.ID) || u.Name == "" {
 		return merrs.NewInvalidArgumentError("a user needs a minted user principal and a name")
 	}
 	if !u.Primary.IsZero() && u.Primary.Kind != entity.PrincipalGroup {
 		return merrs.NewInvalidArgumentError("a user's primary group must be a group")
 	}
+	if u.Role.String() == "" {
+		return merrs.NewInvalidArgumentError("unknown API role")
+	}
 	if err := validIDs(u.IDs, entity.SchemeUID, entity.SchemeSID, entity.SchemeKerberos); err != nil {
 		return err
 	}
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		key := userKey(u.Principal.ID)
-		b, existed, err := get(tx, key)
-		if err != nil {
+	if err := noAlloc(a); err != nil {
+		return err
+	}
+	key := userKey(u.Principal.ID)
+	b, existed, err := get(tx, key)
+	if err != nil {
+		return err
+	}
+	var old entity.User
+	if existed {
+		if old, err = decodeUser(u.Principal.ID, b); err != nil {
 			return err
 		}
-		var old entity.User
-		if existed {
-			if old, err = decodeUser(u.Principal.ID, b); err != nil {
-				return err
-			}
-		}
-		if err := reindex(tx, u.Principal, existed, old.Name, u.Name, old.IDs, u.IDs); err != nil {
-			return err
-		}
-		return tx.Set(key, encodeUser(u))
-	})
+	}
+	if err := expected(old.Generation, expect); err != nil {
+		return err
+	}
+	if err := reindex(tx, u.Principal, existed, old.Name, u.Name, old.IDs, u.IDs); err != nil {
+		return err
+	}
+	u.Generation = nextVersion(tx, old.Generation)
+	return tx.Set(key, encodeUser(u))
 }
 
-func (c ControlPlane) PutGroup(ctx context.Context, g entity.Group) error {
+// PutGroup creates a group, expect zero, or changes the one whose generation
+// expect names, raising its generation.
+func (c ControlPlane) PutGroup(ctx context.Context, g entity.Group, expect uint64, a entity.Alloc) error {
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return putGroup(tx, g, expect, a) })
+}
+
+func putGroup(tx kv.Txn, g entity.Group, expect uint64, a entity.Alloc) error {
 	if g.Principal.Kind != entity.PrincipalGroup || fixedID(g.Principal.ID) || g.Name == "" {
 		return merrs.NewInvalidArgumentError("a group needs a minted group principal and a name")
 	}
 	if err := validIDs(g.IDs, entity.SchemeGID, entity.SchemeSID); err != nil {
 		return err
 	}
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		key := groupKey(g.Principal.ID)
-		b, existed, err := get(tx, key)
-		if err != nil {
+	if err := noAlloc(a); err != nil {
+		return err
+	}
+	key := groupKey(g.Principal.ID)
+	b, existed, err := get(tx, key)
+	if err != nil {
+		return err
+	}
+	var old entity.Group
+	if existed {
+		if old, err = decodeGroup(g.Principal.ID, b); err != nil {
 			return err
 		}
-		var old entity.Group
-		if existed {
-			if old, err = decodeGroup(g.Principal.ID, b); err != nil {
-				return err
-			}
-		}
-		if err := reindex(tx, g.Principal, existed, old.Name, g.Name, old.IDs, g.IDs); err != nil {
-			return err
-		}
-		return tx.Set(key, encodeGroup(g))
-	})
+	}
+	if err := expected(old.Generation, expect); err != nil {
+		return err
+	}
+	if err := reindex(tx, g.Principal, existed, old.Name, g.Name, old.IDs, g.IDs); err != nil {
+		return err
+	}
+	g.Generation = nextVersion(tx, old.Generation)
+	return tx.Set(key, encodeGroup(g))
+}
+
+// noAlloc refuses an Alloc naming any ID.
+//
+// ponytail: the store keeps no uid, gid or RID counter yet, so a write can
+// allocate nothing and takes every ID as the record holds it. Draw the named
+// IDs from those counters in the write's transaction once they exist.
+func noAlloc(a entity.Alloc) error {
+	if a != (entity.Alloc{}) {
+		return merrs.NewInvalidArgumentError("the store allocates no uid, gid or RID yet")
+	}
+	return nil
+}
+
+// expected refuses a write whose caller read another generation or version
+// than the stored one, zero standing for no record. The stored one is read
+// with conflict tracking, so of two writes from one read, the second to
+// commit conflicts and then finds it moved. An expect value is opaque and
+// belongs to one record kind: a caller passes back what it read from that
+// record, never a value it computed or read from another kind.
+func expected(stored, expect uint64) error {
+	if stored != expect {
+		return entity.ErrGenerationMismatch
+	}
+	return nil
 }
 
 // validIDs refuses a scheme the principal's kind may not carry, an empty
@@ -203,44 +253,56 @@ func claim(tx kv.Txn, key []byte, what string, p entity.Principal, value []byte,
 	return tx.Set(key, value)
 }
 
-func (c ControlPlane) DeleteUser(ctx context.Context, p entity.Principal) error {
+// DeleteUser removes the user whose generation expect names.
+func (c ControlPlane) DeleteUser(ctx context.Context, p entity.Principal, expect uint64) error {
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return deleteUser(tx, p, expect) })
+}
+
+func deleteUser(tx kv.Txn, p entity.Principal, expect uint64) error {
 	if p.Kind != entity.PrincipalUser {
 		return merrs.NewInvalidArgumentError("not a user")
 	}
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		b, ok, err := get(tx, userKey(p.ID))
-		if err != nil || !ok {
-			return notFound(err, p)
-		}
-		u, err := decodeUser(p.ID, b)
-		if err != nil {
-			return err
-		}
-		return deletePrincipal(tx, p, userKey(p.ID), u.Name, u.IDs)
-	})
+	b, ok, err := get(tx, userKey(p.ID))
+	if err != nil || !ok {
+		return notFound(err, p)
+	}
+	u, err := decodeUser(p.ID, b)
+	if err != nil {
+		return err
+	}
+	if err := expected(u.Generation, expect); err != nil {
+		return err
+	}
+	return deletePrincipal(tx, p, userKey(p.ID), u.Name, u.IDs)
 }
 
-func (c ControlPlane) DeleteGroup(ctx context.Context, p entity.Principal) error {
+// DeleteGroup removes the group whose generation expect names, with its
+// members' rows in both directions.
+func (c ControlPlane) DeleteGroup(ctx context.Context, p entity.Principal, expect uint64) error {
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return deleteGroup(tx, p, expect) })
+}
+
+func deleteGroup(tx kv.Txn, p entity.Principal, expect uint64) error {
 	if p.Kind != entity.PrincipalGroup {
 		return merrs.NewInvalidArgumentError("not a group")
 	}
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		b, ok, err := get(tx, groupKey(p.ID))
-		if err != nil || !ok {
-			return notFound(err, p)
-		}
-		g, err := decodeGroup(p.ID, b)
-		if err != nil {
-			return err
-		}
-		// Its members' rows, both directions.
-		if err := dropPairs(tx, membersPrefix(p.ID), func(m []byte) []byte {
-			return memberRevKey(entity.PrincipalID(m), p.ID)
-		}); err != nil {
-			return err
-		}
-		return deletePrincipal(tx, p, groupKey(p.ID), g.Name, g.IDs)
-	})
+	b, ok, err := get(tx, groupKey(p.ID))
+	if err != nil || !ok {
+		return notFound(err, p)
+	}
+	g, err := decodeGroup(p.ID, b)
+	if err != nil {
+		return err
+	}
+	if err := expected(g.Generation, expect); err != nil {
+		return err
+	}
+	if err := dropPairs(tx, membersPrefix(p.ID), func(m []byte) []byte {
+		return memberRevKey(entity.PrincipalID(m), p.ID)
+	}); err != nil {
+		return err
+	}
+	return deletePrincipal(tx, p, groupKey(p.ID), g.Name, g.IDs)
 }
 
 func notFound(err error, p entity.Principal) error {
@@ -251,7 +313,8 @@ func notFound(err error, p entity.Principal) error {
 }
 
 // deletePrincipal removes p's record, its index rows, the groups it is a
-// member of, its grants and its quotas. Files keep naming p, as an unknown
+// member of, its grants and its quotas, moving the grant-list version of
+// every share it held a grant on. Files keep naming p, as an unknown
 // principal. The membership and grant rows are found by scan, so their ranges are
 // guarded: a membership or grant added for p after this transaction's
 // snapshot makes one of the two conflict, rather than leave a row naming a
@@ -270,10 +333,17 @@ func deletePrincipal(tx kv.Txn, p entity.Principal, record []byte, name string, 
 	}); err != nil {
 		return err
 	}
+	var granted []entity.ShareID
 	if err := dropPairs(tx, grantsOfPrefix(p.ID), func(share []byte) []byte {
+		granted = append(granted, entity.ShareID(share))
 		return grantKey(entity.ShareID(share), p.ID)
 	}); err != nil {
 		return err
+	}
+	for _, share := range granted {
+		if err := moveGrantVersion(tx, share); err != nil {
+			return err
+		}
 	}
 	if err := tx.Delete(nameKey(nameKind(p.Kind), name)); err != nil {
 		return err
@@ -318,30 +388,34 @@ func dropPairs(tx kv.Txn, prefix []byte, twin func(id []byte) []byte) error {
 // AddMember adds a user or a nested group to a group. Both must exist; the
 // reads that check so conflict with a deletion of either.
 func (c ControlPlane) AddMember(ctx context.Context, m entity.Membership) error {
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return addMember(tx, m) })
+}
+
+func addMember(tx kv.Txn, m entity.Membership) error {
 	if m.Group.Kind != entity.PrincipalGroup || (m.Member.Kind != entity.PrincipalUser && m.Member.Kind != entity.PrincipalGroup) || m.Group == m.Member {
 		return merrs.NewInvalidArgumentError("a membership is a user or another group in a group")
 	}
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		for _, p := range []entity.Principal{m.Group, m.Member} {
-			if _, ok, err := get(tx, principalKey(p)); err != nil || !ok {
-				return notFound(err, p)
-			}
+	for _, p := range []entity.Principal{m.Group, m.Member} {
+		if _, ok, err := get(tx, principalKey(p)); err != nil || !ok {
+			return notFound(err, p)
 		}
-		kind := encodeKind(m.Member.Kind)
-		if err := tx.Set(memberKey(m.Group.ID, m.Member.ID), kind); err != nil {
-			return err
-		}
-		return tx.Set(memberRevKey(m.Member.ID, m.Group.ID), kind)
-	})
+	}
+	kind := encodeKind(m.Member.Kind)
+	if err := tx.Set(memberKey(m.Group.ID, m.Member.ID), kind); err != nil {
+		return err
+	}
+	return tx.Set(memberRevKey(m.Member.ID, m.Group.ID), kind)
 }
 
 // RemoveMember removes both rows of a membership; removing one that does not
 // exist is not an error.
 func (c ControlPlane) RemoveMember(ctx context.Context, m entity.Membership) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		if err := tx.Delete(memberKey(m.Group.ID, m.Member.ID)); err != nil {
-			return err
-		}
-		return tx.Delete(memberRevKey(m.Member.ID, m.Group.ID))
-	})
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return removeMember(tx, m) })
+}
+
+func removeMember(tx kv.Txn, m entity.Membership) error {
+	if err := tx.Delete(memberKey(m.Group.ID, m.Member.ID)); err != nil {
+		return err
+	}
+	return tx.Delete(memberRevKey(m.Member.ID, m.Group.ID))
 }

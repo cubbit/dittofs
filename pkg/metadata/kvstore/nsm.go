@@ -40,10 +40,6 @@ func (s *Store) RaiseNSMState(ctx context.Context, n uint32) error {
 }
 
 func nsmIn(r kv.Reader) (uint32, error) {
-	b, ok, err := get(r, nsmKey())
-	if err != nil || !ok {
-		return 0, err
-	}
-	n, err := decodeCounter(b)
+	n, err := counterIn(r, nsmKey())
 	return uint32(n), err
 }

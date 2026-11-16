@@ -15,12 +15,36 @@ type User struct {
 	Primary   Principal   // the group a new file gets; zero: the creator's own principal
 	Disabled  bool
 	Secret    SecretRef // by reference, never the credential itself
+	Email     string    // optional, never defaulted, and never a spelling: nothing looks a user up by it
+	// Role, NotBefore and MustChange are the management API's: they grant
+	// nothing on files.
+	Role       APIRole
+	NotBefore  time.Time // store time, in whole seconds: a credential issued before it is refused
+	MustChange bool      // set with a generated password: until it changes, sign-in permits only that change
+	Generation uint64    // raised by every write of the record; the management API's entity tag
 }
 
+// APIRole is a user's role in the management API, in increasing order.
+type APIRole uint8
+
+const (
+	RoleNone APIRole = iota
+	RoleViewer
+	RoleOperator
+	RoleAdmin
+)
+
+var apiRoles = []string{RoleNone: "none", RoleViewer: "viewer", RoleOperator: "operator", RoleAdmin: "admin"}
+
+func (r APIRole) String() string                { return enumString(apiRoles, r) }
+func (r APIRole) MarshalText() ([]byte, error)  { return enumMarshal(apiRoles, r) }
+func (r *APIRole) UnmarshalText(b []byte) error { return enumUnmarshal(apiRoles, r, b) }
+
 type Group struct {
-	Principal Principal
-	Name      string
-	IDs       ProtocolIDs
+	Principal  Principal
+	Name       string
+	IDs        ProtocolIDs
+	Generation uint64 // raised by every write of the record, as a user's is
 }
 
 // Membership is one member of one group, its own record in both directions,
@@ -89,6 +113,14 @@ type Share struct {
 	// never by a share put.
 	Namespaces []NamespaceGen
 	Write      uint32
+	// Generation is raised by every share put: the info record's, not the
+	// state's or the namespaces'.
+	Generation uint64
+	// GrantVersion is the share's grant-list version, its own record, moved
+	// by every grant set or deleted on the share and never by a share put. A
+	// cache of the share's grants keys on it, since a deleted grant has no
+	// version left of its own.
+	GrantVersion uint64
 }
 
 type ShareState uint8
@@ -311,6 +343,18 @@ type Installation struct {
 	// image is a new instance.
 	Instance   [16]byte
 	Generation []byte // empty where the platform offers none
+	// NTLMOff is what turning identity.ntlm back on reads: a write turning it
+	// off sets Off and clears Deleted, and the NT-hash deletion's last step
+	// sets Deleted. Turning it on is refused while Off is set and Deleted is
+	// zero.
+	NTLMOff struct {
+		Off     uint64      // the settings generation of the last write turning identity.ntlm off; zero if none has
+		Deleted OperationID // the NT-hash deletion completed since that write; zero while none has
+	}
+	// SigningKey names the management API's access-token signing key, a
+	// secret owned by this record under "signing_key"; zero until the first
+	// version is sealed.
+	SigningKey SecretRef
 }
 
 // ShareList is raised in the transaction of every share create, delete,
@@ -373,6 +417,7 @@ type Quota struct {
 	Soft      Limit         // allowed beyond it for Grace, then refused as Hard
 	Grace     time.Duration // how long usage may stay above Soft
 	Advisory  Limit         // never refused: crossing it only emits an event
+	Version   uint64        // raised by every change
 }
 
 // Limit is a byte and a file count; zero in either means no limit on it.

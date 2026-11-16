@@ -40,7 +40,7 @@ func AddShare(tb testing.TB, s *kvstore.Store, name string, limit int64) engine.
 		Root: entity.NewFileID(),
 	}
 
-	if err := s.ControlPlane().PutShare(tb.Context(), sh); err != nil {
+	if err := s.ControlPlane().PutShare(tb.Context(), sh, 0); err != nil {
 		tb.Fatalf("enginetest: create share %s: %v", name, err)
 	}
 

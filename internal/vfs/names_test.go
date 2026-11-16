@@ -165,7 +165,7 @@ func TestNamesAddAndRemoveEntries(t *testing.T) {
 	}
 
 	other := n.addShare(t, "other", "/other")
-	n.must(t, n.cp.SetGrant(ctx, entity.ShareGrant{Share: other, Principal: n.fs.Admin.Principal, Access: entity.AccessAdmin}))
+	n.must(t, n.cp.SetGrant(ctx, entity.ShareGrant{Share: other, Principal: n.fs.Admin.Principal, Access: entity.AccessAdmin}, 0))
 	oroot, _, err := n.Root(ctx, n.admin, vfs.ShareRef{Name: "other"})
 	n.must(t, err)
 	var cross *vfs.CrossError
@@ -391,7 +391,7 @@ func TestARemovalJoinsACreateAdmittedBeforeIt(t *testing.T) {
 	// and then waits at the accept lock held above: the mark below comes
 	// after its admission, whatever the scheduling.
 	n.admitted(t, root, created)
-	n.must(t, n.cp.DeleteShare(ctx, n.share, entity.SnapshotsRefuse))
+	n.must(t, n.cp.DeleteShare(ctx, n.share, entity.SnapshotsRefuse, 1))
 	joined := make(chan error)
 	go func() { joined <- n.JoinShare(context.Background(), n.share) }()
 	select {

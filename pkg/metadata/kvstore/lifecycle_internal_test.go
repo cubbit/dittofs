@@ -65,7 +65,7 @@ func shareWithID(t *testing.T, s *Store, name string, id entity.ShareID) entity.
 		Root: entity.NewFileID(),
 	}
 
-	if err := s.ControlPlane().PutShare(ctx, sh); err != nil {
+	if err := s.ControlPlane().PutShare(ctx, sh, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -288,7 +288,7 @@ func TestRaiseVersionLimitsSkipsRemovedShares(t *testing.T) {
 	gone := entity.NewShareID()
 
 	for _, id := range []entity.ShareID{removing.ID, retired.ID, emptied.ID} {
-		if err := s.ControlPlane().DeleteShare(ctx, id, entity.SnapshotsRefuse); err != nil {
+		if err := s.ControlPlane().DeleteShare(ctx, id, entity.SnapshotsRefuse, 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -371,7 +371,7 @@ func TestTagsDerivesEachShareState(t *testing.T) {
 		sh := namedShare(t, s, c.name)
 
 		if c.state != entity.ShareEnabled {
-			if err := s.ControlPlane().DeleteShare(ctx, sh.ID, entity.SnapshotsRefuse); err != nil {
+			if err := s.ControlPlane().DeleteShare(ctx, sh.ID, entity.SnapshotsRefuse, 1); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -953,7 +953,7 @@ func TestTagsInBatches(t *testing.T) {
 	removing, retired, emptied := shares[k-1], shares[k], shares[2*k]
 
 	for _, sh := range []entity.Share{removing, retired, emptied} {
-		if err := s.ControlPlane().DeleteShare(ctx, sh.ID, entity.SnapshotsRefuse); err != nil {
+		if err := s.ControlPlane().DeleteShare(ctx, sh.ID, entity.SnapshotsRefuse, 1); err != nil {
 			t.Fatal(err)
 		}
 	}

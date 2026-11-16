@@ -325,7 +325,7 @@ func TestAWriteOnAContinuouslyAvailableShareIsStable(t *testing.T) {
 	p, err := s.cp.ExportPolicy(ctx, s.share)
 	s.must(t, err)
 	p.SMB |= entity.SMBContinuouslyAvailable
-	s.must(t, s.cp.PutExportPolicy(ctx, p))
+	s.must(t, s.cp.PutExportPolicy(ctx, p, 0))
 	if got := write(ref, 7, vfs.Unstable); len(got) != 1 || got[0] != (entity.Extent{Offset: 7, Length: 3}) {
 		t.Errorf("an unstable write through an open on a continuously available share: committed %v, want its extent", got)
 	}
@@ -749,7 +749,7 @@ func TestAReadOnlyShareRefusesWritesThroughAnOpen(t *testing.T) {
 	p, err := s.cp.ExportPolicy(ctx, s.share)
 	s.must(t, err)
 	p.ReadOnly = true
-	s.must(t, s.cp.PutExportPolicy(ctx, p))
+	s.must(t, s.cp.PutExportPolicy(ctx, p, 0))
 	s.on(contenttest.OpWrite, func(entity.FileID) { t.Error("a write on a read-only share was staged") })
 	s.on(contenttest.OpDeallocate, func(entity.FileID) { t.Error("a deallocate on a read-only share was staged") })
 	if _, err := s.Write(ctx, pc, ref, 0, []byte("x"), vfs.Unstable); !errors.Is(err, vfs.ErrReadOnly) {
@@ -946,7 +946,7 @@ func TestOnlyAnSMBOpenFlushesAndALockStateWritesStable(t *testing.T) {
 	p, err := s.cp.ExportPolicy(ctx, s.share)
 	s.must(t, err)
 	p.SMB |= entity.SMBContinuouslyAvailable
-	s.must(t, s.cp.PutExportPolicy(ctx, p))
+	s.must(t, s.cp.PutExportPolicy(ctx, p, 0))
 	commits := s.synced()
 	if _, err := s.Write(ctx, pc, lref, 0, []byte("abc"), vfs.Unstable); err != nil {
 		t.Fatalf("a write through the lock state: %v", err)

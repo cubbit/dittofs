@@ -62,7 +62,7 @@ func (c *composition) continuouslyAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.SMB |= entity.SMBContinuouslyAvailable
-	if err := cp.PutExportPolicy(t.Context(), p); err != nil {
+	if err := cp.PutExportPolicy(t.Context(), p, 0); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -277,7 +277,7 @@ func v20(t *testing.T, opts ...enginetest.Option) {
 		c := compose(t, opts...)
 		h, _ := c.owned(t, "f", c.alice.Principal, 0o644)
 		q := entity.Quota{Principal: c.alice.Principal, Hard: entity.Limit{Bytes: 4}}
-		if err := c.FS.Store.ControlPlane().SetQuota(t.Context(), c.Share.ID, q); err != nil {
+		if err := c.FS.Store.ControlPlane().SetQuota(t.Context(), c.Share.ID, q, 0); err != nil {
 			t.Fatal(err)
 		}
 		start := time.Now()
