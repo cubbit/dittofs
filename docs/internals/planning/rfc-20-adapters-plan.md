@@ -789,7 +789,7 @@ D20). The one settings table, with the adapters' section, and `Check`, wired int
 reconcile and into the settings routes, are RFC 13's plan's epic 5 (#4059). This epic writes
 what reconcile calls for an adapter: `Reconfigure`, or `New`, then the old one's stop and the
 new one's start. An adapter refused with nothing serving, a port held for a moment at boot,
-is retried on reconcile's read backoff, 1 s doubling to 30 s, until it serves; one that serves
+is retried on its own backoff in reconcile, 1 s doubling to 30 s, until it serves; one that serves
 is retried only when the settings generation moves.
 
 RFC sections: §3.4's "built by `node.New`", §3.6's sequence, §3.7's conditions, §10.1's alerting
