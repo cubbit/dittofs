@@ -146,7 +146,7 @@ func TestHandleMovesNameTheSegmentsTheyTouched(t *testing.T) {
 			name:  "LoseSuperseded",
 			setup: threeSegments,
 			run: func(t *testing.T, ix *Index) []core.SegmentID {
-				_, segs, err := ix.LoseSuperseded(testFile, ext(4096, 4096), ver(4))
+				_, segs, err := ix.LoseSuperseded(testFile, ext(4096, 4096), ver(4), 2)
 				if err != nil {
 					t.Fatalf("LoseSuperseded: %v", err)
 				}

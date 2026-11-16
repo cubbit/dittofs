@@ -13,12 +13,14 @@ import (
 // was superseded, and Lose, for every other reason, the negative control.
 var lossCalls = []struct {
 	name string
-	call func(*Index, core.FileID, core.Extent, core.Version) (HeldDelta, []core.SegmentID, error)
+	call func(*Index, core.FileID, core.Extent, core.Version, core.Seq) (HeldDelta, []core.SegmentID, error)
 	// yieldsLoss is whether Since yields a marker for the loss.
 	yieldsLoss bool
 }{
 	{"superseded", (*Index).LoseSuperseded, false},
-	{"synced", (*Index).Lose, true},
+	{"synced", func(ix *Index, id core.FileID, e core.Extent, v core.Version, _ core.Seq) (HeldDelta, []core.SegmentID, error) {
+		return ix.Lose(id, e, v)
+	}, true},
 }
 
 // TestSupersededLossCutsItsExtentWithNoMarker checks that a superseded synced
@@ -39,7 +41,9 @@ func TestSupersededLossCutsItsExtentWithNoMarker(t *testing.T) {
 				f.write(write(6, 4, b, 5))
 				return nil
 			})
-			hd, segs, err := row.call(ix, id, ext(4, 4), ver(5))
+			// The named seq holds nothing in this row, so the superseded
+			// arm's extra clause is inert and the two legs cut alike.
+			hd, segs, err := row.call(ix, id, ext(4, 4), ver(5), 4)
 			if err != nil {
 				t.Fatalf("loss = %v, want no error", err)
 			}
@@ -79,8 +83,9 @@ func TestSupersededLossCutsItsExtentWithNoMarker(t *testing.T) {
 				return
 			}
 			// The same loss again cuts nothing more: no piece below v5 remains
-			// inside e, so what is held is unchanged.
-			if _, _, err := ix.LoseSuperseded(id, ext(4, 4), ver(5)); err != nil {
+			// inside e and the seq it names holds nothing, so what is held
+			// is unchanged.
+			if _, _, err := ix.LoseSuperseded(id, ext(4, 4), ver(5), 4); err != nil {
 				t.Fatalf("second superseded loss = %v, want no error", err)
 			}
 			if got := heldPieces(&ix.fs, id); !slices.Equal(got, want) {
@@ -115,7 +120,7 @@ func TestSupersededLossRaisesTheChangeVersion(t *testing.T) {
 		f.write(write(0, 12, a, 3))
 		return nil
 	})
-	if _, _, err := ix.LoseSuperseded(id, ext(4, 4), ver(9)); err != nil {
+	if _, _, err := ix.LoseSuperseded(id, ext(4, 4), ver(9), 4); err != nil {
 		t.Fatalf("LoseSuperseded = %v, want no error", err)
 	}
 	if _, err := ix.Fill(7, id, write(4, 4, rec(2, 0), 6), 30, ver(4)); !errors.Is(err, core.ErrStaleFill) {
@@ -142,7 +147,7 @@ func TestSupersededLossRefusesAZeroLengthExtent(t *testing.T) {
 		f.write(write(0, 12, a, 3))
 		return nil
 	})
-	hd, segs, err := ix.LoseSuperseded(id, ext(4, 0), ver(5))
+	hd, segs, err := ix.LoseSuperseded(id, ext(4, 0), ver(5), 0)
 	if !errors.Is(err, core.ErrZeroLength) {
 		t.Fatalf("superseded loss of a zero-length extent = %v, want ErrZeroLength", err)
 	}
@@ -158,4 +163,101 @@ func TestSupersededLossRefusesAZeroLengthExtent(t *testing.T) {
 	if n := markerCount(&ix.fs, id); n != 0 {
 		t.Fatalf("markers = %d after a refused superseded loss, want 0", n)
 	}
+}
+
+// TestSupersededLossExcludesTheNamedRecordOverItsExtent pins the cut's own
+// rule at the writer's convention, where the loss record's version is the
+// dropped record's own: the version clause alone never reaches the named
+// content, and the sequence clause is what excludes it over the loss
+// extent. Four rows over one shape: the named record's piece over e goes
+// and its remainder stays; older content under the loss's version goes as
+// any cut takes it; a different record at the loss's exact version — one
+// the loss does not name — stays held over e, so the name is a sequence
+// match, never a version equality; and the named record outside e is
+// untouched, the loss answering only over the extent its header carries.
+func TestSupersededLossExcludesTheNamedRecordOverItsExtent(t *testing.T) {
+	cut := func(ix *Index, id core.FileID, e core.Extent, v core.Version, dropped core.Seq) error {
+		t.Helper()
+		_, _, err := ix.LoseSuperseded(id, e, v, dropped)
+		return err
+	}
+	got := func(ix *Index, id core.FileID) []Piece {
+		t.Helper()
+		return heldPieces(&ix.fs, id)
+	}
+	t.Run("the named record is excluded over e by its sequence", func(t *testing.T) {
+		ix := New(1 << 20)
+		id := fid(1)
+		r := rec(2, 0)
+		change(t, &ix.fs, id, func(f *file) error {
+			f.write(Placed{Extent: ext(0, 128), Record: r, Version: ver(5), Seq: 2})
+			return nil
+		})
+		if err := cut(ix, id, ext(0, 64), ver(5), 2); err != nil {
+			t.Fatalf("LoseSuperseded = %v, want no error", err)
+		}
+		want := []Piece{
+			{Extent: ext(64, 64), Record: r, Skip: 64, Version: ver(5), Seq: 2},
+		}
+		if got := got(ix, id); !slices.Equal(got, want) {
+			t.Fatalf("held after the named cut:\n got  %+v\n want %+v: the piece over the loss extent goes by its sequence, the remainder stays", got, want)
+		}
+	})
+	t.Run("older content over e goes as the version clause takes it", func(t *testing.T) {
+		ix := New(1 << 20)
+		id := fid(1)
+		q := rec(1, 0)
+		change(t, &ix.fs, id, func(f *file) error {
+			f.write(Placed{Extent: ext(0, 128), Record: q, Version: ver(3), Seq: 1})
+			return nil
+		})
+		if err := cut(ix, id, ext(0, 64), ver(5), 2); err != nil {
+			t.Fatalf("LoseSuperseded = %v, want no error", err)
+		}
+		want := []Piece{
+			{Extent: ext(64, 64), Record: q, Skip: 64, Version: ver(3), Seq: 1},
+		}
+		if got := got(ix, id); !slices.Equal(got, want) {
+			t.Fatalf("held after the version cut:\n got  %+v\n want %+v: the content below the loss's version over e goes, the rest stays", got, want)
+		}
+	})
+	t.Run("a different record at the loss's version stays", func(t *testing.T) {
+		ix := New(1 << 20)
+		id := fid(1)
+		x := rec(3, 0)
+		change(t, &ix.fs, id, func(f *file) error {
+			// X carries the loss's exact version over e and a sequence the
+			// loss does not name: the loss said the dropped content was
+			// superseded, and nothing about its neighbours.
+			f.write(Placed{Extent: ext(0, 64), Record: x, Version: ver(5), Seq: 70})
+			return nil
+		})
+		if err := cut(ix, id, ext(0, 64), ver(5), 2); err != nil {
+			t.Fatalf("LoseSuperseded = %v, want no error", err)
+		}
+		want := []Piece{
+			{Extent: ext(0, 64), Record: x, Version: ver(5), Seq: 70},
+		}
+		if got := got(ix, id); !slices.Equal(got, want) {
+			t.Fatalf("held after the cut naming another record:\n got  %+v\n want %+v: content at the loss's version the loss does not name stays", got, want)
+		}
+	})
+	t.Run("the named record outside e is untouched", func(t *testing.T) {
+		ix := New(1 << 20)
+		id := fid(1)
+		r := rec(2, 128)
+		change(t, &ix.fs, id, func(f *file) error {
+			f.write(Placed{Extent: ext(128, 64), Record: r, Version: ver(5), Seq: 2})
+			return nil
+		})
+		if err := cut(ix, id, ext(0, 64), ver(5), 2); err != nil {
+			t.Fatalf("LoseSuperseded = %v, want no error", err)
+		}
+		want := []Piece{
+			{Extent: ext(128, 64), Record: r, Version: ver(5), Seq: 2},
+		}
+		if got := got(ix, id); !slices.Equal(got, want) {
+			t.Fatalf("held after the cut over another extent:\n got  %+v\n want %+v: the loss answers only over the extent its header carries", got, want)
+		}
+	})
 }

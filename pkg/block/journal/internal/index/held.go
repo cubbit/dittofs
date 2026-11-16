@@ -564,6 +564,28 @@ func (s *heldSet) cutBelow(e core.Extent, v core.Version) {
 	}
 }
 
+// cutSuperseded stops holding the parts inside e the superseded loss's own
+// rule excludes: content strictly below the loss's version, like any cut,
+// and the record the loss names by its sequence number, whatever its
+// version — the writer's convention sets the loss record's version to the
+// dropped record's own, so the version clause alone never reaches it and
+// the sequence clause is what excludes it over e. A different record at the
+// loss's exact version over e, one the loss does not name, stays held, for
+// the loss said the dropped content was superseded and nothing about its
+// neighbours. It costs O(log n) per piece cut.
+func (s *heldSet) cutSuperseded(e core.Extent, v core.Version, dropped core.Seq) {
+	s.work = s.work[:0]
+	s.visit(e, func(p Piece) bool {
+		if p.Version.Compare(v) < 0 || p.Seq == dropped {
+			s.work = append(s.work, clip(p, e))
+		}
+		return true
+	})
+	for _, p := range s.work {
+		s.cut(p.Extent)
+	}
+}
+
 // cut stops holding e: pieces inside it are dropped, and pieces crossing its
 // ends keep their parts outside it.
 func (s *heldSet) cut(e core.Extent) {

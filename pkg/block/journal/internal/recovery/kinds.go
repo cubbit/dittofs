@@ -567,7 +567,7 @@ func (ks *kindState) applyCuts(ix *index.Index) error {
 		// work nothing does.
 		var err error
 		if lo.Ev.Reason == core.LossSuperseded {
-			_, _, err = ix.LoseSuperseded(lo.Ev.File, lo.Ev.Extent, lo.Ev.Version)
+			_, _, err = ix.LoseSuperseded(lo.Ev.File, lo.Ev.Extent, lo.Ev.Version, lo.Dropped)
 		} else {
 			_, _, err = ix.Lose(lo.Ev.File, lo.Ev.Extent, lo.Ev.Version)
 		}

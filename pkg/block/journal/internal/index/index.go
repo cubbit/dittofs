@@ -152,13 +152,16 @@ func (ix *Index) Lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta,
 
 // LoseSuperseded applies a superseded synced loss — one whose reason is that
 // the content was superseded, a drop metadata itself asked for — to id under
-// the file's lock, with no admission, and returns the change to the file's
+// the file's lock, with no admission. The loss names its dropped record by
+// dropped's sequence number, and the cut excludes that record over e
+// whatever its version, beside the content below v any cut takes; other
+// content at exactly v over e stays. It returns the change to the file's
 // held state with the ids of the segments whose held counters the cut
-// lowered, as Lose does. It makes the cut Lose does over e below v but
-// leaves no marker, so nothing is ever settled for it. A zero-length e is
-// refused with core.ErrZeroLength and changes nothing.
-func (ix *Index) LoseSuperseded(id core.FileID, e core.Extent, v core.Version) (HeldDelta, []core.SegmentID, error) {
-	return ix.fs.loseSuperseded(id, e, v)
+// lowered, as Lose does — but it leaves no marker, so nothing is ever
+// settled for it. A zero-length e is refused with core.ErrZeroLength and
+// changes nothing.
+func (ix *Index) LoseSuperseded(id core.FileID, e core.Extent, v core.Version, dropped core.Seq) (HeldDelta, []core.SegmentID, error) {
+	return ix.fs.loseSuperseded(id, e, v, dropped)
 }
 
 // ApplyRemoval applies the removal of kind k that a record already in its
