@@ -812,7 +812,7 @@ reads conflicts with a concurrent change (epic 5).
 ```go
 func (h *settingsRoutes) put(ctx context.Context, meta entity.WriteMeta, caller auth.Role, s entity.Setting, expect uint64) error {
 	return h.cp.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
-		if err := node.Settings.Check(tx, caller, settings.Put(s), h.holdsContent); err != nil {
+		if err := deps.Settings.Check(tx, caller, settings.Put(s), h.holdsContent); err != nil {
 			return err // config_refused_total; bound ones also config_bound_refusals_total
 		}
 		return tx.PutSetting(s, expect) // raises CFGGEN; a stale expect is ErrGenerationMismatch
@@ -823,7 +823,7 @@ func (h *settingsRoutes) put(ctx context.Context, meta entity.WriteMeta, caller 
 // the default, so a bound key or a store location cannot change by removing an override.
 func (h *settingsRoutes) delete(ctx context.Context, meta entity.WriteMeta, caller auth.Role, scope entity.SettingScope, key string, expect uint64) error {
 	return h.cp.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
-		if err := node.Settings.Check(tx, caller, settings.Delete(scope, key), h.holdsContent); err != nil {
+		if err := deps.Settings.Check(tx, caller, settings.Delete(scope, key), h.holdsContent); err != nil {
 			return err
 		}
 		return tx.DeleteSetting(scope, key, expect)

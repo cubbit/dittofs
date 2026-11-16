@@ -295,8 +295,8 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   `tls_skip_verify: true` refused on load (D7), `ExpiresAt` gone (D4); `cmdutil`'s lock file, the
   save by rename, and the token source over the locked file (D4, D6); contexts holding a URL or the
   local socket's path, the account and `--cacert` (R5); `login` (a password from a prompt or
-  `--password-file`, or `--token-file` for an API token), `logout`, `password change`, each a
-  credential call with no idempotency key (R8, R12); the file `0600` in a `0700` directory (R6).
+  `--password-file`, or `--token-file` for an API token) and `password change`, each a credential
+  call with no idempotency key, and `logout`, which sends one (R8, R12); the file `0600` in a `0700` directory (R6).
   Consumed by every later subtask.
 - **Acceptance criteria:**
   - Two commands refreshing one context at once both succeed and the session survives.
@@ -310,8 +310,8 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   refused (R5); the file's mode `0600` and its directory's `0700` read back, and on Windows the
   file's ACL granting only the user (R6); a stored `tls_skip_verify: true` refused naming the field
   (D7); a must-change account refused `password_change_required`, `password change`, then the
-  command succeeding (R8); `login`, `logout` and `password change` each succeeding, which the server
-  refuses `400` had a key been sent (R12).
+  command succeeding (R8); `login` and `password change` each succeeding, which the server refuses
+  `400` had a key been sent, and `logout` succeeding with one (R12).
 
 ### T6.3 Name resolution, read-modify-write, operations and the shared suite
 
@@ -434,8 +434,8 @@ A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can
 
 - **E4's client needs three edits** (#4337), which this document is written against:
   `WithTokenSource` and the retry on `401` replaying body and key, `Wait` included (D6);
-  `SignIn`, `Refresh`, `SignOut` and `ChangePassword`, credential calls sent with no idempotency key
-  and never retried by the transport, since a retried refresh revokes the session; a `CallOption` on
+  `SignIn`, `Refresh`, `SignOut` and `ChangePassword`, never retried by the transport and sent with
+  no idempotency key but `SignOut`, which carries one, since a retried refresh revokes the session; a `CallOption` on
   `Create` sending no key, for `token create`, and the same on `Action` for `:set-password`.
   Recommended: E4 adds the first and third, E5 the credential calls beside its routes.
 - **Ledger rows proposed** for the commands D7 deletes with no RFC 23 route: uploads draining and GC
