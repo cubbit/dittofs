@@ -181,7 +181,7 @@ cited by number and title, and how it applies here or why it does not.
 | R12 | A connection loads the settings snapshot once, at accept, and `Conn.Settings` returns it, from which `NewConn` reads its protocol's shape; a settings change never alters a connection already accepted | MUST | §3.6, §4.7 (`Conn.Settings`), A20 | T4.10, T4.6 |
 | R13 | Each connection has one reader, which frames records and hands each to the pipeline's `serve`, and one writer, which serialises replies onto the socket; the pipeline's work for a request runs on neither | MUST | §6.1; the epic 5 document's D1 | T4.10 |
 | R14 | The stages `NewConn` returns are filled by `withDefaults` at accept; stages it refuses close the connection before it reads | MUST | §4.7 (`Stages`); the epic 5 document's D1 | T4.10 |
-| R15 | A close, by the client, a deadline, a protocol violation (`Conn.Close`), the drain or a `Reconfigure` that removes the connection's address, cancels the context of every request in progress, ends every hold and park as on a closed connection with their replies dropped, and runs `OnClose` only once nothing runs, in the epic 5 document's D1 order: the reader stopped, the connection's context cancelled, the pipeline's `close`, its `wait`, `OnClose`, the writer stopped | MUST | §3.2, §4.7 (`Conn.Close`), §6.5; the epic 5 document's D1 | T4.10 |
+| R15 | A close, by the client, a deadline, a protocol violation (`Conn.Close`), the drain or a `Reconfigure` that removes the connection's address, cancels the context of every request in progress, ends every hold and park as on a closed connection with their replies dropped, and runs `OnClose` only once nothing runs, in D2's order, the connection's context cancelled, then the reader stopped, and then in the epic 5 document's D1 order, the pipeline's `close`, its `wait`, `OnClose`, the writer stopped | MUST | §3.2, §4.7 (`Conn.Close`), §6.5; the epic 5 document's D1 | T4.10 |
 | R16 | `Conn.Close` is idempotent and never waits for the goroutine that called it, so a handler and the reader may call it | MUST | §4.7 (`Conn.Close`); the epic 5 document's D1 | T4.10 |
 | R17 | Each `Server` builds its own buffer pools, over the receive budget for requests and the reply budget for replies, and hands the reply pool to `newShared`; `Deps` carries no allocator | invariant | §6.8; the epic 5 document's D1 | T4.10 |
 | R18 | A slow client costs only its own connection: a reply it does not read waits in its connection's writer, never in a worker; that connection is not read once its writer is at its bound, and closes past the write deadline | MUST | §6.1, A10 | T4.10, T4.4 |
@@ -298,8 +298,10 @@ allocator in `Deps`", the compiler, since `Deps` has no such field.
   `AF_INET6`, not V6-only, for a wildcard on `tcp`, and V6-only for a network ending in `6`.
   `decision:` at the bind. Overturned if a deployment needs one dual-stack socket per wildcard.
 - **D2, a connection has two goroutines, and the reader runs its teardown.** `Conn.Close`
-  records the error, stops the reader's read (a read deadline in the past), cancels the
-  connection's context and calls the pipeline's `close`, and returns; the reader, once out of
+  records the error, cancels the connection's context, then stops the reader's read (a read
+  deadline in the past), in that order so that a reader re-arming its deadline, which checks
+  the context once it has armed, either sees the ended context or has its new deadline
+  overwritten by the stop, never the reverse; then it calls the pipeline's `close`, and returns; the reader, once out of
   its loop, calls `wait`, `OnClose`, stops the writer, releases the connection's charge and
   unregisters it. So a close from a handler or from the reader never waits on itself, and no
   third goroutine runs per closing connection (RFC 24 §6.1). Prior art: `net/http`'s
