@@ -591,22 +591,35 @@ func TestRunServesABadCopyFromItsLiveTwin(t *testing.T) {
 // TestRunRepointsAPieceOutOfASegmentTheOpenEnds holds the copy preference on
 // healthy equal-number copies: the rebuild's collapse keeps the one at the
 // greater (segment, offset), and when that copy sits in a segment the open
-// ends — torn-tail here — while another fed copy sits in a segment the open
-// keeps, the built piece is repointed to the greatest kept copy, so the read
-// that serves it names a segment the open holds open.
+// ends — an ended segment, whose every record the emptying deletes — while
+// another fed copy sits in a segment the open keeps, the built piece is
+// repointed to the greatest kept copy, so the read that serves it names a
+// segment the open holds open. The geometry is an ended segment, not a torn
+// tail: a torn tail seals its segment with the records below its cut in
+// place, so a copy there survives and no repoint moves it — the surviving
+// twin test below pins that half.
 func TestRunRepointsAPieceOutOfASegmentTheOpenEnds(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
 	file := kindsFile(1)
+	// Segment 9, ending: the record, then a zero slot no proof covers, then
+	// a verifying record whose synced-through stays at the slot's start, so
+	// the slot was never proven and the segment ends torn.
 	seg := buildSeg(9, writeRec(80, 5, 0, 64))
-	seg = append(seg, bytes.Repeat([]byte{0xff}, 16)...) // the torn tail that ends segment 9
+	slot := int64(len(seg))
+	seg = append(seg, make([]byte, 16)...)
+	after := writeRec(70, 6, 0x10000, 16)
+	after.Identity, after.Segment = journalID, 9
+	after.SyncedThrough = uint64(slot) // at the slot's start: the slot lies past it
+	after.RecordOffset = uint32(len(seg))
+	seg = append(seg, after.Bytes()...)
 	r.plantSeg(9, seg)
 	r.plantSeg(2, buildSeg(2, writeRec(80, 5, 0, 64))) // the kept twin, in a segment the open keeps
 
 	st := kindsRun(t, r)
 
-	if fate := fateOf(t, st, 9); fate.Kind != fateTornTail {
-		t.Fatalf("segment 9's fate got %v, want torn-tail", fate.Kind)
+	if fate := fateOf(t, st, 9); fate.Kind != fateEnded {
+		t.Fatalf("segment 9's fate got %v, want ended", fate.Kind)
 	}
 	if fate := fateOf(t, st, 2); fate.Kind != fateIntact {
 		t.Fatalf("segment 2's fate got %v, want intact", fate.Kind)
@@ -620,6 +633,78 @@ func TestRunRepointsAPieceOutOfASegmentTheOpenEnds(t *testing.T) {
 	}
 	if p.Seq != 80 {
 		t.Errorf("the repointed piece carries seq %d, want 80: a copy keeps its record's numbers", p.Seq)
+	}
+}
+
+// TestRunSubtractsARottenDropByATwinBelowTheTornTailCut holds the subtraction's
+// live set against the torn-tail fate's own letter: a torn tail truncates
+// its segment at the cut and seals it, so the records above the cut go with
+// the tail while every record below it survives — a healthy twin there is
+// live, and it answers the same rotten drop any twin in an intact segment
+// does. A predicate that closed the whole torn-tail segment would keep the
+// drop, and the open would append a loss record for a record whose twin
+// verifies.
+func TestRunSubtractsARottenDropByATwinBelowTheTornTailCut(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	// Segment 1: the rotten original, intact, confined by the remainder
+	// verify over the run its superseded loss leaves.
+	seg1 := buildSeg(1, writeRec(60, 5, 0, 128), plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8))
+	seg1[format.SegmentHeaderSize+format.RecordHeaderSize+8+70] ^= 0xff
+	r.plantSeg(1, seg1)
+	// Segment 2: the healthy twin, then a torn tail past it — the cut falls
+	// at the twin's end, so the twin sits below it and survives.
+	seg2 := buildSeg(2, writeRec(60, 5, 0, 128))
+	seg2 = append(seg2, bytes.Repeat([]byte{0xff}, 16)...)
+	r.plantSeg(2, seg2)
+
+	st := kindsRun(t, r)
+
+	if fate := fateOf(t, st, 2); fate.Kind != fateTornTail {
+		t.Fatalf("segment 2's fate got %v, want torn-tail", fate.Kind)
+	}
+	if got := st.Tails.Corrupt; len(got) != 0 {
+		t.Fatalf("Tails.Corrupt got %+v, want none: the twin below segment 2's cut is live and answers the rotten drop", got)
+	}
+	if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+		t.Errorf("Tails.Damaged got %v, want [1]: segment 1 alone holds the confined drop", st.Tails.Damaged)
+	}
+	p, ok := st.Rebuilt.Index.Lookup(file, 64)
+	if !ok {
+		t.Fatalf("Lookup at 64 missed, want the surviving twin's kept run to feed")
+	}
+	if p.Record.Segment != 2 {
+		t.Errorf("the kept run reads from segment %d, want 2: the surviving twin below the torn tail's cut", p.Record.Segment)
+	}
+}
+
+// TestRunKeepsAPieceInATornTailSegmentsSurvivingRecords holds the repoint's
+// home test against the same letter: the collapse-kept copy of two healthy
+// equal-number copies sits in a torn-tail segment below its cut, where it
+// survives with the segment, and the piece stays: a repoint that moved it
+// would move content out of a segment the open keeps, for no better home
+// than a twin's.
+func TestRunKeepsAPieceInATornTailSegmentsSurvivingRecords(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	seg := buildSeg(9, writeRec(80, 5, 0, 64))
+	seg = append(seg, bytes.Repeat([]byte{0xff}, 16)...) // the tail past the cut: the record below it survives
+	r.plantSeg(9, seg)
+	r.plantSeg(2, buildSeg(2, writeRec(80, 5, 0, 64))) // the twin, in an intact segment
+
+	st := kindsRun(t, r)
+
+	if fate := fateOf(t, st, 9); fate.Kind != fateTornTail {
+		t.Fatalf("segment 9's fate got %v, want torn-tail", fate.Kind)
+	}
+	p, ok := st.Rebuilt.Index.Lookup(file, 0)
+	if !ok {
+		t.Fatalf("Lookup over the copied record's extent missed, want the piece held")
+	}
+	if p.Record != (index.RecordAt{Segment: 9, Offset: uint32(format.SegmentHeaderSize)}) {
+		t.Errorf("the piece reads from %+v, want {9 %d}: the collapse-kept copy survives its segment's torn tail, so no repoint moves it", p.Record, format.SegmentHeaderSize)
 	}
 }
 

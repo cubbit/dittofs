@@ -573,34 +573,57 @@ func (ks *kindState) applyCuts(ix *index.Index) error {
 	return nil
 }
 
-// keptFate is the open's fate policy as one predicate: whether the open
-// keeps a segment — every fate the classing names except torn-tail and
-// ended, and a segment no fate names keeps, for only the classing names an
-// ending and nothing else ends one. The subtraction over the corrupt drops
-// and the repoint over the fed copies both judge a copy by this, so the
-// policy is written once.
-func keptFate(tl tails) func(core.SegmentID) bool {
-	fates := make(map[core.SegmentID]fateKind, len(tl.Fates))
+// keptHome is the open's home policy as one predicate: whether the record
+// at off in segment id survives the open — any segment in a fate the
+// classing names except an ending; a segment no fate names keeps, for only
+// the classing names an ending and nothing else ends one; an ended segment
+// keeps none of its records; and a torn tail takes only the records at or
+// above its cut, the ones below surviving with the segment it seals. The
+// subtraction over the corrupt drops and the repoint over the fed copies
+// both judge a home by this, so the policy is written once.
+func keptHome(tl tails) func(core.SegmentID, int64) bool {
+	fates := make(map[core.SegmentID]segmentFate, len(tl.Fates))
 	for _, f := range tl.Fates {
-		fates[f.ID] = f.Kind
+		fates[f.ID] = f
 	}
-	return func(id core.SegmentID) bool {
-		k, judged := fates[id]
-		return !judged || (k != fateTornTail && k != fateEnded)
+	return func(id core.SegmentID, off int64) bool {
+		f, judged := fates[id]
+		if !judged {
+			return true
+		}
+		switch f.Kind {
+		case fateEnded:
+			// decision: every record of an ended segment is a bad home
+			// whatever its place, for the phase that ends it truncates it
+			// and then empties it — a fate with no cut still ends the
+			// whole segment. Overturned by an ended fate that leaves any
+			// record behind.
+			return false
+		case fateTornTail:
+			// decision: only the records at or above a torn tail's cut go
+			// with it — the tail truncates the segment at the cut and then
+			// seals it, so a record whose slot starts below the cut
+			// survives with the segment the open keeps. Overturned by a
+			// torn-tail fate that drops a record below its cut.
+			return off < f.Offset
+		default:
+			return true
+		}
 	}
 }
 
 // subtractCopies is the bad-copy half of the copies rule, run once the tail's
 // classing has judged every drop: a corrupt drop an equal-sequence record
-// another scan holds in a kept-fate segment — kept by keptFate's one policy
-// — is removed from Corrupt, for the live copy serves what the drop guarded
-// and the loss record a later open would append for it would drop a record
-// a twin contradicts. Damaged is not touched: the classing's verdict on the
+// another scan holds in a home the open keeps — keptHome's one policy, which
+// keeps a record below a torn tail's cut like any intact segment's — is
+// removed from Corrupt, for the live copy serves what the drop guarded and
+// the loss record a later open would append for it would drop a record a
+// twin contradicts. Damaged is not touched: the classing's verdict on the
 // segment stands whatever serves in its place, and the tail phases cut and
 // report by it.
 func (ks *kindState) subtractCopies(scans []segmentScan, tl tails) []corruptRecord {
-	kept := keptFate(tl)
-	// live is every seq a kept-fate segment holds a FED record of, in
+	kept := keptHome(tl)
+	// live is every seq a surviving home holds a FED record of, in
 	// whichever segment: the one membership test below, not one per drop.
 	// A location the remainder pass confined never joins, for the open
 	// itself found that copy rotten: two rotten twins would each count the
@@ -609,17 +632,17 @@ func (ks *kindState) subtractCopies(scans []segmentScan, tl tails) []corruptReco
 	// found dead counts only against itself.
 	var live map[core.Seq][]core.SegmentID
 	for i := range scans {
-		if !kept(scans[i].ID) {
-			continue
-		}
 		for _, rec := range scans[i].Records {
+			if !kept(rec.Segment, int64(rec.At)) {
+				continue // the open ends this record's home
+			}
 			if ks.confined[index.RecordAt{Segment: rec.Segment, Offset: rec.At}] {
 				continue // the open confined this copy: it fed nothing
 			}
 			if live == nil {
 				live = map[core.Seq][]core.SegmentID{}
 			}
-			live[rec.Numbers.Seq] = append(live[rec.Numbers.Seq], scans[i].ID)
+			live[rec.Numbers.Seq] = append(live[rec.Numbers.Seq], rec.Segment)
 		}
 	}
 	if live == nil {
@@ -642,16 +665,16 @@ func (ks *kindState) subtractCopies(scans []segmentScan, tl tails) []corruptReco
 // repointCopies is the copy preference the deliverable spells out, run after
 // the cuts over the finished index: for every sequence number fed with two or
 // more copies, the rebuild's collapse keeps the one at the greatest
-// (segment, offset); where that keeps a copy in a segment the open ends or
-// saw fail while another fed copy sits in a segment the open keeps, the piece
-// moves to the greatest kept copy — a read then names a segment the open
-// holds open. Copies the repoint leaves note like today: the collapse's word
-// stands.
+// (segment, offset); where that keeps a copy in a home the open ends — an
+// ended segment, or a record at or above a torn tail's cut — while another
+// fed copy sits in a surviving home, the piece moves to the greatest
+// surviving copy — a read then names a home the open keeps. Copies the
+// repoint leaves note like today: the collapse's word stands.
 func (ks *kindState) repointCopies(ix *index.Index, tl tails) {
 	if len(ks.copies) == 0 {
 		return
 	}
-	kept := keptFate(tl)
+	kept := keptHome(tl)
 	greatest := func(cps []index.RecordAt) int {
 		best := 0
 		for i := 1; i < len(cps); i++ {
@@ -668,13 +691,13 @@ func (ks *kindState) repointCopies(ix *index.Index, tl tails) {
 			continue
 		}
 		keep := greatest(cps)
-		if kept(cps[keep].Segment) {
-			continue // the collapse's word stands: nothing to move
+		if kept(cps[keep].Segment, int64(cps[keep].Offset)) {
+			continue // the collapse's word stands: the kept copy survives the open
 		}
-		// The greatest copy among the kept segments' own.
+		// The greatest copy among the surviving homes' own.
 		best := -1
 		for i, at := range cps {
-			if !kept(at.Segment) {
+			if !kept(at.Segment, int64(at.Offset)) {
 				continue
 			}
 			if best < 0 || at.Segment > cps[best].Segment ||
