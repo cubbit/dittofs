@@ -34,11 +34,12 @@ type Bootstrap struct {
 	// Node is this node's identity, and Devices its journal directories, one
 	// per device, which the engine opens its journals in.
 	//
-	// ponytail: the file holds neither, so the host sets both before it builds
-	// the node. Load reads them once the node's identity and its devices are
-	// facts the bootstrap file holds.
-	Node    entity.NodeID `yaml:"-" json:"-"`
-	Devices []string      `yaml:"-" json:"-"`
+	// ponytail: nothing in the file sets either today, and Load never reads
+	// them: the host sets both before it builds the node. RFC 13's bootstrap
+	// loader reads them once the node's identity and its devices are
+	// bootstrap facts.
+	Node    entity.NodeID `mapstructure:"-" yaml:"-" json:"-"`
+	Devices []string      `mapstructure:"-" yaml:"-" json:"-"`
 }
 
 // LoggingConfig controls logging behavior.
