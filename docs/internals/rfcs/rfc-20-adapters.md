@@ -1976,7 +1976,9 @@ type HeaderCodec interface {
 	Args(rec *Buf, h Header) []byte
 	// ReplyLen is the most Encode writes for h, a status-alone body included,
 	// with Chain's padding to 8 and the transform Wrap adds in place: the
-	// pipeline reserves Bound() + ReplyLen(h).
+	// pipeline reserves Bound() + ReplyLen(h). For a compound row's message it
+	// also covers the compound's head and one result's head, which a reply that
+	// fails before or at a member writes beside the members' bounds.
 	ReplyLen(h Header) int
 }
 type Router interface {
@@ -2083,12 +2085,6 @@ type OpTable struct {
 	// the protocol puts ahead of each result: NFSv4's resop and status. Set
 	// with ReadOp; nil elsewhere.
 	EncodeResult func(out *Buf, op uint32, s Status, v Version) error
-	// EncodeHead writes the compound reply's head, ahead of its results:
-	// NFSv4's status, the request's tag and the count of results. Its size
-	// MUST NOT depend on s or n, so the runner writes it once before the
-	// members run and again, over its own bytes, once their status and count
-	// are known. Set with ReadOp; nil elsewhere.
-	EncodeHead func(out *Buf, s Status, n int, v Version) error
 }
 
 type Op struct {
@@ -2132,6 +2128,13 @@ type Invocation struct {
 	// Count is a compound row's: the members its arguments say follow, set by
 	// that row's own Decode. 0 on every other row.
 	Count int
+	// EncodeHead is a compound row's, set by that row's own Decode over what it
+	// decoded: it writes the compound reply's head, ahead of its results,
+	// NFSv4's status, the request's tag and the count of results. Its size
+	// MUST NOT depend on s or n, so the runner writes it once before the
+	// members run and again, over its own bytes, once their status and count
+	// are known. nil on every other row.
+	EncodeHead func(out *Buf, s Status, n int, v Version) error
 	// Role says what this request does to state: an SMB LOCK whose elements
 	// unlock releases it, a WRITE to an open under a break flushes it, an
 	// NFSv4 OPEN that claims a delegated open flushes it. It is called in
@@ -2303,7 +2306,7 @@ the `Request`; for an SMB chain it also repeats `Decode`, `Unwrap`, `Admit` and
 credits on its own. It hands `Unwrap` and `Route` the member before a related
 one, so the IDs it inherits are resolved before its signature is checked and
 its handles carry over. A compound row's reply is one buffer: the runner
-writes `Members.EncodeHead` first, then each member's result as
+writes the compound's `Invocation.EncodeHead` first, then each member's result as
 `Members.EncodeResult` followed by that member's `Encode`, and last writes the
 head again over its own bytes with the compound's status and the count of
 results, so no result is copied. A chain encodes each member's reply, joins them with
