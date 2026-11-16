@@ -24,15 +24,9 @@ func get(r kv.Reader, key []byte) ([]byte, bool, error) {
 
 // raise adds one to the counter at key, an absent counter being zero.
 func raise(tx kv.Txn, key []byte) error {
-	b, ok, err := get(tx, key)
+	v, err := counterIn(tx, key)
 	if err != nil {
 		return err
-	}
-	var v uint64
-	if ok {
-		if v, err = decodeCounter(b); err != nil {
-			return err
-		}
 	}
 	return tx.Set(key, encodeCounter(v+1))
 }
@@ -105,13 +99,18 @@ func pages[T any](ctx context.Context, db kv.KV, prefix, after []byte, load func
 // counter reads the counter at key, an absent counter being zero.
 func counter(ctx context.Context, db kv.KV, key []byte) (uint64, error) {
 	var v uint64
-	err := db.View(ctx, func(r kv.Reader) error {
-		b, ok, err := get(r, key)
-		if err != nil || !ok {
-			return err
-		}
-		v, err = decodeCounter(b)
+	err := db.View(ctx, func(r kv.Reader) (err error) {
+		v, err = counterIn(r, key)
 		return err
 	})
 	return v, err
+}
+
+// counterIn reads the counter at key, an absent one being zero.
+func counterIn(r kv.Reader, key []byte) (uint64, error) {
+	b, ok, err := get(r, key)
+	if err != nil || !ok {
+		return 0, err
+	}
+	return decodeCounter(b)
 }

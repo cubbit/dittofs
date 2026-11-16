@@ -422,7 +422,7 @@ func TestLockingIsAdmittedOnEveryEntryPath(t *testing.T) {
 	}
 
 	bob.Disabled = true
-	s.must(t, s.cp.PutUser(ctx, bob, 1, entity.Alloc{}))
+	s.must(t, s.cp.PutUser(ctx, bob, userGeneration(t, s.fs.Store, bob.Principal), entity.Alloc{}))
 	f, _, err := s.Lookup(ctx, proven(s.fs.Admin.Principal, inLab), s.fs.Root, []byte("f"))
 	s.must(t, err)
 	if err := ops["lock"](host, f); !errors.Is(err, vfs.ErrAccess) {

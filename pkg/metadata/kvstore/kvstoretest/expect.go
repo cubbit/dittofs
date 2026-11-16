@@ -22,33 +22,18 @@ type versioned struct {
 // versionedKinds is every record kind whose writes take expect, each over
 // records of its own in s.
 func versionedKinds(t *testing.T, s *kvstore.Store) []versioned {
-	cp, ix, c := s.ControlPlane(), s.ShareIndex(), s.Capacity()
+	cp, c := s.ControlPlane(), s.Capacity()
 	sh, u, g := share("photos", "/photos"), user("alice"), group("staff")
 	inst := entity.SettingScope{Kind: entity.ScopeInstallation}
 	q := entity.Quota{Principal: u.Principal, Hard: entity.Limit{Files: 10}}
 	return []versioned{
 		{"user",
 			func(e uint64) error { return cp.PutUser(ctx, u, e, entity.Alloc{}) },
-			func() uint64 {
-				got, err := s.Principals().User(ctx, u.Principal)
-				if merrs.IsNotFoundError(err) {
-					return 0
-				}
-				must(t, err)
-				return got.Generation
-			},
+			func() uint64 { return userGeneration(t, s, u.Principal) },
 			func(e uint64) error { return cp.DeleteUser(ctx, u.Principal, e) }},
 		{"group",
 			func(e uint64) error { return cp.PutGroup(ctx, g, e, entity.Alloc{}) },
-			func() uint64 {
-				for got, err := range cp.Groups(ctx, "") {
-					must(t, err)
-					if got.Principal == g.Principal {
-						return got.Generation
-					}
-				}
-				return 0
-			},
+			func() uint64 { return groupGeneration(t, cp, g.Principal) },
 			func(e uint64) error { return cp.DeleteGroup(ctx, g.Principal, e) }},
 		{"share",
 			func(e uint64) error { return cp.PutShare(ctx, sh, e) },
@@ -74,11 +59,7 @@ func versionedKinds(t *testing.T, s *kvstore.Store) []versioned {
 			nil},
 		{"netgroup",
 			func(e uint64) error { return cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab"}, e) },
-			func() uint64 {
-				got, _, err := ix.Netgroup(ctx, "lab")
-				must(t, err)
-				return got.Version
-			},
+			func() uint64 { return netgroupVersion(t, s, "lab") },
 			func(e uint64) error { return cp.DeleteNetgroup(ctx, "lab", e) }},
 		{"export policy",
 			func(e uint64) error {
@@ -192,6 +173,25 @@ func testExpectRace(t *testing.T, kvo Opener) {
 	}
 }
 
+// A user or group deleted and created again under the same principal takes a
+// generation it never had, so a write from a read of the deleted record is
+// refused rather than applied to the new one.
+func testRecreatedPrincipalRefusesOldGeneration(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	for _, k := range versionedKinds(t, s)[:2] {
+		t.Run(k.name, func(t *testing.T) {
+			must(t, k.put(0))
+			deleted := k.gen()
+			must(t, k.del(deleted))
+			must(t, k.put(0))
+			stored := k.gen()
+			if err := k.put(deleted); !refused(err) {
+				t.Errorf("%s created again, stored at %d, written under the deleted record's generation %d: %v, want %v", k.name, stored, deleted, err, entity.ErrGenerationMismatch)
+			}
+		})
+	}
+}
+
 // An Alloc naming an ID is refused: the store keeps no uid, gid or RID
 // counter to draw it from.
 func testAllocRefused(t *testing.T, kvo Opener) {
@@ -247,4 +247,27 @@ func netgroupVersion(t *testing.T, s *kvstore.Store, name string) uint64 {
 	g, _, err := s.ShareIndex().Netgroup(ctx, name)
 	must(t, err)
 	return g.Version
+}
+
+// userGeneration is p's stored generation, zero when there is no such user.
+func userGeneration(t *testing.T, s *kvstore.Store, p entity.Principal) uint64 {
+	t.Helper()
+	got, err := s.Principals().User(ctx, p)
+	if merrs.IsNotFoundError(err) {
+		return 0
+	}
+	must(t, err)
+	return got.Generation
+}
+
+// groupGeneration is p's stored generation, zero when there is no such group.
+func groupGeneration(t *testing.T, cp kvstore.ControlPlane, p entity.Principal) uint64 {
+	t.Helper()
+	for got, err := range cp.Groups(ctx, "") {
+		must(t, err)
+		if got.Principal == p {
+			return got.Generation
+		}
+	}
+	return 0
 }

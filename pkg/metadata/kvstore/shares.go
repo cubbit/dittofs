@@ -204,15 +204,9 @@ var ErrTagsExhausted = errors.New("kvstore: installation has no share tags left"
 // nextTag mints a journal tag no share of the installation has had: the
 // tag counter's next value, from 1, since a zero tag names no share.
 func nextTag(tx kv.Txn) (uint32, error) {
-	b, ok, err := get(tx, tagKey)
+	v, err := counterIn(tx, tagKey)
 	if err != nil {
 		return 0, err
-	}
-	var v uint64
-	if ok {
-		if v, err = decodeCounter(b); err != nil {
-			return 0, err
-		}
 	}
 	if v >= math.MaxUint32 {
 		return 0, ErrTagsExhausted
@@ -491,18 +485,10 @@ func moveGrantVersion(tx kv.Txn, share entity.ShareID) error {
 	return tx.Set(key, encodeCounter(nextVersion(tx, v)))
 }
 
-// counterIn reads the counter at key, an absent one being zero.
-func counterIn(r kv.Reader, key []byte) (uint64, error) {
-	b, ok, err := get(r, key)
-	if err != nil || !ok {
-		return 0, err
-	}
-	return decodeCounter(b)
-}
-
-// Grant is the grant naming p on a share, with its version; false when none
-// does.
-func (c ControlPlane) Grant(ctx context.Context, share entity.ShareID, p entity.Principal) (g entity.ShareGrant, found bool, err error) {
+// ShareGrant is the stored grant naming p on a share, with the version a
+// write replacing or deleting it passes as expect; false when none does. It
+// is looked up by p's ID alone, so p's Kind is not checked.
+func (c ControlPlane) ShareGrant(ctx context.Context, share entity.ShareID, p entity.Principal) (g entity.ShareGrant, found bool, err error) {
 	err = c.s.kv.View(ctx, func(r kv.Reader) error {
 		g, found, err = grantIn(r, share, p.ID)
 		return err

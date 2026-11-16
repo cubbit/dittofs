@@ -79,11 +79,22 @@ func (s *shares) user(t *testing.T, name, uid string, share entity.ShareID, a en
 	return u
 }
 
+// userGeneration is the generation a write replacing or deleting user p
+// expects.
+func userGeneration(t *testing.T, st *kvstore.Store, p entity.Principal) uint64 {
+	t.Helper()
+	u, err := st.Principals().User(t.Context(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.Generation
+}
+
 // grantVersion, policyVersion and quotaVersion are the version a write
 // replacing that record expects, zero when there is none.
 func grantVersion(t *testing.T, cp kvstore.ControlPlane, share entity.ShareID, p entity.Principal) uint64 {
 	t.Helper()
-	g, _, err := cp.Grant(t.Context(), share, p)
+	g, _, err := cp.ShareGrant(t.Context(), share, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +290,7 @@ func TestEveryCallResolvesAfresh(t *testing.T) {
 		}},
 		{"disabled", func(u entity.User) {
 			u.Disabled = true
-			s.must(t, s.cp.PutUser(t.Context(), u, 1, entity.Alloc{}))
+			s.must(t, s.cp.PutUser(t.Context(), u, userGeneration(t, s.fs.Store, u.Principal), entity.Alloc{}))
 		}},
 	} {
 		u := s.user(t, c.name, "", s.share, entity.AccessReadWrite)
@@ -909,7 +920,7 @@ func TestASquashedCallerIsTheAnonymousPrincipalOnly(t *testing.T) {
 	if a.caller.Principal != nobody.Principal || a.caller.InGroup(staff.Principal) {
 		t.Errorf("a squashed claimed caller: acting as %v, group %v, groups %v", a.caller.Principal, a.caller.Group, a.caller.Groups)
 	}
-	s.must(t, s.cp.DeleteUser(ctx, nobody.Principal, 1))
+	s.must(t, s.cp.DeleteUser(ctx, nobody.Principal, userGeneration(t, s.fs.Store, nobody.Principal)))
 	if _, err := s.StatFS(ctx, proven(bob.Principal, inLab), s.fs.Root); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("a proven caller, granted read-write, squashed to a deleted anonymous principal: %v", err)
 	}

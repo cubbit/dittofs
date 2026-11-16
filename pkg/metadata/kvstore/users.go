@@ -105,7 +105,7 @@ func putUser(tx kv.Txn, u entity.User, expect uint64, a entity.Alloc) error {
 	if err := reindex(tx, u.Principal, existed, old.Name, u.Name, old.IDs, u.IDs); err != nil {
 		return err
 	}
-	u.Generation = old.Generation + 1
+	u.Generation = nextVersion(tx, old.Generation)
 	return tx.Set(key, encodeUser(u))
 }
 
@@ -142,7 +142,7 @@ func putGroup(tx kv.Txn, g entity.Group, expect uint64, a entity.Alloc) error {
 	if err := reindex(tx, g.Principal, existed, old.Name, g.Name, old.IDs, g.IDs); err != nil {
 		return err
 	}
-	g.Generation = old.Generation + 1
+	g.Generation = nextVersion(tx, old.Generation)
 	return tx.Set(key, encodeGroup(g))
 }
 
@@ -161,7 +161,9 @@ func noAlloc(a entity.Alloc) error {
 // expected refuses a write whose caller read another generation or version
 // than the stored one, zero standing for no record. The stored one is read
 // with conflict tracking, so of two writes from one read, the second to
-// commit conflicts and then finds it moved.
+// commit conflicts and then finds it moved. An expect value is opaque and
+// belongs to one record kind: a caller passes back what it read from that
+// record, never a value it computed or read from another kind.
 func expected(stored, expect uint64) error {
 	if stored != expect {
 		return entity.ErrGenerationMismatch

@@ -133,7 +133,8 @@ func testDeleteRacesAdd(t *testing.T, kvo Opener) {
 						must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
 						must(t, cp.PutGroup(ctx, g, 0, entity.Alloc{}))
 						must(t, cp.PutShare(ctx, sh, 0))
-						del := func() error { return cp.DeleteUser(ctx, u.Principal, 1) }
+						gen := userGeneration(t, s, u.Principal)
+						del := func() error { return cp.DeleteUser(ctx, u.Principal, gen) }
 						add := func() error { return c.add(cp, u.Principal, g.Principal, sh.ID) }
 						var delErr, addErr error
 						if deleteHeld {

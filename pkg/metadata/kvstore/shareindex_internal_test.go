@@ -85,7 +85,7 @@ func TestGrantedLeavesOutWhatTheGrantWithholds(t *testing.T) {
 		t.Fatal(err)
 	}
 	set := func(a entity.ShareAccess) {
-		g, _, err := s.ControlPlane().Grant(ctx, share, u.Principal)
+		g, _, err := s.ControlPlane().ShareGrant(ctx, share, u.Principal)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -137,10 +137,11 @@ func TestUserReadsTheRecord(t *testing.T) {
 	if err := s.ControlPlane().PutUser(ctx, u, 0, entity.Alloc{}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.Principals().User(ctx, u.Principal); err != nil || !got.Disabled || got.Name != "u" {
+	got, err := s.Principals().User(ctx, u.Principal)
+	if err != nil || !got.Disabled || got.Name != "u" {
 		t.Errorf("User: %+v, %v", got, err)
 	}
-	if err := s.ControlPlane().DeleteUser(ctx, u.Principal, 1); err != nil {
+	if err := s.ControlPlane().DeleteUser(ctx, u.Principal, got.Generation); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Principals().User(ctx, u.Principal); !merrs.IsNotFoundError(err) {

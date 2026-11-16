@@ -61,7 +61,7 @@ func user(name string, ids ...entity.ProtocolID) entity.User {
 // what a write replacing or deleting it expects.
 func grantVersion(t *testing.T, cp kvstore.ControlPlane, share entity.ShareID, p entity.Principal) uint64 {
 	t.Helper()
-	g, _, err := cp.Grant(ctx, share, p)
+	g, _, err := cp.ShareGrant(ctx, share, p)
 	must(t, err)
 	return g.Version
 }
@@ -81,7 +81,7 @@ func testUserRenameAndIDsMoveTheirRows(t *testing.T, kvo Opener) {
 	must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
 
 	u.Name, u.IDs = "alicia", entity.ProtocolIDs{uid("1001")}
-	must(t, cp.PutUser(ctx, u, 1, entity.Alloc{}))
+	must(t, cp.PutUser(ctx, u, userGeneration(t, s, u.Principal), entity.Alloc{}))
 	if _, err := p.ByName(ctx, entity.PrincipalUser, "alice"); !merrs.IsNotFoundError(err) {
 		t.Errorf("old name still resolves: %v", err)
 	}
@@ -159,7 +159,7 @@ func testDeleteRemovesMembershipsAndGrants(t *testing.T, kvo Opener) {
 	}
 
 	// Deleting the middle group cuts u off from outer and its grant.
-	must(t, cp.DeleteGroup(ctx, g.Principal, 1))
+	must(t, cp.DeleteGroup(ctx, g.Principal, groupGeneration(t, cp, g.Principal)))
 	if got := all(t, p.Groups(ctx, u.Principal)); len(got) != 0 {
 		t.Errorf("Groups after DeleteGroup = %v", got)
 	}
@@ -167,13 +167,13 @@ func testDeleteRemovesMembershipsAndGrants(t *testing.T, kvo Opener) {
 		t.Errorf("grant after DeleteGroup = %v", a)
 	}
 	// Deleting outer drops its grant; a new group can take the name.
-	must(t, cp.DeleteGroup(ctx, outer.Principal, 1))
+	must(t, cp.DeleteGroup(ctx, outer.Principal, groupGeneration(t, cp, outer.Principal)))
 	again := group("all")
 	must(t, cp.PutGroup(ctx, again, 0, entity.Alloc{}))
 	if a, _ := p.Grant(ctx, sh.ID, again.Principal); a != entity.AccessNone {
 		t.Errorf("a new group inherited a deleted one's grant: %v", a)
 	}
-	must(t, cp.DeleteUser(ctx, u.Principal, 1))
+	must(t, cp.DeleteUser(ctx, u.Principal, userGeneration(t, s, u.Principal)))
 	if _, err := p.ByName(ctx, entity.PrincipalUser, "alice"); !merrs.IsNotFoundError(err) {
 		t.Errorf("deleted user resolves: %v", err)
 	}
@@ -323,7 +323,7 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	moved("a grant's delete", func() error {
 		return cp.DeleteGrant(ctx, sh.ID, u.Principal, grantVersion(t, cp, sh.ID, u.Principal))
 	})
-	if _, ok, err := cp.Grant(ctx, sh.ID, u.Principal); err != nil || ok {
+	if _, ok, err := cp.ShareGrant(ctx, sh.ID, u.Principal); err != nil || ok {
 		t.Errorf("a deleted grant: found %v, %v; want none", ok, err)
 	}
 	if a, _ := p.Grant(ctx, sh.ID, u.Principal); a != entity.AccessReadWrite {
@@ -449,7 +449,7 @@ func testQuotas(t *testing.T, kvo Opener) {
 	if _, err := c.SoftExceeded(ctx, sh.ID, gt, true); err != nil {
 		t.Fatal(err)
 	}
-	must(t, cp.DeleteGroup(ctx, g.Principal, 1))
+	must(t, cp.DeleteGroup(ctx, g.Principal, groupGeneration(t, cp, g.Principal)))
 	if q, since, err := c.Quota(ctx, sh.ID, gt); err != nil || !q.Unlimited() || !since.IsZero() {
 		t.Errorf("a deleted group's quota reads %+v since %v, %v", q, since, err)
 	}

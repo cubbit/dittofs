@@ -1059,7 +1059,7 @@ func TestADisabledUserConnectsNoClient(t *testing.T) {
 	s := newShares(t, nil, nil)
 	alice := s.user(t, "alice", "", s.share, entity.AccessReadWrite)
 	alice.Disabled = true
-	s.must(t, s.cp.PutUser(t.Context(), alice, 1, entity.Alloc{}))
+	s.must(t, s.cp.PutUser(t.Context(), alice, userGeneration(t, s.fs.Store, alice.Principal), entity.Alloc{}))
 	if _, _, err := s.Connect(t.Context(), signedIn(alice.Principal, 1), smb("alice-pc", 1), &vfstest.Callbacks{}); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("a disabled user's Connect answered %v, want ErrAccess", err)
 	}

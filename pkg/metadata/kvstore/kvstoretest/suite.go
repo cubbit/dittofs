@@ -50,6 +50,7 @@ func Run(t *testing.T, open Opener) {
 		{"ShareReadsPolicyAndGrantsTogether", testShareReadsPolicyAndGrantsTogether},
 		{"WritesCheckExpect", testWritesCheckExpect},
 		{"ExpectRace", testExpectRace},
+		{"RecreatedPrincipalRefusesOldGeneration", testRecreatedPrincipalRefusesOldGeneration},
 		{"AllocRefused", testAllocRefused},
 		{"WritesToRemovedShare", testWritesToRemovedShare},
 		{"Quotas", testQuotas},

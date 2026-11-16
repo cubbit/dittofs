@@ -1,7 +1,6 @@
 package kvstoretest
 
 import (
-	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/sim"
 )
 
 // Durable opens a store's data again over the same directory or key prefix,
@@ -31,31 +31,14 @@ func RunDurable(t *testing.T, d Durable) {
 	}
 }
 
-// clock is the store time a durable case moves. It never sleeps: a case
-// advances it, and the store reads it at its next open, since a store holds
-// its time under a ceiling raised only at open and on its own ticker.
-type clock struct {
-	mu sync.Mutex
-	t  time.Time
-}
-
-func newClock() *clock { return &clock{t: time.Unix(1_800_000_000, 0)} }
-
-func (c *clock) now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.t
-}
-
-func (c *clock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.t = c.t.Add(d)
-}
+// newClock is the store time a durable case moves. It never sleeps: a case
+// jumps it, and the store reads it at its next open, since a store holds its
+// time under a ceiling raised only at open and on its own ticker.
+func newClock() *sim.TestClock { return sim.NewTestClock(time.Unix(1_800_000_000, 0)) }
 
 // What a store wrote is there after it is reopened over the same data.
 func testReopenKeepsData(t *testing.T, d Durable) {
-	open := d(t, newClock().now)
+	open := d(t, newClock().Now)
 	u := user("alice", uid("1000"))
 	db := open()
 	must(t, kvstore.Init(ctx, db, uuid.New()))
@@ -76,13 +59,13 @@ func testReopenKeepsData(t *testing.T, d Durable) {
 // past it.
 func testClockAdvances(t *testing.T, d Durable) {
 	clk := newClock()
-	open := d(t, clk.now)
+	open := d(t, clk.Now)
 	storeTime := func(db kv.KV) (now time.Time) {
 		must(t, db.Update(ctx, func(tx kv.Txn) error { now = tx.Now(); return nil }))
 		return now
 	}
 	before := storeTime(open())
-	clk.advance(time.Hour)
+	clk.Jump(time.Hour)
 	if after := storeTime(open()); after.Before(before.Add(time.Hour)) {
 		t.Errorf("store time after the clock advanced an hour: got %v, want at or past %v", after, before.Add(time.Hour))
 	}
