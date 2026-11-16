@@ -18,8 +18,37 @@ import (
 // snapshot and its commit: the order in which the first must conflict.
 type holding struct {
 	kv.KV
-	mu   sync.Mutex
+	mu       sync.Mutex
+	hook     func()
+	viewHook func()
+}
+
+// View runs viewHook once, inside the next View, after its first Get: a
+// write the hook commits lands between that read and the View's next.
+func (h *holding) View(ctx context.Context, fn func(kv.Reader) error) error {
+	h.mu.Lock()
+	hook := h.viewHook
+	h.viewHook = nil
+	h.mu.Unlock()
+	if hook == nil {
+		return h.KV.View(ctx, fn)
+	}
+	return h.KV.View(ctx, func(r kv.Reader) error { return fn(&pausing{Reader: r, hook: hook}) })
+}
+
+// pausing is a Reader that runs hook once, after its first Get.
+type pausing struct {
+	kv.Reader
 	hook func()
+}
+
+func (p *pausing) Get(key []byte) ([]byte, error) {
+	b, err := p.Reader.Get(key)
+	if p.hook != nil {
+		p.hook()
+		p.hook = nil
+	}
+	return b, err
 }
 
 func (h *holding) Update(ctx context.Context, fn func(kv.Txn) error) error {

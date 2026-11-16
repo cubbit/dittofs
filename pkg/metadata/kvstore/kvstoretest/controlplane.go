@@ -361,22 +361,43 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	}
 }
 
-// A share's policy and its grant-list version are read from one commit: a
-// read finds either both or neither of two writes that move them.
+// A share's policy and its grant-list version are read from one snapshot: a
+// read across the commits of a policy write and a grant write finds both or
+// neither.
 func testShareReadsPolicyAndGrantsTogether(t *testing.T, kvo Opener) {
-	s, _ := newStore(t, kvo)
-	cp, ix := s.ControlPlane(), s.ShareIndex()
-	sh, u := share("photos", "/photos"), user("alice")
-	must(t, cp.PutShare(ctx, sh, 0))
-	must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
-	must(t, cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashAll}, 0))
-	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0))
-	got, pol, err := ix.Share(ctx, sh.ID)
-	must(t, err)
-	want := grantVersion(t, cp, sh.ID, u.Principal)
-	if got.GrantVersion != want || pol.Version != policyVersion(t, cp, sh.ID) || pol.Squash != entity.SquashAll {
-		t.Errorf("share read: grant-list version %d, policy %d squash %v; want %d, %d, all",
-			got.GrantVersion, pol.Version, pol.Squash, want, policyVersion(t, cp, sh.ID))
+	for _, b := range kvo.backends() {
+		t.Run(b.name, func(t *testing.T) {
+			s, h := heldStore(t, b)
+			cp, ix := s.ControlPlane(), s.ShareIndex()
+			sh, u := share("photos", "/photos"), user("alice")
+			must(t, cp.PutShare(ctx, sh, 0))
+			must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
+			must(t, cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashAll}, 0))
+			must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0))
+			before, beforePol, err := ix.Share(ctx, sh.ID)
+			must(t, err)
+
+			var writeErr error
+			h.mu.Lock()
+			h.viewHook = func() {
+				writeErr = errors.Join(
+					cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashRoot}, beforePol.Version),
+					cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessReadWrite}, grantVersion(t, cp, sh.ID, u.Principal)))
+			}
+			h.mu.Unlock()
+			got, pol, err := ix.Share(ctx, sh.ID)
+			must(t, err)
+			must(t, writeErr)
+			grantMoved, policyMoved := got.GrantVersion != before.GrantVersion, pol.Version != beforePol.Version
+			if grantMoved != policyMoved {
+				t.Errorf("share read across a policy and a grant write: grant-list version moved %v, policy version moved %v; want both or neither", grantMoved, policyMoved)
+			}
+			after, afterPol, err := ix.Share(ctx, sh.ID)
+			must(t, err)
+			if after.GrantVersion == before.GrantVersion || afterPol.Squash != entity.SquashRoot {
+				t.Errorf("share read after both writes: grant-list version %d, squash %v; want above %d, %v", after.GrantVersion, afterPol.Squash, before.GrantVersion, entity.SquashRoot)
+			}
+		})
 	}
 }
 
