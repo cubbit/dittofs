@@ -418,7 +418,8 @@ type rebuilt struct {
 // shape takes. The workers only scan: the records they convert stay buffered
 // on their scans, and once the last one has returned the rest of the phase
 // runs serially in one fixed order — the aside kinds' bodies are decoded and
-// decided against their own rules (losses reaching the sink given), the
+// decided against their own rules (the losses collected for the open's
+// wiring), the
 // tails are classed, then the buffered records are fed into a fresh index,
 // segments in ascending-id order and each scan's records in their walk
 // order, and Finish closes the builder. The kinds pass's collected answer

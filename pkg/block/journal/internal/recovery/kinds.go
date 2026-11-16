@@ -15,7 +15,7 @@ import (
 )
 
 // OpenLoss is one loss record the open found on disk, decoded: its event,
-// with AtOpen set and the number left for the sink to assign, and the seq of
+// with AtOpen set and the number left for the open's publishing to assign, and the seq of
 // the record it drops.
 type OpenLoss struct {
 	Ev      core.LossEvent
@@ -39,7 +39,7 @@ type OpenForget struct {
 }
 
 // ReadOnlyDrop is one record a read-only journal failed earlier in this
-// process — a seq on the loss sink's failed list the feed finds on disk —
+// process — a seq on the directory's failed list the feed finds on disk —
 // withheld whole and owed the unsynced loss record a later open appends.
 type ReadOnlyDrop struct {
 	// Ev is built from the found record's own header: its file, extent,
@@ -57,9 +57,9 @@ type ReadOnlyDrop struct {
 // its records named; and the read-only drops and the withheld numbers the
 // feed computes over the same records.
 type kindResults struct {
-	// Losses holds every verified loss record the pass delivered to the loss
-	// sink, in the order the pass read it, an event a sink already published
-	// when one was given.
+	// Losses holds every verified loss record the pass collected, in the
+	// order the pass read it, its events unfired until the open's own
+	// wiring places them into its loss ring.
 	Losses []OpenLoss
 
 	// Forgets holds one entry per forgotten share tag, ascending by tag, the
@@ -103,7 +103,7 @@ type kindState struct {
 	// forget holds the greatest seq each share tag's forget records name.
 	forget map[core.ShareTag]core.Seq
 
-	// failed holds the seqs the loss sink's failed list named, the records a
+	// failed holds the seqs the open's failed-list data named, the records a
 	// read-only journal failed earlier in this process.
 	failed map[core.Seq]bool
 
