@@ -222,7 +222,7 @@ tests of the epic that fills it in.
 - the CLI's dependency closure names no store or server package (RFC 23 §7, CP14);
 - nothing imports a deleted v1 path that never returns.
 
-Two more land with `internal/node/api` in epic 4, since rule 12 keeps that package out of epic 1:
+Two more land with `internal/node/api` in epic 3, since rule 12 keeps that package out of epic 1:
 no package under `internal/node` but `node` itself imports a component's implementation (CP16), and
 `internal/node/api` reaches `ControlPlane`'s writes only inside `Write`, so every change commits with
 its audit record (RFC 23 CP12).
@@ -389,15 +389,15 @@ registers no suite and no group, and changes no `lint-go` tag.
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | Delete v1, declare the surface | v1 deleted with the tests that drive it, harness fixed, landed first; the node's surface and the shared wire types; the new `cmd/dfs` skeleton; architecture tests | 6 | 12.25 | team | every epic; the RFC 13 plan (#4059) and the RFC 18 plan (#4058) |
 | E2 | Store records | the view's signatures with `expect`; the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry; the namespace record and its store index | 13 | 35.5 | C | E5; partly E3, E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059, `Node`, `NodeStatus`); the RFC 18 plan's epics 2 and 3 (#4058, the principals generation) |
-| E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition with RFC 8's root duties, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven, RFC 23's own settings section, the harness | 10 | 23 | A | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the `apply` slot); the RFC 18 plan's epics 2 and 7 (#4058, the runner) |
+| E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition with RFC 8's root duties, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven, RFC 23's own settings section, the harness | 11 | 29.5 | A | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the `apply` slot); the RFC 18 plan's epics 2 and 7 (#4058, the runner) |
 | E4 | The management API | server, route table, typed handlers (D14), write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5), each resource's wire types, the client | 14 | 34 | B | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the write path's `Check` slot) |
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 10 | 25.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
 | E6 | The CLI | `login` and the rebuilt `dfsctl` on epic 4's client, generated reference | 6 | 12 | A | E7 |
 | E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 5 | 13.5 | team | E8 (partly) |
 | E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **64** | **155.75** | | |
+| | **Total** | | **65** | **162.25** | | |
 
-**Plan estimate: 64 subtasks, 155.75 man-days, not counting epic 8.**
+**Plan estimate: 65 subtasks, 162.25 man-days, not counting epic 8.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -466,8 +466,9 @@ flowchart TD
   adapters through their factories inside this node.
 - **🔀 X1, the RFC 13 plan's bootstrap and secrets.** Outside this plan: #4059's epic 2
   (`pkg/bootstrap`, the node identity) and epic 4 (`pkg/secrets`). Epic 3 builds its composition,
-  start and stop and reconcile before it, on a `node.Config` its tests fill in; `dfs start` reads
-  the bootstrap once it lands. Epic 5's `dfs init` and its signing key wait for it.
+  start and stop and reconcile before it, on a `node.Config` its tests fill in; of epic 3, X1
+  gates only the node identity at start (its T3.10), and `dfs start` reads the bootstrap from the
+  RFC 13 plan's epic 1. Epic 5's `dfs init` and its signing key wait for it.
 - **🔀 X2, the RFC 18 plan's sign-in interface.** Outside this plan: #4058's epic 2 (`APISignIn`,
   `NewHashes`). Epic 5 builds tokens, sessions, roles and throttling before it, over epic 2's
   records; sign-in, the first password and `set-password` wait for it. This plan's epic 5 is the
@@ -522,7 +523,7 @@ internal/node/                composition root, one package, one file per concer
                               23 §2.1), remotes, node status, the operation runner
                               (D8), the deletions driven past the mark, RFC 23's own
                               settings section
-internal/node/api/            the management API server, one package: server and        E4, E5
+internal/node/api/            the management API server, one package: server and        E3, E4, E5
                               listeners, health endpoints (RFC 23 §2.5), route table,
                               typed handlers (D14), write path, problems, decoding,
                               long polls, one file per resource
@@ -888,7 +889,10 @@ func (n *Node) apply(ctx context.Context) error {
 		return err // a failed read: the loop backs off, then runs a full pass
 	}
 	n.restartPending(settings.Diff(n.applied, next)) // node_restart_pending
-	n.identity.Apply(settings.Get[identity.Settings](next, n.nodeID))
+	st := identity.State{Generation: n.pgen, Settings: settings.Get[identity.Settings](next, n.nodeID)}
+	if err := n.identity.Apply(st); err != nil { // before identity starts, the first one (RFC 18 §2.6)
+		n.refused(identity.Section, err) // reported with the other refusals (epic 3's D10)
+	}
 	// ... *vfs.Filesystem and the engine, each with its own section
 	n.smbRefused = n.applySMB(ctx, settings.Get[adaptersettings.SMB](next, n.nodeID)) // D12
 	if n.smbRefused != nil {
@@ -989,20 +993,27 @@ The runner drives an operation no component drives on its own, `resolve-principa
 identity's step (A5, D8, epic 3):
 
 ```go
-func (r *runner) drive(ctx context.Context, op metadata.Operation, version uint64) {
-	step := r.steps[op.Kind] // resolve-principal: identity's, the RFC 18 plan's epic 7
+func (r *runner) drive(ctx context.Context, op entity.Operation, version uint64) {
+	run := r.steps[op.Kind] // a step.Step (internal/node/step); resolve-principal: the RFC 18 plan's epic 7
 	for {
-		next, done, err := step(ctx, op) // its Params and last durable Step: resumes from there
-		was := op.State
-		op.Step, op.Updated, op.State = next, r.clock.Now(), stateOf(done, err)
-		meta := entity.WriteMeta{}
-		if op.State != was {
-			meta.Audit = r.auditOf(op) // every state change carries its audit (RFC 16 §3)
+		res, err := run(ctx, op) // its Params and last durable Step: resumes from there
+		was, wasStep := op.State, op.Step
+		op.Step, op.State = res.Next, stateOf(res, err) // ErrStepFailed or a problem fails; other errors retry
+		if op.State == was && bytes.Equal(op.Step, wasStep) {
+			r.backoff(ctx) // an unchanged turn commits nothing
+			continue
 		}
+		op.Updated, op.Result = r.clock.Now(), res.Result
+		meta := entity.WriteMeta{Audit: r.auditOf(op)} // every recorded turn carries its audit (RFC 16 §3)
 		err = r.store.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
+			if res.Done && res.End != nil {
+				if err := res.End(tx); err != nil { // the step's own end writes, in the same transaction
+					return err
+				}
+			}
 			return tx.PutOperation(op, version)
 		})
-		if err != nil || op.State != metadata.OpRunning {
+		if err != nil || op.State != entity.OpRunning {
 			return // a failed write leaves the record running, resumed at the next start (§4.3 above)
 		}
 		version++
@@ -1036,7 +1047,14 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// the principal counted is the principal checked; the zero one does the dummy work and fails
-	if err := h.signin.VerifyPassword(r.Context(), acct, req.Password); err != nil { // APISignIn (X2)
+	err = h.signin.VerifyPassword(r.Context(), acct, req.Password) // APISignIn (X2)
+	if errors.Is(err, identity.ErrUnavailable) {
+		// the store could not answer: 503, nothing settled or audited, the source's raise taken back
+		h.unraise(r.Context(), src, nonce)
+		h.problem(w, err)
+		return
+	}
+	if errors.Is(err, identity.ErrLogonFailure) {
 		// the refusal's audit, and no idempotency record (RFC 16 §3, RFC 23 §4.5); it settles the
 		// failure, moving the source's Failed and its XP row, the only write after creation that
 		// moves them, and doing nothing on a source count missing or holding another Nonce (§5.3)
@@ -1044,6 +1062,10 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 			func(tx entity.ControlPlaneTx) error { return h.settleFailure(tx, src, nonce) }); werr != nil {
 			h.log.Error("sign-in refusal not audited", "err", werr) // the attempt stays counted
 		}
+		h.problem(w, err)
+		return
+	}
+	if err != nil {
 		h.problem(w, err)
 		return
 	}
@@ -1060,6 +1082,9 @@ func (h *handlers) authenticate(r *http.Request) (metadata.User, error) {
 		return metadata.User{}, err
 	}
 	u, err := h.signin.Account(r.Context(), claims.Principal) // per call (RFC 23 §5.3)
+	if errors.Is(err, identity.ErrUnavailable) {
+		return metadata.User{}, err // 503, never 401: the store could not answer
+	}
 	if err != nil || claims.IssuedAt.Before(u.NotBefore) || h.revoked(r.Context(), claims.Session) {
 		return metadata.User{}, errUnauthenticated
 	}
@@ -1193,7 +1218,7 @@ API write commits in, and a share's removal steps past the mark.
 
 ### Epic 3 — The node 🔀
 
-**Epic 3 estimate: 10 subtasks, 23 man-days.**
+**Epic 3 estimate: 11 subtasks, 29.5 man-days.**
 
 `node.New` composes what §1.1's dependency limits name, and the node starts, reconciles, reports
 and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
@@ -1227,10 +1252,9 @@ and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 - `node.New`: the node-level services of RFC 23 §2.1's table the journal-only engine uses (the
   metadata store, the journals, open state, the engine, identity and `*vfs.Filesystem`), each built
   empty from its own `Deps` (D11); the syncer, the remote clients and GC are not composed (§6.1).
-- The remote registry and the adapter factories that reconcile acquires instances through (D11).
-  The registry builds only the in-memory remote store, for a binding that names it: the MVP's
-  shares name it as their remote while nothing offloads (#4053), since the next bullet refuses a
-  share with none.
+- The engine's `CloneHold` adapter as `openstate.EngineHolds`, moved unchanged from
+  `enginetest.Holds`, which then calls it. No remote registry and no adapter factory: nothing in
+  the journal-only engine calls a remote client, and the adapters are RFC 20's plan's epic 7 (D12).
 - RFC 8's root duties: `addShare` refuses a share whose namespace names no remote block store
   (RFC 8 §2.1), reported refused (RFC 23 §2.4); and the engine's `Stats` adapted into RFC 25's
   registry as conditions and series.
@@ -1238,11 +1262,10 @@ and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
 - Reconcile: the counters read once a second, the full reconcile, and `addShare`, `removeShare` and
   the `apply` slot (RFC 23 §2.3), with the namespace simplification of §4.3 above. The RFC 13 plan's
   epic 5 fills `apply` on `settings.Diff` and `Get` (X3).
-- RFC 23's own section, `api.session_lifetime`, `api.token_max_lifetime` and `audit.retention` (RFC
-  13 Appendix B), as a typed struct with defaults and `Validate` (the RFC 13 plan's D2): the node
-  starts epic 2's sweeper with its retentions, and epic 5's sessions and tokens read its lifetimes.
-  The table row naming it is the RFC 13 plan's epic 5's. The §5.5 rows wait with OpenID Connect
-  (O2).
+- The sweep, run with RFC 23 §6's 90-day audit retention as a constant until RFC 23's own section
+  lands (§6.1).
+- `internal/vfs`'s own removal join deleted, in the change that drives a share's removal from the
+  node.
 - The node-status writer, writing at most once a second and only when a value changed, and the
   `node_` series (RFC 23 §2.4, §11).
 - The health and readiness endpoints and the metrics listener, with RFC 25's registry and watchdog
