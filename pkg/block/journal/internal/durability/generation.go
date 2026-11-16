@@ -117,15 +117,6 @@ func (s *dirState) take(k piece) bool {
 	return true
 }
 
-// takeLocked is take with the caller holding mu.
-func (s *dirState) takeLocked(k piece) bool {
-	if _, ok := s.pieces[k]; ok {
-		return false
-	}
-	s.pieces[k] = struct{}{}
-	return true
-}
-
 // takePiece takes the piece of the loss record an open found on disk
 // (dropped with ev's extent), reporting false when an earlier Lose or Place
 // already had. The call that took the piece is the one that publishes; a
