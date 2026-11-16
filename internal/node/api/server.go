@@ -178,7 +178,8 @@ func (s *Server) serve(srv *http.Server, l net.Listener) {
 }
 
 // Stop closes both listeners, waiting for the requests in flight until ctx
-// ends, and then for both servers to return.
+// ends, a parked poll answering its last read at once, and then for both
+// servers to return.
 func (s *Server) Stop(ctx context.Context) error {
 	s.stopped.Store(true)
 	err := errors.Join(s.api.Shutdown(ctx), s.met.Shutdown(ctx))
