@@ -2082,13 +2082,13 @@ type OpTable struct {
 	// EncodeResult writes, before a member's own Encode appends its body, what
 	// the protocol puts ahead of each result: NFSv4's resop and status. Set
 	// with ReadOp; nil elsewhere.
-	EncodeResult func(out *resources.Buf, op uint32, s Status, v Version) error
+	EncodeResult func(out *Buf, op uint32, s Status, v Version) error
 	// EncodeHead writes the compound reply's head, ahead of its results:
 	// NFSv4's status, the request's tag and the count of results. Its size
 	// MUST NOT depend on s or n, so the runner writes it once before the
 	// members run and again, over its own bytes, once their status and count
 	// are known. Set with ReadOp; nil elsewhere.
-	EncodeHead func(out *resources.Buf, s Status, n int, v Version) error
+	EncodeHead func(out *Buf, s Status, n int, v Version) error
 }
 
 type Op struct {
