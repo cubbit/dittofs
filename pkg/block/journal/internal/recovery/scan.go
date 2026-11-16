@@ -395,6 +395,47 @@ func segSize(rd *reader, id core.SegmentID) (int64, error) {
 	return 0, err
 }
 
+// segmentRecords answers the records of one segment's scan the rebuild
+// indexes: its converted records minus the placements judged — the carriers
+// of the drops a scan set aside, the catalogue's confines and the clone
+// targets whose bodies failed. rebuildIndex feeds its own scans through it,
+// and repairTornPlacement, which re-walks a segment's headers fresh, hands
+// the fresh scan here with the placements the rebuild's own scan of the
+// segment dropped, so the repair's record set is the rebuild's by
+// construction: no record the rebuild confined comes back through a repair.
+//
+// The judged offset is the entry's where a catalogue drop named one — a
+// confined record's header is zero where none verified — and the scanned
+// header's otherwise; both spell the placement the fold would re-apply.
+func segmentRecords(sc segmentScan, judged []droppedRecord) []index.Record {
+	if len(judged) == 0 {
+		return sc.Records
+	}
+	at := make(map[int64]bool, len(judged))
+	for _, d := range judged {
+		if d.Entry.RecordOffset != 0 {
+			at[d.Entry.RecordOffset] = true
+		}
+		at[d.Header.Offset] = true
+	}
+	return slices.DeleteFunc(slices.Clone(sc.Records), func(r index.Record) bool {
+		return at[int64(r.At)]
+	})
+}
+
+// rebuildDrops answers the placements the rebuild's own scan of segment id
+// set aside: the drops its catalogue confined and its clone targets whose
+// bodies failed. A segment the rebuild attached holds no scan and answered
+// nothing of it, so a repair walking it fresh judges by none.
+func rebuildDrops(st *State, id core.SegmentID) []droppedRecord {
+	for i := range st.Rebuilt.Scans {
+		if st.Rebuilt.Scans[i].ID == id {
+			return st.Rebuilt.Scans[i].Dropped
+		}
+	}
+	return nil
+}
+
 // rebuilt is the rebuild phase's answer: the index the records on disk
 // rebuilt into with the counters they raised, the scan of every own
 // segment — aside kinds carried for the phases that apply their rules, the

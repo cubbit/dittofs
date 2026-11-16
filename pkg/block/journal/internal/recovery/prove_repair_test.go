@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -185,5 +186,70 @@ func TestATornCopyNeverDropsAGoodCopyWithItsNumbers(t *testing.T) {
 			t.Errorf("the index holds %d entries, want 1: the good copy of R alone, the torn placement's dropped as never written", got)
 		}
 		wantFate(t, st, 3, fateTornTail, tornAt)
+	})
+}
+
+// TestTheRepairFoldsNoRecordTheCatalogueConfined holds the two paths' shared
+// record set: a repair re-walks a segment's headers fresh while the rebuild
+// may have read the segment by its catalogue — the two sources can then sit
+// over different verdicts for one record some day — so the placements the
+// rebuild judged dropped, here a clone target whose spec the catalogue
+// confined, must stay out of the fold whichever way the fresh walk reads
+// them. Segment 1 is named and sealed, read by its catalogue; its confined
+// clone target C cuts the extent G — the write beside it, of the same file —
+// while segment 2's newest tail holds a torn write T over the same extent.
+// The repair of T's displacement re-walks segment 1 and may not re-apply
+// what the rebuild never fed: G holds its extent again, C cuts nothing.
+func TestTheRepairFoldsNoRecordTheCatalogueConfined(t *testing.T) {
+	const overwrite = 0x4100
+	g := tailRec(200, overwrite)
+	c := rec(7, func(r *raw.Record) { // a clone target of the tail's own file, cutting G's extent
+		r.FileID = rec(1, nil).FileID
+		r.Version = raw.Version{Counter: 300}
+		r.Clone = &raw.CloneBody{Share: srcShare(), File: srcFile(), Off: 0x101, AsOf: raw.Version{Counter: 9}}
+	})
+	b, _ := buildSealed(1, g, c)
+	// C's spec is the one body a content record carries: rotted where it
+	// sits, the catalogue reads it, confines C and feeds the rest.
+	cAt := int64(len(buildSeg(1, g)))
+	b[cAt+format.RecordHeaderSize] ^= 0xff // C's spec
+
+	tornSeg := buildSeg(2, tailRec(250, overwrite)) // T, over G's whole extent
+	copy(tornSeg, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
+	tornAt := int64(format.SegmentHeaderSize)
+	tornSeg[tornAt+format.RecordHeaderSize+8+2] ^= 0xff // T's payload
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, b)
+	r.plantSeg(2, tornSeg)
+
+	st := runTails(t, r)
+
+	if got := st.Rebuilt.ByCatalog; got != 1 {
+		t.Fatalf("Run rebuilt %d segments by catalog, want 1: the confined record never demotes its segment", got)
+	}
+	if sc, ok := scanOf(st, 1); !ok || len(sc.Dropped) != 1 || sc.Dropped[0].Header.Offset != cAt {
+		t.Fatalf("segment 1's rebuild scan got %d drops (found %v), want the confined clone target at %d", len(sc.Dropped), ok, cAt)
+	}
+	if len(st.Tails.Corrupt) != 1 || st.Tails.Corrupt[0].Segment != 1 {
+		t.Errorf("Corrupt got %+v, want exactly segment 1's confined clone target", st.Tails.Corrupt)
+	}
+	if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+		t.Errorf("Damaged got %v, want [1]: the confined record was sealed over", st.Tails.Damaged)
+	}
+	// The torn report is T's alone: no re-append, no failed window, and the
+	// segment's fate is the torn tail the classing owned.
+	if len(st.Proof.Reappends) != 0 || len(st.Proof.FailedWindows) != 0 {
+		t.Errorf("Reappends got %+v, FailedWindows got %v, want none: the torn T is never written, never re-appended", st.Proof.Reappends, st.Proof.FailedWindows)
+	}
+	wantFate(t, st, 2, fateTornTail, tornAt)
+	// G's placement holds the extent T displaced again — the confined C cut
+	// nothing, for the rebuild never fed it and the repair may not either.
+	wantPlacement(t, st, overwrite, index.Placed{
+		Extent:  core.Extent{Off: overwrite, Len: 16},
+		Record:  index.RecordAt{Segment: 1, Offset: format.SegmentHeaderSize},
+		Version: core.Version{Counter: 200},
+		Seq:     100,
 	})
 }

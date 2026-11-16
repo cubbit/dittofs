@@ -1,184 +1,106 @@
 package index
 
 import (
-	"cmp"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
 
-// ReplayWindow re-applies to id, inside the extent window alone, the records
-// recs reach there — the answer set of a repair, already exclusive of the
-// placement whose drop called for it, a surviving copy of the same record
-// included — exactly as the rebuild that first applied them would: every
-// kind's reach is clipped to the window, the clip deciding
-// each on its own rule (a truncate's and a delete's removal runs to the end of
-// the file), writes and fills hold their pieces in precedence order — the
-// greatest of the records reaching a byte holds it, last applied wins being
-// exactly precedence — removals cut the runs they reach, and the marks set
-// and clear the offloaded bit in their own pass after the pieces, in the
-// order of their sequence numbers. Nothing outside the window changes and
-// nothing a record noted on its first pass is re-noted: the drop-range notes,
-// the counters and the removal markers the records raised the first time stay
-// as they were, for the notes name the record, not its placement, and the
-// repair only re-places. The over runs of the write of numbers torn — the
-// repair's one record, whose pieces the caller has already unplaced — go
-// with it, exactly as a failed window drops the failed write's, save where a
-// copy of the record stays in recs: a run names the record by version, not
-// its placement, so a surviving copy's supersede is as true as the placement
-// the verdict dropped was, and its runs stay.
+// DropTorn repairs one torn record the open judged never written: the
+// placement at — segment and offset where the record sits — loses the
+// pieces it placed inside the record's extent, then everything its replay
+// displaced inside the record's reach is re-placed from the survivors —
+// the answer set of a repair, already exclusive of the torn record's own
+// placement, a surviving copy of the same record included — exactly as the
+// rebuild that first applied them would: every kind's reach clips to the
+// reach's window, the clip deciding each on its own rule (a truncate's and a
+// delete's removal runs to the end of the file), writes and fills hold
+// their pieces in precedence order — the greatest of the records reaching a
+// byte holds it, last applied wins being exactly precedence — removals cut
+// the runs they reach, and the marks set and clear the offloaded bit in
+// their own pass after the pieces, in the order of their sequence numbers.
+// Nothing outside the record's reach changes and nothing a record noted on
+// its first pass is re-noted: the drop-range notes, the counters and the
+// removal markers the records raised the first time stay as they were, for
+// the notes name the record, not its placement, and the repair only
+// re-places — save the torn record's own, runs and marker alike, which go
+// with the tear below.
 //
-// recs may carry two copies of one record — carried forward, or re-appended
-// beside its original — and the call keeps what the rebuild keeps, the one at
-// the greater (segment, offset). A rec whose reach meets no byte of the window
-// answers nothing.
+// The survivors may carry two copies of one record — carried forward, or
+// re-appended beside its original — and the fold keeps what the rebuild
+// keeps, the one at the greater (segment, offset). A survivor whose reach
+// meets no byte of the record's reach answers nothing.
 //
-// It takes the file's lock, creates no entry for a file without one, and
-// joins no piece across the window's ends.
-func (ix *Index) ReplayWindow(id core.FileID, window core.Extent, torn Numbers, recs []Record) {
-	if window.Len <= 0 {
-		return
-	}
+// The two steps take the file's lock in the order the open applies them:
+// the un-place settles first, as a cut does, so a drop that empties the
+// held set frees it with its runs before the fold runs — the fold cannot
+// bring those runs back. The call creates no entry for a file without one,
+// and joins no piece across the reach's ends.
+func (ix *Index) DropTorn(id core.FileID, at RecordAt, torn Record, survivors []Record) {
 	if !ix.fs.view(id, func(*file) {}) {
 		return
 	}
 	_, _ = ix.fs.update(id, func(f *file) error {
-		f.replayWindow(window, torn, recs)
+		f.held.unplace(at, core.Extent{Off: torn.Off, Len: torn.Len})
+		return nil
+	})
+	window := torn.Reach()
+	if window.Len <= 0 {
+		return // a reach over no byte displaced nothing to re-place
+	}
+	_, _ = ix.fs.update(id, func(f *file) error {
+		f.repairTorn(window, torn.Numbers, survivors)
 		return nil
 	})
 }
 
-// replayWindow folds recs over f's held set inside the window, under the
-// file's lock, as ReplayWindow's contract spells it: one pass of placings and
-// cuts in precedence order, one pass of marks in sequence order, then the
-// over runs of the dropped write gone where no copy of it stayed.
-func (f *file) replayWindow(window core.Extent, torn Numbers, recs []Record) {
-	lo, hi := window.Off, window.Off+window.Len
-	// windowed clips e to the window, or answers nothing where they meet at
-	// no byte; the empty extent Len 0 never reaches the held set below.
-	windowed := func(e core.Extent) core.Extent {
-		l, h := max(e.Off, lo), min(e.Off+e.Len, hi)
-		if l >= h {
-			return core.Extent{Len: 0}
-		}
-		return core.Extent{Off: l, Len: h - l}
-	}
-	// reachOf answers what a record's replay reached, before the clip: its
-	// kind's own extent, or the removal to the end a truncate's and a
-	// delete's reach names, exactly as the rebuild replays the kind.
-	reachOf := func(r Record) core.Extent {
-		switch r.Kind {
-		case RecTruncate:
-			return toEnd(r.Off)
-		case RecDelete:
-			return toEnd(0)
-		default:
-			return core.Extent{Off: r.Off, Len: r.Len}
-		}
-	}
+// repairTorn folds the survivors over f's held set inside the window, under
+// the file's lock, and takes the torn record's own leavings with it: one
+// precedence-ordered fold of placings, cuts and marks — the same fold the
+// rebuild replays a file's records by — then the runs and the marker of the
+// torn record, where no copy of it stayed among the survivors.
+func (f *file) repairTorn(window core.Extent, torn Numbers, recs []Record) {
+	kept, _ := f.fold(toBufs(recs), window) // a repair's fold cannot err: its removals cut, never the marking ops
 
-	order := slices.Clone(recs)
-	slices.SortFunc(order, func(a, b Record) int {
-		// The precedence the rebuild orders by, then the placement tie-break
-		// that keeps its order total over distinct copies of one record.
-		return cmp.Or(
-			a.Numbers.Compare(b.Numbers),
-			cmp.Compare(a.Segment, b.Segment),
-			cmp.Compare(a.At, b.At),
-		)
-	})
-	// decision: records with equal numbers are one record, whatever its copy
-	// count, and the greater (segment, offset) is kept — the rebuild's own
-	// rule, so the repair's placement names the same record's home the
-	// rebuild's would. Both copies were noted on the record's first pass and
-	// the notes stay, so the drop ranges lose nothing here.
-	kept := order[:0]
-	for i := 0; i < len(order); {
-		j := i + 1
-		for j < len(order) && order[i].Numbers == order[j].Numbers {
-			j++
-		}
-		kept = append(kept, order[j-1])
-		i = j
-	}
-	clear(order[len(kept):])
-	order = kept
-
-	marks := make([]Record, 0, len(order))
-	for _, r := range order {
-		w := windowed(reachOf(r))
-		if w.Len == 0 {
-			continue
-		}
-		switch r.Kind {
-		case RecWrite, RecFill:
-			f.held.put(Piece{
-				Extent: w,
-				Record: RecordAt{Segment: r.Segment, Offset: r.At},
-				// The payload starts at the extent's first byte, so a clipped
-				// piece's skip is the clip's own head; the rebuild places the
-				// unclipped piece with skip 0, and this names the same bytes.
-				Skip:    uint32(w.Off - r.Off),
-				Version: r.Numbers.Version,
-				Seq:     r.Numbers.Seq,
-			})
-			if r.Kind == RecFill {
-				marks = append(marks, r) // its own mark, as the rebuild's bit pass takes it
-			}
-		case RecRelease, RecTruncate, RecDeallocate, RecDelete, RecCloneTarget:
-			// A removal cut the pieces its reach covered at its place in the
-			// precedence: everything already applied below it, and nothing
-			// above — the records above re-place theirs. The marker it left
-			// the first time stays: it names the removal, not one placement.
-			f.held.cut(w)
-		case RecOffloaded, RecUnmark:
-			marks = append(marks, r)
-		}
-	}
-
-	// The bit pass, over the pieces the fold built and in the order of the
-	// marks' sequence numbers, as the rebuild's own: the highest-seq mark
-	// covering a piece at or above its version decides its bit. Every piece
-	// inside the window entered by a put, bit unset, so the fold of the marks
-	// reaching the window decides every bit in it from the same start the
-	// rebuild's fold began from.
-	slices.SortStableFunc(marks, func(a, b Record) int {
-		return cmp.Or(
-			cmp.Compare(a.Numbers.Seq, b.Numbers.Seq),
-			cmp.Compare(a.Segment, b.Segment),
-			cmp.Compare(a.At, b.At),
-		)
-	})
-	for _, m := range marks {
-		w := windowed(core.Extent{Off: m.Off, Len: m.Len})
-		if w.Len == 0 {
-			continue
-		}
-		if m.Kind == RecUnmark {
-			f.held.unmark(w, m.Numbers.Version)
-		} else {
-			f.held.markOffloaded(w, core.Version{}, m.Numbers.Version)
-		}
-	}
-
-	// The dropped write's runs go with it: a supersede nobody made is not a
-	// change any later read may be told. A removal or a mark raised no run,
-	// and the runs of the writes that stayed are still true, so only the
-	// dropped write's are dropped. But a copy of the record that stayed among
-	// the recs the fold kept keeps every run its version raised: a run names
-	// the record by version, never its placement, and the surviving copy's
-	// supersede is as true as the placement the verdict dropped was.
+	// The torn record's own runs and marker go with it: a supersede and a
+	// removal nobody's copy keeps are not changes any later read may be
+	// told, and "treated as never written" means the index must hold what a
+	// rebuild that was never fed the record holds — a marker left by its
+	// first replay would have Since yield a delete or truncate of content
+	// the index actually holds. A removal or a mark raised no run, and the
+	// runs of the writes that stayed are still true, so only the torn
+	// record's own are dropped. A surviving copy among the survivors keeps
+	// runs and marker alike: both name the record by version, never its
+	// placement, and the surviving copy's supersede is as true as the
+	// placement the verdict dropped was.
 	//
-	// decision: this keeps only the runs that are still here. A drop that
-	// emptied the file's held set lost them already — Unplace's settle frees
-	// the empty set with its runs, whichever copy of the record survives —
-	// and the fold re-notes nothing, so an open that un-places a record
-	// covering the file's whole held content leaves no run of it even where a
-	// good copy re-places. Widening the settle to keep an emptied set's runs
-	// changes what Since answers over a live journal's releases, so it is not
-	// taken from here; revisit if a torn-drop repair is ever required to
-	// report the supersede of a surviving copy whole-file.
-	if !slices.ContainsFunc(order, func(r Record) bool { return r.Numbers == torn }) {
-		f.held.dropOverBy(torn.Version, window)
+	// decision: this keeps only the runs and markers that are still here. A
+	// drop that emptied the file's held set lost the runs already — the
+	// un-place's settle frees the empty set with its runs, whichever copy of
+	// the record survives — and the fold re-notes nothing, so an open that
+	// un-places a record covering the file's whole held content leaves no
+	// run of it even where a good copy re-places. Widening the settle to keep
+	// an emptied set's runs changes what Since answers over a live journal's
+	// releases, so it is not taken from here; revisit if a torn-drop repair
+	// is ever required to report the supersede of a surviving copy
+	// whole-file.
+	if slices.ContainsFunc(kept, func(r bufRec) bool { return r.numbers == torn }) {
+		return
 	}
+	f.held.dropOverBy(torn.Version, window)
+	f.markers = slices.DeleteFunc(f.markers, func(m marker) bool { return m.version == torn.Version })
+}
+
+// toBufs adapts the repair's records to the fold's buffered shape —
+// everything the fold reads of each, nothing the repair has no use for —
+// taking the copy the fold's sort then owns.
+func toBufs(recs []Record) []bufRec {
+	out := make([]bufRec, len(recs))
+	for i, r := range recs {
+		out[i] = bufRec{
+			kind: r.Kind, seg: r.Segment, at: r.At,
+			off: r.Off, n: r.Len, numbers: r.Numbers, clone: r.Clone,
+		}
+	}
+	return out
 }

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
@@ -226,13 +225,13 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 	// header names as a predecessor — that no seal proves. The marker flow
 	// above queued its own unsealed scans here; every fate the classing left
 	// short of fateSealed names the same segments, so the queue joins them
-	// without a second pass. A zero-header segment holds no records, so its
-	// fate is the classing's alone.
+	// without a second pass. A zero-header segment reaches this proof like
+	// any other, for the rebuild walks its records too: a record a sync
+	// there proved whole is proven with its fellows, and a torn one is
+	// dropped as never written. A segment in which no record header verifies
+	// anywhere never takes a fate or a queue slot, so a spare stays
+	// untouched.
 	named := successorSet(st.Attached.Own)
-	zeroHeader := make(map[core.SegmentID]bool, len(st.Attached.ZeroHeader))
-	for _, id := range st.Attached.ZeroHeader {
-		zeroHeader[id] = true
-	}
 	queued := make(map[core.SegmentID]bool, len(unsealed))
 	var pending []core.SegmentID
 	for _, id := range unsealed {
@@ -245,7 +244,7 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 	for i := range st.Tails.Fates {
 		f := &st.Tails.Fates[i]
 		fateByID[f.ID] = f
-		if named[f.ID] || f.Kind == fateSealed || queued[f.ID] || zeroHeader[f.ID] {
+		if named[f.ID] || f.Kind == fateSealed || queued[f.ID] {
 			continue
 		}
 		pending = append(pending, f.ID)
@@ -459,7 +458,15 @@ func proveTail(ctx context.Context, fs storage.FS, rd *reader, st *State, expect
 	// The cut never passes the file's size, and the classing's own non-zero
 	// offset is never crossed, so neither of its floor rules is broken.
 	kind, off := fateEnded, heldEnd
-	if !lost && !windowFailed && torn && heldEnd <= tornAt {
+	if !lost && !windowFailed && torn && heldEnd <= tornAt && fate.Kind != fateEnded {
+		// The last term keeps the classing's own verdict: a segment it
+		// ended — over a torn slot, a torn header — is ended whatever this
+		// flow found in its tail, for a torn tail's cut and seal would
+		// write the marker over the very bytes its ended fate answers for,
+		// and the next open would read a seal above a tear as corruption.
+		// It is the one check this flow keeps, never to clear: the ended
+		// cut itself stays the flow's to deepen, at the end of the last
+		// record that held.
 		kind, off = fateTornTail, tornAt
 	}
 	if sc.SyncedThrough > off && !unheldStraddles(cands, verifiedAt, sc.SyncedThrough) {
@@ -531,8 +538,6 @@ func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentSca
 		return refusedRead(rd, cerr)
 	}
 	tornSoFar[index.RecordAt{Segment: r.Segment, Offset: r.At}] = true
-	st.Rebuilt.Index.Unplace(r.File, index.RecordAt{Segment: r.Segment, Offset: r.At},
-		core.Extent{Off: r.Off, Len: r.Len})
 	return repairTornPlacement(rd, st, expect, r, tornSoFar)
 }
 
@@ -544,10 +549,11 @@ func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentSca
 // from any attached segment — the one the torn record sits in and the named
 // and unverified ones beside it, cross-segment overwrites included — minus
 // the placements the run has judged torn so far, so a good copy of the record
-// at another placement is fed while the torn placement is not, and the index
-// folds the survivors over the span in the precedence the rebuild applies
-// them in, so the answer does not depend on the order the segments were fed
-// or walked.
+// at another placement is fed while the torn placement is not, and minus the
+// placements the rebuild's own scan judged — its catalogue's confines and its
+// clone targets whose bodies failed — so a record the rebuild never
+// indexed never comes back through a repair. The index then takes the torn
+// record's own drop with the fold, placements and marker alike.
 //
 // ponytail: the records to re-apply are re-scanned from disk, one walk of
 // every attached segment's record headers per torn record — the scans the
@@ -562,7 +568,7 @@ func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentSca
 // the file, so they name every home a copy could sit in — when a large
 // journal's open shows these re-walks in a profile.
 func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn index.Record, tornSoFar map[index.RecordAt]bool) error {
-	window := tornReach(torn)
+	window := torn.Reach()
 	if window.Len <= 0 {
 		// A record whose replay reached nothing — a marks kind over no
 		// extent, a truncate past every offset — placed and cut nothing the
@@ -578,8 +584,8 @@ func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn inde
 		if err != nil {
 			return refusedRead(rd, err)
 		}
-		for _, r := range sc.Records {
-			if r.File != torn.File || tornSoFar[index.RecordAt{Segment: r.Segment, Offset: r.At}] || !reachesOverlap(tornReach(r), window) {
+		for _, r := range segmentRecords(sc, rebuildDrops(st, id)) {
+			if r.File != torn.File || tornSoFar[index.RecordAt{Segment: r.Segment, Offset: r.At}] || !reachesOverlap(r.Reach(), window) {
 				continue
 			}
 			recs = append(recs, r)
@@ -596,23 +602,8 @@ func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn inde
 			return err
 		}
 	}
-	st.Rebuilt.Index.ReplayWindow(torn.File, window, torn.Numbers, recs)
+	st.Rebuilt.Index.DropTorn(torn.File, index.RecordAt{Segment: torn.Segment, Offset: torn.At}, torn, recs)
 	return nil
-}
-
-// tornReach is the span of the file a record's replay reached: the extent
-// its kind names, or the removal to the end a truncate's and a delete's
-// reach amounts to — the same reach the rebuild's drop ranges note the
-// record by.
-func tornReach(r index.Record) core.Extent {
-	switch r.Kind {
-	case index.RecTruncate:
-		return core.Extent{Off: r.Off, Len: math.MaxInt64 - r.Off}
-	case index.RecDelete:
-		return core.Extent{Off: 0, Len: math.MaxInt64}
-	default:
-		return core.Extent{Off: r.Off, Len: r.Len}
-	}
 }
 
 // reachesOverlap reports whether two reaches cover a byte in common.
