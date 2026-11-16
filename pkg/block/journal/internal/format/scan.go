@@ -537,16 +537,12 @@ func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err e
 					// first slot whose own first read reaches the first byte
 					// that is not zero — a torn or a failed large write leaves
 					// this shape — so the run is told once, not rescanned
-					// once per slot. The cap lands on the crossing slot when
-					// the non-zero byte lies past it, where a stepping walk
-					// refills before any slot reaches the byte: a window not a
-					// multiple of eight would otherwise refill at another
-					// offset than the stepping walk's. The slots crossed are
-					// window hits over zero bytes: the same nothing each of
-					// them would examine.
-					kj := max(int64(0), (int64(i)-24)/8)
-					kc := max(int64(0), (wEnd-31-(p+8)+7)/8)
-					p += 8 * min(kj, kc)
+					// once per slot. The byte indexes held, which ends at
+					// wEnd, so the land never lies past the crossing slot:
+					// the stepping walk refills at it before any farther
+					// slot. The slots crossed are window hits over zero
+					// bytes: the same nothing each of them would examine.
+					p += 8 * max(int64(0), (int64(i)-24)/8)
 					continue
 				}
 				if wEnd >= sc.size {
