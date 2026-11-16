@@ -2005,8 +2005,10 @@ Authentication and principal mapping are
   and it establishes a new context;
 - the sequence window is 128. A call whose sequence number is below the
   window, or already seen within it, is dropped unanswered (RFC 2203
-  §5.3.3.1); one above it advances the window. One whose verifier checksum
-  fails is rejected with `RPCSEC_GSS_CREDPROBLEM` (RFC 2203 §5.3.3.4.2).
+  §5.3.3.1); one above it advances the window once its verifier checksum
+  passes. One whose verifier checksum fails is rejected with
+  `RPCSEC_GSS_CREDPROBLEM` (RFC 2203 §5.3.3.4.2) and leaves the window as it
+  was, since the handle travels in the clear.
   Neither dropped nor rejected call runs;
 - `krb5` (authentication), `krb5i` (plus integrity) and `krb5p` (plus privacy,
   i.e. encryption) are served; the share's minimum level is
@@ -2509,9 +2511,12 @@ an NFSv4.1 code such as `SEQUENCE` sent under NFSv4.0 included, is routed to
 the `ILLEGAL` row, which answers `NFS4ERR_OP_ILLEGAL`, as develop does; `ErrVersion` to
 `PROG_MISMATCH` for an RPC version, and for an NFSv4 minor version not served
 to `NFS4ERR_MINOR_VERS_MISMATCH`, answered once for the compound before any
-operation runs; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrTooLong` to
-`NFS4ERR_TOO_MANY_OPS` for NFSv4.1 and to `NFS4ERR_RESOURCE` for NFSv4.0,
-which has no such status (two rows, split by `Versions`); `ErrReplyTooBig`, a
+operation runs; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrDecode` to
+`GARBAGE_ARGS`, the RPC accept state, in a row naming no operation or version,
+which RFC 20 §4.7's `NewErrorTable` demands of every table; `ErrTooLong` to
+`NFS4ERR_TOO_MANY_OPS` in a row naming no version, which RFC 20 §4.7's
+`NewOpTable` demands of a table with a compound row, and to `NFS4ERR_RESOURCE`
+for NFSv4.0, which has no such status, in a row naming it that wins there; `ErrReplyTooBig`, a
 `COMPOUND` whose reply would hold more than a quarter of the reply pool
 ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)),
 to `NFS4ERR_REP_TOO_BIG` (RFC 8881 §15.1.3.6) in a row naming no version, which
@@ -2533,8 +2538,8 @@ stateid names state under a delegation or a recall (one naming the current
 stateid is refused, as RFC 20 §4.7 judges a compound before it runs) and an `OPEN` with `CLAIM_DELEGATE_CUR` or `CLAIM_DELEG_CUR_FH`,
 which a delegation recall waits on (develop serves those claims); context is
 `SEQUENCE`, `PUTFH`, `GETATTR` and `RENEW`. Every other operation is refused
-with the drain's error. `ErrNotLast` and
-`ErrTooManyPending` never reach NFS, which parks nothing, and map to its fault.
+with the drain's error. `ErrNotLast`, `ErrTooManyPending` and `ErrCancelled`
+never reach NFS, which parks and holds nothing, and map to its fault.
 `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree` and `ErrExpired` are settled
 with the session and GSS tables; the totality test fails until they have rows.
 
@@ -2707,7 +2712,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §11.1 refused credentials *(1 node)* | Send a truncated `AUTH_SYS` credential, one with 17 gids, one with a 256-byte machine name, and an `AUTH_DH` and an unknown flavour, to a share with an everyone grant: each rejected `AUTH_BADCRED`, nothing created. | garbage credentials served as anonymous |
 | §6.3 `MNT` on a Kerberos-only share *(1 node)* | `MNT` over `AUTH_UNIX` of a share whose `MinProof` is `Ticket`: the flavours and the root handle returned; a `GETATTR` with that handle over `AUTH_SYS`: refused `AUTH_TOOWEAK`; over `sec=krb5`: answered. | NFSv3 Kerberos mounts refused; or a handle that skips the minimum |
 | §6.1 NLM on a Kerberos-only share *(1 node)* | On a share whose `MinProof` is `Ticket`, an NLM `LOCK` over `AUTH_SYS` as a uid that can read the file: granted; as a uid that can neither read nor own a 0600 file: refused. A store error resolving the caller: the lock refused, never granted as anonymous. | every NFSv3 lock on a Kerberos share failing; locks on files the caller cannot read |
-| §10 context table *(1 node)* | `RPCSEC_GSS_DESTROY` with a corrupted header MIC: refused, the context still usable. A call at sequence `MAXSEQ`: `RPCSEC_GSS_CTXPROBLEM`, and the context gone. With the table's share sized to four contexts, one principal opening a fifth evicts its own oldest, never another principal's. A reconnect on a new TCP connection keeps its context. | an unauthenticated teardown; one principal evicting everyone |
+| §10 context table *(1 node)* | `RPCSEC_GSS_DESTROY` with a corrupted header MIC: refused, the context still usable. A call above the window whose verifier fails: `RPCSEC_GSS_CREDPROBLEM`, and the window unchanged, so a call at the old window's top still runs. A call at sequence `MAXSEQ`: `RPCSEC_GSS_CTXPROBLEM`, and the context gone. With the table's share sized to four contexts, one principal opening a fifth evicts its own oldest, never another principal's. A reconnect on a new TCP connection keeps its context. | an unauthenticated teardown; one principal evicting everyone |
 | §8.1 ctime | An SMB client sets −1 on all four times of an open and writes through it; assert an NFSv3 `GETATTR` shows `ctime` moved. | SMB suspension freezing the NFS ctime |
 | §9.1 stability | Write `DATA_SYNC`, crash the primary, read back. Assert the data and its `size` and `mtime`. Append 10^4 `FILE_SYNC` writes to a new file with the metadata store stalled; assert every reply arrives. Overwrite committed bytes `FILE_SYNC` with the store stalled; assert no success reply until the store commits — `NFS4ERR_DELAY` within the deadline — and that the reply follows that write's existence commit. Same with unstable overwrites and `COMMIT`. | an append waiting on a metadata transaction, or an overwrite answered stable before its existence commit |
 | §9.1 loss verifier | Write unstable, then fail the sync window holding the writes; `COMMIT`. Assert the `COMMIT` succeeds with a verifier different from the writes', the client resends, and the data reads back. | a loss reported as a `COMMIT` error, or a `COMMIT` answered under the old verifier |

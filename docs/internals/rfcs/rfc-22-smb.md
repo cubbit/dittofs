@@ -2577,8 +2577,13 @@ pends ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%2
 `Errors()`) map as: `ErrNotSupported` and `ErrVersion` to `STATUS_NOT_SUPPORTED`;
 `ErrNoSession` to `STATUS_USER_SESSION_DELETED`; `ErrNoTree` to
 `STATUS_NETWORK_NAME_DELETED`; `ErrExpired` to `STATUS_NETWORK_SESSION_EXPIRED`;
-`ErrNotLast` to `STATUS_INTERNAL_ERROR`; `ErrTooManyPending` to
-`STATUS_INSUFFICIENT_RESOURCES`; `ErrDraining` and `ErrMoved` to an interim
+`ErrNotLast`, and `ErrReplyTooBig`, which never reaches SMB since a chain
+sends early rather than refuse, to `STATUS_INTERNAL_ERROR`; `ErrTooManyPending`
+to `STATUS_INSUFFICIENT_RESOURCES`; `ErrDecode` to `STATUS_INVALID_PARAMETER`,
+in a row naming no command or dialect, which RFC 20 §4.7's `NewErrorTable`
+demands of every table; `ErrCancelled` to `STATUS_CANCELLED` (MS-SMB2
+3.3.5.16), in a row naming no command or dialect, which its `NewOpTable`
+demands of a table that holds; `ErrDraining` and `ErrMoved` to an interim
 `STATUS_PENDING` that grants the request's credits, and the credits of the
 chain members after it, which do not run and of which `core` reads only the
 headers (`HoldCodec.Interim`'s `after`), and that no final response ever

@@ -404,6 +404,11 @@ func NewWaitBudget(name string, ceiling int64) *WaitBudget
 func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Reservation, error)
 func (b *WaitBudget) Reserved() int64
 
+// ErrTooLarge is what a WaitBudget's Reserve, and so a BufPool's Get, wraps
+// when it refuses at once, under any ctx, a charge past the ceiling; it matches
+// no context error, so a caller tells it from a wait's end (RFC 20 §4.3).
+var ErrTooLarge = errors.New("resources: charge past the ceiling")
+
 // Reservation is a value from either, so taking one allocates nothing; it is moved,
 // never copied. Release returns its bytes to its budget, and to its key's count on a
 // WaitBudget, then zeroes the Reservation, so a second Release does nothing.
@@ -469,8 +474,9 @@ pool, the reply pool and the engine's waits (step 7). Every other pool refuses
 at once, so it adds no edge to a wait graph, and **MAY** be charged at any
 point: connection state at a session, the hold pool, the share cap and open
 state. A wait **MUST NOT** be entered while holding a reservation later in this
-order, nor the reply pool's while the same request holds a reply reservation: a
-chain whose earlier members hold theirs sends their replies first
+order, nor flow control's or the reply pool's while the same request holds a
+reply reservation: a chain whose earlier members hold theirs sends their
+replies first
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)). Each wait
 ends:
 
@@ -922,6 +928,9 @@ counts nothing about holds. This RFC fixes which pool holds the bytes:
   // charge from to, and only then releases b's old reservation and keeps the
   // new one. Refused, it returns the error and nothing changes.
   func (b *Buf) Recharge(to *Budget) error
+  // Charge is b's whole charge, its class's capacity and the per-request
+  // overhead, which the floor counts.
+  func (b *Buf) Charge() int64
   ```
 
   If `Recharge` fails, the adapter refuses the call, and the receive
@@ -933,10 +942,10 @@ counts nothing about holds. This RFC fixes which pool holds the bytes:
   backs is not shrunk by being held, so a 100 KiB write in a transfer-class
   buffer charges the hold pool about 1 MiB.
 - The adapter's per-connection floors in requests and bytes count each held
-  request's record length, at least 64 KiB, since the adapter does not read
-  which of a record's bytes are a write's; that is a logical count of what a
-  connection may have held, and it is kept apart from the hold pool, which
-  counts memory. Past
+  request's receive charge, its buffer's class and the per-request overhead
+  (`Buf.Charge`), so the bytes a connection holds under its floor are the
+  memory it keeps in the receive pool; past them the charge moves to the hold
+  pool, which counts it there. Past
   both, a request whose hold starts on an `ErrDelay` the service returned is
   refused at once and nothing is held for it; a call still in the service is
   not refused, as above.
