@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 )
@@ -529,27 +530,38 @@ func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err e
 			// slot's narrow read asks — are the same reads stepping starts,
 			// a refusal asleep at one found by the same attempt either way.
 			wEnd := sc.cur + sc.have // the bytes in hand; never past the size
-			if wEnd > p+8 && zero(sc.window[p+8-sc.cur:wEnd-sc.cur]) {
-				if wEnd >= sc.size {
-					// The window holds the rest of the segment: every
-					// remaining slot is served whole, so the land is the last
-					// grid position of the segment, and the loop ends on its
-					// own residue checks.
-					pl := p + 8 + 8*max(int64(0), (sc.size-1-(p+8))/8)
-					p = pl - 8
-				} else {
-					// The land is the first grid slot whose own first read
-					// crosses wEnd. It lies within the 31 bytes below wEnd,
-					// for a first read never asks more than a seal marker's
-					// own 32, and it crosses unless the window serves it —
-					// The max keeps a short run, one that ends before the
-					// crossing, stepping as it always did.
-					pl := p + 8 + 8*max(int64(0), (wEnd-31-(p+8)+7)/8)
-					n := min(min(RecordHeaderSize, sc.size-pl), SealMarkerSize)
-					if pl+n > wEnd {
-						p = pl - 8
-					}
+			if wEnd > p+8 {
+				held := sc.window[p+8-sc.cur : wEnd-sc.cur]
+				if i := slices.IndexFunc(held, func(c byte) bool { return c != 0 }); i >= 0 {
+					// A zero run that ends inside the window: land on the
+					// first slot whose own first read reaches the first byte
+					// that is not zero — a torn or a failed large write leaves
+					// this shape — so the run is told once, not rescanned
+					// once per slot. The cap lands on the crossing slot when
+					// the non-zero byte lies past it, where a stepping walk
+					// refills before any slot reaches the byte: a window not a
+					// multiple of eight would otherwise refill at another
+					// offset than the stepping walk's. The slots crossed are
+					// window hits over zero bytes: the same nothing each of
+					// them would examine.
+					kj := max(int64(0), (int64(i)-24)/8)
+					kc := max(int64(0), (wEnd-31-(p+8)+7)/8)
+					p += 8 * min(kj, kc)
+					continue
 				}
+				if wEnd >= sc.size {
+					// The window holds the rest of the segment and all of it is
+					// zero: no slot left to examine tells anything new, and
+					// end already stands at the size.
+					break
+				}
+				// The land is the first grid slot whose own first read
+				// crosses wEnd. It lies within the 31 bytes below wEnd, for
+				// a first read never asks more than a seal marker's own 32;
+				// the max keeps a short run, one that ends before the
+				// crossing, stepping as it always did.
+				pl := p + 8 + 8*max(int64(0), (wEnd-31-(p+8)+7)/8)
+				p = pl - 8
 			}
 		}
 	}

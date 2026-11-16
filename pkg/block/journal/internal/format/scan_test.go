@@ -992,59 +992,122 @@ func TestScanEdges(t *testing.T) {
 // few examinations per window it fills, not one every eight bytes, for no
 // record header and no marker verifies in bytes the window holds all zero.
 // The scan it hands back is the same either way: both records, one zero range
-// to the size, no seal, no resync, the end at the size.
+// to the size, no seal, no resync, the end at the size. The second row is the
+// zero run that ends inside a window instead of at the segment's end — one
+// junk byte amid the zeros, the shape a torn or failed large write leaves —
+// which the search must also cross a few examinations per window, never
+// rescanning the zeros once per slot: a per-slot rescan of a run of H zero
+// bytes is O(H squared over sixteen), seconds over one window.
 func TestScanSearchConsumesAnAllZeroWindowAsOne(t *testing.T) {
-	recs := scanTestRecords()[:2]
-	seg, _ := scanSegment(t, testIdentity, recs...)
-	tail := int64(len(seg))
-	seg = append(seg, make([]byte, 3*scanWindow+4096)...)
-	size := int64(len(seg))
+	t.Run("an all-zero tail", func(t *testing.T) {
+		recs := scanTestRecords()[:2]
+		seg, _ := scanSegment(t, testIdentity, recs...)
+		tail := int64(len(seg))
+		seg = append(seg, make([]byte, 3*scanWindow+4096)...)
+		size := int64(len(seg))
 
-	got, err := ScanSegmentHeaders(bytes.NewReader(seg), size, testIdentity, testSegment)
-	if err != nil {
-		t.Fatalf("ScanSegmentHeaders = %v, want no error", err)
-	}
-	if len(got.Records) != 2 {
-		t.Fatalf("attached %d records, want 2", len(got.Records))
-	}
-	want := ScanRange{Off: tail, End: size, Kind: RangeZero}
-	if len(got.Ranges) != 1 || got.Ranges[0] != want {
-		t.Fatalf("ranges = %+v, want the one zero range %+v", got.Ranges, want)
-	}
-	if got.Sealed || got.Resynced {
-		t.Errorf("sealed %v resynced %v, want neither", got.Sealed, got.Resynced)
-	}
-	if got.End != size {
-		t.Errorf("end %d, want the size %d", got.End, size)
-	}
+		got, err := ScanSegmentHeaders(bytes.NewReader(seg), size, testIdentity, testSegment)
+		if err != nil {
+			t.Fatalf("ScanSegmentHeaders = %v, want no error", err)
+		}
+		if len(got.Records) != 2 {
+			t.Fatalf("attached %d records, want 2", len(got.Records))
+		}
+		want := ScanRange{Off: tail, End: size, Kind: RangeZero}
+		if len(got.Ranges) != 1 || got.Ranges[0] != want {
+			t.Fatalf("ranges = %+v, want the one zero range %+v", got.Ranges, want)
+		}
+		if got.Sealed || got.Resynced {
+			t.Errorf("sealed %v resynced %v, want neither", got.Sealed, got.Resynced)
+		}
+		if got.End != size {
+			t.Errorf("end %d, want the size %d", got.End, size)
+		}
 
-	sc := scanner{
-		r:          bytes.NewReader(seg),
-		size:       size,
-		identity:   testIdentity,
-		segment:    testSegment,
-		window:     make([]byte, min(scanWindow, size)),
-		headerOnly: true,
-	}
-	end, found, zeroRun, err := sc.search(tail)
-	if err != nil {
-		t.Fatalf("the search over the zero tail = %v, want no error", err)
-	}
-	if found.outcome != slotNothing || end != size || !zeroRun {
-		t.Fatalf(
-			"the search over the zero tail: found %v, end %d, zeroRun %v, want nothing found at the size %d all zero",
-			found.outcome, end, zeroRun, size,
-		)
-	}
-	// The bound: the search enters each window it crosses with one
-	// examination, and the walk's records are examined before it; a search
-	// that steps one slot at a time over the zeros exceeds it by orders of
-	// the tail's own size.
-	bound := 2*((size-tail)/scanWindow+1) + 8
-	if n := sc.examinedSlots; int64(n) > bound {
-		t.Fatalf(
-			"the zero search examined %d slots, want at most %d, a few per window it crosses, not one every eight bytes",
-			n, bound,
-		)
-	}
+		sc := scanner{
+			r:          bytes.NewReader(seg),
+			size:       size,
+			identity:   testIdentity,
+			segment:    testSegment,
+			window:     make([]byte, min(scanWindow, size)),
+			headerOnly: true,
+		}
+		end, found, zeroRun, err := sc.search(tail)
+		if err != nil {
+			t.Fatalf("the search over the zero tail = %v, want no error", err)
+		}
+		if found.outcome != slotNothing || end != size || !zeroRun {
+			t.Fatalf(
+				"the search over the zero tail: found %v, end %d, zeroRun %v, want nothing found at the size %d all zero",
+				found.outcome, end, zeroRun, size,
+			)
+		}
+		// The bound: the search enters each window it crosses with one
+		// examination, and the walk's records are examined before it; a search
+		// that steps one slot at a time over the zeros exceeds it by orders of
+		// the tail's own size.
+		bound := 2*((size-tail)/scanWindow+1) + 8
+		if n := sc.examinedSlots; int64(n) > bound {
+			t.Fatalf(
+				"the zero search examined %d slots, want at most %d, a few per window it crosses, not one every eight bytes",
+				n, bound,
+			)
+		}
+	})
+
+	t.Run("a non-zero byte inside a window", func(t *testing.T) {
+		recs := scanTestRecords()[:2]
+		seg, _ := scanSegment(t, testIdentity, recs...)
+		tail := int64(len(seg))
+		seg = append(seg, make([]byte, scanWindow+scanWindow/2)...)
+		seg[len(seg)-1] = 0xFF // the junk byte, mid-window of the second window
+		seg = append(seg, make([]byte, scanWindow)...)
+		size := int64(len(seg))
+
+		got, err := ScanSegmentHeaders(bytes.NewReader(seg), size, testIdentity, testSegment)
+		if err != nil {
+			t.Fatalf("ScanSegmentHeaders = %v, want no error", err)
+		}
+		if len(got.Records) != 2 {
+			t.Fatalf("attached %d records, want 2", len(got.Records))
+		}
+		// One bad range, for the run holds a byte that is not zero; no record
+		// verifies past it, so nothing resyncs.
+		want := ScanRange{Off: tail, End: size, Kind: RangeBad}
+		if len(got.Ranges) != 1 || got.Ranges[0] != want {
+			t.Fatalf("ranges = %+v, want the one bad range %+v", got.Ranges, want)
+		}
+		if got.Sealed || got.Resynced {
+			t.Errorf("sealed %v resynced %v, want neither", got.Sealed, got.Resynced)
+		}
+		if got.End != size {
+			t.Errorf("end %d, want the size %d", got.End, size)
+		}
+
+		sc := scanner{
+			r:          bytes.NewReader(seg),
+			size:       size,
+			identity:   testIdentity,
+			segment:    testSegment,
+			window:     make([]byte, min(scanWindow, size)),
+			headerOnly: true,
+		}
+		end, found, zeroRun, err := sc.search(tail)
+		if err != nil {
+			t.Fatalf("the search over the junked zeros = %v, want no error", err)
+		}
+		if found.outcome != slotNothing || end != size || zeroRun {
+			t.Fatalf(
+				"the search over the junked zeros: found %v, end %d, zeroRun %v, want nothing found at the size %d with the run not zero",
+				found.outcome, end, zeroRun, size,
+			)
+		}
+		bound := 2*((size-tail)/scanWindow+1) + 16
+		if n := sc.examinedSlots; int64(n) > bound {
+			t.Fatalf(
+				"the junked search examined %d slots, want at most %d, a few per window it crosses and a few around the junk byte, not a rescan of the zeros per slot",
+				n, bound,
+			)
+		}
+	})
 }
