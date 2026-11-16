@@ -75,16 +75,14 @@ func newDemo(dir string, in io.Reader, out io.Writer) *demo {
 		tag:     1,
 	}
 	d.views = map[rune]func(*demo){
-		'i': viewPlaceholder,
-		's': viewPlaceholder,
-		'f': viewPlaceholder,
-		'd': viewPlaceholder,
-		'+': viewPlaceholder,
+		'i': nil, // the index view — Task 5
+		's': nil, // segments — Task 5
+		'd': nil, // the data dump — Task 4
+		'f': (*demo).viewFS,
+		'+': (*demo).viewStats,
 	}
 	return d
 }
-
-func viewPlaceholder(*demo) {}
 
 // run opens the journal, walks the story beat by beat, and closes it.
 // An empty line advances, `q` or an ended stdin ends the story; either way
