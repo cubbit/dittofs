@@ -348,6 +348,14 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	if err := cp.SetGrant(ctx, entity.ShareGrant{Share: entity.NewShareID(), Principal: u.Principal, Access: entity.AccessRead}, 0); !merrs.IsNotFoundError(err) {
 		t.Errorf("grant on a missing share: %v", err)
 	}
+	// Deleting a principal deletes its grants, so it moves the version too.
+	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0))
+	moved("a granted user's delete", func() error {
+		return cp.DeleteUser(ctx, u.Principal, userGeneration(t, s, u.Principal))
+	})
+	moved("a granted group's delete", func() error {
+		return cp.DeleteGroup(ctx, g.Principal, groupGeneration(t, cp, g.Principal))
+	})
 	if err := cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: entity.NewUser(), Access: entity.AccessRead}, 0); !merrs.IsNotFoundError(err) {
 		t.Errorf("grant to a missing user: %v", err)
 	}

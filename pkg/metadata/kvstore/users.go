@@ -313,7 +313,8 @@ func notFound(err error, p entity.Principal) error {
 }
 
 // deletePrincipal removes p's record, its index rows, the groups it is a
-// member of, its grants and its quotas. Files keep naming p, as an unknown
+// member of, its grants and its quotas, moving the grant-list version of
+// every share it held a grant on. Files keep naming p, as an unknown
 // principal. The membership and grant rows are found by scan, so their ranges are
 // guarded: a membership or grant added for p after this transaction's
 // snapshot makes one of the two conflict, rather than leave a row naming a
@@ -332,10 +333,17 @@ func deletePrincipal(tx kv.Txn, p entity.Principal, record []byte, name string, 
 	}); err != nil {
 		return err
 	}
+	var granted []entity.ShareID
 	if err := dropPairs(tx, grantsOfPrefix(p.ID), func(share []byte) []byte {
+		granted = append(granted, entity.ShareID(share))
 		return grantKey(entity.ShareID(share), p.ID)
 	}); err != nil {
 		return err
+	}
+	for _, share := range granted {
+		if err := moveGrantVersion(tx, share); err != nil {
+			return err
+		}
 	}
 	if err := tx.Delete(nameKey(nameKind(p.Kind), name)); err != nil {
 		return err
