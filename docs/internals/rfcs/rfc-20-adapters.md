@@ -3876,7 +3876,10 @@ close:
 - by `core`: `write`, a failed write; `frame`, a framing error; `decode`, a
   header that did not decode far enough to address a reply; `unwrap`, an
   `Unwrap` that returned no header; `walk`, a chain member's `Next` that is not
-  a valid step; `wiring`, stages refused at accept (§4.7);
+  a valid step; `wiring`, a protocol wiring fault `core` finds, at accept or
+  while serving: stages refused at accept, a stage a request needs that its
+  stages lack, as `Hold` where a table Holds, or a row whose `Decode` leaves out
+  what its reply needs, as a compound row's head (§4.7);
 - by protocol code: `violation`, a `Conn.Close` (§4.7);
 - by the adapter: `removed`, its address removed by `Reconfigure` (§3.1);
   `drain`, closed at the drain's end with a request still running, which is
