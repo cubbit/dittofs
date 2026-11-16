@@ -1,0 +1,4 @@
+# test/harness/bin/dt report --failures | 2026-11-16 16:21 CET | f02e02620
+run 20261116T152131Z-f02e0262: exit 1
+CELL           NEW FAILURE            MESSAGE
+clients/macos  test/clients/files.sh  `test/clients/files.sh /tmp/dt3583415058` exited 1

@@ -1,0 +1,5 @@
+# test/harness/demo/plan-compare.sh | 2026-11-16 16:21 CET | f02e02620
+docs change             0 cells; e2e cells: none
+block store change     24 cells; e2e cells: none
+SMB adapter change     26 cells; e2e cells: e2e/kerberos e2e/cross-protocol
+worktree back at f02e02620

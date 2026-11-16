@@ -1,0 +1,449 @@
+{
+  "reportFormat": "CTRF",
+  "specVersion": "0.1.0",
+  "generatedBy": "dt",
+  "results": {
+    "tool": {
+      "name": "dt"
+    },
+    "summary": {
+      "tests": 39,
+      "passed": 26,
+      "failed": 0,
+      "skipped": 13,
+      "pending": 0,
+      "other": 0,
+      "flaky": 0,
+      "start": 1793689803197,
+      "stop": 1793691340387
+    },
+    "tests": [
+      {
+        "name": "test/scenarios/00-smb-nfs-roundtrip-gc-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 18614,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/01-smb-rename-in-share-root-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 14931,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/10-smb-store-options-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 12657,
+        "extra": {
+          "grade": "known",
+          "issue": "#3048"
+        }
+      },
+      {
+        "name": "test/scenarios/11-smb-2stores-same-bucket-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 12435,
+        "extra": {
+          "grade": "known",
+          "issue": "#3036"
+        }
+      },
+      {
+        "name": "test/scenarios/12-smb-encryption-roundtrip-s.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 26462,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/13-smb-compression-frame-magic-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 11093,
+        "extra": {
+          "grade": "known",
+          "issue": "#2897"
+        }
+      },
+      {
+        "name": "test/scenarios/20-smb-nfs-case-across-adapters-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 10938,
+        "extra": {
+          "grade": "known",
+          "issue": "#3037"
+        }
+      },
+      {
+        "name": "test/scenarios/21-smb-nfs-concurrent-creates-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 13849,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/22-smb-share-modes-s.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 53077,
+        "extra": {
+          "grade": "known",
+          "issue": "#3038"
+        }
+      },
+      {
+        "name": "test/scenarios/23-smb-notify-durable-s.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 67026,
+        "extra": {
+          "grade": "known",
+          "issue": "#3039"
+        }
+      },
+      {
+        "name": "test/scenarios/24-smb-nfs-truncate-during-upload-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 13763,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/25-smb-nfs-truncate-same-content-s.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 15905,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/26-smb-truncate-same-content-s.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 11543,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/30-smb-nfs-permission-revoke-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 11327,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/31-smb-nfs-owner-gid-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 11039,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/32-smb-nfs-trash-two-users-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 11223,
+        "extra": {
+          "grade": "known",
+          "issue": "#2920"
+        }
+      },
+      {
+        "name": "test/scenarios/33-nfs-mount-identity-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 10817,
+        "extra": {
+          "grade": "known",
+          "issue": "#3040"
+        }
+      },
+      {
+        "name": "test/scenarios/40-smb-dedup-same-content-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 12286,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/41-smb-dedup-delete-original-gc-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 16707,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/42-smb-1share-small-large-gc-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 13398,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/43-smb-nfs-open-unlinked-gc-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 17877,
+        "extra": {
+          "grade": "known",
+          "issue": "#2927"
+        }
+      },
+      {
+        "name": "test/scenarios/44-smb-unlink-crash-gc-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 14557,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/45-smb-snapshot-survives-gc-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 13829,
+        "extra": {
+          "grade": "known",
+          "issue": "#2973"
+        }
+      },
+      {
+        "name": "test/scenarios/46-smb-truncate-gc-frees-tail-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 13279,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/50-smb-2shares-one-store-gc-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 13679,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/51-smb-2shares-same-content-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 15778,
+        "extra": {
+          "grade": "known",
+          "issue": "#3041"
+        }
+      },
+      {
+        "name": "test/scenarios/52-smb-2shares-small-large-gc-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 20678,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/53-smb-2shares-share-scoped-views-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 13137,
+        "extra": {
+          "grade": "known",
+          "issue": "#2906"
+        }
+      },
+      {
+        "name": "test/scenarios/54-smb-2shares-idle-disk-used-s.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 20816,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/55-smb-extra-share-gc-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 18915,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/56-smb-extra-share-gc-minimal-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 18690,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/57-smb-2shares-compaction-l.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 328221,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/60-smb-nfs-journal-small-stream-m.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 139943,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/61-smb-journal-full-s3-down-m.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 69401,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/62-smb-remote-block-damaged-xs.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 16891,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/70-smb-s3-down-reads-fail-m.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 196025,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/71-smb-s3-stalled-deadline-m.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 72651,
+        "extra": null
+      },
+      {
+        "name": "test/scenarios/72-smb-snapshot-s3-down-s.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "skipped",
+        "rawStatus": "failed",
+        "duration": 60948,
+        "extra": {
+          "grade": "known",
+          "issue": "#2928"
+        }
+      },
+      {
+        "name": "test/scenarios/73-smb-nfs-crash-restart-m.sh",
+        "suite": [
+          "system"
+        ],
+        "status": "passed",
+        "duration": 102516,
+        "extra": null
+      }
+    ],
+    "environment": {
+      "commit": "419a8401",
+      "branchName": "develop",
+      "osPlatform": "linux",
+      "osRelease": "7.0.0-38-generic"
+    },
+    "extra": {
+      "run": "20261103T071003Z-419a8401",
+      "dirty": false,
+      "tier": "merge",
+      "place": "dedicated",
+      "in": "host",
+      "exit": 0,
+      "cells": [
+        {
+          "suite": "system",
+          "result": "passed",
+          "seconds": 1537,
+          "log": "logs/system.log",
+          "junit": "junit/system.xml"
+        }
+      ]
+    }
+  }
+}

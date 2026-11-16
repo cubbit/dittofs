@@ -1,0 +1,20 @@
+# test/harness/bin/dt run pjdfstest/badger-s3/4.1 chmod/00.t --in auto | grep -Ev '(^|] )ok [0-9]+$'; echo "dt exit: ${PIPESTATUS[0]} in ${SECONDS} s" | 2026-11-16 16:22 CET | f02e02620
+[dt] in dtc: dt run pjdfstest/badger-s3/4.1 chmod/00.t --in=host
+[dt] $ go build -o <worktree>/test/harness/results/20261116T152217Z-f02e0262/bin/ ./cmd/dfs ./cmd/dfsctl
+[dt] fixture: blocks in the bucket dittofs-dt at http://127.0.0.1:4566, under dt-374eb7f093efddfc/
+[dt] fixture: dfs started, pid 136, its API at http://127.0.0.1:35681, its output in <worktree>/test/harness/results/20261116T152217Z-f02e0262/pjdfstest-badger-s3-4.1/dfs.log
+[dt] fixture: NFS exports /export at 172.17.0.3:39057
+[dt] fixture: $ mount -t nfs -o vers=4.1,port=39057,noac,sync,lookupcache=none 172.17.0.3:/export /tmp/dt3898316016
+[dt] fixture: NFS vers=4.1 mounted at /tmp/dt3898316016
+[dt] $ prove -v <worktree>/test/harness/results/20261116T152217Z-f02e0262/tools/pjdfstest/tests/chmod/00.t
+<worktree>/test/harness/results/20261116T152217Z-f02e0262/tools/pjdfstest/tests/chmod/00.t .. 
+1..119
+ok
+All tests successful.
+Files=1, Tests=119, 12 wallclock secs ( 0.03 usr  0.00 sys +  0.16 cusr  0.16 csys =  0.35 CPU)
+Result: PASS
+[dt] pjdfstest/badger-s3/4.1: passed 
+CELL                     RESULT  TIME  NOTE
+pjdfstest/badger-s3/4.1  passed  15s   
+results: <worktree>/test/harness/results/20261116T152217Z-f02e0262
+dt exit: 0 in 17 s

@@ -1,0 +1,9 @@
+# test/harness/bin/dt history clients/test/clients/files.sh | 2026-11-16 16:22 CET | f02e02620
+TEST                   RUNS  PASS  FAIL  SKIP  FLAKY  P50   P90
+test/clients/files.sh  4     2     2     0     0      56ms  228ms
+
+RUN                        CELL           TEST                   RESULT                    TIME
+20261116T152115Z-f02e0262  clients/macos  test/clients/files.sh  passed                    56ms
+20261116T152131Z-f02e0262  clients/macos  test/clients/files.sh  failed (new)              196ms
+20261116T152145Z-f02e0262  clients/macos  test/clients/files.sh  failed (known)            27ms
+20261116T152159Z-f02e0262  clients/macos  test/clients/files.sh  passed (unexpected_pass)  228ms

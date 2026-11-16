@@ -1,0 +1,25 @@
+# test/harness/bin/dt list --tier pr | 2026-11-16 16:21 CET | f02e02620
+SUITE                 TIER  FORMAT   NEEDS                                                               HERE
+lint-go               pr    exit                                                                         yes
+lint-repo             pr    exit                                                                         yes
+shellcheck            pr    exit                                                                         yes
+unit                  pr    go-json                                                                      yes
+unit/windows          pr    go-json  windows                                                             no: windows
+integration           pr    go-json  docker service:postgres service:kmip                                no: service:postgres service:kmip
+integration/portmap   pr    go-json  linux rpcbind                                                       no: linux rpcbind
+integration/kerberos  pr    go-json  docker                                                              yes
+operator              pr    exit                                                                         yes
+e2e/kerberos          pr    go-json  linux root nfs-client smb-client nfs4-acl-tools service:localstack  no: linux root nfs4-acl-tools
+e2e/cross-protocol    pr    go-json  linux root nfs-client smb-client nfs4-acl-tools service:localstack  no: linux root nfs4-acl-tools
+pjdfstest             pr    tap      linux root nfs-client                                               no: linux root
+pynfs                 pr    junit    linux                                                               no: linux
+wpts                  pr    trx      linux docker                                                        no: linux
+smbtorture            pr    subunit  linux docker                                                        no: linux
+cthon04               pr    exit     linux                                                               no: dt mounts NFS only on Linux yet
+bench-smoke           pr    exit     fio                                                                 yes
+
+GROUP        SUITES
+conformance  pjdfstest pynfs wpts smbtorture
+go           unit integration e2e operator
+lint         lint-go lint-repo shellcheck
+perf         fio-verify bench-smoke perf-night

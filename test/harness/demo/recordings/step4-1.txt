@@ -1,0 +1,3 @@
+# sed -i '' 's/uname -s)" ]/uname -s)!" ]/' test/clients/files.sh && git --no-pager diff -U0 test/clients/files.sh | grep '^[-+]\[' | 2026-11-16 16:21 CET | f02e02620
+-[ "$(cat file.txt)" = "hello from $(uname -s)" ] || fail "file.txt reads back other content"
++[ "$(cat file.txt)" = "hello from $(uname -s)!" ] || fail "file.txt reads back other content"

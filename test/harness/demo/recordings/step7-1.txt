@@ -1,0 +1,2 @@
+# git checkout -q test/suites.yaml && rm -f test/clients/known-demo.yaml && git status --short && echo "worktree clean" | 2026-11-16 16:22 CET | f02e02620
+worktree clean
