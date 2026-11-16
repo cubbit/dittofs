@@ -2277,6 +2277,125 @@ func TestPoolAnAbandonedAskIsClearedByTheSpareThatCoversIt(t *testing.T) {
 	}
 }
 
+// TestTargetsAdoptClassesFollowsTheRefillsFillOrder drives the pool's own
+// refill over an empty pool and records the class of each spare it makes,
+// one make at a time: every make but the last is parked at the seam on the
+// allocation its making owes, and between parks exactly one class's ready
+// count has grown — the class of the make that completed — so the sequence
+// the leaves read off is the fill order the refill itself ran in. The last
+// make's class is the one each class's total is still short of at the end.
+// AdoptClasses over the same Targets must return that same sequence, for the
+// classes the spares phase records are the ones the pool's own worker would
+// have filled.
+func TestTargetsAdoptClassesFollowsTheRefillsFillOrder(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	for _, row := range []struct {
+		name string
+		t    segment.Targets
+	}{
+		{"a pool filling every class", segment.Targets{Content: 2, Headroom: 1, Reserve: 1}},
+		{"a pool whose reserve keeps none", segment.Targets{Content: 1, Headroom: 3, Reserve: 0}},
+		{"a pool whose content class keeps none", segment.Targets{Content: 0, Headroom: 0, Reserve: 2}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			seam, _, _, p := poolOf(t, row.t, noMax, 0, nil)
+
+			n := row.t.Content + row.t.Headroom + row.t.Reserve
+			if n < 2 {
+				t.Fatal("the row needs at least two makes to record a fill order")
+			}
+
+			// ready reads each class's ready spares out of the pool's counters:
+			// the counts one make moves.
+			ready := func(c segment.PoolCounters) [4]int {
+				return [4]int{0,
+					int(c.Spares),
+					int(c.HeadroomBytes / segCap),
+					int(c.RepackReserveBytes / segCap)}
+			}
+			// Each make is parked at the allocation its making owes, the next
+			// parking hold armed before the parked one is released — so no
+			// make slips past unheld — and, being the only making goroutine,
+			// exactly one make lands between two parks: the counters read at
+			// each park name the class of the make that just landed, never a
+			// race between two. The read at the first park is the baseline:
+			// nothing has landed yet.
+			held := seam.HoldFirst(t, kit.OpAllocate, "*")
+			p.Start()
+
+			// A refusal releases the parked make first, for the deferred Stop
+			// joins the worker and would wait on it forever.
+			refuse := func(format string, args ...any) {
+				held.Release()
+				p.Stop()
+				t.Fatalf(format, args...)
+			}
+
+			<-held.Reached()
+			var seq []segment.Class
+			was := ready(p.Counters())
+			for range n - 1 {
+				next := seam.HoldFirst(t, kit.OpAllocate, "*")
+				held.Release()
+				held = next
+				select {
+				case <-held.Reached():
+				case <-time.After(10 * time.Second):
+					refuse("the refill parked no next make after %d landed: the pool reports %+v", len(seq), p.Counters())
+				}
+				now := ready(p.Counters())
+				grew := 0
+				for _, cls := range []segment.Class{segment.Content, segment.Headroom, segment.Reserve} {
+					switch d := now[cls] - was[cls]; {
+					case d < 0:
+						refuse("a class's ready count fell between two makes: %+v then %+v", was, now)
+					case d > 1:
+						refuse("more than one spare landed between two parks: %+v before, %+v after", was, now)
+					case d == 1:
+						grew++
+						seq = append(seq, cls)
+					}
+				}
+				if grew != 1 {
+					refuse("a park saw %d classes grow, want exactly the one spare the completed make landed in: %+v", grew, now)
+				}
+				was = now
+			}
+			// The last armed hold parks the final make or is gone before it
+			// reaches storage: releasing it lets the pass end either way.
+			held.Release()
+
+			// The last make is the one no further call parks: its class is
+			// the one each class's total is still short of once it lands.
+			awaitCounters(t, "every target filled", p, func(c segment.PoolCounters) bool {
+				return int(c.Spares) == row.t.Content && int(c.HeadroomBytes/segCap) == row.t.Headroom &&
+					int(c.RepackReserveBytes/segCap) == row.t.Reserve
+			})
+			final := ready(p.Counters())
+			last := [4]int{0, row.t.Content, row.t.Headroom, row.t.Reserve}
+			missing := 0
+			for _, cls := range []segment.Class{segment.Content, segment.Headroom, segment.Reserve} {
+				switch d := last[cls] - was[cls]; {
+				case d < 0 || d > 1:
+					t.Fatalf("the last make moved class %v by %d, want exactly one spare short: before %+v, after %+v", cls, d, was, final)
+				case d == 1:
+					missing++
+					seq = append(seq, cls)
+				}
+			}
+			if missing != 1 {
+				t.Fatalf("the last make filled %d classes, want the one each class was short of: %+v", missing, final)
+			}
+
+			if got := row.t.AdoptClasses(len(seq)); !slices.Equal(got, seq) {
+				t.Errorf("AdoptClasses over %d adoptions got %v, want %v, the classes the refill itself made its spares in", len(seq), got, seq)
+			}
+			p.Stop()
+		})
+	}
+}
+
 // TestTargetsAdoptClassesNamesTheFillOrder pins the fill order the spares
 // phase reads through the one method that owns it: the headroom first, then
 // the repack reserve, then the content class, and every spare past every
