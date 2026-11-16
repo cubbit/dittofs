@@ -25,7 +25,7 @@ func TestShareIndexFollowsRenameAndRemoval(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	must(cp.PutShare(ctx, sh))
+	must(cp.PutShare(ctx, sh, 0))
 	if id, err := x.ByName(ctx, "DATA"); err != nil || id != sh.ID {
 		t.Errorf("ByName under the fold: %v, %v", id, err)
 	}
@@ -33,7 +33,7 @@ func TestShareIndexFollowsRenameAndRemoval(t *testing.T) {
 	must(err)
 
 	sh.Name, sh.Path = "media", "/media"
-	must(cp.PutShare(ctx, sh))
+	must(cp.PutShare(ctx, sh, 1))
 	if _, err := x.ByName(ctx, "Data"); !merrs.IsNotFoundError(err) {
 		t.Errorf("the old name still finds the renamed share: %v", err)
 	}
@@ -55,8 +55,8 @@ func TestShareIndexFollowsRenameAndRemoval(t *testing.T) {
 	if _, p, err := x.Share(ctx, sh.ID); err != nil || p.Squash != entity.SquashRoot || p.Anonymous != entity.AnonymousPrincipal {
 		t.Errorf("a share with no stored policy: squash %v, anonymous %v, %v", p.Squash, p.Anonymous, err)
 	}
-	must(cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashAll}))
-	must(cp.DeleteShare(ctx, sh.ID, entity.SnapshotsRefuse))
+	must(cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashAll}, 0))
+	must(cp.DeleteShare(ctx, sh.ID, entity.SnapshotsRefuse, 2))
 	if _, err := x.ByName(ctx, "media"); !merrs.IsNotFoundError(err) {
 		t.Errorf("a removed share's name still finds it: %v", err)
 	}
@@ -81,11 +81,15 @@ func TestGrantedLeavesOutWhatTheGrantWithholds(t *testing.T) {
 	s := openStore(t)
 	share := newShare(t, s)
 	u := entity.User{Principal: entity.NewUser(), Name: "u"}
-	if err := s.ControlPlane().PutUser(ctx, u); err != nil {
+	if err := s.ControlPlane().PutUser(ctx, u, 0, entity.Alloc{}); err != nil {
 		t.Fatal(err)
 	}
 	set := func(a entity.ShareAccess) {
-		if err := s.ControlPlane().SetGrant(ctx, entity.ShareGrant{Share: share, Principal: u.Principal, Access: a}); err != nil {
+		g, _, err := s.ControlPlane().Grant(ctx, share, u.Principal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ControlPlane().SetGrant(ctx, entity.ShareGrant{Share: share, Principal: u.Principal, Access: a}, g.Version); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -130,13 +134,13 @@ func TestUserReadsTheRecord(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
 	u := entity.User{Principal: entity.NewUser(), Name: "u", Disabled: true}
-	if err := s.ControlPlane().PutUser(ctx, u); err != nil {
+	if err := s.ControlPlane().PutUser(ctx, u, 0, entity.Alloc{}); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.Principals().User(ctx, u.Principal); err != nil || !got.Disabled || got.Name != "u" {
 		t.Errorf("User: %+v, %v", got, err)
 	}
-	if err := s.ControlPlane().DeleteUser(ctx, u.Principal); err != nil {
+	if err := s.ControlPlane().DeleteUser(ctx, u.Principal, 1); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Principals().User(ctx, u.Principal); !merrs.IsNotFoundError(err) {
@@ -166,7 +170,7 @@ func TestInstallationIsInits(t *testing.T) {
 func TestNetgroupFindsTheStoredOne(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
-	if err := s.ControlPlane().PutNetgroup(ctx, entity.Netgroup{Name: "lab", Members: []string{"10.1.0.0/16"}}); err != nil {
+	if err := s.ControlPlane().PutNetgroup(ctx, entity.Netgroup{Name: "lab", Members: []string{"10.1.0.0/16"}}, 0); err != nil {
 		t.Fatal(err)
 	}
 	if g, found, err := s.ShareIndex().Netgroup(ctx, "lab"); err != nil || !found || len(g.Members) != 1 {

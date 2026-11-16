@@ -57,7 +57,7 @@ func newQuotas(t *testing.T) (*attrs, *quotaSink) {
 // limit sets a hard limit on target in the share; a zero one deletes it.
 func (s *attrs) limit(t *testing.T, target kvstore.QuotaTarget, l entity.Limit) {
 	t.Helper()
-	s.must(t, s.cp.SetQuota(t.Context(), s.share, entity.Quota{Principal: target.Principal, Project: target.Project, Hard: l}))
+	s.must(t, s.cp.SetQuota(t.Context(), s.share, entity.Quota{Principal: target.Principal, Project: target.Project, Hard: l}, quotaVersion(t, s.cp, s.share, target)))
 }
 
 func quotaScope(err error) vfs.QuotaScope {
@@ -135,7 +135,7 @@ func TestAWriteIsRefusedByEachScopeInTurn(t *testing.T) {
 	s, sink := newQuotas(t)
 	ctx := t.Context()
 	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
-	s.must(t, s.cp.PutGroup(ctx, staff))
+	s.must(t, s.cp.PutGroup(ctx, staff, 0, entity.Alloc{}))
 	tree, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "tree", kvstore.Dir(0o777))
 	project, err := s.fs.Store.Files().SetProject(ctx, s.fs.Admin, tree)
 	s.must(t, err)
@@ -242,7 +242,7 @@ func TestACreateChargesTheNewFilesOwner(t *testing.T) {
 	// create there by alice, who is not in staff, is refused once the
 	// directory is setgid, and admitted before.
 	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
-	s.must(t, s.cp.PutGroup(ctx, staff))
+	s.must(t, s.cp.PutGroup(ctx, staff, 0, entity.Alloc{}))
 	shared, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "shared", kvstore.Dir(0o777))
 	_, err = files.SetAttrs(ctx, s.fs.Admin, shared, entity.Attrs{}.WithGroup(staff.Principal))
 	s.must(t, err)
@@ -377,11 +377,11 @@ func TestACreateChargesItsProjectNamedOwnerAndPrimaryGroup(t *testing.T) {
 	// staff's quota is spent by a directory it owns; carol, whose primary
 	// group is staff, is charged to it.
 	staff := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
-	s.must(t, s.cp.PutGroup(ctx, staff))
+	s.must(t, s.cp.PutGroup(ctx, staff, 0, entity.Alloc{}))
 	carol := entity.User{Principal: entity.NewUser(), Name: "carol", Primary: staff.Principal,
 		IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "61999"}}}
-	s.must(t, s.cp.PutUser(ctx, carol))
-	s.must(t, s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: carol.Principal, Access: entity.AccessReadWrite}))
+	s.must(t, s.cp.PutUser(ctx, carol, 0, entity.Alloc{}))
+	s.must(t, s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: carol.Principal, Access: entity.AccessReadWrite}, 0))
 	theirs, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "theirs", kvstore.Dir(0o777))
 	_, err = files.SetAttrs(ctx, s.fs.Admin, theirs, entity.Attrs{}.WithGroup(staff.Principal))
 	s.must(t, err)
@@ -398,7 +398,7 @@ func fullGroup(t *testing.T) (s *attrs, sink *quotaSink, staff entity.Principal,
 	s, sink = newQuotas(t)
 	ctx := t.Context()
 	g := entity.Group{Principal: entity.NewGroup(), Name: "staff"}
-	s.must(t, s.cp.PutGroup(ctx, g))
+	s.must(t, s.cp.PutGroup(ctx, g, 0, entity.Alloc{}))
 	theirs, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "theirs", kvstore.Dir(0o777))
 	_, err := s.fs.Store.Files().SetAttrs(ctx, s.fs.Admin, theirs, entity.Attrs{}.WithGroup(g.Principal))
 	s.must(t, err)

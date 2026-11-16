@@ -565,7 +565,7 @@ func TestLateShareBindRaisesItself(t *testing.T) {
 		Access:    entity.AccessAdmin,
 	}
 
-	if err := s.fs.Store.ControlPlane().SetGrant(ctx, grant); err != nil {
+	if err := s.fs.Store.ControlPlane().SetGrant(ctx, grant, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1313,7 +1313,7 @@ func TestOneRaiseCarriesEveryShare(t *testing.T) {
 	all := append([]engine.Share{s.one, s.two}, s.more...)
 	removing := s.more[0].ID
 
-	err := s.fs.Store.ControlPlane().DeleteShare(t.Context(), removing, entity.SnapshotsRefuse)
+	err := s.fs.Store.ControlPlane().DeleteShare(t.Context(), removing, entity.SnapshotsRefuse, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

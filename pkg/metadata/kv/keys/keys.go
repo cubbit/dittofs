@@ -113,6 +113,7 @@ const (
 	SPr   byte = 0x19 // pending-release index: S‖id‖pr‖shard‖file
 	SRr   byte = 0x1A // unfinished-removal index: S‖id‖rr‖shard‖file‖version
 	SDo   byte = 0x1B // durable-open index: S‖id‖do‖shard‖file‖openID
+	SGv   byte = 0x1E // grant-list version
 )
 
 // Sub-kinds under NS‖ns, and under NS‖ns‖gc.

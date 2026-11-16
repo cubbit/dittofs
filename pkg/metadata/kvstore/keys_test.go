@@ -29,6 +29,7 @@ func TestKeyGolden(t *testing.T) {
 		{"share info", shareKey(sid, keys.SInfo), "02" + s + "01"},
 		{"grant", grantKey(sid, gid), "02" + s + "04" + g},
 		{"grant rev", grantRevKey(gid, sid), "24" + g + s},
+		{"grant-list version", shareKey(sid, keys.SGv), "02" + s + "1e"},
 		{"setting, installation", settingKey(entity.SettingScope{Kind: entity.ScopeInstallation}, "k"), "3201" + "6b0001"},
 		{"setting, share", settingKey(entity.SettingScope{Kind: entity.ScopeShare, ID: sid}, "k"), "3205" + s + "6b0001"},
 		{"share list", shareListKey, "28"},

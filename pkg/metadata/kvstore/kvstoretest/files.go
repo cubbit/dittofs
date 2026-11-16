@@ -12,18 +12,18 @@ func testRootAndResolve(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp, files := s.ControlPlane(), s.Files()
 	sh, other := share("photos", "/photos"), share("docs", "/docs")
-	must(t, cp.PutShare(ctx, sh))
-	must(t, cp.PutShare(ctx, other))
+	must(t, cp.PutShare(ctx, sh, 0))
+	must(t, cp.PutShare(ctx, other, 0))
 	u, g := user("alice"), group("staff")
-	must(t, cp.PutUser(ctx, u))
-	must(t, cp.PutGroup(ctx, g))
+	must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
+	must(t, cp.PutGroup(ctx, g, 0, entity.Alloc{}))
 
 	alice := entity.Identity{Principal: u.Principal, Groups: []entity.Principal{g.Principal}}
 	if _, _, err := files.Root(ctx, alice, sh.ID); !isDenied(err) {
 		t.Fatalf("Root with no grant: %v", err)
 	}
 	// A grant to a group the identity carries admits it.
-	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: g.Principal, Access: entity.AccessRead}))
+	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: g.Principal, Access: entity.AccessRead}, 0))
 	h, root, err := files.Root(ctx, alice, sh.ID)
 	must(t, err)
 	if !root.IsRoot() || root.ID != sh.Root || root.Number != 1 || root.Nlink != 0 || root.Validate() != nil {

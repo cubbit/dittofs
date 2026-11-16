@@ -12,12 +12,12 @@ func testDeleteShareMark(t *testing.T, kvo Opener) {
 	f := newFS(t, kvo, entity.FoldIdentity)
 	cp := f.s.ControlPlane()
 	other := share("other", "/other")
-	must(t, cp.PutShare(ctx, other))
+	must(t, cp.PutShare(ctx, other, 0))
 	before, _ := cp.ShareList(ctx)
 	if got, err := f.s.ShareIndex().Removing(ctx); err != nil || len(got) != 0 {
 		t.Errorf("shares being removed before any removal: %v, %v", got, err)
 	}
-	must(t, cp.DeleteShare(ctx, f.share.ID, entity.SnapshotsRefuse))
+	must(t, cp.DeleteShare(ctx, f.share.ID, entity.SnapshotsRefuse, 1))
 	// The one share being removed is listed, though no name finds it.
 	if got, err := f.s.ShareIndex().Removing(ctx); err != nil || len(got) != 1 || got[0] != f.share.ID {
 		t.Errorf("shares being removed: %v, %v; want only %v", got, err, f.share.ID)
@@ -30,22 +30,22 @@ func testDeleteShareMark(t *testing.T, kvo Opener) {
 		t.Errorf("a share being removed is listed: %+v", got)
 	}
 	// The name and path are free at once.
-	must(t, cp.PutShare(ctx, share("data", "/data")))
+	must(t, cp.PutShare(ctx, share("data", "/data"), 0))
 
 	// Removal is one-way, and the share is stale to every caller.
 	for name, err := range map[string]error{
-		"second delete": cp.DeleteShare(ctx, f.share.ID, entity.SnapshotsDelete),
+		"second delete": cp.DeleteShare(ctx, f.share.ID, entity.SnapshotsDelete, 0),
 		"state change":  cp.SetShareState(ctx, f.share.ID, entity.ShareRemoving, entity.ShareEnabled),
-		"rename":        cp.PutShare(ctx, f.share),
-		"grant":         cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: f.admin.Principal, Access: entity.AccessRead}),
-		"policy":        cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: f.share.ID}),
+		"rename":        cp.PutShare(ctx, f.share, 0),
+		"grant":         cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: f.admin.Principal, Access: entity.AccessRead}, 0),
+		"policy":        cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: f.share.ID}, 0),
 		"root":          errOf2(f.s.Files().Root(ctx, f.admin, f.share.ID)),
 	} {
 		if !errors.Is(err, entity.ErrStale) {
 			t.Errorf("%s: %v, want stale", name, err)
 		}
 	}
-	if err := cp.DeleteShare(ctx, entity.NewShareID(), entity.SnapshotsRefuse); !merrs.IsNotFoundError(err) {
+	if err := cp.DeleteShare(ctx, entity.NewShareID(), entity.SnapshotsRefuse, 0); !merrs.IsNotFoundError(err) {
 		t.Errorf("deleting a missing share: %v", err)
 	}
 	if err := cp.SetShareState(ctx, f.share.ID, entity.ShareEnabled, entity.ShareRemoving); err == nil {
@@ -70,13 +70,19 @@ func testDeleteShareRacesRename(t *testing.T, kvo Opener) {
 				cp := f.s.ControlPlane()
 				renamed := f.share
 				renamed.Name = "renamed"
-				del := func() error { return cp.DeleteShare(ctx, f.share.ID, entity.SnapshotsRefuse) }
-				ren := func() error { return cp.PutShare(ctx, renamed) }
+				del := func() error { return cp.DeleteShare(ctx, f.share.ID, entity.SnapshotsRefuse, 1) }
+				ren := func() error { return cp.PutShare(ctx, renamed, 1) }
 				var delErr, renErr error
 				if deleteHeld {
+					// The mark read the share before the rename: it retries,
+					// finds the rename's generation, and is refused, so the
+					// caller reads the share again before removing it.
 					delErr, renErr = race(h, del, ren)
 					must(t, renErr)
-					must(t, delErr)
+					if !errors.Is(delErr, entity.ErrGenerationMismatch) {
+						t.Fatalf("removal from a read before the rename: %v, want %v", delErr, entity.ErrGenerationMismatch)
+					}
+					must(t, cp.DeleteShare(ctx, f.share.ID, entity.SnapshotsRefuse, 2))
 				} else {
 					renErr, delErr = race(h, ren, del)
 					must(t, delErr)
@@ -88,8 +94,8 @@ func testDeleteShareRacesRename(t *testing.T, kvo Opener) {
 					t.Fatalf("index after both: %+v", got)
 				}
 				// Both names are free.
-				must(t, cp.PutShare(ctx, share("data", "/x")))
-				must(t, cp.PutShare(ctx, share("renamed", "/y")))
+				must(t, cp.PutShare(ctx, share("data", "/x"), 0))
+				must(t, cp.PutShare(ctx, share("renamed", "/y"), 0))
 			})
 		}
 	}

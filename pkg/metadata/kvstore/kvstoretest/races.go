@@ -71,17 +71,17 @@ func testUniqueClaimsRace(t *testing.T, kvo Opener) {
 				a, b func(cp kvstore.ControlPlane) error
 			}{
 				{"user name",
-					func(cp kvstore.ControlPlane) error { return cp.PutUser(ctx, user("alice")) },
-					func(cp kvstore.ControlPlane) error { return cp.PutUser(ctx, user("alice")) }},
+					func(cp kvstore.ControlPlane) error { return cp.PutUser(ctx, user("alice"), 0, entity.Alloc{}) },
+					func(cp kvstore.ControlPlane) error { return cp.PutUser(ctx, user("alice"), 0, entity.Alloc{}) }},
 				{"uid",
-					func(cp kvstore.ControlPlane) error { return cp.PutUser(ctx, user("a", uid("7"))) },
-					func(cp kvstore.ControlPlane) error { return cp.PutUser(ctx, user("b", uid("7"))) }},
+					func(cp kvstore.ControlPlane) error { return cp.PutUser(ctx, user("a", uid("7")), 0, entity.Alloc{}) },
+					func(cp kvstore.ControlPlane) error { return cp.PutUser(ctx, user("b", uid("7")), 0, entity.Alloc{}) }},
 				{"share name under the fold",
-					func(cp kvstore.ControlPlane) error { return cp.PutShare(ctx, share("Photos", "/a")) },
-					func(cp kvstore.ControlPlane) error { return cp.PutShare(ctx, share("PHOTOS", "/b")) }},
+					func(cp kvstore.ControlPlane) error { return cp.PutShare(ctx, share("Photos", "/a"), 0) },
+					func(cp kvstore.ControlPlane) error { return cp.PutShare(ctx, share("PHOTOS", "/b"), 0) }},
 				{"nested share paths",
-					func(cp kvstore.ControlPlane) error { return cp.PutShare(ctx, share("home", "/home")) },
-					func(cp kvstore.ControlPlane) error { return cp.PutShare(ctx, share("alice", "/home/alice")) }},
+					func(cp kvstore.ControlPlane) error { return cp.PutShare(ctx, share("home", "/home"), 0) },
+					func(cp kvstore.ControlPlane) error { return cp.PutShare(ctx, share("alice", "/home/alice"), 0) }},
 			} {
 				for _, order := range []string{"a held", "b held"} {
 					t.Run(c.name+"/"+order, func(t *testing.T) {
@@ -118,7 +118,7 @@ func testDeleteRacesAdd(t *testing.T, kvo Opener) {
 					return cp.AddMember(ctx, entity.Membership{Group: g, Member: u})
 				}},
 				{"grant", func(cp kvstore.ControlPlane, u, _ entity.Principal, sh entity.ShareID) error {
-					return cp.SetGrant(ctx, entity.ShareGrant{Share: sh, Principal: u, Access: entity.AccessRead})
+					return cp.SetGrant(ctx, entity.ShareGrant{Share: sh, Principal: u, Access: entity.AccessRead}, 0)
 				}},
 			} {
 				for _, deleteHeld := range []bool{true, false} {
@@ -130,10 +130,10 @@ func testDeleteRacesAdd(t *testing.T, kvo Opener) {
 						s, h := heldStore(t, b)
 						cp, p := s.ControlPlane(), s.Principals()
 						u, g, sh := user("alice"), group("staff"), share("photos", "/photos")
-						must(t, cp.PutUser(ctx, u))
-						must(t, cp.PutGroup(ctx, g))
-						must(t, cp.PutShare(ctx, sh))
-						del := func() error { return cp.DeleteUser(ctx, u.Principal) }
+						must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
+						must(t, cp.PutGroup(ctx, g, 0, entity.Alloc{}))
+						must(t, cp.PutShare(ctx, sh, 0))
+						del := func() error { return cp.DeleteUser(ctx, u.Principal, 1) }
 						add := func() error { return c.add(cp, u.Principal, g.Principal, sh.ID) }
 						var delErr, addErr error
 						if deleteHeld {
@@ -163,7 +163,7 @@ func testShareStateRace(t *testing.T, kvo Opener) {
 	s, h := heldStore(t, kvo.backends()[0])
 	cp := s.ControlPlane()
 	sh := share("photos", "/photos")
-	must(t, cp.PutShare(ctx, sh))
+	must(t, cp.PutShare(ctx, sh, 0))
 	outer, inner := race(h,
 		func() error { return cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced) },
 		func() error { return cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced) })

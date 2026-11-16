@@ -771,7 +771,7 @@ func (f *Fixture) addSecond() {
 		Access:    entity.AccessAdmin,
 	}
 
-	if err := f.FS.Store.ControlPlane().SetGrant(ctx, grant); err != nil {
+	if err := f.FS.Store.ControlPlane().SetGrant(ctx, grant, 0); err != nil {
 		f.t.Fatalf("fixture: grant on the second share: %v", err)
 	}
 

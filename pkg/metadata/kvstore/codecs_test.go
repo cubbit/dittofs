@@ -11,7 +11,6 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
-	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
 var (
@@ -71,8 +70,6 @@ func codecCases() []codecCase {
 	ng := entity.Netgroup{Name: "lab", Members: []string{"a.example", "10.1.0.0/16"}, Version: 2}
 	in := entity.Installation{ID: [16]byte{15: 1}, Instance: [16]byte{15: 2}, Generation: []byte{5}, SigningKey: entity.SecretRef{15: 8}}
 	in.NTLMOff.Off, in.NTLMOff.Deleted = 6, entity.OperationID{15: 7}
-	quota := entity.Quota{Share: sid, Principal: entity.Principal{Kind: entity.PrincipalUser, ID: pid},
-		Hard: entity.Limit{Bytes: 10}, Soft: entity.Limit{Bytes: 1, Files: 2}, Advisory: entity.Limit{Files: 3}, Grace: time.Hour, Version: 9}
 	set := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "k", Value: []byte("v"), Generation: 6, Schema: 1}
 	return []codecCase{
 		{"user", user, encodeUser(user),
@@ -109,10 +106,6 @@ func codecCases() []codecCase {
 			"01" + "00000000000000000000000000000001" + "00000000000000000000000000000002" + "0105" +
 				"0000000000000006" + "00000000000000000000000000000007" + "00000000000000000000000000000008",
 			func(b []byte) (any, error) { return decodeInstallation(b) }},
-		{"quota", quota, encodeQuota(quota),
-			"01" + "01" + "000000000000000a" + "0000000000000000" + "0000000000000001" + "0000000000000002" +
-				"0000000000000000" + "0000000000000003" + "0000034630b8a000" + "0000000000000009",
-			func(b []byte) (any, error) { return decodeQuota(sid, keys.ID([]byte{quotaPrincipal}, pid[:]), b) }},
 		{"counter", uint64(7), encodeCounter(7), "01" + "0000000000000007",
 			func(b []byte) (any, error) { return decodeCounter(b) }},
 		{"setting", set, encodeSetting(set), "01" + "0176" + "0000000000000006" + "00000001",
@@ -165,7 +158,7 @@ func TestPolicyUnknownMatchTag(t *testing.T) {
 // error.
 func FuzzControlPlaneValues(f *testing.F) {
 	decoders := map[string]func([]byte) (any, error){}
-	for _, c := range codecCases() {
+	for _, c := range append(codecCases(), fileCodecCases()...) {
 		switch c.name {
 		case "user", "group", "share", "quota", "installation":
 			decoders[c.name] = c.dec

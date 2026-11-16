@@ -89,13 +89,18 @@ func decodeQuota(share entity.ShareID, suffix, b []byte) (entity.Quota, error) {
 }
 
 // SetQuota writes a share's quota on a user, a group, a project or the share
-// itself, and a quota that limits nothing deletes it and its crossing time.
+// itself, the version expect names or zero for none, raising its version; a
+// quota that limits nothing deletes it and its crossing time.
 // The share must be live, and a user or group must exist: its record is
 // read, so a deletion of it conflicts. A changed soft limit restarts its
 // grace: the crossing time is rewritten at the change's time when usage is
 // above the new soft limit, and deleted otherwise. A change to any other
 // limit leaves a running grace alone.
-func (c ControlPlane) SetQuota(ctx context.Context, share entity.ShareID, q entity.Quota) error {
+func (c ControlPlane) SetQuota(ctx context.Context, share entity.ShareID, q entity.Quota, expect uint64) error {
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return setQuota(tx, share, q, expect) })
+}
+
+func setQuota(tx kv.Txn, share entity.ShareID, q entity.Quota, expect uint64) error {
 	q.Share = share
 	t := QuotaTarget{q.Principal, q.Project}
 	suffix, err := quotaSuffix(t)
@@ -110,54 +115,56 @@ func (c ControlPlane) SetQuota(ctx context.Context, share entity.ShareID, q enti
 	if q.Grace < 0 {
 		return merrs.NewInvalidArgumentError("a quota's grace is not negative")
 	}
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		if _, ok, err := get(tx, shareKey(q.Share, keys.SInfo)); err != nil || !ok {
-			if err == nil {
-				err = merrs.NewNotFoundError(q.Share.String(), "share")
-			}
+	if _, ok, err := get(tx, shareKey(q.Share, keys.SInfo)); err != nil || !ok {
+		if err == nil {
+			err = merrs.NewNotFoundError(q.Share.String(), "share")
+		}
+		return err
+	}
+	if err := liveShare(tx, q.Share); err != nil {
+		return err
+	}
+	if q.Principal != (entity.Principal{}) {
+		if _, ok, err := get(tx, principalKey(q.Principal)); err != nil || !ok {
+			return notFound(err, q.Principal)
+		}
+	}
+	key, since := quotaKey(q.Share, keys.SQt, suffix), quotaKey(q.Share, keys.SQx, suffix)
+	b, ok, err := get(tx, key)
+	if err != nil {
+		return err
+	}
+	old := entity.Quota{}
+	if ok {
+		if old, err = decodeQuota(q.Share, suffix, b); err != nil {
 			return err
 		}
-		if err := liveShare(tx, q.Share); err != nil {
+	}
+	if err := expected(old.Version, expect); err != nil {
+		return err
+	}
+	if q.Unlimited() {
+		if err := tx.Delete(key); err != nil {
 			return err
 		}
-		if q.Principal != (entity.Principal{}) {
-			if _, ok, err := get(tx, principalKey(q.Principal)); err != nil || !ok {
-				return notFound(err, q.Principal)
-			}
-		}
-		key, since := quotaKey(q.Share, keys.SQt, suffix), quotaKey(q.Share, keys.SQx, suffix)
-		if q.Unlimited() {
-			if err := tx.Delete(key); err != nil {
-				return err
-			}
-			return tx.Delete(since)
-		}
-		b, ok, err := get(tx, key)
+		return tx.Delete(since)
+	}
+	if !ok || old.Soft != q.Soft {
+		d, err := usageIn(tx, q.Share)
 		if err != nil {
 			return err
 		}
-		old := entity.Quota{}
-		if ok {
-			if old, err = decodeQuota(q.Share, suffix, b); err != nil {
-				return err
-			}
+		if above(d.of(t), q.Soft) {
+			err = tx.Set(since, encodeSince(tx.Now()))
+		} else {
+			err = tx.Delete(since)
 		}
-		if !ok || old.Soft != q.Soft {
-			d, err := usageIn(tx, q.Share)
-			if err != nil {
-				return err
-			}
-			if above(d.of(t), q.Soft) {
-				err = tx.Set(since, encodeSince(tx.Now()))
-			} else {
-				err = tx.Delete(since)
-			}
-			if err != nil {
-				return err
-			}
+		if err != nil {
+			return err
 		}
-		return tx.Set(key, encodeQuota(q))
-	})
+	}
+	q.Version = nextVersion(tx, old.Version)
+	return tx.Set(key, encodeQuota(q))
 }
 
 // above reports usage past a limit in either of its counts; a zero count

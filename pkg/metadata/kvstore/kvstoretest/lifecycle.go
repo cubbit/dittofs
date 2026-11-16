@@ -33,8 +33,8 @@ func wantLimits(t *testing.T, s *kvstore.Store, want map[entity.ShareID]entity.J
 func testRaiseVersionLimitsNeverLowers(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	a, b := share("a", "/a"), share("b", "/b")
-	must(t, s.ControlPlane().PutShare(ctx, a))
-	must(t, s.ControlPlane().PutShare(ctx, b))
+	must(t, s.ControlPlane().PutShare(ctx, a, 0))
+	must(t, s.ControlPlane().PutShare(ctx, b, 0))
 	l := s.Lifecycle()
 
 	for _, n := range []uint64{100, 50} {
@@ -57,7 +57,7 @@ func testRaiseVersionLimitsNeverLowers(t *testing.T, kvo Opener) {
 func testRaiseVersionLimitsRace(t *testing.T, kvo Opener) {
 	s, h := heldStore(t, kvo.backends()[0])
 	a := share("a", "/a")
-	must(t, s.ControlPlane().PutShare(ctx, a))
+	must(t, s.ControlPlane().PutShare(ctx, a, 0))
 	l := s.Lifecycle()
 	raise := func(n uint64) func() error {
 		return func() error {

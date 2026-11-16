@@ -405,7 +405,7 @@ func (c *composition) secondSource(t *testing.T, b engine.Share) vfs.Handle {
 	if err := c.E.Bind(t.Context(), b); err != nil {
 		t.Fatalf("bind the second share: %v", err)
 	}
-	if err := c.FS.Store.ControlPlane().SetGrant(t.Context(), entity.ShareGrant{Share: c.Second.ID, Principal: c.bob.Principal, Access: entity.AccessReadWrite}); err != nil {
+	if err := c.FS.Store.ControlPlane().SetGrant(t.Context(), entity.ShareGrant{Share: c.Second.ID, Principal: c.bob.Principal, Access: entity.AccessReadWrite}, 0); err != nil {
 		t.Fatal(err)
 	}
 	g, _ := c.FS.Create(t, c.FS.Admin, c.SecondRoot, "g", kvstore.Regular(0o644))

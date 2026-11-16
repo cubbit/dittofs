@@ -23,8 +23,8 @@ const (
 	stepMarked uint8 = 1 // being removed; name and path free
 )
 
-// DeleteShare starts a share's removal and returns once the share is being
-// removed: its name and path are free for a new share, ShareList moves, and
+// DeleteShare starts the removal of the share whose generation expect
+// names, and returns once the share is being removed: its name and path are free for a new share, ShareList moves, and
 // the control plane's calls into it and Root answer stale. A handle into it
 // still resolves here: the filesystem service gates every call on the share
 // state, with the grant (see resolveIn). Removal is one-way; a second call
@@ -45,75 +45,80 @@ const (
 // store does not reach yet. Run them from stepMarked when those land. A share
 // left at stepMarked serves nothing and holds its records.
 
-func (c ControlPlane) DeleteShare(ctx context.Context, share entity.ShareID, snapshots entity.SnapshotDisposition) error {
+func (c ControlPlane) DeleteShare(ctx context.Context, share entity.ShareID, snapshots entity.SnapshotDisposition, expect uint64) error {
+	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return deleteShare(tx, share, snapshots, expect) })
+}
+
+func deleteShare(tx kv.Txn, share entity.ShareID, snapshots entity.SnapshotDisposition, expect uint64) error {
 	if snapshots.String() == "" {
 		return merrs.NewInvalidArgumentError("unknown snapshot disposition")
 	}
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error {
-		stKey := shareKey(share, keys.SSt)
-		b, ok, err := get(tx, stKey)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return merrs.NewNotFoundError(share.String(), "share")
-		}
-		st, err := decodeState(b)
-		if err != nil {
-			return err
-		}
-		// ponytail: a running cut does not refuse the removal with ErrDelay,
-		// because no cut is recorded yet. Read the share's cut record here
-		// when snapshots land.
-		if st.State == entity.ShareRemoving || st.State == entity.ShareRetired {
-			return entity.ErrStale
-		}
-		if err := noPausedNamespace(tx, share); err != nil {
-			return err
-		}
-		if _, ok, err := get(tx, shareKey(share, keys.SRh)); err != nil {
-			return err
-		} else if ok {
-			return ErrRehoming
-		}
-		if snapshots == entity.SnapshotsRefuse {
-			if any, err := guardedAny(tx, shareKey(share, keys.SSnap)); err != nil || any {
-				if err == nil {
-					err = merrs.NewConflictError("delete share", "the share has snapshots; delete or detach them")
-				}
-				return err
+	stKey := shareKey(share, keys.SSt)
+	b, ok, err := get(tx, stKey)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return merrs.NewNotFoundError(share.String(), "share")
+	}
+	st, err := decodeState(b)
+	if err != nil {
+		return err
+	}
+	// ponytail: a running cut does not refuse the removal with ErrDelay,
+	// because no cut is recorded yet. Read the share's cut record here
+	// when snapshots land.
+	if st.State == entity.ShareRemoving || st.State == entity.ShareRetired {
+		return entity.ErrStale
+	}
+	if err := noPausedNamespace(tx, share); err != nil {
+		return err
+	}
+	if _, ok, err := get(tx, shareKey(share, keys.SRh)); err != nil {
+		return err
+	} else if ok {
+		return ErrRehoming
+	}
+	if snapshots == entity.SnapshotsRefuse {
+		if any, err := guardedAny(tx, shareKey(share, keys.SSnap)); err != nil || any {
+			if err == nil {
+				err = merrs.NewConflictError("delete share", "the share has snapshots; delete or detach them")
 			}
+			return err
 		}
-		if snapshots == entity.SnapshotsDelete {
-			if any, err := guardedAny(tx, shareKey(share, keys.SUse)); err != nil || any {
-				if err == nil {
-					err = merrs.NewConflictError("delete share", "a backup, clone, restore, copy or move holds a snapshot")
-				}
-				return err
+	}
+	if snapshots == entity.SnapshotsDelete {
+		if any, err := guardedAny(tx, shareKey(share, keys.SUse)); err != nil || any {
+			if err == nil {
+				err = merrs.NewConflictError("delete share", "a backup, clone, restore, copy or move holds a snapshot")
 			}
-		}
-		ib, ok, err := get(tx, shareKey(share, keys.SInfo))
-		if err != nil {
 			return err
 		}
-		if !ok {
-			return merrs.NewNotFoundError(share.String(), "share")
-		}
-		info, err := decodeShareInfo(share, ib)
-		if err != nil {
-			return err
-		}
-		if err := tx.Set(stKey, encodeState(shareState{State: entity.ShareRemoving, Step: stepMarked, Snapshots: snapshots})); err != nil {
-			return err
-		}
-		if err := tx.Delete(nameKey(keys.NXShare, info.Name)); err != nil {
-			return err
-		}
-		if err := tx.Delete(pathKey(info.Path)); err != nil {
-			return err
-		}
-		return raise(tx, shareListKey)
-	})
+	}
+	ib, ok, err := get(tx, shareKey(share, keys.SInfo))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return merrs.NewNotFoundError(share.String(), "share")
+	}
+	info, err := decodeShareInfo(share, ib)
+	if err != nil {
+		return err
+	}
+	if err := expected(info.Generation, expect); err != nil {
+		return err
+	}
+	if err := tx.Set(stKey, encodeState(shareState{State: entity.ShareRemoving, Step: stepMarked, Snapshots: snapshots})); err != nil {
+		return err
+	}
+	if err := tx.Delete(nameKey(keys.NXShare, info.Name)); err != nil {
+		return err
+	}
+	if err := tx.Delete(pathKey(info.Path)); err != nil {
+		return err
+	}
+	return raise(tx, shareListKey)
 }
 
 // guardedAny reports whether any record lies under prefix, guarding the

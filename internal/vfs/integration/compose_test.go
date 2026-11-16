@@ -76,10 +76,10 @@ func (c *composition) user(t *testing.T, p entity.Principal, name, uid string, a
 	t.Helper()
 	cp := c.FS.Store.ControlPlane()
 	u := entity.User{Principal: p, Name: name, IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: uid}}}
-	if err := cp.PutUser(t.Context(), u); err != nil {
+	if err := cp.PutUser(t.Context(), u, 0, entity.Alloc{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cp.SetGrant(t.Context(), entity.ShareGrant{Share: c.Share.ID, Principal: p, Access: a}); err != nil {
+	if err := cp.SetGrant(t.Context(), entity.ShareGrant{Share: c.Share.ID, Principal: p, Access: a}, 0); err != nil {
 		t.Fatal(err)
 	}
 }
