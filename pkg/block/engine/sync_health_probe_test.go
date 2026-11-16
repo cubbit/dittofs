@@ -84,8 +84,13 @@ func TestHealthMonitor_PeriodicProbeHasItsOwnDeadline(t *testing.T) {
 
 	m.Start(context.Background())
 
-	<-entered // the first probe, run by Start
-	<-entered // a periodic probe, run by the monitor loop
+	for _, who := range []string{"the first probe, run by Start", "a periodic probe, run by the monitor loop"} {
+		select {
+		case <-entered:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("no probe arrived: %s", who)
+		}
+	}
 }
 
 // Reproduces a stalled object store: the endpoint accepts the connection and

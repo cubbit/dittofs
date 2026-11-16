@@ -11,7 +11,9 @@ import (
 // report and in whichever order the registry yields them.
 func TestAddBlockStoreStats_UploadsFailingSurvivesTheSum(t *testing.T) {
 	failing := engine.BlockStoreStats{UploadsFailing: true, ConsecutiveUploadFailures: 4}
-	fine := engine.BlockStoreStats{}
+	// A run of its own, below the failing threshold, so summing the runs
+	// (5) would differ from keeping the longest (4).
+	fine := engine.BlockStoreStats{ConsecutiveUploadFailures: 1}
 
 	for _, order := range [][]engine.BlockStoreStats{{failing, fine}, {fine, failing}} {
 		var totals engine.BlockStoreStats
