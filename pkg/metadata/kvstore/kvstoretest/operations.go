@@ -152,32 +152,36 @@ func testOperationStateWithAudit(t *testing.T, kvo Opener) {
 	}
 }
 
-// A write's read of the running index is tracked: a start of that kind on
-// that target committed after the read makes the write retry, and its
-// committing attempt finds the operation running.
+// A write's read of the running index is tracked: of a write that finds no
+// operation running and a start of that operation committed before the
+// write commits, the write retries, finds the operation running and refuses
+// itself, writing nothing.
 func testRunningOperationTracked(t *testing.T, kvo Opener) {
 	for _, b := range kvo.backends() {
 		t.Run(b.name, func(t *testing.T) {
 			s, h := heldStore(t, b)
 			cp := s.ControlPlane()
 			op := operation("share.delete", shareRef("a"))
-			var found []bool
 			outer, inner := race(h,
 				func() error {
 					return cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-						_, ok, err := tx.RunningOperation(op.Kind, op.Target)
-						if err != nil {
+						if got, ok, err := tx.RunningOperation(op.Kind, op.Target); err != nil || ok {
+							if err == nil {
+								err = &entity.OperationRunningError{ID: got.ID}
+							}
 							return err
 						}
-						found = append(found, ok)
 						return errOf(tx.PutSetting(entity.Setting{Scope: instScope, Key: "k"}, 0))
 					})
 				},
 				func() error { return errOf(cp.PutOperation(ctx, op, 0)) })
 			must(t, inner)
-			must(t, outer)
-			if len(found) == 0 || !found[len(found)-1] {
-				t.Errorf("running share.delete on a, read by each attempt: %v; want the committing attempt to find it", found)
+			var running *entity.OperationRunningError
+			if !errors.As(outer, &running) || running.ID != op.ID {
+				t.Errorf("write that found none running, raced by a start of %v: %v, want refused naming it", op.ID, outer)
+			}
+			if got := all(t, cp.Settings(ctx, instScope)); len(got) != 0 {
+				t.Errorf("settings after the refused write: got %+v, want none", got)
 			}
 		})
 	}
