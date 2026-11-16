@@ -20,7 +20,7 @@ func TestWireBodies(t *testing.T) {
 	}
 	op := Operation{
 		ID: "op_1", Kind: OpShareDelete, Target: Ref{Kind: "share", ID: "sh_1"},
-		Account: "pr_1", State: OpFailed,
+		Account: Principal{Kind: "user", ID: "us_1"}, State: OpFailed,
 		Progress: Progress{Phase: "files", Done: 3, Total: -1, Unit: "files"},
 		Started:  at, Updated: at.Add(time.Minute), Error: &full,
 		Result: json.RawMessage(`{"share":"sh_2"}`),
@@ -48,6 +48,7 @@ func TestWireBodies(t *testing.T) {
 			[]string{"account", "error", "id", "kind", "progress", "result", "started", "state", "target", "updated"}},
 		{"progress", op.Progress, new(Progress), []string{"done", "phase", "total", "unit"}},
 		{"target", op.Target, new(Ref), []string{"id", "kind"}},
+		{"account", op.Account, new(Principal), []string{"id", "kind"}},
 		{"version", Version{Majors: []string{"v1"}}, new(Version), []string{"majors"}},
 	} {
 		b, err := json.Marshal(tc.in)
