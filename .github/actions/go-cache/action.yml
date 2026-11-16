@@ -1,0 +1,63 @@
+name: Go with its cache
+description: >
+  Set up Go and restore its module and build caches on every run. Nothing here
+  saves: the job saves with actions/cache/save at its end, on push runs only,
+  since the build cache fills in the steps after this one and a composite
+  action has no post step.
+
+inputs:
+  go-version-file:
+    description: The file setup-go reads the Go version from. Ignored when go-version is set.
+    default: go.mod
+  go-version:
+    description: The Go version, when no file names it.
+    default: ''
+
+outputs:
+  key:
+    description: The cache key, to save under.
+    value: ${{ steps.restore.outputs.cache-primary-key }}
+  path:
+    description: The module and build cache directories, to save.
+    value: ${{ steps.paths.outputs.path }}
+  cache-hit:
+    description: true when an entry with the key was restored, so nothing needs saving.
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    # setup-go's own cache saves on every event, and a pull request run's or a
+    # merge queue run's entry can be read only by that pull request's or that
+    # queue entry's re-runs.
+    - name: Set up Go
+      id: go
+      uses: actions/setup-go@v7
+      with:
+        go-version: ${{ inputs.go-version }}
+        go-version-file: ${{ inputs.go-version == '' && inputs.go-version-file || '' }}
+        cache: false
+
+    # ImageOS is the runner's variable, not in the env context.
+    - name: Find the cache directories
+      id: paths
+      shell: bash
+      run: |
+        set -euo pipefail
+        {
+          echo "image=${ImageOS:-}"
+          echo 'path<<EOF'
+          go env GOMODCACHE
+          go env GOCACHE
+          echo 'EOF'
+        } >> "$GITHUB_OUTPUT"
+
+    # setup-go's key parts: the image, since cgo builds link its libraries, and
+    # the Go release, since each has a build cache of its own. Exact match
+    # only: an entry is saved once per key and never updated.
+    - name: Restore the Go caches
+      id: restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ steps.paths.outputs.path }}
+        key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.paths.outputs.image }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}
