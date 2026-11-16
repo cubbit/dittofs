@@ -611,19 +611,42 @@ func TestPanicIsAnsweredTheFault(t *testing.T) {
 	}
 }
 
-// A bad checksum is refused before its credits are charged: the Echo after
-// it, charging the connection's one credit, is served.
+// askedReplay is the stages' own replay cache, counting its Lookups: a
+// pass-through, where whether the cache is asked is what is checked.
+type askedReplay struct {
+	core.ReplayCache
+	asked atomic.Int32
+}
+
+func (a *askedReplay) Lookup(ctx context.Context, h core.Header) (*resources.Buf, error) {
+	a.asked.Add(1)
+	return a.ReplayCache.Lookup(ctx, h)
+}
+
+// A bad checksum is refused before the replay cache is asked and before its
+// credits are charged: the Echo after it, charging the connection's one
+// credit, is served, and is the first request the cache is asked about.
 func TestABadChecksumIsRefusedBeforeAdmit(t *testing.T) {
-	s := newSeam(t, testproto.New(adapter.Deps{}), 1<<20)
+	replay := &askedReplay{}
+	s := newSeam(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) {
+		replay.ReplayCache = st.Replay
+		st.Replay = replay
+	}}, 1<<20)
 	bad := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Session: 5, Credits: 1})
 	bad[len(bad)-1] ^= 0x01
 	s.serveBody(bad)
 	if r := s.read(); r.Status != testproto.StatusChecksum {
 		t.Fatalf("a bad checksum is answered %+v", r)
 	}
+	if n := replay.asked.Load(); n != 0 {
+		t.Errorf("the replay cache was asked %d times about a bad checksum, want none", n)
+	}
 	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Credits: 1})
 	if r := s.read(); r.Status != testproto.StatusOK {
 		t.Errorf("the Echo after it is answered %+v: the refused message's credits were charged", r)
+	}
+	if n := replay.asked.Load(); n != 1 {
+		t.Errorf("the replay cache was asked %d times once the Echo was served, want once", n)
 	}
 }
 
