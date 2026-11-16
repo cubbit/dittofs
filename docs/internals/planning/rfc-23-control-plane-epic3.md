@@ -9,7 +9,7 @@ root's duties; [RFC 25](../rfcs/rfc-25-observability.md) §3.5 and §3.6, the pa
 loops and readiness need; [RFC 13](../rfcs/rfc-13-configuration.md) §2.2 and
 [RFC 28](../rfcs/rfc-28-journal-format.md) §2.1 as a consumer of the node identity.
 **Track:** A.
-**Epic 3 estimate: 11 subtasks, 29.5 man-days.**
+**Epic 3 estimate: 11 subtasks, 30 man-days.**
 **Depends on:** S1 (E1 merged): the node's surface (`New`, `Node`, `Config`, `Start`, `Stop`) and
 its export pin, and `dfs start` over the stub. E2 provides what the node reads and writes: the
 counters, the node and node-status records through its node view, the operation record, its
@@ -21,7 +21,8 @@ epic creates; E5, partly, whose signed-in callers extend the harness; E6, partly
 against the harness's node; E7, which runs every row on the node `New` builds; RFC 20's plan's epic
 7 at S2, which writes the adapter rows into reconcile; the RFC 13 plan's S3, the `apply` slot X3
 fills; the RFC 18 plan's epics 2, 5 and 7, whose operation kinds run on the runner, and its epic 8,
-which composes identity into `New`.
+which composes identity into `New` and whose T8.3, a change applied at once on the node that wrote
+it, relies on T3.5's `Deps.Applied` (D16).
 
 ---
 
@@ -172,12 +173,13 @@ that subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R24 | The node learns of changes only by reading the settings generation, the share list version, the principals generation and the claim generation once a second, never from the API request that made them | MUST | RFC 23 §2.3, §8 | T3.5 |
+| R24 | The node learns of changes only by reading the settings generation, the share list version, the principals generation and the claim generation once a second, or when its own write wakes it (R54), never from the API request that made them | MUST | RFC 23 §2.3 (as amended by A8), §8 | T3.5 |
 | R25 | A reconcile step is idempotent: run twice on the same records it does nothing the second time | invariant | RFC 23 §2.3 | T3.5 |
 | R26 | The node runs a full reconcile at start and after any read of the store that failed, listing records by kind in pages, and keeps its running set while the store is unreachable | MUST | RFC 23 §2.3, §8.1 | T3.5 |
 | R27 | A share created is `addShare`, a storage binding in the engine; a share removed is `removeShare` at the step its removal names; a share's state changed moves its binding to quiescing and back | MUST | RFC 23 §2.3 | T3.5, T3.6 |
 | R28 | Every row of RFC 23 §2.3's table is one of `addShare`, `removeShare` and `apply`; a grant or an export policy calls nothing | MUST | RFC 23 §2.3 | T3.5 |
 | R29 | A record that does not validate when its component is built stops only what it configures, and the node reports it refused, keeping the old component where one was serving | MUST | RFC 23 §2.3, §8.1 | T3.5 |
+| R54 | After a write on this node commits, `Deps.Applied` reads the counters, wakes reconcile, which runs a new pass after the one running if any, and returns only once the reconciled-through settings and principals positions cover what it read, never on a pass that read the counters first, or when its context ends | MUST, MUST NOT | RFC 23 §2.3 (as amended by A8), §2.4; RFC 18 §2.6 | T3.5 |
 
 **What a node reports**
 
@@ -323,6 +325,19 @@ that subtasks and tests can cite them.
 - **D15, the filesystem's own removal join goes with its owner.** `internal/vfs`'s `removeShare`
   and its `Start` drop carry a `ponytail:` naming the node's removal driver as their replacement.
   T3.6 is that driver, so both go in the same pull request, with the marker.
+- **D16, the writer's wait is a wake and a wait on the positions, in `New`** (RFC 23 §2.3 as its
+  plan's A8 amends it). `api.Deps` gains `Applied func(ctx context.Context) error`, which `New`
+  fills with the node's: it reads `Nodes.Counters` after the commit, sends on reconcile's one-slot
+  wake channel, which a running pass leaves set so the loop runs again as soon as it ends, and waits
+  on the in-memory reconciled-through settings and principals positions, signalled each time a
+  pass moves them, until they cover the two counters it read or its context ends, then returning
+  `ctx.Err()`. It joins no running pass and runs none itself: a pass that read the counters before
+  the commit cannot raise the positions that far. E4's write adapter calls it and bounds the
+  context (its D22); the RFC 18 plan's epic 8's T8.3 relies on it. `export_test.go` gives
+  `node_test` a per-node pause after a pass's counters read, the positions held in memory and
+  `Applied` itself, answering with the positions it returned on, which E4's T4.4 and that T8.3 use
+  too. No marker. Prior art: read-your-writes in session-consistent stores, such as MongoDB's
+  causal sessions (from memory).
 
 ## 5. Target tree
 
@@ -337,7 +352,8 @@ internal/node/
 internal/node/step/
   step.go, step_test.go                    T3.4  StepResult, Step, Progress (D7)
   removal.go                               T3.4, T3.6  user, group and share deletions (D8)
-  reconcile.go, shares.go                  T3.5  the loop, addShare, removeShare, apply (D10)
+  reconcile.go, shares.go                  T3.5  the loop, addShare, removeShare, apply (D10), Applied (D16)
+  export_test.go                           T3.5  the pause after a counters read, the positions (D16)
   status.go                                T3.7  the status writer and the node_ series
   sweep.go                                 T3.8  the sweep loop
   arch_test.go                             T3.2  R49, R50; T3.9  R2
@@ -345,7 +361,7 @@ internal/node/step/
 internal/node/api/
   server.go, health.go, server_test.go     T3.2  the listener and the two health rows (D3)
 internal/node/nodetest/
-  harness.go, harness_test.go              T3.1  New, Watch, Restart, Clock, Store
+  harness.go, harness_test.go              T3.1  New, WithNew, Watch, Restart, Node, Clock, Store
 pkg/health/
   evaluator.go, watchdog.go                T3.2  sources, conditions and loops (D4)
 internal/vfs/
@@ -379,7 +395,11 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
     so the harness's installation is a real one), over Badger in
     memory or on disk, `sim.TestClock`, a `metrics.Registry`, a logger, the API and metrics
     addresses on `127.0.0.1:0`; `Watch()` for top-level tests; `Restart(t)`, which stops the node
-    and builds a new one over a new KV on the same directories (D13); its own `harness_test.go`.
+    and builds a new one over a new KV on the same directories (D13); `WithNew(func(node.Config)
+    (*node.Node, error))`, the constructor `New` and `Restart` build the node through, `node.New`
+    when none is given, so a `node_test` test can hand it a constructor from `internal/node`'s
+    `export_test.go` while `Config` stays at five fields; `Node()`, which returns the node built
+    last, the new one after `Restart`; its own `harness_test.go`.
     Consumed by every later subtask, E5, E6 and E7.
 - **Acceptance criteria:**
   - After `New`, the store is open and no journal, goroutine or listener exists.
@@ -387,8 +407,10 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Tests:** in `node_test`, watched: `New` then `Stop` with no `Start`, the leak check passing
   (catches a component started by `New`, R4, R7); `New` over an empty KV refused (R48); in
   `openstate`, a clone's hold taken and released through `EngineHolds` against the real table
-  (R8), the engine's own tests running unchanged through `enginetest.Holds`. R6's "closes what it
-  built" is T3.3's.
+  (R8), the engine's own tests running unchanged through `enginetest.Holds`; in `nodetest`, a
+  constructor handed to `WithNew` that calls `node.New` and keeps the nodes it returned, `Restart`
+  building through it a second time and `Node()` returning that second node, not the first. R6's
+  "closes what it built" is T3.3's.
 
 ### T3.4 The operation runner and the principals' deletion
 
@@ -496,11 +518,11 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 
 ### T3.5 Reconcile
 
-**Subtask T3.5 estimate: 4 man-days.**
+**Subtask T3.5 estimate: 4.5 man-days.**
 
 - **Track:** A. **Depends on:** T3.3, and on the record that names a namespace's remote store (E4's
   namespace resource and the RFC 13 plan's table settle which; E2 stores it).
-- **Covers:** R10, R24, R25, R26, R27, R28, R29, R32, R37.
+- **Covers:** R10, R24, R25, R26, R27, R28, R29, R32, R37, R54.
 - **Deliverables:** `reconcileLoop` on `cfg.Clock.After(time.Second)`, reading E2's `Counters` once
   per turn, with the full pass at start and after a failed read, listing shares page by page;
   `addShare` (the remote store's record checked, D5's `ponytail:`; the binding through
@@ -508,7 +530,9 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   change through the binding; `apply`, the slot X3 fills, called only when the settings or
   principals generation moved, returning refusals with a retry flag, and D10's one backoff; the
   refused set with each record's generation and error; its watchdog `Loop`, each store call under
-  a 20 s deadline on `cfg.Clock`. Consumed by T3.6, T3.7 and, at S2, RFC 20's plan's epic 7.
+  a 20 s deadline on `cfg.Clock`; the wake channel, the positions' signal and `Applied`, handed to
+  `api.Deps` in `New`, with D16's `export_test.go` pause and positions. Consumed by T3.6, T3.7,
+  E4's write adapter, the RFC 18 plan's epic 8's T8.3 and, at S2, RFC 20's plan's epic 7.
 - **Acceptance criteria:**
   - A share written through the store is bound within one turn; quiesced, its binding refuses new
     calls; resumed, it serves again.
@@ -525,7 +549,15 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   refusal flagged for retry retried on the backoff, one not flagged waiting for the next generation
   (D10); a grant written, no series moved (R28); two changes applied in counter order (R32); a
   `FaultKV` delay on a store call, waited on the schedule's `sim.TestClock` and advanced past the
-  20 s deadline, the call ended and liveness still `live`, never wall time (R37).
+  20 s deadline, the call ended and liveness still `live`, never wall time (R37). In a test whose
+  clock is never advanced, so only a wake starts a pass: a pass woken by a first `Applied` and held
+  by D16's pause after its counters read; a user written through the view and a second `Applied`
+  called; the held pass released; the next pass held at its own read, which shows the second wake
+  started it after the running one; released, the second `Applied` returns, and the positions it
+  returned on, which D16's `export_test.go` hands back with its answer, cover the counters read
+  after the write (catches a waiter that joins the running pass, or a wake dropped while a pass
+  runs, R54); with a pass held and not released, `Applied` under a context the test cancels
+  returns `context.Canceled` (R54).
 
 ### T3.6 A share's removal driven
 
@@ -681,7 +713,7 @@ writes the adapter rows.
 | --- | --- | --- | --- | --- |
 | 1 | T3.1, T3.4 | 7 | — | `New`, the harness and the runner with its first kinds: what the RFC 18 plan's and E5's steps wait on |
 | 2 | T3.2, T3.3 | 8 | PR 1 | health, the API package, and start and stop in RFC 23 §2.2's order |
-| 3 | T3.5, T3.6 | 7 | PR 2 | reconcile and the share's removal, with `vfs`'s own join deleted beside its owner (D15): S2 |
+| 3 | T3.5, T3.6 | 7.5 | PR 2 | reconcile and the share's removal, with `vfs`'s own join deleted beside its owner (D15): S2 |
 | 4 | T3.7, T3.8, T3.9, T3.10, T3.11 | 7.5 | PR 3 | status, sweep, `dfs start`, node identity and the benchmark: a working server |
 
 A suggestion only: one pull request per subtask works as well.
@@ -693,7 +725,9 @@ A suggestion only: one pull request per subtask works as well.
   `ContinueDelete`, `ContinueRemoval`, `ContinueShardRemoval` and `RecordShardRemoval`.
 - The least certain estimates: T3.3, whose undo and stop bounds cross components whose `Stop`
   semantics differ, and T3.6, whose step 3 joins a share that is still serving.
-- `nodetest.WithStep`, so another package's step runs through the real runner in the harness, is
-  not built: `Config` and `New` are frozen at five fields and no harness reaches the unexported
-  step table. A step's owner tests its function over a real store, and through the runner once its
-  registering epic (the RFC 18 plan's epic 8, E5) puts it in `New`.
+- `nodetest.WithStep` is not built. A `node_test` test runs another package's step through the
+  real runner in the harness by handing `WithNew` a constructor from `internal/node`'s
+  `export_test.go` that adds the step to the unexported table, so `Config` stays at five fields.
+  The step's own package cannot reach that file, so its owner tests the function over a real
+  store, and through the runner once its registering epic (the RFC 18 plan's epic 8, E5) puts it
+  in `New`.

@@ -5,7 +5,7 @@ that need no mount and need more than one middle epic together; §8.1, the rows 
 here through the API; §3.3's bound fields; §10's CP7; Appendix B's rows for §2.1 and §2.3; RFC
 23's plan §1.4 (the scenario assigned to epic 7), §1.5 rule 3, D13 and §5 epic 7.
 **Track:** the team.
-**Epic 7 estimate: 7 subtasks, 11.5 man-days.**
+**Epic 7 estimate: 7 subtasks, 12 man-days.**
 **Depends on:** E3 (`dfs start`, `nodetest`, the runner), E4 (the routes and the client), E5
 (`install.Run`, signed-in callers), E6 (its suite's child-safe rows); outside RFC 23's plan, X3
 and the RFC 18 plan's epic 8's T8.10 for T7.5, and X1 with the RFC 18 plan's epics 7 and 8 for
@@ -325,7 +325,8 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 - **Covers:** R17, R18, R19, R20, R21.
 - **Deliverables:** in `integration_test.go`: `§2.3 reconcile`, the `view` operation faulted while
   writes pass; `§2.4 applied` with D5's hold on the binding's commit; `§4.1 NTLM back on`, the
-  deletion failed by a `FaultKV` error on one of its batches, the sweep run after the
+  deletion failed by a `User` record its codec refuses (the RFC 18 plan's epic 2's R36), written
+  under the store's key through the raw KV, since a store error is retried and never fails it, the sweep run after the
   clock passes 8 days and the operation's record read gone; A6's refusals; a bound field's `409`
   while content exists; E4's settings, adapter, remote-store and namespace success paths through
   the API, and E6's refusal rows for them flipped to success; D3's seeding moved onto the API and
@@ -338,13 +339,16 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 
 ### T7.6 The domain's clauses
 
-**Subtask T7.6 estimate: 1 man-days.**
+**Subtask T7.6 estimate: 1.5 man-days.**
 
 - **Track:** the team. **Depends on:** X1; the RFC 18 plan's epics 7 and 8; T7.3.
 - **Covers:** R22, R26.
 - **Deliverables:** in `integration_test.go`: the two `join-domain` clauses, over `identitytest`'s
   directory and domain controller, the log captured and the metrics registry read; NTLM's
   consumer after a completed deletion, through the composed node's `SignIn` (R26).
+  Also, through the API over the same directory, E6's success paths, which `nodetest` cannot
+  reach: a grant by directory name runs `resolve-principal` and grants the ID it returned (E6's
+  R16), and `resolve-principal` and `test-directory` end `succeeded`.
 - **Acceptance criteria:**
   - Neither join leaves an idempotency record, and neither credential is found raw where CP11
     names.
@@ -397,7 +401,7 @@ T7.1 goes first: E8 waits on it and nothing else of this epic. The rows follow o
 | --- | --- | --- | --- | --- |
 | 1 | T7.1, T7.2 | 4 | — | the fixture and the rows that kill a child; unblocks E8 |
 | 2 | T7.3, T7.4 | 2.5 | PR 1 | everything a fully wired node and the CLI show before X3 |
-| 3 | T7.5, T7.6 | 3 | PR 2, X3, X1, the RFC 18 plan's epics 7 and 8 | the rows that wait on another plan |
+| 3 | T7.5, T7.6 | 3.5 | PR 2, X3, X1, the RFC 18 plan's epics 7 and 8 | the rows that wait on another plan |
 | 4 | T7.7 | 2 | — | the pages and the test that holds them |
 
 PR 4 can be open beside any other. A suggestion only: one pull request per subtask works as well.
