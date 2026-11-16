@@ -358,6 +358,15 @@ and its 4 KiB of header room ([RFC 24 §3.1](rfc-24-resources.md#3.1%20Buffer%20
 the class a 1 MiB `READ`'s reply is drawn from. The preferred directory-read
 size (`dtpref`) is 64 KiB; the largest file (`maxfilesize`) is 2^63 − 1.
 
+A record, its fragments together, is at most the transfer class's capacity, 1
+MiB and 4 KiB, in at most 64 fragments: a record mark that would take it past
+either closes the connection ([RFC 20 §5.2](rfc-20-adapters.md#5.2%20Decoding%20is%20bounded),
+[RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)).
+
+> ponytail: 64 fragments let a record of the cap arrive in fragments of 16 KiB
+> and more; common clients send one. Raise it when a client is seen sending
+> smaller ones.
+
 The size is fixed, not a setting ([RFC 13](rfc-13-configuration.md)). A client
 negotiates down, never up, so a value that differs between nodes breaks a client
 moved between them: build01, told 1 MiB by P1, would go on sending 1 MiB writes
@@ -2099,6 +2108,14 @@ are checked against.
   `RPCSEC_GSS` **MUST** be rejected `AUTH_BADCRED` and run nothing. None is ever
   treated as anonymous: that would turn a malformed credential into the share's
   everyone grant.
+- **Where they are judged.** Decoding the call's header only bounds its
+  credential and verifier: one whose body runs past the record is a decode
+  error, answered `GARBAGE_ARGS`
+  ([RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline)). The flavour and an
+  `AUTH_SYS` body are judged when the call is routed, so a body truncated inside
+  a whole credential is `AUTH_BADCRED`, and a verifier other than `AUTH_NONE`
+  beside an `AUTH_NONE` or `AUTH_SYS` credential is rejected `AUTH_BADVERF`; an
+  `RPCSEC_GSS` credential is the GSS stage's, at unwrap (§10).
 - **Root.** A claimed uid 0 maps to RFC 18's root principal
   ([RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)).
 - **Export flavour policy.** "Requires Kerberos" is the share's `MinProof`
@@ -2516,7 +2533,7 @@ an NFSv4.1 code such as `SEQUENCE` sent under NFSv4.0 included, is routed to
 the `ILLEGAL` row, which answers `NFS4ERR_OP_ILLEGAL`, as develop does; `ErrVersion` to
 `PROG_MISMATCH` for an RPC version, and for an NFSv4 minor version not served
 to `NFS4ERR_MINOR_VERS_MISMATCH`, answered once for the compound before any
-operation runs; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrDecode` to
+operation runs, with its tag and no results; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrDecode` to
 `GARBAGE_ARGS`, the RPC accept state, in a row naming no operation or version,
 which RFC 20 §4.7's `NewErrorTable` demands of every table; `ErrTooLong` to
 `NFS4ERR_TOO_MANY_OPS` in a row naming no version, which RFC 20 §4.7's
@@ -2533,6 +2550,24 @@ row of NFSv4's table naming them in `Ops`; NFSv3, MOUNT and NLM each have a
 table of their own, RFC 20 §4.5), §7.4; `ErrDraining`, and `ErrMoved` for any other
 NFSv4 operation and for NFSv3, MOUNT and NLM, which have no move signal, to no
 reply.
+
+**A reply carrying a status alone** is written whole by the header codec
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`HeaderCodec.Encode`): the RPC reply header, `PROG_MISMATCH` with the lowest and
+highest versions the connection serves, and for an NFSv4 `COMPOUND` its status,
+its tag and an empty results array. A procedure's encoder handed no reply writes
+only what its result carries beside the status.
+
+**Malformed calls.** A record too short to hold its transaction ID and message
+type closes the connection; a call whose later fields do not decode is answered
+`GARBAGE_ARGS` from the row for `ErrDecode`
+([RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline)).
+
+**The fault status**
+([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)) is
+`NFS3ERR_SERVERFAULT` in NFSv3's table, `NFS4ERR_SERVERFAULT` in NFSv4's, and the
+RPC accept state `SYSTEM_ERR` in the stages' table and in MOUNT's, NLM's and
+NSM's.
 
 **What runs while draining** is each operation's `Role`
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)):

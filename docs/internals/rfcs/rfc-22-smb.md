@@ -444,6 +444,10 @@ flight.
 
 - The largest read, write and control request (`MaxReadSize`, `MaxWriteSize`,
   `MaxTransactSize`) is **8 MiB**, a request costing one credit per 64 KiB.
+- A message, as its Direct TCP header counts it, is at most the large class's
+  capacity, 8 MiB and 4 KiB
+  ([RFC 24 §3.1](rfc-24-resources.md#3.1%20Buffer%20classes)): a longer one
+  closes the connection ([RFC 20 §5.2](rfc-20-adapters.md#5.2%20Decoding%20is%20bounded)).
 - Each connection targets **512** credits outstanding, counting those the client holds and
   those a withheld interim's final response still owes. A synchronous response,
   and the interim response of a request held pending, grants what the client
@@ -2616,6 +2620,31 @@ replays the lock or the notification once it reconnects, so the application
 sees no `ERROR_OPERATION_ABORTED`. `ErrNotNegotiated`,
 `ErrNoFH` and `ErrTooLong` are settled against MS-SMB2 when the table is
 built; the totality test fails until they have rows.
+
+**A status's body.** A reply whose status is not success is MS-SMB2 2.2.2's
+error response, which the header codec writes after the header, and a command's
+encoder handed no reply writes nothing
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+`HeaderCodec.Encode`). The exceptions are the command's encoder's, and the
+header codec leaves them to it: the responses MS-SMB2 3.3.4.4 does not count as
+failures, `STATUS_MORE_PROCESSING_REQUIRED` on `SESSION_SETUP` and
+`STATUS_BUFFER_OVERFLOW` on `READ`, `QUERY_INFO` and `IOCTL` among them, and an
+error response carrying the command's error data, as
+`STATUS_STOPPED_ON_SYMLINK`'s does ([§12.4](#12.4%20Reparse%20points)).
+
+**Malformed headers.** A header too short to hold its message ID, or whose
+protocol ID is none the server reads (SMB2's, the transform header's,
+[§4.1](#4.1%20Signing%20in), and an SMB1 `NEGOTIATE`'s,
+[§3.1](#3.1%20Dialects)), closes the connection. Any other, a `StructureSize`
+other than 64 or a `NextCommand` not a multiple of 8 or leaving no room for a
+header before the message's end, is answered `STATUS_INVALID_PARAMETER` from the
+row for `ErrDecode`; a `NextCommand` so refused ends the chain there, and the
+connection closes once the replies before it are sent
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
+
+**The fault status**
+([RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol)) is
+`STATUS_INTERNAL_ERROR`.
 
 **What runs while draining** is each command's `Role`
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)):
