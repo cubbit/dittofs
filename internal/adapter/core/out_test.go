@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -17,9 +18,12 @@ import (
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
-// newOut builds a writer of records framed by f: its out and close, and the
-// peer end of the connection it writes to.
-type newOut func(f core.Framer) (out func(msg *resources.Buf, key, before uint64) error, close func(error), peer net.Conn)
+// bound is a writer's queue's bound, by messages and by bytes; 0 for none.
+type bound struct{ msgs, bytes int }
+
+// newOut builds a writer of records framed by f: its out and close, the peer
+// end of the connection it writes to, and its queue's bound.
+type newOut func(f core.Framer) (out func(msg *resources.Buf, key, before uint64) error, close func(error), peer net.Conn, b bound)
 
 // testOut is the suite of out, which every writer passes (the pipeline's
 // seam with its connection):
@@ -61,11 +65,13 @@ func testOut(t *testing.T, build newOut) {
 		synctest.Test(t, func(t *testing.T) {
 			budget := resources.NewWaitBudget("reply", 1<<30)
 			pool := resources.NewBufPool(budget)
-			out, closeOut, peer := build(f)
-			const n = 1000 // past any queue's bound
+			out, closeOut, peer, b := build(f)
+			// Past the writer's bound by messages and by bytes, twice over.
+			n := max(1000, 2*b.msgs+1)
+			size := max(1, 2*b.bytes/n+1)
 			msgs := make([]*resources.Buf, n)
 			for i := range msgs {
-				msgs[i] = msg(t, pool, string(rune('a'+i%26)))
+				msgs[i] = msg(t, pool, strings.Repeat(string(rune('a'+i%26)), size))
 			}
 			// The peer reads nothing until every out has returned.
 			returned := make(chan error, 1)
@@ -88,7 +94,7 @@ func testOut(t *testing.T, build newOut) {
 				t.Fatal("out blocked its caller while the peer read nothing")
 			}
 			for i := range n {
-				if got := read(t, peer); got != string(rune('a'+i%26)) {
+				if got := read(t, peer); got != strings.Repeat(string(rune('a'+i%26)), size) {
 					t.Fatalf("message %d read as %q, out of order", i, got)
 				}
 			}
@@ -104,7 +110,7 @@ func testOut(t *testing.T, build newOut) {
 		synctest.Test(t, func(t *testing.T) {
 			budget := resources.NewWaitBudget("reply", 1<<30)
 			pool := resources.NewBufPool(budget)
-			out, closeOut, _ := build(f)
+			out, closeOut, _, _ := build(f)
 			if err := out(msg(t, pool, "queued"), 0, 0); err != nil {
 				t.Fatalf("out before the close = %v", err)
 			}
@@ -122,7 +128,7 @@ func testOut(t *testing.T, build newOut) {
 	t.Run("before goes ahead of its key's reply", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			pool := resources.NewBufPool(resources.NewWaitBudget("reply", 1<<30))
-			out, closeOut, peer := build(f)
+			out, closeOut, peer, _ := build(f)
 			defer closeOut(nil)
 			// The writer is held on the first message until the peer reads,
 			// so the reply of key 7 is still queued when the callback comes.
@@ -148,7 +154,7 @@ func testOut(t *testing.T, build newOut) {
 // recorder is the writer the seam tests run the pipeline on: it queues what
 // out takes and writes it, in order, framed, to one end of a net.Pipe, whose
 // other end a testproto.Client reads. It is a verified implementation of
-// out, held to the suite E4's writer passes, not a stand-in.
+// out, held to the suite the connection's writer passes, not a stand-in.
 type recorder struct {
 	f      core.Framer
 	conn   net.Conn
@@ -164,12 +170,12 @@ type queued struct {
 	key uint64
 }
 
-// newRecorder starts a recorder framing with f.
-func newRecorder(f core.Framer) (out func(msg *resources.Buf, key, before uint64) error, close func(error), peer net.Conn) {
+// newRecorder starts a recorder framing with f; its queue has no bound.
+func newRecorder(f core.Framer) (out func(msg *resources.Buf, key, before uint64) error, close func(error), peer net.Conn, b bound) {
 	conn, peer := net.Pipe()
 	r := &recorder{f: f, conn: conn, wake: make(chan struct{}, 1), done: make(chan struct{})}
 	go r.write()
-	return r.out, r.close, peer
+	return r.out, r.close, peer, bound{}
 }
 
 func (r *recorder) out(msg *resources.Buf, key, before uint64) error {

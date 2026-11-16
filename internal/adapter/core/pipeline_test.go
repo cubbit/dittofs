@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -329,7 +330,7 @@ func newSeam(t *testing.T, proto core.Protocol, reply int64) *seam {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, stop, conn := newRecorder(s.f)
+	out, stop, conn, _ := newRecorder(s.f)
 	s.stop, s.client = stop, testproto.NewClient(conn)
 	s.p = core.NewPipeline(core.NewShared(adapter.Deps{}, s.reply), st, context.Background(), peer, out, func(err error) {
 		select {
@@ -825,6 +826,218 @@ func TestACancelIsAnsweredNothing(t *testing.T) {
 		s.serve(testproto.Msg{Op: testproto.OpCancel, Version: 2, Target: 9})
 		if !s.sentNothing() {
 			t.Error("a Cancel was answered")
+		}
+	})
+}
+
+// wrapped is a Router whose tables' rows hand each Invocation they decode to
+// wrap: a pass-through the test reads where the call itself is what is
+// checked. It counts the Routes it is asked.
+type wrapped struct {
+	core.Router
+	wrap   func(core.Invocation) core.Invocation
+	routes atomic.Int64
+	mu     sync.Mutex
+	tables map[*core.OpTable]*core.OpTable
+}
+
+func (w *wrapped) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	w.routes.Add(1)
+	tb, r, err := w.Router.Route(h, prev)
+	if tb == nil {
+		return tb, r, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.tables == nil {
+		w.tables = map[*core.OpTable]*core.OpTable{}
+	}
+	cp, ok := w.tables[tb]
+	if !ok {
+		c := *tb
+		c.Ops = make(map[uint32]*core.Op, len(tb.Ops))
+		for code, op := range tb.Ops {
+			o := *op
+			dec := op.Decode
+			o.Decode = func(b []byte, v core.Version) (core.Invocation, int, error) {
+				inv, n, err := dec(b, v)
+				if err == nil {
+					inv = w.wrap(inv)
+				}
+				return inv, n, err
+			}
+			c.Ops[code] = &o
+		}
+		cp = &c
+		w.tables[tb] = cp
+	}
+	return cp, r, err
+}
+
+// wrapRows is a protocol whose routers wrap their rows' invocations with f;
+// each connection's router is sent on routers.
+func wrapRows(p core.Protocol, f func(core.Invocation) core.Invocation, routers chan<- *wrapped) edited {
+	return edited{p, func(st *core.Stages) {
+		w := &wrapped{Router: st.Router, wrap: f}
+		st.Router = w
+		if routers != nil {
+			routers <- w
+		}
+	}}
+}
+
+// The role is asked only while draining: a request served normally pays for
+// no call of Invocation.Role.
+func TestTheRoleIsAskedOnlyWhileDraining(t *testing.T) {
+	var calls atomic.Int64
+	count := func(inv core.Invocation) core.Invocation {
+		if role := inv.Role; role != nil {
+			inv.Role = func(r *core.Request) core.Role {
+				calls.Add(1)
+				return role(r)
+			}
+		}
+		return inv
+	}
+	s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), count, nil), 1<<20)
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Role: core.RoleContext})
+	s.read()
+	if n := calls.Load(); n != 0 {
+		t.Errorf("serving, the role was asked %d times, want none", n)
+	}
+	s.p.Drain()
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Role: core.RoleContext})
+	s.read()
+	if n := calls.Load(); n != 1 {
+		t.Errorf("draining, the role was asked %d times, want once", n)
+	}
+}
+
+// A request keeps its place under the cap through its call: with 65 Echo in
+// the service, 64 are in their calls and the 65th waits in Admit.
+func TestTheCapHoldsThroughTheCall(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var in atomic.Int64
+		gate := make(chan struct{})
+		hold := func(inv core.Invocation) core.Invocation {
+			call := inv.Call
+			inv.Call = func(ctx context.Context, r *core.Request) error {
+				in.Add(1)
+				<-gate
+				return call(ctx, r)
+			}
+			return inv
+		}
+		s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), hold, nil), 1<<30)
+		all := start(func() {
+			for i := range 65 {
+				s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: uint64(i + 1)})
+			}
+		})
+		synctest.Wait()
+		if n := in.Load(); n != 64 || all.returned() {
+			t.Fatalf("%d requests in their calls at once, want 64 with the 65th held in Admit", n)
+		}
+		close(gate)
+		for range 65 {
+			s.read()
+		}
+		<-all.done
+	})
+}
+
+// routesWith is a Router that chooses the header's table and refuses with
+// err: a refusal that comes back with its table.
+type routesWith struct {
+	core.Router
+	err error
+}
+
+func (r routesWith) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	tb, _, _ := r.Router.Route(h, prev)
+	return tb, nil, r.err
+}
+
+// A refusal Route returns with its table is mapped by that table: no
+// session, its no-session status, which the stages' own table does not map.
+func TestARouteRefusalIsMappedByItsTable(t *testing.T) {
+	s := newSeam(t, edited{testproto.New(adapter.Deps{}).Bare(), func(st *core.Stages) { st.Router = routesWith{st.Router, core.ErrNoSession} }}, 1<<20)
+	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+	if r := s.read(); r.Status != testproto.StatusNoSession {
+		t.Errorf("a refusal with its table is answered %d, want the table's no-session status %d", r.Status, testproto.StatusNoSession)
+	}
+}
+
+// A request admitted after close is not run: no Route, no call, no reply.
+func TestARequestAfterCloseIsNotRun(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		routers := make(chan *wrapped, 1)
+		var s *seam
+		closing := edited{wrapRows(testproto.New(adapter.Deps{}), func(inv core.Invocation) core.Invocation { return inv }, routers), func(st *core.Stages) {
+			st.Security = closesOnUnwrap{st.Security, func() { s.p.Close() }}
+		}}
+		s = newSeam(t, closing, 1<<20)
+		w := <-routers
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+		synctest.Wait()
+		if n := w.routes.Load(); n != 0 {
+			t.Errorf("a request admitted after close was routed %d times", n)
+		}
+		if !s.sentNothing() {
+			t.Error("a request admitted after close was answered")
+		}
+	})
+}
+
+// close called from a handler's own call returns: it never waits for the
+// requests it ends.
+func TestCloseFromAHandlerReturns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var s *seam
+		closes := func(inv core.Invocation) core.Invocation {
+			call := inv.Call
+			inv.Call = func(ctx context.Context, r *core.Request) error {
+				s.p.Close()
+				return call(ctx, r)
+			}
+			return inv
+		}
+		s = newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), closes, nil), 1<<20)
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+		if err := s.p.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if !s.sentNothing() {
+			t.Error("the reply of a request in its call when close came was sent")
+		}
+	})
+}
+
+// With the reply pool held full, a drained request whose table holds still
+// gets its interim, its credit granted, though a request waits on the pool
+// for the reservation it gives back.
+func TestTheInterimGoesOutUnderContention(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newSeam(t, testproto.New(adapter.Deps{}), 2*smallCharge)
+		freeA, freeB := s.full(), s.full()
+		s.p.Drain()
+		for _, m := range []testproto.Msg{
+			{Op: testproto.OpEcho, Version: 1, ID: 1, Role: core.RoleContext},
+			{Op: testproto.OpEcho, Version: 2, ID: 2, Role: core.RoleNone, Credits: 1},
+			{Op: testproto.OpEcho, Version: 1, ID: 3, Role: core.RoleContext},
+		} {
+			s.serve(m)
+			synctest.Wait() // each waits on the pool in turn
+		}
+		freeA()
+		freeB()
+		got := map[uint64]testproto.Reply{}
+		for range 3 {
+			r := s.read()
+			got[r.ID&^(1<<63)] = r
+		}
+		if r, ok := got[2]; !ok || !r.Interim || r.Credits != 1 {
+			t.Errorf("the drained request got %+v, want an interim granting its credit", r)
 		}
 	})
 }

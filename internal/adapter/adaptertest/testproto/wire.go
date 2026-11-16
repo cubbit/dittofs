@@ -317,7 +317,8 @@ func (headerCodec) Args(rec *resources.Buf, h core.Header) []byte {
 	return arguments(rec.B, off, hd)
 }
 
-// ReplyLen is a reply header's 40 bytes: Wrap adds none.
+// ReplyLen is the most Encode writes for h: a reply header's 40 bytes, since a
+// status alone has no body, Chain pads nothing and Wrap adds nothing.
 func (headerCodec) ReplyLen(core.Header) int { return headerLen }
 
 // Chain points the reply at prev in out to the one appended after it, which

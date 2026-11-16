@@ -268,15 +268,14 @@ type pipeline struct {
 
 	mu   sync.Mutex
 	runs int           // requests running and statuses waiting
-	idle chan struct{} // closed while runs is 0
+	idle chan struct{} // made by a wait while runs is above 0, closed when it falls to 0
 }
 
 // newPipeline builds a connection's pipeline over stages withDefaults filled.
 func newPipeline(sh *shared, st Stages, l link) *pipeline {
-	p := &pipeline{sh: sh, st: st, l: l, status: make(chan struct{}, 1), idle: make(chan struct{})}
+	p := &pipeline{sh: sh, st: st, l: l, status: make(chan struct{}, 1)}
 	_, p.noHold = st.Hold.(noHold)
 	p.ctx, p.cancel = context.WithCancel(l.ctx)
-	close(p.idle)
 	return p
 }
 
@@ -291,6 +290,24 @@ func newPipeline(sh *shared, st Stages, l link) *pipeline {
 // not a valid step is answered as a decode error and then closes it, since
 // nothing past it can be read. The ceiling: a client that chains is
 // disconnected. Withdraw it when the chain runner serves every member.
+//
+// decision: the reader runs a record's first message as far as Admit, so a
+// connection at its bound is not read, and everything after runs on the
+// request's own goroutine. Overturned if a stage after Admit must run on the
+// reader.
+//
+// decision: an error raised before Route has chosen a table, at Decode,
+// Unwrap or Admit, is mapped by the stages' own table; a header Decode
+// returns with its error is answered and not passed to Wrap, an Unwrap
+// refusal is answered wrapped under the header it returned, and Unwrap's nil
+// header closes the connection, answered nothing (§5.5). Overturned if a
+// protocol must answer a refusal before Route by a table it routes to.
+//
+// ponytail: unwrap on the reader. One connection's receive rate is capped by
+// one core's decryption, about 2 GB/s for AES-GCM; multichannel and NFS
+// nconnect spread a client over several readers. Move decryption to the
+// worker, with admission re-checked after it, when a single-connection
+// encrypted write benchmark shows the reader CPU-bound.
 func (p *pipeline) serve(rec *resources.Buf) {
 	h, err := p.st.Header.Decode(rec, 0)
 	if h == nil {
@@ -328,6 +345,13 @@ func (p *pipeline) serve(rec *resources.Buf) {
 	release, err := p.st.Flow.Admit(p.ctx, u)
 	if err != nil {
 		p.refuse(rec, u, err, true, false)
+		return
+	}
+	// Admit tries once under a context close ended, and may still grant: a
+	// request admitted after close is not run.
+	if p.ctx.Err() != nil {
+		release()
+		rec.Release()
 		return
 	}
 	p.add()
@@ -429,8 +453,12 @@ func (p *pipeline) run(rec *resources.Buf, h Header, release func()) {
 	}
 	if tb != nil {
 		var serr error
+		// decision: a table that holds, routed on stages whose Hold was nil,
+		// is a fault of the protocol's wiring, since nothing could key or
+		// cancel its holds: the connection is closed naming the table, not
+		// served. Overturned if a protocol must hold with no cancel.
 		if ts, serr = p.sh.table(tb); serr == nil && tb.Holds && p.noHold {
-			serr = errNoHold
+			serr = fmt.Errorf("%w: the table of %s", errNoHold, opNames(tb))
 		}
 		if serr != nil {
 			release()
@@ -475,16 +503,18 @@ func (p *pipeline) run(rec *resources.Buf, h Header, release func()) {
 	send := true
 	switch {
 	case errors.Is(err, errPanicked):
+		// decision: a recovered panic is answered the fault status without
+		// Map, so it is counted once, as a panic, and never also as an error
+		// no row maps. Overturned if a protocol must answer a panic otherwise.
 		s = errs.fault
 	case err != nil:
 		s, send = errs.Map(err, op, h.Version())
 	}
 	if !send {
-		if reply != nil {
-			reply.Release()
-		}
 		if tb != nil && tb.Holds {
-			p.interim(h)
+			p.interim(ctx, h, reply)
+		} else if reply != nil {
+			reply.Release()
 		}
 		release()
 		return
@@ -537,12 +567,17 @@ func (p *pipeline) send(h Header, reply *resources.Buf, key uint64) {
 }
 
 // interim sends the interim a NoReply row gets in a table that holds, which
-// grants the request's credits back; with no buffer for it at once, none.
-func (p *pipeline) interim(h Header) {
-	buf, ok := p.sh.reply.TryGet(p.l.remote, 0)
-	if !ok {
-		return
+// grants the request's credits back, in the request's own reply buffer while
+// it still holds one, or else in a status's buffer, which waits for room:
+// releasing the reservation first could hand its bytes to a request waiting
+// on the pool and leave the interim, and so the client's credits, behind it.
+func (p *pipeline) interim(ctx context.Context, h Header, buf *resources.Buf) {
+	if buf == nil {
+		if buf = p.sh.reserveStatus(ctx, p.l.remote, p.l.close); buf == nil {
+			return
+		}
 	}
+	buf.B = buf.B[:0]
 	if err := p.st.Hold.Interim(h, true, nil, buf); err != nil {
 		buf.Release()
 		p.l.close(err)
@@ -566,6 +601,13 @@ func (p *pipeline) drain() { p.draining.Store(true) }
 // wait returns nil once nothing runs and no status waits, or ctx's error.
 func (p *pipeline) wait(ctx context.Context) error {
 	p.mu.Lock()
+	if p.runs == 0 {
+		p.mu.Unlock()
+		return nil
+	}
+	if p.idle == nil {
+		p.idle = make(chan struct{})
+	}
 	idle := p.idle
 	p.mu.Unlock()
 	select {
@@ -584,17 +626,15 @@ func (p *pipeline) close() { p.cancel() }
 // add counts a request or a status wait starting; done, one ending.
 func (p *pipeline) add() {
 	p.mu.Lock()
-	if p.runs == 0 {
-		p.idle = make(chan struct{})
-	}
 	p.runs++
 	p.mu.Unlock()
 }
 
 func (p *pipeline) done() {
 	p.mu.Lock()
-	if p.runs--; p.runs == 0 {
+	if p.runs--; p.runs == 0 && p.idle != nil {
 		close(p.idle)
+		p.idle = nil
 	}
 	p.mu.Unlock()
 }

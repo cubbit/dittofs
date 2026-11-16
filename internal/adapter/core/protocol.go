@@ -63,7 +63,7 @@ type HeaderCodec interface {
 	Encode(h Header, s Status, out *resources.Buf) error
 	Chain(out *resources.Buf, prev int) error // points the reply at prev to the one appended after it (SMB2's NextCommand, padded to 8); nil-op where nothing chains
 	Args(rec *resources.Buf, h Header) []byte // the arguments of the message h in rec, as Decode and Unwrap left it
-	ReplyLen(h Header) int                    // the most a reply header to h, and Wrap's transform, add to its arguments
+	ReplyLen(h Header) int                    // the most Encode writes for h, a status-alone body included, with Chain's padding and the transform Wrap adds in place: the pipeline reserves Bound() + ReplyLen(h)
 }
 
 // Router chooses the version's table and builds the Request.

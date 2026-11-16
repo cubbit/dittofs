@@ -13,6 +13,13 @@ import (
 // What the package's external tests reach of core's unexported parts. It is
 // the standard library's export_test.go by another name, since
 // exports_test.go here is the surface test.
+//
+// decision: each part of the pipeline is tested once, at its seam with the
+// connection: a test builds a pipeline through these hooks, hands serve the
+// records a reader would, and reads the replies from a recorder in out's
+// place, which passes the suite of out the connection's writer passes too;
+// what only a socket decides is tested on the connection itself. Overturned
+// if a part can only be observed through a socket.
 
 type (
 	Shared      = shared
