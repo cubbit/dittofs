@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RFC 29 — the test harness</title>
+  <link rel="stylesheet" href="../../vendor/reveal.js-5.2.1/reset.css">
+  <link rel="stylesheet" href="../../vendor/reveal.js-5.2.1/reveal.css">
+  <link rel="stylesheet" href="../../shared/deck.css">
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+  <!-- Structure only: every sentence lives in i18n/<lang>.json. -->
+
+  <section id="cover" class="center">
+    <div class="kicker" data-i18n="cover.kicker"></div>
+    <h1 data-i18n="cover.title"></h1>
+    <p class="lead" data-i18n="cover.lead"></p>
+    <div class="badges">
+      <span class="badge" data-i18n="cover.built"></span>
+    </div>
+    <aside class="notes" data-i18n="cover.notes"></aside>
+  </section>
+
+  <section id="two" class="center">
+    <div class="kicker" data-i18n="intro.kicker"></div>
+    <h2 data-i18n="intro.twoTitle"></h2>
+    <p class="lead" data-i18n="intro.two"></p>
+    <aside class="notes" data-i18n="intro.twoNotes"></aside>
+  </section>
+
+  <section id="known" data-term-list="known" data-style="chips">
+    <div class="kicker" data-i18n="intro.kicker"></div>
+    <h2><span data-i18n="intro.knownTitle"></span><span data-page-counter></span></h2>
+    <p class="muted" data-i18n="intro.knownLead"></p>
+    <div data-term-host></div>
+    <aside class="notes" data-i18n="intro.knownNotes"></aside>
+  </section>
+
+  <section id="new" data-term-list="new" data-per-slide="5">
+    <div class="kicker" data-i18n="intro.kicker"></div>
+    <h2><span data-i18n="intro.newTitle"></span><span data-page-counter></span></h2>
+    <div data-term-host></div>
+    <aside class="notes" data-i18n="intro.newNotes"></aside>
+  </section>
+
+  <section id="clash" data-term-list="conflicts" data-per-slide="3">
+    <div class="kicker" data-i18n="intro.kicker"></div>
+    <h2><span data-i18n="intro.clashTitle"></span><span data-page-counter></span></h2>
+    <div data-term-host></div>
+    <aside class="notes" data-i18n="intro.clashNotes"></aside>
+  </section>
+
+  <section id="ways">
+    <div class="kicker" data-i18n="problem.kicker"></div>
+    <h2 data-i18n="ways.title"></h2>
+    <div class="stats">
+      <div class="stat"><div class="num" data-i18n="ways.n1"></div><div class="what" data-i18n="ways.w1"></div></div>
+      <div class="stat"><div class="num" data-i18n="ways.n2"></div><div class="what" data-i18n="ways.w2"></div></div>
+      <div class="stat"><div class="num" data-i18n="ways.n3"></div><div class="what" data-i18n="ways.w3"></div></div>
+      <div class="stat"><div class="num" data-i18n="ways.n4"></div><div class="what" data-i18n="ways.w4"></div></div>
+      <div class="stat"><div class="num" data-i18n="ways.n5"></div><div class="what" data-i18n="ways.w5"></div></div>
+      <div class="stat"><div class="num" data-i18n="ways.n6"></div><div class="what" data-i18n="ways.w6"></div></div>
+    </div>
+    <aside class="notes" data-i18n="ways.notes"></aside>
+  </section>
+
+  <section id="silent">
+    <div class="kicker" data-i18n="problem.kicker"></div>
+    <h2 data-i18n="silent.title"></h2>
+    <table data-i18n-table="silent.table"></table>
+    <p class="muted small" data-i18n="silent.footer"></p>
+    <aside class="notes" data-i18n="silent.notes"></aside>
+  </section>
+
+  <section id="unheard">
+    <div class="kicker" data-i18n="problem.kicker"></div>
+    <h2 data-i18n="unheard.title"></h2>
+    <ul data-i18n-list="unheard.items" data-fragments></ul>
+    <aside class="notes" data-i18n="unheard.notes"></aside>
+  </section>
+
+  <section id="wrappers">
+    <div class="kicker" data-i18n="problem.kicker"></div>
+    <h2 data-i18n="wrappers.title"></h2>
+    <div class="scene" data-scene="layers">
+      <ol class="captions" data-i18n-list="scenes.layers.steps"></ol>
+    </div>
+    <aside class="notes" data-i18n="wrappers.notes"></aside>
+  </section>
+
+  <section id="card">
+    <div class="kicker" data-i18n="idea.kicker"></div>
+    <h2 data-i18n="card.title"></h2>
+    <div class="cols">
+      <div class="card accent"><h3 data-i18n="card.analogyTitle"></h3><p data-i18n="card.analogy"></p></div>
+      <div class="card warn-card"><h3 data-i18n="card.stopsTitle"></h3><p data-i18n="card.stops"></p></div>
+    </div>
+    <p data-i18n="card.footer"></p>
+    <aside class="notes" data-i18n="card.notes"></aside>
+  </section>
+
+  <section id="flow">
+    <div class="kicker" data-i18n="idea.kicker"></div>
+    <h2 data-i18n="flow.title"></h2>
+    <ol data-i18n-list="flow.steps" data-fragments></ol>
+    <p class="muted small" data-i18n="flow.footer"></p>
+    <aside class="notes" data-i18n="flow.notes"></aside>
+  </section>
+
+  <section id="decision">
+    <div class="kicker" data-i18n="idea.kicker"></div>
+    <h2 data-i18n="decision.title"></h2>
+    <div class="cols">
+      <div class="card"><h3 data-i18n="decision.cliTitle"></h3><p class="small" data-i18n="decision.cli"></p></div>
+      <div class="card"><h3 data-i18n="decision.goTitle"></h3><p class="small" data-i18n="decision.go"></p></div>
+    </div>
+    <p class="muted small" data-i18n="decision.footer"></p>
+    <aside class="notes" data-i18n="decision.notes"></aside>
+  </section>
+
+  <section id="carries">
+    <div class="kicker" data-i18n="idea.kicker"></div>
+    <h2 data-i18n="carries.title"></h2>
+    <div class="cols wide-left">
+      <ul class="small" data-i18n-list="carries.items"></ul>
+      <div class="card bad"><h3 data-i18n="carries.goesTitle"></h3><p class="small" data-i18n="carries.goes"></p></div>
+    </div>
+    <p class="muted small" data-i18n="carries.footer"></p>
+    <aside class="notes" data-i18n="carries.notes"></aside>
+  </section>
+
+  <section id="registry">
+    <div class="kicker" data-i18n="reg.kicker"></div>
+    <h2 data-i18n="registry.title"></h2>
+    <div class="cols wide-left">
+<pre class="code-sm"><code># test/suites.yaml
+version: 1
+groups:
+  conformance: [pjdfstest, pynfs, wpts, smbtorture]
+suites:
+  nfs-mount-smoke: { cmd: test/nfs/mount-smoke.sh,
+    tier: pr, needs: [linux, root, nfs-client] }
+  pjdfstest:
+    format: tap
+    cmd: prove -v {test}
+    matrix: { profile: [badger-s3],
+              nfs: ["3", "4", "4.1"] }
+    fixture: { profile: "{profile}", ... }
+    known: test/posix/known.yaml
+    tier: pr</code></pre>
+      <ul class="small" data-i18n-list="registry.items"></ul>
+    </div>
+    <aside class="notes" data-i18n="registry.notes"></aside>
+  </section>
+
+  <section id="cells">
+    <div class="kicker" data-i18n="reg.kicker"></div>
+    <h2 data-i18n="cells.title"></h2>
+    <table data-i18n-table="cells.table"></table>
+    <ul class="small" data-i18n-list="cells.items"></ul>
+    <aside class="notes" data-i18n="cells.notes"></aside>
+  </section>
+
+  <section id="fixture">
+    <div class="kicker" data-i18n="fix.kicker"></div>
+    <h2 data-i18n="fixture.title"></h2>
+    <div class="cols wide-left">
+      <ul class="small" data-i18n-list="fixture.items"></ul>
+      <div class="card accent"><h3 data-i18n="fixture.noScriptTitle"></h3><p class="small" data-i18n="fixture.noScript"></p></div>
+    </div>
+    <aside class="notes" data-i18n="fixture.notes"></aside>
+  </section>
+
+  <section id="selfcheck">
+    <div class="kicker" data-i18n="fix.kicker"></div>
+    <h2 data-i18n="selfcheck.title"></h2>
+    <div class="cols wide-left">
+      <ul class="small" data-i18n-list="selfcheck.items"></ul>
+      <div class="card bad"><p class="small" data-i18n="selfcheck.rule"></p></div>
+    </div>
+    <p class="muted small" data-i18n="selfcheck.footer"></p>
+    <aside class="notes" data-i18n="selfcheck.notes"></aside>
+  </section>
+
+  <section id="bucket">
+    <div class="kicker" data-i18n="fix.kicker"></div>
+    <h2 data-i18n="bucket.title"></h2>
+    <div class="scene" data-scene="bucket">
+      <ol class="captions" data-i18n-list="scenes.bucket.steps"></ol>
+    </div>
+    <aside class="notes" data-i18n="bucket.notes"></aside>
+  </section>
+
+  <section id="quiz-kdc" data-quiz="quizKdc" data-answer="c">
+    <aside class="notes" data-i18n="quizKdc.notes"></aside>
+  </section>
+
+  <section id="places">
+    <div class="kicker" data-i18n="where.kicker"></div>
+    <h2 data-i18n="places.title"></h2>
+    <table data-i18n-table="places.table"></table>
+    <p class="small" data-i18n="places.footer"></p>
+    <aside class="notes" data-i18n="places.notes"></aside>
+  </section>
+
+  <section id="dedicated">
+    <div class="kicker" data-i18n="where.kicker"></div>
+    <h2 data-i18n="dedicated.title"></h2>
+    <ul data-i18n-list="dedicated.items"></ul>
+    <aside class="notes" data-i18n="dedicated.notes"></aside>
+  </section>
+
+  <section id="tiers">
+    <div class="kicker" data-i18n="tiersK.kicker"></div>
+    <h2 data-i18n="tiers.title"></h2>
+    <table data-i18n-table="tiers.table"></table>
+    <p class="small" data-i18n="tiers.footer"></p>
+    <aside class="notes" data-i18n="tiers.notes"></aside>
+  </section>
+
+  <section id="whatruns">
+    <div class="kicker" data-i18n="tiersK.kicker"></div>
+    <h2 data-i18n="whatruns.title"></h2>
+    <ul class="small" data-i18n-list="whatruns.items"></ul>
+    <aside class="notes" data-i18n="whatruns.notes"></aside>
+  </section>
+
+  <section id="gate">
+    <div class="kicker" data-i18n="tiersK.kicker"></div>
+    <h2 data-i18n="gate.title"></h2>
+    <div class="cols wide-left">
+      <ol class="small" data-i18n-list="gate.jobs" data-fragments></ol>
+      <div class="card accent"><h3 data-i18n="gate.mergeTitle"></h3><ul class="small" data-i18n-list="gate.merge"></ul></div>
+    </div>
+    <aside class="notes" data-i18n="gate.notes"></aside>
+  </section>
+
+  <section id="prrun">
+    <div class="kicker" data-i18n="tiersK.kicker"></div>
+    <h2 data-i18n="prrun.title"></h2>
+    <div class="scene" data-scene="pr">
+      <ol class="captions" data-i18n-list="scenes.pr.steps"></ol>
+    </div>
+    <aside class="notes" data-i18n="prrun.notes"></aside>
+  </section>
+
+  <section id="quiz-pr-fail" data-quiz="quizPrFail" data-answer="a">
+    <aside class="notes" data-i18n="quizPrFail.notes"></aside>
+  </section>
+
+  <section id="exit">
+    <div class="kicker" data-i18n="grading.kicker"></div>
+    <h2 data-i18n="exit.title"></h2>
+    <table data-i18n-table="exit.table"></table>
+    <p class="small" data-i18n="exit.footer"></p>
+    <aside class="notes" data-i18n="exit.notes"></aside>
+  </section>
+
+  <section id="formats">
+    <div class="kicker" data-i18n="grading.kicker"></div>
+    <h2 data-i18n="formats.title"></h2>
+    <table data-i18n-table="formats.table"></table>
+    <p class="muted small" data-i18n="formats.footer"></p>
+    <aside class="notes" data-i18n="formats.notes"></aside>
+  </section>
+
+  <section id="grades">
+    <div class="kicker" data-i18n="grading.kicker"></div>
+    <h2 data-i18n="grades.title"></h2>
+    <table data-i18n-table="grades.table"></table>
+    <aside class="notes" data-i18n="grades.notes"></aside>
+  </section>
+
+  <section id="knownfile">
+    <div class="kicker" data-i18n="grading.kicker"></div>
+    <h2 data-i18n="knownfile.title"></h2>
+    <div class="cols">
+<pre class="code-sm"><code># test/posix/known.yaml
+- test: unlink/14.t
+  status: fail        # fail | skip
+  fix: wontfix        # planned | wontfix
+  category: proto
+  reason: "NFSv4 silly rename: ..."
+  where: { nfs: ["4", "4.1"] }
+  # intermittent: true
+  # message: "stub:"</code></pre>
+      <ul class="small" data-i18n-list="knownfile.items"></ul>
+    </div>
+    <p class="muted small" data-i18n="knownfile.footer"></p>
+    <aside class="notes" data-i18n="knownfile.notes"></aside>
+  </section>
+
+  <section id="skips">
+    <div class="kicker" data-i18n="grading.kicker"></div>
+    <h2 data-i18n="skips.title"></h2>
+    <ul data-i18n-list="skips.items"></ul>
+    <aside class="notes" data-i18n="skips.notes"></aside>
+  </section>
+
+  <section id="honest">
+    <div class="kicker" data-i18n="grading.kicker"></div>
+    <h2 data-i18n="honest.title"></h2>
+    <div class="cols">
+      <div class="card"><h3 data-i18n="honest.passTitle"></h3><p class="small" data-i18n="honest.pass"></p></div>
+      <div class="card"><h3 data-i18n="honest.msgTitle"></h3><p class="small" data-i18n="honest.msg"></p></div>
+    </div>
+    <aside class="notes" data-i18n="honest.notes"></aside>
+  </section>
+
+  <section id="flakes">
+    <div class="kicker" data-i18n="grading.kicker"></div>
+    <h2 data-i18n="flakes.title"></h2>
+    <div class="cols">
+      <div class="card"><h3 data-i18n="flakes.qTitle"></h3><ul class="small" data-i18n-list="flakes.q"></ul></div>
+      <div class="card"><h3 data-i18n="flakes.rTitle"></h3><ul class="small" data-i18n-list="flakes.r"></ul></div>
+    </div>
+    <aside class="notes" data-i18n="flakes.notes"></aside>
+  </section>
+
+  <section id="ctrf">
+    <div class="kicker" data-i18n="grading.kicker"></div>
+    <h2 data-i18n="ctrf.title"></h2>
+    <div class="cols">
+<pre class="code-sm"><code>{ "reportFormat": "CTRF",
+  "specVersion": "0.1.0",
+  "results": { "tests": [
+    { "name": "chmod/12.t",
+      "suite": ["pjdfstest", "badger-s3", "4.1"],
+      "status": "failed",
+      "extra": { "grade": "new" } },
+    { "name": "rename/09.t",
+      "status": "passed",
+      "flaky": true, "retries": 1 }
+  ] } }</code></pre>
+      <ul class="small" data-i18n-list="ctrf.items"></ul>
+    </div>
+    <aside class="notes" data-i18n="ctrf.notes"></aside>
+  </section>
+
+  <section id="quiz-fixed" data-quiz="quizFixed" data-answer="b">
+    <aside class="notes" data-i18n="quizFixed.notes"></aside>
+  </section>
+
+  <section id="redrun">
+    <div class="kicker" data-i18n="alert.kicker"></div>
+    <h2 data-i18n="redrun.title"></h2>
+    <div class="scene" data-scene="develop">
+      <ol class="captions" data-i18n-list="scenes.develop.steps"></ol>
+    </div>
+    <aside class="notes" data-i18n="redrun.notes"></aside>
+  </section>
+
+  <section id="flood">
+    <div class="kicker" data-i18n="alert.kicker"></div>
+    <h2 data-i18n="flood.title"></h2>
+    <table data-i18n-table="flood.table"></table>
+    <p class="small" data-i18n="flood.footer"></p>
+    <aside class="notes" data-i18n="flood.notes"></aside>
+  </section>
+
+
+  <section id="bench">
+    <div class="kicker" data-i18n="alert.kicker"></div>
+    <h2 data-i18n="bench.title"></h2>
+    <ul class="small" data-i18n-list="bench.items"></ul>
+    <aside class="notes" data-i18n="bench.notes"></aside>
+  </section>
+
+  <section id="whom">
+    <div class="kicker" data-i18n="whom.kicker"></div>
+    <h2 data-i18n="whom.title"></h2>
+    <div class="cols3">
+      <div class="card"><h3 data-i18n="whom.devTitle"></h3><p class="small" data-i18n="whom.dev"></p></div>
+      <div class="card"><h3 data-i18n="whom.revTitle"></h3><p class="small" data-i18n="whom.rev"></p></div>
+      <div class="card"><h3 data-i18n="whom.authTitle"></h3><p class="small" data-i18n="whom.auth"></p></div>
+    </div>
+    <aside class="notes" data-i18n="whom.notes"></aside>
+  </section>
+
+  <section id="rules">
+    <div class="kicker" data-i18n="rules.kicker"></div>
+    <h2 data-i18n="rules.title"></h2>
+    <ul class="small" data-i18n-list="rules.items"></ul>
+    <p class="muted small" data-i18n="rules.footer"></p>
+    <aside class="notes" data-i18n="rules.notes"></aside>
+  </section>
+
+  <section id="nochange">
+    <div class="kicker" data-i18n="rules.kicker"></div>
+    <h2 data-i18n="nochange.title"></h2>
+    <div class="cols">
+      <div class="card good"><h3 data-i18n="nochange.keepTitle"></h3><ul class="small" data-i18n-list="nochange.keep"></ul></div>
+      <div class="card"><h3 data-i18n="nochange.outTitle"></h3><ul class="small" data-i18n-list="nochange.out"></ul></div>
+    </div>
+    <aside class="notes" data-i18n="nochange.notes"></aside>
+  </section>
+
+
+  <section id="risks">
+    <div class="kicker" data-i18n="rules.kicker"></div>
+    <h2 data-i18n="risks.title"></h2>
+    <table data-i18n-table="risks.table"></table>
+    <aside class="notes" data-i18n="risks.notes"></aside>
+  </section>
+
+  <section id="glossary" data-glossary data-per-slide="4">
+    <div class="kicker" data-i18n="glossaryKicker"></div>
+    <h2><span data-i18n="glossaryTitle"></span><span data-page-counter></span></h2>
+    <div data-term-host></div>
+  </section>
+
+</div>
+</div>
+<script type="module">
+  import { boot } from '../../shared/deck.js';
+  import scenes from './scenes/index.js';
+  boot({ scenes }).catch((err) => {
+    document.body.insertAdjacentHTML('afterbegin', `<pre style="color:#b8322a;padding:16px">${String(err).replace(/</g, '&lt;')}</pre>`);
+    throw err;
+  });
+</script>
+</body>
+</html>

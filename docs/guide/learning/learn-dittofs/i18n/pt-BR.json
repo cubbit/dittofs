@@ -1,0 +1,64 @@
+{
+  "glossary": {
+    "source": "Fonte",
+    "codeToday": "Código hoje",
+    "codeTarget": "Onde o RFC o coloca",
+    "planned": "previsto",
+    "open": "Abrir no glossário",
+    "noText": "Ainda sem definição."
+  },
+  "catalogue": {
+    "title": "Aprenda DittoFS",
+    "lead": "Como o DittoFS funciona, uma parte de cada vez, em linguagem simples. Escolha uma seção; clique em um termo sublinhado para ver a definição e troque o idioma no canto superior direito.",
+    "from": "Do RFC {n}"
+  },
+  "chrome": {
+    "start": "Voltar ao primeiro slide",
+    "home": "Todas as seções"
+  },
+  "quiz": {
+    "kicker": "Teste-se",
+    "hint": "Escolha uma resposta para ver qual é a certa e por quê, ou aperte → para seguir em frente.",
+    "right": "Certo. Embaixo de cada resposta está o porquê de ela estar certa ou errada.",
+    "wrong": "Não é esta: a resposta certa é a {answer}. Embaixo de cada resposta está o porquê de ela estar certa ou errada."
+  },
+  "sections": {
+    "introduction": {
+      "name": "Introdução",
+      "blurb": "Quem usa o DittoFS e o que vê, as partes dentro de um nó, uma escrita do cliente ao bucket e de volta — e um mapa de todas as seções a seguir.",
+      "from": "Do RFC 0 e da arquitetura de hoje"
+    },
+    "filesystem-service": {
+      "name": "O filesystem service",
+      "blurb": "O único lugar onde toda chamada NFS e SMB é verificada — share, permissão, arquivos abertos, quota — sempre na mesma ordem, seja qual for o protocolo."
+    },
+    "adapters": {
+      "name": "Os adapters",
+      "blurb": "Como NFS e SMB conversam com o sistema de arquivos: um só caminho para cada requisição e as mesmas regras para todo protocolo — depois o que é próprio do SMB, e o que um cliente Windows vê quando um nó some.",
+      "parts": [
+        "O modelo",
+        "SMB"
+      ]
+    },
+    "open-state": {
+      "name": "Open state e locks",
+      "blurb": "Quem mantém um arquivo aberto, travado ou em cache, como NFS e SMB dividem essas promessas, e o que acontece com elas quando um cliente ou o servidor sai de cena."
+    },
+    "metadata-store": {
+      "name": "O metadata store",
+      "blurb": "Onde o DittoFS lembra de tudo menos dos bytes dos arquivos: um único banco transacional, uma view estreita para cada parte, e por que pastas movimentadas nunca disputam uma chave."
+    },
+    "engine": {
+      "name": "O engine",
+      "blurb": "O coordenador que não guarda bytes: decide quando cada escrita é confirmada, enviada, removida e buscada de volta, e em que ordem."
+    },
+    "journal": {
+      "name": "O journal",
+      "blurb": "Onde uma escrita chega primeiro: o log local que guarda cada byte até ele chegar ao bucket e depois devolve o espaço."
+    },
+    "test-harness": {
+      "name": "O harness de testes",
+      "blurb": "Um único comando que roda toda suíte de testes do mesmo jeito, no notebook ou na CI, e nunca conta como aprovado um teste que não rodou."
+    }
+  }
+}

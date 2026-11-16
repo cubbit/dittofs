@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RFC 1 — the journal</title>
+  <link rel="stylesheet" href="../../vendor/reveal.js-5.2.1/reset.css">
+  <link rel="stylesheet" href="../../vendor/reveal.js-5.2.1/reveal.css">
+  <link rel="stylesheet" href="../../shared/deck.css">
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+  <!-- Structure only: every sentence lives in i18n/<lang>.json. -->
+
+  <section id="cover" class="center">
+    <div class="kicker" data-i18n="cover.kicker"></div>
+    <h1 data-i18n="cover.title"></h1>
+    <p class="lead" data-i18n="cover.lead"></p>
+    <div class="badges">
+      <span class="badge" data-i18n="cover.built"></span>
+    </div>
+    <aside class="notes" data-i18n="cover.notes"></aside>
+  </section>
+
+  <section id="two" class="center">
+    <div class="kicker" data-i18n="intro.kicker"></div>
+    <h2 data-i18n="intro.twoTitle"></h2>
+    <p class="lead" data-i18n="intro.two"></p>
+    <aside class="notes" data-i18n="intro.twoNotes"></aside>
+  </section>
+
+  <section id="known" data-term-list="known" data-style="chips">
+    <div class="kicker" data-i18n="intro.kicker"></div>
+    <h2><span data-i18n="intro.knownTitle"></span><span data-page-counter></span></h2>
+    <p class="muted" data-i18n="intro.knownLead"></p>
+    <div data-term-host></div>
+    <aside class="notes" data-i18n="intro.knownNotes"></aside>
+  </section>
+
+  <section id="new" data-term-list="new" data-per-slide="4">
+    <div class="kicker" data-i18n="intro.kicker"></div>
+    <h2><span data-i18n="intro.newTitle"></span><span data-page-counter></span></h2>
+    <div data-term-host></div>
+    <aside class="notes" data-i18n="intro.newNotes"></aside>
+  </section>
+
+  <section id="clash" data-term-list="conflicts" data-per-slide="3">
+    <div class="kicker" data-i18n="intro.kicker"></div>
+    <h2><span data-i18n="intro.clashTitle"></span><span data-page-counter></span></h2>
+    <div data-term-host></div>
+    <aside class="notes" data-i18n="intro.clashNotes"></aside>
+  </section>
+
+  <section id="problem">
+    <div class="kicker" data-i18n="problem.kicker"></div>
+    <h2 data-i18n="problem.title"></h2>
+    <div class="scene" data-scene="careless">
+      <ol class="captions" data-i18n-list="scenes.careless.steps"></ol>
+    </div>
+    <aside class="notes" data-i18n="problem.notes"></aside>
+  </section>
+
+  <section id="promises">
+    <div class="kicker" data-i18n="problem.kicker"></div>
+    <h2 data-i18n="promises.title"></h2>
+    <ul data-i18n-list="promises.items" data-fragments></ul>
+    <aside class="notes" data-i18n="promises.notes"></aside>
+  </section>
+
+  <section id="promises2">
+    <div class="kicker" data-i18n="problem.kicker"></div>
+    <h2 data-i18n="promises.title2"></h2>
+    <ul data-i18n-list="promises.items2" data-fragments></ul>
+    <p class="muted small" data-i18n="promises.footer"></p>
+    <aside class="notes" data-i18n="promises.notes2"></aside>
+  </section>
+
+  <section id="notebook">
+    <div class="kicker" data-i18n="model.kicker"></div>
+    <h2 data-i18n="notebook.title"></h2>
+    <div class="cols">
+      <div class="card accent"><h3 data-i18n="notebook.analogyTitle"></h3><p data-i18n="notebook.analogy"></p></div>
+      <div class="card warn-card"><h3 data-i18n="notebook.stopsTitle"></h3><p data-i18n="notebook.stops"></p></div>
+    </div>
+    <p data-i18n="notebook.missing"></p>
+    <aside class="notes" data-i18n="notebook.notes"></aside>
+  </section>
+
+  <section id="extents">
+    <div class="kicker" data-i18n="model.kicker"></div>
+    <h2 data-i18n="extents.title"></h2>
+    <div class="scene" data-scene="extents">
+      <ol class="captions" data-i18n-list="scenes.extents.steps"></ol>
+    </div>
+    <aside class="notes" data-i18n="extents.notes"></aside>
+  </section>
+
+  <section id="gaps">
+    <div class="kicker" data-i18n="model.kicker"></div>
+    <h2 data-i18n="gaps.title"></h2>
+    <p class="muted" data-i18n="gaps.lead"></p>
+    <div class="cols3">
+      <div class="card"><h3 data-i18n="gaps.c1Title"></h3><p class="small" data-i18n="gaps.c1"></p></div>
+      <div class="card"><h3 data-i18n="gaps.c2Title"></h3><p class="small" data-i18n="gaps.c2"></p></div>
+      <div class="card"><h3 data-i18n="gaps.c3Title"></h3><p class="small" data-i18n="gaps.c3"></p></div>
+    </div>
+    <div class="card bad"><p data-i18n="gaps.rule"></p></div>
+    <p class="muted small" data-i18n="gaps.exact"></p>
+    <aside class="notes" data-i18n="gaps.notes"></aside>
+  </section>
+
+  <section id="placement">
+    <div class="kicker" data-i18n="model.kicker"></div>
+    <h2 data-i18n="placement.title"></h2>
+    <ul data-i18n-list="placement.items" data-fragments></ul>
+    <aside class="notes" data-i18n="placement.notes"></aside>
+  </section>
+
+  <section id="quiz-gap" data-quiz="quizGap" data-answer="c">
+    <aside class="notes" data-i18n="quizGap.notes"></aside>
+  </section>
+
+  <section id="life">
+    <div class="kicker" data-i18n="how.kicker"></div>
+    <h2 data-i18n="life.title"></h2>
+    <div class="scene" data-scene="life">
+      <ol class="captions" data-i18n-list="scenes.life.steps"></ol>
+    </div>
+    <aside class="notes" data-i18n="life.notes"></aside>
+  </section>
+
+  <section id="offer">
+    <div class="kicker" data-i18n="how.kicker"></div>
+    <h2 data-i18n="offer.title"></h2>
+    <div class="cols wide-left">
+      <ul class="small" data-i18n-list="offer.items" data-fragments></ul>
+      <div class="card accent"><h3 data-i18n="offer.boundsTitle"></h3><ul class="small" data-i18n-list="offer.bounds"></ul></div>
+    </div>
+    <p class="muted small" data-i18n="offer.example"></p>
+    <aside class="notes" data-i18n="offer.notes"></aside>
+  </section>
+
+  <section id="repack">
+    <div class="kicker" data-i18n="how.kicker"></div>
+    <h2 data-i18n="repack.title"></h2>
+    <div class="scene" data-scene="repack">
+      <ol class="captions" data-i18n-list="scenes.repack.steps"></ol>
+    </div>
+    <p class="muted small" data-i18n="repack.ponytail"></p>
+    <aside class="notes" data-i18n="repack.notes"></aside>
+  </section>
+
+  <section id="versions">
+    <div class="kicker" data-i18n="how.kicker"></div>
+    <h2 data-i18n="versions.title"></h2>
+    <table data-i18n-table="versions.table"></table>
+    <p class="small" data-i18n="versions.footer"></p>
+    <aside class="notes" data-i18n="versions.notes"></aside>
+  </section>
+
+  <section id="fill">
+    <div class="kicker" data-i18n="race.kicker"></div>
+    <h2 data-i18n="fill.title"></h2>
+    <div class="scene" data-scene="fill">
+      <ol class="captions" data-i18n-list="scenes.fill.steps"></ol>
+    </div>
+    <aside class="notes" data-i18n="fill.notes"></aside>
+  </section>
+
+  <section id="fillwrite">
+    <div class="kicker" data-i18n="race.kicker"></div>
+    <h2 data-i18n="fillwrite.title"></h2>
+    <table data-i18n-table="fillwrite.table"></table>
+    <p class="muted small" data-i18n="fillwrite.footer"></p>
+    <aside class="notes" data-i18n="fillwrite.notes"></aside>
+  </section>
+
+  <section id="quiz-fill" data-quiz="quizFill" data-answer="a">
+    <aside class="notes" data-i18n="quizFill.notes"></aside>
+  </section>
+
+  <section id="survive">
+    <div class="kicker" data-i18n="fail.kicker"></div>
+    <h2 data-i18n="survive.title"></h2>
+    <div class="cols3">
+      <div class="card good"><h3 data-i18n="survive.c1Title"></h3><p class="small" data-i18n="survive.c1"></p></div>
+      <div class="card bad"><h3 data-i18n="survive.c2Title"></h3><p class="small" data-i18n="survive.c2"></p></div>
+      <div class="card good"><h3 data-i18n="survive.c3Title"></h3><p class="small" data-i18n="survive.c3"></p></div>
+    </div>
+    <p class="muted small" data-i18n="survive.footer"></p>
+    <aside class="notes" data-i18n="survive.notes"></aside>
+  </section>
+
+  <section id="failedsync">
+    <div class="kicker" data-i18n="fail.kicker"></div>
+    <h2 data-i18n="failedsync.title"></h2>
+    <p class="muted small" data-i18n="failedsync.lead"></p>
+    <ol class="small" data-i18n-list="failedsync.steps" data-fragments></ol>
+    <div class="card bad"><p class="small" data-i18n="failedsync.rule"></p></div>
+    <aside class="notes" data-i18n="failedsync.notes"></aside>
+  </section>
+
+  <section id="readonly">
+    <div class="kicker" data-i18n="fail.kicker"></div>
+    <h2 data-i18n="readonly.title"></h2>
+    <p data-i18n="readonly.lead"></p>
+    <ul data-i18n-list="readonly.items"></ul>
+    <aside class="notes" data-i18n="readonly.notes"></aside>
+  </section>
+
+  <section id="capacity">
+    <div class="kicker" data-i18n="fail.kicker"></div>
+    <h2 data-i18n="capacity.title"></h2>
+    <div class="cols wide-left">
+      <ul class="small" data-i18n-list="capacity.items" data-fragments></ul>
+      <div class="card accent"><h3 data-i18n="capacity.headroomTitle"></h3><p class="small" data-i18n="capacity.headroom"></p></div>
+    </div>
+    <aside class="notes" data-i18n="capacity.notes"></aside>
+  </section>
+
+  <section id="full">
+    <div class="kicker" data-i18n="fail.kicker"></div>
+    <h2 data-i18n="full.title"></h2>
+    <ol data-i18n-list="full.steps" data-fragments></ol>
+    <p class="muted small" data-i18n="full.outcome"></p>
+    <aside class="notes" data-i18n="full.notes"></aside>
+  </section>
+
+  <section id="quiz-sync" data-quiz="quizSync" data-answer="b">
+    <aside class="notes" data-i18n="quizSync.notes"></aside>
+  </section>
+
+  <section id="index">
+    <div class="kicker" data-i18n="how.kicker"></div>
+    <h2 data-i18n="index.title"></h2>
+    <table data-i18n-table="index.table"></table>
+    <p class="small" data-i18n="index.footer"></p>
+    <aside class="notes" data-i18n="index.notes"></aside>
+  </section>
+
+  <section id="indexsize">
+    <div class="kicker" data-i18n="numbers.kicker"></div>
+    <h2 data-i18n="indexsize.title"></h2>
+    <table data-i18n-table="indexsize.table"></table>
+    <p class="small" data-i18n="indexsize.footer"></p>
+    <aside class="notes" data-i18n="indexsize.notes"></aside>
+  </section>
+
+  <section id="numbers">
+    <div class="kicker" data-i18n="numbers.kicker"></div>
+    <h2 data-i18n="numbers.title"></h2>
+    <div class="stats">
+      <div class="stat"><div class="num" data-i18n="numbers.n1"></div><div class="what" data-i18n="numbers.w1"></div></div>
+      <div class="stat"><div class="num" data-i18n="numbers.n2"></div><div class="what" data-i18n="numbers.w2"></div></div>
+      <div class="stat"><div class="num" data-i18n="numbers.n3"></div><div class="what" data-i18n="numbers.w3"></div></div>
+      <div class="stat"><div class="num" data-i18n="numbers.n4"></div><div class="what" data-i18n="numbers.w4"></div></div>
+      <div class="stat"><div class="num" data-i18n="numbers.n5"></div><div class="what" data-i18n="numbers.w5"></div></div>
+      <div class="stat"><div class="num" data-i18n="numbers.n6"></div><div class="what" data-i18n="numbers.w6"></div></div>
+    </div>
+    <aside class="notes" data-i18n="numbers.notes"></aside>
+  </section>
+
+  <section id="shares">
+    <div class="kicker" data-i18n="how.kicker"></div>
+    <h2 data-i18n="shares.title"></h2>
+    <ul class="small" data-i18n-list="shares.items"></ul>
+    <aside class="notes" data-i18n="shares.notes"></aside>
+  </section>
+
+  <section id="concurrency">
+    <div class="kicker" data-i18n="how.kicker"></div>
+    <h2 data-i18n="concurrency.title"></h2>
+    <ul data-i18n-list="concurrency.items"></ul>
+    <aside class="notes" data-i18n="concurrency.notes"></aside>
+  </section>
+
+  <section id="testable">
+    <div class="kicker" data-i18n="tests.kicker"></div>
+    <h2 data-i18n="testable.title"></h2>
+    <ul class="small" data-i18n-list="testable.items"></ul>
+    <div class="card bad"><p class="small" data-i18n="testable.kill"></p></div>
+    <aside class="notes" data-i18n="testable.notes"></aside>
+  </section>
+
+  <section id="whom">
+    <div class="kicker" data-i18n="whom.kicker"></div>
+    <h2 data-i18n="whom.title"></h2>
+    <div class="cols3">
+      <div class="card"><h3 data-i18n="whom.engTitle"></h3><p class="small" data-i18n="whom.eng"></p></div>
+      <div class="card"><h3 data-i18n="whom.opsTitle"></h3><p class="small" data-i18n="whom.ops"></p></div>
+      <div class="card"><h3 data-i18n="whom.testTitle"></h3><p class="small" data-i18n="whom.test"></p></div>
+    </div>
+    <aside class="notes" data-i18n="whom.notes"></aside>
+  </section>
+
+  <section id="rules">
+    <div class="kicker" data-i18n="rules.kicker"></div>
+    <h2 data-i18n="rules.title"></h2>
+    <ul class="small" data-i18n-list="rules.items"></ul>
+    <p class="muted small" data-i18n="rules.footer"></p>
+    <aside class="notes" data-i18n="rules.notes"></aside>
+  </section>
+
+  <section id="nongoals">
+    <div class="kicker" data-i18n="rules.kicker"></div>
+    <h2 data-i18n="nongoals.title"></h2>
+    <ul data-i18n-list="nongoals.items"></ul>
+    <p class="muted small" data-i18n="nongoals.footer"></p>
+    <aside class="notes" data-i18n="nongoals.notes"></aside>
+  </section>
+
+  <section id="open">
+    <div class="kicker" data-i18n="open.kicker"></div>
+    <h2 data-i18n="open.title"></h2>
+    <ol class="small" data-i18n-list="open.questions"></ol>
+    <aside class="notes" data-i18n="open.notes"></aside>
+  </section>
+
+  <section id="glossary" data-glossary data-per-slide="4">
+    <div class="kicker" data-i18n="glossaryKicker"></div>
+    <h2><span data-i18n="glossaryTitle"></span><span data-page-counter></span></h2>
+    <div data-term-host></div>
+  </section>
+
+</div>
+</div>
+<script type="module">
+  import { boot } from '../../shared/deck.js';
+  import scenes from './scenes/index.js';
+  boot({ scenes }).catch((err) => {
+    document.body.insertAdjacentHTML('afterbegin', `<pre style="color:#b8322a;padding:16px">${String(err).replace(/</g, '&lt;')}</pre>`);
+    throw err;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "rfc": {
+    "number": 1,
+    "title": "the journal",
+    "path": "docs/internals/rfcs/rfc-1-journal.md",
+    "commit": "8d55e52207809c409bffe24623f6e32c54119943",
+    "status": "draft"
+  },
+  "terms": {
+    "known": [
+      "share", "node", "engine", "extent", "chunk", "block", "remote-tier", "carver",
+      "syncer", "dirty", "durable", "evict", "hole", "lost", "retry-later", "write-verifier"
+    ],
+    "new": [
+      "journal", "record", "segment", "held-extent",
+      "content-version", "offloaded-bit", "offer", "report",
+      "release", "fill", "missing", "change-version",
+      "removal-marker", "repack", "unreclaimed-bytes", "headroom",
+      "loss-event", "placement-index"
+    ],
+    "conflicts": ["record", "offload", "sync", "release", "durable", "handle"]
+  }
+}

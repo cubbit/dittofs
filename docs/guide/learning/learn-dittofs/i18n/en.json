@@ -1,0 +1,64 @@
+{
+  "glossary": {
+    "source": "Source",
+    "codeToday": "Code today",
+    "codeTarget": "Where the RFC puts it",
+    "planned": "planned",
+    "open": "Open in the glossary",
+    "noText": "No definition yet."
+  },
+  "catalogue": {
+    "title": "Learn DittoFS",
+    "lead": "How DittoFS works, one part at a time, in plain language. Pick a section; click any underlined term for its definition, and switch language in the top-right corner.",
+    "from": "From RFC {n}"
+  },
+  "chrome": {
+    "start": "Back to the first slide",
+    "home": "All sections"
+  },
+  "quiz": {
+    "kicker": "Check yourself",
+    "hint": "Pick an answer to see which one is right and why — or press → to move on.",
+    "right": "Right. Each option's explanation is under it.",
+    "wrong": "Not this one: the right answer is {answer}. Each option's explanation is under it."
+  },
+  "sections": {
+    "introduction": {
+      "name": "Introduction",
+      "blurb": "Who uses DittoFS and what they see, the parts inside one node, one write from the client to the bucket and back — and a map of every section that follows.",
+      "from": "From RFC 0 and today's architecture"
+    },
+    "filesystem-service": {
+      "name": "The filesystem service",
+      "blurb": "The one place where every NFS and SMB call is checked — share, permission, open files, quota — in the same order, whichever protocol it came by."
+    },
+    "adapters": {
+      "name": "Adapters",
+      "blurb": "How NFS and SMB talk to the filesystem: one path for every request and the same rules for every protocol — then what is specific to SMB, and what a Windows client sees when a node goes away.",
+      "parts": [
+        "The model",
+        "SMB"
+      ]
+    },
+    "open-state": {
+      "name": "Open state and locks",
+      "blurb": "Who holds a file open, locked or cached, how NFS and SMB share those promises, and what happens to them when a client or the server goes away."
+    },
+    "metadata-store": {
+      "name": "The metadata store",
+      "blurb": "Where DittoFS remembers everything except file bytes: one transactional database, a narrow view for each part, and why busy folders never fight over one key."
+    },
+    "engine": {
+      "name": "The engine",
+      "blurb": "The coordinator that holds no bytes: it decides when each write is acknowledged, uploaded, evicted and fetched back, and in what order."
+    },
+    "journal": {
+      "name": "The journal",
+      "blurb": "Where a write lands first: the local log that keeps every byte safe until it reaches the bucket, then gives the space back."
+    },
+    "test-harness": {
+      "name": "The test harness",
+      "blurb": "One command that runs every test suite the same way, on a laptop or in CI, and never counts a test that didn't run as passed."
+    }
+  }
+}

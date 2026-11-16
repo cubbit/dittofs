@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Learn DittoFS</title>
+  <link rel="stylesheet" href="shared/deck.css">
+  <style>
+    body { font-family: var(--font); margin: 0; padding: 56px 16px; }
+    main { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+    h1 { font-size: 40px; margin: 0; }
+    .lead { color: var(--ink-2); font-size: 18px; line-height: 1.5; margin: 0; }
+    .decks { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-direction: column; gap: 14px; }
+    .decks .card {
+      display: block; text-decoration: none; color: var(--ink);
+      background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px;
+    }
+    a.card:hover, .decks .part:hover { border-color: var(--accent); }
+    .decks .t { font-size: 26px; font-weight: 700; margin: 0 0 6px; }
+    .decks .d { color: var(--ink-2); font-size: 17px; line-height: 1.45; }
+    .decks .s { color: var(--ink-2); font-size: 13px; margin-top: 10px; letter-spacing: .02em; }
+    .decks .parts { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+    .decks .part {
+      display: block; text-decoration: none; color: var(--ink);
+      border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;
+    }
+    .decks .part .pt { font-weight: 650; font-size: 17px; }
+    .decks .part .s { margin-top: 4px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1 data-ui="catalogue.title">Learn DittoFS</h1>
+  <p class="lead" data-ui="catalogue.lead"></p>
+  <ul class="decks"></ul>
+</main>
+<script type="module">
+  // The home page: one card per section of DittoFS. A section is named for
+  // what it explains, not for the RFC it is built from; the RFC is a footnote,
+  // since that is where the content is checked. A section with several decks
+  // lists them as parts, in order.
+  import { LANGS, SOURCE_LANG, Strings, loadJSON, pickLang, rememberLang, renderPlain, escapeHtml } from './shared/i18n.js';
+
+  const sections = await loadJSON('decks.json');
+  let lang = pickLang();
+
+  async function render() {
+    document.documentElement.lang = lang;
+    const ui = new Strings(await loadJSON(`i18n/${lang}.json`, { optional: true }), await loadJSON(`i18n/${SOURCE_LANG}.json`));
+    const t = (k) => ui.get(k).value ?? k;
+    document.querySelectorAll('[data-ui]').forEach((el) => { el.textContent = t(el.dataset.ui); });
+    document.title = t('catalogue.title');
+    // A section built on more than one RFC names its sources itself.
+    const source = (meta, sec) => escapeHtml(ui.get(`sections.${sec}.from`).value ?? t('catalogue.from').replace('{n}', meta.rfc.number));
+    const items = await Promise.all(sections.map(async (sec) => {
+      const decks = await Promise.all(sec.decks.map(async (d) => {
+        const strings = new Strings(await loadJSON(`${d.path}i18n/${lang}.json`, { optional: true }), await loadJSON(`${d.path}i18n/${SOURCE_LANG}.json`));
+        return { ...d, meta: await loadJSON(`${d.path}deck.json`), title: renderPlain(strings.get('cover.title').value ?? '', (id) => id) };
+      }));
+      const head = `<div class="t">${escapeHtml(t(`sections.${sec.section}.name`))}</div>
+        <div class="d">${escapeHtml(t(`sections.${sec.section}.blurb`))}</div>`;
+      if (decks.length === 1) {
+        const d = decks[0];
+        return `<li><a class="card" href="${d.path}?lang=${lang}">${head}<div class="s">${source(d.meta, sec.section)}</div></a></li>`;
+      }
+      const parts = decks.map((d, i) => `<a class="part" href="${d.path}?lang=${lang}">
+        <div class="pt">${i + 1} · ${escapeHtml(ui.get(`sections.${sec.section}.parts`).value?.[i] ?? d.title)}</div><div class="s">${source(d.meta, sec.section)}</div></a>`).join('');
+      return `<li><div class="card">${head}<div class="parts">${parts}</div></div></li>`;
+    }));
+    document.querySelector('.decks').innerHTML = items.join('');
+  }
+
+  const bar = document.createElement('div');
+  bar.className = 'deck-chrome';
+  for (const l of LANGS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = l.label;
+    b.setAttribute('aria-pressed', String(l.id === lang));
+    b.addEventListener('click', async () => {
+      lang = l.id;
+      rememberLang(lang);
+      bar.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      await render();
+    });
+    bar.appendChild(b);
+  }
+  document.body.appendChild(bar);
+  rememberLang(lang);
+  await render();
+</script>
+</body>
+</html>

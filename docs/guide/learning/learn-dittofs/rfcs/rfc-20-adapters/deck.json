@@ -1,0 +1,22 @@
+{
+  "rfc": {
+    "number": 20,
+    "title": "the adapter model",
+    "path": "docs/internals/rfcs/rfc-20-adapters.md",
+    "commit": "f7e4d96f7bceb79bc4d9aa9f30c426291ef7cd56",
+    "status": "draft"
+  },
+  "terms": {
+    "known": [
+      "filesystem-service", "share", "node", "primary", "gateway-node", "open-state",
+      "deny-mode", "handle", "caching-grant", "anonymous-open", "admission", "retry-later"
+    ],
+    "new": [
+      "adapter", "core", "pipeline", "codec",
+      "handler", "operation-table", "error-table", "compound",
+      "connection-state", "client-held-name", "held-request", "callback",
+      "auxiliary-service", "sidecar", "recording-service", "reference-server"
+    ],
+    "conflicts": ["adapter", "session", "rpc", "lease", "handle", "filesystem-service"]
+  }
+}

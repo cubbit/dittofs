@@ -1,0 +1,432 @@
+/* Theme for every learning deck. Colours are tokens so dark mode and the
+   scene kit read the same values. */
+
+:root {
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --surface-2: #f1efe9;
+  --ink: #1d1f24;
+  --ink-2: #4a4f59;
+  --ink-3: #7a808b;
+  --line: #d9d6cd;
+  --accent: #2357c6;
+  --accent-soft: #e3ebfb;
+  --good: #1d7a46;
+  --good-soft: #def3e6;
+  --bad: #b8322a;
+  --bad-soft: #f9e1de;
+  --warn: #9a6200;
+  --warn-soft: #fbefd6;
+  --term: #2357c6;
+  --code-bg: #f1efe9;
+  --shadow: 0 6px 24px rgba(20, 22, 30, 0.12);
+  --font: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15171c;
+    --surface: #1d2027;
+    --surface-2: #262a33;
+    --ink: #eceef2;
+    --ink-2: #b4b9c4;
+    --ink-3: #868c99;
+    --line: #363b46;
+    --accent: #7ea6ff;
+    --accent-soft: #233150;
+    --good: #5fcf8e;
+    --good-soft: #193526;
+    --bad: #ff8a80;
+    --bad-soft: #43201e;
+    --warn: #f0b85a;
+    --warn-soft: #3d2e12;
+    --term: #8fb2ff;
+    --code-bg: #262a33;
+    --shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #15171c;
+  --surface: #1d2027;
+  --surface-2: #262a33;
+  --ink: #eceef2;
+  --ink-2: #b4b9c4;
+  --ink-3: #868c99;
+  --line: #363b46;
+  --accent: #7ea6ff;
+  --accent-soft: #233150;
+  --good: #5fcf8e;
+  --good-soft: #193526;
+  --bad: #ff8a80;
+  --bad-soft: #43201e;
+  --warn: #f0b85a;
+  --warn-soft: #3d2e12;
+  --term: #8fb2ff;
+  --code-bg: #262a33;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+
+html, body { background: var(--bg); color: var(--ink); }
+
+.reveal-viewport { background: var(--bg); color: var(--ink); }
+
+.reveal {
+  font-family: var(--font);
+  font-size: 26px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+/* The slide canvas: 1280x720, content from the top, padding fixed so the
+   overflow check measures the same box in every language. */
+.reveal .slides > section {
+  box-sizing: border-box;
+  height: 100%;
+  top: 0 !important;
+  padding: 48px 64px 40px;
+  text-align: left;
+  flex-direction: column;
+  gap: 18px;
+}
+.reveal .slides > section.center { justify-content: center; }
+
+.reveal h1, .reveal h2, .reveal h3 {
+  font-family: var(--font);
+  color: var(--ink);
+  margin: 0;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  text-transform: none;
+}
+.reveal h1 { font-size: 60px; font-weight: 750; }
+.reveal h2 { font-size: 40px; font-weight: 700; }
+.reveal h3 { font-size: 28px; font-weight: 650; }
+.reveal p { margin: 0; }
+.reveal .lead { font-size: 30px; color: var(--ink-2); max-width: 1000px; }
+.reveal .muted { color: var(--ink-3); }
+.reveal .small { font-size: 20px; }
+
+.reveal ul, .reveal ol { margin: 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 10px; }
+.reveal li::marker { color: var(--accent); }
+
+.reveal code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  background: var(--code-bg);
+  padding: 0.05em 0.3em;
+  border-radius: 4px;
+}
+.reveal pre {
+  margin: 0;
+  width: 100%;
+  box-shadow: none;
+  font-size: 19px;
+  line-height: 1.45;
+  background: var(--code-bg);
+  border-radius: 10px;
+  padding: 16px 20px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.reveal pre code { background: none; padding: 0; font-size: 1em; white-space: pre; }
+
+.reveal strong { font-weight: 700; }
+
+/* Kicker above a title: the deck's section or the RFC it cites. */
+.reveal .kicker {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.reveal .badges { display: flex; gap: 10px; flex-wrap: wrap; }
+.reveal .badge {
+  font-size: 18px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+}
+.reveal .badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+
+/* Two columns, for text beside a picture or two contrasted lists. */
+.reveal .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: start; }
+.reveal .cols.wide-left { grid-template-columns: 1.4fr 1fr; }
+
+.reveal .card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.reveal .card h3 { font-size: 24px; }
+.reveal .card.warn-card { border-color: var(--warn); }
+.reveal .cols3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; align-items: stretch; }
+.reveal ol.layers { display: grid; grid-template-columns: 1fr 1fr; column-gap: 40px; row-gap: 8px; font-size: 21px; padding-left: 1.4em; }
+.reveal pre.code-sm { font-size: 16px; }
+.reveal .card.good { border-color: var(--good); }
+.reveal .card.bad { border-color: var(--bad); }
+.reveal .card.accent { border-color: var(--accent); }
+
+/* Analogy box: the README requires analogies to be labelled as such. */
+.reveal .analogy {
+  border-left: 4px solid var(--warn);
+  background: var(--warn-soft);
+  padding: 10px 16px;
+  border-radius: 0 10px 10px 0;
+  font-size: 22px;
+}
+
+.reveal .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.reveal .stat {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 18px;
+}
+.reveal .stat .num { font-size: 40px; font-weight: 750; color: var(--accent); line-height: 1.1; }
+.reveal .stat .what { font-size: 19px; color: var(--ink-2); }
+
+.reveal table { border-collapse: collapse; width: 100%; font-size: 20px; }
+.reveal table th, .reveal table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.reveal table th { color: var(--ink-2); font-weight: 650; font-size: 18px; }
+
+/* Glossary terms. Only a term's first use on a slide is marked. */
+.reveal .term {
+  color: var(--term);
+  border-bottom: 2px dotted var(--term);
+  cursor: pointer;
+}
+.reveal .term:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.reveal .term.term-quiet { color: inherit; border-bottom: none; }
+/* In a title a term keeps the title's colour: a big blue word reads as a
+   heading of its own. The underline still says it is clickable. */
+.reveal :is(h1, h2) .term:not(.term-quiet) { color: inherit; border-bottom-width: 3px; }
+
+.reveal .chips { display: flex; flex-wrap: wrap; gap: 12px; }
+.reveal .chip {
+  font-size: 24px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+}
+.reveal .chip .term { border-bottom: none; }
+
+.reveal dl.term-list { margin: 0; display: flex; flex-direction: column; gap: 14px; }
+.reveal dl.term-list dt { font-weight: 700; font-size: 26px; }
+.reveal dl.term-list dd { margin: 2px 0 0; color: var(--ink-2); font-size: 22px; }
+.reveal dl.term-list.glossary { gap: 11px; }
+.reveal dl.term-list.glossary dd { font-size: 19px; line-height: 1.38; }
+.reveal dl.term-list .code { font-size: 16px; color: var(--ink-3); }
+
+/* Quiz: one question, three options. Picking one marks every option right or
+   wrong and shows each one's explanation. Print and the check measure the
+   answered state, the tallest one. */
+.reveal .quiz-body { display: flex; flex-direction: column; gap: 14px; }
+.reveal .quiz-body h2 { font-size: 34px; line-height: 1.2; }
+.reveal ol.quiz-options { list-style: none; padding: 0; gap: 12px; }
+.reveal .quiz-option { display: flex; flex-direction: column; gap: 4px; }
+.reveal .quiz-option button {
+  display: flex; align-items: center; gap: 14px;
+  width: 100%; text-align: left;
+  font: inherit; font-size: 24px; color: var(--ink);
+  background: var(--surface); border: 2px solid var(--line); border-radius: 10px;
+  padding: 10px 16px; cursor: pointer;
+}
+.reveal .quiz-option button:hover, .reveal .quiz-option button:focus-visible { border-color: var(--accent); outline: none; }
+.reveal .quiz-option .letter {
+  flex: none; width: 34px; height: 34px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-weight: 700; font-size: 20px; background: var(--surface-2); color: var(--ink-2);
+}
+.reveal .quiz-option .why { display: none; font-size: 19px; line-height: 1.35; color: var(--ink-2); padding-left: 66px; }
+.reveal .quiz-verdict { font-size: 20px; color: var(--ink-3); }
+
+.reveal .quiz-answered .quiz-option button { cursor: default; }
+.reveal .quiz-answered .quiz-option.right button { border-color: var(--good); background: var(--good-soft); }
+.reveal .quiz-answered .quiz-option.right .letter { background: var(--good); color: var(--surface); }
+.reveal .quiz-answered .quiz-option.wrong.picked button { border-color: var(--bad); background: var(--bad-soft); }
+.reveal .quiz-answered .quiz-option.wrong.picked .letter { background: var(--bad); color: var(--surface); }
+.reveal .quiz-answered .quiz-option.wrong:not(.picked) button { opacity: 0.75; }
+.reveal .quiz-answered .quiz-option .why { display: block; }
+.reveal .quiz-answered.quiz-correct .quiz-verdict { color: var(--good); font-weight: 650; }
+.reveal .quiz-answered:not(.quiz-correct) .quiz-verdict { color: var(--bad); font-weight: 650; }
+
+.quiz-measure .reveal .quiz-option .why,
+.print-pdf .reveal .quiz-option .why { display: block; }
+.print-pdf .reveal .quiz-option.right button { border-color: var(--good); background: var(--good-soft); }
+.print-pdf .reveal .quiz-verdict { display: none; }
+
+/* A string that fell back to English, visible only in check mode. */
+.check-mode .reveal .i18n-missing { outline: 3px dashed var(--warn); }
+.check-mode .reveal .slides > section.overflowing { outline: 6px solid var(--bad); outline-offset: -6px; }
+
+/* Scenes: an SVG picture and the captions it steps through. */
+.reveal .scene { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; }
+.reveal .scene svg { width: 100%; flex: 1; min-height: 0; overflow: visible; }
+.reveal .scene.side { flex-direction: row; gap: 28px; }
+.reveal .scene.side svg { flex: 1.5; height: 100%; }
+.reveal .scene.side .captions { flex: 1; }
+/* side + half: a drawing that reads at half the width, beside captions long
+   enough to need the other half. */
+.reveal .scene.side.half svg { flex: 1; }
+.reveal .scene.side.half .captions { flex: 1.15; font-size: 19px; gap: 6px; }
+.reveal .scene .captions { list-style: none; padding: 0; margin: 0; gap: 8px; font-size: 22px; }
+.reveal .scene .captions li {
+  color: var(--ink-3);
+  padding: 4px 0 4px 14px;
+  border-left: 4px solid transparent;
+  transition: color 0.25s, border-color 0.25s;
+}
+.reveal .scene .captions li.done { color: var(--ink-2); }
+.reveal .scene .captions li.active { color: var(--ink); border-left-color: var(--accent); }
+.reveal .scene .scene-step { display: none; }
+/* one: captions written as full sentences, too long to list side by side.
+   They share one grid cell, sized by the tallest, and only the current step's
+   shows, so the drawing does not jump as the steps change. */
+.reveal .scene.one .captions { display: grid; }
+.reveal .scene.one .captions li { grid-area: 1 / 1; visibility: hidden; }
+.reveal .scene.one .captions li.active { visibility: visible; }
+
+/* Transitions run at twice their natural length, with PACE in scene.js. */
+.scene .node rect { fill: var(--surface); stroke: var(--line); stroke-width: 2; transition: fill 0.5s, stroke 0.5s, opacity 0.5s; }
+.scene .node text { fill: var(--ink); font-family: var(--font); font-size: 22px; font-weight: 600; }
+.scene .node text.sub { fill: var(--ink-3); font-size: 16px; font-weight: 500; }
+.scene .node.kind-client rect { fill: var(--surface-2); }
+.scene .node.kind-adapter rect { stroke: var(--accent); }
+.scene .node.kind-service rect { fill: var(--accent-soft); stroke: var(--accent); }
+.scene .node.kind-store rect { fill: var(--surface-2); stroke-dasharray: 0; }
+.scene .node.kind-group rect { fill: none; stroke: var(--line); stroke-dasharray: 6 6; }
+.scene .node.kind-group text { fill: var(--ink-3); font-size: 17px; font-weight: 600; }
+.scene .node.hl rect { stroke: var(--accent); stroke-width: 4; }
+/* A replayed step that only shows nodes pulses their outline; see run(). */
+.scene .node.pulse rect { animation: node-pulse 1.4s ease-in-out; }
+@keyframes node-pulse { 50% { stroke: var(--accent); stroke-width: 6; } }
+.scene .node.hl-bad rect { stroke: var(--bad); stroke-width: 4; fill: var(--bad-soft); }
+.scene .node.hl-good rect { stroke: var(--good); stroke-width: 4; fill: var(--good-soft); }
+.scene .node.dim, .scene .link.dim { opacity: 0.3; }
+.scene .hidden { opacity: 0; }
+.scene .node, .scene .link, .scene .mark { transition: opacity 0.6s; }
+
+.scene .link path { fill: none; stroke: var(--ink-3); stroke-width: 2.5; }
+.scene .link.dashed path { stroke-dasharray: 8 7; }
+.scene .link.bad path { stroke: var(--bad); }
+.scene .link text { fill: var(--ink-3); font-family: var(--font); font-size: 16px; }
+.scene .arrowhead { fill: var(--ink-3); }
+
+.scene .packet { fill: var(--accent); }
+.scene .packet.bad { fill: var(--bad); }
+.scene .packet.good { fill: var(--good); }
+.scene .packet.warn { fill: var(--warn); }
+.scene .packet-label { fill: var(--ink); font-family: var(--mono); font-size: 15px; font-weight: 600; }
+
+.scene .mark rect { stroke-width: 2; }
+.scene .mark text { font-family: var(--font); font-size: 17px; font-weight: 650; }
+.scene .mark.info rect { fill: var(--accent-soft); stroke: var(--accent); }
+.scene .mark.info text { fill: var(--accent); }
+.scene .mark.good rect { fill: var(--good-soft); stroke: var(--good); }
+.scene .mark.good text { fill: var(--good); }
+.scene .mark.bad rect { fill: var(--bad-soft); stroke: var(--bad); }
+.scene .mark.bad text { fill: var(--bad); }
+.scene .mark.warn rect { fill: var(--warn-soft); stroke: var(--warn); }
+.scene .mark.warn text { fill: var(--warn); }
+
+/* Chrome outside the slide canvas: language switch and term popover. */
+.deck-chrome {
+  position: fixed;
+  top: 12px;
+  right: 14px;
+  z-index: 40;
+  display: flex;
+  gap: 4px;
+  font-family: var(--font);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px;
+  box-shadow: var(--shadow);
+}
+.deck-chrome button {
+  font: 600 13px var(--font);
+  color: var(--ink-2);
+  background: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.deck-chrome button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.deck-chrome .nav {
+  font: 600 15px var(--font);
+  color: var(--ink-2);
+  text-decoration: none;
+  border-radius: 999px;
+  padding: 5px 9px;
+  line-height: 0;
+  display: inline-flex;
+  align-items: center;
+}
+.deck-chrome .nav:hover { background: var(--line); color: var(--ink); }
+.deck-chrome .sep { width: 1px; background: var(--line); margin: 4px 2px; }
+
+.term-pop {
+  position: fixed;
+  z-index: 50;
+  max-width: 380px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+  font: 15px/1.45 var(--font);
+}
+.term-pop[hidden] { display: none; }
+.term-pop h4 { margin: 0 0 6px; font-size: 17px; }
+.term-pop p { margin: 0 0 8px; }
+.term-pop .clash { color: var(--warn); }
+.term-pop .meta { font-size: 13px; color: var(--ink-3); display: flex; flex-direction: column; gap: 3px; }
+.term-pop .meta code { font-family: var(--mono); font-size: 12px; }
+.term-pop a, .term-pop button.link {
+  color: var(--accent);
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.check-report {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  z-index: 60;
+  max-width: 520px;
+  max-height: 40vh;
+  overflow: auto;
+  background: var(--surface);
+  color: var(--ink);
+  border: 2px solid var(--bad);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font: 13px/1.4 var(--mono);
+}
+.check-report.clean { border-color: var(--good); }
+
+@media print {
+  .deck-chrome, .term-pop, .check-report { display: none !important; }
+}

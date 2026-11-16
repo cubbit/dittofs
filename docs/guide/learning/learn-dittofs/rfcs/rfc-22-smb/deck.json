@@ -1,0 +1,25 @@
+{
+  "rfc": {
+    "number": 22,
+    "title": "SMB",
+    "path": "docs/internals/rfcs/rfc-22-smb.md",
+    "commit": "bc7aa998636cd2b1080d934496893911facc7ba2",
+    "status": "draft"
+  },
+  "terms": {
+    "known": [
+      "adapter", "pipeline", "handler", "error-table", "held-request", "callback",
+      "connection-state", "client-held-name", "drain", "identity", "flow-control",
+      "filesystem-service", "share", "node", "primary", "gateway-node", "open-state",
+      "deny-mode", "caching-grant", "grace-period", "retry-later", "journal",
+      "stability-point", "write-verifier", "rpc"
+    ],
+    "new": [
+      "dialect", "credit", "signing", "tree-connect",
+      "ipc", "file-id", "client-guid", "oplock",
+      "lease-break", "caching-fence", "durable-handle", "persistent-handle",
+      "continuously-available", "channel-sequence", "witness", "private-use-mapping"
+    ],
+    "conflicts": ["file-id", "handle", "durable-handle", "lease", "session", "deny-mode"]
+  }
+}
