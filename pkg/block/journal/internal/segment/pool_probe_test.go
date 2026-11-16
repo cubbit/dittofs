@@ -34,19 +34,6 @@ func (p *Pool) PendingForTest() int {
 	return p.pending
 }
 
-// StoppedForTest reports whether Stop has closed the worker's done, so a
-// check can sequence a Stop that must land while the worker is mid-flight:
-// the closed channel is the stop flag, observable without racing the join
-// the Stop itself blocks in.
-func (r *Retirer) StoppedForTest() bool {
-	select {
-	case <-r.done:
-		return true
-	default:
-		return false
-	}
-}
-
 // ExtraNamesForTest reports how many extra names the executor still records
 // for a segment id, so a check can assert a completed retirement leaves none
 // behind: the map is bounded by the retirements still owed a retry.

@@ -23,6 +23,8 @@ import "context"
 // A tag has one handle open at a time. Share of a tag whose handle is open
 // returns that same handle, with its limit replaced by limit and the floors
 // raised to floor; after the handle's Close, a later Share makes a new handle.
+//
+// Once the journal's Close began, Share is refused with ErrClosed.
 func (j *Journal) Share(tag ShareTag, limit int64, floor Version) (*Handle, error) {
 	// decision: a Journal with no core, the zero value, refuses Share with
 	// ErrNotImplemented instead of panicking. Share is guarded like Reserve is:
@@ -42,6 +44,21 @@ func (j *Journal) Share(tag ShareTag, limit int64, floor Version) (*Handle, erro
 	// that sees the share also sees its entry.
 	j.handlesMu.Lock()
 	defer j.handlesMu.Unlock()
+	// decision: Share refuses off the journal's own closed flag, raised before
+	// anything else Close does, and the check closes only the sliver between
+	// that rise and the core fence's, which is Close's first act on the core:
+	// an attach racing through that sliver is refused by the check here, and
+	// past it by the fence at the core's own check, so no handle ever lands
+	// behind a close begun — never a handle the close's snapshot misses, whose
+	// first Close would answer ErrClosed on a fence it never drained and whose
+	// reservations nothing would release. Draw and SetVersionLimit need no such
+	// check at all: the core's fence closes them from the moment Close has
+	// begun, and neither leaves state behind. Overturned by a Share that must
+	// succeed against a close already begun, which would need the core's own
+	// ordering instead.
+	if j.closed.Load() {
+		return nil, ErrClosed
+	}
 	s, err := j.core.Share(tag, limit, floor)
 	if err != nil {
 		return nil, err

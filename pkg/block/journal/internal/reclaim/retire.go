@@ -199,6 +199,30 @@ func (w *Worker) Stop() {
 	w.wg.Wait()
 }
 
+// Stopped reports whether Stop has closed done: the worker's loop has ended,
+// or ends before its next turn. It reads the closed channel alone, so it is
+// safe from any goroutine; a Stop running concurrently may flip it after the
+// read, which is the probe's own race to tolerate. Unlike the stopped flag
+// under mu it takes no mutex, because done closes under mu inside Stop's
+// once — a caller holding mu would block Stop's close path and invert what
+// it observes.
+//
+// decision: Stopped has no production caller; the close-order test in the
+// data path needs to see the reclaim worker stopped while the retirer it
+// hands to still runs, and the worker's state is otherwise unobservable
+// outside this package (Emptied and Prompt drop silently once stopped).
+// Hold the signature with a conformance test of the worker's own if one
+// ever lands, or drop the method with the test when the close reports its
+// steps to the seam.
+func (w *Worker) Stopped() bool {
+	select {
+	case <-w.done:
+		return true
+	default:
+		return false
+	}
+}
+
 // worker drains the queue: one goroutine, woken by a coalesced kick or by
 // the tick, running one pass per wake and, on each tick, the scan before
 // the pass.

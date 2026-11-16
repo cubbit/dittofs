@@ -23,10 +23,7 @@ import (
 // taken, since the layer's worker takes it to complete the sync. The call
 // counts as in flight on the handle, so the handle's Close waits for it.
 func (c *Core) Sync(ctx context.Context, s *Share, ids ...core.FileID) ([]core.SyncMark, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	exit, err := s.enter()
+	exit, err := beginCall(ctx, s)
 	if err != nil {
 		return nil, err
 	}

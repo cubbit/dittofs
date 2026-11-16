@@ -233,6 +233,25 @@ func TestShare_RefusalsChangeNothing(t *testing.T) {
 	}
 }
 
+// TestShare_FenceBetweenChecksIsRefused pins the closed re-check under
+// registryMu: an attach whose first closed check passed can still meet the
+// fence between that check and the registry's lock — the flag store, then the
+// registry swap, of BeginClose — and only the re-check refuses it. Without it
+// the attach would register a handle the fence's swap already removed, one
+// the close's drain never collects. The hook fences the core in the window
+// itself, so the window needs no race to be crossed once.
+func TestShare_FenceBetweenChecksIsRefused(t *testing.T) {
+	coreReady := make(chan *Core, 1)
+	c, _ := newTestCore(t, func(o *coreOptions) {
+		o.shareHook = func() { (<-coreReady).BeginClose() }
+	})
+	coreReady <- c
+
+	if _, err := c.Share(1, 0, core.Version{}); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("the Share that met the fence between its two checks = %v, want ErrClosed", err)
+	}
+}
+
 // Close refuses new calls at once, waits for the call in flight, and keeps the
 // extent held.
 func TestHandleClose_WaitsForTheCallInFlight(t *testing.T) {
@@ -457,6 +476,21 @@ func TestHandleClose_TwiceAndConcurrently(t *testing.T) {
 	}
 	if returned, err := closeWithin(s); !returned || !errors.Is(err, core.ErrClosed) {
 		t.Fatalf("a later Close = %v (returned: %v), want ErrClosed at once", err, returned)
+	}
+}
+
+// A Close of a share the core's own close already fenced answers nil, as it
+// did before the fence existed: a cleanup that shut the core down first must
+// not read its handles' end as the refusal. The double Close while the core
+// lives is still the one that says ErrClosed, above.
+func TestHandleClose_AfterTheCoreClosed(t *testing.T) {
+	c, _ := newTestCore(t)
+	s := mustShare(t, c, 1)
+	if err := c.Close(); err != nil {
+		t.Fatalf("the core's Close: %v", err)
+	}
+	if returned, err := closeWithin(s); !returned || err != nil {
+		t.Fatalf("the Close of the fenced share = %v (returned: %v), want nil at once", err, returned)
 	}
 }
 

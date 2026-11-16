@@ -21,10 +21,7 @@ import (
 // refuses them; a request of negative bytes or non-positive writes is a
 // caller bug, core.ErrInvalidExtent.
 func (c *Core) Reserve(ctx context.Context, s *Share, bytes int64, writes int) (*capacity.Reservation, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	exit, err := s.enter()
+	exit, err := beginCall(ctx, s)
 	if err != nil {
 		return nil, err
 	}
@@ -52,10 +49,7 @@ func (c *Core) Reserve(ctx context.Context, s *Share, bytes int64, writes int) (
 // version is drawn or byte written. A cancelled ctx and a zero-length or
 // invalid write are refused as WriteAt refuses them, drawing nothing.
 func (c *Core) WriteReserved(ctx context.Context, s *Share, r *capacity.Reservation, id core.FileID, off int64, p []byte, mtime int64) (core.Version, error) {
-	if err := ctx.Err(); err != nil {
-		return core.Version{}, err
-	}
-	exit, err := s.enter()
+	exit, err := beginCall(ctx, s)
 	if err != nil {
 		return core.Version{}, err
 	}

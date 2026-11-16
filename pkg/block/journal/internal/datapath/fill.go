@@ -31,10 +31,7 @@ import (
 // supersedes it. Its record bytes are admitted by every limit a write is, but
 // the version limit.
 func (c *Core) Fill(ctx context.Context, s *Share, id core.FileID, off int64, p []byte, asOf, v core.Version) (err error) {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	exit, err := s.enter()
+	exit, err := beginCall(ctx, s)
 	if err != nil {
 		return err
 	}

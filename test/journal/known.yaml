@@ -172,7 +172,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs repack, Close joining background work before closing segments, and recovery.'
+  reason: 'The journal opens; the check fails on a stub call. Needs repack and recovery; the close joins its background work before it closes every segment.'
   issue: '#3379'
   message: 'stub: MarkOffloaded'
 
