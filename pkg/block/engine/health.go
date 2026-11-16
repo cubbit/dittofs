@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
@@ -47,29 +48,18 @@ func readOnlyCondition(ro journal.ReadOnlyState, dir string, id journal.JournalI
 	}, true
 }
 
-// Condition is one health condition the engine raises, in the fields of
-// RFC 25 §8.2's, so the composition root adapts it into the health evaluator.
-type Condition struct {
-	Name    string
-	Subject Subject
-	Cause   error  // the error or reason that raised it
-	Detail  string // a constant message and the figures that matter
-}
-
-// Subject is what a condition is about (RFC 25 §8.2).
-type Subject struct {
-	Scope Scope
-	ID    string
-	Name  string
-}
-
-// Scope is the kind of thing a condition is about (RFC 25 §3.3).
-type Scope uint8
+// The engine raises the health package's conditions, so the node's evaluator
+// reads them as they are.
+type (
+	Condition = health.Condition
+	Subject   = health.Subject
+	Scope     = health.Scope
+)
 
 const (
-	ScopeJournal Scope = iota + 1 // a journal device: ID its identity, Name its directory
-	ScopeNode                     // this node: ID its identity
-	ScopeShare                    // a share: ID its identity
+	ScopeJournal = health.ScopeJournal
+	ScopeNode    = health.ScopeNode
+	ScopeShare   = health.ScopeShare
 )
 
 // JournalStats is one device's journal, as Stats reports it: the journal's
