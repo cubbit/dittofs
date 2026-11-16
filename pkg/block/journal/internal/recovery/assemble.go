@@ -136,6 +136,16 @@ func runAssemble(_ context.Context, deps Deps, _ *reader, st *State, _ core.Jour
 		a.Unsynced = append(a.Unsynced, reclaim.UnsyncedLoss{Rec: rec, HeldBy: holdersOf(st.Kinds.Losses, rec)})
 	}
 	for _, rec := range st.Kinds.ForgetRecs {
+		// decision: every forget record of a tag registers against the
+		// tag's one collected snapshot, the greatest forget's holder set —
+		// not the snapshot its own append took, which the rebuild never
+		// collected (the kinds pass keeps one forget per tag). An earlier
+		// forget of the same tag therefore over-holds: its re-check set
+		// includes segments holding records of the tag above it, so the
+		// record answers live until more segments retire than its own
+		// snapshot would have kept it for — the safe direction, a forget
+		// kept too long. Overturned by a rebuild collecting one snapshot
+		// per forget record.
 		f := reclaim.ForgetSet{Rec: rec}
 		for _, fo := range st.Kinds.Forgets {
 			if fo.Tag == rec.Tag {
