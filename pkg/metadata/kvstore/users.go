@@ -109,6 +109,9 @@ func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) (uint64
 		return 0, err
 	}
 	u.Generation = nextVersion(c.tx, old.Generation)
+	if u.Position, err = c.principals(); err != nil {
+		return 0, err
+	}
 	return u.Generation, c.tx.Set(key, encodeUser(u))
 }
 
@@ -146,6 +149,9 @@ func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) (uint
 		return 0, err
 	}
 	g.Generation = nextVersion(c.tx, old.Generation)
+	if g.Position, err = c.principals(); err != nil {
+		return 0, err
+	}
 	return g.Generation, c.tx.Set(key, encodeGroup(g))
 }
 
@@ -296,6 +302,9 @@ func (c controlTx) DeleteUser(p entity.Principal, expect uint64) error {
 	if err := indexAdmin(c.tx, p.ID, enabledAdmin(u), false); err != nil {
 		return err
 	}
+	if _, err := c.principals(); err != nil {
+		return err
+	}
 	return deletePrincipal(c.tx, p, userKey(p.ID), u.Name, u.IDs)
 }
 
@@ -323,6 +332,9 @@ func (c controlTx) DeleteGroup(p entity.Principal, expect uint64) error {
 	if err := dropPairs(c.tx, membersPrefix(p.ID), func(m []byte) []byte {
 		return memberRevKey(entity.PrincipalID(m), p.ID)
 	}); err != nil {
+		return err
+	}
+	if _, err := c.principals(); err != nil {
 		return err
 	}
 	return deletePrincipal(c.tx, p, groupKey(p.ID), g.Name, g.IDs)
@@ -423,6 +435,9 @@ func (c controlTx) AddMember(m entity.Membership) error {
 			return notFound(err, p)
 		}
 	}
+	if _, err := c.principals(); err != nil {
+		return err
+	}
 	kind := encodeKind(m.Member.Kind)
 	if err := c.tx.Set(memberKey(m.Group.ID, m.Member.ID), kind); err != nil {
 		return err
@@ -437,6 +452,9 @@ func (c ControlPlane) RemoveMember(ctx context.Context, m entity.Membership) err
 }
 
 func (c controlTx) RemoveMember(m entity.Membership) error {
+	if _, err := c.principals(); err != nil {
+		return err
+	}
 	if err := c.tx.Delete(memberKey(m.Group.ID, m.Member.ID)); err != nil {
 		return err
 	}

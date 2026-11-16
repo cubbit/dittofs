@@ -78,7 +78,7 @@ func encodeUser(u entity.User) []byte {
 	w := codec.NewWriter(v1).String(u.Name)
 	putIDs(w, u.IDs)
 	putPrincipal(w, u.Primary).Bool(u.Disabled).Fixed(u.Secret[:]).String(u.Email).Uint8(uint8(u.Role))
-	return putSeconds(w, u.NotBefore).Bool(u.MustChange).Uint64(u.Generation).Encode()
+	return putSeconds(w, u.NotBefore).Bool(u.MustChange).Uint64(u.Generation).Uint64(u.Position).Encode()
 }
 
 // putSeconds writes t in whole seconds, the zero time as zero.
@@ -107,7 +107,7 @@ func decodeUser(id entity.PrincipalID, b []byte) (entity.User, error) {
 	u.Disabled = r.Bool()
 	copy(u.Secret[:], r.Fixed(16))
 	u.Email, u.Role = r.String(), entity.APIRole(r.Uint8())
-	u.NotBefore, u.MustChange, u.Generation = readSeconds(r), r.Bool(), r.Uint64()
+	u.NotBefore, u.MustChange, u.Generation, u.Position = readSeconds(r), r.Bool(), r.Uint64(), r.Uint64()
 	if err := r.Done(); err != nil {
 		return u, err
 	}
@@ -122,7 +122,7 @@ func decodeUser(id entity.PrincipalID, b []byte) (entity.User, error) {
 func encodeGroup(g entity.Group) []byte {
 	w := codec.NewWriter(v1).String(g.Name)
 	putIDs(w, g.IDs)
-	return w.Uint64(g.Generation).Encode()
+	return w.Uint64(g.Generation).Uint64(g.Position).Encode()
 }
 
 func decodeGroup(id entity.PrincipalID, b []byte) (entity.Group, error) {
@@ -131,7 +131,7 @@ func decodeGroup(id entity.PrincipalID, b []byte) (entity.Group, error) {
 		return entity.Group{}, err
 	}
 	g := entity.Group{Principal: entity.Principal{Kind: entity.PrincipalGroup, ID: id}, Name: r.String(), IDs: readIDs(r)}
-	g.Generation = r.Uint64()
+	g.Generation, g.Position = r.Uint64(), r.Uint64()
 	return g, r.Done()
 }
 
@@ -177,7 +177,7 @@ func decodePrincipal(b []byte) (entity.Principal, error) {
 // encodeShareInfo writes the fields a share put owns; State is its own record.
 func encodeShareInfo(s entity.Share) []byte {
 	return codec.NewWriter(v1).String(s.Name).String(s.Path).Fixed(s.Root[:]).
-		Uint32(uint32(s.Fold)).Uint8(uint8(s.Names)).Fixed(s.DigestKey[:]).Uint32(s.Tag).Uint64(s.Generation).Encode()
+		Uint32(uint32(s.Fold)).Uint8(uint8(s.Names)).Fixed(s.DigestKey[:]).Uint32(s.Tag).Uint64(s.Generation).Uint64(s.Position).Encode()
 }
 
 func decodeShareInfo(id entity.ShareID, b []byte) (entity.Share, error) {
@@ -190,7 +190,7 @@ func decodeShareInfo(id entity.ShareID, b []byte) (entity.Share, error) {
 	s.Fold = entity.FoldRule(r.Uint32())
 	s.Names = entity.NameRule(r.Uint8())
 	copy(s.DigestKey[:], r.Fixed(entity.DigestKeyLen))
-	s.Tag, s.Generation = r.Uint32(), r.Uint64()
+	s.Tag, s.Generation, s.Position = r.Uint32(), r.Uint64(), r.Uint64()
 	return s, r.Done()
 }
 
@@ -376,7 +376,7 @@ func decodeCounter(b []byte) (uint64, error) {
 }
 
 func encodeSetting(s entity.Setting) []byte {
-	return codec.NewWriter(v1).Bytes(s.Value).Uint64(s.Generation).Uint32(s.Schema).Encode()
+	return codec.NewWriter(v1).Bytes(s.Value).Uint64(s.Generation).Uint32(s.Schema).Uint64(s.Position).Encode()
 }
 
 func decodeSetting(scope entity.SettingScope, key string, b []byte) (entity.Setting, error) {
@@ -389,6 +389,6 @@ func decodeSetting(scope entity.SettingScope, key string, b []byte) (entity.Sett
 		s.Value = append([]byte(nil), v...)
 	}
 	s.Generation = r.Uint64()
-	s.Schema = r.Uint32()
+	s.Schema, s.Position = r.Uint32(), r.Uint64()
 	return s, r.Done()
 }

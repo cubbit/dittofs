@@ -144,6 +144,9 @@ func Run(t *testing.T, open Opener) {
 		{"APITokens", testAPITokens},
 		{"SignInFailures", testSignInFailures},
 		{"SignInFailuresRace", testSignInFailuresRace},
+		{"Positions", testPositions},
+		{"PrincipalsRaisedOncePerWrite", testPrincipalsRaisedOncePerWrite},
+		{"VersionedKindsMoveNoCounter", testVersionedKindsMoveNoCounter},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}

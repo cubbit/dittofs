@@ -37,7 +37,7 @@ func (c ControlPlane) Write(ctx context.Context, meta entity.WriteMeta, fn func(
 				return err
 			}
 		}
-		if err := fn(controlTx{tx}); err != nil {
+		if err := fn(controlTx{tx, new(uint64)}); err != nil {
 			return err
 		}
 		if meta.Audit != nil {
@@ -143,10 +143,17 @@ func decodeIdempotency(account entity.Principal, key string, b []byte) (entity.I
 // controlTx is entity.ControlPlaneTx over one transaction; the view's
 // methods run their writes through it. The transaction is a named field, not
 // embedded, so a caller holding a ControlPlaneTx cannot assert it back to a
-// kv.Txn and write rows no method checks.
-type controlTx struct{ tx kv.Txn }
+// kv.Txn and write rows no method checks. pgen is the principals generation
+// the transaction raised, zero until it raises one.
+type controlTx struct {
+	tx   kv.Txn
+	pgen *uint64
+}
 
 var _ entity.ControlPlaneTx = controlTx{}
+
+// principals raises the principals generation for this transaction, once.
+func (c controlTx) principals() (uint64, error) { return raisePrincipals(c.tx, c.pgen) }
 
 func (c controlTx) Setting(scope entity.SettingScope, key string) (entity.Setting, bool, error) {
 	b, ok, err := get(c.tx, settingKey(scope, key))

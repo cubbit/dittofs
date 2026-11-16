@@ -97,6 +97,7 @@ var (
 	shareListKey    = []byte{keys.KindSL}
 	installationKey = []byte{keys.KindIN}
 	cfgGenKey       = []byte{keys.KindCFGGEN}
+	pgenKey         = []byte{keys.KindPGEN}
 	tagKey          = []byte{keys.KindTG}
 )
 

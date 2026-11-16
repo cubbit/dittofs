@@ -23,8 +23,9 @@ func testCosts(t *testing.T, kvo Opener) {
 	gen := userGeneration(t, s, u.Principal)
 	c.Take()
 	must(t, errOf(cp.PutUser(ctx, u, gen, entity.Alloc{})))
-	// Read the record and the new name row; write both; delete the old row.
-	if got, want := c.Take(), (kv.Counts{Gets: 2, Sets: 2, Deletes: 1}); got != want {
+	// Read the record, the new name row and the principals generation; write
+	// all three; delete the old row.
+	if got, want := c.Take(), (kv.Counts{Gets: 3, Sets: 3, Deletes: 1}); got != want {
 		t.Errorf("user rename: %+v, want %+v", got, want)
 	}
 

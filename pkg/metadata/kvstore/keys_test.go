@@ -53,6 +53,7 @@ func TestKeyGolden(t *testing.T) {
 		{"share list", shareListKey, "28"},
 		{"installation", installationKey, "29"},
 		{"settings generation", cfgGenKey, "33"},
+		{"principals generation", pgenKey, "3b"},
 		{"journal", journalKey(gid), "2e" + g},
 		{"journal index", journalIndexKey(entity.NodeID(pid), "/j"), "48" + p + "2f6a0001"},
 		{"removal step", shardRemovalKey(7), "2d" + "0000000000000007" + "04"},

@@ -147,14 +147,13 @@ func (c controlTx) PutShare(s entity.Share, expect uint64) (uint64, error) {
 			return 0, err
 		}
 	}
-	s.Generation = old.Generation + 1
-	if err := c.tx.Set(info, encodeShareInfo(s)); err != nil {
-		return 0, err
+	s.Generation, s.Position = old.Generation+1, old.Position
+	if moved {
+		if s.Position, err = raise(c.tx, shareListKey); err != nil {
+			return 0, err
+		}
 	}
-	if !moved {
-		return s.Generation, nil
-	}
-	return s.Generation, raise(c.tx, shareListKey)
+	return s.Generation, c.tx.Set(info, encodeShareInfo(s))
 }
 
 // createShareRecords writes what a new share starts with besides its info:
@@ -360,7 +359,8 @@ func claimShare(tx kv.Txn, key []byte, id entity.ShareID, taken string) error {
 
 // SetShareState moves a share from one state to another, refusing when it is
 // not in from: the read is tracked, so of two changes racing from one state,
-// one conflicts and then finds the state moved. It raises ShareList.
+// one conflicts and then finds the state moved. It raises ShareList, and the
+// share's position with it, which its info record holds.
 //
 // Removal is one-way and not this call's: only DeleteShare moves a share to
 // being removed, and a share being removed or retired is stale to it.
@@ -400,7 +400,18 @@ func (c controlTx) SetShareState(share entity.ShareID, from, to entity.ShareStat
 	if err := c.tx.Set(key, encodeState(shareState{State: to})); err != nil {
 		return err
 	}
-	return raise(c.tx, shareListKey)
+	info := shareKey(share, keys.SInfo)
+	if b, err = c.tx.Get(info); err != nil {
+		return err
+	}
+	s, err := decodeShareInfo(share, b)
+	if err != nil {
+		return err
+	}
+	if s.Position, err = raise(c.tx, shareListKey); err != nil {
+		return err
+	}
+	return c.tx.Set(info, encodeShareInfo(s))
 }
 
 // SetGrant sets a principal's access to a share, the grant's version
@@ -574,11 +585,4 @@ func (c controlTx) PutExportPolicy(p entity.ExportPolicy, expect uint64) (uint64
 	}
 	p.Version = nextVersion(c.tx, old.Version)
 	return p.Version, c.tx.Set(key, encodePolicy(p))
-}
-
-// ShareList is raised by every share create, rename, path change and state
-// change: the pseudo-filesystem's change attribute.
-func (c ControlPlane) ShareList(ctx context.Context) (entity.ShareList, error) {
-	v, err := counter(ctx, c.s.kv, shareListKey)
-	return entity.ShareList{Version: v}, err
 }

@@ -47,10 +47,11 @@ func codecCases() []codecCase {
 		NotBefore:  time.Unix(1_800_000_000, 0).UTC(),
 		MustChange: true,
 		Generation: 5,
+		Position:   11,
 	}
-	grp := entity.Group{Principal: group, Name: "staff", Generation: 2}
+	grp := entity.Group{Principal: group, Name: "staff", Generation: 2, Position: 12}
 	share := entity.Share{ID: sid, Name: "Photos", Path: "/photos", Root: entity.FileID{15: 7}, Tag: 9,
-		Fold: entity.FoldUpcase, Names: entity.NamesWindows, DigestKey: [32]byte{31: 0x5A}, Generation: 4}
+		Fold: entity.FoldUpcase, Names: entity.NamesWindows, DigestKey: [32]byte{31: 0x5A}, Generation: 4, Position: 13}
 	grant := entity.ShareGrant{Share: sid, Principal: group, Access: entity.AccessReadWrite, Version: 3}
 	policy := entity.ExportPolicy{
 		Share:         sid,
@@ -86,13 +87,13 @@ func codecCases() []codecCase {
 	tok := entity.APIToken{ID: [16]byte{15: 0x52}, Account: alice, Hash: [32]byte{31: 3},
 		Created: time.Unix(6, 0).UTC(), Expires: time.Unix(7, 0).UTC()}
 	fails := entity.SignInFailures{Count: 3, Last: time.Unix(8, 0).UTC(), Failed: time.Unix(9, 1).UTC(), Nonce: 10}
-	set := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "k", Value: []byte("v"), Generation: 6, Schema: 1}
+	set := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "k", Value: []byte("v"), Generation: 6, Schema: 1, Position: 14}
 	return []codecCase{
 		{"user", user, encodeUser(user),
 			"01" + "05616c696365" + "01" + "0104" + "31303030" + "02" + "bb000000000000000000000000000002" + "01" + "00000000000000000000000000000009" +
-				"03614078" + "03" + "000000006b49d200" + "01" + "0000000000000005",
+				"03614078" + "03" + "000000006b49d200" + "01" + "0000000000000005" + "000000000000000b",
 			func(b []byte) (any, error) { return decodeUser(pid, b) }},
-		{"group", grp, encodeGroup(grp), "01" + "057374616666" + "00" + "0000000000000002",
+		{"group", grp, encodeGroup(grp), "01" + "057374616666" + "00" + "0000000000000002" + "000000000000000c",
 			func(b []byte) (any, error) { return decodeGroup(gid, b) }},
 		{"kind", entity.PrincipalGroup, encodeKind(entity.PrincipalGroup), "0102",
 			func(b []byte) (any, error) { return decodeKind(b) }},
@@ -102,7 +103,7 @@ func codecCases() []codecCase {
 			func(b []byte) (any, error) { return decodePrincipal(b) }},
 		{"share", share, encodeShareInfo(share),
 			"01" + "0650686f746f73" + "072f70686f746f73" + "00000000000000000000000000000007" +
-				"00000002" + "02" + "000000000000000000000000000000000000000000000000000000000000005a" + "00000009" + "0000000000000004",
+				"00000002" + "02" + "000000000000000000000000000000000000000000000000000000000000005a" + "00000009" + "0000000000000004" + "000000000000000d",
 			func(b []byte) (any, error) { return decodeShareInfo(sid, b) }},
 		{"state", shareState{State: entity.ShareRemoving, Step: 1, Snapshots: entity.SnapshotsDetach},
 			encodeState(shareState{State: entity.ShareRemoving, Step: 1, Snapshots: entity.SnapshotsDetach}), "01" + "03" + "01" + "02",
@@ -135,7 +136,7 @@ func codecCases() []codecCase {
 			func(b []byte) (any, error) { return decodeIdempotency(group, "k", b) }},
 		{"counter", uint64(7), encodeCounter(7), "01" + "0000000000000007",
 			func(b []byte) (any, error) { return decodeCounter(b) }},
-		{"setting", set, encodeSetting(set), "01" + "0176" + "0000000000000006" + "00000001",
+		{"setting", set, encodeSetting(set), "01" + "0176" + "0000000000000006" + "00000001" + "000000000000000e",
 			func(b []byte) (any, error) { return decodeSetting(set.Scope, "k", b) }},
 		{"journal index", jid, encodeJournalIndex(jid), "01" + "dd00000000000000000000000000000e",
 			func(b []byte) (any, error) {
@@ -217,7 +218,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 	decoders := map[string]func([]byte) (any, error){}
 	for _, c := range append(codecCases(), fileCodecCases()...) {
 		switch c.name {
-		case "user", "group", "share", "quota", "installation", "audit", "idempotency", "namespace",
+		case "user", "group", "share", "setting", "quota", "installation", "audit", "idempotency", "namespace",
 			"session", "api token", "sign-in failures":
 			decoders[c.name] = c.dec
 			f.Add(c.enc)
@@ -229,6 +230,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 		"user":             func(v any) []byte { return encodeUser(v.(entity.User)) },
 		"group":            func(v any) []byte { return encodeGroup(v.(entity.Group)) },
 		"share":            func(v any) []byte { return encodeShareInfo(v.(entity.Share)) },
+		"setting":          func(v any) []byte { return encodeSetting(v.(entity.Setting)) },
 		"quota":            func(v any) []byte { return encodeQuota(v.(entity.Quota)) },
 		"installation":     func(v any) []byte { return encodeInstallation(v.(entity.Installation)) },
 		"audit":            func(v any) []byte { return encodeAudit(v.(entity.AuditRecord)) },

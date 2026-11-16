@@ -56,6 +56,7 @@ const (
 	KindTG     byte = 0x37
 	KindMKP    byte = 0x38
 	KindIDS    byte = 0x3A // server-wide ID allocators, IDS‖kind; 0x39 is retired
+	KindPGEN   byte = 0x3B // principals generation
 	KindIK     byte = 0x3E // idempotency record: IK‖account‖key
 	KindXP     byte = 0x3F // expiry index: XP‖expiry‖tagged, empty
 	KindAU     byte = 0x45 // audit record: AU‖time‖auditID

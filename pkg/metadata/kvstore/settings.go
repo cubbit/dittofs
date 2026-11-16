@@ -118,14 +118,8 @@ func (c controlTx) PutSetting(s entity.Setting, expect uint64) (uint64, error) {
 		return 0, err
 	}
 	s.Generation = old.Generation + 1
-	if err := c.tx.Set(key, encodeSetting(s)); err != nil {
+	if s.Position, err = raise(c.tx, cfgGenKey); err != nil {
 		return 0, err
 	}
-	return s.Generation, raise(c.tx, cfgGenKey)
-}
-
-// SettingsGeneration is raised by every setting change; a node that sees it
-// move re-reads the settings.
-func (c ControlPlane) SettingsGeneration(ctx context.Context) (uint64, error) {
-	return counter(ctx, c.s.kv, cfgGenKey)
+	return s.Generation, c.tx.Set(key, encodeSetting(s))
 }
