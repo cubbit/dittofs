@@ -39,8 +39,9 @@ type writer struct {
 
 	mu       sync.Mutex
 	queue    []queued
+	held     int // messages out took and has not yet written or released
 	wake     chan struct{}
-	room     chan struct{} // closed while the queue is below its bound
+	room     chan struct{} // closed while the messages held are below the bound
 	closed   bool
 	stopped  chan struct{}
 	done     chan struct{}
@@ -88,7 +89,8 @@ func (w *writer) out(msg *resources.Buf, key, before uint64) error {
 	w.queue = append(w.queue, queued{})
 	copy(w.queue[at+1:], w.queue[at:])
 	w.queue[at] = queued{msg: msg, key: key}
-	if len(w.queue) >= writeBound && isClosed(w.room) {
+	w.held++
+	if w.held >= writeBound && isClosed(w.room) {
 		w.room = make(chan struct{})
 	}
 	w.mu.Unlock()
@@ -100,14 +102,32 @@ func (w *writer) out(msg *resources.Buf, key, before uint64) error {
 	return nil
 }
 
+// pause returns a channel closed once the messages held fall below the bound,
+// and whether they are at it: the reader waits there rather than refuse a record
+// (RFC 20 section 6.2).
+func (w *writer) pause() (<-chan struct{}, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.held < writeBound {
+		return nil, false
+	}
+	return w.room, true
+}
+
 // stop ends the writer: what is queued is released unsent. The connection's
 // teardown calls it last.
 func (w *writer) stop() {
 	w.stopOnce.Do(func() {
 		w.mu.Lock()
 		w.closed = true
+		// A write the peer holds ends now rather than at write_timeout.
+		_ = w.nc.SetWriteDeadline(time.Now().Add(-time.Second))
 		q := w.queue
 		w.queue = nil
+		w.held -= len(q)
+		if !isClosed(w.room) {
+			close(w.room)
+		}
 		w.mu.Unlock()
 		for _, m := range q {
 			m.msg.Release()
@@ -143,37 +163,32 @@ func (w *writer) queued() bool {
 	return len(w.queue) > 0
 }
 
-// take removes the messages one gathered write sends: the queue's head up to
-// but not including its first keyed reply, which is a reply a callback may
-// still precede, so it is taken alone when it is the head. The callback, queued
-// while the messages before it are written, then goes out ahead of it.
-//
-// decision: a keyed reply bounds a gathered write. Batching it with the
-// messages before it would leave a callback no place to go ahead of it, and a
-// reply that holds a key is the holding tables' own, rare beside the rest
-// (RFC 20 section 6.2). Overturned if a protocol holds enough replies for the
-// bound to cost a gathered write.
+// take removes every queued message and arms the write deadline for them, all
+// under the mutex: a stop that set a deadline in the past is never overwritten,
+// because a closed writer takes nothing.
 func (w *writer) take() []queued {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	n := len(w.queue)
-	for i, m := range w.queue {
-		if m.key == 0 {
-			continue
-		}
-		if i == 0 {
-			n = 1
-		} else {
-			n = i
-		}
-		break
+	q := w.queue
+	w.queue = nil
+	if len(q) == 0 {
+		return nil
 	}
-	q := w.queue[:n]
-	w.queue = w.queue[n:]
-	if len(w.queue) < writeBound && !isClosed(w.room) {
-		close(w.room)
+	if !w.closed && w.timeout > 0 {
+		_ = w.nc.SetWriteDeadline(time.Now().Add(w.timeout))
 	}
 	return q
+}
+
+// written accounts for n messages once their write returned: they leave the
+// bound's count, and a paused reader is released when it falls below it.
+func (w *writer) written(n int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.held -= n
+	if w.held < writeBound && !isClosed(w.room) {
+		close(w.room)
+	}
 }
 
 // flush sends the messages one gathered write takes in one net.Buffers write,
@@ -190,10 +205,8 @@ func (w *writer) flush() error {
 	for _, m := range q {
 		bufs = append(bufs, w.framer.Frame(nil, len(m.msg.B)), m.msg.B)
 	}
-	if w.timeout > 0 {
-		_ = w.nc.SetWriteDeadline(time.Now().Add(w.timeout))
-	}
 	_, err := bufs.WriteTo(w.nc)
+	w.written(len(q))
 	for _, m := range q {
 		m.msg.Release()
 	}
@@ -206,6 +219,10 @@ func (w *writer) fail(err error) {
 	w.mu.Lock()
 	q := w.queue
 	w.queue = nil
+	w.held -= len(q)
+	if !isClosed(w.room) {
+		close(w.room)
+	}
 	closed := w.closed
 	w.closed = true
 	w.mu.Unlock()

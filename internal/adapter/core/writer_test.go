@@ -12,6 +12,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/adapter"
@@ -106,10 +107,8 @@ func TestTheGatheredWrite(t *testing.T) {
 	}
 	// A later batch's hook follows the one before it, whose messages are
 	// released by then: queue one and read it, then only its charge is held.
-	for _, m := range []string{"z"} {
-		if err := w.Out(msg(m), 0, 0); err != nil {
-			t.Fatal(err)
-		}
+	if err := w.Out(msg("z"), 0, 0); err != nil {
+		t.Fatal(err)
 	}
 	if n := <-batches; n != 1 {
 		t.Fatalf("the last write gathered %d messages, want 1", n)
@@ -197,9 +196,11 @@ func TestTheClosedPeerCloses(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer func() { _ = conn.Close() }()
 	closed := make(chan error, 1)
+	budget := resources.NewWaitBudget("reply", 1<<30)
+	adaptertest.CheckLeaks(t, &resources.Budgets{Reply: budget})
+	pool := resources.NewBufPool(budget)
 	w := core.NewTestWriter(conn, f, 0, func(err error) { closed <- err })
 	defer w.Stop()
-	pool := resources.NewBufPool(resources.NewWaitBudget("reply", 1<<30))
 	msg, err := pool.Get(context.Background(), netip.Addr{}, 4)
 	if err != nil {
 		t.Fatal(err)
@@ -219,4 +220,173 @@ func TestTheClosedPeerCloses(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("a write to a closed peer did not close the connection")
 	}
+	if r := budget.Reserved(); r != 0 {
+		t.Errorf("%d bytes are still reserved after a failed write", r)
+	}
+}
+
+// readRecord reads one framed record from peer.
+func readRecord(t *testing.T, peer net.Conn, f core.Framer) {
+	t.Helper()
+	hdr := make([]byte, f.HeaderLen())
+	if _, err := io.ReadFull(peer, hdr); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err := f.BodyLen(hdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(peer, make([]byte, n)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The deadline is armed for each gathered write, not once for the connection: a
+// second batch starts its own write_timeout when the first ends.
+func TestTheDeadlineIsArmedForEachBatch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := framer()
+		conn, peer := net.Pipe()
+		defer func() { _ = peer.Close() }()
+		closed := make(chan time.Time, 1)
+		budget := resources.NewWaitBudget("reply", 1<<30)
+		pool := resources.NewBufPool(budget)
+		w := core.NewTestWriter(conn, f, time.Second, func(error) { closed <- time.Now() })
+		defer w.Stop()
+		msg := func(body string) *resources.Buf {
+			b, err := pool.Get(context.Background(), netip.Addr{}, len(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			b.B = append(b.B[:0], body...)
+			return b
+		}
+		start := time.Now()
+		if err := w.Out(msg("first"), 0, 0); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		time.Sleep(500 * time.Millisecond)
+		readRecord(t, peer, f) // the first batch's write ends here
+		if err := w.Out(msg("second"), 0, 0); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		time.Sleep(600 * time.Millisecond) // 1.1s: a deadline armed once would have closed
+		select {
+		case <-closed:
+			t.Fatal("the connection closed at the first batch's deadline")
+		default:
+		}
+		time.Sleep(600 * time.Millisecond) // 1.7s: past the second batch's 1.5s
+		select {
+		case at := <-closed:
+			if d := at.Sub(start); d < 1400*time.Millisecond || d > 1700*time.Millisecond {
+				t.Errorf("the connection closed at %v, want the second batch's deadline", d)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("the second batch's write never timed out")
+		}
+	})
+}
+
+// A failed write releases the queue behind the one it held.
+func TestAFailedWriteReleasesTheQueue(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := framer()
+		conn, peer := net.Pipe()
+		budget := resources.NewWaitBudget("reply", 1<<30)
+		adaptertest.CheckLeaks(t, &resources.Budgets{Reply: budget})
+		pool := resources.NewBufPool(budget)
+		w := core.NewTestWriter(conn, f, 0, func(error) {})
+		defer w.Stop()
+		msg := func(body string) *resources.Buf {
+			b, err := pool.Get(context.Background(), netip.Addr{}, len(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			b.B = append(b.B[:0], body...)
+			return b
+		}
+		if err := w.Out(msg("held"), 0, 0); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		if err := w.Out(msg("behind"), 0, 0); err != nil {
+			t.Fatal(err)
+		}
+		_ = peer.Close() // the write fails; both messages must be released
+		synctest.Wait()
+		if r := budget.Reserved(); r != 0 {
+			t.Errorf("%d bytes are still reserved after a failed write", r)
+		}
+	})
+}
+
+// stop ends a write the peer holds rather than waiting for write_timeout, and
+// releases every message before it returns.
+func TestStopEndsAHeldWrite(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := framer()
+		conn, peer := net.Pipe()
+		defer func() { _ = peer.Close() }()
+		budget := resources.NewWaitBudget("reply", 1<<30)
+		adaptertest.CheckLeaks(t, &resources.Budgets{Reply: budget})
+		pool := resources.NewBufPool(budget)
+		w := core.NewTestWriter(conn, f, time.Minute, func(error) {})
+		b, err := pool.Get(context.Background(), netip.Addr{}, 4)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.B = append(b.B[:0], "held"...)
+		if err := w.Out(b, 0, 0); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait() // the writer is in the write; the peer reads nothing
+		w.Stop()
+		if r := budget.Reserved(); r != 0 {
+			t.Errorf("%d bytes are still reserved after stop returned", r)
+		}
+	})
+}
+
+// The bound counts every message out took, the batch being written included,
+// and a reader paused at it is released when the messages fall below.
+func TestTheBoundReleasesTheReader(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := framer()
+		conn, peer := net.Pipe()
+		defer func() { _ = peer.Close() }()
+		budget := resources.NewWaitBudget("reply", 1<<30)
+		adaptertest.CheckLeaks(t, &resources.Budgets{Reply: budget})
+		pool := resources.NewBufPool(budget)
+		w := core.NewTestWriter(conn, f, 0, func(error) {})
+		defer w.Stop()
+		for i := range 64 {
+			b, err := pool.Get(context.Background(), netip.Addr{}, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b.B = append(b.B[:0], byte('a'+i%26))
+			if err := w.Out(b, 0, 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		synctest.Wait()
+		room, at := core.Pause(w)
+		if !at || room == nil {
+			t.Fatalf("64 messages held, pause says %v", at)
+		}
+		go func() {
+			for range 64 {
+				readRecord(t, peer, f)
+			}
+		}()
+		synctest.Wait()
+		select {
+		case <-room:
+		default:
+			t.Fatal("the bound never released the reader once the messages were written")
+		}
+	})
 }

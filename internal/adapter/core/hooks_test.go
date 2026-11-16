@@ -217,3 +217,7 @@ func (t *TestWriter) Stop() { t.w.stop() }
 
 // OnBatch has the writer report each gathered write's message count.
 func OnBatch(t *TestWriter, fn func(n int)) { t.w.onBatch = fn }
+
+// Pause is the writer's bound as the reader sees it: a channel closed once the
+// messages held fall below it, and whether they are at it.
+func Pause(t *TestWriter) (<-chan struct{}, bool) { return t.w.pause() }
