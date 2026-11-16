@@ -943,7 +943,7 @@ commit's failing file reported through `Stats`. Counters: `engine_write_refusals
   else `ErrNoSpace`. The sync is `Sync` over the scope's
   `Files`, the seal is inside the scoped `Repack`, and the per-segment unreclaimed figure
   is the journal's to give (§6 point 8). A `SyncError` from
-  that sync goes to T4.6's per-file report, so the file's next `Commit` still fails once;
+  that sync goes to T4.6's per-file report, so the file's next `Commit` still answers a changed verifier, not an error;
   the deadline rule; the `decision:` and `ponytail:` markers.
   Turns green §1.4's two cases that `ErrNoSpace` on a repack freeing nothing fails: two
   concurrent refusals with the first pass held, and an unsynced overwrite at the share's
@@ -951,7 +951,7 @@ commit's failing file reported through `Stats`. Counters: `engine_write_refusals
   giving `ErrDelay`, then the write once it resolves. The seal in an idle active segment is
   the journal's `Repack` and tested in its conformance (§6 point 8). Also tested: a timer's failed window
   followed by a refusal whose sync takes the window's report, then the file's `Commit`
-  fails once.
+  succeeds with a changed verifier.
 - T7.2 The self-fence, as epic 7's D6 and D7 take it until RFC 8 takes #3654: the
   `Clock.Elapsed` at which any part of the engine last committed a write transaction, and
   the one at which the node last went from none outstanding or failing to one; 30 s after

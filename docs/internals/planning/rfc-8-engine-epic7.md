@@ -232,7 +232,7 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
 | R12 | Still refused: sync the scope with `Sync` over every file the share's `Files` yields, or every bound share's on that journal for the journal's own scope; repack over the scope, which seals each active segment holding the scope's unreclaimed bytes, never one of a stream whose capacity-sealed segment still awaits repack; retry | MUST | §10.2 step 4, RFC 1 §3.1, §10 question 5 | T7.1b |
 | R13 | Still refused after that: `ErrDelay` with `DelayCapacity` while the scope has bytes left to free (D4) and no cause of the table's second row holds, else `ErrNoSpace` at once | MUST | §10.2 step 4, RFC 1 §3.7, §10 question 6 | T7.1b |
 | R14 | The answer rests on what is left to free, never on what one repack freed: bytes in a segment another pass has selected count | invariant | §10.2 step 4, §10 | T7.1b |
-| R15 | A failed window the scope sync takes is reported to that file's next `Commit`, which fails once | invariant | §5.1, §11.2, RFC 1 §5.3 | T7.1b |
+| R15 | A failed window the scope sync takes is reported to that file's next `Commit`, which succeeds with a changed verifier | invariant | §5.1, §11.2, RFC 1 §5.3 | T7.1b |
 | R16 | The engine requests a repack when the journal is at capacity | MUST | §10.3 | T7.1b |
 | R17 | Every capacity measure reads the journal's `UnreclaimedBytes` and `DirtyBytes`, never a release's or a repack's result | invariant | §10.3 | T7.1b |
 | R18 | Repack at a refusal runs inline under the caller's deadline, never as queued work | invariant | §10 | T7.1b |
@@ -580,7 +580,7 @@ would split one condition's cause from its raise.
     go (catches left to free that skips a resolved failed segment, D4, R14);
   - a timer sync's failed window in a file of share A, made with the journal's crash seam,
     then a refusal of A whose scope sync takes the window's report: that file's next
-    `Commit` fails once and the one after succeeds (catches a report dropped or handed to
+    `Commit` succeeds with a changed verifier and the one after succeeds (catches a report dropped or handed to
     the refused write, R15);
   - a refusal while a failed window is unresolved: the window is made with the journal's
     crash seam in a segment that also holds share A's synced, superseded bytes, its writes

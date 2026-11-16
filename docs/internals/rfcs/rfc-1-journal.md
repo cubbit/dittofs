@@ -2265,10 +2265,12 @@ journal records, per file with a write in the failed window, an unreported
 failure. The next `Sync` naming that file — whether it was waiting when the sync
 failed or arrives later — returns the error and clears the file's mark; the
 `Sync` after it reports only what happened since. So a window the sync timer
-failed, with no `Sync` waiting, still fails the next flush, commit or stable
-write of each of its files, and its writer learns its data is gone, as a file's
-next `fsync` reports a failed writeback once on the platforms that track it per
-file. A file with no write in the window is not told. The marks live in memory
+failed, with no `Sync` waiting, still reaches the next `Sync` of each of its
+files, as a file's next `fsync` reports a failed writeback once on the platforms
+that track it per file, and its writer learns its data is gone: the engine
+answers that file's next commit with a new verifier and each open across the
+loss with `ErrLost` once
+([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)). A file with no write in the window is not told. The marks live in memory
 and cost one entry per file with a write in an unreported window; a restart
 loses them, and the restart itself changes the write verifier.
 
