@@ -3,6 +3,7 @@ package kvstore
 import (
 	"bytes"
 	"encoding/hex"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -12,6 +13,22 @@ import (
 
 func TestKeyGolden(t *testing.T) {
 	p, g, s := "aa000000000000000000000000000001", "bb000000000000000000000000000002", "cc000000000000000000000000000003"
+	h := "0000000000000000000000000000000000000000000000000000000000000001"
+	hash, alice := [32]byte{31: 1}, entity.Principal{Kind: entity.PrincipalUser, ID: pid}
+	// A source is keyed masked: the host bits of each prefix below are set.
+	v4, v6 := netip.MustParsePrefix("10.1.2.3/24"), netip.MustParsePrefix("2001:db8:0:1:ffff::1/64")
+	epoch := entity.SignInFailures{Last: time.Unix(0, 0), Failed: time.Unix(0, 0)}
+	// sf is k's count key, or with an f, the XP row of a count holding it.
+	sf := func(k entity.SignInKey, f ...entity.SignInFailures) []byte {
+		tag, tail, err := signInTail(k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(f) > 0 {
+			return signInExpiryKey(tag, tail, f[0])
+		}
+		return signInKey(tag, tail)
+	}
 	for _, c := range []struct {
 		name string
 		key  []byte
@@ -50,6 +67,22 @@ func TestKeyGolden(t *testing.T) {
 		{"namespace", namespaceInfoKey(entity.NamespaceID(gid)), "17" + g + "0a"},
 		{"namespace share", namespaceShareKey(entity.NamespaceID(gid), sid), "17" + g + "0b" + s},
 		{"store index", storeIndexKey([16]byte(pid), entity.NamespaceID(gid)), "4b" + p + g},
+		{"session", sessionKey(pid), "40" + p},
+		{"session's refresh hash", sessionHashKey(pid, hash), "40" + p + "01" + h},
+		{"refresh hash", refreshKey(hash), "41" + h},
+		{"account's session", accountSessionKey(alice, sid), "4c" + p + s},
+		{"session expiry", sessionExpiryKey(entity.Session{ID: sid, Expires: time.Unix(0, 2)}), "3f" + "0000000000000002" + "03" + s},
+		{"token", tokenKey(pid), "42" + p},
+		{"token hash", tokenHashKey(hash), "43" + h},
+		{"account's token", accountTokenKey(alice, sid), "44" + p + s},
+		{"token expiry", tokenExpiryKey(entity.APIToken{ID: sid, Expires: time.Unix(0, 2)}), "3f" + "0000000000000002" + "05" + s},
+		{"account's sign-in count", sf(entity.SignInKey{Account: alice}), "4901" + p},
+		{"source's sign-in count", sf(entity.SignInKey{Source: v4}), "4902" + "0a010200" + "18"},
+		{"IPv4-mapped source's sign-in count", sf(entity.SignInKey{Source: netip.MustParsePrefix("::ffff:10.1.2.3/120")}), "4902" + "0a010200" + "18"},
+		{"IPv6 source's sign-in count", sf(entity.SignInKey{Source: v6}), "4902" + "20010db8000000010000000000000000" + "40"},
+		{"pair's sign-in count", sf(entity.SignInKey{Account: alice, Source: v4}), "4903" + p + "0a010200" + "18"},
+		{"source's count expiry", sf(entity.SignInKey{Source: v4}, epoch), "3f" + "000000d18c2e2800" + "04" + "0a010200" + "18"},
+		{"pair's count expiry", sf(entity.SignInKey{Account: alice, Source: v4}, epoch), "3f" + "00004e94914f0000" + "06" + p + "0a010200" + "18"},
 	} {
 		if got := hex.EncodeToString(c.key); got != c.want {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, c.want)
