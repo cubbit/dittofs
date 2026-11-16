@@ -469,8 +469,8 @@ flight.
   last up to `pending_timeout`. Each connection is guaranteed **256** held
   requests and **32 MiB** of held `WRITE` data — the credit target's worth, 512 credits of
   64 KiB — and past either it draws on the node's one hold pool, a sixteenth
-  of the process's memory limit, in which each held request is charged its
-  write's bytes and at least 64 KiB
+  of the process's memory limit, in which each held request past a floor is charged
+  its whole receive charge, buffer class and per-request overhead
   ([RFC 24 §4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go)
   owns the pool and which pool holds a held request's bytes). The count is the
   adapter's ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)): it counts

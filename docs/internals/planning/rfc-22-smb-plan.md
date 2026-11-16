@@ -784,6 +784,8 @@ RFC sections: §3.1, §3.2, §3.3's credits and pending ceiling, §4.1's signing
 - T3.8 The error table: every row of RFC 22 §16.5 and `core`'s refusals, by typed kinds; `NoReply`
   rows for `ErrDraining` and `ErrMoved`; each command's drain role (`RoleRelease`, `RoleFlush`); a
   golden vector per row; the totality test over `vfs.Errors()` and `core.Errors()` (plan gap 6),
+  through the one helper it builds in `core`'s `errors.go` (RFC 20 §4.5), which RFC 21's tables
+  call too,
   and `&vfs.Delay{}`, a `Delay` with no cause, which RFC 17 §4.3 rules out, asserted never held
   as a break, the fallback amendment A1 removed;
   the held rows' `Hold` is T9.5's.
