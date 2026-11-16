@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -51,7 +52,9 @@ func start(t *testing.T) *node {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := s.Stop(t.Context()); err != nil {
+		// The test's own context has ended by now, which would end Stop's
+		// wait for a connection the client is still closing.
+		if err := s.Stop(context.Background()); err != nil {
 			t.Errorf("Stop: %v", err)
 		}
 	})
