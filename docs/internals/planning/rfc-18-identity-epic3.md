@@ -16,13 +16,16 @@ cache); [RFC 16](../rfcs/rfc-16-metadata-store.md) §3 (`Principals.Grant`,
 `Server` with `Apply` and a stubbed `Resolve`, and `vfs.Deps`' `Identity` and `Names`. **E2,
 partly**: T3.10 alone waits, for E2's T2.1 (root as a well-known principal; anonymous already exists) and
 T2.4 (`State.Settings`, whose `NTLM` key it reads); T3.2's routing lands before E2's T2.5 fills
-`Spell` and `Find`, and answers what they answer. **RFC 23's plan's epic 2, partly**: it raises the principals
-generation, `PGEN`, on every principal write. No subtask reads `PGEN` and each test hands
-`Apply` its `State`, but T3.8 waits for it: a cache whose generation no write raises would
-serve a disabled user. T3.1 to T3.7 start before it lands.
+`Spell` and `Find`, and answers what they answer. **RFC 23's plan's epic 2 (#4326), partly**:
+its T2.6 raises the principals generation, `PGEN`, once in each transaction that writes a
+principal. No subtask reads `PGEN` and each test hands `Apply` its `State`, but T3.8 waits for
+its T2.6: a cache whose generation no write raises would serve a disabled user. T3.1 to T3.7
+start before it lands. Its T2.3 also writes `S‖id‖gv`, which T3.6 writes too: whichever lands
+second keeps the other's write.
 **Blocks:** **S2**, with E4: admission resolves through identity (T3.6) and `Spell` and `Find`
 reach it (T3.2). E5, whose PAC's deny-only SIDs reach T3.4's groups; E6, whose "mint burst" row
-resolves through `Resolve` and whose directory groups and TTL join T3.4 and T3.8; E7, whose
+resolves through `Resolve` and whose directory groups and TTL join T3.4 and T3.8; E4's T4.5 and E6's T6.7, whose spans read
+T3.1's `Deps.Tracer`; E7, whose
 pass-through caller is resolved here; E8, which composes the `State` whose every `Apply` T3.3's
 serial counts.
 
@@ -93,7 +96,8 @@ counter and the `identity.resolve` span; the cache's benchmark.
 - **E9**, E2E green: RFC 18 §10's Tier 2 rows over SMB.
 - **S1**, the identity surface frozen: what E1 delivers.
 - **S2**, NTLM sign-in and resolution in `vfs`: E3 and E4 done.
-- **RFC 23's plan's epic 2**, store records: writes the principals generation, `PGEN`.
+- **RFC 23's plan's epic 2**, store records (#4326): its T2.6 raises the principals generation,
+  `PGEN`, and its T2.3 writes `S‖id‖gv` with `DeleteGrant`.
 
 ## 2. How the general rules apply
 
@@ -317,7 +321,8 @@ pkg/metadata/kvstore/
   `Fresh` from `Expires` (D6). `Deps.Tracer`, the first code that reads it (E1's D4), and the
   `identity.resolve` span; `identity_resolution_refusals_total` with `disabled` and
   `store_unavailable`. `admit.Check` stays in `internal/vfs/admit`; no table of callers is
-  kept in identity (R25). Consumed by T3.3, T3.4, T3.6, E5, E6, E7.
+  kept in identity (R25). Consumed by T3.3, T3.4, T3.6, E5, E6, E7; `Deps.Tracer` also by E4's
+  T4.5 and E6's T6.7.
 - **Acceptance criteria:**
   - `Resolve` of an `Identity` whose evidence names a principal at `Claimed`, or none at
     `Ticket`, is `ErrInvalid` before any store read.
@@ -449,7 +454,9 @@ pkg/metadata/kvstore/
   policy `ShareIndex.Share` already reads in one view, which gains the `S‖id‖gv` read, so no
   call makes a second read (RFC 16 §3's `Principals.SharePolicy` waits for a consumer with no
   share view); `S‖id‖gv` written by `SetGrant`, `RemoveGrant` and the deletion of a user
-  or group on each share it held a grant on, retiring `shares.go`'s `ponytail:`; admission's
+  or group on each share it held a grant on, retiring `shares.go`'s `ponytail:`, unless RFC 23's
+  plan's epic 2's T2.3, the other writer, has landed first, in which case T3.6 keeps its write
+  and adds only what it lacks; admission's
   step 4 calling `vfs.Deps.Identity.Resolve`, `vfs.New` refusing a `Deps` without it;
   `authz.Caller` rebuilt on `identity.Caller`, converted to `entity.Identity` for the
   chokepoint, D9's refusal and marker at the conversion, and a caller whose `Access` is
@@ -510,7 +517,7 @@ pkg/metadata/kvstore/
 
 **Subtask T3.8 estimate: 3 man-days.**
 
-- **Track:** A. **Depends on:** T3.3, T3.6, T3.7, RFC 23's plan's epic 2.
+- **Track:** A. **Depends on:** T3.3, T3.6, T3.7, RFC 23's plan's epic 2's T2.6.
 - **Covers:** R23, R25, R27, R28, R29, R30, R31, R32, R33, R34, R37.
 - **Deliverables:** `internal/vfs`'s `callerKey{proof identity.ProofKey; policy
   entity.SharePolicy; readOnly bool; client netip.Addr; built uint64}` with
@@ -602,7 +609,7 @@ flowchart TD
   T3_1 --> T3_4["T3.4 Squash and groups"] --> T3_5["T3.5 Grants and flags"] --> T3_6["T3.6 Admission through identity"]
   S1 --> T3_7["T3.7 Proof key"]
   T3_2 & T3_6 --> S2(["S2 resolution in vfs, with E4"]):::sync
-  X1(["RFC 23 plan epic 2: PGEN raised"]):::sync --> T3_8
+  X1(["RFC 23 plan epic 2 T2.6: PGEN raised"]):::sync --> T3_8
   T3_3 & T3_6 & T3_7 --> T3_8["T3.8 Caller cache"]
   T3_8 --> T3_9["T3.9 Benchmark"]
   E2(["E2's T2.1 and T2.4: root, State.Settings"]):::sync --> T3_10["T3.10 Root, anonymous, NTLM off"]
@@ -661,7 +668,7 @@ the version this document was written against.
   ruled client; RFC 17 §4.9 adds the netgroups' and share list's versions for a cached
   steps 1 to 4. D1 caches step 4 alone and keys on step 3's output instead.
 - The plan has E3 wait on RFC 23's plan's epic 2 for the `State`. Nothing here reads `PGEN`,
-  so only T3.8 waits, for the writes that raise it (Depends on).
+  so only T3.8 waits, for its T2.6, the writes that raise it (Depends on).
 - RFC 18 §3.1 computes `Evidence`'s digest at sign-in; D4 computes it in `Key()` with a
   `ponytail:`, since the sketch's signatures are indicative.
 - The `krb` row bound to its linked SID (RFC 18 §4.2, A17) is E5's sign-in in the plan;
@@ -682,8 +689,9 @@ the version this document was written against.
 - `Deps.Tracer`: the plan's §1.3 gives it to epic 4. T3.1's `identity.resolve` span is the first
   code that reads it, so T3.1 adds it, as E1's D4 now says, and E4's span reads it.
 - `S‖id‖gv` is not kept on `feat/storage-v2` (`shares.go`'s `ponytail:`); T3.6 writes it.
-  RFC 16 §3 renames `RemoveGrant` to `DeleteGrant` with `expect`, which RFC 23's plan's epic 2 builds; whichever lands
-  second keeps the write.
+  RFC 16 §3 renames `RemoveGrant` to `DeleteGrant` with `expect`, which RFC 23's plan's epic 2
+  builds in its T2.3, the other writer of `S‖id‖gv`; whichever lands second keeps the other's
+  write, and removes the `ponytail:` only if it is still there.
 - The estimate is 10 subtasks, 16 man-days, against the plan's 7 subtasks, 12.5 man-days:
   3.5 man-days more for the store reads and `S‖id‖gv` (T3.5, T3.6) that `feat/storage-v2`
   lacks, the in-memory service's identity server (T3.6), moving `vfs`'s claimed-identity tests
