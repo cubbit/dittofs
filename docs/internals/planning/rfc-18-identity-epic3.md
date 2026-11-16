@@ -7,7 +7,7 @@ and ID14 and the resolver's halves of ID6, ID7 and ID13, §9.2's resolution refu
 `identity.resolve` span, and §10's rows named in §3 below, as pull request #4058 merged them
 (83232b441); [RFC 17](../rfcs/rfc-17-vfs.md) §2.3 and §4.9 (admission and its caller
 cache); [RFC 16](../rfcs/rfc-16-metadata-store.md) §3 (`Principals.Grant`,
-`Principals.SharePolicy`) and §4.2's `S‖id‖gv`; [RFC 23](../rfcs/rfc-23-control-plane.md)
+`SharePolicy`) and §4.2's `S‖id‖gv`; [RFC 23](../rfcs/rfc-23-control-plane.md)
 §3.2, for one scenario.
 **Track:** A.
 **Epic 3 estimate: 10 subtasks, 15.75 man-days.**
@@ -20,9 +20,9 @@ T2.4 (`State.Settings`, whose `NTLM` key it reads); T3.2's routing lands before 
 T3.6 waits for its T2.3, which writes `S‖id‖gv` in `SetGrant` and `DeleteGrant` (its T2.11 writes
 it in each deletion batch), so T3.6 reads it and writes none. No subtask reads `PGEN`, and each
 test hands `Apply` its `State`. **E8, partly**: T3.6 waits for its T8.1 (E8's D1), which composes
-identity in `node.New` and applies each `PGEN`: T3.6 makes `vfs.New` refuse a `Deps` without
-`Identity`, and T3.8's cache, which drops a local caller only at an `Apply` (D6), never runs
-on a node that applies none.
+identity in `node.New` and applies its first `State`, since T3.6 makes `vfs.New` refuse a `Deps`
+without `Identity`. Each later `PGEN` is applied by E8's T8.2 (its R6); until then a node's cached
+local caller outlives a disable until it is evicted, since its `Fresh` is zero (D6).
 **Blocks:** **S2**, with E4: admission resolves through identity (T3.6) and `Spell` and `Find`
 reach it (T3.2). E5, whose PAC's deny-only SIDs reach T3.4's groups; E6, whose "mint burst" row
 resolves through `Resolve` and whose directory groups and TTL join T3.4 and T3.8; E4's T4.5 and E6's T6.7, whose spans read
@@ -55,8 +55,8 @@ caller was derived from.
 
 The resolver moved and completed: map, squash, the group closure with its cap and deny-only
 principals, grants, flags; the `State`'s serial and a stale resolution resolved once more;
-`Identity.Key()`; admission's caller cache; RFC 16 §3's `Grant` read, and the `SharePolicy` with
-the `GrantVersion` the cache keys on, read by RFC 23's plan's epic 2's T2.3; `Spell` and `Find` routed to `Names`; the refusals
+`Identity.Key()`; admission's caller cache; RFC 16 §3's `Grant` read, and the `SharePolicy` built from `ShareIndex.Share`'s read with
+the `GrantVersion` the cache keys on, which RFC 23's plan's epic 2's T2.3 returns; `Spell` and `Find` routed to `Names`; the refusals
 counter and the `identity.resolve` span; the cache's benchmark.
 
 ### 1.2 Out of scope
@@ -72,8 +72,8 @@ counter and the `identity.resolve` span; the cache's benchmark.
 - A deny-only principal matched by a file's deny entries at the chokepoint (RFC 19 §2.3): no
   epic of RFC 18's plan; §9 holds the question, and D9 keeps the gap closed meanwhile.
 - The API's account check under the generation (RFC 18 §7.2, §8.1): E2's `Account`.
-- Composing identity in the node and applying each `PGEN` the reconcile reads: E8's T8.1, which
-  T3.6 waits for.
+- Composing identity in the node and applying its first `State`: E8's T8.1, which T3.6 waits
+  for. Applying each later `PGEN` the reconcile reads: E8's T8.2 (its R6).
 - Rows over SMB, "disable takes effect", "squash drops SIDs", "deny-only SIDs", "`none` is
   stored" and "no file spelling" among them: E9. "admin needs proof" and "deny-only lookup
   error" are held here (T3.5 and T3.6 for the first, T3.4 for the second, R14, R19) and by E5's
@@ -96,7 +96,8 @@ counter and the `identity.resolve` span; the cache's benchmark.
 - **E6**, the directory.
 - **E7**, NETLOGON and the machine account.
 - **E8**, the integration epic: identity composed into the node, its `State` from reconcile;
-  its T8.1 composes identity in `node.New` and applies each `PGEN`.
+  its T8.1 composes identity in `node.New` and applies its first `State`, and its T8.2 each later
+  `PGEN`.
 - **E9**, E2E green: RFC 18 §10's Tier 2 rows over SMB.
 - **S1**, the identity surface frozen: what E1 delivers.
 - **S2**, NTLM sign-in and resolution in `vfs`: E3 and E4 done.
@@ -303,7 +304,6 @@ pkg/vfs/vfstest/memory/memory.go  T3.6  Deps.Identity, Auth and Names from ident
 pkg/identity/arch_test.go         T3.6  only vfstest/memory imports identitymem, with its seed
 pkg/metadata/kvstore/
   principals.go       T3.5  Grant as RFC 16 §3 declares it
-                      T3.6  SharePolicy
   shares.go           T3.6  consumes ShareIndex.Share's GrantVersion (RFC 23 epic 2's T2.3)
   kvstoretest/        T3.5  rows for the grant read
 ```
@@ -460,8 +460,8 @@ pkg/metadata/kvstore/
 - **Covers:** R6, R27, R35, R38; D9's refusal.
 - **Deliverables:** the `SharePolicy` admission hands `Resolve`, built from the share and
   policy `ShareIndex.Share` reads in one view, with the `GrantVersion` RFC 23's plan's epic 2's
-  T2.3 returns from the same read, so no call makes a second read (RFC 16 §3's `Principals.SharePolicy` waits for a consumer with no
-  share view); `S‖id‖gv` as RFC 23's plan's epic 2 writes it (T2.3 for `SetGrant` and
+  T2.3 returns from the same read, so no call makes a second read and T3.6 adds no `Principals`
+  method; `S‖id‖gv` as RFC 23's plan's epic 2 writes it (T2.3 for `SetGrant` and
   `DeleteGrant`, T2.11 in each deletion batch), so T3.6 depends on its T2.3; admission's
   step 4 calling `vfs.Deps.Identity.Resolve`, `vfs.New` refusing a `Deps` without it;
   `authz.Caller` rebuilt on `identity.Caller`, converted to `entity.Identity` for the
@@ -671,8 +671,9 @@ the version this document was written against.
   ruled client; RFC 17 §4.9 adds the netgroups' and share list's versions for a cached
   steps 1 to 4. D1 caches step 4 alone and keys on step 3's output instead.
 - The plan has E3 wait on RFC 23's plan's epic 2 for the `State`. Nothing here reads `PGEN`,
-  so no subtask waits for its T2.6: T8.1, which T3.6 waits for, applies each `PGEN` before the
-  cache exists (Depends on). T3.6 waits for its T2.3 instead, the `S‖id‖gv` writer.
+  so no subtask waits for its T2.6: T8.1, which T3.6 waits for, applies the first `State` before
+  the cache exists, and E8's T8.2 each later `PGEN` (Depends on). T3.6 waits for its T2.3
+  instead, the `S‖id‖gv` writer.
 - RFC 18 §3.1 computes `Evidence`'s digest at sign-in; D4 computes it in `Key()` with a
   `ponytail:`, since the sketch's signatures are indicative.
 - The `krb` row bound to its linked SID (RFC 18 §4.2, A17) is E5's sign-in in the plan;
