@@ -1079,6 +1079,14 @@ func TestAHeldRecordFollowsItsNewPlaceThroughAFailedSync(t *testing.T) {
 	m := newHeldMove(t)
 	fr := m.fr
 	fr.failSyncKeepingPages(t, m.placed.Segment, errors.New("sync boom"))
+	// This test's flow is the only one through a held move that needs a
+	// third fresh segment: both earlier segments have failed, so the window
+	// this failure leaves re-appends the record into a new one. A roll whose
+	// pool has no spare ready is refused once and retried only at a tick of
+	// the sync bound, which this rig's never-advanced clock does not deliver,
+	// so the spares are settled here, while the worker is parked on the gate,
+	// to keep the re-append from racing the pool's refill.
+	fr.settlePool(t)
 	m.release()
 
 	// The new place's window resolves first, then the hold's end announces the
