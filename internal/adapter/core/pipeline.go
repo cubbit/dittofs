@@ -18,7 +18,7 @@ import (
 // series, resolved once per server.
 //
 // decision: the series are kept here, never in a table: two servers may
-// share a table, and each records into its own registry. A table's are
+// share a table, and a node's servers share its one registry. A table's are
 // resolved at the first Route that returns it and a label's at the first
 // accept that names it, into copy-on-write maps that every request reads with
 // no lock and no label lookup, and that mu fills. Overturned if a profile

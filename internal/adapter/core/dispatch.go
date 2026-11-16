@@ -21,8 +21,8 @@ type OpTable struct {
 	//
 	// decision: the label is a field the protocol sets, not a name NewOpTable
 	// is given or a registry it resolves into: core first sees a table when
-	// Route returns it, and two servers may share one table, each recording
-	// into its own registry. Overturned if a table is built per server.
+	// Route returns it, and two servers may share one table. Overturned if a
+	// table is built per server.
 	Protocol string
 	// ReadOp reads the operation code at the head of a compound member's bytes,
 	// and how many bytes it took: NFSv4's argop. Set on a table that is a
