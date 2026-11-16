@@ -808,6 +808,7 @@ adapter rows are RFC 20's plan's epic 7 (D12):
 ```go
 func (n *Node) reconcileLoop(ctx context.Context) {
 	full, backoff, skip := true, 1, 0 // RFC 23 §2.3: a full pass at start, and after a failed read
+	smbSkip, smbBackoff := 0, 1        // D12: the nothing-serving SMB retry, 1 s doubling to 30 s
 	for range n.cfg.Clock.Tick(time.Second) {
 		if skip > 0 { // after a failed read: 1 s, doubling to 30 s
 			skip--
@@ -820,6 +821,14 @@ func (n *Node) reconcileLoop(ctx context.Context) {
 		}
 		if err == nil && (full || c.Settings != n.seen.Settings) { // only the settings generation re-applies sections
 			err = n.apply(ctx) // fails only on a failed read; a refused section waits for the next generation
+		} else if err == nil && n.smb == nil && n.smbRefused != nil { // D12: nothing serves SMB
+			if smbSkip > 0 {
+				smbSkip--
+			} else if n.retrySMB(ctx) != nil { // its own backoff: never err, so no full pass, no read failure counted
+				smbSkip, smbBackoff = smbBackoff, min(2*smbBackoff, 30)
+			} else {
+				smbBackoff = 1
+			}
 		}
 		if err != nil { // node_reconcile_errors_total (rule 3)
 			full, skip, backoff = true, backoff, min(2*backoff, 30)
@@ -847,13 +856,26 @@ func (n *Node) apply(ctx context.Context) error {
 	n.restartPending(settings.Diff(n.applied, next)) // node_restart_pending
 	n.identity.Apply(settings.Get[identity.Settings](next, n.nodeID))
 	// ... *vfs.Filesystem and the engine, each with its own section
-	if err := n.applySMB(ctx, settings.Get[adaptersettings.SMB](next, n.nodeID)); err != nil { // D12
-		// RFC 23 §2.3, §2.4: reported refused, and not retried until the settings generation
-		// moves, so a lasting port conflict restarts nothing on later ticks
-		n.refused(adaptersettings.SectionSMB, err)
+	n.smbRefused = n.applySMB(ctx, settings.Get[adaptersettings.SMB](next, n.nodeID)) // D12
+	if n.smbRefused != nil {
+		// RFC 23 §2.3, §2.4: reported refused; while an adapter serves, not retried until the
+		// settings generation moves, so a lasting port conflict restarts nothing on later ticks.
+		// With nothing serving (n.smb nil), the loop calls retrySMB on its own backoff, so a port
+		// held for a moment at boot, by an old process still exiting, does not leave SMB down
+		n.refused(adaptersettings.SectionSMB, n.smbRefused)
 	}
 	n.applied = next
 	return nil
+}
+
+// D12: the loop's retry while nothing serves SMB. n.smbRefused, a Node field beside n.smb,
+// holds the last refusal of SMB's section and is nil once it serves.
+func (n *Node) retrySMB(ctx context.Context) error {
+	n.smbRefused = n.applySMB(ctx, settings.Get[adaptersettings.SMB](n.applied, n.nodeID))
+	if n.smbRefused != nil {
+		n.refused(adaptersettings.SectionSMB, n.smbRefused)
+	}
+	return n.smbRefused
 }
 
 // D12: written by RFC 20's plan's epic 7; shown for where it sits.
@@ -966,9 +988,10 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var wait time.Duration
+	var nonce uint64 // the source count's Nonce as this attempt read it (RFC 16 §2.3)
 	// RFC 23 §5.3: count before verifying, reads tracked, so a burst cannot pass at one count
 	if err := h.store.Write(r.Context(), metadata.WriteMeta{}, func(tx metadata.ControlPlaneTx) error {
-		wait = h.reserveAttempt(tx, acct, src) // §5.3: reads the counts and, only when no wait applies, raises them: the source's and the pair's (a local-socket caller has neither, a name with no account no pair), and the account's unless acct is zero; a wait raises nothing, so the transaction commits nothing
+		wait, nonce = h.reserveAttempt(tx, acct, src) // §5.3: reads the counts and, only when no wait applies, raises them: the source's and the pair's (a local-socket caller has neither, a name with no account no pair), and the account's unless acct is zero; each raise moves its Last, the wait's start; the source's Failed and XP row move here only when this creates its count, drawing its Nonce; a wait raises nothing, so the transaction commits nothing
 		return nil
 	}); err != nil {
 		h.problem(w, err) // fail closed: an attempt not counted is not checked
@@ -980,15 +1003,17 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 	}
 	// the principal counted is the principal checked; the zero one does the dummy work and fails
 	if err := h.signin.VerifyPassword(r.Context(), acct, req.Password); err != nil { // APISignIn (X2)
-		// the refusal's audit, and no idempotency record (RFC 16 §3, RFC 23 §4.5)
+		// the refusal's audit, and no idempotency record (RFC 16 §3, RFC 23 §4.5); it settles the
+		// failure, moving the source's Failed and its XP row, the only write after creation that
+		// moves them, and doing nothing on a source count missing or holding another Nonce (§5.3)
 		if werr := h.store.Write(r.Context(), metadata.WriteMeta{Audit: refusedAuditOf(r)},
-			func(tx metadata.ControlPlaneTx) error { return nil }); werr != nil {
+			func(tx metadata.ControlPlaneTx) error { return h.settleFailure(tx, src, nonce) }); werr != nil {
 			h.log.Error("sign-in refusal not audited", "err", werr) // the attempt stays counted
 		}
 		h.problem(w, err)
 		return
 	}
-	sess := h.newSession(r.Context(), acct) // its Write resets the account's and the pair's counts, and takes back the source's raise, putting back its Last unless a later attempt moved it
+	sess := h.newSession(r.Context(), acct, src, nonce) // its Write resets the account's and the pair's counts, and takes back the source's raise, its Count only, when the source count holds nonce
 	key := h.signingKey()                   // Resolve(ctx, storage role, kind key, the installation's signing_key owner, ref) (D10)
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims(acct, sess))
 	tok.Header["kid"] = key.Version // D3: rotation verifies older tokens by version
@@ -1007,6 +1032,11 @@ func (h *handlers) authenticate(r *http.Request) (metadata.User, error) {
 	return u, nil
 }
 ```
+
+The change-password handler, `POST /auth/password`, runs the same three steps on the caller's
+account and source: `reserveAttempt` before it checks the current password, `settleFailure` in the
+refusal's write when that check fails, and, when it passes, the takeback of the source's raise and
+the reset of the account's and the pair's counts in the transaction that writes the new password.
 
 ## 5. The epics in detail
 
@@ -1288,8 +1318,10 @@ call against their current record.
 - RFC 23 CP9 and CP10 hold at the API's authentication layer;
 - the clauses of RFC 23 §12's "§5.3 throttling" row hold at the API's authentication layer, which
   epic 7 then runs through the node: the address forms, the `429` that raises nothing, loopback
-  counted as a source and the local socket with no source or pair count, the source's 15-minute
-  window and a success's takeback that leaves it running from the last failure and the resets by `:set-password`, by the break-glass reset and
+  counted as a source and the local socket with no source or pair count, the source's wait counted
+  from its last counted attempt, a burst from one source included, the source's 15-minute window,
+  which only a failure's settle or an attempt that creates the count moves, overlapping successes,
+  a count never settled and a settle or takeback on a count swept or recreated included, and the resets by `:set-password`, by the break-glass reset and
   by the account's deletion included; and the "§5.2 roles" row's refusals of A6's settings;
 - `dfs init`, killed after each of its steps, between two journals' `node-id` copies included, and
   run again, finishes with one identity, and `dfs start` then serves; run again beside a leftover
@@ -1324,8 +1356,11 @@ call against their current record.
   and counting `POST /auth/password`'s current-password check too; a `429` that reads the counts
   and commits nothing, answered with the code `throttled` (RFC 23 §4.7); a name with no account
   counted against its source only; a loopback address counted as any source, and a caller on the
-  local socket with no source or pair count; a source's count forgotten 15 min after its last
-  failure, a success's takeback putting back the `Last` and the `XP` row it moved, and cleared by
+  local socket with no source or pair count; a source's wait counted from its last counted
+  attempt (`Last`), and its count forgotten 15 min after its last settled failure (`Failed`), which
+  with its `XP` row only a failure's settle or an attempt that creates the count moves; a success's
+  takeback touching only its count; a settle or takeback doing nothing on a count swept or
+  recreated since its attempt (`Nonce`); and the count cleared by
   the break-glass reset in bounded batches. A benchmark of checked sign-ins, two commits each, from many sources beside
   concurrent metadata commits, which §6.1's sign-in row reads for its trigger; and a test that a
   `429` flood from one address commits nothing (§4.3 above).
@@ -1482,7 +1517,8 @@ runs RFC 23's e2e rows.
   RFC says, and benchmarks it at 10⁴ shares, a cold pass and steady share churn, against
   RFC 23 §2.3's bound on applying a change. The sketch's reconcile re-applies settings only when
   the settings generation moves; it retries only a failed read, after a backoff, with a full pass,
-  and a refused section waits for the next generation. A store whose reads fail is a test on the
+  and a refused section waits for the next generation, except an adapter with nothing serving,
+  retried on its own backoff, 1 s doubling to 30 s and reset when it serves. A store whose reads fail is a test on the
   injected clock, of the backoff and of the full pass after it, not a benchmark, since each
   recovery is one more cold pass.
 - **O7. A1 reached into RFC 20's code and plans.** `pkg/adapter/settings.Adapter` has `Port`, which
