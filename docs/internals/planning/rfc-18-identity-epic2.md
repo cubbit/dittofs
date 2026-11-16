@@ -28,7 +28,7 @@ on the view and on `ControlPlaneTx`, refused until T2.2 lands, its D2); T2.3 for
 once-per-transaction `PGEN` raise and the records' `Position`); T2.8 for its T2.11 (`DeleteUser`'s
 mark and batches, whose last batch deletes the secrets the record references, its D8); T2.7 for
 its T2.6 (the `PGEN` helper) and T2.7 (`PutOperation`), and for `ControlPlaneTx.SetNTHashDeleted`,
-which RFC 23's epic 2 adds through #4336; everything else starts before it. **RFC 23's plan's
+which #4336 added to RFC 23's epic 2; everything else starts before it. **RFC 23's plan's
 epic 3**, for T2.7 only: its T3.4, whose `internal/node/step` types the step returns. RFC 23's
 plan's epic 1 (#4314, D1) deletes v1 first, which S1 already waits on.
 **Blocks:** **E6**, whose T6.2 is identity's one mint path over T2.3's `Create`, and which also
@@ -581,7 +581,7 @@ internal/identity/
 
 - **Track:** C. **Depends on:** T2.1, T2.2. #4059's S1 and S2; RFC 23's plan's epic 2's T2.6
   (the `PGEN` raise and `Position`, for each user `DropNTHashes` zeroes) and T2.7 (`PutOperation`),
-  its `ControlPlaneTx.SetNTHashDeleted` (added through #4336), and its epic 3's T3.4 (the runner's
+  its `ControlPlaneTx.SetNTHashDeleted` (added by #4336), and its epic 3's T3.4 (the runner's
   `StepResult`); RFC 16 §3's amendment (D4).
 - **Covers:** R4, R31, R32, R33, R36.
 - **Deliverables:** kvstore's `DropNTHashes` (D4), with its `ponytail:` on the batch size;
@@ -736,12 +736,12 @@ deletion's step can fail on a record it cannot decode (T2.7, R36).
 - **Root's SID (D9).** Neither RFC 18 §2.1 nor RFC 22 §16.3 gives root one (Samba uses
   `S-1-22-1-0`, from memory); an RFC 22 amendment, or a decision that root has none.
 - **`State.Settings`' type (D6).** RFC 18 §2.6 names `config.Identity`, which no plan builds.
+- **The user's uid and gid flags.** The RFC 18 plan's §1.1 table maps `dfsctl user create
+  --host-uid` and `--host-gid` to "rebuilt by RFC 23's plan"; RFC 23's plan's epic 6 rebuilds them
+  as `--uid` and `--gid` (its T6.5), the uid and gid T2.2 allocates when absent. The row should name
+  the new flags.
 
 **Other:**
-
-- **`ControlPlaneTx.SetNTHashDeleted(op)`.** RFC 23's epic 2 declares `Installation()` on
-  `ControlPlaneTx` as a read only; it adds one setter per writer of `NTLMOff` (`SetNTLMOff(gen)`,
-  `SetNTHashDeleted(op)`) through #4336. T2.7's `End` waits for it.
 
 - `tx.PutSecret`, which the API's password write uses (D5), is #4059's secrets view on
   `ControlPlaneTx`; whichever of the RFC 13 plan's view changes and RFC 23's plan's epic 2 lands
