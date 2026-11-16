@@ -25,8 +25,9 @@ E3's T3.2 has routed `Spell` and `Find`.
 Kerberos branch joins the dispatch, the throttle, the logon event and the series T4.2, T4.4
 and T4.5 build. **E7, partly**: pass-through is a row of T4.2's domain table, and it reuses
 T4.1's key exchange and MIC check keyed by the reply's `UserSessionKey`, T4.2's NTLMv1 refusal,
-which sits before routing, and T4.4's throttle for the domain controller's count. RFC 22's
-plan, whose S6a is this epic's S2.
+which sits before routing, and T4.4's throttle for the domain controller's count. **E6, partly**:
+its T6.7 cache keys names with T4.4's `kvstore.FoldName`. RFC 22's plan, whose S6a is this
+epic's S2.
 
 ---
 
@@ -94,7 +95,8 @@ the local check against a sealed NT hash; the NTLM-off refusal at sign-in; the t
 - **E3**, resolution, whose T3.1 adds `Deps.Tracer`.
 - **E4**, this epic.
 - **E5**, Kerberos and the PAC.
-- **E6**, the directory: the directory record whose NetBIOS domain and realm E7's row reads.
+- **E6**, the directory: the directory record whose NetBIOS domain and realm E7's row reads, and
+  the directory cache whose keys fold with T4.4's `kvstore.FoldName`.
 - **E7**, NETLOGON and the machine account: pass-through.
 - **E8**, the integration epic: identity composed into the node.
 - **E9**, E2E green: RFC 18 §10's Tier 2 rows over SMB.
@@ -122,7 +124,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no external system: NTLM is checked against published vectors |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T4.1, T4.2, T4.4, T4.5 | RFC 18's `decision:` notes of §3.5 (an alternate UPN suffix) at the domain table and §3.6 (no map to guest) at `SignIn`'s error path; its `ponytail:` notes of §3.1 and §7.3 at the throttle; this document's `decision:` markers for D1 and D2 (T4.1), D3, D4 and D10 (T4.2), D5 (T4.4), and D7's `ponytail:` (T4.5); epic 1's stub marker on `SignIn` narrowed to the Kerberos branch |
 | rule 10, a test must be able to fail | all | each R row's test is named with the bug it catches; R10's constant-time compare is held by `hmac.Equal` and R24 by the event's one emit site, each named as such |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T4.4, T4.5 | `LogonSink`, `LogonEvent` and `LogLines`, which `internal/node` calls to fill `Deps.Logons`; `kvstore.FoldName`, E2's fold exported for the throttle, a store helper rather than identity surface; the cryptography stays unexported |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T4.4, T4.5 | `LogonSink`, `LogonEvent` and `LogLines`, which `internal/node` calls to fill `Deps.Logons`; `kvstore.FoldName`, E2's fold exported for the throttle and E6's T6.7, a store helper rather than identity surface; the cryptography stays unexported |
 | rule 12, each subtask creates only what it declares | all | `Deps.Logons` lands with T4.5, its first reader; the pass-through row with E7; no `State` field is added |
 
 ## 3. Requirements and invariants
@@ -250,7 +252,7 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   counts only checked failures toward `bad password` (from memory).
 - **D6, the throttle folds with the name index's fold.** E2's fold, which keys `NX‖user`, is
   exported as `kvstore.FoldName`, so a spelling the store finds as one user is one pair and no
-  second copy can drift from it. The user part is stripped of a `DOMAIN\` prefix and an
+  second copy can drift from it; E6's T6.7 folds its cache keys with the same export. The user part is stripped of a `DOMAIN\` prefix and an
   `@realm` suffix as E2's `Lookup` strips it. Prior art: none found.
 - **D7, logon events go to `Deps.Logons`, written as log lines without the presented name,
   pending the user's answer (§9).** `LogonSink` has RFC 25's method shape, `Logon(ctx,
@@ -274,7 +276,9 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   Prior art: none found.
 - **D9, a missing `Auth` answers `ErrUnavailable` in `vfs`.** `vfs.New` does not refuse a
   `Deps` without `Auth`; `SignIn` then answers `ErrUnavailable`, so a filesystem built without
-  identity, `pkg/vfs/vfstest/memory`'s included, fails closed and imports nothing new. Prior art:
+  identity fails closed. `pkg/vfs/vfstest/memory` is not one: E3's T3.6 hands it the real server
+  through `internal/identity/identitymem` as `Auth`, so once T4.3 lands its `SignIn` signs in a
+  user seeded in its store. Prior art:
   `errUnsigned` fails closed the same way today.
 - **D10, a disabled user's outcome is `disabled` whatever the password.** The proof is computed
   against the dummy hash as for a miss (D4), and the answer is `ErrLogonFailure` either way;
@@ -299,7 +303,7 @@ internal/identity/
   server.go           T4.5  Deps.Logons
   export_test.go      T4.2  the hook that delivers the NT hash a proof was computed with
 pkg/metadata/kvstore/
-  (E2's fold's file)  T4.4  nameFold exported as FoldName (D6)
+  keys.go             T4.4  E2's nameFold exported as FoldName (D6)
 internal/vfs/
   shares.go           T4.3  SignIn through Deps.Auth; errUnsigned removed once Spell and Find are routed
 ```
@@ -456,7 +460,8 @@ internal/vfs/
   `identity_logon_throttle_evictions_total` (the name pending §9); `SignIn` asking it after
   D3's `ErrInvalid` refusals and before anything reads a credential, and counting each
   `ErrLogonFailure` but a throttled one, with outcome `throttled`; RFC 18 §3.1's and §7.3's
-  `ponytail:` notes and D5's markers. Consumed by T4.5, E5 and E7.
+  `ponytail:` notes and D5's markers. Consumed by T4.5, E5 (whose Kerberos branch asks it once the
+  ticket decrypts, E5's D9) and E7; `kvstore.FoldName` also by E6's T6.7.
 - **Acceptance criteria:**
   - A throttled attempt reads neither the store nor the secret provider.
 - **Tests:** at `Server.SignIn`, over the memory KV store, on the injected clock:
@@ -581,10 +586,11 @@ logon sink come in.
   reads the `NTLM` key of `State.Settings`. It stays pending E2's D6; this epic adds no `State`
   field.
 - The wiring imports nothing new: `vfs` holds `pkg/identity`'s interface, and only
-  `internal/node` (E8) builds the server. `pkg/vfs/vfstest/memory` keeps no `Auth` and answers
-  `ErrUnavailable` (D9), so RFC 22's plan's S4b, NTLM against `memory.New`'s `SignIn`, cannot be
-  met by this epic: it waits for E8's composed node, or for a stand-in RFC 20 §7 holds to a
-  suite. That plan's S6a text needs the same change.
+  `internal/node` (E8) and identity's own packages build the server. `pkg/vfs/vfstest/memory`
+  gets the real server as `Auth` from E3's T3.6, through `internal/identity/identitymem`, so RFC
+  22's plan's S4b, NTLM against `memory.New`'s `SignIn`, is met once E3's T3.6 and T4.3 have
+  both landed, with the test's user seeded through `NewHashes` in the store it hands
+  `identitymem`.
 
 **Where the plan and the RFCs disagree, or leave a gap (RFC pull-request material):**
 
@@ -624,7 +630,8 @@ logon sink come in.
   returns the reply (session key, SIDs, flags, domain SID) and `SignIn` applies T4.1's
   `exportedKey` and `checkMIC` to it, keeping the MIC and key rules in one place.
 - **Kerberos and the throttle**: §3.1 throttles before the credential, but a ticket's client name
-  is known only once the ticket is decrypted. E5's to settle.
+  is known only once the ticket is decrypted. E5's D9 asks T4.4's throttle once the ticket
+  decrypts under the service key, and its R45 counts Kerberos failures in this table.
 
 **Review.** The surface was designed twice: an independent architect pass proposed the same
 tree and no new `internal/identity` export but the logon types, which it would leave to RFC 25
