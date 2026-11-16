@@ -53,7 +53,9 @@ its drift test; the architecture tests that need no package this epic does not c
 - Each resource's spec and status types in `pkg/node/apiv1`: E4 for the resources its routes
   serve, E5 for API tokens, sessions and sign-in.
 - The kvstore settings view's delete and cross-scope read and the secrets view (`DeleteSetting`,
-  `Secret`, `PutSecret`, `PruneSecret`): the RFC 13 plan's epic 1 declares them.
+  `Secret`, `PutSecret`, `PruneSecret`), on the view and on `ControlPlaneTx` alike, since the RFC
+  13 plan's A2 and RFC 18's password write commit a sealed secret through `ControlPlaneTx.PutSecret`
+  inside a `Write`: the RFC 13 plan's epic 1 declares them.
 - `pkg/bootstrap`, the refused v1 keys and the node identity: the RFC 13 plan's epic 2.
 - The two architecture rules over `internal/node/api` (its imports, and its writes only through
   `Write`): E4 lands them with the package (D7).
@@ -186,8 +188,11 @@ that subtasks and tests can cite them.
   takes its dependencies as one struct the command builds (from memory).
 - **D3, the store view is not declared here.** Its signatures (`expect` on every write,
   `DeleteGrant`, `PutOperation`, `Write`) and the records they name freeze when E2 declares and
-  fills them together, with `WriteMeta` and `ControlPlaneTx` in the root `pkg/metadata`, where RFC
-  16 §3 declares the views and which both kvstore and the API can import. A stub view frozen a
+  fills them together, with `WriteMeta` and `ControlPlaneTx` in `pkg/metadata/entity`, which kvstore
+  and the API both already import. Not the root `pkg/metadata`: on `feat/storage-v2` it is still
+  v1's metadata `Service`, and kvstore naming a type there would pull it into kvstore's closure and,
+  through kvstore, into the engine's, which `pkg/block/engine/imports_test.go` refuses. The two
+  types can move beside RFC 16 §3's views once that `Service` leaves the root package. A stub view frozen a
   whole epic before its bodies would pin signatures no test exercises. The user's decision. No
   marker.
 - **D4, `dfs init` and `dfs`'s `reset-admin` land as stub commands here, not in E5.** The planning
@@ -248,7 +253,7 @@ test/harness/run/fixture.go                T1.1  a DittoFS-server fixture refuse
 pkg/apiclient/                             T1.2  deleted, with its v1 body (D6); E4 lands it again
 cmd/dfsctl/commands/**                     T1.2  bodies replaced by a refusal (D11); tree and flags kept
 pkg/controlplane/  internal/controlplane/
-pkg/snapshot/  pkg/identity/               T1.3  deleted (internal/auth/netlogon stays, with no importer)
+pkg/snapshot/  pkg/identity/               T1.3  deleted (internal/auth/netlogon stays, with no production importer)
 pkg/auth/sid/mapper.go                     T1.3  deleted, with sid_test.go's mapper tests
 pkg/health/share.go, cache.go              T1.3  deleted
 pkg/config/                                T1.3  stripped to the bootstrap loader; Config renamed Bootstrap (D8)
@@ -284,7 +289,9 @@ internal/node/
     two that import `pkg/identity/ldap` or `pkg/apiclient`. `netlogon_passthrough`,
     `netlogon_reload` and `online_join` import only `internal/auth/netlogon`, which stays, so they
     stay, and `test/harness/needs`' `TestADDCNeedsWhatItsTestsRun` still finds the cell's tests.
-    The RFC 18 plan's epics 6 and 7 rebuild the two.
+    `adBindDN`, `adAdminPassword` and `adBaseDN`, which `online_join_test.go` uses, move from the
+    deleted `ad_dc_ldap_test.go` to `ad_dc_integration_test.go` first, so `go vet -tags=ad_dc`
+    still compiles. The RFC 18 plan's epics 6 and 7 rebuild the two.
   - `test/harness/fixture`'s v1 server deleted: `fixture.go`'s `Server`, `Start`, `Command`,
     `Reset` and `Stop`, `api.go` and `shares.go`, with `api_test.go`, `mount_unix_test.go`,
     `s3_test.go` and `shares_test.go` (which calls `loadShares` and `addShare`), and the ten tests
@@ -336,7 +343,8 @@ internal/node/
   - deleted: `pkg/controlplane/**`, `internal/controlplane/**`, `pkg/snapshot`, `pkg/identity/**`
     (the LDAP provider imports the root files, so the tree goes whole), `pkg/auth/sid/mapper.go`
     and `sid_test.go`'s mapper tests, `pkg/health`'s `share.go` and `cache.go` and their tests;
-    `internal/auth/netlogon` stays, with no importer, for the RFC 18 plan to move;
+    `internal/auth/netlogon` stays, with no production importer (the three ad-dc tests T1.1 keeps
+    import it), for the RFC 18 plan to move;
   - `pkg/config` stripped of v1's server sections (`database`, `controlplane`, `admin`,
     `kerberos`, `ldap`, `identity`, `gc`, `integrity`, `snapshot`, `metadata`, `metrics`,
     `shutdown_timeout`, and `blockstore` but its journal path), leaving the loader, logging and the
@@ -478,7 +486,7 @@ internal/node/
 flowchart TD
   T1_1["T1.1 Delete v1's test drivers"] --> T1_2["T1.2 Delete the client"]
   T1_2 --> T1_3["T1.3 Replace the server"]
-  T1_3 --> C1(["after T1.3: v1 gone; S0 for the RFC 13 plan"]):::sync
+  T1_3 --> C1(["after T1.3: v1 gone; S0 for the RFC 13 and RFC 18 plans"]):::sync
   T1_3 --> T1_4["T1.4 Daemon flags' other callers, reference test"]
   T1_5["T1.5 Shared wire types"]
   T1_3 & T1_5 --> T1_6["T1.6 Architecture tests"]
@@ -487,7 +495,7 @@ flowchart TD
 ```
 
 Checkpoint after T1.3: the module, `dt` and every cell build and pass without v1, which is all
-the RFC 13 plan's S0 asks for. Checkpoint after T1.6: S1. T1.5 waits on nothing and can run beside
+the RFC 13 and RFC 18 plans' S0 asks for. Checkpoint after T1.6: S1. T1.5 waits on nothing and can run beside
 T1.1–T1.4.
 
 ## 8. Suggested pull requests

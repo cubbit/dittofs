@@ -148,7 +148,7 @@ What replaces what:
 | `cmd/dfsctl` command bodies | the same tree, rebuilt | bodies deleted in epic 1 |
 | `pkg/health`'s `share.go` and `cache.go` | `pkg/health`, with RFC 25's registry and watchdog beside the `Checker`, `Report` and `wrap.go` helpers the stores implement | those two deleted in epic 1 |
 | `pkg/snapshot` (only v1 calls it) | none | deleted in epic 1 |
-| `pkg/identity/**` (v1 resolver, cache, link store, LDAP provider) and `pkg/auth/sid/mapper.go` | RFC 18's `pkg/identity` and RID counter (RFC 18 plan) | deleted in epic 1, whole: the LDAP provider imports the root files; the RFC 18 plan lifts what it reuses from history. `internal/auth/netlogon` stays, without importers, for the RFC 18 plan to move |
+| `pkg/identity/**` (v1 resolver, cache, link store, LDAP provider) and `pkg/auth/sid/mapper.go` | RFC 18's `pkg/identity` and RID counter (RFC 18 plan) | deleted in epic 1, whole: the LDAP provider imports the root files; the RFC 18 plan lifts what it reuses from history. `internal/auth/netlogon` stays, without production importers, for the RFC 18 plan to move |
 | `pkg/config`'s v1 sections | `pkg/bootstrap`, the host's bootstrap only (RFC 13 plan) | stripped in epic 1; renamed and finished by the RFC 13 plan |
 | key `database.*`, the `controlplane.db` file | none | refused by the RFC 13 plan's loader; the database file by epic 3's start |
 | keys `kerberos.*`, `ldap.*`, `identity.machine_sid`, `DITTOFS_KERBEROS_*`, `DITTOFS_LDAP_*` | `identity.*` settings and `Secret` records (RFC 18 plan) | refused by the RFC 13 plan's loader |
@@ -1116,9 +1116,11 @@ RFC 23 CP14 and CP16, as architecture tests.
     `pkg/controlplane/{models,runtime}` (`api_test.go`, `mount_unix_test.go`, `s3_test.go`), so `dt`
     compiles and `lint-repo`'s `go test ./test/harness/...` passes; epic 7 rebuilds the fixture on
     `dfs init`, `dfs start` and epic 4's client;
-  - delete all of `test/integration/ad-dc`'s tests, which import `pkg/identity`,
-    `pkg/identity/ldap` or `pkg/apiclient`, so `lint-go`'s `ad_dc` vet compiles; the RFC 18 plan's
-    epic 6 and 7 rebuild them;
+  - delete the two `test/integration/ad-dc` tests that import `pkg/identity/ldap` or
+    `pkg/apiclient` (`ad_dc_ldap_test.go`, `netlogon_smbclient_test.go`), moving the constants
+    `online_join_test.go` shares out of the first, so `lint-go`'s `ad_dc` vet compiles; the other
+    three import only `internal/auth/netlogon` and stay; the RFC 18 plan's epics 6 and 7 rebuild
+    the two;
   - delete `test/e2e`'s v1 driver: the `helpers` package, which imports `pkg/controlplane` and
     `pkg/apiclient`, the top-level `e2e` package, whose `main_test.go` and 51 other tests import it, and the `snapshot`
     package. `test/e2e/framework` stays: it imports nothing of this module (mounts, network
@@ -1173,8 +1175,9 @@ API write commits in, and a share's removal steps past the mark.
 
 **Expected content:**
 - The view's signatures, declared here with their bodies rather than in epic 1: `expect` on every
-  write, `DeleteGrant`, `PutOperation` and `Write`, with `WriteMeta` and `ControlPlaneTx` in the
-  root `pkg/metadata`, where RFC 16 §3 declares the views and which kvstore and the API both import,
+  write, `DeleteGrant`, `PutOperation` and `Write`, with `WriteMeta` and `ControlPlaneTx` in
+  `pkg/metadata/entity`, which kvstore and the API both import (the root `pkg/metadata` is still v1's
+  `Service`, which the engine's import rule refuses in kvstore's closure),
   and every caller updated.
 - A3's entry point: the transaction type carrying the view's writes, and the audit and idempotency
   records written in it.
