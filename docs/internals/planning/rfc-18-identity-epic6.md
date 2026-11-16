@@ -20,11 +20,11 @@ and §8.2's `Source`.
 **Depends on:** **E1** (S1): `pkg/identity`'s `Identities`, `FindOpts`, `Spelling`, `Caller`;
 `internal/identity`'s `Server`, `Deps`, `State`, `Apply`, `Start`. **E2**: T2.3's `Minter.Create`
 (T6.2), T2.4's `Settings`, `State.Settings` and `Apply`'s refusal (T6.3), its `Deps.Secrets`
-(T6.5) and its ID range (T6.9), T2.5's `Spell` and `Find` (T6.9), T2.2's `Alloc` (T6.9) and
-T2.6's `Clock.After` (T6.5, D7). **E3, partly**: T3.1's
+(T6.5) and its ID range (T6.9), T2.5's `Spell` and `Find` (T6.9), T2.2's `Alloc` (T6.9),
+T2.6's `Clock.After` (T6.5, D7) and T2.1's `entity.FoldPrincipalName` (its D2), which T6.7's
+keys fold with. **E3, partly**: T3.1's
 `Deps.Tracer`, for T6.7's spans, and T3.1's `Resolve`, T3.4's closure and T3.8's caller cache, for
-T6.11; the rest does not wait. **E2's D2**: `entity.FoldPrincipalName`, which T6.7's keys fold
-with. **#4059's S1** (the RFC 13
+T6.11; the rest does not wait. **#4059's S1** (the RFC 13
 plan's): `pkg/settings`' `Of`, for T6.3. **#4059's epic 3, partly**: its write check `Check` with
 tracked reads, for T6.13 alone. **RFC 23's plan's epic 3, partly**: `pkg/health`'s `Condition`,
 for T6.8's source. **RFC 23's plan's epic 2 (#4326), partly**: its T2.2's `User.Email` and its
@@ -35,9 +35,12 @@ branch, called by whichever of T6.9 and E5's T5.5 lands second. **E7**, partly: 
 wraps T6.9's `Find`, `test-directory` wraps T6.5's test call, and pass-through compares the
 `LogonDomainID` with T6.5's domain SID. **E8**: "directory deadline", "disabled directory account"
 and "deny-only lookup error" run on this epic's directory; E8 adds T6.8's source to the node's
-registry, lists T6.3's section in the node's settings table, reads a directory account's enabled
+health evaluator through `Add`, lists T6.3's section in the node's settings table, reads a directory account's enabled
 state at a Kerberos sign-in through T6.11's cache read (its T8.5, D6 pending), and hands T6.9's
-`KerberosLinkSID` to RFC 23's API as `Deps.Directory`.
+`KerberosLinkSID` to RFC 23's API as `Deps.Directory`. **RFC 23's plan's epic 4**, its T4.11's
+success paths: T6.9's `KerberosLinkSID` and T6.4's in-memory directory with its suite. **RFC 23's
+plan's epic 6**, its T6.4 and T6.6: T6.4's in-memory directory and T6.9's `Find`, for the grant by
+directory name and `domain resolve`/`domain test`.
 
 ---
 
@@ -100,7 +103,7 @@ directory step; the benchmarks; the NetBIOS cross-check and the section's write 
 - A directory account's enabled state read at a Kerberos sign-in (RFC 18 §3.4, §3.7): E8's T8.5,
   through T6.11's cache read (E8's D6, pending). R57 is held here at resolution.
 - The node composing identity, filling `State.Directory` from the store and adding T6.8's source to
-  its health registry: E8.
+  its health evaluator through `Add`: E8.
 - Serving in-grace entries while refreshing them in the background after an outage: RFC 18 §5.3's
   own `ponytail:`, written at the cache (T6.8), not built.
 - A second directory, forest trusts, the global catalogue: RFC 18 §5.1's own `ponytail:`.
@@ -143,7 +146,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T6.1, T6.4, T6.6 | the directory's suite runs against the Samba domain controller in `integration/ad-dc`, reached by its host name with its certificate verified against the fixture's CA; a test that needs real AD's nesting or paging runs there, never on the in-memory one alone |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T6.4, T6.5, T6.7, T6.8, T6.9 | RFC 18's notes at their sites: §5.1's `ponytail:` (one directory) at the client, §5.2's two `ponytail:` notes (constant TTLs, one cache per node) at the cache, §5.3's `decision:` (stale then closed) and `ponytail:` (recovery burst) at the cache's grace, §5.5's `ponytail:` (no NT hash read) at the client's attribute list, §4.4's `decision:` (no mint for an unauthenticated lookup) at `Find`; this document's D1 to D13 markers at theirs |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | each R row's test is named in its subtask with the bug it catches; R6's write role is held by #4059's write check, run on this section (T6.13) |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T6.3, T6.4, T6.5, T6.8, T6.9 | the exports are `internal/identity/directory`'s `Record`, `Conn`, `Request`, `Entry`, `Dialer` and `DialTLS`, which `internal/node` and `identitytest` call, its `Client`, `NewClient` and question methods, which `internal/identity` calls, `State.Directory` and `Deps.Directory`, `Server.Conditions` for the node's registry, `Server.KerberosLinkSID` for the API's link write, and `identitytest`'s directory, fault wrapper and suite; the cache and the mint path stay unexported |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T6.3, T6.4, T6.5, T6.8, T6.9 | the exports are `internal/identity/directory`'s `Record`, `Conn`, `Request`, `Entry`, `Dialer` and `DialTLS`, which `internal/node` and `identitytest` call, its `Client`, `NewClient` and question methods, which `internal/identity` calls, `State.Directory` and `Deps.Directory`, `Server.Conditions` for the node's health evaluator, `Server.KerberosLinkSID` for the API's link write, and `identitytest`'s directory, fault wrapper and suite; the cache and the mint path stay unexported |
 | rule 12, each subtask creates only what it declares | all | each deliverable names its consumer; `Deps.Directory` lands with the client (T6.5), `State.Directory` with `Apply`'s check (T6.3), `Settings.DirectoryStaleGrace` with the cache (T6.7), the fault wrapper with the in-memory directory it wraps (T6.4), first used in T6.6; `Clock.After` is E2's T2.6's (D7) and the record's `RequirePAC` E5's T5.8's |
 
 ## 3. Requirements and invariants
@@ -488,8 +491,10 @@ pkg/settings/
     or, not, `\xx` escapes), so a bad escape matches what a directory would;
   - `identitytest.FaultyDirectory` (kind 3), built on `pkg/sim`'s `Fault` and `Schedule`, around a
     `Dialer` and every `Conn` it returns: it always sends the dial or the query to what it wraps,
-    then fails, delays on the test clock or times out that answer, or every one, on cue, so the
-    directory has really answered and a test whose code ignored the answer still fails;
+    then fails, delays on the test clock, times out, or tears that answer by rewriting a named
+    attribute's description in its entries (T6.6's hostile ranges), or every one, on cue, so the
+    directory has really answered and a test whose code ignored the answer still fails; it keeps
+    a pass-through record of the queries it sent, for a test whose requirement is a query count;
   - `identitytest.DirectoryConformance(t, open func(t *testing.T) (directory.Conn, Seeder))`, its
     first rows: a value holding `*`, `(`, `)`, `\` and NUL matches only the entry that holds it
     literally; two entries answering one name both returned; a search based outside the naming
@@ -587,9 +592,10 @@ pkg/settings/
   cannot read `tokenGroups` gets the same closure through the chain rule and `primaryGroupID`
   (catches the primary group lost, R22); `identitytest`'s fault wrapper failing the second page:
   the closure `ErrUnavailable`, never the first page's groups (catches a truncated closure, R22);
-  an `rfc2307` user two levels deep through `memberUid` and `member` (R22); a server answering
-  `member;range=1500-1499`, and one answering `member;range=0-1499` twice: each `ErrUnavailable`,
-  the second without a third query (catches a parse bug or an endless loop on a hostile range,
+  an `rfc2307` user two levels deep through `memberUid` and `member` (R22); the wrapper tearing
+  the second range's attribute to `member;range=1500-1499`, and on another run repeating
+  `member;range=0-1499`: each `ErrUnavailable`, the second without a third query, read from the
+  wrapper's pass-through record of queries (catches a parse bug or an endless loop on a hostile range,
   R22). `FuzzRangeAttr`, seeded with `0-1499`, `1500-*` and `0-0`: no panic, a parsed range has
   `lo ≤ hi` or `hi` = `*`, and it re-formats to text that parses to the same bounds; crashers
   under `testdata/fuzz/FuzzRangeAttr`. The 1 024-SID page
@@ -600,7 +606,7 @@ pkg/settings/
 
 **Subtask T6.7 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T6.5. E3's T3.1 (`Deps.Tracer`), E2's `entity.FoldPrincipalName` (D2).
+- **Track:** C. **Depends on:** T6.5. E3's T3.1 (`Deps.Tracer`), E2's T2.1 (`entity.FoldPrincipalName`, its D2).
 - **Covers:** R7, R8, R14, R16, R25, R26, R27, R28, R29, R30, R31, R32, R33, R34, R35, R38.
 - **Deliverables:** the cache in `internal/identity`: one per `Server`, emptied with each new
   client; keys per R29, names folded with E2's `entity.FoldPrincipalName` (its D2); a positive entry fresh 5 minutes, a negative
@@ -652,7 +658,7 @@ pkg/settings/
   `directory_unreachable` degraded while lookups are served stale and unhealthy once one is
   refused past the grace, the condition RFC 25 §3.9's row names; the Go table that would hold the
   row is whoever builds it, since RFC 23's plan's epic 3 builds none. Consumed by E8, which adds
-  the server to the node's registry.
+  the server to the node's health evaluator through `Add`.
 - **Acceptance criteria:**
   - With the directory answering, `Conditions` reports nothing.
 - **Tests:** at the cache, on the injected clock: §10's "stale grace" row's outage half, 100 users
@@ -683,7 +689,9 @@ pkg/settings/
   Kerberos branch by whichever of T6.9 and E5's T5.5 lands second. D7's bound opened by `Find`'s
   directory branch. `(*Server).KerberosLinkSID(ctx, name string) (sid.SID, error)`, fresh-only
   (D11): `ErrUnavailable` when no fresh answer can be had, `ErrUnknownPrincipal` when the directory
-  holds no such entry, a zero SID for a name in another realm (RFC 23's plan's epic 4's R44),
+  holds no such entry, a zero SID for a name in another realm, the realm compared as the KDC
+  spells it, case and all (RFC 18 §4.2), and for an entry holding no SID, nothing minted (RFC 23's
+  plan's epic 4's R44),
   consumed by E8, which hands it to RFC 23's API as `Deps.Directory`. Consumed by T6.10, T6.11,
   E5 (step 3), E7 (`resolve-principal`, pass-through's SID), E8 and RFC 22's `lsarpc` through
   `Find`.
@@ -705,7 +713,9 @@ pkg/settings/
   found by name alone, R46); `KerberosLinkSID("alice@CORP.EXAMPLE")` with alice's entry cached and
   the directory failing within the grace: `ErrUnavailable`, never the cached SID (catches a link
   written from a stale answer, R63); with the directory answering: alice's SID; `nobody@CORP.EXAMPLE`
-  `ErrUnknownPrincipal`; `alice@OTHER.REALM` the zero SID (R63); every query delayed 4 seconds
+  `ErrUnknownPrincipal`; `alice@OTHER.REALM` and `alice@corp.example` the zero SID (catches a
+  folded realm, R63); an `rfc2307` entry with no SID the zero SID, nothing minted (R63); every
+  query delayed 4 seconds
   through the fault wrapper, a cold
   `Find` with `Mint` of a user in 300 groups failing `ErrUnavailable` at 20 seconds on the
   injected clock, nothing written (R17). Doubles: the in-memory directory (kind 2), the fault
@@ -841,7 +851,7 @@ flowchart TD
   T6_5 --> T6_6["T6.6 Groups, paging, ranges"]
   T6_5 --> T6_7["T6.7 The cache"]
   E3X(["E3: Tracer, closure, caller cache"]):::sync -. "T3.1" .-> T6_7
-  E4X(["E2: entity.FoldPrincipalName"]):::sync -. "fold" .-> T6_7
+  E2F(["E2: entity.FoldPrincipalName"]):::sync -. "T2.1" .-> T6_7
   T6_7 --> T6_8["T6.8 Outage mode"]
   X23(["RFC 23 epic 3: pkg/health"]):::sync -. "Condition" .-> T6_8
   T6_2 & T6_6 & T6_7 --> T6_9["T6.9 Directory principals"]
