@@ -1,6 +1,7 @@
 package kvstore
 
 import (
+	"bytes"
 	"errors"
 	"time"
 
@@ -207,16 +208,18 @@ func decodeShareInfo(id entity.ShareID, b []byte) (entity.Share, error) {
 }
 
 // shareState is a share's state record: its state and, while it is being
-// removed, how far the removal has got and what it does with snapshots, so
-// a crash resumes the removal where it stopped.
+// removed, how far the removal has got, the key its current pass resumes
+// after and what it does with snapshots, so a crash resumes the removal
+// where it stopped.
 type shareState struct {
 	State     entity.ShareState
 	Step      uint8
 	Snapshots entity.SnapshotDisposition
+	Cursor    []byte // nil: the pass starts at its range's first key
 }
 
 func encodeState(s shareState) []byte {
-	return codec.NewWriter(v1).Uint8(uint8(s.State)).Uint8(s.Step).Uint8(uint8(s.Snapshots)).Encode()
+	return codec.NewWriter(v1).Uint8(uint8(s.State)).Uint8(s.Step).Uint8(uint8(s.Snapshots)).Bytes(s.Cursor).Encode()
 }
 
 func decodeState(b []byte) (shareState, error) {
@@ -225,6 +228,9 @@ func decodeState(b []byte) (shareState, error) {
 		return shareState{}, err
 	}
 	s := shareState{State: entity.ShareState(r.Uint8()), Step: r.Uint8(), Snapshots: entity.SnapshotDisposition(r.Uint8())}
+	if c := r.Bytes(); len(c) > 0 {
+		s.Cursor = bytes.Clone(c)
+	}
 	return s, r.Done()
 }
 

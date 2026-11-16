@@ -15,7 +15,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
-	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -75,12 +74,6 @@ func shareWithID(t *testing.T, s *Store, name string, id entity.ShareID) entity.
 	}
 
 	return got
-}
-
-// encodeRemovalStep writes a SH‖shard‖rm value, standing in for the
-// removal's per-shard steps, which no code writes yet.
-func encodeRemovalStep(step removalStep) []byte {
-	return codec.NewWriter(v1).Uint8(uint8(step)).Encode()
 }
 
 // keysUnder lists the keys under prefix.
@@ -392,7 +385,7 @@ func TestTagsDerivesEachShareState(t *testing.T) {
 			upper: c.upper,
 		} {
 			if step != none {
-				rows(t, s, shardRemovalKey(shard), encodeRemovalStep(step))
+				rows(t, s, shardRemovalKey(shard), encodeShardStep(step, nil))
 			}
 		}
 
@@ -424,7 +417,7 @@ func TestTagsDerivesEachShareState(t *testing.T) {
 func TestTagsRefusesAMalformedRow(t *testing.T) {
 	s := lifecycleStore(t, nil)
 	sh := namedShare(t, s, "a")
-	rows(t, s, shardRemovalKey(uint64(sh.Shard)), encodeRemovalStep(stepDone+1))
+	rows(t, s, shardRemovalKey(uint64(sh.Shard)), encodeShardStep(stepDone+1, nil))
 
 	if got, err := s.Lifecycle().Tags(context.Background()); err == nil {
 		t.Errorf("Tags over an rm row at step %d: %v, want an error", stepDone+1, got)
@@ -962,10 +955,10 @@ func TestTagsInBatches(t *testing.T) {
 	upper := lower + 1000 // above every shard the test's shares were given
 	rows(t, s,
 		keys.Uint64(shardsPrefix(removing.ID), upper), encodeEmpty(),
-		shardRemovalKey(lower), encodeRemovalStep(stepOffloaded),
-		shardRemovalKey(upper), encodeRemovalStep(stepForgotten),
+		shardRemovalKey(lower), encodeShardStep(stepOffloaded, nil),
+		shardRemovalKey(upper), encodeShardStep(stepForgotten, nil),
 		shareKey(retired.ID, keys.SSt), encodeState(shareState{State: entity.ShareRetired}),
-		shardRemovalKey(uint64(retired.Shard)), encodeRemovalStep(stepDone),
+		shardRemovalKey(uint64(retired.Shard)), encodeShardStep(stepDone, nil),
 	)
 
 	err := s.kv.Update(ctx, func(tx kv.Txn) error {

@@ -106,6 +106,29 @@ func decodeRemovalStep(b []byte) (removalStep, error) {
 	return step, nil
 }
 
+// encodeShardStep writes an rm row: its step and, at step 4, the key the
+// shard's file drop resumes after.
+func encodeShardStep(step removalStep, cursor []byte) []byte {
+	w := codec.NewWriter(v1).Uint8(uint8(step))
+	if step == stepFour {
+		w.Bytes(cursor)
+	}
+	return w.Encode()
+}
+
+// decodeShardStep reads an rm row whole, with step 4's cursor.
+func decodeShardStep(b []byte) (step removalStep, cursor []byte, err error) {
+	if step, err = decodeRemovalStep(b); err != nil {
+		return 0, nil, err
+	}
+	r, _ := open(b)
+	r.Uint8()
+	if step == stepFour {
+		cursor = r.Bytes()
+	}
+	return step, cursor, r.Done()
+}
+
 func journalKey(id [16]byte) []byte {
 	return keys.ID([]byte{keys.KindJ}, id[:])
 }
