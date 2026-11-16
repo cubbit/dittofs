@@ -308,8 +308,8 @@ that needs it.
     every view. It is not narrowed further to a read interface: `ErrUnavailable`'s tests run over
     a real kvstore on `kvtest.FaultKV`, which a narrower interface would not make easier;
   - §2.6 no longer calls the `Minter`'s writes identity's only ones: identity also writes the
-    installation's join and rotation records (epic 7's D5 and D11) and a scheduled operation with
-    its audit record (epic 5's T5.10), all through `ControlPlane.Write`; §4.1's one-path rule now
+    installation's join and rotation records (epic 7's D5) and the scheduled rotation's operation
+    with its audit record (epic 7's D11), all through `ControlPlane.Write`; §4.1's one-path rule now
     names the principal records it mints;
   - RFC 16 §3's `Principals.SharePolicy` is dropped: resolution builds `SharePolicy` from one
     `ShareIndex.Share` read, whose share carries `GrantVersion` (RFC 23's plan's epic 2, D20), and
