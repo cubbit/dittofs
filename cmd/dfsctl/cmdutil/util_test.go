@@ -86,7 +86,8 @@ func TestPrintOutput(t *testing.T) {
 }
 
 // With no person at Env's reader a removal refuses before prompting, naming
-// --force, and --force removes without a prompt either way.
+// --force, and --force removes without a prompt either way. With a person
+// there, the answer read from Env.In decides, and the prompt goes to Env.Err.
 func TestRunDeleteWithConfirmation(t *testing.T) {
 	for _, tt := range []struct {
 		name        string
@@ -95,14 +96,18 @@ func TestRunDeleteWithConfirmation(t *testing.T) {
 		force       bool
 		wantDeleted bool
 		wantErr     string
+		wantStderr  string
 	}{
-		{name: "terminal, forced", interactive: true, force: true, wantDeleted: true},
+		{name: "terminal, yes", in: "y\n", interactive: true, wantDeleted: true, wantStderr: "Remove Context 'c'? [y/N] "},
+		{name: "terminal, no", in: "n\n", interactive: true, wantStderr: "Remove Context 'c'? [y/N] Aborted.\n"},
+		{name: "terminal, reader ends", interactive: true, wantStderr: "Remove Context 'c'? [y/N] \nAborted.\n"},
 		{name: "no terminal", in: "y\n", wantErr: "test: removing Context 'c' needs confirmation; pass --force"},
 		{name: "no terminal, forced", force: true, wantDeleted: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd, _ := newCmd("table")
-			env := Env{In: strings.NewReader(tt.in), Interactive: tt.interactive}
+			var stderr bytes.Buffer
+			env := Env{In: strings.NewReader(tt.in), Err: &stderr, Interactive: tt.interactive}
 			deleted := false
 			err := RunDeleteWithConfirmation(cmd, env, "Context", "c", tt.force, func() error { deleted = true; return nil })
 			if tt.wantErr != "" {
@@ -114,6 +119,9 @@ func TestRunDeleteWithConfirmation(t *testing.T) {
 			}
 			if deleted != tt.wantDeleted {
 				t.Errorf("deleted: got %v, want %v", deleted, tt.wantDeleted)
+			}
+			if stderr.String() != tt.wantStderr {
+				t.Errorf("stderr: got %q, want %q", stderr.String(), tt.wantStderr)
 			}
 		})
 	}

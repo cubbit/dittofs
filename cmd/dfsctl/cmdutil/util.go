@@ -2,6 +2,7 @@
 package cmdutil
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/cubbit/dittofs/internal/cli/output"
@@ -12,12 +13,10 @@ import (
 // Unavailable is the body of every v1 command dfsctl still lists: it refuses,
 // naming the command, and the command exits non-zero.
 //
-// decision: dfsctl keeps v1's command tree, its names, arguments and flags,
-// after the server those commands spoke to is gone, with each body refusing.
-// Deleting the commands would leave every invocation of them in the docs and
-// in Go strings naming a command that does not exist, and the CLI's rebuild
-// on the v2 API rewrites those invocations anyway, command by command. A
-// command stops calling this when it is rebuilt; once none does, delete it.
+// decision: dfsctl keeps the v1 commands a v2 route will serve, each body
+// refusing until it is rebuilt on that route; the commands no route serves are
+// deleted. A command stops calling this when it is rebuilt; once none does,
+// delete it.
 func Unavailable(cmd *cobra.Command, _ []string) error {
 	return fmt.Errorf("%s: not available until the CLI is rebuilt on the v2 API", cmd.CommandPath())
 }
@@ -68,23 +67,26 @@ func printSuccess(cmd *cobra.Command, msg string) {
 }
 
 // RunDeleteWithConfirmation asks env's reader to confirm, unless force is set,
-// and then runs deleteFn. Without a person at the reader it refuses, naming
-// --force, rather than wait on a prompt nobody answers.
+// and then runs deleteFn. The prompt goes to env.Err, so the command's output
+// stays its own. Without a person at the reader it refuses, naming --force,
+// rather than wait on a prompt nobody answers.
 func RunDeleteWithConfirmation(cmd *cobra.Command, env Env, resourceType, name string, force bool, deleteFn func() error) error {
-	if !force && !env.Interactive {
-		return fmt.Errorf("%s: removing %s '%s' needs confirmation; pass --force", cmd.CommandPath(), resourceType, name)
-	}
-	confirmed, err := prompt.ConfirmWithForce(env.In, fmt.Sprintf("Remove %s '%s'?", resourceType, name), force)
-	if err != nil {
-		if prompt.IsAborted(err) {
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "\nAborted.")
+	if !force {
+		if !env.Interactive {
+			return fmt.Errorf("%s: removing %s '%s' needs confirmation; pass --force", cmd.CommandPath(), resourceType, name)
+		}
+		confirmed, err := prompt.Confirm(env.In, env.Err, fmt.Sprintf("Remove %s '%s'?", resourceType, name), false)
+		if errors.Is(err, prompt.ErrAborted) {
+			_, _ = fmt.Fprintln(env.Err, "\nAborted.")
 			return nil
 		}
-		return err
-	}
-	if !confirmed {
-		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
-		return nil
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			_, _ = fmt.Fprintln(env.Err, "Aborted.")
+			return nil
+		}
 	}
 
 	if err := deleteFn(); err != nil {

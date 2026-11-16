@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
@@ -21,14 +20,10 @@ func main() {
 	commands.Commit = commit
 	commands.Date = date
 
-	root := commands.NewRoot(cmdutil.Env{
+	os.Exit(commands.Run(cmdutil.Env{
 		In:          os.Stdin,
 		Out:         os.Stdout,
 		Err:         os.Stderr,
 		Interactive: term.IsTerminal(int(os.Stdin.Fd())),
-	})
-	if err := root.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+	}, os.Args[1:]))
 }
