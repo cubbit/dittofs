@@ -176,13 +176,11 @@ func hashFree(r kv.Reader, key []byte, id [16]byte) error {
 	if err != nil || !ok {
 		return err
 	}
-	if other, err := decodeID(b); err != nil || other != id {
-		if err == nil {
-			err = merrs.NewAlreadyExistsError("hash")
-		}
-		return err
+	other, err := decodeID(b)
+	if err == nil && other != id {
+		err = merrs.NewAlreadyExistsError("hash")
 	}
-	return nil
+	return err
 }
 
 func (c controlTx) PutSession(s entity.Session) error {
