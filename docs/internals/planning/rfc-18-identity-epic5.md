@@ -310,7 +310,7 @@ record are E6's and E8's to drive, on the rule this epic builds.
   reads anyway. A field another scheme sets is refused `ErrInvalid` by kvstore. Prior art: none
   found.
 - **D12, the machine mint goes through identity's one mint path, E6's T6.2.** E2 leaves the path,
-  its re-runs on `ErrExist` and `identity_mints_total`, to the first epic that mints; E6's T6.2
+  its re-runs on `ErrExist` and `identity_mints_total`, to E6's T6.2 (its §1.2); E6's T6.2
   comes early in E6 and needs only E2's T2.3, while T5.9 is late in this epic, so E6 owns it and
   T5.9 hands it a plan that returns the machine's batch. T5.9's estimate is 0.5 man-days below the
   figure that built the path. Prior art: none found.
@@ -870,8 +870,8 @@ the version this document was written against.
   throttle (R45) and the test realm (D10). The fixture's 2
   stays as the plan has it though it is built. T5.3 is the least certain, then T5.10,
   which depends on D13's answer.
-- `identity_mints_total` and the mint path's re-run are E6's T6.2 (D12); E2 leaves them to the
-  first epic that mints, and its §1.2 should name T6.2.
+- `identity_mints_total` and the mint path's re-run are E6's T6.2 (D12), as E2's §1.2 names
+  them.
 - The surface was designed twice. The independent architect pass proposed the same tree
   (gokrb5's decryption with identity's checks, a key ring at `Apply`, the PAC walked over raw
   bytes, `ProtocolID`'s linked SID, `State.Keytab` the only new server field) and these
