@@ -61,7 +61,6 @@ var removalSteps = [...]uint8{
 //
 // The rest of the removal runs in the background: ContinueRemoval's batches,
 // RecordShardRemoval for step 3 and ContinueShardRemoval for step 4.
-
 func (c ControlPlane) DeleteShare(ctx context.Context, share entity.ShareID, snapshots entity.SnapshotDisposition, expect uint64) error {
 	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteShare(share, snapshots, expect) })
 }
@@ -234,6 +233,9 @@ func (s *Store) removalBatch(tx kv.Txn, share entity.ShareID) (step uint8, done 
 			_, err = raise(tx, cfgGenKey)
 		}
 	case stepClients:
+		// ponytail: no move record is deleted, as nothing writes one yet.
+		// Delete each MV record naming one of the share's shards in this
+		// step once moves between shards land.
 		st.Cursor, finished, err = dropClientRows(tx, share, st.Cursor, n)
 	case stepRecords:
 		kept := [][]byte{shareKey(share, keys.SSt), shareKey(share, keys.SInfo), namespacesKey(share)}
@@ -246,7 +248,10 @@ func (s *Store) removalBatch(tx kv.Txn, share entity.ShareID) (step uint8, done 
 	case stepShards:
 		st.Cursor, finished, err = dropShards(tx, share, st.Cursor, n)
 	case stepLast:
-		return removalSteps[stepLast], true, removeLast(tx, share)
+		if err := removeLast(tx, share); err != nil {
+			return 0, false, err
+		}
+		return removalSteps[stepLast], true, nil
 	default:
 		return 0, false, fmt.Errorf("%w: share removal at pass %d", errMalformed, st.Step)
 	}
