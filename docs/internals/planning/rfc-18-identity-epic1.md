@@ -58,7 +58,11 @@ three `vfs.Deps` fields; the import checks; `internal/identity/**` in the `e2e` 
   the first subtask that reads it, as §2.6 says (D4).
 - `HoldJoinCredential(id, cred) (release func())`, which keeps the online join's administrator
   credential in memory under the operation's ID: called by RFC 23's plan's epic 4 (its T4.11,
-  whose D13 declares it), built in E7. The plan's §3 sketch gains the return value.
+  whose D13 declares it), built in E7's T7.4. The plan's §3 sketch gains the return value. Its
+  credential type, `pkg/identity.JoinCredential{User string; Password []byte}`, lands in
+  `pkg/identity` after S1 with that subtask (E7's D12); S1's freeze admits it, as it admits each
+  later `Deps` and `State` field, since it adds a type and changes no frozen signature, and it
+  needs no import T1.5's check refuses (R2).
 - `TokenVerifier`, `TokenClaims`, `IssuerKeys` and `Deps.Issuers` (RFC 18 §8.2): deferred, the
   plan's deferral ledger row "OpenID Connect's `TokenVerifier`".
 - `identitytest`'s in-memory directory and domain controller: E6 and E7.
@@ -116,7 +120,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R3 | `pkg/vfs` aliases the value types an adapter needs, so an adapter imports `pkg/vfs` alone and neither identity package | invariant | §2.7; RFC 17 §3.0; RFC 20 §2.3 | T1.1, T1.5 |
 | R4 | Adapters map, squash and grant nothing; every spelling goes through `vfs.Service`'s `Spell` and `Find`, held by RFC 20 §7.1's import test (ID11) | invariant | §9.1 ID11; RFC 20 §7.1 | T1.5 |
 | R5 | Only `internal/node` imports the server, `internal/identity` or any package under it, besides identity's own packages and `pkg/vfs/vfstest/memory`, which imports `internal/identity/identitymem` alone (E3's T3.6); `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use the real server | invariant | §2.7; §10 "Who stands in for what" | T1.5 |
-| R6 | Only `internal/identity/directory` imports LDAP; `internal/auth/netlogon`, which S0 leaves and whose `join.go` imports it, is exempt by a `decision:` until E7 moves it into `internal/identity/netlogon` and removes the exemption | invariant | §2.7 | T1.5 |
+| R6 | Only `internal/identity/directory` imports LDAP; `internal/auth/netlogon`, which S0 leaves and whose `join.go` imports it, is exempt by a `decision:` until E7's T7.6 moves it into `internal/identity/netlogon` and removes the exemption | invariant | §2.7 | T1.5 |
 | R7 | `Authenticator` is the same shape as `vfs.Principals.SignIn`, so the filesystem passes it through | invariant | §3.1 | T1.3, T1.6 |
 | R8 | `ErrLogonFailure` and `ErrUnknownPrincipal` are `vfserr`'s, and `vfs.Errors()` returns both; the adapter rows that map them are the RFC 21 and RFC 22 plans' (the plan's deferral row) | MUST | §2.7; RFC 17 §4.3; RFC 20 §7.3 | T1.2 |
 | R9 | `Evidence` holds no key, and `Keys` travel beside an `Identity`, never in it | invariant | §3.1 | T1.1 |
@@ -336,7 +340,7 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
     `internal/identity`;
     no package but `internal/identity/directory` imports `github.com/go-ldap/ldap/v3`, with
     `internal/auth/netlogon` exempt by a `decision:` at the check, since S0 leaves it and its
-    `join.go` imports LDAP. E7 removes the exemption when it moves the package into
+    `join.go` imports LDAP. E7's T7.6 removes the exemption when it moves the package into
     `internal/identity/netlogon`, where `join.go`'s LDAP calls go through
     `internal/identity/directory` or R6 fails. Seeded
     violations of each in its `testdata/arch`, among them a non-test `internal/vfs` file
