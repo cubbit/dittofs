@@ -191,13 +191,20 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 					if !errors.Is(verr, core.ErrCorrupt) {
 						return sc, verr
 					}
+					// Only the record whose body did not verify stays out
+					// of the verified end, whatever the tail's classing
+					// then makes of it: a verified aside's bytes are
+					// durable like any record's, and a tail cut that
+					// reached before one would take the loss record off
+					// with it, and the next open would serve the record
+					// it names again.
 					sc.Dropped = append(sc.Dropped, droppedRecord{Header: h, Err: verr})
 					continue
 				}
 				sc.Aside = append(sc.Aside, asideRecord{Header: h, Body: vb})
-				continue
+			} else {
+				sc.Aside = append(sc.Aside, asideRecord{Header: h})
 			}
-			sc.Aside = append(sc.Aside, asideRecord{Header: h})
 		default: // the reconcile kinds, 15 and 16
 			return sc, fmt.Errorf("%w: a %s record in segment %d", core.ErrNotImplemented, h.Kind, info.ID)
 		}

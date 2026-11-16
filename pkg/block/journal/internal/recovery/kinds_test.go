@@ -964,6 +964,37 @@ func TestRunRefusesAReadTheAsideBodyCannotComplete(t *testing.T) {
 	}
 }
 
+// TestRunACutLeavesAVerifiedAsideInPlace holds the tail's cut against the
+// aside a segment holds: a verifying loss record is a record like any
+// other, its bytes durable past its end, so the torn tail behind one
+// begins at the record's own end — a cut that stopped at the last content
+// record before it would take the loss record off with the tail, and the
+// next open would derive no loss and serve the record it names again.
+func TestRunACutLeavesAVerifiedAsideInPlace(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	file := kindsFile(1)
+	seg := buildSeg(1,
+		writeRec(60, 5, 0, 64),
+		plantLossRec(file, 60, 61, 9, 0, 64, 1<<8), // unsynced, corrupt: withholds the record whole
+	)
+	lossEnd := int64(len(seg))
+	seg = append(seg, bytes.Repeat([]byte{0xff}, 16)...) // the torn tail behind the loss record
+	r.plantSeg(1, seg)
+
+	st := kindsRun(t, r)
+
+	if fate := fateOf(t, st, 1); fate.Kind != fateTornTail || fate.Offset != lossEnd {
+		t.Fatalf("segment 1's fate got %v at %d, want torn-tail at %d: the cut begins where the verified loss record ends, and never a content record before it", fate.Kind, fate.Offset, lossEnd)
+	}
+	if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+		t.Errorf("Lookup over the named record hit, want a miss: the loss record survived the tail's cut and withholds the record whole")
+	}
+	if len(st.Kinds.Losses) != 1 {
+		t.Errorf("State.Kinds.Losses holds %d losses, want the one the surviving record names", len(st.Kinds.Losses))
+	}
+}
+
 // TestRunSkipsTheRemainderVerifyOfARecordAnotherRuleDropsWhole holds the one
 // whole-withhold answer over both phases: a record the failed list, a whole
 // loss name or a forget of its tag above its seq withholds whole, so no run
