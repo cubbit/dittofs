@@ -742,6 +742,7 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 		name := segmentName(seg)
 
 		// The window, not the sync alone, is failed: see the done-context leg.
+		lost := len(f.J.Stats().Losses)
 		failWindow(t, f, seg)
 		reappended := f.J.Stats().Counters.SyncReappendedBytes
 		hold := f.Seam.HoldFirst(t, kit.OpSync, name)
@@ -754,9 +755,33 @@ func TestRFC1C_CancelledCallChangesNothingOrCompletes(t *testing.T) {
 
 		err := <-done
 		stub(t, "Sync", err)
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("the cancelled Sync returned %v, want the context's error", err)
+		// The cancelled call ends with the context's error, or, where the
+		// window's failure completed before the cancellation reached the
+		// call, with the failure itself, returned in place of that error
+		// because the call had already taken its file's mark. Either answer
+		// keeps the rule: the failure is reported once, to whichever call is
+		// there first.
+		if !errors.Is(err, context.Canceled) && !errors.Is(err, journal.ErrSyncFailed) {
+			t.Fatalf("the cancelled Sync returned %v, want the context's error or the failure it raced", err)
 		}
+		if errors.Is(err, journal.ErrSyncFailed) {
+			return
+		}
+
+		// The released sync the cancelled call led runs on. The wait below
+		// holds the fault in place until the window has answered it: clearing
+		// the fault while the sync's own fault consult is still outstanding
+		// would turn the scripted failure into a success that genuinely makes
+		// the write durable, and the leg would then grade the journal by its
+		// own scheduling rather than by its contract. A window the journal
+		// fails names the records it drops in its loss events; one it
+		// re-appends from a copy it kept in memory moves the re-appended
+		// bytes. Only then does the fault clear, and the Sync below asserts
+		// whichever answer the journal made.
+		eventually(t, "the failed window of the cancelled sync neither failed nor re-appended", func() bool {
+			s := f.J.Stats()
+			return len(s.Losses) > lost || s.Counters.SyncReappendedBytes > reappended
+		})
 		f.Seam.SetFault(nil)
 		_, err = h.Sync(t.Context(), id)
 		stub(t, "Sync", err)

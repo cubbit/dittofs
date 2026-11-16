@@ -912,11 +912,27 @@ func TestRFC1B_SyncFailure(t *testing.T) {
 		pt := pattern(fmt.Sprint("timer", k), 4096)
 		v = write(t, h, id, 128<<10, pt)
 		timer := segmentName(segmentOf(t, f, id, 128<<10))
-		f.Advance(journal.SyncBound)
-		eventually(t, fmt.Sprintf("share %d: the write after a failed sync was not made durable in %s within the sync bound", k, timer), func() bool {
+		// decision: nothing pins the bound's timer armed before the write
+		// returned — the bound runs from when the worker first observes the
+		// record — so a timer armed after a single Advance would wait for the
+		// next which nothing moves. The clock steps a tenth of the bound at a
+		// time, up to ten bounds, until the image holds the write; ten bounds
+		// drives a third of the idle-seal age and so reaches no seal. Between
+		// steps, only a real-time wait can see the sync arrive on the journal's
+		// goroutine.
+		made := false
+		for range 100 {
+			f.Advance(journal.SyncBound / 10)
 			image, err := f.Seam.Durable(timer)
-			return err == nil && bytes.Contains(image, pt)
-		})
+			if err == nil && bytes.Contains(image, pt) {
+				made = true
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if !made {
+			t.Fatalf("share %d: the write after a failed sync was not made durable in %s within ten bounds of the clock", k, timer)
+		}
 		durable = append(durable, kept{written{k, id, journal.Extent{Off: 128 << 10, Len: 4096}, v}, pt})
 	}
 
