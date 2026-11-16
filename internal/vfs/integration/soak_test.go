@@ -449,7 +449,7 @@ func (r *soakRun) step() {
 			v, err = r.c.fs.Commit(ctx, r.smb, r.refs[i], 0, 0)
 		})
 		record = func() {
-			if ferr := r.m.flush(r.opens[i], v, err); ferr != nil {
+			if ferr := r.m.flush(r.opens[i], v, err, f.owes); ferr != nil {
 				r.fail("call %d, %s: %v", r.calls, desc, ferr)
 			}
 
@@ -713,7 +713,7 @@ func (r *soakRun) check() {
 			// Attribute first, so a record lost in this Commit credits the
 			// writes it has not acknowledged yet.
 			faulted, owed := r.attribute(), f.owed()
-			if ferr := r.m.flush(r.opens[i], v, err); ferr != nil {
+			if ferr := r.m.flush(r.opens[i], v, err, true); ferr != nil {
 				r.fail("process %d: %v", r.proc, ferr)
 			}
 

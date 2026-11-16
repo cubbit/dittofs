@@ -86,10 +86,20 @@ type fileModel struct {
 	created time.Time
 	ops     []*soakOp
 	losses  []lossEvent // the losses found on the file while a process served it
+	// window, while set, is the failed sync window that held a write of the
+	// file and that the file's next Commit without an open has not answered.
+	window *failedWindow
 	// owes is set while the file's next Commit may fail once for a loss: a
 	// failed sync window that held its unacknowledged writes, or a loss a
 	// restart found, which the next Commit's drain may raise.
 	owes bool
+}
+
+// failedWindow is a failed sync window of a file: the process it failed in
+// and the verifier the write it dropped carried.
+type failedWindow struct {
+	proc     int
+	verifier vfs.Verifier
 }
 
 // lossEvent is a loss found on a file while process proc served it, at a
@@ -232,33 +242,84 @@ func (m *soakModel) lose(f *fileModel, proc int) {
 	f.losses = append(f.losses, lossEvent{proc: proc, at: m.now})
 }
 
-// flush judges a Commit through the SMB open o, then records it as commit
-// does. RFC 8 §5.1 reports a loss through the file's loss sequence, which the
-// process keeps in memory, and an SMB flush through an open taken before the
-// loss answers ErrLost from it once. So a flush that answers success while a
-// loss found after o's last sample is unreported fails; ErrLost moves the
-// sample; another error leaves the report owed.
-func (m *soakModel) flush(o *smbOpen, v vfs.Verifier, err error) error {
+// flush judges a Commit through the SMB open o that answered err, then
+// records it as commit does; spare says the file holds a loss a restart found,
+// which the next drain may raise into the loss sequence after o sampled it.
+// Each open taken before a loss found in its process, a failed sync window
+// included, is owed ErrLost on exactly one flush, then its flushes succeed: a
+// success while that is owed fails, and so does an ErrLost when nothing is
+// owed and nothing spare explains it. Another error leaves the report owed.
+func (m *soakModel) flush(o *smbOpen, v vfs.Verifier, err error, spare bool) error {
 	o.f.commit(o.proc, 0, 0, v, err)
 
-	if errors.Is(err, vfs.ErrLost) {
+	owed := m.owesLost(o)
+
+	switch {
+	case errors.Is(err, vfs.ErrLost) && !owed && !spare:
+		return fmt.Errorf(
+			"%s: the SMB open's flush answered ErrLost with no loss after its last one",
+			o.f.name,
+		)
+	case errors.Is(err, vfs.ErrLost):
 		m.now++
 		o.at = m.now
-
-		return nil
+	case err == nil && owed:
+		return fmt.Errorf(
+			"%s: a loss found after its SMB open sampled the loss sequence, "+
+				"and the open's flush answered success, not ErrLost",
+			o.f.name,
+		)
 	}
 
-	if err != nil {
-		return nil
-	}
+	return nil
+}
 
+// owesLost reports whether the SMB open o owes ErrLost: a loss was found on
+// its file, in its process, after it last sampled the loss sequence.
+func (m *soakModel) owesLost(o *smbOpen) bool {
 	for _, l := range o.f.losses {
 		if l.proc == o.proc && l.at > o.at {
-			return fmt.Errorf(
-				"%s: a loss found after its SMB open sampled the loss sequence, and the open's flush answered success, not ErrLost",
-				o.f.name,
-			)
+			return true
 		}
+	}
+
+	return false
+}
+
+// failWindow records a failed sync window holding a write of f, which
+// carried verifier v, while process proc serves it. It is a loss of the file:
+// each SMB open of it taken before is owed ErrLost on one flush, and its next
+// Commit without an open answers a changed verifier.
+func (m *soakModel) failWindow(f *fileModel, proc int, v vfs.Verifier) {
+	m.lose(f, proc)
+	f.window = &failedWindow{proc: proc, verifier: v}
+}
+
+// nfsCommit judges a Commit of f without an open, in process proc, that
+// answered verifier v and err. After a failed sync window, the file's next
+// Commit succeeds with a changed verifier, so an NFS client sees it and
+// resends what it wrote: a success with the dropped write's verifier would
+// have the client take that write as stable. A restart before it drops the
+// check, since a new process answers a new verifier anyway.
+//
+// decision: the oracle holds the answer of 16 November 2026, that the
+// engine's plan is right and RFC 8 §5.1's "fails once" is wrong: the Commit
+// does not fail, it changes the verifier. Overturned only by a change of that
+// answer.
+func (f *fileModel) nfsCommit(proc int, v vfs.Verifier, err error) error {
+	w := f.window
+	if w == nil || err != nil {
+		return nil
+	}
+
+	f.window = nil
+	if w.proc == proc && v == w.verifier {
+		return fmt.Errorf(
+			"%s: the Commit after a failed sync window answered the dropped write's verifier %x, "+
+				"want a changed one",
+			f.name,
+			v,
+		)
 	}
 
 	return nil
@@ -814,10 +875,12 @@ func TestOracle(t *testing.T) {
 				write(f, 0, 'a', 4, true)
 				o := m.open(f, 1)
 				m.lose(f, 1)
-				if err := m.flush(o, vA, errors.New("a store fault")); err != nil {
+
+				if err := m.flush(o, vA, errors.New("a store fault"), false); err != nil {
 					return fmt.Errorf("a flush failing for another reason: %w", err)
 				}
-				return m.flush(o, vA, nil)
+
+				return m.flush(o, vA, nil, false)
 			},
 			"not ErrLost",
 		},
@@ -827,15 +890,19 @@ func TestOracle(t *testing.T) {
 				write(f, 0, 'a', 4, true)
 				m.lose(f, 1)
 				o := m.open(f, 1)
-				if err := m.flush(o, vA, nil); err != nil {
+
+				if err := m.flush(o, vA, nil, false); err != nil {
 					return err
 				}
+
 				o2 := m.open(f, 1)
 				m.lose(f, 1)
-				if err := m.flush(o2, vA, vfs.ErrLost); err != nil {
+
+				if err := m.flush(o2, vA, vfs.ErrLost, false); err != nil {
 					return fmt.Errorf("the flush that reported it: %w", err)
 				}
-				return m.flush(o2, vA, nil)
+
+				return m.flush(o2, vA, nil, false)
 			},
 			"",
 		},
@@ -845,7 +912,8 @@ func TestOracle(t *testing.T) {
 				write(f, 0, 'a', 4, true)
 				o := m.open(f, 1)
 				m.lose(f, 2)
-				return m.flush(o, vA, nil)
+
+				return m.flush(o, vA, nil, false)
 			},
 			"",
 		},
@@ -888,6 +956,137 @@ func TestOracle(t *testing.T) {
 					return errors.New("a write answered with success does not count")
 				}
 				return nil
+			},
+			"",
+		},
+		{
+			"O40 an SMB open owes ErrLost for a loss after it, once",
+			func(m *soakModel, f *fileModel) error {
+				write(f, 0, 'a', 4, true)
+
+				o := m.open(f, 1)
+				if m.owesLost(o) {
+					return errors.New("owes ErrLost before any loss")
+				}
+
+				m.lose(f, 1)
+
+				if !m.owesLost(o) {
+					return errors.New("owes no ErrLost after a loss found after it")
+				}
+
+				if err := m.flush(o, vA, vfs.ErrLost, false); err != nil {
+					return err
+				}
+
+				if m.owesLost(o) {
+					return errors.New("still owes ErrLost after its flush reported it")
+				}
+
+				return nil
+			},
+			"",
+		},
+		{
+			"O42 the Commit after a failed window answers the dropped write's verifier",
+			func(m *soakModel, f *fileModel) error {
+				w := write(f, 0, 'a', 4, false)
+				m.failWindow(f, 1, w.verifier)
+
+				return f.nfsCommit(1, w.verifier, nil)
+			},
+			"want a changed one",
+		},
+		{
+			"O50 a Commit that failed after a window leaves the check for the next one",
+			func(m *soakModel, f *fileModel) error {
+				w := write(f, 0, 'a', 4, false)
+				m.failWindow(f, 1, w.verifier)
+
+				if err := f.nfsCommit(1, vB, errors.New("a store fault")); err != nil {
+					return fmt.Errorf("a failed Commit: %w", err)
+				}
+
+				return f.nfsCommit(1, w.verifier, nil)
+			},
+			"want a changed one",
+		},
+		{
+			"O43 the Commit after a failed window answers a changed verifier",
+			func(m *soakModel, f *fileModel) error {
+				w := write(f, 0, 'a', 4, false)
+				m.failWindow(f, 1, w.verifier)
+
+				if err := f.nfsCommit(1, vB, nil); err != nil {
+					return err
+				}
+
+				f.commit(1, 0, 0, vB, nil)
+
+				if w.acked {
+					return errors.New("the dropped write was acknowledged by a changed verifier")
+				}
+
+				return f.nfsCommit(1, vA, nil)
+			},
+			"",
+		},
+		{
+			"O44 a restart before the Commit drops the check",
+			func(m *soakModel, f *fileModel) error {
+				w := write(f, 0, 'a', 4, false)
+				m.failWindow(f, 1, w.verifier)
+
+				return f.nfsCommit(2, w.verifier, nil)
+			},
+			"",
+		},
+		{
+			"O45 an open across a failed window flushes with success",
+			func(m *soakModel, f *fileModel) error {
+				w := write(f, 0, 'a', 4, false)
+				o := m.open(f, 1)
+				m.failWindow(f, 1, w.verifier)
+
+				return m.flush(o, vB, nil, false)
+			},
+			"not ErrLost",
+		},
+		{
+			"O46 an open across a failed window gets ErrLost on exactly one flush",
+			func(m *soakModel, f *fileModel) error {
+				w := write(f, 0, 'a', 4, false)
+				o := m.open(f, 1)
+				m.failWindow(f, 1, w.verifier)
+
+				if err := m.flush(o, vB, vfs.ErrLost, false); err != nil {
+					return fmt.Errorf("the first flush: %w", err)
+				}
+
+				if err := m.flush(o, vB, nil, false); err != nil {
+					return fmt.Errorf("the flush after: %w", err)
+				}
+
+				return m.flush(o, vB, vfs.ErrLost, false)
+			},
+			"ErrLost with no loss after its last one",
+		},
+		{
+			"O47 an open taken after the window owes nothing",
+			func(m *soakModel, f *fileModel) error {
+				w := write(f, 0, 'a', 4, false)
+				m.failWindow(f, 1, w.verifier)
+
+				return m.flush(m.open(f, 1), vB, nil, false)
+			},
+			"",
+		},
+		{
+			"O48 ErrLost with no loss is accepted only over a loss a restart found",
+			func(m *soakModel, f *fileModel) error {
+				write(f, 0, 'a', 4, true)
+
+				return m.flush(m.open(f, 1), vA, vfs.ErrLost, true)
 			},
 			"",
 		},
