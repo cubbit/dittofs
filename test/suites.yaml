@@ -135,7 +135,7 @@ suites:
   # no suite runs the soak's own fault log under -race.
   engine-soak:
     format: go-json
-    cmd: go test -tags=engine_conformance,engine_soak -run '^(TestSoak|TestOracle)' -timeout=20m ./internal/vfs/integration/...
+    cmd: go test -tags=engine_conformance,engine_soak -run=^(TestSoak|TestOracle) -timeout=20m ./internal/vfs/integration/...
     known: test/engine/soak-known.yaml
     tier: pr
   # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
