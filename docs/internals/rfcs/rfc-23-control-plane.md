@@ -108,7 +108,8 @@ Under this RFC:
 - **generation** — the counter every record carries, raised by every change
   ([RFC 13 §2.3](rfc-13-configuration.md#2.3%20A%20record%20is%20versioned)); the entity tag of most resources (§4.4).
 - **position** — the value of its kind's counter that a record's last change
-  raised; how "applied" is computed, and a quota's entity tag (§2.4, §4.4).
+  raised, carried by a setting, a share and a principal; how "applied" is
+  computed (§2.4).
 - **node-status record** — the one record each node writes about itself: what
   it has reconciled, refused and holds restart-pending (§2.4).
 - **operation** — a resource that stands for work longer than one request, with
@@ -398,11 +399,11 @@ func New(cfg Config) (*Node, error) {
 	n.syncer = syncer.New(syncer.Deps{Remote: n.remote, ...})
 	n.open   = openstate.New(openstate.Deps{Records: n.meta.OpenRecords(), ...}) // built before the engine, which holds it through an adapter; its Sink, the filesystem, is handed to its Start (§2.2 step 5)
 	n.engine = engine.New(engine.Deps{
-		Node: cfg.Bootstrap.Node, Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
+		Node: cfg.Bootstrap.Node /* what bootstrap.NodeID read: the node-id copies, or the host's key when no copy exists; refused as RFC 13 §2.2 says */, Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
 		Existence: n.meta.Existence(), Content: n.meta.Content(), Lifecycle: n.meta.Lifecycle(),
 		Holds: cloneHolds{n.open}, ...}) // the root's adapter: engine.CloneHold onto CloneOpen, CloneClose and Recovery.Served, their errors mapped as RFC 8 §2.6 says, so the engine imports no open state
 	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock, n.wd.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
-	n.ident  = identity.New(identity.Deps{Principals: n.meta.Principals(), ...}) // no settings: the first Apply brings them
+	n.ident  = identity.New(identity.Deps{Store: n.meta, ...}) // no settings: the first Apply brings them
 	n.fs     = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine,
 		Identity: n.ident, Auth: n.ident, Names: n.ident, ...})                // the one identity, behind three narrow fields
 
@@ -509,6 +510,9 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    installation ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)). `New` has already refused both: the first
    before it opens the metadata store, the second as `metadata.Open` reads the
    format record ([RFC 16 §3.2](rfc-16-metadata-store.md#3.2%20How%20it%20is%20assembled)). A start creates no installation.
+   Once the store is open, the node writes a missing `node-id` copy into each
+   journal directory whose `format` names the journal the store records for
+   this node and device, and into no other ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap), [RFC 28 §2.1](rfc-28-journal-format.md#2.1%20Layout)).
 2. **Open the listeners.** From here the node's health endpoints answer
    (§2.5): live, not ready. The node's API address and the metrics listener
    open here. Until step 7, every `/api/v1` route but `/api/v1/health` answers
@@ -645,13 +649,14 @@ The node holds two pictures: the **desired** one, read from records, and the
 | an adapter's live setting | applies it to connections set up afterwards ([RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)) |
 | an adapter's restart-class setting | builds a new adapter through its factory with the new settings. `New` opens nothing, so a setting it refuses leaves the old adapter serving and the record refused. Only then the node drains and stops the old adapter and starts the new one; the others keep serving. If the new one fails to start, the node builds and starts one with the last settings that served, and reports the record refused (§2.4) |
 | a sidecar enabled or disabled | `Sync` with the serving adapters, or with none ([RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars)) |
-| a node-scoped or installation-scoped restart-class setting | nothing until the process next starts; the node reports the record as restart-pending (§2.4) |
-| a principal, grant or export policy | `apply`, handing identity and `*vfs.Filesystem` the new generation; their generations and versions are in the identity and admission cache keys ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) |
+| a node-scoped or installation-scoped restart-class setting other than an adapter's (row above) | nothing until the process next starts; the node reports the record as restart-pending (§2.4) |
+| a principal | `apply`, handing identity the new principals generation, which is in the identity cache's key ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) |
+| a grant or export policy | nothing: it raises no counter, and admission reads the share's grant-list version and `ExportPolicy.Version` on every call, which are in the admission cache's key ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) |
 | a shard record | nothing: the gateway's `Router` reads shard records itself, and [RFC 11](rfc-11-ownership.md)'s epochs keep its routing correct |
 
 Every row is one of reconcile's three calls (§2.1): a share created or removed
-is `addShare` or `removeShare`, a change of its backends is both, and every
-other row is `apply`, which hands each component — identity, `*vfs.Filesystem`, the
+is `addShare` or `removeShare`, a change of its backends is both, the grant,
+export-policy and shard rows call nothing, and every other row is `apply`, which hands each component — identity, `*vfs.Filesystem`, the
 engine, GC, the adapters and the sidecars — the values it reads.
 
 The node learns of changes the way RFC 13 and RFC 18 already require — by
@@ -686,9 +691,13 @@ when a value changed:
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)).
 
 A record's own generation (§4.4) counts its changes; it is not comparable with
-these counters. So every control-plane record **MUST** also carry its
-**position**: the value of its kind's counter that its last change raised,
-written in that change's transaction. A record at position *S* is **applied**
+these counters. So every record of a reconciled kind — a setting, a share, a
+principal — **MUST** also carry its **position**: the value of its kind's
+counter that its last change raised, written in that change's transaction.
+A grant, an export policy, a netgroup and a quota carry none: each call reads
+their versions, which are in the cache keys that hold them
+([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)), so
+one is applied on every node from its commit. A record at position *S* is **applied**
 on a node once that node has reconciled its kind through at least *S* and the
 record is in neither its refused set nor its restart-pending set. The API joins
 these reports into each resource's status (§4.1), so "applied on 2 of 3 nodes;
@@ -839,10 +848,12 @@ encrypts — fixed at creation. The API applies RFC 13's classes and nothing els
   field ([RFC 13 §5.1](rfc-13-configuration.md#5.1%20A%20bound%20setting%20refuses%20change));
 - a new endpoint or credential is proven before it is written
   ([RFC 13 §5.2](rfc-13-configuration.md#5.2%20Reaching%20the%20same%20content%20another%20way%20is%20not%20a%20change));
-- **rotating a credential is an operation**: it writes the new version, waits
-  until every node using it reports that version, then deletes the old one
+- **rotating a credential is an operation**: it writes the new version and waits
+  until every node using it reports that version
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). The operation reports the nodes still holding the
-  old version, and succeeds only when the old version is gone;
+  old version, and succeeds once every node reports the new one; the old one is
+  then deleted, or kept for the retention RFC 13 §7 names for a keytab, a
+  machine password or the signing key, and deleted when it passes;
 - a remote store is deleted only when no namespace names it; a namespace only
   when no share names it, after which GC drains it — collecting a held namespace, forgetting any other ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) and the
   namespace's status shows the drain.
@@ -889,8 +900,11 @@ with nothing of it dropped, and the result says so.
 An adapter is configured by its own record, at installation scope per adapter
 ([RFC 13 §3](rfc-13-configuration.md#3.%20Scopes)): every key is
 `adapters.<protocol>.<field>`, the common timeouts included, so each adapter
-carries its own copy; its listen addresses are bootstrap facts of
-each host ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)), not records. The resource is
+carries its own copy, its port included: `adapters.<protocol>.port`, with a
+node override where one host must bind elsewhere, a node-scoped `Setting`
+written through the setting resource (§3.1)
+([RFC 20 §3.6](rfc-20-adapters.md#3.6%20Changing%20settings%20while%20serving)). Its listen addresses are bootstrap
+facts of each host ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)), not records. The resource is
 `/adapters/{protocol}`, with `enabled` and the protocol's settings:
 
 - **enable** moves the adapter from configured to serving on every node
@@ -916,7 +930,12 @@ them and decides nothing about identity:
 - **create** a user or group with `POST /users` or `POST /groups` and an
   idempotency key (§4.5); **edit** one with `PUT`/`PATCH` and `If-Match`. A
   protocol spelling — uid, gid, SID, Kerberos name — is checked unique in its
-  scheme and never defaulted ([RFC 18 §2.3](rfc-18-identity.md#2.3%20IDs%20are%20never%20defaulted%20and%20never%20reused)). A file user created without a
+  scheme and never defaulted ([RFC 18 §2.3](rfc-18-identity.md#2.3%20IDs%20are%20never%20defaulted%20and%20never%20reused)). Writing a user's Kerberos
+  name stores beside it the directory user SID the link is made for, asked of
+  the directory in the write: one that cannot answer refuses the write
+  `ErrUnavailable`, one that holds no such entry refuses it naming the name,
+  and a name in another realm stores none ([RFC 18 §4.2](rfc-18-identity.md#4.2%20Kerberos%20names), as the RFC 18
+  plan amends it). A file user created without a
   uid, gid or SID gets one allocated in the create's transaction; an account
   created with a role and no spelling at all is API-only and gets none, so it
   signs in over no file protocol ([RFC 18 §8](rfc-18-identity.md#8.%20Management-API%20users));
@@ -952,8 +971,45 @@ them and decides nothing about identity:
   from no grant ([RFC 18 §6.4](rfc-18-identity.md#6.4%20Share%20access%20from%20the%20grants)).
   `DELETE /shares/{id}/grants/{principal}` removes the grant, through RFC 16's
   `DeleteGrant`, so the principal falls through to its groups' grants. A grant
-  naming a machine principal is refused with `ErrInvalid` (§5.1). Netgroups are put and deleted whole; a client rule naming a
-  deleted one fails closed (RFC 16).
+  naming a machine principal is refused with `ErrInvalid` (§5.1). A grant
+  takes the principal's ID only. To grant a directory principal by name or
+  SID, the client first runs `resolve-principal`, an operation whose runner
+  asks identity's `Find` and mints the principal in its own transaction
+  ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)'s `Minter`); its result is the ID the grant's `PUT` names,
+  so neither write depends on a running component (§4.3). Netgroups are put and deleted whole; a client rule naming a
+  deleted one fails closed (RFC 16);
+- **the domain join** is an operation the runner drives through identity:
+  `join-domain` creates the computer account, or, offline, takes one an
+  administrator created with its password, which the call writes as a new
+  version of the machine password's `Secret`, marked `HandedOver` (RFC 16 §2.3,
+  as the RFC 18 plan amends it), in a write of its own (§4.3),
+  audited as a `set` of that reference, committed before the operation's, so
+  no record holds more than the reference. That write is refused `409`
+  `operation_running` while a `join-domain` or a `rotate-machine-password`
+  runs (§4.6), reading the running operations tracked, so no version a running
+  join or rotation did not take becomes current under it. A crash between the
+  two writes leaves an audited version no join uses; it derives no key and the
+  secure channel never signs in with it ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2),
+  as the RFC 18 plan amends it), and the next join or rotation supersedes it. Neither join keeps an
+  idempotency record (§4.5), so no digest of its body, credential included, is kept. An online join's administrator credential is never put in the
+  operation's record: the route picks the operation's ID and hands the
+  credential to identity under it before the write that creates the operation,
+  so the join's first step never runs ahead of it
+  ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2), as the RFC 18 plan amends it);
+  `rotate-machine-password` seals the machine password's next `Secret` version
+  first, then, once every node reports that version applied, sets that password
+  at the domain controller, and starts only once every node reports the
+  previous one applied, in
+  [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)'s order
+  ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). Leaving the domain has
+  no action until RFC 18 defines it. `test-directory` checks that every node reaches the
+  directory the record names, and reports each node's answer. The join's
+  state is the installation record's `Join` ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities), as the RFC 18 plan
+  adds it): the computer account's name and the last rotation, which outlive
+  the operations that wrote them; the machine password's version is its
+  `Secret`'s. The installation reports `machine_password_rotation_failed`
+  from it, and each node reports its secure channel's health as
+  `machine_account_unhealthy` among its conditions (§2.4).
 
 [RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)'s figure follows a user's create
 from this API through the principals generation to its next sign-in, beside
@@ -1021,11 +1077,49 @@ this table is all of them:
 | `decommission` | node | `admin` | no | [RFC 13 §5.5](rfc-13-configuration.md#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) |
 | `acknowledge-unreadable` | node | `admin` | yes | [RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads) |
 | `declare-lost` | backup location | `admin` | yes | [RFC 13 §2.5](rfc-13-configuration.md#2.5%20A%20backup%20location%20is%20its%20own%20record), [RFC 26 §4.1](rfc-26-catalog-backups.md#4.1%20Interfaces) |
+| `resolve-principal` | installation | `operator` | yes | §3.5, [RFC 18 §4.6](rfc-18-identity.md#4.6%20Names) |
+| `test-directory` | installation | `admin` | yes | §3.5, [RFC 18 §5.1](rfc-18-identity.md#5.1%20What%20a%20directory%20provides) |
+| `join-domain` | installation | `admin` | yes | §3.5, [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2) |
+| `rotate-machine-password` | installation | `admin` | yes | §3.5, [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2) |
 | `cancel` | operation | the role that may start its kind | no | §4.6 |
 
 An operation's `Kind` is an `OpKind`, a closed set read from this table and
-§4.6's list: one value per action above that is an operation, and one per
-create or delete §4.6 makes one. So `api_operations{kind}` is a closed set
+§4.6's list: one value per action above that is an operation, one per
+create or delete §4.6 makes one, and `identity.nt-hash-delete`, the deletion
+of every stored NT hash that setting `identity.ntlm` off starts, in that
+setting's write ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)). The rule
+for turning NTLM back on is this one, and RFC 18 §3.5 points here:
+
+- **The state is kept on the installation record,** not read from the
+  operations, which the sweep deletes 7 days after they end (§4.6):
+  `Installation.NTLMOff` ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)) holds `Off`, the settings
+  generation of the last write turning `identity.ntlm` off, and `Deleted`,
+  the `identity.nt-hash-delete` that has completed since that write, zero
+  while none has. A write turning it off from on sets `Off` and clears
+  `Deleted`, and one setting it off while it is already off changes neither;
+  the deletion's last step sets `Deleted` in the transaction that ends it.
+  Nothing else writes either.
+- **Turning it on** — a put of on, or the delete of the installation's
+  `identity.ntlm` record, which makes the default, on, effective — is refused
+  `409` `operation_running` while `Off` is set and `Deleted` is zero, naming
+  the deletion running or the last one failed while its record is kept, and
+  is retried once one has completed. With `Deleted` set, it is accepted
+  however long ago the deletion ended.
+- **Turning it off** starts a deletion unless one runs. A write setting it
+  off while it is already off starts one only when `Deleted` is zero and none
+  runs, which is how an administrator finishes a failed one (RFC 18 §3.5, as
+  the RFC 18 plan amends it); with one running it starts none, so §4.6's one
+  per target and kind holds. A deletion has no cancel.
+- The settings route enforces all three, reading `NTLMOff` and the running
+  index tracked in the write's own transaction, since a section's validator
+  reads no operation. A provisioning apply ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file))
+  writes `identity.ntlm` through the same check, as the API would. A write
+  that starts a deletion answers as a call that starts
+  an operation does (§4.6), `202` with the operation's `Location`, and the
+  operation's target is the installation; one that starts none answers as a
+  setting's write does.
+
+Since `OpKind` is closed, `api_operations{kind}` is a closed set
 ([RFC 25 §2.4](rfc-25-observability.md#2.4%20Labels)), and `operation_running`
 keys on the same value.
 
@@ -1067,7 +1161,9 @@ keys on the same value.
 **One request is one transaction.** A write validates with the components'
 validators ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)), then commits its records, the generation they
 raise, its audit record (§6) and its idempotency record (§4.5) in one
-transaction, or none of them. A write that starts long work commits its first
+transaction, or none of them. The one transaction is `ControlPlane.Write`'s
+([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)): the handler's writes run in it, and
+`Write` adds the audit and idempotency records before it commits. A write that starts long work commits its first
 step that way and returns an operation (§4.6). A write **MUST NOT** answer
 success before its transaction commits, and **MUST NOT** depend on any call to
 a running component.
@@ -1104,7 +1200,7 @@ Every resource read returns an `ETag` that is the value RFC 16's write of that
 record takes as `expect`
 ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)): its
 generation ([RFC 13 §2.3](rfc-13-configuration.md#2.3%20A%20record%20is%20versioned)), its version (a grant, an export policy, a
-netgroup) or its position (a quota, §2.4). A client compares it only for
+netgroup, a quota). A client compares it only for
 equality. A resource built from
 several records — a share's info, its state and its namespaces are three
 ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)) — takes its tag from the one its `spec` writes; the others
@@ -1139,8 +1235,8 @@ state it expects.
 ### 4.5 Idempotency
 
 Every `POST` and every `DELETE` **MUST** carry an `Idempotency-Key`, a client
-value unique per intended action, except the credential calls below; one
-without is refused `428`. The server
+value unique per intended action and at most 255 bytes, except the credential
+calls below; one without is refused `428`, and a longer one `400`. The server
 keeps, per (account, key), the digest of the request — method, path, body — and
 the answer it gave, written in the request's own transaction:
 
@@ -1149,13 +1245,17 @@ the answer it gave, written in the request's own transaction:
   operation ID for long work;
 - the same key with a **different** digest is refused `422`
   `idempotency_mismatch`;
-- a request refused before its transaction — validation, a precondition —
-  records nothing, so a corrected retry with the same key is a new request;
+- a request refused — validation, a precondition — records nothing, so a
+  corrected retry with the same key is a new request; the key is checked
+  before validation and preconditions run in the same transaction
+  ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)'s `Write`), so a recorded key with a different digest
+  answers `422` even when the request would also fail them; a body that does
+  not decode, an unknown field included, is refused before the key is read;
 - records are kept 24 h, then deleted.
 
 **A call that carries or issues a credential keeps no idempotency record.**
-Sign-in, refresh, `POST /auth/password`, `:set-password` and API-token creation
-**MUST NOT** carry an `Idempotency-Key` — one is refused `400` — and the server
+Sign-in, refresh, `POST /auth/password`, `:set-password`, API-token creation and
+`join-domain`, online or offline, **MUST NOT** carry an `Idempotency-Key` — one is refused `400` — and the server
 records neither their digest nor their answer, so no token, password or digest
 of one is kept anywhere but §5.3's hashes. A retry is a new call:
 
@@ -1166,7 +1266,17 @@ of one is kept anywhere but §5.3's hashes. A retry is a new call:
   presents is no longer current; the client signs in with the new one;
 - a retried **`:set-password`** sets the same password again;
 - a retried **API-token creation** creates a second token. The first, never
-  shown, is listed under the account and revocable, and expires as §5.3 bounds.
+  shown, is listed under the account and revocable, and expires as §5.3 bounds;
+- a retried offline **`join-domain`** is refused `409` `operation_running`
+  while the first join runs, at its first write, so it writes no version (§3.5);
+  once the first join has ended, the retry writes its password as a new
+  version and starts a second join. The client finds the first in the
+  operation list;
+- a retried online **`join-domain`** hands the credential over again under a
+  new operation ID; while the first join runs, its write is refused `409`
+  `operation_running` and the hold ends with the request
+  ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2), as the RFC 18 plan amends it); once it has ended, the
+  retry starts a second join.
 
 > decision: credential calls are not idempotent, because replaying their answer
 > means storing a usable credential for the record's 24 h, which §5.3's
@@ -1189,7 +1299,7 @@ changed. A client **MUST** reuse a key across its own retries of one action and
 
 Work that does not finish in one transaction — a share's removal, a user's
 deletion, a clone, a restore, a backup, a re-home, a move, a credential
-rotation, a signing-key rotation, an index rebuild, a copy's acceptance, a location's loss — is an **operation**. Its call commits the work's
+rotation, a signing-key rotation, the NT hashes' deletion, an index rebuild, a copy's acceptance, a location's loss — is an **operation**. Its call commits the work's
 first durable step and answers `202 Accepted` with `Location:
 /api/v1/operations/{id}` and the operation's body.
 
@@ -1240,8 +1350,9 @@ type Progress struct {
   ([RFC 27 §3.1](rfc-27-namespace-migration.md#3.1%20Interfaces)). Every other kind answers `409` `not_cancellable`: a
   share's removal is one-way, and a re-home has no cancel, only a rate of 0.
 - **One per target and kind.** A second request for the same work on the same
-  target while one runs is refused `409` `operation_running`, naming it,
-  except an acknowledgement of unreadable ranges, which joins the running one
+  target while one runs is refused `409` `operation_running`, naming it, as
+  is a write §4.1 refuses because of an operation of a named kind (`identity.ntlm`
+  turned on before an `identity.nt-hash-delete` has completed since the last turn-off, as `Installation.NTLMOff` records it), except an acknowledgement of unreadable ranges, which joins the running one
   ([§3.3](#3.3%20Stores%20and%20namespaces)).
 - **Ends.** A finished operation is kept 7 days, then deleted; its audit records
   stay for the audit's own retention (§6).
@@ -1265,7 +1376,7 @@ An error is an `application/problem+json` body (RFC 9457) with these fields:
 name, and the API adds only its own: `unauthenticated`, `forbidden`,
 `generation_mismatch`, `precondition_required`, `idempotency_mismatch`,
 `managed`, `operation_running`, `not_cancellable`, `last_admin`, `not_a_copy`,
-`password_change_required`, `starting`, `unavailable`. One table maps every
+`password_change_required`, `throttled`, `starting`, `unavailable`. One table maps every
 error to a status, as [RFC 20 §4.5](rfc-20-adapters.md#4.5%20One%20error%20table%20per%20protocol) maps every service error to a wire
 status, and a test proves it total (§12):
 
@@ -1278,7 +1389,7 @@ status, and a test proves it total (§12):
 | `409` | the resource's state refuses it: `ErrStale`, `ErrLocked`, `ErrMoving`, `ErrDelay`, a bound setting, a managed record, an operation running, the last admin, a namespace that is not a copy |
 | `412`, `428` | §4.4 and §4.5 |
 | `422` | an idempotency key reused with another request |
-| `429` | sign-in throttled (§5.3) |
+| `429` | sign-in throttled (§5.3), code `throttled`, so `api_sign_ins_total` counts it as that result |
 | `503` | the metadata store unreachable, the node still starting, or its API calls at their bound; with `Retry-After` |
 
 An error the table does not name is answered `500` and counted; any increase is
@@ -1329,8 +1440,14 @@ second store.
   current record — never against a role carried in a token (§5.3).
 - **An operator cannot raise privilege.** Giving an account a role, or editing
   a user that holds one, is `admin`'s; so an operator cannot make itself admin by
-  editing its own record, nor write `identity.oidc` or `api.oidc_role_map`,
-  which map an issuer's claim to a role (§5.5).
+  editing its own record, nor write a setting
+  [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings) gives to `admin` alone:
+  among them `identity.oidc` and `api.oidc_role_map`, which map an issuer's claim to a role (§5.5),
+  `api.password_sign_in`, which could take password sign-in from every admin
+  but one (§5.5), `identity.directory`, the whole record, which could point identity at a directory the
+  operator runs, and `audit.retention`, `api.session_lifetime` and `api.token_max_lifetime`, so it
+  cannot erase the audit it cannot read or outlast a revocation it cannot see. `audit.retention`
+  also refuses a value under 90 days, from `admin` too (§6).
 - **A secret is written as its owner is.** A write of a `Secret` is authorized
   as a write of the resource that names it — a remote store's credential as the
   store, a backup location's as the location — and no route writes a secret by
@@ -1351,7 +1468,8 @@ second store.
 ### 5.3 Sign-in, tokens and sessions
 
 - **Sign-in** is `POST /api/v1/auth/sign-in` with a name and password. The API
-  verifies them by calling identity directly, `APISignIn.VerifyPassword`
+  verifies them by calling identity directly, `APISignIn.Lookup` for the name's
+  principal and then `VerifyPassword(p, password)`
   ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)), never through `vfs`: the account's password hash is a
   `Secret` sealed under the `storage` wrapping key, which every API node opens
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). It returns an
@@ -1362,10 +1480,23 @@ second store.
   API verifies the signature and expiry and then reads the account — through
   `APISignIn.Account`, identity's cache keyed by the principals generation
   ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)) — and refuses a disabled or deleted account, a
-  revoked session, or a token issued before the account's **not-before** time.
-  So disabling an account, changing its role, changing its password or signing
-  it out everywhere takes effect on every node within a second, not at token
-  expiry.
+  revoked session, or a token issued before the account's **not-before** time:
+  an access token by its issue time, and a refresh or an API token by its
+  session's or its own creation time, so a refresh cannot mint a token past it.
+  So disabling an account, changing its password or signing it out everywhere
+  takes effect on every node within a second, not at token expiry. Changing its
+  role raises no not-before: the per-call read of the account applies the new
+  role within a second, and the account's sessions and API tokens
+  survive it. An issue or creation time is the store time of the write that issued
+  the token or created the session, never a node's clock, raised to the
+  account's not-before when that is later, since that write read the account
+  after any raise it follows; times compare in whole seconds, and a raise sets
+  not-before to the whole second after its commit, so a token issued before the
+  raise is before it and one issued after is not. A password change, a
+  must-change first password included, answers a new session created in its
+  own write, whose creation time is the not-before that write sets, so the new
+  session is not refused by its own raise; the session that made the change
+  refreshes no more.
 - **The refresh token** is opaque and random, stored only as its hash in a
   session record with an expiry of `api.session_lifetime` (installation, live;
   proposed: 12 h, a working day of one sign-in). Each use returns a
@@ -1381,19 +1512,102 @@ second store.
   `admin`'s, an operation (§4.6), as RFC 13 §7 rotates a secret: the next key
   signs once every node holds it, and the old one verifies until the last token
   it signed has expired. No secret route writes it (§5.2).
-- **Throttling.** After 5 consecutive failed sign-ins for an account, or from
-  one source address, each further attempt waits twice as long as the last,
-  from 1 s up to 5 min, answered `429` with `Retry-After`. A success resets the
-  account's count. Every failure is audited (§6). The counts are kept in the
-  store, written in the failure's audit transaction, so the bound is 5 per
-  account and per source installation-wide, not per node.
+- **Throttling.** Three counts are kept: one per account and source address
+  together, one per source address, and one per account across all sources.
+  Once 5 attempts have been counted for an account from one source, or 5 from
+  one source for any accounts, each further attempt there waits twice as long
+  as the last, from 1 s up to 5 min, and one that comes sooner is answered
+  `429` with `Retry-After`; the account's own count applies the same wait only
+  from 100 failures, so guesses spread over many sources stay bounded
+  ([NIST SP 800-63B-4 §3.2.2](https://pages.nist.gov/800-63-4/sp800-63b.html#throttle)).
+  A burst against one account from many sources can therefore pass up to 100
+  before the account's wait: that is NIST's ceiling, kept rather than lowered,
+  because an account-wide wait is also one any source can impose on the
+  account's owner, and the per-pair count already keeps the owner's own source
+  apart from the attacker's, as smart lockout does.
+  The counts are kept in the store, so each bound holds installation-wide, not
+  per node. An attempt is counted before its password is checked, in one
+  transaction that reads the counts and raises them, so concurrent guesses
+  cannot all pass at the same count; the wait is decided on the counts as
+  read, so the fifth attempt is checked and the sixth waits; a write that fails
+  refuses the attempt. An attempt answered `429` raises no count and commits
+  nothing: its transaction only reads, it tried no password, and its password
+  is never checked, so a flood of them neither lengthens a wait nor costs a
+  commit each. A
+  success resets the account's count and its pair's, and takes back its own
+  raise of the source's; a failure is audited (§6). An account is keyed by the
+  principal its name resolves to (`APISignIn.Lookup`, [RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)), and the
+  password checked is that principal's, so the name counted and the name
+  checked are one. `Lookup` resolves the name's user part, without its domain
+  or realm, folded as [RFC 18 §4.6](rfc-18-identity.md#4.6%20Names) folds names,
+  as RFC 18 §3.1's logon throttle keys a name (as the RFC 18 plan amends it), so every spelling of one name —
+  `alice`, `ALICE`, `CORP\alice`, `alice@CORP.EXAMPLE` — shares one count
+  whichever domain qualifies it, and a name whose user part resolves to no
+  account counts against its source only, never against a shared account
+  or pair. A source
+  is the connection's peer address, an IPv4-mapped IPv6 address read as its
+  IPv4 address and any other IPv6 address by its /64; no forwarding header is
+  read, so behind a proxy every client is the proxy's source, a loopback
+  address included, since a proxy on the host delivers from one. A caller on
+  the API's local socket (Transport, below) has no source: no source count
+  and no pair, so only its account's count applies. A
+  pair's count is forgotten 24 h after its last counted attempt, and a
+  source's 15 min after its last settled failure. A source's count keeps two
+  times: its last counted attempt, which every count moves and its wait counts
+  from, so a burst from one source waits past the fifth; and its last settled
+  failure, which only a failure's settle moves, or the attempt that creates
+  the count, so a count whose attempt never settles still expires. Its expiry
+  follows the second. A success's takeback lowers only the source's count and
+  moves neither time back, so the source's wait may run a little longer after
+  a success, and successes through a shared source, overlapping ones
+  included, do not keep a guesser's count alive. A settle or a takeback
+  applies only to the source's count its attempt was counted on: on one swept
+  or recreated since, it does nothing, so a takeback never removes a raise
+  that count does not hold, and a failure settled after its count expired
+  joins no new one. An account's count is reset by a
+  success, by `:set-password` and by the break-glass reset (§5.4), and deleted
+  with the account, whose pairs the sweep forgets. The break-glass reset also
+  clears every source's count, in bounded batches. `POST /auth/password`'s check of
+  the current password is an attempt too, counted, waited on and settled as a
+  sign-in's is, for its account and the caller's source, so a stolen access
+  token cannot guess the password it would replace.
+
+  > decision: the fast wait is keyed by account and source together, as
+  > identity providers' smart lockout separates familiar and unfamiliar
+  > locations, so a guesser on one address cannot hold an account's owner on
+  > another. Behind one proxy they are one address, and the next decision
+  > says what that costs. Only the 100-failure account count reaches across sources: a
+  > guesser spread over enough addresses to reach it can still hold the
+  > account, and the break-glass reset clears `admin`'s (§5.4). Revisit if
+  > that is reported: the upgrade is a source the account has signed in from
+  > before, exempt from the account-wide count.
+
+  > decision: a source is the peer address, so every client behind one proxy,
+  > NAT or Kubernetes SNAT shares one source count, and one guesser there can
+  > hold that source's wait at its 5-minute cap by one checked attempt each
+  > time it expires, for every account signing in through it, and the pair's
+  > wait of every account it guesses, since every client there shares that
+  > pair too. A proxy on the host makes loopback such a source, so loopback is
+  > not exempt. The count is
+  > forgotten 15 min after its last failure rather than 24 h, a `429` does not
+  > raise it, a caller on the local socket (a `dfsctl` on the host) has none
+  > and no pair, so a guesser through the proxy cannot hold the host's own
+  > administrator, and the break-glass reset clears it, refunding the spray
+  > that forced the reset as well; a success from the source does not reset it,
+  > since a guesser holding one valid account could then reset its own spray
+  > count. Revisit when a shared source's wait is reported: the upgrade is a
+  > forwarding header read only from a configured list of trusted proxies.
 - **Transport.** The API **MUST** be served over TLS on every address but
-  loopback. Its certificate and key are bootstrap facts of the host.
+  loopback (`127.0.0.0/8` and `::1`, an IPv4-mapped address read as its IPv4
+  address). Its certificate and key are bootstrap facts of the host. It is
+  also served without TLS on a **local socket**, a Unix socket at a path the
+  host's bootstrap names, readable and writable by the server's user only, so
+  a caller on it is a process of the host that holds that user's rights.
 
 ### 5.4 The bootstrap administrator and the first password
 
 - **Created once, by initialisation.** The explicit initialisation step
-  ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) creates one account, `admin`, with role `admin`. A start
+  ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) creates one account, `admin`, with role `admin`, and the node's identity ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)). A start
   never creates one, so an installation whose accounts were all deleted is not
   repaired by restarting it (below).
 - **It is not a file user.** `admin` **MUST NOT** be given uid 0, any other uid,
@@ -1410,8 +1624,9 @@ second store.
   must-change or not: a stolen first-sign-in token must not set a password on
   its own.
 - **Recovery.** Lost admin credentials are reset by an offline command of the
-  server binary on a node that is stopped, with the host's bootstrap. It sets a new generated password with must-change, writes
-  an audit record naming the host and the command, and nothing else. It is the
+  server binary on a node that is stopped, with the host's bootstrap. It sets a new generated password with must-change, which raises the account's not-before time as any password change does, clears
+  the account's sign-in failure count and every source's (§5.3), writes an audit record naming the
+  host and the command, and nothing else. It is the
   one change not made through the API.
 
 > decision: the break-glass reset bypasses the API, because the API is what is
@@ -1447,15 +1662,22 @@ protocol can carry the token
   presents one: the API takes every ID token from the issuer's token endpoint
   itself.
 - **Roles from a claim.** `api.oidc_role_map` maps values of the issuer's role
-  claim to `viewer`, `operator` or `admin`. The session's role is the higher of
-  the account's own and the highest one the claim maps to, recorded in the
-  session record, never in a token. A token with no mapped value adds no role
-  beyond the account's own; an account left with no role is refused `403`.
+  claim to `viewer`, `operator` or `admin`. The session records only the
+  highest role the claim maps to, never in a token; each call takes the higher
+  of it and the account's current role, read per call (§5.3), so raising the
+  account's role reaches an OpenID Connect session as it reaches any other,
+  but lowering it leaves the session the role its claim mapped to, until the
+  session ends or is revoked.
+  A token with no mapped value adds no role beyond the account's own; a call
+  left with no role is refused `403`.
   `identity.oidc` and `api.oidc_role_map` are `admin`'s to write, since either
   can grant `admin` (§5.2).
-- **Password sign-in per role.** `api.password_sign_in` lists the roles that
-  may sign in by password (default: every role). A password sign-in for any
-  other role is refused `403` `password_sign_in_disabled`, audited. The last
+- **Password sign-in per role.** `api.password_sign_in`, written by `admin`
+  only (§5.2), lists the roles that may sign in by password (default: every role). A password sign-in for any
+  other role is refused `403` `password_sign_in_disabled`, audited. It is
+  checked against the account's current role on every call of a
+  password-signed-in session too, so a session whose role it no longer allows
+  is refused `403` `password_sign_in_disabled` and signs in again. The last
   enabled `admin` account with no `oidc` link keeps password sign-in whatever
   the setting, so the break-glass reset (§5.4) always leaves a way in.
 - **Audit.** Each OpenID Connect sign-in, failed or not, is audited as a
@@ -1488,13 +1710,14 @@ Every management action leaves an **audit record**:
   commit cannot either. An operation's state changes — started, each phase,
   ended — are audited in the transactions that make them.
 - **Refusals are audited too**, in a transaction of their own: every request
-  refused after authentication, and every sign-in, failed or not. A request
-  refused before authentication is counted, not recorded, except at sign-in,
-  where throttling bounds the rate.
+  refused after authentication, and every sign-in whose password is checked,
+  failed or not. A request refused before authentication is counted, not
+  recorded, a sign-in answered `429` included (§5.3), so throttling bounds the
+  rate of the records sign-in writes.
 - **The audit is append-only.** No API call edits or deletes a record. Records
-  older than `audit.retention` (installation, live; proposed: 400 days, a year
-  and a quarter, so one annual review finds the whole year) are deleted in
-  bounded batches.
+  older than `audit.retention` (installation, live, written by `admin` only,
+  never under 90 days (§5.2); proposed: 400 days, a year and a quarter, so one
+  annual review finds the whole year) are deleted in bounded batches.
 - **Reading** is `GET /api/v1/audit`, for `admin`, filtered by time range,
   actor and target, and paged as §4.2 says. Delivery to an outside collector is
   [RFC 25 §4](rfc-25-observability.md#4.%20Event%20streams)'s `admin` event
@@ -1534,7 +1757,7 @@ The CLI is a client of the management API and of nothing else:
 - `login --oidc <issuer>` signs in through §5.5's device grant: it prints the
   verification URI and user code, polls the API, and stores the API's refresh
   token as a password sign-in's; it needs no browser on the machine it runs on;
-- it keeps named contexts — server URL, account, TLS trust — and stores a
+- it keeps named contexts — server URL or the local socket's path (§5.3), account, TLS trust — and stores a
   refresh token or an API token with access for its user only;
 - **its reference is generated** from its own command definitions, never
   written by hand, and a change to a command regenerates it in the same change.
@@ -1618,7 +1841,7 @@ These rules bind from the single node on, where most of them cost nothing
 | --- | --- |
 | CP1 | `node.New` builds every component; after start, only the node changes which components run, and only from records. |
 | CP2 | The API changes nothing but records; it never calls a component to change it, and a write answers success only after its transaction commits. |
-| CP3 | Every node applies records by their binding class, in counter order, and reports the position it has reconciled through per kind, the records it refused and those awaiting a restart; a record is applied on a node only when that position reaches the record's own and it is in neither set. |
+| CP3 | Every node applies records by their binding class, in counter order, and reports the position it has reconciled through per kind, the records it refused and those awaiting a restart; a record of a reconciled kind is applied on a node only when that position reaches the record's own and it is in neither set; a grant, an export policy, a netgroup or a quota is applied from its commit, and a secret version once the node reports holding it (§2.4). |
 | CP4 | Stop is the reverse of start; the API outlives the adapters and the store outlives everything. |
 | CP5 | Every `PUT`, `PATCH` and `DELETE` carries `If-Match` — or, for a `PUT` that creates, `If-None-Match: *` — checked inside the write's transaction; a write never commits over a tag, or over a record, its author did not read. |
 | CP6 | A request with a recorded idempotency key is answered from the record and applied at most once. |
@@ -1693,14 +1916,16 @@ builds a node any other way, and an architecture test fails on a caller of
 | §3.2 create admits nobody | Create a share; mount it as alice over SMB and NFS: refused. Grant alice; mount: admitted. | an open default |
 | §3.2 delete | Delete a share with 10⁵ files; kill the node during phase "files" once `Done` > 0; restart: assert the same operation ID reports `running`, that `Done` is at least that value and rises, and that it ends `succeeded`. Delete again with a new key: `409` `stale`. | progress the API made up |
 | §3.5 grants | Grant `Finance` read on a share and alice, a member, `none`: assert alice refused. `DELETE` alice's grant: assert her grant gone and alice granted read through `Finance`. `PUT` a grant naming a machine principal: assert `400` `ErrInvalid` and no grant written. | `none` stored as no grant, or a machine granted file access |
+| §4.1 NTLM back on | Turn `identity.ntlm` off: assert `202` and one `identity.nt-hash-delete`. Turn it off again while that runs: assert no second operation. Turn it on, and delete the installation's `identity.ntlm` record, while it runs: each `409` `operation_running`, naming it. Fail the deletion, turn NTLM off again: assert a new deletion starts. Let it complete; advance the clock 8 days and run the sweep: assert its operation record is gone and turning NTLM on is accepted. | NTLM on again while NT hashes remain; a second deletion beside the first; the rule lost with the swept operation |
 | §4.4 lost update | Two clients read a policy, both `PUT` with the same `If-Match`, sent to two API nodes at once **(cluster)** and on one node in a tight loop: assert exactly one commits and the other is `412`. Send a `PUT` without `If-Match`: `428`. Two clients `PUT` the first grant of one principal with `If-None-Match: *`: assert one commits and the other is `412`. | the Start-here lost update; a create overwriting a concurrent one |
 | §4.4 background field | Start a re-home of a share; `PUT` its spec with a stale copy that includes its old namespace: assert the namespace is unchanged and the `PUT` refused. | a `PUT` reverting a component's write |
-| §4.5 idempotency | Send a `DELETE` with a key, drop the answer, resend: assert one operation, the same ID and body. Resend with the same key and another body: `422`. Send a create that fails validation, fix it and resend with the same key: accepted. Sign in, refresh and create an API token, each twice; read the store's raw keys: assert no idempotency record exists for them and no token value or password appears; assert the second refresh revoked the session. | double application on retry; a credential kept in a replay record |
+| §4.5 idempotency | Start an offline `join-domain` and, while it runs, retry it: assert `409` `operation_running` and no new version of the machine password's `Secret`. Send a `DELETE` with a key, drop the answer, resend: assert one operation, the same ID and body. Resend with the same key and another body: `422`. Send a create that fails validation, fix it and resend with the same key: accepted. Sign in, refresh and create an API token, each twice; read the store's raw keys: assert no idempotency record exists for them and no token value or password appears; assert the second refresh revoked the session. Start an offline `join-domain` and an online one: assert no idempotency record exists for either; the offline join's password is found only sealed, in the machine password's `Secret`, and the online join's administrator credential is found nowhere in the store, the operation's record, the audit, a log line or a metric (CP11). | double application on retry; a credential kept in a replay record |
 | §4.6 runner claim | **(cluster)** Start a credential rotation; kill the node that claims it; assert another node claims it after the claim expires and it completes, deleting the old version once. | an operation lost with its node |
 | §4.7 error table | For every error value in every closed set, provoke it through the API, or inject it at the seam where none can be provoked; assert each has a status and code, and `api_unmapped_errors_total` stays 0. | an error with no row |
 | §5.1 roles grant nothing | With the bootstrap admin and every role, mount every share over every flavour: assert every mount refused. Read the admin's record: no uid, gid, SID, Kerberos name or grant. | an API role leaking into file access ([RFC 18 §10](rfc-18-identity.md#10.%20Conformance)) |
-| §5.2 roles | Read the route list from the router and compare it with §4.1's resources and Actions table; a route in neither fails the check. For every route, call it as `viewer`, `operator` and `admin`; assert the table of §5.2, `404` where the caller may not read. As an operator, give yourself `admin`: refused. As an operator, write the password secret of an admin account, and the signing key, through every secret-bearing route: refused, and neither changed. Demote the last admin: `409` `last_admin`. | a route missing its check; privileged credentials replaced through a secret write |
-| §5.3 revocation | Sign in on two nodes; disable the account; assert every call on both is refused within 1 s, with the access token unexpired. Reuse an already-rotated refresh token: assert the session is revoked. | a token outliving its account |
+| §5.2 roles | Read the route list from the router and compare it with §4.1's resources and Actions table; a route in neither fails the check. For every route, call it as `viewer`, `operator` and `admin`; assert the table of §5.2, `404` where the caller may not read. As an operator, give yourself `admin`: refused. As an operator, write the password secret of an admin account, and the signing key, through every secret-bearing route: refused, and neither changed. Demote the last admin: `409` `last_admin`. As an operator, write `audit.retention`, `api.session_lifetime`, `api.token_max_lifetime`, `api.password_sign_in` and `identity.directory`: each refused, nothing committed. As an admin, write `audit.retention` of 89 days: refused. | a route missing its check; privileged credentials replaced through a secret write |
+| §5.3 revocation | Sign in on two nodes; disable the account; assert every call on both is refused within 1 s, with the access token unexpired. Reuse an already-rotated refresh token: assert the session is revoked. Change an account's password, then refresh a session signed in before it and call with an API token created before it: assert both refused. Run the break-glass reset: assert a session signed in before it is refused. Demote an operator to viewer: assert an operator call on both nodes is refused within 1 s, while its session and API token still answer viewer calls. | a token outliving its account |
+| §5.3 throttling | Fail 5 sign-ins for one account from one address: assert the sixth from it answers `429`, a sign-in for that account from a second address is checked, and 5 concurrent attempts past the bound pass no more than the counts allow. Fail 100 across 25 addresses: assert the next from a new address waits. Sign in correctly: assert the account's and the pair's counts reset. Fail 5 sign-ins for five different accounts from one address: assert the sixth from it, for any account, answers `429`. Fail sign-ins for a name with no account: assert only its source's count rises, and no account's or pair's. Fail from `::ffff:192.0.2.1` and `192.0.2.1`: assert one source count; from two addresses in one IPv6 /64: one source count. Within a pair's wait, send 50 attempts that answer `429`: assert no count rose, no password was checked, and no write committed. Fail 5 sign-ins for five accounts from `127.0.0.6`, from `::1`, and from `127.0.0.1` and `::ffff:127.0.0.1` together: assert the sixth from each answers `429`, as a loopback address is a source like any other. Then fail 5 for one account through the local socket: assert the sixth is checked, and no source or pair count exists for it. Advance the clock 15 min past a source's last failure: assert its count is forgotten. Fail 3 from one source, then sign in correctly from it once a minute for 20 min: assert the source's count is forgotten 15 min after the third failure, its `XP` row never moved by a success. Fail 3 from one source, then hold two correct sign-ins from it open together, each counted after the other's count and settled in either order: assert the source's last settled failure stays the third failure's time and its count falls back to 3. Fail 3 from one source, advance the clock 10 min, then send 50 attempts for 50 accounts from it together: assert two are checked and the rest answer `429`. Count an attempt that creates a source's count, kill the node before it settles, advance the clock 15 min: assert the count is forgotten. Let a source's count expire while one of its attempts is checked, and let a new attempt create the count again: assert the old attempt's failure settled, or its success taken back, leaves the new count as it found it. Raise an account's count, then run `:set-password`: assert it is reset; raise it again, then run the break-glass reset: assert the account's and every source's counts are reset; delete the account: assert its account count is gone and its pairs are forgotten by the sweep 24 h after their last attempt. Fail 4 as `alice` and 1 as `ALICE`: assert the next for `CORP\alice`, and for `alice@CORP.EXAMPLE`, from that address answers `429`. Advance the clock 24 h past a pair's last failure: assert its count is forgotten. Fail 3 current-password checks on `POST /auth/password`, then 2 sign-ins, from one address: assert the next of either answers `429`. Run 200 concurrent attempts against one account from 200 addresses: assert no more than 100 are checked before the account's wait. | one count per account, so a guesser on one address locks out the owner on another; a proxy on the host turning off the source count |
 | §5.5 OpenID Connect | Against a test issuer, run `login --oidc` with no browser: assert a session whose tokens are the API's, and no ID token stored. Map a claim value to `operator` for an account whose own role is `viewer`: assert `operator` rights, and `viewer` only in a session whose token lacks the value. Set `api.password_sign_in` to `viewer`: assert an `operator`'s password sign-in refused `403`, and the last unlinked `admin` still signs in by password. As `operator`, write `api.oidc_role_map`: refused. | an ID token used as the session; a role carried in a token; an operator raising its own role |
 | §5.4 first password | Initialise without a password; assert it is printed by the step and appears in no log. Sign in: every call but the password change is `403`. Change it without the current password: refused. | a first-login token setting a password alone |
 | §6 audit | Run every mutating route once, applied and refused. Assert one audit record each, with generations before and after, and no secret value; fault the commit of one change and assert neither the change nor its record exists. | a change with no record |
@@ -1713,13 +1938,10 @@ in `e2e`, their Kerberos flavours in `e2e/kerberos`. No suite runs yet the multi
 
 ## 13. Open questions
 
-1. **Which counter a position is of.** [RFC 16](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)
-   defines the records this RFC adds and their keys, a `User`'s role and
-   not-before time, every record's `Position`, and `expect` on every write,
-   `SetGrant` and `SetQuota` included. One question is left: which counter
-   (`CFGGEN`, `SL` or `PGEN`) a grant's, an export policy's, a netgroup's and a
-   quota's `Position` is of. [RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)
-   keeps grants and export policies off the principals generation.
+1. **Which counter a position is of.** Settled in §2.4: only the reconciled
+   kinds carry one, as [RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)
+   has it; a grant, an export policy, a netgroup and a quota are versioned
+   instead.
 2. **Audit volume at scale.** An audit record per change is nothing for
    operators; a provisioning reload that rewrites 10⁴ shares writes 10⁴ records
    in its transactions. Whether a reload's records are summarised per record

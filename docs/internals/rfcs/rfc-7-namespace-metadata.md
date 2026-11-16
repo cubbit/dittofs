@@ -985,6 +985,10 @@ was given: the name stored in the entry and returned by a listing is the one
 that went in. A name that comes back different is a name the client cannot use,
 and the client has no way to discover the rule that changed it. Folding the
 *key* on a case-insensitive share ([§3.3](#3.3%20Case)) is not a rewrite of the name.
+The one exception is the `windows` rule's private-use spelling of a reserved
+character in a name an NFS call gives
+([§3.8](#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)): that client
+then lists the spelling, and finds the entry by either.
 
 Validation happens here, not in the adapters, because there is more than one
 adapter and a rule enforced in one of them is a rule the other does not have.
@@ -1144,18 +1148,36 @@ enforces it for every protocol, at the boundary of [§3.2](#3.2%20A%20name%20is%
   still refuses a name that is not valid UTF-8, because the fold maps UTF-16
   code units and such a name has none.
 - **`windows`**, the default on a case-insensitive share: additionally refuses a
-  name that is not valid UTF-8; a name containing a **reserved character** —
-  `"`, `*`, `:`, `<`, `>`, `?`, `\`, `|` and the controls 0x01–0x1F;
-  a name ending in a space or a dot; and a **reserved device name** — `CON`, `PRN`,
-  `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`, in any case, alone or followed by a
-  dot and anything, as `con.txt`. Such a create fails `ErrInvalid` through every
-  adapter, so no client makes a name the share's other clients cannot open. The
-  private-use code points U+F001–U+F07F are ordinary characters under this
-  rule: they are stored and listed as themselves, never translated to the
-  reserved character some clients use them for, so a client saving
-  `Q3: draft.docx` under that substitution succeeds and sees its own name. An
-  adapter's translation of them ([RFC 22 §12.3](rfc-22-smb.md#12.3%20Names%20SMB%20cannot%20carry)) applies on `posix` shares
-  only.
+  name that is not valid UTF-8 and a **reserved device name** (`CON`, `PRN`,
+  `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0` to `COM9`, `COM¹` to `COM³`, `LPT0` to
+  `LPT9` and `LPT¹` to `LPT³`, in any case, alone or followed by spaces, a dot and
+  anything, as `con.txt` and `CON .txt`), and keeps out of every stored name a
+  **reserved character** (`"`, `*`, `:`, `<`, `>`, `?`, `\`, `|` and the
+  controls 0x01 to 0x1F) and a trailing space or dot. In a name a call over NFS
+  gives (its `vfs.Call`'s `Protocol`), each such character is stored as its
+  private-use code point ([RFC 22 Appendix B](rfc-22-smb.md#Appendix%20B%20%E2%80%94%20private-use%20mapping)):
+  `:` as U+F022, a trailing space as U+F028, a trailing dot as U+F029, each
+  character of a trailing run spelled, so `a..` is stored as `a` U+F029 U+F029;
+  the share's `MaxNameBytes` is judged on the name as stored, after the spelling.
+  The
+  spelling is applied before the name is keyed, wherever such a name is looked
+  up or stored: a create, a link, a rename's target and every lookup, after `.`
+  and `..` are resolved ([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)). From any
+  other protocol such a create fails `ErrInvalid`, as a device name does from
+  every protocol, so no client makes a name the share's other clients cannot
+  open. The device-name check runs first, on the name with its trailing
+  spaces and dots ignored, as Windows reads it, so `CON.` from NFS is refused
+  as `CON` is rather than stored as `CON` U+F029. So an NFS client that creates `a:b` lists `a`
+  U+F022 `b`; a lookup of
+  either spelling finds that one entry, and a create of either while the other
+  exists fails as existing (`ErrExist`), as a create of `readme` beside
+  `README` does ([§3.3](#3.3%20Case)). The private-use code points U+F001 to U+F07F
+  are ordinary characters under this rule: they are stored and listed as
+  themselves, never translated back to the reserved character some clients use
+  them for, so a client saving `Q3: draft.docx` under that substitution succeeds
+  and sees its own name. An adapter's translation of them ([RFC 22 §12.3](rfc-22-smb.md#12.3%20Names%20SMB%20cannot%20carry))
+  applies on `posix` shares only, which make no promise across protocols for
+  these names.
 
 > decision: the `windows` rule is enforced here, for every protocol, rather than
 > by the adapter whose clients need it, because a name another protocol creates
@@ -1163,8 +1185,18 @@ enforces it for every protocol, at the boundary of [§3.2](#3.2%20A%20name%20is%
 > it. Overturned if a share's clients of the other protocols are shown to need
 > such names; the `posix` rule then serves them.
 
+> decision: a reserved character in a name an NFS call gives is stored in its
+> private-use spelling rather than refused, so the name exists once, in the
+> spelling SMB shows. No mapping in an adapter could do this: an NFS client can
+> write both `A` U+F028 and `A ` (A and a space), which an SMB client would see
+> as one name. The cost is that the NFS client lists a spelling other than the
+> one it gave. Overturned if NFS clients
+> on such shares are found to need the bytes they wrote; the `posix` rule then
+> serves them.
+
 **Neither names nor keys are normalised.** A stored name is the bytes given
-([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)). On a case-insensitive share the name's
+([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)),
+the `windows` rule's private-use spelling aside. On a case-insensitive share the name's
 UTF-16 code units are each mapped through a 16-bit **upcase table**, one unit for
 one, with no normalisation, and the table is recorded by ID with the rule
 ([RFC 16 §4.6](rfc-16-metadata-store.md#4.6%20Store%20format), which names the first table and pins it by its hash). It is not
@@ -2619,7 +2651,7 @@ interfaces of [§11.1](#11.1%20Interface) and never read a key.
 | [§7.4](#7.4%20The%20identity%20arrives%20resolved) who is privileged | On a share that squashes the superuser and admits asserted identities, with a share grant naming principal P `admin`: as P with an asserted identity, and as the asserted superuser, read a mode-0 file, `chown` it and set a setuid mode: assert `ErrAccess` or `ErrPerm` on each. As P authenticated: assert all succeed. As P on an unprivileged open of a file whose ACL denies write: assert refused and `Granted` without write; on a privileged open: assert granted. Which flavours yield which flags is checked on the wire ([§12.5](#12.5%20Translations%2C%20fuzzing%20and%20metrics)). As privileged, open a mode-0644 file for execute: assert refused; in a sticky directory remove another user's file: assert allowed. As a group writer, set `Modify` to server time: assert allowed; to a client time: assert `ErrPerm`. |
 | [§9.2](#9.2%20Timestamps) two-directory rename | With folds due on A and B, rename A→B and B→A concurrently, 1,000 times: assert each completes within one fold's time and creates in both directories keep running. |
 | [§9.6](#9.6%20setuid%20and%20setgid%20are%20cleared%20when%20an%20unprivileged%20caller%20changes%20the%20file) append-only setuid | Make a file mode 4755, append-only, owned by alice; append to it as bob: assert the append succeeds and the setuid bit is clear; write below its size: assert refused and the bit unchanged. |
-| [§3.8](#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use) names | On a `windows` share create `CON`, `aux.txt`, `a?b` and `dir.`: assert each `ErrInvalid`. On a `posix` share assert each is created. On a case-insensitive share create `Straße.docx`, then `STRASSE.docx`: assert two entries; create `Ǆ` and look up `ǆ`: assert one entry, found with one read, listed as given; create `ǅ` beside them: assert a second entry, since the table maps a titlecase digraph to itself. Create `K.txt` and look up the same name spelled with the Kelvin sign U+212A: assert not found; a build that applies Unicode case folding finds it. Create `café` decomposed and then composed: assert two entries. A build that folds fully or normalises the key fails the first assertion. |
+| [§3.8](#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use) names | On a `windows` share create `CON`, `aux.txt`, `a?b` and `dir.` from SMB: assert each `ErrInvalid`. Create the four from NFS, and `CON.`: assert `CON`, `aux.txt` and `CON.` `ErrInvalid`, and `a?b` and `dir.` created and listed as `a` U+F025 `b` and `dir` U+F029; create `a..`, `a. ` and `...` from NFS: assert each stored with every trailing character spelled; look up each from NFS in either spelling: assert the one entry; create `a` U+F025 `b` and `dir` U+F029 from NFS beside them: assert each `ErrExist`; look up `..` from NFS: assert the parent. A build that refuses the reserved characters from NFS fails the creates, and one that spells a name before `..` is resolved finds no parent. On a `posix` share assert each is created. On a case-insensitive share create `Straße.docx`, then `STRASSE.docx`: assert two entries; create `Ǆ` and look up `ǆ`: assert one entry, found with one read, listed as given; create `ǅ` beside them: assert a second entry, since the table maps a titlecase digraph to itself. Create `K.txt` and look up the same name spelled with the Kelvin sign U+212A: assert not found; a build that applies Unicode case folding finds it. Create `café` decomposed and then composed: assert two entries. A build that folds fully or normalises the key fails the first assertion. |
 | [§6.1](#6.1%20A%20handle%20names%20a%20file%2C%20never%20a%20path) no shard, no `FileID` | Mint a file's handle, move the file to another shard, look it up again: assert the two handles are byte-identical. Read every identifier each protocol reports for the file; assert none contains its `FileID`. |
 | [§6.5](#6.5%20A%20protocol%27s%20numeric%20file%20id%20is%20a%20stored%20number%2C%20never%20reused) restored and snapshot ids | Restore a share keeping numbers, then create a file: assert its number exceeds every restored one. Take two snapshots of one file: assert their 64-bit ids differ from each other and from the live file's. |
 | [§8.2](#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later) delete on close identity | alice opens a file with delete on close; bob, with no right to delete it, holds a second open and closes last. Assert the file is unlinked, as alice. Repeat with alice's lease expiring before bob closes: assert it is unlinked, as alice. A build that unlinks as the last closer fails bob's close-time unlink. |

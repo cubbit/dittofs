@@ -208,6 +208,7 @@ One directory per journal, containing:
 | Name | Is |
 | --- | --- |
 | `format` | the format version, the **journal identity** — a random 128-bit value chosen when the journal is created and never changed — and the **installation ID** the explicit initialisation step wrote ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)), all covered by a checksum; byte layout below. From the replication extension's version on it also holds the journal's **generation**, which only that extension changes: it is raised, and swapped into the metadata store, at every open of the journal and every acquisition and renewal of its node's lease — at open and acquisition before anything is served from it — and a journal whose swap loses serves nothing more ([RFC 10 §2.2](rfc-10-journal-replication.md#2.2%20One%20journal%20carries%20many%20shards)). An unrecognised version, or a checksum that does not verify, **MUST** fail the open, not be upgraded or repaired silently. |
+| `node-id` | the node's identity, checksummed; byte layout below. Written by the node after `Init`, never by the journal, which leaves it alone ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)) |
 | `<id>.seg` | a segment: its id ([§2.2](#2.2%20Segments)) in 20 decimal digits, zero-padded, so names sort as ids do |
 
 An implementation **MUST NOT** require any other file to reconstruct its state
@@ -247,6 +248,20 @@ directory before returning, so a crash leaves the old file or the new one
 whole, never a mix. Open ignores a `format.tmp`, the next rewrite overwrites
 it, and `Init` does not count it when it requires an empty directory
 ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)).
+
+**The `node-id` file — 24 bytes.**
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | magic, `DNI1` |
+| 4 | 16 | the node's identity, a 128-bit value |
+| 20 | 4 | CRC32C over bytes `[0, 20)`, not seeded |
+
+A file of any other length, another magic or a checksum that does not verify
+does not parse, and [RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap) refuses the start on it. Copies, and the
+identity the host's file names as a UUID's canonical text, are compared as
+these 16 bytes. The file is written as `format` is: to `node-id.tmp`, synced,
+renamed, and the directory synced; a start ignores a `node-id.tmp`.
 
 ### 2.2 Segments
 

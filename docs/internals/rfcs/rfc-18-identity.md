@@ -376,7 +376,8 @@ kinds of principal follow from this rule.
   name (`host`, `nfs`, `cifs`, or any name with a `/`), or whose user part ends
   in `$`, is a machine name. Its first successful Kerberos sign-in with no
   record **MUST** mint it, held as a `User` record of kind `Machine` with its
-  `krb` spelling and nothing else
+  `krb` spelling, linked for its PAC's user SID if it had one (§4.2), and
+  nothing else
   ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)).
   It is still a principal of its own where state is compared: it is the caller's
   `Mapped` (§6.1), which NFSv4.1 state protection records
@@ -475,14 +476,13 @@ reaches calls forwarded from every node.
 package identity // internal/identity
 
 type Deps struct {
-	Principals metadata.Principals // RFC 16 §3: lookups by spelling, groups, grants, a share's policy
-	Records    metadata.Records    // RFC 16 §3: one group's record
-	Mint       metadata.Minter     // RFC 16 §3: the only writes (§2.4, §5.1)
+	Store      *kvstore.Store      // RFC 16 §3.2: its Principals, Records and Minter views, as vfs.Deps.Meta (RFC 17 §2.3); the Minter's are the only writes (§2.4, §5.1)
 	Secrets    SecretProvider      // RFC 13 §7: keytab, NT hashes, API password hashes, the bind credential, the machine-account password
 	Logons     LogonSink           // RFC 25 §4.1's logon stream
 	Issuers    IssuerKeys          // fetches each OpenID Connect issuer's keys over verified TLS (§8.2)
 	Clock      Clock // the package's own subset of RFC 8 §2.1's Clock
 	Metrics    *metrics.Registry
+	Tracer     trace.Tracer        // §9.2's identity.authenticate span
 	Logger     *slog.Logger
 }
 
@@ -500,15 +500,21 @@ func (s *Server) Stop(ctx context.Context) error  // drops every in-memory table
 type State struct {
 	Generation uint64          // the principals generation (§7.2)
 	Settings   config.Identity // the identity.* settings and the directory record
-	Keytab     []SecretVersion // the keytab's versions in force (§3.3)
+	Keytab     []secrets.Version // the keytab's versions in force, opened, current first (§3.3)
+	Machine    []secrets.Version // the machine password's versions in force, opened, current first, each with its KeyVersion and HandedOver mark (RFC 16 §2.3); empty when not joined (§3.3, §3.5)
 	NTLM       Revision        // the identity.ntlm setting's revision (§3.5)
 }
 ```
 
-`Records` and `Minter` are RFC 16's views, defined there once. A `Minter` write
-never overwrites a record, allocates the IDs it is told to inside its
-transaction, and fails with `ErrExist` when another principal holds a row it
-would write (§2.2).
+`Deps` and `State` are the composed shape: an implementation adds each field
+with the first code that reads it, so an early build holds fewer.
+`Principals`, `Records` and `Minter` are RFC 16 §3's views, defined there
+once; identity takes the one store that implements them, a concrete type where
+there is one implementation, as RFC 17 §2.3 does. A `Minter` write
+is one batch of new records (§4.1's mint): it never overwrites a record,
+allocates the IDs it is told to inside its one transaction, raises the
+principals generation once, and fails whole with `ErrExist` when another
+principal holds a row it would write (§2.2).
 
 **Start and stop.** No settings reach `New`. The node reads the records at
 start and hands identity its first `State` through `Apply`, before `Start`. It
@@ -525,6 +531,7 @@ so an operator's own next call sees it.
 | --- | --- |
 | a principal, membership or protocol-ID row | a new generation; cached callers built under an older one are not served (§7.2) |
 | a keytab `Secret` version | the new key is added, and an older one is kept for one maximum ticket lifetime (§3.3); no restart |
+| a machine password `Secret` version | its derived keys are added, unless it is marked `HandedOver`, which derives none, and the secure channel signs in with it once the domain controller takes it; the previous version is kept as a keytab's is (§3.3, §3.5); no restart |
 | the directory record | a new client and an empty directory cache; lookups in flight finish on the old client |
 | `identity.ntlm` turned off | as §3.5 says |
 | `identity.id_range` | applies to the next allocation; no existing ID moves |
@@ -538,8 +545,9 @@ start cold.
 The contract is `pkg/identity`, a leaf importing metadata types only: the value
 types (`Identity`, `ProofKind`, `Protection`, `Claims`, `Evidence`, `Keys`,
 `SignInStep`, `SignInResult`, `Caller`, `Spelling`, `Scheme`, `SID`,
-`NTLMAuthenticate`), the errors, the interfaces of §3.1, §4.1, §6.1 and §8.1,
-and `NewHashes`. Its test helpers are `identitytest`: an in-memory directory and
+`NTLMAuthenticate`), the interfaces of §3.1, §4.1, §6.1 and §8.1, and
+`NewHashes`. Its errors, `ErrLogonFailure` and `ErrUnknownPrincipal`, are
+`vfserr`'s ([RFC 17 §4.3](rfc-17-vfs.md#4.3%20Errors%20are%20neutral%20values)). Its test helpers are `identitytest`: an in-memory directory and
 domain controller, each held by its conformance suite to the real one
 ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). The server is `internal/identity`,
 with the LDAP client alone in `internal/identity/directory` so only it imports
@@ -602,7 +610,11 @@ type Evidence struct {
 }
 
 // Keys is what the adapter's mechanism needs for the AP-REP and for signing
-// and encryption. It is never copied into an Identity.
+// and encryption. It is never copied into an Identity. Session is the context
+// key: for NTLM the exported session key (§3.5); for Kerberos the one RFC 4121
+// §2 names, the acceptor's subkey (Subkey) when the AP-REP sends one, else the
+// authenticator's subkey, else the ticket's session key, kept whole, since SMB
+// takes its first 16 bytes or all 32 by the cipher.
 type Keys struct{ Session, Subkey, APRep []byte }
 
 type Service uint8
@@ -646,10 +658,15 @@ fresh sign-in.
   renews.
 - **Repeated logon failures are throttled here**, not in an adapter: the
   authenticator sees every attempt from both protocols with the client's
-  address. Past 10 `ErrLogonFailure` results in 10 minutes for one (principal
-  name, client address), every further attempt from that pair **MUST** fail
+  address. Past 10 `ErrLogonFailure` results in 10 minutes for one (name,
+  client address), the name being the user part as presented, without its
+  domain or realm, folded as §4.6 folds a name, so `alice`, `ALICE`,
+  `CORP\alice` and `alice@CORP.EXAMPLE` count as one whichever source each
+  routes to (§3.5), every further attempt from that pair **MUST** fail
   `ErrLogonFailure` before its credential is checked, until the window has
-  passed with fewer. The answer is the ordinary logon failure, so it tells a
+  passed with fewer. A UPN whose prefix is not the account's `sAMAccountName`
+  (`alice.smith@` for `asmith`) counts apart, so such an account has two
+  counts, each still under the domain's own lockout. The answer is the ordinary logon failure, so it tells a
   guesser nothing, and no account is locked: a local account is never locked by
   failures, and a domain account's lockout is the domain's.
 - **Each attempt emits one logon event** to
@@ -699,16 +716,33 @@ and inside SMB's SPNEGO ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
 
 - **Service names.** The installation accepts tickets for the service names its
   keytab holds — `nfs/<host>`, `cifs/<host>` and `host/<host>` — for every host
-  name a node answers on. A ticket for any other name **MUST** be refused.
+  name a node answers on: when joined, the computer account's `dNSHostName`
+  and NetBIOS name, with each service `sPNMappings` maps to `host` on every
+  host name its `servicePrincipalName` holds a `host/` name for (below), and every name an
+  operator imports a key for. A ticket for any other name **MUST** be refused.
+- **Encryption types are AES only.** The keytab holds AES128 and AES256 keys
+  (`aes128-cts-hmac-sha1-96`, `aes256-cts-hmac-sha1-96`), an online join sets
+  the computer account's `msDS-SupportedEncryptionTypes` to `0x18`, an offline
+  join refuses an account whose value lacks either bit or is absent (§3.5), a
+  keytab import holding a DES or RC4 key is refused whole, and a ticket under
+  DES or RC4, or one whose session key or authenticator subkey is not AES,
+  **MUST** be refused `ErrLogonFailure`.
+
+> decision: AES only. DES is broken and RC4's key is the NT hash, so a domain
+> still issuing RC4 tickets lets an NT hash forge them; current Active Directory
+> releases are removing RC4 from their defaults. Revisit if a deployment's
+> clients are shown unable to request AES tickets.
+
 - **The keytab is a secret**: each key a `Secret` of kind keytab
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), loaded only through
   `Apply`. A key rotates in this order: the new version is added to the keytab
   `Secret`; once every node reports it applied
   ([RFC 23 §2.4](rfc-23-control-plane.md#2.4%20What%20a%20node%20reports)), the
   key is changed at the KDC; the old version is kept for one maximum ticket
-  lifetime after that, 10 hours plus the clock skew, then removed. So tickets
-  under either key are accepted during the rollover, and a retired key is not
-  accepted forever.
+  lifetime after that, 10 hours plus the clock skew, then removed, a restart
+  included: longer than RFC 13 §7 keeps another secret's previous version. So
+  tickets under either key are accepted during the rollover, and a retired key
+  is not accepted forever.
 - **Checks.** `SignIn` **MUST** verify the ticket's encryption, its start and end
   times within a clock skew of 5 minutes, as Kerberos implementations use, the
   authenticator's freshness against a replay cache held in the node's memory,
@@ -723,13 +757,16 @@ and inside SMB's SPNEGO ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
 > ponytail: the replay cache is in memory, per process. A restart forgets it, so
 > an AP-REQ captured within the clock skew before a restart can be accepted once
 > after it, and **(cluster)** each node keeps its own. A replay yields no session
-> key, so it can sign no SMB request and compute no RPCSEC_GSS verifier. Refuse
+> key, so it can sign no SMB request, every session signing
+> ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)), and compute no RPCSEC_GSS
+> verifier. Refuse
 > authenticators stamped before the process start, or share the cache between
 > nodes, when a replay across a restart or a fail-over is shown to reach
 > anything.
 
-> ponytail: the clock skew and the old key's retention are constants. Make
-> either a setting when a deployment's KDC is shown to need another value.
+> ponytail: the clock skew, the old key's retention and the hour a pinned
+> domain controller may go unanswered (§3.5) are constants. Make one a setting
+> when a deployment's KDC or domain is shown to need another value.
 
 > decision: an unknown user principal is refused, not made anonymous. A
 > Kerberos user the installation has no record of is either a directory
@@ -738,6 +775,44 @@ and inside SMB's SPNEGO ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
 > everyone grant. Revisit if a deployment is shown to need cross-realm users
 > with no directory, and then as a share-scoped option.
 
+**On a joined installation, the computer account's own service names are
+keyed from the machine password.** A join registers `cifs/` and `host/`
+service names, for the short name and the fully qualified one, on the computer
+account, so a ticket for them is encrypted under that account's key. For
+exactly the service names the computer account holds, identity derives the
+keys from the machine password (§3.5) — the AES keys under the computer
+account's salt, the realm in upper case, then `host`, the account's name
+without its `$` in lower case, `.` and the realm in lower case — each tagged
+with the account's key version number (`msDS-KeyVersionNumber`), because a
+ticket names its key by that number, not by the `Secret`'s version. The number
+is 32 bits, as the ticket carries it, never truncated to a keytab file's 8-bit
+field. The account's service names are read at each join and rotation from its
+`servicePrincipalName`, each `host/` name standing also for every service the
+forest's `sPNMappings` maps to `host` (the `CN=Directory Service,CN=Windows
+NT,CN=Services` entry of the configuration partition), `cifs` among them,
+since Active Directory issues a ticket for those under the key of the account
+that holds the `host/` name; an offline join reports which names it serves
+through them, and a ticket's service name is compared with them
+with ASCII letters folded (§4.6), as Active Directory compares them case-insensitively. A derived key follows its password's version: it is
+applied with it, and kept after it stops being current for the retention
+above. The one exception is a version marked `HandedOver` (RFC 16 §2.3), an
+offline join's (§3.5): no key is derived from it, whichever node applies it and
+after any restart, since the mark is stored with the version. A ticket for one of these names whose key version number no held key
+carries is tried against each held derived key of its encryption type, the
+current one first, so a ticket issued before the rotation has confirmed its
+number, or by a domain controller whose number lags, still verifies. Every other service name a node answers on — `nfs/<host>`, another host
+name, or a name registered on a separate service account — keeps an imported
+keytab `Secret`, rotated in the order above. An imported key for a name the
+computer account holds is refused, so no name has two keys.
+
+> decision: the computer account's names are derived rather than imported,
+> because their key and the machine password are one key; rotating them apart
+> breaks every Kerberos sign-in for them at the first rotation. Samba keeps its
+> keytab in step with the machine password the same way. Names on another
+> account keep an imported keytab, since the machine password says nothing of
+> their key. Overturned if no deployment registers a service name on the
+> computer account, which leaves derivation without a user.
+
 ### 3.4 The PAC
 
 A Kerberos ticket from a directory that issues PACs (MS-PAC) carries one: the
@@ -745,22 +820,42 @@ user's SID, its group SIDs and their attributes, signed by the domain
 controller.
 
 - The PAC's server signature **MUST** verify under the service key before any
-  SID in it is used. A PAC that does not verify **MUST** fail the sign-in. A
-  ticket without a PAC is accepted, its groups then read from the store and the
-  directory (§2.5); so is a PAC whose server signature verifies but which holds
-  no logon-information buffer, which is treated as no PAC.
+  SID in it is used, computed over the PAC's bytes as received with both
+  signature fields zeroed (MS-PAC 2.8.4), never over a re-encoding, so no byte
+  the decoder skips goes unsigned. The signature's type **MUST** be the keyed
+  checksum of the service key's encryption type, `HMAC-SHA1-96-AES256` (16) or
+  `HMAC-SHA1-96-AES128` (15), with a 12-byte value; any other type, an unkeyed
+  one such as CRC32 or RSA-MD5 among them, fails. Of a buffer type that appears more than once,
+  only the first is used (MS-PAC 2.4). A PAC that does not verify **MUST** fail the sign-in. A
+  PAC whose server signature verifies but which holds no logon-information
+  buffer is treated as no PAC. In the directory's realm, whatever the record's
+  schema, a ticket without a PAC **MUST** fail `ErrLogonFailure`, counted with
+  outcome `no_pac`, unless the directory record sets `require_pac` to false:
+  Active Directory issues one to every account but one marked
+  `NO_AUTH_DATA_REQUIRED`, a PAC-less ticket there is how a domain account
+  named like a local one would reach it (§4.2), and an Active Directory read
+  through the `rfc2307` schema is still one. `require_pac` is for a KDC that
+  issues no PAC at all, and defaults to true. In any other keytab realm, and in
+  the directory's when `require_pac` is false, a ticket without a PAC is
+  accepted, its groups then read from the store and the directory (§2.5).
 - **The PAC is bound to the record.** Its user SID **MUST** equal the SID on the
-  record §4.2 selected, and its client name and authentication time **MUST**
+  record §4.2 selected, or, when step 1's `krb` row selected it, the SID that
+  row is linked for (§4.2), since a local user's or root's own SID is in the
+  installation's domain, which no PAC carries; a row linked for no SID binds no
+  ticket that carries a PAC. Its client name and authentication time **MUST**
   equal the ticket's. A mismatch fails `ErrLogonFailure`, logs both principals,
   and binds nothing. A name reused in the directory after its first holder was
-  deleted, or a local user and a directory user sharing one, is then refused
-  rather than bound to the wrong person.
+  deleted is then refused rather than bound to the wrong person, whether the
+  name selects a directory record or a `krb` row.
 - The evidence's `SIDs` are the user SID and the group SIDs the PAC lists — its
   memberships, extra SIDs and resource groups — excluding any whose attributes
   mark them disabled. A SID in the installation's own domain (§4.4), in the
   built-in domain (`S-1-5-32-…`), or naming a user rather than a group, is
   dropped and counted: the directory's domain controller can vouch only for its
-  own domain's groups. Well-known SIDs are kept only where RFC 22 §16.3 lists
+  own domain's groups. So is a SID of another domain of the forest, a
+  universal group's or a `SIDHistory` one: no record holds it (§4.4), so no
+  grant or ACL entry can name it and dropping it loses no deny, and it never
+  fails the sign-in. Well-known SIDs are kept only where RFC 22 §16.3 lists
   them.
 - **A deny-only SID is kept, apart.** A SID the PAC marks deny-only (Windows'
   `SE_GROUP_USE_FOR_DENY_ONLY`) is one the directory says may only take access
@@ -778,24 +873,70 @@ controller.
 
 > decision: only the PAC's server signature is verified; the KDC signature is
 > not sent to a domain controller. A forged PAC needs the service key, which the
-> keytab's seal protects. Overturned if the keytab is ever readable without its
-> wrapping key, or a deployment requires KDC-signature checks.
+> keytab's seal protects. The password an administrator hands an offline join is
+> known to whoever created the account, so no key is ever derived from it (§3.5):
+> no ticket under a key its creator knows verifies, during the retention or
+> before it. Its ceiling is the offline join itself: the first closing rotation
+> sets its password over a secure channel authenticated by the handed-over one,
+> so a creator on the network path during the join can observe the channel's
+> set-up, whose session key the handed-over password derives, or answer it as a
+> domain controller, and learn that password, and through it the second's,
+> set over a channel the first authenticates. The creator must therefore be
+> kept off the path while the join runs, which the operator guides say, since no
+> check of the code can. Overturned if the keytab is ever readable
+> without its wrapping key, or a deployment requires KDC-signature checks; the
+> join's ceiling is lifted by setting the closing rotations' passwords over the
+> directory's verified TLS when a deployment cannot keep the creator off the path.
+> A second ceiling needs no forgery: the account's creator usually stays the
+> computer object's owner, and an owner can write
+> `msDS-AllowedToActOnBehalfOfOtherIdentity` and, through resource-based
+> constrained delegation, have the domain controller sign a ticket for any user
+> to the computer account's names; whoever may write an online join's
+> organisational unit can do the same. The join reports the owner and that
+> attribute (§3.5) and the operator guides say to transfer ownership, since no
+> check of the code can take the owner's right away.
 
 ### 3.5 NTLMv2
 
 NTLMv2 is accepted inside SPNEGO when `identity.ntlm` is on (the default).
-NTLMv1 and LM are refused ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
+NTLMv1 and LM are refused ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)), and
+identity refuses an `NtChallengeResponse` of 24 bytes itself, so pass-through
+never forwards one to a domain controller that would accept it.
 `SignIn` decides one message from one of two sources:
 
-| The message's domain, compared case-insensitively | Source | How |
+| The message's domain, compared with ASCII letters folded, since realms and NetBIOS names are ASCII (a simple case fold would match the Kelvin sign U+212A to `k`) | Source | How |
 | --- | --- | --- |
-| empty, or the installation's own NetBIOS name, which the CHALLENGE advertises when no pass-through is configured | **local** | the user is found by name; its NT hash, a `Secret` of kind nt-hash, verifies the NTLMv2 response computed with the user and domain as the message names them (MS-NLMP 3.3.2). A directory principal is refused: it has no local NT hash |
-| the directory's NetBIOS domain, with pass-through configured | **pass-through** | the response is sent once to a domain controller over the secure channel of the installation's machine account (MS-NRPC `NetrLogonSamLogonEx`), sealed and signed with AES; the reply carries the user's SID and group SIDs with their attributes, used as a PAC's are (§3.4); the evidence maps by that user SID |
-| anything else | — | `ErrLogonFailure` |
+| empty with a user name that holds no `@`, or the installation's own NetBIOS name, which the CHALLENGE advertises when no pass-through is configured | **local** | the user is found by name; its NT hash, a `Secret` of kind nt-hash, verifies the NTLMv2 response computed with the user and domain as the message names them (MS-NLMP 3.3.2). A directory principal is refused: it has no local NT hash |
+| the directory's NetBIOS domain or its realm, or empty with a user name ending `@` and the directory's realm (a UPN sign-in), with pass-through configured | **pass-through** | the response is sent once to a domain controller over the secure channel of the installation's machine account (MS-NRPC `NetrLogonSamLogonEx`), sealed and signed with AES; the reply carries the user's SID and group SIDs with their attributes, used as a PAC's are (§3.4), and the evidence maps by that user SID. The reply's `UserSessionKey` (MS-NRPC 2.2.1.4.11) is the session base key the domain controller computed (MS-APDS 3.1.5.2.1), used as a local sign-in's computed one is (below); a reply whose key is missing, short or all zero fails `ErrLogonFailure`, and so does a guest logon, a reply whose `UserFlags` holds `LOGON_GUEST` or whose user RID is 501, the domain's Guest (§3.6). The reply's `LogonDomainID` **MUST** be the directory's domain SID (§5.1); with none read, pass-through fails `ErrUnavailable` |
+| anything else | — | `ErrLogonFailure`, counted with outcome `unknown_domain` so it is told apart from a wrong password |
+
+Before any logon is sent over the secure channel, its set-up **MUST** verify
+the domain controller's server credential (MS-NRPC 3.1.4.1); one that fails
+refuses the channel, so no NTLM response reaches a peer that does not hold the
+machine password.
+
+A local user or group name never holds `@` (§4.6), so a name with one is never
+local. `identity.netbios_name` **MUST NOT** equal the directory record's NetBIOS
+domain, or a domain would route to both sources: a settings change naming the
+record's domain, and a directory record naming the installation's own name as
+its domain, later records included, are each refused at validation, naming the
+other ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)).
+
+> decision: a UPN under one of the forest's alternate suffixes (`uPNSuffixes`),
+> or a domain written with a trailing dot, is `unknown_domain`: only the
+> directory record's realm routes to pass-through, and nothing reads the
+> forest's suffixes. Overturned when a deployment's users sign in with an
+> alternate suffix; the directory then reads `uPNSuffixes` from the partitions
+> container at each record change.
 
 - **The MIC.** When the AUTHENTICATE's `MsvAvFlags` marks a MIC present, the MIC
   **MUST** verify over the exact NEGOTIATE, CHALLENGE and AUTHENTICATE bytes on
-  the wire (MS-NLMP 3.2.5.1.2), and a flagged MIC that is missing or zero fails.
+  the wire (MS-NLMP 3.2.5.1.2), and a flagged MIC that is missing or zero fails,
+  local or pass-through. The MIC is keyed by the exported session key: the
+  session base key, or, when `NTLMSSP_NEGOTIATE_KEY_EXCH` is set, the RC4 unwrap
+  of `EncryptedRandomSessionKey` under it (MS-NLMP 3.1.5.1.2). The session base
+  key is computed locally as `HMAC_MD5(NTOWFv2, NTProofStr)` (MS-NLMP 3.3.2),
+  and through pass-through is the reply's `UserSessionKey`.
   Either failure is `ErrLogonFailure`. A message that asks for signing without
   key exchange is refused the same way.
 - **Equal work.** The NTLMv2 proof is compared in constant time, and an unknown
@@ -818,8 +959,17 @@ commit (§7.2) — and deletes every stored NT hash, as an operation in bounded
 batches ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)).
 A password set derives its NT hash under the `identity.ntlm` revision it read,
 and the API's write of it is conditional on that revision still being current,
-so no NT hash is written after the deletion has passed its user. Turning NTLM on
-again stores a hash only at a user's next password set.
+so no NT hash is written after the deletion has passed its user. Sealing
+wraps the hash and commits nothing; the sealed version is put in that same
+conditional write ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), so a
+write the condition refuses stores no NT hash. Turning NTLM on again **MUST** be refused while
+a turn-off's deletion has not completed: a deletion that stopped part way
+leaves hashes it never reached, which turning NTLM on would make valid again.
+[RFC 23 §4.1](rfc-23-control-plane.md#4.1%20Shape) is the
+one owner of that rule: the state that records a completed deletion, every
+write path it guards, how the refusal answers and how an administrator
+finishes a deletion that stopped are its, and this RFC restates none of them.
+Once on, it stores a hash only at a user's next password set.
 
 > decision: turning NTLM off refuses established NTLM sessions as well, rather
 > than letting them run to their end, because an operator turning it off is
@@ -834,17 +984,164 @@ again stores a hash only at a user's next password set.
 **The machine account.** Pass-through needs the installation joined to the
 directory's domain as a computer account. Joining is an operation
 ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)) that
-creates the computer object, sets its service names, and stores its password as
-a `Secret`. Domain controllers are found from the domain's DNS service records,
-with fail-over between them. The password rotates on a schedule shorter than the
-domain's maximum machine-password age, always domain controller first, then a
-new `Secret` version
-([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)); a rotation **MUST NOT**
-start until every node reports the previous one applied, because a domain
-controller accepts only the current and the previous password, and a second
-rotation would leave a lagging node with neither. A failure to store the new
-version after the domain controller took it leaves a password only that
-controller knows, and needs a re-join.
+seals a new password as a `Secret` first, as a rotation does, then creates the
+computer object with that password, its service names and its
+`msDS-SupportedEncryptionTypes` (§3.3). It takes two optional parameters: the
+organisational unit to create the object in, a distinguished name under the
+directory record's base, by default the domain's `Computers` container, which
+the domain names and which is not checked against the base; and
+the object's DNS host name, by default the account's name in lower case, `.`
+and the realm in lower case, which it writes as `dNSHostName` and from which
+the fully qualified service names are made. An organisational unit outside the
+base, or a host name that is not a DNS name, is refused before the join's first
+step. A join of either kind is refused while the directory record's schema is
+`rfc2307`, which has no domain controller (§5.1). The join's first step records the one
+domain controller it uses, and every later step and a resumed join use that one,
+so a controller that has not replicated the account never reads as "no such
+account". A resumed join creates nothing if that controller already accepts the
+sealed password, so a crash between the two leaves no password only the
+controller knows. The probe has three answers: it accepts, it rejects, or it
+could not be asked, which retries and never reads as a rejection. A join whose
+pinned controller could not be asked for an hour fails, naming the controller;
+a join run again then pins another, and is run with a takeover, since the
+failed one may have created the account. A failed join, online or offline,
+leaves the installation not joined, and `identity.netbios_name` unchanged,
+since the join writes it only at its last step. It prunes the versions it
+sealed but those it sent to a controller: the account's creation's, or each
+closing rotation's set, so at most two, since the controller may hold the
+second as its current password and the first as its previous one. Those stay
+in force, unconfirmed, as a failed rotation's does (below), until a later join
+completes: that join seals its own versions beside them and prunes them once it
+is joined, so the rule of at most one unconfirmed version (below) holds only
+on a joined installation. It is recovered by running a join again: an offline one once the
+account's password has been reset, or an online one with a takeover. The administrator credential an online join takes is used for that
+one operation, held only in the memory of the node that took it, and never
+stored, logged or put in the operation's record. The node holds it under the
+operation's ID before the record that creates the operation is written, so the
+join's first step never runs ahead of it; a hold whose operation is never
+created ends when its request does. A join resumed without it,
+after a restart or on another node, continues only if the account already
+accepts the sealed password; one that must still create the account fails,
+naming the missing credential, and is run again with a takeover. An online join **MUST**
+refuse a computer account that already exists, naming it, unless the request
+explicitly takes it over: `identity.netbios_name` defaults to `DITTOFS`, so a
+second installation joining the same domain would otherwise reset the first's
+password and break it. A takeover sets the password in the same order.
+The online join creates the object over LDAP on its pinned controller with TLS
+verified as §5.1's connection is, against the record's trust roots; v1's join
+kept an opt-in `InsecureSkipVerify`, which is dropped here too.
+An **offline join** takes instead a computer account an administrator created,
+with its password, which the API stores before the operation starts as a
+version marked `HandedOver` (RFC 16 §2.3,
+[RFC 23 §3.5](rfc-23-control-plane.md#3.5%20Users%2C%20groups%2C%20grants%20and%20netgroups)).
+The join refuses that version if it is not so marked, naming it, so a seal that
+lost the mark fails closed. It verifies the password against a domain controller,
+refuses an account whose `msDS-SupportedEncryptionTypes` lacks either AES bit,
+naming the attribute and the value `0x18` to set, since an account created in
+Active Directory Users and Computers has none, and reports which service names the account holds, so an operator knows which
+names still need an imported key (§3.3), before the secure channel signs in
+with the password; it then rotates the password twice
+(below), because whoever created the account knows it and could derive the
+computer account's service key and forge a PAC with it, and a domain
+controller accepts the previous password as well as the current one, so after
+one rotation the creator could still set up a secure channel as the account.
+**The second rotation's confirm proves no third set.** The join reads the
+account's key version number from its pinned controller when it verifies the
+handed-over password, and records it with that step. The second rotation's
+confirm **MUST** find the controller accepting that rotation's version and
+read exactly the recorded number plus two; anything else fails the join,
+naming the number read. The number is the pinned controller's, and so is the
+guarantee: a controller the two sets have not yet replicated to still accepts
+the handed-over password until they do. A creator who sets a password of its own between the
+two rotations, over a channel the handed-over password still authenticates as
+the previous one, raises the number a third time, and would otherwise leave
+that password the controller's previous one, a mismatch the ordinary confirm
+below only reports. After the second set the handed-over password is neither
+of the two the pinned controller accepts, nor any other once the sets replicate, so no later set by the creator can follow it.
+Those rotations are the join's own last steps, not other operations: the join
+is done only once the second has confirmed its password, so a crash between
+storing and rotating resumes the rotations. A version marked `HandedOver` derives no
+Kerberos key, so the computer account's names accept no ticket until the
+rotation completes, and no ticket issued under it is ever accepted, which
+costs only the tickets a client fetched in the minutes the join takes. The
+secure channel signs in with it only to set the first closing rotation's
+password: pass-through is refused until the second is confirmed, and the previous-version
+fallback below never uses it (§3.4's decision names the join's ceiling). Either
+join writes the account's name, without its `$` and in upper case, as
+`identity.netbios_name` at its last step, once the account accepts the
+password in force (an offline join's once its second rotation is confirmed), refusing
+a name outside `[A-Z0-9-]` or longer than 15 bytes, which a joined
+installation refuses to change; a local principal's `qualified` spelling
+(§4.6), derived from that name and stored nowhere, changes with it. Domain controllers are found from the domain's
+DNS service records, with fail-over between them, unless the directory record
+names a domain controller address (and optionally a DNS server), which is then
+used alone (§5.1). **The join's state is stored**, on the `Installation`
+record's `Join` (RFC 16 §2.3), written by the join's and the rotation's steps,
+so it outlives the operation's record and a restart: whether the installation
+is joined, the account's name, the computer object's owner and any value of
+its `msDS-AllowedToActOnBehalfOfOtherIdentity` (§3.4's decision), and the last
+rotation's time, outcome, tag and number read. A last rotation that failed
+raises §9.2's installation condition `machine_password_rotation_failed`,
+derived from that record, so only a rotation completed clears it. Each node
+reports its own secure channel's health as the node condition
+`machine_account_unhealthy`
+([RFC 23 §2.4](rfc-23-control-plane.md#2.4%20What%20a%20node%20reports)).
+
+**The machine password rotates** on a schedule shorter than the domain's
+maximum machine-password age, in [RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)'s
+order, as an imported keytab does (§3.3): the new password is sealed as a new
+`Secret` version first, tagged with the key version number it will take, the
+account's current one plus one, read from the domain controller the rotation
+will set it at; once every node reports it applied, it is set at that domain
+controller; then that controller's number is read again to confirm the tag. A
+tag is written with its version and never changed: one the controller does not
+confirm is reported, and its tickets still verify through the fallback to each
+held derived key (§3.3). `msDS-KeyVersionNumber` is computed by each domain controller
+from its own copy of the account, so one that has not yet replicated the
+change answers the old number, and the rotation reads only the one it wrote
+to. Until the domain controller takes the
+new password, the secure channel signs in with the previous one, and it falls
+back to the previous one on any controller that refuses the new one until the
+retention passes, since another controller may not have replicated the change;
+a previous version marked `HandedOver` is never used this way. "The previous
+one" is the newest version before the current one that a controller confirmed;
+the fallback tries the current version, then each earlier version in force,
+newest first.
+Each step is
+recorded as RFC 23 §4.6 requires. Before every set, not only a resumed one, the
+rotation asks the pinned controller whether it already accepts the sealed
+version, and sets it only if not. The controller accepts a version when a
+secure channel set up with it verifies the controller's server credential
+(MS-NRPC 3.1.4.1); "rejects" and "could not be asked" are as for the join. A crash between sealing and setting leaves
+no password only the controller knows, and a version a later rotation sets
+again is never set twice, which would raise the account's key version number
+past its tag. A rotation **MUST NOT** start until every node reports the previous one
+applied, because a domain controller accepts only the current and the previous
+password, and a second rotation would leave a lagging node with neither. A
+rotation that cannot start by its schedule is reported failed, so a lagging
+node shows as `machine_password_rotation_failed` before the password ages out. A
+rotation whose pinned controller could not be asked for an hour, to set or to
+confirm, is reported failed the same way, naming the controller; the version
+it sealed stays in force beside the previous one until a later rotation
+completes, since the controller may have taken it before it went away. The
+next rotation sets that sealed version rather than sealing another, so on a
+joined installation at most one unconfirmed version is ever in force, however
+many rotations fail. For the
+same reason a resumed seal step that finds the current version already tagged,
+unconfirmed, with the number it would write takes that version rather than
+sealing another, so a crash after the seal commits and before the runner
+records the step appends no second version. A rotation's confirm first asks
+the controller whether it accepts the sealed version: one it does not accept
+fails the rotation, naming it, since another set has replaced it. A rotation
+whose version is accepted is complete at its confirm, whether the number read
+matches the tag or not: a mismatch is reported and counted
+(`identity_machine_key_version_mismatches_total`, §9.2), the tag is not
+changed, and its tickets verify through the fallback above. An offline join's
+second rotation is the one exception: its confirm completes only on the number
+the join requires (above), and otherwise fails the join. At that confirm the
+offline join is joined and writes `identity.netbios_name`, and at any
+rotation's completion `machine_password_rotation_failed` clears. Pruning the
+previous version once the retention passes follows, and changes none of them.
 
 > ponytail: pass-through reaches only the one directory's domain; §5.1's
 > ponytail says when to follow trusts.
@@ -938,8 +1235,8 @@ type Identities interface {
 }
 
 // FindOpts: Mint lets a lookup the directory answers mint the directory
-// principal. The server sets it only for a call whose Identity is Secret or
-// above (§4.4).
+// principal. The filesystem sets it only for a call whose Identity is Secret
+// or above (§4.4).
 type FindOpts struct{ Mint bool }
 
 type Scheme uint8 // UID, GID, SID, Krb, Dir, UserName, GroupName, OIDC, Owner, Qualified (§2.2)
@@ -949,12 +1246,30 @@ type Spelling struct{ Scheme Scheme; Num uint32; SID SID; Text string }
 ```
 
 Sign-in, `Find` and resolution (§4.3) share one internal mint, so every record
-identity writes goes through one path, under one rule: it never overwrites, it
-allocates what the record lacks in its own transaction, and on `ErrExist` it
-re-runs the lookup that led to it once. If the lookup now finds a principal, the
-mint binds to it; otherwise it fails `ErrUnavailable`, writes nothing and logs
+identity writes goes through one path, under one rule: it never overwrites, and
+**one sign-in, lookup or resolution mints every principal it needs in one
+batch**: one transaction, which allocates what each record lacks, with one
+principals-generation raise (§7.2), however many groups the batch holds. On
+`ErrExist` the whole batch writes nothing and the lookups that led to it are
+re-run: a principal they now find is bound, and the rest are minted in a new
+batch, for as long as each re-run binds a principal the one before did not.
+Each `ErrExist` means another call minted something this one needs, so the
+batch shrinks every round and the re-runs end, inside §5.1's bound. A re-run
+that binds none fails the call `ErrUnavailable`; it writes nothing and logs
 both `PrincipalID`s. Two nodes minting alice find alice by name or SID on the
 re-run; bob claiming alice's `uidNumber` finds no bob, and fails.
+
+**A name never fails a mint.** A directory principal whose name another
+principal of its kind holds under §4.6's comparison — a local group `finance`
+beside the directory's `Finance`, or two directory groups the directory tells
+apart but the simple fold does not — is minted without a name: the batch
+writes no name-index row for it, so it is found by its SID and entry ID, never
+by name, and the mint is counted (§9.2) and logged naming both. A later answer
+names it once the name is free, as §5.1's rename does. So one clash of names
+locks no group's members out. Until then it has no name spelling: the
+`qualified` scheme and `lsarpc` answer its SID as unmapped, an NFSv4 owner
+string is its decimal uid or gid whatever the proof (§4.5), and its SID
+spells it to SMB as any principal's does.
 
 - An adapter **MUST** encode and decode every principal through these calls,
   and **MUST NOT** derive one spelling from another — a SID from a uid, a uid
@@ -973,18 +1288,39 @@ answers:
 
 1. the `krb` index row for the name exactly as the ticket spells it — an
    operator's explicit link, to a user or to root, or a minted machine;
-2. if the realm is one of the keytab's realms, the local user whose name equals
-   the name's user part, compared as user names are (§4.6), unless it is a
-   directory principal or has no file spelling;
+2. if the realm is one of the keytab's realms and not the directory's realm
+   where a PAC is required (§3.4), the local user whose name equals the name's
+   user part, compared as user names are (§4.6), unless it is a directory
+   principal or has no file spelling; in that realm a local user is reached
+   only through step 1's `krb` row;
 3. the directory, if the realm is the directory's: the entry the directory
    holds under the name's user part, by the record's name attribute (§5.1), and
    then the principal holding that entry's `dir` spelling — never a principal
    found by name alone;
 4. otherwise none: a user name is refused (§3.3), a machine name minted (§2.4).
 
-A realm in the name **MUST** be compared as the KDC spells it, case and all. A
+A realm in the name **MUST** be compared as the KDC spells it, case and all,
+the one exception to §4.6's ASCII folding of realms: Kerberos realms are
+case-sensitive, so an `ad` directory record's realm, which Active Directory
+always spells in upper case, is refused when it holds a lower-case ASCII
+letter (§5.1). A
 name with a service part (`nfs/build01`) never matches step 2 or 3. A ticket
 with a PAC is then checked against the record §3.4 says.
+
+**A `krb` row is linked for a SID.** Beside its principal, a `krb` row stores
+the directory user SID the link was made for, so §3.4 can bind a PAC to a
+record whose own SID no PAC carries. A machine's mint stores its ticket's PAC
+user SID, or none when the ticket carried no PAC. An operator's link to a user
+or to root stores, for a name in the directory's realm, the SID the directory
+holds under the name's user part, asked of the directory (§5.1) when the link
+is written and taken from a fresh answer only, never one served stale (§5.3),
+as a rename's is: a directory that cannot answer refuses the write `ErrUnavailable`,
+and one that holds no such entry refuses it naming the name. A link in any
+other realm stores none. Moving a machine's `krb` spelling to a user (§2.4)
+keeps its SID. So the link follows the directory account, not its name: the
+account deleted and its name given to another, the new holder's PAC carries
+another SID and is refused, never bound to the linked user; linking the new
+account is a new write.
 
 ### 4.3 uid and gid
 
@@ -1049,7 +1385,7 @@ with a PAC is then checked against the record §3.4 says.
 - **A SID with no principal behind it** — a user of a domain the installation
   does not know — is `ErrUnknownPrincipal` from `Find`; what a set naming one
   does is [RFC 19 §2.8](rfc-19-authorization.md#2.8%20What%20a%20stored%20ACL%20may%20hold)'s.
-  A SID of the directory's domain is asked of the directory first, and minted
+  A SID of the directory's domain (§5.1) is asked of the directory first, and minted
   only when `FindOpts.Mint` is set; otherwise `Find` answers
   `ErrUnknownPrincipal` and writes nothing.
 - **A principal shown over SMB with no SID** — only a deleted one — is shown as
@@ -1077,7 +1413,8 @@ and RFC 21 carries it on the wire.
   name is `name@domain`, where `domain` is `identity.nfs4_domain` (default: the
   keytab's first realm in lower case, or `localdomain` with none). With
   `Claimed` or `None` it is the decimal uid or gid, as RFC 8881 §5.9 allows. A
-  principal with no spelling is `nobody@domain`, or `65534`.
+  principal minted without a name (§4.1) is its decimal uid or gid on any
+  proof. A principal with no spelling is `nobody@domain`, or `65534`.
 - **Finding.** A string `name@domain` whose domain equals `identity.nfs4_domain`,
   compared case-insensitively, maps by name (§4.6). A decimal string maps by uid
   or gid, whatever the proof. Any other string, including a name in another
@@ -1093,6 +1430,15 @@ and RFC 21 carries it on the wire.
 
 - User and group names are compared case-insensitively, under simple Unicode
   case folding, and **MUST** be unique under that comparison within their kind.
+- Realms, NetBIOS names and service names are ASCII, and are compared with
+  ASCII letters folded only, wherever they are compared but in a Kerberos
+  name's mapping (§4.2): NTLM domain routing and
+  a UPN's realm suffix (§3.5), a ticket's service name (§3.3), and
+  `identity.netbios_name` against the directory's NetBIOS domain. A simple case
+  fold would match the Kelvin sign U+212A to `k`.
+- A local user or group name **MUST NOT** hold `@`; a creation or rename naming
+  one is refused `ErrInvalid`, so an NTLM user name with `@` always names a
+  directory user (§3.5).
 - A user and a group may share a name
   ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)); a
   name lookup always says which kind it wants.
@@ -1106,13 +1452,35 @@ and RFC 21 carries it on the wire.
 
 A directory is one external source of users and groups — an LDAP directory with
 Windows attributes (MS-ADTS), or one with RFC 2307 attributes — named by the
-installation's directory record (`identity.directory`): its address, base, bind
-credential reference, trust roots, realm, NetBIOS domain, and the attributes
+installation's directory record (`identity.directory`): its schema, `ad` or
+`rfc2307`, `ad` when the record names none, its address, base, bind
+credential reference, trust roots, realm, NetBIOS domain, the attributes
 that hold a user's and a group's name (default `sAMAccountName`; `uid` and `cn`
-for an RFC 2307 directory). There is at most one.
+for an `rfc2307` one), `require_pac`, true unless the record sets it false
+(§3.4), and optionally a domain controller address and a
+DNS server, used instead of the domain's DNS service records (§3.5). There is
+at most one. An `ad` record's realm is refused at validation when it holds a
+lower-case ASCII letter, since a ticket's realm is compared exactly (§4.2).
+
+**The directory's domain SID** is the `objectSid` of its domain object, the
+entry the root DSE's `defaultNamingContext` names, read by each new client
+before its first answer, so a record change reads it again. Pass-through's
+`LogonDomainID` check (§3.5) and §4.4's routing of a SID compare with it. A
+client of an `ad` directory that cannot read it answers `ErrUnavailable`. An
+`rfc2307` directory reads none: it has no domain SID and routes no SID (§4.4),
+and a join is refused against it (§3.5), so it configures no pass-through.
 
 A directory answers three questions, each by a bounded number of queries under a
-5-second timeout:
+5-second timeout. One sign-in's or resolution's identity work together stops
+at 20 seconds, past which it fails `ErrUnavailable`: its directory queries, its
+mints, and for a pass-through sign-in its wait for the secure channel and its
+call to the domain controller, each counted against the same 20 seconds. So a
+slow directory or domain controller holds a sign-in no longer than that. The
+bound sits below the 30-second request deadline and the handshake timeout's
+default ([RFC 20 §6.4](rfc-20-adapters.md#6.4%20Deadlines%20and%20limits)),
+which bound the whole sign-in, so a sign-in identity alone delays fails with
+this `ErrUnavailable`, not with the deadline; a handshake timeout set below 20
+seconds cuts such a sign-in off at the connection instead:
 
 | Question | Asked when |
 | --- | --- |
@@ -1128,8 +1496,20 @@ one that cannot be finished fails whole (§2.5).
 - **A record is minted once**, from the first answer, and holds its
   `PrincipalID`, `dir` entry ID, name, SID, uid and gid from then on. Later
   answers update its name through the store's rename and its e-mail address,
-  each when it changed; a name another principal holds is refused and the
-  record keeps its old one. Later answers never change its `PrincipalID`, entry
+  each when it changed. A record whose entry no longer answers its name gives
+  the name up at once: when the new name is free the record takes it, and
+  otherwise the record is left without a name, found by its SID and entry ID,
+  counted and logged, as a mint is (§4.1). When a directory principal holds the
+  new name, the directory is asked about that holder's entry, and only a
+  definite answer that it no longer answers that name — a fresh answer naming
+  it otherwise, or "no such entry" — makes the holder give the name up first,
+  the rename then following; so two entries that swapped names (alice and bob)
+  each end under the right one, and no record keeps answering to a name its
+  entry gave up. An error, a timeout or an answer served stale (§5.3) is not
+  that answer: the holder keeps its name, and the renaming record is left
+  without one, counted, until a later answer settles it. The renames one
+  answer causes, a swap's both, commit in one transaction with one
+  principals-generation raise, as a mint batch does (§4.1). Later answers never change its `PrincipalID`, entry
   ID, SID, uid or gid. An entry with no SID or no uid gets one allocated (§4.3,
   §4.4), so a directory without Windows or Unix attributes still yields
   principals that satisfy ID3.
@@ -1170,7 +1550,8 @@ The identity server keeps one cache of directory answers, in memory;
   NOT** replace a positive entry.
 - Concurrent lookups of one key **MUST** share one query, so a sign-in storm
   sends the directory one query per user, not one per connection.
-- The key is the question: (scheme, spelling) for "who holds this", the
+- The key is the question: (scheme, spelling) for "who holds this", a name
+  folded as §4.6 compares names, so `alice` and `ALICE` share one entry; the
   principal for "what are its groups".
 
 > ponytail: the TTLs and the timeout are constants. Make them settings when an
@@ -1192,6 +1573,21 @@ or times out:
   counted (`identity_directory_lookups_total{result="stale"}`);
 - anything else **MUST** be refused: a lookup with no entry, or one older than
   that, fails with `ErrUnavailable`, and a sign-in that needed it fails.
+
+While a node's `directory_unreachable` is raised (§9.2), which its own failed
+queries raise and **(cluster)** no other node's, an entry within the grace is
+used without asking the directory, a lookup with no entry within the grace
+fails `ErrUnavailable` at once rather than waiting out a timeout, and one
+lookup in 10 seconds asks it as a probe; the first answer clears the condition
+and lookups ask again. So an outage costs one query's timeout every 10 seconds,
+not one per expired entry or per cold sign-in, and no error is cached as an
+answer (§5.2).
+
+> ponytail: an outage longer than the TTL leaves every entry past it when the
+> condition clears, and each one's next lookup queries the directory, one per
+> user, in the sign-in that needs it. Serve in-grace entries while refreshing
+> them in the background at a capped rate when a recovery's query burst is
+> shown to load the directory or delay sign-ins.
 
 **The bound, stated once.** A directory account is let in at most the TTL plus
 the grace after the last answer that showed it enabled, on any proof: Kerberos
@@ -1621,7 +2017,13 @@ that wrote the change applies it at once.
   older than the current `State` is neither stored nor served. So a resolution
   that read bob's record before a disable, and finished after the `Apply` that
   delivered it, is not cached under the new `State`, and bob's next call misses
-  and is refused. The same rule holds for the API's account check (§8.1).
+  and is refused. A call whose own resolution went stale while it ran resolves
+  once more, under the current `State`; that second caller is served to the
+  call whatever was applied meanwhile, and stored only if still current. It
+  read every record after the `State` it is stamped with, so it is as fresh as
+  any resolution in flight, and a steady rate of raises, such as first
+  sign-ins minting, delays a call by one resolution and never starves it. The
+  same rule holds for the API's account check (§8.1).
 - Grant and export-policy changes carry their own versions, read on every call
   and already in the key.
 - The generation covers only what the store holds. Directory answers expire by
@@ -1649,7 +2051,7 @@ connection-state pool, and past its share:
 | --- | --- |
 | caller cache | the least recently used entry is evicted, counted |
 | directory cache | the least recently used entry is evicted; an evicted entry is a miss, never "not found" |
-| replay cache | holds entries younger than the clock skew; a sign-in that would need one more fails `ErrUnavailable` |
+| replay cache | holds each entry until its authenticator's time plus the clock skew, on the injected clock, so an authenticator stamped ahead cannot be replayed once its entry is gone; a sign-in that would need one more fails `ErrUnavailable` |
 | logon throttle | the oldest pair is evicted, counted |
 | directory lookups a `Claimed` caller triggers | at most 100 a minute per client address; past it the call is refused with a retryable error, never mapped to anonymous |
 | records a `Claimed` caller's lookup mints (§5.5) | at most 100 a minute per node, whatever the client; past it the call is refused with a retryable error, never mapped to anonymous, and nothing is written |
@@ -1700,11 +2102,21 @@ package identity // pkg/identity
 
 // APISignIn is the API's account check (RFC 23 §5.3).
 type APISignIn interface {
-	// VerifyPassword checks name's password against its stored hash and returns
-	// the account's principal. A wrong password, an unknown name, a disabled or
-	// deleted account, and an account with no password all fail
-	// ErrLogonFailure, alike; ErrUnavailable when the store cannot answer.
-	VerifyPassword(ctx context.Context, name string, password []byte) (metadata.Principal, error)
+	// Lookup resolves a name as presented to its account's principal by the
+	// name's user part, without its domain or realm, folded as §4.6 folds names,
+	// as §3.1's throttle keys a name (as the RFC 18 plan amends it), so every
+	// spelling of one account, whichever domain qualifies it, gives one
+	// principal; the zero principal for a user part with no account. It reads
+	// the store only: it never queries a directory and never mints a principal,
+	// so the step before the API counts the attempt costs no outside call. The
+	// API counts an attempt against what it returns before VerifyPassword runs,
+	// and VerifyPassword checks that principal (RFC 23 §5.3).
+	Lookup(ctx context.Context, name string) (metadata.Principal, error)
+	// VerifyPassword checks p's password against its stored hash. A wrong
+	// password, the zero principal, a disabled or deleted account, and an
+	// account with no password all fail ErrLogonFailure, alike; ErrUnavailable
+	// when the store cannot answer.
+	VerifyPassword(ctx context.Context, p metadata.Principal, password []byte) error
 	// Account returns p's current record for the API's per-call check, under
 	// the principals generation (§7.2); ErrLogonFailure if disabled or deleted.
 	Account(ctx context.Context, p metadata.Principal) (metadata.User, error)
@@ -1731,11 +2143,22 @@ type TokenClaims struct {
 // API writes the result with the record, conditional on ntlm.Revision still
 // being current; for a directory principal it fails ErrInvalid.
 func NewHashes(u metadata.User, password []byte, ntlm NTLMSetting) (PasswordHashes, error)
+
+// PasswordHashes is what NewHashes derives: the argon2id hash, and the NT hash
+// or nil (§3.5).
+type PasswordHashes struct{ Password, NTHash []byte }
+
+// NTLMSetting is identity.ntlm as a password set read it: whether it is on,
+// and the revision the write is conditional on (§3.5).
+type NTLMSetting struct {
+	On       bool
+	Revision uint64
+}
 ```
 
-- `VerifyPassword` compares in constant time, and an unknown name does the same
-  work as a wrong password — a hash verification against a fixed dummy — so
-  timing does not tell the two apart.
+- `VerifyPassword` compares in constant time, and the zero principal, an
+  unknown name's, does the same work as a wrong password — a hash
+  verification against a fixed dummy — so timing does not tell the two apart.
 - Tokens, sessions, roles, the not-before time and the API's sign-in throttle
   stay RFC 23's: `Account` returns the record and the API reads its role and
   `NotBefore` itself.
@@ -1839,11 +2262,14 @@ alice's still signs in as alice.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| Sign-ins by mechanism and outcome | `identity_authentications_total{protocol, mechanism, outcome}`: `mechanism` = `kerberos`, `ntlm`; `outcome` = `ok`, `logon_failure`, `disabled`, `invalid`, `unavailable`, `throttled`, `replay` | counter |
+| Sign-ins by mechanism and outcome | `identity_authentications_total{protocol, mechanism, outcome}`: `mechanism` = `kerberos`, `ntlm`; `outcome` = `ok`, `logon_failure`, `disabled`, `invalid`, `unavailable`, `throttled`, `replay`, `unknown_domain`, `no_pac` | counter |
 | Sign-in latency | `identity_authentication_seconds{mechanism}` | histogram (`request`) |
 | Records identity minted | `identity_mints_total{kind}`: `machine`, `user`, `group` | counter |
+| Mints whose name another principal held (§4.1) | `identity_mints_unnamed_total{kind}`: `user`, `group` | counter |
+| Directory principals left without a name by a rename (§5.1) | `identity_renames_unnamed_total{kind}`: `user`, `group` | counter |
+| Rotation confirms whose key version number differs from the tag (§3.5) | `identity_machine_key_version_mismatches_total` | counter |
 | Unmapped spellings | `identity_unmapped_total{scheme}`: `uid`, `gid`, `sid`, `owner` | counter |
-| SIDs dropped from a PAC or pass-through reply (§3.4) | `identity_pac_sids_dropped_total` | counter |
+| SIDs dropped from a PAC or pass-through reply (§3.4) | `identity_pac_sids_dropped_total{reason}`: `own_domain`, `builtin`, `user`, `other_domain`, `well_known` | counter |
 | Calls refused at resolution | `identity_resolution_refusals_total{reason}`: `disabled`, `group_cap`, `store_unavailable`, `directory_unavailable`, `anonymous_missing`, `ntlm_off`, `lookup_cap` | counter |
 | Directory lookups by result | `identity_directory_lookups_total{question, result}`: `question` = `name`, `sid`, `uid`, `gid`, `groups`, `group`; `result` = `fresh`, `queried`, `not_found`, `stale`, `refused`, `ambiguous` | counter |
 | Directory query latency | `identity_directory_seconds` | histogram (`request`) |
@@ -1852,7 +2278,9 @@ alice's still signs in as alice.
 
 | Condition | Scope | Raised |
 | --- | --- | --- |
-| `directory_unreachable` | installation | degraded while lookups are served stale within the grace; unhealthy once one is refused past it; cleared by the first query the directory answers |
+| `directory_unreachable` | node | raised by this node's own failed queries; degraded while lookups are served stale within the grace; unhealthy once one is refused past it; cleared by the first query the directory answers this node |
+| `machine_account_unhealthy` | node | unhealthy while this node's secure channel to every domain controller fails; cleared by the next channel set up |
+| `machine_password_rotation_failed` | installation | unhealthy while the `Installation` record's last rotation is recorded failed (§3.5); cleared only by a rotation completed, never by a channel set up with the previous password or by a restart |
 
 No metric label or span attribute carries an issuer's subject, an address or a
 user name. Caller-cache hits and misses are admission's
@@ -1886,7 +2314,7 @@ RFC 16's conformance suite's, not repeated here.
 | one uid, two proofs | 2 | Create two directory users with no uid, alice in group `Finance`, bob not. Assert their allocated uids differ, and that an operator write giving bob alice's uid fails. On a share admitting `sec=krb5` and `AUTH_SYS`, alice reads over Kerberos a file whose ACL grants `Finance` only: granted. From another host, over `AUTH_SYS`, send alice's uid with no gids: refused, the caller not `authenticated`, and the caller cache missed. | a defaulted uid; a cache keyed on numbers |
 | client in the key | 2 | A share admits host A read-write and host B read-only and refuses host C. Send identical `AUTH_SYS` claims from A, then B, then C: A writes, B is refused writes with `ErrReadOnly`, C is refused admission, and no call hit an entry another host built. | the read-only narrowing shared across hosts |
 | root | 2 | `Squash = none`, `AUTH_SYS` uid 0 with no user record: `chown` succeeds, and a file root creates is owned by root. `Squash = root`: refused. A directory entry with `uidNumber` 0: minted with an allocated uid. | root acting as anonymous; a directory supplying uid 0 |
-| stale grace | 1 | Resolve alice and bob; stop the directory. Within the grace both sign in, counted stale; carol, never resolved, is refused; past the grace alice is refused. With the grace zero, alice is refused as soon as her entry passes the TTL. | fail-open on outage, or no grace |
+| stale grace | 1 | Resolve alice and bob; stop the directory. Within the grace both sign in, counted stale; carol, never resolved, is refused; past the grace alice is refused. With the grace zero, alice is refused as soon as her entry passes the TTL. Warm 100 users, stop the directory and step past the TTL with `directory_unreachable` raised: each signs in within the grace while the delaying fault wrapper counts at most one query per 10 seconds on the injected clock; while it is raised, dave, never resolved, is refused `ErrUnavailable` at once, with no query and no timeout waited out; restart the directory: the next probe clears the condition. | fail-open on outage, or no grace; an outage that queries per expired entry and times every sign-in out; a cold sign-in holding a slot for a timeout during an outage |
 | disabled directory account | 1 | A directory user signs in over Kerberos with a PAC. Disable them in the directory and step past the TTL: refused. Repeat with the directory down past the TTL plus the grace: refused. Repeat with the entry deleted: refused, outcome `disabled`. | a PAC keeping a disabled account in |
 | error is not "unknown" | 2 | Inject a store error on the `uid` index during an `AUTH_SYS` call to a share with an everyone grant of `read-write`: a retryable error and nothing created. | an error read as "not found" |
 | no map to guest | 2 | Over SMB a wrong password, an unknown user and, with the store failing, a known user: `STATUS_LOGON_FAILURE` each time and no session. An anonymous session reaches `IPC$`, and `TREE_CONNECT` to `profiles` is refused. | a failed login answered as guest |
@@ -1898,32 +2326,48 @@ RFC 16's conformance suite's, not repeated here.
 | in-flight disable | 1 | Block bob's record read with a fault wrapper around the store. Disable bob and apply the new `State`. Release the read: nothing cached under the new `State`, and bob's next call misses and is refused. | a stale resolution stamped with the new generation |
 | group cap | 1 | A principal in 1 025 groups: refused, never resolved with fewer. A nested group whose read fails mid-closure: the call fails. A membership cycle: resolved. | truncated group lists; a cycle read as a failure |
 | owner strings | 2 | Over `sec=krb5`, `chown` to `alice@corp.example` and to `alice@other.example`: success, then `NFS4ERR_BADOWNER`. Over `AUTH_SYS`, `GETATTR`: numeric owners. A file owned by a deleted user: `nobody@…`, and over SMB `S-1-0-0`. | names mapped by guesswork |
-| PAC | 1 | A ticket whose PAC server signature is corrupted: refused. A ticket with no PAC, and one with a PAC holding no logon-information buffer, for a user in a store group: accepted, the group applies. A PAC carrying a SID of the installation's own domain for a local group with a share grant: that SID dropped, the grant not given. | an unverified or unfiltered PAC trusted; every modern KDC refused |
-| PAC bound to the record | 1 | Mint directory user bob; delete bob in the directory, create a new bob with a new SID, and sign the new bob in with a PAC: refused or minted anew, never the old principal. A local alice and a directory alice in a keytab realm: refused. A PAC whose client name differs from the ticket's: refused. | a reused name bound to the old person |
+| PAC | 1 | A ticket whose PAC server signature is corrupted: refused. A PAC changed only in padding between buffers, which the decoder skips: refused. A server signature of an unkeyed type over the same bytes, and one of the AES128 type under an AES256 key: refused. In a keytab realm other than the directory's, a ticket with no PAC, and one with a PAC holding no logon-information buffer, for a user in a store group: accepted, the group applies. In the directory's realm, the same two tickets for a directory user, and for `backup`, a name only a local user holds: each `ErrLogonFailure`, counted `no_pac`, with the record's schema `ad` and again with it `rfc2307`; with `require_pac` false: accepted. There `backup` is reached only through a `krb` row linked to the local `backup`, which stores the directory `backup`'s SID: its ticket with a PAC binds the local `backup`; delete the directory `backup` and create another under the name: its ticket is refused, never bound to the local one. Linking a name the directory does not hold: refused, naming it. A machine minted from a ticket with a PAC signs in again: bound. A PAC carrying a SID of the installation's own domain for a local group with a share grant: that SID dropped, the grant not given. A PAC carrying a universal group's SID from a second domain of the forest: that SID dropped and counted with reason `other_domain`, and the sign-in succeeds. | an unverified or unfiltered PAC trusted; every modern KDC refused; a PAC-less ticket landing on a same-named local user; an operator's link no ticket can reach, or one a reused name inherits |
+| PAC bound to the record | 1 | Mint directory user bob; delete bob in the directory, create a new bob with a new SID, and sign the new bob in with a PAC: refused or minted anew, never the old principal. A local alice and a directory alice in the directory's realm: the directory alice is bound, never the local one. A PAC whose client name differs from the ticket's: refused. | a reused name bound to the old person |
 | deny-only SIDs | 2 | A test PAC marks `Finance` deny-only. A file's ACL allows `Finance` read: refused. Another allows alice and denies `Finance` read: refused. A share whose only grant names `Finance`: the share refuses alice. | a deny-only SID dropped, or treated as a group |
 | deny-only lookup error | 1 | Inject a store error on the `sid` index while mapping a PAC's deny-only SID: the call fails, never resolved without the deny. | a deny dropped by an error |
 | binding | 2 | Over SMB, alice holds a Kerberos session. Delete alice and create a user named alice: every call on the old session refused; a fresh sign-in acts as the new principal. Repeat with an NTLM pass-through session, its user SID re-linked. | a live context re-mapped by name |
 | re-authentication | 2 | alice re-authenticates her SMB session with a wrong password: the session gone. As alice with a new ticket: trees and opens kept, the new `Expires` in force. As bob: the session acts as bob, and alice's open keeps its grant. Past `Expires`, `CLOSE` and an unlock succeed and a read is refused. | a failed proof leaving the old identity in place; a client unable to release what it holds |
-| pass-through | 1 | A directory user with no `krb` row signs in by NTLM pass-through: the caller is the principal holding its verified user SID; a wrong password raises the domain controller's bad-password count by one. | no mapping path; amplified lockouts |
+| pass-through | 1 | A directory user with no `krb` row signs in by NTLM pass-through: the caller is the principal holding its verified user SID; a wrong password raises the domain controller's bad-password count by one. An AUTHENTICATE whose `NtChallengeResponse` is 24 bytes: `ErrLogonFailure`, and nothing sent to the domain controller. A reply whose `UserFlags` holds `LOGON_GUEST`, and one whose user RID is 501: `ErrLogonFailure`, no session. | no mapping path; amplified lockouts; an NTLMv1 response forwarded; a guest logon taken as the user |
 | no file spelling | 2 | On a share whose only grant is authenticated users read, a machine principal reads a file: refused, not `authenticated`. A second machine's state operation on the first's `SP4_MACH_CRED` client record: refused. A grant naming a machine or an API-only account: refused. | a machine treated as an authenticated file caller |
 | `none` is stored | 2 | Grant `Finance` read-write and alice `none`: alice refused. Remove alice's grant: alice granted through `Finance`. | `none` stored as no grant |
-| directory deadline | 1 | Resolve bob over NTLM; remove bob from a directory group. Keep the session open past the TTL: his next call drops the group, with no generation change. | a cached caller outliving the directory answer |
+| mint burst | 1 | On the injected clock, 50 concurrent first sign-ins of distinct directory users, each in the same 300 directory groups, none minted before: every sign-in succeeds, none `ErrUnavailable`; each group is minted once; and the principals generation rises once per sign-in that minted, never once per group. Then a second wave whose group sets overlap pairwise without being equal (X in A and B, Y in B and C, Z in C and A, none minted): every sign-in succeeds. | a burst of first sign-ins failing on each other's generation raises; a re-run bounded at one |
+| name held at mint | 1 | A local group `finance`, and a directory group `Finance` alice is in, never minted: alice signs in, the directory group minted without a name, found by its SID and counted in `identity_mints_unnamed_total`; its `qualified` spelling none and its owner string over Kerberos its decimal gid; rename the local group: the next answer names the directory one. | one name clash locking a group's members out |
+| name swap | 1 | Mint directory users alice and bob, then swap their names in the in-memory directory and step past the TTL: each record follows its entry, `Find` of `alice` answers the principal minted for the entry first called bob and of `bob` the other, nothing waits on the other's rename, and a name either record gave up while the other still held it is counted in `identity_renames_unnamed_total`; the swap raises the principals generation once. Rename alice to a name bob holds while the delaying fault wrapper fails, then times out, the query about bob, and again with bob's entry served stale: bob keeps his name each time, and alice is left without one and counted. | a swap that never resolves; a name pointing at the wrong person; a live user's name taken on a failed query |
+| steady raises | 1 | On the injected clock, raise the principals generation while every resolution runs: each call is served after at most two resolutions, and the second is stored only when no raise came during it. | a resolution starved by first sign-ins minting |
+| directory deadline | 1 | Resolve bob over NTLM; remove bob from a directory group. Keep the session open past the TTL: his next call drops the group, with no generation change. On the injected clock, with every directory query answering after 4 seconds, a cold sign-in of a user in 300 groups fails `ErrUnavailable` at 20 seconds. | a cached caller outliving the directory answer |
 | SID-less directory | 1 | An RFC 2307 entry with no SID: the minted principal holds a local SID from the RID counter, unchanged when the directory later adds one. | a directory principal with no SID |
-| logon throttle | 1 | 10 wrong passwords for alice from one address, then the right one: refused, outcome `throttled`, and the domain controller's bad-password count is 10, not 11, a count the domain controller's suite holds to the real one, its reset on a success included. | a throttle that still checks the credential |
+| logon throttle | 1 | 10 wrong passwords for alice from one address, then the right one: refused, outcome `throttled`, and the domain controller's bad-password count is 10, not 11, a count the domain controller's suite holds to the real one, its reset on a success included. Then 10 wrong passwords spread over `alice`, `ALICE`, `CORP\alice` and `alice@CORP.EXAMPLE` from one address: the eleventh refused, outcome `throttled`. | a throttle that still checks the credential; a throttle a spelling variant resets |
 | expiry | 2 | Over `sec=krb5`, keep a context open past its ticket's `Expires`: the next request is refused with the expired-credential answer. | a context served past its ticket |
-| replay | 1 | The same AP-REQ twice: the second refused, outcome `replay`. | no replay cache |
+| clock skew | 1 | On an injected clock, a ticket whose start time is 6 minutes ahead, one whose end time passed 6 minutes ago, and an authenticator stamped 6 minutes off: each `ErrLogonFailure`; each at 4 minutes: accepted. | a ticket used outside its lifetime |
+| service name | 1 | A ticket for `cifs/<host>` whose service name is rewritten to a name no node answers on, still under the same key, and one for a name no key is held for: both `ErrLogonFailure`. With derived keys, every name on the computer account shares one key and the service name is outside the ticket's encrypted part, so only this check refuses a ticket retargeted to another name. | a ticket accepted for a name the installation does not serve |
+| ticket addresses | 1 | A ticket listing IPv4 address A, signed in with `SignInStep.Client` A and then B: accepted, then `ErrLogonFailure`. A ticket listing only a NetBIOS address, from any address: accepted. A ticket with no addresses: accepted. | a ticket used from a host it does not name |
+| replay | 1 | The same AP-REQ twice: the second refused, outcome `replay`. On the injected clock, an AP-REQ whose authenticator is stamped 4 minutes ahead, replayed 6 minutes after it was first seen: refused. | no replay cache; an entry expired while its authenticator is still inside the skew |
+| AES only | 1 | Tickets for a keytab name under RC4 and under DES, and an AES ticket whose session key is RC4: each `ErrLogonFailure`; a keytab import holding an RC4 key: refused whole; under AES128 and AES256: accepted. | an RC4 ticket forged from an NT hash |
+| derived keytab | 1 | Joined to the in-memory domain controller, rotate the machine password, then restart identity over the same store: tickets under the previous and the new key version number are both accepted until the retention passes, then the previous one is refused. Stop a rotation between sealing and setting, and resume it: the password is set once and the channel signs in. A ticket under the new number that arrives before the rotation confirms it, and one under the old number from a second controller that has not replicated the change: both accepted. Import a key for a `cifs/` name the computer account holds: refused. | a rotation breaking Kerberos; a password only the controller knows; a ticket refused while its number is unconfirmed |
+| online join | 1 | Stop an online join between sealing the password and creating the account, and resume it in the same process: the account is created once, with the sealed password, and the channel signs in. Stop it there again and restart identity before resuming: the join fails, naming the missing administrator credential, and run again with a takeover it joins. Stop it after creating the account, restart and resume: joined with no credential. Join again under the same name: refused, naming the account, its password unchanged; with a takeover asked: joined, the password sealed before it is set. Make the pinned domain controller unreachable for an hour on the injected clock: the join fails, naming it, and a join run again pins another. | a password only the controller knows; a second installation breaking the first; a join wedged on a controller that is gone |
+| offline join | 1 | Offline-join an account whose `msDS-SupportedEncryptionTypes` lacks AES, and one without the attribute: both refused. One that advertises it: joined, with the service names it holds reported, and the password the administrator handed over rotated: a ticket under a key derived from it is refused, before the rotations and after them. Stop the join after storing the handed-over password, restart identity over the same store and resume: the version is still marked `HandedOver` and derives no key, the join resumes its rotations, and it is done only once the second is confirmed. Before then, a pass-through sign-in is refused; after it, a controller that refuses the new password is not signed in to with the handed-over one. After the join, the handed-over password sets up no secure channel at the controller, being neither its current nor its previous password. Fail the second closing rotation after its set reached the controller, so the join fails: the installation is not joined, the `Installation` record says so after a restart, both versions it set kept, unconfirmed, and the rest it sealed pruned; an offline join run again after a reset completes, and only then are the kept versions pruned. Between the two closing rotations, set a password at the in-memory controller over a channel the handed-over password authenticates, once before the second rotation reads its tag and once after: the join fails both times, naming the number read, and is not joined. |  a join whose tickets are all refused; a service key its creator still knows; a join left without Kerberos by a crash before its rotation; the handed-over password signing the secure channel; the creator's password still the controller's previous one; a creator's set between the closing rotations passed as a mismatch; a failed join pruning a password the controller holds |
+| machine account health | 1 | Fail the secure channel to every domain controller: `machine_account_unhealthy` raised; restore one: cleared. Fail a rotation, then restore the channel and restart identity: `machine_password_rotation_failed` raised until a rotation completes. Hold a node from reporting the previous version past the rotation's schedule: raised. Make a rotation's pinned controller unreachable for an hour on the injected clock after it set the password: the rotation fails, naming it, raised, and tickets under both the sealed and the previous version still verify. Fail two rotations in a row, then complete one: the second sets the first's sealed version rather than sealing another, at most one unconfirmed version is in force, and the secure channel signs in throughout. Fail a rotation after the controller took its set, then run the next: it probes, finds the version accepted and does not set it again, and the account's key version number rises once. A confirm whose number differs from the tag: the rotation completes, the mismatch reported and counted, the tag unchanged, and a ticket under the controller's number verifies. A confirm at a controller that no longer accepts the sealed version: the rotation fails, naming it. | a failed rotation hidden by a reconnect; a rotation stuck behind a lagging node or a controller that is gone; versions piling up across failed rotations; a re-set that moves the number past its tag; a rotation that never completes on a mismatch |
+| rogue domain controller | 1 | In `integration/ad-dc`, a fault wrapper around the client's connection to the real domain controller changes one byte of the server credential in `NetrServerAuthenticate3`'s reply, which the controller computed after accepting the client's: it fails to verify (MS-NRPC 3.1.4.1), the channel is refused, and no NTLM response is sent. A controller that does not hold the machine password, a second domain's among them, refuses the client's credential first and never reaches this check. | pass-through to whoever answers on the address |
+| NETLOGON wire | 1 | In `integration/ad-dc`, through the same fault wrapper. Drop the connection after a pass-through's `NetrLogonSamLogonEx` with a wrong password was written: `ErrUnavailable`, the request not sent again, and the account's `badPwdCount` up by one; drop it before the request was written: sent once on a new connection. The client's `NetrServerAuthenticate3` offers no RC4, and with the AES flag cleared in the flags the reply negotiates, the channel is refused. Every `NetrLogonSamLogonEx` the wrapper passes carries a Netlogon verifier at the privacy level. | a bad password counted twice toward lockout; a channel negotiated down from AES; a logon sent unsealed |
+| NetBIOS name while joined | 1 | On a joined installation, a settings change to `identity.netbios_name`: refused at validation, the name unchanged. | a CHALLENGE naming an account the installation does not hold |
+| NetBIOS name and domain | 1 | A settings change giving `identity.netbios_name` the directory record's NetBIOS domain, and a directory record whose NetBIOS domain is `identity.netbios_name`, in another case: each refused at validation, naming the other. | one domain routing to both sources |
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
 | `ManageGIDs` | 2 | A user in 20 store groups calls over `AUTH_SYS`: a file whose ACL grants only the 20th group is granted. | groups capped at the credential's 16 |
-| NTLM off | 2 | Make a cache hit on a local NTLM session and on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: no NT hash written. | an NTLM context outliving the setting; a stray hash |
-| NTLM MIC | 1 | An AUTHENTICATE with a corrupted MIC, and one with the MIC zeroed while `MsvAvFlags` marks it present: both `ErrLogonFailure`. | the drop-the-MIC relay |
-| NTLM domain | 1 | A standalone installation's CHALLENGE advertises its own NetBIOS name; an AUTHENTICATE naming it in another case: verified locally. | every standalone login refused |
+| NTLM off | 2 | Make a cache hit on a local NTLM session and on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: its write refused, and no `Secret` of kind nt-hash stored. While the deletion runs, after it fails part way through a fault wrapper around the store, and after it is cancelled, turning `identity.ntlm` on is refused as RFC 23 §4.1 rules; once a deletion has completed, it is accepted. | an NTLM context outliving the setting; a stray hash; hashes a failed deletion never reached made valid again |
+| NTLM MIC | 1 | An AUTHENTICATE with a corrupted MIC, and one with the MIC zeroed while `MsvAvFlags` marks it present: both `ErrLogonFailure`, locally and through pass-through. A pass-through reply whose `UserSessionKey` is all zero, or whose `LogonDomainID` is another domain's: `ErrLogonFailure`; with the directory's domain SID unread: `ErrUnavailable`. | the drop-the-MIC relay |
+| NTLM domain | 1 | A standalone installation's CHALLENGE advertises its own NetBIOS name; an AUTHENTICATE naming it in another case: verified locally. With pass-through configured, `alice@corp.example.com` with an empty domain, and `corp.example.com\alice`: both passed through. A domain matching nothing, and an installation name holding `K` sent with the Kelvin sign U+212A in its place: `ErrLogonFailure`, outcome `unknown_domain`. | every standalone login refused; UPN and DNS-domain sign-ins refused as a wrong password |
 | no local password for a directory user | 1 | `NewHashes` for a directory principal: `ErrInvalid`, nothing stored; a local NTLM sign-in naming one: refused. | two passwords for one principal |
-| directory TLS | 1 | A record asking for plain LDAP, or for skipping verification: refused at validation. A directory behind a self-signed certificate, then one whose host name does not match: no bind sent, lookups `ErrUnavailable`, nothing cached. A referral to another host: not followed. | a bind credential handed to whoever answers |
-| one query per key | 1 | 100 concurrent lookups of one key: `identity_directory_lookups_total` rises by 1, and the in-memory directory's own record of the queries it answered holds one. | a sign-in storm multiplied per connection |
+| directory TLS | 1 | A record asking for plain LDAP, or for skipping verification, and one whose realm is `corp.example` rather than `CORP.EXAMPLE`: refused at validation. A directory behind a self-signed certificate, then one whose host name does not match: no bind sent, lookups `ErrUnavailable`, nothing cached. A referral to another host: not followed. | a bind credential handed to whoever answers |
+| one query per key | 1 | 100 concurrent lookups of one key: `identity_directory_lookups_total` rises by 1. | a sign-in storm multiplied per connection |
 | exact queries | 1 | Look up names holding `*`, `(`, `)` and `\` in a directory that also holds the entries they would match as a filter: each resolves to its own entry only. Two entries answering one name: `ErrUnavailable`, outcome `ambiguous`, nothing bound. | a name matching another entry |
 | lookup cap | 1 | One client address sends 101 distinct unknown uids in a minute: at most 100 directory queries, the rest refused retryably, none mapped to anonymous. | a uid spray loading the directory |
 | anonymous lookup | 2 | Over an anonymous session on `IPC$`, `LookupSids` of an unminted directory SID: no record written. | an unauthenticated caller minting principals |
-| name case | 1 | Two users whose names differ only in case: the second refused as a duplicate. | names unique byte for byte |
+| name case | 1 | Two users whose names differ only in case: the second refused as a duplicate. A local user named `bob@example.com`: refused. | names unique byte for byte |
 | `AUTH_SYS` from the directory | 2 | An `AUTH_SYS` call sends the `uidNumber` of a directory entry with no record: the caller is that entry's minted principal, not `authenticated`. | a directory that never maps a claimed uid |
 | mint from a claim, guarded | 2 | Send `AUTH_SYS` calls for 10^4 uids the directory does not hold: assert each acts as anonymous and no record is written. Send calls for 500 `uidNumber`s it holds, from 50 addresses at once: assert no more than the node cap minted per minute, the rest refused retryably, never anonymous. Rename a minted entry in the directory: assert the same `PrincipalID` with the new name after the TTL. Disable one entry and delete another: assert both refused after the TTL. | a mint on the client's word, a scan bounded only per address, or a record that follows the entry's name |
 | mint conflict | 1 | Mint directory user alice, then sign in bob, whose entry has another SID and alice's `uidNumber`: the sign-in fails, bob is bound to no principal, alice's record unchanged. Two concurrent mints of one entry: both bind to one principal. | a lost mint bound to whoever holds the row |
@@ -1936,7 +2380,8 @@ RFC 16's conformance suite's, not repeated here.
 **Fuzz.** `FuzzPAC`, `FuzzAPReq`, `FuzzSID` and `FuzzOwnerString` never panic,
 never allocate past the input's size times a constant, and decode∘encode is the
 identity on what decodes; `FuzzPAC` includes PACs with no logon-information
-buffer. The NTLM message decoder is RFC 20's. **Unit.** Resolution's five steps
+buffer, and PACs repeating a logon-information, client-information or signature
+buffer, of which only the first is decoded. The NTLM message decoder is RFC 20's. **Unit.** Resolution's five steps
 run as one table-driven test over (proof kind × squash × grant × no file
 spelling) against the in-memory metadata store; `NewHashes` is a pure function with a table of
 its own.
@@ -1948,22 +2393,46 @@ sign-in included, with a verified in-memory one
 API's sign-in is tested against the real identity server, called directly
 ([RFC 23 §12](rfc-23-control-plane.md#12.%20Conformance)).
 
+**Where the in-memory ones stand in.** The in-memory directory parses and
+evaluates RFC 4515 filters, and its suite holds it to the real one on exact
+queries, the escaping of an LDAP filter's special characters, an ambiguous
+name, `LDAP_MATCHING_RULE_IN_CHAIN`, `tokenGroups`, paging, range retrieval,
+and an account disabled by `userAccountControl` or `accountExpires`. The
+in-memory domain controller stands in above the NETLOGON client, answering its
+calls with their results, so the rows that check the client's own wire
+behaviour — "rogue domain controller" and "NETLOGON wire": the server-credential
+check, a retry only before the request was sent, the AES-only negotiation and
+the sealed channel — run only against a real domain controller, through a fault
+wrapper around the client's connection to it. Its suite holds it to the real one on pass-through, the
+bad-password count rising by one per wrong password and reset by a success, a
+computer account's creation and the refusal of an existing one,
+`msDS-KeyVersionNumber` rising by one on a password set,
+`msDS-SupportedEncryptionTypes` as written, and the three answers of the probe
+whether a password is accepted. A controller that has not yet replicated a
+change is the in-memory one's alone, since one real controller cannot show it.
+
 **Suites.** Tier 1, identity alone with the in-memory directory and domain
 controller, and Tier 2, through both adapters on the composed single-node
 harness, run in `unit`, with the fuzz seeds and table tests. The in-memory
 directory and domain controller stand in only because a suite holds each to the
-real one ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). The
-directory's rows: exact queries, the escaping of an LDAP filter's special characters, and an
-ambiguous name. The domain controller's: pass-through, the bad-password count
-rising by one per wrong password, and the count reset by a success. Both suites
-run against the in-memory ones in `unit` and against a real LDAP directory and
-domain controller in `integration/ad-dc`. Tier 2 is the
+real one ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). Both
+suites run against the in-memory ones in `unit` and against a real LDAP
+directory and domain controller in `integration/ad-dc`, where the NETLOGON wire
+rows also run. Tier 2 is the
 in-process layer, as RFC 20 §7.4 is, not RFC 17's and RFC 19's kernel-client
 rows, which run in `e2e/cross-protocol`. The allocation rules are RFC 16's and
 the roles row RFC 23's; the forwarded-identity row's cluster half has no suite
 yet.
 
 ## 11. Migration
+
+> decision: the programme builds identity for new installations only (route B of
+> the storage rewrite), so no installation carries v1's uid-derived SIDs or its
+> resolver into v2, and the slices below, written for an in-place migration, are
+> superseded: v2 starts with the stored RIDs of §4.4 and the resolution of §6,
+> and v1's code is deleted rather than shadowed. Revisit only if an installation
+> must be upgraded in place, and then by an export and import, not by these
+> slices.
 
 Each slice ships alone, behind the one before it, and deletes what it replaces.
 
