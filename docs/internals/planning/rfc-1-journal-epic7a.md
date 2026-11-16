@@ -389,7 +389,7 @@ tests can cite them. Obligations E7b, E9a or E9b carry are in §1.2 and §4, not
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R55 | A segment under a name this journal produces, whose header slot is zeros, does not verify, or verifies naming this journal (with its file's segment id or another), in which no record header and no seal marker verifies, which no successor names and in which no read failed, is re-adopted as a spare, counted toward the headroom, the repack reserve or a stream's next segment, and never treated as an orphan; a segment whose id a sync mark names is never re-adopted; a record-less take whose header names a predecessor still on disk is held, not re-adopted and never zeroed or unlinked, until a phase writes the open's verdict on that predecessor before the spares phase runs; a held take is re-adopted at a later open once its predecessor's marker verifies or the predecessor is unlinked, and counts toward the headroom; the exception is withdrawn once the loss-record and reconcile phases precede the spares phase | MUST | RFC 28 §3.1 | T7.7, T7.10 |
+| R55 | A segment under a name this journal produces, whose header slot is zeros, does not verify, or verifies naming this journal (with its file's segment id or another), in which no record header and no seal marker verifies, which no successor names and in which no read failed, is re-adopted as a spare, counted toward the headroom, the repack reserve or a stream's next segment, and never treated as an orphan; a segment whose id a sync mark names is never re-adopted; a record-less take whose predecessor's seal is not proven is held, not re-adopted and never zeroed or unlinked, until a phase writes the open's verdict on that predecessor before the spares phase runs; a held take is re-adopted at a later open once its predecessor's seal is proven (its marker verifies on the device after the sync and direct re-read, or its trailer verifies naming a footer just past the marker) or the predecessor is unlinked, and counts toward the headroom; predecessors this open ends are excluded from the hold only once their ending is durable — gone with a synced unlink; the exception is withdrawn once the loss-record and reconcile phases precede the spares phase | MUST | RFC 28 §3.1 | T7.7, T7.10 |
 | R56 | The identity in a segment header is checked before the record-less test, so a foreign segment is never re-adopted or zeroed | invariant | RFC 28 §3.1 | T7.7 |
 | R57 | A re-adopted spare's size is checked against the cap and, where the platform reports it, that no extent is unallocated or unwritten; one that fails is unlinked and made again | invariant | RFC 28 §3.1 | T7.7 |
 | R58 | A re-adopted spare whose header slot or trailer slot is not zeros has both zeroed and synced before a stream may take it | invariant | RFC 28 §3.1, §2.2 | T7.7 |
@@ -877,7 +877,7 @@ test/journal/known.yaml  T7.12, T7.13, T7.15   entries removed and re-pointed
   the test (R55).
 - **Acceptance criteria:**
   - Crashed with every spare untaken, and after a stream took one but before its first sync, the
-    reopen holds the record-less take whose header names an on-disk predecessor with no slot of it zeroed, re-adopts every other record-less segment, and the headroom and repack reserve are whole with
+    reopen holds the record-less take whose predecessor's seal is not proven with no slot of it zeroed, re-adopts every other record-less segment, and the headroom and repack reserve are whole with
     no new allocation, and nothing is reported as an orphan or as damage.
   - A recycle crashed between its rename and its zeroing sync is re-adopted with both slots zeroed
     before any stream takes it, and no record of its old life is attached.
@@ -977,9 +977,12 @@ proof, which would trust the cache).
   (R6, R30); a segment holding no verifying record whose id a mark names withheld from T7.7's
   spare test and ended for T7.13's emptying (R55, R61); the attach-and-rebuild pass
   decides each predecessor's fate — sealed, ended by this open, or gone — before the spares
-  phase runs, and a take is held only when its predecessor survives the open, so a
-  predecessor the open ends frees its take for the emptying's spares, which the
-  no-spare refusal would otherwise make on a usable segment (R53). After T7.9's proof and before anything is
+  phase runs, and a take is held only when its predecessor survives the open with a
+  durable ending: a predecessor the open ends frees its take only once it is gone with a
+  synced unlink, never while its unlink is one a crash can undo, for a freed take zeroed
+  before that durability leaves an unnamed predecessor reported torn instead of damaged
+  at the next open; the emptying's spares gain the freed takes, which the no-spare
+  refusal would otherwise make on a usable segment (R53). After T7.9's proof and before anything is
   appended, zeroed or taken from the pool: the lost-tail check of R62, which needs only the marks,
   the verifying records and the set of records T7.9 will have T7.11 re-append (D13); a mark whose
   segment is not on disk is read as retired, with RFC 28 §3.3's `ponytail:` on that reading; a
@@ -1001,7 +1004,11 @@ proof, which would trust the cache).
   - A segment the mark names holding no verifying record, with the mark's `Offset` at its header's
     end so nothing was lost, is never re-adopted, and is gone after the open; with the `Offset`
     past the header and no copy anywhere it is a lost tail and refuses the open.
-- **Tests:** the torn-slot, torn-header and counter halves of R80 ("a mark proves only up to `Through`", added here, §9); the rot below `Through` (catches a mark ignored, which would cut a synced record as torn, R36); the lost tail with and without a cached copy (catches a lost tail read as torn, R62, or a record about to be re-appended counted as lost); the same lost tail refused three opens in a row, comparing the directory and the spare count each time (catches a check that runs after the re-append, which burns a spare per retry until the repack reserve is gone, D13); the mark's empty segment (catches it re-adopted as a spare, where a re-append would land and hide the loss, R55); the id and sequence above the marks (catches a drained directory reissuing them, R6, R30).
+  - A take naming a predecessor the open ends is freed only once the predecessor is gone with a
+    synced unlink: a crash between the take's zeroing and the predecessor's durable unlink meets
+    the next open reporting the predecessor damaged, never torn, and the freed take counts among
+    the emptying's spares only after that unlink.
+- **Tests:** the torn-slot, torn-header and counter halves of R80 ("a mark proves only up to `Through`", added here, §9); the rot below `Through` (catches a mark ignored, which would cut a synced record as torn, R36); the lost tail with and without a cached copy (catches a lost tail read as torn, R62, or a record about to be re-appended counted as lost); the same lost tail refused three opens in a row, comparing the directory and the spare count each time (catches a check that runs after the re-append, which burns a spare per retry until the repack reserve is gone, D13); the mark's empty segment (catches it re-adopted as a spare, where a re-append would land and hide the loss, R55); the freed take of an ended predecessor across a crash before the predecessor's unlink is durable (catches a take zeroed ahead of its evidence, R55); the id and sequence above the marks (catches a drained directory reissuing them, R6, R30).
 
 ### T7.11 Re-appending what the device lost
 
