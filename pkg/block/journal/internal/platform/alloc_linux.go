@@ -274,7 +274,7 @@ func (f *file) allocated(fd int, size int64) (bool, string, error) {
 // its own: the seek answers the same hole over the same offset.
 //
 // decision: a seek refused with EINVAL, ENOSYS, ENOTTY or EOPNOTSUPP is the
-// one refusal the filesystem can make that says a hole report exists too:
+// one refusal the filesystem can make that says no hole report exists either:
 // the query cannot be asked there any more than the extent one could, so the
 // file answers whole rather than failing the open over a device that never
 // refused one — the fail-open Allocated names for a filesystem that answers
