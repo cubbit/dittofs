@@ -32,6 +32,7 @@ const (
 	StatusDelay                      // vfs.ErrDelay: at once in version 1, once its hold passes in version 2; of DelayResources, at once in both
 	StatusCancelled                  // core.ErrCancelled: a parked or held request its client cancelled
 	StatusDecode                     // core.ErrDecode: a record or arguments it cannot decode
+	StatusReplyTooBig                // core.ErrReplyTooBig: a reply's charge past a quarter of the reply pool's ceiling
 )
 
 // HoldFor is how long version 2 holds a request the service answered
@@ -259,6 +260,7 @@ func errorRows(holds bool) []core.ErrorRow {
 		{Err: core.ErrNoTree, Status: StatusNoTree},
 		{Err: core.ErrNoFH, Status: StatusNoFH},
 		{Err: core.ErrTooLong, Status: StatusTooLong},
+		{Err: core.ErrReplyTooBig, Status: StatusReplyTooBig},
 		{Err: core.ErrExpired, Status: StatusExpired},
 		{Err: core.ErrNotLast, Status: StatusNotLast},
 		{Err: core.ErrTooManyPending, Status: StatusTooManyPending},

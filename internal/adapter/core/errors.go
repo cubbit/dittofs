@@ -208,18 +208,19 @@ func describe(r ErrorRow) string {
 // NewErrorTable's check cannot see. Overturned if a caller must match a
 // decode error's cause.
 var (
-	ErrNotSupported   = errors.New("core: operation not supported")        // absent from the table, or switched off
-	ErrVersion        = errors.New("core: version not served")             // outside Op.Versions
-	ErrNotNegotiated  = errors.New("core: not negotiated")                 // Needs: negotiated
-	ErrNoSession      = errors.New("core: no session")                     // Needs: session
-	ErrNoTree         = errors.New("core: no tree")                        // Needs: tree
-	ErrNoFH           = errors.New("core: no current filehandle")          // Needs: NeedsFH
-	ErrTooLong        = errors.New("core: compound past its cap")          // the compound cap
-	ErrExpired        = errors.New("core: credential expired")             // an expired credential, Op.Expired false
-	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
-	ErrTooManyPending = errors.New("core: too many pending requests")      // Stages.MaxPending
-	ErrDecode         = errors.New("core: cannot decode")                  // a header, an operation's or a member's arguments, a step of the record's walk (§4.1)
-	ErrCancelled      = errors.New("core: cancelled by its client")        // a held or parked request its client cancelled (§6.5); wraps nothing
+	ErrNotSupported   = errors.New("core: operation not supported")                // absent from the table, or switched off
+	ErrVersion        = errors.New("core: version not served")                     // outside Op.Versions
+	ErrNotNegotiated  = errors.New("core: not negotiated")                         // Needs: negotiated
+	ErrNoSession      = errors.New("core: no session")                             // Needs: session
+	ErrNoTree         = errors.New("core: no tree")                                // Needs: tree
+	ErrNoFH           = errors.New("core: no current filehandle")                  // Needs: NeedsFH
+	ErrTooLong        = errors.New("core: compound past its cap")                  // the compound cap
+	ErrReplyTooBig    = errors.New("core: reply past a quarter of the reply pool") // a reply's charge past a quarter of the reply pool's ceiling (§4.3)
+	ErrExpired        = errors.New("core: credential expired")                     // an expired credential, Op.Expired false
+	ErrNotLast        = errors.New("core: not the last member of a chain")         // Park
+	ErrTooManyPending = errors.New("core: too many pending requests")              // Stages.MaxPending
+	ErrDecode         = errors.New("core: cannot decode")                          // a header, an operation's or a member's arguments, a step of the record's walk (§4.1)
+	ErrCancelled      = errors.New("core: cancelled by its client")                // a held or parked request its client cancelled (§6.5); wraps nothing
 	// ErrMoved and ErrDraining are what a request the drain does not serve
 	// gets while the adapter drains: ErrMoved where the service names a
 	// gateway node for the request's share (the move signal), ErrDraining
@@ -233,6 +234,7 @@ var (
 func Errors() []error {
 	return []error{
 		ErrNotSupported, ErrVersion, ErrNotNegotiated, ErrNoSession, ErrNoTree, ErrNoFH,
-		ErrTooLong, ErrExpired, ErrNotLast, ErrTooManyPending, ErrDecode, ErrCancelled, ErrMoved, ErrDraining,
+		ErrTooLong, ErrReplyTooBig, ErrExpired, ErrNotLast, ErrTooManyPending, ErrDecode, ErrCancelled, ErrMoved,
+		ErrDraining,
 	}
 }

@@ -13,6 +13,7 @@ package resources
 import (
 	"container/list"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -132,6 +133,11 @@ func (b *Budget) release(n int64) {
 	}
 }
 
+// ErrTooLarge is what a WaitBudget's Reserve, and so a BufPool's Get, wraps
+// when it refuses at once, under any ctx, a charge past the ceiling. It
+// matches no context error, so a caller tells it from a wait's end.
+var ErrTooLarge = errors.New("resources: charge past the ceiling")
+
 // WaitBudget is a counter of bytes reserved that waits at its ceiling: the
 // receive and reply budgets.
 //
@@ -178,12 +184,11 @@ func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Rese
 	// fault of configuration, not as a delay to retry. Withdraw it if a caller
 	// is found that must queue a charge larger than its budget.
 	if n > c.ceiling {
-		return Reservation{}, fmt.Errorf("resources: reserve %d bytes from %s: its ceiling is %d", n, c.name, c.ceiling)
+		return Reservation{}, fmt.Errorf("resources: reserve %d bytes from %s, whose ceiling is %d: %w", n, c.name, c.ceiling, ErrTooLarge)
 	}
 
 	c.mu.Lock()
-	if b.waiters.Len() == 0 && n <= c.ceiling-c.reserved {
-		c.reserved += n
+	if b.chargeLocked(n) {
 		c.mu.Unlock()
 		return Reservation{w: b, key: key, n: n}, nil
 	}
@@ -220,6 +225,30 @@ func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Rese
 	return Reservation{}, fmt.Errorf("resources: reserve %d bytes from %s: %w", n, c.name, ctx.Err())
 }
 
+// try charges n bytes for key only when they fit and no waiter is ahead of
+// them, and otherwise returns false at once, allocating nothing.
+func (b *WaitBudget) try(key netip.Addr, n int64) (Reservation, bool) {
+	c := &b.c
+	c.mu.Lock()
+	ok := b.chargeLocked(n)
+	c.mu.Unlock()
+	if !ok {
+		return Reservation{}, false
+	}
+	return Reservation{w: b, key: key, n: n}, true
+}
+
+// chargeLocked charges n bytes when they fit under the ceiling and no waiter
+// is ahead of them: Reserve's path that does not wait, and try's.
+func (b *WaitBudget) chargeLocked(n int64) bool {
+	c := &b.c
+	if b.waiters.Len() > 0 || n > c.ceiling-c.reserved {
+		return false
+	}
+	c.reserved += n
+	return true
+}
+
 // grantLocked charges each waiter from the head while the head's bytes fit,
 // on the calling goroutine, and stops at the first that does not.
 func (b *WaitBudget) grantLocked() {
@@ -238,6 +267,12 @@ func (b *WaitBudget) grantLocked() {
 // Reserved is the bytes reserved now, for gauges and the leak check.
 func (b *WaitBudget) Reserved() int64 {
 	return b.c.read()
+}
+
+// ceiling is the most the budget reserves at once, and so the largest charge
+// Reserve can grant.
+func (b *WaitBudget) ceiling() int64 {
+	return b.c.ceiling
 }
 
 func (b *WaitBudget) release(n int64) {

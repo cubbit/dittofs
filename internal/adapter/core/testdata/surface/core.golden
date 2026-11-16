@@ -214,6 +214,7 @@ var (
 	ErrNoTree         = errors.New("core: no tree")
 	ErrNoFH           = errors.New("core: no current filehandle")
 	ErrTooLong        = errors.New("core: compound past its cap")
+	ErrReplyTooBig    = errors.New("core: reply past a quarter of the reply pool")
 	ErrExpired        = errors.New("core: credential expired")
 	ErrNotLast        = errors.New("core: not the last member of a chain")
 	ErrTooManyPending = errors.New("core: too many pending requests")
