@@ -393,11 +393,11 @@ registers no suite and no group, and changes no `lint-go` tag.
 | E4 | The management API | server, route table, typed handlers (D14), write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5), each resource's wire types, the client | 14 | 34 | B | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the write path's `Check` slot) |
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 10 | 25.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
 | E6 | The CLI | `login` and the rebuilt `dfsctl` on epic 4's client, generated reference | 6 | 12 | A | E7 |
-| E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 5 | 13.5 | team | E8 (partly) |
+| E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 7 | 11.5 | team | E8 (partly) |
 | E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **65** | **162.25** | | |
+| | **Total** | | **67** | **160.25** | | |
 
-**Plan estimate: 65 subtasks, 162.25 man-days, not counting epic 8.**
+**Plan estimate: 67 subtasks, 160.25 man-days, not counting epic 8.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -1481,7 +1481,7 @@ call against their current record.
 
 ### Epic 7 — Integration 🔀
 
-**Epic 7 estimate: 5 subtasks, 13.5 man-days.**
+**Epic 7 estimate: 7 subtasks, 11.5 man-days.**
 
 The middle epics meet: RFC 23 §12's single-node rows run through the API, signed in, against the
 node `node.New` builds.
@@ -1501,7 +1501,7 @@ these RFC 23 §12 rows pass, in their single-node part:
 | "§2.4 applied" | API and node status |
 | "§2.5 health" | API and node |
 | "§3.2 delete" | API and the runner |
-| "§3.5 grants" | API and admission |
+| "§3.5 grants" | API only: what a grant stores; its admission half is epic 8's |
 | "§4.4 lost update" | API |
 | "§4.5 idempotency" | API and accounts |
 | "§4.7 error table" | every component's errors |
@@ -1549,6 +1549,8 @@ runs RFC 23's e2e rows.
 - RFC 23 §12's rows "§3.2 create admits nobody" and "§5.1 roles grant nothing" pass in `e2e` and
   `e2e/kerberos`, and "§2.2 order"'s clause that no adapter listened before the first reconcile
   completed passes;
+- "§3.5 grants"' admission half passes in `e2e`: alice, a member of `Finance` granted read with her
+  own grant `none`, refused a mount; her grant deleted, admitted through `Finance`;
 - the #3714 filter's entries that D9 gives this epic are removed on `feat/storage-v2`.
 
 **Expected content:**
