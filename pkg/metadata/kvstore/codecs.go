@@ -55,6 +55,18 @@ func readPrincipal(r *codec.Reader) entity.Principal {
 	return p
 }
 
+func putResource(w *codec.Writer, ref entity.ResourceRef) *codec.Writer {
+	return w.Uint8(uint8(ref.Kind)).Bytes(ref.ID)
+}
+
+// readResource reads a resource reference, setting *known false for one of a
+// kind this build does not know.
+func readResource(r *codec.Reader, known *bool) entity.ResourceRef {
+	ref := entity.ResourceRef{Kind: entity.ResourceKind(r.Uint8()), ID: cloneOrNil(r.Bytes())}
+	*known = *known && ref.Kind.String() != ""
+	return ref
+}
+
 func putIDs(w *codec.Writer, ids entity.ProtocolIDs) {
 	w.Len(len(ids))
 	for _, id := range ids {

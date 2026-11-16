@@ -148,8 +148,8 @@ func (c ControlPlane) AuditRecords(ctx context.Context, f entity.AuditFilter, af
 
 func encodeAudit(a entity.AuditRecord) []byte {
 	w := putPrincipal(codec.NewWriter(v1), a.Actor).String(a.ActorName).String(a.Credential).
-		Fixed(a.Node[:]).String(a.Source).Bytes(a.Request).Uint8(uint8(a.Target.Kind)).Bytes(a.Target.ID)
-	return w.Uint64(a.Before).Uint64(a.After).Bytes(a.Change).Bytes(a.Outcome).Encode()
+		Fixed(a.Node[:]).String(a.Source).Bytes(a.Request)
+	return putResource(w, a.Target).Uint64(a.Before).Uint64(a.After).Bytes(a.Change).Bytes(a.Outcome).Encode()
 }
 
 // decodeAudit decodes a record whose position, its time and ID, is pos.
@@ -167,13 +167,14 @@ func decodeAudit(pos, b []byte) (entity.AuditRecord, error) {
 	a.ActorName, a.Credential = r.String(), r.String()
 	copy(a.Node[:], r.Fixed(16))
 	a.Source, a.Request = r.String(), cloneOrNil(r.Bytes())
-	a.Target = entity.ResourceRef{Kind: entity.ResourceKind(r.Uint8()), ID: cloneOrNil(r.Bytes())}
+	known := true
+	a.Target = readResource(r, &known)
 	a.Before, a.After = r.Uint64(), r.Uint64()
 	a.Change, a.Outcome = cloneOrNil(r.Bytes()), cloneOrNil(r.Bytes())
 	if err := r.Done(); err != nil {
 		return a, err
 	}
-	if a.Target.Kind.String() == "" {
+	if !known {
 		return a, errMalformed
 	}
 	return a, nil

@@ -73,7 +73,7 @@ func (s *Store) RaiseNodeEpoch(ctx context.Context, node entity.NodeID) (epoch u
 // than both, and a version range whose minimum is above its maximum, are
 // refused.
 func (n Nodes) RegisterNode(ctx context.Context, node entity.Node) (rec entity.Node, err error) {
-	if node.Roles != entity.RoleProtocol|entity.RoleStorage {
+	if node.Roles != entity.NodeRoleProtocol|entity.NodeRoleStorage {
 		return rec, merrs.NewInvalidArgumentError("a node serves both the protocol and the storage role")
 	}
 	for _, r := range node.Formats {
@@ -226,7 +226,7 @@ func decodeNode(id entity.NodeID, b []byte) (entity.Node, error) {
 	if err != nil {
 		return entity.Node{}, err
 	}
-	n := entity.Node{ID: id, Address: r.String(), Roles: entity.Roles(r.Uint8()), Binary: r.String(), Domain: r.String(),
+	n := entity.Node{ID: id, Address: r.String(), Roles: entity.NodeRoles(r.Uint8()), Binary: r.String(), Domain: r.String(),
 		Epoch: r.Uint64()}
 	if k := r.Len(); k > 0 {
 		n.Formats = make(map[entity.Format]entity.VersionRange, k)
@@ -238,22 +238,10 @@ func decodeNode(id entity.NodeID, b []byte) (entity.Node, error) {
 	if err := r.Done(); err != nil {
 		return n, err
 	}
-	if n.Roles&^(entity.RoleProtocol|entity.RoleStorage) != 0 {
+	if n.Roles&^(entity.NodeRoleProtocol|entity.NodeRoleStorage) != 0 {
 		return n, errMalformed
 	}
 	return n, nil
-}
-
-func putResource(w *codec.Writer, ref entity.ResourceRef) *codec.Writer {
-	return w.Uint8(uint8(ref.Kind)).Bytes(ref.ID)
-}
-
-// readResource reads a resource reference, setting *known false for one of a
-// kind this build does not know.
-func readResource(r *codec.Reader, known *bool) entity.ResourceRef {
-	ref := entity.ResourceRef{Kind: entity.ResourceKind(r.Uint8()), ID: cloneOrNil(r.Bytes())}
-	*known = *known && ref.Kind.String() != ""
-	return ref
 }
 
 func encodeNodeStatus(s entity.NodeStatus) []byte {

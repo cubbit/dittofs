@@ -10,7 +10,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
-const bothRoles = entity.RoleProtocol | entity.RoleStorage
+const bothRoles = entity.NodeRoleProtocol | entity.NodeRoleStorage
 
 // Each start raises the node's epoch and then registers it: the epoch the
 // raise answered is the one the record holds, one per start, whatever the
@@ -47,7 +47,7 @@ func testNodeEpochAcrossStarts(t *testing.T, kvo Opener) {
 func testRegisterNodeRefuses(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	for name, n := range map[string]entity.Node{
-		"protocol role only": {Roles: entity.RoleProtocol},
+		"protocol role only": {Roles: entity.NodeRoleProtocol},
 		"no role":            {},
 		"range backwards":    {Roles: bothRoles, Formats: map[entity.Format]entity.VersionRange{1: {Min: 3, Max: 2}}},
 	} {

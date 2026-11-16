@@ -5,7 +5,7 @@ package entity
 type Node struct {
 	ID      NodeID
 	Address string
-	Roles   Roles
+	Roles   NodeRoles
 	Binary  string // the binary version it runs
 	Domain  string // its failure domain
 	Epoch   uint64 // raised at every start on a single node
@@ -15,13 +15,13 @@ type Node struct {
 	Lapsed  bool // marked by a takeover: its lease at Epoch fences nothing
 }
 
-// Roles is what a node serves; both roles together is the one accepted
+// NodeRoles is what a node serves; both roles together is the one accepted
 // value. Its value is stored.
-type Roles uint8
+type NodeRoles uint8
 
 const (
-	RoleProtocol Roles = 1 << iota
-	RoleStorage
+	NodeRoleProtocol NodeRoles = 1 << iota
+	NodeRoleStorage
 )
 
 // Format names one versioned format nodes share. Its value is stored.

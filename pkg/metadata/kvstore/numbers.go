@@ -66,6 +66,8 @@ const (
 // raises it in its own transaction, never in ranges, so NextID refuses it.
 const idShard = 7
 
+// IDS kind 8 is retired: it held the node epoch.
+
 // maxOpenID bounds open IDs below 2^40: with the shard, an open ID fills
 // SMB's 8-byte persistent FileId.
 //

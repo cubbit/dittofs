@@ -91,7 +91,7 @@ func codecCases() []codecCase {
 		Account: group, State: entity.OpFailed, Claim: entity.OpClaim{Node: entity.NodeID{15: 1}, Epoch: 2, Expires: time.Unix(3, 0).UTC()},
 		Step: []byte("s"), Params: []byte("p"), Started: time.Unix(4, 0).UTC(), Updated: time.Unix(5, 6).UTC(),
 		Error: []byte("e"), Result: []byte("r"), Generation: 7}
-	node := entity.Node{ID: entity.NodeID{15: 5}, Address: "a", Roles: entity.RoleProtocol | entity.RoleStorage, Binary: "b",
+	node := entity.Node{ID: entity.NodeID{15: 5}, Address: "a", Roles: entity.NodeRoleProtocol | entity.NodeRoleStorage, Binary: "b",
 		Domain: "d", Epoch: 2, Formats: map[entity.Format]entity.VersionRange{2: {Min: 3, Max: 4}, 1: {Min: 1, Max: 1}}, Lapsed: true}
 	status := entity.NodeStatus{Node: node.ID, Settings: 1, ShareList: 2, Principals: 3, Claims: 4,
 		Refused:        []entity.RefusedRecord{{Record: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{9}}, Generation: 5, Error: []byte("e")}},
