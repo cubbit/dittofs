@@ -146,7 +146,12 @@ func TestADFixture(t *testing.T) {
 			t.Fatalf("docker restart: %v\n%s", err, out)
 		}
 		waitForADReady(t, 5*time.Minute)
-		waitForMachinePassword(t, getContainerIP(t), "dittofs", rotated)
+		dcIP = getContainerIP(t) // a restart can change the container's IP
+		waitForMachinePassword(t, dcIP, "dittofs", rotated)
+
+		// Put DITTOFS$ back, so a later subtest can sign in with machineAccountPass.
+		rotateMachinePassword(t, machineAccountPass)
+		waitForMachinePassword(t, dcIP, "dittofs", machineAccountPass)
 	})
 }
 
