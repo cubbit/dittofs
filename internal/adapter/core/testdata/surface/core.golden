@@ -205,7 +205,8 @@ type Security interface {
 	Wrap(h Header, reply *resources.Buf) error
 }
 
-type Server struct{}
+type Server struct {
+}
 
 type Stages struct {
 	Header     HeaderCodec
