@@ -17,11 +17,10 @@ cache); [RFC 16](../rfcs/rfc-16-metadata-store.md) §3 (`Principals.Grant`,
 partly**: T3.10 alone waits, for E2's T2.1 (root as a well-known principal; anonymous already exists) and
 T2.4 (`State.Settings`, whose `NTLM` key it reads); T3.2's routing lands before E2's T2.5 fills
 `Spell` and `Find`, and answers what they answer. **RFC 23's plan's epic 2 (#4326), partly**:
-its T2.6 raises the principals generation, `PGEN`, once in each transaction that writes a
-principal. No subtask reads `PGEN` and each test hands `Apply` its `State`, but T3.8 waits for
-its T2.6: a cache whose generation no write raises would serve a disabled user. T3.1 to T3.7
-start before it lands. Its T2.3 also writes `S‖id‖gv`, which T3.6 writes too: whichever lands
-second keeps the other's write.
+T3.6 waits for its T2.3, which writes `S‖id‖gv` in `SetGrant` and `DeleteGrant` (its T2.11 writes
+it in each deletion batch), so T3.6 reads it and writes none. No subtask reads `PGEN`, and each
+test hands `Apply` its `State`: between T3.8 and E8, which applies each `PGEN` the reconcile
+reads, a disable reaches a cached caller only at `Fresh`; E8 closes that gap.
 **Blocks:** **S2**, with E4: admission resolves through identity (T3.6) and `Spell` and `Find`
 reach it (T3.2). E5, whose PAC's deny-only SIDs reach T3.4's groups; E6, whose "mint burst" row
 resolves through `Resolve` and whose directory groups and TTL join T3.4 and T3.8; E4's T4.5 and E6's T6.7, whose spans read
@@ -55,7 +54,7 @@ caller was derived from.
 The resolver moved and completed: map, squash, the group closure with its cap and deny-only
 principals, grants, flags; the `State`'s serial and a stale resolution resolved once more;
 `Identity.Key()`; admission's caller cache; RFC 16 §3's `Grant` and `SharePolicy` reads and
-the `S‖id‖gv` writes the cache keys on; `Spell` and `Find` routed to `Names`; the refusals
+the `S‖id‖gv` read the cache keys on; `Spell` and `Find` routed to `Names`; the refusals
 counter and the `identity.resolve` span; the cache's benchmark.
 
 ### 1.2 Out of scope
@@ -96,8 +95,8 @@ counter and the `identity.resolve` span; the cache's benchmark.
 - **E9**, E2E green: RFC 18 §10's Tier 2 rows over SMB.
 - **S1**, the identity surface frozen: what E1 delivers.
 - **S2**, NTLM sign-in and resolution in `vfs`: E3 and E4 done.
-- **RFC 23's plan's epic 2**, store records (#4326): its T2.6 raises the principals generation,
-  `PGEN`, and its T2.3 writes `S‖id‖gv` with `DeleteGrant`.
+- **RFC 23's plan's epic 2**, store records (#4326): its T2.3 writes `S‖id‖gv` in `SetGrant` and
+  `DeleteGrant`, and its T2.11 in each deletion batch that drops a grant.
 
 ## 2. How the general rules apply
 
@@ -118,7 +117,7 @@ number and title and not copied.
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T3.1, T3.3, T3.4, T3.5, T3.6, T3.7, T3.8 | RFC 18's notes at their sites: §2.5's `decision:` and `ponytail:` (T3.4), §6.2's two `decision:` notes (T3.4, T3.5), §6.4's `decision:` and `ponytail:` (T3.5), §7.2's `ponytail:` (T3.8); this document's D1 to D10 markers at theirs |
 | rule 10, a test must be able to fail | all | every R row is held by a test named in its subtask that fails on its assertion, or by the compiler where named |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T3.3, T3.7 | `ProofKey` and `Identity.Key()` are RFC 18 §6.1's; `Resolver.Current` is the one addition, pending the RFC amendment §9 asks for; the cache and its key stay unexported in `internal/vfs` |
-| rule 12, each subtask creates only what it declares | all | `S‖id‖gv` lands with T3.6, its first reader, in the share view admission already reads; `Grant`'s shape with T3.5; `Deps.Tracer` with T3.1's span |
+| rule 12, each subtask creates only what it declares | all | the `S‖id‖gv` read lands with T3.6, its first reader, in the share view admission already reads; `Grant`'s shape with T3.5; `Deps.Tracer` with T3.1's span |
 
 ## 3. Requirements and invariants
 
@@ -300,7 +299,7 @@ pkg/identity/arch_test.go         T3.6  only vfstest/memory imports identitymem,
 pkg/metadata/kvstore/
   principals.go       T3.5  Grant as RFC 16 §3 declares it
                       T3.6  SharePolicy
-  shares.go, users.go T3.6  S‖id‖gv written by every grant write and principal deletion
+  shares.go           T3.6  S‖id‖gv read with the share, written by RFC 23's epic 2 (T2.3, T2.11)
   kvstoretest/        T3.5, T3.6  rows for both reads
 ```
 
@@ -419,7 +418,7 @@ pkg/metadata/kvstore/
 
 ### T3.5 Grants and flags
 
-**Subtask T3.5 estimate: 2 man-days.**
+**Subtask T3.5 estimate: 2.5 man-days.**
 
 - **Track:** A. **Depends on:** T3.4.
 - **Covers:** R7, R15, R16, R17, R18, R19, R20, R21.
@@ -427,7 +426,11 @@ pkg/metadata/kvstore/
   RFC 16 §3 declares it, the caller's own grant alone, a stored `none` answering `(none,
   true)`, with its `kvstoretest` row; the grant step reading one grant per principal, own
   then each group, then the defaults (§6.4's `ponytail:`), for `Mapped` before a proven
-  caller's squash; `Access` and `ReadOnly`; the flags; §6.4's `decision:`; the moved resolver's `decision:` on a squashed caller's `none` grant brought onto the new `Grant`. Consumed by T3.6.
+  caller's squash; `Access` and `ReadOnly`; the flags; §6.4's `decision:`; the moved resolver's `decision:` on a squashed caller's `none` grant brought onto the new `Grant`;
+  every test asserting access through groups or defaults on `Grant` (`kvstoretest/auth.go:152`,
+  `controlplane.go:148-164` and `282-292`, `races.go:151`, `principals_test.go`'s
+  `TestGrantResolution`) rewritten, own-grant cases reading `(a, ok)` and effective-access cases
+  going through `Files.Authorize`. Consumed by T3.6.
 - **Acceptance criteria:**
   - A proven caller's own `none` grant refuses on a share whose group grant admits it.
   - `Admin` is set only for a `Secret` or `Ticket` caller whose grant says `admin`.
@@ -446,17 +449,15 @@ pkg/metadata/kvstore/
 
 ### T3.6 Admission resolves through identity
 
-**Subtask T3.6 estimate: 2.5 man-days.**
+**Subtask T3.6 estimate: 2 man-days.**
 
-- **Track:** A. **Depends on:** T3.5.
-- **Covers:** R6, R27, R35, R38, R37 (its `kvstoretest` rows); D9's refusal.
+- **Track:** A. **Depends on:** T3.5. RFC 23's plan's epic 2's T2.3 (`S‖id‖gv` written).
+- **Covers:** R6, R27, R35, R38, R37 (its `kvstoretest` row); D9's refusal.
 - **Deliverables:** the `SharePolicy` admission hands `Resolve`, built from the share and
   policy `ShareIndex.Share` already reads in one view, which gains the `S‖id‖gv` read, so no
   call makes a second read (RFC 16 §3's `Principals.SharePolicy` waits for a consumer with no
-  share view); `S‖id‖gv` written by `SetGrant`, `RemoveGrant` and the deletion of a user
-  or group on each share it held a grant on, retiring `shares.go`'s `ponytail:`, unless RFC 23's
-  plan's epic 2's T2.3, the other writer, has landed first, in which case T3.6 keeps its write
-  and adds only what it lacks; admission's
+  share view); `S‖id‖gv` as RFC 23's plan's epic 2 writes it (T2.3 for `SetGrant` and
+  `DeleteGrant`, T2.11 in each deletion batch), so T3.6 depends on its T2.3; admission's
   step 4 calling `vfs.Deps.Identity.Resolve`, `vfs.New` refusing a `Deps` without it;
   `authz.Caller` rebuilt on `identity.Caller`, converted to `entity.Identity` for the
   chokepoint, D9's refusal and marker at the conversion, and a caller whose `Access` is
@@ -468,14 +469,13 @@ pkg/metadata/kvstore/
   so `pkg/vfs/vfstest/memory`, the adapters' verified in-memory `vfs.Service`, passes the value
   it returns as `Deps.Identity`, `Auth` and `Names`, as RFC 18 §10 "Who stands in for what"
   says, and never imports `internal/identity`: E1's T1.5 rule allows only `internal/node` and
-  identity's own packages, `identitymem` among them, and keeps no exception; T1.5's
+  identity's own packages, `identitymem` among them; T1.5's
   `arch_test.go` gains the rule that no non-test package but `pkg/vfs/vfstest/memory` imports
   `identitymem`, with a seeded violation, so the helper is no way around that rule.
   Consumed by T3.8, S2, E5 to E9.
 - **Acceptance criteria:**
   - `go build ./...` with `internal/vfs/admit/resolve.go` gone and `vfs`'s tests green on the
     real identity server.
-  - Every grant write and principal deletion moves the share's `S‖id‖gv`.
   - `pkg/vfs/vfstest/memory` builds on the real identity server and imports no
     `internal/identity`.
 - **Tests:** at `vfs.Service`, over the real identity server and memory store: a `Squash =
@@ -488,9 +488,7 @@ pkg/metadata/kvstore/
   and allows everyone: refused at admission (catches D9's refusal removed, which lets the read
   through, fail-open); the arch test's seed of a non-test package importing `identitymem`
   reported. `kvstoretest`
-  rows: `Share` reads the policy and `S‖id‖gv` from one commit, and `SetGrant`, `RemoveGrant`,
-  `DeleteUser` and `DeleteGroup` each raise `S‖id‖gv` (catches a grant change a cache keyed on
-  misses, R27).
+  row: `Share` reads the policy and `S‖id‖gv` from one commit (R37).
 
 ### T3.7 The proof key
 
@@ -517,7 +515,7 @@ pkg/metadata/kvstore/
 
 **Subtask T3.8 estimate: 3 man-days.**
 
-- **Track:** A. **Depends on:** T3.3, T3.6, T3.7, RFC 23's plan's epic 2's T2.6.
+- **Track:** A. **Depends on:** T3.3, T3.6, T3.7.
 - **Covers:** R23, R25, R27, R28, R29, R30, R31, R32, R33, R34, R37.
 - **Deliverables:** `internal/vfs`'s `callerKey{proof identity.ProofKey; policy
   entity.SharePolicy; readOnly bool; client netip.Addr; built uint64}` with
@@ -609,7 +607,7 @@ flowchart TD
   T3_1 --> T3_4["T3.4 Squash and groups"] --> T3_5["T3.5 Grants and flags"] --> T3_6["T3.6 Admission through identity"]
   S1 --> T3_7["T3.7 Proof key"]
   T3_2 & T3_6 --> S2(["S2 resolution in vfs, with E4"]):::sync
-  X1(["RFC 23 plan epic 2 T2.6: PGEN raised"]):::sync --> T3_8
+  X1(["RFC 23 plan epic 2 T2.3: S‖id‖gv written"]):::sync --> T3_6
   T3_3 & T3_6 & T3_7 --> T3_8["T3.8 Caller cache"]
   T3_8 --> T3_9["T3.9 Benchmark"]
   E2(["E2's T2.1 and T2.4: root, State.Settings"]):::sync --> T3_10["T3.10 Root, anonymous, NTLM off"]
@@ -626,7 +624,7 @@ is reached once T3.2 and T3.6 have landed; the cache follows without changing wh
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T3.1, T3.2, T3.3 | 4 | — | the resolver in identity with its `State`, and `vfs`'s naming calls routed |
-| 2 | T3.4, T3.5, T3.6 | 6.5 | PR 1 | the rest of resolution and admission calling it: one review of what a caller acts as |
+| 2 | T3.4, T3.5, T3.6 | 6.5 | PR 1, RFC 23's plan's epic 2's T2.3 | the rest of resolution and admission calling it: one review of what a caller acts as |
 | 3 | T3.7, T3.8, T3.9 | 4.5 | PR 2 | the key, the cache built on it and its measurement |
 | 4 | T3.10 | 1 | PR 3, E2's T2.1 and T2.4 | what E2's principals and setting bring to resolution |
 
@@ -668,7 +666,9 @@ the version this document was written against.
   ruled client; RFC 17 §4.9 adds the netgroups' and share list's versions for a cached
   steps 1 to 4. D1 caches step 4 alone and keys on step 3's output instead.
 - The plan has E3 wait on RFC 23's plan's epic 2 for the `State`. Nothing here reads `PGEN`,
-  so only T3.8 waits, for its T2.6, the writes that raise it (Depends on).
+  and nothing reads it before E8, so no subtask waits for its T2.6: until E8 applies each `PGEN`,
+  a disable reaches a cached caller only at `Fresh` (Depends on). T3.6 waits for its T2.3 instead,
+  the `S‖id‖gv` writer.
 - RFC 18 §3.1 computes `Evidence`'s digest at sign-in; D4 computes it in `Key()` with a
   `ponytail:`, since the sketch's signatures are indicative.
 - The `krb` row bound to its linked SID (RFC 18 §4.2, A17) is E5's sign-in in the plan;
@@ -688,11 +688,12 @@ the version this document was written against.
 
 - `Deps.Tracer`: the plan's §1.3 gives it to epic 4. T3.1's `identity.resolve` span is the first
   code that reads it, so T3.1 adds it, as E1's D4 now says, and E4's span reads it.
-- `S‖id‖gv` is not kept on `feat/storage-v2` (`shares.go`'s `ponytail:`); T3.6 writes it.
-  RFC 16 §3 renames `RemoveGrant` to `DeleteGrant` with `expect`, which RFC 23's plan's epic 2
-  builds in its T2.3, the other writer of `S‖id‖gv`; whichever lands second keeps the other's
-  write, and removes the `ponytail:` only if it is still there.
+- `S‖id‖gv` is not kept on `feat/storage-v2` (`shares.go`'s `ponytail:`); RFC 23's plan's epic 2
+  writes it alone (its T2.3 and T2.11) and T3.6 reads it. RFC 23's epic 2's D20 and its T2.3 test
+  reading a principal's access through its groups on `Grant` change with T3.5 in a follow-up to
+  #4326: D20 to "written here alone; the RFC 18 plan's epic 3 reads it", the test to "`Grant`
+  answers `ok == false`, and a group member is admitted through the group's grant".
 - The estimate is 10 subtasks, 16 man-days, against the plan's 7 subtasks, 12.5 man-days:
-  3.5 man-days more for the store reads and `S‖id‖gv` (T3.5, T3.6) that `feat/storage-v2`
-  lacks, the in-memory service's identity server (T3.6), moving `vfs`'s claimed-identity tests
+  3.5 man-days more for the store reads (T3.5, T3.6) that `feat/storage-v2` lacks, with the
+  `Grant` tests that assert effective access rewritten, the in-memory service's identity server (T3.6), moving `vfs`'s claimed-identity tests
   (D7), the serial (D2) and the benchmark as its own subtask. T3.8 is the least certain.
