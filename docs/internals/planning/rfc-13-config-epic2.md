@@ -170,8 +170,8 @@ bind the journal, which leaves `node-id` alone; RFC 16 §4.6's fold-rule key wor
 - **D2, the environment is an argument.** `Load(path string, environ []string)` takes the
   environment as `os.Environ()`'s slice, so a test passes its own and nothing reads the process's
   environment but `dfs`'s commands. Viper's `AutomaticEnv` is not used: the scan binds each
-  bootstrap key's name itself, so one list says what is read. E1's frozen `Load(path)` gains the
-  argument here, with its two callers. No marker.
+  bootstrap key's name itself, so one list says what is read. E1's T1.3 freezes the signature with
+  the argument, and its callers pass `os.Environ()`. No marker.
 - **D3, keys are matched exactly.** The file's keys are compared as declared, in lower case, as a
   setting's are (RFC 13 Appendix B); viper lowers every key, so the check reads the file's own key
   spelling from the YAML before the decode. Pending the review of #4486's first open question; if
@@ -409,8 +409,6 @@ A suggestion only: one pull request per subtask works as well.
 
 - **Exact key matching (D3)** follows #4486's first open question; the estimate drops by 0.5
   man-days if the file keeps viper's matching.
-- **`Load`'s signature gains the environment (D2).** E1 freezes `Load(path)`; this epic changes it
-  with its two callers, `dfs start` and `dfs config`, before RFC 23's epic 3 calls it.
 - **`Installation.Active` has no owner in RFC 23's epic 2**, which adds `Node.Formats` only; T2.8
   declares it (D6).
 - **FoundationDB's credential** (#4486's second open question) decides whether
