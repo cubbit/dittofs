@@ -21,7 +21,7 @@ published NTLMv2 vectors.
 name) and T2.6 (`NewHashes`, whose NT hash T4.2's tests sign in against). T2.6 does not wait for
 RFC 23's user deletion (#4326's T2.11) once its marked-deleted cases move to E2's T2.8 (#4316),
 which waits for T2.11 and which RFC 23's password write waits for, so S2 does not; RFC 23's
-epic 2 PR table names T2.8 rather than T2.6 in a follow-up to #4326. T4.1 starts at S1.
+epic 2 PR table names T2.8 rather than T2.6 in #4336. T4.1 starts at S1.
 **E3, partly**: T4.5 reads the `Deps.Tracer` E3's T3.1 adds; T4.3 removes `errUnsigned` once
 E3's T3.2 has routed `Spell` and `Find`.
 **Blocks:** **S2**, with E3: `vfs.Service`'s `SignIn` answers an NTLM step (T4.3). **E5**, whose
@@ -176,8 +176,8 @@ tests can cite them. Sources are RFC 18 unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R18 | Past 10 `ErrLogonFailure` results in 10 minutes for one (name, client address), the name being the user part without its domain or realm, folded as §4.6 folds a name, every further attempt from that pair fails `ErrLogonFailure` before its credential is checked, until the window has passed with fewer | MUST | §3.1 | T4.4 |
-| R19 | No account is locked by failures: the count is per pair, so the same user from another address still signs in | invariant | §3.1 | T4.4 |
+| R18 | Past 10 `ErrLogonFailure` results in 10 minutes for one (name, client address), the name being the user part without its domain or realm, folded as §4.6 folds a name, and the address an IPv6 address's /64 as RFC 23 §5.3 keys a source, every further attempt from that pair fails `ErrLogonFailure` before its credential is checked, until the window has passed with fewer | MUST | §3.1; RFC 23 §5.3 | T4.4 |
+| R19 | No account is locked by failures: the count is per pair, so the same user from an address outside the pair's /64 (or another IPv4 address) still signs in | invariant | §3.1; RFC 23 §5.3 | T4.4 |
 | R20 | Past its share, the throttle evicts its oldest pair, counted | bound | §7.3 | T4.4 |
 | R30 | `Stop` drops the throttle's table, identity's first in-memory table (epic 1's R14 leaves the drop to the first epic that keeps one) | invariant | §2.6 | T4.4 |
 | R21 | §10's "logon throttle" row, its local half: 10 wrong passwords then the right one refused, outcome `throttled`; 10 spread over `alice`, `ALICE`, `CORP\alice` and `alice@CORP.EXAMPLE`, the eleventh refused | test row | §10 | T4.4, T4.5 |
@@ -271,8 +271,10 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   presented, which only the stream may hold. `ponytail:` at `LogLines`, naming RFC 25's sink as
   the upgrade. A `nil` `Logons` makes `SignIn` answer `ErrUnavailable`, as epic 1's stubs do,
   where RFC 25's `nil` `*Sink` is a null sink: identity refuses rather than sign in unrecorded,
-  and `New` does not refuse the `nil`, so earlier epics' tests build unchanged. `decision:` at
-  that check. Prior art: Samba's `auth_json_audit` writes authentication events to a log of
+  and `New` does not refuse the `nil`, so earlier epics' tests build unchanged. A server built
+  without `Logons` refuses NTLM from T4.5 on, so `node.New`'s does until E8's T8.2 hands the
+  sink, and a node test that signs in over NTLM waits for T8.2 (RFC 23's epic 5's T5.7).
+  `decision:` at that check. Prior art: Samba's `auth_json_audit` writes authentication events to a log of
   their own (from memory).
 - **D8, E4's domain table has two rows; E7 adds the third.** The table is a function of the
   `State` and the message's user and domain, answering local or unknown; pass-through's row
@@ -391,7 +393,8 @@ internal/vfs/
   - the `export_test.go` hook that delivers the NT hash a proof was computed with;
   - `internal/identity/identitymem` (E3's T3.6) passing #4059's provider over `keyprovider`'s
     local provider, with its key files under the test's `t.TempDir()`, as `Deps.Secrets`, so
-    `pkg/vfs/vfstest/memory`'s `SignIn` can resolve an NT hash (RFC 22's plan's S4b).
+    `pkg/vfs/vfstest/memory`'s `SignIn` can resolve an NT hash (RFC 22's plan's S4b), by
+    whichever of T4.2 and E3's T3.6 lands second.
 
   Consumed by T4.3, T4.4, T4.5, by E5 (the dispatch) and E7 (the table's third row).
 - **Acceptance criteria:**
@@ -488,8 +491,8 @@ internal/vfs/
     `export_test.go` accessor of the table's footprint (catches a key holding the name, D5);
   - two addresses in one IPv6 /64: one pair, the eleventh attempt from the second refused
     (catches a key on the whole IPv6 address, D5);
-  - `Start`, the throttle filled for alice from A, `Stop`, `Start`: alice from A is checked, and
-    the footprint accessor reads zero (catches a table kept across `Stop`, R30).
+  - `Start`, the throttle filled for alice from A, `Stop`: the footprint accessor reads zero
+    (catches a table kept across `Stop`, R30).
 
   Doubles: the injected clock (kind 1); `kvtest`'s fault wrapper (kind 3). The outcome
   `throttled` is asserted by T4.5's table.
@@ -498,7 +501,7 @@ internal/vfs/
 
 **Subtask T4.5 estimate: 1.75 man-days.**
 
-- **Track:** B. **Depends on:** T4.4; E3's T3.1.
+- **Track:** B. **Depends on:** T4.3, T4.4; E3's T3.1.
 - **Covers:** R14, R21, R22, R23, R24, R25, R26, R28.
 - **Deliverables:** `Deps.Logons LogonSink`, its first reader (D7); `LogonSink{ Logon(ctx
   context.Context, e *LogonEvent) }`; `LogonEvent{ Time time.Time; Outcome, Mechanism, Protocol,
@@ -510,7 +513,7 @@ internal/vfs/
   E3's `Deps.Tracer`, a child of the context's span, with the proof kind, the outcome and the
   principal's ID; a `nil` `Logons` answering `ErrUnavailable` (D7); `identitymem` passing
   `LogLines(Deps.Logger)` as `Logons`, so `pkg/vfs/vfstest/memory` keeps signing in (RFC 22's
-  plan's S4b). Consumed by E5 and E7, whose
+  plan's S4b), by whichever of T4.5 and E3's T3.6 lands second. Consumed by E5 and E7, whose
   outcomes join, and by E8, which hands the node's sink and registers the series.
 - **Acceptance criteria:**
   - `New` accepts a `Deps` without `Logons`, and `SignIn` then answers `ErrUnavailable`.
@@ -534,7 +537,8 @@ internal/vfs/
   - a `Deps` without `Logons`: `ErrUnavailable` (D7);
   - at `pkg/vfs/vfstest/memory`, `memory.New`'s `SignIn` with the §4.2.4 AUTHENTICATE signs in
     the §4.2.4 user seeded through `NewHashes` in the store it hands `identitymem` (catches
-    `identitymem` left without `Secrets` or `Logons`, which would break RFC 22's plan's S4b).
+    `identitymem` left without `Secrets` or `Logons`, which would break RFC 22's plan's S4b),
+    added by whichever of T4.5 and E3's T3.6 lands second.
 
 ## 7. Order of work
 
@@ -547,6 +551,7 @@ flowchart TD
   T4_3 --> S2(["S2 sign-in in vfs, with E3"]):::sync
   T4_2 --> T4_4["T4.4 Logon throttle"]
   T4_4 --> T4_5["T4.5 Logon events, series, span"]
+  T4_3 --> T4_5
   X3(["E3's T3.1: Deps.Tracer"]):::sync --> T4_5
   T4_5 --> C1(["after T4.5: E5 and E7 join the dispatch"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -606,7 +611,8 @@ logon sink come in.
   gets the real server as `Auth` from E3's T3.6, through `internal/identity/identitymem`. T4.2
   makes `identitymem` pass #4059's provider over `keyprovider`'s local provider as `Secrets`, and
   T4.5 makes it pass `LogLines(Deps.Logger)` as `Logons`, so RFC 22's plan's S4b, NTLM against
-  `memory.New`'s `SignIn`, is met once T4.3 and T4.5 have both landed.
+  `memory.New`'s `SignIn`, is met once T4.3, T4.5 and E3's T3.6 have all landed; whichever of
+  T4.2, T4.5 and T3.6 lands later makes its `identitymem` change.
 
 **Where the plan and the RFCs disagree, or leave a gap (RFC pull-request material):**
 
@@ -629,6 +635,8 @@ logon sink come in.
   `FuzzNTLMv2Response`.
 - **The throttle's eviction count** is required by RFC 18 §7.3 and named nowhere in §9.2;
   `identity_logon_throttle_evictions_total` is this document's name for it.
+- **The throttle's client address.** RFC 18 §3.1's client address should read as RFC 23 §5.3's
+  source, an IPv6 address by its /64, as D5 keys it (R18, R19).
 - **A throttled attempt** is an `ErrLogonFailure` result; §3.1 does not say whether it counts
   toward the window. D5 says it does not; §3.1 should say so.
 - **A malformed step** (neither or both mechanisms, no user) has no `mechanism` label in §9.2;
@@ -641,8 +649,10 @@ logon sink come in.
   this epic builds only the refusals (R16, D3).
 - **A marked principal's outcome.** RFC 18 §3.7 gives a deleted principal logon outcome
   `disabled`, but RFC 23's epic 2 (its R39, R40) removes a marked user's name index in the mark's
-  transaction, so sign-in cannot tell it from an unknown name and answers `logon_failure` (R14).
-  §3.7 should give a marked principal outcome `logon_failure`.
+  transaction, so sign-in cannot tell it from an unknown name and answers `logon_failure` (R14),
+  as RFC 23's epic 2 T2.11 also states, with a `decision:` at the mark. Either §3.7 gives a
+  marked principal outcome `logon_failure`, recommended, or both sides change to `disabled`,
+  which would need sign-in to find a marked principal by name; pending the RFC 18 edit.
 - **"no local password for a directory user"**: the plan gives the row to E8; E2 takes its
   `NewHashes` half and this epic its sign-in half (R9), which needs no directory.
 - **The plan's §4.4 sketch** has `s.netlogon.SamLogonEx` return a `SignInResult`. A package
