@@ -109,13 +109,13 @@ func openJournal(clock engine.Clock) func(context.Context, string, journal.Versi
 	}
 }
 
-// noTrace starts no span: the node has no tracer yet.
+// noTrace is the engine's Tracer, and starts no span.
 func noTrace(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
 	return ctx, func(error) {}
 }
 
-// Start opens the node's stores and starts its services. It does not start
-// one yet: it returns errors.ErrUnsupported.
+// Start starts the services New built. It does not start one yet: it
+// returns errors.ErrUnsupported.
 func (n *Node) Start(ctx context.Context) error {
 	return errors.ErrUnsupported
 }
