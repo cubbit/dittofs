@@ -233,28 +233,40 @@ func TestDeadlineContextStartsNoGoroutine(t *testing.T) {
 }
 
 // A panicking handler is answered ErrPanicked, logged once at error with its
-// operation and its stack, and counted under its operation alone.
+// operation, the panic value's type and its stack, and counted under its
+// operation alone. The value, which may hold a name a user chose, is logged
+// at debug only (RFC 25 §5.4).
 func TestRecoveryAnswersAPanic(t *testing.T) {
 	var logged bytes.Buffer
 	m := metrics.New("v", "c")
-	sh := core.NewShared(adapter.Deps{Metrics: m, Logger: slog.New(slog.NewJSONHandler(&logged, nil))})
+	sh := core.NewShared(adapter.Deps{Metrics: m, Logger: slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))})
 	tb := routed(t)[0]
 	ts, err := sh.Table(tb)
 	if err != nil {
 		t.Fatal(err)
 	}
 	echo := tb.Ops[testproto.OpEcho]
-	err = sh.Recovery(echo, ts)(func(context.Context, *core.Request) error { panic("boom") })(context.Background(), nil)
+	const value = "open /exports/plans-2027.ods"
+	err = sh.Recovery(echo, ts)(func(context.Context, *core.Request) error { panic(value) })(context.Background(), nil)
 	if !errors.Is(err, core.ErrPanicked) {
 		t.Errorf("a panic is answered %v, want ErrPanicked", err)
 	}
 	lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
-	var rec struct{ Level, Op, Stack string }
-	if len(lines) != 1 || json.Unmarshal([]byte(lines[0]), &rec) != nil {
-		t.Fatalf("logged %q, want one record", logged.String())
+	var rec, debug struct {
+		Level, Op, Stack, Panic string
+		PanicType               string `json:"panic_type"`
 	}
-	if rec.Level != "ERROR" || rec.Op != echo.Name || !strings.Contains(rec.Stack, "TestRecoveryAnswersAPanic") {
-		t.Errorf("logged %+v, want an error naming %s with the panicking frame in its stack", rec, echo.Name)
+	if len(lines) != 2 || json.Unmarshal([]byte(lines[0]), &rec) != nil || json.Unmarshal([]byte(lines[1]), &debug) != nil {
+		t.Fatalf("logged %q, want two records", logged.String())
+	}
+	if rec.Level != "ERROR" || rec.Op != echo.Name || rec.PanicType != "string" || !strings.Contains(rec.Stack, "TestRecoveryAnswersAPanic") {
+		t.Errorf("logged %+v, want an error naming %s and the value's type, with the panicking frame in its stack", rec, echo.Name)
+	}
+	if strings.Contains(lines[0], "plans-2027") {
+		t.Errorf("the error line carries the panic value: %s", lines[0])
+	}
+	if debug.Level != "DEBUG" || debug.Op != echo.Name || debug.Panic != value {
+		t.Errorf("logged %+v at debug, want the panic value", debug)
 	}
 	got, _ := scrape(t, m)
 	for _, op := range tb.Ops {

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -150,13 +151,16 @@ func (sh *shared) deadline(next Call) Call {
 var errPanicked = errors.New("core: handler panicked")
 
 // recovery turns op's panic into errPanicked, logged at error with the
-// operation and the stack and counted under op in ts.
+// operation, the panic value's type and the stack, and counted under op in
+// ts. The value is the handler's own text and may hold a name a user chose,
+// which RFC 25 §5.4 keeps below Info, so it is logged at debug.
 func (sh *shared) recovery(op *Op, ts *tableSeries) Middleware {
 	return func(next Call) Call {
 		return func(ctx context.Context, r *Request) (err error) {
 			defer func() {
 				if p := recover(); p != nil {
-					sh.log.ErrorContext(ctx, "handler panicked", "op", op.Name, "panic", p, "stack", string(debug.Stack()))
+					sh.log.ErrorContext(ctx, "handler panicked", "op", op.Name, "panic_type", fmt.Sprintf("%T", p), "stack", string(debug.Stack()))
+					sh.log.DebugContext(ctx, "handler panicked", "op", op.Name, "panic", p)
 					ts.panicked(op)
 					err = errPanicked
 				}
