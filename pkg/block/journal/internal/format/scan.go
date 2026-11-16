@@ -281,6 +281,9 @@ type scanner struct {
 	// alone (read), so no read reaches a body. The window's fetch of
 	// already-held bytes keeps serving the search's zero-telling.
 	headerOnly bool
+	// examinedSlots counts the slots examine has read, the test's measure
+	// of a search's cost.
+	examinedSlots int
 	// searching is set while the forward search runs: a header-only refill
 	// goes wide there, for the bytes it crosses are no attached record's.
 	searching bool
@@ -296,6 +299,7 @@ type scanner struct {
 // tested cheap before any checksum is computed — and only then the
 // decoders, which is what makes a forward search cheap to run.
 func (sc *scanner) examine(off int64) slot {
+	sc.examinedSlots++
 	// A slot is first read as far as a seal marker reaches, and only a record
 	// prefix widens the read to the header's size, so a header-only walk makes
 	// no read past a marker's own bytes into the footer a sealed segment holds
@@ -511,6 +515,43 @@ func (sc *scanner) search(off int64) (end int64, found slot, zeroRun bool, err e
 			return p, found, zeroRun, err
 		}
 		zeroRun = zeroRun && slotZero
+		if slotZero {
+			// The zero consume: a run of zeros the window already holds, all
+			// the way to the first slot whose own first read crosses the
+			// window's end — every slot strictly between examines the same
+			// nothing this one does, for no record header and no marker
+			// verifies in bytes held all zero, and each of them is served
+			// its whole first read from the window, so stepping over them
+			// one at a time makes no read the reader ever sees. Crossing that
+			// first unserved slot is not: the stepping walk refills the window
+			// at it, so the search consumes the run and lands on it, and the
+			// reads the search starts — a refill's own offset, or the bytes a
+			// slot's narrow read asks — are the same reads stepping starts,
+			// a refusal asleep at one found by the same attempt either way.
+			wEnd := sc.cur + sc.have // the bytes in hand; never past the size
+			if wEnd > p+8 && zero(sc.window[p+8-sc.cur:wEnd-sc.cur]) {
+				if wEnd >= sc.size {
+					// The window holds the rest of the segment: every
+					// remaining slot is served whole, so the land is the last
+					// grid position of the segment, and the loop ends on its
+					// own residue checks.
+					pl := p + 8 + 8*max(int64(0), (sc.size-1-(p+8))/8)
+					p = pl - 8
+				} else {
+					// The land is the first grid slot whose own first read
+					// crosses wEnd. It lies within the 31 bytes below wEnd,
+					// for a first read never asks more than a seal marker's
+					// own 32, and it crosses unless the window serves it —
+					// The max keeps a short run, one that ends before the
+					// crossing, stepping as it always did.
+					pl := p + 8 + 8*max(int64(0), (wEnd-31-(p+8)+7)/8)
+					n := min(min(RecordHeaderSize, sc.size-pl), SealMarkerSize)
+					if pl+n > wEnd {
+						p = pl - 8
+					}
+				}
+			}
+		}
 	}
 	return end, found, zeroRun, nil
 }

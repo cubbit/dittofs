@@ -985,3 +985,66 @@ func TestScanEdges(t *testing.T) {
 		}
 	})
 }
+
+// TestScanSearchConsumesAnAllZeroWindowAsOne is the empty-tail fast path: the
+// forward search over bytes an unsealed preallocated segment holds past its
+// last record — megabytes the journal never wrote, all zero — crosses them a
+// few examinations per window it fills, not one every eight bytes, for no
+// record header and no marker verifies in bytes the window holds all zero.
+// The scan it hands back is the same either way: both records, one zero range
+// to the size, no seal, no resync, the end at the size.
+func TestScanSearchConsumesAnAllZeroWindowAsOne(t *testing.T) {
+	recs := scanTestRecords()[:2]
+	seg, _ := scanSegment(t, testIdentity, recs...)
+	tail := int64(len(seg))
+	seg = append(seg, make([]byte, 3*scanWindow+4096)...)
+	size := int64(len(seg))
+
+	got, err := ScanSegmentHeaders(bytes.NewReader(seg), size, testIdentity, testSegment)
+	if err != nil {
+		t.Fatalf("ScanSegmentHeaders = %v, want no error", err)
+	}
+	if len(got.Records) != 2 {
+		t.Fatalf("attached %d records, want 2", len(got.Records))
+	}
+	want := ScanRange{Off: tail, End: size, Kind: RangeZero}
+	if len(got.Ranges) != 1 || got.Ranges[0] != want {
+		t.Fatalf("ranges = %+v, want the one zero range %+v", got.Ranges, want)
+	}
+	if got.Sealed || got.Resynced {
+		t.Errorf("sealed %v resynced %v, want neither", got.Sealed, got.Resynced)
+	}
+	if got.End != size {
+		t.Errorf("end %d, want the size %d", got.End, size)
+	}
+
+	sc := scanner{
+		r:          bytes.NewReader(seg),
+		size:       size,
+		identity:   testIdentity,
+		segment:    testSegment,
+		window:     make([]byte, min(scanWindow, size)),
+		headerOnly: true,
+	}
+	end, found, zeroRun, err := sc.search(tail)
+	if err != nil {
+		t.Fatalf("the search over the zero tail = %v, want no error", err)
+	}
+	if found.outcome != slotNothing || end != size || !zeroRun {
+		t.Fatalf(
+			"the search over the zero tail: found %v, end %d, zeroRun %v, want nothing found at the size %d all zero",
+			found.outcome, end, zeroRun, size,
+		)
+	}
+	// The bound: the search enters each window it crosses with one
+	// examination, and the walk's records are examined before it; a search
+	// that steps one slot at a time over the zeros exceeds it by orders of
+	// the tail's own size.
+	bound := 2*((size-tail)/scanWindow+1) + 8
+	if n := sc.examinedSlots; int64(n) > bound {
+		t.Fatalf(
+			"the zero search examined %d slots, want at most %d, a few per window it crosses, not one every eight bytes",
+			n, bound,
+		)
+	}
+}
