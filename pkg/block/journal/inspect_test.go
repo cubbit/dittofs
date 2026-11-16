@@ -200,8 +200,7 @@ func reopenedJournal(t *testing.T) (*Journal, map[core.SegmentID][]uint32) {
 	if st.Assembled.Set == nil || st.Rebuilt.Index == nil || st.Rebuilt.Counters == nil {
 		t.Fatal("reopen fixture: the rebuild left the assembled state half built")
 	}
-	seed := dirtySeed(st.Rebuilt.Index)
-	c, err := datapath.New(datapath.Deps{
+	deps, state := continueFrom(st, datapath.Deps{
 		FS:          seam.FS(),
 		Clock:       kit.NewStopwatchClock(),
 		Dir:         dir,
@@ -211,17 +210,8 @@ func reopenedJournal(t *testing.T) (*Journal, map[core.SegmentID][]uint32) {
 		ExtentLimit: 1 << 20,
 		Descriptors: core.NewDescriptorBudget(64),
 		Targets:     segment.Targets{Content: 4},
-	}, datapath.State{
-		Index:    st.Rebuilt.Index,
-		Counters: st.Rebuilt.Counters,
-		Set:      st.Assembled.Set,
-		Open: &datapath.OpenState{
-			Live:     st.Assembled.Live,
-			Forgets:  st.Assembled.Forgets,
-			Unsynced: st.Assembled.Unsynced,
-			Dirty:    seed,
-		},
 	})
+	c, err := datapath.New(deps, state)
 	if err != nil {
 		t.Fatalf("the core over the rebuilt state: %v", err)
 	}

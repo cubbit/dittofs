@@ -190,7 +190,7 @@ func (f *assembledJournal) tryReopen(t *testing.T, floor Version, set func(*Sett
 		return nil, fmt.Errorf("the recovery over %s left the state half assembled", f.dir)
 	}
 	s := resolveDefaults(cfg.Settings)
-	c, err := datapath.New(datapath.Deps{
+	deps, state := continueFrom(st, datapath.Deps{
 		FS:            cfg.Storage,
 		Clock:         cfg.Clock,
 		Tracer:        cfg.Tracer,
@@ -204,22 +204,8 @@ func (f *assembledJournal) tryReopen(t *testing.T, floor Version, set func(*Sett
 		Targets:       buildTargets(s),
 		MaxBytes:      s.MaxBytes,
 		IdleSealBytes: s.IdleSealBytes,
-
-		// The highest id the directory holds: the maker draws its first
-		// spare above it, so a fresh spare never meets a rebuilt
-		// segment's id.
-		LastSegment: st.Attached.MaxID,
-	}, datapath.State{
-		Index:    st.Rebuilt.Index,
-		Counters: st.Rebuilt.Counters,
-		Set:      st.Assembled.Set,
-		Open: &datapath.OpenState{
-			Live:     st.Assembled.Live,
-			Forgets:  st.Assembled.Forgets,
-			Unsynced: st.Assembled.Unsynced,
-			Dirty:    dirtySeed(st.Rebuilt.Index),
-		},
 	})
+	c, err := datapath.New(deps, state)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +251,7 @@ func (f *assembledJournal) segmentFileNames(t *testing.T) []string {
 	return out
 }
 
-// within waits for the named condition to hold, polling it with a short
+// waitFor waits for the named condition to hold, polling it with a short
 // pause between polls, until the generous backstop ends. It is the bounded
 // wait of a check that waits on the worker's own rhythm; the backstop is the
 // only time bound, and its end fails the check naming what never came.
@@ -281,7 +267,7 @@ func waitFor(t *testing.T, what string, backstop time.Duration, cond func() bool
 	}
 }
 
-// holdsStill asserts the condition stays false through the whole span, the
+// staysThrough asserts the condition stays false through the whole span, the
 // bounded wait that shows something does not happen: the span covers many
 // passes of the worker's own rhythm, whose every pass would act were the
 // condition to hold.
@@ -745,17 +731,20 @@ func TestReopenAssembled_EqualityOfFiles(t *testing.T) {
 // sets and pins the zero time besides.
 func TestReopenAssembled_EqualityOfDirtyFiles(t *testing.T) {
 	before, after := equalityFixture(t)
-	if !after.dirtyZeroOfShare {
-		t.Fatalf("the reopened journal's dirty files name write times, want the zero time restored content carries")
-	}
-	if !before.dirtyDatedOfShare {
-		t.Fatalf("the first journal's dirty files all name the zero time, want at least one write time the writes carried")
-	}
+	// The sets compare before the write-time figures: a seed that listed no
+	// file at all fails naming the missing files, not the write-time check
+	// that an empty list makes vague.
 	for _, tag := range []ShareTag{1, 2} {
 		if !maps.Equal(before.dirtySets[tag], after.dirtySets[tag]) {
 			t.Fatalf("share %d's dirty-file set after the reopen = %v, want %v: the dirty seed missed or added a file",
 				tag, maps.Keys(after.dirtySets[tag]), maps.Keys(before.dirtySets[tag]))
 		}
+	}
+	if !after.dirtyZeroOfShare {
+		t.Fatalf("the reopened journal's dirty files name write times, want the zero time restored content carries")
+	}
+	if !before.dirtyDatedOfShare {
+		t.Fatalf("the first journal's dirty files all name the zero time, want at least one write time the writes carried")
 	}
 	if got, want := after.journalDirtyBytes, before.journalDirtyBytes; got != want {
 		t.Fatalf("Stats().DirtyBytes after the reopen = %d, want %d: the seed must carry the dirty bytes the first journal held", got, want)
