@@ -1,6 +1,8 @@
 package core_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -208,8 +210,9 @@ func (protoDecode) Is(target error) bool { return target == core.ErrDecode }
 // Every table answers ErrDecode for every operation and version: a table with
 // no row for it naming neither operations nor versions is refused at build,
 // and so is one with a row for it, whatever it names, that holds, sends no
-// reply or answers the fault status, the panic naming that row, since a
-// header's decode error has no operation and must not pass for a fault. A
+// reply or answers the fault or success, the panic naming that row, since a
+// header's decode error has no operation and must pass neither for a fault
+// nor for a request served. A
 // protocol's typed row for its own value is not such a row, and a wrapped
 // ErrDecode maps to its row.
 func TestNewErrorTableDemandsAnErrDecodeRowForEveryOperation(t *testing.T) {
@@ -225,9 +228,11 @@ func TestNewErrorTableDemandsAnErrDecodeRowForEveryOperation(t *testing.T) {
 		{"no row", []core.ErrorRow{{Err: vfs.ErrNotFound, Status: neither}}, missing},
 		{"a row naming an operation", []core.ErrorRow{{Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: garbage}}, missing},
 		{"a row naming versions", []core.ErrorRow{{Err: core.ErrDecode, Versions: versions(1, 2), Status: garbage}}, missing},
-		{"a row that sends no reply", []core.ErrorRow{{Err: core.ErrDecode, NoReply: true}}, bad("")},
+		{"a row that sends no reply", []core.ErrorRow{{Err: core.ErrDecode, NoReply: true, Status: garbage}}, bad("")},
 		{"a row that holds", []core.ErrorRow{{Err: core.ErrDecode, Hold: func(error, time.Time) time.Time { return time.Time{} }, Status: garbage}}, bad("")},
 		{"a row answering the fault status", []core.ErrorRow{{Err: core.ErrDecode, Status: fault}}, bad("")},
+		{"a row answering success", []core.ErrorRow{{Err: core.ErrDecode}}, bad("")},
+		{"a row naming an operation that answers success, beside one naming neither", []core.ErrorRow{decodeRow, {Err: core.ErrDecode, Ops: []uint32{read.Code}}}, bad(" ops [1]")},
 		{"a row naming an operation that answers the fault status, beside one naming neither", []core.ErrorRow{decodeRow, {Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: fault}}, bad(" ops [1]")},
 		{"a row naming neither", []core.ErrorRow{decodeRow}, ""},
 		{"one naming neither beside one naming an operation", []core.ErrorRow{decodeRow, {Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: opOnly}}, ""},
@@ -246,4 +251,13 @@ func TestNewErrorTableDemandsAnErrDecodeRowForEveryOperation(t *testing.T) {
 	tb := table()
 	mapsTo(t, tb, fmt.Errorf("header: %w", core.ErrDecode), nil, 7, garbage)
 	mapsTo(t, tb, core.ErrDecode, write, 1, garbage)
+}
+
+// ErrCancelled wraps nothing: a row for context.Canceled, which a protocol
+// may keep for its own deadline, never answers a cancel that ended a hold or
+// a park, and ErrCancelled's own row is the one that does (§6.5).
+func TestErrCancelledWrapsNothing(t *testing.T) {
+	if errors.Is(core.ErrCancelled, context.Canceled) || errors.Unwrap(core.ErrCancelled) != nil {
+		t.Errorf("ErrCancelled %q matches context.Canceled or wraps an error, want a plain sentinel", core.ErrCancelled)
+	}
 }

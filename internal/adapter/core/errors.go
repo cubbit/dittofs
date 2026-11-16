@@ -45,9 +45,9 @@ type ErrorRow struct {
 // the protocol's server-fault status. It refuses two rows equal in rank that
 // can match one error, operation and version, and a table with no row
 // answering ErrDecode for every operation and version (one naming neither Ops
-// nor Versions that replies at once with a status other than the fault), or
-// with a row for it, whatever its Ops or Versions, that holds, sends no reply
-// or answers the fault.
+// nor Versions that replies at once with a status other than the fault or
+// success), or with a row for it, whatever its Ops or Versions, that holds,
+// sends no reply or answers the fault or success.
 //
 // decision: a table that fails its check panics, naming the rows, since a
 // table is program text and NewErrorTable returns no error; the first
@@ -71,10 +71,11 @@ func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable {
 	// row names, so only a row naming neither maps it everywhere. Without
 	// one a client's garbage reaches the fault status, which §10.1 alerts on
 	// as a bug; a row that holds, sends no reply or answers the fault status
-	// would hide it the same way, whatever it names, since Map takes a
-	// narrower row first.
+	// would hide it the same way, and one answering success would tell the
+	// client it was served, whatever either names, since Map takes a narrower
+	// row first.
 	if r, ok := t.badRow(ErrDecode); ok {
-		panic(fmt.Sprintf("core: error table: row %s matches ErrDecode but holds, sends no reply or answers the fault", describe(r)))
+		panic(fmt.Sprintf("core: error table: row %s matches ErrDecode but holds, sends no reply or answers the fault or success", describe(r)))
 	}
 	if !t.mapsEverywhere(ErrDecode) {
 		panic("core: error table: no row answers ErrDecode for every operation and version")
@@ -91,13 +92,21 @@ func (t *ErrorTable) mapsEverywhere(err error) bool {
 }
 
 // badRow returns a row err matches that holds, sends no reply or answers the
-// fault: Map answers err by it for every operation and version it names, so
-// err is not answered at once there. err is the bare sentinel, which a
-// protocol's typed row never matches, so that row still wins for its own
-// value (§4.5).
+// fault or success: Map answers err by it for every operation and version it
+// names, so err is not answered at once there, or is answered as served. A
+// zero Status is success in every protocol here: NFS3_OK, NFS4_OK, RPC's
+// SUCCESS and STATUS_SUCCESS are all 0.
+//
+// decision: err is the bare sentinel, which a protocol's typed row never
+// matches, so that row still wins for its own value (§4.5) and goes
+// unchecked: a protocol may hold its own decode or cancel value, send no
+// reply for it, or answer it the fault or success, and only that protocol's
+// tests would see it. The ceiling is that protocol's own value; the
+// catch-all for the sentinel stays checked. Check typed rows too if a
+// protocol is found answering its own value that way.
 func (t *ErrorTable) badRow(err error) (ErrorRow, bool) {
 	for _, r := range t.rows {
-		if errors.Is(err, r.Err) && (r.NoReply || r.Hold != nil || r.Status == t.fault) {
+		if errors.Is(err, r.Err) && (r.NoReply || r.Hold != nil || r.Status == t.fault || r.Status == 0) {
 			return r, true
 		}
 	}
@@ -179,6 +188,12 @@ func describe(r ErrorRow) string {
 
 // core's own refusals. Each table maps every one, and the tables' totality
 // test takes them from Errors beside the service's errors.
+//
+// decision: a decode error wraps ErrDecode once, with %w, and formats its
+// cause with %v. A second %w would let a row for the cause, narrower than
+// ErrDecode's catch-all or listed before it, answer the error instead, which
+// NewErrorTable's check cannot see. Overturned if a caller must match a
+// decode error's cause.
 var (
 	ErrNotSupported   = errors.New("core: operation not supported")        // absent from the table, or switched off
 	ErrVersion        = errors.New("core: version not served")             // outside Op.Versions
