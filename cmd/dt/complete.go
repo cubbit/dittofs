@@ -43,8 +43,9 @@ var completeRun = fromRegistry(func(root string, r *registry.Registry, cmd *cobr
 		return nil
 	}
 	if len(args) > 0 {
+		name, _, _ := strings.Cut(args[0], "/") // a cell or a suite's first segments name its suite
 		var flags []string
-		if s := r.Suite(args[0]); s != nil {
+		if s := r.Suite(name); s != nil {
 			for _, o := range s.Options {
 				flags = append(flags, "--"+o.Name)
 			}
@@ -74,8 +75,12 @@ var completeGroupSuites = fromRegistry(func(_ string, r *registry.Registry, _ *c
 		return nil
 	}
 	listed := toComplete[:strings.LastIndex(toComplete, ",")+1]
+	done := strings.Split(strings.TrimSuffix(listed, ","), ",")
 	var suites []string
 	for _, s := range r.Groups[args[0]] {
+		if slices.Contains(done, s) {
+			continue
+		}
 		suites = append(suites, listed+s)
 	}
 	return suites
