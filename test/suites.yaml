@@ -153,7 +153,7 @@ suites:
   # which then names the command rather than the benchmark; its b.Fatalf line is in bench.txt.
   engine-bench:
     cmd:
-      - { sh: 'n=10; test -z "$ENGINE_BENCH_COUNT" || n=$ENGINE_BENCH_COUNT; go test -count=$n -benchtime=1x -tags=engine_conformance,engine_bench -run ^$ -bench . ./internal/vfs/integration/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+      - { sh: 'n=10; test -z "$ENGINE_BENCH_COUNT" || n=$ENGINE_BENCH_COUNT; case $n in ""|*[!0-9]*) echo "ENGINE_BENCH_COUNT must be a number" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -tags=engine_conformance,engine_bench -run ^$ -bench . ./internal/vfs/integration/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
     timeout: { test: 300m, cell: 310m }
   # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
