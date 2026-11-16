@@ -555,9 +555,12 @@ func (ks *kindState) applyCuts(ix *index.Index) error {
 		if !lo.Ev.Synced {
 			continue
 		}
+		// The segments the cuts lower are discarded: the open has no
+		// worker that retires a segment over them, so the ids would name
+		// work nothing does.
 		var err error
 		if lo.Ev.Reason == core.LossSuperseded {
-			_, err = ix.LoseSuperseded(lo.Ev.File, lo.Ev.Extent, lo.Ev.Version)
+			_, _, err = ix.LoseSuperseded(lo.Ev.File, lo.Ev.Extent, lo.Ev.Version)
 		} else {
 			_, _, err = ix.Lose(lo.Ev.File, lo.Ev.Extent, lo.Ev.Version)
 		}

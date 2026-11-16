@@ -95,15 +95,23 @@ func (fs *files) lose(id core.FileID, e core.Extent, v core.Version) (HeldDelta,
 // loseSuperseded applies a superseded synced loss of e at v to id as lose
 // applies any other: under the file's lock, with no admission, returning the
 // held-state change the loss made, the zero HeldDelta when nothing was held
-// over e or the loss was refused. A zero-length e is refused with
-// core.ErrZeroLength before anything changes.
+// over e or the loss was refused, and — as every move that lowers a
+// segment's counters does — the ids of the segments the cut lowered,
+// distinct and ascending, nil when it lowered none. A zero-length e is
+// refused with core.ErrZeroLength before anything changes.
 //
 // See the decision at file.loseSuperseded for why it leaves no marker.
-func (fs *files) loseSuperseded(id core.FileID, e core.Extent, v core.Version) (HeldDelta, error) {
+func (fs *files) loseSuperseded(id core.FileID, e core.Extent, v core.Version) (HeldDelta, []core.SegmentID, error) {
 	if e.Len == 0 {
-		return HeldDelta{}, core.ErrZeroLength
+		return HeldDelta{}, nil, core.ErrZeroLength
 	}
-	return fs.update(id, func(f *file) error { return f.loseSuperseded(e, v) })
+	var m touched
+	hd, err := fs.update(id, func(f *file) error {
+		f.held.touched = &m
+		defer func() { f.held.touched = nil }()
+		return f.loseSuperseded(e, v)
+	})
+	return hd, m.named(), err
 }
 
 // loseSuperseded stops holding e below v, for a synced loss record whose

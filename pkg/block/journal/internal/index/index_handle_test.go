@@ -140,6 +140,29 @@ func TestHandleMovesNameTheSegmentsTheyTouched(t *testing.T) {
 			},
 		},
 		{
+			// The same cut through the superseded arm: the segment list is
+			// the markered Lose's, the only difference between the two being
+			// the marker itself.
+			name:  "LoseSuperseded",
+			setup: threeSegments,
+			run: func(t *testing.T, ix *Index) []core.SegmentID {
+				_, segs, err := ix.LoseSuperseded(testFile, ext(4096, 4096), ver(4))
+				if err != nil {
+					t.Fatalf("LoseSuperseded: %v", err)
+				}
+				return segs
+			},
+			want: []core.SegmentID{2},
+			check: func(t *testing.T, ix *Index) {
+				if sb := ix.SegmentBytes(2); sb.Held != 0 {
+					t.Fatalf("LoseSuperseded lowered SegmentBytes(2).Held to %d, want 0", sb.Held)
+				}
+				if sb := ix.SegmentBytes(3); sb.Held != 4096 {
+					t.Fatalf("LoseSuperseded moved SegmentBytes(3).Held to %d, want 4096", sb.Held)
+				}
+			},
+		},
+		{
 			name:  "LiftSuperseded",
 			setup: retainedUsed,
 			run: func(t *testing.T, ix *Index) []core.SegmentID {

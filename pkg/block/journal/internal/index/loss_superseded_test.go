@@ -13,15 +13,12 @@ import (
 // was superseded, and Lose, for every other reason, the negative control.
 var lossCalls = []struct {
 	name string
-	call func(*Index, core.FileID, core.Extent, core.Version) (HeldDelta, error)
+	call func(*Index, core.FileID, core.Extent, core.Version) (HeldDelta, []core.SegmentID, error)
 	// yieldsLoss is whether Since yields a marker for the loss.
 	yieldsLoss bool
 }{
 	{"superseded", (*Index).LoseSuperseded, false},
-	{"synced", func(ix *Index, id core.FileID, e core.Extent, v core.Version) (HeldDelta, error) {
-		hd, _, err := ix.Lose(id, e, v)
-		return hd, err
-	}, true},
+	{"synced", (*Index).Lose, true},
 }
 
 // TestSupersededLossCutsItsExtentWithNoMarker checks that a superseded synced
@@ -42,12 +39,18 @@ func TestSupersededLossCutsItsExtentWithNoMarker(t *testing.T) {
 				f.write(write(6, 4, b, 5))
 				return nil
 			})
-			hd, err := row.call(ix, id, ext(4, 4), ver(5))
+			hd, segs, err := row.call(ix, id, ext(4, 4), ver(5))
 			if err != nil {
 				t.Fatalf("loss = %v, want no error", err)
 			}
 			if hd.File != id || hd.HeldBytes != -2 || hd.DirtyBytes != -2 {
 				t.Fatalf("HeldDelta = %+v, want File %v, HeldBytes -2, DirtyBytes -2", hd, id)
+			}
+			// The superseded cut names the segments it lowered exactly as a
+			// markered loss does over the same content: the one record the
+			// cut took a piece of.
+			if !slices.Equal(segs, []core.SegmentID{1}) {
+				t.Fatalf("%s named segments %v, want [1]: the cut lowered a's segment alone", row.name, segs)
 			}
 			want := []Piece{
 				{Extent: ext(0, 4), Record: a, Skip: 0, Version: ver(3)},
@@ -77,7 +80,7 @@ func TestSupersededLossCutsItsExtentWithNoMarker(t *testing.T) {
 			}
 			// The same loss again cuts nothing more: no piece below v5 remains
 			// inside e, so what is held is unchanged.
-			if _, err := ix.LoseSuperseded(id, ext(4, 4), ver(5)); err != nil {
+			if _, _, err := ix.LoseSuperseded(id, ext(4, 4), ver(5)); err != nil {
 				t.Fatalf("second superseded loss = %v, want no error", err)
 			}
 			if got := heldPieces(&ix.fs, id); !slices.Equal(got, want) {
@@ -112,7 +115,7 @@ func TestSupersededLossRaisesTheChangeVersion(t *testing.T) {
 		f.write(write(0, 12, a, 3))
 		return nil
 	})
-	if _, err := ix.LoseSuperseded(id, ext(4, 4), ver(9)); err != nil {
+	if _, _, err := ix.LoseSuperseded(id, ext(4, 4), ver(9)); err != nil {
 		t.Fatalf("LoseSuperseded = %v, want no error", err)
 	}
 	if _, err := ix.Fill(7, id, write(4, 4, rec(2, 0), 6), 30, ver(4)); !errors.Is(err, core.ErrStaleFill) {
@@ -139,12 +142,15 @@ func TestSupersededLossRefusesAZeroLengthExtent(t *testing.T) {
 		f.write(write(0, 12, a, 3))
 		return nil
 	})
-	hd, err := ix.LoseSuperseded(id, ext(4, 0), ver(5))
+	hd, segs, err := ix.LoseSuperseded(id, ext(4, 0), ver(5))
 	if !errors.Is(err, core.ErrZeroLength) {
 		t.Fatalf("superseded loss of a zero-length extent = %v, want ErrZeroLength", err)
 	}
 	if hd != (HeldDelta{}) {
 		t.Fatalf("HeldDelta of a refused loss = %+v, want the zero delta", hd)
+	}
+	if segs != nil {
+		t.Fatalf("segments of a refused loss = %v, want nil", segs)
 	}
 	if want := []Piece{{Extent: ext(0, 12), Record: a, Version: ver(3)}}; !slices.Equal(heldPieces(&ix.fs, id), want) {
 		t.Fatalf("held after the refusal:\n got  %+v\n want %+v", heldPieces(&ix.fs, id), want)
