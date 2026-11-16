@@ -1340,7 +1340,10 @@ in three groups:
    - **decode header** — the RPC header and credential, or the SMB2 header
      (the transform header, for an encrypted SMB message). An RPC credential
      and verifier are bounded here and judged at route
-     ([RFC 21 §11.1](rfc-21-nfs.md#11.1%20Identity)); an NFSv4 `COMPOUND`'s tag
+     ([RFC 21 §11.1](rfc-21-nfs.md#11.1%20Identity)), in a call of RPC
+     version 2 only: a call of another version is read no further, so no
+     stage judges its credential, and route answers it `RPC_MISMATCH`
+     ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors)). An NFSv4 `COMPOUND`'s tag
      and minor version are read with its header (§4.8).
    - **unwrap** — decrypt, verify a signature or checksum (§5.5).
    - **admit** — charge the connection's flow control (§6.3).
@@ -1366,7 +1369,7 @@ How each stage refuses:
 | --- | --- |
 | frame | length past the cap: connection closed. No room in the receive pool: not refused — the record is not read until room frees |
 | decode header, decode args | the protocol's garbage-args or invalid-parameter answer, from the table's row for `ErrDecode` (§4.7). A header that did not decode far enough to address a reply: connection closed. Which malformed headers each protocol closes on: [RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors), [RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors) |
-| unwrap | SMB: `STATUS_ACCESS_DENIED` on the request's message ID, or, for a malformed inner header of an encrypted message, `STATUS_INVALID_PARAMETER` from the row for `ErrDecode`, each wrapped as §5.5 says, connection kept; a message that fails decryption, or an inner header too short to be one, misaligned, naming a command MS-SMB2 2.2.1 does not define, or, for an unrelated member, naming another session than the transform header, closes it (`Conn.Close`, MS-SMB2 3.3.5.2.1.1, 3.3.5.2.6) ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). `RPCSEC_GSS`: a failed verifier `RPCSEC_GSS_CREDPROBLEM`; a sequence number below the window, or already seen, dropped unanswered and counted under `unwrap` (§10.1); one above it advances the window only once its verifier checks, so a call with a forged verifier leaves the window as it was ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
+| unwrap | SMB: `STATUS_ACCESS_DENIED` on the request's message ID, or, for a malformed inner header of an encrypted message, `STATUS_INVALID_PARAMETER` from the row for `ErrDecode`, each wrapped as §5.5 says, connection kept; a message that fails decryption, or an inner header too short to be one, misaligned, naming a command code no request carries (MS-SMB2 2.2.1.2), or, for an unrelated member, naming another session than the transform header, closes it (`Conn.Close`, MS-SMB2 3.3.5.2.1.1, 3.3.5.2.6) ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). `RPCSEC_GSS`: a failed verifier `RPCSEC_GSS_CREDPROBLEM`; a sequence number below the window, or already seen, dropped unanswered and counted under `unwrap` (§10.1); one above it advances the window only once its verifier checks, so a call with a forged verifier leaves the window as it was ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
 | admit | the default cap never refuses, since the connection is not read until a request completes; a protocol's `Flow` may refuse, and a `Stages.Errors` row maps that refusal |
 | replay check | the cached reply, or the protocol's sequence error; past the deadline, the reply reservation's `ErrDelay` with `DelayResources` (§4.7's `ReplayCache`) |
 | route | NFS: an RPC version other than 2 `RPC_MISMATCH`; a credential [RFC 21 §11.1](rfc-21-nfs.md#11.1%20Identity) refuses `AUTH_BADCRED`, and a verifier it does not allow `AUTH_BADVERF`; a program, version or minor version not served, as §4.8 says; a message that is not a call, and answers no callback sent on the connection (§3.3), dropped unanswered through a `NoReply` row. SMB: §4.8 |
@@ -1927,7 +1930,8 @@ type Framer interface {
 	// may come in, 1 where every header ends its record: the reader reserves
 	// the class that holds the cap before a fragment that does not end its
 	// record, counts the fragments it reads, and closes the connection past
-	// either (RFC 24 §3.2).
+	// either (RFC 24 §3.2). A chain's joined reply is held under the same
+	// bytes: the chain sends what it holds before passing them (below).
 	MaxRecord() (bytes, fragments int)
 	// Frame appends to dst the header of a record whose body is body bytes, in
 	// one piece, and returns it. The writer calls it for every record it sends,
@@ -2006,8 +2010,12 @@ type Security interface {
 	// kept. A nil Header with its error says close: nothing is answered, and
 	// the pipeline closes the connection through Conn.Close with that error (a
 	// message that fails decryption, or an inner header too short to be one,
-	// misaligned, naming a command MS-SMB2 2.2.1 does not define, or, for an
-	// unrelated member, naming another session than the transform header).
+	// misaligned, naming a command code no request carries (MS-SMB2 2.2.1.2),
+	// or, for an unrelated member, naming another session than the transform
+	// header). Unwrap returns a header or an error, never neither: core
+	// closes a connection whose Unwrap returns neither as it closes one with a
+	// nil Header, under the close reason unwrap, with an unexported error of
+	// its own, so the close is counted and logged with a cause.
 	Unwrap(h Header, rec *Buf, prev Header) (Header, error)
 	// Wrap signs or encrypts in place, a chain once per record (§4.7). The
 	// refusal of a header that failed Decode is not passed to it, alone or
@@ -2286,7 +2294,8 @@ conn.write(reply) // the writer's queue (§6.2)
 Until `Route` returns a table, an `err` is mapped by `Stages.Errors`, and by
 the table after. The refusal of a header that failed `Decode` is not passed to
 `Wrap`, one at `Unwrap` is wrapped under the header it returned (§5.5), and a
-nil header closes the connection.
+nil header closes the connection, with `Unwrap`'s error, or with `core`'s own
+where `Unwrap` returned none.
 
 For NFSv4 the RPC procedure is `COMPOUND`, a compound row: its `Members` is
 the minor version's operation table. Its `Decode` decodes the compound's own
@@ -2329,12 +2338,17 @@ reservation is held until the joined record goes out
 ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)). It is first
 tried without waiting (`BufPool.TryGet`,
 [RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)). When it does not
-fit at once while the chain holds reply reservations, or when its reservation
+fit at once while the chain holds reply reservations, when its reservation
 would take the chain's held reservations past a quarter of the reply pool's
-ceiling (§4.3), the replies before it go out as a record of their own, wrapped
+ceiling (§4.3), or when the replies it holds, as encoded, and its reservation's
+bytes would pass the protocol's record cap, `Framer.MaxRecord`'s bytes, the
+replies before it go out as a record of their own, wrapped
 once, and only then does the member reserve under its deadline: a chain never
 waits on the reply pool while holding it
-([RFC 24 §2.6](rfc-24-resources.md#2.6%20Reservations%20are%20taken%20in%20one%20order)). A member `Unwrap`
+([RFC 24 §2.6](rfc-24-resources.md#2.6%20Reservations%20are%20taken%20in%20one%20order)).
+The record cap keeps a joined record within what one `Frame` header can state:
+SMB's Direct TCP length is 3 bytes, and a quarter of a large node's reply pool
+can pass it ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)). A member `Unwrap`
 refuses splits the chain: the replies before it go out first, joined and
 wrapped once; its refusal goes out next in a record of its own, wrapped once
 under its own header as §5.5 says, with the replies of the related members
@@ -3000,9 +3014,10 @@ encrypted SMB message, the inner one. A connection with no transform has no
   malformed one is an unwrap refusal with `ErrDecode`, answered
   `STATUS_INVALID_PARAMETER` (§4.1; MS-SMB2 3.3.5.2.6) and encrypted under the
   transform's session, as 3.3.4.1.4 encrypts every response to an encrypted
-  request; one MS-SMB2 disconnects for (too short to be a header, misaligned,
-  naming an undefined command, or naming another session) closes the connection
-  (3.3.5.2.1.1, 3.3.5.2.6). A
+  request; one MS-SMB2 disconnects for, or lets the server disconnect for (too
+  short to be a header, misaligned, naming a command code no request carries,
+  or naming another session), closes the connection (3.3.5.2.1.1, 3.3.5.2.6;
+  RFC 22 §16.5). A
   message `Unwrap` refused is answered under the header `Unwrap` returns with
   its refusal, which carries two facts for `Wrap`: the key to sign the answer
   under, or none, and whether the answer may be sealed. Both are the
@@ -3045,6 +3060,9 @@ encrypted SMB message, the inner one. A connection with no transform has no
   nothing can be answered: the pipeline closes the connection through
   `Conn.Close` with that error, as for an SMB message that fails decryption
   (MS-SMB2 3.3.5.2.1.1), whose inner header has no message ID to answer on.
+  `Unwrap` always returns a header or an error; one that returns neither breaks
+  its contract, and `core` closes the connection with an unexported error of
+  its own, under the close reason `unwrap` (§4.7).
 - **Unwrap runs on the reader**, because SMB's credit charge (admit) is in the
   inner header. **Wrap runs on the worker**, before the reply is queued: both
   protocols need only a unique nonce or sequence number per message, not an
@@ -3161,9 +3179,9 @@ as it completes.
 The bound on requests in flight per connection is the protocol's own mechanism
 wherever it has one — NFSv4.1 slots ([RFC 21 §3.1](rfc-21-nfs.md#3.1%20Slot%20tables)),
 SMB credits ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)). Where it has
-none — and on every NFS connection, since the minor version and slot are
-known only after **decode args** — the adapter imposes a fixed per-connection
-cap of **64** requests in flight at **admit**; NFSv4.1 slots bound a session in
+none, and on every NFS connection, since an NFSv4.1 slot, in `SEQUENCE`'s
+arguments, is known only after **decode args**, the adapter imposes a fixed
+per-connection cap of **64** requests in flight at **admit**; NFSv4.1 slots bound a session in
 addition
 ([RFC 24 §3.4](rfc-24-resources.md#3.4%20The%20per-connection%20cap%20for%20protocols%20without%20flow%20control)),
 and a connection at its cap is simply not read until a request completes, so
@@ -3801,7 +3819,7 @@ measures only what happens before and after the service call.
 | How much is in flight per protocol? | `adapter_requests_in_flight{protocol}` | gauge |
 | How often is a request refused before the service? | `adapter_refusals_total{protocol, stage}`, `stage` where it was refused, `reply_too_big` for §4.3's compound | counter |
 | How often are replays answered from the cache? | `adapter_replay_hits_total{protocol}` | counter |
-| How often does a chain's reply go out in more than one record, and why (§4.7)? | `adapter_chain_splits_total{protocol, reason}`, `reason` = `unwrap`, `decode`, `flow`, `reply_pool`, `quarter` | counter |
+| How often does a chain's reply go out in more than one record, and why (§4.7)? | `adapter_chain_splits_total{protocol, reason}`, `reason` = `unwrap`, `decode`, `flow`, `reply_pool`, `quarter`, `record` | counter |
 | How long are requests on the wire around the service call? | `adapter_wire_seconds{protocol, stage}` | histogram |
 | How often does a handler fault? | `adapter_handler_panics_total{protocol, op}` | counter |
 | How often does an error have no row? | `adapter_unmapped_errors_total{protocol}` | counter |

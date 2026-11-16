@@ -301,7 +301,10 @@ table, all of it by default
 only 4.x serves no MOUNT, NLM or NSM.
 
 - A `COMPOUND` whose minor version is above 2 **MUST** be answered
-  `NFS4ERR_MINOR_VERS_MISMATCH` with no operation run.
+  `NFS4ERR_MINOR_VERS_MISMATCH` with no operation run: its tag echoed and no
+  results (RFC 8881 §16.2.3, §15.1.3.2), written by the header codec, which
+  reads the tag and the minor version with the RPC header, so the router
+  refuses it before any member decodes (§11.5).
 - The minor version is the client's choice per `COMPOUND`; the server
   **MUST NOT** remember one per client, so a client that falls back from 4.2
   to 4.1 needs no new client ID.
@@ -2111,7 +2114,9 @@ are checked against.
 - **Where they are judged.** Decoding the call's header only bounds its
   credential and verifier: one whose body runs past the record, or past the 400
   bytes RFC 5531 §8.2's `opaque_auth` allows, is a decode error, answered
-  `GARBAGE_ARGS` ([RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline)). The
+  `GARBAGE_ARGS` ([RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline)). A
+  call whose RPC version is not 2 has neither read: it is answered
+  `RPC_MISMATCH` first (§11.5). The
   flavour and an `AUTH_SYS` body are judged when the call is routed, so a body
   truncated inside a whole credential is `AUTH_BADCRED`; an `RPCSEC_GSS`
   credential is the GSS stage's, at unwrap (§10). A verifier other than an
@@ -2562,9 +2567,25 @@ highest versions for `PROG_MISMATCH`, those the connection serves, and for
 its tag and an empty results array. A procedure's encoder handed no reply writes
 only what its result carries beside the status.
 
+**The `COMPOUND` tag** has no cap of its own: it is a `utf8str_cs`, an
+`opaque<>` (RFC 8881 §3.2, RFC 7530 §2.1), whose definition RFC 8881 §16.2.3
+and RFC 7530 §15.2.4 leave to the implementor, asking only that the reply's tag
+SHOULD be the request's. It is bounded by the
+record alone ([§2.3](#2.3%20Transfer%20sizes)) and echoed whole, in every reply
+the compound gets, a refusal's included. The header codec reads it with the
+RPC header, so `HeaderCodec.ReplyLen` counts its bytes in the reply head, and
+the reply's reservation, or a status alone's buffer, is sized with them before
+it is taken: no reservation grows with the tag, and NFS parks nothing.
+
 **Malformed calls.** A record too short to hold its transaction ID and message
-type closes the connection; a call whose later fields do not decode is answered
-`GARBAGE_ARGS` from the row for `ErrDecode`
+type closes the connection. A call's RPC version, the first field of its body
+(RFC 5531 §9's `call_body`), is judged before anything after it is read: one
+other than 2 is decoded no further, its credential and verifier unread, and is
+answered `RPC_MISMATCH` with 2 and 2, as RFC 5531 §9 answers a version the
+server does not run, and as the Linux server does before it reads the
+credential. So a malformed credential behind a wrong version is never
+`GARBAGE_ARGS`. A call of version 2 whose later fields do not decode is
+answered `GARBAGE_ARGS` from the row for `ErrDecode`
 ([RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline)).
 
 **The fault status**
