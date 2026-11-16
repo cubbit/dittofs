@@ -102,11 +102,15 @@ func groupsOf(r kv.Reader, of entity.Principal) ([]entity.Principal, error) {
 			}
 			seen[id] = true
 			g := entity.Principal{Kind: entity.PrincipalGroup, ID: id}
-			if ok, err := live(r, g); err != nil || !ok {
-				if err != nil {
-					return nil, err
+			if b, ok, err := get(r, groupKey(id)); err != nil {
+				return nil, err
+			} else if ok {
+				if rec, err := decodeGroup(id, b); err != nil || rec.Deleted {
+					if err != nil {
+						return nil, err
+					}
+					continue
 				}
-				continue
 			}
 			out = append(out, g)
 			queue = append(queue, id)

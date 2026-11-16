@@ -30,11 +30,11 @@ func versionedKinds(t *testing.T, s *kvstore.Store) []versioned {
 		{"user",
 			func(e uint64) (uint64, error) { return cp.PutUser(ctx, u, e, entity.Alloc{}) },
 			func() uint64 { return userGeneration(t, s, u.Principal) },
-			func(e uint64) error { return cp.DeleteUser(ctx, u.Principal, e) }},
+			func(e uint64) error { return deleted(s, cp.DeleteUser(ctx, u.Principal, e), u.Principal) }},
 		{"group",
 			func(e uint64) (uint64, error) { return cp.PutGroup(ctx, g, e, entity.Alloc{}) },
 			func() uint64 { return groupGeneration(t, cp, g.Principal) },
-			func(e uint64) error { return cp.DeleteGroup(ctx, g.Principal, e) }},
+			func(e uint64) error { return deleted(s, cp.DeleteGroup(ctx, g.Principal, e), g.Principal) }},
 		{"share",
 			func(e uint64) (uint64, error) { return cp.PutShare(ctx, sh, e) },
 			func() uint64 {

@@ -44,6 +44,8 @@ func Run(t *testing.T, open Opener) {
 		{"UserAPIFields", testUserAPIFields},
 		{"PrincipalUniqueness", testPrincipalUniqueness},
 		{"DeleteRemovesMembershipsAndGrants", testDeleteRemovesMembershipsAndGrants},
+		{"MarkedPrincipalReads", testMarkedPrincipalReads},
+		{"ContinueDeleteEnds", testContinueDeleteEnds},
 		{"Shares", testShares},
 		{"SetShareState", testSetShareState},
 		{"GrantVersions", testGrantVersions},

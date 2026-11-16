@@ -3,6 +3,7 @@ package kvstoretest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/google/uuid"
 	"iter"
 	"net/netip"
@@ -132,6 +133,21 @@ func testPrincipalUniqueness(t *testing.T, kvo Opener) {
 			t.Errorf("accepted %+v", bad)
 		}
 	}
+}
+
+// deleted runs the batches of p's deletion, which err, the mark's outcome,
+// started, to the end.
+func deleted(s *kvstore.Store, err error, p entity.Principal) error {
+	for range 1000 {
+		var done bool
+		if err == nil {
+			done, err = s.Nodes().ContinueDelete(ctx, p)
+		}
+		if err != nil || done {
+			return err
+		}
+	}
+	return fmt.Errorf("the deletion of %v not done after 1000 batches", p)
 }
 
 func isExist(err error) bool {
@@ -347,10 +363,10 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	// Deleting a principal deletes its grants, so it moves the version too.
 	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0)))
 	moved("a granted user's delete", func() error {
-		return cp.DeleteUser(ctx, u.Principal, userGeneration(t, s, u.Principal))
+		return deleted(s, cp.DeleteUser(ctx, u.Principal, userGeneration(t, s, u.Principal)), u.Principal)
 	})
 	moved("a granted group's delete", func() error {
-		return cp.DeleteGroup(ctx, g.Principal, groupGeneration(t, cp, g.Principal))
+		return deleted(s, cp.DeleteGroup(ctx, g.Principal, groupGeneration(t, cp, g.Principal)), g.Principal)
 	})
 	if _, err := cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: entity.NewUser(), Access: entity.AccessRead}, 0); !merrs.IsNotFoundError(err) {
 		t.Errorf("grant to a missing user: %v", err)
@@ -474,7 +490,7 @@ func testQuotas(t *testing.T, kvo Opener) {
 	if _, err := c.SoftExceeded(ctx, sh.ID, gt, true); err != nil {
 		t.Fatal(err)
 	}
-	must(t, cp.DeleteGroup(ctx, g.Principal, groupGeneration(t, cp, g.Principal)))
+	must(t, deleted(s, cp.DeleteGroup(ctx, g.Principal, groupGeneration(t, cp, g.Principal)), g.Principal))
 	if q, since, err := c.Quota(ctx, sh.ID, gt); err != nil || !q.Unlimited() || !since.IsZero() {
 		t.Errorf("a deleted group's quota reads %+v since %v, %v", q, since, err)
 	}
