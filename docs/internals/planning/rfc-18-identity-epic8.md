@@ -693,10 +693,9 @@ T6.6 test only the CLI's arguments and refusal, and the success paths run in its
 - **Expiry at `Resolve` (D7).** Options: (a) no refusal at `Resolve`, as RFC 18 §6.1 says, and the
   RFC 18 plan's line dropped; (b) `Resolve` refuses an expired identity `ErrAccess` as a second
   gate, RFC 18 §6.1 amended. Recommended: (a); E3's open point asks the same.
-- **E7's D6 and D11, as they reach T8.6.** Under E7's D6 (a), recommended there, T8.6 fills
-  `State.Join` from `Installation.Join`; under (b) or (c) it fills nothing and its restart test
-  goes. Under E7's D11 (b), T8.6 also creates the scheduled rotation from reconcile; under (a),
-  recommended there, identity does.
+- **E7's D6 and D11, as they reach T8.6.** Settled: E7's D6 is (a), so T8.6 fills
+  `State.Join` from `Installation.Join`, and E7's D11 is (a), so identity creates the scheduled
+  rotation itself and T8.6 does not.
 - **Who fills identity's runner steps and API fields (D10).** Options: (a) E8, each with the
   subtask that first runs it, as RFC 23's plan's epics 3 and 4 now say; (b) E2, E5 and E7 each
   edit `node.New` for their own. Recommended: (a), since only E8 composes identity.
