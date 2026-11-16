@@ -9,7 +9,7 @@ and the client rules), §11 (the `api_` series), and §10's CP2, CP5, CP6, CP8, 
 on the API's side; [RFC 13](../rfcs/rfc-13-configuration.md) §6 and §7 as a caller;
 [RFC 23's plan](rfc-23-control-plane-plan.md) D2, D5 and D14.
 **Track:** B.
-**Epic 4 estimate: 11 subtasks, 33.5 man-days.**
+**Epic 4 estimate: 11 subtasks, 34 man-days.**
 **Depends on:** S1 (E1 merged): the shared wire types in `pkg/node/apiv1` and the node's surface. E2:
 `ControlPlane.Write` with `entity.WriteMeta` and `entity.ControlPlaneTx`, `expect` on every write,
 the idempotency, audit and operation records with their errors in `entity`, the operation record's
@@ -238,6 +238,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | R57 | Until epic 5's authentication is in, every route but the public ones (the health rows and `/api/version`) answers `401` | MUST | RFC 23 plan §5 epic 4 | T4.2 |
 | R58 | `GET /api/version` answers the major versions served, with no authentication and nothing else; `GET /api/v1/nodes` gives each node's binary version, for `viewer` | MUST | RFC 23 §9 | T4.2, T4.6 |
 | R59 | The client reaches a server named by a URL or by the local socket's path; resolves names to IDs with the list filters; echoes the `ETag` it read, opaque, in `If-Match`; generates one idempotency key per command and reuses it across that command's retries; stops on `412`; follows an operation with `?wait=`; ignores a response field it does not know; and refuses a server that serves no major version it speaks, naming both | MUST | RFC 23 §7, §9 | T4.8 |
+| R66 | `GET /api/v1/health` answers, for `viewer`, the node's readiness and its health conditions and those of the installation, each with its cause; it is the one `/api/v1` route that answers before the node is ready, and without a token it is `401`; `/health/live` and `/health/ready` stay one word and unauthenticated | MUST | RFC 23 §2.5, §12 ("§2.5 health") | T4.6 |
 | R65 | Authorization is checked by the API per action against the caller's right; a caller without the right to read a resource gets `404`, one without the right to change it `403` | MUST | RFC 23 §5.2 | T4.2 |
 
 **Observability, layering and secrets**
@@ -324,7 +325,8 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
 - **D15, `api_operations` and `api_operation_oldest_seconds` are read at scrape** from E2's running
   index, which holds only running operations, so a scrape reads O(running).
 - **D16, `/api/v1` answers `503` `starting`, with `Retry-After`, until `Deps.Ready()` says
-  `ready`**, the function E3 hands in; the route table keeps no state of its own. No marker.
+  `ready`, but `GET /api/v1/health`**, whose row is marked to answer before ready so a stuck start
+  is readable (R66), the function E3 hands in; the route table keeps no state of its own. No marker.
 - **D17, the pre-write step is a field of the write row** (RFC 23 §4.3, as amended here). A row may
   name `prepare(ctx, req) (Input, error)`, run once before `Write` and never on a conflict retry;
   its result is the handler's `in`, and the handler re-reads in the transaction the record the step
@@ -369,7 +371,8 @@ internal/node/api/
 internal/node/arch_test.go                        T4.2, T4.4, T4.9, T4.11  E3's two rules extended
 pkg/node/apiv1/
   role.go                                         T4.2
-  operation.go (extended), node.go, audit.go      T4.6
+  operation.go (extended), node.go, audit.go,
+  health.go                                       T4.6
   share.go, exportpolicy.go                       T4.7
   remote.go, namespace.go, adapter.go, setting.go,
   secretref.go                                    T4.9
@@ -418,6 +421,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   Nodes        nodeStatuses // declared here (E2)
   Settings     checker      // D4
   Clock        clock        // Now, After (D18)
+  Health       conditions   // E3's health.Registry, read whole by GET /api/v1/health (T4.6)
   // Directory, Joins and Sealer land with T4.9 and T4.11
   ```
   `auth/caller.go` (`Caller`, `CallerFrom`); `apiv1.Role`; `rights.go`, the role table's rights
@@ -523,13 +527,15 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 ### T4.6 Operations, nodes and the audit read
 
-**Subtask T4.6 estimate: 2 man-days.**
+**Subtask T4.6 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.5.
-- **Covers:** R3, R24, R25, R26, R53, R58, R60.
+- **Covers:** R3, R24, R25, R26, R53, R58, R60, R66.
 - **Deliverables:** `GET /operations` (by state) and `/operations/{id}` with `?wait=` (at most 60 s),
   `:cancel` answering `409` `not_cancellable`; `GET /nodes` and `/nodes/{id}` with the binary
-  version; `GET /api/v1/audit` (`admin`) by time range, actor and target; the operations collector
+  version; `GET /api/v1/health` (`viewer`, answering before ready): the word from `Deps.Ready()`
+  and every condition `Deps.Health` holds, node and installation, each with its cause, as
+  `apiv1.Health`; `GET /api/v1/audit` (`admin`) by time range, actor and target; the operations collector
   (D15); the wire types each serves. Consumed by T4.7 onward and E6.
 - **Acceptance criteria:**
   - A `?wait=` returns on a state change made by the runner, or at the wait's end on the clock.
@@ -537,7 +543,11 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 - **Tests:** a wait answered on the runner's state change, another at 60 s on the clock (R25); an
   operation's body and `Location` as the starting write answered them (R24); cancel for every kind
   (R26); an audit range read back in store-time order and filtered by actor (R53); a node's binary
-  version (R58); the operations gauge before and after an operation ends (R60).
+  version (R58); the operations gauge before and after an operation ends (R60); `/api/v1/health`
+  `401` with no `Authenticate` and answered for `viewer`, its word and conditions equal to
+  `Deps.Ready()` and the registry's after a condition is set and cleared, answered while `Ready`
+  says `starting` when every other `/api/v1` route answers `503`, and `/health/ready`'s body still
+  one word with that condition set (R66).
 
 ### T4.7 Shares and export policies
 
@@ -703,7 +713,7 @@ its commands on the client.
 | --- | --- | --- | --- | --- |
 | 1 | T4.1, T4.2 | 6 | — | the server's core, the seam E5 builds on |
 | 2 | T4.3, T4.4 | 6.5 | PR 1 | the transport and the write path |
-| 3 | T4.5, T4.6 | 5 | PR 1 | reads, operations, nodes and the audit |
+| 3 | T4.5, T4.6 | 5.5 | PR 1 | reads, operations, nodes and the audit |
 | 4 | T4.7, T4.8 | 6 | PR 2, PR 3 | shares and the client that first drives them |
 | 5 | T4.9, T4.10 | 6 | PR 4 | the remaining resources |
 | 6 | T4.11 | 4 | PR 5 | the domain |
