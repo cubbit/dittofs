@@ -412,7 +412,8 @@ func (c ControlPlane) SignInFailures(ctx context.Context, k entity.SignInKey) (f
 	return f, found, err
 }
 
-// Session reads one session: the per-call check of an access token's.
+// Session reads one session: the per-call check of an access token's. A
+// session whose account is deleted or marked deleted is not found.
 func (c ControlPlane) Session(ctx context.Context, id [16]byte) (s entity.Session, found bool, err error) {
 	err = c.s.kv.View(ctx, func(r kv.Reader) error {
 		s, found, err = sessionIn(r, id)
@@ -467,7 +468,8 @@ func (c ControlPlane) DeleteSession(ctx context.Context, id [16]byte) error {
 	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteSession(id) })
 }
 
-// APIToken reads one token.
+// APIToken reads one token; one whose account is deleted or marked deleted
+// is not found.
 func (c ControlPlane) APIToken(ctx context.Context, id [16]byte) (t entity.APIToken, found bool, err error) {
 	err = c.s.kv.View(ctx, func(r kv.Reader) error {
 		t, found, err = tokenIn(r, id)

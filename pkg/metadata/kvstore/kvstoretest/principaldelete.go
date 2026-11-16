@@ -49,6 +49,13 @@ func testMarkedPrincipalReads(t *testing.T, kvo Opener) {
 	if got, err := p.User(ctx, u.Principal); err != nil || !got.Primary.IsZero() {
 		t.Errorf("alice's primary naming a marked group: got %v, %v; want zero", got.Primary, err)
 	}
+	must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		got, _, err := tx.User(u.Principal)
+		if err == nil && !got.Primary.IsZero() {
+			t.Errorf("alice's primary naming a marked group, read in a write: got %v, want zero", got.Primary)
+		}
+		return err
+	}))
 	for name, err := range map[string]error{
 		"ByName":       errOf(p.ByName(ctx, entity.PrincipalGroup, "staff")),
 		"ByProtocolID": errOf(p.ByProtocolID(ctx, gid)),
