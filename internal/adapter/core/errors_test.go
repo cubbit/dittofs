@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -63,6 +64,8 @@ const (
 	versionOnly
 	neither
 	quota
+	garbage
+	cancelled
 )
 
 var (
@@ -71,6 +74,15 @@ var (
 )
 
 func versions(first, last core.Version) *core.Range { return &core.Range{First: first, Last: last} }
+
+// decodeRow is the row every table must carry: ErrDecode for every operation
+// and version.
+var decodeRow = core.ErrorRow{Err: core.ErrDecode, Status: garbage}
+
+// table is NewErrorTable over rows and decodeRow.
+func table(rows ...core.ErrorRow) *core.ErrorTable {
+	return core.NewErrorTable(fault, append(rows, decodeRow)...)
+}
 
 // mapsTo checks one Map answer.
 func mapsTo(t *testing.T, tb *core.ErrorTable, err error, op *core.Op, v core.Version, want core.Status) {
@@ -90,7 +102,7 @@ func TestMapTakesATypedRowBeforeItsSentinel(t *testing.T) {
 		"sentinel first": {sentinel, typed},
 	} {
 		t.Run(name, func(t *testing.T) {
-			tb := core.NewErrorTable(fault, rows...)
+			tb := table(rows...)
 			mapsTo(t, tb, &vfs.Delay{Cause: vfs.DelayRecall}, read, 1, recalled)
 			mapsTo(t, tb, fmt.Errorf("open: %w", &vfs.Delay{Cause: vfs.DelayRecall}), read, 1, recalled)
 			mapsTo(t, tb, &vfs.Delay{Cause: vfs.DelayClone}, read, 1, delayed)
@@ -103,7 +115,7 @@ func TestMapTakesATypedRowBeforeItsSentinel(t *testing.T) {
 // then operations, then versions, then neither, declared least specific
 // first; a request with no operation matches only rows naming none.
 func TestMapTakesTheMostSpecificRow(t *testing.T) {
-	tb := core.NewErrorTable(fault,
+	tb := table(
 		core.ErrorRow{Err: vfs.ErrNotFound, Status: neither},
 		core.ErrorRow{Err: vfs.ErrNotFound, Versions: versions(2, 2), Status: versionOnly},
 		core.ErrorRow{Err: vfs.ErrNotFound, Ops: []uint32{read.Code}, Status: opOnly},
@@ -118,7 +130,7 @@ func TestMapTakesTheMostSpecificRow(t *testing.T) {
 
 	// With no row naming both, a row naming the operation wins over one
 	// naming the version.
-	tb = core.NewErrorTable(fault,
+	tb = table(
 		core.ErrorRow{Err: vfs.ErrNotFound, Versions: versions(2, 2), Status: versionOnly},
 		core.ErrorRow{Err: vfs.ErrNotFound, Ops: []uint32{read.Code}, Status: opOnly},
 	)
@@ -128,7 +140,7 @@ func TestMapTakesTheMostSpecificRow(t *testing.T) {
 // An error no row matches is answered the fault status, with a reply; a
 // NoReply row answers none.
 func TestMapAnswersTheFaultAndNoReply(t *testing.T) {
-	tb := core.NewErrorTable(fault,
+	tb := table(
 		core.ErrorRow{Err: core.ErrDraining, NoReply: true},
 		core.ErrorRow{Err: &vfs.QuotaError{Scope: vfs.QuotaUser}, Status: quota},
 	)
@@ -139,8 +151,13 @@ func TestMapAnswersTheFaultAndNoReply(t *testing.T) {
 	}
 }
 
-// buildPanic is the panic NewErrorTable raised on rows, or nil.
+// buildPanic is the panic NewErrorTable raised on rows and decodeRow, or nil.
 func buildPanic(rows ...core.ErrorRow) (p any) {
+	return bareBuildPanic(append(rows, decodeRow)...)
+}
+
+// bareBuildPanic is the panic NewErrorTable raised on rows alone, or nil.
+func bareBuildPanic(rows ...core.ErrorRow) (p any) {
 	defer func() { p = recover() }()
 	core.NewErrorTable(fault, rows...)
 	return nil
@@ -179,4 +196,54 @@ func TestNewErrorTableRefusesRowsThatOverlap(t *testing.T) {
 			}
 		})
 	}
+}
+
+// protoDecode is a protocol's own decode error, matching ErrDecode as the
+// service's typed values match their sentinels.
+type protoDecode struct{}
+
+func (protoDecode) Error() string        { return "proto: cannot decode" }
+func (protoDecode) Is(target error) bool { return target == core.ErrDecode }
+
+// Every table answers ErrDecode for every operation and version: a table with
+// no row for it naming neither operations nor versions is refused at build,
+// and so is one with a row for it, whatever it names, that holds, sends no
+// reply or answers the fault status, the panic naming that row, since a
+// header's decode error has no operation and must not pass for a fault. A
+// protocol's typed row for its own value is not such a row, and a wrapped
+// ErrDecode maps to its row.
+func TestNewErrorTableDemandsAnErrDecodeRowForEveryOperation(t *testing.T) {
+	missing := "no row answers ErrDecode"
+	bad := func(ops string) string {
+		return fmt.Sprintf("row {%v%s} matches ErrDecode", core.ErrDecode, ops)
+	}
+	for _, c := range []struct {
+		name string
+		rows []core.ErrorRow
+		want string // a substring of the panic; "" for none
+	}{
+		{"no row", []core.ErrorRow{{Err: vfs.ErrNotFound, Status: neither}}, missing},
+		{"a row naming an operation", []core.ErrorRow{{Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: garbage}}, missing},
+		{"a row naming versions", []core.ErrorRow{{Err: core.ErrDecode, Versions: versions(1, 2), Status: garbage}}, missing},
+		{"a row that sends no reply", []core.ErrorRow{{Err: core.ErrDecode, NoReply: true}}, bad("")},
+		{"a row that holds", []core.ErrorRow{{Err: core.ErrDecode, Hold: func(error, time.Time) time.Time { return time.Time{} }, Status: garbage}}, bad("")},
+		{"a row answering the fault status", []core.ErrorRow{{Err: core.ErrDecode, Status: fault}}, bad("")},
+		{"a row naming an operation that answers the fault status, beside one naming neither", []core.ErrorRow{decodeRow, {Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: fault}}, bad(" ops [1]")},
+		{"a row naming neither", []core.ErrorRow{decodeRow}, ""},
+		{"one naming neither beside one naming an operation", []core.ErrorRow{decodeRow, {Err: core.ErrDecode, Ops: []uint32{read.Code}, Status: opOnly}}, ""},
+		{"a protocol's typed row that sends no reply, beside one naming neither", []core.ErrorRow{decodeRow, {Err: protoDecode{}, NoReply: true}}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := bareBuildPanic(c.rows...)
+			switch {
+			case c.want == "" && p != nil:
+				t.Fatalf("NewErrorTable refused a table that maps ErrDecode everywhere: %v", p)
+			case c.want != "" && (p == nil || !strings.Contains(fmt.Sprint(p), c.want)):
+				t.Errorf("NewErrorTable panicked with %v, want a panic with %q", p, c.want)
+			}
+		})
+	}
+	tb := table()
+	mapsTo(t, tb, fmt.Errorf("header: %w", core.ErrDecode), nil, 7, garbage)
+	mapsTo(t, tb, core.ErrDecode, write, 1, garbage)
 }

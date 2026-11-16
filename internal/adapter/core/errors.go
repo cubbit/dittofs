@@ -42,9 +42,14 @@ type ErrorRow struct {
 }
 
 // NewErrorTable builds a table answering an error no row matches with fault,
-// the protocol's server-fault status.
+// the protocol's server-fault status. It refuses two rows equal in rank that
+// can match one error, operation and version, and a table with no row
+// answering ErrDecode for every operation and version (one naming neither Ops
+// nor Versions that replies at once with a status other than the fault), or
+// with a row for it, whatever its Ops or Versions, that holds, sends no reply
+// or answers the fault.
 //
-// decision: a table that fails its check panics, naming both rows, since a
+// decision: a table that fails its check panics, naming the rows, since a
 // table is program text and NewErrorTable returns no error; the first
 // request a protocol serves builds it, so a test of the protocol finds it.
 // Overturned if a table is ever built from configuration.
@@ -62,7 +67,41 @@ func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable {
 			}
 		}
 	}
+	// A decode error is mapped with no operation, and outside any version a
+	// row names, so only a row naming neither maps it everywhere. Without
+	// one a client's garbage reaches the fault status, which §10.1 alerts on
+	// as a bug; a row that holds, sends no reply or answers the fault status
+	// would hide it the same way, whatever it names, since Map takes a
+	// narrower row first.
+	if r, ok := t.badRow(ErrDecode); ok {
+		panic(fmt.Sprintf("core: error table: row %s matches ErrDecode but holds, sends no reply or answers the fault", describe(r)))
+	}
+	if !t.mapsEverywhere(ErrDecode) {
+		panic("core: error table: no row answers ErrDecode for every operation and version")
+	}
 	return t
+}
+
+// mapsEverywhere reports whether a row err matches names neither Ops nor
+// Versions, so some row maps err for every operation and version.
+func (t *ErrorTable) mapsEverywhere(err error) bool {
+	return slices.ContainsFunc(t.rows, func(r ErrorRow) bool {
+		return r.Ops == nil && r.Versions == nil && errors.Is(err, r.Err)
+	})
+}
+
+// badRow returns a row err matches that holds, sends no reply or answers the
+// fault: Map answers err by it for every operation and version it names, so
+// err is not answered at once there. err is the bare sentinel, which a
+// protocol's typed row never matches, so that row still wins for its own
+// value (§4.5).
+func (t *ErrorTable) badRow(err error) (ErrorRow, bool) {
+	for _, r := range t.rows {
+		if errors.Is(err, r.Err) && (r.NoReply || r.Hold != nil || r.Status == t.fault) {
+			return r, true
+		}
+	}
+	return ErrorRow{}, false
 }
 
 // Map is err's status for op at v; reply false is a NoReply row.
@@ -151,6 +190,8 @@ var (
 	ErrExpired        = errors.New("core: credential expired")             // an expired credential, Op.Expired false
 	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")      // Stages.MaxPending
+	ErrDecode         = errors.New("core: cannot decode")                  // a header, an operation's or a member's arguments, a step of the record's walk (§4.1)
+	ErrCancelled      = errors.New("core: cancelled by its client")        // a held or parked request its client cancelled (§6.5); wraps nothing
 	// ErrMoved and ErrDraining are what a request the drain does not serve
 	// gets while the adapter drains: ErrMoved where the service names a
 	// gateway node for the request's share (the move signal), ErrDraining
@@ -164,6 +205,6 @@ var (
 func Errors() []error {
 	return []error{
 		ErrNotSupported, ErrVersion, ErrNotNegotiated, ErrNoSession, ErrNoTree, ErrNoFH,
-		ErrTooLong, ErrExpired, ErrNotLast, ErrTooManyPending, ErrMoved, ErrDraining,
+		ErrTooLong, ErrExpired, ErrNotLast, ErrTooManyPending, ErrDecode, ErrCancelled, ErrMoved, ErrDraining,
 	}
 }
