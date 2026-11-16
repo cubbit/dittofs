@@ -476,7 +476,9 @@ internal/node/
     one exemption RFC 23 names. `nodetest` does not exist until E3, so the rule's `testdata` tree
     plants both branches: an allowed file under a `nodetest` path, and a forbidden one under a
     look-alike (`nodetest2`), so an over-broad prefix match fails now rather than in E3;
-  - **the CLI's closure** (R11, R20): the transitive imports of `cmd/dfsctl/...` and
+  - **the CLI's closure** (R11, R20), over the binary's dependencies, `go list -deps ./cmd/dfsctl`
+    without `-test`, so a test's import of the harness is not counted: the transitive imports of
+    `cmd/dfsctl/...` and
     `pkg/node/apiv1`, and of `pkg/apiclient` once E4 lands it, stay, of this module, within
     `cmd/dfsctl/...`, `pkg/apiclient`, `pkg/node/apiv1` and `internal/cli/...`, and
     `pkg/node/apiv1`'s within the standard library;
