@@ -61,8 +61,9 @@ type demo struct {
 	h   map[journal.ShareTag]*journal.Handle
 	tag journal.ShareTag // the story's one working tag
 
-	views map[rune]func(*demo)
-	quit  bool
+	views   map[rune]func(*demo)
+	quit    bool
+	version journal.Version // the last mutating beat's issued version
 
 	// lastView holds each view's last-shown rows, the diff layer's
 	// snapshots; markStale drops them all.
@@ -79,8 +80,8 @@ func newDemo(dir string, in io.Reader, out io.Writer) *demo {
 		tag:     1,
 	}
 	d.views = map[rune]func(*demo){
-		'i': nil, // the index view — Task 5
-		's': nil, // segments — Task 5
+		'i': (*demo).viewIndex,
+		's': (*demo).viewSegments,
 		'd': nil, // the data dump — Task 4
 		'f': (*demo).viewFS,
 		'+': (*demo).viewStats,

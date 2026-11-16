@@ -96,3 +96,61 @@ func (d *demo) viewStats() {
 	}
 	d.renderView("stats", rows)
 }
+
+// viewIndex is the (i) view: the story file's placement entries, per the
+// index the journal reports. The read-out's honesty rule: the journal's
+// own answer prints verbatim, today's refusal included, and the view never
+// invents rows.
+func (d *demo) viewIndex() {
+	es, err := d.j.Inspect().File(FILE)
+	if err != nil {
+		d.printf("index: %v   // the read-out lands with recovery's assembly\n", err)
+		return
+	}
+	rows := make([]viewRow, 0, len(es))
+	for _, e := range es {
+		entry := e
+		rows = append(rows, viewRow{
+			key: fmt.Sprintf("%d-%d@v%d", entry.Extent.Off, entry.Extent.Off+entry.Extent.Len, entry.Version.Counter),
+			text: fmt.Sprintf("%-9s %3d–%-4d v%-3d tag %d  record %d@%d  offloaded %v",
+				entryKindName(entry.Kind), entry.Extent.Off, entry.Extent.Off+entry.Extent.Len,
+				entry.Version.Counter, entry.Tag, entry.Location.Segment, entry.Location.Offset,
+				entry.Offloaded),
+		})
+	}
+	d.renderView("index", rows)
+}
+
+// viewSegments is the (s) view: per-segment accounting.
+func (d *demo) viewSegments() {
+	segs := d.j.Inspect().Segments()
+	if len(segs) == 0 {
+		d.printf("(no per-segment accounting yet — it lands with epic 9a; stats carries the totals today)\n")
+		return
+	}
+	rows := make([]viewRow, 0, len(segs))
+	for _, s := range segs {
+		rows = append(rows, viewRow{
+			key:  fmt.Sprintf("seg %d", s.ID),
+			text: fmt.Sprintf("seg %-3d stream %d  allocated %9d  held %9d  retained %9d  %s", s.ID, s.Stream, s.Allocated, s.HeldBytes, s.RetainedBytes, segState(s)),
+		})
+	}
+	d.renderView("segments", rows)
+}
+
+func segState(s journal.SegmentInfo) string {
+	var st string
+	if s.Sealed {
+		st += "sealed "
+	}
+	if s.Failed {
+		st += "failed "
+	}
+	if s.Damaged {
+		st += "damaged"
+	}
+	if st == "" {
+		st = "active"
+	}
+	return st
+}
