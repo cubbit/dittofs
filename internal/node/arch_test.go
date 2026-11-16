@@ -724,6 +724,7 @@ func TestAPIWritesOnlyThroughWrite(t *testing.T) {
 		{"interface", []string{"(interface).PutShare"}},
 		{"renamed", []string{"(interface).Forget"}},
 		{"func-field", []string{"var Drop"}},
+		{"assert", []string{"(interface).PutUser"}},
 	} {
 		got, err := storeWrites(filepath.Join("testdata/arch/store-write", tc.dir), module+"internal/node/api", writers)
 		if err != nil {
@@ -753,6 +754,120 @@ func TestAPIWritesOnlyThroughWrite(t *testing.T) {
 		}
 		if !slices.Equal(got, tc.want) {
 			t.Errorf("%s: store writers taken as values %q, want %q", tc.dir, got, tc.want)
+		}
+	}
+}
+
+// storeMethods are the store methods Deps.Store may declare: the api
+// reaches the store's writes only through Write.
+var storeMethods = []string{"Write"}
+
+// writeCalls type-checks the package in dir, as import path path, and
+// returns each way it breaks the write rule: Deps.Store declaring a method
+// storeMethods does not list; a call of the store's Write from a function
+// other than the write adapter, write, and the refusal's audit, refuse,
+// unless the package is auth, whose every function may call it; and a call
+// of Write whose WriteMeta is not a literal setting Audit to something other
+// than nil. A Write is any method so named whose second parameter is
+// entity.WriteMeta.
+func writeCalls(dir, path string) ([]string, error) {
+	pkg, files, info, err := typeCheck(dir, path)
+	if err != nil {
+		return nil, err
+	}
+	var bad []string
+	if o, ok := pkg.Scope().Lookup("Deps").(*types.TypeName); ok {
+		if st, ok := o.Type().Underlying().(*types.Struct); ok {
+			for f := range st.Fields() {
+				if it, ok := f.Type().Underlying().(*types.Interface); ok && f.Name() == "Store" {
+					for m := range it.Methods() {
+						if !slices.Contains(storeMethods, m.Name()) {
+							bad = append(bad, "Deps.Store declares "+m.Name())
+						}
+					}
+				}
+			}
+		}
+	}
+	isAuth := under(path, module+"internal/node/api/auth")
+	for _, f := range files {
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				c, ok := n.(*ast.CallExpr)
+				if !ok || len(c.Args) < 2 {
+					return true
+				}
+				sel, ok := c.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				fn, ok := info.Uses[sel.Sel].(*types.Func)
+				if !ok || fn.Name() != "Write" || fn.Signature().Params().Len() < 2 ||
+					fn.Signature().Params().At(1).Type().String() != module+"pkg/metadata/entity.WriteMeta" {
+					return true
+				}
+				if !isAuth && fd.Name.Name != "write" && fd.Name.Name != "refuse" {
+					bad = append(bad, fd.Name.Name+" calls Write outside the write adapter")
+				}
+				if !setsAudit(c.Args[1]) {
+					bad = append(bad, fd.Name.Name+" calls Write with no audit record")
+				}
+				return true
+			})
+		}
+	}
+	slices.Sort(bad)
+	return bad, nil
+}
+
+// setsAudit reports whether e is a composite literal whose Audit is set to
+// something other than nil.
+func setsAudit(e ast.Expr) bool {
+	lit, ok := e.(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	for _, el := range lit.Elts {
+		kv, ok := el.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		if k, ok := kv.Key.(*ast.Ident); ok && k.Name == "Audit" {
+			v, isIdent := kv.Value.(*ast.Ident)
+			return !isIdent || v.Name != "nil"
+		}
+	}
+	return false
+}
+
+// The api's Deps.Store declares only Write, which only the write adapter
+// and auth call, each with its audit record set; planted packages declaring
+// other store methods, calling Write from a resource handler, and calling it
+// from auth with no audit record or a nil one are caught.
+func TestWritesThroughTheAdapter(t *testing.T) {
+	for _, tc := range []struct {
+		dir, path string
+		want      []string
+	}{
+		{"api", "internal/node/api", nil},
+		{"api/auth", "internal/node/api/auth", nil},
+		{"testdata/arch/write-calls/handler", "internal/node/api", []string{"putShare calls Write outside the write adapter"}},
+		{"testdata/arch/write-calls/auth", "internal/node/api/auth", []string{
+			"forget calls Write with no audit record",
+			"revoke calls Write with no audit record",
+		}},
+		{"testdata/arch/store-write/interface", "internal/node/api", []string{"Deps.Store declares PutShare", "Deps.Store declares Shares"}},
+	} {
+		got, err := writeCalls(tc.dir, module+tc.path)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.dir, err)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: violations %q, want %q", tc.dir, got, tc.want)
 		}
 	}
 }
