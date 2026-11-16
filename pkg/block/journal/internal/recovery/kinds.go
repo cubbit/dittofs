@@ -71,11 +71,14 @@ type kindResults struct {
 	// the feed that withholds them.
 	ReadOnlyDrops []ReadOnlyDrop
 
-	// Withheld is the numbers of the records the feed withholds, folded by
-	// their two axes — the highest sequence number and the highest version
-	// among them independently — so the counters open above every number
-	// the disk still holds on both axes; zero until the feed computes it
-	// over the same scans.
+	// Withheld is the numbers of the records the feed withholds whole — a
+	// failed-list, whole-loss-named, forgotten or confined record, the ruler
+	// of Rule 6 and the location rule — folded by their two axes, the
+	// highest sequence number and the highest version among them
+	// independently, so the counters open above every number the disk still
+	// holds on both axes; a synced superseded cut leaves no residue to fold,
+	// for its record fed. Zero until the feed computes it over the same
+	// scans.
 	Withheld index.Numbers
 }
 
@@ -434,9 +437,12 @@ func fromFormat(r format.LossReason) core.LossReason {
 	panic(fmt.Sprintf("recovery: loss reason %d names no reason", uint8(r)))
 }
 
-// keptRuns returns the runs of e the cuts leave, in offset order: the runs a
-// record a synced superseded loss names feeds over, its extent minus the
-// union of every extent the loss records naming it cover.
+// keptRuns returns the runs of e the cuts leave, in offset order: the runs of
+// a record a synced superseded loss names that the loss's own cut does not
+// take, its extent minus the union of every extent the loss records naming
+// it cover. The record feeds whole and the cut splits it after the rebuild
+// finishes; this shape is the remainder pass's alone — what it verifies and
+// what a rotten record's confinements name — never the feed's.
 func keptRuns(e core.Extent, cuts []core.Extent) []core.Extent {
 	cs := slices.Clone(cuts)
 	slices.SortFunc(cs, func(a, b core.Extent) int { return cmp.Compare(a.Off, b.Off) })
@@ -821,9 +827,10 @@ func appendSeg(segs []core.SegmentID, id core.SegmentID) []core.SegmentID {
 //   - a location the remainder pass confined withholds that exact copy — by
 //     where it sits, never by its seq, or a healthy equal-seq twin elsewhere
 //     would withhold with it;
-//   - a synced superseded loss naming the record clips the runs of the
-//     record's own extent outside the union of the loss extents, and feeds
-//     the clipped runs under the record's own numbers;
+//   - a synced superseded loss naming the record shapes nothing here: the
+//     record feeds whole, and the loss's own cut splits it where the
+//     rebuild has finished, so the runs the loss leaves hold with the
+//     record's own single place and skip and no run is silently lost;
 //   - everything else feeds, and every fed location joins the copies the
 //     repoint pass reads.
 //
@@ -870,32 +877,6 @@ func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
 
 	withheld := ks.withheldWhole(rec) ||
 		ks.confined[index.RecordAt{Segment: rec.Segment, Offset: rec.At}]
-	if !withheld {
-		if sup, named := ks.superseded[seq]; named &&
-			(rec.Kind == index.RecWrite || rec.Kind == index.RecFill) {
-			// decision: the clip a superseded loss record carries applies to
-			// the content records it names — its write and fill alone. A
-			// removal it names feeds whole: the loss's own cut is a content
-			// cut below the loss's version, while a removal's marker runs
-			// from its offset to the end of the file, so clipping the removal
-			// to the loss's extent would leave the bytes past the extent
-			// held by the removal's unclipped half. Overturned by a loss
-			// reason that ever names removal records.
-			kept := keptRuns(core.Extent{Off: rec.Off, Len: rec.Len}, sup.extents)
-			if len(kept) > 0 {
-				for _, run := range kept {
-					rr := rec
-					rr.Off, rr.Len = run.Off, run.Len
-					if err := do(rr); err != nil {
-						return err
-					}
-				}
-				f.noteCopy(rec)
-				return nil
-			}
-			withheld = true // the loss extents cover the record's whole extent
-		}
-	}
 	if withheld {
 		// The withheld numbers fold by their two axes, the highest sequence
 		// number and the highest version among the withheld independently:
@@ -918,8 +899,7 @@ func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
 }
 
 // noteCopy joins where rec sits to the copies of its seq, one entry per fed
-// record: a record clipped into runs is one copy, and the runs share where
-// it sits.
+// record.
 func (f *feedFilter) noteCopy(rec index.Record) {
 	k := copyKey{file: rec.File, seq: rec.Numbers.Seq}
 	at := index.RecordAt{Segment: rec.Segment, Offset: rec.At}

@@ -344,13 +344,41 @@ func TestRunFeedsTheRemainderASyncedSupersededLossNames(t *testing.T) {
 		}
 		p, ok := st.Rebuilt.Index.Lookup(file, 64)
 		if !ok {
-			t.Fatalf("Lookup at 64 missed, want the kept run [64,128) to feed clipped")
+			t.Fatalf("Lookup at 64 missed, want the cut to leave the record's [64,128) run held")
 		}
 		if p.Extent != (core.Extent{Off: 64, Len: 64}) || p.Seq != 60 {
-			t.Errorf("the kept run got %+v of seq %d, want the clipped extent [64,128) under the record's own seq 60", p.Extent, p.Seq)
+			t.Errorf("the kept run got %+v of seq %d, want the cut extent [64,128) under the record's own seq 60", p.Extent, p.Seq)
 		}
 		if got := st.Kinds.Losses[0].Segments; !slices.Equal(got, []core.SegmentID{2}) {
 			t.Errorf("the loss names segments %v, want [2]: superseded or whole, the record it names is its liveness", got)
+		}
+	})
+	t.Run("a cut in the middle of the record", func(t *testing.T) {
+		r := newRig(t)
+		r.writeFormat()
+		file := kindsFile(1)
+		r.plantSeg(2, buildSeg(2,
+			writeRec(60, 5, 0, 128),
+			plantLossRec(file, 60, 61, 9, 32, 32, 1|4<<8), // synced, superseded over [32,64)
+		))
+
+		st := kindsRun(t, r)
+
+		// The record feeds whole and the cut splits it where the loss
+		// record names: [0,32) and [64,128) both hold, and no run of it
+		// is silently lost to a clip the index never applied.
+		if p, ok := st.Rebuilt.Index.Lookup(file, 0); !ok {
+			t.Fatalf("Lookup at 0 missed, want the record's [0,32) run held: the cut owns the split, and a clipped feed would have lost it")
+		} else if p.Extent != (core.Extent{Off: 0, Len: 32}) {
+			t.Errorf("the run at 0 got %+v, want [0,32): the cut split the record at the loss extent's edges", p.Extent)
+		}
+		if p, ok := st.Rebuilt.Index.Lookup(file, 64); !ok {
+			t.Fatalf("Lookup at 64 missed, want the record's [64,128) run held")
+		} else if p.Extent != (core.Extent{Off: 64, Len: 64}) {
+			t.Errorf("the run at 64 got %+v, want [64,128)", p.Extent)
+		}
+		if _, ok := st.Rebuilt.Index.Lookup(file, 32); ok {
+			t.Errorf("Lookup at 32 hit, want a miss: the cut dropped the loss's own extent")
 		}
 	})
 	t.Run("a loss extent past the record's end", func(t *testing.T) {
@@ -429,11 +457,14 @@ func TestRunFeedsTheRemainderASyncedSupersededLossNames(t *testing.T) {
 
 		st := kindsRun(t, r)
 
+		// The record feeds whole and the cut takes all of it, so nothing
+		// held remains — and the feed withheld nothing, so no numbers
+		// fold: the counters saw the record's own.
 		if _, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
-			t.Errorf("Lookup at 0 hit, want a miss: the loss extent covers the record whole, so no run feeds")
+			t.Errorf("Lookup at 0 hit, want a miss: the cut takes the record's whole extent")
 		}
-		if got, want := st.Kinds.Withheld, (index.Numbers{Version: core.Version{Counter: 5}, Seq: 60}); got != want {
-			t.Errorf("Withheld got %+v, want %+v: the numbers of the whole record no run fed", got, want)
+		if got := (st.Kinds.Withheld); got != (index.Numbers{}) {
+			t.Errorf("Withheld got %+v, want the zero pair: the record fed, and the cut is no withhold", got)
 		}
 	})
 }
