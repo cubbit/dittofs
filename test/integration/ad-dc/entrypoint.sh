@@ -185,26 +185,45 @@ samba-tool group addmembers devs "$USER_ALICE" >/dev/null 2>&1 || true
 create_user_if_absent "$USER_BOB"
 samba-tool group addmembers engineering "$USER_BOB" >/dev/null 2>&1 || true
 
-# --- Machine account for NETLOGON passthrough tests (#1314, #1345) --------
-# Creates the DITTOFS$ computer account used by TestNetlogonPassthroughAlice.
-# samba-tool computer create yields a sAMAccountName of "dittofs$" (AD uppercases
-# it to DITTOFS$ on lookup).
+# --- Computer accounts for the joins --------------------------------------
+# Each is created once, its password set only then, so a restart leaves it as
+# the tests or a join last left it.
+#
+# dittofs$ is the account an installation with the default NetBIOS name would
+# join as. It already exists, so an online join of that name must refuse it
+# rather than reset the password of whoever holds it; the NETLOGON tests sign
+# in as it with its password.
+#
+# offjoinaes$ and offjoinlegacy$ are pre-staged for an offline join, as an
+# administrator creates them and hands their password over: the first with
+# msDS-SupportedEncryptionTypes 0x18, which an offline join accepts, the second
+# without the attribute, as Active Directory Users and Computers creates one,
+# which an offline join refuses.
 #
 # NOTE (#1345): `samba-tool computer create --computerpassword=...` is NOT a
-# valid option on this samba (4.17.x) — it errors with "no such option", and the
-# old `|| true` SILENTLY SWALLOWED that, so the machine account was NEVER created
-# and every NETLOGON test ran against a nonexistent account. Create the computer
-# first, then set its password via `user setpassword` (which derives proper
-# Kerberos keys, making the account usable for both NETLOGON and Kerberos-SMB).
+# valid option on this samba (4.17.x). Create the computer first, then set its
+# password via `user setpassword`, which derives its Kerberos keys.
 MACHINE_PASSWORD="${MACHINE_PASSWORD:-MachinePass01!}"
-if ! samba-tool computer list 2>/dev/null | grep -qix 'dittofs\$'; then
-    log "Creating machine account dittofs\$ (NETLOGON passthrough)"
-    samba-tool computer create dittofs
-fi
-# Always (re)set the password so a reused domain DB (the .provisioned restart
-# path) or an account left by an earlier run reconciles to the expected
-# credential — and the AES/RC4 Kerberos keys regenerate from it each time.
-samba-tool user setpassword 'dittofs$' --newpassword="$MACHINE_PASSWORD"
+OFFJOIN_AES_PASSWORD="${OFFJOIN_AES_PASSWORD:-OffJoinAES01!}"
+OFFJOIN_LEGACY_PASSWORD="${OFFJOIN_LEGACY_PASSWORD:-OffJoinLegacy01!}"
+
+# create_computer_if_absent NAME PASSWORD [ENCTYPES]
+create_computer_if_absent() {
+    local name="$1" password="$2" enctypes="${3:-}" dn
+    samba-tool computer show "$name" >/dev/null 2>&1 && return 0
+    log "Creating computer account $name\$"
+    samba-tool computer create "$name"
+    if [ -n "$enctypes" ]; then
+        dn="$(samba-tool computer show "$name" --attributes=distinguishedName \
+            | sed -n 's/^distinguishedName: //p')"
+        printf 'dn: %s\nchangetype: modify\nreplace: msDS-SupportedEncryptionTypes\nmsDS-SupportedEncryptionTypes: %s\n' \
+            "$dn" "$enctypes" | ldbmodify -H /var/lib/samba/private/sam.ldb
+    fi
+    samba-tool user setpassword "$name\$" --newpassword="$password"
+}
+create_computer_if_absent dittofs "$MACHINE_PASSWORD"
+create_computer_if_absent offjoinaes "$OFFJOIN_AES_PASSWORD" 24
+create_computer_if_absent offjoinlegacy "$OFFJOIN_LEGACY_PASSWORD"
 
 # --- Combined service keytab ----------------------------------------------
 # Register BOTH the DittoFS SMB (cifs/) AND NFS (nfs/) service principals on the
