@@ -2,17 +2,17 @@ package context
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/internal/cli/credentials"
 	"github.com/spf13/cobra"
 )
 
-var listCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all configured contexts",
-	Long: `List all configured server contexts stored in the local credential file.
+func newListCmd() *cobra.Command {
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all configured contexts",
+		Long: `List all configured server contexts stored in the local credential file.
 
 Each row shows the context name, server URL, username, and login status. The active context is marked with an asterisk (*). Use this to identify which servers you have credentials for and which context is currently selected.
 
@@ -22,7 +22,9 @@ Examples:
 
   # List contexts as JSON for scripting
   dfsctl context list -o json`,
-	RunE: runContextList,
+		RunE: runContextList,
+	}
+	return listCmd
 }
 
 // ContextInfo represents context information for output.
@@ -81,5 +83,5 @@ func runContextList(cmd *cobra.Command, args []string) error {
 		contexts = append(contexts, info)
 	}
 
-	return cmdutil.PrintOutput(os.Stdout, contexts, len(contexts) == 0, "No contexts configured. Use 'dfsctl login --server <url>' to create one.", contexts)
+	return cmdutil.PrintOutput(cmd, contexts, len(contexts) == 0, "No contexts configured. Use 'dfsctl login --server <url>' to create one.", contexts)
 }

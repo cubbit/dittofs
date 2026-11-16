@@ -3,6 +3,7 @@ package prompt
 import (
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/manifoldco/promptui"
 )
@@ -11,8 +12,9 @@ import (
 var ErrPasswordMismatch = errors.New("passwords do not match")
 
 // Password prompts for a password input with masking.
-func Password(label string) (string, error) {
+func Password(in io.Reader, label string) (string, error) {
 	prompt := promptui.Prompt{
+		Stdin: io.NopCloser(in),
 		Label: label,
 		Mask:  '*',
 	}
@@ -22,8 +24,9 @@ func Password(label string) (string, error) {
 }
 
 // PasswordWithValidation prompts for a password with minimum length validation.
-func PasswordWithValidation(label string, minLength int) (string, error) {
+func PasswordWithValidation(in io.Reader, label string, minLength int) (string, error) {
 	prompt := promptui.Prompt{
+		Stdin: io.NopCloser(in),
 		Label: label,
 		Mask:  '*',
 		Validate: func(input string) error {
@@ -40,15 +43,15 @@ func PasswordWithValidation(label string, minLength int) (string, error) {
 
 // PasswordWithConfirmation prompts for a password and confirmation.
 // Returns error if passwords don't match.
-func PasswordWithConfirmation(label, confirmLabel string, minLength int) (string, error) {
+func PasswordWithConfirmation(in io.Reader, label, confirmLabel string, minLength int) (string, error) {
 	// First password prompt
-	password, err := PasswordWithValidation(label, minLength)
+	password, err := PasswordWithValidation(in, label, minLength)
 	if err != nil {
 		return "", err
 	}
 
 	// Confirmation prompt
-	confirm, err := Password(confirmLabel)
+	confirm, err := Password(in, confirmLabel)
 	if err != nil {
 		return "", err
 	}
@@ -62,6 +65,6 @@ func PasswordWithConfirmation(label, confirmLabel string, minLength int) (string
 
 // NewPassword prompts for a new password with confirmation.
 // Uses default labels and minimum length of 8.
-func NewPassword() (string, error) {
-	return PasswordWithConfirmation("Password", "Confirm password", 8)
+func NewPassword(in io.Reader) (string, error) {
+	return PasswordWithConfirmation(in, "Password", "Confirm password", 8)
 }

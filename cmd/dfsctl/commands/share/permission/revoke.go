@@ -5,16 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	revokeUser  string
-	revokeGroup string
-	revokeSID   string
-)
-
-var revokeCmd = &cobra.Command{
-	Use:   "revoke <share>",
-	Short: "Revoke permission from a share",
-	Long: `Remove a per-principal permission entry from a share.
+func newRevokeCmd() *cobra.Command {
+	revokeCmd := &cobra.Command{
+		Use:   "revoke <share>",
+		Short: "Revoke permission from a share",
+		Long: `Remove a per-principal permission entry from a share.
 
 After revoking, the user or group falls back to the share's default permission
 level (see 'dfsctl share show'). To explicitly block a principal rather than
@@ -33,11 +28,10 @@ Examples:
 
   # Revoke a direct AD/SID grant
   dfsctl share permission revoke /archive --sid S-1-5-21-1111-2222-3333-1104`,
-	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
-}
-
-func init() {
-	revokeCmd.Flags().StringVar(&revokeUser, "user", "", "User to revoke permission from (local name, AD name, or SID)")
-	revokeCmd.Flags().StringVar(&revokeGroup, "group", "", "Group to revoke permission from (local name, AD name, or SID)")
-	revokeCmd.Flags().StringVar(&revokeSID, "sid", "", "Raw Windows SID to revoke permission from")
+		Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+	}
+	revokeCmd.Flags().String("user", "", "User to revoke permission from (local name, AD name, or SID)")
+	revokeCmd.Flags().String("group", "", "Group to revoke permission from (local name, AD name, or SID)")
+	revokeCmd.Flags().String("sid", "", "Raw Windows SID to revoke permission from")
+	return revokeCmd
 }

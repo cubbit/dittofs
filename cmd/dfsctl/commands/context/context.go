@@ -2,14 +2,16 @@
 package context
 
 import (
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
 
 // Cmd is the context subcommand.
-var Cmd = &cobra.Command{
-	Use:   "context",
-	Short: "Manage server contexts",
-	Long: `Manage named connection contexts for one or more DittoFS servers.
+func New(env cmdutil.Env) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "context",
+		Short: "Manage server contexts",
+		Long: `Manage named connection contexts for one or more DittoFS servers.
 
 Each context stores a server URL, authentication credentials, and a display name. Contexts work similarly to kubectl contexts: log in once per server, then switch between them with 'context use'. All subsequent dfsctl commands use the active context automatically.
 
@@ -25,12 +27,11 @@ Examples:
 
   # Remove a context that is no longer needed
   dfsctl context remove staging`,
-}
-
-func init() {
-	Cmd.AddCommand(listCmd)
-	Cmd.AddCommand(useCmd)
-	Cmd.AddCommand(currentCmd)
-	Cmd.AddCommand(renameCmd)
-	Cmd.AddCommand(removeCmd)
+	}
+	cmd.AddCommand(newListCmd())
+	cmd.AddCommand(newUseCmd())
+	cmd.AddCommand(newCurrentCmd())
+	cmd.AddCommand(newRenameCmd())
+	cmd.AddCommand(newRemoveCmd(env))
+	return cmd
 }

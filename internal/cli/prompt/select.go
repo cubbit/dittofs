@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"github.com/manifoldco/promptui"
+	"io"
 )
 
 // SelectOption represents an item in a selection list.
@@ -23,7 +24,7 @@ func selectTemplates() *promptui.SelectTemplates {
 
 // Select prompts the user to select from a list of options.
 // Returns the selected option's value.
-func Select(label string, options []SelectOption) (string, error) {
+func Select(in io.Reader, label string, options []SelectOption) (string, error) {
 	templates := selectTemplates()
 
 	if len(options) > 0 && options[0].Description != "" {
@@ -32,6 +33,7 @@ func Select(label string, options []SelectOption) (string, error) {
 	}
 
 	prompt := promptui.Select{
+		Stdin:     io.NopCloser(in),
 		Label:     label,
 		Items:     options,
 		Templates: templates,
@@ -48,8 +50,9 @@ func Select(label string, options []SelectOption) (string, error) {
 
 // SelectString prompts the user to select from a list of strings.
 // Returns the selected string.
-func SelectString(label string, items []string) (string, error) {
+func SelectString(in io.Reader, label string, items []string) (string, error) {
 	prompt := promptui.Select{
+		Stdin: io.NopCloser(in),
 		Label: label,
 		Items: items,
 		Size:  10,
@@ -61,8 +64,9 @@ func SelectString(label string, items []string) (string, error) {
 
 // SelectIndex prompts the user to select from a list of options.
 // Returns the index of the selected option.
-func SelectIndex(label string, options []SelectOption) (int, error) {
+func SelectIndex(in io.Reader, label string, options []SelectOption) (int, error) {
 	prompt := promptui.Select{
+		Stdin:     io.NopCloser(in),
 		Label:     label,
 		Items:     options,
 		Templates: selectTemplates(),
@@ -76,7 +80,7 @@ func SelectIndex(label string, options []SelectOption) (int, error) {
 // MultiSelect allows selecting multiple options (using space to toggle).
 // Note: promptui doesn't natively support multi-select, so this is a workaround
 // using multiple single selects with a "Done" option.
-func MultiSelect(label string, options []SelectOption) ([]string, error) {
+func MultiSelect(in io.Reader, label string, options []SelectOption) ([]string, error) {
 	selected := make(map[string]bool)
 	var result []string
 
@@ -93,6 +97,7 @@ func MultiSelect(label string, options []SelectOption) ([]string, error) {
 		items = append(items, "Done")
 
 		prompt := promptui.Select{
+			Stdin: io.NopCloser(in),
 			Label: label,
 			Items: items,
 			Size:  len(items),

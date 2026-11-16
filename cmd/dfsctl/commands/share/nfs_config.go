@@ -5,18 +5,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	nfsCfgNetgroup        string
-	nfsCfgSquash          string
-	nfsCfgAllowAuthSys    string
-	nfsCfgRequireKerberos string
-)
-
-// nfsConfigCmd is the parent for per-share NFS adapter config.
-var nfsConfigCmd = &cobra.Command{
-	Use:   "nfs-config",
-	Short: "Manage per-share NFS adapter configuration",
-	Long: `View and update the NFS adapter configuration for a share.
+// newNfsConfigCmd returns the parent for per-share NFS adapter config.
+func newNfsConfigCmd() *cobra.Command {
+	nfsConfigCmd := &cobra.Command{
+		Use:   "nfs-config",
+		Short: "Manage per-share NFS adapter configuration",
+		Long: `View and update the NFS adapter configuration for a share.
 
 This controls the share's export settings: the squash mode, the
 authentication flags and the netgroup that restricts which clients may reach
@@ -34,12 +28,17 @@ Examples:
 
   # Remove the netgroup association (allow all clients)
   dfsctl share nfs-config set /export --netgroup ""`,
+	}
+	nfsConfigCmd.AddCommand(newNfsConfigShowCmd())
+	nfsConfigCmd.AddCommand(newNfsConfigSetCmd())
+	return nfsConfigCmd
 }
 
-var nfsConfigShowCmd = &cobra.Command{
-	Use:   "show <name>",
-	Short: "Show a share's NFS adapter configuration",
-	Long: `Show the NFS adapter configuration for a share.
+func newNfsConfigShowCmd() *cobra.Command {
+	nfsConfigShowCmd := &cobra.Command{
+		Use:   "show <name>",
+		Short: "Show a share's NFS adapter configuration",
+		Long: `Show the NFS adapter configuration for a share.
 
 Displays the netgroup association, squash mode, and authentication settings
 (AUTH_SYS and Kerberos). Use this command to inspect the current NFS export
@@ -51,13 +50,16 @@ Examples:
 
   # Emit as JSON
   dfsctl share nfs-config show /export -o json`,
-	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+		Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+	}
+	return nfsConfigShowCmd
 }
 
-var nfsConfigSetCmd = &cobra.Command{
-	Use:   "set <name>",
-	Short: "Update a share's NFS adapter configuration",
-	Long: `Update the NFS adapter configuration for a share.
+func newNfsConfigSetCmd() *cobra.Command {
+	nfsConfigSetCmd := &cobra.Command{
+		Use:   "set <name>",
+		Short: "Update a share's NFS adapter configuration",
+		Long: `Update the NFS adapter configuration for a share.
 
 Only the flags you supply are changed; omitted flags leave the existing values
 intact. Changes take effect immediately, without an adapter restart.
@@ -79,15 +81,11 @@ Examples:
 
   # Require Kerberos authentication and disallow AUTH_SYS
   dfsctl share nfs-config set /export --require-kerberos true --allow-auth-sys false`,
-	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
-}
-
-func init() {
-	nfsConfigSetCmd.Flags().StringVar(&nfsCfgNetgroup, "netgroup", "", "Netgroup name to associate (empty string clears the association)")
-	nfsConfigSetCmd.Flags().StringVar(&nfsCfgSquash, "squash", "", "Squash mode (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest)")
-	nfsConfigSetCmd.Flags().StringVar(&nfsCfgAllowAuthSys, "allow-auth-sys", "", "Allow AUTH_SYS flavor (true|false)")
-	nfsConfigSetCmd.Flags().StringVar(&nfsCfgRequireKerberos, "require-kerberos", "", "Require Kerberos auth (true|false)")
-
-	nfsConfigCmd.AddCommand(nfsConfigShowCmd)
-	nfsConfigCmd.AddCommand(nfsConfigSetCmd)
+		Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+	}
+	nfsConfigSetCmd.Flags().String("netgroup", "", "Netgroup name to associate (empty string clears the association)")
+	nfsConfigSetCmd.Flags().String("squash", "", "Squash mode (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest)")
+	nfsConfigSetCmd.Flags().String("allow-auth-sys", "", "Allow AUTH_SYS flavor (true|false)")
+	nfsConfigSetCmd.Flags().String("require-kerberos", "", "Require Kerberos auth (true|false)")
+	return nfsConfigSetCmd
 }

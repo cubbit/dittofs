@@ -7,10 +7,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var useCmd = &cobra.Command{
-	Use:   "use <name>",
-	Short: "Switch to a different context",
-	Long: `Switch the active context so that subsequent dfsctl commands target a different server.
+func newUseCmd() *cobra.Command {
+	useCmd := &cobra.Command{
+		Use:   "use <name>",
+		Short: "Switch to a different context",
+		Long: `Switch the active context so that subsequent dfsctl commands target a different server.
 
 The new active context is saved to the local credential file. Run 'context current' afterwards to confirm the switch, or 'context list' to see all available context names.
 
@@ -20,8 +21,10 @@ Examples:
 
   # Switch to a local development server context
   dfsctl context use local-dev`,
-	Args: cobra.ExactArgs(1),
-	RunE: runContextUse,
+		Args: cobra.ExactArgs(1),
+		RunE: runContextUse,
+	}
+	return useCmd
 }
 
 func runContextUse(cmd *cobra.Command, args []string) error {
@@ -43,6 +46,6 @@ func runContextUse(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to switch context: %w", err)
 	}
 
-	fmt.Printf("Switched to context: %s\n", contextName)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Switched to context: %s\n", contextName)
 	return nil
 }

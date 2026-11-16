@@ -5,10 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var listCmd = &cobra.Command{
-	Use:   "list <share>",
-	Short: "List all quotas on a share",
-	Long: `List all per-identity quotas configured on a share.
+func newListCmd() *cobra.Command {
+	listCmd := &cobra.Command{
+		Use:   "list <share>",
+		Short: "List all quotas on a share",
+		Long: `List all per-identity quotas configured on a share.
 
 Outputs one row per quota entry, showing the scope (user/group/default-user),
 identity ID, hard and soft byte/file limits, current usage, and the grace
@@ -24,5 +25,7 @@ Examples:
 
   # List as YAML
   dfsctl quota list /archive -o yaml`,
-	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+		Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+	}
+	return listCmd
 }

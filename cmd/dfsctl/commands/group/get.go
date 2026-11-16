@@ -5,10 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var getCmd = &cobra.Command{
-	Use:   "get <name|id>",
-	Short: "Get group details",
-	Long: `Get detailed information about a specific group on the DittoFS server.
+func newGetCmd() *cobra.Command {
+	getCmd := &cobra.Command{
+		Use:   "get <name|id>",
+		Short: "Get group details",
+		Long: `Get detailed information about a specific group on the DittoFS server.
 Accepts either the group name or the group's full ID (see 'dfsctl group list').
 The output includes the group's GID, description, member list, and creation
 timestamp. Use -o json or -o yaml for machine-readable output.
@@ -25,5 +26,7 @@ Examples:
 
   # Output as YAML
   dfsctl group get editors -o yaml`,
-	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+		Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+	}
+	return getCmd
 }

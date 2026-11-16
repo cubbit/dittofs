@@ -3,24 +3,11 @@ package cmdutil
 
 import (
 	"fmt"
-	"io"
-	"os"
 
 	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/cubbit/dittofs/internal/cli/prompt"
 	"github.com/spf13/cobra"
 )
-
-// Flags stores global flag values accessible by subcommands.
-var Flags = &GlobalFlags{}
-
-// GlobalFlags holds the global flag values a command reads. The root's other
-// persistent flags stay registered, so every invocation of them still parses,
-// and return to the struct with the commands that read them.
-type GlobalFlags struct {
-	Output  string
-	NoColor bool
-}
 
 // Unavailable is the body of every v1 command dfsctl still lists: it refuses,
 // naming the command, and the command exits non-zero.
@@ -35,24 +22,20 @@ func Unavailable(cmd *cobra.Command, _ []string) error {
 	return fmt.Errorf("%s: not available until the CLI is rebuilt on the v2 API", cmd.CommandPath())
 }
 
-// GetOutputFormatParsed returns the parsed output format.
-func GetOutputFormatParsed() (output.Format, error) {
-	return output.ParseFormat(Flags.Output)
+// outputFormat is the format the root's --output flag names for cmd.
+func outputFormat(cmd *cobra.Command) (output.Format, error) {
+	f, _ := cmd.Flags().GetString("output")
+	return output.ParseFormat(f)
 }
 
-// IsColorDisabled returns whether color output is disabled.
-func IsColorDisabled() bool {
-	return Flags.NoColor
-}
-
-// PrintOutput prints data in the specified format (JSON, YAML, or table).
-// For table format, it displays emptyMsg if data is empty, otherwise uses the tableRenderer.
-func PrintOutput(w io.Writer, data any, isEmpty bool, emptyMsg string, tableRenderer output.TableRenderer) error {
-	format, err := GetOutputFormatParsed()
+// PrintOutput prints data to cmd's output in the format --output names. For a
+// table it prints emptyMsg when isEmpty, and tableRenderer otherwise.
+func PrintOutput(cmd *cobra.Command, data any, isEmpty bool, emptyMsg string, tableRenderer output.TableRenderer) error {
+	format, err := outputFormat(cmd)
 	if err != nil {
 		return err
 	}
-
+	w := cmd.OutOrStdout()
 	switch format {
 	case output.FormatJSON:
 		return output.PrintJSON(w, data)
@@ -75,28 +58,32 @@ func BoolToYesNo(b bool) string {
 	return "no"
 }
 
-// PrintSuccess prints a success message if the output format is table.
-func PrintSuccess(msg string) {
-	format, err := GetOutputFormatParsed()
-	if err != nil || format != output.FormatTable {
+// printSuccess prints msg to cmd's output when the output is a table.
+func printSuccess(cmd *cobra.Command, msg string) {
+	if format, err := outputFormat(cmd); err != nil || format != output.FormatTable {
 		return
 	}
-	printer := output.NewPrinter(os.Stdout, !IsColorDisabled())
-	printer.Success(msg)
+	noColor, _ := cmd.Flags().GetBool("no-color")
+	output.NewPrinter(cmd.OutOrStdout(), !noColor).Success(msg)
 }
 
-// RunDeleteWithConfirmation prompts for confirmation (unless force is true) and runs deleteFn.
-func RunDeleteWithConfirmation(resourceType, name string, force bool, deleteFn func() error) error {
-	confirmed, err := prompt.ConfirmWithForce(fmt.Sprintf("Remove %s '%s'?", resourceType, name), force)
+// RunDeleteWithConfirmation asks env's reader to confirm, unless force is set,
+// and then runs deleteFn. Without a person at the reader it refuses, naming
+// --force, rather than wait on a prompt nobody answers.
+func RunDeleteWithConfirmation(cmd *cobra.Command, env Env, resourceType, name string, force bool, deleteFn func() error) error {
+	if !force && !env.Interactive {
+		return fmt.Errorf("%s: removing %s '%s' needs confirmation; pass --force", cmd.CommandPath(), resourceType, name)
+	}
+	confirmed, err := prompt.ConfirmWithForce(env.In, fmt.Sprintf("Remove %s '%s'?", resourceType, name), force)
 	if err != nil {
 		if prompt.IsAborted(err) {
-			fmt.Println("\nAborted.")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "\nAborted.")
 			return nil
 		}
 		return err
 	}
 	if !confirmed {
-		fmt.Println("Aborted.")
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
 		return nil
 	}
 
@@ -104,6 +91,6 @@ func RunDeleteWithConfirmation(resourceType, name string, force bool, deleteFn f
 		return err
 	}
 
-	PrintSuccess(fmt.Sprintf("%s '%s' removed successfully", resourceType, name))
+	printSuccess(cmd, fmt.Sprintf("%s '%s' removed successfully", resourceType, name))
 	return nil
 }

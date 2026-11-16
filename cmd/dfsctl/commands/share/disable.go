@@ -5,10 +5,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var disableCmd = &cobra.Command{
-	Use:   "disable <name>",
-	Short: "Disable a share (drain clients, block new connections)",
-	Long: `Disable a share on the DittoFS server.
+func newDisableCmd() *cobra.Command {
+	disableCmd := &cobra.Command{
+		Use:   "disable <name>",
+		Short: "Disable a share (drain clients, block new connections)",
+		Long: `Disable a share on the DittoFS server.
 
 Disabling a share drains connected clients synchronously (NFS MOUNT / NFSv4
 PUTFH / SMB TREE_CONNECT are refused for disabled shares) and blocks new
@@ -25,5 +26,7 @@ Examples:
 
   # Emit the updated Share record as JSON
   dfsctl share disable /archive -o json`,
-	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+		Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
+	}
+	return disableCmd
 }

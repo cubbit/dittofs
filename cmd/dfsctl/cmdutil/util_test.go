@@ -2,9 +2,10 @@ package cmdutil
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
-	"github.com/cubbit/dittofs/internal/cli/output"
+	"github.com/spf13/cobra"
 )
 
 func TestBoolToYesNo(t *testing.T) {
@@ -40,135 +41,80 @@ func (t testTableRenderer) Rows() [][]string {
 	return t.rows
 }
 
-func TestPrintOutput_JSON(t *testing.T) {
-	// Set flags to JSON format
-	Flags.Output = "json"
-
+// newCmd returns a command whose --output flag says format and whose output
+// lands in the returned buffer, as a subcommand of the root sees both.
+func newCmd(format string) (*cobra.Command, *bytes.Buffer) {
 	var buf bytes.Buffer
-	data := []string{"foo", "bar"}
-	renderer := testTableRenderer{
-		headers: []string{"NAME"},
-		rows:    [][]string{{"foo"}, {"bar"}},
-	}
-
-	err := PrintOutput(&buf, data, false, "No items", renderer)
-	if err != nil {
-		t.Fatalf("PrintOutput() error = %v", err)
-	}
-
-	// JSON output is indented
-	result := buf.String()
-	if len(result) == 0 {
-		t.Error("PrintOutput() returned empty output for JSON")
-	}
-	// Check that it contains the expected data
-	if !bytes.Contains(buf.Bytes(), []byte("foo")) || !bytes.Contains(buf.Bytes(), []byte("bar")) {
-		t.Errorf("PrintOutput() = %q, missing expected data", result)
-	}
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("output", format, "")
+	cmd.Flags().Bool("no-color", true, "")
+	cmd.SetOut(&buf)
+	return cmd, &buf
 }
 
-func TestPrintOutput_YAML(t *testing.T) {
-	// Set flags to YAML format
-	Flags.Output = "yaml"
-
-	var buf bytes.Buffer
-	data := []string{"foo", "bar"}
-	renderer := testTableRenderer{
-		headers: []string{"NAME"},
-		rows:    [][]string{{"foo"}, {"bar"}},
-	}
-
-	err := PrintOutput(&buf, data, false, "No items", renderer)
-	if err != nil {
-		t.Fatalf("PrintOutput() error = %v", err)
-	}
-
-	expected := "- foo\n- bar\n"
-	if buf.String() != expected {
-		t.Errorf("PrintOutput() = %q, want %q", buf.String(), expected)
-	}
-}
-
-func TestPrintOutput_Table_Empty(t *testing.T) {
-	// Set flags to table format
-	Flags.Output = "table"
-
-	var buf bytes.Buffer
-	data := []string{}
-	renderer := testTableRenderer{
-		headers: []string{"NAME"},
-		rows:    [][]string{},
-	}
-
-	err := PrintOutput(&buf, data, true, "No items found.", renderer)
-	if err != nil {
-		t.Fatalf("PrintOutput() error = %v", err)
-	}
-
-	expected := "No items found.\n"
-	if buf.String() != expected {
-		t.Errorf("PrintOutput() = %q, want %q", buf.String(), expected)
-	}
-}
-
-func TestPrintOutput_Table_WithData(t *testing.T) {
-	// Set flags to table format
-	Flags.Output = "table"
-
-	var buf bytes.Buffer
-	data := []string{"foo", "bar"}
-	renderer := testTableRenderer{
-		headers: []string{"NAME"},
-		rows:    [][]string{{"foo"}, {"bar"}},
-	}
-
-	err := PrintOutput(&buf, data, false, "No items found.", renderer)
-	if err != nil {
-		t.Fatalf("PrintOutput() error = %v", err)
-	}
-
-	// Table output should contain headers and rows
-	result := buf.String()
-	if len(result) == 0 {
-		t.Errorf("PrintOutput() returned empty output for table")
-	}
-}
-
-func TestGetOutputFormatParsed(t *testing.T) {
-	tests := []struct {
-		flagValue string
-		expected  output.Format
-		wantErr   bool
+func TestPrintOutput(t *testing.T) {
+	renderer := testTableRenderer{headers: []string{"NAME"}, rows: [][]string{{"foo"}, {"bar"}}}
+	for _, tt := range []struct {
+		format  string
+		isEmpty bool
+		want    string
 	}{
-		{"table", output.FormatTable, false},
-		{"json", output.FormatJSON, false},
-		{"yaml", output.FormatYAML, false},
-		{"invalid", output.FormatTable, true},
+		{"json", false, "[\n  \"foo\",\n  \"bar\"\n]\n"},
+		{"yaml", false, "- foo\n- bar\n"},
+		{"table", true, "No items found.\n"},
+	} {
+		cmd, buf := newCmd(tt.format)
+		if err := PrintOutput(cmd, []string{"foo", "bar"}, tt.isEmpty, "No items found.", renderer); err != nil {
+			t.Fatalf("PrintOutput -o %s: %v", tt.format, err)
+		}
+		if buf.String() != tt.want {
+			t.Errorf("PrintOutput -o %s: got %q, want %q", tt.format, buf.String(), tt.want)
+		}
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.flagValue, func(t *testing.T) {
-			Flags.Output = tt.flagValue
-			result, err := GetOutputFormatParsed()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("GetOutputFormatParsed() error = %v, wantErr %v", err, tt.wantErr)
-				return
+	cmd, buf := newCmd("table")
+	if err := PrintOutput(cmd, nil, false, "No items found.", renderer); err != nil {
+		t.Fatalf("PrintOutput -o table: %v", err)
+	}
+	if !strings.Contains(buf.String(), "NAME") || !strings.Contains(buf.String(), "bar") {
+		t.Errorf("PrintOutput -o table: got %q, want the header NAME and the row bar", buf.String())
+	}
+
+	if err := PrintOutput(func() *cobra.Command { c, _ := newCmd("xml"); return c }(), nil, false, "", renderer); err == nil {
+		t.Error("PrintOutput -o xml: got no error, want the format refused")
+	}
+}
+
+// With no person at Env's reader a removal refuses before prompting, naming
+// --force, and --force removes without a prompt either way.
+func TestRunDeleteWithConfirmation(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		in          string
+		interactive bool
+		force       bool
+		wantDeleted bool
+		wantErr     string
+	}{
+		{name: "terminal, forced", interactive: true, force: true, wantDeleted: true},
+		{name: "no terminal", in: "y\n", wantErr: "test: removing Context 'c' needs confirmation; pass --force"},
+		{name: "no terminal, forced", force: true, wantDeleted: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, _ := newCmd("table")
+			env := Env{In: strings.NewReader(tt.in), Interactive: tt.interactive}
+			deleted := false
+			err := RunDeleteWithConfirmation(cmd, env, "Context", "c", tt.force, func() error { deleted = true; return nil })
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("error: got %v, want %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("error: got %v, want none", err)
 			}
-			if !tt.wantErr && result != tt.expected {
-				t.Errorf("GetOutputFormatParsed() = %v, want %v", result, tt.expected)
+			if deleted != tt.wantDeleted {
+				t.Errorf("deleted: got %v, want %v", deleted, tt.wantDeleted)
 			}
 		})
-	}
-}
-
-func TestIsColorDisabled(t *testing.T) {
-	Flags.NoColor = true
-	if !IsColorDisabled() {
-		t.Error("IsColorDisabled() = false, want true")
-	}
-
-	Flags.NoColor = false
-	if IsColorDisabled() {
-		t.Error("IsColorDisabled() = true, want false")
 	}
 }

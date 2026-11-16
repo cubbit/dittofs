@@ -3,6 +3,7 @@ package prompt
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/manifoldco/promptui"
@@ -11,13 +12,14 @@ import (
 // Confirm prompts the user for yes/no confirmation.
 // Returns true if the user confirms, false otherwise.
 // Returns ErrAborted if the user presses Ctrl+C.
-func Confirm(label string, defaultYes bool) (bool, error) {
+func Confirm(in io.Reader, label string, defaultYes bool) (bool, error) {
 	defaultStr := "y/N"
 	if defaultYes {
 		defaultStr = "Y/n"
 	}
 
 	prompt := promptui.Prompt{
+		Stdin:     io.NopCloser(in),
 		Label:     fmt.Sprintf("%s [%s]", label, defaultStr),
 		IsConfirm: true,
 		Default:   "",
@@ -46,8 +48,9 @@ func Confirm(label string, defaultYes bool) (bool, error) {
 // ConfirmDanger prompts for confirmation of a dangerous operation.
 // Requires typing the confirmation word to proceed.
 // Returns ErrAborted if the user presses Ctrl+C.
-func ConfirmDanger(label, confirmWord string) (bool, error) {
+func ConfirmDanger(in io.Reader, label, confirmWord string) (bool, error) {
 	prompt := promptui.Prompt{
+		Stdin: io.NopCloser(in),
 		Label: fmt.Sprintf("%s (type '%s' to confirm)", label, confirmWord),
 		Validate: func(input string) error {
 			if input != confirmWord {
@@ -73,9 +76,9 @@ func ConfirmDanger(label, confirmWord string) (bool, error) {
 
 // ConfirmWithForce returns true immediately if force is true,
 // otherwise prompts for confirmation.
-func ConfirmWithForce(label string, force bool) (bool, error) {
+func ConfirmWithForce(in io.Reader, label string, force bool) (bool, error) {
 	if force {
 		return true, nil
 	}
-	return Confirm(label, false)
+	return Confirm(in, label, false)
 }

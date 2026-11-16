@@ -3,6 +3,7 @@ package prompt
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 
 	"github.com/manifoldco/promptui"
@@ -28,8 +29,9 @@ func wrapError(err error) error {
 }
 
 // Input prompts for text input.
-func Input(label string, defaultValue string) (string, error) {
+func Input(in io.Reader, label string, defaultValue string) (string, error) {
 	prompt := promptui.Prompt{
+		Stdin:   io.NopCloser(in),
 		Label:   label,
 		Default: defaultValue,
 	}
@@ -39,8 +41,9 @@ func Input(label string, defaultValue string) (string, error) {
 }
 
 // InputRequired prompts for required text input.
-func InputRequired(label string) (string, error) {
+func InputRequired(in io.Reader, label string) (string, error) {
 	prompt := promptui.Prompt{
+		Stdin: io.NopCloser(in),
 		Label: label,
 		Validate: func(input string) error {
 			if input == "" {
@@ -55,8 +58,9 @@ func InputRequired(label string) (string, error) {
 }
 
 // InputWithValidation prompts for text input with custom validation.
-func InputWithValidation(label string, validate func(string) error) (string, error) {
+func InputWithValidation(in io.Reader, label string, validate func(string) error) (string, error) {
 	prompt := promptui.Prompt{
+		Stdin:    io.NopCloser(in),
 		Label:    label,
 		Validate: validate,
 	}
@@ -67,8 +71,9 @@ func InputWithValidation(label string, validate func(string) error) (string, err
 
 // InputOptional prompts for optional text input.
 // Returns empty string if user just presses Enter.
-func InputOptional(label string) (string, error) {
+func InputOptional(in io.Reader, label string) (string, error) {
 	prompt := promptui.Prompt{
+		Stdin: io.NopCloser(in),
 		Label: label + " (optional)",
 	}
 
@@ -77,8 +82,9 @@ func InputOptional(label string) (string, error) {
 }
 
 // InputInt prompts for integer input with validation.
-func InputInt(label string, defaultValue int) (int, error) {
+func InputInt(in io.Reader, label string, defaultValue int) (int, error) {
 	prompt := promptui.Prompt{
+		Stdin:   io.NopCloser(in),
 		Label:   label,
 		Default: strconv.Itoa(defaultValue),
 		Validate: func(input string) error {
@@ -100,8 +106,9 @@ func InputInt(label string, defaultValue int) (int, error) {
 }
 
 // InputPort prompts for a network port with validation (1-65535).
-func InputPort(label string, defaultValue int) (int, error) {
+func InputPort(in io.Reader, label string, defaultValue int) (int, error) {
 	prompt := promptui.Prompt{
+		Stdin:   io.NopCloser(in),
 		Label:   label,
 		Default: strconv.Itoa(defaultValue),
 		Validate: func(input string) error {
