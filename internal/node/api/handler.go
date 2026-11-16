@@ -62,7 +62,8 @@ func read[R any](h func(context.Context, request[none]) (R, error)) adapter {
 }
 
 // call adapts a call that is no write of the adapter's: h makes the whole
-// answer, and writes through its own Write if it writes.
+// answer. If it writes, it does so through a function of package auth, the
+// one place besides the write adapter that calls the store's Write.
 func call[B any](h func(context.Context, request[B]) (answer, error)) adapter {
 	return func(ctx context.Context, _ *Server, r *http.Request, id [16]byte) (answer, error) {
 		rq, err := decodeRequest[B](r, id)
@@ -150,9 +151,15 @@ func pick(rows []route, r *http.Request) (*route, string) {
 
 // run authenticates r unless its row is public, refuses a caller the row
 // does not admit, parses the path's ID and runs the row's adapter. With no
-// Authenticate, every caller is refused 401. A caller's rights are checked
-// before whether it must change its password, so that refusal reveals no row
-// the caller may not read.
+// Authenticate, every caller is refused 401. A refusal of an authenticated
+// caller here, before the adapter, is audited against the row's kind unless
+// r is a GET or a HEAD; the write adapter audits its own.
+//
+// decision: a path no row names is refused unaudited. It names no resource,
+// and the store refuses an audit record whose target has no kind, so its
+// record would fail to write; the refusal is still counted by op, as
+// unmatched. Overturned if the store admits an audit record targeting no
+// resource.
 func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID string) (answer, error) {
 	if rt == nil || rt.right != auth.Public {
 		if s.d.Authenticate == nil {
@@ -163,29 +170,47 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 			return answer{}, err
 		}
 		ctx = auth.With(ctx, c)
-		if rt == nil {
-			return answer{}, errNotFound
+	}
+	id, err := admit(ctx, rt, rawID)
+	if err != nil {
+		if _, authed := auth.CallerFrom(ctx); authed && rt != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			rec := s.auditOf(ctx, r)
+			rec.Target.Kind = rt.kind
+			s.refuse(ctx, rec, err)
 		}
+		return answer{}, err
+	}
+	return rt.serve(ctx, s, r, id)
+}
+
+// admit refuses a row the caller ctx carries may not call and an ID that
+// does not parse, and returns the ID the path names. A caller's rights are
+// checked before whether it must change its password, so that refusal
+// reveals no row the caller may not read.
+func admit(ctx context.Context, rt *route, rawID string) (id [16]byte, err error) {
+	if rt == nil {
+		return id, errNotFound
+	}
+	if c, ok := auth.CallerFrom(ctx); ok {
 		read, hold := auth.Allowed(c, rt.right)
 		switch {
 		case !read:
-			return answer{}, errNotFound
+			return id, errNotFound
 		case !hold:
-			return answer{}, &refusal{code: apiv1.CodeForbidden, detail: "the caller's role does not permit this call"}
+			return id, &refusal{code: apiv1.CodeForbidden, detail: "the caller's role does not permit this call"}
 		case c.MustChange && !rt.mustChange:
-			return answer{}, &refusal{code: apiv1.CodePasswordChangeRequired, detail: "change the account's password first"}
+			return id, &refusal{code: apiv1.CodePasswordChangeRequired, detail: "change the account's password first"}
 		}
 	}
-	var id [16]byte
 	if strings.Contains(rt.pattern, "{id}") {
 		// Every ID is a UUID in its canonical form, which ParseShareID
 		// parses for any of them.
 		sid, err := entity.ParseShareID(rawID)
 		if err != nil {
-			return answer{}, errNotFound
+			return id, errNotFound
 		}
 		id = sid
 		trace.SpanFromContext(ctx).SetAttributes(attribute.String("api.id", sid.String()))
 	}
-	return rt.serve(ctx, s, r, id)
+	return id, nil
 }

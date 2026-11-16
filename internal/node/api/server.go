@@ -52,9 +52,12 @@ type Deps struct {
 }
 
 // controlPlane is the metadata store's control plane as the API reaches it:
-// every change through Write, which commits it with its records.
+// every change through Write, which commits it with its records, and an
+// idempotency key's record looked up by Replay before a step Write must not
+// repeat.
 type controlPlane interface {
 	Write(ctx context.Context, meta entity.WriteMeta, fn func(entity.ControlPlaneTx) error) error
+	Replay(ctx context.Context, i entity.IdempotencyRecord) error
 }
 
 // Server is the node's two listeners.

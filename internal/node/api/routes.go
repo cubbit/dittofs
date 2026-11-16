@@ -5,16 +5,20 @@ import (
 	"net/http"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
 // route is one row of the route table: a method and a pattern of
-// net/http.ServeMux, the action a POST on {id}:verb names, the right its
-// caller must hold, whether it answers a caller that must change its
-// password, and its adapter.
+// net/http.ServeMux, the action a POST on {id}:verb names, the kind of
+// resource it changes, which a refusal before its adapter is audited
+// against and a row that changes nothing leaves zero, the right its caller
+// must hold, whether it answers a caller that must change its password, and
+// its adapter.
 type route struct {
 	method, pattern string
 	verb            string
+	kind            entity.ResourceKind
 	right           auth.Right
 	mustChange      bool
 	serve           adapter

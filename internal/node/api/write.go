@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
@@ -20,53 +21,74 @@ import (
 // maxKey bounds an Idempotency-Key, in bytes.
 const maxKey = 255
 
-// writing is what a write row's adapter knows of the resource its path
-// names: its kind; read, which returns its record, tracked in the write's
+// writing is what a write row's adapter knows of the resource it writes:
+// its kind; read, which returns the record id names, tracked in the write's
 // transaction, as the body a PUT of it sends, with its tag, ok false when
-// there is none; and whether its commit raises the principals or settings
-// generation.
+// there is none; whether its commit raises the principals or settings
+// generation; whether the row is a POST action that changes the spec, and so
+// carries If-Match as a PUT does; and secret, which names the fields of the
+// body whose values its audit record holds only as "set", nil for none.
 type writing[B any] struct {
-	kind   entity.ResourceKind
-	read   func(tx entity.ControlPlaneTx, id [16]byte) (doc B, tag uint64, ok bool, err error)
-	raises bool
+	kind        entity.ResourceKind
+	read        func(tx entity.ControlPlaneTx, id [16]byte) (doc B, tag uint64, ok bool, err error)
+	raises      bool
+	changesSpec bool
+	secret      func(path string) bool
 }
 
 // write adapts a write. Its checks run in this order: the body is decoded;
-// then, inside the store's Write, the request's idempotency key is looked
-// up; then the headers its method requires are required and checked against
-// the record's tag, read tracked; then h runs. So a key recorded for another
-// request answers 422 before a missing If-Match answers 428, and two writes
-// naming one tag cannot both commit. prepare, when not nil, runs once before
-// Write, never on a conflict retry, and its result is h's in; for a PATCH it
-// sees the patch, decoded as the body. A PATCH body is
-// a merge patch of the document read returns, and the result is decoded as
-// strictly as a PUT's body, so a patch can set nothing a PUT could not.
+// the request's idempotency key is looked up, a recorded one answering its
+// replay or 422; the headers its method requires are required, 428, or
+// refused when they contradict each other, 400; prepare runs; then, inside
+// the store's Write, the key is looked up again, the record's tag is
+// compared, read tracked, 412, and h runs. So a key recorded for another
+// request answers 422 before a missing If-Match answers 428, a replay or a
+// refused key never runs prepare, and two writes naming one tag cannot both
+// commit. prepare, when not nil, runs once before Write, never on a conflict
+// retry, and its result is h's in; for a PATCH it sees the patch, decoded as
+// the body. A PATCH body is a merge patch of the document read returns, and
+// the result is decoded as strictly as a PUT's body, so a patch can set
+// nothing a PUT could not. h returns its answer's body and the ID of the
+// record it wrote: the path's, or, for a POST on a collection, the one it
+// created.
 //
-// The answer, 200 with what h returns and the record's tag as its ETag, is
-// made inside the transaction and recorded under the key, so a replay
-// answers exactly what was first sent and changes nothing. The audit record
-// commits with the change; a refused request records no key and is audited
-// in a transaction of its own. After a commit that raises the principals or
+// decision: prepare runs before the tag is compared, so a write with a stale
+// tag runs it and is then refused 412. The tag is read inside Write's
+// transaction, tracked, because only there does a match hold until the
+// commit; a second read before prepare would cost every write a read to
+// spare a step that a stale write wastes. Overturned if a step is costly
+// enough, or has an effect outside the write, that running it for a stale
+// write matters.
+//
+// The answer, 200 with what h returns and the record's tag as its ETag, or
+// 201 with a Location naming the record for a POST on a collection, is made
+// inside the transaction and recorded under the key, so a replay answers
+// exactly what was first sent and changes nothing. The audit record commits
+// with the change; a refused request records no key and is audited in a
+// transaction of its own. After a commit that raises the principals or
 // settings generation, the answer waits for the node to apply it.
-func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) (I, error), h func(context.Context, request[B], I, entity.ControlPlaneTx) (R, error)) adapter {
+func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) (I, error), h func(context.Context, request[B], I, entity.ControlPlaneTx) (R, [16]byte, error)) adapter {
 	return func(ctx context.Context, s *Server, r *http.Request, id [16]byte) (a answer, err error) {
-		c, _ := auth.CallerFrom(ctx)
-		key := r.Header.Get("Idempotency-Key")
-		rec := entity.AuditRecord{Actor: c.Principal, Node: s.d.Node, Source: r.RemoteAddr,
-			Request: requestOf(ctx, r, key), Target: entity.ResourceRef{Kind: w.kind, ID: id[:]}}
+		if s.d.Store == nil {
+			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
+		}
+		created := r.PathValue("id") == ""
+		rec := s.auditOf(ctx, r)
+		rec.Target.Kind = w.kind
+		if !created {
+			rec.Target.ID = id[:]
+		}
 		refused := rec // as the request arrived, holding nothing a failed attempt set
 		defer func() {
 			if err != nil {
 				s.refuse(ctx, refused, err)
 			}
 		}()
-		if s.d.Store == nil {
-			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
-		}
 		body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
 		if err != nil {
 			return answer{}, &fieldError{detail: err.Error()}
 		}
+		key := r.Header.Get("Idempotency-Key")
 		if len(key) > maxKey {
 			return answer{}, &fieldError{field: "Idempotency-Key", detail: "longer than " + strconv.Itoa(maxKey) + " bytes"}
 		}
@@ -74,11 +96,17 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		if err := decode(bytes.NewReader(body), &rq.Body); err != nil {
 			return answer{}, err
 		}
-		patch := r.Method == http.MethodPatch
-		if patch {
-			if _, err := mergePatch([]byte("{}"), body); err != nil {
-				return answer{}, err
+		var idem *entity.IdempotencyRecord
+		if key != "" {
+			c, _ := auth.CallerFrom(ctx)
+			idem = &entity.IdempotencyRecord{Account: c.Principal, Key: key, Digest: digest(r, body)}
+			if err := s.d.Store.Replay(ctx, *idem); err != nil {
+				return s.replayed(err)
 			}
+		}
+		cond, err := conditionOf(r, key, w.changesSpec)
+		if err != nil {
+			return answer{}, err
 		}
 		var in I
 		if prepare != nil {
@@ -86,21 +114,17 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 				return answer{}, err
 			}
 		}
-		var idem *entity.IdempotencyRecord
-		if key != "" {
-			idem = &entity.IdempotencyRecord{Account: c.Principal, Key: key, Digest: digest(r, body)}
-		}
 		err = s.d.Store.Write(ctx, entity.WriteMeta{Audit: &rec, Idempotency: idem}, func(tx entity.ControlPlaneTx) error {
 			rq := rq
 			doc, tag, ok, err := w.read(tx, id)
 			if err != nil {
 				return err
 			}
-			if err := precondition(r, key, tag, ok); err != nil {
+			if err := cond.check(tag, ok); err != nil {
 				return err
 			}
 			rq.Expect = tag
-			if patch {
+			if r.Method == http.MethodPatch {
 				b, err := json.Marshal(doc)
 				if err != nil {
 					return err
@@ -113,40 +137,39 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 					return err
 				}
 			}
-			resp, err := h(ctx, rq, in, tx)
+			resp, wrote, err := h(ctx, rq, in, tx)
 			if err != nil {
 				return err
 			}
-			after, afterTag, exists, err := w.read(tx, id)
+			after, afterTag, exists, err := w.read(tx, wrote)
 			if err != nil {
 				return err
 			}
-			if rec.Change, err = change(present(doc, ok), present(after, exists)); err != nil {
+			if rec.Change, err = change(present(doc, ok), present(after, exists), w.secret); err != nil {
 				return err
 			}
+			rec.Target.ID = wrote[:]
 			rec.Before, rec.After, rec.Outcome = tag, afterTag, []byte("applied")
-			if a, err = jsonAnswer(http.StatusOK, resp); err != nil {
+			status := http.StatusOK
+			if created {
+				status = http.StatusCreated
+			}
+			if a, err = jsonAnswer(status, resp); err != nil {
 				return err
 			}
 			if exists {
 				a.header.Set("ETag", etag(afterTag))
+			}
+			if created {
+				a.header.Set("Location", r.URL.Path+"/"+entity.ShareID(wrote).String())
 			}
 			if idem != nil {
 				idem.Answer, err = json.Marshal(recorded{a.status, a.header, a.body})
 			}
 			return err
 		})
-		var replay *entity.IdempotentReplay
-		if errors.As(err, &replay) {
-			s.replays.Inc()
-			var rc recorded
-			if err := json.Unmarshal(replay.Answer, &rc); err != nil {
-				return answer{}, err
-			}
-			return answer{rc.Status, rc.Header, rc.Body}, nil
-		}
 		if err != nil {
-			return answer{}, err
+			return s.replayed(err)
 		}
 		s.audits.WithLabelValues("applied").Inc()
 		if idem != nil {
@@ -161,8 +184,10 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			// where it is applied. Overturned if a pass on a healthy
 			// node regularly outlasts the second.
 			//
-			// ponytail: the second is the wall clock's. Move it to the
-			// API's injected clock when the API is handed one.
+			// ponytail: the second is the wall clock's, and no test pins
+			// it: a test holding Applied past it would race the clock.
+			// Move it to the API's injected clock, and test it there,
+			// when the API is handed one.
 			wctx, cancel := context.WithTimeout(ctx, time.Second)
 			if werr := s.d.Applied(wctx); werr != nil {
 				s.d.Logger.Debug("node api: a committed write is not yet applied on this node", "request_id", requestID(ctx), "err", werr)
@@ -173,36 +198,77 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 	}
 }
 
-// precondition refuses a request lacking a header its method requires, 428:
-// a POST or a DELETE its Idempotency-Key, and a PUT, a PATCH or a DELETE its
-// If-Match; and 412, naming the record's tag when there is one, a request
-// whose If-Match is not the record's tag or whose PUT with If-None-Match: *
-// finds a record. A tag is compared only for equality.
+// replayed is the answer err recorded when it is a replay of a request
+// answered before, and err itself otherwise.
+func (s *Server) replayed(err error) (answer, error) {
+	var replay *entity.IdempotentReplay
+	if !errors.As(err, &replay) {
+		return answer{}, err
+	}
+	s.replays.Inc()
+	var rc recorded
+	if err := json.Unmarshal(replay.Answer, &rc); err != nil {
+		return answer{}, err
+	}
+	return answer{rc.Status, rc.Header, rc.Body}, nil
+}
+
+// condition is what a write requires of its record's tag: none, that no
+// record exists (a PUT with If-None-Match: *), or that the record's tag is
+// match.
+type condition struct {
+	create bool
+	match  string
+}
+
+// conditionOf is the condition r's headers name, refusing a request lacking
+// a header its method requires, 428: a POST or a DELETE its Idempotency-Key,
+// and a PUT, a PATCH, a DELETE or a POST action that changes the spec its
+// If-Match, which a PUT may replace by If-None-Match: *. A request carrying
+// both, or an If-Match of * or of a list, is refused 400.
 //
 // decision: If-Match is required, not optional. Optional, every script
 // omits it, and a lost update is the default behaviour; the CLI reads before
 // it writes, so the cost falls on nobody who uses it. Overturned if a client
 // class appears that cannot read first, which would get a named
-// unconditional action, not a missing header.
-func precondition(r *http.Request, key string, tag uint64, ok bool) error {
+// unconditional action, not a missing header. If-Match names one tag: *
+// would make the write unconditional again, and a list would let a client
+// that has read no single record write over any of several, so both are
+// refused rather than honoured.
+func conditionOf(r *http.Request, key string, changesSpec bool) (condition, error) {
 	m := r.Method
 	if key == "" && (m == http.MethodPost || m == http.MethodDelete) {
-		return &refusal{code: apiv1.CodePreconditionRequired, detail: "a " + m + " carries an Idempotency-Key"}
+		return condition{}, &refusal{code: apiv1.CodePreconditionRequired, detail: "a " + m + " carries an Idempotency-Key"}
 	}
-	match := r.Header.Get("If-Match")
+	match, none := r.Header.Get("If-Match"), r.Header.Get("If-None-Match")
 	switch {
-	case m == http.MethodPost:
-		return nil
-	case m == http.MethodPut && r.Header.Get("If-None-Match") == "*":
-		if ok {
-			return mismatch(tag)
-		}
-		return nil
+	case match != "" && none != "":
+		return condition{}, &fieldError{field: "If-Match", detail: "a request carries If-Match or If-None-Match, not both"}
+	case match == "*" || strings.Contains(match, ","):
+		return condition{}, &fieldError{field: "If-Match", detail: "If-Match names exactly one tag, never * or a list"}
+	case m == http.MethodPost && !changesSpec:
+		return condition{}, nil
+	case m == http.MethodPut && none == "*":
+		return condition{create: true}, nil
 	case match == "":
-		return &refusal{code: apiv1.CodePreconditionRequired, detail: "a " + m + " carries If-Match, or a PUT creating its record If-None-Match: *"}
+		return condition{}, &refusal{code: apiv1.CodePreconditionRequired, detail: "a " + m + " carries If-Match, or a PUT creating its record If-None-Match: *"}
+	}
+	return condition{match: match}, nil
+}
+
+// check refuses, 412 naming the record's tag when there is one, a write
+// whose condition the record does not meet: one creating its record finds
+// one, or one naming a tag finds none or another. A tag is compared only for
+// equality.
+func (c condition) check(tag uint64, ok bool) error {
+	switch {
+	case c.create && ok:
+		return mismatch(tag)
+	case c.match == "" || c.create:
+		return nil
 	case !ok:
 		return &refusal{code: apiv1.CodeGenerationMismatch, detail: "no record holds the tag If-Match names"}
-	case match != etag(tag):
+	case c.match != etag(tag):
 		return mismatch(tag)
 	}
 	return nil
@@ -233,18 +299,6 @@ type recorded struct {
 	Body   []byte      `json:"body"`
 }
 
-// requestOf is a write's request as its audit record holds it: its method,
-// its path, its request ID and its idempotency key, never its body.
-func requestOf(ctx context.Context, r *http.Request, key string) []byte {
-	b, _ := json.Marshal(struct { // strings always encode
-		Method         string `json:"method"`
-		Path           string `json:"path"`
-		RequestID      string `json:"request_id"`
-		IdempotencyKey string `json:"idempotency_key,omitempty"`
-	}{r.Method, r.URL.Path, requestID(ctx), key})
-	return b
-}
-
 // present is doc when its record exists, and nil when it does not.
 func present(doc any, ok bool) any {
 	if !ok {
@@ -254,10 +308,10 @@ func present(doc any, ok bool) any {
 }
 
 // change is what differs between the JSON of old and new, each field that
-// does named by its dotted path with its old and new values, nil when
-// nothing does; a nil side, a record that does not exist, has every field
-// null.
-func change(old, new any) ([]byte, error) {
+// does named by its dotted path with its old and new values, or with "set"
+// when secret names the path, nil when nothing does; a nil side, a record
+// that does not exist, has every field null.
+func change(old, new any, secret func(path string) bool) ([]byte, error) {
 	o, err := asJSON(old)
 	if err != nil {
 		return nil, err
@@ -266,8 +320,8 @@ func change(old, new any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := map[string][2]any{}
-	diff("", o, n, out)
+	out := map[string]any{}
+	diff("", o, n, secret, out)
 	if len(out) == 0 {
 		return nil, nil
 	}
@@ -282,7 +336,13 @@ func asJSON(v any) (any, error) {
 	return decodeAny(b)
 }
 
-func diff(path string, o, n any, out map[string][2]any) {
+func diff(path string, o, n any, secret func(string) bool, out map[string]any) {
+	if path != "" && secret != nil && secret(path) {
+		if !reflect.DeepEqual(o, n) {
+			out[path] = "set"
+		}
+		return
+	}
 	om, oObj := o.(map[string]any)
 	nm, nObj := n.(map[string]any)
 	if o == nil && nObj {
@@ -304,11 +364,11 @@ func diff(path string, o, n any, out map[string][2]any) {
 		return path + "." + k
 	}
 	for k, v := range om {
-		diff(at(k), v, nm[k], out)
+		diff(at(k), v, nm[k], secret, out)
 	}
 	for k, v := range nm {
 		if _, ok := om[k]; !ok {
-			diff(at(k), nil, v, out)
+			diff(at(k), nil, v, secret, out)
 		}
 	}
 }

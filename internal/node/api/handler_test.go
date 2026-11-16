@@ -112,7 +112,9 @@ func as(role entity.APIRole, mustChange bool) func(*http.Request) (auth.Caller, 
 	}
 }
 
+// reply is what a request, method and path, was answered.
 type reply struct {
+	req    string
 	status int
 	header http.Header
 	body   []byte
@@ -138,21 +140,22 @@ func (s *served) do(t *testing.T, method, path, body string, hdr ...string) repl
 	if err != nil {
 		t.Fatal(err)
 	}
-	return reply{resp.StatusCode, resp.Header, b}
+	return reply{method + " " + path, resp.StatusCode, resp.Header, b}
 }
 
-// problem decodes r as a problem body, failing unless it is one.
+// problem decodes r as a problem body, failing, naming r's request, unless
+// it is one.
 func (r reply) problem(t *testing.T) apiv1.Problem {
 	t.Helper()
 	if ct := r.header.Get("Content-Type"); ct != apiv1.MediaTypeProblem {
-		t.Fatalf("answer %d %s: content type %q, want %s", r.status, r.body, ct, apiv1.MediaTypeProblem)
+		t.Fatalf("%s: answered %d %s with content type %q, want %s", r.req, r.status, r.body, ct, apiv1.MediaTypeProblem)
 	}
 	var p apiv1.Problem
 	if err := json.Unmarshal(r.body, &p); err != nil {
-		t.Fatalf("problem %s: %v", r.body, err)
+		t.Fatalf("%s: problem %s: %v", r.req, r.body, err)
 	}
 	if p.Status != r.status {
-		t.Fatalf("problem %s: status %d, answered %d", r.body, p.Status, r.status)
+		t.Fatalf("%s: problem %s has status %d, answered %d", r.req, r.body, p.Status, r.status)
 	}
 	return p
 }
