@@ -50,20 +50,25 @@ func (c *manualClock) Now() time.Time {
 	return c.now
 }
 
-func (c *manualClock) AfterFunc(d time.Duration, f func()) func() bool {
+func (c *manualClock) AfterFunc(d time.Duration, f func()) core.Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	id := c.next
 	c.next++
 	c.timers[id] = manualTimer{c.now.Add(d), f}
-	return func() bool {
+	return stopFunc(func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		_, ok := c.timers[id]
 		delete(c.timers, id)
 		return ok
-	}
+	})
 }
+
+// stopFunc is a timer whose Stop is the func.
+type stopFunc func() bool
+
+func (f stopFunc) Stop() bool { return f() }
 
 func (c *manualClock) Advance(d time.Duration) {
 	c.mu.Lock()

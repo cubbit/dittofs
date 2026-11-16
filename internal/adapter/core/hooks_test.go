@@ -83,8 +83,12 @@ func CountLookups(sh *Shared, n *atomic.Int64) {
 	}
 }
 
-// Clock is the server's clock, which SetClock replaces with a test's.
-type Clock = clock
+// Clock is the server's clock, which SetClock replaces with a test's, and
+// Timer what its AfterFunc arms.
+type (
+	Clock = clock
+	Timer = timer
+)
 
 var ErrPanicked = errPanicked
 

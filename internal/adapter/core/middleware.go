@@ -102,15 +102,16 @@ const attemptDeadline = 30 * time.Second
 // testing/synctest bubble whole, where the runtime's time is the test's.
 type clock interface {
 	Now() time.Time
-	AfterFunc(d time.Duration, f func()) (stop func() bool)
+	AfterFunc(d time.Duration, f func()) timer
 }
+
+// timer is f armed on a clock; Stop reports whether it kept f from running.
+type timer interface{ Stop() bool }
 
 type runtimeClock struct{}
 
-func (runtimeClock) Now() time.Time { return time.Now() }
-func (runtimeClock) AfterFunc(d time.Duration, f func()) func() bool {
-	return time.AfterFunc(d, f).Stop
-}
+func (runtimeClock) Now() time.Time                            { return time.Now() }
+func (runtimeClock) AfterFunc(d time.Duration, f func()) timer { return time.AfterFunc(d, f) }
 
 // The pipeline keeps an attempt's start and the hold's deadline in the
 // context under these keys, before the attempt's reply reservation (R81).
@@ -169,11 +170,12 @@ type clockCtx struct {
 	at   time.Time
 	done chan struct{}
 
-	mu    sync.Mutex
-	err   error
-	stop  func() // the clock's timer and the parent's watch
-	funcs map[int]func()
-	next  int
+	mu      sync.Mutex
+	err     error
+	timer   timer       // the clock's, at at
+	unwatch func() bool // stops the parent's watch
+	funcs   map[int]func()
+	next    int
 }
 
 // withClockDeadline is parent with a deadline at at on clk; cancel ends it
@@ -195,14 +197,15 @@ func withClockDeadline(parent context.Context, clk clock, at time.Time) (ctx con
 		c.end(context.DeadlineExceeded)
 		return c, cancel
 	}
-	stopParent := context.AfterFunc(parent, func() { c.end(parent.Err()) })
-	stopTimer := clk.AfterFunc(at.Sub(now), func() { c.end(context.DeadlineExceeded) })
+	unwatch := context.AfterFunc(parent, func() { c.end(parent.Err()) })
+	t := clk.AfterFunc(at.Sub(now), func() { c.end(context.DeadlineExceeded) })
 	c.mu.Lock()
-	c.stop = func() { stopParent(); stopTimer() }
+	c.timer, c.unwatch = t, unwatch
 	ended := c.err != nil
 	c.mu.Unlock()
 	if ended {
-		c.stop()
+		t.Stop()
+		unwatch()
 	}
 	return c, cancel
 }
@@ -249,11 +252,12 @@ func (c *clockCtx) end(err error) {
 	}
 	c.err = err
 	close(c.done)
-	stop, funcs := c.stop, c.funcs
+	t, unwatch, funcs := c.timer, c.unwatch, c.funcs
 	c.funcs = nil
 	c.mu.Unlock()
-	if stop != nil {
-		stop()
+	if t != nil {
+		t.Stop()
+		unwatch()
 	}
 	for _, f := range funcs {
 		go f()
