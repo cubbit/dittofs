@@ -42,9 +42,10 @@ var soakSeed = flag.Uint64(
 var soakSeeds = []uint64{1, 2}
 
 // soakFakeSeeds are the seeds the run over the in-memory journal replays: the
-// soak's own, two that reach the debt and flush paths, and 26, whose Commit
-// waits on an existence commit the engine retries on the test clock.
-var soakFakeSeeds = []uint64{1, 2, 10, 26, 60}
+// soak's own, two that reach the debt and flush paths, 26, whose Commit
+// waits on an existence commit the engine retries on the test clock, and 59,
+// whose SMB flush is the Commit whose own Sync fails a window.
+var soakFakeSeeds = []uint64{1, 2, 10, 26, 59, 60}
 
 const (
 	soakFiles     = 3                // files each seed writes
@@ -420,6 +421,10 @@ func (r *soakRun) step() {
 		commit bool
 		// lostOpen is set when the SMB open flushed may answer ErrLost.
 		lostOpen bool
+		// flushOpen is the SMB open flushed, and spare that its file held a
+		// loss a restart found before the call.
+		flushOpen *smbOpen
+		spare     bool
 		// anonymous is set for a Commit without an open, and answered to the
 		// verifier it answered with success.
 		anonymous bool
@@ -506,11 +511,7 @@ func (r *soakRun) step() {
 	case k < 74:
 		commit = true
 		desc = fmt.Sprintf("commit %s through an SMB open", f.name)
-		// An open across a loss found in this process answers ErrLost on
-		// exactly one flush, whatever Commit of the file came between; a loss a
-		// restart found may also reach the open's loss sequence.
-		spare := f.owes
-		lostOpen = r.m.owesLost(r.opens[i]) || spare
+		spare, flushOpen = f.owes, r.opens[i]
 		r.log.set(r.calls, desc, false)
 
 		var v vfs.Verifier
@@ -574,6 +575,15 @@ func (r *soakRun) step() {
 	r.log.set(0, "", false)
 	r.slow(desc, start)
 	r.failedWindows()
+
+	if flushOpen != nil {
+		// An open across a loss found in this process answers ErrLost on
+		// exactly one flush, whatever Commit of the file came between, a
+		// window this flush's own Sync failed included; a loss a restart
+		// found may also reach the open's loss sequence.
+		lostOpen = r.m.owesLost(flushOpen) || spare
+	}
+
 	faulted := r.attribute(op)
 	if record != nil {
 		record()
