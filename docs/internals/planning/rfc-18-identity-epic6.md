@@ -229,7 +229,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R39 | Every record identity writes goes through one mint path: one sign-in, lookup or resolution mints every principal it needs in one batch; on `ErrExist` the lookups are re-run, a principal now found is bound, the rest minted in a new batch, for as long as each re-run binds a principal the one before did not; a re-run that binds none fails `ErrUnavailable`, writes nothing and logs both `PrincipalID`s | invariant | §4.1 | T6.2 |
 | R40 | A name never fails a mint: a principal whose name another of its kind holds under §4.6's comparison is minted without a name, counted in `identity_mints_unnamed_total` and logged naming both | invariant | §4.1, §9.2 | T6.2 |
 | R41 | Every record minted is counted in `identity_mints_total{kind}` | invariant | §9.2 | T6.2 |
-| R42 | A directory record is minted once, from the first answer, and holds its `PrincipalID`, `dir` entry ID, name, SID, uid and gid from then on | invariant | §5.1 | T6.9 |
+| R42 | A directory record is minted once, from the first answer, and holds its `PrincipalID`, `dir` entry ID, SID, uid and gid from then on; a later answer renames it (R51) | invariant | §5.1 | T6.9 |
 | R43 | A directory principal's uid and gid are the entry's `uidNumber` and `gidNumber` when it has them, else allocated, written once and never recomputed; an entry whose `uidNumber` or `gidNumber` is 0 or 65534 gets an allocated one, and the mint is counted | invariant | §2.3 item 3, §4.3 | T6.9 |
 | R44 | A directory principal's SID is its entry's; an entry with none is given a local SID from the RID counter when minted, and keeps it whatever the directory later says | invariant | §4.4, §5.1, §9.1 ID3, ID4 | T6.9, T6.10 |
 | R45 | A SID of the directory's domain with no principal is asked of the directory, and minted only when `FindOpts.Mint` is set; otherwise `Find` answers `ErrUnknownPrincipal` and writes nothing | invariant | §4.4 | T6.9 |
@@ -799,8 +799,9 @@ pkg/settings/
   past the TTL: his next call drops the group with no generation change (catches a cached caller
   outliving the answer, R57, R59); bob's `userAccountControl` disable bit set, then carol's
   `accountExpires` passed, each past the TTL: the next call refused `ErrAccess`, counted
-  `disabled` (catches a resolution ignoring the enabled state, R57); bob's entry deleted: the next resolution past 30 seconds refused
-  `ErrAccess`, counted `disabled` (catches "gone" read as "no change", R56); the directory failed
+  `disabled` (catches a resolution ignoring the enabled state, R57); bob's entry deleted, the clock past the 5-minute TTL: the next resolution refused
+  `ErrAccess`, counted `disabled`; again within 30 seconds, refused with no query (catches "gone"
+  read as "no change", R56); the directory failed
   past the grace: refused `ErrUnavailable`, counted `directory_unavailable`, never the everyone
   grant (R34, R60); a cached caller served before the TTL, rebuilt past it, refused past the TTL
   plus the grace (R32); the fault wrapper failing the groups question once: `ErrUnavailable`,
@@ -966,6 +967,9 @@ mint, T5.9, is late in E5, which depends on T6.2 for it.
   bounds `Fresh` by both, and §7.1 should say so.
 - RFC 18 §5.3 serves "an entry" within the grace, while §5.4 forbids a cached negative answer as
   a fallback; T6.7 never serves a negative entry stale, and §5.3 should say so.
+- RFC 18 §5.1's "A record is minted once" says the record holds its name from then on, and its next
+  sentence and §10's "name swap" row rename it; R42 follows the rename, and the first sentence
+  should drop "name".
 - RFC 18 §5.1 names no entry ID for an `rfc2307` directory, which has no `objectGUID`; T6.5 takes
   `entryUUID` (RFC 4530).
 - RFC 13 §6 runs a rule across two components' settings in the control plane; the NetBIOS rule
