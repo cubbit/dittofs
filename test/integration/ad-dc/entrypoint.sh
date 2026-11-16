@@ -36,9 +36,9 @@ KEYTAB_DIR="${KEYTAB_DIR:-/keytabs}"
 
 # The DC's dynamic RPC ports, NETLOGON's on ncacn_ip_tcp among them, which the
 # endpoint mapper on 135 hands out. Pinned to a small range, as a firewalled
-# site pins a Windows DC's, so a firewall guide can name it; the Dockerfile's
-# EXPOSE lists it with the DC's other ports.
-RPC_PORT_RANGE="50000-50019"
+# site pins a Windows DC's, so a firewall guide can name it. Read at provision
+# only; the tests pass it from fixture_test.go's adRPCPortLow/adRPCPortHigh.
+RPC_PORT_RANGE="${RPC_PORT_RANGE:-50000-50019}"
 
 # Service principals the DittoFS server presents to clients.
 SMB_SPN="${SMB_SPN:-cifs/dittofs.${REALM,,}}"
@@ -167,6 +167,12 @@ create_user_if_absent() {
     fi
 }
 
+# dn_of KIND NAME prints the distinguishedName of a samba-tool user or computer.
+dn_of() {
+    samba-tool "$1" show "$2" --attributes=distinguishedName 2>/dev/null \
+        | sed -n 's/^distinguishedName: //p' | head -n1
+}
+
 create_group_if_absent() {
     local group="$1"
     if ! samba-tool group show "$group" >/dev/null 2>&1; then
@@ -196,8 +202,10 @@ create_user_if_absent "$USER_BOB"
 samba-tool group addmembers engineering "$USER_BOB" >/dev/null 2>&1 || true
 
 # --- Computer accounts for the joins --------------------------------------
-# Each is created once, its password set only then, so a restart leaves it as
-# the tests or a join last left it.
+# Each is set up once, its password set only then, so a restart leaves it as
+# the tests or a join last left it. A marker written after the last step decides
+# "done", not the account's existence, so a start that died half-way through
+# an account finishes it on the next start.
 #
 # dittofs$ is the account an installation with the default NetBIOS name would
 # join as. It already exists, so an online join of that name must refuse it
@@ -220,16 +228,17 @@ OFFJOIN_LEGACY_PASSWORD="${OFFJOIN_LEGACY_PASSWORD:-OffJoinLegacy01!}"
 # create_computer_if_absent NAME PASSWORD [ENCTYPES]
 create_computer_if_absent() {
     local name="$1" password="$2" enctypes="${3:-}" dn
-    samba-tool computer show "$name" >/dev/null 2>&1 && return 0
+    local marker="/var/lib/samba/.computer-$name"
+    [ -f "$marker" ] && return 0
     log "Creating computer account $name\$"
-    samba-tool computer create "$name"
+    samba-tool computer show "$name" >/dev/null 2>&1 || samba-tool computer create "$name"
     if [ -n "$enctypes" ]; then
-        dn="$(samba-tool computer show "$name" --attributes=distinguishedName \
-            | sed -n 's/^distinguishedName: //p')"
+        dn="$(dn_of computer "$name")"
         printf 'dn: %s\nchangetype: modify\nreplace: msDS-SupportedEncryptionTypes\nmsDS-SupportedEncryptionTypes: %s\n' \
             "$dn" "$enctypes" | ldbmodify -H /var/lib/samba/private/sam.ldb
     fi
     samba-tool user setpassword "$name\$" --newpassword="$password"
+    touch "$marker"
 }
 create_computer_if_absent dittofs "$MACHINE_PASSWORD"
 create_computer_if_absent offjoinaes "$OFFJOIN_AES_PASSWORD" 24
@@ -275,8 +284,7 @@ if [ ! -f "$keytab" ]; then
     #
     # exportkeytab (below) then emits the full key set the DC now holds — AES256,
     # AES128, and RC4 — because we never restrict it to a single --enctype.
-    admin_dn="$(samba-tool user show Administrator --attributes=distinguishedName 2>/dev/null \
-        | sed -n 's/^distinguishedName: //p' | head -n1)"
+    admin_dn="$(dn_of user Administrator)"
     if [ -n "$admin_dn" ]; then
         log "Enabling AES enctypes on $admin_dn (msDS-SupportedEncryptionTypes=31)"
         ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF || \
@@ -338,8 +346,8 @@ EOF
 fi
 
 # Tests wait for this marker, so it is written last: once the keytab is whole
-# and the KDC, LDAP and DNS accept connections.
-for port in 88 389 53; do
+# and the KDC, LDAP, DNS and the RPC endpoint mapper accept connections.
+for port in 88 389 53 135; do
     for _ in $(seq 1 60); do
         (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && continue 2
         sleep 1
