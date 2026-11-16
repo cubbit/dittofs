@@ -183,6 +183,22 @@ func (s *served) poll(ctx context.Context, path string) <-chan polled {
 	return ch
 }
 
+// settle waits until the poll ch answers or parks, the clock then holding
+// more than parked waits, and returns its answer, the zero one if it parked.
+func (s *served) settle(t *testing.T, what string, ch <-chan polled, parked int) polled {
+	t.Helper()
+	var p polled
+	eventually(t, what+" answers or parks", func() bool {
+		select {
+		case p = <-ch:
+			return true
+		default:
+			return s.clock.Pending() > parked
+		}
+	})
+	return p
+}
+
 func answered(t *testing.T, what string, ch <-chan polled) polled {
 	t.Helper()
 	select {
@@ -243,9 +259,9 @@ func TestWaitBounds(t *testing.T) {
 		{"wait=61s", "wait"}, {"wait=0s", "wait"}, {"wait=-1s", "wait"}, {"wait=soon", "wait"},
 		{"wait=5s&wait=junk", "wait"}, {"wiat=5s", "wiat"},
 	} {
-		// Polled, so a wait accepted in error parks and is reported, not
+		// Settled, so a wait accepted in error parks and is reported, not
 		// waited out.
-		r := answered(t, "GET knob?"+tc.q, s.poll(t.Context(), knobAt(uuid.NewString())+"?"+tc.q))
+		r := s.settle(t, "GET knob?"+tc.q, s.poll(t.Context(), knobAt(uuid.NewString())+"?"+tc.q), s.clock.Pending())
 		var p apiv1.Problem
 		if err := json.Unmarshal(r.body, &p); err != nil || r.status != http.StatusBadRequest || p.Field != tc.field {
 			t.Errorf("GET knob?%s: answered %d %s, want 400 naming %s", tc.q, r.status, r.body, tc.field)
@@ -267,15 +283,7 @@ func TestParkedPollsAreBounded(t *testing.T) {
 	}
 	eventually(t, "256 polls park", func() bool { return s.clock.Pending() == base+256 })
 	next := s.poll(t.Context(), knobAt(id)+"?wait=30s")
-	var refused polled
-	eventually(t, "the 257th poll answers or parks", func() bool {
-		select {
-		case refused = <-next:
-			return true
-		default:
-			return s.clock.Pending() > base+256
-		}
-	})
+	refused := s.settle(t, "the 257th poll", next, base+256)
 	s.clock.Advance(30 * time.Second)
 	if refused.status == 0 {
 		refused = answered(t, "the 257th poll", next)
@@ -290,17 +298,7 @@ func TestParkedPollsAreBounded(t *testing.T) {
 		}
 	}
 	// Each answered poll gave its slot back, so the next one parks.
-	again := s.poll(t.Context(), knobAt(id)+"?wait=30s")
-	var early polled
-	eventually(t, "a poll after the 256 drained answers or parks", func() bool {
-		select {
-		case early = <-again:
-			return true
-		default:
-			return s.clock.Pending() == base+1
-		}
-	})
-	if early.status != 0 {
+	if early := s.settle(t, "a poll after the 256 drained", s.poll(t.Context(), knobAt(id)+"?wait=30s"), base); early.status != 0 {
 		t.Errorf("a poll after the 256 drained: answered %d %s, want it parked", early.status, early.body)
 	}
 }
@@ -383,9 +381,9 @@ func TestWaitAlreadyDone(t *testing.T) {
 	id := uuid.NewString()
 	s.putKnob(t, id, api.KnobOn, 0)
 	base := s.clock.Pending()
-	p := answered(t, "GET knob?wait=on with the knob on", s.poll(t.Context(), knobAt(id)+"?wait="+api.KnobOn))
+	p := s.settle(t, "GET knob?wait=on with the knob on", s.poll(t.Context(), knobAt(id)+"?wait="+api.KnobOn), base)
 	if p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":1,"spec":{"value":"on"}}` || s.clock.Pending() != base {
-		t.Errorf("GET knob?wait=on with the knob on: answered %d %s err %v, %d waits on the clock; want 200 at generation 1 and %d waits", p.status, p.body, p.err, s.clock.Pending(), base)
+		t.Fatalf("GET knob?wait=on with the knob on: answered %d %s err %v, %d waits on the clock; want 200 at generation 1 and %d waits", p.status, p.body, p.err, s.clock.Pending(), base)
 	}
 
 	other := uuid.NewString()
@@ -462,8 +460,8 @@ func TestCursorOutsideListing(t *testing.T) {
 	}
 	for _, key := range []string{"0", api.TagsTo, "~"} {
 		r := s.do(t, http.MethodGet, "/api/v1/tags?after="+cursor(key), "")
-		if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != "after" {
-			t.Errorf("GET tags after %q: answered %d field %q, want 400 naming after", key, r.status, p.Field)
+		if r.status != http.StatusBadRequest || r.problem(t).Field != "after" {
+			t.Errorf("GET tags after %q: answered %d %s, want 400 naming after", key, r.status, r.body)
 		}
 	}
 	if names, _ := s.tags(t, "?after="+cursor("b")); !slices.Equal(names, []string{"d"}) {
