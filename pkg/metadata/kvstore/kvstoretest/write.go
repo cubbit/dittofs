@@ -3,6 +3,7 @@ package kvstoretest
 import (
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -448,6 +449,27 @@ func testIdempotency(t *testing.T, kvo Opener) {
 	}
 	if ran != 1 {
 		t.Errorf("function runs after a replay: got %d, want 1", ran)
+	}
+	for _, tc := range []struct {
+		name    string
+		account entity.Principal
+		key     string
+		body    string
+		want    string
+	}{
+		{"same request", alice, "k1", "create lab", "replay 201 lab"},
+		{"another digest", alice, "k1", "create lab2", entity.ErrIdempotencyMismatch.Error()},
+		{"another account", bob, "k1", "create lab", "<nil>"},
+		{"a key holding nothing", alice, "k9", "create lab", "<nil>"},
+	} {
+		err := cp.Replay(ctx, entity.IdempotencyRecord{Account: tc.account, Key: tc.key, Digest: sha256.Sum256([]byte(tc.body))})
+		got := fmt.Sprint(err)
+		if a, ok := replayed(err); ok {
+			got = "replay " + string(a)
+		}
+		if got != tc.want {
+			t.Errorf("Replay of %s: got %s, want %s", tc.name, got, tc.want)
+		}
 	}
 	if err := keyed(cp, alice, "k1", "create lab2", "201", "lab2", &ran); !errors.Is(err, entity.ErrIdempotencyMismatch) {
 		t.Errorf("key reused with another digest: %v, want %v", err, entity.ErrIdempotencyMismatch)
