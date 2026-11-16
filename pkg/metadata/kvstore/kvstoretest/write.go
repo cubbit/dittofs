@@ -3,6 +3,7 @@ package kvstoretest
 import (
 	"crypto/sha256"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -280,6 +281,42 @@ func testLastAdminRace(t *testing.T, kvo Opener) {
 	}
 }
 
+// A write that keeps a user an enabled admin, a rename, leaves the
+// enabled-admin index unwritten, so a concurrent count of it commits on its
+// first attempt.
+func testAdminRenameKeepsCount(t *testing.T, kvo Opener) {
+	for _, b := range kvo.backends() {
+		t.Run(b.name, func(t *testing.T) {
+			s, h := heldStore(t, b)
+			cp := s.ControlPlane()
+			a := user("a")
+			a.Role = entity.RoleAdmin
+			gen, err := cp.PutUser(ctx, a, 0, entity.Alloc{})
+			must(t, err)
+			attempts := 0
+			outer, inner := race(h,
+				func() error {
+					return cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+						attempts++
+						if _, err := tx.EnabledAdmins(); err != nil {
+							return err
+						}
+						return errOf(tx.PutNetgroup(entity.Netgroup{Name: "lab"}, 0))
+					})
+				},
+				func() error {
+					a.Name = "a2"
+					return errOf(cp.PutUser(ctx, a, gen, entity.Alloc{}))
+				})
+			must(t, inner)
+			must(t, outer)
+			if attempts != 1 {
+				t.Errorf("attempts of a count raced by an admin's rename: got %d, want 1", attempts)
+			}
+		})
+	}
+}
+
 // The installation is read tracked: a concurrent turn-off of NTLM that
 // commits first makes the write run again and read it. Turning NTLM off
 // clears a completed NT-hash deletion; the machine join reads back as set.
@@ -309,14 +346,15 @@ func testInstallationInWrite(t *testing.T, kvo Opener) {
 			if seen.NTLMOff.Off != 5 || seen.NTLMOff.Deleted != (entity.OperationID{}) {
 				t.Errorf("NTLM off read by the attempt that committed: got %+v, want off at 5 with no deletion", seen.NTLMOff)
 			}
-			var j entity.MachineJoin
-			j.Joined, j.Account, j.Names = true, "HOST$", []string{"host/a.example"}
+			j := entity.MachineJoin{Joined: true, Account: "HOST$", Owner: []byte{1, 5}, Delegation: []byte{7},
+				Names: []string{"host/a.example", "cifs/a.example"}}
+			j.LastRotation.At, j.LastRotation.Failed = time.Unix(1_800_000_100, 0).UTC(), true
+			j.LastRotation.Tag, j.LastRotation.Read = 4, 5
 			j.LastRotation.Version, j.LastRotation.Confirmed = 3, time.Unix(1_800_000_000, 0).UTC()
 			must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.SetMachineJoin(j) }))
 			in, err := s.Installation(ctx)
 			must(t, err)
-			if !in.Join.Joined || in.Join.Account != j.Account || len(in.Join.Names) != 1 ||
-				in.Join.LastRotation.Version != 3 || !in.Join.LastRotation.Confirmed.Equal(j.LastRotation.Confirmed) {
+			if !reflect.DeepEqual(in.Join, j) {
 				t.Errorf("machine join read back: got %+v, want %+v", in.Join, j)
 			}
 		})
