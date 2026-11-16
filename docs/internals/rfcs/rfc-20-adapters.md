@@ -4284,7 +4284,10 @@ nfs4 COMPOUND                      request span: frame → send, opened by the p
   ([RFC 25 §5.4](rfc-25-observability.md#5.4%20What%20is%20never%20logged)).
 - **Unsampled costs nothing.** With tracing off or a request unsampled, the
   span calls allocate nothing and read no clock beyond the trace ID; §6.10's
-  pipeline benchmark asserts it.
+  pipeline benchmark asserts it. So the pipeline decides sampling from the
+  trace ID it draws for every request, before it opens a span, and calls the
+  tracer only for a sampled request: a tracer that samples nothing still
+  allocates in `Start`.
 
 ### 10.3 Logs
 
