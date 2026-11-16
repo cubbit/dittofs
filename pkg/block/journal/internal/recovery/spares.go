@@ -25,11 +25,11 @@ import (
 // with the records after it — so re-adopting one loses nothing. A segment a
 // successor names is not among them whatever its records hold: it was sealed
 // before its successor was made. The naming successor itself is withheld
-// only while the predecessor it names is still on disk and neither of its
-// own proofs seals its end, as the decision below says; the proof the
-// marker or the trailer makes releases the take at this open, retirement —
-// the predecessor's name on no file — releases it too, and the re-adoption
-// then leaves the predecessor unnamed at the next open: the unnamed path
+// while the verdict the raise computed ends the predecessor it names, as
+// the decision below says; a predecessor whose end its own evidence seals
+// releases the take at this open, and one the open ends releases it only
+// once the emptying has unlinked it, so the re-adoption never leaves the
+// predecessor unnamed while its claim still judges it: the unnamed path
 // the classing keeps
 // safe, a predecessor nothing names being one that could have been open at a
 // crash, its tail proven on the device rather than trusted, its synced drops
@@ -47,41 +47,39 @@ import (
 // is never read as empty.
 //
 // decision: a candidate a sync mark names is withheld, never re-adopted,
-// zeroed or unlinked whatever its own bytes say, for the mark is the caller's
-// durable record that its stream synced through the segment, and the mark's
-// own work — its contribution to the counters, the proof below its Through,
-// the lost-tail check — belongs to the marks phases that run later and must
-// find the segment as it stands. The ceiling is the withholding alone, a
-// filter at this one choke point; withdraw it when the marks phases land and
-// own the named segments' fates under their own rules.
+// zeroed or unlinked whatever its own bytes say, and the mark's own work —
+// its contribution to the counters, the proof below its Through, the
+// withheld record-less segment the raise ends, the lost-tail check — is
+// the marks phases' own, must they find the segment as it stands. The
+// ceiling is the withholding alone, a filter at this one choke point: the
+// raise ends the mark's record-less segment and the later emptying unlinks
+// it, and a mark naming a segment holding records keeps them from the
+// record-less test alone, never naming a fate of its own here.
 //
 // decision: a record-less take whose verified header names a predecessor
-// whose end is not yet proven — a predecessor still on disk that neither
-// its marker nor its trailer seals — is withheld with it, never re-adopted,
-// zeroed or unlinked, for the take's naming header is evidence the tail
-// classing reasons from — its claim is what the marker-alone-rotted and
-// missing-end checks judge the predecessor by — and nothing that reasons
-// from evidence releases it before the conclusion is durable. The holding
-// ends where the verdict does: a predecessor whose marker verifies on the
-// scan, or whose trailer names a footer just past the rotted marker — the
-// proof the classing's marker-alone exemption reads — releases its take at
-// the very open that reads the proof, and so does one unlinked, its claim
-// answering nothing on disk. Releasing the take is a re-proof, not an
-// evidence loss: the open that next finds the predecessor unnamed judges
-// its tail on the device, cutting it where no acknowledged record sits and
-// sealing it there, with every record its trailer proved still reading
-// back — the verdict on the marker moved, with the take's release, to
-// the unnamed path the tail proof owns, but the predecessor's bytes lost
-// nothing. Today no end reaches this phase unproven: the open refuses a
-// named predecessor whose end neither proof seals, so the hold binds where
-// the later phases that carry a verdict instead of refusing will let such
-// an end arrive — the hold is their contract, and the rows below pin it at
-// this function. Withdrawn when the phases that write the open's loss
-// records and reconcile run before the spares phase, at which point the
-// take is re-adopted at once as any other spare. The ceiling is the held
-// take itself: it leaks no cap, counting toward the headroom for as long as
-// it is held.
-func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID]bool, marks []core.SyncMark, sealProven map[core.SegmentID]bool) (cands []core.SegmentID, held []core.SegmentID) {
+// this open ends — a predecessor still on disk whose end neither its own
+// marker nor its trailer proved, so the open ends it rather than trusting
+// it — is withheld with it, never re-adopted, zeroed or unlinked, for the
+// take's naming header is evidence the tail classing reasons from — its
+// claim is what the marker-alone-rotted and missing-end checks judge the
+// predecessor by — and nothing that reasons from evidence releases it
+// before the conclusion is durable. The taking ends where the predecessor
+// does: one whose end its own evidence seals leaves the pool its take at
+// this very open, and so does one unlinked, its claim answering nothing on
+// disk. A predecessor the open ends releases its take only once it is gone
+// with a synced unlink — where the emptying empties it — for a take
+// adopted before that unlink is durable would zero the only header naming
+// the predecessor, and the next open would read its predecessor with less
+// evidence than the one that took it had. A held take leaks no cap: it
+// counts toward the headroom for as long as it is held. A predecessor on
+// disk with no verdict entry keeps its take held — the verdict the raise
+// writes one entry per named predecessor, so a missing entry names a
+// predecessor the open could not class, an open the unreadable-range
+// refusal answers before this phase adopts anything.
+//
+// spareCandidates takes the verdict the marks raise computed; its own
+// reads stay the record-less test.
+func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID]bool, marks []core.SyncMark, fates map[core.SegmentID]predFate) (cands []core.SegmentID, held []core.SegmentID) {
 	scanned := make(map[core.SegmentID]segmentScan, len(scans))
 	for _, sc := range scans {
 		scanned[sc.ID] = sc
@@ -107,23 +105,17 @@ func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID
 		onDisk[id] = true
 	}
 
-	// The takes naming a predecessor whose end is not yet proven: a
-	// predecessor still on disk that neither of its own proofs seals —
-	// neither the marker the scan reads whole, nor the trailer naming a
-	// footer just past it, the proof the classing's marker-alone exemption
-	// turns into the sealed fate. Each such take stays with the predecessor
-	// it names, withheld by the decision above; a name no file holds is
-	// retired, its take the pool's plain spare.
+	// The takes naming a predecessor the verdict ends: each stays with the
+	// predecessor it names, withheld by the decision above, until the
+	// emptying unlinks that predecessor with a synced unlink; a predecessor
+	// gone answers nothing on disk, its take the pool's plain spare.
 	naming := make(map[core.SegmentID]bool, len(att.Own))
 	for _, s := range att.Own {
 		p := s.Header.Predecessor
 		if p == 0 || p == s.ID || !onDisk[p] {
 			continue
 		}
-		// A predecessor with no scan is one a read failed on: the open
-		// refuses on its ranges before this phase, so the hold is
-		// conservative and unreachable.
-		if psc, pok := scanned[p]; !pok || (!psc.Sealed && !sealProven[p]) {
+		if f, pok := fates[p]; !pok || f == predEnded {
 			naming[s.ID] = true
 		}
 	}
@@ -284,15 +276,11 @@ func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.Jou
 		return &core.UnreadableRangesError{Ranges: ranges}
 	}
 
-	// The classing's proofs of a predecessor's end: the sealed fate a named
-	// predecessor takes whether its marker verified on the scan or its
-	// trailer named a footer just past the rotted marker in the marker-alone
-	// exemption — the two proofs that release a held take.
-	sealProven := make(map[core.SegmentID]bool, len(st.Tails.Fates))
-	for _, f := range st.Tails.Fates {
-		sealProven[f.ID] = f.Kind == fateSealed
-	}
-	cand, held := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), marks, sealProven)
+	// The predecessor verdicts the marks raise computed: each named
+	// predecessor's sealed, ended or gone, the answer the naming hold keys
+	// on — a predecessor the open ends keeps its take held, one whose end
+	// its own evidence seals releases it at this open.
+	cand, held := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), marks, st.Marks.fates)
 	sizes := make(map[core.SegmentID]int64, len(st.Rebuilt.Scans))
 	for _, sc := range st.Rebuilt.Scans {
 		sizes[sc.ID] = sc.Size

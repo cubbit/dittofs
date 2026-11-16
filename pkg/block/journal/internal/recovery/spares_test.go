@@ -64,21 +64,9 @@ func (r *rig) runCandidates() State {
 // with no sync mark naming any of them.
 func candidates(st State) []core.SegmentID {
 	// The held takes are the state's own answer, Spares.Held; the row here
-	// reads the candidate list alone, its proofs the state's own.
-	cands, _ := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), nil, sealProvenOf(st))
+	// reads the candidate list alone, its verdicts the state's own.
+	cands, _ := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), nil, st.Marks.fates)
 	return cands
-}
-
-// sealProvenOf mirrors the phase's own answer over a state: each id the
-// classing gave the sealed fate — the fate a named predecessor takes whether
-// its marker verified on the scan or its trailer named a footer just past the
-// rotted marker.
-func sealProvenOf(st State) map[core.SegmentID]bool {
-	proven := make(map[core.SegmentID]bool, len(st.Tails.Fates))
-	for _, f := range st.Tails.Fates {
-		proven[f.ID] = f.Kind == fateSealed
-	}
-	return proven
 }
 
 // TestSpareCandidatesHasARecordlessUntakenSpare plants one all-zero segment
@@ -336,7 +324,10 @@ func TestSparesPhaseWithholdsACandidateASyncMarkNames(t *testing.T) {
 	removes := r.seam.Calls(kit.OpRemove)
 
 	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID,
-		[]core.SyncMark{{Stream: 1, Segment: uint64(marked), Through: testCap, Offset: testCap, Sequence: 1}})
+		// The mark covers nothing: its Offset sits at the header's end, the
+		// loss-free shape — a mark whose Offset lay past the header over a
+		// record-less segment would be a lost tail the marks phases refuse.
+		[]core.SyncMark{{Stream: 1, Segment: uint64(marked), Through: format.SegmentHeaderSize, Offset: format.SegmentHeaderSize, Sequence: 1}})
 	if err != nil {
 		t.Fatalf("spares: the open under a sync mark: %v", err)
 	}
@@ -1304,17 +1295,17 @@ func TestSparesPhaseACancelledDuringTheUnlinksStopsTheRest(t *testing.T) {
 	}
 }
 
-// TestSpareCandidatesHoldsATakeOnlyOverAnUnprovenEnd pins the naming hold's
-// whole release surface at the function that owns it: a take naming a
-// predecessor on disk is held only while neither of the predecessor's own
-// proofs seals its end. The marker's proof releases on the scan itself; the
-// trailer's — the marker-alone exemption's, surfacing as the sealed fate —
-// releases on the classing's answer; the leg with no proof held, its inputs
-// the hand-fed ones this row supplies, is the shape today's open refuses
-// before the phase (a named predecessor whose end neither proof seals), which
-// the later verdict-carrying phases will let reach it and the hold must
-// still meet there.
-func TestSpareCandidatesHoldsATakeOnlyOverAnUnprovenEnd(t *testing.T) {
+// TestSpareCandidatesHoldsATakeOnlyOverTheVerdictEachEndGives pins the naming
+// hold's whole release surface at the function that owns it: a take naming a
+// predecessor on disk is held only while the predecessor's verdict says the
+// open ends it. A predecessor whose marker verifies on the scan takes the
+// sealed verdict from the raise and releases its take; the trailer's proof —
+// the marker-alone exemption's, surfacing as the sealed fate — releases it
+// the same way; the ended verdict, hand-fed for the arm the open cannot run
+// — the take whose predecessor a mark names and the raise ends — is the
+// hold's whole remaining surface, released only where the emptying unlinks
+// the predecessor with a synced unlink.
+func TestSpareCandidatesHoldsATakeOnlyOverTheVerdictEachEndGives(t *testing.T) {
 	const w = core.SegmentID(2)
 	sealed, _ := buildSealed(1, tailRec(200, 0x4100))
 	rotted := func() []byte {
@@ -1327,15 +1318,15 @@ func TestSpareCandidatesHoldsATakeOnlyOverAnUnprovenEnd(t *testing.T) {
 	for _, leg := range []struct {
 		name     string
 		plant    []byte
-		proven   map[core.SegmentID]bool // the classing's sealed-end answer, hand-fed for the arm the open cannot run
+		fates    map[core.SegmentID]predFate // the verdict the raise computed, hand-fed for the arm the open cannot run
 		wantHeld bool
 	}{
 		{"the marker releases it, its seal read on the scan", sealed,
-			map[core.SegmentID]bool{1: false}, false},
+			map[core.SegmentID]predFate{1: predSealed}, false},
 		{"the trailer releases it, its proof the classing's sealed fate", rotted(),
-			map[core.SegmentID]bool{1: true}, false},
-		{"an end no proof seals holds it", rotted(),
-			map[core.SegmentID]bool{1: false}, true},
+			map[core.SegmentID]predFate{1: predSealed}, false},
+		{"a predecessor the open ends holds it", rotted(),
+			map[core.SegmentID]predFate{1: predEnded}, true},
 	} {
 		t.Run(leg.name, func(t *testing.T) {
 			r := newRig(t)
@@ -1344,7 +1335,7 @@ func TestSpareCandidatesHoldsATakeOnlyOverAnUnprovenEnd(t *testing.T) {
 			plantTake(r, w, 1)
 			st := r.runCandidates()
 
-			cands, heldTakes := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), nil, leg.proven)
+			cands, heldTakes := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), nil, leg.fates)
 
 			gotHeld := slices.Contains(heldTakes, w)
 			if gotHeld != leg.wantHeld {

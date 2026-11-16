@@ -106,7 +106,13 @@ type State struct {
 	Proof proof
 
 	// Spares is what the spares phase did with the segments it re-adopted:
-	// each adoption, with the id the allocator owns again, and each id the
+
+	// Marks is the marks raise phase's answer: the marks themselves, the
+	// predecessor verdicts the spares phase holds takes by, and the
+	// segments withheld from the spare test. The raise phase fills it.
+	Marks marksResults
+
+	// Spares is what the spares phase did with the segments it re-adopted:	// each adoption, with the id the allocator owns again, and each id the
 	// phase unlinked.
 	Spares Spares
 
@@ -142,7 +148,7 @@ func (p phase) String() string { return string(p.span) }
 var phases = [...]phase{
 	{span: core.SpanOpenAttach, run: runAttach},
 	{span: core.SpanOpenRebuild, run: runRebuild},
-	{span: core.SpanOpenMarksRaise},
+	{span: core.SpanOpenMarksRaise, run: runMarksRaise},
 	{span: core.SpanOpenTailProof, run: runTailProof},
 	{span: core.SpanOpenMarksLostTail},
 	{span: core.SpanOpenSpares, run: runSpares},
@@ -237,8 +243,7 @@ func rebuildReaders(deps Deps) int {
 // rebuild, and marks for the spares phase, which withholds every
 // candidate a mark names and each record-less take whose header names a
 // predecessor whose end is not yet proven; the marks phases' own reads
-// are not built yet.
-func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {
+// are not built yet.func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {
 	if err := ctx.Err(); err != nil {
 		return State{}, err
 	}

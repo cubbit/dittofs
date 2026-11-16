@@ -1,0 +1,282 @@
+package recovery
+
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"slices"
+
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+)
+
+// predFate is one predecessor segment's verdict for this open: what became
+// of a segment another's header names, decided before the spares phase runs
+// so the take naming it is adopted or held on the predecessor's own state
+// and not on evidence the phase would have to re-derive.
+type predFate uint8
+
+const (
+	// predSealed is a predecessor on disk whose end its own evidence
+	// proves — the marker the scan read, or the trailer naming a footer
+	// past a rotted one, through the classing's marker-alone exemption.
+	// Its take is re-adopted at this open.
+	predSealed predFate = iota
+	// predEnded is a predecessor the open ends — still on disk, its end
+	// unproven, ended by the classing's fate or by this phase over a mark's
+	// record-less segment. Its take is withheld: a predecessor the open
+	// ends frees its take only once it is gone with a synced unlink, so the
+	// emptying that unlinks it hands the take to the pool once the segment
+	// is gone, and a take adopted before that unlink would zero the only
+	// header naming the predecessor, leaving the next open reading its
+	// predecessor with less evidence than this one had.
+	predEnded
+	// predGone is a predecessor no own, unverified or zero-header segment
+	// on disk holds: its name answers nothing, so its take is the pool's
+	// plain spare. Only a verified own header's claim counts — a foreign
+	// segment is nobody's predecessor here.
+	predGone
+)
+
+// String names the verdict as the rules above spell it.
+func (f predFate) String() string {
+	switch f {
+	case predSealed:
+		return "sealed"
+	case predEnded:
+		return "ended"
+	case predGone:
+		return "gone"
+	}
+	return "unknown"
+}
+
+// marksResults is the marks raise phase's answer: the marks themselves, one
+// entry per named segment; the predecessor verdicts the spares phase holds
+// takes by; and the segments withheld from the spare test — every segment
+// a mark names, kept on disk for the marks steps that read what it holds.
+type marksResults struct {
+	set      map[core.SegmentID]core.SyncMark
+	fates    map[core.SegmentID]predFate
+	withheld map[core.SegmentID]bool
+}
+
+// runMarksRaise is the marks raise phase: the caller's sync marks read into
+// the state every later phase consumes, raising and withholding before the
+// tail's proof runs and before anything is appended, zeroed or taken from
+// the pool, so a refused open changes nothing. For each mark, four jobs:
+//
+// The mark's Through joins the proofs the tail classing reads. A refused
+// range — a torn or a zero slot included — below the Through in the mark's
+// segment, whose catalog does not verify, is a range that names no record
+// and refuses the open: the mark is the caller's durable record that its
+// stream synced through the range, so its bytes held a record nothing on
+// disk names, and the open never cuts it as the torn tail of a crash. A
+// record the classing left unreconciled below the Through — a clone target
+// whose body failed — folds into the corrupt drops, and a torn or zero
+// header slot the Through covers counts as synced damage: the damaged set
+// carries the segment until the journal closes, and the classing reports
+// none of these where the mark is the only proof, for its probes read the
+// device, and the mark is the caller's.
+//
+// The mark's segment is withheld from the spare test wherever it stands,
+// and where it holds no verifying record it is ended — the fate that takes
+// it no append — for a re-append landing in it would hide a lost tail it
+// guards. The other fates stay as the classing wrote them, and a mark whose
+// segment is not on disk is decided by the lost-tail check that runs after
+// the tail's proof, which reads the absence as a retirement: the counters
+// and the id seed below are raised for every mark regardless.
+//
+// The next sequence number the counters issue and the id seed the attach
+// pass drew both end above the mark's own Sequence and Segment, so a
+// restored or drained directory never reissues a number the caller's
+// metadata still names.
+//
+// Every predecessor an own header names gets its verdict, decided here
+// before the spares phase runs: gone where no disk segment holds the id,
+// ended where the segment's fate ends it, sealed otherwise. The verdict is
+// what the spares phase holds a take by — a take naming an ended
+// predecessor stays with it until the emptying has unlinked it, and one
+// naming a sealed predecessor is re-adopted at once.
+func runMarksRaise(ctx context.Context, _ Deps, _ *reader, st *State, _ core.JournalID, _ core.Version, marks []core.SyncMark) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	res := marksResults{
+		set:      make(map[core.SegmentID]core.SyncMark, len(marks)),
+		fates:    make(map[core.SegmentID]predFate, len(st.Attached.Own)),
+		withheld: make(map[core.SegmentID]bool, len(marks)),
+	}
+	named := successorSet(st.Attached.Own)
+	unverified := unverifiedSet(st.Attached)
+
+	for _, m := range marks {
+		s := core.SegmentID(m.Segment)
+		res.set[s] = m
+		// Every segment a mark names is withheld from the spare test and kept
+		// on disk whatever its own bytes say: the marks steps that follow the
+		// tail's proof read what it holds.
+		res.withheld[s] = true
+		// The counters and the id seed rise above every mark, whatever the
+		// device returned of the segment it names: a drained directory never
+		// reissues a number or an id the caller's metadata still names.
+		if err := st.Rebuilt.Counters.Observe(index.Numbers{Seq: core.Seq(m.Sequence)}); err != nil {
+			return err
+		}
+		if s > st.Attached.MaxID {
+			st.Attached.MaxID = s
+		}
+		sc, ok := markScan(st, s)
+		if !ok {
+			// A mark whose segment is not on disk, or whose read no bounded
+			// attempt completed: the first is a retirement the lost-tail
+			// check reads after the tail's proof, the second a range the open
+			// refuses on before any phase adopts. Neither is decided here.
+			continue
+		}
+		// A segment the classing judged through its named or sealed arms
+		// confined or refused its bad ranges by its own catalog already, so
+		// the mark's Through owes those segments nothing; the range below is
+		// the classing's torn half alone, the newest segment of a stream
+		// whose catalog does not verify.
+		if !named[s] && !sc.Sealed {
+			for _, r := range sc.Ranges {
+				if r.Off < m.Through {
+					return refuseMarkedRange(s, r)
+				}
+			}
+		}
+		// A record whose header verified and whose body the classing left
+		// unreconciled, below the Through: the sync covered it, so it is
+		// corruption with a name its header gives it — a corrupt drop, its
+		// own error carried, never a refusal. The classing arms the fold
+		// complements are the torn ones alone, so each drop one of its own
+		// proofs already corrupted is skipped here rather than counted
+		// twice, and every drop below the Through it left torn folds.
+		for _, d := range sc.Dropped {
+			if d.Synced || sc.Sealed || named[s] || d.Header.Offset < sc.SyncedThrough {
+				continue // the classing corrupted this one from its own proofs
+			}
+			if d.Header.Offset >= m.Through {
+				continue // above the mark's Through, never proven synced
+			}
+			d.Synced = true
+			st.Tails.Corrupt = append(st.Tails.Corrupt, corruptRecord{Segment: s, Drop: d})
+			markDamaged(st, s)
+		}
+		// The header slot of a segment whose header did not verify: the
+		// classing calls it torn where no proof covers it, damaged where one
+		// does, and the mark's Through is one more proof — a sync that
+		// reached past the slot makes what it holds synced damage.
+		if unverified[s] && m.Through >= format.SegmentHeaderSize {
+			markDamaged(st, s)
+		}
+		// The mark's record-less segment: nothing in it verifies, so
+		// nothing in it serves, and the emptying unlinks it. Offset zero
+		// keeps the cutting phases off it — there is no record to cut
+		// behind.
+		if sc.VerifiedEnd == format.SegmentHeaderSize {
+			endSegment(st, s)
+		}
+	}
+
+	// The verdict, after every mark is folded: a predecessor a mark ends
+	// — the record-less segment above — keeps its fate once decided, and
+	// the set holds one entry per named predecessor.
+	onDisk := make(map[core.SegmentID]bool, len(st.Attached.Own)+len(st.Attached.Unverified)+len(st.Attached.ZeroHeader))
+	for _, seg := range st.Attached.Own {
+		onDisk[seg.ID] = true
+	}
+	for _, id := range slices.Concat(st.Attached.Unverified, st.Attached.ZeroHeader) {
+		onDisk[id] = true
+	}
+	for _, seg := range st.Attached.Own {
+		p := seg.Header.Predecessor
+		if p == 0 || p == seg.ID || !onDisk[p] {
+			continue
+		}
+		res.fates[p] = onDiskVerdict(st, p)
+	}
+
+	slices.Sort(st.Tails.Damaged)
+	slices.SortStableFunc(st.Tails.Corrupt, func(a, b corruptRecord) int {
+		return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.at(), b.at()))
+	})
+	st.Marks = res
+	return nil
+}
+
+// markScan finds the mark's segment's scan in the rebuild's answer,
+// reporting whether the segment was attached and scanned at all.
+func markScan(st *State, id core.SegmentID) (segmentScan, bool) {
+	for i := range st.Rebuilt.Scans {
+		if st.Rebuilt.Scans[i].ID == id {
+			return st.Rebuilt.Scans[i], true
+		}
+	}
+	return segmentScan{}, false
+}
+
+// onDiskVerdict answers the verdict a predecessor the directory still holds
+// carries: ended where its classed fate ends it, sealed otherwise. A
+// predecessor the open could not class — no fate entry, a read the bound
+// did not clear — holds its take, the conservative answer, for the open
+// refuses on its ranges before the spares phase adopts anything and no
+// verdict may release a take over evidence nobody read.
+func onDiskVerdict(st *State, p core.SegmentID) predFate {
+	for _, f := range st.Tails.Fates {
+		if f.ID == p {
+			if f.Kind == fateEnded {
+				return predEnded
+			}
+			return predSealed
+		}
+	}
+	return predEnded
+}
+
+// endSegment folds the ended fate over segment id into the state's fates, in
+// place: an entry the classing already gave keeps its id and takes the ended
+// kind with nothing to cut, and a segment the classing gave no entry — the
+// record-less spare shapes it hands to the spare test — gains one. Offset
+// zero is the ending whole: the segment holds no record to cut behind, so
+// its removal is the emptying's unlink.
+func endSegment(st *State, id core.SegmentID) {
+	for i := range st.Tails.Fates {
+		if st.Tails.Fates[i].ID == id {
+			st.Tails.Fates[i].Kind = fateEnded
+			st.Tails.Fates[i].Offset = 0
+			return
+		}
+	}
+	st.Tails.Fates = append(st.Tails.Fates, segmentFate{ID: id, Kind: fateEnded})
+	slices.SortFunc(st.Tails.Fates, func(a, b segmentFate) int { return cmp.Compare(a.ID, b.ID) })
+}
+
+// markDamaged folds segment id into the damaged set, once: a torn fact a
+// mark proved synced is reported damage, and the open keeps counting the
+// segment until the journal closes, whatever later phases do with it.
+func markDamaged(st *State, id core.SegmentID) {
+	if !slices.Contains(st.Tails.Damaged, id) {
+		st.Tails.Damaged = append(st.Tails.Damaged, id)
+	}
+}
+
+// refuseMarkedRange is the open's refusal of a byte range below a sync
+// mark's Through in the mark's own segment, whose catalog does not verify:
+// a torn slot, a zero slot or a rotted record the walk refused.
+//
+// decision: the range is the whole open's refusal rather than a dropped
+// record, because the mark proves its bytes held a record no catalog names
+// — the segment is one no successor names, so nothing on disk holds its
+// boundaries — and the reconcile that would recover what it held is not
+// built, so serving past it could serve without knowing what was lost. The
+// ceiling is a journal that stays closed over a rotted record header below
+// a mark's Through, over a truncated named predecessor and over a refusal
+// no catalog names, until the reconcile work lands, which withdraws this
+// marker.
+func refuseMarkedRange(id core.SegmentID, r format.ScanRange) error {
+	return fmt.Errorf("%w: segment %d: a refused range at [%d,%d) below a mark's Through that names no record",
+		core.ErrNotImplemented, id, r.Off, r.End)
+}
