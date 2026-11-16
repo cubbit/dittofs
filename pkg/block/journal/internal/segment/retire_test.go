@@ -2380,7 +2380,7 @@ func TestRetireStopDropsTheRestOfAnInterruptedPass(t *testing.T) {
 		e.r.Stop()
 		close(stopped)
 	}()
-	for !e.r.StoppedForTest() {
+	for !e.r.Stopped() {
 		runtime.Gosched()
 	}
 	remove.Release()

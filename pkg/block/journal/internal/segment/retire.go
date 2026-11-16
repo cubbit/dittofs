@@ -552,12 +552,12 @@ func (r *Retirer) stoppedLocked() bool {
 // observes.
 //
 // decision: Stopped has no production caller; the close-order test in the
-// data path needs to see the retirer still running between the pool's stop
-// and its own, and the worker's state is otherwise unobservable outside
-// this package (Enqueue drops silently, Counters answers both ways). Hold
-// the signature with a conformance test of the retirer's own if one ever
-// lands, or drop the method with the test when the close reports its steps
-// to the seam.
+// data path needs to see the retirer still running between the reclaim
+// worker's stop and its own, and the retire tests sequence a Stop that must
+// land mid-flight — the worker's state is otherwise unobservable (Enqueue
+// drops silently, Counters answers both ways). Hold the signature with a
+// conformance test of the retirer's own if one ever lands, or drop the
+// method with the tests when the close reports its steps to the seam.
 func (r *Retirer) Stopped() bool {
 	select {
 	case <-r.done:

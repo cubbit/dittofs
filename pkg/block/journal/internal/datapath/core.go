@@ -112,16 +112,22 @@ type coreOptions struct {
 	// takeHook is installed on the admission's decision section before any
 	// goroutine of the core starts; nil in production.
 	takeHook func()
-	// stopProbe is registered as a stop right before the pool's, so Close
-	// runs it in the reverse order once the pool has stopped and before the
-	// idle sealer and the retirer have; the stop it returns is what Close
-	// runs and is given the retirer so it can check it has not stopped yet.
-	// Nil in production.
-	stopProbe func(*segment.Pool, *segment.Retirer) func()
+	// stopProbe is registered between the retirer's stop and the reclaim
+	// worker's, so reverse order runs it once the pool, the idle sealer and
+	// the reclaim worker have stopped and before the retirer stops; the stop
+	// it returns is what Close runs and is given all three, so it can check
+	// each is in the state its Stop doc names. Nil in production.
+	stopProbe func(*segment.Pool, *segment.Retirer, *reclaim.Worker) func()
 	// shareHook runs in Share between the first closed check and the
 	// registry's lock, so a test can fence the core in the window the
 	// re-check under registryMu refuses. Nil in production.
 	shareHook func()
+	// afterSwap runs in BeginClose inside the registry swap's critical
+	// section, between the swap and the unlock, so a test can pin the closed
+	// flag already up before the fence releases the mutex — the order every
+	// attach racing the fence depends on. The hook must take no lock of its
+	// own: it runs under registryMu. Nil in production.
+	afterSwap func()
 	// extentLimit overrides the index's entry bound a test core builds with,
 	// keeping Deps at the figure the production wiring passes.
 	extentLimit int64
@@ -261,12 +267,21 @@ type Core struct {
 	// for the same reason afterAppend is.
 	shareHook func()
 
+	// afterSwap is a test seam that runs in BeginClose inside the registry
+	// swap's critical section, between the swap and the unlock, so a test
+	// can pin the closed flag up before the fence releases the mutex. It is
+	// nil outside tests, for the same reason shareHook is.
+	afterSwap func()
+
 	// registry is the open handles, replaced whole under registryMu and read
 	// through the pointer alone. See shares.go.
 	registry atomic.Pointer[[]*Share]
 	// decision: registryMu is a leaf. It covers only swapping and reading the
-	// registry pointer, and holds nothing else across it. It stays a plain
-	// mutex: a recorded order it cannot break is not its to police.
+	// registry pointer, and holds nothing else across it but afterSwap, a
+	// test seam that observes the fence from inside the critical section and
+	// takes no lock of its own; nil in production, where the critical
+	// section stays the swap alone. It stays a plain mutex: a recorded order
+	// it cannot break is not its to police.
 	registryMu sync.Mutex
 
 	// stranded is the set of stranded tags, replaced whole under strandMu
@@ -346,7 +361,7 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		budget = core.NewDescriptorBudget(64)
 	}
 
-	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), identity: deps.Identity, tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, shareHook: o.shareHook, rec: o.recorder}
+	c := &Core{clock: deps.Clock, index: state.Index, counters: state.Counters, set: state.Set, segCap: state.Set.Cap(), identity: deps.Identity, tracer: deps.Tracer, accountSpy: o.accountSpy, stepSpy: o.stepSpy, betweenHeldReads: o.betweenHeldReads, afterAppend: o.afterAppend, beforeAppend: o.beforeAppend, beforeWrote: o.beforeWrote, beforeResolve: o.beforeResolve, beforeRead: o.beforeRead, afterCorrupt: o.afterCorrupt, afterRetarget: o.afterRetarget, shareHook: o.shareHook, afterSwap: o.afterSwap, rec: o.recorder}
 	tbl := newFileLocks()
 	if c.rec != nil {
 		tbl.SetRecorder(c.rec)
@@ -648,15 +663,19 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		c.retiring.Start()
 	}
 	c.addStop(c.retirer.Stop)
+	// The probe registers between the retirer's stop and the reclaim
+	// worker's, so reverse order runs it once the reclaim worker has stopped
+	// and before the retirer stops — the window the stop-order test reads
+	// all three workers' states in.
+	if o.stopProbe != nil {
+		c.addStop(o.stopProbe(c.pool, c.retirer, c.retiring))
+	}
 	c.addStop(c.retiring.Stop)
 
 	if deps.IdleSealBytes > 0 {
 		c.sealer = segment.NewIdleSealer(c.streams, deps.Clock, deps.IdleSealBytes, d.Admit, deps.Log)
 		c.sealer.Start()
 		c.addStop(c.sealer.Stop)
-	}
-	if o.stopProbe != nil {
-		c.addStop(o.stopProbe(c.pool, c.retirer))
 	}
 	c.pool.Start()
 	c.addStop(c.pool.Stop)

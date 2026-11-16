@@ -12,8 +12,11 @@ package datapath
 // concurrently with Close's fence-and-wait, because a fence that landed
 // between Close's own fence and its drain Wait would Add to the drain after
 // Close was already waiting at zero — a WaitGroup misuse whose share nobody
-// waits for. No caller does this: the journal's Close, which its own flag
-// lets run once, is BeginClose's only caller and fences before it waits.
+// waits for. No caller does this: the journal's Close, whose own flag lets it
+// run once, fences here before Core.Close goes on to the drain wait, and
+// BeginClose's other caller is Core.Close itself — its once means a re-entry
+// after the first call returned finds the flag up and the registry empty, and
+// no two fence-and-wait runs can overlap.
 //
 // decision: the fence sets the core's flag before it empties the registry,
 // and Core.Share refuses off the flag under the registry's own mutex, so an
@@ -27,6 +30,9 @@ func (c *Core) BeginClose() {
 	c.closedFlag.Store(true)
 	c.registryMu.Lock()
 	fenced := c.registry.Swap(&[]*Share{})
+	if c.afterSwap != nil {
+		c.afterSwap()
+	}
 	c.registryMu.Unlock()
 	if fenced == nil {
 		return

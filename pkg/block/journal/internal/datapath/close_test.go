@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
@@ -200,13 +201,11 @@ func TestInFlightCallsFinishAtClose(t *testing.T) {
 // TestCallsWhileAWriteIsHeldAtItsAppend checks the surface that takes no
 // context against a write held at the seam before its append: the parked
 // write holds its file's append domain, its admission's grant and its share's
-// drain, and Extents, Files, DirtyFiles and Settle must each answer while it
-// is held. A call of that surface that waited on the parked write — its
-// file's append domain among them — sits past the watchdog and fails its leg
-// here rather than surfacing only once Close's drain waits it out. Each call
-// names the held write's own file and share, the strongest case. Stats is
-// not a leg here: it waits on the change that owns its counters'
-// close-time behaviour.
+// drain, and Extents, Files, DirtyFiles, Settle and Stats must each answer
+// while it is held. A call of that surface that waited on the parked write —
+// its file's append domain among them — sits past the watchdog and fails
+// its leg here rather than surfacing only once Close's drain waits it out.
+// Each call names the held write's own file and share, the strongest case.
 func TestCallsWhileAWriteIsHeldAtItsAppend(t *testing.T) {
 	parked, release := make(chan struct{}), make(chan struct{})
 	var armed atomic.Bool
@@ -283,6 +282,27 @@ func TestCallsWhileAWriteIsHeldAtItsAppend(t *testing.T) {
 		close(settled)
 	}()
 	within(t, settled, "Settle while the write is held")
+
+	// Stats names the held write's own share, whose entry carries the grant
+	// the parked write holds: it took its admission grant before it parked,
+	// so the share's ReservedBytes is the write in flight. A Stats that
+	// waited on the parked write — the append domain it never takes — would
+	// sit past the watchdog and fail here.
+	stated := make(chan error, 1)
+	go func() {
+		ss, ok := c.Stats().Shares[s.Tag]
+		switch {
+		case !ok:
+			stated <- errors.New("the held write's share is missing from Stats")
+		case ss.ReservedBytes <= 0:
+			stated <- errors.New("Stats holds no reserved bytes for the held write's share")
+		default:
+			stated <- nil
+		}
+	}()
+	if err := within(t, stated, "Stats while the write is held"); err != nil {
+		t.Fatalf("Stats beside the held write = %v, want the held write's share holding its grant", err)
+	}
 
 	stopWrite()
 	got := within(t, held, "the held write")
@@ -544,33 +564,37 @@ func TestSetClosesAfterLastStopReturns(t *testing.T) {
 	assertJoinedBeforeClose(t, log, c, map[string]core.FileID{"worker 1": f1, "worker 2": f2})
 }
 
-// TestPoolStopsBeforeRetirer pins the registry's order against the segment
-// group's own: the pool stops before the retirer, so the wake the retirer's
-// queue drop sends reaches a pool that makes nothing, and a retirement still
-// in flight unlinks its segment rather than reserving a slot in a live pool.
-// The probe registers between the pool's and the retirer's stop, so reverse
-// order runs it after the pool stopped and before the retirer stops, and it
-// reads the state the two Stop docs name: Take on a stopped pool answers
-// core.ErrClosed, and the retirer that has not stopped reports it. A registry
-// that left the pool to the group's close runs the probe while the pool still
-// serves takes, failing the take assertion; one that registered the retirer's
-// stop after the pool's stops the retirer first, failing the stopped
-// assertion.
-func TestPoolStopsBeforeRetirer(t *testing.T) {
+// TestPoolAndReclaimStopBeforeRetirer pins the stop registry's order: the
+// pool and the reclaim worker stop before the retirer, so the wake the
+// retirer's queue drop sends reaches a pool that makes nothing, a retirement
+// still in flight unlinks its segment rather than reserving a slot in a live
+// pool, and no candidate the worker still holds reaches a retirer already
+// stopped. The probe registers between the retirer's stop and the reclaim
+// worker's, so reverse order runs it once the pool and the reclaim worker
+// have stopped and before the retirer stops, and it reads the state the
+// three Stop docs name: Take on a stopped pool answers core.ErrClosed,
+// Stopped on the stopped worker and the still-running retirer answers
+// false. A registry that left the pool to the group's close runs the probe
+// while the pool still serves takes, failing the take assertion; one that
+// registered the reclaim worker's stop behind the retirer's or the retirer's
+// before the worker's fails the stopped assertions.
+func TestPoolAndReclaimStopBeforeRetirer(t *testing.T) {
 	type probeState struct {
 		take           error
+		workerStopped  bool
 		retirerStopped bool
 	}
 	probeDone := make(chan probeState, 1)
 	c, _ := newTestCore(t, func(o *coreOptions) {
-		o.stopProbe = func(p *segment.Pool, r *segment.Retirer) func() {
+		o.stopProbe = func(p *segment.Pool, r *segment.Retirer, w *reclaim.Worker) func() {
 			return func() {
 				// Take is the stopped state the pool's Stop doc names; a
 				// stopped pool refuses it changing nothing, and a live one
 				// answers a real spare. Stopped is the state the retirer's
-				// Stop doc names, read off the closed channel alone.
+				// and the worker's Stop docs name, read off the closed
+				// channel alone.
 				_, err := p.Take(segment.Content)
-				probeDone <- probeState{take: err, retirerStopped: r.Stopped()}
+				probeDone <- probeState{take: err, workerStopped: w.Stopped(), retirerStopped: r.Stopped()}
 			}
 		}
 	})
@@ -591,13 +615,77 @@ func TestPoolStopsBeforeRetirer(t *testing.T) {
 		abandonRecorded(t, c)
 		t.Fatalf("Close did not return within %s: the group closed before the workers it owns stopped", watchdog)
 	}
-	got := within(t, probeDone, "the probe's stop, between the pool's and the retirer's")
+	got := within(t, probeDone, "the probe's stop, between the reclaim worker's and the retirer's")
 	if !errors.Is(got.take, core.ErrClosed) {
 		t.Fatalf("when the probe's stop ran, the pool still served a take: Take = %v, want ErrClosed", got.take)
+	}
+	if !got.workerStopped {
+		t.Fatalf("when the probe's stop ran, the reclaim worker still ran: Stopped = false, want it stopped")
 	}
 	if got.retirerStopped {
 		t.Fatalf("when the probe's stop ran, the retirer had stopped too: Stopped = true, want the retirer still running")
 	}
+}
+
+// TestJournalCallsRefusedBeforeAnyDrainStarts pins the fence's own order
+// inside BeginClose: the closed flag is up before the fence releases the
+// registry's mutex, the order the fence's decision names — an attach racing
+// the fence is refused off the flag before it can re-check, or merged into
+// the registry the swap collected, and a journal-level call made once the
+// swap has run is already refused. The hook parks inside the swap's
+// critical section, so the fence is made to hold the mutex while the probe
+// Share runs and no scheduling race can let it slip past either placement:
+// a fence that stored the flag only once the mutex had been released lets
+// the probe pass its first check and block on the mutex the park holds —
+// failing the bounded wait — while the correct store refuses the probe on
+// the flag alone, before it ever takes the mutex.
+func TestJournalCallsRefusedBeforeAnyDrainStarts(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var fired atomic.Bool
+	var c *Core
+	c, _ = newTestCore(t, func(o *coreOptions) {
+		o.afterSwap = func() {
+			if !fired.CompareAndSwap(false, true) {
+				// Only the first BeginClose parks: the cleanup's own Close
+				// runs BeginClose again, and a hook parked there would hang
+				// it on a release the test never sends.
+				return
+			}
+			close(entered)
+			<-release
+		}
+	})
+	_ = mustShare(t, c, 1)
+	// A failure between the park and the release must not leave the park
+	// held for the core's cleanup to wait on.
+	stop := releaser(t, release)
+
+	done := make(chan struct{})
+	go func() {
+		c.BeginClose()
+		close(done)
+	}()
+	within(t, entered, "the fence's hook, past the swap and before any drain")
+
+	// The registry is the fence's own already: emptied by the swap the
+	// hook parks inside.
+	if got := c.Shares(); len(got) != 0 {
+		t.Fatalf("the registry once the fence's swap had run = %v, want it empty", got)
+	}
+
+	attach := make(chan error, 1)
+	go func() {
+		_, err := c.Share(2, 0, core.Version{})
+		attach <- err
+	}()
+	got := within(t, attach, "the Share made once the swap had run")
+	if !errors.Is(got, core.ErrClosed) {
+		t.Fatalf("the Share once the fence's swap had run = %v, want ErrClosed: the flag must be up before any drain starts", got)
+	}
+
+	stop()
+	within(t, done, "the fence, released past its hook")
 }
 
 // TestRemovalInWaitDurableIsWaited checks the drain against the removal that
