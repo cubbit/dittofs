@@ -41,6 +41,9 @@ type Swept struct {
 // the others back. Give each kind its own schedule once a profile shows the
 // sweep.
 func (n Nodes) Sweep(ctx context.Context, auditRetention time.Duration) (sw Swept, err error) {
+	// decision: a retention of zero or less is refused rather than read as
+	// "keep nothing", since it would delete every audit record at once; a
+	// setting that means to keep none needs its own value.
 	if auditRetention <= 0 {
 		return sw, merrs.NewInvalidArgumentError("audit retention is a positive duration")
 	}
