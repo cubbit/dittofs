@@ -33,6 +33,8 @@ REALM="${AD_REALM:-DITTOFS.AD}"
 DOMAIN="${AD_DOMAIN:-DITTOFS}"
 ADMIN_PASSWORD="${AD_ADMIN_PASSWORD:-Passw0rd!2024}"
 KEYTAB_DIR="${KEYTAB_DIR:-/keytabs}"
+# The provisioned smb.conf names the TLS files issue_tls_cert writes here.
+TLS_DIR=/var/lib/samba/private/tls
 
 # Service principals the DittoFS server presents to clients.
 SMB_SPN="${SMB_SPN:-cifs/dittofs.${REALM,,}}"
@@ -78,9 +80,9 @@ if [ ! -f /var/lib/samba/.provisioned ]; then
         --server-role=dc \
         --dns-backend=SAMBA_INTERNAL \
         --adminpass="$ADMIN_PASSWORD" \
-        --option="tls certfile = /var/lib/samba/private/tls/cert.pem" \
-        --option="tls keyfile = /var/lib/samba/private/tls/key.pem" \
-        --option="tls cafile = /var/lib/samba/private/tls/ca.pem"
+        --option="tls certfile = $TLS_DIR/cert.pem" \
+        --option="tls keyfile = $TLS_DIR/key.pem" \
+        --option="tls cafile = $TLS_DIR/ca.pem"
 
     # Samba writes its own krb5.conf during provision; expose it to other
     # containers / the Go test on the shared volume.
@@ -95,12 +97,12 @@ fi
 # per domain and exported as $KEYTAB_DIR/ca.pem, so a client verifies the DC
 # rather than skipping verification. Samba's own generated certificate names
 # the DC in its CN only, which Go refuses. The provisioned smb.conf names the
-# tls/ files written here, so Samba serves them rather than generating its own. The certificate is issued again
-# at every start because its SANs carry the container's IPs, which a restart
-# can change; its DNS SAN is the DC's host name, fixed by the container's
-# --hostname.
+# files written here, so Samba serves them rather than generating its own. The
+# certificate is issued again at every start because its SANs carry the
+# container's IPs, which a restart can change; its DNS SAN is the DC's host
+# name, fixed by the container's --hostname.
 issue_tls_cert() {
-    local tls=/var/lib/samba/private/tls fqdn san ip
+    local tls="$TLS_DIR" fqdn san ip
     fqdn="$(hostname -s).${REALM,,}"
     mkdir -p "$tls"
     if [ ! -f "$tls/ca.key" ]; then
