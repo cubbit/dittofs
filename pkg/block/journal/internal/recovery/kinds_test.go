@@ -928,6 +928,34 @@ func TestRunRefusesAReadTheRemainderVerifyCannotComplete(t *testing.T) {
 	}
 }
 
+// TestRunAnswersTheUnreadRangesOverTheKindsPassesRefusal holds the refusal
+// order an aside's own refusal meets when the reader already holds a range
+// no bound cleared: the kinds pass decides its asides on the scans it got,
+// but a cover — or any record — can sit in a range the device did not
+// answer, so the open answers the operator's unknown first, on the
+// collected ranges, and never the pass's verdict on the half it could
+// read. A segment whose header no bound cleared is collected at attach and
+// classed nowhere, so the pass beside it refuses on its zero-length loss
+// record alone.
+func TestRunAnswersTheUnreadRangesOverTheKindsPassesRefusal(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, buildSeg(2, writeRec(1, 1, 0, 16),
+		plantLossRec(kindsFile(1), 100, 101, 201, 0, 0, 1<<8), // zero-length: the pass's refusal
+	))
+	r.plantSeg(5, buildSeg(5, writeRec(2, 2, 0, 16))) // its header: unreadable
+	r.failReads(format.SegmentName(5), 0)
+
+	_, err := r.asideRun(nil, nil)
+	var ure *core.UnreadableRangesError
+	if !errors.As(err, &ure) {
+		t.Fatalf("Run got err %v, want an UnreadableRangesError over the header no bound cleared, never the pass's aside refusal alone", err)
+	}
+	if len(ure.Ranges) != 1 || ure.Ranges[0].Segment != 5 {
+		t.Errorf("the refusal's ranges got %+v, want segment 5's header alone", ure.Ranges)
+	}
+}
+
 // TestRunRefusesAReadTheAsideBodyCannotComplete holds the aside body-read's
 // own I/O leg: a loss record's 16 bytes are read by the scan's walk through
 // the open's bound, and a read no bounded attempt cleared refuses the open

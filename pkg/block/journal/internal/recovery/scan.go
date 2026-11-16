@@ -588,6 +588,15 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	// corrupt drops the decode confines onto the same scans.
 	ks, kerr := decodeAsides(rd, identity, failed, scans)
 	if kerr != nil {
+		// The aside the pass refuses on can sit beside a range no bound
+		// cleared — the pass decides what its scans show, and an unread
+		// record is the operator's unknown to clear first, over any
+		// verdict over the half the pass could read — so the refusal
+		// answers the ranges when any were collected, the pass's own
+		// error otherwise, exactly as the feed's does.
+		if len(rd.unread) > 0 && !isContextErr(kerr) {
+			return rebuilt{}, kindResults{}, tails{}, &core.UnreadableRangesError{Ranges: slices.Clone(rd.unread)}
+		}
 		return rebuilt{}, kindResults{}, tails{}, kerr
 	}
 	// The partly-superseded remainders verify before the classing, over the
