@@ -34,6 +34,7 @@ var t0 = time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 type manualClock struct {
 	mu     sync.Mutex
 	now    time.Time
+	step   time.Duration // how far each read moves now on, firing no timer
 	timers map[int]manualTimer
 	next   int
 }
@@ -48,7 +49,9 @@ func newManualClock() *manualClock { return &manualClock{now: t0, timers: map[in
 func (c *manualClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.now
+	now := c.now
+	c.now = c.now.Add(c.step)
+	return now
 }
 
 func (c *manualClock) AfterFunc(d time.Duration, f func()) core.Timer {
@@ -328,16 +331,17 @@ func request(h core.Call) *core.Request {
 	return r
 }
 
-// R90's attribute keys, as §10.1's labels write them.
+// §10.2's span attribute keys, as §10.1's labels write them.
 var spanKeys = []string{"protocol", "version", "op", "status", "result", "request_bytes", "reply_bytes", "stage"}
 
 // A compound member's call runs in a span of its own, a child of the
-// request's named adapter.<protocol>.<operation>, with R90's attributes
-// only: the result ok, or the service error's name.
+// request's named adapter.<protocol>.<operation>, with §10.2's attributes
+// only: the result ok, or the service error's name, and none for an error
+// outside the service's set.
 func TestChainOpensASpanPerCompoundMember(t *testing.T) {
 	tr := newTraced(t, true)
 	reqCtx, reqSpan := tr.tracer.Start(context.Background(), "request")
-	for _, answer := range []error{nil, vfs.ErrNotFound} {
+	for _, answer := range []error{nil, vfs.ErrNotFound, errHandler} {
 		err := tr.members.Chain(tr.mEcho)(reqCtx, request(func(ctx context.Context, _ *core.Request) error {
 			if sc := trace.SpanFromContext(ctx); sc.SpanContext().SpanID() == reqSpan.SpanContext().SpanID() || !sc.IsRecording() {
 				t.Error("a member's call runs under the request's span, not a recording span of its own")
@@ -360,17 +364,21 @@ func TestChainOpensASpanPerCompoundMember(t *testing.T) {
 		attrs := map[string]string{}
 		for _, kv := range s.Attributes() {
 			if !slices.Contains(spanKeys, string(kv.Key)) {
-				t.Errorf("the member's span carries %s, outside R90's keys", kv.Key)
+				t.Errorf("the member's span carries %s, outside §10.2's keys", kv.Key)
 			}
 			attrs[string(kv.Key)] = kv.Value.String()
 		}
 		if attrs["protocol"] != testproto.Name || attrs["version"] != "1" || attrs["op"] != "echo" {
 			t.Errorf("the member's span's attributes are %v", attrs)
 		}
-		results = append(results, attrs["result"])
+		result, ok := attrs["result"]
+		if !ok {
+			result = "none"
+		}
+		results = append(results, result)
 	}
-	if !slices.Equal(results, []string{"ok", "not_found"}) {
-		t.Errorf("the members' spans' results are %v, want ok and not_found", results)
+	if !slices.Equal(results, []string{"ok", "not_found", "none"}) {
+		t.Errorf("the members' spans' results are %v, want ok, not_found and none", results)
 	}
 }
 
@@ -434,7 +442,7 @@ func TestChainUnsampledAllocatesNothingMore(t *testing.T) {
 	}
 }
 
-// The chain's fixed order (R79), seen from a member's call that panics:
+// The chain's fixed order (§4.7), seen from a member's call that panics:
 // the handler's context is the deadline's own, done at 30 s on the clock
 // while the span is still open; the panic, which recovery turns into
 // ErrPanicked outermost, reaches the span first, which ends with the fault
@@ -470,6 +478,21 @@ func TestChainOrder(t *testing.T) {
 	}
 	if !strings.Contains(tr.logged.String(), `"level":"ERROR"`) {
 		t.Errorf("the panic was not logged at error: %q", tr.logged.String())
+	}
+}
+
+// The metrics hinge runs before the deadline (§4.7), so resolve_ids ends as
+// the chain reaches the hinge: on a clock that moves 1 ms each time it is
+// read, it is the request's own 2 ms, with none of the deadline's reads.
+func TestChainOrderHingeBeforeDeadline(t *testing.T) {
+	tr := newTraced(t, false)
+	tr.clk.step = time.Millisecond
+	if err := tr.top.Chain(tr.topEcho)(context.Background(), request(func(context.Context, *core.Request) error { return nil })); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := scrape(t, tr.m)
+	if sum := got["adapter_wire_seconds_sum{protocol="+testproto.Name+",stage=resolve_ids}"]; sum != 0.002 {
+		t.Errorf("resolve_ids sums %v s, want the request's 0.002: the deadline's clock reads are counted in it", sum)
 	}
 }
 

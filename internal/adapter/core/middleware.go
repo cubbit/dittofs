@@ -119,7 +119,7 @@ func (runtimeClock) Now() time.Time                            { return time.Now
 func (runtimeClock) AfterFunc(d time.Duration, f func()) timer { return time.AfterFunc(d, f) }
 
 // The pipeline keeps an attempt's start and the hold's deadline in the
-// context under these keys, before the attempt's reply reservation (R81).
+// context under these keys, before the attempt's reply reservation (§6.4).
 type (
 	attemptStartKey struct{}
 	holdDeadlineKey struct{}
