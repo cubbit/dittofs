@@ -119,9 +119,12 @@ rig-*/
 # Local port/credential overrides for the root compose stack.
 docker-compose.override.yml
 
-# graphify hook copies are machine-local (they embed an absolute interpreter path)
+# graphify hook copies are machine-local (they embed an absolute interpreter path).
+# graphify hook install writes all four copies since 0.9.92 (0.9.70 wrote two).
 .githooks/post-commit
 .githooks/post-checkout
+.githooks/post-merge
+.githooks/post-rewrite
 .rfc-png/
 
 # Obsidian vault settings
