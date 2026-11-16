@@ -597,6 +597,11 @@ type Installation struct {
 	// (RFC 18 §3.5); zero until a join first seals a version, which a failed
 	// join keeps.
 	MachinePassword SecretRef
+	// SigningKey names the management API's access-token signing key, a
+	// Secret of the key kind owned by this record under "signing_key" (RFC 23
+	// §5.3); zero until the initialisation step seals its first version, and
+	// moved only by the rotation's steps.
+	SigningKey SecretRef
 	// Join is the machine account's state, written by the join's and the
 	// rotation's steps (RFC 18 §3.5); zero while no join has run.
 	Join MachineJoin
@@ -632,6 +637,22 @@ type ShareList struct {
 // Claim when it moves (RFC 23 §2.2 step 5, RFC 9 §2.5).
 type ClaimGeneration struct {
 	Generation uint64
+}
+
+// Namespace is one block namespace's own record (RFC 23 §3.3): the remote
+// store it is created on, named by that store configuration's scope ID, and
+// its fields bound at creation (RFC 13 §5.1), which RFC 13 Appendix B lists
+// and no write changes while content exists. A share names it through
+// Namespaces; the store names it back through NSR‖store‖ns, written and
+// deleted in this record's transaction, so a remote store's deletion finds
+// whether any namespace names it in one range read, NS‖ns‖share‖ answers
+// whether any share names the namespace the same way, and a share whose
+// namespace names no remote store is refused from this record (RFC 8 §2.1).
+type Namespace struct {
+	ID         NamespaceID
+	Store      [16]byte // the remote store's scope ID (RFC 13 §3); zero never names one
+	Bound      []byte   // the bound fields, encoded by RFC 13's settings schema
+	Generation uint64   // raised by every PutNamespace (RFC 23 §4.4)
 }
 
 // Snapshot is a named, user-visible cut of a share. SnapshotCut, and the
@@ -1337,6 +1358,9 @@ type ControlPlane interface {
 	Netgroups(ctx context.Context, after string) iter.Seq2[Netgroup, error]
 	PutNetgroup(ctx context.Context, n Netgroup, expect uint64) error // sets Version to the writing commit's, as SetGrant does
 	DeleteNetgroup(ctx context.Context, name string, expect uint64) error // rules naming it are not rewritten and fail closed (Netgroup)
+	Namespaces(ctx context.Context, after NamespaceID) iter.Seq2[Namespace, error]
+	PutNamespace(ctx context.Context, n Namespace, expect uint64) error // writes NS‖ns‖info and its NSR‖store‖ns key in one transaction; a namespace naming no remote store is ErrInvalid; a bound field changed while content exists is refused (RFC 13 §5.1)
+	DeleteNamespace(ctx context.Context, id NamespaceID, expect uint64) error // refused while a share's Namespaces names it; deletes the record and its NSR key together
 	Snapshots(ctx context.Context, share ShareID) iter.Seq2[Snapshot, error]
 	Settings(ctx context.Context, scope SettingScope) iter.Seq2[Setting, error]
 	PutSetting(ctx context.Context, s Setting, expect uint64) error
@@ -1352,6 +1376,9 @@ type ControlPlane interface {
 	// a cursor's write names the holder it read. NodeStatus is not here: every
 	// node writes its own through the Node view.
 	PutOperation(ctx context.Context, op Operation, expect uint64) error
+	Session(ctx context.Context, id [16]byte) (Session, bool, error)                 // the per-call check of an access token's session
+	Sessions(ctx context.Context, account Principal) iter.Seq2[Session, error]         // through SSA‖principal‖
+	DeleteSession(ctx context.Context, id [16]byte) error                             // the session, its SSA key and every SSH row it had (§4.2)
 	AdvanceCursor(ctx context.Context, c AuditCursor, holder NodeID, holderEpoch uint64) error
 
 	// Write is the management API's one transaction (RFC 23 §4.3): fn makes
@@ -1401,6 +1428,13 @@ type ControlPlaneTx interface {
 	Share(id ShareID) (Share, bool, error)                          // tracked read
 	SignInFailures(key SignInKey) (SignInFailures, bool, error)     // tracked read: a sign-in's count reads its counts and raises them in one transaction, the source's and, for a name that resolves to an account, the pair's and the account's; one answered 429 raises none and commits nothing; a caller on the local socket has neither a source's nor a pair's (RFC 23 §5.3)
 	EnabledAdmins() (int, error)                                    // tracked: counts UA‖ under GuardRange, so two writes that each remove one of the last enabled admins conflict (RFC 23 §5.2)
+	Namespace(id NamespaceID) (Namespace, bool, error)              // tracked read: a share's create or rebind refuses a namespace that names no remote store (RFC 8 §2.1)
+	StoreNamed(store [16]byte) (bool, error)                        // tracked: NSR‖store‖ under GuardRange, so a remote store's deletion conflicts with a namespace created on it (RFC 23 §3.3)
+	NamespaceNamed(ns NamespaceID) (bool, error)                   // tracked: NS‖ns‖share‖ under GuardRange
+	Now() time.Time                                                 // the store time of this transaction: KV.Txn's Now, fixed for the transaction's life and, on the embedded backends, taken when it starts; a retried attempt gets a new one. A token's not-before is this, whole seconds, plus one, with the user record read tracked in the same transaction (RFC 23 §5.3)
+	DeleteSession(id [16]byte) error
+	PutNamespace(n Namespace, expect uint64) error
+	DeleteNamespace(id NamespaceID, expect uint64) error
 	DeleteUser(p Principal, expect uint64) error                    // the mark
 	DeleteGroup(p Principal, expect uint64) error                   // the mark
 	DeleteShare(share ShareID, snapshots SnapshotDisposition, expect uint64) error // the mark
@@ -1864,6 +1898,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `CR‖ns‖hash‖ShareID‖FileID‖offset‖died` | reverse ref index: one empty-valued key per live (`died` zero), history or parked ref, written in the ref's transaction and deleted by the transaction that drops it or by the parked-ref prune; authoritative for "which refs name this chunk", and the refcount is its cache ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)) |
 | | `I‖ns‖name` | put intent: domain, domain ID, epoch, and for a shard the writer's node ID and node epoch ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)) |
 | | `BR‖ns‖b‖not_before‖name`, `BD‖ns‖name`, `BC‖ns‖b‖bucket‖name`, `b` the block name's first byte | GC index: retired blocks by `not_before`, deleted blocks awaiting prune (value: when the delete succeeded), compaction candidates by dead-ratio bucket. Derived from block records; repairable and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
+| | `NS‖ns‖info` | Namespace (§2.3): the remote store it is created on and its bound fields, written by `PutNamespace` with its `NSR` reverse key in one transaction; deleted only once no share's `Namespaces` names the namespace and its drain has run ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) |
 | | `NS‖ns‖gc‖lease‖partition`, `NS‖ns‖gc‖recheck`, `NS‖ns‖gc‖hold`, `NS‖ns‖gc‖suspect‖hash` | GC lease per GC partition with its epoch, last `Recheck` result, the deleter's hold, audit lowering state ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) |
 | | `NS‖ns‖gc‖forward` | GC forward-walk marker: the numbers of the last forward pass started and the last completed ([RFC 9 §6.2](rfc-9-gc.md#6.2%20Corrections)) |
 | | `NS‖ns‖claim` | claim nonces: the instance nonce this installation intends to write into the namespace's claim, recorded durably before the claim put, the last one it wrote, one an operator accepted for a copy (`AcceptCopy`), and one a `Recheck` found and did not record (`Mismatch`), all recorded under the instance part current then ([§2.3](#2.3%20Server-wide%20and%20control-plane%20entities)), and a nonce recorded under another counts as not recorded; and `claimed`, set once the namespace's first claim is recorded written. `Claim` and a `Recheck` read the claim and compare it with these. Every claim put on any path — `Recheck`, a namespace's create, import, recovery, re-home, restore — records its intended nonce here first. **Installation-local**: never exported and never imported, so a moved namespace's importer starts with its own nonces and does not fence itself on finding the claim it just took ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) |
@@ -1877,6 +1912,8 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `NS‖ns‖bk‖location` | folder record: the copy or sweep holding the namespace's block folder at a backup location, its deadline, the **lease number** raised at every take, which every sweep commit reads, the folder's census of (material ID, fingerprint), and the count of blocks in its mark set, raised by each copy transaction that adds blocks and recomputed by a settle — both emptied, in batches, by an operator's statement that the location is lost —, which RFC 9 §7.6's drain gate reads ([RFC 26 §2.4.1](rfc-26-catalog-backups.md#2.4.1%20Layout%20at%20the%20location)) |
 | | `NS‖ns‖backup‖backupID` | backup record: one per backup of the namespace's shares, under the namespace so it moves with it. The transaction that starts the backup writes it with kind, share, snapshot, location and the retention fixed then; its state — `writing`, `complete`, `damaged`, `failed`, `expired` or `lost` — what each state version carries is written here before that version is put at the location, and the state field reads `complete` only after the location's `complete` version ([RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step) step 5); before the backup is marked `complete` at its location one transaction records the export's digest, its manifest section's MAC, the head's version at an immutable location and its size, which `FetchRaw` reads it by, the material IDs the export names, which the drain reads until expiry ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)), and the expiry time, which `Extend` raises; an operator's statement that a location is lost marks its backups `lost` here only. A backup's record stays under the namespace that sealed its export, so that namespace's holder expires, re-seals and sweeps it: a re-home leaves the share's earlier backups' records under the old namespace, and its finish releases the use records of the catalog backups taken before it, whose chunks the parking then holds ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)); a move of the namespace carries its records with it. A recovery import writes one for every backup of the namespace it finds at a configured location, from that backup's authenticated state, as `failed` when that is not `complete`, and rebuilds each folder record's census and block count from its mark set before it publishes ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)). Re-seals, the next export's digest list and the drain read these, never what a location returns, and a location version that differs is a health condition. Expiry deletes it last, after the export is removed ([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot), [RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation)) |
 | **Server-wide** | `U‖principal`, `G‖principal` | User, Group, keyed by `PrincipalID`; a machine principal is a User record (§2.3) |
+| | `NS‖ns‖share‖ShareID` | namespace → share reverse index: one empty key per share whose `Namespaces` names the namespace, written and deleted in the share's own transaction (its create, a re-home's switch and finish, step 6 of its removal); `DeleteNamespace` and the API read `NS‖ns‖share‖` under `GuardRange`, so whether a share names the namespace is one range read and a share created into it concurrently conflicts |
+| | `NSR‖store‖ns` | remote store → namespace reverse index: one empty key per namespace record naming the store, written and deleted with `NS‖ns‖info`; a remote store's deletion reads `NSR‖store‖` under `GuardRange` and is refused while any key is there (RFC 23 §3.3), so a namespace created on the store concurrently conflicts with it |
 | | `UA‖principal` | enabled-admin index: one empty key per `User` whose `Role` is admin and who is not `Disabled`, written and deleted by `PutUser` and `DeleteUser` in the user's own transaction; the management API's `last_admin` rule (RFC 23 §5.2) counts it under `GuardRange` through `ControlPlaneTx.EnabledAdmins`, so two writes that each disable, delete or demote one of the last enabled admins conflict and the retry is refused |
 | | `M‖group‖member`, `MR‖member‖group` | Membership, both directions |
 | | `GR‖principal‖ShareID` | grant reverse index: one empty key per `ShareGrant`, so deleting a principal finds its grants without a scan of every share; server-wide, so an export carries no row of it and an import writes one per grant it publishes |
@@ -1917,7 +1954,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `OPR‖kind‖target` | running-operation index: one per target and operation kind → `opID`, written when the operation starts and deleted when it ends, so a second request for the same work finds it in one read and is refused (RFC 23 §4.6); `kind` the operation's kind as a string, `target` tagged |
 | | `IK‖account‖key` | IdempotencyRecord (§2.3), written in the request's own transaction (RFC 23 §4.5) |
 | | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`), session (0x03, session ID), source's sign-in failures (0x04, address), API token (0x05, token ID) and an account-and-source pair's sign-in failures (0x06, principal then address), written and deleted with it, so the sweep is one ordered scan |
-| | `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash` | Session (§2.3); refresh-token index: a refresh token's hash → session ID, the current one and every one it replaced, until the session expires, so presenting an invalidated token finds the session it must revoke (RFC 23 §5.3); and its reverse, one empty key per hash the session has retained, written with its `SSH` row, so the expiry sweep (`XP`, tag 0x03) deletes the session's `SSH` rows by one range of its own, never a scan of `SSH` |
+| | `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash`, `SSA‖principal‖session` | Session (§2.3); refresh-token index: a refresh token's hash → session ID, the current one and every one it replaced, until the session expires, so presenting an invalidated token finds the session it must revoke (RFC 23 §5.3); and its reverse, one empty key per hash the session has retained, written with its `SSH` row, so the expiry sweep (`XP`, tag 0x03) deletes the session's `SSH` rows by one range of its own, never a scan of `SSH`; and the per-account index, one empty key per session, for listing an account's sessions and deleting them with it. `DeleteSession` (sign-out, a reused refresh token's revocation, the account's deletion) deletes `SS‖session`, its `SSA` key, and, by the range `SS‖session‖h‖`, every `SSH` row the session ever had, in one transaction, so no refresh hash it issued is found afterwards |
 | | `SF‖tagged` | SignInFailures (§2.3), keyed by the account (tag 0x01, principal; a name that resolves to no account has none), the source address (0x02), or the two together (0x03, principal then address), read and raised in the attempt's own transaction before its password is checked, except an attempt answered `429`, which raises none and commits nothing, and a caller on the API's local socket has no source's or pair's (RFC 23 §5.3, which says how a source address is normalised); a pair's is deleted by the expiry sweep 24 h after its last counted attempt and a source's 15 min after its `Failed`, which only a failure's settle or an attempt that creates the count moves, with its `XP` row (`XP`, tags 0x04 and 0x06); a settle or a takeback does nothing on a source's record that is missing or holds another `Nonce`; an account's and its pair's are deleted by a success; an account's by `:set-password`, the break-glass reset and the account's deletion, which leaves its pairs to the sweep; and every source's by the break-glass reset, in bounded batches |
 | | `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID` | APIToken (§2.3); token index: the hash → token ID; per-account index, for listing and for deleting an account's tokens with it; all three deleted by the expiry sweep once the token expires (`XP`, tag 0x05) |
 | | `AU‖time‖auditID` | AuditRecord (§2.3), in store-time order, so a time-range read and the retention sweep are one range; never rewritten (RFC 23 §6) |
@@ -2064,13 +2101,13 @@ are the prefix's. No separator byte is written.
 | Store | `\x00` 0x00, followed by the bytes `format`; nothing else is under 0x00 |
 | Per file, per share | `F` 0x01, `S` 0x02 |
 | Per namespace | `C` 0x10, `CR` 0x11, `B` 0x12, `BR` 0x13, `BD` 0x14, `BC` 0x15, `I` 0x16, `NS` 0x17 |
-| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38, `IDS` 0x3A, `PGEN` 0x3B, `OP` 0x3C, `OPR` 0x3D, `IK` 0x3E, `XP` 0x3F, `SS` 0x40, `SSH` 0x41, `AT` 0x42, `ATH` 0x43, `ATA` 0x44, `AU` 0x45, `AUX` 0x46, `AUC` 0x47, `JD` 0x48, `SF` 0x49, `UA` 0x4A; 0x39 retired |
+| Server-wide | `U` 0x20, `G` 0x21, `M` 0x22, `MR` 0x23, `GR` 0x24, `NX` 0x25, `NP` 0x26, `NG` 0x27, `SL` 0x28, `IN` 0x29, `NSM` 0x2A, `PX` 0x2B, `N` 0x2C, `SH` 0x2D, `J` 0x2E, `RS` 0x2F, `MV` 0x30, `SLOT` 0x31, `CFG` 0x32, `CFGGEN` 0x33, `SEC` 0x34, `CL` 0x35, `CLO` 0x36, `TG` 0x37, `MKP` 0x38, `IDS` 0x3A, `PGEN` 0x3B, `OP` 0x3C, `OPR` 0x3D, `IK` 0x3E, `XP` 0x3F, `SS` 0x40, `SSH` 0x41, `AT` 0x42, `ATH` 0x43, `ATA` 0x44, `AU` 0x45, `AUX` 0x46, `AUC` 0x47, `JD` 0x48, `SF` 0x49, `UA` 0x4A, `NSR` 0x4B, `SSA` 0x4C; 0x39 retired |
 
 | Under | Sub-kind codes |
 | --- | --- |
 | `F‖id` | none for the File itself; `acl` 0x01, `x` 0x02, `s` 0x03, `e` 0x04, `t` 0x05, `h` 0x06, `rm` 0x07, `ov` 0x08, `ref` 0x09, `H` 0x0A, `fx` 0x0B, `fo` 0x0C, `rel` 0x0D, `op` 0x0E, `dp` 0x0F; under `op‖openID`, `l` 0x01 |
 | `S‖id` | `info` 0x01, `st` 0x02, `nsg` 0x03, `g` 0x04, `xp` 0x05, `snap` 0x06, `cut` 0x07, `live` 0x08, `sc` 0x09, `hd` 0x0A, `hr` 0x0B, `use` 0x0C, `rh` 0x0D, `or` 0x0E, `ut` 0x0F, `pu` 0x10, `pj` 0x11, `ud` 0x12, `qt` 0x13, `qx` 0x14, `vf` 0x15, `fnc` 0x16, `vl` 0x17, `shs` 0x18, `pr` 0x19, `rr` 0x1A, `do` 0x1B, `od` 0x1C, `pjn` 0x1D, `gv` 0x1E |
-| `NS‖ns` | `gc` 0x01, and under it `lease` 0x01, `recheck` 0x02, `hold` 0x03, `suspect` 0x04, `forward` 0x05, `pause` 0x06, `cursor` 0x07; `claim` 0x02, `pk` 0x03, `key` 0x04, `bk` 0x05, `drain` 0x06, `keyseq` 0x07, `park` 0x08, `backup` 0x09 |
+| `NS‖ns` | `gc` 0x01, and under it `lease` 0x01, `recheck` 0x02, `hold` 0x03, `suspect` 0x04, `forward` 0x05, `pause` 0x06, `cursor` 0x07; `claim` 0x02, `pk` 0x03, `key` 0x04, `bk` 0x05, `drain` 0x06, `keyseq` 0x07, `park` 0x08, `backup` 0x09, `info` 0x0A, `share` 0x0B |
 | `N‖node`, `SH‖shard`, `CL‖clientID`, `SS‖session` | `exp` 0x01, `clk` 0x02, `st` 0x03; `rq` 0x01, `xh` 0x02, `hw` 0x03, `rm` 0x04, `fw` 0x05, `rqx` 0x06; `sh` 0x01; `h` 0x01 |
 | `J‖journal` | `sm` 0x01, then the stream number, 4 bytes big-endian; `og` 0x02 |
 | `NS‖ns‖gc‖cursor` | walk: audit 0x01, block walk 0x02, index rebuild 0x03 |

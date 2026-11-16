@@ -8,7 +8,7 @@ fields), §2.3.2 (a share's removal, the store's side), §3 (`ControlPlane` with
 its retention), §5.2 (the last admin, the store's side), §5.3 (the sign-in counts' expiry), §6
 (append-only, retention), and §10's CP5, CP6, CP11 and CP12 on the store's side.
 **Track:** C.
-**Epic 2 estimate: 12 subtasks, 30 man-days.**
+**Epic 2 estimate: 13 subtasks, 35.25 man-days.**
 **Depends on:** S1 (E1 merged): v1 deleted, so nothing but v2 calls kvstore's view. The RFC 13
 plan's epic 1, if it lands first, gives the settings view's delete and the secrets view (D4).
 **Blocks:** E5, which starts on T2.2's user fields and builds on T2.4 and T2.9; E4's write path
@@ -47,7 +47,8 @@ The suite's reopen and clock; the view's signatures with `expect`, `Alloc`, `Del
 grant-list version, `Write`, `WriteMeta` and `ControlPlaneTx`; the fields RFC 16 adds to `User`,
 `Group`, `Share` and `Quota`; positions and the principals generation; the management API's records
 and their keys; the node and node-status records and the store's node view; the expiry sweep; the
-store's side of a user's, a group's and a share's removal through step 6.
+store's side of a user's, a group's and a share's removal through step 6; the namespace record
+and its remote-store index; the installation's signing-key reference.
 
 ### 1.2 Out of scope
 
@@ -132,7 +133,7 @@ them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R11 | Each record has the key RFC 16 §4.2 gives it: `OP‖opID`, `OPR‖kind‖target`, `IK‖account‖key`, `XP‖expiry‖tagged`, `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash`, `SF‖tagged`, `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID`, `AU‖time‖auditID`, `AUX‖tagged‖time‖auditID`, `N‖node`, `N‖node‖st`, `PGEN`, `S‖id‖gv` | MUST | RFC 16 §4.2; RFC 23 §3.1 | T2.3–T2.9 |
+| R11 | Each record has the key RFC 16 §4.2 gives it: `OP‖opID`, `OPR‖kind‖target`, `IK‖account‖key`, `XP‖expiry‖tagged`, `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash`, `SF‖tagged`, `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID`, `AU‖time‖auditID`, `AUX‖tagged‖time‖auditID`, `N‖node`, `N‖node‖st`, `PGEN`, `S‖id‖gv`, `NS‖ns‖info`, `NSR‖store‖ns`, `NS‖ns‖share‖ShareID`, `SSA‖principal‖session` | MUST | RFC 16 §4.2; RFC 23 §3.1 | T2.3–T2.9, T2.13 |
 | R12 | Each codec version has golden bytes for fixed values, and each new key row a golden key; a change that alters either without a version or format bump fails | test row | RFC 16 §6.3 | T2.2, T2.4–T2.9 |
 | R13 | Decoding a newer version, a truncated value or a trailing byte fails with a named error, never a zero value | MUST | RFC 16 §6.3 | T2.2, T2.4–T2.9 |
 | R14 | A new record kind is a format bump: format *n* names the codec versions a binary may write, so no value is written that an older reader of format *n* cannot decode | MUST | RFC 16 §4.6 | T2.2 |
@@ -174,7 +175,7 @@ them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R32 | A session's refresh-token index holds its current hash and every hash it replaced until the session expires, each with a reverse row under the session, so the expiry sweep deletes a session's index rows by one range of its own, never a scan of the index | MUST | RFC 16 §4.2 (`SS`, `SSH`) | T2.9, T2.10 |
+| R32 | A session's refresh-token index holds its current hash and every hash it replaced until the session expires, each with a reverse row under the session, so the expiry sweep deletes a session's index rows by one range of its own, never a scan of the index; a per-account index lists an account's sessions; `DeleteSession` deletes the session, its per-account key and every refresh hash it ever had in one transaction, so none is found afterwards | MUST | RFC 16 §3, §4.2 (`SS`, `SSH`, `SSA`) | T2.9, T2.10 |
 | R33 | An API token's record, its hash index and its per-account index are written together and deleted together, by the expiry sweep or with the account | MUST | RFC 16 §4.2 (`AT`, `ATH`, `ATA`) | T2.9, T2.10, T2.11 |
 | R34 | A sign-in's counts are read tracked and raised in the attempt's own transaction, through `ControlPlaneTx`'s `SignInFailures` and `PutSignInFailures`, which writes the count's row and, where the count expires, its `XP` row | MUST | RFC 16 §3, §4.2 (`SF`) | T2.9 |
 | R35 | A pair's count is deleted 24 h after its `Last`, a source's 15 min after its `Failed`, each with its `XP` row, which moves when that time moves; an account's count does not expire | MUST | RFC 23 §5.3; RFC 16 §2.3, §4.2 (`SF`) | T2.9, T2.10 |
@@ -185,6 +186,17 @@ them.
 | --- | --- | --- | --- | --- |
 | R36 | Every record that expires has one empty `XP‖expiry‖tagged` key, written and deleted with it, so the sweep is one ordered scan | MUST | RFC 16 §4.2 (`XP`) | T2.5, T2.7, T2.9, T2.10 |
 | R37 | One sweep deletes every expiring record in bounded batches; each record's expiry is written with it, so the sweep is handed only `audit.retention` | invariant | RFC 23 plan §4.3; RFC 23 §6 | T2.10 |
+
+**Namespaces and the installation's signing key**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R48 | A namespace has its own record, `NS‖ns‖info`, naming the remote store it is created on and its bound fields, versioned by `Generation`; a namespace naming no remote store is refused | MUST | RFC 16 §2.3 (`Namespace`), §3, §4.2 (`NS‖ns‖info`); RFC 23 §3.3 | T2.13 |
+| R49 | Every namespace record has one `NSR‖store‖ns` key, written and deleted in the record's transaction, so whether a remote store is named is one range read; a remote store's deletion reads it under a range guard, so a namespace created on the store concurrently conflicts with it | MUST | RFC 16 §4.2 (`NSR‖store‖ns`), §3; RFC 23 §3.3 | T2.13 |
+| R50 | A share's create or rebind reads its namespace's record tracked and refuses a namespace that names no remote block store | MUST | RFC 8 §2.1; RFC 16 §3 (`ControlPlaneTx`); RFC 23 §3.2 | T2.13 |
+| R52 | `ControlPlaneTx.Now` is the transaction's store time, fixed for its life, so a value derived from it (a token's not-before) and the tracked reads beside it commit together | MUST | RFC 16 §3 (`ControlPlaneTx`); RFC 23 §5.3 | T2.4 |
+| R53 | Whether any share names a namespace is one range read of `NS‖ns‖share‖`, written and deleted in the share's own transaction and read under a range guard, so a share created into the namespace concurrently conflicts with its deletion | MUST | RFC 16 §4.2 (`NS‖ns‖share‖ShareID`), §3; RFC 23 §3.3 | T2.13 |
+| R51 | The `Installation` record names the management API's signing key as `SigningKey`, a `SecretRef` owned by the record under `signing_key` | MUST | RFC 16 §2.3 (`Installation`, `SecretOwner`) | T2.2 |
 
 **Nodes**
 
@@ -328,6 +340,16 @@ them.
   them, the clock passed through their `Options.Clock`; Badger in memory cannot reopen and the
   frozen-clock runs cannot advance, so they do not, and the suite says so where it skips. No
   marker. Prior art: none needed.
+- **D19, a namespace is its own record, with a reverse index from its remote store.** RFC 16 had
+  no namespace record: a share's `Namespaces` holds (generation, `NamespaceID`) pairs only, and on
+  `feat/storage-v2` a share's create mints a fresh namespace. RFC 23 §3.3 deletes a remote store
+  only when no namespace names it, and RFC 8 §2.1 refuses a share whose namespace names no remote
+  store; both need a record to read, and the first a key read rather than a scan. So RFC 16 gains
+  `Namespace`, keyed `NS‖ns‖info` (sub-kind 0x0A, after `backup` 0x09), and the reverse index
+  `NSR‖store‖ns` (kind 0x4B, after `UA` 0x4A), amended in this document's pull request; the store
+  is named by its configuration's scope ID (RFC 13 §3). RFC 13 Appendix B's namespace settings stay
+  as they are: the record holds them as its bound fields. Both join format 1 (D1). The user's
+  decision. Prior art: none needed.
 - **D18, enabled admins have a tracked index.** RFC 23 §5.2 refuses
   disabling, deleting or demoting the last enabled admin. Read with no tracked range, two
   concurrent demotions each see the other admin and both commit. So `PutUser` and `DeleteUser`
@@ -351,6 +373,7 @@ pkg/metadata/entity/
                             IdempotentReplay, ErrIdempotencyMismatch (T2.5); ErrOperationRunning
                             (T2.7)
   node.go             T2.8  Node, NodeStatus, RefusedRecord, RecordRef, SecretVersion, Roles
+  namespace.go        T2.13 Namespace; Installation.SigningKey in control.go (T2.2)
 pkg/metadata/kv/keys/ T2.3  sub-kind S‖id‖gv; kinds OP, OPR, IK, XP, SS, SSH, SF, AT, ATH, ATA,
                             AU, AUX, PGEN, UA (T2.4–T2.9)
 pkg/metadata/kvstore/
@@ -364,6 +387,7 @@ pkg/metadata/kvstore/
   sweep.go            T2.10 Sweep
   principaldelete.go  T2.11 a user's and a group's deletion past the mark
   shareremove.go      T2.12 a share's removal, steps 2 to 6, and the shard drop
+  namespaces.go       T2.13 NS‖ns‖info, NSR, PutNamespace, DeleteNamespace, StoreNamed
   codecs.go           T2.2, T2.4–T2.9  the new and changed codecs
   codecs_test.go      T2.2, T2.4–T2.9  golden vectors, refusal cases, FuzzControlPlaneValues
   store.go            T2.2  D1's decision marker at maxFormat
@@ -401,20 +425,22 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 
 ### T2.2 The API's fields on users, groups, shares and quotas
 
-**Subtask T2.2 estimate: 1 man-days.**
+**Subtask T2.2 estimate: 1.25 man-days.**
 
 - **Track:** C. **Depends on:** nothing.
-- **Covers:** R1, R2, R3, R12, R13, R14.
+- **Covers:** R1, R2, R3, R12, R13, R14, R51.
 - **Deliverables:** in `entity`: `User.Role APIRole`, `User.NotBefore time.Time`,
   `User.MustChange bool`, `User.Email string` (D12), `User.Generation`, `Group.Generation`,
-  `Share.Generation`, `Quota.Version`; `type APIRole uint8` with none, viewer, operator, admin. The
-  user, group, share-info and quota codecs change in place at version 1 (D1), with D1's
+  `Share.Generation`, `Quota.Version`, `Installation.SigningKey SecretRef` (R51), shaped as
+  `MachinePassword` and written by E5; `type APIRole uint8` with none, viewer, operator, admin. The
+  user, group, share-info, quota and installation codecs change in place at version 1 (D1), with D1's
   `decision:` marker at `maxFormat`. Consumed by T2.3, which raises the generations, and by E5,
   which starts on the user fields.
 - **Acceptance criteria:**
-  - A user written with every new field reads back with each, `NotBefore` at whole seconds.
+  - A user written with every new field reads back with each, `NotBefore` at whole seconds; an
+    installation's `SigningKey` reads back as written.
 - **Tests:** one golden vector per changed codec (catches a changed byte, R12); a truncated value,
-  a trailing byte and a newer version each refused by name (R13); the four decoders in
+  a trailing byte and a newer version each refused by name (R13); the five decoders in
   `FuzzControlPlaneValues` (rule 2). The conformance case writes and reads every new field through
   the view (catches a field the codec drops, R1–R3). R14 is deferred by D1's `decision:`; from the
   first release that creates a store its golden vectors enforce it. No double.
@@ -453,10 +479,10 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 
 ### T2.4 `Write`, `ControlPlaneTx` and the audit record
 
-**Subtask T2.4 estimate: 4 man-days.**
+**Subtask T2.4 estimate: 4.25 man-days.**
 
 - **Track:** C. **Depends on:** T2.3.
-- **Covers:** R8, R11, R12, R13, R18, R19, R20, R21, R22, R25, R26, R47.
+- **Covers:** R8, R11, R12, R13, R18, R19, R20, R21, R22, R25, R26, R47, R52.
 - **Deliverables:**
   ```go
   // in entity (D2)
@@ -469,6 +495,7 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   	User(p Principal) (User, bool, error)
   	Share(id ShareID) (Share, bool, error)
   	EnabledAdmins() (int, error) // D18
+	Now() time.Time // kv.Txn's Now: on feat/storage-v2 taken when the transaction starts, fixed for its life; a retry gets a new one
   	DeleteUser(p Principal, expect uint64) error // the mark
   	DeleteGroup(p Principal, expect uint64) error
   	DeleteShare(share ShareID, snapshots SnapshotDisposition, expect uint64) error
@@ -517,6 +544,8 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
     `FaultKV` delay after its `EnabledAdmins` read so both read two, each refusing when it would
     leave none: exactly one commits, on Badger in memory and on disk (catches an untracked count,
     R47);
+  - `Now` read twice in one `Write` returns one value, at or after the store time before the
+    `Write` began, and a conflict's retry returns a later one (R52);
   - golden vectors, refusal cases and `FuzzControlPlaneValues` entries for the audit codec and the
     `AU`, `AUX` keys (R12, R13).
 
@@ -621,13 +650,14 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 
 ### T2.9 Sessions, API tokens and sign-in counts
 
-**Subtask T2.9 estimate: 3 man-days.**
+**Subtask T2.9 estimate: 3.75 man-days.**
 
 - **Track:** C. **Depends on:** T2.4.
 - **Covers:** R6, R7, R11, R12, R13, R18, R32, R33, R34, R35, R36.
 - **Deliverables:** `entity.Session`, `APIToken`, `SignInFailures`, `SignInKey`; the `SS`, `SSH`,
-  `AT`, `ATH`, `ATA` and `SF` kinds; on the view and on `ControlPlaneTx`: `PutSession`,
-  `SessionByRefresh(hash)`, `PutAPIToken`, `APITokenByHash(hash)`, `APITokens(ctx, account)`,
+  `SSA`, `AT`, `ATH`, `ATA` and `SF` kinds; on the view and on `ControlPlaneTx`: `PutSession`,
+  `Session(id)`, the per-call check, `Sessions(account)`, `DeleteSession(id)`, which deletes the
+  session, its `SSA` key and every `SSH` row it had through `SS‖session‖h‖`, `SessionByRefresh(hash)`, `PutAPIToken`, `APITokenByHash(hash)`, `APITokens(ctx, account)`,
   `DeleteAPIToken`, `SignInFailures(key)` (tracked), `PutSignInFailures(key, f)` and
   `DeleteSignInFailures(key)`. `PutSignInFailures` writes the source's `XP` row (tag 0x04) at
   `Failed` + 15 min and the pair's (tag 0x06) at `Last` + 24 h, moving it when the time moves, and
@@ -637,7 +667,10 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   - A refresh token's hash, rotated twice, finds its session by any of the three hashes until the
     session expires.
   - Moving a source's `Failed` moves its `XP` row; moving only its `Last` does not.
-- **Tests:** at kvstore's conformance suite: the refresh index and its reverse rows (R32); a token
+- **Tests:** at kvstore's conformance suite: the refresh index and its reverse rows (R32); a
+  session rotated twice, then deleted: none of its three hashes finds it, it is gone from
+  `Sessions(account)`, and nothing is left under its `SS‖session‖h‖` (catches a deletion that
+  leaves an old hash findable, R32); a token
   found by hash and listed by account, the three rows written together (R33); a count read tracked
   and raised in one `Write`, and two raises of one count, the first held open by a `FaultKV` delay
   after its read, where the second retries and both raises land (catches an untracked read, R34);
@@ -723,6 +756,40 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   the last transaction (R45); the next share's tag differs (R46); `ContinueRemoval` after the last
   transaction answering `done` (D14). No double.
 
+### T2.13 Namespace records and the remote store's index
+
+**Subtask T2.13 estimate: 4 man-days.**
+
+- **Track:** C. **Depends on:** T2.4.
+- **Covers:** R11, R12, R13, R48, R49, R50, R53.
+- **Deliverables:** `entity.Namespace` (D19); the `NS‖ns‖info` sub-kind and the `NSR` kind; on
+  the view, `Namespaces(ctx, after)`, `PutNamespace(ctx, n, expect)` and
+  `DeleteNamespace(ctx, id, expect)`, each with its `ControlPlaneTx` form; on `ControlPlaneTx`,
+  the tracked reads `Namespace(id)`, `StoreNamed(store)` and `NamespaceNamed(ns)`, the last two
+  under a range guard over `NSR‖store‖` and `NS‖ns‖share‖`. The `NS‖ns‖share‖ShareID` key is
+  written in a share's create and deleted with `nsg` in step 6 of its removal (T2.12); no
+  existing share index answers by namespace, since `NX‖share` and `NP` key on name and path. `PutShare`'s create reads its namespace's record tracked and refuses one that
+  names no remote store, in place of minting a fresh namespace; every share-creating caller on
+  `feat/storage-v2` (the suite's fixtures, `internal/vfs` and `pkg/block/engine` tests) puts a
+  namespace record first. `DeleteNamespace` refuses a namespace a share still names, by
+  `NamespaceNamed`. Consumed by
+  E3's `addShare` refusal, E4's store, namespace and share routes, whose store delete refuses
+  while `StoreNamed` is true.
+- **Acceptance criteria:**
+  - A namespace's record and its `NSR` key are written together and deleted together.
+  - A share created in a namespace that names no remote store is refused.
+- **Tests:** at kvstore's conformance suite: `StoreNamed` true after a `PutNamespace` and false
+  after its `DeleteNamespace`, with nothing else under `NSR‖store‖` (R49); a `Write` that refuses
+  a store's deletion when `StoreNamed` is true, refused with a namespace on the store (R49); a
+  namespace's create on a store and a `Write` deleting that store, the second held open by a
+  `FaultKV` delay after its `StoreNamed` read: one commits and the other's retry sees the change
+  (catches an untracked index read, R49), on Badger in memory and on disk; a share create naming
+  a namespace with no store refused (R50); a namespace with no store refused, and a stale
+  `expect` refused (R48); `NamespaceNamed` true after a share's create and false after its
+  removal, and a namespace's deletion racing a share's create into it, interleaved by a `FaultKV`
+  delay, one committing (R53); golden vectors, refusal cases and a `FuzzControlPlaneValues` entry for
+  the namespace codec (R12, R13). No double.
+
 ## 7. Order of work
 
 ```mermaid
@@ -742,6 +809,7 @@ flowchart TD
   T2_1 & T2_5 & T2_7 & T2_9 --> T2_10["T2.10 Expiry sweep"]
   T2_1 & T2_6 & T2_9 --> T2_11["T2.11 User and group deletion"]
   T2_1 & T2_4 --> T2_12["T2.12 Share removal"]
+  T2_4 --> T2_13["T2.13 Namespace records and store index"]
   T2_11 & T2_12 --> C3(["after T2.12: E3 drives the removals"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
@@ -755,13 +823,14 @@ nothing and can run beside T2.2–T2.9.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T2.1, T2.2, T2.3 | 6 | — | the suite's reopen and clock, the fields, and `expect` on every write with every caller |
-| 2 | T2.4, T2.5 | 5.5 | PR 1 | `Write` with its audit and idempotency records: E4's write path |
+| 1 | T2.1, T2.2, T2.3 | 6.25 | — | the suite's reopen and clock, the fields, and `expect` on every write with every caller |
+| 2 | T2.4, T2.5 | 5.75 | PR 1 | `Write` with its audit and idempotency records: E4's write path |
 | 3 | T2.6, T2.7, T2.8 | 6 | PR 2 | positions, operations and nodes: what E3's node reads and writes |
-| 4 | T2.9, T2.10 | 4.5 | PR 3 | E5's records and the sweep that expires them |
+| 4 | T2.9, T2.10 | 5.25 | PR 3 | E5's records and the sweep that expires them |
 | 5 | T2.11, T2.12 | 8 | PR 4 | the removals past the mark, both resumed from their records |
+| 6 | T2.13 | 4 | PR 2 | the namespace record and its index, which E3's and E4's share refusal and store delete read |
 
-A suggestion only: one pull request per subtask works as well.
+PR 6 can be open beside PRs 3 to 5. A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
