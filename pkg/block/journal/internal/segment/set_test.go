@@ -1196,6 +1196,242 @@ func TestAdoptSpareRefusals(t *testing.T) {
 	}
 }
 
+// TestAdoptRebuiltCountsLikeTheEventPaths: the entry the rebuild uses enters
+// a segment the scans classed, pre-charged with its records' bytes, moving
+// every counter the event paths move — the footprint by the accounted size,
+// the segment count, the sealed count for a sealed one, and each share's
+// record and overhead bytes — so the counters read without a walk the same
+// after a reopen as the journal itself would have left them. The accounted
+// size is the caller's input: an active segment is adopted at the cap, a
+// sealed one at its post-seal size, and the second adoption enters a set the
+// first one already seeded.
+func TestAdoptRebuiltCountsLikeTheEventPaths(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	const tagA, tagB = core.ShareTag(1), core.ShareTag(2)
+	s := NewSet(segCap, nil)
+
+	if err := s.AdoptRebuilt(core.SegmentID(1), segCap, Active, false,
+		map[core.ShareTag]int64{tagA: 96, tagB: 128},
+		map[core.ShareTag]int64{tagA: 32, tagB: 16}); err != nil {
+		t.Fatalf("the adoption of the active segment at the cap: %v", err)
+	}
+	if err := s.AdoptRebuilt(core.SegmentID(2), 1000, Sealed, false,
+		map[core.ShareTag]int64{tagA: 300},
+		map[core.ShareTag]int64{tagA: 48}); err != nil {
+		t.Fatalf("the adoption of the sealed segment at its post-seal size, into the set the first adoption seeded: %v", err)
+	}
+
+	c := s.Counters()
+	if c.UsedBytes != segCap+1000 {
+		t.Fatalf("after the adoptions the footprint is %d, want the cap and the post-seal size together %d", c.UsedBytes, segCap+1000)
+	}
+	if c.Segments != 2 {
+		t.Fatalf("after the adoptions the set holds %d segments, want 2", c.Segments)
+	}
+	if c.Sealed != 1 {
+		t.Fatalf("after the adoptions the set holds %d sealed segments, want the one sealed adoption", c.Sealed)
+	}
+	if c.Spares != 0 {
+		t.Fatalf("after the adoptions the ledger holds %d spares, want none", c.Spares)
+	}
+	if c.DoubleRetires != 0 {
+		t.Fatalf("after the adoptions the ledger counted %d double retires, want 0", c.DoubleRetires)
+	}
+
+	if st, err := s.State(core.SegmentID(1)); err != nil || st != Active {
+		t.Fatalf("State(1) after the adoption = %d, %v, want Active", st, err)
+	}
+	if st, err := s.State(core.SegmentID(2)); err != nil || st != Sealed {
+		t.Fatalf("State(2) after the adoption = %d, %v, want Sealed", st, err)
+	}
+	if s.SealedFull(core.SegmentID(2)) {
+		t.Fatal("SealedFull(2) = true after the adoption, want false: the scan handed no full word")
+	}
+
+	bytes, over := s.TagFigures()
+	if got := bytes[tagA]; got != 96+300 {
+		t.Fatalf("tag A holds %d record bytes after the adoptions, want 96+300 = %d", got, 96+300)
+	}
+	if got := bytes[tagB]; got != 128 {
+		t.Fatalf("tag B holds %d record bytes after the adoptions, want 128", got)
+	}
+	if got := over[tagA]; got != 32+48 {
+		t.Fatalf("tag A holds %d overhead bytes after the adoptions, want 32+48 = %d", got, 32+48)
+	}
+	if got := over[tagB]; got != 16 {
+		t.Fatalf("tag B holds %d overhead bytes after the adoptions, want 16", got)
+	}
+	if got := s.ShareBytes(tagA); got != 396 {
+		t.Fatalf("ShareBytes(A) = %d after the adoptions, want 396", got)
+	}
+	if got := s.ShareBytes(tagB); got != 128 {
+		t.Fatalf("ShareBytes(B) = %d after the adoptions, want 128", got)
+	}
+	if _, ret := s.ShareBytesAndRetired(tagA); ret != 0 {
+		t.Fatalf("tag A holds %d retired bytes after the adoptions, want the adoptions to release none", ret)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("after the adoptions: %v", err)
+	}
+}
+
+// TestAdoptRebuiltRefusals: an adoption validates its whole argument before
+// anything moves — the null id, every id the ledger owns (a segment an
+// adoption entered and a spare alike), a size the ledger cannot account and
+// an unserved shape of state, seal word and charges are all refused, and no
+// refusal moves a counter, a share's figure or the set of the ledger the
+// first adoption already seeded.
+func TestAdoptRebuiltRefusals(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	const tagA, tagB = core.ShareTag(1), core.ShareTag(2)
+	s := NewSet(segCap, nil)
+	if err := s.AdoptRebuilt(core.SegmentID(1), segCap, Active, false,
+		map[core.ShareTag]int64{tagA: 96}, map[core.ShareTag]int64{tagA: 32}); err != nil {
+		t.Fatalf("the adoption of the seeded segment: %v", err)
+	}
+	if err := s.AddSpare(core.SegmentID(3), noMax); err != nil {
+		t.Fatalf("AddSpare: %v", err)
+	}
+	before := s.Counters()
+	beforeBytes, beforeOver := s.TagFigures()
+
+	for _, r := range []struct {
+		name string
+		id   core.SegmentID
+		size int64
+		st   State
+		full bool
+		tags map[core.ShareTag]int64
+		over map[core.ShareTag]int64
+		want error
+	}{
+		{"the null id", 0, segCap, Active, false, nil, nil, ErrBadID},
+		{"the id of a segment the set holds", core.SegmentID(1), segCap, Active, false, nil, nil, ErrDuplicateID},
+		{"the id of a spare the ledger holds", core.SegmentID(3), segCap, Active, false, nil, nil, ErrDuplicateID},
+		{"a zero size", core.SegmentID(2), 0, Sealed, false, nil, nil, ErrBadSize},
+		{"a negative size", core.SegmentID(2), -1, Sealed, false, nil, nil, ErrBadSize},
+		{"a size above the cap", core.SegmentID(2), segCap + 1, Sealed, false, nil, nil, ErrBadSize},
+		{"charged bytes over the size", core.SegmentID(2), 100, Active, false, map[core.ShareTag]int64{tagA: 101}, nil, ErrBadSize},
+		{"a charge above the cap", core.SegmentID(2), segCap, Active, false, map[core.ShareTag]int64{tagA: math.MaxInt64, tagB: math.MaxInt64}, nil, ErrBadSize},
+		{"a charge of no bytes", core.SegmentID(2), 100, Active, false, map[core.ShareTag]int64{tagA: 0}, nil, ErrBadSize},
+		{"a negative charge", core.SegmentID(2), 100, Active, false, map[core.ShareTag]int64{tagA: -1}, nil, ErrBadSize},
+		{"the state below every one the set serves", core.SegmentID(2), 100, 0, false, nil, nil, ErrWrongState},
+		{"a state past every one the set serves", core.SegmentID(2), 100, State(4), false, nil, nil, ErrWrongState},
+		{"a full word with no seal behind it", core.SegmentID(2), segCap, Active, true, nil, nil, ErrWrongState},
+		{"a full word below the cap it names", core.SegmentID(2), segCap - 1, Sealed, true, nil, nil, ErrBadSize},
+		{"overhead above its tag's bytes", core.SegmentID(2), segCap, Active, false,
+			map[core.ShareTag]int64{tagA: 100}, map[core.ShareTag]int64{tagA: 101}, ErrBadSize},
+		{"overhead with no bytes to sit in", core.SegmentID(2), segCap, Active, false,
+			nil, map[core.ShareTag]int64{tagA: 1}, ErrBadSize},
+		{"a negative overhead", core.SegmentID(2), segCap, Active, false,
+			map[core.ShareTag]int64{tagA: 100}, map[core.ShareTag]int64{tagA: -1}, ErrBadSize},
+	} {
+		if err := s.AdoptRebuilt(r.id, r.size, r.st, r.full, r.tags, r.over); !errors.Is(err, r.want) {
+			t.Fatalf("%s: AdoptRebuilt err = %v, want %v", r.name, err, r.want)
+		}
+	}
+
+	if after := s.Counters(); after != before {
+		t.Fatalf("after the refusals the counters are %+v, want the refusals to move none: %+v", after, before)
+	}
+	if bytes, over := s.TagFigures(); !maps.Equal(bytes, beforeBytes) || !maps.Equal(over, beforeOver) {
+		t.Fatalf("after the refusals the shares' figures are %v, %v, want the refusals to move none: %v, %v",
+			bytes, over, beforeBytes, beforeOver)
+	}
+	if rows := s.Snapshot(); len(rows) != 1 {
+		t.Fatalf("after the refusals the set holds %d segments, want the one the seed adopted", len(rows))
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("after the refusals: %v", err)
+	}
+}
+
+// TestAdoptRebuiltFollowsTheEventPaths: a rebuilt entry is a citizen of the
+// set the event paths know — the charged bytes the adoption entered are the
+// running bound a later AddRecord is refused past, a seal and a cut serve the
+// segment, and its retire releases each share's charged bytes into the
+// retired figure exactly as a segment the journal itself made.
+func TestAdoptRebuiltFollowsTheEventPaths(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	const tagA, tagB = core.ShareTag(1), core.ShareTag(2)
+	s := NewSet(segCap, nil)
+	if err := s.AdoptRebuilt(core.SegmentID(1), segCap, Active, false,
+		map[core.ShareTag]int64{tagA: 96, tagB: 128},
+		map[core.ShareTag]int64{tagA: 32, tagB: 16}); err != nil {
+		t.Fatalf("the adoption: %v", err)
+	}
+
+	if err := s.AddRecord(core.SegmentID(1), tagA, segCap, segCap/2); !errors.Is(err, ErrBadSize) {
+		t.Fatalf("the AddRecord that would take the held bytes past the adopted size: %v, want ErrBadSize", err)
+	}
+	if err := s.AddRecord(core.SegmentID(1), tagA, 64, 8); err != nil {
+		t.Fatalf("the AddRecord inside the adopted bound: %v", err)
+	}
+	if got := s.ShareBytes(tagA); got != 96+64 {
+		t.Fatalf("tag A holds %d record bytes after the charge, want the adopted 96 and the charged 64 together", got)
+	}
+
+	if err := s.Seal(core.SegmentID(1), false); err != nil {
+		t.Fatalf("the seal of the adopted segment: %v", err)
+	}
+	if err := s.Shrink(core.SegmentID(1), 96+128+64); err != nil {
+		t.Fatalf("the cut of the adopted segment to its charged bytes: %v", err)
+	}
+	if freed, err := s.Retire(core.SegmentID(1)); err != nil || freed != 96+128+64 {
+		t.Fatalf("the retire of the adopted segment freed %d, %v, want the shrunk accounted size %d", freed, err, 96+128+64)
+	}
+	if settled, ret := s.ShareBytesAndRetired(tagA); settled != 0 || ret != 96+64 {
+		t.Fatalf("tag A holds %d settled and %d retired bytes after the retire, want 0 and the adopted-and-charged 160", settled, ret)
+	}
+	if settled, ret := s.ShareBytesAndRetired(tagB); settled != 0 || ret != 128 {
+		t.Fatalf("tag B holds %d settled and %d retired bytes after the retire, want 0 and the adopted 128", settled, ret)
+	}
+	if c := s.Counters(); c.UsedBytes != 0 || c.Segments != 0 || c.Sealed != 0 {
+		t.Fatalf("after the retire the counters are %+v, want the set empty", c)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("after the retire: %v", err)
+	}
+}
+
+// TestAdoptRebuiltDropsAZeroOverhead: a tag an adoption charges with bytes but
+// no overhead leaves no key in the overhead figures, as AddRecord charges a
+// zero overhead nowhere — so Check, which compares the shares' totals with the
+// entries' key for key, agrees without the two maps holding the empty key
+// only one of them would have kept.
+func TestAdoptRebuiltDropsAZeroOverhead(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	const segCap = 4096
+	const tagA, tagB = core.ShareTag(1), core.ShareTag(2)
+	s := NewSet(segCap, nil)
+	if err := s.AdoptRebuilt(core.SegmentID(1), segCap, Active, false,
+		map[core.ShareTag]int64{tagA: 96, tagB: 128},
+		map[core.ShareTag]int64{tagA: 0, tagB: 16}); err != nil {
+		t.Fatalf("the adoption with one zero overhead: %v", err)
+	}
+
+	bytes, over := s.TagFigures()
+	if got := bytes[tagA]; got != 96 {
+		t.Fatalf("tag A holds %d record bytes after the adoption, want 96", got)
+	}
+	if _, ok := over[tagA]; ok {
+		t.Fatalf("the overhead figures hold tag A at %d after the adoption, want the zero overhead dropped", over[tagA])
+	}
+	if got := over[tagB]; got != 16 {
+		t.Fatalf("tag B holds %d overhead bytes after the adoption, want 16", got)
+	}
+	if err := s.Check(); err != nil {
+		t.Fatalf("after the adoption: %v", err)
+	}
+}
+
 // TestClaimRetirement: one call resolves whether a segment can be retired and
 // takes its claim as one step, so two retirements of one segment serialise on
 // it. Each row of its table serves or refuses exactly once: the absent id
