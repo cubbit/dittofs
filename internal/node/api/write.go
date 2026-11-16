@@ -119,7 +119,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			if err != nil {
 				return err
 			}
-			if rec.Change, err = change(doc, after); err != nil {
+			if rec.Change, err = change(present(doc, ok), present(after, exists)); err != nil {
 				return err
 			}
 			rec.Before, rec.After, rec.Outcome = tag, afterTag, []byte("applied")
@@ -243,9 +243,18 @@ func requestOf(ctx context.Context, r *http.Request, key string) []byte {
 	return b
 }
 
+// present is doc when its record exists, and nil when it does not.
+func present(doc any, ok bool) any {
+	if !ok {
+		return nil
+	}
+	return doc
+}
+
 // change is what differs between the JSON of old and new, each field that
 // does named by its dotted path with its old and new values, nil when
-// nothing does.
+// nothing does; a nil side, a record that does not exist, has every field
+// null.
 func change(old, new any) ([]byte, error) {
 	o, err := asJSON(old)
 	if err != nil {
@@ -272,9 +281,15 @@ func asJSON(v any) (any, error) {
 }
 
 func diff(path string, o, n any, out map[string][2]any) {
-	om, isObj := o.(map[string]any)
-	nm, bothObj := n.(map[string]any)
-	if !isObj || !bothObj {
+	om, oObj := o.(map[string]any)
+	nm, nObj := n.(map[string]any)
+	if o == nil && nObj {
+		om, oObj = map[string]any{}, true
+	}
+	if n == nil && oObj {
+		nm, nObj = map[string]any{}, true
+	}
+	if !oObj || !nObj {
 		if !reflect.DeepEqual(o, n) {
 			out[path] = [2]any{o, n}
 		}
