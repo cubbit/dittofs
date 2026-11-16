@@ -968,7 +968,7 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 	var wait time.Duration
 	// RFC 23 §5.3: count before verifying, reads tracked, so a burst cannot pass at one count
 	if err := h.store.Write(r.Context(), metadata.WriteMeta{}, func(tx metadata.ControlPlaneTx) error {
-		wait = h.reserveAttempt(tx, acct, src) // §5.3: reads the counts and, only when no wait applies, raises them: the source's and the pair's (a local-socket caller has neither, a name with no account no pair), and the account's unless acct is zero; a wait raises nothing, so the transaction commits nothing
+		wait = h.reserveAttempt(tx, acct, src) // §5.3: reads the counts and, only when no wait applies, raises them: the source's and the pair's (a local-socket caller has neither, a name with no account no pair), and the account's unless acct is zero; the source's Last moves here only when this creates its count; a wait raises nothing, so the transaction commits nothing
 		return nil
 	}); err != nil {
 		h.problem(w, err) // fail closed: an attempt not counted is not checked
@@ -980,15 +980,16 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 	}
 	// the principal counted is the principal checked; the zero one does the dummy work and fails
 	if err := h.signin.VerifyPassword(r.Context(), acct, req.Password); err != nil { // APISignIn (X2)
-		// the refusal's audit, and no idempotency record (RFC 16 §3, RFC 23 §4.5)
+		// the refusal's audit, and no idempotency record (RFC 16 §3, RFC 23 §4.5); it settles the
+		// failure, moving the source's Last and its XP row, the only write that moves them (§5.3)
 		if werr := h.store.Write(r.Context(), metadata.WriteMeta{Audit: refusedAuditOf(r)},
-			func(tx metadata.ControlPlaneTx) error { return nil }); werr != nil {
+			func(tx metadata.ControlPlaneTx) error { return h.settleFailure(tx, src) }); werr != nil {
 			h.log.Error("sign-in refusal not audited", "err", werr) // the attempt stays counted
 		}
 		h.problem(w, err)
 		return
 	}
-	sess := h.newSession(r.Context(), acct) // its Write resets the account's and the pair's counts, and takes back the source's raise, putting back its Last unless a later attempt moved it
+	sess := h.newSession(r.Context(), acct) // its Write resets the account's and the pair's counts, and takes back the source's raise, its Count only
 	key := h.signingKey()                   // Resolve(ctx, storage role, kind key, the installation's signing_key owner, ref) (D10)
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims(acct, sess))
 	tok.Header["kid"] = key.Version // D3: rotation verifies older tokens by version
@@ -1289,7 +1290,7 @@ call against their current record.
 - the clauses of RFC 23 §12's "§5.3 throttling" row hold at the API's authentication layer, which
   epic 7 then runs through the node: the address forms, the `429` that raises nothing, loopback
   counted as a source and the local socket with no source or pair count, the source's 15-minute
-  window and a success's takeback that leaves it running from the last failure and the resets by `:set-password`, by the break-glass reset and
+  window, which only a failure's settling moves, overlapping successes included, and the resets by `:set-password`, by the break-glass reset and
   by the account's deletion included; and the "§5.2 roles" row's refusals of A6's settings;
 - `dfs init`, killed after each of its steps, between two journals' `node-id` copies included, and
   run again, finishes with one identity, and `dfs start` then serves; run again beside a leftover
@@ -1325,7 +1326,8 @@ call against their current record.
   and commits nothing, answered with the code `throttled` (RFC 23 §4.7); a name with no account
   counted against its source only; a loopback address counted as any source, and a caller on the
   local socket with no source or pair count; a source's count forgotten 15 min after its last
-  failure, a success's takeback putting back the `Last` and the `XP` row it moved, and cleared by
+  failure, its `Last` and `XP` row moved only when a failure settles and a success's takeback
+  touching only its count, and cleared by
   the break-glass reset in bounded batches. A benchmark of checked sign-ins, two commits each, from many sources beside
   concurrent metadata commits, which §6.1's sign-in row reads for its trigger; and a test that a
   `429` flood from one address commits nothing (§4.3 above).
