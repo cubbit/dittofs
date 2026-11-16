@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -10,13 +9,10 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 )
 
-// friendlyLine turns err into the one line a presenter can act on: what
-// happened and, where it is on the user to fix, what to do.
+// friendlyLine turns err into the one line a presenter can act on. The
+// in-process driver has nobody else's reachability to diagnose, so the
+// journal's own words are the whole story.
 func friendlyLine(err error) string {
-	var un *unreachableError
-	if errors.As(err, &un) {
-		return fmt.Sprintf("jdemo: daemon not reachable at %s — run 'jdemo start' first", un.path)
-	}
 	return fmt.Sprintf("jdemo: %v", err)
 }
 
@@ -103,17 +99,6 @@ func renderSegments(w io.Writer, segs []journal.SegmentInfo) {
 		panePrint(tw, "%d\t%d\t%d\t%d\t%d\t%s\n",
 			s.ID, s.Stream, s.Allocated, s.HeldBytes, s.RetainedBytes, flags)
 	}
-	_ = tw.Flush()
-}
-
-// renderVerify prints what a verification pass found, counts first so a
-// clean pass reads at a glance.
-func renderVerify(w io.Writer, rep verifyJSON) {
-	tw := newTabWriter(w)
-	panePrint(tw, "%d unsupported entries\n", rep.Unsupported)
-	panePrint(tw, "%d unindexed records\n", rep.Unindexed)
-	panePrint(tw, "%d bad footers\n", rep.BadFooters)
-	panePrint(tw, "footprint mismatch: %d bytes\n", rep.Mismatch)
 	_ = tw.Flush()
 }
 
