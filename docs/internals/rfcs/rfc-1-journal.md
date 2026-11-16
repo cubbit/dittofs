@@ -111,7 +111,8 @@ offer picks it up, and a release of it is refused until then.
 - **content version** — the number ordering a file's writes and removals; where
   two cover one byte, the higher wins ([§4.3](#4.3%20Versions)).
 - **offloaded bit** — set only when the engine reports the bytes offloaded in the
-  remote tier; eviction needs it ([§2](#2.%20The%20model%20it%20presents)).
+  remote tier, after an offload or through the reseed's `MarkOffloaded`, or when a fill
+  writes bytes fetched from it ([§3.4](#3.4%20Fill)); eviction needs it ([§2](#2.%20The%20model%20it%20presents)).
 - **offer**, **report** — the frozen view of dirty bytes the engine uploads, and
   its statement of which of them are now offloaded ([§3.3](#3.3%20Offload)).
 - **release**, **fill** — no longer holding offloaded bytes (eviction), whose

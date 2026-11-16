@@ -959,8 +959,8 @@ type Deps struct {
 	// accept loop at its accept deadline), Close unregisters it at unbind.
 	// RFC 25's health loop satisfies Loop as it is. nil watches nothing.
 	Watch func(loop string) Loop
-	// DialClient opens a connection back to a client, for a callback (an
-	// NFSv4.0 recall, NLM's GRANTED), from the local address the client
+	// DialClient opens a connection back to a client, for a callback (NLM's
+	// GRANTED, NSM's SM_NOTIFY), from the local address the client
 	// reached, so a floating address keeps working after a takeover (§3.3).
 	// nil is a net.Dialer bound to that address; a test supplies one
 	// returning a pipe.
