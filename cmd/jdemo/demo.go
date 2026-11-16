@@ -65,8 +65,9 @@ type demo struct {
 	quit    bool
 	version journal.Version // the last mutating beat's issued version
 
-	// lastView holds each view's last-shown rows, the diff layer's
-	// snapshots; markStale drops them all.
+	// lastView holds each view's last-shown rows: the diff layer's
+	// snapshots. They survive beats on purpose — a look after a mutating
+	// beat is where the diff is the point.
 	lastView map[string]map[string]string
 }
 
@@ -228,9 +229,6 @@ func (d *demo) beat(b beat) {
 	d.printf("%s\n%s\n\n", b.title, b.caption)
 	if d.waitEnter() {
 		b.run(d)
-		if b.mutates {
-			d.markStale()
-		}
 	}
 	d.printf("\n")
 	if d.quit {

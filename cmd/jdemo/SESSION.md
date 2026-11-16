@@ -58,10 +58,15 @@ offload flow.
 
 ## Numbers worth narrating
 
-- `used` counts each segment at the format's 256 MiB cap: the roll beat's
-  two segments read as 512 MiB whatever the payload.
+- `used` counts each segment at the format's 256 MiB cap: the pool holds
+  six of them (content, spares, headroom, reserve), so a fresh journal
+  reads about 1.5 GiB committed and the roll beat does not raise it — a
+  spare simply becomes the next content segment.
 - Every write draws a version: hello is v1, the overwrite v2, the roll v3,
   the truncate v4 — `versions left` falls one each.
-- The `(d)` tail lines: an active segment's unwritten tail reads as
-  "torn (or sealed)", because the slots past the last record are not a
-  record — that is the honest decode of a segment mid-append.
+- The `(d)` tail lines tell three stories apart: "untaken" is an
+  unwritten tail of zeros (or a spare never taken), "sealed here" is the
+  DJS1 marker a seal leaves, and "torn" is bytes the walk cannot step
+  over — a torn write, or a record whose segment or own offset names
+  somewhere else, which is how a recycled segment's old bytes stay
+  honestly unreadable.

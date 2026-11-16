@@ -76,9 +76,6 @@ func (d *demo) renderView(name string, rows []viewRow) string {
 	return text
 }
 
-// markStale drops every view's snapshot: the next render of each view is
-// a fresh first look, not a diff against rows a mutating beat has
-// invalidated.
-func (d *demo) markStale() {
-	d.lastView = nil
-}
+// markStale is gone by design: the spec's diff is between one view's
+// consecutive looks, snapshots survive mutating beats — that is when the
+// diff is the point.
