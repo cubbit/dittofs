@@ -39,12 +39,11 @@ type Deps struct {
 	// Authenticate answers who a request is; nil, every route but the
 	// public ones answers 401.
 	Authenticate func(*http.Request) (auth.Caller, error)
-	// Store is the metadata store's control plane; nil, a write answers 503.
+	// Store is the metadata store's control plane, which every read and
+	// write of the API reaches; nil, each answers 503.
 	Store controlPlane
-	// Reads is the metadata store's reads; nil, a read of the store
-	// answers 503.
-	Reads reads
-	// Clock is the API's time, which a parked poll waits on.
+	// Clock is the API's time, which a parked poll waits on; nil, a read
+	// that would park answers 503.
 	Clock clock
 	// Node is the node serving the API, as its audit records name it.
 	Node entity.NodeID
@@ -57,10 +56,11 @@ type Deps struct {
 }
 
 // controlPlane is the metadata store's control plane as the API reaches it:
-// every change through Write, which commits it with its records, and an
-// idempotency key's record looked up by Replay before a step Write must not
-// repeat.
+// its reads; every change through Write, which commits it with its records;
+// and an idempotency key's record looked up by Replay before a step Write
+// must not repeat.
 type controlPlane interface {
+	reads
 	Write(ctx context.Context, meta entity.WriteMeta, fn func(entity.ControlPlaneTx) error) error
 	Replay(ctx context.Context, i entity.IdempotencyRecord) error
 }
@@ -72,6 +72,9 @@ type Server struct {
 	serving  sync.WaitGroup
 	stopped  atomic.Bool
 	parked   chan struct{}
+	// quit closes once the API listener shuts down, so a parked poll
+	// answers rather than holding Stop until its wait has passed.
+	quit chan struct{}
 
 	tracer             trace.Tracer
 	requests           *prometheus.CounterVec
@@ -94,6 +97,7 @@ func newServer(d Deps, rows []route) *Server {
 	s := &Server{
 		d:      d,
 		parked: make(chan struct{}, maxParked),
+		quit:   make(chan struct{}),
 		tracer: d.Tracer,
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dittofs_api_requests_total",
 			Help: "API calls, by op and outcome: ok or the problem's code."}, []string{"op", "outcome"}),
@@ -139,6 +143,7 @@ func newServer(d Deps, rows []route) *Server {
 	// requiring a token.
 	s.api = &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	s.met = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
+	s.api.RegisterOnShutdown(sync.OnceFunc(func() { close(s.quit) }))
 	return s
 }
 

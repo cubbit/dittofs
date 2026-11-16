@@ -31,14 +31,21 @@ const (
 // parameters it filters on, each an indexed field of its records; records,
 // which yields its records in key order, resuming after the key after, with
 // the filters the request named; each record's key; and its item on the
-// wire.
+// wire, from the record and what the page read once for every item.
 type listing[E, T any] struct {
 	lo, hi  []byte
 	filters []string
 	records func(ctx context.Context, st reads, after []byte, filter map[string]string) iter.Seq2[E, error]
 	key     func(E) []byte
-	item    func(E) T
+	item    func(E, perPage) T
 }
+
+// perPage is what a listing reads once per page and hands every item.
+//
+// ponytail: it holds nothing yet. It gains the node statuses, read once per
+// page, that every item's applied is computed from, once the store this
+// package reads serves them.
+type perPage struct{}
 
 // list adapts a listing: its answer is 200 with one page of at most ?limit=
 // items, 100 without it and never more than 1,000, resuming after the
@@ -72,12 +79,12 @@ func list[E, T any](l listing[E, T]) adapter {
 				return answer{}, &fieldError{field: k, detail: "not a filter of this listing"}
 			}
 		}
-		if s.d.Reads == nil {
+		if s.d.Store == nil {
 			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
 		}
 		page := apiv1.Page[T]{Items: []T{}}
 		var last []byte
-		for e, err := range l.records(ctx, s.d.Reads, after, filter) {
+		for e, err := range l.records(ctx, s.d.Store, after, filter) {
 			if err != nil {
 				return answer{}, err
 			}
@@ -85,7 +92,7 @@ func list[E, T any](l listing[E, T]) adapter {
 				page.Next = encodeCursor(last)
 				break
 			}
-			page.Items = append(page.Items, l.item(e))
+			page.Items = append(page.Items, l.item(e, perPage{}))
 			last = l.key(e)
 		}
 		return jsonAnswer(http.StatusOK, page)

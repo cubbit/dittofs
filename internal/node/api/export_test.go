@@ -87,8 +87,8 @@ var testRows = []route{
 		return none{}, nil
 	})},
 	{method: http.MethodPost, pattern: "/api/v1/password", kind: entity.ResourceUser, right: auth.Self, mustChange: true, serve: call(verb("password"))},
-	{method: http.MethodGet, pattern: "/api/v1/knobs/{id}", right: auth.View, serve: watch(readKnob, func(was, now knobRead) bool { return was.Generation != now.Generation })},
-	{method: http.MethodGet, pattern: "/api/v1/vaults/{id}", right: auth.View, serve: watch(readVault, func(vaultRead, vaultRead) bool { return false })},
+	{method: http.MethodGet, pattern: "/api/v1/knobs/{id}", right: auth.View, serve: watch(watching[knobRead]{read: readKnob, tag: func(k knobRead) uint64 { return k.Generation }, until: knobWait})},
+	{method: http.MethodGet, pattern: "/api/v1/vaults/{id}", right: auth.View, serve: watch(watching[vaultRead]{read: readVault, tag: func(v vaultRead) uint64 { return v.Generation }, until: changes(func(vaultRead, vaultRead) bool { return false })})},
 	{method: http.MethodGet, pattern: "/api/v1/tags", right: auth.View, serve: list(tags)},
 	{method: http.MethodGet, pattern: "/api/v1/fail", right: auth.View, serve: read(func(context.Context, request[none]) (none, error) {
 		return none{}, errors.New(UnnamedError)
@@ -238,6 +238,18 @@ func readKnob(ctx context.Context, st reads, rq request[none]) (knobRead, error)
 	return k, json.Unmarshal(s.Value, &k.Spec)
 }
 
+// KnobOn is the wait word ?wait= takes on a knob, beside a duration: until
+// the knob's value is on, for at most the longest wait.
+const KnobOn = "on"
+
+// knobWait is a knob's ?wait=: a duration, until its tag changes, or KnobOn.
+func knobWait(w string) (time.Duration, func(first, now knobRead) bool, error) {
+	if w == KnobOn {
+		return maxWait, func(_, now knobRead) bool { return now.Spec.Value == KnobOn }, nil
+	}
+	return changes(func(first, now knobRead) bool { return first.Generation != now.Generation })(w)
+}
+
 // vaultRead is a vault as GET reads it: the reference its password was
 // sealed under, and its version.
 type vaultRead struct {
@@ -261,6 +273,10 @@ func settingIn(ctx context.Context, st reads, id [16]byte, key string) (entity.S
 	return entity.Setting{}, nil
 }
 
+// TagsFrom and TagsTo bound the keys a cursor of the test listing may
+// name: [a, {), every lowercase name.
+const TagsFrom, TagsTo = "a", "{"
+
 // tag is a netgroup as the test listing GET /api/v1/tags answers it, in
 // name order, filtered by name.
 type tag struct {
@@ -269,6 +285,8 @@ type tag struct {
 }
 
 var tags = listing[entity.Netgroup, tag]{
+	lo:      []byte(TagsFrom),
+	hi:      []byte(TagsTo),
 	filters: []string{"name"},
 	records: func(ctx context.Context, st reads, after []byte, f map[string]string) iter.Seq2[entity.Netgroup, error] {
 		all := st.Netgroups(ctx, string(after))
@@ -291,5 +309,5 @@ var tags = listing[entity.Netgroup, tag]{
 		}
 	},
 	key:  func(g entity.Netgroup) []byte { return []byte(g.Name) },
-	item: func(g entity.Netgroup) tag { return tag{g.Name, g.Members} },
+	item: func(g entity.Netgroup, _ perPage) tag { return tag{g.Name, g.Members} },
 }

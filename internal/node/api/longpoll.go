@@ -22,73 +22,103 @@ type clock interface {
 	After(d time.Duration) <-chan struct{}
 }
 
-type controllerKey struct{}
+// watching is what a read a client may wait on knows of its record: read,
+// which reads it; tag, its tag, which the answer carries as its ETag; and
+// until, which parses ?wait=, answering how long the call may park, above
+// zero, and done, whether a read now answers the wait, first being the read
+// the call began with.
+type watching[R any] struct {
+	read  func(context.Context, reads, request[none]) (R, error)
+	tag   func(R) uint64
+	until func(wait string) (time.Duration, func(first, now R) bool, error)
+}
 
-// watch adapts a read a client may wait on. Without ?wait= it answers as
-// read does. With ?wait=d, d a duration up to 60 s, a first read that
-// changed would not answer at once parks the call, which then re-reads once
-// a second on the API's clock and answers the first read for which changed
-// reports true, or the last one once d has passed. A node parks at most 256
-// calls, apart from the calls it runs, and refuses the next 503. A parked
-// call's write deadline is moved past its wait, so the server's write
-// timeout, which bounds every other call, does not cut it off.
+// changes is the ?wait= of a record a client waits on to change: a duration
+// above 0 and at most 60 s, done once differ reports the record changed.
+func changes[R any](differ func(first, now R) bool) func(string) (time.Duration, func(first, now R) bool, error) {
+	return func(w string) (time.Duration, func(first, now R) bool, error) {
+		d, err := time.ParseDuration(w)
+		if err != nil || d <= 0 || d > maxWait {
+			return 0, nil, &fieldError{field: "wait", detail: "not a duration above 0 and at most " + maxWait.String()}
+		}
+		return d, differ, nil
+	}
+}
+
+// watch adapts a read a client may wait on. Its answer is 200 with the
+// record and its tag as the ETag. Without ?wait= it reads once. With it, a
+// first read that is not already done parks the call, which then re-reads
+// once a second on the API's clock and answers the first read that is done,
+// or the last one once the wait has passed or the API listener shuts down.
+// No query parameter but wait is accepted. A node parks at most 256 calls,
+// apart from the calls it runs, and refuses the next 503.
 //
 // ponytail: a parked poll re-reads its record once a second on the API's
 // clock, with no notification hub, so the 256 parked polls cost at most 256
 // reads a second. Upgrade by signalling parked polls from the node's
-// per-second read of the store's counters.
-func watch[R any](h func(context.Context, reads, request[none]) (R, error), changed func(was, now R) bool) adapter {
+// per-second read of the store's counters. The parking set is first come,
+// first served, so one account can hold every parked slot; upgrade to a
+// per-account share of the set when accounts contend for it.
+func watch[R any](w watching[R]) adapter {
 	return func(ctx context.Context, s *Server, r *http.Request, id [16]byte) (answer, error) {
 		var wait time.Duration
-		if q := r.URL.Query(); q.Has("wait") {
+		var done func(first, now R) bool
+		for k, v := range r.URL.Query() {
 			var err error
-			if wait, err = time.ParseDuration(q.Get("wait")); err != nil || wait <= 0 || wait > maxWait {
-				return answer{}, &fieldError{field: "wait", detail: "not a duration above 0 and at most " + maxWait.String()}
+			switch {
+			case len(v) != 1:
+				return answer{}, &fieldError{field: k, detail: "given more than once"}
+			case k != "wait":
+				return answer{}, &fieldError{field: k, detail: "not a parameter of this read"}
 			}
-		}
-		if s.d.Reads == nil {
-			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
-		}
-		rq := request[none]{ID: id}
-		first, err := h(ctx, s.d.Reads, rq)
-		if err != nil || wait == 0 {
-			return jsonOr(first, err)
-		}
-		select {
-		case s.parked <- struct{}{}:
-			defer func() { <-s.parked }()
-		default:
-			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds as many parked polls as it may"}
-		}
-		if rc, ok := ctx.Value(controllerKey{}).(*http.ResponseController); ok {
-			// The server's deadline is the wall clock's, whatever clock the
-			// wait is on.
-			if err := rc.SetWriteDeadline(time.Now().Add(wait + s.api.WriteTimeout)); err != nil {
+			if wait, done, err = w.until(v[0]); err != nil {
 				return answer{}, err
 			}
 		}
-		last, end := first, s.d.Clock.Now().Add(wait)
-		for {
-			left := end.Sub(s.d.Clock.Now())
-			if left <= 0 {
-				return jsonAnswer(http.StatusOK, last)
-			}
-			select {
-			case <-s.d.Clock.After(min(time.Second, left)):
-			case <-ctx.Done():
-				return answer{}, ctx.Err()
-			}
-			if last, err = h(ctx, s.d.Reads, rq); err != nil || changed(first, last) {
-				return jsonOr(last, err)
-			}
+		if s.d.Store == nil {
+			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
 		}
+		rq := request[none]{ID: id}
+		first, err := w.read(ctx, s.d.Store, rq)
+		if err != nil || wait == 0 || done(first, first) {
+			return w.answer(first, err)
+		}
+		if s.d.Clock == nil {
+			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no clock to park a poll on"}
+		}
+		return answer{wait: wait, park: func(ctx context.Context) (answer, error) {
+			select {
+			case s.parked <- struct{}{}:
+				defer func() { <-s.parked }()
+			default:
+				return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds as many parked polls as it may"}
+			}
+			last, end := first, s.d.Clock.Now().Add(wait)
+			for {
+				left := end.Sub(s.d.Clock.Now())
+				if left <= 0 {
+					return w.answer(last, nil)
+				}
+				select {
+				case <-s.d.Clock.After(min(time.Second, left)):
+				case <-s.quit:
+					return w.answer(last, nil)
+				case <-ctx.Done():
+					return answer{}, ctx.Err()
+				}
+				if last, err = w.read(ctx, s.d.Store, rq); err != nil || done(first, last) {
+					return w.answer(last, err)
+				}
+			}
+		}}, nil
 	}
 }
 
-// jsonOr is 200 with v, or err.
-func jsonOr[R any](v R, err error) (answer, error) {
-	if err != nil {
-		return answer{}, err
+// answer is 200 with v and its tag as the ETag, or err.
+func (w watching[R]) answer(v R, err error) (answer, error) {
+	a, err := jsonOr(v, err)
+	if err == nil {
+		a.header.Set("ETag", etag(w.tag(v)))
 	}
-	return jsonAnswer(http.StatusOK, v)
+	return a, err
 }

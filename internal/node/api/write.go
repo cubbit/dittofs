@@ -210,7 +210,7 @@ func (s *Server) replayed(err error) (answer, error) {
 	if err := json.Unmarshal(replay.Answer, &rc); err != nil {
 		return answer{}, err
 	}
-	return answer{rc.Status, rc.Header, rc.Body}, nil
+	return answer{status: rc.Status, header: rc.Header, body: rc.Body}, nil
 }
 
 // condition is what a write requires of its record's tag: none, that no
