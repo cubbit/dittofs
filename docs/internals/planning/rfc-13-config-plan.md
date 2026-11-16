@@ -72,11 +72,13 @@ start and names the record that replaced it.
   word, which carries this clause too, so the two merge cleanly in either order.
 - **A2. RFC 13 §7 names the provider's full surface**: below the interface #4050 amends, which
   this plan leaves as #4050 writes it, one block declares the built-in provider's methods,
-  `Resolve`, `Seal` and `Versions` with their kind and owner and `Seal` with its `Meta`, and
-  `Meta` and `Version`, so the surface the RFC 18 plan's O9 freezes lives in the RFC rather than
+  `Resolve`, `Seal`, `Versions`, `Prune` and `Delete` with their kind and owner and `Seal` with
+  its `Meta`, and `Meta` and `Version`. `Seal` returns the sealed `Secret` unwritten, and its
+  caller commits it with `ControlPlaneTx.PutSecret` inside its own audited `Write` (§4.4), so a
+  secret's change commits with its audit record or not at all (RFC 23 §6); RFC 16 is unchanged. So the surface the RFC 18 plan's O9 freezes lives in the RFC rather than
   only here. Editing #4050's lines now would conflict with it, so the two blocks fold on this
   plan's rebase after #4050 merges: the upper block becomes the one `SecretProvider`, its `Seal`
-  taking `m Meta`, and the lower keeps only what the built-in provider adds, a
+  taking `m Meta` and returning the unwritten `Secret`, `Delete` taking the kind and owner, and the lower keeps only what the built-in provider adds, a
   `RotatingProvider` embedding it with `Versions` and `Prune`, then `Meta` and `Version`.
 
 The amendments this plan relies on land with the plans that need them:
@@ -143,9 +145,10 @@ green with the epic that makes it pass.
     content is an input to the check, which its caller reads in the write's transaction, so
     `pkg/settings` declares no store interface.
 - **`pkg/secrets`' provider:** RFC 13 §7's `SecretProvider`, as A2 completes it: `Seal` with its kind, role, owner and
-  `Meta` (a machine password's `KeyVersion` and `HandedOver`), `Resolve` with the kind, role and
+  `Meta` (a machine password's `KeyVersion` and `HandedOver`), returning the sealed `Secret` for
+  its caller's `Write` to commit, `Resolve` with the kind, role and
   owner its caller expects, `Versions`, which opens every version still held as a `Version` with its
-  number and `Meta`, `Prune` and `Delete`, and the package's own errors. These are what the RFC 18
+  number and `Meta`, `Prune` and `Delete` with the kind and owner they check, and the package's own errors. These are what the RFC 18
   plan's O9 asks for.
 - **The kvstore views' signatures:** the settings delete, the cross-scope read, and secrets.
 
@@ -294,7 +297,7 @@ Out of scope, each named in O1:
 
 **Plan estimate: 35 subtasks, 75 man-days.**
 
-The skill's estimate for RFC 13's 1,213 lines is 3 middle epics (`round(1213 / 400)`), and this plan
+The skill's estimate for RFC 13's 1,221 lines is 3 middle epics (`round(1221 / 400)`), and this plan
 has 3.
 
 **Legend.** ⛔ is a blocker. "team" is an epic that belongs to no track. "Partly" means the dependent
@@ -345,8 +348,9 @@ flowchart TD
 - **S1, the configuration surface frozen.** `pkg/bootstrap`, `pkg/settings` and `pkg/secrets` build
   with stub bodies, with everything a later epic calls: `Load`, `NodeID`, `InitNodeID` and
   `WriteMissingNodeIDs`; `Of` and its options, `Read`, `Get`, `Diff`, `Keep`, `Check` with `Put` and
-  `Delete`; `Seal` with its kind, role, owner and `Meta`, `Resolve` with the expected kind, role and
-  owner, `Versions`, `Prune` and `Delete`; the kvstore views'
+  `Delete`; `Seal` with its kind, role, owner and `Meta`, returning the `Secret` unwritten,
+  `Resolve` with the expected kind, role and owner, `Versions`, and `Prune` and `Delete` with the
+  expected kind and owner; the kvstore views'
   delete, cross-scope read and secrets. Unblocks epics 2, 3 and 4; with S2, the RFC 18 plan's epic 2, which
   adds `pkg/secrets` to identity's `Deps`.
 - **S2, secrets sealed.** A `Secret` seals, resolves and versions under each role's key. It is
@@ -859,38 +863,49 @@ RFC 16 §3's `Secret`, `PutSecret` and `PruneSecret` (epic 4).
 
 ```go
 type Provider struct {
-	cp   metadata.ControlPlane
+	cp   metadata.ControlPlane // reads, and Prune's and Delete's writes; Seal writes nothing
 	keys map[Role]keyprovider.KeyProvider // protocol and storage, each from its bootstrap key location
 }
 
-func (p *Provider) Seal(ctx context.Context, role Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte, m Meta) (entity.SecretRef, error) {
+func (p *Provider) Seal(ctx context.Context, role Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte, m Meta) (entity.Secret, error) {
 	if role != roleOf(kind) {
-		return ref, ErrWrongRole // the role follows from the kind (D4)
+		return entity.Secret{}, ErrWrongRole // the role follows from the kind (D4)
 	}
 	cur, err := p.cp.Secret(ctx, ref, 0) // version 0: the current one (RFC 16 §3, #4050)
 	if err != nil && !errors.Is(err, metadata.ErrNotFound) {
-		return ref, err
+		return entity.Secret{}, err
 	}
 	if cur.Version > 0 && (kind != cur.Kind || owner != cur.Owner) {
-		return ref, ErrKindChanged // a reseal never moves a secret to another kind or owner
+		return entity.Secret{}, ErrKindChanged // a reseal never moves a secret to another kind or owner
 	}
 	if cur.Version > 0 && cur.Kind == entity.SecretRemoteCredential { // the stored kind, not the caller's
 		// decision: D9. A remote tier's credential rotates only once the capability check
 		// finds the claim (RFC 13 §5.2); withdraw when both are built. Delete refuses a
 		// credential a store still names, so delete-then-seal cannot reach version 1.
-		return ref, ErrUnproven // pkg/secrets' own error (D6)
+		return entity.Secret{}, ErrUnproven // pkg/secrets' own error (D6)
 	}
 	next := cur.Version + 1
 	dk := freshKey()                                     // one data key per version (D4)
 	sealed := gcmSeal(dk, value, aad(role, kind, owner, ref, next, m.HandedOver)) // AAD: each field length-prefixed; moved or flipped, it fails to open
 	wrapped, keyID, err := p.keys[role].Wrap(ctx, dk)
 	if err != nil {
-		return ref, err
+		return entity.Secret{}, err
 	}
-	s := entity.Secret{ID: ref, Kind: kind, Owner: owner, Version: next, KeyID: keyID, Value: envelope(wrapped, sealed),
-		KeyVersion: m.KeyVersion, HandedOver: m.HandedOver} // KeyVersion outside the AAD, never changed
-	return ref, p.cp.PutSecret(ctx, s, cur.Version) // raises CFGGEN, so every node resolves it again
+	return entity.Secret{ID: ref, Kind: kind, Owner: owner, Version: next, KeyID: keyID, Value: envelope(wrapped, sealed),
+		KeyVersion: m.KeyVersion, HandedOver: m.HandedOver}, nil // KeyVersion outside the AAD, never changed; nothing written
 }
+
+// A caller seals before its Write and commits inside it, with the record naming ref and its
+// audit record (RFC 16 §3's Write, RFC 23 §6), so a rerun of fn does not wrap again:
+//
+//	s, err := secrets.Seal(ctx, role, kind, owner, ref, value, m)
+//	if err != nil {
+//		return err
+//	}
+//	return cp.Write(ctx, meta, func(tx metadata.ControlPlaneTx) error {
+//		// ...the record or setting naming ref...
+//		return tx.PutSecret(s, s.Version-1) // raises CFGGEN; a concurrent seal since: ErrConflict, and the caller seals again
+//	})
 
 // Resolve takes the kind, role and owner its caller expects (D10); the record never supplies them.
 func (p *Provider) Resolve(ctx context.Context, role Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]byte, error) {
@@ -921,7 +936,10 @@ func (p *Provider) Versions(ctx context.Context, role Role, kind entity.SecretKi
 // Prune is called by the rotation's owner once its retention ends. It trusts no caller's
 // count: it reads every registered node's NodeStatus.Secrets and drops only the versions
 // below the lowest one any node holds (RFC 13 §7; on one node, this node's, §4.3).
-func (p *Provider) Prune(ctx context.Context, ref entity.SecretRef) error {
+func (p *Provider) Prune(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) error {
+	if err := p.checkHolder(ctx, kind, owner, ref); err != nil { // the current version's kind and owner, as Resolve; Delete does the same
+		return err
+	}
 	// Never above the current version. A node reporting none of ref keeps none resolved, and one
 	// that resolves it later reads the current version, so it holds nothing back (§4.3).
 	held, err := p.lowestHeld(ctx, ref)
@@ -953,8 +971,9 @@ the three packages and the views compile with stub bodies.
   and `WriteMissingNodeIDs`.
 - `pkg/settings`' types: classes, section and its options, table, snapshot, `Read`, `Get`, `Diff`,
   `Keep`, `Check` with its holds-content input and its `Put` and `Delete` writes, and their errors.
-- `pkg/secrets`' provider (RFC 13 §7): `Seal` with its `Meta`, `Resolve`, `Versions`, `Prune`,
-  `Delete` and their errors.
+- `pkg/secrets`' provider (RFC 13 §7): `Seal` with its `Meta`, returning the `Secret` its caller's
+  `Write` commits with `tx.PutSecret`, `Resolve`, `Versions`, `Prune` and `Delete` with the kind and
+  owner they check, and their errors.
 - The kvstore settings view's delete and cross-scope read, and the secrets view.
 - The freeze review: the surface is S1, so every symbol S1 lists is checked against its first
   caller.
@@ -1099,7 +1118,9 @@ reference, version, role, kind or owner, or with its `HandedOver` flipped, faili
 - The `Secret` record, its codec and its fuzz target.
 - `Seal` given the secret's kind, role and owner, which it records on the `Secret` and binds into
   the additional data, each field length-prefixed, as `Resolve` checks them; a kind or owner change
-  refused; D9's refusal on the stored kind.
+  refused; D9's refusal on the stored kind. It writes nothing: it returns the sealed `Secret`, which
+  its caller commits with `tx.PutSecret(s, s.Version-1)` in its own `Write` (§4.4), tested by a
+  `Write` whose audit record fails to commit leaving no version behind.
 - Envelope sealing (D4) and `Resolve` under each role's key, given the kind its caller expects
   (D10).
 - The secrets view: every `Secret` write and delete raises `CFGGEN` in its transaction (RFC 13 §5),
@@ -1108,7 +1129,8 @@ reference, version, role, kind or owner, or with its `HandedOver` flipped, faili
   versions below the lowest one any node's `NodeStatus.Secrets` holds (§4.3 above), counted by
   `config_secrets_behind`.
 - `Delete`, which every version goes with, refused for a credential a store record still names
-  (D9). The commit that fails after a secret is sealed, faulted on Badger under `t.TempDir()`,
+  (D9). `Prune` and `Delete` refuse a reference whose kind or owner is not the caller's, as
+  `Resolve` does. The commit that fails after a secret is sealed, faulted on Badger under `t.TempDir()`,
   leaves no secret behind. `DeleteUser` does not call it: kvstore deletes the
   user's `SEC` rows itself, in the transaction that deletes the user record (RFC 16 §3). The rows go
   with that record's deletion: this epic adds them to today's `DeleteUser`, whose one transaction
@@ -1154,7 +1176,8 @@ that adapter or the port mapper out on that node, as RFC 13 §6 says, reported, 
   plan's epic 7 (#4050's D12, O7).
 - RFC 23's write path on `Check`, a setting's put and delete with the caller's role, in the slot
   RFC 23's plan's epic 4 leaves, and its secret writes on `pkg/secrets`, the route deriving `Seal`'s
-  owner from the record it writes and checking that section's write role, as RFC 23 §5.2's "written
+  owner from the record it writes and checking that section's write role, sealing before its
+  `Write` and committing the `Secret` with `tx.PutSecret` beside the record and its audit, as RFC 23 §5.2's "written
   as its owner is" requires.
 - RFC 23's own section (its plan's epic 3) named in the table.
 - D3's Appendix B test.
@@ -1212,9 +1235,14 @@ and its §6.1 row naming this epic). No `dt` suite builds the image, so it is ch
   `dfsbench` (D7).
 - The certificate and key the image and the launchers start with, host bootstrap facts (RFC 13
   §2.2), so the API, bound on a non-loopback address, serves over TLS (RFC 23 §5.3): the image
-  takes the pair mounted, as it takes every bootstrap fact, and the repository's launchers
-  generate a self-signed pair for their own installation. The certificate names the host; the
-  probe does not verify it, since it reads one word. RFC 23's plan hands this
+  ships none and takes the pair the operator mounts, as it takes every bootstrap fact. The
+  repository's launchers generate a self-signed pair at run time, once per installation, into its
+  data volume, never into the working tree or a `Dockerfile` step, and trust it by that
+  certificate, with curl's `--cacert` or a `--ca-cert` on dfsctl, which it lacks today and this subtask
+  adds, never `-k` or `--tls-skip-verify`,
+  since `docker/bootstrap.sh`'s first call sends the admin password. The certificate names the
+  host; the image's `HEALTHCHECK` probe alone does not verify it, since it reads one word and
+  sends nothing. RFC 23's plan hands this
   here in its §6.1 ledger (its D13). It rides on the launchers' subtask, inside the epic's
   estimate.
 

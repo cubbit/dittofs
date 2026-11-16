@@ -748,16 +748,24 @@ and `Prune`:
 ```go
 type SecretProvider interface {
 	Resolve(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef) ([]byte, error)
-	Seal(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef, value []byte, m Meta) (SecretRef, error)
+	// Seal wraps value as the next version of ref and returns it unwritten.
+	// The caller commits it with ControlPlaneTx.PutSecret(s, s.Version-1)
+	// inside its own Write, beside the record naming ref and its audit record
+	// (RFC 16 §3, RFC 23 §6), so a sealed version commits with its change or
+	// not at all. Wrapping runs before that Write, so a rerun of its function
+	// does not wrap again; a concurrent seal since fails the commit's expect.
+	Seal(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef, value []byte, m Meta) (Secret, error)
 	// Versions opens every version still held, current first, checked
 	// against the caller's kind and owner as Resolve checks the current one,
 	// for a holder that needs them all at once.
 	Versions(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef) ([]Version, error)
 	// Prune drops the versions below the lowest one any node reports holding
 	// (§8), never the current one; the rotation's owner calls it once its
-	// retention ends.
-	Prune(ctx context.Context, ref SecretRef) error
-	Delete(ctx context.Context, ref SecretRef) error
+	// retention ends. Prune and Delete check the caller's kind and owner as
+	// Resolve does, so a wrong reference neither destroys another holder's
+	// secret nor cuts its retention short.
+	Prune(ctx context.Context, kind SecretKind, owner SecretOwner, ref SecretRef) error
+	Delete(ctx context.Context, kind SecretKind, owner SecretOwner, ref SecretRef) error
 }
 
 // Meta is written with a version: a machine password's KeyVersion, set once
