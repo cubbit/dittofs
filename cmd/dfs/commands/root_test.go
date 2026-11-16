@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,7 +28,8 @@ func TestCommandTree(t *testing.T) {
 	}
 }
 
-// dfs start fails, naming the step, while the node starts nothing.
+// dfs start fails, naming the step: it hands the node no KV yet, so building
+// the node refuses.
 func TestStartNamesTheStep(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -43,7 +43,7 @@ func TestStartNamesTheStep(t *testing.T) {
 		_ = rootCmd.PersistentFlags().Set("config", "") // resets cfgFile for the next test
 	})
 	err := rootCmd.Execute()
-	if !errors.Is(err, errors.ErrUnsupported) || !strings.HasPrefix(err.Error(), "starting the node: ") {
-		t.Errorf("dfs start: %v, want the node's start step refused", err)
+	if err == nil || !strings.HasPrefix(err.Error(), "building the node: ") {
+		t.Errorf("dfs start: %v, want the node's build step refused", err)
 	}
 }
