@@ -93,3 +93,51 @@ type IdempotencyRecord struct {
 	Answer  []byte    // status and body as first answered
 	Expires time.Time // set by the write: 24 h after the request's store time
 }
+
+// Operation is the record of one piece of long work: who started it, where
+// it is, and its answer. Its owner's progress is not here: it is read from
+// the owner's own records.
+type Operation struct {
+	ID      OperationID
+	Kind    string      // as the management API names it: "share.delete", "user.delete", ...
+	Target  ResourceRef // what it works on; with Kind, at most one runs per pair
+	Account Principal   // who started it; zero for the schedule
+	State   OpState
+	Claim   OpClaim // the runner's, on work it drives; zero otherwise
+	Step    []byte  // the runner's last durable step
+	Params  []byte  // the request's parameters its kind reads, never a credential
+	// Started and Updated are store times set by the write: Started by the
+	// one that created the record, Updated by each.
+	Started, Updated time.Time
+	Error            []byte // the problem body, when it failed
+	Result           []byte // when it succeeded
+	Generation       uint64 // raised by every write; what the next one passes as expect
+}
+
+// OpState is where an operation is in its life. Its value is stored.
+type OpState uint8
+
+const (
+	OpPending OpState = iota + 1
+	OpRunning
+	OpSucceeded
+	OpFailed
+	OpCancelling
+	OpCancelled
+)
+
+var opStates = []string{OpPending: "pending", OpRunning: "running", OpSucceeded: "succeeded",
+	OpFailed: "failed", OpCancelling: "cancelling", OpCancelled: "cancelled"}
+
+func (s OpState) String() string { return enumString(opStates, s) }
+
+// Ended reports a state an operation never leaves.
+func (s OpState) Ended() bool { return s == OpSucceeded || s == OpFailed || s == OpCancelled }
+
+// OpClaim is a runner's hold on an operation it drives: the node, the node
+// epoch it held then, and when the hold lapses unless renewed.
+type OpClaim struct {
+	Node    NodeID
+	Epoch   uint64
+	Expires time.Time // store time
+}

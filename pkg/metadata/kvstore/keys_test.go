@@ -62,6 +62,10 @@ func TestKeyGolden(t *testing.T) {
 		{"audit by actor", auditActorPrefix(group), "4601" + g},
 		{"audit by target", auditTargetPrefix(entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{0}}), "4602" + "05" + "00ff0001"},
 		{"audit by node", auditNodePrefix(entity.NodeID(sid)), "4603" + s},
+		{"operation", operationKey(entity.OperationID(gid)), "3c" + g},
+		{"running operation", runningKey("k", entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{0}}), "3d" + "6b0001" + "05" + "00ff0001"},
+		{"operation expiry", operationExpiryKey(entity.Operation{ID: entity.OperationID(gid), Updated: time.Unix(0, 2)}),
+			"3f" + "0002260ff9290002" + "02" + g}, // 7 days after its end
 		{"idempotency", idempotencyKey(group, "k"), "3e" + g + "6b0001"},
 		{"idempotency expiry", idempotencyExpiryKey(entity.IdempotencyRecord{Account: group, Key: "k", Expires: time.Unix(0, 2)}),
 			"3f" + "0000000000000002" + "01" + g + "6b0001"},

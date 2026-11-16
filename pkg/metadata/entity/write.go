@@ -14,6 +14,10 @@ var ErrGenerationMismatch = errors.New("entity: record changed since it was read
 // already used for a request with another digest. Nothing was written.
 var ErrIdempotencyMismatch = errors.New("entity: idempotency key used for another request")
 
+// ErrOperationRunning is an operation started on a target while another of
+// its kind runs there. Nothing was written.
+var ErrOperationRunning = errors.New("entity: an operation of this kind already runs on this target")
+
 // IdempotentReplay is a request whose idempotency key its account already
 // used for the same request: Answer is the answer recorded then, and nothing
 // was written.
@@ -78,6 +82,10 @@ type ControlPlaneTx interface {
 	PutNetgroup(n Netgroup, expect uint64) (uint64, error)
 	DeleteNetgroup(name string, expect uint64) error
 	PutSetting(s Setting, expect uint64) (uint64, error)
+	// PutOperation creates an operation, expect zero, or changes the one
+	// whose generation expect names. Its kind and target never change, and
+	// an ended one does not change at all.
+	PutOperation(op Operation, expect uint64) (uint64, error)
 	AddMember(m Membership) error
 	RemoveMember(m Membership) error
 

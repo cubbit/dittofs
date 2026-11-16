@@ -57,6 +57,8 @@ const (
 	KindMKP    byte = 0x38
 	KindIDS    byte = 0x3A // server-wide ID allocators, IDS‖kind; 0x39 is retired
 	KindPGEN   byte = 0x3B // principals generation
+	KindOP     byte = 0x3C // operation: OP‖opID
+	KindOPR    byte = 0x3D // running-operation index: OPR‖kind‖target → opID
 	KindIK     byte = 0x3E // idempotency record: IK‖account‖key
 	KindXP     byte = 0x3F // expiry index: XP‖expiry‖tagged, empty
 	KindAU     byte = 0x45 // audit record: AU‖time‖auditID
@@ -189,6 +191,7 @@ const (
 	KeyData   byte = 0x05
 
 	XPIdempotency byte = 0x01
+	XPOperation   byte = 0x02
 	XPSession     byte = 0x03
 	XPSource      byte = 0x04 // a source's sign-in count
 	XPToken       byte = 0x05

@@ -52,7 +52,12 @@ func auditActorPrefix(p entity.Principal) []byte {
 }
 
 func auditTargetPrefix(r entity.ResourceRef) []byte {
-	return keys.String([]byte{keys.KindAUX, keys.AUXTarget, byte(r.Kind)}, r.ID)
+	return appendTarget([]byte{keys.KindAUX, keys.AUXTarget}, r)
+}
+
+// appendTarget appends a resource as a key component: its kind, then its ID.
+func appendTarget(dst []byte, r entity.ResourceRef) []byte {
+	return keys.String(append(dst, byte(r.Kind)), r.ID)
 }
 
 func auditNodePrefix(n entity.NodeID) []byte {
