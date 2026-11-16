@@ -19,7 +19,7 @@ writes, `resolve-principal`, `test-directory`) and §4.6 (operations);
 `identity.netbios_name`; [RFC 25](../rfcs/rfc-25-observability.md) §3.9's two condition rows; MS-NRPC
 2.2.1.4.11, 3.1.4.1 and 3.4.5.2.6, and MS-APDS 3.1.5.2.1.
 **Track:** A.
-**Epic 7 estimate: 17 subtasks, 34.5 man-days.**
+**Epic 7 estimate: 17 subtasks, 35.5 man-days.**
 **Depends on:** **S1**, E1's surface frozen: `SignIn`, `Deps`, `State`, `Apply`, `*Server`.
 **RFC 23's plan's epic 1** (#4334): `cmd/dfs`'s and `cmd/dfsctl`'s `netlogon` commands deleted, so
 T7.6 can move the package. **E2**: T2.4's `State.Settings` (`identity.netbios_name`), `Deps.Secrets`
@@ -30,8 +30,9 @@ logon event and series, which pass-through joins as the table's third row. **E5*
 T5.3's key selection, which the derived keys join (T7.9); T5.7's PAC SID filter (T7.11); T5.10's
 `Prune` and `Versions` on `SecretProvider` (T7.12); T5.11's ticket fetch (T7.16). **E6**: T6.3's
 record, T6.4's `DialTLS`, T6.5's client, test call and domain SID, T6.9's `Find` with
-`FindOpts.Mint`. **RFC 23's plan's epic 3** (#4336, merged): T3.4's runner, whose `StepResult` E8
-adapts these steps into, a `*apiv1.Problem` failing an operation and any other error retried.
+`FindOpts.Mint`. **RFC 23's plan's epic 3** (#4336, merged): T3.4's runner and its D7's leaf
+`internal/node/step`, whose `StepResult`, `Step` and `Progress` these steps return and take, a
+`*apiv1.Problem` failing an operation and any other error retried.
 **RFC 23's plan's epic 4** (#4337): T4.11's routes, which write each operation, pick the online
 join's ID and call `HoldJoinCredential` before the creating `Write`, and seal the offline join's
 password with `secrets.Meta{HandedOver: true}` in a write of their own. **#4059**: `secrets.Seal`,
@@ -91,10 +92,11 @@ Kerberos and pass-through on an installation joined offline to an explicit contr
 - "NetBIOS name while joined": E8's T8.8, which reads the `Installation` record's `Join` this epic
   writes. "NetBIOS name and domain" for a settings change: E6.
 - The API's routes, their parameter validation, the offline join's sealed write, the hold taken
-  before the creating `Write`, the `409` while a join or rotation runs, and the refusal of an imported
-  key for a name the account holds at the secret route: RFC 23's plan's epic 4's T4.11 (§9). That a
-  hold ends when its creating `Write` is refused: E8 (§9).
-- The secret-free capture across both joins and a rotation: E8's T8.11.
+  before the creating `Write`, the `409` while a join or rotation runs, and the refusal of an
+  imported key for a name the account holds at the secret route: RFC 23's plan's epic 4's T4.11
+  (§9). That a hold ends when its creating `Write` is refused: E8 (§9).
+- The secret-free capture: the online join's administrator credential, RFC 23's plan's epic 7's
+  T7.6; the rest, across both joins and a rotation, E8's T8.11.
 - The alert rows of the two conditions: RFC 25 §3.9 names them and no Go table holds them yet
   (E8's D8).
 - Rebasing the fixture's branches onto `feat/storage-v2`, `test/ad-dc-join` among them, and the
@@ -144,7 +146,7 @@ and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T7.7, T7.8, T7.16 | the suite against Samba, the wire rows through the fault wrapper only there, both joins and a rotation against Samba |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T7.5, T7.6, T7.9, T7.10, T7.11, T7.12, T7.13, T7.14, T7.15 | RFC 18's §3.3 decision (derived names) at the ring, §3.3's `ponytail:` (the hour) at the probe, §3.4's decision (the join's ceilings) at the offline join, §3.5's decision (alternate UPN suffix) at the pass-through row and its `ponytail:` (one domain) at the channel; this document's markers at their sites (§4) |
 | rule 10, a test must be able to fail | all | each R row names a test that fails on its assertion when broken, or the test of another epic that holds it; R61 alone is held by review (§9) |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T7.3, T7.4, T7.5, T7.9, T7.10, T7.12, T7.14 | `internal/identity` adds `Deps.DomainController`, `State.Machine`, `State.Join`, `HoldJoinCredential` and the step methods `internal/node` calls; `pkg/identity` adds `JoinCredential`, which RFC 23's API names (D12); `internal/identity/netlogon` exports the seam `identitytest` implements; `internal/identity/directory` the account functions `netlogon` calls; test accessors in `export_test.go` |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T7.3, T7.4, T7.5, T7.9, T7.10, T7.12, T7.14 | `internal/identity` adds `Deps.DomainController`, `State.Machine`, `State.Join`, `HoldJoinCredential` and the step methods `internal/node` registers, typed by `internal/node/step` (D4); `pkg/identity` adds `JoinCredential`, which RFC 23's API names (D12); `internal/identity/netlogon` exports the seam `identitytest` implements and `NewDialer`, which E8 calls; `internal/identity/directory` the account functions `netlogon` calls; test accessors in `export_test.go` |
 | rule 12, each subtask creates only what it declares | all | `State.Machine` and `State.Join` with T7.9, `Deps.DomainController` with T7.10, their first readers; `JoinCredential` with T7.4; each kind with its subtask; the wire fault wrapper with T7.8, its first user |
 
 ## 3. Requirements and invariants
@@ -171,7 +173,7 @@ can cite them. Sources are RFC 18 unless named.
 | R13 | A computer account cannot sign in to files by pass-through: the logon does not set `MSV1_0_ALLOW_WORKSTATION_TRUST_ACCOUNT` | invariant | §2.4; RFC 18 plan D5 | T7.6, T7.7 |
 | R14 | A pass-through whose user SID maps to a principal recorded disabled or marked deleted fails `ErrLogonFailure`, and a marked one is never minted anew | MUST | §3.7 | T7.11 |
 | R15 | Pass-through is refused until the installation is joined, an offline join's once its second rotation is confirmed | MUST | §3.5 | T7.11, T7.15 |
-| R16 | At most 10 pass-throughs run at once per node; a call waits at most 5 s for a slot and then answers `ErrUnavailable`, and the call itself is bounded at 5 s, both inside §5.1's 20 seconds | bound | RFC 18 plan D5; §5.1 | T7.10, T7.11; the 20 seconds whole is E8's T8.7 |
+| R16 | At most 10 pass-throughs run at once per node; a call waits at most 5 s for a slot and then answers `ErrUnavailable`, and the call itself is bounded at 5 s, both inside §5.1's 20 seconds | bound | RFC 18 plan D5; §5.1 | T7.3, T7.10, T7.11; the 20 seconds whole is E8's T8.7 |
 
 **The secure channel and the domain controllers**
 
@@ -189,7 +191,7 @@ can cite them. Sources are RFC 18 unless named.
 | R21 | On a joined installation, keys for exactly the service names the computer account holds are derived from the machine password: AES128 and AES256 under the salt of the realm in upper case, `host`, the account's name without its `$` in lower case, `.` and the realm in lower case | MUST | §3.3 | T7.9, T7.16 |
 | R22 | Each derived key is tagged with the account's key version number, 32 bits, never truncated to a keytab file's 8 bits | invariant | §3.3 | T7.9 |
 | R23 | The account's names are read at each join and rotation from its `servicePrincipalName`, each `host/` name standing also for every service `sPNMappings` maps to `host`, on that host name; a ticket's service name is compared with them with ASCII letters folded | MUST | §3.3 | T7.3, T7.7, T7.9, T7.12, T7.14 |
-| R24 | A derived key follows its password's version: applied with it, kept after it stops being current for 10 hours plus the clock skew, a restart included, then removed | MUST | §3.3; §2.6's table | T7.9, T7.12 |
+| R24 | A derived key follows its password's version: applied with it, kept after it stops being current for 10 hours plus the clock skew, a restart included, then removed | MUST | §3.3; §2.6's table | T7.9, T7.10 (the fallback's end) |
 | R25 | A version marked `HandedOver` derives no key, on any node and after any restart | MUST NOT | §3.3; §2.6's table; RFC 16 §2.3 | T7.9 |
 | R26 | A ticket for one of these names whose key version number no held key carries is tried against each held derived key of its encryption type, the current one first | MUST | §3.3 | T7.9 |
 | R27 | An imported key for a name the computer account holds is refused, so no name has two keys | MUST NOT | §3.3; §10 "derived keytab" | T7.9 for the ring; the import's refusal at the secret route is RFC 23's plan's epic 4's, pending §9 |
@@ -207,7 +209,7 @@ can cite them. Sources are RFC 18 unless named.
 | R34 | The probe has three answers: accepts, a channel set up with the version verifying the controller's server credential; rejects; and could not be asked, which retries and never reads as a rejection | MUST | §3.5 | T7.3, T7.14 |
 | R35 | A join whose pinned controller could not be asked for an hour fails, naming the controller; a join run again with a takeover pins another | bound | §3.5; §3.3's `ponytail:` | T7.14 |
 | R36 | A failed join leaves the installation not joined and `identity.netbios_name` unchanged, keeps each version it sent to a controller, at most two, unconfirmed, and prunes the rest it sealed; the kept ones are pruned once a later join has completed | MUST | §3.5 | T7.14, T7.15; the removal of an unsent current version is pending §9 |
-| R37 | The administrator credential is used for one operation, held only in the memory of the node that took it under the operation's ID, and never stored, logged or put in the operation's record; a hold whose operation is never created ends with its request | MUST NOT | §3.5; RFC 23 §3.5, §4.5 | T7.4; the capture is E8's T8.11, the refused-write end E8's (§9) |
+| R37 | The administrator credential is used for one operation, held only in the memory of the node that took it under the operation's ID, and never stored, logged or put in the operation's record; a hold whose operation is never created ends with its request | MUST NOT | §3.5; RFC 23 §3.5, §4.5 | T7.4; the online join's credential in no record or log: RFC 23's plan's epic 7's T7.6; the rest of the capture: E8's T8.11; the refused-write end: E8's T8.6 |
 | R38 | A join resumed without the credential continues only if the account already accepts the sealed password; one that must still create the account fails, naming the missing credential | MUST | §3.5 | T7.14 |
 | R39 | An online join refuses a computer account that already exists, naming it, unless the request takes it over; a takeover sets the password in the same order | MUST | §3.5 | T7.14, T7.16 |
 | R40 | The online join creates the object over LDAP on its pinned controller with TLS verified against the record's trust roots, with no `InsecureSkipVerify` | MUST | §3.5; §5.1 | T7.7, through E6's T6.4 |
@@ -261,12 +263,12 @@ epic's test holds it.
   `ssp/netlogon` (session key, credential chain, its server-credential check, AES encryption), with
   `CapRC4` taken out of its default capabilities. A `decision:` marker at the dial. Prior art (from
   memory): Samba's `winbindd` reaches NETLOGON on `ncacn_ip_tcp` with schannel.
-- **D2, the seam stands above the NETLOGON client.** `netlogon.Dialer` and `netlogon.DC` (T7.3)
-  take the logon, the probe, the password set and the computer account's reads and writes, as RFC 18
-  §10 and the RFC 18 plan's D11 place the in-memory controller. Below the seam, the server-credential
+- **D2, the seam stands above the NETLOGON client.** `netlogon.Dialer` and `netlogon.DC` (T7.3) take
+  the logon, the probe, the password set and the computer account's reads and writes, as RFC 18 §10
+  and the RFC 18 plan's D11 place the in-memory controller. Below the seam, the server-credential
   check, the retry rule, the AES-only negotiation and the seal are the client's own code, tested
-  only against Samba through a fault wrapper around the client's `net.Conn` (T7.8). Above it,
-  delays and failures come from `identitytest.FaultyDomainController` (kind 3), built on `pkg/sim`'s
+  only against Samba through a fault wrapper around the client's `net.Conn` (T7.8). Above it, delays
+  and failures come from `identitytest.FaultyDomainController` (kind 3), built on `pkg/sim`'s
   `Fault`, as E6's `FaultyDirectory` is; it can also refuse a dial before anything is sent, which
   "could not be asked" needs. Prior art: E6's T6.4; v1's `fakeConn` at the LDAP connection.
 - **D3, the computer account's LDAP lives in `internal/identity/directory`.** E1's rule lets only
@@ -276,38 +278,40 @@ epic's test holds it.
   and removes E1's exemption. Reads bind with the directory record's bind credential, an online
   join's writes with the held administrator credential. Prior art: `adcli` creates the computer
   object over LDAP and sets its password there (from memory).
-- **D4, the kinds are plain methods on `*Server`, E8 adapting them.** Like E2's T2.7, the methods
-  are plain-typed and E8 adapts them into RFC 23's `StepResult` and registers them in `node.New`;
-  unlike it, each takes the whole `entity.Operation`, for `op.Params`, and answers `(next []byte,
-  done bool, result []byte, end func(entity.ControlPlaneTx) error, err error)`, with a `Progress`
-  method on the cursor. A terminal failure is a `*apiv1.Problem` whose detail names the controller,
-  the number read, the version or the missing credential, which E8 passes through and the runner
-  fails the operation with; every other error is retried. Identity imports `pkg/node/apiv1` for it
-  and for the kinds' parameter types (§9). Prior art: RFC 23's plan's epic 3, D7.
+- **D4, the kinds are methods on `*Server` typed by `internal/node/step`.** As E2's T2.7 and E5's
+  T5.10 are: `JoinStep(ctx, op entity.Operation) (step.StepResult, error)` and
+  `JoinProgress(next []byte) apiv1.Progress`, and the same for the other three kinds; E8 puts them
+  in the runner's table in `node.New` as they are (its T8.6). A terminal failure is a
+  `*apiv1.Problem` whose detail names the controller, the number read, the version or the missing
+  credential, which the runner fails the operation with; every other error is retried. Identity
+  imports `internal/node/step`, and `pkg/node/apiv1` for the problem and the kinds' parameter
+  types (§9), never `internal/node`. Prior art: RFC 23's plan's epic 3, D7.
 - **D5, identity writes the machine account's records itself.** The seal of each version with
   `Installation.MachinePassword`, the record's `Join`, and an attempt to send a version are written
-  by the step through kvstore's control-plane `Write`, each committed before the controller sees
-  the password; a join's `Joined` and `identity.netbios_name` are written together in the step's
-  `end`, so no crash leaves one without the other. RFC 18 §2.6 calls the `Minter`'s writes identity's
-  only ones, so §2.6 is amended, and RFC 23's plan's epic 2 owns the `ControlPlaneTx` method that
-  writes `Join` (§9). A `decision:` marker at the writer. Prior art: none needed.
+  by the step through kvstore's control-plane `Write`, each committed before the controller sees the
+  password; a join's `Joined` and `identity.netbios_name` are written together in the step's `end`,
+  so no crash leaves one without the other. RFC 18 §2.6 calls the `Minter`'s writes identity's only
+  ones, so §2.6 is amended, and RFC 23's plan's epic 2 owns the `ControlPlaneTx` method that writes
+  `Join` (§9). A `decision:` marker at the writer. Prior art: none needed.
 - **D6, the account's names and its confirmed version are stored with its join, pending the user's
-  answer (§9).** A restart must derive the same keys without asking a controller, RFC 18 §3.3 refuses
-  an imported key for a name the account holds, which RFC 23's secret route can check only if the
-  names are stored, and "the previous one" is "the newest a controller confirmed", which a tag
-  alone cannot tell once a lagging controller gives two versions one tag. Recommended: RFC 16 §2.3's
-  `MachineJoin` gains `Names []string`, the account's service names with `sPNMappings` applied, and
-  `LastRotation.Version uint64`, the secret version the last join or rotation confirmed; identity's
+  answer (§9).** A restart must derive the same keys without asking a controller, RFC 18 §3.3
+  refuses an imported key for a name the account holds, which RFC 23's secret route can check only
+  if the names are stored, and "the previous one" is "the newest a controller confirmed", which a
+  tag alone cannot tell once a lagging controller gives two versions one tag. Recommended: RFC 16
+  §2.3's `MachineJoin` gains `Names []string`, the account's service names with `sPNMappings`
+  applied, and `LastRotation.Version uint64` and `LastRotation.Confirmed time.Time`, the secret
+  version the last join or rotation confirmed and the store time of that confirm, which a failed
+  rotation leaves as they were, so the retention's clock (D14) is not moved by a failure; identity's
   `State` gains `Join entity.MachineJoin`, filled by E8 from the same read as `Machine`. A zero
   `State.Join` is "not joined", which is the right answer while the field is unset. Written in place
   in T7.9, T7.12, T7.14 and T7.15.
 - **D7, the online join's tag.** A created account has no key version number before its creation,
   and a tag is never changed (R50). The created account's version is sealed with `KeyVersion` 1, the
   number an account takes at its first password set (from memory, checked by T7.1), and its confirm
-  reports and counts a mismatch as a rotation's does; a takeover's is the pinned controller's
-  number plus one. Tickets under another number verify through the fallback (R26). The join writes
-  `LastRotation` at its confirm, so the schedule has a start. A `decision:` marker at the seal. Prior
-  art: none found.
+  reports and counts a mismatch as a rotation's does; a takeover's is the pinned controller's number
+  plus one. Tickets under another number verify through the fallback (R26). The join writes
+  `LastRotation` at its confirm, so the schedule has a start. A `decision:` marker at the seal.
+  Prior art: none found.
 - **D8, an imported key for a name the account holds contributes nothing to the ring.** `Apply`
   cannot refuse the `State` for it without holding a principal change back (E8's D2), so the ring
   skips that entry, logs it at `Error`, and keeps the derived key; RFC 23's secret route refuses the
@@ -324,30 +328,40 @@ epic's test holds it.
   scheduled operation. Recommended: identity, from a loop started by `Start` on the injected
   clock, creates a `rotate-machine-password` operation through kvstore's `PutOperation` when the
   installation is joined, no join or rotation runs (a tracked read of the running index) and the
-  last rotation is 7 days old; the account is the system's. The loop writes nothing else: a rotation
-  that cannot start because this node lags fails itself at its wait once the next one is due (R48).
-  7 days is Samba's `machine password timeout` default (from memory), inside Windows' 30-day member
-  default. A `ponytail:` names the constant. Written in place in T7.13.
+  last rotation is 7 days old. The loop writes nothing else: a rotation that cannot start because
+  this node lags fails itself at its wait once the next one is due (R48). 7 days is Samba's
+  `machine password timeout` default (from memory), inside Windows' 30-day member default. A
+  `ponytail:` names the constant. Written in place in T7.13. Under (a) and (b) alike the operation
+  is started by no call: RFC 23 §4.6 starts every operation from a call answering `202`, records
+  "who started it" in `Operation.Account`, and every management action leaves an audit record
+  (RFC 23 §6), while no RFC names a principal for the schedule. Recommended, either way: the
+  zero `Account`, read as the schedule, and an audit record in the creating `Write` naming the
+  schedule as its actor, so an unasked rotation is still found in the audit; RFC 23 §4.6 and its
+  plan's epic 4's R50 ("the API writes their records only") are amended to admit it (§9).
 - **D12, `JoinCredential` is declared in `pkg/identity`.** RFC 23's plan's epic 4 declares
   `Joins.HoldJoinCredential(id entity.OperationID, cred JoinCredential) (release func())` and needs
   the type in a package it may import. `pkg/identity.JoinCredential{User string; Password []byte}`
-  lands with T7.4, its first consumer, after S1 (§9), and `netlogon` takes the same type for its bind
-  and administrator credentials. The hold zeroes the password at release. No marker. Prior art: none
-  needed.
+  lands with T7.4, its first consumer, after S1 (§9), and `netlogon` takes the same type for its
+  bind and administrator credentials. The hold zeroes the password at release. No marker. Prior art:
+  none needed.
 - **D13, the scenario against Samba drives identity directly.** A `_test.go` file in
   `test/integration/ad-dc` may import `internal/identity` (E1's R5 checks non-test files only), so
   T7.16 builds the server over the memory KV store and runs the joins' and rotation's steps in a
   loop against Samba, before E8 composes the node: the joins against a real controller are this
   epic's largest risk. No marker. Prior art: none needed.
-- **D14, the retention's prune runs at the next rotation's first turn.** Waiting out 10 hours plus
-  the skew inside the rotation would keep it running, refusing an offline join's write and the
-  schedule for that time (RFC 23 §3.5). So a rotation's first turn, before it pins, prunes through
-  `Prune` once the retention has passed since the last confirm and that confirm completed, and
-  reports the old version revocable; a joined installation's first rotation prunes what a failed join
-  kept. `Prune` drops every version below the current one, so it never runs while the current
-  version is unconfirmed. A `ponytail:` marker names the ceiling: a previous version is held until
-  the next rotation, at most the schedule's 7 days, not the retention's 10 hours. Prior art: Samba
-  keeps the previous machine password until the next change (from memory).
+- **D14, the keys expire at the retention; the secret is pruned at the next rotation's first
+  turn.** Waiting out 10 hours plus the skew inside the rotation would keep it running, refusing an
+  offline join's write and the schedule for that time (RFC 23 §3.5). So the retention needs no
+  running operation: a version below the one `Join.LastRotation.Version` names stops deriving keys
+  (T7.9) and backing the channel's fallback (T7.10) once the clock passes
+  `LastRotation.Confirmed` plus 10 hours plus the skew, from `State` alone, a restart included. The
+  secret itself is pruned by a rotation's first turn, before it pins, through `Prune`, once the
+  retention has passed since the last confirm and that confirm completed, and the old version is
+  reported revocable then; a joined installation's first rotation prunes what a failed join kept.
+  `Prune` drops every version below the current one, so it never runs while the current version is
+  unconfirmed. A `ponytail:` marker names the ceiling: a previous version's sealed value stays in
+  the store, used by no key and no channel, until the next rotation, at most the schedule's 7 days.
+  Prior art: Samba keeps the previous machine password until the next change (from memory).
 
 ## 5. Target tree
 
@@ -356,11 +370,12 @@ internal/identity/netlogon/               (git mv of internal/auth/netlogon)
   seam.go               T7.3   Dialer, DC, Channel, Account, Computer, LogonRequest, Reply,
                                ErrRejected, ErrNoAccount
   securechannel.go      T7.6   ncacn_ip_tcp + schannel on ssp/netlogon, AES only, server credential (D1)
-  logon.go              T7.6   NetrLogonSamLogonEx, the retry rule, the 5 s bound
+  logon.go              T7.6   NetrLogonSamLogonEx, the retry rule
   password.go           T7.6   NetrServerPasswordSet2, the trust password (moved)
   reply.go              T7.6   SamInfo4 → Reply; FuzzSamInfo4 in reply_test.go
-  discovery.go          T7.7   SRV records, or the record's address and DNS server alone (moved)
-  dc.go                 T7.7   the real Dialer and DC: the channel plus directory's account calls
+  discovery.go          T7.7   Lookup: SRV records, through the record's DNS server when set (moved)
+  dc.go                 T7.6   NewDialer, its Dial, and DC.Channel over the secure channel
+                        T7.7   DC's account calls over directory's, Lookup
 internal/identity/directory/
   computer.go           T7.6   v1's join LDAP moved here (D3)
                         T7.7   create, reset, read a computer account with sPNMappings applied
@@ -368,7 +383,8 @@ internal/identity/
   server.go             T7.9   State.Machine, State.Join
                         T7.10  Deps.DomainController
   machinekeys.go        T7.9   derived keys into E5's ring, the fallback, D8
-  channel.go            T7.10  the node's channel, fallback, semaphore, machine_account_unhealthy
+  channel.go            T7.10  the node's channel, R17's order, fallback, semaphore, the 5 s call
+                               bound, machine_account_unhealthy
   passthrough.go        T7.11  the table's third row, the reply's checks
   rotate.go             T7.12  RotateStep, RotateProgress, the prune (D14), the counter, the condition
   schedule.go           T7.13  the scheduled rotation (D11)
@@ -388,6 +404,7 @@ test/integration/ad-dc/
   netlogon_wire_test.go T7.8   the fault wrapper around net.Conn; the two wire rows
   join_scenario_test.go T7.16  both joins, a rotation, Kerberos and pass-through against Samba
   netlogon_passthrough_test.go, netlogon_reload_test.go, online_join_test.go   T7.6  deleted (v1)
+  fixture_test.go       T7.6   waitForMachinePassword over DC.Channel (test/ad-dc-join)
   entrypoint.sh         T7.2   joiner, offjoinowned$, BUILD01$ (test/ad-dc-join)
 docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, security.md, configuration.md
 ```
@@ -423,12 +440,12 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 - **Track:** A. **Depends on:** T7.1.
 - **Covers:** R13, R42, R46, R60 (the accounts they run against); consumed by T7.7, T7.8 and T7.16.
 - **Deliverables:** on `test/ad-dc-join`, beside the pre-staged `dittofs$`, `offjoinaes$` and
-  `offjoinlegacy$` and the pinned RPC range: a `joiner` user granted "create computer objects" on the
-  `Computers` container, and `offjoinowned$` created by it with `0x18`, so its owner is `joiner`, with
-  `msDS-AllowedToActOnBehalfOfOtherIdentity` set on it; `BUILD01$` with a known password; `cifs/`
-  names registered on the offline-join accounts if T7.1 finds Samba applies no `sPNMappings`; the
-  fixture test asserting each account's owner, encryption types and names. The guide's fixture
-  section names the new accounts.
+  `offjoinlegacy$` and the pinned RPC range: a `joiner` user granted "create computer objects" on
+  the `Computers` container, and `offjoinowned$` created by it with `0x18`, so its owner is
+  `joiner`, with `msDS-AllowedToActOnBehalfOfOtherIdentity` set on it; `BUILD01$` with a known
+  password; `cifs/` names registered on the offline-join accounts if T7.1 finds Samba applies no
+  `sPNMappings`; the fixture test asserting each account's owner, encryption types and names. The
+  guide's fixture section names the new accounts.
 - **Acceptance criteria:**
   - The accounts T7.7 and T7.16 change are put back by `DCSeeder` at each test's start (T7.7), so the
     cell can run twice on one fixture.
@@ -441,13 +458,15 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 **Subtask T7.3 estimate: 3.5 man-days.**
 
 - **Track:** A. **Depends on:** none. S1; E6's T6.4 (`identitytest`'s package and `pkg/sim`'s use).
-- **Covers:** R23, R34, R60.
+- **Covers:** R16 (the hold T7.10 and T7.11 use), R23, R34, R60.
 - **Deliverables:**
   - in `internal/identity/netlogon`'s `seam.go` (D2), whose declarations import only the standard
     library, `pkg/auth/sid`, `pkg/identity` and `internal/identity/directory`'s `Record`:
     ```go
     type Dialer interface {
-    	Controllers(ctx context.Context, rec directory.Record) ([]string, error) // R17's order
+    	// Lookup answers the domain's controllers from its SRV records, through
+    	// dnsServer when set; the record's explicit address is the channel's rule (R17).
+    	Lookup(ctx context.Context, realm, dnsServer string) ([]string, error)
     	Dial(ctx context.Context, rec directory.Record, addr string) (DC, error)
     }
     type DC interface {
@@ -474,14 +493,15 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
     with `Computer{Name, OU, DNSHostName string}`, `LogonRequest` and `SIDAttr` as their fields name;
     an absent `msDS-SupportedEncryptionTypes` reads as 0. Consumed by T7.6, T7.7, T7.9 to T7.16, E8's
     T8.6 and RFC 23's plan's epic 4's T4.11 tests;
-  - `identitytest.DomainController` (kind 2): one domain of several controllers, accounts with their
+  - `identitytest.DomainController` (kind 2): one domain of several controllers, which `Lookup`
+    answers in the order it was built with, accounts with their
     current and previous passwords, names, owner and delegation value, `badPwdCount` per user,
     `msDS-KeyVersionNumber` raised by one per set, `sPNMappings` applied to the names it answers,
     NTLMv2 verified by a verifier of its own written from MS-NLMP 3.3.2 (it imports nothing of
     `internal/identity`), replication held per controller on cue;
   - `identitytest.FaultyDomainController` (kind 3) on `pkg/sim`'s `Fault` and `Schedule`: a call is
-    sent to what it wraps and then failed, delayed on the test clock or answered "could not be asked",
-    or a dial is refused before anything is sent, on cue;
+    sent to what it wraps and then failed, delayed on the test clock, answered "could not be asked",
+    or held until the test releases it, or a dial is refused before anything is sent, on cue;
   - `identitytest.DomainControllerConformance(t, open func(*testing.T) (netlogon.DC, DCSeeder))`,
     `DCSeeder{AddUser, BadPwdCount, StageComputer, SetComputerPassword, Reset}`, `Reset` putting
     every staged account's password back and deleting created ones; run in `unit` over the in-memory
@@ -495,8 +515,8 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   by `Channel` with the new password; a set raising the number by one; encryption types read as
   written and 0 when unset; a `host/` name answered with the `cifs/` name `sPNMappings` maps to it
   (R23); the probe's three answers (each row failing on the in-memory one when its rule is removed,
-  R60, R34). An unreplicated controller answering the old number and accepting the previous password,
-  the in-memory one's alone. No double but the ones delivered here.
+  R60, R34). An unreplicated controller answering the old number and accepting the previous
+  password, the in-memory one's alone. No double but the ones delivered here.
 - **Rules:** rule 1 (kind 2 held by its suite), rule 8 (the same suite runs against Samba in T7.7).
 
 ### T7.4 `JoinCredential` and `HoldJoinCredential`
@@ -525,9 +545,9 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 - **Covers:** R58.
 - **Deliverables:** `ResolvePrincipalStep` and `TestDirectoryStep`, D4's shape, done in one turn:
   the first decodes the name or SID from `op.Params`, calls `Find` with `FindOpts.Mint` and answers
-  the principal's ID as `result`, `ErrUnknownPrincipal` as a `*apiv1.Problem` naming the spelling and
-  `ErrUnavailable` retried; the second runs E6's test call and answers this node's result, with D9's
-  `ponytail:`. Consumed by E8's T8.6 and RFC 23's plan's epic 4's T4.11.
+  the principal's ID as `result`, `ErrUnknownPrincipal` as a `*apiv1.Problem` naming the spelling
+  and `ErrUnavailable` retried; the second runs E6's test call and answers this node's result, with
+  D9's `ponytail:`. Consumed by E8's T8.6 and RFC 23's plan's epic 4's T4.11.
 - **Acceptance criteria:**
   - A directory SID not yet minted is minted by the step and its ID answered.
 - **Tests:** at the steps, over the memory KV store and E6's in-memory directory: a SID minted and
@@ -539,7 +559,7 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 
 ### T7.6 The secure channel, moved and hardened
 
-**Subtask T7.6 estimate: 2.75 man-days.**
+**Subtask T7.6 estimate: 3 man-days.**
 
 - **Track:** A. **Depends on:** T7.1, T7.3. RFC 23's plan's epic 1 (#4334).
 - **Covers:** R2, R9, R10, R11, R13.
@@ -547,15 +567,22 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   LDAP code moved into `internal/identity/directory/computer.go` and E1's `arch_test` exemption
   removed in the same change (D3), and the three v1 tests in `integration/ad-dc` that import the old
   package deleted; the channel on D1's transport over `go-msrpc`'s `ssp/netlogon`, capabilities AES
-  and Secure RPC without `CapRC4`, a reply negotiating no AES refused, the server credential verified
-  before anything else is sent (by the library or by this code, as T7.1 found); the binding sealed;
-  `NetrLogonSamLogonEx` at `NetlogonNetworkTransitiveInformation` and SamInfo4, without
-  `MSV1_0_ALLOW_WORKSTATION_TRUST_ACCOUNT`, bounded at 5 s, retried once on a new connection only
-  for a failure before its request was written; set-up serialised, logons concurrent;
-  `NetrServerPasswordSet2` with v1's trust-password layout (MS-NRPC 3.4.5.2.6); the reply decoder
-  from `go-msrpc`'s SamInfo4 to `Reply`, and `FuzzSamInfo4`; v1's Kerberos-signed named pipe,
-  `SecretStore`, providers, `RotationManager`, `Controller` and `Status` deleted (rule 7); RFC 18
-  §3.5's `ponytail:` (one domain) and D1's `decision:`. Consumed by T7.7 and T7.8.
+  and Secure RPC without `CapRC4`, a reply negotiating no AES refused, the server credential
+  verified before anything else is sent (by the library or by this code, as T7.1 found); the binding
+  sealed; `NetrLogonSamLogonEx` at `NetlogonNetworkTransitiveInformation` and SamInfo4, without
+  `MSV1_0_ALLOW_WORKSTATION_TRUST_ACCOUNT`, retried once on a new connection only for a failure
+  before its request was written; set-up serialised, logons concurrent; `NetrServerPasswordSet2`
+  with v1's trust-password layout (MS-NRPC 3.4.5.2.6); the reply decoder from `go-msrpc`'s SamInfo4
+  to `Reply`, and `FuzzSamInfo4`; v1's Kerberos-signed named pipe, `SecretStore`, providers,
+  `RotationManager`, `Controller` and `Status` deleted (rule 7); RFC 18 §3.5's `ponytail:` (one
+  domain) and D1's `decision:`; `dc.go`'s `NewDialer(dial func(ctx context.Context, network, addr
+  string) (net.Conn, error)) Dialer`, production passing `(&net.Dialer{}).DialContext`, its `Dial`
+  and the `DC`'s `Channel` and `Close`, its `Lookup`, `Account`, `Create` and `Reset` answering
+  `errors.ErrUnsupported` until T7.7, in the same pull request (§8), as E1's stubs behind final
+  signatures do; on `test/ad-dc-join`, `fixture_test.go`'s `waitForMachinePassword` rewritten to
+  poll `DC.Channel` through `NewDialer`, since it built v1's `NewAuthenticator` and
+  `NewOfflineProvider` and called `online_join_test.go`'s `waitForSecureChannel`, both gone (the
+  file is behind `ad_dc`, which lint-go's `go vet -tags=` list builds). Consumed by T7.7 and T7.8.
 - **Acceptance criteria:**
   - Only identity's own packages, `identitytest` and `internal/node` import the package, and it
     imports no Kerberos library and no `go-ldap`.
@@ -577,17 +604,18 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   over the verified TLS) and read a computer account (the key version number, encryption types,
   `servicePrincipalName` with the configuration partition's `sPNMappings` applied, the security
   descriptor's owner, the delegation attribute), each over E6's `DialTLS` to the pinned controller's
-  address; `discovery.go` from v1: `_ldap._tcp.dc._msdcs.<realm>` through the record's DNS server
-  when it names one, or the record's address alone; the real `Dialer` and `DC` composing T7.6's
-  channel with these; `DCSeeder` over `samba-tool`. Consumed by E8's T8.6 (the production dialer)
-  and T7.16.
+  address; `discovery.go` from v1 as `NewDialer`'s `Lookup`: `_ldap._tcp.dc._msdcs.<realm>`
+  through the DNS server it is given, when set; `NewDialer`'s `DC` answering `Account`, `Create`
+  and `Reset` through these, replacing T7.6's `errors.ErrUnsupported`; `DCSeeder` over
+  `samba-tool`. Consumed by E8's T8.6 (the production dialer) and T7.16.
 - **Acceptance criteria:**
-  - `go vet` reports no `go-ldap` import outside `internal/identity/directory`.
+  - `pkg/identity/arch_test.go` passes with the `internal/auth/netlogon` exemption gone (E1's R6),
+    and no `errors.ErrUnsupported` is left in `dc.go`.
 - **Tests:** in `integration/ad-dc`, `DCSeeder.Reset` at each test's start: T7.3's suite over the
   real controller (R60, R23); `BUILD01$`'s right password passed through refused (catches the
   workstation-trust flag set, R13); `Account` of `offjoinowned$` answering `joiner`'s SID and the
   delegation value; a create over a listener whose certificate names another host refused at the
-  handshake (R40, through E6's `DialTLS`). In `unit`: discovery over a DNS server on `127.0.0.1:0`
+  handshake (R40, through E6's `DialTLS`). In `unit`: `Lookup` over a DNS server on `127.0.0.1:0`
   answering two SRV records in priority order (R17). No double: the controller is real.
 
 ### T7.8 The NETLOGON wire rows
@@ -597,8 +625,8 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 - **Track:** A. **Depends on:** T7.7.
 - **Covers:** R2, R9, R10, R11.
 - **Deliverables:** in `test/integration/ad-dc`, a fault wrapper (kind 3) around the client's
-  `net.Conn` to the real controller, handed in through an `export_test.go` dial hook in
-  `internal/identity/netlogon`, that reads DCE/RPC PDU headers, tears the connection or flips a byte
+  `net.Conn` to the real controller, handed to `netlogon.NewDialer` (T7.6) as its dial, that reads
+  DCE/RPC PDU headers, tears the connection or flips a byte
   of a named reply on cue, and records each request's opnum and authentication level as it passes;
   the rows "rogue domain controller" and "NETLOGON wire".
 - **Acceptance criteria:**
@@ -612,18 +640,21 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 
 ### T7.9 The machine password in `State`, and the derived keys
 
-**Subtask T7.9 estimate: 2.75 man-days.**
+**Subtask T7.9 estimate: 3 man-days.**
 
 - **Track:** A. **Depends on:** T7.3. E2's T2.4; E5's T5.2 and T5.3; #4059's `secrets.Version`.
 - **Covers:** R21, R22, R23, R24, R25, R26, R27, R28, R47.
 - **Deliverables:** `State.Machine []secrets.Version` and `State.Join entity.MachineJoin` (D6,
   pending), the first code that reads them; `Apply`, while `Join.Joined`, deriving for each version
-  in `State.Machine` not marked `HandedOver` AES128 and AES256 keys under R21's salt for each name in
-  `Join.Names`, tagged with the version's `KeyVersion`, into E5's ring beside the imported keys, and
-  deriving nothing while not joined; E5's key selection, for one of those names whose number no held
-  key carries, trying each held derived key of the ticket's type, current first; an imported key for
-  one of those names skipped and logged (D8); RFC 18 §3.3's decision at the derivation and D8's
-  marker. Consumed by T7.10 to T7.16 and E8's T8.6, which fills both fields.
+  in `State.Machine` not marked `HandedOver` AES128 and AES256 keys under R21's salt for each name
+  in `Join.Names`, tagged with the version's `KeyVersion`, into E5's ring beside the imported keys,
+  and deriving nothing while not joined; a version below the one `Join.LastRotation.Version` names
+  carrying a not-after of `LastRotation.Confirmed` plus 10 hours plus the skew, past which key
+  selection skips it, read from `State` and the injected clock with no new `State` (D14); E5's key
+  selection, for one of those names whose number no held key carries, trying each held derived key
+  of the ticket's type, current first; an imported key for one of those names skipped and logged
+  (D8); RFC 18 §3.3's decision at the derivation and D8's marker. Consumed by T7.10 to T7.16 and
+  E8's T8.6, which fills both fields.
 - **Acceptance criteria:**
   - A `State` with `Machine` empty or `Join.Joined` false derives nothing.
 - **Tests:** at `SignIn`'s Kerberos branch, over the memory KV store, with tickets made by E5's test
@@ -634,40 +665,51 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   while its number is unconfirmed, R26); `cifs/NAS.CORP.EXAMPLE` accepted (R23's fold); a number
   above 255 kept whole (catches an 8-bit truncation, R22); the same versions with `Join.Joined`
   false, as a failed join leaves them: every ticket refused (R28); a `HandedOver` version alone, and
-  one current beside a confirmed one as a crash between the API's two writes leaves it: a ticket under
-  a key derived from it refused, one under the confirmed version accepted (R25, R47); an imported
-  keytab holding a key for `cifs/nas.corp.example`: a ticket under it refused and one under the
-  derived key accepted (R27); a version dropped from the next `State`: its ticket refused (R24's
-  removal; the retention itself is T7.12's). Doubles: E5's test realm (real tickets).
+  one current beside a confirmed one as a crash between the API's two writes leaves it: a ticket
+  under a key derived from it refused, one under the confirmed version accepted (R25, R47); an
+  imported keytab holding a key for `cifs/nas.corp.example`: a ticket under it refused and one under
+  the derived key accepted (R27); a version dropped from the next `State`: its ticket refused (R24's
+  removal); with no second rotation, the clock advanced to 10 hours 4 minutes after
+  `LastRotation.Confirmed`: the previous number's ticket accepted, and to 10 hours 5 minutes and a
+  second: refused, and still refused by a fresh server over the same store (catches a key kept until
+  the next rotation's prune, R24, at the consumer). Doubles: E5's test realm (real tickets), the
+  clock (kind 1).
 - **Rules:** rule 11 (the two fields), rule 12.
 
 ### T7.10 The node's secure channel
 
-**Subtask T7.10 estimate: 2 man-days.**
+**Subtask T7.10 estimate: 2.5 man-days.**
 
 - **Track:** A. **Depends on:** T7.9.
-- **Covers:** R16, R17, R18, R19, R20, R28, R47.
+- **Covers:** R16, R17, R18, R19, R20, R24, R28, R47.
 - **Deliverables:** `Deps.DomainController netlogon.Dialer`, its first reader, `New` not requiring
   it and its absence answering `ErrUnavailable` as E1's D4 rules; the node's channel, only while
-  `State.Join.Joined`: controllers from `Deps.DomainController`, tried in order with fail-over; the
-  version chosen per R18 from `State.Machine` and `Join.LastRotation.Version`, never a `HandedOver`
-  one; the channel set up again only when `Machine`, `Join` or the directory record changes; the
-  semaphore of 10 with its 5-second wait (D10); `machine_account_unhealthy` in identity's
-  `Conditions` (E6's T6.8's source), raised while every controller fails, cleared by a channel set
-  up; `Stop` closing the channel. Consumed by T7.11, T7.12 and E8's T8.6.
+  `State.Join.Joined`: the directory record's controller address alone when it names one, else
+  `Deps.DomainController`'s `Lookup` of the realm through the record's DNS server, tried in order
+  with fail-over (R17's rule, here and not in each `Dialer`); the version chosen per R18 from
+  `State.Machine` and `Join.LastRotation.Version`, never a `HandedOver` one, and the previous one
+  not past T7.9's not-after; the channel set up again only when `Machine`, `Join` or the directory
+  record changes; the semaphore of 10 with its 5-second wait (D10), and each call bounded at 5 s on
+  the injected clock, its slot held until the call underneath returns, so a timed-out call still
+  counts towards the 10; `machine_account_unhealthy` in identity's `Conditions` (E6's T6.8's
+  source), raised while every controller fails, cleared by a channel set up; `Stop` closing the
+  channel. Consumed by T7.11, T7.12 and E8's T8.6.
 - **Acceptance criteria:**
   - A new principals generation alone leaves the channel open.
 - **Tests:** over the in-memory controller of two controllers, on the injected clock: "machine
   account health"'s channel clauses: both controllers' dials refused through the fault wrapper, the
   condition raised; one restored, cleared (R20); the first refused and the second answering: signed
-  in on the second, the condition never raised (R17's fail-over); a controller that has taken version
-  3 and one that has not: the channel signs in to each, with 3 and with 2 (catches no fallback, R18);
-  a `HandedOver` version 4 current and 3 confirmed, as R47's crash leaves it: the channel signs in
-  with 3, and with 4 nowhere (R19, R47); a record naming one controller's address: the other never
-  dialled (R17); `Join.Joined` false: no dial (R28); ten logons held at the controller by a gate the
-  test owns, the clock advanced 5 s: an eleventh `ErrUnavailable` and no eleventh call reached the
-  controller, then the gate released and the ten answered (R16). Doubles: the in-memory controller
-  (kind 2), its fault wrapper (kind 3), the clock (kind 1).
+  in on the second, the condition never raised (R17's fail-over); a controller that has taken
+  version 3 and one that has not: the channel signs in to each, with 3 and with 2 (catches no
+  fallback, R18); a `HandedOver` version 4 current and 3 confirmed, as R47's crash leaves it: the
+  channel signs in with 3, and with 4 nowhere (R19, R47); a record naming one controller's address:
+  the other never dialled, and `Lookup` never called (R17); `Join.Joined` false: no dial (R28); past
+  T7.9's not-after, a controller that has not taken the new version: no sign-in with the previous
+  one (catches a fallback kept until the prune, R18, R24); ten logons held by the fault wrapper's
+  hold, an eleventh started at 1 s; the clock advanced to 5 s: the ten answer `ErrUnavailable` (the
+  call bound); to 6 s: the eleventh `ErrUnavailable` and no eleventh call reached the controller
+  (the slots still held); the hold released, a twelfth signs in (R16). Doubles: the in-memory
+  controller (kind 2), its fault wrapper (kind 3), the clock (kind 1).
 - **Rules:** rule 9 (D10's `ponytail:`), rule 4 (`Stop` under the leak check).
 
 ### T7.11 Pass-through sign-in
@@ -681,12 +723,13 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   or an empty domain with `user@realm`, compared with ASCII letters folded, when the record's schema
   is `ad` and `State.Join.Joined`; RFC 18 §3.5's alternate-suffix `decision:` at the row; the call
   through T7.10's channel inside the sign-in's context; the reply checked: `UserSessionKey` 16 bytes
-  and not zero, no `LOGON_GUEST`, the user SID's last sub-authority not 501, `LogonDomainID` equal to
-  E6's domain SID (`ErrUnavailable` while unread); E4's `exportedKey` and `checkMIC` with the reply's
-  key; the SIDs through E5's filter and counter; the user SID through `Find` with `FindOpts.Mint`, a
-  disabled or marked principal `ErrLogonFailure`, never minted anew; the controller's refusal
-  `ErrLogonFailure`, a failure to ask it `ErrUnavailable`; the evidence at `ProofSecret` bound to the
-  principal, with `Keys.Session` the exported key. Consumed by E8's T8.6, T8.7 and T8.11 and T7.16.
+  and not zero, no `LOGON_GUEST`, the user SID's last sub-authority not 501, `LogonDomainID` equal
+  to E6's domain SID (`ErrUnavailable` while unread); E4's `exportedKey` and `checkMIC` with the
+  reply's key; the SIDs through E5's filter and counter; the user SID through `Find` with
+  `FindOpts.Mint`, a disabled or marked principal `ErrLogonFailure`, never minted anew; the
+  controller's refusal `ErrLogonFailure`, a failure to ask it `ErrUnavailable`; the evidence at
+  `ProofSecret` bound to the principal, with `Keys.Session` the exported key. Consumed by E8's T8.6,
+  T8.7 and T8.11 and T7.16.
 - **Acceptance criteria:**
   - Every failure path binds no principal and returns no key.
 - **Tests:** at `SignIn`, over the memory KV store, the in-memory directory and controller, E4's
@@ -694,18 +737,18 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   `Resolve`, is the principal holding her SID (R2, R3); a wrong password raising the count by one
   (R12); a 24-byte response, the count unchanged (R8); replies with `LOGON_GUEST` and with RID 501,
   each refused (R5); "NTLM MIC"'s pass-through half: a corrupted and a zeroed MIC refused, signing
-  without key exchange refused, a zero, a 15-byte and a missing `UserSessionKey` each refused, another
-  domain's `LogonDomainID` refused, the domain SID unread `ErrUnavailable` (R4, R6, R7); "NTLM
-  domain"'s pass-through half: `alice@corp.example.com` with an empty domain and
+  without key exchange refused, a zero, a 15-byte and a missing `UserSessionKey` each refused,
+  another domain's `LogonDomainID` refused, the domain SID unread `ErrUnavailable` (R4, R6, R7);
+  "NTLM domain"'s pass-through half: `alice@corp.example.com` with an empty domain and
   `corp.example.com\alice` passed through, `alice@alt.example` and `corp.example.com.\alice`
   `unknown_domain` (R1); "logon throttle"'s controller count: 10 wrong then right, throttled, the
   count 10 (R12); a deny-only group SID kept in `DenyOnly` and a `S-1-5-32-544` dropped and counted
   (R3); alice's record disabled in the store: refused with outcome `disabled`; alice marked deleted:
   refused and no principal minted for her SID (R14); `Join.Joined` false: `unknown_domain` and
-  nothing sent (R15); eleven concurrent sign-ins with the controller gated as in T7.10: the eleventh
-  `ErrUnavailable` at 5 s on the clock (R16, at the consumer). Doubles: the in-memory directory and
-  controller (kind 2), the fault wrapper (kind 3), the clock (kind 1); E4's recording sink, a sink of
-  outputs.
+  nothing sent (R15); ten sign-ins held by the fault wrapper's hold as in T7.10, an eleventh started
+  at 1 s: `ErrUnavailable` at 6 s on the clock, nothing sent for it (R16, at the consumer). Doubles:
+  the in-memory directory and controller (kind 2), the fault wrapper (kind 3), the clock (kind 1);
+  E4's recording sink, a sink of outputs.
 - **Rules:** rule 9 (RFC 18 §3.5's decision and `ponytail:`).
 
 ### T7.12 The rotation and its prune
@@ -713,45 +756,47 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 **Subtask T7.12 estimate: 4 man-days.**
 
 - **Track:** A. **Depends on:** T7.10. E5's T5.10 (`Prune`, `Versions`).
-- **Covers:** R23, R24, R46, R47, R48, R49, R50, R51, R52, R53, R54, R55, R56, R57, R59.
+- **Covers:** R23, R46, R47, R48, R49, R50, R51, R52, R53, R54, R55, R56, R57, R59.
 - **Deliverables:** `RotateStep` and `RotateProgress` (D4), the cursor recording the pinned
   controller, the tag, the sealed version, whether a set was attempted, and the first unanswered
-  time; in RFC 18 §3.5's order: the prune of D14 at the first turn; pin a controller; wait until this
-  node's `State.Machine` holds the previous version (D9), failing as a problem once the next scheduled
-  rotation is due (R48); seal through `secrets.Seal` with `secrets.Meta{KeyVersion: number+1}` and
-  `Installation.MachinePassword` in one write (D5), or take an unconfirmed, non-`HandedOver` version
-  already tagged with that number, or the failed rotation's sealed version; wait until this node holds
-  it; probe, record the attempt (D5), set only if not accepted; confirm: probe, then read the number,
-  a mismatch logged and counted in `identity_machine_key_version_mismatches_total`; at the confirm,
-  `Join.LastRotation` (with D6's `Version`) and `Join.Names` written; a pinned controller unanswered
-  for an hour failing as a problem naming it, with `LastRotation.Failed` written first; the parts
-  written so T7.15 calls them for the closing rotations; `machine_password_rotation_failed` in
-  `Conditions`, derived from `State.Join.LastRotation.Failed`; D9's and D14's `ponytail:`; RFC 18
-  §3.3's `ponytail:` on the hour. Consumed by T7.13, T7.15 and E8's T8.6.
+  time; in RFC 18 §3.5's order: the prune of D14 at the first turn; pin a controller; wait until
+  this node's `State.Machine` holds the previous version (D9), failing as a problem once the next
+  scheduled rotation is due (R48); seal through `secrets.Seal` with `secrets.Meta{KeyVersion:
+  number+1}` and `Installation.MachinePassword` in one write (D5), or take an unconfirmed,
+  non-`HandedOver` version already tagged with that number, or the failed rotation's sealed version;
+  wait until this node holds it; probe, record the attempt (D5), set only if not accepted; confirm:
+  probe, then read the number, a mismatch logged and counted in
+  `identity_machine_key_version_mismatches_total`; at the confirm, `Join.LastRotation` (with D6's
+  `Version`) and `Join.Names` written; a pinned controller unanswered for an hour failing as a
+  problem naming it, with `LastRotation.Failed` written first; the parts written so T7.15 calls them
+  for the closing rotations; `machine_password_rotation_failed` in `Conditions`, derived from
+  `State.Join.LastRotation.Failed`; D9's and D14's `ponytail:`; RFC 18 §3.3's `ponytail:` on the
+  hour. Consumed by T7.13, T7.15 and E8's T8.6.
 - **Acceptance criteria:**
   - No path writes a version's tag after its seal.
 - **Tests:** calling the step in a loop over the memory KV store and #4059's provider, feeding each
   turn's `next` back, `Apply` given each new `State` as E8's reconcile would, on the injected clock,
   the in-memory controller: "derived keytab"'s rotation: rotate, then build a fresh server over the
   same store: tickets under both numbers accepted (R49, through T7.9); stop between seal and set,
-  resume: set once, the number up by one, the channel signs in (R52, R54); "machine account health"'s
-  rotation clauses: a controller unreachable for an hour after the set: failed naming it, the
-  condition raised and still raised after a fresh server, tickets under both versions verified (R53,
-  R56); two failures then a completion: the second sets the first's version, one unconfirmed version
-  in force (R53); a failure after the controller took the set, then the next rotation: no second set,
-  the number up once (R52); a confirm reading 8 against tag 7: completed, counted once, the tag still
-  7, a ticket under 8 accepted (R50, R55); a confirm at a controller that no longer accepts the
-  version: failed naming it (R55); `LastRotation`'s time, tag and number read back after a fresh
-  server (R46); this node not yet holding the previous version: nothing sealed, and failed once the
-  next rotation is due (R51, R48); this node holding the sealed version only after the clock passes
-  the wait: the set waits for it (R49); a `HandedOver` version current from R47's crash: the rotation
-  seals a new version and never takes or sets it (R47, R54); the condition cleared at the completion
-  and not by a channel set up with the previous version (R56); the next rotation at 10 hours 4 minutes
-  after a confirm prunes nothing, at 10 hours 5 minutes and a second prunes the previous version, its
-  ticket refused, the revocation in `result`, `LastRotation` byte-equal before and after (R24, R57);
-  after a failed rotation, the next one prunes nothing (catches `Prune` dropping the confirmed
-  previous version). Doubles: the in-memory controller (kind 2), its fault wrapper (kind 3),
-  `kvtest`'s wrapper for the crash between seal and record (kind 3), the clock (kind 1).
+  resume: set once, the number up by one, the channel signs in (R52, R54); "machine account
+  health"'s rotation clauses: a controller unreachable for an hour after the set: failed naming it,
+  the condition raised and still raised after a fresh server, tickets under both versions verified
+  (R53, R56); two failures then a completion: the second sets the first's version, one unconfirmed
+  version in force (R53); a failure after the controller took the set, then the next rotation: no
+  second set, the number up once (R52); a confirm reading 8 against tag 7: completed, counted once,
+  the tag still 7, a ticket under 8 accepted (R50, R55); a confirm at a controller that no longer
+  accepts the version: failed naming it (R55); `LastRotation`'s time, tag and number read back after
+  a fresh server (R46); this node not yet holding the previous version: nothing sealed, and failed
+  once the next rotation is due (R51, R48); this node holding the sealed version only after the
+  clock passes the wait: the set waits for it (R49); a `HandedOver` version current from R47's
+  crash: the rotation seals a new version and never takes or sets it (R47, R54); the condition
+  cleared at the completion and not by a channel set up with the previous version (R56); the next
+  rotation at 10 hours 4 minutes after a confirm prunes nothing, at 10 hours 5 minutes and a second
+  prunes the previous version, no longer listed by `Versions`, the revocation in `result`,
+  `LastRotation` byte-equal before and after (R57; the keys' expiry is T7.9's); after a failed
+  rotation, the next one prunes nothing (catches `Prune` dropping the confirmed previous version).
+  Doubles: the in-memory controller (kind 2), its fault wrapper (kind 3), `kvtest`'s wrapper for the
+  crash between seal and record (kind 3), the clock (kind 1).
 - **Rules:** rule 9 (D5's `decision:`, D9's and D14's `ponytail:`), rule 3 (the counter, the
   condition).
 
@@ -795,18 +840,18 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 - **Tests:** the step in a loop over the memory KV store, the in-memory directory and controller, on
   the clock: "online join": stopped between seal and create and resumed in the same server: created
   once with `cifs/` and `host/` names, the default `dNSHostName` and `0x18`, in the `Computers`
-  container, and the channel signs in (R30, R32, R33); stopped there, a fresh server, resumed: failed
-  naming the missing credential, then a takeover joins (R38); stopped after create, a fresh server,
-  resumed: joined with no credential (R33, R38); a join under an existing name: refused naming it,
-  the password unchanged; with a takeover: joined, the version sealed before the set (R39); the
-  pinned controller's dials refused for an hour: failed naming it, and a join run again with a
-  takeover pins the other (R35, R31); an `rfc2307` record refused (R29); a name `NAS_01` refused at
-  the first turn, `nas-01` written `NAS-01` (R45); an account named as the record's NetBIOS domain in
-  another case refused (R62); the owner and delegation value on `Join` (R46); a failed join:
-  `Join.Joined` false after a fresh server, `identity.netbios_name` unchanged, the attempted version
-  kept (R36); `kvtest`'s wrapper failing the `end`'s commit: neither `Joined` nor the name written
-  (catches the two written apart). Doubles: the in-memory directory and controller (kind 2), the
-  fault wrappers (kind 3), the clock (kind 1).
+  container, and the channel signs in (R30, R32, R33); stopped there, a fresh server, resumed:
+  failed naming the missing credential, then a takeover joins (R38); stopped after create, a fresh
+  server, resumed: joined with no credential (R33, R38); a join under an existing name: refused
+  naming it, the password unchanged; with a takeover: joined, the version sealed before the set
+  (R39); the pinned controller's dials refused for an hour: failed naming it, and a join run again
+  with a takeover pins the other (R35, R31); an `rfc2307` record refused (R29); a name `NAS_01`
+  refused at the first turn, `nas-01` written `NAS-01` (R45); an account named as the record's
+  NetBIOS domain in another case refused (R62); the owner and delegation value on `Join` (R46); a
+  failed join: `Join.Joined` false after a fresh server, `identity.netbios_name` unchanged, the
+  attempted version kept (R36); `kvtest`'s wrapper failing the `end`'s commit: neither `Joined` nor
+  the name written (catches the two written apart). Doubles: the in-memory directory and controller
+  (kind 2), the fault wrappers (kind 3), the clock (kind 1).
 - **Rules:** rule 9 (D7's `decision:`).
 
 ### T7.15 The offline join
@@ -834,12 +879,12 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   sealed without the mark refused naming it (R41); stopped after storing, a fresh server, resumed:
   still `HandedOver`, no key derived, the rotations resumed, joined only at the second confirm (R43,
   R44); before then, a pass-through refused (R15); after it, a controller refusing the new version
-  not signed in to with the handed-over one (R19), and the handed-over password setting up no channel
-  at the controller; the second closing rotation failed after its set: not joined after a fresh
-  server, both versions kept, and an offline join after a reset completes, after which the first
-  rotation's prune drops them (R36); a creator's set between the rotations, before the second reads
-  its tag and after: failed naming the number, not joined (R43). Doubles: the in-memory controller
-  (kind 2), its fault wrapper (kind 3), the clock (kind 1).
+  not signed in to with the handed-over one (R19), and the handed-over password setting up no
+  channel at the controller; the second closing rotation failed after its set: not joined after a
+  fresh server, both versions kept, and an offline join after a reset completes, after which the
+  first rotation's prune drops them (R36); a creator's set between the rotations, before the second
+  reads its tag and after: failed naming the number, not joined (R43). Doubles: the in-memory
+  controller (kind 2), its fault wrapper (kind 3), the clock (kind 1).
 - **Rules:** rule 9 (RFC 18 §3.4's decision).
 
 ### T7.16 Joins and a rotation against Samba
@@ -850,18 +895,19 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 - **Covers:** R21, R32, R39, R43, R46, against Samba: an AD user signs in over Kerberos and over
   pass-through on an installation joined offline and pointed at an explicit domain controller.
 - **Deliverables:** `join_scenario_test.go` (D13), `DCSeeder.Reset` at its start: the server built
-  over the memory KV store with T7.7's dialer and a record naming the controller's address
-  explicitly; `offjoinaes$`'s password sealed `HandedOver` and the offline join's steps run to
-  joined; alice's ticket for `cifs/offjoinaes.dittofs.ad` from gokrb5's client verified through
-  `SignIn` under the derived key; alice signed in by pass-through with an AUTHENTICATE computed from
-  her password; a rotation, a fresh server over the same store, and a ticket fetched after it verified;
-  an online join of `ONJOIN` with the fixture's administrator, and one of `DITTOFS` refused.
+  over the memory KV store with `NewDialer` (T7.6, T7.7) over `net.Dialer`'s `DialContext` and a
+  record naming the controller's address explicitly; `offjoinaes$`'s password sealed `HandedOver`
+  and the offline join's steps run to joined; alice's ticket for `cifs/offjoinaes.dittofs.ad` from
+  gokrb5's client verified through `SignIn` under the derived key; alice signed in by pass-through
+  with an AUTHENTICATE computed from her password; a rotation, a fresh server over the same store,
+  and a ticket fetched after it verified; an online join of `ONJOIN` with the fixture's
+  administrator, and one of `DITTOFS` refused.
 - **Acceptance criteria:**
   - The test runs in `integration/ad-dc` on `feat/storage-v2`.
 - **Tests:** the scenario above (catches derived keys, a channel or a created object that agree only
   with the in-memory controller, R21, R32); the number read at the second confirm equal to the
-  verified plus two at Samba (R43); `onjoin$`'s `servicePrincipalName`, `dNSHostName` and `0x18` read
-  back with `samba-tool` (R32); `dittofs$`'s password unchanged after the refused join (R39);
+  verified plus two at Samba (R43); `onjoin$`'s `servicePrincipalName`, `dNSHostName` and `0x18`
+  read back with `samba-tool` (R32); `dittofs$`'s password unchanged after the refused join (R39);
   `LastRotation` after the rotation naming Samba's number (R46). No double: the controller is real.
 
 ### T7.17 The guides
@@ -926,14 +972,15 @@ both joins run and E8's T8.6 can start.
 | --- | --- | --- | --- | --- |
 | 1 | T7.1, T7.2 | 1.75 | — | the spike and the fixture, on `test/ad-dc-join` |
 | 2 | T7.3, T7.4, T7.5 | 4.75 | S1, E6's T6.4, T6.5 and T6.9, the kinds' parameter types | the seam and the calls other epics wait for; may be open beside PR 1 |
-| 3 | T7.6, T7.7, T7.8 | 6.5 | PR 1, PR 2, #4334 | the client moved, hardened and held to Samba |
-| 4 | T7.9, T7.10, T7.11 | 7.25 | PR 2; E2's T2.4, E3's T3.1, E4, E5's T5.2, T5.3 and T5.7, E6's T6.5 and T6.9 | derived keys and pass-through; may be open beside PR 3 |
+| 3 | T7.6, T7.7, T7.8 | 6.75 | PR 1, PR 2, #4334 | the client moved, hardened and held to Samba |
+| 4 | T7.9, T7.10, T7.11 | 8 | PR 2; E2's T2.4, E3's T3.1, E4, E5's T5.2, T5.3 and T5.7, E6's T6.5 and T6.9 | derived keys and pass-through; may be open beside PR 3 |
 | 5 | T7.12, T7.13 | 4.75 | PR 4, E5's T5.10 | the rotation, its prune and its schedule |
 | 6 | T7.14, T7.15 | 6 | PR 5, E6's T6.3 | both joins |
 | 7 | T7.16, T7.17 | 3.5 | PR 3, PR 6, E5's T5.11 | the joins against Samba and the guides |
 
 A suggestion only: one pull request per subtask works as well, but for T7.6, whose move and LDAP
-extraction go in one change.
+extraction go in one change, and T7.6 with T7.7, since T7.6's `NewDialer` answers
+`errors.ErrUnsupported` for the account calls until T7.7.
 
 ## 9. Open points
 
@@ -944,23 +991,28 @@ epic documents of RFC 18's epics 1 to 6 and 8 (#4315, #4316, #4318, #4339, #4340
 **Pending the user's answer** (the recommended option is written in place):
 
 - **Where the account's names and its confirmed version live (D6).** Options: (a) RFC 16 §2.3's
-  `MachineJoin` gains `Names` and `LastRotation.Version`, and identity's `State` gains `Join`,
-  filled by E8; (b) the names read again from a controller at every start, so a restart with no
-  controller reachable derives no key, and "confirmed" inferred from `LastRotation.Tag`, which a
-  lagging controller can make ambiguous; (c) the names fixed at `cifs/` and `host/` on the two host
-  names, dropping `sPNMappings`, a departure from RFC 18 §3.3. Recommended: (a).
+  `MachineJoin` gains `Names`, `LastRotation.Version` and `LastRotation.Confirmed`, and identity's
+  `State` gains `Join`, filled by E8; (b) the names read again from a controller at every start, so
+  a restart with no controller reachable derives no key, "confirmed" inferred from
+  `LastRotation.Tag`, which a lagging controller can make ambiguous, and the retention counted from
+  `LastRotation.At`, which a failed rotation moves; (c) the names fixed at `cifs/` and `host/` on
+  the two host names, dropping `sPNMappings`, a departure from RFC 18 §3.3. Recommended: (a).
 - **Who starts a scheduled rotation (D11).** Options: (a) identity creates the operation from a
   loop of its own, every 7 days; (b) the node's reconcile creates it, in E8 or RFC 23's plan's
-  epic 3, identity answering only whether one is due; (c) the operator starts every rotation, and
-  RFC 18 §3.5's schedule is dropped. Recommended: (a), the smallest; (b) if operations are to be
-  created only outside identity.
+  epic 3, identity answering only whether one is due, the creation then beside the runner's other
+  writes of operation records; (c) the operator starts every rotation, and RFC 18 §3.5's schedule
+  is dropped. Under (a) and (b) the operation carries the zero `Account`, read as the schedule,
+  and its creating `Write` an audit record naming the schedule. Recommended: (a), the smallest; (b)
+  if operations are to be created only outside identity.
 
 **Where the RFC 18 plan and this document differ:**
 
-- The figure here is 34.5 man-days over 17 subtasks, against the RFC 18 plan's 32 over 13. It holds
+- The figure here is 35.5 man-days over 17 subtasks, against the RFC 18 plan's 32 over 13. It holds
   work the RFC 18 plan's list does not name: the rotation's schedule (T7.13, 0.75),
   `HoldJoinCredential`'s type (T7.4, 0.5), the online join and a rotation against Samba (in T7.16,
-  0.5) and the account's LDAP moved into the directory package (in T7.6 and T7.7), less a fixture
+  0.5), the keys' and the fallback's expiry at the retention (in T7.9 and T7.10, 0.5), the call
+  bound and R17's order above the seam (in T7.10, 0.25), the fixture's wait rewritten (in T7.6,
+  0.25) and the account's LDAP moved into the directory package (in T7.6 and T7.7), less a fixture
   remainder smaller than planned, since three of its commits exist, and the credential arithmetic
   `go-msrpc` already has. T7.6 and T7.7 are the least certain: they depend on T7.1, and the fallback
   adds 1.5.
@@ -972,8 +1024,9 @@ epic documents of RFC 18's epics 1 to 6 and 8 (#4315, #4316, #4318, #4339, #4340
   `cifs/dittofs.dittofs.ad` on `Administrator` for E5's keytab.
 - The RFC 18 plan lists no creator principal; T7.2 adds `joiner` and `offjoinowned$` for the
   owner's report against Samba, and `BUILD01$` for the workstation-trust refusal.
-- The RFC 18 plan has the retention's prune follow each rotation; D14 runs it at the next
-  rotation's first turn, so no operation stays running for 10 hours.
+- The RFC 18 plan has the retention's prune follow each rotation; D14 runs the secret's prune at
+  the next rotation's first turn, so no operation stays running for 10 hours, while the keys and
+  the channel's fallback stop at the retention itself (T7.9, T7.10).
 - The RFC 18 plan's §4.4 sketch has `s.netlogon.SamLogonEx` return a `SignInResult`; the package
   returns the reply and `SignIn` applies E4's functions (E4's open point), as T7.11 does.
 - The RFC 18 plan's D8 signature `HoldJoinCredential(id, cred)` returns `release func()`, as E1 and
@@ -983,20 +1036,23 @@ epic documents of RFC 18's epics 1 to 6 and 8 (#4315, #4316, #4318, #4339, #4340
 
 - RFC 18 §2.6 calls the `Minter`'s writes identity's only ones, while §3.5 has the join's and the
   rotation's steps seal versions and write the `Installation` record and `identity.netbios_name`
-  (D5); E5's T5.10 needs the same amendment. The `ControlPlaneTx` method that writes `Join` is RFC 23's
-  plan's epic 2's to add, as `SetNTHashDeleted` was.
+  (D5); E5's T5.10 needs the same amendment. The `ControlPlaneTx` method that writes `Join` is RFC
+  23's plan's epic 2's to add, as `SetNTHashDeleted` was.
 - RFC 18 §2.6's `Deps` names neither the directory's dialer (E6's `Deps.Directory`) nor the domain
   controller's (`Deps.DomainController`), and its `State` has no `Join` (D6).
 - RFC 18 §3.5 does not say what tag an online join's version carries for an account it creates,
   whose number does not exist when it seals (D7).
-- RFC 18 §3.5 schedules the rotation and no RFC says who starts it (D11).
+- RFC 18 §3.5 schedules the rotation and no RFC says who starts it (D11). Under D11 (a) or (b),
+  RFC 23 §4.6, which starts every operation from a call and records who started it, and RFC 23's
+  plan's epic 4's R50, which has the API alone write the four kinds' records, are the places to
+  amend for an operation the schedule starts, its `Account` and its audit record.
 - RFC 18 §3.3 refuses an imported key for a name the account holds; RFC 23's secret route can check
   it only once the names are stored (D6), and until then R27's import half is unmet: T7.9's ring
   skips the key (D8).
-- RFC 13 §7's `Prune` drops every version below the lowest held and never the current one, while
-  RFC 18 §3.5 has a failed join prune "the rest it sealed", the newest version whenever it sealed one
-  it never sent, and a later join prune "once it is joined". T7.14 keeps every version it attempted
-  to send and removes none it cannot, and D14 prunes at the next rotation; a per-version removal
+- RFC 13 §7's `Prune` drops every version below the lowest held and never the current one, while RFC
+  18 §3.5 has a failed join prune "the rest it sealed", the newest version whenever it sealed one it
+  never sent, and a later join prune "once it is joined". T7.14 keeps every version it attempted to
+  send and removes none it cannot, and D14 prunes at the next rotation; a per-version removal
   belongs to #4059's provider, and RFC 18 §3.5 should say the kept versions go at the first prune
   after a join completes. Until #4059 adds one, a failed join's one unsent version stays in force,
   unconfirmed, deriving nothing while not joined.
@@ -1015,8 +1071,16 @@ epic documents of RFC 18's epics 1 to 6 and 8 (#4315, #4316, #4318, #4339, #4340
 #4385) carry this epic's edges: `JoinCredential` admitted after S1 and T7.6's removal of the
 `go-ldap` exemption; T5.7's filter consumed by T7.11 and T5.3's selection calling T7.9's fallback;
 the computer-account functions in `internal/identity/directory` outside `Conn`; T8.6's fields, the
-four kinds, the `*apiv1.Problem` passed through, and the refused creating `Write`'s hold. Still
-owed elsewhere:
+four kinds in the runner's table as they are, `NewDialer` given `net.Dialer`'s `DialContext`, and
+the refused creating `Write`'s hold. Still owed elsewhere:
+
+- **E1 (#4315):** R5 and T1.5 name `pkg/identity/identitytest` among identity's own packages,
+  importing `internal/identity/directory` and `internal/identity/netlogon` and never the server;
+  a seeded violation shows it importing `internal/identity`. E6's note that the rule "names the
+  server's package, not the directory's" then holds.
+- **E5 (#4340):** T5.10's "whose machine password prunes the same way" becomes: whose machine
+  password's derived keys expire at the same retention, its secret pruned at the next rotation's
+  first turn (D14), not inside a waiting step.
 
 - **RFC 23's plan's epic 4 (#4337):** T4.11 validates the online join's OU and host name before the
   creating write (R30), refuses at the secret route a keytab key for a name in `Join.Names` (R27,
