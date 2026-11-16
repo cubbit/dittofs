@@ -537,3 +537,62 @@ func TestAPIExports(t *testing.T) {
 		}
 	}
 }
+
+// composeCalls counts the references to enginewire's Compose in the non-test
+// files in dir, under whatever name each file imports the package.
+func composeCalls(dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
+		if err != nil {
+			return 0, err
+		}
+		name := ""
+		for _, imp := range f.Imports {
+			if p, _ := strconv.Unquote(imp.Path.Value); p == module+"pkg/block/engine/enginewire" {
+				name = "enginewire"
+				if imp.Name != nil {
+					name = imp.Name.Name
+				}
+			}
+		}
+		ast.Inspect(f, func(x ast.Node) bool {
+			if s, ok := x.(*ast.SelectorExpr); ok && s.Sel.Name == "Compose" {
+				if id, ok := s.X.(*ast.Ident); ok && name != "" && id.Name == name {
+					n++
+				}
+			}
+			return true
+		})
+	}
+	return n, nil
+}
+
+// The node composes the engine through enginewire's Compose exactly once: a
+// copy of the wiring inlined in its place, or a second Compose whose table
+// is not the one the engine's holds act on, is caught.
+func TestNodeComposesOnce(t *testing.T) {
+	for _, tc := range []struct {
+		dir  string
+		want int
+	}{
+		{".", 1},
+		{"testdata/arch/compose-inline", 0},
+		{"testdata/arch/compose-twice", 2},
+	} {
+		got, err := composeCalls(tc.dir)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.dir, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s: enginewire.Compose referenced %d times, want %d", tc.dir, got, tc.want)
+		}
+	}
+}
