@@ -8,7 +8,8 @@ here through the API; §3.3's bound fields; §10's CP7; Appendix B's rows for §
 **Epic 7 estimate: 7 subtasks, 11.5 man-days.**
 **Depends on:** E3 (`dfs start`, `nodetest`, the runner), E4 (the routes and the client), E5
 (`install.Run`, signed-in callers), E6 (its suite's child-safe rows); outside RFC 23's plan, X3
-for T7.5, and X1 with the RFC 18 plan's epics 7 and 8 for T7.6.
+and the RFC 18 plan's epic 8's T8.10 for T7.5, and X1 with the RFC 18 plan's epics 7 and 8 for
+T7.6.
 **Blocks:** E8, which starts its cells through this epic's server fixture (T7.1) once S3 is in.
 
 ---
@@ -320,7 +321,7 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 
 **Subtask T7.5 estimate: 2 man-days.**
 
-- **Track:** the team. **Depends on:** X3; T7.3, T7.4.
+- **Track:** the team. **Depends on:** X3; T7.3, T7.4; the RFC 18 plan's epic 8's T8.10.
 - **Covers:** R17, R18, R19, R20, R21.
 - **Deliverables:** in `integration_test.go`: `§2.3 reconcile`, the `view` operation faulted while
   writes pass; `§2.4 applied` with D5's hold on the binding's commit; `§4.1 NTLM back on`, the
