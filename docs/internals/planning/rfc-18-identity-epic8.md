@@ -10,7 +10,7 @@ reports), §3.5 (the domain's actions) and §4.1 (the rule for turning `identity
 [RFC 13](../rfcs/rfc-13-configuration.md) §6, §7 (a new secret version resolved again and reported)
 and Appendix B's `identity.*` rows; [RFC 25](../rfcs/rfc-25-observability.md) §3.9, §5.4 and §7.
 **Track:** the team.
-**Epic 8 estimate: 11 subtasks, 15 man-days.**
+**Epic 8 estimate: 11 subtasks, 14.75 man-days.**
 **Depends on:** **E2**: T2.4's `Settings`, `State.Settings` and `Deps.Secrets` and T2.6's
 `APISignIn` (T8.1), T2.7's `identity.nt-hash-delete` step (T8.10). **E3**: T3.1's span, T3.6's
 admission through identity and T3.10's resolution over the caller cache (T8.2, T8.3, T8.9). **E4**:
@@ -21,13 +21,13 @@ T6.5's `Deps.Directory`, T6.8's `Conditions` and T6.9's directory principals and
 (T8.2, T8.5, T8.9), T6.6 and T6.11's groups and resolution step (T8.4, T8.5), T6.13's check (T8.8)
 and T6.1's fixture part, rebased onto `feat/storage-v2` with the cell selected there (T8.4). **E7**:
 T7.3's in-memory domain controller, T7.4's `HoldJoinCredential`, T7.5's, T7.12's and T7.14's step
-methods, T7.7's `Dialer`, T7.9's `State.Machine` and `State.Join` (its D6, pending), T7.10's
-`Deps.DomainController` and `machine_account_unhealthy`, T7.11's pass-through, T7.12's
-`machine_password_rotation_failed` and T7.14's and T7.15's `Installation.Join` (T8.6, T8.7, T8.8,
-T8.11). **RFC 23's plan**: its epic 3's `node.New`, start and stop, reconcile's `apply` and its
-T3.1's `internal/node/nodetest` with `WithNew` and `Harness.Node()`, the current node after any
-`Restart` (D4) (T8.1), and epic 3's T3.5 (D16), `Deps.Applied` with its `export_test.go` pause
-(T8.3); its epic 4's write path, which calls `Deps.Applied` (T8.3), and settings routes (T8.4,
+methods, T7.6's and T7.7's `NewDialer`, T7.9's `State.Machine` and `State.Join` (its D6,
+pending), T7.10's `Deps.DomainController` and `machine_account_unhealthy`, T7.11's pass-through,
+T7.12's `machine_password_rotation_failed` and T7.14's and T7.15's `Installation.Join` (T8.6, T8.7,
+T8.8, T8.11). **RFC 23's plan**: its epic 3's `node.New`, start and stop, reconcile's `apply`
+and its T3.1's `internal/node/nodetest` with `WithNew` and `Harness.Node()`, the current node
+after any `Restart` (D4) (T8.1), and epic 3's T3.5 (D16), `Deps.Applied` with its `export_test.go`
+pause (T8.3); its epic 4's write path, which calls `Deps.Applied` (T8.3), and settings routes (T8.4,
 T8.10); its epic 5's accounts (T8.9). **#4059** (the RFC 13 plan): its S1 and S2 (T8.1), its epic
 3's write check with tracked reads (T8.8), its epic 4's version reads (T8.2) and its epic 5's
 settings table and `apply` on `settings.Diff` (T8.1, T8.2, T8.10).
@@ -272,8 +272,8 @@ epic's test holds it.
   the API's `Deps.Directory` and `Deps.Joins` are filled in `node.New` by this epic, each by the
   subtask that first runs it: E5's keytab retention (T5.10's `Step` and `Progress`) and
   `Deps.Directory` (E6's `KerberosLinkSID`) by T8.2, E7's kinds and `Deps.Joins` by T8.6, E2's
-  deletion by T8.10. E2's and E5's methods are typed by `internal/node/step` and go in the table as
-  they are; E7's are plain-typed (its D4), and T8.6 adapts them into `StepResult`. RFC 23's plan's
+  deletion by T8.10. E2's, E5's and E7's methods are typed by `internal/node/step` (E7's D4) and
+  go in the table as they are, with no adapter. RFC 23's plan's
   epic 3 (its D7) and epic 4 (its D13) name this epic as the one that registers the steps and fills
   the fields. Prior art: none found.
 - **D11, Tier 1 rows run in identity's tests, node rows in the node's.** A row RFC 18 §10 marks
@@ -291,7 +291,7 @@ internal/node/
                                State.Directory; T5.10's Step and Progress; api.Deps.Directory;
                                secret versions reported; the server added to the evaluator
                         T8.6   Deps.DomainController, State.Machine, State.Join, E7's four
-                               kinds adapted, api.Deps.Joins
+                               kinds, api.Deps.Joins
                         T8.10  E2's identity.nt-hash-delete step
   node.go               T8.2   newNode and seams, the directory's dialer (D4)
                         T8.6   the domain controller's dialer in seams (D4)
@@ -489,23 +489,24 @@ test/integration/ad-dc/
 
 ### T8.6 The machine account in the node
 
-**Subtask T8.6 estimate: 2.5 man-days.**
+**Subtask T8.6 estimate: 2.25 man-days.**
 
 - **Track:** the team. **Depends on:** T8.2. E7's T7.3 (the in-memory domain controller), T7.4
-  (`HoldJoinCredential`), T7.5, T7.12 and T7.14 (the four kinds), T7.7 (the `Dialer`), T7.9
+  (`HoldJoinCredential`), T7.5, T7.12 and T7.14 (the four kinds), T7.6 and T7.7 (`NewDialer`), T7.9
   (`State.Machine`, `State.Join`), T7.10 (`Deps.DomainController`, `machine_account_unhealthy`) and
   T7.15 (the offline join).
 - **Covers:** R5, R8, R10, R13.
-- **Deliverables:** `Deps.DomainController` filled with T7.7's `Dialer`, or the in-memory one
-  through `seams` and `NewWithDialers` (D4); `State.Machine` from the provider's versions of
+- **Deliverables:** `Deps.DomainController` filled with
+  `netlogon.NewDialer((&net.Dialer{}).DialContext)` (E7's T7.6, T7.7), or the in-memory one through
+  `seams` and `NewWithDialers` (D4); `State.Machine` from the provider's versions of
   `Installation.MachinePassword`, with their `KeyVersion` and `HandedOver`, and `State.Join` from
   `Installation.Join` (pending E7's D6), both rebuilt on a settings move; the machine password's
   versions reported; `JoinStep` and `JoinProgress`, `RotateStep` and `RotateProgress`,
   `ResolvePrincipalStep` and `TestDirectoryStep` in the runner's table under `join-domain`,
-  `rotate-machine-password`, `resolve-principal` and `test-directory`, each adapted from E7's
-  plain-typed answer into `StepResult` (E7's D4, D10 here), a `*apiv1.Problem` passed through
-  unwrapped as the terminal failure and every other error returned plain, so the runner retries
-  it; `api.Deps.Joins` filled from identity (D10). Consumed by T8.7, T8.11.
+  `rotate-machine-password`, `resolve-principal` and `test-directory` as they are, typed by
+  `internal/node/step` (E7's D4, D10 here), with no adapter: the runner fails the operation on a
+  step's `*apiv1.Problem` and retries any other error; `api.Deps.Joins` filled from identity (D10).
+  Consumed by T8.7, T8.11.
 - **Acceptance criteria:**
   - None of the four kinds is reported refused in node status for want of a step.
 - **Tests:** in `node_test`, through `nodetest`, the in-memory directory and domain controller
@@ -665,7 +666,7 @@ passes through; after T8.11, E9 can start once S3 is reached.
 | 1 | T8.1 | 1.5 | E2's T2.4 and T2.6, RFC 23's plan's epic 3 | identity in the node, which E3's T3.6 and RFC 23's plan's epic 5 wait for |
 | 2 | T8.2, T8.3, T8.4 | 5 | PR 1, E3's T3.6, E4, E5, E6 | the node delivering every principal, Kerberos and directory change, checked against Samba |
 | 3 | T8.5 | 2 | E5's T5.8b, E6's T6.11 | the Kerberos clauses in identity alone; may be open beside PR 2 |
-| 4 | T8.6, T8.7, T8.8 | 4 | PR 2, E7 | the machine account in the node and what pass-through and the join close |
+| 4 | T8.6, T8.7, T8.8 | 3.75 | PR 2, E7 | the machine account in the node and what pass-through and the join close |
 | 5 | T8.9, T8.10, T8.11 | 2.5 | PR 4, RFC 23's plan's epics 4 and 5 | the rows through the API, and the capture over everything above |
 
 A suggestion only: one pull request per subtask works as well.
@@ -705,12 +706,12 @@ handed by `export_test.go`'s constructor.
 
 **Where the RFC 18 plan and this document differ:**
 
-- The figure here is 15 man-days over 11 subtasks, against the RFC 18 plan's 10.5 over 5. It
+- The figure here is 14.75 man-days over 11 subtasks, against the RFC 18 plan's 10.5 over 5. It
   holds work the RFC 18 plan's list does not name: the writer's at-once apply held at identity
   (T8.3, 0.5; RFC 23's plan's epic 3 builds it, D3), the
   enabled state at sign-in (in T8.5, 0.75), the NetBIOS check (T8.8, 0.75), the machine account's
-  composition, the node's seams, `State.Join`, the problem passed through and the refused join's
-  hold (T8.6, 2.5), the live Samba sign-in
+  composition, the node's seams, `State.Join`, the four kinds registered with no adapter and the
+  refused join's hold (T8.6, 2.25), the live Samba sign-in
   moved from E5 (T8.4, 1.25), and the keytab retention's run through the runner and both halves of
   the `krb` link through the API (in T8.2, 0.75).
   It holds less of the rows: the review found every clause of "admin needs proof", "deny-only
