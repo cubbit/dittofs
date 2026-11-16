@@ -26,6 +26,7 @@ func RunDurable(t *testing.T, d Durable) {
 	}{
 		{"ReopenKeepsData", testReopenKeepsData},
 		{"ClockAdvances", testClockAdvances},
+		{"ShareRemovalAcrossReopens", testShareRemovalAcrossReopens},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, d) })
 	}

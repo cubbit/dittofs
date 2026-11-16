@@ -161,6 +161,11 @@ func clonePhase1(tx kv.Txn, op CloneOp, k int, hold entity.OpenID) (bool, error)
 		return false, err
 	}
 	before := f
+	// Tracked, so a removal marking the source's share conflicts with the
+	// hold this writes on its file, in either commit order.
+	if err := liveShare(tx, sp.SrcShare); err != nil {
+		return false, err
+	}
 	src, err := fileIn(tx, sp.SrcShare, sp.Src)
 	if err != nil {
 		return false, err

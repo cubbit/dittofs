@@ -438,7 +438,7 @@ func removalAt4(t *testing.T, s *Store, sh entity.Share) {
 	t.Helper()
 	ctx := context.Background()
 	if err := s.ControlPlane().DeleteShare(ctx, sh.ID, entity.SnapshotsDelete, sh.Generation); err != nil {
-		t.Fatal(err)
+		t.Fatalf("DeleteShare(%s): %v, want nil", sh.Name, err)
 	}
 	for _, c := range []struct {
 		want    uint8
@@ -571,17 +571,21 @@ func TestShareRemovalRereadsAnRmRowWrittenUnderIt(t *testing.T) {
 	}
 }
 
-// A share one of whose files is the source of a clone not done onto another
-// share's file is not marked for removal until the clone is done.
-func TestDeleteShareWaitsForAnotherSharesClone(t *testing.T) {
+// cloneOntoAnotherShare gives the fixture's share a written file and a second
+// share in its namespace with an empty file, and the clone of the first's
+// first MiB onto the second, not yet applied.
+func cloneOntoAnotherShare(t *testing.T, f *cfix) (entity.Share, CloneOp) {
+	t.Helper()
 	ctx := context.Background()
-	f := newContentFix(t, nil)
 	src := f.file(0)
 	f.exist(src, write(1, 0, 4*mib))
-	cp := f.s.ControlPlane()
 	other := entity.Share{ID: entity.NewShareID(), Name: "other", Path: "/other", Root: entity.NewFileID(),
 		Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: f.ns}}}
-	if _, err := cp.PutShare(ctx, other, 0); err != nil {
+	if _, err := f.s.ControlPlane().PutShare(ctx, other, 0); err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := f.s.ShareIndex().Share(ctx, other.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
 	dst := entity.NewFileID()
@@ -594,8 +598,19 @@ func TestDeleteShareWaitsForAnotherSharesClone(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	f.clone(CloneOp{Share: other.ID, File: dst, Version: entity.VersionOf(5), Time: time.Unix(1_900_000_005, 0),
-		Spec: entity.CloneSpec{SrcShare: f.share, Src: src, Len: mib}})
+	return other, CloneOp{Share: other.ID, File: dst, Version: entity.VersionOf(5), Time: time.Unix(1_900_000_005, 0),
+		Spec: entity.CloneSpec{SrcShare: f.share, Src: src, Len: mib}}
+}
+
+// A share one of whose files is the source of a clone not done onto another
+// share's file is not marked for removal until the clone is done.
+func TestDeleteShareWaitsForAnotherSharesClone(t *testing.T) {
+	ctx := context.Background()
+	f := newContentFix(t, nil)
+	other, op := cloneOntoAnotherShare(t, f)
+	dst := op.File
+	f.clone(op)
+	cp := f.s.ControlPlane()
 	sh, _, err := f.s.ShareIndex().Share(ctx, f.share)
 	if err != nil {
 		t.Fatal(err)
@@ -672,4 +687,58 @@ func TestShareRemovalWaitsForEveryShard(t *testing.T) {
 		t.Fatalf("dropping the extra shard's files, none left: done %v, %v; want done", done, err)
 	}
 	cont(5)
+}
+
+// A clone whose phase 1 comes after its source's share is marked for
+// removal answers stale and holds nothing there.
+func TestCloneFromAShareBeingRemovedIsStale(t *testing.T) {
+	ctx := context.Background()
+	f := newContentFix(t, nil)
+	_, op := cloneOntoAnotherShare(t, f)
+	sh, _, err := f.s.ShareIndex().Share(ctx, f.share)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.ControlPlane().DeleteShare(ctx, f.share, entity.SnapshotsDelete, sh.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.Existence().Clone(ctx, op, nil); !errors.Is(err, entity.ErrStale) {
+		t.Errorf("a clone from a share being removed: %v, want %v", err, entity.ErrStale)
+	}
+}
+
+// removeToDone marks a share of one shard for removal and runs the removal
+// to its end.
+func removeToDone(t *testing.T, s *Store, sh entity.Share) {
+	t.Helper()
+	ctx := context.Background()
+	removalAt4(t, s, sh)
+	for done := false; !done; {
+		var err error
+		if done, err = s.Nodes().ContinueShardRemoval(ctx, sh.ID, sh.Shard); err != nil {
+			t.Fatalf("dropping share %v's files: %v", sh.Name, err)
+		}
+	}
+	for done := false; !done; {
+		var err error
+		if _, done, err = s.Nodes().ContinueRemoval(ctx, sh.ID); err != nil {
+			t.Fatalf("removing share %v: %v", sh.Name, err)
+		}
+	}
+}
+
+// Removing a clone's destination share before the clone is done gives up
+// its hold on the source, so the source's share can be removed after.
+func TestRemovingACloneDestinationReleasesTheSource(t *testing.T) {
+	ctx := context.Background()
+	f := newContentFix(t, nil)
+	other, op := cloneOntoAnotherShare(t, f)
+	f.clone(op)
+	removeToDone(t, f.s, other)
+
+	sh, _, err := f.s.ShareIndex().Share(ctx, f.share)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removeToDone(t, f.s, sh)
 }

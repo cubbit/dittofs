@@ -56,8 +56,10 @@ var removalSteps = [...]uint8{
 // deletes them one any use record still holds, and one whose file is the
 // source of a clone not done onto another share's file. Snapshot and use
 // records and durable opens are found under a range guard, and the re-home
-// record by a tracked read, so a cut, a re-home, a use record or a clone that
-// starts concurrently conflicts with the mark in either commit order.
+// record by a tracked read, so a cut, a re-home or a use record that starts
+// concurrently conflicts with the mark in either commit order. A clone's
+// phase 1 reads the source share's state with tracking, so a clone
+// committing after the mark conflicts with it or answers stale.
 //
 // The rest of the removal runs in the background: ContinueRemoval's batches,
 // RecordShardRemoval for step 3 and ContinueShardRemoval for step 4.
@@ -207,8 +209,11 @@ func noForeignCloneHold(tx kv.Txn, share entity.ShareID) error {
 			return err
 		}
 		b, ok, err := get(tx, openKey(share, entity.FileID(file), entity.OpenID(id)))
-		if err != nil || !ok {
+		if err != nil {
 			return err
+		}
+		if !ok {
+			continue
 		}
 		op, err := decodeOpen(entity.FileID(file), entity.OpenID(id), b)
 		if err != nil || op.Kind != entity.OpenCloneSource {
@@ -503,10 +508,9 @@ func shardOfShare(r kv.Reader, share entity.ShareID, shard uint64) error {
 // ponytail: the share's files are the shard's, as a share has one shard. Drop
 // only the files whose Shard names it once a share can have more.
 //
-// ponytail: a clone not done onto a file here keeps its hold on a source in
-// another share, which is then never released; reachable once two shares
-// name one namespace. Drop that hold with the clone's removal record here,
-// tolerating a source already removed.
+// A clone not done onto a file here gives up its hold on its source as the
+// drop reaches the clone's removal record, so the source's share can be
+// removed in turn.
 //
 // ponytail: each batch scans from the share's first file key, since every
 // row before it is gone; on a store whose scan steps over deleted keys until
@@ -548,6 +552,11 @@ func (s *Store) shardDropBatch(tx kv.Txn, share entity.ShareID, shard uint64) (b
 	files := keys.ID([]byte{keys.KindF}, share[:])
 	_, finished, err := walk(tx, files, nil, max(1, (s.k-1)/batchItemKeys), func(row kv.KeyValue) (bool, error) {
 		rest := row.Key[len(files):]
+		if len(rest) > keys.IDLen && rest[keys.IDLen] == keys.FRm {
+			if err := dropCloneHoldOf(tx, entity.FileID(rest[:keys.IDLen]), rest[keys.IDLen+1:], row.Value); err != nil {
+				return false, err
+			}
+		}
 		if len(rest) <= keys.IDLen || rest[keys.IDLen] != keys.FRef {
 			return false, tx.Delete(row.Key)
 		}
@@ -576,6 +585,24 @@ func (s *Store) shardDropBatch(tx kv.Txn, share entity.ShareID, shard uint64) (b
 		return false, err
 	}
 	return true, tx.Set(shardRemovalKey(shard), encodeRemovalStep(stepDone))
+}
+
+// dropCloneHoldOf drops the hold on its source of the clone not done whose
+// removal record of dst is at the key suffix v, if it is one. A source
+// already gone holds nothing.
+func dropCloneHoldOf(tx kv.Txn, dst entity.FileID, v, b []byte) error {
+	version, _, err := keys.ReadVersion(v)
+	if err != nil {
+		return fmt.Errorf("%w: removal key: %v", errMalformed, err)
+	}
+	m, err := decodeRemoval(version, b)
+	if err != nil || m.Kind != entity.RemoveClone || m.Done {
+		return err
+	}
+	if err := dropCloneHold(tx, dst, m); err != nil && !errors.Is(err, entity.ErrStale) {
+		return err
+	}
+	return nil
 }
 
 // walk visits, in key order, at most n rows under prefix after the key
