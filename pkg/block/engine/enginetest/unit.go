@@ -99,7 +99,7 @@ func NewUnit(t *testing.T, o UnitOptions) *Unit {
 
 	if o.OpenState {
 		u.Sink = &Sink{}
-		tb, err := openstate.New(openstate.Deps{Records: u.FS.Store, Clock: u.Clock, Rand: rand.Reader,
+		tb, err := openstate.New(openstate.Deps{Records: u.FS.Store, Node: entity.NodeID{15: 1}, Clock: u.Clock, Rand: rand.Reader,
 			Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 		if err != nil {
 			t.Fatalf("unit: open state: %v", err)

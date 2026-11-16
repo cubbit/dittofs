@@ -188,11 +188,7 @@ func testDeleteRemovesMembershipsAndGrants(t *testing.T, kvo Opener) {
 func testShares(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
-	list := func() uint64 {
-		v, err := cp.ShareList(ctx)
-		must(t, err)
-		return v.Version
-	}
+	list := func() uint64 { return counters(t, s).ShareList }
 	home := share("Home", "/home")
 	must(t, errOf(CreateShare(ctx, cp, home)))
 	if list() != 1 {
@@ -261,13 +257,13 @@ func testSetShareState(t *testing.T, kvo Opener) {
 	cp := s.ControlPlane()
 	sh := share("photos", "/photos")
 	must(t, errOf(CreateShare(ctx, cp, sh)))
-	v, _ := cp.ShareList(ctx)
+	v := counters(t, s).ShareList
 	must(t, cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced))
 	if err := cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced); !merrs.IsConflictError(err) {
 		t.Errorf("stale from: %v", err)
 	}
-	if w, _ := cp.ShareList(ctx); w.Version != v.Version+1 {
-		t.Errorf("ShareList %d, want %d", w.Version, v.Version+1)
+	if w := counters(t, s).ShareList; w != v+1 {
+		t.Errorf("ShareList %d, want %d", w, v+1)
 	}
 	if got := all(t, cp.Shares(ctx)); got[0].State != entity.ShareQuiesced {
 		t.Errorf("state %v", got[0].State)
@@ -615,7 +611,7 @@ func testNetgroupsAndSettings(t *testing.T, kvo Opener) {
 	if len(got) != 1 || string(got[0].Value) != "2" || got[0].Generation != 2 {
 		t.Errorf("installation settings = %+v", got)
 	}
-	if gen, _ := cp.SettingsGeneration(ctx); gen != 3 {
+	if gen := counters(t, s).Settings; gen != 3 {
 		t.Errorf("settings generation = %d", gen)
 	}
 	if _, err := cp.PutSetting(ctx, entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeShare}, Key: "a"}, 0); err == nil {

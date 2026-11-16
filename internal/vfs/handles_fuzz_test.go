@@ -51,7 +51,7 @@ func FuzzHandles(f *testing.F) {
 		}
 	}
 	clock := sim.NewTestClock(time.Unix(0, 0))
-	tab, err := openstate.New(openstate.Deps{Records: st, Clock: clock, Rand: rand.Reader})
+	tab, err := openstate.New(openstate.Deps{Records: st, Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
 	if err != nil {
 		f.Fatal(err)
 	}

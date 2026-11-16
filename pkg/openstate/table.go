@@ -295,7 +295,7 @@ func (t *Table) Start(ctx context.Context, sink Sink, order Order) error {
 	}
 	t.starting = true // a second Start is refused before it changes the store
 	t.cmu.Unlock()
-	epoch, err := t.d.Records.RaiseNodeEpoch(ctx)
+	epoch, err := t.d.Records.RaiseNodeEpoch(ctx, t.d.Node)
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
 	if err != nil {

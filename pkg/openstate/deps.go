@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
@@ -14,6 +15,7 @@ type Deps struct {
 	// the Clients and Opens views and NextID. It is the concrete store, since
 	// its open-state views have no interface of their own.
 	Records *kvstore.Store
+	Node    entity.NodeID // this node, whose epoch each Start raises
 	Clock   Clock
 	Rand    io.Reader    // every random bit of a token or confirm; crypto/rand in production
 	Logger  *slog.Logger // slog.Default() when nil

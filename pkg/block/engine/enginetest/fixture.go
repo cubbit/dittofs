@@ -824,7 +824,7 @@ func (f *Fixture) start() {
 
 	f.crashed = new(atomic.Bool)
 	var err error
-	f.Opens, err = openstate.New(openstate.Deps{Records: f.FS.Store, Clock: f.Clock, Rand: rand.Reader, Logger: f.logger})
+	f.Opens, err = openstate.New(openstate.Deps{Records: f.FS.Store, Node: entity.NodeID{15: 1}, Clock: f.Clock, Rand: rand.Reader, Logger: f.logger})
 	if err != nil {
 		t.Fatalf("fixture: open state: %v", err)
 	}

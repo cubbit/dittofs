@@ -74,7 +74,7 @@ func benchTable(b *testing.B) *Table {
 	if err != nil {
 		b.Fatal(err)
 	}
-	tab, err := New(Deps{Records: st, Clock: &fakeClock{}, Rand: newSeeded(b.Name())})
+	tab, err := New(Deps{Records: st, Node: entity.NodeID{15: 1}, Clock: &fakeClock{}, Rand: newSeeded(b.Name())})
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -22,6 +22,7 @@ type User struct {
 	NotBefore  time.Time // store time, in whole seconds: a credential issued before it is refused
 	MustChange bool      // set with a generated password: until it changes, sign-in permits only that change
 	Generation uint64    // raised by every write of the record; the management API's entity tag
+	Position   uint64    // the principals generation its last change raised
 }
 
 // APIRole is a user's role in the management API, in increasing order.
@@ -45,6 +46,7 @@ type Group struct {
 	Name       string
 	IDs        ProtocolIDs
 	Generation uint64 // raised by every write of the record, as a user's is
+	Position   uint64 // the principals generation its last change raised
 }
 
 // Membership is one member of one group, its own record in both directions,
@@ -121,6 +123,9 @@ type Share struct {
 	// cache of the share's grants keys on it, since a deleted grant has no
 	// version left of its own.
 	GrantVersion uint64
+	// Position is the share list version its last create, rename, path
+	// change or state change raised.
+	Position uint64
 }
 
 type ShareState uint8
@@ -395,6 +400,7 @@ type Setting struct {
 	Value      []byte // secrets appear only as references
 	Generation uint64 // raised by every change
 	Schema     uint32 // a reader that does not know it refuses the record
+	Position   uint64 // the settings generation its last change raised
 }
 
 // SettingScope is one of the five scopes and, below installation, the ID of

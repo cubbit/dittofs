@@ -193,3 +193,29 @@ func TestNSMBoot(t *testing.T) {
 		t.Errorf("verifiers %x and %x", a, b)
 	}
 }
+
+// Settings that differ in scope kind, scope ID or key never share a
+// reference, even where their bytes would run together.
+func TestSettingRefDistinct(t *testing.T) {
+	inst, node := SettingScope{Kind: ScopeInstallation}, SettingScope{Kind: ScopeNode, ID: [16]byte{1}}
+	refs := map[string]ResourceRef{
+		"installation ab": SettingRef(inst, "ab"),
+		"installation b":  SettingRef(inst, "b"),
+		"node ab":         SettingRef(node, "ab"),
+		"share ab":        SettingRef(SettingScope{Kind: ScopeShare, ID: [16]byte{1}}, "ab"),
+		"node 2 ab":       SettingRef(SettingScope{Kind: ScopeNode, ID: [16]byte{2}}, "ab"),
+	}
+	seen := map[string]string{}
+	for name, r := range refs {
+		if r.Kind != ResourceSetting {
+			t.Errorf("%s: kind %v, want setting", name, r.Kind)
+		}
+		if other, ok := seen[string(r.ID)]; ok {
+			t.Errorf("%s and %s share the reference %x", name, other, r.ID)
+		}
+		seen[string(r.ID)] = name
+	}
+	if a, b := SettingRef(node, "ab"), SettingRef(node, "ab"); string(a.ID) != string(b.ID) {
+		t.Errorf("one setting named twice: %x and %x, want equal", a.ID, b.ID)
+	}
+}

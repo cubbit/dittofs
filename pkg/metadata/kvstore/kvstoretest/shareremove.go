@@ -13,7 +13,7 @@ func testDeleteShareMark(t *testing.T, kvo Opener) {
 	cp := f.s.ControlPlane()
 	other := share("other", "/other")
 	must(t, errOf(CreateShare(ctx, cp, other)))
-	before, _ := cp.ShareList(ctx)
+	before := counters(t, f.s).ShareList
 	if got, err := f.s.ShareIndex().Removing(ctx); err != nil || len(got) != 0 {
 		t.Errorf("shares being removed before any removal: %v, %v", got, err)
 	}
@@ -23,8 +23,8 @@ func testDeleteShareMark(t *testing.T, kvo Opener) {
 		t.Errorf("shares being removed: %v, %v; want only %v", got, err, f.share.ID)
 	}
 
-	if after, _ := cp.ShareList(ctx); after.Version != before.Version+1 {
-		t.Errorf("ShareList %d -> %d", before.Version, after.Version)
+	if after := counters(t, f.s).ShareList; after != before+1 {
+		t.Errorf("ShareList %d -> %d", before, after)
 	}
 	if got := all(t, cp.Shares(ctx)); len(got) != 1 || got[0].ID != other.ID {
 		t.Errorf("a share being removed is listed: %+v", got)

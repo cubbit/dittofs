@@ -118,7 +118,8 @@ func (c controlTx) DeleteShare(share entity.ShareID, snapshots entity.SnapshotDi
 	if err := c.tx.Delete(pathKey(info.Path)); err != nil {
 		return err
 	}
-	return raise(c.tx, shareListKey)
+	_, err = raise(c.tx, shareListKey)
+	return err
 }
 
 // guardedAny reports whether any record lies under prefix, guarding the

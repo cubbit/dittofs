@@ -144,6 +144,22 @@ func Run(t *testing.T, open Opener) {
 		{"APITokens", testAPITokens},
 		{"SignInFailures", testSignInFailures},
 		{"SignInFailuresRace", testSignInFailuresRace},
+		{"Positions", testPositions},
+		{"PrincipalsRaisedOncePerWrite", testPrincipalsRaisedOncePerWrite},
+		{"PrincipalRemovalsRaise", testPrincipalRemovalsRaise},
+		{"PrincipalsRaisedPerAttempt", testPrincipalsRaisedPerAttempt},
+		{"VersionedKindsMoveNoCounter", testVersionedKindsMoveNoCounter},
+		{"OneOperationPerTargetAndKind", testOneOperationPerTargetAndKind},
+		{"OperationReads", testOperationReads},
+		{"OperationStateWithAudit", testOperationStateWithAudit},
+		{"RunningOperationTracked", testRunningOperationTracked},
+		{"RunningOperations", testRunningOperations},
+		{"NodeEpochAcrossStarts", testNodeEpochAcrossStarts},
+		{"RegisterNodeRefuses", testRegisterNodeRefuses},
+		{"ZeroNodeRefused", testZeroNodeRefused},
+		{"NodeStatuses", testNodeStatuses},
+		{"ListReconciledRecords", testListReconciledRecords},
+		{"ListSharesAcrossRename", testListSharesAcrossRename},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}

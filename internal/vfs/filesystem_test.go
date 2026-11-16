@@ -69,7 +69,7 @@ func newFixtureOver(t *testing.T, d Deps, fs *kvstoretest.FS) *fixture {
 		t.Fatal(err)
 	}
 	clock := sim.NewTestClock(time.Unix(0, 0))
-	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Clock: clock, Rand: rand.Reader})
+	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
 	if err != nil {
 		t.Fatal(err)
 	}

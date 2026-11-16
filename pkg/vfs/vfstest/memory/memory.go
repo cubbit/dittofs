@@ -52,7 +52,7 @@ func New(t *testing.T) *Service {
 	must(t, err)
 	_, err = fs.Store.ControlPlane().PutUser(t.Context(), admin, stored.Generation, entity.Alloc{})
 	must(t, err)
-	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Clock: clock, Rand: rand.Reader})
+	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
 	must(t, err)
 	content := contenttest.NewOver(wallClock{}, fs.Store)
 	content.Bind(fs.Share.ID)

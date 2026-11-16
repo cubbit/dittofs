@@ -326,7 +326,7 @@ var (
 
 func unstarted(t *testing.T, fs *kvstoretest.FS, clock *fakeClock) *fixture {
 	t.Helper()
-	tab, err := New(Deps{Records: fs.Store, Clock: clock, Rand: newSeeded(t.Name())})
+	tab, err := New(Deps{Records: fs.Store, Node: entity.NodeID{15: 1}, Clock: clock, Rand: newSeeded(t.Name())})
 	if err != nil {
 		t.Fatal(err)
 	}
