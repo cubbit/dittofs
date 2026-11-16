@@ -589,8 +589,11 @@ Every adapter runs through the same four states, driven by the node
   first request.
 - **serving** — listeners open, connections accepted. Start succeeds only once
   every configured listener is bound; a partial bind is a failed start, and
-  closes what it opened. The node starts an adapter last, after its first
-  reconcile has opened the shares and, in a cluster, it holds a node epoch
+  closes what it opened. An empty `Addrs` is valid: `Start` binds nothing, and
+  the adapter serves, ready, on no address until a `Reconfigure` adds one, as
+  for a node that holds no floating address for now (§3.6). The node starts an
+  adapter last, after its first reconcile has opened the shares and, in a
+  cluster, it holds a node epoch
   ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)), so no
   request arrives before the service can answer it.
 - **draining** — no new connection is accepted. Open connections are still
@@ -948,8 +951,9 @@ type Adapter interface {
 	// as the settings name it, its port the one bound, so a port of 0 is
 	// resolved and a wildcard such as 0.0.0.0 is reported as itself, never as
 	// the [::] its socket reports; an address Reconfigure added included and
-	// one it removed gone. It is empty before Start and after Stop. The node
-	// builds each Serving from it (§3.5).
+	// one it removed gone. It is empty before Start, after Stop, and while
+	// serving on an empty Addrs (§3.1). The node builds each Serving from it
+	// (§3.5).
 	Addrs() map[Socket][]netip.AddrPort
 
 	// Health is ready when serving with no condition raised; configured and
@@ -1221,6 +1225,9 @@ and a floating-address takeover, which adds the address the node took over.
 The node hands them to the adapter in `settings.Adapter.Addrs`, from the host's
 bootstrap and the addresses it took over, never from the settings record, and
 the adapter binds each of its listeners on each of them (§4.7's `Listener`).
+An IPv4-mapped IPv6 address is bound as its IPv4 address, on the IPv4 network
+(`tcp4` for a TCP listener), as `Validate` already counts it, and `Addrs`
+reports it as the settings name it.
 
 > decision: `Addrs` is supplied by the node and is live, though RFC 13 marks a
 > host's listen addresses restart-only: a takeover must add an address to a
@@ -2642,10 +2649,12 @@ func Errors() []error
 // NewServer returns the adapter New hands back: each listener bound on each
 // of the settings' Addrs, all or none at Start (§3.1); Reconfigure binds them
 // on an added address the same way (§3.6). s is the protocol's whole shape,
-// which New was given; core reads its Adapter. It refuses a listener naming
-// no service, an empty one or one twice, two listeners naming the same
-// Socket or the same network and nonzero port, and a listener whose
-// Protocol's NewConn(nil) returns stages accept would refuse.
+// which New was given; core reads its Adapter. It refuses an empty listener
+// set, which only a programming error gives, since every protocol names at
+// least one; a listener naming no service, an empty one or one twice; two
+// listeners naming the same Socket or the same network and nonzero port; and
+// a listener whose Protocol's NewConn(nil) returns stages accept would
+// refuse.
 func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, error)
 
 // Listener is one protocol on one port, bound on each of the settings' Addrs.
