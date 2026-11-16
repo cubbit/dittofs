@@ -384,7 +384,7 @@ pkg/identity/
 internal/identity/
   settings.go       T2.4  Settings, its defaults and Validate, the section's registration and its
                           CheckTx against the ID marks (D1)
-  server.go         T2.4  SecretProvider, Deps.Secrets, State.Settings
+  server.go         T2.4  SecretProvider, Deps.Secrets, State.Settings, Apply's Validate refusal
                     T2.6  Clock.After (D8)
   names.go          T2.5  Spell, Find
   account.go        T2.6  Lookup, VerifyPassword, Account, the hashing semaphore
