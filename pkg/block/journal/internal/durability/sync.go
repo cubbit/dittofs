@@ -283,7 +283,7 @@ type Durability struct {
 	// one section, so a snapshot pairs a generation with exactly the events
 	// that raised it. The ring, its event count and the piece set live in the
 	// directory's state; the registry's own mutex is taken inside lmu and
-	// calls nothing back, so lmu stays a leaf on the journal's lock order and
+	// calls nothing back, so lmu is a leaf on the journal's lock order and
 	// is never held across an Append, a Sync or a MarkLoss, which take locks
 	// of other domains. A window raise (RaiseWindow) takes the registry alone
 	// and raises with no event, so a snapshot may show it ahead of the events.
