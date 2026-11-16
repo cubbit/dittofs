@@ -815,20 +815,34 @@ func TestAllocatedOnDisk(t *testing.T) {
 // FIEMAP windows on the file's own descriptor, repeated while interrupted by
 // a signal; a window refused with an error the device reports passes through
 // once, as an *fs.PathError naming the file — but ENOTTY and EOPNOTSUPP say
-// no extent report exists, not a fault, so the hole seek answers instead:
-// with no hole below the size the file is whole, over a never-written file
-// it is not, interrupted it is made again, a failure it reports passes
-// through under lseek's own name, and a seek refused with EINVAL, ENOSYS,
-// ENOTTY or EOPNOTSUPP is the one refusal that leaves the file whole, for
-// the filesystem answers neither extents nor holes.
+// no extent report exists, not a fault, so the hole seek answers instead,
+// forced to the answer a hole report would give: with no hole below the size
+// the file is whole, over a never-written file it is not, interrupted it is
+// made again, a failure it reports passes through under lseek's own name,
+// and a seek refused with EINVAL, ENOSYS, ENOTTY or EOPNOTSUPP is the one
+// refusal that leaves the file whole, for the filesystem answers neither
+// extents nor holes. The window rows answer whole windows — more than the
+// walk holds room for in one — so the walk's own advance to the next window
+// is what they pin: one of the extents of the second window one block late
+// is a hole named exactly there.
 func TestAllocatedCalls(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
-	const n int64 = 1 << 16
+	const (
+		n    int64 = 1 << 16
+		blk  int64 = 4096
+		frag int64 = 40 * blk // a 40-extent file: one window of 32 and one of 8
+	)
 	body := bytes.Repeat([]byte{0xa5}, int(n))
 	truncated := func(t *testing.T, f *file) {
 		t.Helper()
 		if err := f.Truncate(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scattered := func(t *testing.T, f *file) {
+		t.Helper()
+		if err := f.Truncate(frag); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -837,10 +851,25 @@ func TestAllocatedCalls(t *testing.T) {
 		writeBytes(t, f, body, 0)
 	}
 
+	// extentWindow builds one window's filler answering count one-block
+	// extents, the first starting at first — contiguous when late is 0, a
+	// hole of that many bytes before it when it is not.
+	extentWindow := func(first, count, late int64) func(*fiemap) {
+		return func(fm *fiemap) {
+			fm.mapped = uint32(count)
+			for i := range count {
+				e := &fm.extents[i]
+				e.logical = uint64(first + late + i*blk)
+				e.length = uint64(blk)
+			}
+		}
+	}
+
 	for _, l := range []struct {
 		name      string
-		fiemapErr []error // queued for the FIEMAP calls
-		lseekErr  []error // queued for the hole seek's calls
+		fiemapErr []error         // queued for the FIEMAP calls
+		lseek     []seekAnswer    // queued for the hole seek's calls
+		windows   []func(*fiemap) // queued full-window answers for the FIEMAP calls
 		whole     bool
 		errno     syscall.Errno // wrapped in the answer, 0 when none
 		errOp     string        // the PathError's op naming the call that failed
@@ -848,22 +877,28 @@ func TestAllocatedCalls(t *testing.T) {
 		ops       []string // the calls, in order
 		tail      []string // calls that may follow ops: the fallback over a filesystem the leg's own host serves none to
 	}{
-		{"a filesystem without the ioctl", []error{syscall.ENOTTY}, nil, true, 0, "", written,
+		{"a filesystem without the ioctl", []error{syscall.ENOTTY}, []seekAnswer{{off: n}}, nil, true, 0, "", written,
 			[]string{"fiemap", "lseek"}, nil},
-		{"a filesystem without extent support", []error{syscall.EOPNOTSUPP}, nil, true, 0, "", written,
+		{"a filesystem without extent support", []error{syscall.EOPNOTSUPP}, []seekAnswer{{off: n}}, nil, true, 0, "", written,
 			[]string{"fiemap", "lseek"}, nil},
-		{"a filesystem without extents over a never-written file", []error{syscall.ENOTTY}, nil, false, 0, "", truncated,
+		{"a filesystem without extents over a never-written file", []error{syscall.ENOTTY}, []seekAnswer{{off: 0}}, nil, false, 0, "", truncated,
 			[]string{"fiemap", "lseek"}, nil},
-		{"a filesystem that answers neither", []error{syscall.EOPNOTSUPP}, []error{syscall.EINVAL}, true, 0, "", written,
+		{"a filesystem that answers neither", []error{syscall.EOPNOTSUPP}, []seekAnswer{{err: syscall.EINVAL}}, nil, true, 0, "", written,
 			[]string{"fiemap", "lseek"}, nil},
-		{"a window interrupted twice", []error{syscall.EINTR, syscall.EINTR}, nil, true, 0, "", written,
+		{"a window interrupted twice", []error{syscall.EINTR, syscall.EINTR}, nil, nil, true, 0, "", written,
 			[]string{"fiemap", "fiemap", "fiemap"}, []string{"lseek"}},
-		{"a refused query", []error{syscall.EIO}, nil, false, syscall.EIO, "fiemap", written,
+		{"a refused query", []error{syscall.EIO}, nil, nil, false, syscall.EIO, "fiemap", written,
 			[]string{"fiemap"}, nil},
-		{"a refused hole seek", []error{syscall.ENOTTY}, []error{syscall.EIO}, false, syscall.EIO, "lseek", written,
+		{"a refused hole seek", []error{syscall.ENOTTY}, []seekAnswer{{err: syscall.EIO}}, nil, false, syscall.EIO, "lseek", written,
 			[]string{"fiemap", "lseek"}, nil},
-		{"an interrupted hole seek", []error{syscall.EOPNOTSUPP}, []error{syscall.EINTR, syscall.EINTR}, true, 0, "", written,
+		{"an interrupted hole seek", []error{syscall.EOPNOTSUPP}, []seekAnswer{{err: syscall.EINTR}, {err: syscall.EINTR}, {off: n}}, nil, true, 0, "", written,
 			[]string{"fiemap", "lseek", "lseek", "lseek"}, nil},
+		{"a fragmented file whole over two windows", nil, nil,
+			[]func(*fiemap){extentWindow(0, 32, 0), extentWindow(32*blk, 8, 0)}, true, 0, "", scattered,
+			[]string{"fiemap", "fiemap"}, nil},
+		{"the thirty-third extent one block late", nil, nil,
+			[]func(*fiemap){extentWindow(0, 32, 0), extentWindow(32*blk, 8, blk)}, false, 0, "", scattered,
+			[]string{"fiemap", "fiemap"}, nil},
 	} {
 		t.Run(l.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -877,8 +912,11 @@ func TestAllocatedCalls(t *testing.T) {
 			if len(l.fiemapErr) > 0 {
 				r.failNext("fiemap", l.fiemapErr...)
 			}
-			if len(l.lseekErr) > 0 {
-				r.failNext("lseek", l.lseekErr...)
+			if len(l.lseek) > 0 {
+				r.seekNext(l.lseek...)
+			}
+			if len(l.windows) > 0 {
+				r.windowNext(l.windows...)
 			}
 
 			whole, err := f.Allocated()
