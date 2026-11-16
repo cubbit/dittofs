@@ -56,14 +56,14 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'the engine''s calls to every declared method (engine/conformance/arch_test.go:133): the engine calls every declared method once epics 3 to 8 are built, the clone calls last.'
+  reason: 'the engine passing Journal.Draw as a method value (engine/write.go:196), which the architecture test counts as no call (engine/conformance/arch_test.go:82): every other declared method is called, and the row reports Journal.Draw alone until the engine calls it directly.'
   issue: '#4206'
 - test: TestRFC8A_AttachAfterDeviceLoss
   message: 'fixture: journal init: rename'
   status: fail
   fix: planned
   category: feature
-  reason: 'the format file rename in the fixture''s Reinit (journal/open.go:139, engine/enginetest/fixture.go:712): a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the fixture''s journal re-initialisation, whose rename of the format file fails, until the journal''s Init and re-initialisation match what the row needs.'
+  reason: 'the fixture''s Reinit under the crash seam (engine/enginetest/fixture.go:700): a re-initialised journal is refused until RecordJournal, then the share attaches above its old limit. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at the fixture''s journal re-initialisation, where the seam''s rename of the format file fails. Whether the seam or the fixture''s removal of the directory under it causes this is not settled.'
   issue: '#4206'
 - test: TestRFC8A_RecoveryThroughSince
   message: 'holds segments; recovering them is not built'
@@ -133,15 +133,15 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'a block of 16 the conformance package cannot set (engine/conformance/rfc8_a_test.go:422): the raise halves of the version limit row, at a block of 16 the conformance package cannot set. Init and Open work; the fixture now attaches the share; the row stops at its own check: the raise halves need a block of 16, which this package cannot set yet. Then back to the row''s own need: until the journal has Share, Draw and SetVersionLimit, then at the missing knob until an issue gives the package one.'
+  reason: 'a block of 16 the conformance package cannot set (engine/conformance/rfc8_a_test.go:422): the raise halves of the version limit row, at a block of 16 the conformance package cannot set. Init and Open work; the fixture now attaches the share; the row stops at its own check: the raise halves need a block of 16, which this package cannot set yet. The journal''s Share, Draw and SetVersionLimit are built, so the knob is all the row waits for.'
   issue: '#4206'
 - test: TestRFC8_SelfFenceVersionLimitRaise
   message: 'the failing raise fences the node'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: the version limit''s raise failing for 31s fences the node and its commit clears it. The engine side is done: the raise loop runs as a retrying owner. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at its own assertion, that the failing raise fences the node, until the journal has what it needs.'
-  issue: '#3590'
+  reason: 'the engine''s version block, which the conformance package cannot set (engine/recover.go:19, set only by SetBlockForTest in engine/export_test.go:57): the version limit''s raise failing for 31s fences the node and its commit clears it. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at its own assertion: at a block of 2^24 the raise falls due only after half a block of draws, which one draw per poll never reaches within the bound, until the package can set a small block.'
+  issue: '#4206'
 - test: TestRFC8A_RemovalCrashedBetweenBatchesResumes
   message: 'holds segments; recovering them is not built'
   status: fail
@@ -161,8 +161,8 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: a failed window with loss records raises journal_sync_failed, which clears an hour later on the test clock, while a failed sync whose window is re-appended raises none, and neither does a restart over the loss record; also the failed window (epic 4) and the start (epic 6). Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
-  issue: '#3590'
+  reason: 'the journal''s Open recovering segments: a failed window with loss records raises journal_sync_failed, which clears an hour later on the test clock, while a failed sync whose window is re-appended raises none, and neither does a restart over the loss record; also the failed window and the start. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its writes and their sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
 - test: TestACommittedWriteSurvivesACrash
   message: 'holds segments; recovering them is not built'
   status: fail
@@ -182,14 +182,14 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'the journal''s Repack: a write refused at the share''s journal limit while another refusal''s repack runs answers ErrDelay (DelayCapacity), and is served once that repack frees the superseded records. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
+  reason: 'the journal''s Repack: a write refused at the share''s journal limit while another refusal''s repack runs answers ErrDelay (DelayCapacity), and is served once that repack frees the superseded records. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
   issue: '#4206'
 - test: TestV20/journal/a_refusal_nothing_can_free_is_no_space_at_once
   message: 'a write past the limit with nothing to free: vfs: retry shortly: capacity, want ErrNoSpace'
   status: fail
   fix: planned
   category: feature
-  reason: 'the journal''s Repack: a write refused at the share''s journal limit with nothing superseded answers ErrNoSpace at once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
+  reason: 'the journal''s Repack: a write refused at the share''s journal limit with nothing superseded answers ErrNoSpace at once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
   issue: '#4206'
 - test: TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag
   message: 'forget the tag: engine: journal: not implemented: vfs: unavailable'
@@ -224,57 +224,57 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: the scoped repack of a share at its limit leaves other shares segments alone. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#3590'
+  reason: 'the journal''s Repack: the scoped repack of a share at its limit leaves other shares segments alone. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
+  issue: '#4206'
 - test: TestRFC8A_CapacityRacingRefusals
   message: 'write 1 of b: vfs: retry shortly: capacity'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: two refusals racing for the only unreclaimed segments answer retry-later while the first repack is held. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#3590'
+  reason: 'the journal''s Repack: two refusals racing for the only unreclaimed segments answer retry-later while the first repack is held. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
+  issue: '#4206'
 - test: TestRFC8A_CapacityOverwriteServedAfterTheLastStep
   message: 'write 1 of b: vfs: retry shortly: capacity'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: an overwrite left unsynced at the limit is served after the scope sync and the seal. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#3590'
+  reason: 'the journal''s Repack: an overwrite left unsynced at the limit is served after the scope sync and the seal. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
+  issue: '#4206'
 - test: TestRFC8A_CapacityNothingLeftToFree
   message: 'write of 2097152 bytes at 0: vfs: retry shortly: capacity'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: a scope with nothing left to free answers no space and the first write reads back. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#3590'
+  reason: 'the journal''s Repack: a scope with nothing left to free answers no space and the first write reads back. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
+  issue: '#4206'
 - test: TestRFC8A_CapacityResolvedFailedSegmentCountsAsLeft
   message: 'write 1 of b: vfs: retry shortly: capacity'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: a failed segment with a resolved window counts as left to free. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#3590'
+  reason: 'the journal''s Repack: a failed segment with a resolved window counts as left to free. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
+  issue: '#4206'
 - test: TestRFC8A_CapacityScopeSyncTakesAFailedWindow
   message: 'write 1 of b: vfs: retry shortly: capacity'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: the scope sync takes a failed window and the next Commit fails once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#3590'
+  reason: 'the journal''s Repack: the scope sync takes a failed window and the next Commit fails once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
+  issue: '#4206'
 - test: TestRFC8A_CapacityRefusalWhileAWindowIsUnresolved
   message: 'write 1 of b: vfs: retry shortly: capacity'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: a refusal while a failed window is unresolved answers retry-later at once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#3590'
+  reason: 'the journal''s Repack: a refusal while a failed window is unresolved answers retry-later at once. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
+  issue: '#4206'
 - test: TestRFC8A_CapacityRepackReserveServesAThirdShare
   message: 'write of 2097152 bytes at 0: vfs: retry shortly: capacity'
   status: fail
   fix: planned
   category: feature
-  reason: 'Epic 7: repack draws on the reserve, so a third share is served. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats has no UnreclaimedEndedBytes (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
-  issue: '#3590'
+  reason: 'the journal''s Repack: repack draws on the reserve, so a third share is served. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at a write refused retry-later by capacity: the journal''s Repack returns ErrNotImplemented and its Stats'' UnreclaimedEndedBytes reads 0 until Repack seals (journal epic 9a; RFC 1 section 10 questions 5 and 6), so the engine keeps the interim retry-later answer.'
+  issue: '#4206'
 - test: TestV26/journal/a_clone_of_a_lost_run_reads_lost_there
   message: 'holds segments; recovering them is not built'
   status: fail
