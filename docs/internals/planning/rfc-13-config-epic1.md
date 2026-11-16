@@ -8,8 +8,8 @@ and secrets methods, as signatures.
 **Track:** the team.
 **Epic 1 estimate: 7 subtasks, 8.75 man-days.**
 **Depends on:** S0, reached: RFC 23's epic 1 has stripped `pkg/config` to the bootstrap loader and
-renamed its `Config` to `Bootstrap` (#4334). T1.6 also depends on RFC 23's T2.4, which declares
-`ControlPlaneTx` (D2).
+renamed its `Config` to `Bootstrap` (#4334). RFC 23's T2.4, which declares `ControlPlaneTx` for
+T1.6, has landed (#4362, D2).
 **Blocks:** E2, E3 and E4, which fill the bodies frozen here (S1); the RFC 18 plan's epic 2, which
 adds the frozen `pkg/secrets` to identity's `Deps`; RFC 23's T3.10 and T5.4, which call the node
 identity's entry points, and its T5.3 and T5.4, which seal through `pkg/secrets`.
@@ -53,8 +53,7 @@ the move of `keyprovider` (D3); the export pins.
 - Every body behind a stub: the loader's refusals, the node identity's reads and writes and the
   version gate (E2); sections, the snapshot, `Check` and the diff (E3); sealing, versions and
   pruning (E4).
-- The kvstore view's `expect` on writes that have none today, and the transaction forms on
-  `ControlPlaneTx`: RFC 23's T2.3 and T2.4 (D2).
+- The kvstore view's `expect` on writes that have none today: RFC 23's T2.3.
 - `dfs config`'s behaviour on the bootstrap and the configuration guide: E2, which implements what
   T1.1 settles.
 - The management API's settings and secrets routes and `dfsctl`'s commands: RFC 23's epics 4 and
@@ -174,12 +173,11 @@ bullets describe RFC 26's and RFC 5's records.
   since RFC 13 §2.2 names three bootstrap keys only and every later plan inherits the rest. T1.1
   amends RFC 13 on `develop`, reviewed before any of it is built. How a component declares a
   section (D9) is a Go signature, frozen by T1.6, and recorded here. No marker.
-- **D2, `Check` waits for RFC 23's T2.4.** `Check` runs inside the write's transaction and takes
-  `entity.ControlPlaneTx`, which RFC 23's epic 2 declares and fills in one subtask, freezing no
-  stub of it. So T1.6 lands after RFC 23's T2.4; the rest of the epic does not wait, and E3 starts
-  on `Of`, `Read`, `Get` and `Diff` if S1 is late. The view's methods of T1.5 land without their
-  transaction forms, which RFC 23's T2.4 adds, as its D4 says for whichever lands second. No
-  marker.
+- **D2, `Check` takes RFC 23's `ControlPlaneTx`, which has landed.** `Check` runs inside the
+  write's transaction and takes `entity.ControlPlaneTx`, which RFC 23's T2.4 declared on
+  `feat/storage-v2` (#4362) without the settings delete and the secret writes. So T1.6 waits on
+  nothing outside the epic, and T1.5 adds those writes' transaction forms to `ControlPlaneTx`, as
+  RFC 23's epic 2 says in its D4 for whichever lands second. No marker.
 - **D3, `keyprovider` moves here, not in E4.** `Bootstrap` names each role's wrapping key as a
   `keyprovider.Config`, so the type must be importable from `pkg/bootstrap` without the block
   middleware tree, which is why it moves at all. The move is unchanged but for one thing: each
@@ -199,7 +197,7 @@ bullets describe RFC 26's and RFC 5's records.
   record's kind and ID" and declares it nowhere (pending #4475). No marker.
 - **D7, `secrets.New` is part of the freeze.** The node and `dfs init` build a provider from the
   view and the two roles' keys; without a frozen constructor each would reach for the unexported
-  struct. `bootstrap.Load` is already frozen. No marker.
+  struct. `bootstrap.Load` exists already; T1.3 only adds its environment argument. No marker.
 - **D8, the secret kinds are RFC 16's list, and a kind with no role is not declared.**
   `SecretKind` declares RFC 16 §2.3's kinds whose role RFC 13 §7's table gives. The node credential
   (RFC 15 §4.4) has no role there and waits with the cluster; the directory's bind credential and
@@ -318,6 +316,9 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     `keyprovider.Config` (D3). No field for the memory limit (D5), the scratch paths or
     initialise-if-empty.
   - `keyprovider` moved to `pkg/keyprovider` with its `mapstructure` tags and its importers (D3).
+  - `Load` and `MustLoad` take the environment, `Load(path string, environ []string)`, and every
+    caller passes `os.Environ()`, so epic 2's loader and its tests read no process state (epic 2's
+    D2). The body ignores the argument until epic 2.
   - The node identity's entry points, with stub bodies (D4), shaped for their callers, RFC 23's
     T3.10 and T5.4:
     ```go
@@ -382,7 +383,7 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
 - **Deliverables:** on kvstore's `ControlPlane`, with stub bodies (D4):
   `DeleteSetting(ctx, scope, key, expect)`, `AllSettings(ctx) iter.Seq2[entity.Setting, error]`
   (§9: the name waits on RFC 16), `Secret(ctx, id, version)`, `PutSecret(ctx, s, expect)` and
-  `PruneSecret(ctx, id, below)`. Their transaction forms are RFC 23's T2.4's (D2).
+  `PruneSecret(ctx, id, below)`, each with its transaction form on `ControlPlaneTx` (D2).
 - **Acceptance criteria:**
   - The four RFC 16 §3 methods have RFC 16's signatures.
   - E3 and E4 fill them without changing a signature.
@@ -392,7 +393,7 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
 
 **Subtask T1.6 estimate: 1.5 man-days.**
 
-- **Track:** the team. **Depends on:** T1.1 (the review of D9), RFC 23's T2.4 (D2).
+- **Track:** the team. **Depends on:** T1.1 (the review of D9).
 - **Covers:** R14, R17, R18.
 - **Deliverables:** with stub bodies (D4):
   - `Class` (`Live`, `Restart`, `NextWrite`, `Bound`) and the `class` struct tag (D9);
@@ -441,8 +442,7 @@ flowchart TD
   T1_2["T1.2 pkg/config renamed"] --> T1_3
   T1_3 --> T1_4["T1.4 pkg/secrets, Secret types"]
   T1_4 --> T1_5["T1.5 kvstore views"]
-  X24(["RFC 23's T2.4: ControlPlaneTx"]):::sync --> T1_6["T1.6 pkg/settings' types"]
-  T1_1 --> T1_6
+  T1_1 --> T1_6["T1.6 pkg/settings' types"]
   T1_3 & T1_5 & T1_6 --> T1_7["T1.7 Freeze review, export pins"]
   T1_7 --> S1(["after T1.7: S1, the surface frozen"]):::sync
   T1_2 --> C1(["after T1.2: pkg/bootstrap builds"]):::sync
@@ -450,8 +450,8 @@ flowchart TD
 ```
 
 T1.1 and T1.2 start at once and in parallel. Checkpoint after T1.1: the user surface is agreed,
-the review the epic exists for. Checkpoint after T1.2: `pkg/config` is gone. T1.6 is the one
-subtask that waits outside the epic (D2).
+the review the epic exists for. Checkpoint after T1.2: `pkg/config` is gone. No subtask waits
+outside the epic (D2).
 
 ## 8. Suggested pull requests
 
@@ -459,8 +459,8 @@ subtask that waits outside the epic (D2).
 | --- | --- | --- | --- | --- |
 | 1 | T1.2 | 0.75 | none | the rename alone, mechanical and easy to review, on `feat/storage-v2` |
 | 2 | T1.1 | 2 | none | the RFC 13 amendment, on `develop`, the review of the user surface; parallel with PR 1 |
-| 3 | T1.3, T1.4, T1.5 | 3.75 | PR 1, PR 2 | the bootstrap's facts, the secrets surface and the views, which need no `ControlPlaneTx` |
-| 4 | T1.6, T1.7 | 2.25 | PR 3, RFC 23's T2.4 | the settings surface and the pins that freeze all three packages: S1 |
+| 3 | T1.3, T1.4, T1.5 | 3.75 | PR 1, PR 2 | the bootstrap's facts, the secrets surface and the views |
+| 4 | T1.6, T1.7 | 2.25 | PR 3 | the settings surface and the pins that freeze all three packages: S1 |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -473,10 +473,6 @@ A suggestion only: one pull request per subtask works as well.
   proposed in RFC 18's epic 6 breakdown (#4341, its D3). Pending #4472.
 - **The cross-scope read has no RFC 16 signature.** RFC 16 §3 has `Settings(ctx, scope)` only;
   T1.5 names the one-scan read `AllSettings` until RFC 16 §3 gains it. Pending #4473.
-- **`Check`'s transaction is not frozen with the rest.** RFC 13's plan's S1 lists `Check` among the
-  symbols frozen at stub level, and RFC 23's epic 2 declares `ControlPlaneTx` with its bodies, with
-  no stub (D2). The epics' order follows D2; RFC 13's plan, §3.2, still reads as if S1 needed
-  nothing outside RFC 13's plan. Pending #4474.
 - **Moved from E4.** `keyprovider`'s move (D3), which RFC 13's plan gives E4; E4's estimate loses
   it.
 - **The estimate.** 8.75 man-days and 7 subtasks against the 6 and 4 first estimated: T1.1, the
