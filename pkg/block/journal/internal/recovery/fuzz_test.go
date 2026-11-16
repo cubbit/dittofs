@@ -191,9 +191,16 @@ func FuzzOpen(f *testing.F) {
 			}
 		}
 		// Segment 2 has no scan only where the attach pass did not take it as
-		// an own, unverified or zero-header segment, so no record of it indexes.
+		// an own, unverified or zero-header segment — only a foreign segment
+		// is left out of the rebuild, so anything else the attach pass took
+		// must have been scanned, whatever its header slot holds.
 		if _, scanned := size[2]; !scanned {
-			return
+			for _, fs := range st.Attached.Foreign {
+				if fs.ID == 2 {
+					return
+				}
+			}
+			t.Fatalf("segment 2 has no scan though the attach pass took it (Attached %+v)", st.Attached)
 		}
 		for i, off := range valid.recOff {
 			h, ok := header(2, int64(off))
