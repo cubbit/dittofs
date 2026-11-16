@@ -391,13 +391,13 @@ registers no suite and no group, and changes no `lint-go` tag.
 | E2 | Store records | the view's signatures with `expect`; the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry; the namespace record and its store index | 13 | 35.5 | C | E5; partly E3, E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059, `Node`, `NodeStatus`); the RFC 18 plan's epics 2 and 3 (#4058, the principals generation) |
 | E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition with RFC 8's root duties, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven, RFC 23's own settings section, the harness | 10 | 23 | A | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the `apply` slot); the RFC 18 plan's epics 2 and 7 (#4058, the runner) |
 | E4 | The management API | server, route table, typed handlers (D14), write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5), each resource's wire types, the client | 14 | 34 | B | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the write path's `Check` slot) |
-| E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 8 | 18.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
+| E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 10 | 25.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
 | E6 | The CLI | `login` and the rebuilt `dfsctl` on epic 4's client, generated reference | 5 | 11 | A | E7 |
 | E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 5 | 13.5 | team | E8 (partly) |
 | E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **61** | **147.75** | | |
+| | **Total** | | **63** | **154.75** | | |
 
-**Plan estimate: 61 subtasks, 147.75 man-days, not counting epic 8.**
+**Plan estimate: 63 subtasks, 154.75 man-days, not counting epic 8.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -503,10 +503,10 @@ flowchart TD
   table and the reads, which wait on nothing. Its write path joins once epic 2's entry point lands.
   Track B is the only track with one epic, and the largest one: once its routes are in, it leads
   integration.
-- **Track C** takes epic 2 at S1, then epic 5. Epic 5 starts with tokens, sessions and the role
-  table, which need only the user fields epic 2 lands first, puts its routes in epic 4's table and
-  its callers in epic 3's harness once those land, and takes sign-in and `dfs init` once X1 and X2
-  are in.
+- **Track C** takes epic 2 at S1, then epic 5. Epic 5 starts with the wire types, its settings
+  section, its rights in epic 4's role table and throttling, which need epic 2's sign-in counts and
+  neither X1 nor X2; then the signing key and `dfs init` once X1 and X2 are in, and sign-in, its
+  routes on epic 4's call adapter and its callers in epic 3's harness.
 - **The team converges** at epic 1, whose deletion lands first as its own pull request, and at
   epic 7.
 
@@ -1357,7 +1357,7 @@ error to a status.
 
 ### Epic 5 — Accounts and sign-in 🔀
 
-**Epic 5 estimate: 8 subtasks, 18.5 man-days.**
+**Epic 5 estimate: 10 subtasks, 25.5 man-days.**
 
 The installation gets its first account. API accounts sign in, hold tokens, and are authorized per
 call against their current record.
@@ -1378,8 +1378,9 @@ call against their current record.
   counted as a source and the local socket with no source or pair count, the source's wait counted
   from its last counted attempt, a burst from one source included, the source's 15-minute window,
   which only a failure's settle or an attempt that creates the count moves, overlapping successes,
-  a count never settled and a settle or takeback on a count swept or recreated included, and the resets by `:set-password`, by the break-glass reset and
-  by the account's deletion included; and the "§5.2 roles" row's refusals of A6's settings;
+  a count never settled and a settle or takeback on a count swept or recreated included, and the resets by `:set-password` and by the break-glass reset included (the reset by the
+  account's deletion is epic 2's); the "§5.2 roles" row's refusals of A6's settings run in epic 7,
+  once X3 has wired `Check`;
 - `dfs init`, killed after each of its steps, between two journals' `node-id` copies included, and
   run again, finishes with one identity, and `dfs start` then serves; run again beside a leftover
   journal directory of another installation holding a `node-id`, it refuses, naming that
@@ -1505,6 +1506,9 @@ The §1.4 scenarios assigned to epic 7 pass too.
   section that describes v1's control plane, its API or its CLI (the architecture invariants'
   Runtime among them, each v1 gate, `CheckShareAccess`, `ApplyIdentityMapping`, `shareEntryStatus`
   and `RootKeepsAdmin`, mapped to its v2 owner).
+- Once X3 has wired `Check`, the "§5.2 roles" row's refusals of A6's settings: an operator's
+  write of each admin-only key refused and nothing committed, and an admin's `audit.retention` of
+  89 days refused.
 - The conditions of rule 3 checked end to end through `/api/v1/health`.
 
 ### Epic 8 — E2E green 🔀
