@@ -9,7 +9,7 @@ and the client rules), §11 (the `api_` series), and §10's CP2, CP5, CP6, CP8, 
 on the API's side; [RFC 13](../rfcs/rfc-13-configuration.md) §6 and §7 as a caller;
 [RFC 23's plan](rfc-23-control-plane-plan.md) D2, D5 and D14.
 **Track:** B.
-**Epic 4 estimate: 11 subtasks, 35.5 man-days.**
+**Epic 4 estimate: 11 subtasks, 36 man-days.**
 **Depends on:** S1 (E1 merged): the shared wire types in `pkg/node/apiv1` and the node's surface. E2:
 `ControlPlane.Write` with `entity.WriteMeta` and `entity.ControlPlaneTx`, `expect` on every write,
 the idempotency, audit and operation records with their errors in `entity`, the operation record's
@@ -209,7 +209,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R42 | A user or group is created by `POST` with an idempotency key and edited by `PUT` or `PATCH` with `If-Match`; a protocol spelling is checked unique in its scheme and never defaulted; an account created with a role and no spelling gets none | MUST | RFC 23 §3.5 | T4.10 |
 | R43 | `email` is optional, never defaulted, refused with `ErrInvalid` unless a syntactically valid address, stored as given, refused on a directory principal, and offered no filter; who may read it is E5's | MUST | RFC 23 §3.5 | T4.10 |
-| R44 | Writing a user's Kerberos name stores the directory user SID the link is made for, asked of the directory before the transaction: one that cannot answer refuses it `ErrUnavailable`, one with no such entry refuses it naming the name, and a name in another realm stores none | MUST | RFC 23 §3.5, §4.3 (as amended here) | T4.11 |
+| R44 | Writing a user's Kerberos name stores the directory user SID the link is made for, asked of the directory before the transaction and taken from a fresh answer only, never one served stale: one that cannot answer, or serves only a stale answer, refuses it `ErrUnavailable`, one with no such entry refuses it naming the name, and a name in another realm stores none; a machine's spelling moved to a user keeps its stored SID and the directory is not asked | MUST | RFC 23 §3.5, §4.3 (as amended here); RFC 18 §4.2 | T4.11 |
 | R45 | Deleting a user or group is an operation, answered `202` after the mark | MUST | RFC 23 §3.5 | T4.10 |
 | R46 | A grant is `PUT /shares/{id}/grants/{principal}` with `If-None-Match: *` or `If-Match`, `none` included and stored apart from no grant; `DELETE` removes it through `DeleteGrant`; a grant naming a machine principal is refused `ErrInvalid`; a grant takes the principal's ID only | MUST | RFC 23 §3.5 | T4.10 |
 | R47 | Netgroups are put and deleted whole; a quota is set | MUST | RFC 23 §3.5, §3.1 | T4.10 |
@@ -321,13 +321,16 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
 - **D12, a refusal's audit record is a second `Write` holding only it**, with no idempotency key. A
   failure to write it is logged at `Error` and does not change the answer. No marker.
 - **D13, the domain's calls into identity are interfaces the API declares, failing closed.**
-  `Deps.Directory` (the SID a Kerberos name is linked for), `Deps.Joins`
+  `Deps.Directory` (`KerberosLinkSID(ctx, name string) (sid.SID, error)`, this epic's to declare:
+  its `ErrUnavailable`, a stale answer included, refuses the write `503`; its `ErrUnknownPrincipal`
+  refuses it naming the name; a zero SID, a name in another realm, stores none), `Deps.Joins`
   (`HoldJoinCredential(id entity.OperationID, cred JoinCredential) (release func())`, the signature
   the RFC 18 plan's epic 7 shares) and `Deps.Sealer` (`Seal`) are filled in `node.New` by the RFC 18
   plan's epic 8, which composes identity and hands it to the API, and by X1; nil, the route
   refuses `503` `unavailable`, or the RFC's own refusal where it names one. No marker.
 - **D14, the `identity.ntlm` rule is one function of the write's transaction**, called by the
-  settings route; a provisioning apply calls the same function once the provisioning file exists (a
+  settings route, writing `Off` through E2's `ControlPlaneTx.SetNTLMOff(gen)`, its one writer
+  (`Deleted` is RFC 18's step's, through `SetNTHashDeleted`); a provisioning apply calls the same function once the provisioning file exists (a
   ledger row). No marker.
 - **D15, `api_operations` and `api_operation_oldest_seconds` are read at scrape** from E2's running
   index, which holds only running operations, so a scrape reads O(running).
@@ -405,7 +408,9 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 - **Track:** B. **Depends on:** nothing in this epic (S1, E2's errors in `entity`).
 - **Covers:** R5, R13, R14, R28, R29, R30.
 - **Deliverables:** `problems.go`: one table from every error the API returns (the API's own codes
-  and `entity`'s errors) to a status and a code, `problemOf(err) apiv1.Problem`, an unnamed error
+  and `entity`'s errors, and identity's that D13's interfaces return: `ErrUnavailable` `503`,
+  `ErrUnknownPrincipal` `400` naming the name; `ErrLogonFailure` is sign-in's, E5's row) to a status
+  and a code, `problemOf(err) apiv1.Problem`, an unnamed error
   `500` counted in `api_unmapped_errors_total`; `decode.go`: `json.Decoder` with
   `DisallowUnknownFields`, the field named in the `400`; `patch.go`: RFC 7396 merge (D5);
   `cursor.go`: the cursor (D6). Consumed by T4.2's adapters.
@@ -677,12 +682,16 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 ### T4.10 Users, groups, grants, netgroups and quotas
 
-**Subtask T4.10 estimate: 3 man-days.**
+**Subtask T4.10 estimate: 3.5 man-days.**
 
-- **Track:** B. **Depends on:** T4.8.
+- **Track:** B. **Depends on:** T4.8; the allocating create on the RFC 18 plan's epic 2's T2.2 (the
+  ID counters, until which E2's D2 refuses an `Alloc` naming an ID) and the machine-principal refusal
+  on its T2.1 (`PrincipalMachine`).
 - **Covers:** R42, R43, R45, R46, R47, R48.
-- **Deliverables:** `res_users.go` and `res_groups.go` (create, edit, `disabled`, `email` parsed with
-  `net/mail`, delete as an operation, memberships), `res_grants.go` (`PUT` and `DELETE` by principal
+- **Deliverables:** `res_users.go` and `res_groups.go` (create passing `entity.Alloc{UID, GID, RID,
+  Range}` for each ID the request leaves out, the range read from `identity.id_range` through the
+  settings table; edit, `disabled`, `email` parsed with `net/mail`, delete as an operation,
+  memberships), `res_grants.go` (`PUT` and `DELETE` by principal
   ID, `none` included, a machine principal refused), `res_netgroups.go` (put and delete whole),
   `res_quotas.go`; their wire types. Consumed by E5 (the role field, `last_admin`, `email`'s
   visibility) and E6.
@@ -690,7 +699,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   - A grant naming a machine principal is refused `ErrInvalid` and writes nothing.
   - An invalid `email`, or one on a directory principal, is refused and writes nothing.
 - **Tests:** create with a key and a spelling another user holds, refused by the store (R42); an
-  API-only account created with no spelling holding none (R42); an invalid address and a directory
+  API-only account created with no spelling holding none (R42); a user created with no uid getting
+  one in `identity.id_range`, and a second create a different one (R42); an invalid address and a directory
   principal's address refused (R43); a delete answered `202` after the mark (R45); a `none` grant
   read back apart from no grant, `DELETE` falling through to a group's grant, a machine principal
   refused (R46); a netgroup replaced whole, a quota set (R47); `disabled` read back (R48).
@@ -700,7 +710,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 **Subtask T4.11 estimate: 4.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.9, T4.10; its success paths on the RFC 18 plan's epics 6 and 7
-  (identity's calls and `pkg/identity/identitytest`'s in-memory directory and domain controller)
+  (identity's calls and `pkg/identity/identitytest`'s in-memory directory and domain controller),
+  and the `krb` link's stored SID on its epic 5's T5.8 (`entity.ProtocolID.Linked`)
   and X1.
 - **Covers:** R3, R22, R44, R49, R50, R51, R61, R63, R64.
 - **Deliverables:** `res_domain.go`: a user's `krb` spelling, the SID asked of `Deps.Directory` before
@@ -718,7 +729,10 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   - An offline join's retry while the first runs writes no version.
 - **Tests:** with each interface nil, every domain route refused and nothing written (R64, D13);
   over the in-memory directory and domain controller held to their suites: a `krb` link with the
-  directory answering, unreachable, holding no entry, and in another realm (R44); a key on
+  directory answering, unreachable, holding no entry, and in another realm; alice's entry cached
+  and the directory failing inside its stale grace, the write refused `ErrUnavailable` with nothing
+  written; a machine's spelling moved to a user keeping its SID with the directory unreachable
+  (R44); a key on
   `join-domain` refused `400`, and no idempotency record for either join read raw (R22); the offline
   retry `409` with no new version, its password found raw in no audit record (the `set`, the 409's
   refusal record), log line, problem body or metric (R49, R63); the online join's credential found
@@ -760,7 +774,7 @@ its commands on the client.
 | 2 | T4.3, T4.4 | 6.5 | PR 1 | the transport and the write path |
 | 3 | T4.5, T4.6 | 5.5 | PR 1 | reads, operations, nodes and the audit |
 | 4 | T4.7, T4.8 | 7 | PR 2, PR 3 | shares and the client that first drives them |
-| 5 | T4.9, T4.10 | 6 | PR 4 | the remaining resources |
+| 5 | T4.9, T4.10 | 6.5 | PR 4 | the remaining resources |
 | 6 | T4.11 | 4.5 | PR 5 | the domain |
 
 PR 2 and PR 3 can be open at once. A suggestion only: one pull request per subtask works as well.
@@ -781,15 +795,14 @@ Other open points:
 - The RFC 13 plan's write-path sketch calls `node.Settings.Check` from the API, which would import
   `node` (a cycle, and outside the export pin); it should read `deps.Settings.Check`, the table the
   node hands in (D4).
-- **The keytab.** RFC 18 §3.3 refuses a keytab holding DES or RC4 keys whole. The RFC 18 plan's
-  epic 5 proposes `pkg/identity.CheckKeytab(b []byte) error`, a pure function; once it is settled
-  there, T4.9's secret route calls it in the keytab's pre-write step before `Seal`, and
-  `pkg/identity` joins D20's import allow-list. Until then the check is that epic's, and this
-  epic's route seals what it is given. A keytab version's retention (RFC 23 §3.3) has no route here:
-  if the RFC 18 plan's proposed `retire-keytab-version` action is accepted, its route row and
-  `OpKind` are this epic's and its step RFC 18's; until then it is the ledger row proposed below.
-- RFC 23's plan, proposed and not made: a deferral-ledger row for a keytab version's retention,
-  owner the RFC 18 plan, trigger its retirement action decided.
+- **The keytab.** RFC 18 §3.3 refuses a keytab holding DES or RC4 keys whole. Once the RFC 18
+  plan's epic 5 settles `pkg/identity.CheckKeytab(b []byte) error` (its D3), T4.9's keytab
+  pre-write step calls it before `Seal`, a failure answered `400` `ErrInvalid`, `pkg/identity`
+  joins D20's import allow-list, and T4.9 tests a keytab with one AES and one RC4 key refused with
+  no `Secret` version written. Until then the check is that epic's. A keytab version's retention is
+  RFC 23 §3.3's, inside the rotation operation, so no ledger row is needed; only if that epic's D13
+  picks a `retire-keytab-version` action do its route row and `OpKind` join T4.11, with an RFC 23
+  §3.3 amendment.
 - What this epic reads from E3: `internal/node/api` and `New(Deps)`, `Deps.Ready` and `Deps.Live`,
   its two architecture rules, the harness, and the runner's pickup of a new operation.
 - The least certain estimates: T4.4, whose order of checks and audit diff cross every resource, and
