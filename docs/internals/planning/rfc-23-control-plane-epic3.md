@@ -253,7 +253,10 @@ break: it builds no adapter. RFC 20's plan's epic 7 writes start step 9 after st
   `Fenced` binding, no `namespace_unclaimed`. Its upgrade path is RFC 27's `Claim` at step 5.
 - **D7, the runner's step table is handed to it by `New`.** `newRunner(store, clock, steps)`, with
   steps keyed on `entity.Operation`'s kind type and `type Step func(ctx, op entity.Operation) (next
-  []byte, done bool, err error)`, the shape the RFC 18 plan's sketch uses. `New` writes the rows
+  []byte, done bool, err error)`, the shape the RFC 18 plan's sketch uses. A turn commits only when
+  the step's `next` or the state differs from the record's: an unchanged turn writes nothing, so a
+  step that waits (E5's signing-key rotation keeps its switch time in `next` and returns not done)
+  costs no commit per second. `New` writes the rows
   this epic owns; the RFC 18 plan's epics 2 and 7 and E5 add theirs in `New`. An operation whose
   kind has no row stays `pending` and is reported refused in node status, naming the kind, so a
   binary that gains the step later runs it; a `decision:` marker says so. At start the runner pages through
@@ -348,7 +351,9 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
     `New`;
   - `openstate.EngineHolds`, `enginetest.Holds`' adapter moved unchanged (D12);
   - `internal/node/nodetest.New(t, opts...) *Harness`: an installation initialised with
-    `kvstore.Init` and `journal.Init` under `t.TempDir()`, its journals recorded, over Badger in
+    `kvstore.Init` and `journal.Init` under `t.TempDir()`, its journals recorded (E5's subtask
+    that creates `internal/install` switches it to `install.Run`, which does what `dfs init` does,
+    so the harness's installation is a real one), over Badger in
     memory or on disk, `sim.TestClock`, a `metrics.Registry`, a logger, the API and metrics
     addresses on `127.0.0.1:0`; `Watch()` for top-level tests; `Restart(t)`, which stops the node
     and builds a new one over a new KV on the same directories (D13); its own `harness_test.go`.
@@ -436,7 +441,7 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Covers:** R17, R39, R40, R41, R43.
 - **Deliverables:** `newRunner(cp, clock, steps)` and its loop: at start it pages through E2's
   `Operations` and drives each one not ended (D7's `ponytail:`); a new operation is picked up at the next turn; each step's `next`, state
-  and `Updated` committed through `ControlPlane.Write`, with an audit record on a state change;
+  and `Updated` committed through `ControlPlane.Write` only when `next` or the state changed (D7), with an audit record on a state change;
   `Stop` returning with each operation at its last durable step; a kind with no row left `pending`
   and reported refused (D7, its `decision:` marker and RFC 23's plan's §4.3 `ponytail:`); its
   watchdog `Loop`. The user's and the group's deletion steps, each calling E2's `ContinueDelete`
@@ -449,7 +454,8 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Tests:** in package `node`, `newRunner` over Badger under `t.TempDir()` with the real user
   deletion step, asserting by durable state: the store closed and reopened between two batches,
   the operation resumed from the record and every row gone (catches a cursor kept in memory, R17,
-  R39, R40, R43; rule 8); a `FaultKV` error on a state change's commit, neither the state nor its
+  R39, R40, R43; rule 8); a step returning the same `next` twice committing once, the commits counted
+  with `kv.Counting` around the KV (D7); a `FaultKV` error on a state change's commit, neither the state nor its
   audit record present (R41); an operation of a kind with no row still `pending` after a turn
   (D7).
 
