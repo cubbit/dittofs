@@ -84,7 +84,7 @@ func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
 // of the rows below it, so two shares created at once on nested paths cannot
 // both commit, in either order.
 func (c ControlPlane) PutShare(ctx context.Context, s entity.Share, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return putShare(tx, s, expect) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.PutShare(s, expect) })
 }
 
 func putShare(tx kv.Txn, s entity.Share, expect uint64) error {
@@ -359,7 +359,7 @@ func claimShare(tx kv.Txn, key []byte, id entity.ShareID, taken string) error {
 // Removal is one-way and not this call's: only DeleteShare moves a share to
 // being removed, and a share being removed or retired is stale to it.
 func (c ControlPlane) SetShareState(ctx context.Context, share entity.ShareID, from, to entity.ShareState) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return setShareState(tx, share, from, to) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.SetShareState(share, from, to) })
 }
 
 func setShareState(tx kv.Txn, share entity.ShareID, from, to entity.ShareState) error {
@@ -406,7 +406,7 @@ func setShareState(tx kv.Txn, share entity.ShareID, from, to entity.ShareState) 
 // default grants at most read-write. Share and principal must exist, read so
 // that a deletion of either conflicts; a default always exists.
 func (c ControlPlane) SetGrant(ctx context.Context, g entity.ShareGrant, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return setGrant(tx, g, expect) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.SetGrant(g, expect) })
 }
 
 func setGrant(tx kv.Txn, g entity.ShareGrant, expect uint64) error {
@@ -451,7 +451,7 @@ func setGrant(tx kv.Txn, g entity.ShareGrant, expect uint64) error {
 // groups, then the defaults, decide its access again. Deleting a grant that
 // does not exist, expect zero, changes nothing.
 func (c ControlPlane) DeleteGrant(ctx context.Context, share entity.ShareID, p entity.Principal, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return deleteGrant(tx, share, p, expect) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteGrant(share, p, expect) })
 }
 
 func deleteGrant(tx kv.Txn, share entity.ShareID, p entity.Principal, expect uint64) error {
@@ -523,7 +523,7 @@ func defaultPolicy(share entity.ShareID) entity.ExportPolicy {
 // policy naming no Anonymous names the anonymous principal: it is stored as
 // given and read back as naming it.
 func (c ControlPlane) PutExportPolicy(ctx context.Context, p entity.ExportPolicy, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return putExportPolicy(tx, p, expect) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.PutExportPolicy(p, expect) })
 }
 
 func putExportPolicy(tx kv.Txn, p entity.ExportPolicy, expect uint64) error {

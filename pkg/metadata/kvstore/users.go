@@ -69,7 +69,7 @@ func fixedID(id entity.PrincipalID) bool { return [15]byte(id[:15]) == [15]byte{
 // PutUser creates a user, expect zero, or changes the one whose generation
 // expect names, raising its generation.
 func (c ControlPlane) PutUser(ctx context.Context, u entity.User, expect uint64, a entity.Alloc) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return putUser(tx, u, expect, a) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.PutUser(u, expect, a) })
 }
 
 func putUser(tx kv.Txn, u entity.User, expect uint64, a entity.Alloc) error {
@@ -105,6 +105,9 @@ func putUser(tx kv.Txn, u entity.User, expect uint64, a entity.Alloc) error {
 	if err := reindex(tx, u.Principal, existed, old.Name, u.Name, old.IDs, u.IDs); err != nil {
 		return err
 	}
+	if err := indexAdmin(tx, u.Principal.ID, enabledAdmin(old), enabledAdmin(u)); err != nil {
+		return err
+	}
 	u.Generation = nextVersion(tx, old.Generation)
 	return tx.Set(key, encodeUser(u))
 }
@@ -112,7 +115,7 @@ func putUser(tx kv.Txn, u entity.User, expect uint64, a entity.Alloc) error {
 // PutGroup creates a group, expect zero, or changes the one whose generation
 // expect names, raising its generation.
 func (c ControlPlane) PutGroup(ctx context.Context, g entity.Group, expect uint64, a entity.Alloc) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return putGroup(tx, g, expect, a) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.PutGroup(g, expect, a) })
 }
 
 func putGroup(tx kv.Txn, g entity.Group, expect uint64, a entity.Alloc) error {
@@ -145,6 +148,23 @@ func putGroup(tx kv.Txn, g entity.Group, expect uint64, a entity.Alloc) error {
 	g.Generation = nextVersion(tx, old.Generation)
 	return tx.Set(key, encodeGroup(g))
 }
+
+func enabledAdmin(u entity.User) bool { return u.Role == entity.RoleAdmin && !u.Disabled }
+
+// indexAdmin keeps the enabled-admin index, one empty row per enabled admin,
+// writing it only when the user moves into or out of the set: every write
+// under the index conflicts with a concurrent count of it.
+func indexAdmin(tx kv.Txn, id entity.PrincipalID, was, is bool) error {
+	switch {
+	case is && !was:
+		return tx.Set(adminKey(id), nil)
+	case was && !is:
+		return tx.Delete(adminKey(id))
+	}
+	return nil
+}
+
+func adminKey(id entity.PrincipalID) []byte { return keys.ID([]byte{keys.KindUA}, id[:]) }
 
 // noAlloc refuses an Alloc naming any ID.
 //
@@ -255,7 +275,7 @@ func claim(tx kv.Txn, key []byte, what string, p entity.Principal, value []byte,
 
 // DeleteUser removes the user whose generation expect names.
 func (c ControlPlane) DeleteUser(ctx context.Context, p entity.Principal, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return deleteUser(tx, p, expect) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteUser(p, expect) })
 }
 
 func deleteUser(tx kv.Txn, p entity.Principal, expect uint64) error {
@@ -273,13 +293,16 @@ func deleteUser(tx kv.Txn, p entity.Principal, expect uint64) error {
 	if err := expected(u.Generation, expect); err != nil {
 		return err
 	}
+	if err := indexAdmin(tx, p.ID, enabledAdmin(u), false); err != nil {
+		return err
+	}
 	return deletePrincipal(tx, p, userKey(p.ID), u.Name, u.IDs)
 }
 
 // DeleteGroup removes the group whose generation expect names, with its
 // members' rows in both directions.
 func (c ControlPlane) DeleteGroup(ctx context.Context, p entity.Principal, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return deleteGroup(tx, p, expect) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteGroup(p, expect) })
 }
 
 func deleteGroup(tx kv.Txn, p entity.Principal, expect uint64) error {
@@ -388,7 +411,7 @@ func dropPairs(tx kv.Txn, prefix []byte, twin func(id []byte) []byte) error {
 // AddMember adds a user or a nested group to a group. Both must exist; the
 // reads that check so conflict with a deletion of either.
 func (c ControlPlane) AddMember(ctx context.Context, m entity.Membership) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return addMember(tx, m) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.AddMember(m) })
 }
 
 func addMember(tx kv.Txn, m entity.Membership) error {
@@ -410,7 +433,7 @@ func addMember(tx kv.Txn, m entity.Membership) error {
 // RemoveMember removes both rows of a membership; removing one that does not
 // exist is not an error.
 func (c ControlPlane) RemoveMember(ctx context.Context, m entity.Membership) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return removeMember(tx, m) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.RemoveMember(m) })
 }
 
 func removeMember(tx kv.Txn, m entity.Membership) error {

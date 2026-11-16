@@ -29,7 +29,7 @@ func (c ControlPlane) Netgroups(ctx context.Context, after string) iter.Seq2[ent
 // PutNetgroup creates a netgroup, expect zero, or replaces the one whose
 // version expect names, raising its version.
 func (c ControlPlane) PutNetgroup(ctx context.Context, g entity.Netgroup, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return putNetgroup(tx, g, expect) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.PutNetgroup(g, expect) })
 }
 
 func putNetgroup(tx kv.Txn, g entity.Netgroup, expect uint64) error {
@@ -60,7 +60,7 @@ func netgroupIn(r kv.Reader, name string) (entity.Netgroup, error) {
 // naming it is rewritten: such a rule then fails closed, an allow matching no
 // host and a deny every host.
 func (c ControlPlane) DeleteNetgroup(ctx context.Context, name string, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return deleteNetgroup(tx, name, expect) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteNetgroup(name, expect) })
 }
 
 func deleteNetgroup(tx kv.Txn, name string, expect uint64) error {
@@ -91,7 +91,7 @@ func (c ControlPlane) Settings(ctx context.Context, scope entity.SettingScope) i
 // polls, in one transaction. A share's setting is refused while the share is
 // being removed.
 func (c ControlPlane) PutSetting(ctx context.Context, s entity.Setting, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return putSetting(tx, s, expect) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.PutSetting(s, expect) })
 }
 
 func putSetting(tx kv.Txn, s entity.Setting, expect uint64) error {

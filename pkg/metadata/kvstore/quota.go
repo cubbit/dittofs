@@ -97,7 +97,7 @@ func decodeQuota(share entity.ShareID, suffix, b []byte) (entity.Quota, error) {
 // above the new soft limit, and deleted otherwise. A change to any other
 // limit leaves a running grace alone.
 func (c ControlPlane) SetQuota(ctx context.Context, share entity.ShareID, q entity.Quota, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return setQuota(tx, share, q, expect) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.SetQuota(share, q, expect) })
 }
 
 func setQuota(tx kv.Txn, share entity.ShareID, q entity.Quota, expect uint64) error {

@@ -122,6 +122,15 @@ func Run(t *testing.T, open Opener) {
 		{"JournalIDPerNodeAndDevice", testJournalIDPerNodeAndDevice},
 		{"RecordJournalAgain", testRecordJournalAgain},
 		{"NextID", testNextID},
+		{"WriteAllOrNothing", testWriteAllOrNothing},
+		{"WriteRestoresMeta", testWriteRestoresMeta},
+		{"WriteTrackedRead", testWriteTrackedRead},
+		{"AuditReads", testAuditReads},
+		{"LastAdminRace", testLastAdminRace},
+		{"InstallationInWrite", testInstallationInWrite},
+		{"WriteNow", testWriteNow},
+		{"Idempotency", testIdempotency},
+		{"IdempotencyRace", testIdempotencyRace},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}

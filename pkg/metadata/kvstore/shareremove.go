@@ -46,7 +46,7 @@ const (
 // left at stepMarked serves nothing and holds its records.
 
 func (c ControlPlane) DeleteShare(ctx context.Context, share entity.ShareID, snapshots entity.SnapshotDisposition, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return deleteShare(tx, share, snapshots, expect) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteShare(share, snapshots, expect) })
 }
 
 func deleteShare(tx kv.Txn, share entity.ShareID, snapshots entity.SnapshotDisposition, expect uint64) error {

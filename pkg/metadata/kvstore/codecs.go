@@ -323,8 +323,16 @@ func decodeNetgroup(name string, b []byte) (entity.Netgroup, error) {
 }
 
 func encodeInstallation(in entity.Installation) []byte {
-	return codec.NewWriter(v1).Fixed(in.ID[:]).Fixed(in.Instance[:]).Bytes(in.Generation).
-		Uint64(in.NTLMOff.Off).Fixed(in.NTLMOff.Deleted[:]).Fixed(in.SigningKey[:]).Encode()
+	w := codec.NewWriter(v1).Fixed(in.ID[:]).Fixed(in.Instance[:]).Bytes(in.Generation).
+		Uint64(in.NTLMOff.Off).Fixed(in.NTLMOff.Deleted[:]).Fixed(in.SigningKey[:])
+	j := in.Join
+	w.Bool(j.Joined).String(j.Account).Bytes(j.Owner).Bytes(j.Delegation).Len(len(j.Names))
+	for _, n := range j.Names {
+		w.String(n)
+	}
+	rot := j.LastRotation
+	putTime(w, rot.At).Bool(rot.Failed).Uint32(rot.Tag).Uint32(rot.Read).Uint64(rot.Version)
+	return putTime(w, rot.Confirmed).Encode()
 }
 
 func decodeInstallation(b []byte) (entity.Installation, error) {
@@ -341,6 +349,17 @@ func decodeInstallation(b []byte) (entity.Installation, error) {
 	in.NTLMOff.Off = r.Uint64()
 	copy(in.NTLMOff.Deleted[:], r.Fixed(16))
 	copy(in.SigningKey[:], r.Fixed(16))
+	j := &in.Join
+	j.Joined, j.Account, j.Owner, j.Delegation = r.Bool(), r.String(), copied(r.Bytes()), copied(r.Bytes())
+	if n := r.Len(); n > 0 {
+		j.Names = make([]string, n)
+		for i := range j.Names {
+			j.Names[i] = r.String()
+		}
+	}
+	rot := &j.LastRotation
+	rot.At, rot.Failed, rot.Tag, rot.Read, rot.Version = readTime(r), r.Bool(), r.Uint32(), r.Uint32(), r.Uint64()
+	rot.Confirmed = readTime(r)
 	return in, r.Done()
 }
 

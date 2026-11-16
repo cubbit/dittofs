@@ -355,6 +355,30 @@ type Installation struct {
 	// secret owned by this record under "signing_key"; zero until the first
 	// version is sealed.
 	SigningKey SecretRef
+	// Join is the machine account's state, written by the domain join's and
+	// the rotation's steps; zero while no join has run.
+	Join MachineJoin
+}
+
+// MachineJoin is the machine account's state, outliving the operations that
+// write it and a restart.
+type MachineJoin struct {
+	Joined     bool
+	Account    string   // the computer account's name, with its $
+	Owner      []byte   // the computer object's owner, a binary SID, as the join read it
+	Delegation []byte   // its msDS-AllowedToActOnBehalfOfOtherIdentity as read; empty when unset
+	Names      []string // the account's service names with sPNMappings applied
+	// LastRotation is the last join's or rotation's outcome. A failed
+	// rotation moves At and Failed and leaves Version and Confirmed as they
+	// were.
+	LastRotation struct {
+		At        time.Time // store time
+		Failed    bool      // cleared only by a rotation that completed
+		Tag       uint32    // the key version number of the sealed version
+		Read      uint32    // the number the confirm read; differs from Tag on a reported mismatch
+		Version   uint64    // the secret version the last join or rotation confirmed
+		Confirmed time.Time // the store time of that confirm
+	}
 }
 
 // ShareList is raised in the transaction of every share create, delete,
