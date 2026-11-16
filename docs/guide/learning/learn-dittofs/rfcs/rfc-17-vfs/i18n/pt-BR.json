@@ -624,62 +624,6 @@
     ],
     "notes": "Regras: §4.1 (forma atômica, ou a operação não é suportada), §4.8, §3.2 e §3.3 (um event hook MUST NOT bloquear nem fazer a operação falhar), §4.3, §4.4 (um adapter MUST NOT construir, interpretar ou comparar handles), §4.5. Não-objetivos: §1.1, todos os itens; o que ele pode guardar se limita ao cache de admission (§4.9), ao cache de autorização (§4.6) e ao pseudo-filesystem, cada um indexado pelas versões que leu. Contar requisições retidas cabe ao RFC 20 §4.6 e ao RFC 24. Os números de linhas V removidas não são reutilizados. §6 lista os invariantes, de V3 a V42, cada um com o teste que pegaria um service errado mas plausível. Eventos: o filesystem monta todo evento de acesso e de quota e o entrega ao sink de eventos do nó, que o enfileira (§3.3). Encaminhamentos: §1.1, uma share só é servida pela instalação que a detém."
   },
-  "migration": {
-    "title": "Introduzido em etapas",
-    "table": [
-      [
-        "Etapa",
-        "O que passa para o service"
-      ],
-      [
-        "0",
-        "tipos e erros neutros passam de `pkg/metadata` para `pkg/vfs`"
-      ],
-      [
-        "1",
-        "`vfs.Service`, `vfs.New`, seu ciclo de vida e o harness de testes"
-      ],
-      [
-        "2",
-        "shares, identidade, [[admission]], o [[pseudo-filesystem]]"
-      ],
-      [
-        "3",
-        "um único ponto de passagem para toda chamada ao [[open-state|open state]]"
-      ],
-      [
-        "4",
-        "`Write`, `Read` e `Commit`. Hoje os adapters têm quatro cópias separadas da sequência de escrita, que viram esta única."
-      ]
-    ],
-    "footer": "O service é construído desde o início sobre o novo metadata store e o open state do RFC 14, não sobre o código de hoje. Os bugs em que as cópias dos adapters divergiram e que perdem dados ou abrem acesso são corrigidos já, no código de hoje.",
-    "notes": "A tabela e as decisões de §9. A delegação da etapa 1 ao metadata.Service de hoje e o shim da etapa 3 sobre o lock manager de hoje são pulados (decisão em §9), porque ambos são apagados quando o novo store chegar. Cada etapa edita o RFC no mesmo PR e chega com seus testes; os testes entre protocolos rodam em todo PR que possa quebrá-los. A etapa 0 não tem allowlist de imports: a decisão de §9 rejeita uma allowlist de imports dos adapters que encolhe, porque o plano do RFC 20 apaga os adapters v1 de uma vez. Etapa 4: 'the four copies of the write sequence become §5.1'.",
-    "table2": [
-      [
-        "Etapa",
-        "O que passa para o service"
-      ],
-      [
-        "5",
-        "`Open` e `Close`: [[deny-mode|deny modes]], delete on close, releases"
-      ],
-      [
-        "6",
-        "`Lock` e `Unlock` sobre vários intervalos de bytes numa só chamada, depois copy e clone"
-      ],
-      [
-        "7 em diante",
-        "o resto das operações, depois o tratamento de requisições comum aos adapters"
-      ],
-      [
-        "cluster",
-        "o gateway, `Serve`, o router e o transport"
-      ]
-    ],
-    "title2": "Introduzido em etapas (continuação)",
-    "notes2": "A tabela de §9, da etapa 5 ao cluster, e o item 'Drift bugs that lose data or open access are fixed now'. Os bugs de divergência estruturais são corrigidos pela sua etapa. A etapa 6 são Lock e Unlock com listas de intervalos; a etapa 7 termina com o pipeline comum e as tabelas de erros do RFC 20.",
-    "kicker": "Migração"
-  },
   "openq": {
     "title": "Questões abertas",
     "questions": [

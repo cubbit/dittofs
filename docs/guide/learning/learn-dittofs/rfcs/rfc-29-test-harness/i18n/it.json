@@ -590,7 +590,7 @@
       "`bench-smoke` verifica che i benchmark funzionino ancora. Non blocca le pull request, ma blocca le esecuzioni dopo un merge e quelle notturne.",
       "I controlli su throughput e allocazioni, detti anche gate, falliscono quando una misura supera una soglia. Vengono saltati con il race detector di Go (`-race`) e in modalità short (`-short`), che la suite `unit` usa, quindi nessun job li eseguiva.",
       "`unit --nonrace` li esegue ogni notte senza quei flag. Uno che scatta anche dopo il retry rende rossa l'esecuzione notturna, ma non fa mai fallire una pull request.",
-      "`perf-night` sull'[[dedicated-host|host dedicato]] confronta DittoFS con Samba. Segnala un calo, ma la segnalazione non fa fallire nulla. I numeri vengono registrati per `dt history` e da soli non decidono mai se un'esecuzione passa."
+      "`perf-night` sull'[[dedicated-host|host dedicato]] esegue lo stesso carico SMB su DittoFS e su Samba, che serve solo come riferimento per il test. Segnala una notte i cui valori scendono sotto la propria mediana recente, ma la segnalazione non fa fallire nulla. I numeri valgono per quella macchina, non dicono nulla dei due server in generale e non sono pensati per essere riprodotti altrove. Li registra `dt history`, e non decidono mai se un'esecuzione passa."
     ],
     "notes": "§4.10 Benchmarks and long runs; §4.6 Metrics. perf-night segnala un punto, un'area o il dato della notte sotto la sua mediana di 7 giorni di più della sua banda di rumore; la cell fallisce quando un passo fallisce o va in timeout, o la notte non si può valutare. Un gate nonrace che scatta di nuovo al retry rende rossa l'esecuzione notturna e pubblica, e non fa fallire nessuna PR. I gate saltati con -race e -short, che nessun job eseguiva: tabella del §1, ultima riga. La suite unit esegue go test -race, con -short sulle pull request; la sua opzione nonrace esegue di notte i due test dei gate (§4.1). Dopo ogni merge un passo esegue anche i benchmark dei componenti che ne indicano uno e li confronta con la loro baseline salvata usando benchstat. Una variazione oltre la banda di rumore di benchstat viene pubblicata, senza mai far fallire l'esecuzione, e una baseline si sostituisce solo con una pull request (§4.10, 'Comparison against a stored baseline')."
   },
@@ -650,7 +650,7 @@
       "Le scansioni di sicurezza: gitleaks e CodeQL",
       "`combined-tree`, che unisce PR aperte per testarle insieme",
       "Il canary, che osserva un deploy reale",
-      "Il job che esegue nfstest contro il server NFS del kernel, knfsd, per confronto"
+      "Il job che esegue nfstest contro il server NFS del kernel, knfsd, usato solo come riferimento per i risultati dei test"
     ],
     "notes": "§5 What this doesn't change; §4.8 'Four things stay outside the registry'; §4.1 'What isn't registered' (il job NFS sec=krb5, coperto da e2e; i crash rig e gli edge test, eseguibili a mano). Gli skip dei test ora vengono valutati, e questo è nuovo."
   },

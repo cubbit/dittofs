@@ -590,7 +590,7 @@
       "`bench-smoke` checks that the benchmarks still work. It does not block pull requests, but it does block the runs after a merge and at night.",
       "The throughput and allocation checks, also called gates, fail when a measurement crosses a threshold. They skip under Go's race detector (`-race`) and short mode (`-short`), which the `unit` suite uses, so no job ran them.",
       "`unit --nonrace` runs them every night without those flags. One that still trips after its retry turns the nightly run red, but it never fails a pull request.",
-      "`perf-night` on the [[dedicated-host|dedicated host]] compares DittoFS with Samba. It flags a drop, but the flag fails nothing. Numbers are recorded for `dt history` and never decide on their own whether a run passes."
+      "`perf-night` on the [[dedicated-host|dedicated host]] runs the same SMB workload against DittoFS and against Samba, which serves only as a reference point for the test. It flags a night whose figures fall below their own recent median, but the flag fails nothing. The figures hold for that one machine, say nothing about either server in general, and are not meant to be reproduced elsewhere. `dt history` records them, and they never decide whether a run passes."
     ],
     "notes": "§4.10 Benchmarks and long runs; §4.6 Metrics. perf-night flags a point, an area or the night's figure below its 7-day median by more than its noise band; the cell fails when a step fails or times out, or the night can't be scored. A tripped nonrace gate on the retry turns the nightly run red and posts, and fails no PR. The gates skipping under -race and -short, with no job running them: §1's table, last row. The unit suite runs go test -race, with -short on pull requests; its nonrace option runs the two gate tests nightly (§4.1). After every merge, a step also runs the benchmarks of the components that name one and compares them with their stored baseline using benchstat. A change beyond benchstat's noise band is posted, never a failed run, and a baseline is replaced only through a pull request (§4.10, 'Comparison against a stored baseline')."
   },
@@ -650,7 +650,7 @@
       "Security scans: gitleaks and CodeQL",
       "`combined-tree`, which merges open PRs to test them together",
       "The canary, which watches a live deployment",
-      "The job that runs nfstest against the kernel's own NFS server, knfsd, for comparison"
+      "The job that runs nfstest against the kernel's own NFS server, knfsd, used only as a reference for the test results"
     ],
     "notes": "§5 What this doesn't change; §4.8 'Four things stay outside the registry'; §4.1 'What isn't registered' (the NFS sec=krb5 job, covered by e2e; the crash rigs and edge tests, runnable by hand). The tests' skips are now graded, which is new."
   },

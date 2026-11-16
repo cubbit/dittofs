@@ -406,7 +406,9 @@ stand between the two.
 - **Explain the design, not its progress.** Decks teach how the system
   works. They do not call an RFC a draft, and they do not track the work:
   no branch names, no plans, epics, estimates or man-days, no "pieces 1 to 7
-  merged". That changes every week and teaches nothing about the system.
+  merged", and no migration path from today's code to the design (the order
+  in which pieces move, slices, what replaces what). That changes every week
+  and teaches nothing about the system.
   Where today's code behaves differently in a way a reader would notice,
   a deck may say so once, as behaviour ("today a cold read fetches a byte
   range of the whole block"), never as a branch or a schedule. `deck.json`

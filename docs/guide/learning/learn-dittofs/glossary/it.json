@@ -965,7 +965,7 @@
     "name": "baseline",
     "short": "Un'istantanea dei risultati smbtorture di DittoFS stesso, tenuta in un file. La aggiorna uno sviluppatore con una pull request; nessun job notturno la scrive.",
     "long": "`baseline-results.md`, un'istantanea dei risultati smbtorture di DittoFS su `badger-s3`, scritta con `dt known baseline` e integrata tramite una pull request. Sostituisce un job notturno che la pushava e falliva ogni notte.",
-    "clash": "Tre cose condividono la parola: il file baseline di smbtorture; gli stessi test NFS eseguiti, per confronto, sul server NFS del kernel Linux (knfsd); e la baseline salvata di un benchmark, che segnala una variazione ma non fa mai fallire un'esecuzione. Nessuna è una lista di known failure."
+    "clash": "Tre cose condividono la parola: il file baseline di smbtorture; gli stessi test NFS eseguiti sul server NFS del kernel Linux (knfsd), come riferimento; e la baseline salvata di un benchmark, che segnala una variazione ma non fa mai fallire un'esecuzione. Nessuna è una lista di known failure."
   },
   "control-plane": {
     "name": "control plane",

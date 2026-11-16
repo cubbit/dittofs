@@ -624,62 +624,6 @@
     ],
     "notes": "Regole: §4.1 (forma atomica, oppure l'operazione non è supportata), §4.8, §3.2 e §3.3 (un event hook MUST NOT bloccare né far fallire l'operazione), §4.3, §4.4 (un adapter MUST NOT costruire, interpretare o confrontare gli handle), §4.5. Non-obiettivi: §1.1, tutti i punti; ciò che può tenere si limita alla cache di admission (§4.9), alla cache di autorizzazione (§4.6) e allo pseudo-filesystem, ciascuno indicizzato per le versioni che ha letto. Contare le richieste trattenute spetta all'RFC 20 §4.6 e all'RFC 24. I numeri delle righe V rimosse non si riusano. §6 elenca gli invarianti, da V3 a V42, ciascuno con il test che coglierebbe un service sbagliato ma plausibile. Eventi: il filesystem costruisce ogni evento di accesso e di quota e lo consegna al sink di eventi del nodo, che lo mette in coda (§3.3). Rimandi: §1.1, una share è servita solo dall'installazione che la detiene."
   },
-  "migration": {
-    "title": "Introdotto per tappe",
-    "table": [
-      [
-        "Tappa",
-        "Cosa passa nel service"
-      ],
-      [
-        "0",
-        "tipi ed errori neutri passano da `pkg/metadata` a `pkg/vfs`"
-      ],
-      [
-        "1",
-        "`vfs.Service`, `vfs.New`, il ciclo di vita e l'harness di test"
-      ],
-      [
-        "2",
-        "share, identità, [[admission]], lo [[pseudo-filesystem]]"
-      ],
-      [
-        "3",
-        "un unico punto di passaggio per ogni chiamata all'[[open-state|open state]]"
-      ],
-      [
-        "4",
-        "`Write`, `Read` e `Commit`. Oggi gli adapter hanno quattro copie separate della sequenza di scrittura, che diventano questa sola."
-      ]
-    ],
-    "footer": "Il service si costruisce fin dall'inizio sul nuovo metadata store e sull'open state dell'RFC 14, non sul codice di oggi. I bug nati dalle copie degli adapter divergenti che perdono dati o aprono accessi si correggono subito, nel codice di oggi.",
-    "notes": "La tabella e le decisioni di §9. La delega della tappa 1 al metadata.Service di oggi e lo shim della tappa 3 sul lock manager di oggi si saltano (decisione in §9), perché entrambi vengono cancellati quando arriva il nuovo store. Ogni tappa modifica l'RFC nella stessa PR e arriva con i suoi test; i test tra protocolli girano su ogni PR che può romperli. La tappa 0 non ha allowlist degli import: la decisione di §9 scarta un'allowlist degli import degli adapter che si accorcia, perché il piano dell'RFC 20 cancella gli adapter v1 tutti insieme. Tappa 4: 'the four copies of the write sequence become §5.1'.",
-    "table2": [
-      [
-        "Tappa",
-        "Cosa passa nel service"
-      ],
-      [
-        "5",
-        "`Open` e `Close`: [[deny-mode|deny mode]], delete on close, release"
-      ],
-      [
-        "6",
-        "`Lock` e `Unlock` su più intervalli di byte in una sola chiamata, poi copy e clone"
-      ],
-      [
-        "7 in poi",
-        "il resto delle operazioni, poi la gestione delle richieste comune agli adapter"
-      ],
-      [
-        "cluster",
-        "il gateway, `Serve`, il router e il transport"
-      ]
-    ],
-    "title2": "Introdotto per tappe (seguito)",
-    "notes2": "La tabella di §9, dalla tappa 5 al cluster, e il punto 'Drift bugs that lose data or open access are fixed now'. I bug di deriva strutturali si correggono con la loro tappa. La tappa 6 sono Lock e Unlock su liste di intervalli; la tappa 7 finisce con la pipeline comune e le tabelle di errori dell'RFC 20.",
-    "kicker": "Migrazione"
-  },
   "openq": {
     "title": "Domande aperte",
     "questions": [

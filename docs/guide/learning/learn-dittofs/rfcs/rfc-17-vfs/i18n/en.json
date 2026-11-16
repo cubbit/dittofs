@@ -624,62 +624,6 @@
     ],
     "notes": "Rules: §4.1 (atomic form, or the operation is not supported), §4.8, §3.2 and §3.3 (an event hook MUST NOT block or fail the operation), §4.3, §4.4 (an adapter MUST NOT build, parse or compare handles), §4.5. Non-goals: §1.1, every bullet; the state it may keep is limited to the admission cache (§4.9), the authorisation cache (§4.6) and the pseudo-filesystem, each keyed by the versions it read. Counting held requests is RFC 20 §4.6's and RFC 24's. Numbers of removed V-rows are not reused. §6 lists the invariants, V3 to V42, each with the test that would catch a plausible wrong service. Events: the filesystem builds every access and quota event and hands it to the node's event sink, which queues it (§3.3). Referrals: §1.1, a share is served only by the installation that holds it."
   },
-  "migration": {
-    "title": "Introduced in slices",
-    "table": [
-      [
-        "Slice",
-        "What moves into the service"
-      ],
-      [
-        "0",
-        "neutral types and errors move out of `pkg/metadata` into `pkg/vfs`"
-      ],
-      [
-        "1",
-        "`vfs.Service`, `vfs.New`, its lifecycle and the test harness"
-      ],
-      [
-        "2",
-        "shares, identity, [[admission]], the [[pseudo-filesystem]]"
-      ],
-      [
-        "3",
-        "a single seam through which every [[open-state|open state]] call passes"
-      ],
-      [
-        "4",
-        "`Write`, `Read` and `Commit`. Today the adapters carry four separate copies of the write sequence, and they become this one."
-      ]
-    ],
-    "footer": "The service is built over the new metadata store and RFC 14's open state from the start, not over today's code. Bugs where the adapters' copies drifted apart and that lose data or open access are fixed now, in today's code.",
-    "notes": "§9's table and decisions. Slice 1's delegation to today's metadata.Service and slice 3's shim over today's lock manager are skipped (decision in §9), because both are deleted when the new store lands. Each slice edits the RFC in the same PR and lands with its tests; cross-protocol tests run on every PR that can break them. Slice 0 has no import allowlist: §9's decision rejects a shrinking allowlist of adapter imports, since RFC 20's plan deletes the v1 adapters at once. Slice 4: 'the four copies of the write sequence become §5.1'.",
-    "table2": [
-      [
-        "Slice",
-        "What moves into the service"
-      ],
-      [
-        "5",
-        "`Open` and `Close`: [[deny-mode|deny modes]], delete on close, releases"
-      ],
-      [
-        "6",
-        "`Lock` and `Unlock` for several byte ranges in one call, then copy and clone"
-      ],
-      [
-        "7 on",
-        "the rest of the operations, then the request handling the adapters share"
-      ],
-      [
-        "cluster",
-        "the gateway, `Serve`, the router and transport"
-      ]
-    ],
-    "title2": "Introduced in slices, continued",
-    "notes2": "§9's table, slices 5 to cluster, and the bullet 'Drift bugs that lose data or open access are fixed now'. The structural drift bugs are fixed by their slice. Slice 6 is range-list Lock and Unlock; slice 7 ends with RFC 20's shared pipeline and error tables.",
-    "kicker": "Migration"
-  },
   "openq": {
     "title": "Open questions",
     "questions": [
