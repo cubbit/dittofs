@@ -115,8 +115,8 @@ tests can cite them. Sources are RFC 18 unless named.
 | R2 | `pkg/identity` is a leaf importing metadata types only | invariant | §2.7 | T1.1, T1.5 |
 | R3 | `pkg/vfs` aliases the value types an adapter needs, so an adapter imports `pkg/vfs` alone and neither identity package | invariant | §2.7; RFC 17 §3.0; RFC 20 §2.3 | T1.1, T1.5 |
 | R4 | Adapters map, squash and grant nothing; every spelling goes through `vfs.Service`'s `Spell` and `Find`, held by RFC 20 §7.1's import test (ID11) | invariant | §9.1 ID11; RFC 20 §7.1 | T1.5 |
-| R5 | Only `internal/node` imports the server, `internal/identity` or any package under it, besides identity's own packages; `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use the real server | invariant | §2.7; §10 "Who stands in for what" | T1.5 |
-| R6 | Only `internal/identity/directory` imports LDAP; `internal/auth/netlogon`, which S0 leaves and whose `join.go` imports it, is exempt by a `decision:` until it goes | invariant | §2.7 | T1.5 |
+| R5 | Only `internal/node` imports the server, `internal/identity` or any package under it, besides identity's own packages and `pkg/vfs/vfstest/memory`, which imports `internal/identity/identitymem` alone (E3's T3.6); `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use the real server | invariant | §2.7; §10 "Who stands in for what" | T1.5 |
+| R6 | Only `internal/identity/directory` imports LDAP; `internal/auth/netlogon`, which S0 leaves and whose `join.go` imports it, is exempt by a `decision:` until E7 moves it into `internal/identity/netlogon` and removes the exemption | invariant | §2.7 | T1.5 |
 | R7 | `Authenticator` is the same shape as `vfs.Principals.SignIn`, so the filesystem passes it through | invariant | §3.1 | T1.3, T1.6 |
 | R8 | `ErrLogonFailure` and `ErrUnknownPrincipal` are `vfserr`'s, and `vfs.Errors()` returns both; the adapter rows that map them are the RFC 21 and RFC 22 plans' (the plan's deferral row) | MUST | §2.7; RFC 17 §4.3; RFC 20 §7.3 | T1.2 |
 | R9 | `Evidence` holds no key, and `Keys` travel beside an `Identity`, never in it | invariant | §3.1 | T1.1 |
@@ -270,8 +270,8 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
     filesystem sets from the call's proof (E3 routes it), consumed by `vfs.Deps.Names`;
   - `Resolver{ Resolve(ctx, Identity, entity.SharePolicy, readOnly bool) (*Caller, error) }`,
     `Caller` with every field §6.1 lists, and `ReadOnlyCause` with `ReadOnlyNotNarrowed`,
-    `ReadOnlyGrant`, `ReadOnlyShare` (§6.1's `NotNarrowed`, `Grant`, `Share`, prefixed so they do
-    not read as `identity.Share`), consumed by `vfs.Deps.Identity` and by E3;
+    `ReadOnlyGrant`, `ReadOnlyShare` (§6.1's `NotNarrowed`, `Grant`, `Share`, prefixed as Go
+    names an enum's values, like `ProofNone`), consumed by `vfs.Deps.Identity` and by E3;
   - `entity.SharePolicy` as RFC 16 §3 declares it (D6), consumed by `Resolver`;
   - `APISignIn{ Lookup(ctx, name string) (entity.Principal, error); VerifyPassword(ctx,
     entity.Principal, password []byte) error; Account(ctx, entity.Principal) (entity.User,
@@ -306,7 +306,7 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
 - **Tests:** at the lifecycle `internal/node` will call, over the memory KV store, each
   under `prof.Watch`: `New` with a nil `Store`, refused (catches a server built with nothing to
   read); `New` then `Stop` with no `Start` (catches work started in `New`,
-  R11); `Start` with no `Apply` (catches a server that runs with no `State`, R13); `Start`, `Stop` and the leak check (catches a goroutine left behind, R14); concurrent
+  R11); `Start` with no `Apply` (catches a server that runs with no `State`, R13); `Start` then `Stop` (catches a goroutine left behind, R14); concurrent
   `Apply` calls and a reader of the current `State`, through an `export_test.go` accessor,
   under `-race`, the only run in which it can fail (catches an unsynchronised write of `State`; with one field, R12's "part of one
   `Apply` and part of another" cannot happen here, so E2's T2.4, where `State` gains `Settings`,
@@ -325,9 +325,10 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
     `pkg/identity` imports only the standard library, `entity`, `pkg/auth/sid` and `vfserr`;
     no non-test package but `internal/node` and identity's own packages imports
     `internal/identity` or any package under it, except `internal/identity/identitymem`, whose one
-    importer E3's T3.6 restricts to `pkg/vfs/vfstest/memory`, and `internal/node/nodetest`, which
-    imports `internal/identity/directory` and E7's package as the node's seams if E8's D4 is
-    agreed, never `internal/identity` itself; `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use
+    importer E3's T3.6 restricts to `pkg/vfs/vfstest/memory`; `internal/node` is the package
+    alone, so `internal/node/nodetest` imports nothing under `internal/identity` (a `node_test`
+    test hands the node identity's in-memory seams through `nodetest.WithNew` and
+    `internal/node`'s `export_test.go`, E8's D4); `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use
     the real server (RFC 18 §10). `pkg/vfs/vfstest/memory`, the verified in-memory
     `vfs.Service`, needs the real server too once E3's T3.6 makes `vfs.New` require it; it
     reaches it through `internal/identity/identitymem` (E3's T3.6), one of identity's own
@@ -335,10 +336,12 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
     `internal/identity`;
     no package but `internal/identity/directory` imports `github.com/go-ldap/ldap/v3`, with
     `internal/auth/netlogon` exempt by a `decision:` at the check, since S0 leaves it and its
-    `join.go` imports LDAP: the exemption goes with the package. Seeded
+    `join.go` imports LDAP. E7 removes the exemption when it moves the package into
+    `internal/identity/netlogon`, where `join.go`'s LDAP calls go through
+    `internal/identity/directory` or R6 fails. Seeded
     violations of each in its `testdata/arch`, among them a non-test `internal/vfs` file
     importing `internal/identity` and a non-test package importing
-    `internal/identity/directory`;
+    `internal/identity/directory`, `internal/node/nodetest` among them;
   - `internal/identity/**` and `pkg/identity/**` in `test/suites.yaml`'s `e2e` `kerberos`
     cell's `paths:`, so a change to the server or the contract runs the Kerberos cell.
 - **Acceptance criteria:**
@@ -400,13 +403,18 @@ document, with its recommendation:
   refuse a stale caller (RFC 18 §7.2), and `Resolver` declares only `Resolve`. Recommended
   there: add the method, amending RFC 18 §6.1. If it is agreed before S1, T1.3 declares it and
   T1.4 stubs it; otherwise E3's T3.3 adds it to the frozen surface, whose only implementer is
-  `*Server`. Epic 1's implementation (#4334) declares it, so the answer decides only whether it
-  stays.
+  `*Server`.
 - **`ProofKind` and `Protection`: identity's own, or aliases of `entity`'s.** `pkg/vfs` declares
   both today, and `entity` (`control.go`) declares its own with the same values for the share
-  policy. T1.1 moves `pkg/vfs`'s, which #4334 implements, so E3's `Resolve` compares an
+  policy. T1.1 moves `pkg/vfs`'s, so E3's `Resolve` compares an
   `Identity`'s proof against `SharePolicy`'s across two types. Aliasing `entity`'s instead keeps
   R2 (a metadata type) and removes the conversion. Recommended: alias `entity`'s.
+- **A stopped server answering `ErrUnavailable`.** T1.4's `Stop` ends the server's goroutines
+  and leaves its methods answering from the store, so E8's node test cannot see whether the node
+  stops identity after its callers (E8's R4). If every method of a stopped `*Server` answers
+  `ErrUnavailable`, which E2 to E7 then keep as they fill the stubs, that test can hold the order.
+  Recommended: add it to T1.4 as an acceptance criterion and a test, at about 0.25 man-days, once
+  agreed.
 - **`State.NTLM`, the `identity.ntlm` revision (E2's D6).** Recommended there: it lands with its
   first reader, and RFC 18 §2.6 names that reader or drops the field.
 
@@ -416,5 +424,12 @@ document, with its recommendation:
   `identity.resolve`, the first span identity opens in the order of work, so by rule 12 and
   RFC 18 §2.6 the field arrives there (D4), and E4 reads it. RFC 18 §2.6's comment on the field
   names only §9.2's `identity.authenticate` span; it should name `identity.resolve` too.
+- **Two `ReadOnlyCause` types.** `entity` already declares one, with `NotNarrowed`,
+  `NarrowedByShare` and `NarrowedByClient` (`pkg/metadata/entity/names.go`), meaning a cause
+  other than the grant; T1.3's `identity.ReadOnlyCause` also counts the grant and folds share and
+  client rule into `ReadOnlyShare`. Unlike `ProofKind`, it cannot be aliased; the chokepoint
+  reads `entity`'s, so E3's T3.6, which rebuilds `authz.Caller`, maps one onto the other, and
+  E3's §9 holds the question. RFC 18 §6.1's field comment still lists
+  `NotNarrowed`, `Grant` and `Share`; the RFC's next fold renames them to T1.3's prefixed names.
 - **The estimate.** The plan's figure for epic 1 is 6 subtasks, 6 man-days; this document's is
   6 subtasks, 5.25 man-days.
