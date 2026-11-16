@@ -17,7 +17,7 @@ ticket addresses and §16.3's well-known SIDs a PAC may carry.
 `Service`), `internal/identity`'s `Server` with `Deps{Store, Clock, Metrics, Logger}` and
 `State{Generation}`. **E2, partly**: T5.2 waits for T2.4 (`State.Settings`, which the
 `identity.keytab` key joins); T5.7 for T2.2 (the installation's domain SID, whose SIDs a PAC
-loses); T5.9 for T2.1 and T2.3 (`entity.PrincipalMachine` and `Minter.Create`). **E3,
+loses); T5.9 for T2.1 (`entity.PrincipalMachine`), reaching T2.3's `Minter.Create` through E6's T6.2. **E3,
 partly**: T5.7, T5.8b and T5.11 test at its `Resolve`, whose T3.4 maps the evidence's SIDs and
 `DenyOnly` into the caller's groups and T3.5 reads the grants. **E4**: T5.5 joins the `SignIn`
 dispatch of E4's T4.2, with T4.4's throttle and T4.5's `LogonSink`, `identity.authenticate` span
@@ -96,9 +96,10 @@ ticket's sign-in, captured; `FuzzPAC` and `FuzzAPReq`.
   onto `feat/storage-v2` and the cell's place in its plan job's select: E6's T6.1 (§9).
 - The cross-epic clauses of "PAC bound to the record" (a reused name through step 3) and
   "disabled directory account" (at sign-in): E8's T8.5, on this epic's binding. The clauses E8
-  cites are held by this epic's own tests: "PAC bound to the record"'s client name (T5.6) and
-  linked SID (T5.8b), "admin needs proof"'s PAC half and "deny-only lookup error"'s SID read
-  (T5.7). "deny-only SIDs", "binding", "re-authentication" and
+  cites are held by this epic's own tests: "PAC bound to the record"'s client name (T5.6),
+  "admin needs proof"'s PAC half and "deny-only lookup error"'s SID read
+  (T5.7). The linked SID's reuse clause is §10's "PAC" row's, not "PAC bound to the
+  record"'s, and T5.8b holds it. "deny-only SIDs", "binding", "re-authentication" and
   "expiry" over a protocol: E9, and "expiry" over NFS with the NFS side, the RFC 18 plan's
   deferral ledger row "RFC 18 §10's NFS rows and NFS halves".
 - Kerberos over RPCSEC_GSS (RFC 18 §3.3's first line): the ledger row "`AUTH_SYS` and
@@ -158,8 +159,8 @@ tests can cite them. Sources are RFC 18 unless named.
 | --- | --- | --- | --- | --- |
 | R1 | The keytab is a `Secret` of kind keytab, loaded only through `Apply`: the versions in force are `State.Keytab`, current first, and a new version takes effect at the `Apply` that delivers it, with no restart | invariant | §2.6, §3.3 | T5.2 |
 | R2 | The keytab holds AES128 and AES256 keys only, and a keytab import holding a DES or RC4 key is refused whole | MUST | §3.3; §10 "AES only" | T5.2; RFC 23 plan epic 4's T4.9 (the import's refusal, once D3 settles) |
-| R3 | A rotation adds the new version and keeps the old one, so tickets under either key are accepted during the rollover; the old one is kept for one maximum ticket lifetime, 10 hours plus the clock skew, after the change at the KDC, then removed, a restart included, so a retired key is not accepted forever | invariant | §3.3, §2.6; RFC 13 §7; §10 "keytab rollover" | T5.2 (every version `Apply` hands it accepted, a dropped one refused); RFC 23 §3.3's credential rotation (the retention and the removal, D13) |
-| R4 | Withdrawn: removing the previous version once the retention passes, and reporting that the old key may be revoked at its service, are RFC 23 §3.3's credential rotation, which deletes it with `tx.PruneSecret` inside an audited `Write` (D13) | — | RFC 13 §7; RFC 16 §4.2 (`SEC‖id‖version`) | RFC 23 §3.3's credential rotation |
+| R3 | Every keytab version `Apply` hands identity is accepted and a version it no longer hands is refused, a restart included, so tickets under the old and the new key are both accepted while the rotation keeps both, and a retired key is refused once the rotation prunes it (R4) | invariant | §3.3, §2.6; RFC 13 §7; §10 "keytab rollover" | T5.2 |
+| R4 | Withdrawn: keeping the previous version for one maximum ticket lifetime, 10 hours plus the clock skew, and removing it then are RFC 23 §3.3's credential rotation, which deletes it with `tx.PruneSecret` inside an audited `Write` (D13). The report that the old key may be revoked at its service is the control plane's (RFC 13 §7), and RFC 23 §3.3 does not name it yet (§9) | — | §3.3; RFC 13 §7; RFC 16 §3 (`tx.PruneSecret`); RFC 23 §3.3 | RFC 23 §3.3's credential rotation; the revocation report pending the RFC 23 §3.3 amendment (§9) |
 
 **The ticket**
 
@@ -227,6 +228,12 @@ tests can cite them. Sources are RFC 18 unless named.
 | --- | --- | --- | --- | --- |
 | R44 | `FuzzPAC` and `FuzzAPReq` never panic, never allocate past the input's size times a constant, and decode∘encode is the identity on what decodes; `FuzzPAC` includes PACs with no logon-information buffer and PACs repeating a logon-information, client-information or signature buffer, of which only the first is decoded | test row | §10 Fuzz | T5.3, T5.6 |
 
+**The Samba ticket**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R46 | alice signs in with an AES ticket the fixture's Samba domain controller issued for an imported `cifs/` name, and her caller holds the PAC's groups | test row | the RFC 18 plan's epic 5 **Done when:** | T5.11 |
+
 Which test holds each row is in its subtask's **Tests**. R14's step 3 and R39's directory
 record are E6's and E8's to drive, on the rule this epic builds.
 
@@ -256,7 +263,8 @@ record are E6's and E8's to drive, on the rule this epic builds.
   (§2.7), so the API's secret route cannot call `internal/identity`. A pure function beside
   `NewHashes` is reachable from the route, needs an RFC 18 §2.7 amendment, and is the same parse
   `Apply` runs. The route's call is RFC 23's plan's epic 4's: its T4.9 secret route calls it in the
-  keytab's pre-write step once this is settled, and until then seals what it is given.
+  keytab's pre-write step once this is settled, and until then seals what it is given. A
+  `decision:` marker at `CheckKeytab` names the refusal whole and the parse it shares with `Apply`.
 - **D4, a ticket's service name is checked twice.** The ticket's service name, which sits outside
   its encrypted part, must be one the ring holds under the selected key, compared with ASCII
   letters folded (R5), and its first component must be `SignInStep.Service`'s, so a `cifs/`
@@ -287,11 +295,16 @@ record are E6's and E8's to drive, on the rule this epic builds.
   `DenyOnly` whatever its enabled bit, and only a SID that is neither deny-only nor enabled is
   dropped as disabled. A `decision:` marker at the filter. Prior art (from memory): Windows'
   access check reads deny-only groups from the token whatever their enabled bit.
-- **D8, the domain a PAC vouches for is its logon domain.** A group SID outside the PAC's
-  `LogonDomainId` is `other_domain`; the user's own SID is checked against R39, not this rule. A
-  SID the store holds as a user is `user`, read through the `sid` index, whose error fails the
-  sign-in `ErrUnavailable` rather than keeping or dropping the SID unread. A `decision:` marker
-  at the filter. Prior art (from memory): Samba's `winbindd` filters a trusted domain's PAC SIDs
+- **D8, the domain a PAC vouches for is its logon domain, and the filter's reasons run in one
+  order.** The user's own SID is checked against R39, not this rule. Each group SID D7 kept is
+  tried in this order, the first that answers deciding: (1) a well-known SID, any not under
+  `S-1-5-21-…` or `S-1-5-32-…`, is kept if it is everyone (`S-1-1-0`), authenticated users
+  (`S-1-5-11`) or network (`S-1-5-2`), else dropped `well_known` (`S-1-5-18` among them),
+  RFC 22 §16.3's list; (2) `S-1-5-32-…` is `builtin`; (3) a SID under the installation's domain
+  SID is `own_domain`; (4) one outside the PAC's `LogonDomainId` is `other_domain`; (5) a SID the
+  store holds as a user is `user`, read through the `sid` index, whose error fails the sign-in
+  `ErrUnavailable` rather than keeping or dropping the SID unread. So no SID has two reasons. A
+  `decision:` marker at the filter. Prior art (from memory): Samba's `winbindd` filters a trusted domain's PAC SIDs
   by the logon domain.
 - **D9, a Kerberos attempt is throttled under the ticket's client name, read once the ticket
   decrypts under the service key.** RFC 18 §3.1 throttles before the credential is checked, but a
@@ -307,18 +320,22 @@ record are E6's and E8's to drive, on the rule this epic builds.
   PACs the Samba fixture issued. Its first consumer is T5.3; E8 and E9 build tickets with it. It
   imports gokrb5 and `pkg/identity` only, never `internal/identity`, which nothing outside that
   package and its tests imports. Prior art (from memory): MIT's `kdb5_util` test KDCs; gokrb5's
-  own tests build tickets with `messages.NewTicket`.
+  own tests build tickets with `messages.NewTicket`. A `decision:` marker at `Realm` says why it
+  is no double: real tickets, its PACs held to the captures.
 - **D11, the `krb` row's SID is a field of `entity.ProtocolID`.** `ProtocolID` gains `Linked
   sid.SID`, zero for none, set only on a `krb` spelling, encoded with the record's spellings and
   in the `PX‖krb` row's value as RFC 16's row says. Sign-in reads it through the user record it
   reads anyway. A field another scheme sets is refused `ErrInvalid` by kvstore. It is its own
-  subtask, T5.8a, so the API's link write waits on nothing but S1. Prior art: none found.
+  subtask, T5.8a, so the API's link write waits on nothing but S1. A `decision:` marker at the field. Prior
+  art: none found.
 - **D12, the machine mint goes through identity's one mint path, E6's T6.2.** E2 leaves the path,
   its re-runs on `ErrExist` and `identity_mints_total`, to E6's T6.2 (its §1.2); E6's T6.2
   comes early in E6 and needs only E2's T2.3, while T5.9 is late in this epic, so E6 owns it and
   T5.9 hands it a plan that returns the machine's batch. T5.9's estimate is 0.5 man-days below the
-  figure that built the path. Prior art: none found.
-- **D13, withdrawn: the keytab's retention, prune and revocation report are RFC 23's.** RFC 23
+  figure that built the path. A `decision:` marker at T5.9's call to `mint`. Prior art: none
+  found.
+- **D13, withdrawn: the keytab's retention and prune are RFC 23's, and its revocation report
+  waits on an RFC 23 §3.3 amendment (§9).** RFC 23
   §3.3's credential rotation keeps the old keytab version for the retention, then deletes it with
   `tx.PruneSecret` inside an audited `Write`, and `apiv1`'s operation kinds hold no retire kind
   (`pkg/node/apiv1/opkind.go`), so a retire step in identity would be a second, unaudited path to
@@ -330,7 +347,8 @@ record are E6's and E8's to drive, on the rule this epic builds.
   Recommended: T5.8b adds `RequirePAC`, true unless set false, its first reader, and waits for
   T6.3; the record reaches T5.8b as E6's D2 decides (`State.Directory`, recommended). The
   alternative, T5.8b declaring schema, realm and `require_pac` itself, makes two epics declare one
-  section.
+  section. A `decision:` marker at `RequirePAC`'s default, true, names the fail-closed read of a
+  missing row.
 - **D15, `SignInStep` gains `Transport`, `TransportNFS` or `TransportSMB`, which the adapter
   sets.** R8's address check runs when `Transport` is `TransportSMB`, and a Kerberos attempt's
   `protocol` label is read from it. `Service` cannot stand in: RFC 18 §3.3 accepts `host/` tickets,
@@ -509,7 +527,8 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   the third authenticator `ErrUnavailable`, and after the clock passes the first
   entry's time plus the skew the third is accepted (catches a full cache evicting a live entry,
   which would admit its replay, R11); 64 goroutines presenting one AP-REQ at once under `-race`:
-  exactly one accepted (R9).
+  exactly one accepted (catches a lookup and an insert under two locks, which admits a replay
+  that races its original, R9).
 
 ### T5.5 Kerberos sign-in without a PAC
 
@@ -620,8 +639,10 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   §10's "PAC" clause, a SID of the installation's own domain naming a local group with a share
   grant: the grant not given, `own_domain` 1 (catches an unfiltered PAC granting a local group,
   R32); a universal group's SID of a second domain: dropped, `other_domain` 1, and the sign-in
-  succeeds (R32); `S-1-5-32-544` and `S-1-5-18`: `builtin` and `well_known`, `S-1-5-11` kept
-  (R32); a SID the store holds as a user: `user` (R32); the `sid` index failing through `kvtest`:
+  succeeds (R32); `S-1-5-32-544` and `S-1-5-18`: `builtin` and `well_known`, each counted once, and
+  `S-1-1-0`, `S-1-5-11` and `S-1-5-2` kept in `SIDs` (catches a well-known SID dropped as
+  `other_domain`, or a reason that depends on which rule ran first, R32, D8); a SID the store
+  holds as a user: `user` (R32); the `sid` index failing through `kvtest`:
   `ErrUnavailable` (D8); a group listed among the extra SIDs and one among the resource groups,
   each with a share grant: both granted (catches a decoder reading the memberships alone, R31); a
   group whose attributes clear `SE_GROUP_ENABLED`: absent from `SIDs`, and a deny-only group with
@@ -677,9 +698,11 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   `backup`'s `krb` row linked for directory `backup`'s SID binds the local `backup`, and after
   directory `backup` is deleted and another created under the name, the new holder's PAC is
   refused, never bound to the local one (catches a link a reused name inherits, R39); a row with
-  no `Linked` refusing a PAC-bearing ticket (R39); a local alice and a ticket whose PAC carries a
-  SID other than her record's: refused (R39); a record with no `require_pac` row reads it true
-  (R35).
+  no `Linked` refusing a PAC-bearing ticket (catches an unlinked row binding whoever presents the
+  name, R39); a local alice and a ticket whose PAC carries a SID other than her record's: refused
+  (catches a binding checked on `krb` rows only, leaving step 2's match unbound, R39); a record
+  with no `require_pac` row reads it true (catches a missing row read as false, which fails open,
+  R35).
 - **Rules:** rule 9 (D14's marker).
 
 ### T5.9 Machine principals
@@ -718,8 +741,8 @@ T5.10, the keytab's retention and prune, is removed: RFC 23 §3.3's credential r
 **Subtask T5.11 estimate: 1.25 man-days.**
 
 - **Track:** B. **Depends on:** T5.9, T5.1, T3.5.
-- **Covers:** none of its own; consumes T5.1 to T5.9 against a ticket a real domain controller
-  issued, the check that the verifier and the test realm do not agree only with each other.
+- **Covers:** R46; consumes T5.1 to T5.9 against a ticket a real domain controller issued, the
+  check that the verifier and the test realm do not agree only with each other.
 - **Deliverables:** `TestADPACCapture` extended, with `develop`'s `TestADGroupSIDsFromPAC`'s
   ticket fetch lifted into it: with `DITTOFS_AD_DC_PAC_OUT` set, it also writes alice's AP-REQ
   for `cifs/`, built by gokrb5's client from the service ticket the domain controller issued,
@@ -762,8 +785,11 @@ flowchart TD
   T5_8b --> T5_9["T5.9 Machine principals"]
   T5_9 --> T5_11["T5.11 alice's Samba ticket"]
   T5_1 --> T5_11
+  T5_8a --> C0(["after T5.8a: RFC 23 epic 4 writes the link's SID"]):::sync
   T5_2 --> C1(["after T5.2: E7 extends the ring"]):::sync
+  T5_5 --> C3(["after T5.5: Kerberos sign-in through vfs.Service"]):::sync
   T5_9 --> C2(["after T5.9: Kerberos sign-in whole in unit"]):::sync
+  T5_11 --> C4(["after T5.11: the Samba-issued AP-REQ passes"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
@@ -818,7 +844,7 @@ the version this document was written against.
   without the order; Windows writes deny-only groups with the enabled bit clear (D7).
 - RFC 18 §3.4's "a SID of another domain of the forest" names no reference domain: the PAC's
   logon domain (D8) or the directory's domain SID (E6). In the directory's realm the two should
-  be equal, and nothing requires it.
+  be equal, and nothing requires it. Nor does §3.4 order its drop reasons; D8 states one.
 - RFC 18 §3.3 accepts tickets for "the service names its keytab holds" and does not say that a
   name's service must be the protocol's (D4).
 - RFC 18 §7.3 refuses a sign-in when the replay cache is full and counts nothing; a full cache
@@ -830,6 +856,11 @@ the version this document was written against.
 - RFC 18 §3.3 and RFC 13 §7 count an imported key's retention from "the change at the KDC",
   which identity cannot see; RFC 23 §3.3's rotation, which removes the old version (D13), counts
   it from every node reporting the new one. RFC 18 §3.3 should defer to RFC 23 §3.3.
+- RFC 13 §7 has the control plane report that an old keytab version may be revoked at its
+  service; RFC 23 §3.3's rotation reports the nodes still holding the old version and deletes it,
+  and names no revocation report. RFC 23 §3.3 should name it, at the prune, so the report has an
+  owner (R4); until then no subtask in any epic makes it. For Marco to confirm against keeping
+  it here, which would need the control plane's prune to reach identity.
 - RFC 18 §3.3 says "each key a `Secret` of kind keytab", while §2.6's `State.Keytab` holds a
   keytab's versions; this document reads it as one `Secret` whose versions are whole keytabs.
 
@@ -841,11 +872,13 @@ the version this document was written against.
 - The plan's §3.3 has E5 wait on E1 to E4 only. T5.8b also waits on E6's T6.3 (D14) and T5.9 on
   E6's T6.2 (D12).
 - The plan gives E5 the keytab's prune and its revocation report. RFC 23 §3.3's credential
-  rotation does both (D13), so T5.10 is removed. E7, whose T7.12 cited T5.10 for `Prune` and
-  `Versions` on `SecretProvider`, and E8, which registered T5.10's step, follow.
-- The plan has the fixture's Kerberos part take `integration/ad-dc` out of the plan job's filter on
-  `feat/storage-v2`. The built part was cut from `develop`, where no filter exists. E6's T6.1 owns
-  the move: once RFC 23's plan's epic 1 (#4334) had merged, it moved `test/ad-dc-network-tls` and
+  rotation keeps and prunes the old version (D13), so T5.10 is removed; the report waits on the
+  RFC 23 §3.3 gap above. E2's D6, merged, still says T5.10 adds `Prune` and `Versions` to
+  `SecretProvider`; E7's T7.12 adds them now, and E2's D6 needs that one-line correction.
+- The plan gives taking `integration/ad-dc` out of the plan job's filter on `feat/storage-v2` to
+  whichever of the fixture's three parts lands first. The built part was cut from `develop`,
+  where no filter exists, and this epic records the outcome rather than assigning it: E6's T6.1
+  took the move: once RFC 23's plan's epic 1 (#4334) had merged, it moved `test/ad-dc-network-tls` and
   this part's `test/ad-dc-kerberos`, stacked on it, onto `feat/storage-v2` as #4420 and #4421, and
   #4420 lifts the `V2` skip that dropped the cell from the plan job's select in `tests.yml`.
 - The plan's **Done when:** runs alice's Samba-issued ticket in `integration/ad-dc`. A test there
