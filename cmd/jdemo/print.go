@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
-	"slices"
+
 	"text/tabwriter"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
@@ -100,49 +100,4 @@ func renderSegments(w io.Writer, segs []journal.SegmentInfo) {
 			s.ID, s.Stream, s.Allocated, s.HeldBytes, s.RetainedBytes, flags)
 	}
 	_ = tw.Flush()
-}
-
-// renderStats prints the journal's totals and the per-share breakdown behind
-// them — the viewer answer for "what changed?".
-func renderStats(w io.Writer, st journal.Stats) {
-	tw := newTabWriter(w)
-	panePrint(tw, "name\tvalue\n")
-	panePrint(tw, "max bytes\t%d\n", st.MaxBytes)
-	panePrint(tw, "used\t%d\n", st.UsedBytes)
-	panePrint(tw, "reserved\t%d\n", st.ReservedBytes)
-	panePrint(tw, "held\t%d\n", st.HeldBytes)
-	panePrint(tw, "dirty\t%d\n", st.DirtyBytes)
-	panePrint(tw, "files\t%d\n", st.Files)
-	panePrint(tw, "index entries\t%d\n", st.ExtentCount)
-	panePrint(tw, "segments\t%d (%d sealed)\n", st.Segments, st.Sealed)
-	panePrint(tw, "spares\t%d\n", st.Spares)
-	panePrint(tw, "unreclaimed\t%d\n", st.UnreclaimedBytes)
-	panePrint(tw, "removal markers\t%d\n", st.RemovalMarkers)
-	panePrint(tw, "versions left\t%d\n", st.VersionsLeft)
-	if len(st.Losses) > 0 {
-		panePrint(tw, "losses\t%d (generation %d)\n", len(st.Losses), st.LossGeneration)
-	}
-	if st.DamagedSegments > 0 {
-		panePrint(tw, "damaged segments\t%d\n", st.DamagedSegments)
-	}
-	_ = tw.Flush()
-
-	if len(st.Shares) > 0 {
-		panePrint(w, "\n")
-		// The rows are sorted by tag: a map's iteration is not an order,
-		// and the panes must not reshuffle between refreshes.
-		tags := make([]journal.ShareTag, 0, len(st.Shares))
-		for tag := range st.Shares {
-			tags = append(tags, tag)
-		}
-		slices.Sort(tags)
-		tw := newTabWriter(w)
-		panePrint(tw, "share\tlimit\tused\theld\tdirty\tunreclaimed\n")
-		for _, tag := range tags {
-			s := st.Shares[tag]
-			panePrint(tw, "share %d\t%d\t%d\t%d\t%d\t%d\n",
-				tag, s.Limit, s.UsedBytes, s.HeldBytes, s.DirtyBytes, s.UnreclaimedBytes)
-		}
-		_ = tw.Flush()
-	}
 }
