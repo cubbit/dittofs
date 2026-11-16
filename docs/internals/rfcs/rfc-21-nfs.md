@@ -1527,7 +1527,10 @@ So if P1 dies while build01 lists `builds/src/`, P2 resumes at the same entry.
   rule that includes a Windows reserved device name, from the one list
   [RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)
   keeps and [RFC 22 §12.3](rfc-22-smb.md#12.3%20Names%20SMB%20cannot%20carry)
-  cites; under the `posix` rule NFS creates it.
+  cites; under the `posix` rule NFS creates it. Under the `windows` rule a
+  reserved character, or a trailing space or dot, in a name NFS gives is stored
+  in RFC 7 §3.8's private-use spelling, so a `READDIR` lists that spelling and a
+  lookup finds the entry by either; RFC 7's §3.8 names row tests it from NFS.
 
 - NFSv4.1's character-set capability (`fs_charset_cap`) follows the share's
   name rule ([RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)):
