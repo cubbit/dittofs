@@ -1,6 +1,7 @@
 package gc
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -107,8 +108,42 @@ func (g *dedupSweepGuard) stripeFor(h block.ContentHash) *dedupGuardStripe {
 // It is the only exported member of the rendezvous. The guard, its stripes and
 // the sweep-side claim stay package-private because the sweep lives here; the
 // write path lives in the engine and needs exactly this one call.
-func AdoptDedup(h block.ContentHash, probe func() (bool, error)) (bool, error) {
-	return dedupGuard.adopt(h, probe)
+func AdoptDedup(ctx context.Context, h block.ContentHash, v DedupView) (bool, error) {
+	return dedupGuard.adopt(h, func() (bool, error) {
+		return blockHoldsChunk(ctx, v, h)
+	})
+}
+
+// DedupView is what the dedup oracle reads: the chunk's synced marker and the
+// record of the block the marker names. Satisfied by the per-share metadata
+// store.
+type DedupView interface {
+	GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error)
+	GetBlockRecord(ctx context.Context, blockID string) (block.BlockRecord, bool, error)
+}
+
+// blockHoldsChunk reports whether h may be deduped: it has a synced marker,
+// and the block that marker names has a record with a live chunk.
+//
+// decision: a marker whose block record is missing or at count 0 is not
+// trusted. The sweep sets the count to 0 just before it deletes the block, and
+// a delete whose answer is lost leaves the record and the marker for the next
+// pass although the object may already be gone; deduping onto it would point a
+// file at bytes that no longer exist. Refusing costs one upload of the chunk,
+// which writes a marker for the new block. A marker with no block ID is refused
+// for the same reason.
+func blockHoldsChunk(ctx context.Context, v DedupView, h block.ContentHash) (bool, error) {
+	loc, synced, err := v.GetLocator(ctx, h)
+	if err != nil || !synced || loc.BlockID == "" {
+		return false, err
+	}
+
+	rec, found, err := v.GetBlockRecord(ctx, loc.BlockID)
+	if err != nil {
+		return false, err
+	}
+
+	return found && rec.LiveChunkCount > 0, nil
 }
 
 // adopt runs probe under h's stripe and records an adoption when probe reports

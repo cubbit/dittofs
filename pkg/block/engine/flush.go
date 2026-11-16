@@ -146,10 +146,12 @@ type engineDeduper struct {
 // remote sweep running concurrently cannot reclaim the hash the carver is
 // about to point a manifest row at.
 func (d engineDeduper) IsChunkDurable(ctx context.Context, hash ChunkHash) (bool, error) {
-	h := block.ContentHash(hash)
-	return gc.AdoptDedup(h, func() (bool, error) {
-		return d.synced.IsSynced(ctx, h)
-	})
+	v, ok := d.synced.(gc.DedupView)
+	if !ok {
+		return false, fmt.Errorf("dedup: store %T has no block records to check", d.synced)
+	}
+
+	return gc.AdoptDedup(ctx, block.ContentHash(hash), v)
 }
 
 // localDeduper is the dedup oracle for a share with NO remote block store.
