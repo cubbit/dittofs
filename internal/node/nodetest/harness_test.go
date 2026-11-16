@@ -5,6 +5,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
@@ -18,7 +19,7 @@ func TestTheRecordedJournalOpens(t *testing.T) {
 	if err != nil || id == ([16]byte{}) {
 		t.Fatalf("JournalID of the node's device: got %x, %v; want the recorded journal", id, err)
 	}
-	j, err := journal.Open(t.Context(), dev, journal.Version{}, id, nil, journal.WithClock(h.Clock()))
+	j, err := journal.Open(t.Context(), dev, journal.Version{}, id, nil, journal.WithClock(h.Clock()), journaltest.SuitableMount())
 	if err != nil {
 		t.Fatalf("journal.Open of the device with the recorded identity: got %v, want it open", err)
 	}
