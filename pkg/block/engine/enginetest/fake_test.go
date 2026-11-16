@@ -164,6 +164,57 @@ func TestFakeLossRingAndGeneration(t *testing.T) {
 	}
 }
 
+// FailNextWrite dooms the next write of a file: it is held until the next
+// Sync, whatever file that Sync names, fails its window, and the file's own
+// next Sync answers a SyncError, even when a newer write replaced the record
+// first, whose content is kept; a disarmed doom takes no write.
+func TestFakeFailNextWriteFailsItsWindowAtTheNextSync(t *testing.T) {
+	j, h := fake(t, 0)
+	ctx := t.Context()
+	write(t, h, fileA, 0, "kept")
+	j.FailNextWrite(fileA, true)
+	write(t, h, fileA, 4, "lost")
+
+	if _, missing, _, _, _ := h.ReadAt(ctx, fileA, 0, make([]byte, 8)); len(missing) != 0 {
+		t.Errorf("before the window closed: missing %v, want the doomed write still held", missing)
+	}
+
+	if _, err := h.Sync(ctx, fileB); err != nil {
+		t.Fatalf("the Sync of another file closing the window = %v, want nil", err)
+	}
+
+	_, missing, _, _, _ := h.ReadAt(ctx, fileA, 0, make([]byte, 8))
+	if !slices.Equal(missing, []journal.Extent{ext(4, 4)}) || j.Durable(fileA) {
+		t.Errorf("after the window failed: missing %v, durable %v; want %v, undurable",
+			missing, j.Durable(fileA), ext(4, 4))
+	}
+
+	var se *journal.SyncError
+	if _, err := h.Sync(ctx, fileA); !errors.As(err, &se) {
+		t.Errorf("file A's next Sync = %v, want a SyncError", err)
+	}
+
+	j.FailNextWrite(fileA, true)
+	write(t, h, fileA, 8, "doom")
+	write(t, h, fileA, 8, "newr")
+	j.FailNextWrite(fileB, true)
+	j.FailNextWrite(fileB, false)
+	write(t, h, fileB, 0, "safe")
+
+	if _, err := h.Sync(ctx, fileA, fileB); !errors.As(err, &se) ||
+		!slices.Equal(se.Files, []journal.FileID{fileA}) {
+		t.Errorf("a Sync after the doomed write was replaced and B's doom disarmed = %v, "+
+			"want a SyncError naming A alone", err)
+	}
+
+	_, missing, _, _, _ = h.ReadAt(ctx, fileA, 8, make([]byte, 4))
+	_, missingB, _, _, _ := h.ReadAt(ctx, fileB, 0, make([]byte, 4))
+
+	if len(missing) != 0 || len(missingB) != 0 {
+		t.Errorf("missing %v of A's newer write and %v of B's, want none", missing, missingB)
+	}
+}
+
 // FailNextWindow loses every write since the window last closed, and only
 // those: the next Sync, whatever it names, drops them with one failed-window
 // event each and raises the generation once; each file that had a write in

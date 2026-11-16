@@ -56,6 +56,8 @@ type FakeJournal struct {
 	failing       map[journal.FileID]bool // FailSync's files: the next Sync naming one fails its window
 	undurable     map[journal.FileID]bool // files a failed window left undurable, until a Sync of theirs succeeds
 	failWindow    bool                    // FailNextWindow's: the next Sync fails the window
+	doomNext      map[journal.FileID]bool // FailNextWrite's files: the next write of one is doomed
+	doomed        []doomedWrite           // doomed writes, whose window the next Sync fails
 	syncedAt      uint64                  // the counter of the last version issued when the window last closed
 	seg           uint64                  // the stream's segment, from 1
 	end           int64                   // the end of the stream's last record in seg
@@ -86,6 +88,14 @@ type fakeFile struct {
 	asOf    journal.Version
 	rec     record       // its newest record
 	pending []superseded // bytes whose superseding record is not synced yet
+}
+
+// doomedWrite is a write FailNextWrite doomed: the extent and version of its
+// record, whose window fails at the next Sync.
+type doomedWrite struct {
+	id journal.FileID
+	e  journal.Extent
+	v  journal.Version
 }
 
 // overRun is one run where the write of version by superseded bytes the write
@@ -303,6 +313,7 @@ func (j *FakeJournal) Reopen() {
 
 	j.syncedAt = j.last               // what the fake kept across the restart is durable
 	j.failing, j.undurable = nil, nil // a restart loses the unreported failures
+	j.doomNext, j.doomed = nil, nil   // and the windows not yet failed
 }
 
 // Lose drops what file id holds in e as the journal does on a loss: the bytes
@@ -653,6 +664,14 @@ func (h *FakeHandle) writeAt(
 	slices.SortFunc(f.pieces, func(a, b piece) int { return cmp.Compare(a.off, b.off) })
 	j.held[h.tag] += int64(len(p))
 	f.asOf = v
+
+	if j.doomNext[id] {
+		delete(j.doomNext, id)
+
+		e := journal.Extent{Off: off, Len: int64(len(p))}
+		j.doomed = append(j.doomed, doomedWrite{id, e, v})
+	}
+
 	return v, nil
 }
 
@@ -716,6 +735,8 @@ func (h *FakeHandle) Sync(_ context.Context, ids ...journal.FileID) ([]entity.Sy
 		h.j.failWindow = false
 		h.j.loseWindow()
 	}
+
+	h.j.failDoomed()
 	h.j.syncedAt = h.j.last
 	var failed []journal.FileID
 	for _, id := range ids {
@@ -820,6 +841,80 @@ func (j *FakeJournal) FailSync(id journal.FileID, e journal.Extent, also ...jour
 	for _, a := range also {
 		j.undurable[a] = true
 	}
+}
+
+// FailNextWrite dooms the next write of file id, or, with on false, stops
+// doing so if no write took it yet: the window holding that write's record
+// fails at the next Sync, whatever files it names, as the journal fails a
+// window at the sync that closes it. The record is lost as a failed window's,
+// the loss generation rises, and file id is left undurable, its next Sync
+// answering a SyncError naming it, even when a newer write or a removal
+// replaced the record before that Sync; that newer content is kept.
+//
+// ponytail: the journal drops every record of a failed window, the newer
+// writes in it included; the fake drops only the doomed record's own pieces.
+// Model the whole window once a test reads a newer write a failed window
+// should have dropped.
+func (j *FakeJournal) FailNextWrite(id journal.FileID, on bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if !on {
+		delete(j.doomNext, id)
+
+		return
+	}
+
+	if j.doomNext == nil {
+		j.doomNext = map[journal.FileID]bool{}
+	}
+
+	j.doomNext[id] = true
+}
+
+// failDoomed fails the window of every doomed write, as FailNextWrite says.
+// j.mu is held.
+func (j *FakeJournal) failDoomed() {
+	for _, d := range j.doomed {
+		f := j.files[d.id]
+		if f == nil {
+			continue
+		}
+
+		// Only the doomed record's own pieces: cut each one alone.
+		var own []piece
+
+		for _, p := range f.pieces {
+			if p.v == d.v && p.off < d.e.Off+d.e.Len && d.e.Off < p.end() {
+				own = append(own, p)
+			}
+		}
+
+		for _, p := range own {
+			j.cut(f, p.off, p.end())
+		}
+
+		// The window failed whether or not a newer write replaced the
+		// record meanwhile: the file had a write in it, so it is told.
+		j.gen++
+		j.losses = append(j.losses, journal.LossEvent{
+			SeqNum:  j.nextSeq(),
+			Share:   f.tag,
+			File:    d.id,
+			Extent:  d.e,
+			Version: d.v,
+			Reason:  journal.LossFailedWindow,
+		})
+
+		if j.failing == nil {
+			j.failing = map[journal.FileID]bool{}
+			j.undurable = map[journal.FileID]bool{}
+		}
+
+		j.failing[d.id], j.undurable[d.id] = true, true
+	}
+
+	j.doomed = nil
 }
 
 // FailNextWindow fails the window the next Sync closes, whatever files it

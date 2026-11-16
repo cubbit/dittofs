@@ -960,7 +960,7 @@ func TestOracle(t *testing.T) {
 			"",
 		},
 		{
-			"O40 an SMB open owes ErrLost for a loss after it, once",
+			"O49 an SMB open owes ErrLost for a loss after it, once",
 			func(m *soakModel, f *fileModel) error {
 				write(f, 0, 'a', 4, true)
 
