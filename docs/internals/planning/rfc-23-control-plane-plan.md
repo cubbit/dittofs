@@ -399,15 +399,15 @@ registers no suite and no group, and changes no `lint-go` tag.
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | Delete v1, declare the surface | v1 deleted with the tests that drive it, harness fixed, landed first; the node's surface and the shared wire types; the new `cmd/dfs` skeleton; architecture tests | 6 | 12.25 | team | every epic; the RFC 13 plan (#4059) and the RFC 18 plan (#4058) |
 | E2 | Store records | the view's signatures with `expect`; the records and fields RFC 16 declares for RFC 23; A3's entry point; a share's removal steps; expiry; the namespace record and its store index | 13 | 35.5 | C | E5; partly E3, E4; the RFC 13 plan's epics 2 and 4, partly, and its S3 (#4059, `Node`, `NodeStatus`); the RFC 18 plan's epics 2 and 3 (#4058, the principals generation) |
-| E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition with RFC 8's root duties, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven, RFC 23's own settings section, the harness | 11 | 29.5 | A | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the `apply` slot); the RFC 18 plan's epics 2 and 7 (#4058, the runner) |
+| E3 🔀 | The node | `dfs start` on the RFC 13 plan's bootstrap (X1), composition with RFC 8's root duties, start and stop, reconcile, node status, health, the operation runner, share and principal deletions driven, RFC 23's own settings section, the harness | 11 | 30 | A | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the `apply` slot); the RFC 18 plan's epics 2 and 7 (#4058, the runner) |
 | E4 | The management API | server, route table, typed handlers (D14), write path, preconditions, idempotency, problems, reads, resources with a share's export policy, operations, audit read, the domain's actions (A5), each resource's wire types, the client | 11 | 36.5 | B | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059, the write path's `Check` slot) |
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 10 | 25.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
 | E6 | The CLI | `login` and the rebuilt `dfsctl` on epic 4's client, generated reference | 6 | 12 | A | E7 |
 | E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 7 | 11.5 | team | E8 (partly) |
 | E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **64** | **162.75** | | |
+| | **Total** | | **64** | **163.25** | | |
 
-**Plan estimate: 64 subtasks, 162.75 man-days, not counting epic 8.**
+**Plan estimate: 64 subtasks, 163.25 man-days, not counting epic 8.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -1230,7 +1230,7 @@ API write commits in, and a share's removal steps past the mark.
 
 ### Epic 3 — The node 🔀
 
-**Epic 3 estimate: 11 subtasks, 29.5 man-days.**
+**Epic 3 estimate: 11 subtasks, 30 man-days.**
 
 `node.New` composes what §1.1's dependency limits name, and the node starts, reconciles, reports
 and stops as RFC 23 §2 says, on one node. `dfs start` becomes a working server.
