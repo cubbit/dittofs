@@ -1971,10 +1971,12 @@ type HeaderCodec interface {
 	Decode(rec *Buf, off int) (Header, error)
 	// Encode writes the reply's header for s and, where s is a failure
 	// answered with a status alone (RFC 22 §16.5 names SMB's exceptions),
-	// what a reply carrying s alone needs, which is the whole reply of a
-	// request refused before its arguments decoded: SMB's error response
-	// (RFC 22 §16.5), an NFSv4 COMPOUND's status, tag and empty results, RPC
-	// PROG_MISMATCH's lowest and highest versions (RFC 21 §11.5).
+	// what a reply carrying s alone needs, which is the whole reply of every
+	// request answered with a status alone, a compound refused whole after its
+	// own Decode included, since its EncodeHead serves only a compound whose
+	// members run: SMB's error response (RFC 22 §16.5), an NFSv4 COMPOUND's
+	// status, tag and empty results, RPC_MISMATCH's and PROG_MISMATCH's lowest
+	// and highest versions (RFC 21 §11.5).
 	Encode(h Header, s Status, out *Buf) error
 	Chain(out *Buf, prev int) error            // points the reply at prev to the one appended after it (SMB2's NextCommand, padded to 8); nil-op where nothing chains
 	// Args is the argument bytes of message h in rec, located as Decode and
