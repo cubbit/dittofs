@@ -394,8 +394,9 @@ Exported symbols added, all under `internal/adapter/`:
   `Fragment(hdr []byte) (n int, last bool, err error)`, `AppendRecordMark(dst []byte, n int)
   []byte`; `type Call []byte`, with an accessor per field, the credential and verifier as their
   flavour and a slice of the record, and a `COMPOUND`'s tag and minor version, and
-  `ParseCall(b []byte) (Call, error)`, which bounds every length first; `type AuthSys` (fixed
-  arrays, nothing allocated) and `DecodeAuthSys(body []byte) (AuthSys, error)`;
+  `ParseCall(b []byte) (Call, error)`, which bounds every length first; `type AuthSysParms`
+  (fixed arrays, nothing allocated; `AuthSys` is the flavour constant beside `AuthNone`, as
+  RFC 5531 names them) and `DecodeAuthSys(body []byte) (AuthSysParms, error)`;
   `AppendAccepted`, `AppendDenied` and `AppendCompoundStatus`; the constants of `const.go`.
   Consumers: T6.4a and T6.4b; the RFC 21 plan's codecs.
 - `nfs/protocol`: `Tables` (T6.4a); `type Protocol`, `New(t Tables) *Protocol` (T6.4b). `nfs`
@@ -404,8 +405,8 @@ Exported symbols added, all under `internal/adapter/`:
 Nothing else is exported, and `pkg/adapter` and `pkg/adapter/settings` export nothing new:
 T6.4b changes only `NFS.Validate`'s body. `core`
 changes only where RFC 20 §4.7 is amended, and each change has one owner: `Framer.Frame` and
-`HeaderCodec.Args` and `ReplyLen` land with E5's T5.1a (which the epic 5 document is to
-state, §9), and `Framer.BodyLen`'s `last` and `MaxRecord` with E4's reader, which loops on them, each with `testproto`'s stages and
+`HeaderCodec.Args` and `ReplyLen` land with E5's T5.1a, and `ReplyLen`'s coverage of a
+compound's heads with its T5.4 (which the epic 5 document is to state, §9), and `Framer.BodyLen`'s `last` and `MaxRecord` with E4's reader, which loops on them, each with `testproto`'s stages and
 `core.golden`. T6.3a and T6.4a implement the header stage's two, T6.3b and T6.4b the
 framer's.
 
@@ -428,9 +429,11 @@ framer's.
   the RFC 22 plan's T3.1 and T3.4), and returning the header with its error for a
   `StructureSize` other than 64 and for a `NextCommand` not a multiple of 8 or leaving no room
   for a header before the record's end (RFC 22 §16.5); `AppendReply` writes the response
-  header: the server-to-client flag set, the request's command, message ID, credit charge,
-  session and tree or async ID, its related and async flags, `NextCommand` and signature zero,
-  the status and the credits it is handed (D4); `AppendError` writes MS-SMB2 2.2.2's body with
+  header as MS-SMB2 3.3.4.3 and 3.3.4.4 have it, matching "the SMB2 header of the request with
+  the following changes": the request's command, message ID, credit charge, session and tree or
+  async ID, and its flags but `SMB2_FLAGS_SIGNED`, which `Wrap` sets once it signs (MS-SMB2
+  3.3.4.1.1), with `SMB2_FLAGS_SERVER_TO_REDIR` set; `NextCommand` and signature zero; the
+  status and the credits it is handed (D4); `AppendError` writes MS-SMB2 2.2.2's body with
   no error data; `Chain` pads to 8 and sets the previous reply's `NextCommand`. Golden vectors
   (D3), read by a helper in `wire_test.go`; `FuzzRecord`.
 - **Consumers:** T6.3a and T6.3b; the RFC 22 plan's epic 2, whose harness decodes this header,
@@ -448,8 +451,10 @@ framer's.
     68 and one past the record return the header with an error.
   - `AppendReply` over the capture's request header, with frame 6's status and credits, gives
     frame 6's header byte for byte, but for any field the server chooses that the test lists
-    with its reason; the hand-written async reply too. `AppendError` gives MS-SMB2 2.2.2's 9
-    bytes. Two replies joined with `Chain` put the second at a multiple of 8, the first's
+    with its reason; the hand-written async reply too. Over frame 126's request, whose flags
+    are `0x10`, the reply's flags are frame 127's, `0x11`; over a request whose flags are
+    `0x18`, `SIGNED` among them, they are `0x11` until `Wrap` signs. `AppendError` gives
+    MS-SMB2 2.2.2's 9 bytes. Two replies joined with `Chain` put the second at a multiple of 8, the first's
     `NextCommand` pointing at it.
   - The refusals that claim a length (a frame of 2^24 - 1 bytes, a `NextCommand` near 2^32)
     each add less than 4 KiB to `runtime.MemStats.TotalAlloc`.
@@ -465,7 +470,9 @@ framer's.
   and an unaligned or out-of-record `NextCommand` accepted, R9). The cap, at its byte and one
   past (catches a cap off by its header room). The reply vectors (catch a reply missing the
   server-to-client flag, which a client discards, an async reply written in the sync form, and
-  the frame header's length off by its own 4 bytes, R4). `Chain` (catches padding to 4, or
+  the frame header's length off by its own 4 bytes, R4); the capture's flags (catch a request
+  flag the reply drops, such as the priority bits its requests carry, answered `0x10` to `0x11`
+  and `0x18` to `0x19` in that capture, and `SIGNED` copied onto a reply not yet signed). `Chain` (catches padding to 4, or
   none). The claimed lengths (catch a buffer allocated before its length is checked, R8).
   `FuzzRecord`, over a frame header and the headers of a chain (a panic; a length past the cap
   or the record accepted; an accepted header whose reply, from `AppendReply`, does not carry
@@ -907,11 +914,12 @@ A suggestion only: one pull request per subtask works as well.
   reached at the RFC 22 plan's point where a session runs over loopback, after its epics 3 to
   5, not by this epic alone.
 - **Findings for other documents, not edited here.**
-  - The epic 5 document's T5.1a: this document has `HeaderCodec.Args` and `ReplyLen` and
-    `Framer.Frame` land with it, each added to `core`'s interfaces, to `testproto`'s stages and
-    to `core.golden`, but the epic 5 document names none of the three as a deliverable, on
-    `feat/storage-v2` or in #4449: its T5.1a reads `Args` and calls `Frame`, and `ReplyLen`
-    appears only in D9 and T5.4. Its T5.1a should list the three as its own.
+  - The epic 5 document's T5.1a and T5.4: T5.1a adds all three of `HeaderCodec.Args`,
+    `ReplyLen` and `Framer.Frame` to `core`'s interfaces, to `testproto`'s stages and to
+    `core.golden` (#4487), its pipeline reading `Args` and its writer's suite calling `Frame`;
+    `ReplyLen`'s coverage of a compound's head and one result's head is T5.4's (#4522). The
+    epic 5 document names none of this as a deliverable, on `feat/storage-v2` or in #4449, and
+    should list each part under its subtask.
   - E5's T5.11 and RFC 20 §4.7's `Park`: `Park` releases the record's `Buf` (E5's D12) before
     `HoldCodec.Final` gives the final reply's header, and `testproto`'s `decision:` on its
     header view says to withdraw the view if `core` ever releases a record before its request
