@@ -713,7 +713,7 @@ writes the adapter rows.
 | --- | --- | --- | --- | --- |
 | 1 | T3.1, T3.4 | 7 | — | `New`, the harness and the runner with its first kinds: what the RFC 18 plan's and E5's steps wait on |
 | 2 | T3.2, T3.3 | 8 | PR 1 | health, the API package, and start and stop in RFC 23 §2.2's order |
-| 3 | T3.5, T3.6 | 7 | PR 2 | reconcile and the share's removal, with `vfs`'s own join deleted beside its owner (D15): S2 |
+| 3 | T3.5, T3.6 | 7.5 | PR 2 | reconcile and the share's removal, with `vfs`'s own join deleted beside its owner (D15): S2 |
 | 4 | T3.7, T3.8, T3.9, T3.10, T3.11 | 7.5 | PR 3 | status, sweep, `dfs start`, node identity and the benchmark: a working server |
 
 A suggestion only: one pull request per subtask works as well.

@@ -5,14 +5,13 @@ rules, §2.5's `GET /api/v1/health`, §5.3's local socket and refresh, §5.4's p
 e-mail and directory grants, §4.4–§4.6 as the CLI applies them, §10's CP14, and §12's "§7 CLI" row in
 the part a unit test can check.
 **Track:** A.
-**Epic 6 estimate: 6 subtasks, 12 man-days.**
+**Epic 6 estimate: 6 subtasks, 11.5 man-days.**
 **Depends on:** E1, whose `dfsctl` tree refuses every v1 command until this epic; E3's harness
 `internal/node/nodetest`; E4's client (`pkg/apiclient`) and routes, `GET /api/v1/health` among them;
-E5's sign-in, refresh, sign-out, password change, API tokens and signing-key rotation; for the
-grant by directory name and the domain commands, the RFC 18 plan's epic 6's T6.4 (`identitytest`'s
-in-memory directory and its suite) and T6.9 (`Find`), its epic 7's `resolve-principal` and
-`test-directory` runner kinds, and its epic 8's T8.1 (identity composed in `node.New`) and T8.2
-(`nodetest`'s option for the in-memory directory).
+E5's sign-in, refresh, sign-out, password change, API tokens and signing-key rotation. The grant by
+directory name and the domain commands need no directory here: `nodetest` reaches none (its seam is
+`internal/node`'s `export_test.go`), so this epic tests their arguments and refusal, and E7's T7.6
+their success through the API.
 **Blocks:** E7, whose "§7 CLI" row runs this epic's shared suite against `dfsctl` in a child
 process; E8, whose e2e setup drives the rebuilt CLI.
 
@@ -345,11 +344,9 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 
 ### T6.4 Shares, export policies, grants, quotas and `share mount`
 
-**Subtask T6.4 estimate: 2 man-days.**
+**Subtask T6.4 estimate: 1.75 man-days.**
 
-- **Track:** A. **Depends on:** T6.3; E4 (shares, export policies, grants, quotas); the RFC 18
-  plan's epic 6's in-memory directory and its `Find`, its epic 7's `resolve-principal` kind, and its epic 8's T8.1 and
-  T8.2.
+- **Track:** A. **Depends on:** T6.3; E4 (shares, export policies, grants, quotas).
 - **Covers:** R3, R16, R18.
 - **Deliverables:** `share create|list|get|update|delete|quiesce|resume`, `share export-policy
   get|set|update`; `grant set|remove|list` by user, group or directory name, the last through
@@ -357,10 +354,12 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   `If-None-Match: *`; `quota set|remove|list`; `share mount` (D11), its command line a pure function
   of host, port, share and options; their `clisuite` rows; `cli.md` regenerated. Consumed by E7, E8.
 - **Acceptance criteria:**
-  - A grant to `CORP\bob` runs `resolve-principal`, waits for it, and grants the ID it returned.
+  - A grant to `CORP\bob` starts `resolve-principal` with that name; with no directory wired it
+    prints the operation's failure and exits non-zero, granting nothing. Its success is E7's T7.6.
   - `share mount` with an adapter record naming port 1445 builds a command line with 1445.
 - **Tests:** the `clisuite` rows over the harness, each record read back through the API; a grant by
-  directory name against the in-memory directory, the operation and the grant read back (R16); a
+  directory name sending `resolve-principal` with the name, and, with no directory wired, printing
+  its failure, exiting non-zero and leaving no grant (R16); a
   first grant created through `If-None-Match: *` and a second refused `412`; the mount line from an
   adapter record the test writes through the store (R18), the line itself a table test per platform;
   the reference matching (R3).
@@ -388,11 +387,10 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 
 ### T6.6 Stores, namespaces, adapters, settings, nodes, the audit, the domain and `status`
 
-**Subtask T6.6 estimate: 2.25 man-days.**
+**Subtask T6.6 estimate: 2 man-days.**
 
 - **Track:** A. **Depends on:** T6.3; E4 (stores, namespaces, secrets, adapters, settings, nodes, the
-  audit, the domain's routes, `GET /api/v1/health`); the RFC 18 plan's epic 6's in-memory directory and its
-  `Find`, its epic 7's `resolve-principal` and `test-directory` kinds, and its epic 8's T8.1 and T8.2.
+  audit, the domain's routes, `GET /api/v1/health`).
 - **Covers:** R3, R17.
 - **Deliverables:** `store create|list|get|update|delete|set-credential` (the credential from a
   prompt or a file); `namespace create|list|get|delete`; `adapter list|get|set`;
@@ -407,8 +405,8 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 - **Tests:** the `clisuite` rows over the harness; one table over the settings-backed writes, each
   printing the problem's code and detail and exiting non-zero (D9); `setting get` of a record the
   test writes through the store, at two scopes (R17); `audit list --actor` after a share create;
-  `domain resolve` and `domain test` against the in-memory directory, and `join` refused while the
-  directory is not wired; `status` naming the harness's readiness; `node list` naming the harness's
+  `domain resolve`, `domain test` and `join` sending their arguments and, with no directory wired,
+  printing the refusal and exiting non-zero (their success is E7's T7.6); `status` naming the harness's readiness; `node list` naming the harness's
   node; the reference matching (R3).
 
 ## 7. Order of work
@@ -433,8 +431,8 @@ suite, whose child-safe rows E7 runs.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T6.1, T6.2, T6.3 | 6 | — | the root, sign-in and the machinery every command builds on |
-| 2 | T6.4, T6.5 | 3.75 | PR 1 | shares and principals, the commands E7's rows use most |
-| 3 | T6.6 | 2.25 | PR 1 | the settings-backed resources, the domain and `status` |
+| 2 | T6.4, T6.5 | 3.5 | PR 1 | shares and principals, the commands E7's rows use most |
+| 3 | T6.6 | 2 | PR 1 | the settings-backed resources, the domain and `status` |
 
 A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can be open at once.
 
