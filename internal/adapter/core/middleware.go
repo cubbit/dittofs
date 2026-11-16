@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Call is one step of the middleware chain: the handler, or what wraps it.
@@ -37,10 +38,11 @@ func (sh *shared) chain(op *Op, ts *tableSeries) Call {
 func invoke(ctx context.Context, r *Request) error { return r.invoke(ctx, r) }
 
 // trace opens a compound member's span, a child of the request's, named
-// adapter.<protocol>.<operation> with R90's attributes, and ends it in a
+// adapter.<protocol>.<operation> with §10.2's attributes, and ends it in a
 // deferred call that records the fault if the call panicked. A call outside
 // a compound runs under the request's span, and with no tracer there is
-// none (§10.2).
+// none (§10.2). A request not sampled opens none either, so it costs nothing
+// (RFC 25 §6.3).
 func (sh *shared) trace(op *Op, ts *tableSeries) Middleware {
 	if sh.tracer == nil || !ts.member {
 		return func(next Call) Call { return next }
@@ -48,6 +50,9 @@ func (sh *shared) trace(op *Op, ts *tableSeries) Middleware {
 	name, label := "adapter."+ts.protocol+"."+op.Name, strings.ToLower(op.Name)
 	return func(next Call) Call {
 		return func(ctx context.Context, r *Request) (err error) {
+			if !trace.SpanContextFromContext(ctx).IsSampled() {
+				return next(ctx, r)
+			}
 			ctx, span := sh.tracer.Start(ctx, name)
 			returned := false
 			defer func() {

@@ -20,6 +20,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
 	"github.com/cubbit/dittofs/internal/adapter/core"
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -386,6 +387,50 @@ func TestChainOutsideACompoundOpensNoSpan(t *testing.T) {
 	}))
 	if n := len(tr.spans.Ended()); n != 0 {
 		t.Errorf("the chain ended %d spans, want none", n)
+	}
+}
+
+// unsampled is the context of a request sampled at ratio 0: its span context
+// is valid, and not sampled.
+func unsampled(t *testing.T) context.Context {
+	t.Helper()
+	tracer := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.TraceIDRatioBased(0))).Tracer("test")
+	ctx, span := tracer.Start(context.Background(), "request")
+	if sc := span.SpanContext(); !sc.IsValid() || sc.IsSampled() {
+		t.Fatalf("the request's span context is %v, want valid and not sampled", sc)
+	}
+	return ctx
+}
+
+// A member of a request not sampled runs under the request's span context:
+// the chain starts no span for it, not even one that records nothing
+// (RFC 25 §6.3).
+func TestChainUnsampledOpensNoSpan(t *testing.T) {
+	tr := newTraced(t, true)
+	reqCtx := unsampled(t)
+	_ = tr.members.Chain(tr.mEcho)(reqCtx, request(func(ctx context.Context, _ *core.Request) error {
+		if got := trace.SpanContextFromContext(ctx); !got.Equal(trace.SpanContextFromContext(reqCtx)) {
+			t.Errorf("an unsampled member's call runs under span %v, want the request's %v", got.SpanID(), trace.SpanContextFromContext(reqCtx).SpanID())
+		}
+		return nil
+	}))
+}
+
+// A member of a request not sampled allocates no more with a tracer than
+// with none: RFC 25 §6.3's tracing off against on at ratio 0.
+func TestChainUnsampledAllocatesNothingMore(t *testing.T) {
+	if prof.RaceEnabled {
+		t.Skip("the race detector changes allocation counts")
+	}
+	ctx := unsampled(t)
+	allocs := map[bool]float64{}
+	for _, tracing := range []bool{false, true} {
+		tr := newTraced(t, tracing)
+		call, r := tr.members.Chain(tr.mEcho), request(func(context.Context, *core.Request) error { return nil })
+		allocs[tracing] = testing.AllocsPerRun(100, func() { _ = call(ctx, r) })
+	}
+	if allocs[true] != allocs[false] {
+		t.Errorf("an unsampled member's call allocates %v times with a tracer, %v with none; want the same", allocs[true], allocs[false])
 	}
 }
 
