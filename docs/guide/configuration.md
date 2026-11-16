@@ -467,37 +467,25 @@ Env-var mapping:
 
 #### Recycle bin (trash)
 
-The recycle bin is configured **per share** via `dfsctl share create` /
-`dfsctl share edit` (or the REST share create/update body), not the
+The recycle bin is configured **per share**, in the share's record, not the
 server config file. When enabled, deleting a file or directory moves it
 into a visible `#recycle` directory at the share root instead of
 destroying it; it can be restored over the mount.
 
-| Setting (`dfsctl` flag) | REST field | Type | Default | Meaning |
-|---|---|---|---|---|
-| `--enable-trash` | `trash_enabled` | bool | `false` | Turn the per-share recycle bin on or off. Disabling it auto-empties the bin (permanently deletes its contents). |
-| `--trash-retention-days` | `trash_retention_days` | int | `0` | Auto-purge bin entries older than N days. `0` = keep forever. |
-| `--trash-restrict-empty-to-admin` | `trash_restrict_to_admin` | bool | `false` | Restrict emptying the bin to admins. Users may still restore. |
-| `--trash-max-size` | `trash_max_bytes` | int64 (bytes) | `0` | Cap total bytes held in the bin; over-cap evicts oldest-first. `0` = unbounded. |
-| `--trash-exclude` | `trash_exclude_patterns` | glob (repeatable) | (none) | Deletions matching any glob bypass the bin and are removed immediately. |
+| Share field | Type | Default | Meaning |
+|---|---|---|---|
+| `trash_enabled` | bool | `false` | Turn the per-share recycle bin on or off. Disabling it auto-empties the bin (permanently deletes its contents). |
+| `trash_retention_days` | int | `0` | Auto-purge bin entries older than N days. `0` = keep forever. |
+| `trash_restrict_to_admin` | bool | `false` | Restrict emptying the bin to admins. Users may still restore. |
+| `trash_max_bytes` | int64 (bytes) | `0` | Cap total bytes held in the bin; over-cap evicts oldest-first. `0` = unbounded. |
+| `trash_exclude_patterns` | glob list | (none) | Deletions matching any glob bypass the bin and are removed immediately. |
 
 A background reaper enforces `trash_retention_days` and
 `trash_max_bytes` on an hourly interval. Deletes of items already
 *inside* `#recycle` are permanent, and in-place truncate/overwrite of a
 file's content is not recycled (only unlink and replace-overwrite are).
-`dfsctl share show <name>` displays the active trash configuration.
 
-```bash
-# Enable the bin with a 30-day retention and a 10 GiB cap
-./dfsctl share create --name /docs --metadata badger-main --block-store s3-remote \
-  --enable-trash --trash-retention-days 30 --trash-max-size 10737418240
-
-# Change settings on an existing share (applied live)
-./dfsctl share edit /docs --trash-retention-days 7 \
-  --trash-exclude '*.tmp' --trash-exclude '*.cache'
-```
-
-The CLI no longer has trash management commands; they return with their own
+The CLI no longer has trash commands or flags; they return with their own
 API. See [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
 for the recycle-trap design.
 

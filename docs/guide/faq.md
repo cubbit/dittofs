@@ -344,18 +344,13 @@ Yes, on an opt-in, per-share basis. When a share has the recycle bin
 enabled, deleting a file or directory moves it into a visible
 `#recycle` directory at the share root instead of destroying it. You
 can browse and restore from `#recycle` over NFS or SMB like any other
-folder (just drag the item back out). The CLI no longer has commands to
-list, restore or empty the bin; they return with their own API.
+folder (just drag the item back out). The CLI no longer has commands or
+flags to enable, list, restore or empty the bin; they return with their own
+API.
 
-```bash
-# Enable the bin on a new or existing share
-dfsctl share create --name /docs ... --enable-trash
-dfsctl share edit /docs --enable-trash true
-```
-
-Retention is configurable per share: `--trash-retention-days N`
+Retention is configurable per share: `trash_retention_days`
 auto-purges entries older than N days (`0` = keep forever), and
-`--trash-max-size BYTES` caps the bin and evicts oldest-first when
+`trash_max_bytes` caps the bin and evicts oldest-first when
 exceeded (`0` = unbounded). A background reaper enforces both hourly.
 
 Caveats:
@@ -368,7 +363,7 @@ Caveats:
 - Deleting an item that is already inside `#recycle` is **permanent**.
 - **Disabling trash auto-empties the bin**, permanently deleting its
   contents.
-- Exclude globs (`--trash-exclude GLOB`, repeatable) cause matching
+- Exclude globs (`trash_exclude_patterns`) cause matching
   deletions to bypass the bin entirely.
 
 See [CONFIGURATION.md](configuration.md#recycle-bin-trash) for the
