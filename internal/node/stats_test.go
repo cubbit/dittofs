@@ -83,7 +83,8 @@ func TestEngineConditions(t *testing.T) {
 		}}},
 	}
 	var e health.Evaluator
-	e.Add(engineConditions{func() engine.Stats { return s }})
+	src := &engineConditions{func() engine.Stats { return s }}
+	e.Add(src)
 	want := []health.Condition{
 		{Name: "node_fenced", Subject: health.Subject{Scope: health.ScopeNode, ID: "n1"}, Cause: cause, Detail: "fenced"},
 		{Name: "journal_read_only", Subject: health.Subject{Scope: health.ScopeJournal, ID: "j1", Name: "/dev/a"}},
@@ -91,5 +92,9 @@ func TestEngineConditions(t *testing.T) {
 	}
 	if got := e.Conditions(nil); !reflect.DeepEqual(got, want) {
 		t.Errorf("conditions: got %+v, want %+v", got, want)
+	}
+	e.Remove(src)
+	if got := e.Conditions(nil); len(got) != 0 {
+		t.Errorf("conditions after removing the engine's source: got %+v, want none", got)
 	}
 }
