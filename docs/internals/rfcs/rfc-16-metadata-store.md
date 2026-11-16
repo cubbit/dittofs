@@ -754,13 +754,20 @@ type Setting struct {
 // (RFC 13 §7); every node holds both keys.
 type Secret struct {
 	ID    SecretRef
-	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, machine password (RFC 18 §3.5), remote credential, key, node credential (RFC 15 §4.4)
+	Kind  SecretKind // password (slow hash), nt-hash (only with NTLM enabled), keytab, machine password (RFC 18 §3.5), remote credential, key, node credential (RFC 15 §4.4), directory credential (the directory's bind credential), client secret (an OpenID Connect client's secret)
 	Version uint64   // raised by every rotation; the previous version stays resolvable until every node reports this one, a keytab's and a machine password's for RFC 18 §3.3's retention, the API signing key's until its last token expires (RFC 13 §7)
 	KeyID string     // which wrapping key sealed it: one per role or secret kind
 	Owner SecretOwner // the record or setting key whose field names it; a new version keeps both Kind and Owner, which PutSecret enforces, and pkg/secrets refuses a read whose reference comes from another owner or expects another kind, so a reference cannot be pointed at another holder's secret (RFC 23 §5.2)
 	Value []byte     // sealed
 	KeyVersion uint32 // a machine password's key version number, set when sealed and never changed; zero for every other kind (RFC 18 §3.3, §3.5)
 	HandedOver bool   // a machine password an offline join was handed: derives no Kerberos key and backs no previous-version fallback (RFC 18 §3.5); written with the version, bound into its sealed value's additional data, never changed
+}
+
+// ResourceRef names one record by its kind and its ID. The zero value names
+// none.
+type ResourceRef struct {
+	Kind string   // the record's kind, as RFC 23 names its resource
+	ID   [16]byte // minted, as FileID, ShareID and PrincipalID are (§2.2)
 }
 
 // SecretOwner is the one holder a secret belongs to: a record's field (a
@@ -1385,6 +1392,7 @@ type ControlPlane interface {
 	DeleteNamespace(ctx context.Context, id NamespaceID, expect uint64) error // refused while a share's Namespaces names it; deletes the record and its NSR key together
 	Snapshots(ctx context.Context, share ShareID) iter.Seq2[Snapshot, error]
 	Settings(ctx context.Context, scope SettingScope) iter.Seq2[Setting, error]
+	AllSettings(ctx context.Context) iter.Seq2[Setting, error] // every scope's settings in one scan, for the node's reconcile (RFC 23 §2.3)
 	PutSetting(ctx context.Context, s Setting, expect uint64) error
 	DeleteSetting(ctx context.Context, scope SettingScope, key string, expect uint64) error // removes an override, so the wider scope's value is effective; raises the settings generation as a put does (RFC 13 §3)
 	Secret(ctx context.Context, id SecretRef, version uint64) (Secret, error) // one version, still sealed; version 0 reads the current one; ErrNotFound once pruned
