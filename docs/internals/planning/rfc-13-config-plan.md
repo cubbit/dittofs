@@ -810,8 +810,8 @@ The write path: the API's settings route checks inside RFC 16's `Write`, so a re
 reads conflicts with a concurrent change (epic 5).
 
 ```go
-func (h *settingsRoutes) put(ctx context.Context, meta metadata.WriteMeta, caller auth.Role, s entity.Setting, expect uint64) error {
-	return h.cp.Write(ctx, meta, func(tx metadata.ControlPlaneTx) error {
+func (h *settingsRoutes) put(ctx context.Context, meta entity.WriteMeta, caller auth.Role, s entity.Setting, expect uint64) error {
+	return h.cp.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
 		if err := node.Settings.Check(tx, caller, settings.Put(s), h.holdsContent); err != nil {
 			return err // config_refused_total; bound ones also config_bound_refusals_total
 		}
@@ -821,8 +821,8 @@ func (h *settingsRoutes) put(ctx context.Context, meta metadata.WriteMeta, calle
 
 // A delete is checked as the change it is: to the effective value it leaves, the wider row or
 // the default, so a bound key or a store location cannot change by removing an override.
-func (h *settingsRoutes) delete(ctx context.Context, meta metadata.WriteMeta, caller auth.Role, scope entity.SettingScope, key string, expect uint64) error {
-	return h.cp.Write(ctx, meta, func(tx metadata.ControlPlaneTx) error {
+func (h *settingsRoutes) delete(ctx context.Context, meta entity.WriteMeta, caller auth.Role, scope entity.SettingScope, key string, expect uint64) error {
+	return h.cp.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
 		if err := node.Settings.Check(tx, caller, settings.Delete(scope, key), h.holdsContent); err != nil {
 			return err
 		}
@@ -831,7 +831,7 @@ func (h *settingsRoutes) delete(ctx context.Context, meta metadata.WriteMeta, ca
 }
 
 // pkg/settings (epic 3), in this order.
-func (t Table) Check(tx metadata.ControlPlaneTx, caller auth.Role, w Write, holds HoldsContent) error {
+func (t Table) Check(tx entity.ControlPlaneTx, caller auth.Role, w Write, holds HoldsContent) error {
 	sec, key, err := t.lookup(w.Key, w.Scope) // longest section prefix on a dot boundary; unknown key, wrong scope, newer Schema (RFC 13 §2.3)
 	if err != nil {
 		return err
@@ -964,7 +964,7 @@ func (p *Provider) Seal(ctx context.Context, role Role, kind entity.SecretKind, 
 //	if err != nil {
 //		return err
 //	}
-//	return cp.Write(ctx, meta, func(tx metadata.ControlPlaneTx) error {
+//	return cp.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
 //		// ...the record or setting naming ref...
 //		return tx.PutSecret(s, s.Version-1) // raises CFGGEN; a concurrent seal since: ErrGenerationMismatch, not retried
 //	})
