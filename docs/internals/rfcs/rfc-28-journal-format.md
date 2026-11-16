@@ -902,11 +902,11 @@ checks its size against the cap and, where the platform reports it, that no
 extent is left unallocated or unwritten; one that fails is unlinked and made
 again rather than adopted. A re-adopted spare whose header slot or trailer slot
 is not zeros — a recycle interrupted before its zeroing was synced — has both
-slots zeroed and synced before a stream may take it ([§2.2](#2.2%20Segments)). Recovery **MUST** re-adopt a segment that passes as a spare ([§2.2](#2.2%20Segments)), unless a sync mark names its id ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) or its header names a predecessor whose seal is not proven, counted first toward the reconcile spare while the journal has none ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), then toward the
+slots zeroed and synced before a stream may take it ([§2.2](#2.2%20Segments)). Recovery **MUST** re-adopt a segment that passes as a spare ([§2.2](#2.2%20Segments)), unless a sync mark names its id ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) or its header names a predecessor still on disk whose seal is not proven, counted first toward the reconcile spare while the journal has none ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), then toward the
 headroom, the repack reserve or a stream's next segment, and **MUST NOT** treat it
 as an orphan: unlinking it after an age gate would leave the reserves the re-appends
 below draw on short at the very start that needs them. A record-less take whose
-header names a predecessor whose seal is not proven is held rather than re-adopted,
+header names a predecessor still on disk whose seal is not proven is held rather than re-adopted,
 and left as it stands: that header is the evidence its predecessor was sealed ([§2.2](#2.2%20Segments)),
 and until a phase writes the open's verdict on the predecessor before the spares
 phase runs, re-adopting would zero the only surviving header that names it — the
@@ -915,9 +915,11 @@ and a truncation could read as a crash once the missing-end refusal no longer st
 it. A take is held when its predecessor's seal is not proven; a take whose
 predecessor's seal is proven is re-adopted. A later open re-adopts a held take
 once its predecessor's seal is proven — its marker verifies on the device after
-the sync and direct re-read, or its trailer verifies naming a footer just past
-the marker ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) — or the predecessor is
-unlinked, and a held take counts toward the headroom, so a stream's held takes are
+the sync and direct re-read, or its trailer, re-read on the device after a sync
+for a named predecessor, verifies naming a footer just past the marker
+([§3.3](#3.3%20Torn%20and%20corrupt%20records)); a trailer the page cache alone holds
+proves nothing, for it may carry bytes a power cut can still drop — or the
+predecessor is unlinked, and a held take counts toward the headroom, so a stream's held takes are
 never leaked: the reserves keep the caps the crash left behind. The exception is
 withdrawn once the phases that write the open's loss records and the reconcile
 record run before the spares phase: the predecessor's verdict is then durable
