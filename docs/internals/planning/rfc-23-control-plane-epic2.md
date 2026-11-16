@@ -8,15 +8,15 @@ fields), §2.3.2 (a share's removal, the store's side), §3 (`ControlPlane` with
 its retention), §5.2 (the last admin, the store's side), §5.3 (the sign-in counts' expiry), §6
 (append-only, retention), and §10's CP5, CP6, CP11 and CP12 on the store's side.
 **Track:** C.
-**Epic 2 estimate: 13 subtasks, 35.25 man-days.**
+**Epic 2 estimate: 13 subtasks, 35.5 man-days.**
 **Depends on:** S1 (E1 merged): v1 deleted, so nothing but v2 calls kvstore's view. The RFC 13
 plan's epic 1, if it lands first, gives the settings view's delete and the secrets view (D4).
 **Blocks:** E5, which starts on T2.2's user fields and builds on T2.4 and T2.9; E4's write path
 (T2.4, T2.5) and its reads of operations, audit and node status; E3's counters, node status,
 runner, sweep and the removals it drives (T2.6–T2.8, T2.10–T2.12); the RFC 13 plan's epics 2 and
 4, partly, which write the `Node` record, commit secrets with `tx.PutSecret` and count on a user's
-deletion removing its secrets; the RFC 18 plan's epics 2 and 3, which raise and read the principals
-generation.
+deletion removing its secrets; the RFC 18 plan's epic 2, which raises the principals generation in its own transactions (T2.6's
+helper), and its epic 3, which waits for the raise but reads no `PGEN`.
 
 ---
 
@@ -196,6 +196,7 @@ them.
 | R50 | A share's create or rebind reads its namespace's record tracked and refuses a namespace that names no remote block store | MUST | RFC 8 §2.1; RFC 16 §3 (`ControlPlaneTx`); RFC 23 §3.2 | T2.13 |
 | R52 | `ControlPlaneTx.Now` is the transaction's store time, fixed for its life, so a value derived from it (a token's not-before) and the tracked reads beside it commit together | MUST | RFC 16 §3 (`ControlPlaneTx`); RFC 23 §5.3 | T2.4 |
 | R53 | Whether any share names a namespace is one range read of `NS‖ns‖share‖`, written and deleted in the share's own transaction and read under a range guard, so a share created into the namespace concurrently conflicts with its deletion | MUST | RFC 16 §4.2 (`NS‖ns‖share‖ShareID`), §3; RFC 23 §3.3 | T2.13 |
+| R54 | The `Installation` record holds `NTLMOff`, `Off` (the settings generation of the last write turning `identity.ntlm` off) and `Deleted` (the `identity.nt-hash-delete` that completed since), read tracked inside a write so RFC 23 §4.1's rule for turning NTLM back on sits in the write's transaction | MUST | RFC 16 §2.3 (`Installation`), §4.2 (`IN`); RFC 23 §4.1 | T2.2 |
 | R51 | The `Installation` record names the management API's signing key as `SigningKey`, a `SecretRef` owned by the record under `signing_key` | MUST | RFC 16 §2.3 (`Installation`, `SecretOwner`) | T2.2 |
 
 **Nodes**
@@ -259,6 +260,10 @@ them.
   and T2.4 puts `DeleteSetting`, `PutSecret` and `PruneSecret` on `ControlPlaneTx` as well. If this
   epic lands first, the RFC 13 plan adds its writes to `ControlPlaneTx` in the change that adds
   them to the view. Neither waits for the other. No marker. Prior art: none needed.
+- **D20, `S‖id‖gv` meets the RFC 18 plan's epic 3 the same way.** That epic's T3.6 also writes
+  the grant-list version in `SetGrant`. Whichever lands second keeps the other's write, and T2.3
+  removes the `ponytail:` above `SetGrant` only if it is still there. No marker. Prior art: none
+  needed.
 - **D5, kvstore exports no series.** The store has no metrics today, and the count that matters is
   of committed records, which the caller knows when `Write` returns. So the API counts
   `audit_records_total` (E4), and the sweep returns how many records of each kind it deleted, for
@@ -425,20 +430,22 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 
 ### T2.2 The API's fields on users, groups, shares and quotas
 
-**Subtask T2.2 estimate: 1.25 man-days.**
+**Subtask T2.2 estimate: 1.5 man-days.**
 
 - **Track:** C. **Depends on:** nothing.
-- **Covers:** R1, R2, R3, R12, R13, R14, R51.
+- **Covers:** R1, R2, R3, R12, R13, R14, R51, R54.
 - **Deliverables:** in `entity`: `User.Role APIRole`, `User.NotBefore time.Time`,
   `User.MustChange bool`, `User.Email string` (D12), `User.Generation`, `Group.Generation`,
   `Share.Generation`, `Quota.Version`, `Installation.SigningKey SecretRef` (R51), shaped as
-  `MachinePassword` and written by E5; `type APIRole uint8` with none, viewer, operator, admin. The
+  `MachinePassword` and written by E5; `Installation.NTLMOff` with `Off` and `Deleted` (R54), which
+  E4 writes `Off` of and the RFC 18 plan's epic 2 `Deleted`, read tracked through
+  `ControlPlaneTx.Installation()`, added with the other tracked reads in T2.4; `type APIRole uint8` with none, viewer, operator, admin. The
   user, group, share-info, quota and installation codecs change in place at version 1 (D1), with D1's
   `decision:` marker at `maxFormat`. Consumed by T2.3, which raises the generations, and by E5,
   which starts on the user fields.
 - **Acceptance criteria:**
   - A user written with every new field reads back with each, `NotBefore` at whole seconds; an
-    installation's `SigningKey` reads back as written.
+    installation's `SigningKey` and `NTLMOff` read back as written.
 - **Tests:** one golden vector per changed codec (catches a changed byte, R12); a truncated value,
   a trailing byte and a newer version each refused by name (R13); the five decoders in
   `FuzzControlPlaneValues` (rule 2). The conformance case writes and reads every new field through
@@ -456,7 +463,7 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   `DeleteNetgroup` and `PutSetting`, and `entity.Alloc` on `PutUser` and `PutGroup` (D2);
   `RemoveGrant` renamed `DeleteGrant(ctx, share, p, expect)`; `entity.ErrGenerationMismatch`. The
   `S‖id‖gv` sub-kind, written by `SetGrant` and `DeleteGrant` as the writing commit's version,
-  with the `ponytail:` above `SetGrant` removed. `liveShare`, which `PutShare`, `SetGrant`,
+  with the `ponytail:` above `SetGrant` removed if it is still there (D20). `liveShare`, which `PutShare`, `SetGrant`,
   `PutExportPolicy` and `SetQuota` already call, added to `DeleteGrant` and a share-scoped
   `PutSetting` (R17). Every body moved into an unexported function of a `kv.Txn` (D3). Every caller
   on `feat/storage-v2` updated, the tests of `internal/vfs` and `pkg/block/engine` among them (38
@@ -482,7 +489,7 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 **Subtask T2.4 estimate: 4.25 man-days.**
 
 - **Track:** C. **Depends on:** T2.3.
-- **Covers:** R8, R11, R12, R13, R18, R19, R20, R21, R22, R25, R26, R47, R52.
+- **Covers:** R8, R11, R12, R13, R18, R19, R20, R21, R22, R25, R26, R47, R52, R54.
 - **Deliverables:**
   ```go
   // in entity (D2)
@@ -495,6 +502,7 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   	User(p Principal) (User, bool, error)
   	Share(id ShareID) (Share, bool, error)
   	EnabledAdmins() (int, error) // D18
+	Installation() (Installation, error) // tracked: NTLMOff for RFC 23 §4.1's rule
 	Now() time.Time // kv.Txn's Now: on feat/storage-v2 taken when the transaction starts, fixed for its life; a retry gets a new one
   	DeleteUser(p Principal, expect uint64) error // the mark
   	DeleteGroup(p Principal, expect uint64) error
@@ -544,6 +552,8 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
     `FaultKV` delay after its `EnabledAdmins` read so both read two, each refusing when it would
     leave none: exactly one commits, on Badger in memory and on disk (catches an untracked count,
     R47);
+  - a `Write` reading `Installation()` and a concurrent write of `NTLMOff`, held open by a
+    `FaultKV` delay, conflicting so the first retries and sees the new value (R54);
   - `Now` read twice in one `Write` returns one value, at or after the store time before the
     `Write` began, and a conflict's retry returns a later one (R52);
   - golden vectors, refusal cases and `FuzzControlPlaneValues` entries for the audit codec and the
@@ -580,11 +590,14 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 
 **Subtask T2.6 estimate: 1.5 man-days.**
 
-- **Track:** C. **Depends on:** T2.3.
-- **Covers:** R11, R27, R28.
+- **Track:** C. **Depends on:** T2.4.
+- **Covers:** R11, R12, R13, R27, R28.
 - **Deliverables:** `Position uint64` on `Setting`, `Share`, `User` and `Group`, each written with
   the value its transaction raised its counter to; the `PGEN` kind, raised once per transaction
-  that writes a principal, a membership or a `PX‖` row; `Store.Nodes() Nodes` and
+  that writes a principal, a membership or a `PX‖` row, through one unexported helper over
+  `kv.Txn` that every such transaction calls, `Write`'s and those that commit through their own
+  `kv.Update` (the RFC 18 plan's `Minter.Create`, its epic 2, and its renames, its epic 6), so R28
+  holds off the `Write` path too; `Store.Nodes() Nodes` and
   `Nodes.Counters(ctx) (Counters, error)`, reading `CFGGEN`, `SL`, `PGEN` and, while it is absent,
   a claim generation of zero; `SettingsGeneration` and `ShareList` deleted, their suite cases moved
   to `Counters` (D16). Consumed by T2.8, which adds the rest of `Nodes`, by E3's reconcile and by
@@ -596,7 +609,9 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   read back against `Counters` (catches a position written outside the change's transaction, R27);
   one `Write` that puts a user, adds two memberships and changes a `PX‖` row raising `PGEN` by
   exactly one, and both principals it wrote carrying the same position (catches a raise per write,
-  R28); the four versioned kinds raising none (R27). No double.
+  R28); the four versioned kinds raising none (R27); golden vectors for the four codecs
+  `Position` changes and the `PGEN` key, and their `FuzzControlPlaneValues` entries (R12, R13). No
+  double.
 
 ### T2.7 The operation record
 
@@ -800,8 +815,9 @@ flowchart TD
   T2_3 --> T2_4["T2.4 Write, ControlPlaneTx, audit record"]
   T2_4 --> T2_5["T2.5 Idempotency record"]
   T2_5 --> C1(["after T2.5: E4's write path"]):::sync
-  T2_3 --> T2_6["T2.6 Positions, PGEN, Counters"]
+  T2_4 --> T2_6["T2.6 Positions, PGEN, Counters"]
   T2_4 --> T2_7["T2.7 Operation record"]
+  T2_6 --> C5(["after T2.6: the RFC 18 plan's epic 2 T2.3 and epic 3 T3.8 start"]):::sync
   T2_6 --> T2_8["T2.8 Node records, node view, node epoch"]
   T2_7 & T2_8 --> C2(["after T2.8: E3's status, counters and runner"]):::sync
   T2_4 --> T2_9["T2.9 Sessions, tokens, sign-in counts"]
@@ -814,7 +830,8 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-Checkpoints: after T2.2, E5 starts on the user fields; after T2.5, E4's write path commits through
+Checkpoints: after T2.2, E5 starts on the user fields; after T2.6, the RFC 18 plan's epic 2
+T2.3 and epic 3 T3.8 start; after T2.5, E4's write path commits through
 `Write`; after T2.8, E3 reads the counters, writes its status and runs operations; after T2.9, E5's
 sessions and throttling have their records; after T2.12, E3 drives every removal. T2.1 waits on
 nothing and can run beside T2.2–T2.9.
@@ -823,14 +840,15 @@ nothing and can run beside T2.2–T2.9.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T2.1, T2.2, T2.3 | 6.25 | — | the suite's reopen and clock, the fields, and `expect` on every write with every caller |
+| 1 | T2.1, T2.2, T2.3 | 6.5 | — | the suite's reopen and clock, the fields, and `expect` on every write with every caller |
 | 2 | T2.4, T2.5 | 5.75 | PR 1 | `Write` with its audit and idempotency records: E4's write path |
 | 3 | T2.6, T2.7, T2.8 | 6 | PR 2 | positions, operations and nodes: what E3's node reads and writes |
 | 4 | T2.9, T2.10 | 5.25 | PR 3 | E5's records and the sweep that expires them |
-| 5 | T2.11, T2.12 | 8 | PR 4 | the removals past the mark, both resumed from their records |
-| 6 | T2.13 | 4 | PR 2 | the namespace record and its index, which E3's and E4's share refusal and store delete read |
+| 5 | T2.11 | 3 | PR 4 | a user's and a group's deletion, which the RFC 18 plan's epic 2 T2.6 waits for |
+| 6 | T2.12 | 5 | PR 4 | a share's removal past the mark, resumed from its record |
+| 7 | T2.13 | 4 | PR 2 | the namespace record and its index, which E3's and E4's share refusal and store delete read |
 
-PR 6 can be open beside PRs 3 to 5. A suggestion only: one pull request per subtask works as well.
+PR 5 and PR 6 can be open at once; PR 7 beside PRs 3 to 6. A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
