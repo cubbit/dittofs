@@ -97,8 +97,7 @@ func successorSet(own []SegmentInfo) map[core.SegmentID]bool {
 }
 
 // unverifiedSet is the id of every segment whose header slot did not verify,
-// the zero-header ones included. Only a scanned one is visited by the classing:
-// an unnamed zero-header segment has no scan and takes no fate.
+// the zero-header ones included.
 func unverifiedSet(att Attached) map[core.SegmentID]bool {
 	unverified := make(map[core.SegmentID]bool, len(att.Unverified)+len(att.ZeroHeader))
 	for _, id := range slices.Concat(att.Unverified, att.ZeroHeader) {
@@ -113,8 +112,9 @@ func unverifiedSet(att Attached) map[core.SegmentID]bool {
 // the open's reader for the probes it makes, and fails the open when a range
 // names no record it can class: see refuseRange and refuseMissingEnd.
 //
-// An unnamed zero-header segment is never scanned and takes no fate or damage
-// here: the spare phase owns it.
+// An unnamed unverified-header segment in which no record header verifies
+// anywhere and no seal marker does is a spare: it takes no fate or damage
+// here, the spare phase owning it.
 func classifyTails(rd *reader, identity core.JournalID, named, unverified map[core.SegmentID]bool, scans []segmentScan) (tails, error) {
 	// The refusal is the first one met, so the visit order is the segment
 	// id's, never the listing order the rebuild answered in.
@@ -124,6 +124,20 @@ func classifyTails(rd *reader, identity core.JournalID, named, unverified map[co
 	var out tails
 	for _, sc := range scans {
 		id := sc.ID
+		// decision: this skip ignores sc.Ranges, so a segment whose records all
+		// rotted, its bytes not zero, goes silent too: no fate and no damage.
+		// It holds because no verifying header anywhere means nothing on the
+		// segment can be proven synced or reported, and the spare phase owns
+		// its bytes. Overturned by a spare re-adoption rule that needs more
+		// than the record-less test.
+		// A spare: no record header verifies anywhere in the segment, no seal
+		// marker does, and no successor names it, so nothing in it was ever
+		// durable. Re-adopting it is the spares phase's, a step the run lists but does
+		// not yet build, so until then nothing changes it; it has no fate here.
+		if unverified[id] && !named[id] && !sc.Sealed && sc.VerifiedEnd == format.SegmentHeaderSize &&
+			len(sc.Aside) == 0 && len(sc.Dropped) == 0 {
+			continue
+		}
 		damaged, tornSlot, tail := false, false, false
 		tailAt := sc.VerifiedEnd // where a torn tail starts: before any torn drop at it
 		var footer format.Footer
@@ -136,12 +150,13 @@ func classifyTails(rd *reader, identity core.JournalID, named, unverified map[co
 			case named[id] || sc.Sealed:
 				// A segment already sealed holds no torn slot: a crash
 				// cannot tear bytes below a seal, so a refused range in
-				// it is corruption. One no successor names was never offered
-				// its catalog, so its footer is read here: the entries inside
+				// it is corruption. One no successor names, or whose header
+				// slot did not verify, was never offered its catalog, so its
+				// footer is read here: the entries inside
 				// the range are the records it held, each confined as a
 				// corrupt drop. A range with no entry in it names no record.
 				var confined []format.CatalogEntry
-				if !named[id] {
+				if !named[id] || unverified[id] {
 					if !footerRead {
 						footer, footerOK, err = readFooter(rd, identity, sc)
 						if err != nil {
@@ -166,6 +181,12 @@ func classifyTails(rd *reader, identity core.JournalID, named, unverified map[co
 					// issues refuses the open, never a corrupt drop.
 					if nerr := checkNumbers(headerFromEntry(id, e)); nerr != nil {
 						return tails{}, nerr
+					}
+					// A reconcile kind refuses the open on every other path
+					// too: this journal cannot yet feed one, so a footer
+					// entry naming one is never confined as a corrupt drop.
+					if e.Kind > format.KindForget {
+						return tails{}, fmt.Errorf("%w: a %s record in segment %d", core.ErrNotImplemented, e.Kind, id)
 					}
 					sc.Dropped = append(sc.Dropped, droppedRecord{
 						Entry: e, Header: headerFromEntry(id, e), Synced: true,

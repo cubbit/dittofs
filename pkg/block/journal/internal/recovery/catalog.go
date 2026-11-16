@@ -45,8 +45,9 @@ func headerFromEntry(segID core.SegmentID, e format.CatalogEntry) format.RecordH
 // just below the footer's entries, the entry count and every entry's checksum
 // before any record is fed, and each entry feeds through the same conversion
 // the header walk feeds. The content kinds an entry stands for feed from the
-// header the entry claims, their records never read back — that is the
-// point of the catalogue. The header-only kinds whose bodies the index or
+// header the entry claims, their bodies never read back — that is the
+// point of the catalogue — but each record's header is read at the entry's
+// offset and held to it. The header-only kinds whose bodies the index or
 // the later phases need — a clone target's 56-byte spec, a loss's flags, a
 // hold's, unhold's or stamp's cut — are read at the entry's own offset and
 // verified whole, and the header each lands on is checked against the entry
@@ -59,10 +60,10 @@ func headerFromEntry(segID core.SegmentID, e format.CatalogEntry) format.RecordH
 // the footer names still attaches. An entry its own verified record
 // contradicts is the footer's fault, not the record's: the entries cannot
 // be trusted to bound the records, so the segment is demoted to the walk,
-// which reads what the segments say. The refusals that stay the whole open's are the scan's own: a read the
-// bound did not clear, a counter or sequence number this journal never
-// issues, a format this binary does not read, and the reconcile kinds
-// this journal cannot yet feed.
+// which reads what the segments say. The refusals that stay the whole open's
+// are the scan's own: a read the bound did not clear, a counter or sequence
+// number this journal never issues, a format this binary does not read, and
+// the reconcile kinds this journal cannot yet feed.
 //
 // A trailer that yields no verifying footer answers (zero scan over the
 // segment's measured size, false, nil): the caller scans, and the two
@@ -103,8 +104,6 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 		End:             footer.Offset - format.SealMarkerSize,
 		Size:            size,
 	}
-	// The last entry ends at the seal marker.
-	sc.RecordsEnd, sc.VerifiedEnd = sc.End, sc.End
 	for _, e := range footer.Entries {
 		// The entry's numbers meet the largest-value rule first, exactly as
 		// a decoded header's numbers would: whatever its kind does with
@@ -168,6 +167,30 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 			}
 			sc.Records = append(sc.Records, rec)
 		case e.Kind <= format.KindUnmark: // the remaining content kinds, 1-6, 8 and 9
+			// The record's header is read at the entry's offset and held to
+			// the entry's word, though its body is not: an entry is a summary
+			// a writer derived from the record, and one naming another file
+			// than its record's header would index what the walk over the
+			// same bytes does not. The 96-byte header is the cost; the body
+			// is the catalogue's saving. A header that does not verify has
+			// no word to hold the entry to, so the entry stands in for it.
+			//
+			// ponytail: every content entry costs one 96-byte header read, the
+			// price of holding each entry to its record's own word, so a
+			// lying entry demotes rather than serving a wrong file, and it
+			// gives back part of the catalogue's speed. Upgrade to checking a
+			// sample, or trusting entries whose segment trailer and
+			// neighbours all verified, once an open-time profile shows the
+			// catalogue path paying for it.
+			h, herr := readRecordHeaderAt(rd, identity, info.ID, e.RecordOffset)
+			switch {
+			case herr == nil:
+				if merr := entryMatchesHeader(e, h); merr != nil {
+					return segmentScan{ID: info.ID, Size: size}, false, nil
+				}
+			case !errors.Is(herr, core.ErrCorrupt):
+				return sc, false, herr
+			}
 			rec, rerr := contentRecord(rd, identity, headerFromEntry(info.ID, e))
 			if rerr != nil {
 				return sc, false, rerr
@@ -188,22 +211,14 @@ func catalogSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segm
 				}
 				return sc, false, herr
 			}
-			body := make([]byte, h.BodySize())
-			n, rerr := rd.ReadAt(format.SegmentName(info.ID), body, e.RecordOffset+format.RecordHeaderSize)
-			if rerr != nil && !errors.Is(rerr, io.EOF) {
-				// A read the bound did not clear is the open's refusal,
-				// answered as itself: the open refuses on the collected
-				// range, never on a verdict over bytes no read returned.
-				return sc, false, rerr
-			}
-			// A short read reaches VerifyRecordBody with the bytes it
-			// returned, and the length it reports names the damage. None
-			// of these kinds carries a version in its body — only a clone
-			// target's AsOf can, and that body the arm above reads — so
-			// every refusal here is the record's own damage.
-			if _, verr := format.VerifyRecordBody(body[:n], identity, h); verr != nil {
-				sc.drop(e, h, fmt.Errorf("%w: segment %d: the %s at %d: %v",
-					core.ErrCorrupt, info.ID, e.Kind, e.RecordOffset, verr))
+			// A read the bound did not clear is the open's refusal, answered
+			// as itself. None of these kinds carries a version in its body,
+			// so every other failure is the record's own damage.
+			if verr := asideBodyErr(rd, identity, h); verr != nil {
+				if !errors.Is(verr, core.ErrCorrupt) {
+					return sc, false, verr
+				}
+				sc.drop(e, h, verr)
 				continue
 			}
 			sc.Aside = append(sc.Aside, asideRecord{Header: h})

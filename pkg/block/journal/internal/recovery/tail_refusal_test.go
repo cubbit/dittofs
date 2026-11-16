@@ -1,7 +1,6 @@
 package recovery
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -20,11 +19,11 @@ import (
 
 // wantRefused runs the open over r and holds the three things every refusal
 // answers: an error that is core.ErrNotImplemented, text naming the segment
-// and the range's exact offsets, and a directory of the same files and bytes.
+// and the range's exact offsets, and a directory of the same files and bytes,
+// a spare's temporary name apart (assertOnlySpareUnlinks).
 func wantRefused(t *testing.T, r *rig, id core.SegmentID, off, end int64) {
 	t.Helper()
 	before := r.snapshot()
-	listing := slices.Clone(r.listing())
 	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
 	if !errors.Is(err, core.ErrNotImplemented) {
 		t.Fatalf("Run got err %v, want one wrapping core.ErrNotImplemented", err)
@@ -34,14 +33,7 @@ func wantRefused(t *testing.T, r *rig, id core.SegmentID, off, end int64) {
 			t.Errorf("Run's refusal reads %q, want it to name %q", err.Error(), want)
 		}
 	}
-	if got := r.listing(); !slices.Equal(got, listing) {
-		t.Errorf("the directory's listing got %v after the refusal, want %v", got, listing)
-	}
-	for name, b := range before {
-		if got := r.fileBytes(name); !bytes.Equal(got, b) {
-			t.Errorf("%s changed under a refused open, want its bytes untouched", name)
-		}
-	}
+	assertOnlySpareUnlinks(t, before, r)
 }
 
 // namingSeg makes the segment that names predecessor pred.
@@ -328,6 +320,47 @@ func TestARottedRecordHeaderInAnUnnamedSealedSegmentIsConfinedByItsFooter(t *tes
 		}
 		if got := err.Error(); !strings.Contains(got, "segment 1") {
 			t.Errorf("Run's refusal reads %q, want it to name segment 1", got)
+		}
+	})
+	t.Run("an entry in the range names a reconciled record", func(t *testing.T) {
+		// Every other path refuses a reconcile kind, so the footer entry the
+		// classing would confine refuses the open too, never a corrupt drop.
+		reconciled := rec(16, func(r *raw.Record) {
+			r.Offset, r.Length = 0, 0
+			r.Reconciled = &raw.ReconciledBody{Segment: 1, Start: 48, End: 96}
+		})
+		b, _ := buildSealed(1, tailRec(200, 0x4100), reconciled, tailRec(202, 0xc100))
+		b[endA] ^= 0xff // the reconciled record's header
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, b)
+		_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+		if !errors.Is(err, core.ErrNotImplemented) {
+			t.Fatalf("Run got err %v, want one wrapping core.ErrNotImplemented", err)
+		}
+		for _, want := range []string{format.KindReconciled.String(), "segment 1"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("Run's refusal reads %q, want it to name %q", err.Error(), want)
+			}
+		}
+	})
+	t.Run("a named segment whose header slot did not verify is read by its footer too", func(t *testing.T) {
+		// No catalogue is ever offered to an unverified-header segment, so the
+		// classing reads the footer of a named one as it does an unnamed one's.
+		b, _ := plant()
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, damageHeader(b))
+		r.plantSeg(2, namingSeg(2, 1))
+		st := runTails(t, r)
+		if len(st.Tails.Corrupt) != 1 {
+			t.Fatalf("Corrupt got %+v, want exactly B", st.Tails.Corrupt)
+		}
+		if c := st.Tails.Corrupt[0]; c.Segment != 1 || !c.Drop.Synced || c.at() != endA {
+			t.Errorf("Corrupt[0] got segment %d synced %v at %d, want segment 1, synced, at %d", c.Segment, c.Drop.Synced, c.at(), endA)
+		}
+		if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+			t.Errorf("Damaged got %v, want [1]", st.Tails.Damaged)
 		}
 	})
 	t.Run("the footer's checksum is broken", func(t *testing.T) {

@@ -111,21 +111,18 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 		limit = math.MaxInt64
 	}
 	// The unverified-header segments' records verify by identity, segment
-	// and offset whatever their header slot says, so they scan too: a
-	// record a later sync proved synced is never lost to a slot nobody
-	// wrote. A zero-header segment scans only when a successor names it: the
-	// successor proves it was sealed, so its records may be whole behind the
-	// zeroed slot. An unnamed one is a spare, and no proof of a record exists
-	// without its header durable first, so it is never read.
+	// and offset whatever their header slot says, so they scan too, the
+	// zero-header ones named or not: a record a later sync proved synced is
+	// never lost to a slot nobody wrote, and a segment is a spare only where
+	// no record header verifies anywhere in it, which only a scan shows.
+	// The cost is that an all-zero spare is read to its end by the walk's
+	// forward search, up to the whole pool's size at every open; that is
+	// accepted, the search bounded by the largest in-flight reservation
+	// being the upgrade that would withdraw it.
 	named := successorSet(st.Attached.Own)
 	segs := slices.Clone(st.Attached.Own)
-	for _, id := range st.Attached.Unverified {
+	for _, id := range slices.Concat(st.Attached.Unverified, st.Attached.ZeroHeader) {
 		segs = append(segs, SegmentInfo{ID: id, Unverified: true})
-	}
-	for _, id := range st.Attached.ZeroHeader {
-		if named[id] {
-			segs = append(segs, SegmentInfo{ID: id, Unverified: true})
-		}
 	}
 	out, err := rebuildIndex(ctx, rd, expect, segs, named, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan)
 	if err != nil {

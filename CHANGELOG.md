@@ -23,8 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that verifies is read by scanning it, as one with no footer is. The open
   still refuses a named predecessor that ends without its seal marker, at any
   length, and a range inside a sealed segment that no footer names.
-- **The journal's open no longer reads its all-zero spare segments.** Each one
-  cost a full read of the segment at every open.
 
 ## [0.36.0] — 2026-10-19
 

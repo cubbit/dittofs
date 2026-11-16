@@ -730,10 +730,15 @@ func TestCatalogReadsTheHeaderOnlyKindsAtTheirEntry(t *testing.T) {
 func TestCatalogDemotesASegmentWhoseEntryContradictsItsRecord(t *testing.T) {
 	for _, row := range []struct {
 		name   string
+		idx    int // the victim's entry the row falsifies
 		mutate func(*format.CatalogEntry)
 	}{
-		{"seq", func(e *format.CatalogEntry) { e.Seq += 1 }},
-		{"extent", func(e *format.CatalogEntry) { e.Extent.Off += 64 }},
+		{"clone target seq", 0, func(e *format.CatalogEntry) { e.Seq += 1 }},
+		{"clone target extent", 0, func(e *format.CatalogEntry) { e.Extent.Off += 64 }},
+		{"loss seq", 3, func(e *format.CatalogEntry) { e.Seq += 1 }},
+		// A write whose record names one file and whose entry another: the
+		// entry is no more trusted for a content kind than for the rest.
+		{"write file", 5, func(e *format.CatalogEntry) { e.File = workFiles[3] }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			open := func(forceScan bool) (State, []core.SegmentID) {
@@ -744,7 +749,7 @@ func TestCatalogDemotesASegmentWhoseEntryContradictsItsRecord(t *testing.T) {
 				victim := segs[1]
 				name := format.SegmentName(victim)
 				es := slices.Clone(ents[victim])
-				row.mutate(&es[0]) // the clone target's entry
+				row.mutate(&es[row.idx])
 				b := r.fileBytes(name)
 				// The seal is rebuilt over the lying entry, its checksums
 				// recomputed: a footer a writer could have bungled.

@@ -52,7 +52,9 @@ type segmentScan struct {
 	End int64
 	// RecordsEnd is where the last verifying record ends:
 	// format.SegmentHeaderSize when the segment holds none, End for a sealed
-	// or catalogued scan, whose last record ends at the seal marker.
+	// scan, whose last record ends at the seal marker. A catalogued scan
+	// leaves it, and VerifiedEnd, zero: it is always of a named, sealed
+	// segment, which the classing never reads them of.
 	RecordsEnd int64
 	// Ranges holds the byte ranges the walk attached nothing from, as the
 	// walk reported them, ascending; a catalogued scan has none.
@@ -174,6 +176,19 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 			}
 			sc.Records = append(sc.Records, r)
 		case h.Kind <= format.KindForget: // the aside kinds, 10–14
+			// The fixed-body kinds are verified here as the catalogue verifies
+			// them, so the two sources agree on a record whose body rotted;
+			// a forget has no body. A drop carries no Synced: the classing
+			// proves it, torn or corrupt.
+			if h.Kind != format.KindForget {
+				if verr := asideBodyErr(rd, identity, h); verr != nil {
+					if !errors.Is(verr, core.ErrCorrupt) {
+						return sc, verr
+					}
+					sc.Dropped = append(sc.Dropped, droppedRecord{Header: h, Err: verr})
+					continue
+				}
+			}
 			sc.Aside = append(sc.Aside, asideRecord{Header: h})
 		default: // the reconcile kinds, 15 and 16
 			return sc, fmt.Errorf("%w: a %s record in segment %d", core.ErrNotImplemented, h.Kind, info.ID)
@@ -263,6 +278,23 @@ func contentRecord(rd *reader, identity core.JournalID, h format.RecordHeader) (
 	r.Segment = h.Segment
 	r.At = uint32(h.Offset)
 	return r, nil
+}
+
+// asideBodyErr reads a loss, hold, unhold or stamp record's fixed body at the
+// record's own offset through the bound and verifies it whole: nil when it
+// verifies, an error wrapping core.ErrCorrupt naming the segment and offset
+// when it does not or the file ends inside it, a read the bound did not clear
+// as itself.
+func asideBodyErr(rd *reader, identity core.JournalID, h format.RecordHeader) error {
+	body := make([]byte, h.BodySize())
+	n, rerr := rd.ReadAt(format.SegmentName(h.Segment), body, h.Offset+format.RecordHeaderSize)
+	if rerr != nil && !errors.Is(rerr, io.EOF) {
+		return rerr
+	}
+	if _, verr := format.VerifyRecordBody(body[:n], identity, h); verr != nil {
+		return fmt.Errorf("%w: segment %d: the %s at %d: %v", core.ErrCorrupt, h.Segment, h.Kind, h.Offset, verr)
+	}
+	return nil
 }
 
 // cloneSpec reads a clone target record's 56-byte body at the record's own
@@ -369,8 +401,8 @@ type rebuilt struct {
 // names, offered to a segment only when another own segment's verified
 // header names it as predecessor, or the header walk, which every other
 // segment takes. A named segment whose trailer holds no verifying footer, or
-// whose footer an entry of which its own record contradicts, is
-// demoted to the walk, and the two sources must give the same answer — the
+// one of whose footer entries its own record contradicts, is demoted to
+// the walk, and the two sources must give the same answer — the
 // catalogue is an accelerator, not a second opinion. forceScan turns the
 // catalogue off, the test-only switch that makes every segment take the
 // walk so a check can compare the sources' answers.

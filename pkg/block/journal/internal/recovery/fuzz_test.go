@@ -91,6 +91,12 @@ func FuzzOpen(f *testing.F) {
 		b[at] ^= 0x01
 		f.Add(b)
 	}
+	// The seed segment with its header slot cleared: the rebuild scans a
+	// zero-header segment too, so the property must hold over its records.
+	zeroedHeader := append([]byte(nil), valid.b...)
+	clear(zeroedHeader[:format.SegmentHeaderSize])
+	f.Add(zeroedHeader)
+
 	seg1 := sealedSeg(1, 0, fuzzRecs(1, 1)...)
 	f.Fuzz(func(t *testing.T, seg2 []byte) {
 		r := newRig(t)
@@ -109,8 +115,21 @@ func FuzzOpen(f *testing.F) {
 		for _, sc := range st.Rebuilt.Scans {
 			size[sc.ID] = sc.Size
 		}
-		if len(st.Tails.Fates) != len(st.Rebuilt.Scans) {
-			t.Fatalf("Fates %+v, want one per scanned segment (%d)", st.Tails.Fates, len(st.Rebuilt.Scans))
+		// The spare's exact shape is unit-owned; this only bounds the fates.
+		// One fate per scanned segment, a spare apart: a scan in which no
+		// record header verified and nothing was dropped takes none.
+		fated := map[core.SegmentID]bool{}
+		for _, f := range st.Tails.Fates {
+			fated[f.ID] = true
+		}
+		for _, sc := range st.Rebuilt.Scans {
+			spare := sc.VerifiedEnd == format.SegmentHeaderSize && len(sc.Aside) == 0 && len(sc.Dropped) == 0
+			if !fated[sc.ID] && !spare {
+				t.Fatalf("Fates %+v, want one for scanned segment %d, which holds a record", st.Tails.Fates, sc.ID)
+			}
+		}
+		if len(st.Tails.Fates) > len(st.Rebuilt.Scans) {
+			t.Fatalf("Fates %+v, want no more than one per scanned segment (%d)", st.Tails.Fates, len(st.Rebuilt.Scans))
 		}
 		syncedThrough := map[core.SegmentID]int64{}
 		for _, sc := range st.Rebuilt.Scans {
@@ -171,6 +190,8 @@ func FuzzOpen(f *testing.F) {
 				corrupt[c.at()] = true
 			}
 		}
+		// Segment 2 has no scan only where the attach pass did not take it as
+		// an own, unverified or zero-header segment, so no record of it indexes.
 		if _, scanned := size[2]; !scanned {
 			return
 		}

@@ -16,51 +16,85 @@ func zeroHeader(b []byte) []byte {
 	return b
 }
 
-// A segment's header is written before its first record, so every proof a
-// record can carry needs the header durable first: a zeroed header hides no
-// synced record and the rebuild scans none. A spare nobody took, all zeros at
-// the segment cap, is the usual one, and reading it whole at every open would
-// cost the pool's whole size.
-func TestAZeroHeaderSegmentIsNeverScanned(t *testing.T) {
-	t.Run("an all-zero spare", func(t *testing.T) {
-		r := newRig(t)
-		r.writeFormat()
-		r.plantSeg(1, buildSeg(1, tailRec(200, 0x4100)))
-		r.plantSeg(2, make([]byte, 1<<16))
-		st := runUnchanged(t, r, 2)
-		if len(st.Attached.ZeroHeader) != 1 || st.Attached.ZeroHeader[0] != 2 {
-			t.Fatalf("Attached.ZeroHeader got %v, want [2]", st.Attached.ZeroHeader)
+// provenTwo is segment id's two records, the second's synced-through covering
+// both, and where they end.
+func provenTwo(id core.SegmentID) ([]byte, int64) {
+	endA := endAfter(tailRec(200, 0x4100))
+	endB := endAfter(tailRec(200, 0x4100), tailRec(201, 0x8100))
+	return buildSeg(id, syncedRec(200, 0x4100, endA), syncedRec(201, 0x8100, endB)), endB
+}
+
+// A zeroed header slot is a header that does not verify, and a segment is a
+// spare only where no record header verifies anywhere in it: the records
+// behind the slot attach on their own checksums, named by a successor or not,
+// and a verifying record's synced-through past the slot makes it damage.
+func TestAnUnnamedZeroHeaderSegmentsRecordsAreScanned(t *testing.T) {
+	seg, endB := provenTwo(2)
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, zeroHeader(seg))
+	st := runUnchanged(t, r, 2)
+	if len(st.Attached.ZeroHeader) != 1 || st.Attached.ZeroHeader[0] != 2 {
+		t.Fatalf("Attached.ZeroHeader got %v, want [2]", st.Attached.ZeroHeader)
+	}
+	if got := planted(st); got != 2 {
+		t.Errorf("the index holds %d entries, want 2: the zero-header segment's records attach", got)
+	}
+	if sc, ok := scanOf(st, 2); !ok || sc.RecordsEnd != endB {
+		t.Errorf("the scan of segment 2 got RecordsEnd %d (found %v), want %d", sc.RecordsEnd, ok, endB)
+	}
+	// Unsealed and whole: the tail's proof owns it, and its slot was proven
+	// written by the synced-through that passes it.
+	wantFate(t, st, 2, fateIntact, 0)
+	wantDamaged(t, st, 2)
+}
+
+// A zero-header segment whose records verify but whose header slot no proof
+// covers is no spare: the records attach, nothing is damaged, and the header is
+// torn, so the segment ends with no tail to cut.
+func TestAnUnnamedZeroHeaderSegmentWithNoProofIsEndedNotSkipped(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(2, zeroHeader(buildSeg(2, tailRec(200, 0x4100), tailRec(201, 0x8100))))
+	st := runUnchanged(t, r, 2)
+	if got := planted(st); got != 2 {
+		t.Errorf("the index holds %d entries, want 2: the records attach", got)
+	}
+	wantFate(t, st, 2, fateEnded, 0)
+	wantDamaged(t, st)
+}
+
+// An all-zero spare at the segment cap scans empty: it holds no record, so it
+// takes no fate and no damage, and the open changes nothing.
+func TestAnAllZeroSpareScansEmptyAndTakesNoFate(t *testing.T) {
+	const spares = 6
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, buildSeg(1, tailRec(200, 0x4100)))
+	for id := core.SegmentID(2); id < 2+spares; id++ {
+		r.plantSeg(id, make([]byte, 1<<16))
+	}
+	before := r.snapshot()
+	st := runTails(t, r)
+	assertOnlySpareUnlinks(t, before, r)
+	if len(st.Attached.ZeroHeader) != spares {
+		t.Fatalf("Attached.ZeroHeader got %v, want %d spares", st.Attached.ZeroHeader, spares)
+	}
+	for id := core.SegmentID(2); id < 2+spares; id++ {
+		if _, ok := scanOf(st, id); !ok {
+			t.Errorf("Rebuilt.Scans holds no scan of the all-zero spare %d, want an empty one", id)
 		}
-		if sc, ok := scanOf(st, 2); ok {
-			t.Errorf("Rebuilt.Scans holds a scan of the all-zero spare (%+v), want none", sc)
+	}
+	if got := planted(st); got != 1 {
+		t.Errorf("the index holds %d entries, want segment 1's 1", got)
+	}
+	wantFate(t, st, 1, fateIntact, 0)
+	for _, f := range st.Tails.Fates {
+		if f.ID != 1 {
+			t.Errorf("Tails.Fates holds %+v for a spare, want none: the spare phase owns it", f)
 		}
-		if got := planted(st); got != 1 {
-			t.Errorf("the index holds %d entries, want segment 1's 1", got)
-		}
-		wantFate(t, st, 1, fateIntact, 0)
-		for _, f := range st.Tails.Fates {
-			if f.ID == 2 {
-				t.Errorf("Tails.Fates holds %+v for the spare, want none: the spare phase owns it", f)
-			}
-		}
-		wantDamaged(t, st)
-	})
-	t.Run("spares add no scans", func(t *testing.T) {
-		const spares = 6
-		r := newRig(t)
-		r.writeFormat()
-		r.plantSeg(1, buildSeg(1, tailRec(200, 0x4100)))
-		for id := core.SegmentID(2); id < 2+spares; id++ {
-			r.plantSeg(id, make([]byte, 1<<16))
-		}
-		st := runTails(t, r)
-		if len(st.Attached.ZeroHeader) != spares {
-			t.Fatalf("Attached.ZeroHeader got %v, want %d spares", st.Attached.ZeroHeader, spares)
-		}
-		if got := len(st.Rebuilt.Scans); got != 1 {
-			t.Errorf("Rebuilt.Scans holds %d scans, want 1: the %d spares are never scanned", got, spares)
-		}
-	})
+	}
+	wantDamaged(t, st)
 }
 
 // A named predecessor whose header slot reads zero is scanned: the successor

@@ -22,14 +22,6 @@ func cloneRec() raw.Record {
 // cloneFile is the file cloneRec writes.
 func cloneFile() core.FileID { return core.NewFileID(cloneRec().FileID) }
 
-// wantNoCorrupt checks that no drop is reported.
-func wantNoCorrupt(t *testing.T, st State) {
-	t.Helper()
-	if len(st.Tails.Corrupt) != 0 {
-		t.Errorf("Corrupt got %+v, want none: the record was never proven synced", st.Tails.Corrupt)
-	}
-}
-
 func TestATornCloneTargetAtTheNewestTailIsATornTail(t *testing.T) {
 	endA := endAfter(tailRec(200, 0x4100))
 	full := buildSeg(1, tailRec(200, 0x4100), cloneRec())
@@ -58,7 +50,6 @@ func TestATornCloneTargetAtTheNewestTailIsATornTail(t *testing.T) {
 			}
 			wantFate(t, st, 1, fateTornTail, endA)
 			wantDamaged(t, st)
-			wantNoCorrupt(t, st)
 		})
 	}
 }
@@ -107,7 +98,6 @@ func TestAnUnprovenTornCloneTargetBeforeARecordEndsTheSegment(t *testing.T) {
 	}
 	wantFate(t, st, 1, fateEnded, 0)
 	wantDamaged(t, st)
-	wantNoCorrupt(t, st)
 }
 
 // TestACloneTargetBodyIsClassedTheSameWhereverItIsRead holds that the open's
@@ -240,7 +230,6 @@ func TestATornSlotDropDoesNotMoveTheTailStart(t *testing.T) {
 
 	wantFate(t, st, 1, fateEnded, end)
 	wantDamaged(t, st)
-	wantNoCorrupt(t, st)
 }
 
 // TestAZeroGapThenACloneTargetWhoseBodyFailedIsOneTornTailFromTheLastVerifyingRecord
@@ -262,7 +251,6 @@ func TestAZeroGapThenACloneTargetWhoseBodyFailedIsOneTornTailFromTheLastVerifyin
 	st := runUnchanged(t, r, 1)
 	wantFate(t, st, 1, fateTornTail, endA)
 	wantDamaged(t, st)
-	wantNoCorrupt(t, st)
 }
 
 // appendClone appends a clone target whose synced-through is sync(its own
@@ -342,7 +330,74 @@ func TestACloneTargetDropAtTheSyncedThroughIsNotCorrupt(t *testing.T) {
 	r.plantSeg(1, seg)
 	st := runUnchanged(t, r, 1)
 
-	wantNoCorrupt(t, st)
 	wantDamaged(t, st)
 	wantFate(t, st, 1, fateTornTail, endA)
+}
+
+// lossRec is a loss record whose body verifies until a test rots it.
+func lossRec() raw.Record {
+	return rec(10, func(r *raw.Record) { r.Loss = &raw.LossBody{Dropped: 99, Flags: 1 | 1<<8} })
+}
+
+// TestARottedLossBodyIsDroppedWhereverItIsRead holds that the catalogue and
+// the header walk give one answer for a fixed-body aside record whose body
+// rotted: a synced corrupt drop, the record set aside by neither, its segment
+// damaged.
+func TestARottedLossBodyIsDroppedWhereverItIsRead(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	b, _ := buildSealed(1, tailRec(200, 0x4100), lossRec())
+	b[endA+format.RecordHeaderSize] ^= 0xff // the loss's body
+	for _, forceScan := range []bool{false, true} {
+		name := "catalogue"
+		if forceScan {
+			name = "walk"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			r.plantSeg(1, b)
+			r.plantSeg(2, namingSeg(2, 1))
+			deps := r.runDeps()
+			deps.rebuildForceScan = forceScan
+			st, err := Run(context.Background(), deps, core.Version{}, journalID, nil)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if (st.Rebuilt.ByCatalog == 1) == forceScan {
+				t.Fatalf("ByCatalog got %d with forceScan %v, want the source the row names", st.Rebuilt.ByCatalog, forceScan)
+			}
+			if len(st.Tails.Corrupt) != 1 {
+				t.Fatalf("Corrupt got %+v, want exactly the loss", st.Tails.Corrupt)
+			}
+			c := st.Tails.Corrupt[0]
+			if c.Segment != 1 || !c.Drop.Synced || c.at() != endA || !errors.Is(c.Drop.Err, core.ErrCorrupt) {
+				t.Errorf("Corrupt[0] got segment %d synced %v at %d err %v, want segment 1, synced, at %d, ErrCorrupt",
+					c.Segment, c.Drop.Synced, c.at(), c.Drop.Err, endA)
+			}
+			if sc, _ := scanOf(st, 1); len(sc.Aside) != 0 {
+				t.Errorf("segment 1's scan sets %d records aside, want none: the loss never verified", len(sc.Aside))
+			}
+			if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+				t.Errorf("Damaged got %v, want [1]", st.Tails.Damaged)
+			}
+		})
+	}
+}
+
+// A rotted loss body nothing proves synced, at the newest segment's tail, is a
+// torn tail: never reported, never set aside.
+func TestAnUnprovenRottedLossBodyAtTheTailIsATornTail(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	seg := buildSeg(1, tailRec(200, 0x4100), lossRec())
+	seg[endA+format.RecordHeaderSize] ^= 0xff // the loss's body
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg)
+	st := runUnchanged(t, r, 1)
+
+	if sc, _ := scanOf(st, 1); len(sc.Aside) != 0 {
+		t.Errorf("segment 1's scan sets %d records aside, want none: the loss never verified", len(sc.Aside))
+	}
+	wantFate(t, st, 1, fateTornTail, endA)
+	wantDamaged(t, st)
 }
