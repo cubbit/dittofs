@@ -177,9 +177,10 @@ that needs it.
 - **A12. Fifth review's fixes** (RFC 18 §2.6, §3.1, §3.3, §3.4, §3.5, §4.1, §5.1, §7.2, §7.3, §8.1,
   §9.2 and §10; RFC 13 Appendix B's `identity.netbios_name` and `identity.directory`; RFC 17 §4.3;
   RFC 23 §2.1's sketch; RFC 18's two figures):
-  - identity's `Deps` takes the one `*kvstore.Store`, as `vfs.Deps.Meta` does; §8.1 gives
-    `PasswordHashes` and `NTLMSetting` their shapes; RFC 17 §4.3 lists `ErrLogonFailure` and
-    `ErrUnknownPrincipal`; `Keys.Session`'s chain is stated on `Keys` (§3.1);
+  - identity's `Deps` takes the one `*kvstore.Store`, as `vfs.Deps.Meta` does, through the `Store`
+    interface identity declares (A19); §8.1 gives `PasswordHashes` and `NTLMSetting` their shapes;
+    RFC 17 §4.3 lists `ErrLogonFailure` and `ErrUnknownPrincipal`; `Keys.Session`'s chain is stated
+    on `Keys` (§3.1);
   - the throttle keys on the user part without its domain or realm, so every spelling of one user
     shares a count, and §7.3's row and §10's are mended;
   - a mint's re-runs continue while each binds a principal the one before did not, and a name
@@ -291,6 +292,44 @@ that needs it.
   - an operator's `krb` link takes the directory's SID from a fresh answer only, as a rename does;
   - O3 records the tree kept across a guest or anonymous re-authentication, RFC 22's to close; O5
     closes what #4050 now names; O9 records which `identity.directory` row is kept.
+- **A19. Leftovers from the epic breakdowns' reviews** (RFC 18 §2.6, §3.1, §3.5, §3.7, §4.1, §6.1,
+  §8.1, §10 and §11; RFC 16 §2.3 and §3; RFC 7 §7.4):
+  - a principal marked deleted signs in as an unknown name does, logon outcome `logon_failure`, and
+    only a `Disabled` one gets `disabled`: RFC 16 §3's `DeleteUser` deletes the name indexes in the
+    mark's transaction (RFC 23 epic 2's R39, R40), so sign-in finds it by no name (epic 4's R14);
+  - `ReadOnlyCause`'s values are `ReadOnlyNotNarrowed`, `ReadOnlyGrant`, `ReadOnlyShare` and
+    `ReadOnlyClient`, the prefixed names epic 1 declares;
+  - `Deps.Store` is a `Store` interface identity declares with two methods, `Principals()
+    kvstore.Principals` and `ControlPlane() kvstore.ControlPlane`, the second for
+    `ControlPlane.Write`. Each later epic adds a method only when its first reader lands, so the
+    `Minter` view, `Minter() kvstore.Minter` (RFC 16 §3), arrives with E2, which builds it on
+    `*kvstore.Store`. It has no `Close`, so the server cannot close what it was handed, which the
+    type holds rather than a test; a node passes its `*kvstore.Store` unchanged, which implements
+    every view. It is not narrowed further to a read interface: `ErrUnavailable`'s tests run over
+    a real kvstore on `kvtest.FaultKV`, which a narrower interface would not make easier;
+  - §2.6 no longer calls the `Minter`'s writes identity's only ones: identity also writes the
+    installation's join and rotation records (epic 7's D5) and the scheduled rotation's operation
+    with its audit record (epic 7's D11), all through `ControlPlane.Write`; §4.1's one-path rule now
+    names the principal records it mints;
+  - RFC 16 §3's `Principals.SharePolicy` is dropped: resolution builds `SharePolicy` from one
+    `ShareIndex.Share` read, whose share carries `GrantVersion` (RFC 23's plan's epic 2, D20), and
+    RFC 16 §2.3's `Share` gains that field. `ManageGIDs` leaves `SharePolicy`, and `ExportPolicy`
+    marks it deferred with `AUTH_SYS` to RFC 21's plan, as the built `ExportPolicy` has none
+    (this plan's deferral ledger); RFC 18 §6.1's `Resolver` and §11's slice 2 cite the read;
+  - §8.1's `NTLMSetting` names its field `Generation`, as the built setting record does
+    (`entity.Setting.Generation`), so RFC 23's tracked read compares one field;
+  - §3.1's `NTLMAuthenticate` drops `MIC` and `AVFlags`, which nothing authenticates: identity
+    reads the flags from `NTResponse`, which the proof authenticates, and the MIC from `Raw`, and
+    §3.5's MIC rule and §10's "NTLM MIC" row name those two sources;
+  - §6.1's `Caller` gains `Group`, the credential's primary group a create stamps, as admission's
+    `entity.Identity.Group` carries it today: an unsquashed claimed caller's gid, zero otherwise.
+    Without it, a file an `AUTH_SYS` caller creates gets its stored primary group, not its gid,
+    and the caller loses the access it had through that gid. `Resolve` takes the narrowing cause,
+    a `ReadOnlyCause`, in place of `readOnly bool`, and `ReadOnlyShare` splits into
+    `ReadOnlyShare` (the policy's `ReadOnly` flag) and `ReadOnlyClient` (a client rule), so the
+    cause admission knows reaches `Caller` and maps one to one onto RFC 7's `NarrowedByShare` and
+    `NarrowedByClient`. The change that routes admission's resolution through `Deps.Identity`
+    lands after this one. Epic 1's T1.3 signature and epic 3's T3.6 follow it.
 
 ## 1. Introduction
 
@@ -312,14 +351,14 @@ What replaces what:
 | config keys `kerberos.*`, `ldap.*`, `identity.machine_sid`; `DITTOFS_KERBEROS_*`, `DITTOFS_LDAP_*` | `identity.*` settings and `Secret` records (RFC 13 Appendix B, §7) | refused by the RFC 13 plan's bootstrap loader |
 | `test/integration/ad-dc`'s tests importing `pkg/identity/ldap` and `internal/auth/netlogon` | the directory's and domain controller's suites against real AD | rewritten in epics 6 and 7 |
 | `dfs netlogon test` | RFC 23's `test-directory` action and the secure channel's health in node status (§6 O5) | deleted with `cmd/dfs`'s v1 bodies by RFC 23's plan's epic 1 |
-| `dfsctl idmap` and `dfsctl identity-provider` | `Spell`, `Find` and grants by principal (RFC 18 §4.1); the `identity.directory` record | deleted with `cmd/dfsctl`'s v1 bodies by RFC 23's plan's epic 1; not rebuilt |
+| `dfsctl idmap` and `dfsctl identity-provider` | `Spell`, `Find` and grants by principal (RFC 18 §4.1); the `identity.directory` record | deleted with `cmd/dfsctl`'s v1 bodies by RFC 23's plan's epic 6 (T6.1); not rebuilt |
 | `feat/storage-v2`'s local user names holding `@` (`users.go` accepts `alice@corp`) | refused `ErrInvalid` (RFC 18 §4.6), so an NTLM name with `@` is never local | dropped in epic 2 |
 | develop's join options `ou`, `spns`, `dns_host_name` | `ou` and `dns_host_name` as the online join's parameters (RFC 18 §3.5); RFC 18 §3.3's fixed `cifs/` and `host/` names | `spns` dropped: another name keeps an imported keytab (RFC 18 §3.3) |
 | develop's `kerberos.machine_account.account_name` and `dc_address` | `identity.netbios_name` (A2); the directory record's domain controller address (A3) | refused by the RFC 13 plan's bootstrap loader |
 | develop's LDAP `idmap: rid` mode, a uid derived from a RID and so stable across installations | uids and gids allocated from `identity.id_range` (RFC 18 §2.3) | dropped |
 | develop's LDAP `nested_groups`, `max_group_results` and `timeout` | nesting always followed (`tokenGroups`, D6), the group cap (RFC 18 §2.5), RFC 18 §5.1's query timeout and bound | dropped as settings |
 | develop's `User.DisplayName` and `LastLogin` | none: RFC 16 §2.3's `User` holds neither | dropped |
-| `dfsctl user create --host-uid` and `--host-gid` | the uid and gid of RFC 23 §3.5's user write | rebuilt by RFC 23's plan |
+| `dfsctl user create --host-uid` and `--host-gid` | `--uid` and `--gid`, the uid and gid of RFC 23 §3.5's user write | rebuilt by RFC 23's plan's epic 6 (T6.5) |
 | squash modes `root_to_admin`, `all_to_admin` | `Squash` of `none`, `root` or `all` (RFC 18 §6.2), admin only from a share grant (ID6) | dropped |
 | develop's `kerberos.max_clock_skew` | a fixed 5 minutes (RFC 18 §3.3) | dropped |
 | develop's `kerberos.identity_mapping.default_uid`, a uid for a principal not in the static map | a refusal: a Kerberos name no step maps is refused (RFC 18 §4.2) | dropped |
@@ -331,7 +370,7 @@ What replaces what:
 | develop's foreign-SID→uid table (`handlers/sid_mappings.go`) | a directory SID minted as a principal (RFC 18 §4.4); another domain's SID is `ErrUnknownPrincipal` | dropped |
 | develop's SID-keyed share grants with no local user (`models/sid_share_permission.go`) | a grant names a principal by ID; a directory SID resolves first through `resolve-principal` (RFC 23 §3.5) | dropped |
 | develop's netgroups (`dfsctl netgroup`) | RFC 16's `Netgroup` records in a share's export policy (RFC 23 §3.2) | kept, by RFC 23's plan; NFS-side, so this plan builds nothing for them |
-| `dfsctl netlogon status`, `dfsctl netlogon rotate` | the secure channel's health in node status; RFC 23's `rotate-machine-password` (§6 O5) | deleted with `cmd/dfsctl`'s v1 bodies by RFC 23's plan's epic 1 |
+| `dfsctl netlogon status`, `dfsctl netlogon rotate` | the secure channel's health in node status; RFC 23's `rotate-machine-password` (§6 O5) | deleted with `cmd/dfsctl`'s v1 bodies by RFC 23's plan's epic 6 (T6.1) |
 | develop's NFS RPCSEC_GSS Kerberos | RFC 18 §3.3 over RFC 21 §10 | deferred with the NFS side (§6 O2) |
 | `docs/guide/identity.md` and `windows-ad-setup.md`: `msDS-SupportedEncryptionTypes` `0x1F`, an exported keytab with RC4 keys; `configuration.md`'s `kerberos.*` and `DITTOFS_KERBEROS_*`; `smb.md`'s machine account and map-to-guest; `security.md` | `0x18` and AES keys only (A4); the join and the derived keytab (A3); `identity.*` (RFC 13 Appendix B); no map to guest (RFC 18 §3.6) | rewritten in epic 7, but `configuration.md`, which #4059's epic 2 rewrites and epic 7 adds identity's section to (#4059's O8) |
 
@@ -971,7 +1010,7 @@ key := callerKey{id.Key(), share, pol.Version, pol.GrantsVersion, s.identityGen(
 ch := s.callers.DoChan(key, func() (any, error) { // single flight per key (§7.1)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resolveBound) // not the first caller's ctx
 	defer cancel()
-	return s.deps.Identity.Resolve(ctx, id, pol, readOnly) // stale while it ran: once more, served (§7.2)
+	return s.deps.Identity.Resolve(ctx, id, pol, narrowed) // stale while it ran: once more, served (§7.2)
 })
 select { // each waiter keeps its own deadline
 case r := <-ch:
@@ -980,7 +1019,7 @@ case <-ctx.Done():
 	return nil, ctx.Err()
 }
 
-func (s *Server) Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, ro bool) (*Caller, error) {
+func (s *Server) Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, ro ReadOnlyCause) (*Caller, error) {
 	st := s.state.Load() // read before any store read; stamps Built (§7.2)
 	c := &Caller{Built: st.Generation}
 	if err := id.consistent(); err != nil { // a forwarded identity inconsistent with itself: ErrInvalid (§2.6), first
@@ -990,7 +1029,7 @@ func (s *Server) Resolve(ctx context.Context, id Identity, p metadata.SharePolic
 	if err != nil {                   //    ErrAccess (§4.3); Secret with NTLM off refused (§3.5)
 		return nil, err
 	}
-	c.Mapped, c.Principal = m, squash(p, m, id.Proof) // 2. squash (§6.2)
+	c.Mapped, c.Principal, c.Group = m, squash(p, m, id.Proof), group(p, m, id) // 2. squash (§6.2)
 	c.Groups, c.DenyOnly, c.Fresh, err = s.groups(ctx, st, c.Principal, id.Evidence) // 3. (§6.3)
 	if err != nil {
 		return nil, err // incomplete closure: ErrUnavailable
@@ -1075,7 +1114,7 @@ err = ids.VerifyPassword(ctx, p, password) // that principal's password; ErrLogo
 u, err := ids.Account(ctx, p)             // per call, under the generation (§7.2)
 
 // A password set (RFC 23 §3.5).
-h, err := identity.NewHashes(u, password, ntlm) // ntlm: NTLMSetting{On, Revision} as read; pure: NT hash only while on
+h, err := identity.NewHashes(u, password, ntlm) // ntlm: NTLMSetting{On, Generation} as read; pure: NT hash only while on
 // Seal wraps the next version and returns RFC 16's Secret, writing nothing;
 // both are committed inside the Write below, so a refused write stores neither.
 pw, err := secrets.Seal(ctx, storage, entity.SecretPassword, owner(u, "password"), u.Password, h.Password, secrets.Meta{}) // under storage (A5)
@@ -1089,12 +1128,12 @@ if h.NTHash != nil {
 	}
 }
 // The conditional write is #4050's Write, RFC 16 §3's one API transaction:
-// a tracked read of identity.ntlm, refused if its revision moved (§3.5), so
+// a tracked read of identity.ntlm, refused if its generation moved (§3.5), so
 // no NT hash lands after NTLM-off's deletion has scanned past its user. An
 // expect conflict on either PutSecret is ErrConflict: the caller seals again.
 err = store.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
 	s, _, err := tx.Setting(installation, "identity.ntlm") // tracked read
-	if err != nil || s.Generation != ntlm.Revision {
+	if err != nil || s.Generation != ntlm.Generation {
 		return orConflict(err)
 	}
 	if err := tx.PutSecret(pw, pw.Version-1); err != nil {

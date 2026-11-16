@@ -467,6 +467,10 @@ type Share struct {
 	// only by a re-home and an import, never by PutShare.
 	Namespaces []NamespaceGen
 	Write      uint32 // as wide as a ref's nsgen, which RFC 6 §2.1 owns
+	// GrantVersion is the share's grant-list version, S‖id‖gv (§4.2), its own
+	// record: moved by every grant set or deleted on the share, never by
+	// PutShare. A cache of the share's grants keys on it.
+	GrantVersion uint64
 }
 
 // ShareGrant is one principal's access to one share; RFC 18 §6.4 reads a
@@ -528,7 +532,9 @@ type ExportPolicy struct {
 	Clients       []ClientRule  // first match decides; no match refuses. Empty admits every client
 	Squash        Squash        // none, root, all; root by default (RFC 18 §6.2)
 	Anonymous     Principal     // what a squashed, AUTH_NONE or anonymous-session caller acts as; by default the well-known anonymous principal (§2.2, 0x0C). A deleted one fails closed: calls it would serve are refused (RFC 18 §6.2)
-	ManageGIDs    bool          // false by default; true replaces an AUTH_SYS caller's gids with its principal's store memberships (RFC 18 §3.2)
+	// ManageGIDs (RFC 18 §3.2: an AUTH_SYS caller's gids replaced by its
+	// principal's store memberships) is deferred with AUTH_SYS to RFC 21's
+	// plan; the record has no such field until that plan adds it.
 	ReadOnly      bool          // false by default; true narrows every caller's share access to read-only at admission, whatever its grant or client rule (RFC 17 §4.9, RFC 7 §7.4)
 	SMB           SMBShareFlags // encrypt, hidden from enumeration, continuously available, access-based enumeration (RFC 19 §3.7), guest access (RFC 22 §5.1); all off by default
 	Version       uint64        // raised by every change; the authorisation cache key carries it
@@ -1200,9 +1206,9 @@ The views are defined where their semantics are:
 | `Existence`, `Content`, `Blocks` | the write path, the engine's commits and refs, GC | [RFC 6](rfc-6-block-metadata.md) |
 | `OpenRecords` (`metadata.Clients`, `metadata.Opens`, not open state's `openstate.Clients` and `openstate.Opens` views over them) | client records, durable opens and their locks, delete pending, the restart-notice number, and `NextID(kind)`, which issues client, open and lock IDs from `IDS‖kind`; never caching grants or watches, which are never durable | [RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring) |
 | `ShareIndex` | the share list as admission and the pseudo-filesystem read it on every call: one share with its export policy, a share by name or path, the list and its version, a netgroup; it writes nothing | this RFC, for [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees) |
-| `Principals`, `Records`, `Minter` | identity's lookups, a user's record and a share's policy, its reads of one group's record, and the only writes it makes | this RFC, for [RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle) |
+| `Principals`, `Records`, `Minter` | identity's lookups and a user's record, its reads of one group's record, and the principal records it mints | this RFC, for [RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle) |
 | `Lifecycle` | a device's journal identity and sync marks, the version limits, the incarnations | this RFC, for [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) |
-| `ControlPlane`, `Inspect` | the management API, trusted reads by ID | this RFC |
+| `ControlPlane`, `Inspect` | the management API, and identity's control-plane writes through `ControlPlane.Write` ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)); trusted reads by ID | this RFC |
 
 ```go
 // Principals is what authentication and the chokepoint read (RFC 18). Groups
@@ -1222,20 +1228,18 @@ type Principals interface {
 	// RFC 18 §2.1) has no user record: resolution does not call User for it,
 	// so neither is ever refused as disabled or deleted.
 	User(ctx context.Context, p Principal) (User, error)
-	// SharePolicy reads what resolution needs of one share in one snapshot, so a
-	// squash, an anonymous principal and the versions a cache keys on never come
-	// from two different commits.
-	SharePolicy(ctx context.Context, share ShareID) (SharePolicy, error)
 }
 
 // SharePolicy is a share's identity policy as resolution reads it (RFC 18 §6).
+// Resolution builds it from one ShareIndex.Share read, the share and its
+// export policy in one snapshot, so a squash, an anonymous principal and the
+// versions a cache keys on never come from two different commits.
 type SharePolicy struct {
 	Share         ShareID
 	Squash        Squash
 	Anonymous     Principal
-	ManageGIDs    bool
 	PolicyVersion uint64 // ExportPolicy.Version
-	GrantVersion  uint64 // S‖id‖gv
+	GrantVersion  uint64 // Share.GrantVersion, S‖id‖gv
 }
 
 // Records reads one group's record by ID: the spellings and the deleted mark
@@ -1250,8 +1254,9 @@ type Records interface {
 // The installation's identity, which the pseudo-filesystem's handles digest
 // (RFC 7 §6.1), is read through the store's Installation, not a view.
 type ShareIndex interface {
-	// Share is one share with its state and its export policy, read in one
-	// snapshot. A share being removed is still found, in its state.
+	// Share is one share with its state, its grant-list version and its
+	// export policy, read in one snapshot. A share being removed is still
+	// found, in its state.
 	Share(ctx context.Context, id ShareID) (Share, ExportPolicy, error)
 	ByName(ctx context.Context, name string) (ShareID, error) // NX‖share‖name, under §2.3.1's fold: what an SMB client names
 	ByPath(ctx context.Context, path string) (ShareID, error) // NP‖path: what an NFS client mounts
@@ -1260,8 +1265,8 @@ type ShareIndex interface {
 	Netgroup(ctx context.Context, name string) (Netgroup, bool, error) // false: none, which a rule naming it treats as failing closed
 }
 
-// Minter is identity's only write path: the records a first sign-in or lookup
-// mints (RFC 18 §2.4, §4.1, §5.1). It never overwrites. Create writes one
+// Minter is identity's write path for principals: the records a first
+// sign-in or lookup mints (RFC 18 §2.4, §4.1, §5.1). It never overwrites. Create writes one
 // batch, every record one sign-in, lookup or resolution needs, in one
 // transaction: it draws each record's IDs its Alloc names from their counters
 // inside it, raises the principals generation (PGEN, §4.2) once whatever the
