@@ -2423,3 +2423,69 @@ func TestTargetsAdoptClassesNamesTheFillOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestPoolHoldTakenStandsInTheHeadroom: the count the open's held takes stand
+// at rides the pool's own shortage decisions over the headroom. With a
+// headroom target of one and one held take, the refill pass that starts the
+// pool makes nothing — the held take occupies the target's only slot — while
+// the same pool over a zero count fills it; and the recycle's reservation
+// answers the reserve the headroom's taken slot leaves short, never the
+// headroom itself.
+func TestPoolHoldTakenStandsInTheHeadroom(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("the refill makes no spare a held take occupies the slot of", func(t *testing.T) {
+		seam, _, _, p := poolOf(t, segment.Targets{Headroom: 1}, noMax, 0, nil)
+		p.HoldTaken(1)
+		p.Start()
+		defer p.Stop()
+
+		// A bounded wait is the assertion, for the pass may make nothing and
+		// so move no counter: it has run once its kick drained and a yield
+		// had it, and a spare made over the held take would show in the
+		// counters or the creates either side of it.
+		creates := seam.Calls(kit.OpCreate)
+		for range 1 << 20 {
+			if !p.KickQueuedForTest() && !p.FillingForTest() {
+				// the queued kick behind this check lets the pass run once
+				// more before the wait ends
+				for range 16 {
+					runtime.Gosched()
+				}
+				break
+			}
+			runtime.Gosched()
+		}
+		c := p.Counters()
+		if c.HeadroomBytes != 0 || c.Spares != 0 {
+			t.Fatalf("the pool over a held take reports headroom %d and content %d, want none made: the held take occupies the headroom's only slot", c.HeadroomBytes, c.Spares)
+		}
+		if got, want := seam.Calls(kit.OpCreate), creates; got != want {
+			t.Fatalf("the pool made %d new files over a held take, want %d, the count before: no spare is created for a slot a held take occupies", got, want)
+		}
+
+		// The count standing down frees the slot: the kick HoldTaken sends
+		// fills the headroom it kept empty.
+		p.HoldTaken(0)
+		awaitCounters(t, "the freed headroom refilled", p,
+			func(c segment.PoolCounters) bool { return c.HeadroomBytes == segCap })
+		p.Stop()
+	})
+
+	t.Run("a recycle reserves past the taken headroom, never over it", func(t *testing.T) {
+		_, _, _, p := poolOf(t, segment.Targets{Headroom: 1, Reserve: 1}, noMax, 0, nil)
+		p.HoldTaken(1)
+
+		if c, ok := p.WantRecycleForTest(); !ok || c != segment.Reserve {
+			t.Fatalf("a recycle was wanted for %v over a held-taken headroom, want Reserve: the held take occupies the headroom's only slot", c)
+		}
+		if _, ok := p.WantRecycleForTest(); ok {
+			t.Fatal("a second recycle was wanted over a reserve one reservation fills, want none")
+		}
+		p.RecycleFailedForTest(segment.Reserve)
+		if c, ok := p.WantRecycleForTest(); !ok || c != segment.Reserve {
+			t.Fatalf("after the giveback no recycle was wanted for the reserve, want it short again: %v", c)
+		}
+		p.Stop()
+	})
+}

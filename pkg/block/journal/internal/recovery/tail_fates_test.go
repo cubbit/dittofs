@@ -3,7 +3,6 @@ package recovery
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"slices"
 	"testing"
 
@@ -379,22 +378,21 @@ func TestACataloguedDropIsCorruptAndItsSegmentDamaged(t *testing.T) {
 	}
 }
 
-// TestTheOpenAfterARetainedNamingTakeDecidesItsPredecessorTwiceAlike plants
-// the shape the spares phase holds in place — a predecessor P whose header
-// its record-less successor W names, holding verifying records, a synced
-// clone target whose body rotted, and a rotted seal marker beside it — and
-// runs the open twice: W's naming header is evidence the verdict on P
-// reasons from and P's end is unproven, so the take is withheld both times
-// and its header stays whole, naming P exactly as planted. Both opens read
-// exactly the same directory and both must answer the same way — every
-// acknowledged record P holds reads back through the rebuilt index, the
-// synced target whose body rotted is reported corrupt by its own
-// synced-through, and P is damaged, its rotted marker judged by W's claim —
-// where the take released early would leave the second open reading an
-// unnamed P whose tail is merely torn. An open that lost P's records,
-// misclassed its drop, released the take or served it silently is what this
-// fails.
-func TestTheOpenAfterARetainedNamingTakeDecidesItsPredecessorTwiceAlike(t *testing.T) {
+// TestTheOpenAfterAZeroedNamingSuccessorNamesThePredecessorTruthfully plants
+// the shape the spares phase's re-adoption leaves behind — a predecessor P
+// whose header its record-less successor W names, holding verifying records,
+// a synced clone target whose body rotted, and a rotted seal marker beside
+// it — and runs the open twice: W is adopted and zeroed the first time, and
+// its zeroed header names nothing any more, so the second open reads P as
+// the unnamed segment it now is — one that could have been open at a crash,
+// whose tail is proven on the device rather than trusted. That open must
+// keep every acknowledged record P holds — A reads back through the rebuilt
+// index — still report the synced target whose body rotted as corrupt by its
+// own synced-through, and still cut P's rotted marker as the torn tail it
+// is: the tail starts where the last verifying record ends, so no
+// acknowledged record is in it. A second open that lost P's records,
+// misclassed its drop or served it silently is what this fails.
+func TestTheOpenAfterAZeroedNamingSuccessorNamesThePredecessorTruthfully(t *testing.T) {
 	// P: A's header and body verify synced; the clone target C's header
 	// verifies and its own synced-through covers the whole of it, its body
 	// rotted; the seal marker rotted while the trailer and the footer's
@@ -420,18 +418,13 @@ func TestTheOpenAfterARetainedNamingTakeDecidesItsPredecessorTwiceAlike(t *testi
 
 	// The first open: P is a named predecessor, its rotted marker alone
 	// wrong with its end, so it is damaged and sealed; the synced drop it
-	// holds is corrupt; and W is withheld, its naming header kept exactly as
-	// planted.
-	take := r.fileBytes(format.SegmentName(2))
+	// holds is corrupt; and W is adopted with its two slots zeroed.
 	st := runTails(t, r)
-	if got, want := st.Spares.Held, []core.SegmentID{2}; !slices.Equal(got, want) {
-		t.Fatalf("spares: the take naming P got held %v, want %v", got, want)
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Fatalf("spares: the take naming P got adoptions %v, want %v", got, want)
 	}
-	if got := st.Spares.Adopted; len(got) != 0 {
-		t.Fatalf("spares: the take naming P got adoptions %v, want none: held while its predecessor's end is unproven", got)
-	}
-	if wq := r.fileBytes(format.SegmentName(2)); !bytes.Equal(wq, take) {
-		t.Errorf("spares: the held take's bytes changed, got %x..., want the header that names P exactly as planted", wq[:format.SegmentHeaderSize])
+	if wq := r.fileBytes(format.SegmentName(2)); anyHeaderByte(wq) {
+		t.Errorf("spares: the adopted take's slots were left unzeroed, got %x", wq[:format.SegmentHeaderSize])
 	}
 	wantFate(t, st, 1, fateSealed, 0)
 	if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
@@ -442,34 +435,29 @@ func TestTheOpenAfterARetainedNamingTakeDecidesItsPredecessorTwiceAlike(t *testi
 		t.Fatalf("tails: the first open's Corrupt got %+v, want the synced clone target at %d of segment 1, synced", st.Tails.Corrupt, cOff)
 	}
 
-	// The second open: nothing wrote in the first, so the directory is the
-	// one it began with and the second reads it the same way.
+	// The second open: W's header is zeros on disk, so nothing names P any
+	// more — exactly the predecessor that could have been open at a crash.
 	before := r.snapshot()
 	st2 := runTails(t, r)
 
 	// Every acknowledged record reads back: A attached again, whole.
 	if got := planted(st2); got != 1 {
-		t.Errorf("the second open's index holds %d entries of the predecessor's file, want 1: P keeps every record it holds", got)
+		t.Errorf("the second open's index holds %d entries of the predecessor's file, want 1: the unnamed P keeps every record it holds", got)
 	}
 	if !slices.Equal(st2.Tails.Damaged, []core.SegmentID{1}) {
-		t.Errorf("tails: the second open's Damaged got %v, want [1]: the retained claim keeps the rotted target reported", st2.Tails.Damaged)
+		t.Errorf("tails: the second open's Damaged got %v, want [1]: the rotted target stays reported", st2.Tails.Damaged)
 	}
 	if len(st2.Tails.Corrupt) != 1 || st2.Tails.Corrupt[0].Segment != 1 ||
 		st2.Tails.Corrupt[0].Drop.Header.Offset != cOff || !st2.Tails.Corrupt[0].Drop.Synced {
-		t.Fatalf("tails: the second open's Corrupt got %+v, want the synced clone target at %d of segment 1: a drop its own synced-through names corrupts stays corrupt while its predecessor's end is unproven", st2.Tails.Corrupt, cOff)
+		t.Fatalf("tails: the second open's Corrupt got %+v, want the synced clone target at %d of segment 1: a drop its own synced-through names corrupts still corrupts unnamed", st2.Tails.Corrupt, cOff)
 	}
-	// P is sealed by the claim its held take keeps making, exactly as the
-	// first open judged it — no second, unnamed re-classing of the same
-	// bytes, the verdict stable where the take was released early.
-	wantFate(t, st2, 1, fateSealed, 0)
-	// W stays held — P's marker still does not verify, nothing having
-	// written to repair it — and nothing wrote: the directory is the one the
-	// first open left.
-	if got, want := st2.Spares.Held, []core.SegmentID{2}; !slices.Equal(got, want) {
-		t.Errorf("spares: the re-open held %v, want %v: the predecessor's end is still unproven", got, want)
-	}
-	if got := st2.Spares.Adopted; len(got) != 0 {
-		t.Errorf("spares: the re-open's adoptions got %v, want none: the take stays held", got)
+	// The rotted marker is the torn tail: the cut starts where the last
+	// record that verified ends, so no acknowledged record is in it.
+	wantFate(t, st2, 1, fateTornTail, cOff+int64(len(c.Bytes())))
+	// W is a zero-header spare again — a candidate that re-adopts clean —
+	// and nothing wrote: the directory is the one the first open left.
+	if got, want := st2.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Errorf("spares: the re-open's adoptions got %v, want %v", got, want)
 	}
 	for name, was := range before {
 		if got := r.fileBytes(name); !bytes.Equal(got, was) {
@@ -478,67 +466,60 @@ func TestTheOpenAfterARetainedNamingTakeDecidesItsPredecessorTwiceAlike(t *testi
 	}
 }
 
-// TestARetainedNamingTakeKeepsThePredecessorsVerdictIdentical plants P with
-// one synced record and its seal marker rotted — no clone target, so the
-// marker alone is what is wrong with P — beside W, a record-less take whose
-// header names P, and runs the open twice: the take is withheld for as long
-// as its predecessor is on disk, so both opens read exactly the same
-// directory and both must answer the same way — P reported damaged, sealed
-// by W's claim, its every acknowledged record indexed — while an open that
-// released W early would wipe the only naming header past its first verdict
-// and leave the second open unable to report P at all. The take's unchanged
-// bytes, its missing adoption and the two identical verdicts are what this
-// fails on.
-func TestARetainedNamingTakeKeepsThePredecessorsVerdictIdentical(t *testing.T) {
-	// P: A's header and body verify synced; the seal marker rotted while A
-	// and the trailer stay whole — the marker alone wrong with P's end.
+// TestATrailerProvenPredecessorReleasesItsTake plants P with one synced
+// record and its seal marker rotted alone — the trailer and footer intact,
+// naming a footer just past the marker, the proof the classing's
+// marker-alone exemption reads — beside W, a record-less take whose header
+// names P: the trailer settles P's end on its own bytes, so the take is
+// released at the very open that reads the proof, adopted with its slots
+// zeroed there, never held. The second open — W's header zeros, nothing
+// naming P — re-proves the tail on the device: every acknowledged record
+// still reads back, the rotted marker cut as a torn tail below which no
+// acknowledged record sits, and nothing reported damaged — a re-proof, not
+// an evidence loss, for the verdict the trailer had already settled is
+// settled again from the bytes alone.
+func TestATrailerProvenPredecessorReleasesItsTake(t *testing.T) {
 	endA := endAfter(tailRec(200, 0x4100))
 	a := syncedRec(200, 0x4100, endA)
 	p, ents := buildSealed(1, a)
 	markerOff := len(p) - raw.TrailerSize - raw.CatalogEntrySize*len(ents) - format.SealMarkerSize
-	p[markerOff+31] ^= 0xff
+	p[markerOff+31] ^= 0xff // the marker rotted; the trailer names the footer just past it
 
 	r := newRig(t)
 	r.writeFormat()
 	r.plantSeg(1, p)
 	plantTake(r, 2, 1) // W: the record-less take whose header names P
-	before := r.fileBytes(format.SegmentName(2))
 
-	for open, st := range []State{runTails(t, r), runTails(t, r)} {
-		if got := st.Spares.Adopted; len(got) != 0 {
-			t.Errorf("spares: the %s open adopted the take naming P, got %v, want none: the take is withheld while its predecessor's end is unproven", ordinal(open), got)
-		}
-		if got := st.Spares.Unlinked; len(got) != 0 {
-			t.Errorf("spares: the %s open unlinked the take naming P, got %v, want none", ordinal(open), got)
-		}
-		if got, want := st.Spares.Held, []core.SegmentID{2}; !slices.Equal(got, want) {
-			t.Errorf("spares: the %s open held %v, want %v: the withheld take is the phase's held record", ordinal(open), got, want)
-		}
-		if after := r.fileBytes(format.SegmentName(2)); !bytes.Equal(after, before) {
-			t.Errorf("spares: the %s open changed the take's bytes, got %x..., want the header that names P exactly as planted", ordinal(open), after[:format.SegmentHeaderSize])
-		}
-		if !slices.Contains(r.listing(), format.SegmentName(2)) {
-			t.Errorf("spares: the %s open removed the take naming P; the directory holds %v", ordinal(open), r.listing())
-		}
-		if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
-			t.Errorf("tails: the %s open's Damaged got %v, want [1]: P's marker-alone rot is reported the same way every open", ordinal(open), st.Tails.Damaged)
-		}
-		wantFate(t, st, 1, fateSealed, 0)
-		if got := planted(st); got != 1 {
-			t.Errorf("the %s open's index holds %d entries of P's file, want 1: the acknowledged record reads back", ordinal(open), got)
-		}
+	st := runTails(t, r)
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Fatalf("spares: the take naming a trailer-proven predecessor got adoptions %v, want %v: the trailer settles P's end on its own bytes", got, want)
 	}
-}
+	if got := st.Spares.Held; len(got) != 0 {
+		t.Fatalf("spares: the take naming a trailer-proven predecessor got held %v, want none", got)
+	}
+	if wq := r.fileBytes(format.SegmentName(2)); anyHeaderByte(wq) {
+		t.Errorf("spares: the released take's slots were left unzeroed, got %x", wq[:format.SegmentHeaderSize])
+	}
+	wantFate(t, st, 1, fateSealed, 0)
+	if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+		t.Errorf("tails: the first open's Damaged got %v, want [1]: the marker-alone rot is still reported", st.Tails.Damaged)
+	}
 
-// ordinal names the open its index: first, second, each later one by its
-// number, for the failure messages the rows above spell.
-func ordinal(open int) string {
-	switch open {
-	case 0:
-		return "first"
-	case 1:
-		return "second"
-	default:
-		return fmt.Sprintf("%dth", open+1)
+	before := r.snapshot()
+	st2 := runTails(t, r)
+	if got := planted(st2); got != 1 {
+		t.Errorf("the second open's index holds %d entries of the predecessor's file, want 1: the re-prove keeps every acknowledged record", got)
+	}
+	wantFate(t, st2, 1, fateTornTail, endA)
+	if len(st2.Tails.Damaged) != 0 {
+		t.Errorf("tails: the second open's Damaged got %v, want none: the unnamed re-prove cuts the rotted marker as a torn tail, never a damage report", st2.Tails.Damaged)
+	}
+	if got, want := st2.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Errorf("spares: the re-open's adoptions got %v, want %v: W is a zero-header spare again, adopting clean", got, want)
+	}
+	for name, was := range before {
+		if got := r.fileBytes(name); !bytes.Equal(got, was) {
+			t.Errorf("the second open changed %s's bytes, want the directory the first open left", name)
+		}
 	}
 }

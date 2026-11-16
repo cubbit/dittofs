@@ -25,11 +25,12 @@ import (
 // with the records after it — so re-adopting one loses nothing. A segment a
 // successor names is not among them whatever its records hold: it was sealed
 // before its successor was made. The naming successor itself is withheld
-// while the predecessor it names is still on disk, as the decision below
-// says; once that predecessor is retired — its name on no file, or its whole
-// life re-decided by a later open — the take is a plain spare again, its
-// claim answering nothing on disk, and its re-adoption then leaves the
-// predecessor unnamed at the next open: the unnamed path the classing keeps
+// only while the predecessor it names is still on disk and neither of its
+// own proofs seals its end, as the decision below says; the proof the
+// marker or the trailer makes releases the take at this open, retirement —
+// the predecessor's name on no file — releases it too, and the re-adoption
+// then leaves the predecessor unnamed at the next open: the unnamed path
+// the classing keeps
 // safe, a predecessor nothing names being one that could have been open at a
 // crash, its tail proven on the device rather than trusted, its synced drops
 // still corrupt by their own synced-through, and a marker rotted into the
@@ -55,23 +56,32 @@ import (
 // own the named segments' fates under their own rules.
 //
 // decision: a record-less take whose verified header names a predecessor
-// whose end is not yet proven — a predecessor still on disk, with no seal
-// marker its own bytes verify — is withheld with it, never re-adopted,
+// whose end is not yet proven — a predecessor still on disk that neither
+// its marker nor its trailer seals — is withheld with it, never re-adopted,
 // zeroed or unlinked, for the take's naming header is evidence the tail
 // classing reasons from — its claim is what the marker-alone-rotted and
 // missing-end checks judge the predecessor by — and nothing that reasons
-// from evidence releases it before the conclusion is durable: wipe the
-// take's header early and the first open may report a predecessor the
-// second finds nothing wrong with, the verdict gone with the claim that
-// grounded it. The holding ends where the verdict does — a predecessor
-// whose seal marker verifies releases its take at the open that reads the
-// marker whole, and so does one unlinked, its claim answering nothing on
-// disk. Withdrawn when the phases that write the open's loss records and
-// reconcile run before the spares phase, at which point the take is
-// re-adopted at once as any other spare. The ceiling is the held take
-// itself: it leaks no cap, counting toward the headroom for as long as it
-// is held.
-func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID]bool, marks []core.SyncMark) (cands []core.SegmentID, held []core.SegmentID) {
+// from evidence releases it before the conclusion is durable. The holding
+// ends where the verdict does: a predecessor whose marker verifies on the
+// scan, or whose trailer names a footer just past the rotted marker — the
+// proof the classing's marker-alone exemption reads — releases its take at
+// the very open that reads the proof, and so does one unlinked, its claim
+// answering nothing on disk. Releasing the take is a re-proof, not an
+// evidence loss: the open that next finds the predecessor unnamed judges
+// its tail on the device, cutting it where no acknowledged record sits and
+// sealing it there, with every record its trailer proved still reading
+// back — the verdict on the marker moved, with the take's release, to the
+// the unnamed path the tail proof owns, but the predecessor's bytes lost
+// nothing. Today no end reaches this phase unproven: the open refuses a
+// named predecessor whose end neither proof seals, so the hold binds where
+// the later phases that carry a verdict instead of refusing will let such
+// an end arrive — the hold is their contract, and the rows below pin it at
+// this function. Withdrawn when the phases that write the open's loss
+// records and reconcile run before the spares phase, at which point the
+// take is re-adopted at once as any other spare. The ceiling is the held
+// take itself: it leaks no cap, counting toward the headroom for as long as
+// it is held.
+func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID]bool, marks []core.SyncMark, sealProven map[core.SegmentID]bool) (cands []core.SegmentID, held []core.SegmentID) {
 	scanned := make(map[core.SegmentID]segmentScan, len(scans))
 	for _, sc := range scans {
 		scanned[sc.ID] = sc
@@ -98,11 +108,12 @@ func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID
 	}
 
 	// The takes naming a predecessor whose end is not yet proven: a
-	// predecessor still on disk, its seal marker not verifying at this open.
-	// Each such take stays with the predecessor it names, withheld by the
-	// decision above; a predecessor whose marker verifies has its verdict on
-	// its own bytes — the marker releases the take at this open — and a name
-	// no file holds is retired.
+	// predecessor still on disk that neither of its own proofs seals —
+	// neither the marker the scan reads whole, nor the trailer naming a
+	// footer just past it, the proof the classing's marker-alone exemption
+	// turns into the sealed fate. Each such take stays with the predecessor
+	// it names, withheld by the decision above; a name no file holds is
+	// retired, its take the pool's plain spare.
 	naming := make(map[core.SegmentID]bool, len(att.Own))
 	for _, s := range att.Own {
 		p := s.Header.Predecessor
@@ -112,7 +123,7 @@ func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID
 		// A predecessor with no scan is one a read failed on: the open
 		// refuses on its ranges before this phase, so the hold is
 		// conservative and unreachable.
-		if psc, pok := scanned[p]; !pok || !psc.Sealed {
+		if psc, pok := scanned[p]; !pok || (!psc.Sealed && !sealProven[p]) {
 			naming[s.ID] = true
 		}
 	}
@@ -186,10 +197,11 @@ type Spares struct {
 	// Held holds each id the phase withheld because its header names a
 	// predecessor whose end is not yet proven, ascending by id: the take is
 	// left exactly as it stands — not adopted, not unlinked, no slot of it
-	// touched — and its count toward the headroom is what keeps it from
-	// leaking a cap, the accounting the open's pool wiring reads here. A
-	// later open re-adopts it once its predecessor's marker verifies or its
-	// predecessor is unlinked.
+	// touched. Held takes count in two places and stand in the headroom
+	// both times: the fill order spends its headroom slots on them before
+	// the adopted spares draw their classes, and the pool wiring no later
+	// step builds yet — the count it will read here, and the headroom it
+	// must not re-fill — is what keeps a hold from leaking a cap.
 	Held []core.SegmentID
 	// Unlinked holds each id the phase unlinked, ascending by id.
 	Unlinked []core.SegmentID
@@ -272,7 +284,15 @@ func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.Jou
 		return &core.UnreadableRangesError{Ranges: ranges}
 	}
 
-	cand, held := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), marks)
+	// The classing's proofs of a predecessor's end: the sealed fate a named
+	// predecessor takes whether its marker verified on the scan or its
+	// trailer named a footer just past the rotted marker in the marker-alone
+	// exemption — the two proofs that release a held take.
+	sealProven := make(map[core.SegmentID]bool, len(st.Tails.Fates))
+	for _, f := range st.Tails.Fates {
+		sealProven[f.ID] = f.Kind == fateSealed
+	}
+	cand, held := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), marks, sealProven)
 	sizes := make(map[core.SegmentID]int64, len(st.Rebuilt.Scans))
 	for _, sc := range st.Rebuilt.Scans {
 		sizes[sc.ID] = sc.Size
@@ -368,7 +388,12 @@ func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.Jou
 			return err
 		}
 	}
-	classes := deps.SpareTargets.AdoptClasses(len(adopted))
+	// The held takes stand in the headroom first, ahead of the classes the
+	// re-adopted spares draw: their prefix of the fill order is what keeps a
+	// held take's slot from being handed to a spare that would double-fill
+	// it.
+	all := deps.SpareTargets.AdoptClasses(len(held) + len(adopted))
+	classes := all[len(held):]
 	for i := range adopted {
 		adopted[i].Class = classes[i] // candidates ascend, so the i-th class is the i-th id's
 	}

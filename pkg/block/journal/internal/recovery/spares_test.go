@@ -61,9 +61,21 @@ func (r *rig) runCandidates() State {
 // with no sync mark naming any of them.
 func candidates(st State) []core.SegmentID {
 	// The held takes are the state's own answer, Spares.Held; the row here
-	// reads the candidate list alone.
-	cands, _ := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), nil)
+	// reads the candidate list alone, its proofs the state's own.
+	cands, _ := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), nil, sealProvenOf(st))
 	return cands
+}
+
+// sealProvenOf mirrors the phase's own answer over a state: each id the
+// classing gave the sealed fate — the fate a named predecessor takes whether
+// its marker verified on the scan or its trailer named a footer just past the
+// rotted marker.
+func sealProvenOf(st State) map[core.SegmentID]bool {
+	proven := make(map[core.SegmentID]bool, len(st.Tails.Fates))
+	for _, f := range st.Tails.Fates {
+		proven[f.ID] = f.Kind == fateSealed
+	}
+	return proven
 }
 
 // TestSpareCandidatesHasARecordlessUntakenSpare plants one all-zero segment
@@ -182,7 +194,7 @@ func TestSpareCandidatesNeverHasAForeignSegment(t *testing.T) {
 	// scanned it: with it the identity check is the only thing excluding
 	// the id.
 	scans := append(slices.Clone(st.Rebuilt.Scans), segmentScan{ID: id, Size: testCap, RecordsEnd: format.SegmentHeaderSize})
-	if cands, _ := spareCandidates(st.Attached, scans, nil, nil); slices.Contains(cands, id) {
+	if cands, _ := spareCandidates(st.Attached, scans, nil, nil, nil); slices.Contains(cands, id) {
 		t.Errorf("spareCandidates: the foreign segment %d with a record-less scan was a candidate, got %v: the identity is checked before the record-less test", id, cands)
 	}
 	if got := candidates(st); slices.Contains(got, id) {
@@ -1289,131 +1301,106 @@ func TestSparesPhaseACancelledDuringTheUnlinksStopsTheRest(t *testing.T) {
 	}
 }
 
-// TestSpareCandidatesWithholdsATakeNamingAPredecessorOnDisk plants P, a
-// sealed segment on disk, beside two record-less takes: W, whose header
-// names P, and V, whose header names a predecessor no file holds. W is
-// withheld — its header is the evidence the tail classing's verdict on P
-// reasons from, not released before that verdict is durable — while V is a
-// candidate: a claim nothing on disk answers seals nothing, and the take
-// whose predecessor is retired is the pool's plain spare.
-func TestSpareCandidatesWithholdsATakeNamingAPredecessorOnDisk(t *testing.T) {
-	r := newRig(t)
-	r.writeFormat()
-	r.plantSeg(1, markerRottedSealed(1))
-	w, v := core.SegmentID(2), core.SegmentID(3)
-	plantTake(r, w, 1) // names P, on disk and unsealed
-	plantTake(r, v, 9) // names a predecessor no file holds
-
-	st := r.runCandidates()
-	got := candidates(st)
-
-	if slices.Contains(got, w) {
-		t.Errorf("spareCandidates: the take %d naming the on-disk, unsealed predecessor 1 was a candidate, got %v: the naming header is evidence the verdict on 1 reasons from", w, got)
+// TestSpareCandidatesHoldsATakeOnlyOverAnUnprovenEnd pins the naming hold's
+// whole release surface at the function that owns it: a take naming a
+// predecessor on disk is held only while neither of the predecessor's own
+// proofs seals its end. The marker's proof releases on the scan itself; the
+// trailer's — the marker-alone exemption's, surfacing as the sealed fate —
+// releases on the classing's answer; the leg with no proof held, its inputs
+// the hand-fed ones this row supplies, is the shape today's open refuses
+// before the phase (a named predecessor whose end neither proof seals), which
+// the later verdict-carrying phases will let reach it and the hold must
+// still meet there.
+func TestSpareCandidatesHoldsATakeOnlyOverAnUnprovenEnd(t *testing.T) {
+	const w = core.SegmentID(2)
+	sealed, _ := buildSealed(1, tailRec(200, 0x4100))
+	rotted := func() []byte {
+		b, ents := buildSealed(1, tailRec(200, 0x4100))
+		markerOff := len(b) - raw.TrailerSize - raw.CatalogEntrySize*len(ents) - format.SealMarkerSize
+		b[markerOff+31] ^= 0xff
+		return b
 	}
-	if got, want := st.Spares.Held, []core.SegmentID{w}; !slices.Equal(got, want) {
-		t.Errorf("spares: the withholding held %v, want %v: the held take is the phase's own record of what it kept", got, want)
-	}
-	if !slices.Contains(got, v) {
-		t.Errorf("spareCandidates: the take %d naming a predecessor no file holds was not a candidate, got %v: a retired predecessor's claim seals nothing and its take re-adopts", v, got)
+
+	for _, leg := range []struct {
+		name     string
+		plant    []byte
+		proven   map[core.SegmentID]bool // the classing's sealed-end answer, hand-fed for the arm the open cannot run
+		wantHeld bool
+	}{
+		{"the marker releases it, its seal read on the scan", sealed,
+			map[core.SegmentID]bool{1: false}, false},
+		{"the trailer releases it, its proof the classing's sealed fate", rotted(),
+			map[core.SegmentID]bool{1: true}, false},
+		{"an end no proof seals holds it", rotted(),
+			map[core.SegmentID]bool{1: false}, true},
+	} {
+		t.Run(leg.name, func(t *testing.T) {
+			r := newRig(t)
+			r.writeFormat()
+			r.plantSeg(1, leg.plant)
+			plantTake(r, w, 1)
+			st := r.runCandidates()
+
+			cands, heldTakes := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), nil, leg.proven)
+
+			gotHeld := slices.Contains(heldTakes, w)
+			if gotHeld != leg.wantHeld {
+				t.Errorf("spareCandidates: the take %d naming predecessor 1 got held=%v, want %v over %s", w, gotHeld, leg.wantHeld, leg.name)
+			}
+			gotCand := slices.Contains(cands, w)
+			if gotCand != !leg.wantHeld {
+				t.Errorf("spareCandidates: the take %d got candidate=%v, want %v over %s: held and candidate are mutually exclusive", w, gotCand, !leg.wantHeld, leg.name)
+			}
+		})
 	}
 }
 
-// TestTheNamingWithholdingEndsWhenThePredecessorIsGone plants P, W naming
-// it, and runs the open twice the way a retire would leave the directory:
-// first with P on disk — the take withheld, W's header kept exactly as
-// planted, nothing adopted — then with P unlinked by hand, the shape a
-// retirement leaves: W is a plain spare again, adopted, its slots zeroed,
-// for its claim answers nothing on disk.
-func TestTheNamingWithholdingEndsWhenThePredecessorIsGone(t *testing.T) {
+// TestTheHeldTakesCountAheadOfTheAdoptedClasses runs the phase itself over
+// the state a real open builds and the one hand-stamp the open cannot: the
+// predecessor's proof pressed away, the missing-end verdict the refused
+// opens of today keep from reaching the phase and the later phases will
+// carry — so the take is held, and held takes stand in the headroom ahead of
+// the classes the adopted spares draw. Over one held take and a headroom
+// target of one, the first adopted spare — his worked example — takes the
+// reserve, never the headroom slot the held take occupies, and the spare
+// past it takes content.
+func TestTheHeldTakesCountAheadOfTheAdoptedClasses(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
 	r.plantSeg(1, markerRottedSealed(1))
-	w := core.SegmentID(2)
-	plantTake(r, w, 1)
-	planted := r.fileBytes(format.SegmentName(w))
+	plantTake(r, 2, 1) // W: the held take, its predecessor's proof pressed away below
+	r.write(format.SegmentName(5), make([]byte, testCap))
+	r.write(format.SegmentName(6), make([]byte, testCap))
 
-	st := r.runCandidates()
-	if len(st.Spares.Adopted) != 0 || len(st.Spares.Unlinked) != 0 {
-		t.Fatalf("spares: over the on-disk, unsealed predecessor the take got adoptions %v and unlinkings %v, want neither: the take is withheld", st.Spares.Adopted, st.Spares.Unlinked)
+	deps := r.runDeps()
+	deps.SpareTargets = segment.Targets{Content: 2, Headroom: 1, Reserve: 1}
+	ctx := context.Background()
+	rd := newReader(ctx, r.seam.FS(), r.clk, nil)
+	st := State{}
+	if err := runAttach(ctx, deps, rd, &st, journalID, core.Version{}, nil); err != nil {
+		t.Fatalf("attach: %v", err)
 	}
-	if got, want := st.Spares.Held, []core.SegmentID{w}; !slices.Equal(got, want) {
-		t.Fatalf("spares: the withholding held %v, want %v", got, want)
+	if err := runRebuild(ctx, deps, rd, &st, journalID, core.Version{}, nil); err != nil {
+		t.Fatalf("rebuild: %v", err)
 	}
-	if after := r.fileBytes(format.SegmentName(w)); !slices.Equal(after, planted) {
-		t.Fatalf("spares: over the on-disk, unsealed predecessor the take's bytes changed, got %x..., want the header that names 1 as planted", after[:format.SegmentHeaderSize])
-	}
-
-	if err := r.seam.Remove(format.SegmentName(1)); err != nil {
-		t.Fatalf("fixture: remove the retired predecessor: %v", err)
-	}
-	if err := r.seam.SyncDir(); err != nil {
-		t.Fatalf("fixture: sync dir: %v", err)
-	}
-
-	gone := r.runCandidates()
-	if got, want := gone.Spares.Adopted, []AdoptedSpare{{ID: w, Class: segment.Content}}; !slices.Equal(got, want) {
-		t.Errorf("spares: after the predecessor is gone the take got adoptions %v, want %v: a claim nothing on disk answers seals nothing", got, want)
-	}
-	if after := r.fileBytes(format.SegmentName(w)); anyHeaderByte(after[:format.SegmentHeaderSize]) {
-		t.Errorf("spares: after the predecessor is gone the adopted take's header was left unzeroed, got %x", after[:format.SegmentHeaderSize])
-	}
-}
-
-// TestAHeldTakeIsReAdoptedOnceItsPredecessorsMarkerVerifies carries the
-// held take through both ends of its holding: over a predecessor whose seal
-// marker rotted — its end unproven — the take is held, untouched and
-// recorded; then the marker is made whole by hand, the repair a seal would
-// write, and the next open reads the predecessor's end proven on its own
-// bytes: the marker releases the take, exactly as the predecessor's
-// unlinked gone does, and the take is re-adopted there, its slots zeroed.
-func TestAHeldTakeIsReAdoptedOnceItsPredecessorsMarkerVerifies(t *testing.T) {
-	r := newRig(t)
-	r.writeFormat()
-	seg, _ := buildSealed(1, tailRec(200, 0x4100))
-	markerOff := len(seg) - raw.TrailerSize - raw.CatalogEntrySize - format.SealMarkerSize
-	seg[markerOff+31] ^= 0xff // the marker rotted, the predecessor's end unproven
-	r.plantSeg(1, seg)
-	w := core.SegmentID(2)
-	plantTake(r, w, 1)
-	planted := r.fileBytes(format.SegmentName(w))
-
-	st := r.runCandidates()
-	if got, want := st.Spares.Held, []core.SegmentID{w}; !slices.Equal(got, want) {
-		t.Fatalf("spares: over the predecessor whose marker rotted the take held %v, want %v: the end is unproven and the header stays", got, want)
-	}
-	if len(st.Spares.Adopted) != 0 {
-		t.Fatalf("spares: over the predecessor whose marker rotted the take got adoptions %v, want none", st.Spares.Adopted)
-	}
-	if after := r.fileBytes(format.SegmentName(w)); !slices.Equal(after, planted) {
-		t.Fatalf("spares: over the predecessor whose marker rotted the take's bytes changed, got %x..., want the planted header that names 1", after[:format.SegmentHeaderSize])
+	// The stamp the open cannot reach: the classing proved P's end (its
+	// trailer), the phase holds W only where it did not — the state the
+	// refused missing-end verdicts will hand the phase once the later phases
+	// defer them instead of refusing.
+	for i := range st.Tails.Fates {
+		if st.Tails.Fates[i].ID == 1 {
+			st.Tails.Fates[i].Kind = fateTornTail
+		}
 	}
 
-	// The marker whole again: the repair a seal writes, the predecessor's
-	// end proven on its own bytes for the next open to read.
-	fixed := slices.Clone(seg)
-	fixed[markerOff+31] ^= 0xff
-	f, err := r.seam.Open(format.SegmentName(1))
-	if err != nil {
-		t.Fatalf("fixture: open the predecessor: %v", err)
+	if err := runSpares(ctx, deps, rd, &st, journalID, core.Version{}, nil); err != nil {
+		t.Fatalf("spares: the phase over a held take: %v", err)
 	}
-	if _, err := f.WriteAt(fixed, 0); err != nil {
-		t.Fatalf("fixture: write the repaired predecessor: %v", err)
+	if got, want := st.Spares.Held, []core.SegmentID{2}; !slices.Equal(got, want) {
+		t.Fatalf("spares: the take over the pressed proof got held %v, want %v", got, want)
 	}
-	if err := f.Sync(); err != nil {
-		t.Fatalf("fixture: sync the repaired predecessor: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("fixture: close the repaired predecessor: %v", err)
-	}
-
-	sealed := r.runCandidates()
-	if got, want := sealed.Spares.Adopted, []AdoptedSpare{{ID: w, Class: segment.Content}}; !slices.Equal(got, want) {
-		t.Errorf("spares: after the predecessor's marker verifies the take got adoptions %v, want %v: the marker releases the take at the open that reads it whole", got, want)
-	}
-	if len(sealed.Spares.Held) != 0 {
-		t.Errorf("spares: after the predecessor's marker verifies the take is still held %v, want none", sealed.Spares.Held)
-	}
-	if after := r.fileBytes(format.SegmentName(w)); anyHeaderByte(after[:format.SegmentHeaderSize]) {
-		t.Errorf("spares: after the predecessor's marker verifies the adopted take's header was left unzeroed, got %x", after[:format.SegmentHeaderSize])
+	wantAdopted := []AdoptedSpare{{ID: 5, Class: segment.Reserve}, {ID: 6, Class: segment.Content}}
+	if got := st.Spares.Adopted; !slices.Equal(got, wantAdopted) {
+		t.Errorf("spares: with one held take standing in the headroom the adoptions got %v, want %v: the held take occupies the headroom's slot, the first adopted spare takes the reserve, the next content", got, wantAdopted)
 	}
 }
