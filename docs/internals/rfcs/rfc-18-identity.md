@@ -941,7 +941,9 @@ other ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20th
 > alternate suffix; the directory then reads `uPNSuffixes` from the partitions
 > container at each record change.
 
-- **The MIC.** When the AUTHENTICATE's `MsvAvFlags` marks a MIC present, the MIC
+- **The MIC.** Identity reads `MsvAvFlags` from `NTResponse`, which the proof
+  authenticates, and the MIC from `Raw`; the adapter hands over no decoded copy
+  of either (§3.1). When `MsvAvFlags` marks a MIC present, the MIC
   **MUST** verify over the exact NEGOTIATE, CHALLENGE and AUTHENTICATE bytes on
   the wire (MS-NLMP 3.2.5.1.2), and a flagged MIC that is missing or zero fails,
   local or pass-through. The MIC is keyed by the exported session key: the
@@ -2389,7 +2391,7 @@ RFC 16's conformance suite's, not repeated here.
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
 | `ManageGIDs` | 2 | A user in 20 store groups calls over `AUTH_SYS`: a file whose ACL grants only the 20th group is granted. | groups capped at the credential's 16 |
 | NTLM off | 2 | Make a cache hit on a local NTLM session and on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: its write refused, and no `Secret` of kind nt-hash stored. While the deletion runs, after it fails part way through a fault wrapper around the store, and after it is cancelled, turning `identity.ntlm` on is refused as RFC 23 §4.1 rules; once a deletion has completed, it is accepted. | an NTLM context outliving the setting; a stray hash; hashes a failed deletion never reached made valid again |
-| NTLM MIC | 1 | An AUTHENTICATE with a corrupted MIC, and one with the MIC zeroed while `MsvAvFlags` marks it present: both `ErrLogonFailure`, locally and through pass-through. A pass-through reply whose `UserSessionKey` is all zero, or whose `LogonDomainID` is another domain's: `ErrLogonFailure`; with the directory's domain SID unread: `ErrUnavailable`. | the drop-the-MIC relay |
+| NTLM MIC | 1 | An AUTHENTICATE with a corrupted MIC, and one with the MIC zeroed in `Raw` while the `MsvAvFlags` in `NTResponse` marks it present: both `ErrLogonFailure`, locally and through pass-through. A pass-through reply whose `UserSessionKey` is all zero, or whose `LogonDomainID` is another domain's: `ErrLogonFailure`; with the directory's domain SID unread: `ErrUnavailable`. | the drop-the-MIC relay |
 | NTLM domain | 1 | A standalone installation's CHALLENGE advertises its own NetBIOS name; an AUTHENTICATE naming it in another case: verified locally. With pass-through configured, `alice@corp.example.com` with an empty domain, and `corp.example.com\alice`: both passed through. A domain matching nothing, and an installation name holding `K` sent with the Kelvin sign U+212A in its place: `ErrLogonFailure`, outcome `unknown_domain`. | every standalone login refused; UPN and DNS-domain sign-ins refused as a wrong password |
 | no local password for a directory user | 1 | `NewHashes` for a directory principal: `ErrInvalid`, nothing stored; a local NTLM sign-in naming one: refused. | two passwords for one principal |
 | directory TLS | 1 | A record asking for plain LDAP, or for skipping verification, and one whose realm is `corp.example` rather than `CORP.EXAMPLE`: refused at validation. A directory behind a self-signed certificate, then one whose host name does not match: no bind sent, lookups `ErrUnavailable`, nothing cached. A referral to another host: not followed. | a bind credential handed to whoever answers |

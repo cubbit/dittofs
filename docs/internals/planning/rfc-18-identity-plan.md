@@ -292,8 +292,8 @@ that needs it.
   - an operator's `krb` link takes the directory's SID from a fresh answer only, as a rename does;
   - O3 records the tree kept across a guest or anonymous re-authentication, RFC 22's to close; O5
     closes what #4050 now names; O9 records which `identity.directory` row is kept.
-- **A19. Leftovers from the epic breakdowns' reviews** (RFC 18 §2.6, §3.1, §3.7, §4.1, §6.1, §8.1 and
-  §11; RFC 16 §2.3 and §3; RFC 7 §7.4):
+- **A19. Leftovers from the epic breakdowns' reviews** (RFC 18 §2.6, §3.1, §3.5, §3.7, §4.1, §6.1,
+  §8.1, §10 and §11; RFC 16 §2.3 and §3; RFC 7 §7.4):
   - a principal marked deleted signs in as an unknown name does, logon outcome `logon_failure`, and
     only a `Disabled` one gets `disabled`: RFC 16 §3's `DeleteUser` deletes the name indexes in the
     mark's transaction (RFC 23 epic 2's R39, R40), so sign-in finds it by no name (epic 4's R14);
@@ -319,7 +319,8 @@ that needs it.
   - §8.1's `NTLMSetting` names its field `Generation`, as the built setting record does
     (`entity.Setting.Generation`), so RFC 23's tracked read compares one field;
   - §3.1's `NTLMAuthenticate` drops `MIC` and `AVFlags`, which nothing authenticates: identity
-    reads the flags from `NTResponse`, which the proof authenticates, and the MIC from `Raw`;
+    reads the flags from `NTResponse`, which the proof authenticates, and the MIC from `Raw`, and
+    §3.5's MIC rule and §10's "NTLM MIC" row name those two sources;
   - §6.1's `Caller` gains `Group`, the credential's primary group a create stamps, as admission's
     `entity.Identity.Group` carries it today: an unsquashed claimed caller's gid, zero otherwise.
     Without it, a file an `AUTH_SYS` caller creates gets its stored primary group, not its gid,

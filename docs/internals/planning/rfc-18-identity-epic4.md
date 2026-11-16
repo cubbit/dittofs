@@ -207,13 +207,14 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
 - **D1, `MsvAvFlags` is read from the verified response, not from `NTLMAuthenticate.AVFlags`.**
   The flags travel in the NTLMv2 response's AV pairs, which `NTProofStr` authenticates; the
   adapter's decoded copy is not. Reading them where the proof covers them is what defeats the
-  drop-the-MIC relay, which strips the MIC and the flag that announces it. `AVFlags` is left
-  unread (§9). `decision:` marker at the check. Prior art: Microsoft's fix for CVE-2019-1040;
-  Samba's NTLMSSP server reads `MsvAvFlags` from the response's AV pairs (both from memory).
+  drop-the-MIC relay, which strips the MIC and the flag that announces it. The plan's A19 drops
+  `AVFlags` from `NTLMAuthenticate`, so no decoded copy exists to read. `decision:` marker at
+  the check. Prior art: Microsoft's fix for CVE-2019-1040; Samba's NTLMSSP server reads
+  `MsvAvFlags` from the response's AV pairs (both from memory).
 - **D2, the MIC is read from the AUTHENTICATE's bytes, and only when flagged.** When D1's flags
   mark a MIC, it is `Raw`'s 16 bytes at offset 72, zeroed there for the HMAC; a `Raw` shorter
-  than 88 bytes, or a zero MIC, is a missing one and fails. `NTLMAuthenticate.MIC` is left
-  unread, as `AVFlags` is, so no second copy can disagree with the bytes the HMAC covers, and no
+  than 88 bytes, or a zero MIC, is a missing one and fails. A19 drops `NTLMAuthenticate.MIC`
+  with `AVFlags`, so no second copy can disagree with the bytes the HMAC covers, and no
   separate answer for a disagreement exists. With no MIC flagged, bytes 72 to 88 are not read.
   `decision:` marker. Prior art: `develop`'s `authMicOffset` (checked); Samba's
   `NTLMSSP_MIC_OFFSET` (from memory).
@@ -628,8 +629,8 @@ logon sink come in.
 - **Equal work (D4).** §3.5's "an unknown name costs the same work as a wrong password" does not
   say whether the secret's unwrap counts. This epic equalises the NTLMv2 computation; a strict
   reading needs a dummy sealed secret unwrapped on every miss. §3.5 should say which.
-- **`NTLMAuthenticate.AVFlags` and `MIC`** are unread (D1, D2). RFC 18 §3.1 should say both are
-  read from the verified response and the message's bytes, or drop them.
+- **`NTLMAuthenticate.AVFlags` and `MIC`** (D1, D2): settled by the plan's A19, which drops both
+  from RFC 18 §3.1 and has §3.5 and §10 name `NTResponse` and `Raw` as their sources.
 - **The NTLMv2 response decoder** is identity's, while the plan's rule 2 and RFC 18 §10's Fuzz
   paragraph name only the AUTHENTICATE's decoder, as RFC 20's. §10 should list
   `FuzzNTLMv2Response`.
