@@ -4,8 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // WithSegmentCap bounds every segment file the fixture's journal directory
@@ -36,21 +39,42 @@ func TestWithSegmentCapBoundsEverySegmentFile(t *testing.T) {
 		}
 	}
 
-	// A cap the idle sealer's default threshold would outrank - the format's
-	// 16 MiB - scales the threshold with it, or no segment under the cap could
-	// ever hold enough payload for the sealer to fire: the same sixteenth the
-	// journal's own fixture keeps its sealer alive under its small cap.
-	if want := min(int64(16<<20), segCap/16); f.settings.IdleSealBytes != want {
-		t.Errorf("IdleSealBytes = %d, want the cap's own %d so idle sealing still fires under it", f.settings.IdleSealBytes, want)
+	// The idle sealer's threshold scales with the cap - its own sixteenth,
+	// the ratio the journal's own fixture uses - or the default would ask
+	// for more payload than a segment under the cap can hold.
+	if want := segCap / 16; f.settings.IdleSealBytes != want {
+		t.Errorf("IdleSealBytes = %d, want the cap's sixteenth %d so idle sealing still fires under it", f.settings.IdleSealBytes, want)
 	}
 }
 
-// A fixture with no segment cap leaves IdleSealBytes at zero, the default's
-// own, resolved at the journal's open - the option scales it, only the
-// option.
-func TestWithNoSegmentCapTheIdleSealThresholdStaysTheDefault(t *testing.T) {
-	if plain := New(t); plain.settings.IdleSealBytes != 0 {
-		t.Errorf("a fixture with no segment cap has IdleSealBytes %d, want the default's own zero, resolved at open", plain.settings.IdleSealBytes)
+// TestWithSegmentCapTheIdleSealerStillFires pins the scaling's point: a
+// segment holding more than the scaled threshold still seals once the clock
+// passes the idle-seal age - without the scaling, the default asks for more
+// payload than a segment under the cap can hold, and the sealer never fires.
+// The idle seal rides the fixture's own clock, and the bounded poll below is
+// the assertion, for nothing synchronises the sealer's goroutine with this
+// one once the clock has moved.
+func TestWithSegmentCapTheIdleSealerStillFires(t *testing.T) {
+	const segCap = int64(4 << 20) // 4 MiB; the scaled threshold is its sixteenth
+
+	f := New(t, WithSegmentCap(segCap))
+	_, id := f.File("a")
+
+	opts := engine.WriteOpts{Done: func() {}}
+	if _, err := f.E.Write(t.Context(), f.Share.ID, id, 0, make([]byte, segCap/8), opts); err != nil {
+		t.Fatalf("a write past the scaled threshold: %v", err)
+	}
+	if _, _, err := f.E.Commit(t.Context(), f.Share.ID, id, 0, 0); err != nil {
+		t.Fatalf("the write's sync: %v", err)
+	}
+
+	truncates := f.Seam.Calls(kit.OpTruncate)
+	f.Clock.Advance(journaltest.IdleSealAge)
+	for deadline := time.Now().Add(10 * time.Second); f.Seam.Calls(kit.OpTruncate) == truncates; {
+		if time.Now().After(deadline) {
+			t.Fatalf("no segment was truncated within the 10s backstop of advancing the clock past the idle-seal age: the sealer never fires under a cap of %d", segCap)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

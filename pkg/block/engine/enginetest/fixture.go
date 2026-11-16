@@ -463,13 +463,13 @@ func WithSpares(n int) Option {
 // row reopens over is as small as the row chooses. A row whose writes stay
 // far below the cap pays nothing for it; a row that would roll under it
 // names none. The idle sealer's threshold scales with the cap - a sixteenth
-// of it, never above the format's own - for a cap below that threshold
-// would otherwise leave the sealer unable to fire at all, every segment
-// under it under the payload the default asks for.
+// of it, the same ratio the journal's own fixture gives its own - for the
+// default would otherwise ask for more payload than a segment under the
+// cap can hold, and a sixteenth never outranks the cap it scales from.
 func WithSegmentCap(n int64) Option {
 	return func(f *Fixture) {
 		journaltest.SetSegmentCap(&f.settings, n)
-		f.settings.IdleSealBytes = min(int64(16<<20), n/16)
+		f.settings.IdleSealBytes = n / 16
 	}
 }
 
