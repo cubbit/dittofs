@@ -18,6 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # samba-ad-dc pulls in the AD-DC role (provisioning + KDC + LDAP). winbind and
 # krb5-user give us kadmin-style tooling and samba-tool dependencies. ldb-tools
 # (ldbadd/ldbmodify) lets entrypoint.sh stamp RFC2307 attributes directly.
+# openssl issues the DC's TLS certificate from the fixture's own CA.
 # samba-ad-provision ships the AD schema LDIFs (AD_DS_*.ldf) that
 # `samba-tool domain provision` needs; current debian:bookworm-slim split these
 # out of samba-ad-dc, so provisioning fails without it (issue #1252).
@@ -26,7 +27,7 @@ RUN set -eu; \
         apt-get update \
           && apt-get install -y --no-install-recommends \
                samba samba-ad-dc samba-ad-provision samba-common-bin winbind \
-               krb5-user ldb-tools ldap-utils procps \
+               krb5-user ldb-tools ldap-utils procps openssl \
           && rm -rf /var/lib/apt/lists/* \
           && exit 0; \
         echo "apt-get attempt $i failed, retrying in 5s..." >&2; \
@@ -37,8 +38,8 @@ RUN set -eu; \
 
 COPY --chmod=0755 entrypoint.sh /entrypoint.sh
 
-# 88 = Kerberos KDC, 389 = LDAP, 464 = kpasswd. The tests map 88 or 389 to a
-# random host port and wait on it while the domain provisions.
+# 88 = Kerberos KDC, 389 = LDAP, 464 = kpasswd. The tests publish none of them:
+# they reach the DC on its IP on a Docker network of its own.
 EXPOSE 88/tcp 88/udp 389/tcp 464/tcp 464/udp
 
 ENTRYPOINT ["/entrypoint.sh"]

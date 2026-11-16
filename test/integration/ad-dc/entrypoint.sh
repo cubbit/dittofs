@@ -33,6 +33,8 @@ REALM="${AD_REALM:-DITTOFS.AD}"
 DOMAIN="${AD_DOMAIN:-DITTOFS}"
 ADMIN_PASSWORD="${AD_ADMIN_PASSWORD:-Passw0rd!2024}"
 KEYTAB_DIR="${KEYTAB_DIR:-/keytabs}"
+# The provisioned smb.conf names the TLS files issue_tls_cert writes here.
+TLS_DIR=/var/lib/samba/private/tls
 
 # Service principals the DittoFS server presents to clients.
 SMB_SPN="${SMB_SPN:-cifs/dittofs.${REALM,,}}"
@@ -77,7 +79,10 @@ if [ ! -f /var/lib/samba/.provisioned ]; then
         --domain="$DOMAIN" \
         --server-role=dc \
         --dns-backend=SAMBA_INTERNAL \
-        --adminpass="$ADMIN_PASSWORD"
+        --adminpass="$ADMIN_PASSWORD" \
+        --option="tls certfile = $TLS_DIR/cert.pem" \
+        --option="tls keyfile = $TLS_DIR/key.pem" \
+        --option="tls cafile = $TLS_DIR/ca.pem"
 
     # Samba writes its own krb5.conf during provision; expose it to other
     # containers / the Go test on the shared volume.
@@ -88,6 +93,39 @@ if [ ! -f /var/lib/samba/.provisioned ]; then
     log "Provision complete"
 fi
 
+# The DC serves LDAPS and StartTLS with a certificate from a CA made here once
+# per domain and exported as $KEYTAB_DIR/ca.pem, so a client verifies the DC
+# rather than skipping verification. Samba's own generated certificate names
+# the DC in its CN only, which Go refuses. The provisioned smb.conf names the
+# files written here, so Samba serves them rather than generating its own. The
+# certificate is issued again at every start because its SANs carry the
+# container's IPs, which a restart can change; its DNS SAN is the DC's host
+# name, fixed by the container's --hostname.
+issue_tls_cert() {
+    local tls="$TLS_DIR" fqdn san ip
+    fqdn="$(hostname -s).${REALM,,}"
+    mkdir -p "$tls"
+    if [ ! -f "$tls/ca.key" ]; then
+        log "Creating the fixture CA"
+        openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=DittoFS AD-DC test CA" \
+            -addext basicConstraints=critical,CA:TRUE \
+            -addext keyUsage=critical,keyCertSign,cRLSign \
+            -keyout "$tls/ca.key" -out "$tls/ca.pem" 2>/dev/null
+    fi
+    san="DNS:$fqdn,DNS:$(hostname -s)"
+    for ip in $(hostname -I) 127.0.0.1; do san="$san,IP:$ip"; done
+    log "Issuing the DC certificate for $san"
+    openssl req -newkey rsa:2048 -nodes -subj "/CN=$fqdn" \
+        -keyout "$tls/key.pem" -out "$tls/csr.pem" 2>/dev/null
+    openssl x509 -req -in "$tls/csr.pem" -CA "$tls/ca.pem" -CAkey "$tls/ca.key" \
+        -CAcreateserial -days 825 -out "$tls/cert.pem" -extfile <(printf '%s\n' \
+            "subjectAltName=$san" "extendedKeyUsage=serverAuth" "basicConstraints=critical,CA:FALSE") \
+        2>/dev/null
+    chmod 0600 "$tls/key.pem" "$tls/ca.key"
+    cp "$tls/ca.pem" "$KEYTAB_DIR/ca.pem"
+    chmod 0644 "$KEYTAB_DIR/ca.pem"
+}
+
 # Start samba once and keep it: samba-tool below talks to the running DC, and a
 # test starts using the DC as soon as the setup marks it ready, so the samba that
 # serves the setup must be the one that keeps serving. Restarting it after the
@@ -97,6 +135,7 @@ fi
 # earlier start of this container is dropped first.
 if [ "${1:-}" != --populate ]; then
     rm -f "$KEYTAB_DIR/.ready"
+    issue_tls_cert
     "$0" --populate &
     log "Starting samba in foreground..."
     exec samba --foreground --no-process-group

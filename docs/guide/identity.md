@@ -70,7 +70,7 @@ alone, or both together (the full AD-joined deployment).
 > Windows Server license. **It is not a file server, is not a DittoFS component,
 > and is not managed by the dittofs-operator.** In production you install **no**
 > Samba — you point DittoFS at your existing enterprise AD. Port 445 (SMB) is
-> deliberately not exposed by the fixture; DittoFS owns 445.
+> deliberately not published on the host; DittoFS owns 445.
 
 The provisioning logic below lives in `test/integration/ad-dc/entrypoint.sh`. It
 provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
@@ -81,6 +81,9 @@ provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
 - groups `engineering` and `devs` (with `devs` nested under `engineering`).
 - a combined keytab at `/keytabs/dittofs.keytab` holding the `cifs/` and `nfs/`
   SPNs.
+- a CA, exported as `/keytabs/ca.pem`, that issues the DC's TLS certificate for
+  its host name (`dc1.dittofs.ad` when the container runs with `--hostname dc1`)
+  and its IPs.
 
 ### What the provisioning does
 
@@ -503,6 +506,17 @@ the realm + alice/bob + nested groups and asserts identity unification:
 ```bash
 go test -tags=ad_dc -v -timeout 20m ./test/integration/ad-dc/
 ```
+
+The suite needs a Linux Docker host. The tests reach the DC on its container
+IP, with no port published on the host, and Docker Desktop (macOS, Windows)
+does not route the host to container IPs, so there the tests fail rather than
+skip. Every image, container and network the fixture makes is named and
+labelled with the prefix `dittofs-ad-dc-test`; set `DITTOFS_AD_DC_NAME_PREFIX`
+to use another on a Docker host shared between users. A run force-removes any
+container whose name starts with the prefix and a dash, and prunes the networks
+labelled with it, once they are more than an hour old: what an earlier run
+under the same prefix left behind when it was killed. A killed run's image tag
+stays.
 
 It verifies, among other things:
 
