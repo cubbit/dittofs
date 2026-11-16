@@ -396,9 +396,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs failed syncs reported and counted, the sync timer and recovery.'
-  issue: '#3378'
-  message: 'holds segments; recovering them is not built'
+  reason: 'The journal opens and the failed-sync legs run; on the CI cell the row dies where the sync bound''s timer drain outruns the check''s wait, before the reopen refusal the same row reaches on a development host — the platform divergence the linked issue tracks. Needs the timer drain settled there, then failed syncs reported and counted, the sync timer and recovery.'
+  issue: '#4526'
+  message: 'the write after a failed sync was not made durable'
 
 - test: TestRFC1C_CancelledCallChangesNothingOrCompletes/done_context_appends_nothing
   status: fail
@@ -409,12 +409,12 @@
   message: 'stub: Offload'
 
 - test: TestRFC1C_CancelledCallChangesNothingOrCompletes/a_cancelled_sync_still_reports_the_failure
-  status: skip
+  status: fail
   fix: planned
   category: feature
-  reason: 'The inspector reads real entries, so the leg runs past the stub to its own rule — and the failed window''s re-append from the copy kept in memory answers the second sync whole, the leg''s own condition for no failure being owed. The entry lists the skip so the cell grades it expected; the leg exercises its rule again when a failure is owed.'
-  issue: '#3379'
-  message: 'the journal re-appended the window from a copy kept in memory, so no failure is owed and the leg''s rule goes unexercised'
+  reason: 'The inspector reads real entries, so the leg runs past the stub to its own rule. Where the failed window''s re-append from the copy kept in memory answers the second sync whole, the leg skips its own condition for no failure being owed — the outcome a development host sees; on the CI cell the sync answers nil without the re-append, the third outcome its rule does not allow, the platform divergence the linked issue tracks.'
+  issue: '#4526'
+  message: 'the Sync after the cancelled one returned'
 
 - test: TestRFC1C_CloneTargetSurvivesCrash
   status: fail
