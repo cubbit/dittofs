@@ -17,11 +17,17 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
+// testSegCap is the segment cap the recovery tests account at: an open's own
+// default scale, far above every planted segment's file, so the accounted
+// sizes the assemblies spell — the cap for an active or ended segment, the
+// post-seal size of a sealed one — read at a glance.
+const testSegCap = 1 << 20
+
 // runDeps is the deps Run takes over the rig's seam, with nil tracer and
 // logger, the defaults an Open without options gives them.
 func (r *rig) runDeps() Deps {
 	r.t.Helper()
-	return Deps{FS: r.seam.FS(), Clock: r.clk}
+	return Deps{FS: r.seam.FS(), Clock: r.clk, SegmentCap: testSegCap}
 }
 
 // runDepsWithTracer is the rig's deps with a tracer recorded.

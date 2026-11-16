@@ -12,6 +12,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
 // OpenLoss is one loss record the open found on disk, decoded: its event,
@@ -54,8 +56,9 @@ type ReadOnlyDrop struct {
 
 // kindResults is the kinds pass's collected answer: the loss records found on
 // disk, one per delivered piece; one forget per share tag, the greatest seq
-// its records named; and the read-only drops and the withheld numbers the
-// feed computes over the same records.
+// its records named; the read-only drops and the withheld numbers the
+// feed computes over the same records; and the liveness and accounting facts
+// the feed collects over every record the scans attached.
 type kindResults struct {
 	// Losses holds every verified loss record the pass collected, in the
 	// order the pass read it, its events unfired until the open's own
@@ -80,6 +83,52 @@ type kindResults struct {
 	// for its record fed. Zero until the feed computes it over the same
 	// scans.
 	Withheld index.Numbers
+
+	// Records holds one Rec per header-only record the scans attached — a
+	// release, truncate, deallocate, delete, clone target, offloaded or
+	// unmark record — filled by the feed, one entry per copy at the
+	// placement its own slot spells, withheld copies included: every copy's
+	// bytes keep its own segment held until its own release, whatever rule
+	// withheld the record from the index. The aside kinds' own registrations
+	// — a loss record, a forget — sit in LossRecs and ForgetRecs beside
+	// these.
+	Records []reclaim.Rec
+
+	// LossRecs holds one Rec per attached loss record no rule covers,
+	// filled by the decode pass per copy — the pieces it delivered once
+	// each collect twice, for the two copies carry the record between them
+	// — spelled from the record's own header and body the way the append
+	// path registers the record it lands: the flags pick the loss's own
+	// drop rule, and the placement names where the loss record's own bytes
+	// sit, so a registration and its release key the same whole record.
+	LossRecs []reclaim.Rec
+
+	// ForgetRecs holds one Rec per attached forget record no rule covers,
+	// per copy, spelled from the record's own header at the placement its
+	// own slot gives: the tag is the one field its caller must spell out,
+	// and a carried-forward forget registers in its own segment like any
+	// other record.
+	ForgetRecs []reclaim.Rec
+
+	// Charging holds, per segment, per share tag, the record bytes of every
+	// record the scans attached: each record's whole size and the same less
+	// its payload, the two figures the journal's append charges the segment
+	// and tag at the moment a record lands. The feed fills it over the
+	// content records and the aside headers alike — the append charged each
+	// of them, so the per-tag figures a reopen answers equal the running
+	// journal's — withheld records included, for a record the rules
+	// withhold stays on disk and stays charged. Nil until the feed runs.
+	Charging map[core.SegmentID]map[core.ShareTag]Charge
+}
+
+// Charge is one share tag's record bytes on one segment: the whole sizes of
+// everything the segment holds of the tag, and the same less the payloads the
+// records carry — a payload only a write and a fill have. A reopen hands the
+// two figures to the segment ledger beside its adopted segments, the same
+// pair the append charges record by record.
+type Charge struct {
+	Bytes    int64
+	Overhead int64
 }
 
 // kindState is the decoded aside records' whole state: the maps the feed
@@ -229,8 +278,17 @@ func decodeAsides(rd *reader, identity core.JournalID, failed []core.Seq, scs []
 		if !effForget[i] {
 			continue
 		}
-		if f, ok := ks.forget[df[i].h.Tag]; !ok || df[i].h.Seq > f {
-			ks.forget[df[i].h.Tag] = df[i].h.Seq
+		h := df[i].h
+		ks.ForgetRecs = append(ks.ForgetRecs, reclaim.Rec{
+			Kind: format.KindForget,
+			Seg:  h.Segment,
+			Pair: index.Numbers{Seq: h.Seq},
+			Seq:  h.Seq,
+			Tag:  h.Tag,
+			Loc:  segment.Location{Segment: h.Segment, Off: h.Offset, Len: h.Size()},
+		})
+		if f, ok := ks.forget[h.Tag]; !ok || h.Seq > f {
+			ks.forget[h.Tag] = h.Seq
 		}
 	}
 	for i := range dl {
@@ -252,6 +310,23 @@ func decodeAsides(rd *reader, identity core.JournalID, failed []core.Seq, scs []
 			continue
 		}
 		d := dl[i]
+		// One registration per attached copy, before the piece it names is
+		// delivered once: a carried-forward copy's bytes keep its own segment
+		// held exactly as the record the copy carries does.
+		ks.LossRecs = append(ks.LossRecs, reclaim.Rec{
+			Kind:  format.KindLoss,
+			File:  d.h.File,
+			Seg:   d.h.Segment,
+			Ext:   d.h.Extent,
+			Pair:  index.Numbers{Version: d.h.Version, Seq: d.h.Seq},
+			Seq:   d.h.Seq,
+			Named: d.l.Dropped,
+			Tag:   d.h.Tag,
+			// The flags that pick the loss's own drop rule.
+			Synced:     d.l.Synced,
+			Superseded: d.l.Reason == format.LossSuperseded,
+			Loc:        segment.Location{Segment: d.h.Segment, Off: d.h.Offset, Len: d.h.Size()},
+		})
 		piece := lossPiece{seq: d.l.Dropped, ext: d.h.Extent}
 		if ks.pieces[piece] {
 			continue // the piece is delivered: a carried-forward copy reports once
@@ -778,7 +853,10 @@ func refusedRead(rd *reader, err error) error {
 // buffered record meets every on-disk aside rule in the fixed order below —
 // withheld records' segments and fed copies are collected as the feed runs,
 // so the liveness the State carries and the repoint pass reads are answers
-// over the records that actually sat on the segments the open scanned.
+// over the records that actually sat on the segments the open scanned; the
+// header-only records' Recs and every record's charge collect beside them,
+// before any rule withholds anything, so the assembly reads answers over
+// every record the scans attached.
 type feedFilter struct {
 	ks *kindState
 	// losses indexes, per named seq, the collected losses naming it;
@@ -790,8 +868,10 @@ type feedFilter struct {
 }
 
 // newFeedFilter makes the filter's lookups over the collected losses,
-// forgets and read-only drops, in collection order.
+// forgets and read-only drops, in collection order, and the charge table the
+// feed fills through it.
 func (ks *kindState) newFeedFilter() *feedFilter {
+	ks.Charging = make(map[core.SegmentID]map[core.ShareTag]Charge)
 	f := &feedFilter{ks: ks,
 		losses:  make(map[core.Seq][]int, len(ks.Losses)),
 		forgets: make(map[core.ShareTag][]int, len(ks.Forgets)),
@@ -844,6 +924,7 @@ func appendSeg(segs []core.SegmentID, id core.SegmentID) []core.SegmentID {
 // A withheld record's numbers fold into Withheld, so the counters a later
 // pass raises open above the numbers the feed never saw.
 func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
+	f.note(rec)
 	ks := f.ks
 	seq := rec.Numbers.Seq
 	for _, i := range f.losses[seq] {
@@ -907,4 +988,119 @@ func (f *feedFilter) noteCopy(rec index.Record) {
 	if !slices.Contains(f.ks.copies[k], at) {
 		f.ks.copies[k] = append(f.ks.copies[k], at)
 	}
+}
+
+// note collects one attached record's liveness and accounting facts, before
+// any rule decides anything about it: the record charges its segment and
+// tag its whole size and the same less its payload, withheld records among
+// them — the append charged each record at the moment it landed, whatever
+// followed — and a record of one of the header-only kinds notes one Rec at
+// the placement its own slot spells, per copy, for every copy's bytes keep
+// its own segment held until its own release.
+func (f *feedFilter) note(rec index.Record) {
+	size := format.RecordSize(fedFormatKind(rec.Kind), rec.Len)
+	payload := int64(0)
+	if rec.Kind == index.RecWrite || rec.Kind == index.RecFill {
+		payload = rec.Len
+	}
+	f.charge(rec.Segment, rec.Tag, size, payload)
+	if k, headerOnly := fedHeaderOnlyKind(rec.Kind); headerOnly {
+		f.ks.Records = append(f.ks.Records, reclaim.Rec{
+			Kind: k,
+			File: rec.File,
+			Seg:  rec.Segment,
+			Ext:  core.Extent{Off: rec.Off, Len: rec.Len},
+			Pair: rec.Numbers,
+			Seq:  rec.Numbers.Seq,
+			Tag:  rec.Tag,
+			Loc:  segment.Location{Segment: rec.Segment, Off: int64(rec.At), Len: size},
+		})
+	}
+}
+
+// charge adds one record's figures to the segment and tag it sits in: the
+// whole size of its slot, and the same less its payload. Everything a scan
+// attached charges alike — the rules below decide what the index holds, not
+// what the segment's storage holds — so the charge answers the pair the
+// append charged, and a reopen hands the ledger the same figures back.
+func (f *feedFilter) charge(seg core.SegmentID, tag core.ShareTag, size, payload int64) {
+	tags := f.ks.Charging[seg]
+	if tags == nil {
+		tags = make(map[core.ShareTag]Charge)
+		f.ks.Charging[seg] = tags
+	}
+	c := tags[tag]
+	c.Bytes += size
+	c.Overhead += size - payload
+	tags[tag] = c
+}
+
+// chargeAsides charges every aside record one scan set aside to the segment
+// and tag its own header names — the whole size of its slot, no payload —
+// beside the content records the feed charges: the append charged each of
+// them too, so a segment holding nothing but asides still answers the
+// figures the running journal left on it.
+//
+// decision: a record the walk confined as a corrupt drop — a clone target
+// whose body did not verify, an aside body that failed — charges nothing,
+// for it was never attached and the segment that holds it waits on the tail
+// phases' re-append and emptying, which charge what they re-append. The
+// figures of a reopened journal therefore miss only bytes that are on their
+// way out; overturned by a tail phase that ever leaves a confined record's
+// bytes on the segment it keeps.
+func (f *feedFilter) chargeAsides(sc *segmentScan) {
+	for _, a := range sc.Aside {
+		f.charge(a.Header.Segment, a.Header.Tag, a.Header.Size(), 0)
+	}
+}
+
+// fedFormatKind maps the kind of a record the rebuild feeds back to the
+// format kind its header carried — the inverse of contentRecord's per-kind
+// conversion — so the facts a collected record owes can ask the format its
+// own size rules. Every attached record's kind is one of the nine.
+func fedFormatKind(k index.RecordKind) format.Kind {
+	switch k {
+	case index.RecWrite:
+		return format.KindWrite
+	case index.RecFill:
+		return format.KindFill
+	case index.RecRelease:
+		return format.KindRelease
+	case index.RecTruncate:
+		return format.KindTruncate
+	case index.RecDeallocate:
+		return format.KindDeallocate
+	case index.RecDelete:
+		return format.KindDelete
+	case index.RecCloneTarget:
+		return format.KindCloneTarget
+	case index.RecOffloaded:
+		return format.KindOffloaded
+	case index.RecUnmark:
+		return format.KindUnmark
+	}
+	panic(fmt.Sprintf("recovery: record kind %d names no fed kind", uint8(k)))
+}
+
+// fedHeaderOnlyKind answers the format kind one of the header-only content
+// kinds maps to — release through unmark, the seven the liveness tracker
+// registers — and false for the two that carry a payload.
+func fedHeaderOnlyKind(k index.RecordKind) (format.Kind, bool) {
+	switch k {
+	case index.RecRelease:
+		return format.KindRelease, true
+	case index.RecTruncate:
+		return format.KindTruncate, true
+	case index.RecDeallocate:
+		return format.KindDeallocate, true
+	case index.RecDelete:
+		return format.KindDelete, true
+	case index.RecCloneTarget:
+		return format.KindCloneTarget, true
+	case index.RecOffloaded:
+		return format.KindOffloaded, true
+	case index.RecUnmark:
+		return format.KindUnmark, true
+	}
+	return 0, false
 }

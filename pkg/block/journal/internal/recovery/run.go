@@ -35,6 +35,15 @@ type Deps struct {
 	// still builds: the bound refuses later writes, never the open.
 	ExtentLimit int64
 
+	// SegmentCap is the accounted size a segment of the directory is
+	// created at, the figure the assembly seeds the rebuilt segment ledger
+	// at — the cap an active or ended segment is accounted under, and the
+	// post-seal size of a sealed one measured against. The caller fills it
+	// from the journal's settings; a cap that is not positive names no
+	// storage and the seed the assembly makes refuses it by panic, the
+	// set's own maker's answer to a caller bug.
+	SegmentCap int64
+
 	// rebuildOrder reorders the segments the rebuild dispatches before it
 	// starts a reader; nil keeps the listing's order, the one the open runs
 	// in. It is unexported and set only by tests that need an order the
@@ -74,6 +83,11 @@ type State struct {
 	// Tails is the torn-or-corrupt classing of every own and unverified
 	// segment: each one's fate, the damaged set and the corrupt drops.
 	Tails tails
+
+	// Assembled is what the assembly phase built over the rebuilt state:
+	// the seeded segment ledger and the open's liveness registrations, the
+	// state the open continues from. The assembly phase fills it.
+	Assembled Assembled
 }
 
 // phase is one step of the open's recovery: the span it runs under, and
@@ -101,7 +115,7 @@ var phases = [...]phase{
 	{span: core.SpanOpenMarksLostTail},
 	{span: core.SpanOpenSpares},
 	{span: core.SpanOpenReappend},
-	{span: core.SpanOpenAssembly},
+	{span: core.SpanOpenAssembly, run: runAssemble},
 	{span: core.SpanOpenSeal},
 	{span: core.SpanOpenEmptying},
 }
@@ -162,13 +176,13 @@ func rebuildReaders(deps Deps) int {
 // Run rebuilds the journal's state from its directory, running the open's
 // recovery phases in order under one open span, checking ctx before each,
 // and running each phase under the context its parent span returned, so
-// every phase span is the open span's child. Only the attach pass is
-// built; the phases after it are named, span-covered steps that change
-// nothing, each checked for the context, so a cancelled open is answered
-// at the boundary the cancellation reached and the directory is left for
-// a later open. floor and marks are carried for the phases that consume
-// them — the rebuild, the marks and the tail's proof — and are unread
-// until one exists.
+// every phase span is the open span's child. The attach pass, the rebuild
+// and the assembly are built; the phases between and after them are named,
+// span-covered steps that change nothing, each checked for the context, so
+// a cancelled open is answered at the boundary the cancellation reached
+// and the directory is left for a later open. floor and marks are carried
+// for the phases that consume them — the rebuild, the marks and the tail's
+// proof — and are unread until one exists.
 func Run(ctx context.Context, deps Deps, floor core.Version, expect core.JournalID, marks []core.SyncMark) (st State, err error) {
 	if err := ctx.Err(); err != nil {
 		return State{}, err

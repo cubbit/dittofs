@@ -398,6 +398,112 @@ func (s *Set) AdoptSpare(id core.SegmentID) error {
 	return nil
 }
 
+// AdoptRebuilt enters a segment the open's rebuild found, with its record
+// bytes already charged per share tag: the state it was classed at, the
+// seal's own full word, the accounted size and each share's record and
+// overhead bytes are the scan's facts, handed whole, and the ledger accounts
+// them as the event paths would have — the footprint rises by the accounted
+// size, the segment count and, for a sealed one, the sealed count, each
+// tag's bytes join the shares' totals and the entry's running bound is set to
+// their sum, so the counters and Check read the same had the journal itself
+// taken, charged, sealed and cut the segment.
+//
+// The accounted size is the caller's, not the file's: a segment is accounted
+// at its cap from its creation until its unlink, and only one shortened by a
+// torn-tail cut or at seal below it, so the caller hands the cap or the
+// post-seal size. The entry refuses what the format cannot spell — a size
+// above the cap, one the charged bytes do not fit, and a full word naming
+// anything but a sealed segment closed at the cap — and, like an adopted
+// spare, checks no maximum: the file the scan read already exists, and every
+// file the journal holds is accounted.
+//
+// decision: a segment is never refused because the set already holds
+// segments, only for an id the ledger owns. The rebuild seeds a fresh set
+// with one adoption per segment, so a set that already holds segments is a
+// seed half through, and an emptiness gate would refuse every sibling after
+// the first. Withdrawn if an adoption ever runs into a ledger already in
+// service, which would have to carry a fact the ledger can gate on rather
+// than an emptiness it cannot tell from a seed half through.
+func (s *Set) AdoptRebuilt(id core.SegmentID, size int64, st State, full bool, tags, over map[core.ShareTag]int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if id == 0 {
+		return ErrBadID
+	}
+	if s.ownsLocked(id) {
+		return ErrDuplicateID
+	}
+	if st != Active && st != Sealed && st != Ended {
+		return ErrWrongState
+	}
+	// A full word is the seal's own; an unsealed segment cannot carry one.
+	if full && st != Sealed {
+		return ErrWrongState
+	}
+	if size <= 0 || size > s.cap {
+		return ErrBadSize
+	}
+	// A full seal closed the segment at the cap it is accounted at, so a full
+	// word below the cap names a shape no seal makes.
+	if full && size != s.cap {
+		return ErrBadSize
+	}
+	var held int64
+	for _, n := range tags {
+		// Mirrors AddRecord's own bounds: a charge of no bytes is refused, so
+		// a zero key never sits in the shares' totals, and each tag's bytes
+		// sit inside the storage the size accounts for, as AddRecord's bound
+		// keeps an appended record inside the segment's accounted size. The
+		// sum is held under the size as it accumulates — each tag's charge
+		// must fit the size less what the tags before it took — so the sum
+		// never passes the size and can never wrap past the comparison.
+		if n <= 0 || n > size-held {
+			return ErrBadSize
+		}
+		held += n
+	}
+	// An overhead of zero is charged nowhere, as AddRecord charges none: the
+	// key is kept out of the entry's map and the totals' alike, so no figure
+	// the ledger reads holds a share with nothing in it. A refused call
+	// leaves holds a scratch map no ledger state ever sees.
+	var holds map[core.ShareTag]int64
+	for tag, n := range over {
+		// Mirrors AddRecord's own bounds: an overhead is never negative and
+		// sits inside the bytes it is part of, or the tag has no bytes to sit
+		// in at all.
+		if n < 0 || n > tags[tag] {
+			return ErrBadSize
+		}
+		if n > 0 {
+			if holds == nil {
+				holds = make(map[core.ShareTag]int64, len(over))
+			}
+			holds[tag] = n
+		}
+	}
+	s.segs[id] = &entry{
+		state: st,
+		size:  size,
+		full:  full,
+		held:  held,
+		tags:  maps.Clone(tags),
+		over:  holds,
+	}
+	s.c.UsedBytes += size
+	s.c.Segments++
+	if st == Sealed {
+		s.c.Sealed++
+	}
+	for tag, n := range tags {
+		s.tags[tag] += n
+	}
+	for tag, n := range holds {
+		s.over[tag] += n
+	}
+	return nil
+}
+
 // Take carries a spare into the set, as the segment a stream appends to. The
 // storage is already accounted, so the footprint does not move: it moves only
 // when a segment is created, unlinked or shortened.

@@ -315,6 +315,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			Log:         cfg.Logger,
 			Failed:      failed,
 			ExtentLimit: s.ExtentLimit,
+			SegmentCap:  core.SegmentCapOf(s),
 		}, floor, expect, marks); err != nil {
 			return nil, err
 		}
@@ -372,6 +373,32 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		cfg.SparesReady(c)
 	}
 	return newJournal(c), nil
+}
+
+// continueFrom is the core an assembled recovery continues as: the deps the
+// core is made from, with LastSegment raised to the highest segment id the
+// directory holds — so the spare maker draws its first spare above every
+// segment the recovery rebuilt, and a fresh spare never meets a rebuilt
+// segment's id — and, in the state, the rebuilt index and its counters, the
+// assembled set, the open state the assembly ended with, and the dirty seed
+// the rebuilt index spells. It is the mapping the journal's open step calls
+// once it has run the recovery over a directory that holds segments.
+//
+// decision: at this stage only tests call it — the reopen seam's rows and the
+// inspector's planted fixture, each building the deps of its own journal. The
+// journal's own open, which today refuses a directory holding segments with
+// ErrNotImplemented rather than continuing the core, is the wiring that calls
+// it in production and is not built yet. A copy of the mapping there that
+// dropped LastSegment would leave its spares colliding with the rebuilt ids,
+// and no row would name it, so this function is the one mapping: withdrawn
+// here only by the open step replacing its two callers.
+func continueFrom(st recovery.State, deps datapath.Deps) (datapath.Deps, datapath.State) {
+	deps.LastSegment = st.Attached.MaxID
+	return deps, datapath.State{
+		Index: st.Rebuilt.Index, Counters: st.Rebuilt.Counters, Set: st.Assembled.Set,
+		Open: &datapath.OpenState{Live: st.Assembled.Live, Forgets: st.Assembled.Forgets,
+			Unsynced: st.Assembled.Unsynced, Dirty: dirtySeed(st.Rebuilt.Index)},
+	}
 }
 
 // classifyListing says whether the names a directory holds include a format

@@ -50,7 +50,15 @@ func (h RecordHeader) BodySize() int64 {
 // header, body and padding occupy. It panics on an unknown kind, as
 // BodySize does.
 func (h RecordHeader) Size() int64 {
-	return (RecordHeaderSize + h.BodySize() + 7) &^ 7
+	return RecordSize(h.Kind, h.Extent.Len)
+}
+
+// RecordSize answers a record's whole size from its kind and the length its
+// header names: the same bytes Size spells for a whole header, for a reader
+// that converted the header away but still owes the record's placement or
+// accounting. It panics on an unknown kind, as BodySize does.
+func RecordSize(k Kind, length int64) int64 {
+	return (RecordHeaderSize + bodySize(k, length) + 7) &^ 7
 }
 
 // AppendRecord appends h's header, body and padding to dst, seeded with the
