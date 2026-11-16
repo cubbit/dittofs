@@ -6,7 +6,6 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
-	"iter"
 	"maps"
 	"os"
 	"path/filepath"
@@ -165,10 +164,16 @@ const module = "github.com/cubbit/dittofs/"
 
 // componentAllowed reports whether a package under internal/node but node
 // and nodetest may import the module's package rel: none it allows is a
-// component's implementation. Everything else it reaches through an interface
-// it declares or a value the node hands it.
+// component's implementation, the entity and wire packages holding data
+// types only, and nodetest, which imports Badger, is not allowed. Everything
+// else it reaches through an interface it declares or a value the node hands
+// it.
 func componentAllowed(rel string) bool {
-	return strings.HasPrefix(rel, "internal/node/") || rel == "pkg/health" || rel == "pkg/metrics"
+	switch rel {
+	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1":
+		return true
+	}
+	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest")
 }
 
 // componentImports returns, for every package below root but root itself,
@@ -216,7 +221,10 @@ func TestNoComponentImports(t *testing.T) {
 		want []string
 	}{
 		{".", nil},
-		{"testdata/arch/component-import", []string{"api/server.go imports github.com/cubbit/dittofs/pkg/block/engine"}},
+		{"testdata/arch/component-import", []string{
+			"api/server.go imports github.com/cubbit/dittofs/pkg/block/engine",
+			"nodetest-import/harness.go imports github.com/cubbit/dittofs/internal/node/nodetest",
+		}},
 	} {
 		got, err := componentImports(tc.root)
 		if err != nil {
@@ -230,11 +238,11 @@ func TestNoComponentImports(t *testing.T) {
 
 // typeCheck type-checks the package whose non-test sources are in dir as
 // import path path, with every import read from source.
-func typeCheck(dir, path string) ([]*ast.File, *types.Info, error) {
+func typeCheck(dir, path string) (*types.Package, []*ast.File, *types.Info, error) {
 	fset, imp := sourceImporter()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var files []*ast.File
 	for _, e := range entries {
@@ -243,16 +251,17 @@ func typeCheck(dir, path string) ([]*ast.File, *types.Info, error) {
 		}
 		f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, 0)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		files = append(files, f)
 	}
 	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
 	conf := types.Config{Importer: imp}
-	if _, err := conf.Check(path, fset, files, info); err != nil {
-		return nil, nil, err
+	pkg, err := conf.Check(path, fset, files, info)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	return files, info, nil
+	return pkg, files, info, nil
 }
 
 // sourceImporter is one importer from source for every check, so a package
@@ -267,37 +276,43 @@ var sourceImporter = sync.OnceValues(func() (*token.FileSet, types.Importer) {
 const kvUpdate = "(" + module + "pkg/metadata/kv.KV).Update"
 
 // storeWriters returns every exported method of the metadata store's package
-// that writes the store, by its full name: one whose body, or a
-// function or method of the package it calls, opens the KV's write
-// transaction. Write, which commits a change with its audit record, is the
-// one write left out.
-func storeWriters() (map[string]bool, error) {
-	files, info, err := typeCheck("../../pkg/metadata/kvstore", module+"pkg/metadata/kvstore")
+// that writes the store, by its full name, with its signature less the
+// receiver: one whose body, or a function or method of the package it calls,
+// opens the KV's write transaction. Write, which commits a change with its
+// audit record, is the one write left out.
+func storeWriters() (map[string]*types.Signature, error) {
+	_, files, info, err := typeCheck("../../pkg/metadata/kvstore", module+"pkg/metadata/kvstore")
 	if err != nil {
 		return nil, err
 	}
 	calls := map[string][]string{} // a function's full name: the full names it calls
-	var methods []string
-	for fd := range funcDecls(files) {
-		fn := info.Defs[fd.Name].(*types.Func)
-		if fd.Recv != nil && fn.Exported() && fn.Name() != "Write" {
-			methods = append(methods, fn.FullName())
-		}
-		ast.Inspect(fd.Body, func(n ast.Node) bool {
-			if c, ok := n.(*ast.CallExpr); ok {
-				var callee *ast.Ident
-				switch f := c.Fun.(type) {
-				case *ast.Ident:
-					callee = f
-				case *ast.SelectorExpr:
-					callee = f.Sel
-				}
-				if g, ok := info.Uses[callee].(*types.Func); ok {
-					calls[fn.FullName()] = append(calls[fn.FullName()], g.Origin().FullName())
-				}
+	var methods []*types.Func
+	for _, f := range files {
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
 			}
-			return true
-		})
+			fn := info.Defs[fd.Name].(*types.Func)
+			if fd.Recv != nil && fn.Exported() && fn.Name() != "Write" {
+				methods = append(methods, fn)
+			}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if c, ok := n.(*ast.CallExpr); ok {
+					var callee *ast.Ident
+					switch f := c.Fun.(type) {
+					case *ast.Ident:
+						callee = f
+					case *ast.SelectorExpr:
+						callee = f.Sel
+					}
+					if g, ok := info.Uses[callee].(*types.Func); ok {
+						calls[fn.FullName()] = append(calls[fn.FullName()], g.Origin().FullName())
+					}
+				}
+				return true
+			})
+		}
 	}
 	writes := map[string]bool{kvUpdate: true}
 	for grew := true; grew; {
@@ -308,60 +323,60 @@ func storeWriters() (map[string]bool, error) {
 			}
 		}
 	}
-	out := map[string]bool{}
+	out := map[string]*types.Signature{}
 	for _, m := range methods {
-		if writes[m] {
-			out[m] = true
+		if writes[m.FullName()] {
+			s := m.Signature()
+			out[m.FullName()] = types.NewSignatureType(nil, nil, nil, s.Params(), s.Results(), s.Variadic())
 		}
 	}
 	return out, nil
 }
 
-// funcDecls yields every function and method with a body in files.
-func funcDecls(files []*ast.File) iter.Seq[*ast.FuncDecl] {
-	return func(yield func(*ast.FuncDecl) bool) {
-		for _, f := range files {
-			for _, d := range f.Decls {
-				if fd, ok := d.(*ast.FuncDecl); ok && fd.Body != nil && !yield(fd) {
-					return
-				}
-			}
-		}
-	}
-}
-
-// storeWrites type-checks the package in dir and returns each method that
-// writes the store on a type the package uses: one of writers, the KV's write
-// transaction, or a method of an interface named as one of writers, which
-// the node could fill with the store's.
-func storeWrites(dir string, writers map[string]bool) ([]string, error) {
-	_, info, err := typeCheck(dir, module+"internal/node/api")
+// storeWrites type-checks the package in dir, as import path path, and
+// returns each way it holds a store write: a method of a type it uses that is
+// one of writers or the KV's write transaction, and an interface method, a
+// func-typed variable, field or parameter whose signature is a writer's, which
+// the node could fill with the store's method whatever its name.
+func storeWrites(dir, path string, writers map[string]*types.Signature) ([]string, error) {
+	_, _, info, err := typeCheck(dir, path)
 	if err != nil {
 		return nil, err
 	}
-	names := map[string]bool{"Update": true}
-	for w := range writers {
-		names[w[strings.LastIndex(w, ".")+1:]] = true
+	isWriter := func(t types.Type) bool {
+		s, ok := t.Underlying().(*types.Signature)
+		return ok && slices.ContainsFunc(slices.Collect(maps.Values(writers)), func(w *types.Signature) bool { return types.Identical(s, w) })
 	}
 	used := map[types.Type]bool{}
 	for _, tv := range info.Types {
 		used[tv.Type] = true
 	}
+	seen := map[string]bool{}
 	for _, objs := range []map[*ast.Ident]types.Object{info.Defs, info.Uses} {
 		for _, o := range objs {
-			if o != nil {
-				used[o.Type()] = true
+			if o == nil {
+				continue
+			}
+			used[o.Type()] = true
+			if v, ok := o.(*types.Var); ok && isWriter(v.Type()) {
+				seen["var "+v.Name()] = true
 			}
 		}
 	}
-	seen := map[string]bool{}
 	for t := range used {
+		if st, ok := t.Underlying().(*types.Struct); ok {
+			for f := range st.Fields() {
+				if isWriter(f.Type()) {
+					seen["var "+f.Name()] = true
+				}
+			}
+		}
 		for _, t := range []types.Type{t, types.NewPointer(t)} {
 			ms := types.NewMethodSet(t)
 			for i := range ms.Len() {
 				m := ms.At(i).Obj().(*types.Func)
 				_, iface := m.Signature().Recv().Type().Underlying().(*types.Interface)
-				if iface && names[m.Name()] || writers[m.Origin().FullName()] || m.FullName() == kvUpdate {
+				if iface && isWriter(m.Signature()) || writers[m.Origin().FullName()] != nil || m.FullName() == kvUpdate {
 					seen[m.FullName()] = true
 				}
 			}
@@ -370,26 +385,78 @@ func storeWrites(dir string, writers map[string]bool) ([]string, error) {
 	return slices.Sorted(maps.Keys(seen)), nil
 }
 
-// No type internal/node/api uses has a method that writes the store but
-// Write; planted packages holding a store method in an interface of their
-// own, and the store's view itself, are caught.
+// methodValues type-checks the package in dir, as import path path, and
+// returns each store writer it takes as a method value rather than calls,
+// which the node could hand to the api as a function.
+func methodValues(dir, path string, writers map[string]*types.Signature) ([]string, error) {
+	_, files, info, err := typeCheck(dir, path)
+	if err != nil {
+		return nil, err
+	}
+	called := map[ast.Expr]bool{}
+	var sels []*ast.SelectorExpr
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.CallExpr:
+				called[n.Fun] = true
+			case *ast.SelectorExpr:
+				sels = append(sels, n)
+			}
+			return true
+		})
+	}
+	var bad []string
+	for _, s := range sels {
+		if fn, ok := info.Uses[s.Sel].(*types.Func); ok && !called[s] && writers[fn.Origin().FullName()] != nil {
+			bad = append(bad, fn.FullName())
+		}
+	}
+	slices.Sort(bad)
+	return bad, nil
+}
+
+// No package under internal/node/api has a way to write the store but Write,
+// and the node hands it no store write as a function value; planted packages
+// holding a store method in an interface of their own, under its name or
+// another, in a func field, the store's view itself, and a node taking a
+// store method as a value are caught.
 func TestAPIWritesOnlyThroughWrite(t *testing.T) {
 	writers, err := storeWriters()
 	if err != nil {
 		t.Fatal(err)
 	}
 	cp := "(" + module + "pkg/metadata/kvstore.ControlPlane)."
-	if !writers[cp+"PutShare"] || writers[cp+"Shares"] {
+	if writers[cp+"PutShare"] == nil || writers[cp+"Shares"] != nil {
 		t.Fatalf("store writers %v: want ControlPlane's PutShare in and Shares out", slices.Sorted(maps.Keys(writers)))
+	}
+	var dirs []string
+	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			dirs = append(dirs, path)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range dirs {
+		got, err := storeWrites(dir, module+"internal/node/"+filepath.ToSlash(dir), writers)
+		if err != nil {
+			t.Fatalf("%s: %v", dir, err)
+		}
+		if len(got) > 0 {
+			t.Errorf("%s: violations %q, want none", dir, got)
+		}
 	}
 	for _, tc := range []struct {
 		dir  string
 		want []string
 	}{
-		{"api", nil},
-		{"testdata/arch/store-write/interface", []string{"(interface).PutShare"}},
+		{"interface", []string{"(interface).PutShare"}},
+		{"renamed", []string{"(interface).Forget"}},
+		{"func-field", []string{"var Drop"}},
 	} {
-		got, err := storeWrites(tc.dir, writers)
+		got, err := storeWrites(filepath.Join("testdata/arch/store-write", tc.dir), module+"internal/node/api", writers)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.dir, err)
 		}
@@ -397,11 +464,76 @@ func TestAPIWritesOnlyThroughWrite(t *testing.T) {
 			t.Errorf("%s: violations %q, want %q", tc.dir, got, tc.want)
 		}
 	}
-	got, err := storeWrites("testdata/arch/store-write/view", writers)
+	got, err := storeWrites("testdata/arch/store-write/view", module+"internal/node/api", writers)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(got, cp+"PutShare") || slices.Contains(got, cp+"Shares") {
 		t.Errorf("the store's view: violations %q, want PutShare among them and Shares not", got)
+	}
+	for _, tc := range []struct {
+		dir  string
+		want []string
+	}{
+		{".", nil},
+		{"testdata/arch/store-write/method-value", []string{cp + "DeleteNetgroup"}},
+	} {
+		got, err := methodValues(tc.dir, module+"internal/node", writers)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.dir, err)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: store writers taken as values %q, want %q", tc.dir, got, tc.want)
+		}
+	}
+}
+
+// apiExports returns the api package's exported names, each exported type's
+// with its exported methods, the pointer's included, as Type.Method.
+func apiExports(dir string) ([]string, error) {
+	pkg, _, _, err := typeCheck(dir, module+"internal/node/api")
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for _, name := range pkg.Scope().Names() {
+		o := pkg.Scope().Lookup(name)
+		if !o.Exported() {
+			continue
+		}
+		seen[name] = true
+		if _, ok := o.(*types.TypeName); !ok {
+			continue
+		}
+		for _, t := range []types.Type{o.Type(), types.NewPointer(o.Type())} {
+			ms := types.NewMethodSet(t)
+			for i := range ms.Len() {
+				if m := ms.At(i).Obj(); m.Exported() {
+					seen[name+"."+m.Name()] = true
+				}
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(seen)), nil
+}
+
+// The api package exports New, Deps and Server, and Server's Start and Stop,
+// and nothing else; a planted extra method is caught.
+func TestAPIExports(t *testing.T) {
+	want := []string{"Deps", "New", "Server", "Server.Start", "Server.Stop"}
+	for _, tc := range []struct {
+		dir  string
+		want []string
+	}{
+		{"api", want},
+		{"testdata/arch/api-exports", []string{"Deps", "New", "Server", "Server.Handler", "Server.Start", "Server.Stop"}},
+	} {
+		got, err := apiExports(tc.dir)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.dir, err)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: exports %q, want %q", tc.dir, got, tc.want)
+		}
 	}
 }
