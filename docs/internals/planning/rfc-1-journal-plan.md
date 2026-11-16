@@ -1140,7 +1140,8 @@ Metrics: `offered_bytes`, `marked_bytes`, `released_bytes`, `freed_bytes`,
 
 Epic 10 is the journal's share of starting and initialising an installation, and nothing
 else. Everything that needs the engine interface is epic 11's. v1's callers are not ported:
-they are deleted with the rest of v1 at the cutover (stage 7 of #3119).
+RFC 23's plan's epic 1 deletes them with v1's `cmd/dfs`, and moves every caller of the commands
+it removes (`rfc-23-control-plane-plan.md`, D13).
 
 - **Device configuration keys:**
   - a list of journal devices (path, maximum);

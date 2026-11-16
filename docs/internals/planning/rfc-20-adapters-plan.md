@@ -124,7 +124,9 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
 - **`pkg/adapter/config`** (RFC 20 §3.6, RFC 13): `Adapter`, and `NFS` and `SMB` embedding it;
   `TLS`; `Settings{Validate() error; Common() Adapter}`; `DefaultNFS` and `DefaultSMB`; every
   key `adapters.<protocol>.<field>` from a `json` tag; no restart machinery, since every
-  adapter setting is live.
+  adapter setting is live but `port`, restart-class (RFC 20 §3.6, RFC 23's plan's A1), whose
+  field epic 2 adds to the frozen shape (its D20), and whose refusal and binding land with
+  `Reconfigure` (T4.6) and `New` (T6.3, T6.4).
 - **`pkg/adapter/nfs.New`, `pkg/adapter/smb.New`**: signatures and stubs returning an error.
 - **`pkg/resources`** (RFC 24 §2.5, §3.1, RFC 20 §6.8): `Budget`, `WaitBudget`, `Reservation`,
   `Budgets`, `Buf`, `BufPool` and `NewBufPool(*WaitBudget)` (only `BufPool` is called a pool,
@@ -459,7 +461,7 @@ if err := smbA.Start(ctx); err != nil { // binds every listener, then StateServi
 }
 runner.Sync(ctx, servingSet()) // planned (E4): sidecars follow Addrs()
 // ...
-err = smbA.Reconfigure(ctx, next) // or Stop, New and Start when a change needs a rebind (§3.6)
+err = smbA.Reconfigure(ctx, next) // or New, old Stop, new Start on a rebind (§3.6)
 err = smbA.Stop(ctx)              // drain under DrainTimeout, then StateStopped
 ```
 
@@ -775,7 +777,8 @@ and SMB rows, §5.1, §5.2, §5.4 for the headers, §6.10's codec gate for the h
 
 Waits for RFC 23's `internal/node`. Then: `node.New` builds each enabled adapter through
 `pkg/adapter/nfs.New` and `smb.New` from its `Deps`, starts them last, applies a settings
-generation by `Reconfigure` or by stop, `New` and start, drives the sidecar runner, reports
+generation by `Reconfigure` or by `New`, then the old adapter's stop and the new one's start
+(RFC 23 §2.3), drives the sidecar runner, reports
 `Health` and `Connections()` to the control plane's client list, and checks every budget at zero
 after the adapters stop. It also builds what needs a node: `core`'s conditions in
 RFC 25 §3.9's registry and the alert rules for `adapter_unmapped_errors_total` and
@@ -784,7 +787,8 @@ RFC 25 §3.9's registry and the alert rules for `adapter_unmapped_errors_total` 
 The adapters' settings are split three ways. The field `settings.Adapter.Port` is epic 2's (#4000,
 D20). The one settings table, with the adapters' section, and `Check`, wired into the node's
 reconcile and into the settings routes, are RFC 13's plan's epic 5 (#4059). This epic writes
-what reconcile calls for an adapter: `Reconfigure`, or stop, `New` and start.
+what reconcile calls for an adapter: `Reconfigure`, or `New`, then the old one's stop and the
+new one's start.
 
 RFC sections: §3.4's "built by `node.New`", §3.6's sequence, §3.7's conditions, §10.1's alerting
 sentences; RFC 23 §2.2, §2.3; RFC 24 §2.7; RFC 25 §3.9, §7.
