@@ -39,11 +39,11 @@ func FuzzHandles(f *testing.F) {
 	open := entity.Share{ID: entity.NewShareID(), Name: "open", Path: "/a/open", Root: entity.NewFileID()}
 	closed := entity.Share{ID: entity.NewShareID(), Name: "closed", Path: "/closed", Root: entity.NewFileID()}
 	for _, err := range []error{
-		cp.PutUser(ctx, admin, 0, entity.Alloc{}), cp.PutShare(ctx, open, 0), cp.PutShare(ctx, closed, 0),
-		cp.SetGrant(ctx, entity.ShareGrant{Share: open.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0),
-		cp.SetGrant(ctx, entity.ShareGrant{Share: closed.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0),
-		cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: closed.ID, Clients: []entity.ClientRule{
-			{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("0.0.0.0/0")}, Access: entity.AccessNone}}}, 0),
+		errOf(cp.PutUser(ctx, admin, 0, entity.Alloc{})), errOf(cp.PutShare(ctx, open, 0)), errOf(cp.PutShare(ctx, closed, 0)),
+		errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: open.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0)),
+		errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: closed.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0)),
+		errOf(cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: closed.ID, Clients: []entity.ClientRule{
+			{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("0.0.0.0/0")}, Access: entity.AccessNone}}}, 0)),
 	} {
 		if err != nil {
 			f.Fatal(err)

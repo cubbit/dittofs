@@ -56,7 +56,12 @@ const (
 	KindTG     byte = 0x37
 	KindMKP    byte = 0x38
 	KindIDS    byte = 0x3A // server-wide ID allocators, IDS‖kind; 0x39 is retired
+	KindIK     byte = 0x3E // idempotency record: IK‖account‖key
+	KindXP     byte = 0x3F // expiry index: XP‖expiry‖tagged, empty
+	KindAU     byte = 0x45 // audit record: AU‖time‖auditID
+	KindAUX    byte = 0x46 // audit index: AUX‖tagged‖time‖auditID, empty
 	KindJD     byte = 0x48 // a node's journal device to its journal: JD‖node‖device
+	KindUA     byte = 0x4A // enabled-admin index: UA‖principal, empty
 )
 
 // Sub-kinds under F‖id. The File itself has none.
@@ -169,6 +174,12 @@ const (
 	// 0x03 is unassigned: it named the header key, which is gone.
 	KeyExport byte = 0x04
 	KeyData   byte = 0x05
+
+	XPIdempotency byte = 0x01
+
+	AUXActor  byte = 0x01
+	AUXTarget byte = 0x02
+	AUXNode   byte = 0x03
 )
 
 // IDLen is the length of every minted identifier.

@@ -44,7 +44,7 @@ func testReopenKeepsData(t *testing.T, d Durable) {
 	must(t, kvstore.Init(ctx, db, uuid.New()))
 	first, err := kvstore.Open(ctx, db)
 	must(t, err)
-	must(t, first.ControlPlane().PutUser(ctx, u, 0, entity.Alloc{}))
+	must(t, errOf(first.ControlPlane().PutUser(ctx, u, 0, entity.Alloc{})))
 
 	s, err := kvstore.Open(ctx, open())
 	if err != nil {

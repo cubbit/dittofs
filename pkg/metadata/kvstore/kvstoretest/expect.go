@@ -10,11 +10,11 @@ import (
 )
 
 // versioned is one control-plane record kind as a write's expect sees it:
-// put writes the record, gen reads its stored generation or version, zero
-// when there is none, and del, when the kind has one, deletes it.
+// put writes the record and returns the generation or version it wrote,
+// gen reads the stored one, zero when there is none, and del, when the kind has one, deletes it.
 type versioned struct {
 	name string
-	put  func(expect uint64) error
+	put  func(expect uint64) (uint64, error)
 	gen  func() uint64
 	del  func(expect uint64) error
 }
@@ -28,15 +28,15 @@ func versionedKinds(t *testing.T, s *kvstore.Store) []versioned {
 	q := entity.Quota{Principal: u.Principal, Hard: entity.Limit{Files: 10}}
 	return []versioned{
 		{"user",
-			func(e uint64) error { return cp.PutUser(ctx, u, e, entity.Alloc{}) },
+			func(e uint64) (uint64, error) { return cp.PutUser(ctx, u, e, entity.Alloc{}) },
 			func() uint64 { return userGeneration(t, s, u.Principal) },
 			func(e uint64) error { return cp.DeleteUser(ctx, u.Principal, e) }},
 		{"group",
-			func(e uint64) error { return cp.PutGroup(ctx, g, e, entity.Alloc{}) },
+			func(e uint64) (uint64, error) { return cp.PutGroup(ctx, g, e, entity.Alloc{}) },
 			func() uint64 { return groupGeneration(t, cp, g.Principal) },
 			func(e uint64) error { return cp.DeleteGroup(ctx, g.Principal, e) }},
 		{"share",
-			func(e uint64) error { return cp.PutShare(ctx, sh, e) },
+			func(e uint64) (uint64, error) { return cp.PutShare(ctx, sh, e) },
 			func() uint64 {
 				for got, err := range cp.Shares(ctx) {
 					must(t, err)
@@ -48,7 +48,7 @@ func versionedKinds(t *testing.T, s *kvstore.Store) []versioned {
 			},
 			func(e uint64) error { return cp.DeleteShare(ctx, sh.ID, entity.SnapshotsRefuse, e) }},
 		{"setting",
-			func(e uint64) error { return cp.PutSetting(ctx, entity.Setting{Scope: inst, Key: "k"}, e) },
+			func(e uint64) (uint64, error) { return cp.PutSetting(ctx, entity.Setting{Scope: inst, Key: "k"}, e) },
 			func() uint64 {
 				for got, err := range cp.Settings(ctx, inst) {
 					must(t, err)
@@ -58,25 +58,25 @@ func versionedKinds(t *testing.T, s *kvstore.Store) []versioned {
 			},
 			nil},
 		{"netgroup",
-			func(e uint64) error { return cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab"}, e) },
+			func(e uint64) (uint64, error) { return cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab"}, e) },
 			func() uint64 { return netgroupVersion(t, s, "lab") },
 			func(e uint64) error { return cp.DeleteNetgroup(ctx, "lab", e) }},
 		{"export policy",
-			func(e uint64) error {
+			func(e uint64) (uint64, error) {
 				return cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashAll}, e)
 			},
 			func() uint64 { return policyVersion(t, cp, sh.ID) },
 			nil},
 		{"grant",
-			func(e uint64) error {
+			func(e uint64) (uint64, error) {
 				return cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, e)
 			},
 			func() uint64 { return grantVersion(t, cp, sh.ID, u.Principal) },
 			func(e uint64) error { return cp.DeleteGrant(ctx, sh.ID, u.Principal, e) }},
 		{"quota",
-			func(e uint64) error { return cp.SetQuota(ctx, sh.ID, q, e) },
+			func(e uint64) (uint64, error) { return cp.SetQuota(ctx, sh.ID, q, e) },
 			func() uint64 { return quotaVersion(t, c, sh.ID, kvstore.QuotaTarget{Principal: u.Principal}) },
-			func(e uint64) error { return cp.SetQuota(ctx, sh.ID, entity.Quota{Principal: u.Principal}, e) }},
+			func(e uint64) error { return errOf(cp.SetQuota(ctx, sh.ID, entity.Quota{Principal: u.Principal}, e)) }},
 	}
 }
 
@@ -84,7 +84,7 @@ func versionedKinds(t *testing.T, s *kvstore.Store) []versioned {
 // kinds write against, put under expect zero.
 func versionedFixture(t *testing.T, kinds []versioned) {
 	for _, k := range kinds[:3] {
-		must(t, k.put(0))
+		must(t, errOf(k.put(0)))
 	}
 }
 
@@ -99,23 +99,27 @@ func testWritesCheckExpect(t *testing.T, kvo Opener) {
 	for _, k := range kinds {
 		t.Run(k.name, func(t *testing.T) {
 			if k.gen() == 0 {
-				must(t, k.put(0))
+				must(t, errOf(k.put(0)))
 			}
 			v1 := k.gen()
 			if v1 == 0 {
 				t.Fatalf("%s after a create: stored generation 0", k.name)
 			}
-			if err := k.put(0); !refused(err) {
+			if _, err := k.put(0); !refused(err) {
 				t.Errorf("%s created again over an existing one: %v, want %v", k.name, err, entity.ErrGenerationMismatch)
 			}
-			if err := k.put(v1 + 1); !refused(err) {
+			if _, err := k.put(v1 + 1); !refused(err) {
 				t.Errorf("%s written under another generation: %v, want %v", k.name, err, entity.ErrGenerationMismatch)
 			}
 			if got := k.gen(); got != v1 {
 				t.Errorf("%s after refused writes: generation %d, want %d", k.name, got, v1)
 			}
-			must(t, k.put(v1))
+			wrote, err := k.put(v1)
+			must(t, err)
 			v2 := k.gen()
+			if wrote != v2 {
+				t.Errorf("%s written under its generation: returned %d, read back %d", k.name, wrote, v2)
+			}
 			if v2 <= v1 {
 				t.Errorf("%s written under its generation: generation %d, want above %d", k.name, v2, v1)
 			}
@@ -158,10 +162,10 @@ func testExpectRace(t *testing.T, kvo Opener) {
 					t.Fatalf("kind %d is %s, want %s", i, k.name, name)
 				}
 				if k.gen() == 0 {
-					must(t, k.put(0))
+					must(t, errOf(k.put(0)))
 				}
 				read := k.gen()
-				outer, inner := race(h, func() error { return k.put(read) }, func() error { return k.put(read) })
+				outer, inner := race(h, func() error { return errOf(k.put(read)) }, func() error { return errOf(k.put(read)) })
 				if inner != nil {
 					t.Fatalf("%s write committing first: %v", k.name, inner)
 				}
@@ -180,12 +184,12 @@ func testRecreatedPrincipalRefusesOldGeneration(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	for _, k := range versionedKinds(t, s)[:2] {
 		t.Run(k.name, func(t *testing.T) {
-			must(t, k.put(0))
+			must(t, errOf(k.put(0)))
 			deleted := k.gen()
 			must(t, k.del(deleted))
-			must(t, k.put(0))
+			must(t, errOf(k.put(0)))
 			stored := k.gen()
-			if err := k.put(deleted); !refused(err) {
+			if _, err := k.put(deleted); !refused(err) {
 				t.Errorf("%s created again, stored at %d, written under the deleted record's generation %d: %v, want %v", k.name, stored, deleted, err, entity.ErrGenerationMismatch)
 			}
 		})
@@ -198,9 +202,9 @@ func testAllocRefused(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	for name, err := range map[string]error{
-		"user uid": cp.PutUser(ctx, user("alice"), 0, entity.Alloc{UID: true}),
-		"user rid": cp.PutUser(ctx, user("bob"), 0, entity.Alloc{RID: true}),
-		"group":    cp.PutGroup(ctx, group("staff"), 0, entity.Alloc{GID: true}),
+		"user uid": errOf(cp.PutUser(ctx, user("alice"), 0, entity.Alloc{UID: true})),
+		"user rid": errOf(cp.PutUser(ctx, user("bob"), 0, entity.Alloc{RID: true})),
+		"group":    errOf(cp.PutGroup(ctx, group("staff"), 0, entity.Alloc{GID: true})),
 	} {
 		if !isCode(err, merrs.ErrInvalidArgument) {
 			t.Errorf("%s allocation: %v, want invalid argument", name, err)
@@ -214,16 +218,16 @@ func testWritesToRemovedShare(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	sh, u := share("photos", "/photos"), user("alice")
-	must(t, cp.PutShare(ctx, sh, 0))
-	must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
-	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0))
+	must(t, errOf(cp.PutShare(ctx, sh, 0)))
+	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0)))
 	v := grantVersion(t, cp, sh.ID, u.Principal)
 	must(t, cp.DeleteShare(ctx, sh.ID, entity.SnapshotsRefuse, 1))
 	if err := cp.DeleteGrant(ctx, sh.ID, u.Principal, v); !errors.Is(err, entity.ErrStale) {
 		t.Errorf("grant deleted on a share being removed: %v, want %v", err, entity.ErrStale)
 	}
 	scope := entity.SettingScope{Kind: entity.ScopeShare, ID: sh.ID}
-	if err := cp.PutSetting(ctx, entity.Setting{Scope: scope, Key: "k"}, 0); !errors.Is(err, entity.ErrStale) {
+	if _, err := cp.PutSetting(ctx, entity.Setting{Scope: scope, Key: "k"}, 0); !errors.Is(err, entity.ErrStale) {
 		t.Errorf("setting put on a share being removed: %v, want %v", err, entity.ErrStale)
 	}
 }

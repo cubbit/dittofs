@@ -39,10 +39,10 @@ func setupFS(t *testing.T, s *kvstore.Store, c *kv.Counting, fold entity.FoldRul
 	cp := s.ControlPlane()
 	sh := share("data", "/data")
 	sh.Fold = fold
-	must(t, cp.PutShare(ctx, sh, 0))
+	must(t, errOf(cp.PutShare(ctx, sh, 0)))
 	admin := user("admin")
-	must(t, cp.PutUser(ctx, admin, 0, entity.Alloc{}))
-	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0))
+	must(t, errOf(cp.PutUser(ctx, admin, 0, entity.Alloc{})))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0)))
 	id := entity.Identity{Principal: admin.Principal, Privileged: true}
 	root, _, err := s.Files().Root(ctx, id, sh.ID)
 	must(t, err)
@@ -61,8 +61,8 @@ func (f *fs) member(name string, primary entity.Principal, groups ...entity.Prin
 	cp := f.s.ControlPlane()
 	u := user(name)
 	u.Primary = primary
-	must(f.t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
-	must(f.t, cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: u.Principal, Access: entity.AccessReadWrite}, 0))
+	must(f.t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+	must(f.t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: u.Principal, Access: entity.AccessReadWrite}, 0)))
 	for _, g := range groups {
 		must(f.t, cp.AddMember(ctx, entity.Membership{Group: g, Member: u.Principal}))
 	}
@@ -72,7 +72,7 @@ func (f *fs) member(name string, primary entity.Principal, groups ...entity.Prin
 func (f *fs) group(name string) entity.Principal {
 	f.t.Helper()
 	g := group(name)
-	must(f.t, f.s.ControlPlane().PutGroup(ctx, g, 0, entity.Alloc{}))
+	must(f.t, errOf(f.s.ControlPlane().PutGroup(ctx, g, 0, entity.Alloc{})))
 	return g.Principal
 }
 
@@ -253,7 +253,7 @@ func testGetAndGrant(t *testing.T, kvo Opener) {
 		t.Errorf("Get with no grant: %v", err)
 	}
 	reader := f.member("reader", entity.Principal{})
-	must(t, f.s.ControlPlane().SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: reader.Principal, Access: entity.AccessRead}, grantVersion(t, f.s.ControlPlane(), f.share.ID, reader.Principal)))
+	must(t, errOf(f.s.ControlPlane().SetGrant(ctx, entity.ShareGrant{Share: f.share.ID, Principal: reader.Principal, Access: entity.AccessRead}, grantVersion(t, f.s.ControlPlane(), f.share.ID, reader.Principal))))
 	pub, _ := f.create(f.admin, f.root, "pub", directory(0o777))
 	if _, _, err := f.s.Namespace().Create(ctx, reader, pub, []byte("y"), regular(0o644)); !isDenied(err) {
 		t.Errorf("create under a read-only grant: %v", err)

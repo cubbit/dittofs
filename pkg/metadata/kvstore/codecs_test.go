@@ -70,6 +70,15 @@ func codecCases() []codecCase {
 	ng := entity.Netgroup{Name: "lab", Members: []string{"a.example", "10.1.0.0/16"}, Version: 2}
 	in := entity.Installation{ID: [16]byte{15: 1}, Instance: [16]byte{15: 2}, Generation: []byte{5}, SigningKey: entity.SecretRef{15: 8}}
 	in.NTLMOff.Off, in.NTLMOff.Deleted = 6, entity.OperationID{15: 7}
+	in.Join = entity.MachineJoin{Joined: true, Account: "H$", Owner: []byte{1}, Delegation: []byte{2}, Names: []string{"a"}}
+	in.Join.LastRotation.At, in.Join.LastRotation.Failed = time.Unix(2, 3).UTC(), true
+	in.Join.LastRotation.Tag, in.Join.LastRotation.Read, in.Join.LastRotation.Version = 4, 5, 6
+	in.Join.LastRotation.Confirmed = time.Unix(7, 0).UTC()
+	audit := entity.AuditRecord{ID: [16]byte{7: 0xAD}, Time: time.Unix(0, 1_000).UTC(), Actor: group, ActorName: "n", Credential: "k",
+		Node: entity.NodeID{15: 1}, Source: "s", Request: []byte("r"),
+		Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{9}}, Before: 1, After: 2, Change: []byte("c"), Outcome: []byte("o")}
+	apos := auditPos(audit.Time, audit.ID)
+	idem := entity.IdempotencyRecord{Account: group, Key: "k", Digest: [32]byte{31: 1}, Answer: []byte("a"), Expires: time.Unix(8, 9).UTC()}
 	set := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "k", Value: []byte("v"), Generation: 6, Schema: 1}
 	return []codecCase{
 		{"user", user, encodeUser(user),
@@ -104,8 +113,19 @@ func codecCases() []codecCase {
 			func(b []byte) (any, error) { return decodeNetgroup("lab", b) }},
 		{"installation", in, encodeInstallation(in),
 			"01" + "00000000000000000000000000000001" + "00000000000000000000000000000002" + "0105" +
-				"0000000000000006" + "00000000000000000000000000000007" + "00000000000000000000000000000008",
+				"0000000000000006" + "00000000000000000000000000000007" + "00000000000000000000000000000008" +
+				"01" + "024824" + "0101" + "0102" + "01" + "0161" +
+				"0000000000000002" + "00000003" + "01" + "00000004" + "00000005" + "0000000000000006" +
+				"0000000000000007" + "00000000",
 			func(b []byte) (any, error) { return decodeInstallation(b) }},
+		{"audit", audit, encodeAudit(audit),
+			"01" + "02" + "bb000000000000000000000000000002" + "016e" + "016b" + "00000000000000000000000000000001" + "0173" + "0172" +
+				"05" + "0109" + "0000000000000001" + "0000000000000002" + "0163" + "016f",
+			func(b []byte) (any, error) { return decodeAudit(apos, b) }},
+		{"idempotency", idem, encodeIdempotency(idem),
+			"01" + "0000000000000000000000000000000000000000000000000000000000000001" + "0161" +
+				"0000000000000008" + "00000009",
+			func(b []byte) (any, error) { return decodeIdempotency(group, "k", b) }},
 		{"counter", uint64(7), encodeCounter(7), "01" + "0000000000000007",
 			func(b []byte) (any, error) { return decodeCounter(b) }},
 		{"setting", set, encodeSetting(set), "01" + "0176" + "0000000000000006" + "00000001",
@@ -160,6 +180,13 @@ func TestUserUnknownRole(t *testing.T) {
 	}
 }
 
+func TestAuditUnknownKind(t *testing.T) {
+	a := entity.AuditRecord{Target: entity.ResourceRef{Kind: entity.ResourceSession + 1}}
+	if _, err := decodeAudit(auditPos(a.Time, a.ID), encodeAudit(a)); !errors.Is(err, errMalformed) {
+		t.Errorf("audit record targeting kind %d: %v, want %v", a.Target.Kind, err, errMalformed)
+	}
+}
+
 // Each control-plane decoder, on any bytes, either decodes a value that is
 // written again to bytes decoding to the same value, or fails with a named
 // error.
@@ -167,7 +194,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 	decoders := map[string]func([]byte) (any, error){}
 	for _, c := range append(codecCases(), fileCodecCases()...) {
 		switch c.name {
-		case "user", "group", "share", "quota", "installation":
+		case "user", "group", "share", "quota", "installation", "audit", "idempotency":
 			decoders[c.name] = c.dec
 			f.Add(c.enc)
 			f.Add(c.enc[:len(c.enc)/2])
@@ -180,6 +207,8 @@ func FuzzControlPlaneValues(f *testing.F) {
 		"share":        func(v any) []byte { return encodeShareInfo(v.(entity.Share)) },
 		"quota":        func(v any) []byte { return encodeQuota(v.(entity.Quota)) },
 		"installation": func(v any) []byte { return encodeInstallation(v.(entity.Installation)) },
+		"audit":        func(v any) []byte { return encodeAudit(v.(entity.AuditRecord)) },
+		"idempotency":  func(v any) []byte { return encodeIdempotency(v.(entity.IdempotencyRecord)) },
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
 		for name, dec := range decoders {

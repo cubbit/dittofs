@@ -19,7 +19,7 @@ import (
 func newShare(t *testing.T, s *Store) entity.ShareID {
 	t.Helper()
 	sh := entity.Share{ID: entity.NewShareID(), Name: "s", Path: "/s", Root: entity.NewFileID()}
-	if err := s.ControlPlane().PutShare(context.Background(), sh, 0); err != nil {
+	if _, err := s.ControlPlane().PutShare(context.Background(), sh, 0); err != nil {
 		t.Fatal(err)
 	}
 	return sh.ID
@@ -103,7 +103,7 @@ func TestNumbersReserveAlone(t *testing.T) {
 	s := openStoreOver(t, func(db kv.KV) kv.KV { st.KV = db; return st })
 	a := newShare(t, s)
 	bs := entity.Share{ID: entity.NewShareID(), Name: "t", Path: "/t", Root: entity.NewFileID()}
-	if err := s.ControlPlane().PutShare(ctx, bs, 0); err != nil {
+	if _, err := s.ControlPlane().PutShare(ctx, bs, 0); err != nil {
 		t.Fatal(err)
 	}
 	b := bs.ID
@@ -173,15 +173,18 @@ func TestShardNumbersStopAtTheShardSpace(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := entity.Share{ID: entity.NewShareID(), Name: "last", Path: "/last", Root: entity.NewFileID()}
-	if err := s.ControlPlane().PutShare(ctx, last, 0); err != nil {
+	if _, err := s.ControlPlane().PutShare(ctx, last, 0); err != nil {
 		t.Fatal(err)
 	}
 	if sh, _, err := s.ShareIndex().Share(ctx, last.ID); err != nil || sh.Shard != entity.ShardLimit-1 {
 		t.Errorf("the last share: shard %d, %v; want %d", sh.Shard, err, entity.ShardLimit-1)
 	}
-	err := s.ControlPlane().PutShare(ctx, entity.Share{ID: entity.NewShareID(), Name: "over", Path: "/over", Root: entity.NewFileID()}, 0)
+	_, err := s.ControlPlane().PutShare(ctx, entity.Share{ID: entity.NewShareID(), Name: "over", Path: "/over", Root: entity.NewFileID()}, 0)
 	var se *merrs.StoreError
 	if !errors.As(err, &se) || se.Code != merrs.ErrNoSpace {
 		t.Errorf("a share past the shard space: %v, want no space", err)
 	}
 }
+
+// errOf is a write's error alone, its returned generation dropped.
+func errOf[T any](_ T, err error) error { return err }

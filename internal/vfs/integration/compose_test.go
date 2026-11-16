@@ -83,14 +83,14 @@ func (c *composition) user(t *testing.T, p entity.Principal, name, uid string, a
 	if err != nil && !merrs.IsNotFoundError(err) {
 		t.Fatal(err)
 	}
-	if err := cp.PutUser(t.Context(), u, old.Generation, entity.Alloc{}); err != nil {
+	if _, err := cp.PutUser(t.Context(), u, old.Generation, entity.Alloc{}); err != nil {
 		t.Fatal(err)
 	}
 	g, _, err := cp.ShareGrant(t.Context(), c.Share.ID, p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cp.SetGrant(t.Context(), entity.ShareGrant{Share: c.Share.ID, Principal: p, Access: a}, g.Version); err != nil {
+	if _, err := cp.SetGrant(t.Context(), entity.ShareGrant{Share: c.Share.ID, Principal: p, Access: a}, g.Version); err != nil {
 		t.Fatal(err)
 	}
 }

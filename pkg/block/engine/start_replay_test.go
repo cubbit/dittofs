@@ -1109,7 +1109,7 @@ func TestStartReplaysEveryServedShare(t *testing.T) {
 		Access:    entity.AccessAdmin,
 	}
 
-	if err := r.fs.Store.ControlPlane().SetGrant(t.Context(), grant, 0); err != nil {
+	if _, err := r.fs.Store.ControlPlane().SetGrant(t.Context(), grant, 0); err != nil {
 		t.Fatal(err)
 	}
 

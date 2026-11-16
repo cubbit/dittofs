@@ -28,23 +28,23 @@ func (c ControlPlane) Netgroups(ctx context.Context, after string) iter.Seq2[ent
 
 // PutNetgroup creates a netgroup, expect zero, or replaces the one whose
 // version expect names, raising its version.
-func (c ControlPlane) PutNetgroup(ctx context.Context, g entity.Netgroup, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return putNetgroup(tx, g, expect) })
+func (c ControlPlane) PutNetgroup(ctx context.Context, g entity.Netgroup, expect uint64) (uint64, error) {
+	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutNetgroup(g, expect) })
 }
 
-func putNetgroup(tx kv.Txn, g entity.Netgroup, expect uint64) error {
+func (c controlTx) PutNetgroup(g entity.Netgroup, expect uint64) (uint64, error) {
 	if g.Name == "" {
-		return merrs.NewInvalidArgumentError("a netgroup needs a name")
+		return 0, merrs.NewInvalidArgumentError("a netgroup needs a name")
 	}
-	old, err := netgroupIn(tx, g.Name)
+	old, err := netgroupIn(c.tx, g.Name)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if err := expected(old.Version, expect); err != nil {
-		return err
+		return 0, err
 	}
-	g.Version = nextVersion(tx, old.Version)
-	return tx.Set(netgroupKey(g.Name), encodeNetgroup(g))
+	g.Version = nextVersion(c.tx, old.Version)
+	return g.Version, c.tx.Set(netgroupKey(g.Name), encodeNetgroup(g))
 }
 
 // netgroupIn reads a netgroup, the zero one when none is stored.
@@ -60,18 +60,18 @@ func netgroupIn(r kv.Reader, name string) (entity.Netgroup, error) {
 // naming it is rewritten: such a rule then fails closed, an allow matching no
 // host and a deny every host.
 func (c ControlPlane) DeleteNetgroup(ctx context.Context, name string, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return deleteNetgroup(tx, name, expect) })
+	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteNetgroup(name, expect) })
 }
 
-func deleteNetgroup(tx kv.Txn, name string, expect uint64) error {
-	old, err := netgroupIn(tx, name)
+func (c controlTx) DeleteNetgroup(name string, expect uint64) error {
+	old, err := netgroupIn(c.tx, name)
 	if err != nil {
 		return err
 	}
 	if err := expected(old.Version, expect); err != nil {
 		return err
 	}
-	return tx.Delete(netgroupKey(name))
+	return c.tx.Delete(netgroupKey(name))
 }
 
 // Settings lists the settings at one scope, in key order.
@@ -90,38 +90,38 @@ func (c ControlPlane) Settings(ctx context.Context, scope entity.SettingScope) i
 // new one, raising its generation and the settings generation every node
 // polls, in one transaction. A share's setting is refused while the share is
 // being removed.
-func (c ControlPlane) PutSetting(ctx context.Context, s entity.Setting, expect uint64) error {
-	return c.s.kv.Update(ctx, func(tx kv.Txn) error { return putSetting(tx, s, expect) })
+func (c ControlPlane) PutSetting(ctx context.Context, s entity.Setting, expect uint64) (uint64, error) {
+	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutSetting(s, expect) })
 }
 
-func putSetting(tx kv.Txn, s entity.Setting, expect uint64) error {
+func (c controlTx) PutSetting(s entity.Setting, expect uint64) (uint64, error) {
 	if s.Scope.Kind.String() == "" || (s.Scope.Kind == entity.ScopeInstallation) != (s.Scope.ID == [16]byte{}) || s.Key == "" {
-		return merrs.NewInvalidArgumentError("a setting needs a key and a scope, with an ID below installation scope")
+		return 0, merrs.NewInvalidArgumentError("a setting needs a key and a scope, with an ID below installation scope")
 	}
 	if s.Scope.Kind == entity.ScopeShare {
-		if err := liveShare(tx, entity.ShareID(s.Scope.ID)); err != nil {
-			return err
+		if err := liveShare(c.tx, entity.ShareID(s.Scope.ID)); err != nil {
+			return 0, err
 		}
 	}
 	key := settingKey(s.Scope, s.Key)
-	b, ok, err := get(tx, key)
+	b, ok, err := get(c.tx, key)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var old entity.Setting
 	if ok {
 		if old, err = decodeSetting(s.Scope, s.Key, b); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	if err := expected(old.Generation, expect); err != nil {
-		return err
+		return 0, err
 	}
 	s.Generation = old.Generation + 1
-	if err := tx.Set(key, encodeSetting(s)); err != nil {
-		return err
+	if err := c.tx.Set(key, encodeSetting(s)); err != nil {
+		return 0, err
 	}
-	return raise(tx, cfgGenKey)
+	return s.Generation, raise(c.tx, cfgGenKey)
 }
 
 // SettingsGeneration is raised by every setting change; a node that sees it

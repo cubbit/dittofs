@@ -165,7 +165,7 @@ func TestNamesAddAndRemoveEntries(t *testing.T) {
 	}
 
 	other := n.addShare(t, "other", "/other")
-	n.must(t, n.cp.SetGrant(ctx, entity.ShareGrant{Share: other, Principal: n.fs.Admin.Principal, Access: entity.AccessAdmin}, 0))
+	n.must(t, errOf(n.cp.SetGrant(ctx, entity.ShareGrant{Share: other, Principal: n.fs.Admin.Principal, Access: entity.AccessAdmin}, 0)))
 	oroot, _, err := n.Root(ctx, n.admin, vfs.ShareRef{Name: "other"})
 	n.must(t, err)
 	var cross *vfs.CrossError

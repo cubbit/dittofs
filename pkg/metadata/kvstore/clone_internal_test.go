@@ -232,7 +232,7 @@ func TestCloneRefusals(t *testing.T) {
 	src := f.file(0)
 	f.exist(src, write(1, 0, 4*mib))
 	other := entity.NewShareID()
-	if err := f.s.ControlPlane().PutShare(ctx, entity.Share{ID: other, Name: "other", Path: "/other", Root: entity.NewFileID()}, 0); err != nil {
+	if _, err := f.s.ControlPlane().PutShare(ctx, entity.Share{ID: other, Name: "other", Path: "/other", Root: entity.NewFileID()}, 0); err != nil {
 		t.Fatal(err)
 	}
 	foreign := entity.NewFileID()

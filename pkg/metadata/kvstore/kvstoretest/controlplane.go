@@ -78,10 +78,10 @@ func testUserRenameAndIDsMoveTheirRows(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp, p := s.ControlPlane(), s.Principals()
 	u := user("alice", uid("1000"))
-	must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
+	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 
 	u.Name, u.IDs = "alicia", entity.ProtocolIDs{uid("1001")}
-	must(t, cp.PutUser(ctx, u, userGeneration(t, s, u.Principal), entity.Alloc{}))
+	must(t, errOf(cp.PutUser(ctx, u, userGeneration(t, s, u.Principal), entity.Alloc{})))
 	if _, err := p.ByName(ctx, entity.PrincipalUser, "alice"); !merrs.IsNotFoundError(err) {
 		t.Errorf("old name still resolves: %v", err)
 	}
@@ -95,7 +95,7 @@ func testUserRenameAndIDsMoveTheirRows(t *testing.T, kvo Opener) {
 		t.Errorf("new uid: %v, %v", got, err)
 	}
 	// Both are free for another user now.
-	must(t, cp.PutUser(ctx, user("alice", uid("1000")), 0, entity.Alloc{}))
+	must(t, errOf(cp.PutUser(ctx, user("alice", uid("1000")), 0, entity.Alloc{})))
 
 	users := all(t, cp.Users(ctx, ""))
 	if len(users) != 2 || users[0].Name != "alice" || users[1].Name != "alicia" {
@@ -112,15 +112,15 @@ func testUserRenameAndIDsMoveTheirRows(t *testing.T, kvo Opener) {
 func testPrincipalUniqueness(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
-	must(t, cp.PutUser(ctx, user("alice", uid("1000")), 0, entity.Alloc{}))
-	if err := cp.PutUser(ctx, user("alice"), 0, entity.Alloc{}); !isExist(err) {
+	must(t, errOf(cp.PutUser(ctx, user("alice", uid("1000")), 0, entity.Alloc{})))
+	if _, err := cp.PutUser(ctx, user("alice"), 0, entity.Alloc{}); !isExist(err) {
 		t.Errorf("second alice: %v", err)
 	}
-	if err := cp.PutUser(ctx, user("bob", uid("1000")), 0, entity.Alloc{}); !isExist(err) {
+	if _, err := cp.PutUser(ctx, user("bob", uid("1000")), 0, entity.Alloc{}); !isExist(err) {
 		t.Errorf("uid 1000 twice: %v", err)
 	}
 	// A user and a group may share a name.
-	must(t, cp.PutGroup(ctx, group("alice"), 0, entity.Alloc{}))
+	must(t, errOf(cp.PutGroup(ctx, group("alice"), 0, entity.Alloc{})))
 	for _, bad := range []entity.User{
 		user("carol", uid("01000")),
 		user("carol", uid("x")),
@@ -128,7 +128,7 @@ func testPrincipalUniqueness(t *testing.T, kvo Opener) {
 		user("carol", uid("5"), uid("5")),
 		user(""),
 	} {
-		if err := cp.PutUser(ctx, bad, 0, entity.Alloc{}); err == nil {
+		if _, err := cp.PutUser(ctx, bad, 0, entity.Alloc{}); err == nil {
 			t.Errorf("accepted %+v", bad)
 		}
 	}
@@ -144,13 +144,13 @@ func testDeleteRemovesMembershipsAndGrants(t *testing.T, kvo Opener) {
 	cp, p := s.ControlPlane(), s.Principals()
 	u, g, outer := user("alice"), group("staff"), group("all")
 	sh := share("photos", "/photos")
-	must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
-	must(t, cp.PutGroup(ctx, g, 0, entity.Alloc{}))
-	must(t, cp.PutGroup(ctx, outer, 0, entity.Alloc{}))
-	must(t, cp.PutShare(ctx, sh, 0))
+	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+	must(t, errOf(cp.PutGroup(ctx, g, 0, entity.Alloc{})))
+	must(t, errOf(cp.PutGroup(ctx, outer, 0, entity.Alloc{})))
+	must(t, errOf(cp.PutShare(ctx, sh, 0)))
 	must(t, cp.AddMember(ctx, entity.Membership{Group: g.Principal, Member: u.Principal}))
 	must(t, cp.AddMember(ctx, entity.Membership{Group: outer.Principal, Member: g.Principal}))
-	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: outer.Principal, Access: entity.AccessRead}, 0))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: outer.Principal, Access: entity.AccessRead}, 0)))
 	if got := all(t, p.Groups(ctx, u.Principal)); len(got) != 2 {
 		t.Fatalf("Groups = %v", got)
 	}
@@ -169,7 +169,7 @@ func testDeleteRemovesMembershipsAndGrants(t *testing.T, kvo Opener) {
 	// Deleting outer drops its grant; a new group can take the name.
 	must(t, cp.DeleteGroup(ctx, outer.Principal, groupGeneration(t, cp, outer.Principal)))
 	again := group("all")
-	must(t, cp.PutGroup(ctx, again, 0, entity.Alloc{}))
+	must(t, errOf(cp.PutGroup(ctx, again, 0, entity.Alloc{})))
 	if a, _ := p.Grant(ctx, sh.ID, again.Principal); a != entity.AccessNone {
 		t.Errorf("a new group inherited a deleted one's grant: %v", a)
 	}
@@ -194,7 +194,7 @@ func testShares(t *testing.T, kvo Opener) {
 		return v.Version
 	}
 	home := share("Home", "/home")
-	must(t, cp.PutShare(ctx, home, 0))
+	must(t, errOf(cp.PutShare(ctx, home, 0)))
 	if list() != 1 {
 		t.Errorf("ShareList after create = %d", list())
 	}
@@ -205,9 +205,9 @@ func testShares(t *testing.T, kvo Opener) {
 		"ancestor path":       share("top", "/srv"),
 	} {
 		if name == "ancestor path" {
-			must(t, cp.PutShare(ctx, share("deep", "/srv/a/b"), 0))
+			must(t, errOf(cp.PutShare(ctx, share("deep", "/srv/a/b"), 0)))
 			v := list()
-			if err := cp.PutShare(ctx, sh, 0); !isExist(err) {
+			if _, err := cp.PutShare(ctx, sh, 0); !isExist(err) {
 				t.Errorf("%s: %v", name, err)
 			}
 			if list() != v {
@@ -215,33 +215,33 @@ func testShares(t *testing.T, kvo Opener) {
 			}
 			continue
 		}
-		if err := cp.PutShare(ctx, sh, 0); !isExist(err) {
+		if _, err := cp.PutShare(ctx, sh, 0); !isExist(err) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if err := cp.PutShare(ctx, share("deeper", "/srv/a/b/c"), 0); !isExist(err) {
+	if _, err := cp.PutShare(ctx, share("deeper", "/srv/a/b/c"), 0); !isExist(err) {
 		t.Errorf("below a share: %v", err)
 	}
 	// /homes is not below /home.
-	must(t, cp.PutShare(ctx, share("homes", "/homes"), 0))
+	must(t, errOf(cp.PutShare(ctx, share("homes", "/homes"), 0)))
 
 	// Rename and re-path: the old name and path are free, ShareList moves.
 	v := list()
 	home.Name, home.Path = "house", "/house"
-	must(t, cp.PutShare(ctx, home, 1))
+	must(t, errOf(cp.PutShare(ctx, home, 1)))
 	if list() != v+1 {
 		t.Errorf("ShareList after rename = %d, want %d", list(), v+1)
 	}
-	must(t, cp.PutShare(ctx, share("home", "/home"), 0))
+	must(t, errOf(cp.PutShare(ctx, share("home", "/home"), 0)))
 	// A put that changes nothing raises nothing.
 	v = list()
-	must(t, cp.PutShare(ctx, home, 2))
+	must(t, errOf(cp.PutShare(ctx, home, 2)))
 	if list() != v {
 		t.Error("an unchanged put raised ShareList")
 	}
 	moved := home
 	moved.Root = entity.NewFileID()
-	if err := cp.PutShare(ctx, moved, 3); err == nil {
+	if _, err := cp.PutShare(ctx, moved, 3); err == nil {
 		t.Error("a share's root changed")
 	}
 
@@ -260,7 +260,7 @@ func testSetShareState(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	sh := share("photos", "/photos")
-	must(t, cp.PutShare(ctx, sh, 0))
+	must(t, errOf(cp.PutShare(ctx, sh, 0)))
 	v, _ := cp.ShareList(ctx)
 	must(t, cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced))
 	if err := cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced); !merrs.IsConflictError(err) {
@@ -285,9 +285,9 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	cp, p, ix := s.ControlPlane(), s.Principals(), s.ShareIndex()
 	u, g := user("alice"), group("staff")
 	sh := share("photos", "/photos")
-	must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
-	must(t, cp.PutGroup(ctx, g, 0, entity.Alloc{}))
-	must(t, cp.PutShare(ctx, sh, 0))
+	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+	must(t, errOf(cp.PutGroup(ctx, g, 0, entity.Alloc{})))
+	must(t, errOf(cp.PutShare(ctx, sh, 0)))
 	must(t, cp.AddMember(ctx, entity.Membership{Group: g.Principal, Member: u.Principal}))
 	listVersion := func() uint64 {
 		t.Helper()
@@ -304,10 +304,10 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 		}
 	}
 	moved("a group's grant", func() error {
-		return cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: g.Principal, Access: entity.AccessReadWrite}, 0)
+		return errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: g.Principal, Access: entity.AccessReadWrite}, 0))
 	})
 	moved("a user's grant", func() error {
-		return cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0)
+		return errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0))
 	})
 	if a, _ := p.Grant(ctx, sh.ID, u.Principal); a != entity.AccessRead {
 		t.Errorf("own grant = %v", a)
@@ -315,7 +315,7 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	// Setting none is a grant of its own that blocks; only deleting it lets
 	// the group's decide again.
 	moved("a grant changed to none", func() error {
-		return cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessNone}, grantVersion(t, cp, sh.ID, u.Principal))
+		return errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessNone}, grantVersion(t, cp, sh.ID, u.Principal)))
 	})
 	if a, _ := p.Grant(ctx, sh.ID, u.Principal); a != entity.AccessNone {
 		t.Errorf("own grant of none = %v", a)
@@ -345,18 +345,18 @@ func testGrantVersions(t *testing.T, kvo Opener) {
 	if after := listVersion(); after != before {
 		t.Errorf("grant-list version after deleting no grant: %d, want %d", after, before)
 	}
-	if err := cp.SetGrant(ctx, entity.ShareGrant{Share: entity.NewShareID(), Principal: u.Principal, Access: entity.AccessRead}, 0); !merrs.IsNotFoundError(err) {
+	if _, err := cp.SetGrant(ctx, entity.ShareGrant{Share: entity.NewShareID(), Principal: u.Principal, Access: entity.AccessRead}, 0); !merrs.IsNotFoundError(err) {
 		t.Errorf("grant on a missing share: %v", err)
 	}
 	// Deleting a principal deletes its grants, so it moves the version too.
-	must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0)))
 	moved("a granted user's delete", func() error {
 		return cp.DeleteUser(ctx, u.Principal, userGeneration(t, s, u.Principal))
 	})
 	moved("a granted group's delete", func() error {
 		return cp.DeleteGroup(ctx, g.Principal, groupGeneration(t, cp, g.Principal))
 	})
-	if err := cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: entity.NewUser(), Access: entity.AccessRead}, 0); !merrs.IsNotFoundError(err) {
+	if _, err := cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: entity.NewUser(), Access: entity.AccessRead}, 0); !merrs.IsNotFoundError(err) {
 		t.Errorf("grant to a missing user: %v", err)
 	}
 }
@@ -370,10 +370,10 @@ func testShareReadsPolicyAndGrantsTogether(t *testing.T, kvo Opener) {
 			s, h := heldStore(t, b)
 			cp, ix := s.ControlPlane(), s.ShareIndex()
 			sh, u := share("photos", "/photos"), user("alice")
-			must(t, cp.PutShare(ctx, sh, 0))
-			must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
-			must(t, cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashAll}, 0))
-			must(t, cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0))
+			must(t, errOf(cp.PutShare(ctx, sh, 0)))
+			must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+			must(t, errOf(cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashAll}, 0)))
+			must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0)))
 			before, beforePol, err := ix.Share(ctx, sh.ID)
 			must(t, err)
 
@@ -381,8 +381,8 @@ func testShareReadsPolicyAndGrantsTogether(t *testing.T, kvo Opener) {
 			h.mu.Lock()
 			h.viewHook = func() {
 				writeErr = errors.Join(
-					cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashRoot}, beforePol.Version),
-					cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessReadWrite}, grantVersion(t, cp, sh.ID, u.Principal)))
+					errOf(cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashRoot}, beforePol.Version)),
+					errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessReadWrite}, grantVersion(t, cp, sh.ID, u.Principal))))
 			}
 			h.mu.Unlock()
 			got, pol, err := ix.Share(ctx, sh.ID)
@@ -410,15 +410,15 @@ func testQuotas(t *testing.T, kvo Opener) {
 	cp, c := s.ControlPlane(), s.Capacity()
 	u, g := user("alice"), group("staff")
 	sh := share("photos", "/photos")
-	must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
-	must(t, cp.PutGroup(ctx, g, 0, entity.Alloc{}))
-	must(t, cp.PutShare(ctx, sh, 0))
+	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+	must(t, errOf(cp.PutGroup(ctx, g, 0, entity.Alloc{})))
+	must(t, errOf(cp.PutShare(ctx, sh, 0)))
 	uq := entity.Quota{Share: sh.ID, Principal: u.Principal, Hard: entity.Limit{Bytes: 10 << 30}, Soft: entity.Limit{Bytes: 8 << 30},
 		Grace: 7 * 24 * time.Hour, Advisory: entity.Limit{Files: 5000}}
 	pq := entity.Quota{Share: sh.ID, Project: 7, Hard: entity.Limit{Files: 1000}}
 	gq := entity.Quota{Share: sh.ID, Principal: g.Principal, Soft: entity.Limit{Bytes: 1 << 30}, Grace: time.Hour}
 	for _, q := range []entity.Quota{uq, pq, gq} {
-		must(t, cp.SetQuota(ctx, sh.ID, q, 0))
+		must(t, errOf(cp.SetQuota(ctx, sh.ID, q, 0)))
 	}
 	var got []entity.Quota
 	for q, err := range cp.Quotas(ctx, sh.ID) {
@@ -453,12 +453,12 @@ func testQuotas(t *testing.T, kvo Opener) {
 		t.Errorf("the first crossing at %v is not kept", first)
 	}
 	uq.Hard.Bytes = 20 << 30 // another limit keeps the grace running
-	must(t, cp.SetQuota(ctx, sh.ID, uq, quotaVersion(t, c, sh.ID, ut)))
+	must(t, errOf(cp.SetQuota(ctx, sh.ID, uq, quotaVersion(t, c, sh.ID, ut))))
 	if !sinceNow().Equal(first) {
 		t.Error("a new hard limit restarted the grace")
 	}
 	uq.Soft.Bytes = 9 << 30 // a new soft limit restarts it
-	must(t, cp.SetQuota(ctx, sh.ID, uq, quotaVersion(t, c, sh.ID, ut)))
+	must(t, errOf(cp.SetQuota(ctx, sh.ID, uq, quotaVersion(t, c, sh.ID, ut))))
 	if !sinceNow().IsZero() {
 		t.Error("a new soft limit kept the old crossing")
 	}
@@ -468,7 +468,7 @@ func testQuotas(t *testing.T, kvo Opener) {
 	}
 
 	// A quota that limits nothing is deleted.
-	must(t, cp.SetQuota(ctx, sh.ID, entity.Quota{Project: 7}, quotaVersion(t, c, sh.ID, kvstore.QuotaTarget{Project: 7})))
+	must(t, errOf(cp.SetQuota(ctx, sh.ID, entity.Quota{Project: 7}, quotaVersion(t, c, sh.ID, kvstore.QuotaTarget{Project: 7}))))
 	if q, _, err := c.Quota(ctx, sh.ID, kvstore.QuotaTarget{Project: 7}); err != nil || !q.Unlimited() {
 		t.Errorf("a deleted quota reads %+v, %v", q, err)
 	}
@@ -484,7 +484,7 @@ func testQuotas(t *testing.T, kvo Opener) {
 	}
 
 	// The share's own quota names neither a principal nor a project.
-	must(t, cp.SetQuota(ctx, sh.ID, entity.Quota{Hard: entity.Limit{Bytes: 1 << 40}}, 0))
+	must(t, errOf(cp.SetQuota(ctx, sh.ID, entity.Quota{Hard: entity.Limit{Bytes: 1 << 40}}, 0)))
 	if q, _, err := c.Quota(ctx, sh.ID, kvstore.QuotaTarget{}); err != nil || q.Hard.Bytes != 1<<40 {
 		t.Errorf("the share-wide quota reads %+v, %v", q, err)
 	}
@@ -507,7 +507,7 @@ func testQuotas(t *testing.T, kvo Opener) {
 		"principal and project": {entity.Quota{Share: sh.ID, Principal: u.Principal, Project: 1, Hard: entity.Limit{Files: 1}}, invalid},
 		"negative":              {entity.Quota{Share: sh.ID, Project: 1, Hard: entity.Limit{Bytes: -1}}, invalid},
 	} {
-		if err := cp.SetQuota(ctx, c.q.Share, c.q, 0); !c.want(err) {
+		if _, err := cp.SetQuota(ctx, c.q.Share, c.q, 0); !c.want(err) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -526,7 +526,7 @@ func testQuotaSoftChange(t *testing.T, kvo Opener) {
 	at := kvstore.QuotaTarget{Principal: alice.Principal}
 	set := func(files int64) time.Time {
 		t.Helper()
-		must(t, cp.SetQuota(ctx, f.share.ID, entity.Quota{Principal: alice.Principal, Soft: entity.Limit{Files: files}, Grace: time.Hour}, quotaVersion(t, c, f.share.ID, at)))
+		must(t, errOf(cp.SetQuota(ctx, f.share.ID, entity.Quota{Principal: alice.Principal, Soft: entity.Limit{Files: files}, Grace: time.Hour}, quotaVersion(t, c, f.share.ID, at))))
 		_, since, err := c.Quota(ctx, f.share.ID, at)
 		must(t, err)
 		return since
@@ -546,17 +546,17 @@ func testExportPolicy(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	sh := share("photos", "/photos")
-	must(t, cp.PutShare(ctx, sh, 0))
+	must(t, errOf(cp.PutShare(ctx, sh, 0)))
 	pol := entity.ExportPolicy{
 		Share:   sh.ID,
 		Flavors: []entity.AuthFlavor{entity.FlavorSys},
 		Clients: []entity.ClientRule{{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("10.0.0.0/8")}, Access: entity.AccessRead}},
 		Squash:  entity.SquashRoot,
 	}
-	must(t, cp.PutExportPolicy(ctx, pol, 0))
+	must(t, errOf(cp.PutExportPolicy(ctx, pol, 0)))
 	got, err := cp.ExportPolicy(ctx, sh.ID)
 	must(t, err)
-	must(t, cp.PutExportPolicy(ctx, pol, got.Version))
+	must(t, errOf(cp.PutExportPolicy(ctx, pol, got.Version)))
 	again, _ := cp.ExportPolicy(ctx, sh.ID)
 	if got.Version == 0 || again.Version <= got.Version {
 		t.Errorf("versions %d then %d", got.Version, again.Version)
@@ -566,7 +566,7 @@ func testExportPolicy(t *testing.T, kvo Opener) {
 		t.Errorf("policy %+v", got)
 	}
 	pol.Clients[0].Access = entity.AccessAdmin
-	if err := cp.PutExportPolicy(ctx, pol, 0); err == nil {
+	if _, err := cp.PutExportPolicy(ctx, pol, 0); err == nil {
 		t.Error("a client rule granted admin")
 	}
 	pol.Clients[0].Access = entity.AccessRead
@@ -575,7 +575,7 @@ func testExportPolicy(t *testing.T, kvo Opener) {
 	// unverified caller it admits carries no protection at all.
 	for _, proof := range []entity.ProofKind{entity.ProofNone, entity.ProofClaimed} {
 		pol.MinProof, pol.MinProtection = proof, entity.ProtectionIntegrity
-		if err := cp.PutExportPolicy(ctx, pol, 0); err == nil {
+		if _, err := cp.PutExportPolicy(ctx, pol, 0); err == nil {
 			t.Errorf("a policy admitting proof %v with an integrity floor was saved", proof)
 		}
 	}
@@ -585,7 +585,7 @@ func testExportPolicy(t *testing.T, kvo Opener) {
 		entity.ProofSecret: entity.ProtectionPrivacy, entity.ProofTicket: entity.ProtectionIntegrity,
 	} {
 		pol.MinProof, pol.MinProtection, pol.ReadOnly = proof, floor, true
-		must(t, cp.PutExportPolicy(ctx, pol, policyVersion(t, cp, sh.ID)))
+		must(t, errOf(cp.PutExportPolicy(ctx, pol, policyVersion(t, cp, sh.ID))))
 		if got, err := cp.ExportPolicy(ctx, sh.ID); err != nil || got.MinProof != proof ||
 			got.MinProtection != floor || !got.ReadOnly {
 			t.Errorf("the minimums and read-only read back as %+v, %v", got, err)
@@ -596,8 +596,8 @@ func testExportPolicy(t *testing.T, kvo Opener) {
 func testNetgroupsAndSettings(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
-	must(t, cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab", Members: []string{"10.0.0.0/8"}}, 0))
-	must(t, cp.PutNetgroup(ctx, entity.Netgroup{Name: "office"}, 0))
+	must(t, errOf(cp.PutNetgroup(ctx, entity.Netgroup{Name: "lab", Members: []string{"10.0.0.0/8"}}, 0)))
+	must(t, errOf(cp.PutNetgroup(ctx, entity.Netgroup{Name: "office"}, 0)))
 	if got := all(t, cp.Netgroups(ctx, "lab")); len(got) != 1 || got[0].Name != "office" {
 		t.Errorf("Netgroups after lab = %+v", got)
 	}
@@ -608,9 +608,9 @@ func testNetgroupsAndSettings(t *testing.T, kvo Opener) {
 
 	inst := entity.SettingScope{Kind: entity.ScopeInstallation}
 	shareScope := entity.SettingScope{Kind: entity.ScopeShare, ID: entity.NewShareID()}
-	must(t, cp.PutSetting(ctx, entity.Setting{Scope: inst, Key: "a", Value: []byte("1")}, 0))
-	must(t, cp.PutSetting(ctx, entity.Setting{Scope: inst, Key: "a", Value: []byte("2")}, 1))
-	must(t, cp.PutSetting(ctx, entity.Setting{Scope: shareScope, Key: "a", Value: []byte("3")}, 0))
+	must(t, errOf(cp.PutSetting(ctx, entity.Setting{Scope: inst, Key: "a", Value: []byte("1")}, 0)))
+	must(t, errOf(cp.PutSetting(ctx, entity.Setting{Scope: inst, Key: "a", Value: []byte("2")}, 1)))
+	must(t, errOf(cp.PutSetting(ctx, entity.Setting{Scope: shareScope, Key: "a", Value: []byte("3")}, 0)))
 	got := all(t, cp.Settings(ctx, inst))
 	if len(got) != 1 || string(got[0].Value) != "2" || got[0].Generation != 2 {
 		t.Errorf("installation settings = %+v", got)
@@ -618,7 +618,7 @@ func testNetgroupsAndSettings(t *testing.T, kvo Opener) {
 	if gen, _ := cp.SettingsGeneration(ctx); gen != 3 {
 		t.Errorf("settings generation = %d", gen)
 	}
-	if err := cp.PutSetting(ctx, entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeShare}, Key: "a"}, 0); err == nil {
+	if _, err := cp.PutSetting(ctx, entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeShare}, Key: "a"}, 0); err == nil {
 		t.Error("share scope with no ID accepted")
 	}
 }
@@ -629,7 +629,7 @@ func testListingPages(t *testing.T, kvo Opener) {
 	cp := s.ControlPlane()
 	const n = 600
 	for i := range n {
-		must(t, cp.PutGroup(ctx, group(string(rune('a'+i/26/26%26))+string(rune('a'+i/26%26))+string(rune('a'+i%26))), 0, entity.Alloc{}))
+		must(t, errOf(cp.PutGroup(ctx, group(string(rune('a'+i/26/26%26))+string(rune('a'+i/26%26))+string(rune('a'+i%26))), 0, entity.Alloc{})))
 	}
 	got := all(t, cp.Groups(ctx, ""))
 	if len(got) != n || !slices.IsSortedFunc(got, func(a, b entity.Group) int { return strings.Compare(a.Name, b.Name) }) {
@@ -643,8 +643,8 @@ func testShareBoundSettings(t *testing.T, kvo Opener) {
 	cp := s.ControlPlane()
 	ci := share("docs", "/docs")
 	ci.Fold = entity.FoldUpcase
-	must(t, cp.PutShare(ctx, ci, 0))
-	must(t, cp.PutShare(ctx, share("src", "/src"), 0))
+	must(t, errOf(cp.PutShare(ctx, ci, 0)))
+	must(t, errOf(cp.PutShare(ctx, share("src", "/src"), 0)))
 	got := all(t, cp.Shares(ctx))
 	if got[0].Fold != entity.FoldUpcase || got[0].Names != entity.NamesWindows || got[0].DigestKey == ([32]byte{}) {
 		t.Errorf("case-insensitive share: %v %v", got[0].Fold, got[0].Names)
@@ -654,7 +654,7 @@ func testShareBoundSettings(t *testing.T, kvo Opener) {
 	}
 	// A rename that names none of them keeps them.
 	ci.Name, ci.Fold = "papers", 0
-	must(t, cp.PutShare(ctx, ci, 1))
+	must(t, errOf(cp.PutShare(ctx, ci, 1)))
 	if got := all(t, cp.Shares(ctx)); got[0].Name != "papers" || got[0].Fold != entity.FoldUpcase || got[0].DigestKey == ([32]byte{}) {
 		t.Errorf("after rename: %+v", got[0])
 	}
@@ -665,7 +665,7 @@ func testShareBoundSettings(t *testing.T, kvo Opener) {
 	} {
 		changed := ci
 		mut(&changed)
-		if err := cp.PutShare(ctx, changed, 2); err == nil {
+		if _, err := cp.PutShare(ctx, changed, 2); err == nil {
 			t.Errorf("changing the %s was accepted", name)
 		}
 	}
@@ -677,8 +677,8 @@ func testShareTags(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	a, b := share("a", "/a"), share("b", "/b")
-	must(t, cp.PutShare(ctx, a, 0))
-	must(t, cp.PutShare(ctx, b, 0))
+	must(t, errOf(cp.PutShare(ctx, a, 0)))
+	must(t, errOf(cp.PutShare(ctx, b, 0)))
 	tags := func() map[entity.ShareID]uint32 {
 		m := map[entity.ShareID]uint32{}
 		for _, sh := range all(t, cp.Shares(ctx)) {
@@ -692,10 +692,10 @@ func testShareTags(t *testing.T, kvo Opener) {
 	}
 	a.Name = "renamed"
 	a.Tag = 77 // a put never writes the tag
-	must(t, cp.PutShare(ctx, a, 1))
+	must(t, errOf(cp.PutShare(ctx, a, 1)))
 	must(t, cp.DeleteShare(ctx, b.ID, entity.SnapshotsRefuse, 1))
 	c := share("c", "/c")
-	must(t, cp.PutShare(ctx, c, 0))
+	must(t, errOf(cp.PutShare(ctx, c, 0)))
 	after := tags()
 	if after[a.ID] != before[a.ID] {
 		t.Errorf("a put changed the tag %d -> %d", before[a.ID], after[a.ID])
@@ -782,7 +782,7 @@ func testUserAPIFields(t *testing.T, kvo Opener) {
 	u := user("alice")
 	u.Email, u.Role, u.MustChange = "alice@example.com", entity.RoleOperator, true
 	u.NotBefore = time.Unix(1_800_000_000, 999_999_999)
-	must(t, s.ControlPlane().PutUser(ctx, u, 0, entity.Alloc{}))
+	must(t, errOf(s.ControlPlane().PutUser(ctx, u, 0, entity.Alloc{})))
 	got, err := s.Principals().User(ctx, u.Principal)
 	must(t, err)
 	if got.Email != u.Email || got.Role != u.Role || !got.MustChange {
