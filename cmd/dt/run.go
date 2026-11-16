@@ -1,9 +1,12 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -11,13 +14,16 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"golang.org/x/term"
 
 	"github.com/cubbit/dittofs/test/harness/needs"
 	"github.com/cubbit/dittofs/test/harness/plan"
 	"github.com/cubbit/dittofs/test/harness/registry"
+	"github.com/cubbit/dittofs/test/harness/report"
 	"github.com/cubbit/dittofs/test/harness/run"
 )
 
@@ -29,7 +35,7 @@ func (e exitStatus) Error() string { return fmt.Sprintf("exit status %d", int(e)
 func newRun() *cobra.Command {
 	var tier, results, place, in, base string
 	var only, skip []string
-	var ci, changed bool
+	var ci, changed, asJSON, noColor bool
 	var retry, parallel int
 	var packages []string
 	options := map[string]bool{}
@@ -52,8 +58,8 @@ func newRun() *cobra.Command {
 			return cobra.MinimumNArgs(1)(cmd, args)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !slices.Contains([]string{"", "host", "container", "auto"}, in) {
-				return fmt.Errorf("--in %q is not one of host, container, auto", in)
+			if in != "" && !slices.Contains(ins, in) {
+				return fmt.Errorf("--in %q is not one of %s", in, strings.Join(ins, ", "))
 			}
 			if parallel < 1 {
 				return errors.New("--parallel takes how many cells run at once: 1 or more")
@@ -86,15 +92,22 @@ func newRun() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// With --json, stdout holds the JSON alone, and the rest goes to stderr.
+			out := cmd.OutOrStdout()
+			if asJSON {
+				out = cmd.ErrOrStderr()
+			}
 			if inContainer(root, cells, in, ci, place) {
 				// dtc sees the checkout alone, so results elsewhere would stay in the container.
 				if rel, err := filepath.Rel(root, resultsDir(root, results)); err != nil || !filepath.IsLocal(rel) {
 					return fmt.Errorf("--results %s is outside the checkout, the only place dtc writes to", results)
 				}
-				return dtc(cmd, root, again(cmd, args))
+				return dtc(cmd, out, root, again(cmd, args))
 			}
-			return runCells(cmd, root, cells, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: cmd.OutOrStdout(), Tier: tier, Retry: retry, Place: place, Parallel: parallel, Base: base, Changed: changed, Packages: packages})
+			color := painter(colorOn(noColor, os.Getenv("NO_COLOR"), terminal(out)))
+			return runCells(cmd, root, cells, color, asJSON, run.Options{Root: root, Results: resultsDir(root, results), CI: ci, Out: out, Tier: tier, Retry: retry, Place: place, Parallel: parallel, Base: base, Changed: changed, Packages: packages})
 		},
+		ValidArgsFunction: completeRun,
 	}
 	cmd.Flags().StringVar(&tier, "tier", "pr", "run at tier T, or at a suite's own tier when wider: it sets args, env and select")
 	cmd.Flags().StringSliceVar(&only, "only", nil, "run only these suites of the group")
@@ -108,6 +121,12 @@ func newRun() *cobra.Command {
 	cmd.Flags().BoolVar(&changed, "changed", false, "where a suite's packages gives patterns, test only the packages with a change committed since the base: every one without a base, when go.mod, go.sum or go.work changed, or when a changed file is in no package")
 	cmd.Flags().StringSliceVar(&packages, "packages", nil, "test only these packages, where a suite's commands take {packages}: they replace the patterns and --changed's selection")
 	cmd.Flags().StringVar(&in, "in", "", "where the run happens: host, container (dtc) or auto, which moves it to dtc when a cell needs what only the container gives (default auto, host with --ci)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the run's results on stdout as dt report --format json does, once the run ends, and the rest on stderr")
+	cmd.Flags().BoolVar(&noColor, "no-color", false, "don't color the results, as NO_COLOR set does; without either, they're colored on a terminal")
+	_ = cmd.RegisterFlagCompletionFunc("tier", fixed(registry.Tiers...))
+	_ = cmd.RegisterFlagCompletionFunc("in", fixed(ins...))
+	_ = cmd.RegisterFlagCompletionFunc("only", completeGroupSuites)
+	_ = cmd.RegisterFlagCompletionFunc("skip", completeGroupSuites)
 	// Each suite's options are flags: dt run smbtorture --kerberos.
 	if _, r, err := load(); err == nil {
 		for _, s := range r.Suites {
@@ -124,6 +143,38 @@ func newRun() *cobra.Command {
 
 // need checks a need on this machine; the tests replace it.
 var need = needs.Check
+
+// ins are where --in can put a run.
+var ins = []string{"host", "container", "auto"}
+
+// colorOn reports whether dt run colors the results: when they go to a
+// terminal, unless --no-color is given or NO_COLOR is set to anything but
+// empty.
+func colorOn(noColor bool, noColorEnv string, onTerminal bool) bool {
+	return !noColor && noColorEnv == "" && onTerminal
+}
+
+// terminal reports whether w is a terminal.
+func terminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+// painter colors a cell's result, or, when off, leaves it as it is: passed
+// green, failed red, and not run yellow. tabwriter counts a color's escapes
+// as width, so each colored text gets escapes of one length, the terminal's
+// default color where its result has none of its own, and a column colored
+// throughout, its header included, stays aligned.
+type painter bool
+
+var colors = map[string]string{report.Passed: "32", report.Failed: "31", report.NotRun: "33"}
+
+func (p painter) paint(result, text string) string {
+	if !p {
+		return text
+	}
+	return "\x1b[" + cmp.Or(colors[result], "39") + "m" + text + "\x1b[0m"
+}
 
 // inContainer reports whether the run goes to dtc: with --in container, or
 // with --in auto, the default without --ci, when a cell needs what only the
@@ -169,8 +220,8 @@ func again(cmd *cobra.Command, args []string) []string {
 // any other, docker's own or a kill by a signal, as 2, the run didn't run.
 // Ctrl-C reaches dtc from the terminal as it reaches dt, which waits for dtc
 // to stop; a SIGTERM sent to dt alone is passed on.
-func dtc(cmd *cobra.Command, root string, argv []string) error {
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "[dt] in dtc: dt %s\n", strings.Join(argv, " "))
+func dtc(cmd *cobra.Command, out io.Writer, root string, argv []string) error {
+	_, _ = fmt.Fprintf(out, "[dt] in dtc: dt %s\n", strings.Join(argv, " "))
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigs)
@@ -204,29 +255,57 @@ func dtc(cmd *cobra.Command, root string, argv []string) error {
 	return err
 }
 
-// runCells runs the cells, prints their outcomes and where the results went,
-// and returns the run's exit status.
-func runCells(cmd *cobra.Command, root string, cells []run.Cell, o run.Options) error {
+// runCells runs the cells, prints how the run went, then with asJSON the
+// results on stdout, and returns the run's exit status.
+func runCells(cmd *cobra.Command, root string, cells []run.Cell, color painter, asJSON bool, o run.Options) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	start := time.Now()
 	rep, err := run.Run(ctx, cells, o)
 	if rep.Dir == "" {
 		return err // the run couldn't start
 	}
-	rows := [][]string{{"CELL", "RESULT", "TIME", "NOTE"}}
-	for _, o := range rep.Outcomes {
-		rows = append(rows, []string{o.Name, o.Result, o.Took.String(), o.Note})
-	}
-	if err := table(cmd.OutOrStdout(), rows); err != nil {
+	if err := printRun(o.Out, rep, time.Since(start), color); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "results:", rep.Dir)
 	if err != nil {
 		return err // after the outcomes: summary.json couldn't be written
+	}
+	if asJSON {
+		r, err := report.Read(rep.Dir)
+		if err != nil {
+			return err
+		}
+		if err := r.Show(cmd.OutOrStdout(), "json", false); err != nil {
+			return err
+		}
 	}
 	if s := rep.Status(); s != 0 {
 		return exitStatus(s)
 	}
+	return nil
+}
+
+// printRun writes how the run went: a table of its cells, each with its
+// result, time and note, where its results went, and a line counting the
+// cells by result, and all of them, with the run's time, took.
+func printRun(w io.Writer, rep run.Report, took time.Duration, color painter) error {
+	rows := [][]string{{"CELL", color.paint("", "RESULT"), "TIME", "NOTE"}}
+	count := map[string]int{}
+	for _, c := range rep.Outcomes {
+		rows = append(rows, []string{c.Name, color.paint(c.Result, c.Result), c.Took.String(), c.Note})
+		count[c.Result]++
+	}
+	if err := table(w, rows); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(w, "results:", rep.Dir)
+	var counts []string
+	for _, result := range slices.Sorted(maps.Keys(count)) {
+		counts = append(counts, color.paint(result, fmt.Sprintf("%d %s", count[result], result)))
+	}
+	counts = append(counts, fmt.Sprintf("%d total in %s", len(rep.Outcomes), took.Round(time.Second)))
+	_, _ = fmt.Fprintln(w, "cells:", strings.Join(counts, ", "))
 	return nil
 }
 
