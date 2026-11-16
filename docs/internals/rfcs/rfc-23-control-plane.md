@@ -1110,7 +1110,10 @@ for turning NTLM back on is this one, and RFC 18 §3.5 points here:
   per target and kind holds. A deletion has no cancel.
 - The settings route enforces all three, reading `NTLMOff` and the running
   index tracked in the write's own transaction, since a section's validator
-  reads no operation. A write that starts a deletion answers as a call that starts
+  reads no operation. A provisioning apply ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file))
+  writes `identity.ntlm` through the same check, as the API would; a restore
+  of the control-plane store brings `NTLMOff` back with the setting it guards,
+  so the two never disagree. A write that starts a deletion answers as a call that starts
   an operation does (§4.6), `202` with the operation's `Location`, and the
   operation's target is the installation; one that starts none answers as a
   setting's write does.
