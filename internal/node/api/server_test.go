@@ -89,7 +89,8 @@ func answer(status, word string) string {
 
 // Each probe answers its status with one word and no header but its type and
 // length, byte for byte, while the registry the server also serves names a
-// share; every other path on the API listener is 404.
+// share; every other path on the API listener is 404. Deps holds no health
+// condition, so no condition's share name can reach a probe's answer.
 func TestHealthAnswers(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	n := start(t)
@@ -162,7 +163,9 @@ func TestMetricsListener(t *testing.T) {
 }
 
 // A metrics address that cannot be bound fails Start and leaves the API
-// listener closed: its address can be bound again at once.
+// listener closed: its address can be bound again at once. The address is
+// released and rebound, so another process taking it in that window fails
+// the test rather than passing it.
 func TestStartLeavesNothingOpen(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	free, err := net.Listen("tcp", "127.0.0.1:0")
@@ -187,4 +190,19 @@ func TestStartLeavesNothingOpen(t *testing.T) {
 		t.Fatalf("bind the API address after the failed Start: %v, want it free", err)
 	}
 	_ = again.Close()
+}
+
+// A stopped server does not start again: Start answers an error rather than
+// reporting addresses nothing serves.
+func TestStartAfterStop(t *testing.T) {
+	s := api.New(api.Deps{Addr: "127.0.0.1:0", MetricsAddr: "127.0.0.1:0", Metrics: metrics.New("test", "test")})
+	if _, _, err := s.Start(); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, _, err := s.Start(); err == nil || err.Error() != "api: server stopped" {
+		t.Errorf("Start after Stop: got %v, want api: server stopped", err)
+	}
 }

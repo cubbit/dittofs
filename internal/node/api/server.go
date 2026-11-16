@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metrics"
@@ -36,6 +37,7 @@ type Server struct {
 	d        Deps
 	api, met *http.Server
 	serving  sync.WaitGroup
+	stopped  atomic.Bool
 }
 
 // New returns the server over d, listening on nothing until Start.
@@ -51,14 +53,18 @@ func New(d Deps) *Server {
 	// requiring a token.
 	return &Server{
 		d:   d,
-		api: &http.Server{Handler: http.HandlerFunc(d.health), ReadHeaderTimeout: 10 * time.Second},
-		met: &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second},
+		api: &http.Server{Handler: http.HandlerFunc(d.health), ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second},
+		met: &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second},
 	}
 }
 
 // Start opens the API and the metrics listeners and serves both, returning
 // the addresses they bound. When either fails to open, neither is left open.
+// A server once stopped does not start again.
 func (s *Server) Start() (addr, metricsAddr net.Addr, err error) {
+	if s.stopped.Load() {
+		return nil, nil, errors.New("api: server stopped")
+	}
 	al, err := net.Listen("tcp", s.d.Addr)
 	if err != nil {
 		return nil, nil, err
@@ -81,6 +87,7 @@ func (s *Server) serve(srv *http.Server, l net.Listener) {
 // Stop closes both listeners, waiting for the requests in flight until ctx
 // ends, and then for both servers to return.
 func (s *Server) Stop(ctx context.Context) error {
+	s.stopped.Store(true)
 	err := errors.Join(s.api.Shutdown(ctx), s.met.Shutdown(ctx))
 	s.serving.Wait()
 	return err
