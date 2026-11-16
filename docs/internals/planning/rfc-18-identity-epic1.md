@@ -68,8 +68,8 @@ three `vfs.Deps` fields; the import checks; `internal/identity/**` in the `e2e` 
 - **E1**, this epic.
 - **E2**, principals and accounts: the `Minter`, well-known principals, `Spell`, `Find`,
   `NewHashes`, `APISignIn`.
-- **E3**, resolution: `admit`'s resolver moved into identity, the serial `Apply` stamps each
-  `State` with, the proof key and admission's caller cache.
+- **E3**, resolution: `admit`'s resolver moved into identity, the serial `Apply` raises, which
+  each `Caller` is stamped with, the proof key and admission's caller cache.
 - **E4**, local NTLMv2 sign-in.
 - **E5**, Kerberos and the PAC.
 - **E6**, the directory.
@@ -114,7 +114,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R2 | `pkg/identity` is a leaf importing metadata types only | invariant | §2.7 | T1.1, T1.5 |
 | R3 | `pkg/vfs` aliases the value types an adapter needs, so an adapter imports `pkg/vfs` alone and neither identity package | invariant | §2.7; RFC 17 §3.0; RFC 20 §2.3 | T1.1, T1.5 |
 | R4 | Adapters map, squash and grant nothing; every spelling goes through `vfs.Service`'s `Spell` and `Find`, held by RFC 20 §7.1's import test (ID11) | invariant | §9.1 ID11; RFC 20 §7.1 | T1.5 |
-| R5 | Only `internal/node` imports the server, `internal/identity` | invariant | §2.7 | T1.5 |
+| R5 | Only `internal/node` imports the server, `internal/identity`, besides `internal/identity`'s own packages; `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use the real server | invariant | §2.7; §10 "Who stands in for what" | T1.5 |
 | R6 | Only `internal/identity/directory` imports LDAP | invariant | §2.7 | T1.5 |
 | R7 | `Authenticator` is the same shape as `vfs.Principals.SignIn`, so the filesystem passes it through | invariant | §3.1 | T1.3, T1.6 |
 | R8 | `ErrLogonFailure` and `ErrUnknownPrincipal` are `vfserr`'s, and `vfs.Errors()` returns both, so an adapter's error table that does not map them fails its totality check | MUST | §2.7; RFC 17 §4.3; RFC 20 §7.3 | T1.2 |
@@ -142,7 +142,9 @@ held by the compiler: E1's interface assertions (T1.4, T1.6) and the consumers E
   The one rename is RFC 18's `Service`, which `pkg/vfs` keeps as `SignInService`: `vfs.Service`
   is the filesystem's interface. The `ponytail:` in `pkg/vfs/types.go` that asks for this move
   goes with it. Prior art: RFC 17 §3.0 aliases the store's and open state's types the same way;
-  Go's own `golang.org/x/net/context` became an alias of `context` (from memory).
+  Go's own `golang.org/x/net/context` became an alias of `context` (from memory). `SID` aliases
+  `sid.SID`, a standard-library-only codec, so `pkg/auth/sid` is the one non-metadata import
+  besides `vfserr` (D2).
 - **D2, `pkg/identity` re-exports `vfserr`'s two errors.** RFC 18 §2.7 and RFC 17 §4.3 place
   `ErrLogonFailure` and `ErrUnknownPrincipal` in `pkg/vfs/vfserr`; `pkg/identity` and `pkg/vfs`
   re-export the same values, so E2 to E7 write `identity.ErrLogonFailure` and an error identity
@@ -158,15 +160,20 @@ held by the compiler: E1's interface assertions (T1.4, T1.6) and the consumers E
   that rule to epic 1. Epic 1's `Deps` is `Store`, `Clock`, `Metrics` and `Logger`; its
   `State` is `{Generation uint64}`, the principals generation. Each later field arrives with
   the first subtask that reads it, and one epic adds each: `Deps.Secrets` and `State.Settings`
-  (E2's T2.4: its `VerifyPassword` reads the one, its `qualified` spelling the other),
+  (E2's T2.4, the epic's first subtask that needs the provider built: `Apply` reads
+  `State.Settings`, and E2's T2.5 and T2.6 read `netbios_name` and `Deps.Secrets`),
   `Deps.Tracer` (E3's T3.1,
   whose `identity.resolve` span is the first span identity opens; E4's
   `identity.authenticate` reads the same field), `Deps.Logons` (E4), `State.Keytab` (E5),
   `State.Machine` (E7); `Deps.Issuers` is deferred with `TokenVerifier`. `State.NTLM`, the
-  `identity.ntlm` revision, has no reader in E2 or E3: the on-or-off value resolution refuses
-  `Secret` callers by is `State.Settings`' key, and the revision lands with its first reader,
-  pending E2's D6. The serial E3 stamps callers with is the server's, raised by `Apply`, not a
-  `State` field (E3's D2). A field added to a struct only
+  `identity.ntlm` revision, has no reader in E2 or E3: the on-or-off value, by which resolution
+  refuses `Secret` callers (E3's T3.10), is the `NTLM` key of `State.Settings`; the revision
+  lands with its first reader, pending E2's D6. `Generation` is the one field E1 adds before its
+  reader (E3's T3.3), so `Apply` has a value to swap and R12 and R13 can be tested. The serial
+  E3 stamps callers with is the server's, raised by `Apply`, not a `State` field (E3's D2). A
+  field that lands after S1 is never required by `New`: while it is unset, a method that needs
+  it answers `ErrUnavailable` (fail closed), as D7's stubs do, so no earlier caller of `New`
+  changes. A field added to a struct only
   `internal/node` and tests build costs no migration, and epic 1 then waits on nothing of
   #4059. Prior art: RFC 17 §2.3's `vfs.Deps` grew its fields the same way on
   `feat/storage-v2`.
@@ -317,9 +324,16 @@ test/suites.yaml            T1.5  internal/identity/** in the e2e kerberos cell'
 - **Deliverables:**
   - `pkg/identity/arch_test.go`, walking the module as `internal/vfs/arch_test.go` does:
     `pkg/identity` imports only the standard library, `entity`, `pkg/auth/sid` and `vfserr`;
-    no package but `internal/node` and `internal/identity`'s own imports `internal/identity`;
+    no non-test package but `internal/node` and `internal/identity`'s own imports
+    `internal/identity`; `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use
+    the real server (RFC 18 §10). `pkg/vfs/vfstest/memory`, the verified in-memory
+    `vfs.Service`, needs the real server too once E3's T3.6 makes `vfs.New` require it; it
+    reaches it through `internal/identity/identitymem` (E3's T3.6), one of identity's own
+    packages, and passes the value it returns as `vfs.Deps`' three fields without naming
+    `internal/identity`, so the rule keeps no exception;
     no package but `internal/identity/directory` imports `github.com/go-ldap/ldap/v3`. Seeded
-    violations of each in its `testdata/arch`;
+    violations of each in its `testdata/arch`, among them a non-test `internal/vfs` file
+    importing `internal/identity`;
   - `internal/identity/**` in `test/suites.yaml`'s `e2e` `kerberos` cell's `paths:`.
 - **Acceptance criteria:**
   - Each check reports each of its seeded violations, once, and nothing in the repository.
@@ -371,12 +385,7 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-The sources are RFC 18 as #4058 merged it (83232b441). Between the version this document was
-first written against (38b6e745d) and the merge, the one change in the sections it owns is
-§8.1's `APISignIn`, which now has the shape D9 had chosen, so D9 is withdrawn; the RFC's other
-changes (§2.4, §3.4, §3.5, §4.2, §5, §9.2's conditions and §10's rows) touch E2, E5, E6 and E7.
-D5 and D8 were already settled by the RFC's text, the errors by RFC 17 §4.3, `Keys.Session`'s
-chain by RFC 18 §3.1, and §4.1 has the filesystem set `FindOpts.Mint`, which E3's T3.2 does.
+Sources: RFC 18 as #4058 merged it (83232b441).
 
 **Decisions other epic documents ask of this surface**, each pending the user's answer in that
 document, with its recommendation:
