@@ -18,8 +18,9 @@ published NTLMv2 vectors.
 `SignInResult`, `Keys`, `Authenticator`, `*Server` with a stubbed `SignIn`, `vfs.Deps.Auth`.
 **E2, partly**: T4.2 waits for E2's T2.1 (`User.NTHash` and the name fold), T2.4
 (`State.Settings` with its `NTLM` and `NetBIOSName` keys, `Deps.Secrets`), T2.5 (`Find` by user
-name) and T2.6 (`NewHashes`, whose NT hash T4.2's tests sign in against), which itself waits for
-RFC 23's plan's epic 2's T2.11 (`DeleteUser`'s batches, #4326). T4.1 starts at S1.
+name) and T2.6 (`NewHashes`, whose NT hash T4.2's tests sign in against). T2.6 does not wait for
+RFC 23's user deletion (#4326's T2.11): the NT hash's deletion with its user is E2's T2.8, which
+RFC 23's password write waits for instead, so S2 does not. T4.1 starts at S1.
 **E3, partly**: T4.5 reads the `Deps.Tracer` E3's T3.1 adds; T4.3 removes `errUnsigned` once
 E3's T3.2 has routed `Spell` and `Find`.
 **Blocks:** **S2**, with E3: `vfs.Service`'s `SignIn` answers an NTLM step (T4.3). **E5**, whose
