@@ -27,8 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A record-less segment a crash left untaken has its header and trailer slots
   zeroed when its file holds exactly the segment cap and its body is allocated
   whole, and is unlinked when it does not. A segment a sync mark names is left
-  as it stands. Opening a journal that holds segments still fails with
-  `ErrNotImplemented`, so these spares are not yet handed to the pool.
+  as it stands, and so is a record-less take whose header names a
+  predecessor still on disk, until that predecessor's end is proven — a
+  take so held still counts toward the headroom, so it costs the pool no
+  spare beyond its segment. Opening a journal that holds segments still
+  fails with `ErrNotImplemented`, so these spares are not yet handed to the
+  pool.
 
 ## [0.36.0] — 2026-10-19
 
