@@ -10,8 +10,8 @@ import (
 )
 
 // The engine's CloneHold over the real table: a clone the store holds no
-// hold for is stale, a hold taken is the source's durable open, and a
-// release after the hold is gone answers nil.
+// hold for is stale, a hold taken is the source's durable open, a release
+// ends it in the table, and a release after the hold is gone answers nil.
 func TestEngineHoldsTakesAndReleasesAClonesHold(t *testing.T) {
 	f := newFixture(t)
 	src, _ := f.fileIn(t, "src")
@@ -32,6 +32,9 @@ func TestEngineHoldsTakesAndReleasesAClonesHold(t *testing.T) {
 	f.lastBatch(t, dst)
 	if err := h.Release(ctx, id); err != nil {
 		t.Errorf("Release of the hold: got %v, want nil", err)
+	}
+	if err := f.Opens().CloneClose(ctx, id); !errors.Is(err, ErrBadState) {
+		t.Errorf("CloneClose of the hold after Release: got %v, want ErrBadState, the hold gone", err)
 	}
 	if err := h.Release(ctx, id); err != nil {
 		t.Errorf("Release of a hold already gone: got %v, want nil", err)
