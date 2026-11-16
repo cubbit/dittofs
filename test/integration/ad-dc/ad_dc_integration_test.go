@@ -42,6 +42,12 @@ const (
 	adUserAlice = "alice"
 	adUserPass  = "TestPassword01!"
 
+	// The SMB and NFS service principals, in the form gokrb5 requests a ticket
+	// for (no realm). The fixture puts both on an AES-only service account and
+	// exports their keys into dittofs.keytab.
+	adSMBSPNShort = "cifs/dittofs.dittofs.ad"
+	adNFSSPNShort = "nfs/dittofs.dittofs.ad"
+
 	// The domain administrator, whose bind the online join uses.
 	adAdminPassword = "Passw0rd!2024"
 	adBindDN        = "CN=Administrator,CN=Users,DC=dittofs,DC=ad"
@@ -332,6 +338,42 @@ func copyADCA(t *testing.T) string {
 		t.Fatalf("copy the fixture CA: %v\n%s", err, out)
 	}
 	return caPath
+}
+
+// copyADKeytab copies the service keytab the entrypoint exports out of the
+// running DC and returns its path. docker cp reads as root inside the
+// container, so the keytab's 0400 mode and dittofs owner do not block it.
+func copyADKeytab(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "dittofs.keytab")
+	if out, err := adDockerCombined("cp", adContainerName+":/keytabs/dittofs.keytab", path); err != nil {
+		t.Fatalf("copy the service keytab: %v\n%s", err, out)
+	}
+	return path
+}
+
+// writeADKrb5Conf writes a host-side krb5.conf whose realm KDC is the DC at
+// dcIP, over TCP, and returns its path. The krb5.conf Samba generates names
+// the DC by a host name the host cannot resolve.
+func writeADKrb5Conf(t *testing.T, dcIP string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "krb5.conf")
+	conf := fmt.Sprintf(`[libdefaults]
+    default_realm = %s
+    dns_lookup_realm = false
+    dns_lookup_kdc = false
+    udp_preference_limit = 1
+    rdns = false
+
+[realms]
+    %s = {
+        kdc = %s:88
+    }
+`, adRealm, adRealm, dcIP)
+	if err := os.WriteFile(path, []byte(conf), 0o644); err != nil {
+		t.Fatalf("write krb5.conf: %v", err)
+	}
+	return path
 }
 
 func findADDockerfileDir(t *testing.T) string {

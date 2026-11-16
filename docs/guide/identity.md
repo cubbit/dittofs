@@ -79,8 +79,8 @@ provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
   (which is nested under `engineering`).
 - user `bob` — no RFC2307 attrs (the RID-fallback case), member of `engineering`.
 - groups `engineering` and `devs` (with `devs` nested under `engineering`).
-- a combined keytab at `/keytabs/dittofs.keytab` holding the `cifs/` and `nfs/`
-  SPNs.
+- a service account `dittofs-svc` holding the `cifs/` and `nfs/` SPNs, AES only,
+  and a combined keytab of their keys at `/keytabs/dittofs.keytab`.
 - a CA, exported as `/keytabs/ca.pem`, that issues the DC's TLS certificate for
   its host name (`dc1.dittofs.ad` when the container runs with `--hostname dc1`)
   and its IPs.
@@ -129,42 +129,24 @@ samba-tool user create bob "$USER_PASSWORD"
 samba-tool group addmembers engineering bob
 ```
 
-### The AES-keytab requirement (issue #1318)
+### The AES-only service keytab
 
-The DittoFS SPNs are registered on the Administrator account and exported to a
-combined keytab:
+The DittoFS SPNs are registered on a service account of their own, whose
+`msDS-SupportedEncryptionTypes` is `24` (`0x18` = AES128-CTS + AES256-CTS), so
+the KDC refuses a ticket for them under RC4 or DES, and `exportkeytab` writes
+their AES keys only:
 
 ```bash
-samba-tool spn add cifs/dittofs.dittofs.ad 'DITTOFS\Administrator'
-samba-tool spn add nfs/dittofs.dittofs.ad  'DITTOFS\Administrator'
+samba-tool user create dittofs-svc --random-password
+samba-tool spn add cifs/dittofs.dittofs.ad dittofs-svc
+samba-tool spn add nfs/dittofs.dittofs.ad  dittofs-svc
+ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF
+dn: CN=dittofs-svc,CN=Users,DC=dittofs,DC=ad
+changetype: modify
+replace: msDS-SupportedEncryptionTypes
+msDS-SupportedEncryptionTypes: 24
+EOF
 ```
-
-By default the account may carry only an **RC4 (arcfour-hmac)** Kerberos key, so
-`exportkeytab` would emit an RC4-only keytab. **Windows 11 refuses RC4
-(arcfour-hmac) service tickets**, so the keytab must carry AES256/AES128 keys.
-Two steps are required, in order:
-
-1. **Advertise AES** on the SPN-holding account by setting
-   `msDS-SupportedEncryptionTypes` to `31` (`0x1F` = DES-CBC-CRC + DES-CBC-MD5 +
-   RC4-HMAC + AES128-CTS + AES256-CTS; the legacy bits are kept so RC4/DES
-   clients still work):
-
-   ```bash
-   ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF
-   dn: <Administrator-DN>
-   changetype: modify
-   replace: msDS-SupportedEncryptionTypes
-   msDS-SupportedEncryptionTypes: 31
-   EOF
-   ```
-
-2. **Regenerate the Kerberos keys.** AES keys derive from the account password +
-   salt, so they only materialise on a password change. Reset the password to
-   itself to force regeneration without changing the credential:
-
-   ```bash
-   samba-tool user setpassword Administrator --newpassword="$ADMIN_PASSWORD"
-   ```
 
 Then export both principals into one keytab (a second `exportkeytab` into the
 same path **appends**):

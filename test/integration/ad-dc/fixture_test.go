@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jcmturner/gokrb5/v8/client"
+	krb5config "github.com/jcmturner/gokrb5/v8/config"
+	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/oiweiwei/go-msrpc/dcerpc"
 	"github.com/oiweiwei/go-msrpc/msrpc/dcetypes"
 	"github.com/oiweiwei/go-msrpc/msrpc/dtyp"
@@ -59,6 +62,81 @@ func TestADFixture(t *testing.T) {
 			t.Fatalf("LDAPS handshake verifying %s against the fixture CA: %v", adDCHost, err)
 		}
 		_ = conn.Close()
+	})
+
+	// The imported service names sit on an account of their own, not on
+	// Administrator, and that account is AES only: the KDC refuses a service
+	// ticket for them under RC4 and issues one under AES, and the exported
+	// keytab holds no RC4 key for them. DES is not tried: Samba refuses it
+	// whatever the account allows, so that leg could not fail.
+	t.Run("service names on an AES-only account", func(t *testing.T) {
+		krb5ConfPath := writeADKrb5Conf(t, dcIP)
+		out, err := adDockerExec("samba-tool", "spn", "list", "Administrator")
+		if err != nil {
+			t.Fatalf("samba-tool spn list Administrator: %v\n%s", err, out)
+		}
+		for _, spn := range []string{adSMBSPNShort, adNFSSPNShort} {
+			if strings.Contains(strings.ToLower(string(out)), spn) {
+				t.Errorf("Administrator holds %s, want it on the service account only:\n%s", spn, out)
+			}
+		}
+
+		for _, tc := range []struct {
+			spn     string
+			name    string
+			etype   int32
+			refused bool
+		}{
+			{adSMBSPNShort, "rc4-hmac", 23, true},
+			{adSMBSPNShort, "aes256-cts", 18, false},
+			{adNFSSPNShort, "rc4-hmac", 23, true},
+			{adNFSSPNShort, "aes256-cts", 18, false},
+		} {
+			cfg, err := krb5config.Load(krb5ConfPath)
+			if err != nil {
+				t.Fatalf("load krb5.conf: %v", err)
+			}
+			cl := client.NewWithPassword(adUserAlice, adRealm, adUserPass, cfg, client.DisablePAFXFAST(true))
+			if err := cl.Login(); err != nil {
+				t.Fatalf("kinit as alice: %v", err)
+			}
+			// The TGT is AES; only the service ticket's request names the etype.
+			cfg.LibDefaults.DefaultTGSEnctypeIDs = []int32{tc.etype}
+			_, key, err := cl.GetServiceTicket(tc.spn)
+			cl.Destroy()
+			switch {
+			case tc.refused && err == nil:
+				t.Errorf("%s service ticket for %s: issued with a session key of etype %d, want KDC_ERR_ETYPE_NOSUPP",
+					tc.name, tc.spn, key.KeyType)
+			case tc.refused && !strings.Contains(err.Error(), "KDC_ERR_ETYPE_NOSUPP"):
+				t.Errorf("%s service ticket for %s: %v, want KDC_ERR_ETYPE_NOSUPP", tc.name, tc.spn, err)
+			case !tc.refused && err != nil:
+				t.Errorf("%s service ticket for %s: %v, want one issued", tc.name, tc.spn, err)
+			case !tc.refused && key.KeyType != tc.etype:
+				t.Errorf("%s service ticket for %s: session key etype %d, want %d", tc.name, tc.spn, key.KeyType, tc.etype)
+			}
+		}
+
+		// The account keeps an RC4 key, its NT hash, whatever its
+		// msDS-SupportedEncryptionTypes; exportkeytab leaves it out of a
+		// service name's export only while that attribute excludes RC4.
+		kt, err := keytab.Load(copyADKeytab(t))
+		if err != nil {
+			t.Fatalf("load the exported keytab: %v", err)
+		}
+		seen := map[string]bool{}
+		for _, e := range kt.Entries {
+			spn := strings.ToLower(strings.Join(e.Principal.Components, "/"))
+			seen[spn] = true
+			if e.Key.KeyType != 17 && e.Key.KeyType != 18 {
+				t.Errorf("keytab entry for %s has etype %d, want 17 or 18 (AES) only", spn, e.Key.KeyType)
+			}
+		}
+		for _, spn := range []string{adSMBSPNShort, adNFSSPNShort} {
+			if !seen[spn] {
+				t.Errorf("keytab holds no entry for %s", spn)
+			}
+		}
 	})
 
 	// The endpoint mapper hands out NETLOGON on ncacn_ip_tcp from the pinned
