@@ -27,8 +27,9 @@ import (
 
 var t0 = time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 
-// manualClock is a clock the test moves: a timer fires when Advance passes
-// it, or at once when armed already due.
+// manualClock is a clock the test moves: a timer fires when Advance reaches
+// it, one armed already due too, never inline as it is armed, since a
+// runtime timer fires on a goroutine of its own.
 type manualClock struct {
 	mu     sync.Mutex
 	now    time.Time
@@ -50,10 +51,6 @@ func (c *manualClock) Now() time.Time {
 }
 
 func (c *manualClock) AfterFunc(d time.Duration, f func()) func() bool {
-	if d <= 0 {
-		f()
-		return func() bool { return false }
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	id := c.next
@@ -163,6 +160,38 @@ func TestDeadlineEndsWithTheCall(t *testing.T) {
 			return nil
 		})(parent, nil)
 	})
+}
+
+// A deadline already spent, or a parent already done, shows on the call's
+// context as the call starts, not later from a timer's or a watch's
+// goroutine (§6.4, §6.5).
+func TestDeadlineSpentOrCancelledShowsAtOnce(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, c := range []struct {
+		name   string
+		parent context.Context
+		want   error
+	}{
+		{"an attempt started 30 s ago", core.WithAttemptStart(context.Background(), t0.Add(-30*time.Second)), context.DeadlineExceeded},
+		{"a parent cancelled", cancelled, context.Canceled},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sh := core.NewShared(adapter.Deps{})
+			core.SetClock(sh, newManualClock())
+			_ = sh.Deadline(func(ctx context.Context, _ *core.Request) error {
+				select {
+				case <-ctx.Done():
+				default:
+					t.Error("as the call starts its context is not done")
+				}
+				if err := ctx.Err(); !errors.Is(err, c.want) {
+					t.Errorf("as the call starts its context's Err is %v, want %v", err, c.want)
+				}
+				return nil
+			})(c.parent, nil)
+		})
+	}
 }
 
 // A context derived from the call's starts no goroutine to watch it, and

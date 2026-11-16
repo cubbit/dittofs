@@ -177,14 +177,26 @@ type clockCtx struct {
 }
 
 // withClockDeadline is parent with a deadline at at on clk; cancel ends it
-// as Canceled and stops its timer.
+// as Canceled and stops its timer. A parent already done, or a deadline
+// already spent, ends it before it is returned, not later from a watch's or
+// a timer's goroutine, so the call sees either from its start (§6.4, §6.5).
 func withClockDeadline(parent context.Context, clk clock, at time.Time) (ctx context.Context, cancel func()) {
 	if d, ok := parent.Deadline(); ok && d.Before(at) {
 		at = d
 	}
 	c := &clockCtx{Context: parent, at: at, done: make(chan struct{})}
+	cancel = func() { c.end(context.Canceled) }
+	if err := parent.Err(); err != nil {
+		c.end(err)
+		return c, cancel
+	}
+	now := clk.Now()
+	if !at.After(now) {
+		c.end(context.DeadlineExceeded)
+		return c, cancel
+	}
 	stopParent := context.AfterFunc(parent, func() { c.end(parent.Err()) })
-	stopTimer := clk.AfterFunc(at.Sub(clk.Now()), func() { c.end(context.DeadlineExceeded) })
+	stopTimer := clk.AfterFunc(at.Sub(now), func() { c.end(context.DeadlineExceeded) })
 	c.mu.Lock()
 	c.stop = func() { stopParent(); stopTimer() }
 	ended := c.err != nil
@@ -192,7 +204,7 @@ func withClockDeadline(parent context.Context, clk clock, at time.Time) (ctx con
 	if ended {
 		c.stop()
 	}
-	return c, func() { c.end(context.Canceled) }
+	return c, cancel
 }
 
 func (c *clockCtx) Deadline() (time.Time, bool) { return c.at, true }
