@@ -548,7 +548,7 @@ func (r *soakRun) attribute(own ...*soakOp) bool {
 		case len(own) > 0 && own[0] != nil && own[0].kind == opWrite && f.call == r.calls:
 			own[0].faulted = true
 		default:
-			r.m.credit()
+			r.m.credit(r.proc)
 		}
 	}
 
@@ -774,7 +774,7 @@ func TestSoakExcused(t *testing.T) {
 // since the call before, excuses a call's error: a lost record fails nothing,
 // and a fault an earlier call already met excuses no later call.
 func TestSoakAttribute(t *testing.T) {
-	r := &soakRun{log: &faultLog{}, m: newSoakModel()}
+	r := &soakRun{log: &faultLog{}, m: newSoakModel(), proc: 1}
 	fire := func(call int, f firedFault) {
 		f.call = call
 		r.log.fired = append(r.log.fired, f)

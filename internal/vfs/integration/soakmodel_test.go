@@ -159,13 +159,15 @@ func (f *fileModel) commit(proc int, off, length int64, v vfs.Verifier, err erro
 	}
 }
 
-// credit marks faulted every write of every file not yet acknowledged: a
-// loss that fired in a call other than a write's own append lands on a
-// record written since its file's last sync, and the soak cannot tell which.
-func (m *soakModel) credit() {
+// credit marks faulted every write of process proc, in every file, not yet
+// acknowledged: a loss that fired in a call other than a write's own append
+// lands on a record written since its file's last sync, and the soak cannot
+// tell which. A write of an earlier process is not credited: the restart
+// between already settled what it left.
+func (m *soakModel) credit(proc int) {
 	for _, f := range m.files {
 		for _, o := range f.ops {
-			if o.kind == opWrite && !o.acked {
+			if o.kind == opWrite && !o.acked && o.proc == proc {
 				o.faulted = true
 			}
 		}
@@ -306,7 +308,7 @@ func (f *fileModel) candidates(at int64) (vals []byte, lost bool, floor int) {
 	}
 
 	for _, o := range f.ops[max(floor, 0):] {
-		if _, ok := o.covers(at); ok && o.kind == opWrite && o.faulted {
+		if _, ok := o.covers(at); ok && o.kind == opWrite && o.done && o.faulted {
 			lost = true
 		}
 	}
@@ -623,7 +625,7 @@ func TestOracle(t *testing.T) {
 		}, "Lost with no fault"},
 		{"O19 a credited range reads its own bytes", func(m *soakModel, f *fileModel) error {
 			write(f, 0, 'a', 4, false)
-			m.credit()
+			m.credit(1)
 			f.commit(1, 0, 0, vA, nil)
 			return read(m, f, 0, bytesOf('a', 4), false)
 		}, ""},
@@ -632,7 +634,7 @@ func TestOracle(t *testing.T) {
 			func(m *soakModel, f *fileModel) error {
 				write(f, 0, 'a', 4, true)
 				write(f, 0, 'b', 4, false)
-				m.credit()
+				m.credit(1)
 				f.commit(1, 0, 0, vA, nil)
 				return read(m, f, 0, bytesOf(0, 4), false)
 			},
@@ -669,7 +671,7 @@ func TestOracle(t *testing.T) {
 			"O24 a credited write a Commit acknowledged reads Lost",
 			func(m *soakModel, f *fileModel) error {
 				write(f, 0, 'a', 4, false)
-				m.credit()
+				m.credit(1)
 				f.commit(1, 0, 0, vA, nil)
 				return read(m, f, 0, bytesOf('a', 4), true)
 			},
@@ -677,7 +679,7 @@ func TestOracle(t *testing.T) {
 		},
 		{"O25 a credit leaves an acknowledged write alone", func(m *soakModel, f *fileModel) error {
 			write(f, 0, 'a', 4, true)
-			m.credit()
+			m.credit(1)
 			return read(m, f, 0, bytesOf('a', 4), true)
 		}, "Lost with no fault"},
 		{
@@ -774,6 +776,28 @@ func TestOracle(t *testing.T) {
 				return f.stat(8, t0.Add(time.Second))
 			},
 			"",
+		},
+		{
+			"O40 a credit in a later process leaves an earlier process's writes alone",
+			func(m *soakModel, f *fileModel) error {
+				write(f, 0, 'a', 4, true)
+				write(f, 0, 'b', 4, false)
+				m.credit(2)
+
+				return read(m, f, 0, bytesOf('a', 4), true)
+			},
+			"Lost with no fault",
+		},
+		{
+			"O41 a credited write whose call failed does not make Lost acceptable",
+			func(m *soakModel, f *fileModel) error {
+				write(f, 0, 'a', 4, true)
+				f.add(&soakOp{kind: opWrite, off: 0, data: bytesOf('b', 4), proc: 1}, false)
+				m.credit(1)
+
+				return read(m, f, 0, bytesOf('a', 4), true)
+			},
+			"Lost with no fault",
 		},
 		{
 			"O28 a loss found after an SMB open, flushed without ErrLost",
