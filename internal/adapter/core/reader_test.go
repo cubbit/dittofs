@@ -156,8 +156,8 @@ func TestAHeaderPastTheCapReservesNothing(t *testing.T) {
 	if _, err := cli.Write(hdr); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Read(context.Background()); err == nil {
-		t.Fatal("a header past the cap is accepted")
+	if _, err := r.Read(context.Background()); !errors.Is(err, core.ErrFrame) {
+		t.Fatalf("a header past the cap returns %v, want a framing refusal", err)
 	}
 	if held := budgets.Receive.Reserved(); held != 0 {
 		t.Errorf("a header past the cap reserves %d bytes", held)
@@ -243,8 +243,8 @@ func TestAFragmentPastTheCap(t *testing.T) {
 		_, _ = cli.Write(record(payload(1<<20), false))
 		_, _ = cli.Write(record(payload(1), true))
 	}()
-	if _, err := r.Read(context.Background()); err == nil {
-		t.Error("a fragment past the cap is accepted")
+	if _, err := r.Read(context.Background()); !errors.Is(err, core.ErrFrame) {
+		t.Errorf("a fragment past the cap returns %v, want a framing refusal", err)
 	}
 	if held := budgets.Receive.Reserved(); held != 0 {
 		t.Errorf("a framing error leaves %d bytes held", held)
@@ -261,8 +261,8 @@ func TestAFifthFragment(t *testing.T) {
 			_, _ = cli.Write(record(payload(1), i == 4))
 		}
 	}()
-	if _, err := r.Read(context.Background()); err == nil {
-		t.Error("a fifth fragment is accepted")
+	if _, err := r.Read(context.Background()); !errors.Is(err, core.ErrFrame) {
+		t.Errorf("a fifth fragment returns %v, want a framing refusal", err)
 	}
 	if held := budgets.Receive.Reserved(); held != 0 {
 		t.Errorf("a framing error leaves %d bytes held", held)
@@ -405,10 +405,10 @@ func TestTheDeadlineStopsAtTheReceiveWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := core.NewTestReader(srv, framer(), pool, key, 100*time.Millisecond)
-	body := payload(40)
-	if _, err := cli.Write(record(body, true)); err != nil {
-		t.Fatal(err)
-	}
+	// Past the read buffer, so the rest of the record is read from the socket
+	// after the grant and the deadline restarted there is what it runs under.
+	body := payload(64 << 10)
+	go func() { _, _ = cli.Write(record(body, true)) }()
 	done := make(chan error, 1)
 	go func() {
 		rec, err := r.Read(context.Background())
@@ -426,5 +426,111 @@ func TestTheDeadlineStopsAtTheReceiveWait(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the record did not come out after the grant")
+	}
+}
+
+// A partial header already buffered is timed out from its own first byte: the
+// reader arms when it starts cutting, not only when it reads.
+func TestABufferedPartialHeaderTimesOut(t *testing.T) {
+	srv, cli := pair(t)
+	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
+	first, second := record(payload(20), true), record(payload(20), true)
+	if _, err := cli.Write(append(append([]byte{}, first...), second[:3]...)); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := r.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Release()
+	// Three bytes of the next header are read; the client stalls.
+	if err := srv.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = r.Read(context.Background())
+	if !errors.Is(err, os.ErrDeadlineExceeded) || time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("a stalled buffered header returns %v after %v, want the deadline at 50ms", err, time.Since(start))
+	}
+}
+
+// A context that ended before the read started stops it without blocking,
+// also with the record already in the socket.
+func TestAReadUnderAnEndedContextDoesNotBlock(t *testing.T) {
+	srv, cli := pair(t)
+	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 5*time.Second)
+	if _, err := cli.Write(record(payload(20), true)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if _, err := r.Read(ctx); !errors.Is(err, context.Canceled) || time.Since(start) > time.Second {
+		t.Fatalf("a read under an ended context returns %v after %v", err, time.Since(start))
+	}
+}
+
+// A context that ends while the reader waits for its receive charge stops it
+// after the grant rather than reading on.
+func TestACancelDuringTheWaitStopsTheRead(t *testing.T) {
+	srv, cli := pair(t)
+	budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", chargeOf(t, 1<<20))}
+	adaptertest.CheckLeaks(t, budgets)
+	pool := resources.NewBufPool(budgets.Receive)
+	held, err := pool.Get(context.Background(), key, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := core.NewTestReader(srv, framer(), pool, key, 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		rec, err := r.Read(ctx)
+		if rec != nil {
+			rec.Release()
+		}
+		done <- err
+	}()
+	body := payload(20)
+	go func() { _, _ = cli.Write(record(body, true)) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	held.Release()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a read cancelled at the wait returns %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the read continued after its context ended")
+	}
+}
+
+// A context that ends while the reader waits for a record's first byte stops
+// it when the byte arrives, before it arms the deadline.
+func TestACancelWhileTheHeaderWaitsStopsTheRead(t *testing.T) {
+	srv, cli := pair(t)
+	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		rec, err := r.Read(ctx)
+		if rec != nil {
+			rec.Release()
+		}
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond) // the reader waits for the first byte
+	cancel()
+	if _, err := cli.Write(record(payload(20), true)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a read cancelled before its first byte returns %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the read continued after its context ended")
 	}
 }

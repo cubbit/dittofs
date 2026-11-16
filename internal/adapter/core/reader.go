@@ -54,6 +54,11 @@ func newReader(nc net.Conn, f Framer, recv *resources.BufPool, key netip.Addr, t
 // reserved; a record in fragments reserves the cap's class once, before the
 // first body is read, and is charged nothing more.
 func (r *reader) Read(ctx context.Context) (*resources.Buf, error) {
+	// A context that ended before the read started stops it before it blocks:
+	// a close disarms, which clears the deadline its stop set.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// A record's deadline runs while the reader cuts it: from its first byte,
 	// here or already read.
 	if r.n > r.off {

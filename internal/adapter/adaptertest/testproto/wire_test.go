@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -330,15 +331,18 @@ func loopback(t *testing.T) (client, server net.Conn) {
 }
 
 // A reply the server sends in fragments is refused: this protocol writes one
-// fragment per reply.
+// fragment per reply. The body is a valid reply, so the flag is the only thing
+// wrong with it.
 func TestClientRefusesAFragmentedReply(t *testing.T) {
 	conn, peer := loopback(t)
 	c := NewClient(conn)
-	if _, err := peer.Write([]byte{0x80, 0x00, 0x00, 0x04, 0, 0, 0, 0}); err != nil {
+	rec := bytes.Clone(replyVector)
+	rec[0] |= 0x80 // more fragments follow
+	if _, err := peer.Write(rec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Recv(); err == nil {
-		t.Error("a reply in fragments is accepted")
+	if _, err := c.Recv(); err == nil || !strings.Contains(err.Error(), "in fragments") {
+		t.Errorf("a reply in fragments returns %v, want the fragment refusal", err)
 	}
 }
 

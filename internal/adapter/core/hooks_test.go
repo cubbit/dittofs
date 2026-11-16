@@ -103,3 +103,7 @@ func NewTestReader(nc net.Conn, f Framer, recv *resources.BufPool, key netip.Add
 
 // Read returns the next record.
 func (t *TestReader) Read(ctx context.Context) (*resources.Buf, error) { return t.r.Read(ctx) }
+
+// ErrFrame is the framing refusal every record-level error wraps, so a close
+// can name its reason.
+var ErrFrame = errFrame
