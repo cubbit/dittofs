@@ -80,11 +80,10 @@ SMB again.
      the new version refuses;
    - `blockstore.journal.path`, a new directory.
 
-   Start it with its own PID and log files:
+   Start it, in the foreground, with its own log file:
 
    ```bash
-   dfs start --config /etc/dittofs-new/config.yaml \
-     --pid-file /run/dittofs-new.pid --log-file /var/log/dittofs-new.log
+   dfs start --config /etc/dittofs-new/config.yaml >>/var/log/dittofs-new.log 2>&1 &
    dfsctl login --server http://127.0.0.1:8081 --username admin --context new
    ```
 

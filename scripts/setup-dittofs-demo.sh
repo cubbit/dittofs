@@ -251,7 +251,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=DITTOFS_ADMIN_INITIAL_PASSWORD=${ADMIN_PASSWORD}
-ExecStart=/usr/local/bin/dfs start --foreground --config ${CONFIG_FILE}
+ExecStart=/usr/local/bin/dfs start --config ${CONFIG_FILE}
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536

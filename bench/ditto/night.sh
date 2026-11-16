@@ -121,7 +121,7 @@ EOF
     dfs_env unshare --net "$HERE/night.sh" setup_boot "$data" >>"$RES/dfs-setup.log" 2>&1 9<&-
     unset DITTOFS_ADMIN_INITIAL_PASSWORD
     env HOME="$RUN" XDG_CONFIG_HOME="$RUN/config" XDG_STATE_HOME="$RUN/state" \
-        setsid "$WORK/build/bin/dfs" start --foreground --config "$RUN/config.yaml" >>"$RES/dfs.log" 2>&1 </dev/null 9<&- &
+        setsid "$WORK/build/bin/dfs" start --config "$RUN/config.yaml" >>"$RES/dfs.log" 2>&1 </dev/null 9<&- &
     echo "$!" >"$RUN/pid"
     # Up to three minutes: the start waits for the block store's first probe, ten attempts with backoff.
     wait_port "$PORT_DFS" 280
@@ -138,7 +138,7 @@ setup_boot() {
     ip link set lo up
     python3 "$HERE/s3stub.py" "$PORT_DEAD" &
     STUB=$!
-    dfs start --foreground --config "$RUN/config.yaml" &
+    dfs start --config "$RUN/config.yaml" &
     DFS=$!
     trap 'kill "$STUB" "$DFS" 2>/dev/null; wait' EXIT
     for _ in $(seq 60); do

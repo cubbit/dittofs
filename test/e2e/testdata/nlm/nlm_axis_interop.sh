@@ -76,14 +76,14 @@ ip netns exec sns unshare --mount bash -c "
   rpcbind
   sleep 0.5
   export DITTOFS_ADMIN_INITIAL_PASSWORD=$PW
-  exec $DFS start --foreground --config $WORK/config.yaml --pid-file $WORK/dfs.pid --log-file $WORK/dfs.log
+  exec $DFS start --config $WORK/config.yaml
 " >"$WORK/dfs.out" 2>&1 &
 
 for _ in $(seq 1 80); do
   ip netns exec sns curl -sf http://127.0.0.1:$API/health >/dev/null 2>&1 && { log "server ready"; break; }
   sleep 0.3
 done
-ip netns exec sns curl -sf http://127.0.0.1:$API/health >/dev/null 2>&1 || { log "server never ready"; tail -20 "$WORK/dfs.log" 2>/dev/null; exit 1; }
+ip netns exec sns curl -sf http://127.0.0.1:$API/health >/dev/null 2>&1 || { log "server never ready"; tail -20 "$WORK/dfs.out" 2>/dev/null; exit 1; }
 
 # --- 3. provision (dfsctl, inside sns so the API is reachable) -------------
 NS="ip netns exec sns"
