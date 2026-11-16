@@ -34,7 +34,7 @@ func testWriteAllOrNothing(t *testing.T, kvo Opener) {
 	u := user("alice")
 	write := func() error {
 		return cp.Write(ctx, entity.WriteMeta{Audit: &entity.AuditRecord{Source: "10.0.0.1"}},
-			func(tx entity.ControlPlaneTx) error { return tx.PutUser(u, 0, entity.Alloc{}) })
+			func(tx entity.ControlPlaneTx) error { return errOf(tx.PutUser(u, 0, entity.Alloc{})) })
 	}
 	failed := errors.New("audit write failed")
 	sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: kvtest.OpSet, Key: "AU‖*", Action: sim.FaultAction{Err: failed}})
@@ -67,7 +67,7 @@ func testWriteRestoresMeta(t *testing.T, kvo Opener) {
 		t.Run(b.name, func(t *testing.T) {
 			s, h := heldStore(t, b)
 			cp := s.ControlPlane()
-			must(t, cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k", Value: []byte("1")}, 0))
+			must(t, errOf(cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k", Value: []byte("1")}, 0)))
 			meta := entity.WriteMeta{Audit: &entity.AuditRecord{Source: "client"}}
 			attempts := 0
 			outer, inner := race(h,
@@ -81,11 +81,11 @@ func testWriteRestoresMeta(t *testing.T, kvo Opener) {
 							meta.Audit.Change = []byte("first attempt only")
 						}
 						meta.Audit.After, meta.Audit.Outcome = 7, []byte("applied")
-						return tx.PutNetgroup(entity.Netgroup{Name: "lab"}, 0)
+						return errOf(tx.PutNetgroup(entity.Netgroup{Name: "lab"}, 0))
 					})
 				},
 				func() error {
-					return cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k", Value: []byte("2")}, settingGen(t, cp))
+					return errOf(cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k", Value: []byte("2")}, settingGen(t, cp)))
 				})
 			must(t, inner)
 			must(t, outer)
@@ -125,7 +125,7 @@ func testWriteTrackedRead(t *testing.T, kvo Opener) {
 		t.Run(b.name, func(t *testing.T) {
 			s, h := heldStore(t, b)
 			cp := s.ControlPlane()
-			must(t, cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k", Value: []byte("old")}, 0))
+			must(t, errOf(cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k", Value: []byte("old")}, 0)))
 			var seen string
 			outer, inner := race(h,
 				func() error {
@@ -135,11 +135,11 @@ func testWriteTrackedRead(t *testing.T, kvo Opener) {
 						if err != nil {
 							return err
 						}
-						return tx.PutNetgroup(entity.Netgroup{Name: "lab"}, 0)
+						return errOf(tx.PutNetgroup(entity.Netgroup{Name: "lab"}, 0))
 					})
 				},
 				func() error {
-					return cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k", Value: []byte("new")}, settingGen(t, cp))
+					return errOf(cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k", Value: []byte("new")}, settingGen(t, cp)))
 				})
 			must(t, inner)
 			must(t, outer)
@@ -216,12 +216,12 @@ func testLastAdminRace(t *testing.T, kvo Opener) {
 			{"demote", func(tx entity.ControlPlaneTx, u entity.User) error {
 				gen := u.Generation
 				u.Role = entity.RoleOperator
-				return tx.PutUser(u, gen, entity.Alloc{})
+				return errOf(tx.PutUser(u, gen, entity.Alloc{}))
 			}},
 			{"disable", func(tx entity.ControlPlaneTx, u entity.User) error {
 				gen := u.Generation
 				u.Disabled = true
-				return tx.PutUser(u, gen, entity.Alloc{})
+				return errOf(tx.PutUser(u, gen, entity.Alloc{}))
 			}},
 			{"delete", func(tx entity.ControlPlaneTx, u entity.User) error {
 				return tx.DeleteUser(u.Principal, u.Generation)
@@ -233,7 +233,7 @@ func testLastAdminRace(t *testing.T, kvo Opener) {
 				admins := []entity.User{user("a"), user("b")}
 				for _, u := range admins {
 					u.Role = entity.RoleAdmin
-					must(t, cp.PutUser(ctx, u, 0, entity.Alloc{}))
+					must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 				}
 				remove := func(p entity.Principal) error {
 					return cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
@@ -286,7 +286,7 @@ func testInstallationInWrite(t *testing.T, kvo Opener) {
 						if seen, err = tx.Installation(); err != nil {
 							return err
 						}
-						return tx.PutNetgroup(entity.Netgroup{Name: "lab"}, 0)
+						return errOf(tx.PutNetgroup(entity.Netgroup{Name: "lab"}, 0))
 					})
 				},
 				func() error {
@@ -319,7 +319,7 @@ func testWriteNow(t *testing.T, kvo Opener) {
 		t.Run(b.name, func(t *testing.T) {
 			s, h := heldStore(t, b)
 			cp := s.ControlPlane()
-			must(t, cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k"}, 0))
+			must(t, errOf(cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k"}, 0)))
 			var before time.Time
 			must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { before = tx.Now(); return nil }))
 			var nows []time.Time
@@ -334,10 +334,12 @@ func testWriteNow(t *testing.T, kvo Opener) {
 							t.Errorf("Now read twice in one attempt: got %v then %v, want one value", first, again)
 						}
 						nows = append(nows, first)
-						return tx.PutNetgroup(entity.Netgroup{Name: "lab"}, 0)
+						return errOf(tx.PutNetgroup(entity.Netgroup{Name: "lab"}, 0))
 					})
 				},
-				func() error { return cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k"}, settingGen(t, cp)) })
+				func() error {
+					return errOf(cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k"}, settingGen(t, cp)))
+				})
 			must(t, inner)
 			must(t, outer)
 			if len(nows) != 2 {
@@ -359,7 +361,7 @@ func keyed(cp kvstore.ControlPlane, account entity.Principal, key, body, answer,
 	i := &entity.IdempotencyRecord{Account: account, Key: key, Digest: sha256.Sum256([]byte(body))}
 	return cp.Write(ctx, entity.WriteMeta{Idempotency: i}, func(tx entity.ControlPlaneTx) error {
 		*ran++
-		if err := tx.PutNetgroup(entity.Netgroup{Name: name}, 0); err != nil {
+		if _, err := tx.PutNetgroup(entity.Netgroup{Name: name}, 0); err != nil {
 			return err
 		}
 		i.Answer = []byte(answer)

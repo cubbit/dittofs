@@ -73,10 +73,10 @@ func TestViaReachesTheChokepoint(t *testing.T) {
 	fs := kvstoretest.NewFS(t, memKV)
 	cp := fs.Store.ControlPlane()
 	u := entity.User{Principal: entity.NewUser(), Name: "bob"}
-	if err := cp.PutUser(ctx, u, 0, entity.Alloc{}); err != nil {
+	if _, err := cp.PutUser(ctx, u, 0, entity.Alloc{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cp.SetGrant(ctx, entity.ShareGrant{Share: fs.Share.ID, Principal: u.Principal, Access: entity.AccessReadWrite}, 0); err != nil {
+	if _, err := cp.SetGrant(ctx, entity.ShareGrant{Share: fs.Share.ID, Principal: u.Principal, Access: entity.AccessReadWrite}, 0); err != nil {
 		t.Fatal(err)
 	}
 	bob := Caller{Identity: entity.Identity{Principal: u.Principal}, Share: fs.Share.ID}

@@ -96,63 +96,63 @@ func decodeQuota(share entity.ShareID, suffix, b []byte) (entity.Quota, error) {
 // grace: the crossing time is rewritten at the change's time when usage is
 // above the new soft limit, and deleted otherwise. A change to any other
 // limit leaves a running grace alone.
-func (c ControlPlane) SetQuota(ctx context.Context, share entity.ShareID, q entity.Quota, expect uint64) error {
-	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.SetQuota(share, q, expect) })
+func (c ControlPlane) SetQuota(ctx context.Context, share entity.ShareID, q entity.Quota, expect uint64) (uint64, error) {
+	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.SetQuota(share, q, expect) })
 }
 
-func (c controlTx) SetQuota(share entity.ShareID, q entity.Quota, expect uint64) error {
+func (c controlTx) SetQuota(share entity.ShareID, q entity.Quota, expect uint64) (uint64, error) {
 	q.Share = share
 	t := QuotaTarget{q.Principal, q.Project}
 	suffix, err := quotaSuffix(t)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for _, l := range []entity.Limit{q.Hard, q.Soft, q.Advisory} {
 		if l.Bytes < 0 || l.Files < 0 {
-			return merrs.NewInvalidArgumentError("a quota limit is not negative")
+			return 0, merrs.NewInvalidArgumentError("a quota limit is not negative")
 		}
 	}
 	if q.Grace < 0 {
-		return merrs.NewInvalidArgumentError("a quota's grace is not negative")
+		return 0, merrs.NewInvalidArgumentError("a quota's grace is not negative")
 	}
 	if _, ok, err := get(c.tx, shareKey(q.Share, keys.SInfo)); err != nil || !ok {
 		if err == nil {
 			err = merrs.NewNotFoundError(q.Share.String(), "share")
 		}
-		return err
+		return 0, err
 	}
 	if err := liveShare(c.tx, q.Share); err != nil {
-		return err
+		return 0, err
 	}
 	if q.Principal != (entity.Principal{}) {
 		if _, ok, err := get(c.tx, principalKey(q.Principal)); err != nil || !ok {
-			return notFound(err, q.Principal)
+			return 0, notFound(err, q.Principal)
 		}
 	}
 	key, since := quotaKey(q.Share, keys.SQt, suffix), quotaKey(q.Share, keys.SQx, suffix)
 	b, ok, err := get(c.tx, key)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	old := entity.Quota{}
 	if ok {
 		if old, err = decodeQuota(q.Share, suffix, b); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	if err := expected(old.Version, expect); err != nil {
-		return err
+		return 0, err
 	}
 	if q.Unlimited() {
 		if err := c.tx.Delete(key); err != nil {
-			return err
+			return 0, err
 		}
-		return c.tx.Delete(since)
+		return 0, c.tx.Delete(since)
 	}
 	if !ok || old.Soft != q.Soft {
 		d, err := usageIn(c.tx, q.Share)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if above(d.of(t), q.Soft) {
 			err = c.tx.Set(since, encodeSince(c.tx.Now()))
@@ -160,11 +160,11 @@ func (c controlTx) SetQuota(share entity.ShareID, q entity.Quota, expect uint64)
 			err = c.tx.Delete(since)
 		}
 		if err != nil {
-			return err
+			return 0, err
 		}
 	}
 	q.Version = nextVersion(c.tx, old.Version)
-	return c.tx.Set(key, encodeQuota(q))
+	return q.Version, c.tx.Set(key, encodeQuota(q))
 }
 
 // above reports usage past a limit in either of its counts; a zero count

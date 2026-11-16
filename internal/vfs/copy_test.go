@@ -31,10 +31,10 @@ func newCopier(t *testing.T) *copier {
 	user := func(name string) vfs.Call {
 		cp := s.Store.Store.ControlPlane()
 		u := entity.User{Principal: entity.NewUser(), Name: name, IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: strconv.Itoa(int(61000 + copyUIDs.Add(1)))}}}
-		if err := cp.PutUser(t.Context(), u, 0, entity.Alloc{}); err != nil {
+		if _, err := cp.PutUser(t.Context(), u, 0, entity.Alloc{}); err != nil {
 			t.Fatal(err)
 		}
-		if err := cp.SetGrant(t.Context(), entity.ShareGrant{Share: s.Store.Share.ID, Principal: u.Principal, Access: entity.AccessReadWrite}, 0); err != nil {
+		if _, err := cp.SetGrant(t.Context(), entity.ShareGrant{Share: s.Store.Share.ID, Principal: u.Principal, Access: entity.AccessReadWrite}, 0); err != nil {
 			t.Fatal(err)
 		}
 		return vfs.Call{Identity: vfs.Identity{
@@ -235,7 +235,7 @@ func TestACopyOrClonePastAQuotaIsRefused(t *testing.T) {
 			dst := s.file(t, "dst", s.alice, 0o6777, "")
 			// alice is charged the source's 8 bytes once it commits, so 12
 			// leaves her room for 4 bytes more.
-			if err := s.Store.Store.ControlPlane().SetQuota(s.ctx, s.Store.Share.ID, entity.Quota{Principal: s.alice.Identity.Evidence.Principal, Hard: entity.Limit{Bytes: 12}}, 0); err != nil {
+			if _, err := s.Store.Store.ControlPlane().SetQuota(s.ctx, s.Store.Share.ID, entity.Quota{Principal: s.alice.Identity.Evidence.Principal, Hard: entity.Limit{Bytes: 12}}, 0); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.Content.CommitExistence(s.ctx, s.Store.Share.ID, fileID(t, s, src)); err != nil {
@@ -261,7 +261,7 @@ func TestACopyOrClonePastAQuotaIsRefused(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := s.Store.Store.ControlPlane().SetQuota(s.ctx, s.Store.Share.ID, entity.Quota{Principal: s.alice.Identity.Evidence.Principal, Hard: entity.Limit{Bytes: 13}}, old.Version); err != nil {
+			if _, err := s.Store.Store.ControlPlane().SetQuota(s.ctx, s.Store.Share.ID, entity.Quota{Principal: s.alice.Identity.Evidence.Principal, Hard: entity.Limit{Bytes: 13}}, old.Version); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := s.Write(s.ctx, s.Admin(), vfs.Anonymous(dst), 4, []byte("x"), vfs.Unstable); err != nil {
@@ -340,7 +340,7 @@ func TestACopyIsChargedAllItsExtentsToTheDestinationsOwner(t *testing.T) {
 			s := newCopier(t)
 			src := s.file(t, "src", s.bob, 0o644, "abcdefgh")
 			dst := s.file(t, "dst", s.alice, 0o644, "")
-			if err := s.Store.Store.ControlPlane().SetQuota(s.ctx, s.Store.Share.ID, entity.Quota{Principal: s.alice.Identity.Evidence.Principal, Hard: entity.Limit{Bytes: 6}}, 0); err != nil {
+			if _, err := s.Store.Store.ControlPlane().SetQuota(s.ctx, s.Store.Share.ID, entity.Quota{Principal: s.alice.Identity.Evidence.Principal, Hard: entity.Limit{Bytes: 6}}, 0); err != nil {
 				t.Fatal(err)
 			}
 			_, err := s.Copy(s.ctx, s.alice, args(src, dst, c.xs...))
@@ -358,7 +358,7 @@ func TestAnExtentPastTheLargestOffsetIsInvalidBeforeTheQuota(t *testing.T) {
 	s := newCopier(t)
 	src := s.file(t, "src", s.alice, 0o644, "abcdefgh")
 	dst := s.file(t, "dst", s.alice, 0o6777, "0123")
-	if err := s.Store.Store.ControlPlane().SetQuota(s.ctx, s.Store.Share.ID, entity.Quota{Principal: s.alice.Identity.Evidence.Principal, Hard: entity.Limit{Bytes: 1 << 20}}, 0); err != nil {
+	if _, err := s.Store.Store.ControlPlane().SetQuota(s.ctx, s.Store.Share.ID, entity.Quota{Principal: s.alice.Identity.Evidence.Principal, Hard: entity.Limit{Bytes: 1 << 20}}, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Copy(s.ctx, s.bob, args(src, dst, ext(1, 0, math.MaxInt64))); !errors.Is(err, vfs.ErrInvalid) {

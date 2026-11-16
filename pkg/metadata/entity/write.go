@@ -39,7 +39,10 @@ type WriteMeta struct {
 
 // ControlPlaneTx is the control plane's writes and tracked reads inside one
 // write's transaction. Each write checks its expect as the view's method
-// does; a deletion is its first transaction, the mark. A read is tracked, so
+// does and returns the record's new generation, or version, the value a
+// read after the commit reports and the next write passes as its expect; a
+// quota that limits nothing is deleted and returns zero. A deletion is its
+// first transaction, the mark. A read is tracked, so
 // a concurrent write of what it read makes the transaction retry, and the
 // write's function runs again.
 type ControlPlaneTx interface {
@@ -64,17 +67,17 @@ type ControlPlaneTx interface {
 	DeleteUser(p Principal, expect uint64) error
 	DeleteGroup(p Principal, expect uint64) error
 	DeleteShare(share ShareID, snapshots SnapshotDisposition, expect uint64) error
-	PutUser(u User, expect uint64, a Alloc) error
-	PutGroup(g Group, expect uint64, a Alloc) error
-	PutShare(s Share, expect uint64) error
+	PutUser(u User, expect uint64, a Alloc) (uint64, error)
+	PutGroup(g Group, expect uint64, a Alloc) (uint64, error)
+	PutShare(s Share, expect uint64) (uint64, error)
 	SetShareState(share ShareID, from, to ShareState) error
-	SetGrant(g ShareGrant, expect uint64) error
+	SetGrant(g ShareGrant, expect uint64) (uint64, error)
 	DeleteGrant(share ShareID, p Principal, expect uint64) error
-	PutExportPolicy(p ExportPolicy, expect uint64) error
-	SetQuota(share ShareID, q Quota, expect uint64) error
-	PutNetgroup(n Netgroup, expect uint64) error
+	PutExportPolicy(p ExportPolicy, expect uint64) (uint64, error)
+	SetQuota(share ShareID, q Quota, expect uint64) (uint64, error)
+	PutNetgroup(n Netgroup, expect uint64) (uint64, error)
 	DeleteNetgroup(name string, expect uint64) error
-	PutSetting(s Setting, expect uint64) error
+	PutSetting(s Setting, expect uint64) (uint64, error)
 	AddMember(m Membership) error
 	RemoveMember(m Membership) error
 }

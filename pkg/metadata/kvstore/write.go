@@ -71,6 +71,17 @@ func (c ControlPlane) update(ctx context.Context, fn func(entity.ControlPlaneTx)
 	return c.Write(ctx, entity.WriteMeta{}, fn)
 }
 
+// updateGen runs fn as update does and returns the generation fn's write
+// returned in the attempt that committed.
+func (c ControlPlane) updateGen(ctx context.Context, fn func(entity.ControlPlaneTx) (uint64, error)) (uint64, error) {
+	var gen uint64
+	err := c.update(ctx, func(tx entity.ControlPlaneTx) (err error) {
+		gen, err = fn(tx)
+		return err
+	})
+	return gen, err
+}
+
 // replay refuses a request whose key its account already used: with the
 // answer it was given, or as a mismatch when the digest differs.
 func replay(tx kv.Txn, i entity.IdempotencyRecord) error {

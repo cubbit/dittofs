@@ -68,85 +68,85 @@ func fixedID(id entity.PrincipalID) bool { return [15]byte(id[:15]) == [15]byte{
 
 // PutUser creates a user, expect zero, or changes the one whose generation
 // expect names, raising its generation.
-func (c ControlPlane) PutUser(ctx context.Context, u entity.User, expect uint64, a entity.Alloc) error {
-	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.PutUser(u, expect, a) })
+func (c ControlPlane) PutUser(ctx context.Context, u entity.User, expect uint64, a entity.Alloc) (uint64, error) {
+	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutUser(u, expect, a) })
 }
 
-func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) error {
+func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) (uint64, error) {
 	if u.Principal.Kind != entity.PrincipalUser || fixedID(u.Principal.ID) || u.Name == "" {
-		return merrs.NewInvalidArgumentError("a user needs a minted user principal and a name")
+		return 0, merrs.NewInvalidArgumentError("a user needs a minted user principal and a name")
 	}
 	if !u.Primary.IsZero() && u.Primary.Kind != entity.PrincipalGroup {
-		return merrs.NewInvalidArgumentError("a user's primary group must be a group")
+		return 0, merrs.NewInvalidArgumentError("a user's primary group must be a group")
 	}
 	if u.Role.String() == "" {
-		return merrs.NewInvalidArgumentError("unknown API role")
+		return 0, merrs.NewInvalidArgumentError("unknown API role")
 	}
 	if err := validIDs(u.IDs, entity.SchemeUID, entity.SchemeSID, entity.SchemeKerberos); err != nil {
-		return err
+		return 0, err
 	}
 	if err := noAlloc(a); err != nil {
-		return err
+		return 0, err
 	}
 	key := userKey(u.Principal.ID)
 	b, existed, err := get(c.tx, key)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var old entity.User
 	if existed {
 		if old, err = decodeUser(u.Principal.ID, b); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	if err := expected(old.Generation, expect); err != nil {
-		return err
+		return 0, err
 	}
 	if err := reindex(c.tx, u.Principal, existed, old.Name, u.Name, old.IDs, u.IDs); err != nil {
-		return err
+		return 0, err
 	}
 	if err := indexAdmin(c.tx, u.Principal.ID, enabledAdmin(old), enabledAdmin(u)); err != nil {
-		return err
+		return 0, err
 	}
 	u.Generation = nextVersion(c.tx, old.Generation)
-	return c.tx.Set(key, encodeUser(u))
+	return u.Generation, c.tx.Set(key, encodeUser(u))
 }
 
 // PutGroup creates a group, expect zero, or changes the one whose generation
 // expect names, raising its generation.
-func (c ControlPlane) PutGroup(ctx context.Context, g entity.Group, expect uint64, a entity.Alloc) error {
-	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.PutGroup(g, expect, a) })
+func (c ControlPlane) PutGroup(ctx context.Context, g entity.Group, expect uint64, a entity.Alloc) (uint64, error) {
+	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutGroup(g, expect, a) })
 }
 
-func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) error {
+func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) (uint64, error) {
 	if g.Principal.Kind != entity.PrincipalGroup || fixedID(g.Principal.ID) || g.Name == "" {
-		return merrs.NewInvalidArgumentError("a group needs a minted group principal and a name")
+		return 0, merrs.NewInvalidArgumentError("a group needs a minted group principal and a name")
 	}
 	if err := validIDs(g.IDs, entity.SchemeGID, entity.SchemeSID); err != nil {
-		return err
+		return 0, err
 	}
 	if err := noAlloc(a); err != nil {
-		return err
+		return 0, err
 	}
 	key := groupKey(g.Principal.ID)
 	b, existed, err := get(c.tx, key)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var old entity.Group
 	if existed {
 		if old, err = decodeGroup(g.Principal.ID, b); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	if err := expected(old.Generation, expect); err != nil {
-		return err
+		return 0, err
 	}
 	if err := reindex(c.tx, g.Principal, existed, old.Name, g.Name, old.IDs, g.IDs); err != nil {
-		return err
+		return 0, err
 	}
 	g.Generation = nextVersion(c.tx, old.Generation)
-	return c.tx.Set(key, encodeGroup(g))
+	return g.Generation, c.tx.Set(key, encodeGroup(g))
 }
 
 func enabledAdmin(u entity.User) bool { return u.Role == entity.RoleAdmin && !u.Disabled }

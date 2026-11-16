@@ -416,7 +416,7 @@ func TestAMaximalOpenGetsDeleteThroughItsParent(t *testing.T) {
 	if _, err := n.Open(ctx, asAlice, doc); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("a delete-on-close open once the directory is bob's: %v, want ErrAccess", err)
 	}
-	n.must(t, n.cp.SetGrant(ctx, entity.ShareGrant{Share: n.share, Principal: alice.Principal, Access: entity.AccessNone}, grantVersion(t, n.cp, n.share, alice.Principal)))
+	n.must(t, errOf(n.cp.SetGrant(ctx, entity.ShareGrant{Share: n.share, Principal: alice.Principal, Access: entity.AccessNone}, grantVersion(t, n.cp, n.share, alice.Principal))))
 	if _, err := n.Open(ctx, asAlice, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("an open once alice's grant is gone: %v, want ErrAccess", err)
 	}
@@ -433,7 +433,7 @@ func TestAReadOnlyShareStripsAMaximalOpen(t *testing.T) {
 	_, err := n.fs.Store.Files().SetAttrs(ctx, n.fs.Admin, d, entity.Attrs{}.WithOwner(alice.Principal))
 	n.must(t, err)
 	n.fs.Create(t, n.fs.Admin, d, "f", kvstore.Regular(0o666))
-	n.must(t, n.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: n.share, ReadOnly: true}, 0))
+	n.must(t, errOf(n.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: n.share, ReadOnly: true}, 0)))
 	asAlice := n.smbClient(t, "alice-pc", alice.Principal)
 	const readRow = entity.ReadData | entity.ReadNamedAttrs | entity.Execute | entity.ReadAttributes | entity.ReadACL | entity.Synchronize
 	r, err := n.Open(ctx, asAlice, byName(d, "f", vfs.OpenExisting, vfs.MaximumAllowed))
@@ -550,7 +550,7 @@ func TestABackupDeleteOnCloseAndItsRefusal(t *testing.T) {
 	c := n.smbClient(t, "pc", alice.Principal)
 	locked := entity.ACL{Entries: []entity.ACE{{Type: entity.ACEDeny, Mask: entity.EntryRights, Who: entity.Everyone}}}
 	for i, tc := range []struct{ backup, immutable bool }{{true, false}, {true, true}, {false, false}} {
-		n.must(t, n.cp.SetGrant(ctx, entity.ShareGrant{Share: n.share, Principal: alice.Principal, Access: entity.AccessAdmin}, grantVersion(t, n.cp, n.share, alice.Principal)))
+		n.must(t, errOf(n.cp.SetGrant(ctx, entity.ShareGrant{Share: n.share, Principal: alice.Principal, Access: entity.AccessAdmin}, grantVersion(t, n.cp, n.share, alice.Principal))))
 		dir := n.create(t, n.admin, n.fs.Root, string(rune('a'+i)), vfs.CreateDir).Handle
 		h, _ := n.fs.Create(t, n.fs.Admin, dir, "f", kvstore.Regular(0o644))
 		_, err := n.fs.Store.Files().SetACL(ctx, n.fs.Admin, h, locked)
@@ -571,7 +571,7 @@ func TestABackupDeleteOnCloseAndItsRefusal(t *testing.T) {
 		if _, err := n.SetXattr(ctx, c, vfs.Target{H: h, Open: &ref}, vfs.Xattr{Name: []byte("user.k"), Value: []byte("v")}, vfs.XattrEither); err != nil {
 			t.Errorf("an EA set through the open: %v", err)
 		}
-		n.must(t, n.cp.SetGrant(ctx, entity.ShareGrant{Share: n.share, Principal: alice.Principal, Access: entity.AccessReadWrite}, grantVersion(t, n.cp, n.share, alice.Principal)))
+		n.must(t, errOf(n.cp.SetGrant(ctx, entity.ShareGrant{Share: n.share, Principal: alice.Principal, Access: entity.AccessReadWrite}, grantVersion(t, n.cp, n.share, alice.Principal))))
 		if tc.immutable {
 			_, err := n.fs.Store.Files().SetAttrs(ctx, n.fs.Admin, dir, entity.Attrs{}.WithFlags(entity.FlagImmutable))
 			n.must(t, err)
@@ -702,8 +702,8 @@ func (n *names) second(t *testing.T, alice entity.User) (entity.ShareID, vfs.Han
 	t.Helper()
 	ctx := t.Context()
 	b := n.addShare(t, "b", "/b")
-	n.must(t, n.cp.SetGrant(ctx, entity.ShareGrant{Share: b, Principal: n.fs.Admin.Principal, Access: entity.AccessAdmin}, 0))
-	n.must(t, n.cp.SetGrant(ctx, entity.ShareGrant{Share: b, Principal: alice.Principal, Access: entity.AccessReadWrite}, 0))
+	n.must(t, errOf(n.cp.SetGrant(ctx, entity.ShareGrant{Share: b, Principal: n.fs.Admin.Principal, Access: entity.AccessAdmin}, 0)))
+	n.must(t, errOf(n.cp.SetGrant(ctx, entity.ShareGrant{Share: b, Principal: alice.Principal, Access: entity.AccessReadWrite}, 0)))
 	root, _, err := n.fs.Store.Files().Root(ctx, n.fs.Admin, b)
 	n.must(t, err)
 	h, _ := n.fs.Create(t, n.fs.Admin, root, "disk", kvstore.Regular(0o666))
@@ -1025,7 +1025,7 @@ func TestEachFailedStartStepLeavesItBuilt(t *testing.T) {
 			clock := sim.NewTestClock(time.Unix(0, 0))
 			tab, err := openstate.New(openstate.Deps{Records: fx.Store, Clock: clock, Rand: rand.Reader})
 			s, err2 := New(Deps{Meta: fx.Store, Open: tab, Engine: contentOver(clock, fx.Store, live.ID)})
-			if err := errors.Join(err, err2, cp.PutShare(ctx, live, 0), cp.DeleteShare(ctx, fx.Share.ID, entity.SnapshotsRefuse, 1)); err != nil {
+			if err := errors.Join(err, err2, errOf(cp.PutShare(ctx, live, 0)), cp.DeleteShare(ctx, fx.Share.ID, entity.SnapshotsRefuse, 1)); err != nil {
 				t.Fatal(err)
 			}
 			if err := tab.Start(ctx, s, s.Admission); err != nil {
@@ -1913,7 +1913,7 @@ func TestADeleteOnCloseOnAShareMadeReadOnlyIsRefused(t *testing.T) {
 	doc.DeleteOnClose, doc.Backup = true, true
 	r, err := n.Open(ctx, c, doc)
 	n.must(t, err)
-	n.must(t, n.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: n.share, ReadOnly: true}, 0))
+	n.must(t, errOf(n.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: n.share, ReadOnly: true}, 0)))
 	before := testutil.ToFloat64(n.refusals)
 	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
 		t.Fatal(err)

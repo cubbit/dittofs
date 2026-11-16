@@ -37,8 +37,8 @@ func fuzzShare(f *testing.F) (*Filesystem, vfs.Call, vfs.Handle) {
 	admin := entity.User{Principal: entity.NewUser(), Name: "admin", IDs: entity.ProtocolIDs{{Scheme: entity.SchemeUID, Value: "100"}}}
 	sh := entity.Share{ID: entity.NewShareID(), Name: "data", Path: "/data", Root: entity.NewFileID()}
 	for _, err := range []error{
-		cp.PutUser(ctx, admin, 0, entity.Alloc{}), cp.PutShare(ctx, sh, 0),
-		cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0),
+		errOf(cp.PutUser(ctx, admin, 0, entity.Alloc{})), errOf(cp.PutShare(ctx, sh, 0)),
+		errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0)),
 	} {
 		if err != nil {
 			f.Fatal(err)

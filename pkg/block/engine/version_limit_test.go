@@ -565,7 +565,7 @@ func TestLateShareBindRaisesItself(t *testing.T) {
 		Access:    entity.AccessAdmin,
 	}
 
-	if err := s.fs.Store.ControlPlane().SetGrant(ctx, grant, 0); err != nil {
+	if _, err := s.fs.Store.ControlPlane().SetGrant(ctx, grant, 0); err != nil {
 		t.Fatal(err)
 	}
 
