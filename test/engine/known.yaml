@@ -289,3 +289,31 @@
   category: feature
   reason: 'the fixture failing one file''s sync window (internal/vfs/integration/content_journal_test.go:18): a loss changes the verifier and raises only the lost file''s loss sequence. The run supplies no Lose, so the case skips: the fixture fails a whole sync window, every file pending in it, where the case needs one file''s content lost and another''s loss sequence left alone; the engine''s run over the fake journal covers it. It runs once the fixture can fail one file''s window.'
   issue: '#4206'
+- test: TestRFC8A_CloneResumedAtAFullLimit
+  message: 'holds segments; recovering them is not built'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'the journal''s Open recovering segments: a clone crashed after its copies, before its phase 1, on a share at its journal limit is resumed by the restart without copying again, other files are served and the clone finishes. Init and Open work; the row gets past its clone''s hold and the share''s limit, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
+- test: TestRFC8A_TheJoin
+  message: 'holds segments; recovering them is not built'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'the journal''s Open recovering segments: a committed hole reads zeros and a synced record the journal lost reads Lost after the restart. Init and Open work; the row gets past its writes, the committed size and the sync, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
+- test: TestRFC8A_SourceRegistrationRebuilt
+  message: 'holds segments; recovering them is not built'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'the journal''s Open recovering segments: a process stopped once a clone''s phase 1 committed restarts with the source''s registration rebuilt, a write into the frozen extent answering ErrDelay until the clone is done. Init and Open work; the row gets past the clone''s phase 1 and the frozen write before the stop, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
+  issue: '#4206'
+- test: TestRFC8B_JournalFullOnAFullDevice
+  message: 'raised no journal_full'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'the row''s write refused by the spare limit, for which the engine raises nothing (engine/repack.go:273): a write refused once the device has no room for a new segment raises journal_full and keeps it while writes into allocated segments are accepted. Init and Open work; with 1 MiB segments and every new create and allocation failing ENOSPC at the seam, the row gets past its writes to the refused roll and stops at its own check: the journal answers no space by its spare limit, not ENOSPC. Whether the journal or the fixture''s setup keeps the full-device answer from coming is not settled.'
+  issue: '#4206'
