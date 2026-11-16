@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/test/harness/fixture"
 	"github.com/cubbit/dittofs/test/harness/registry"
 	"github.com/cubbit/dittofs/test/harness/report"
 )
@@ -266,5 +267,16 @@ func TestCommandOnTheClient(t *testing.T) {
 	rep, out := runTarget(t, root, r, "c", false)
 	if o := rep.Outcomes[0]; o.Result != report.Passed || !strings.Contains(out, "[dt] $ env ON_CLIENT=yes sh -c") {
 		t.Errorf("outcome %+v\n%s", o, out)
+	}
+}
+
+// A cell whose fixture's server is DittoFS is refused at its start, with the
+// reason, since dt starts no DittoFS server until its fixture is rebuilt.
+func TestDittoFSFixtureRefused(t *testing.T) {
+	for _, server := range []string{"", "dfs"} {
+		_, err := startFixture(context.Background(), registry.Fixture{Server: server, Profile: "memory"}, nil, t.TempDir(), t.TempDir(), io.Discard)
+		if !errors.Is(err, fixture.ErrNoServer) {
+			t.Errorf("server %q: startFixture returned %v, want %v", server, err, fixture.ErrNoServer)
+		}
 	}
 }

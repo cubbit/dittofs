@@ -22,7 +22,6 @@ require (
 	github.com/go-ldap/ldap/v3 v3.4.15
 	github.com/go-playground/validator/v10 v10.30.5
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/hirochachacha/go-smb2 v1.1.0
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jackc/pgx/v5 v5.11.0 // indirect
 	github.com/jcmturner/gofork v1.7.6 // indirect

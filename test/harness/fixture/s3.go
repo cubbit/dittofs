@@ -95,26 +95,3 @@ func answer(status int, err error) string {
 	}
 	return fmt.Sprintf("answered %d", status)
 }
-
-// listURL is {bucket}: the request that lists the keys under the fixture's
-// prefix, an S3 ListObjectsV2, with which a suite sees what the server put in
-// the bucket.
-func (b *bucket) listURL() string {
-	return b.endpoint + "/" + bucketName + "?list-type=2&prefix=" + b.prefix
-}
-
-// storeConfig is the server's S3 block store configuration for the bucket.
-func (b *bucket) storeConfig() map[string]any {
-	return map[string]any{
-		"bucket":            bucketName,
-		"prefix":            b.prefix,
-		"endpoint":          b.endpoint,
-		"region":            "us-east-1",
-		"force_path_style":  true,
-		"access_key_id":     "test",
-		"secret_access_key": "test",
-		// The service is on a loopback or private address, which the
-		// server refuses for an S3 endpoint unless this allows it.
-		"allow_private_endpoint": true,
-	}
-}

@@ -3,22 +3,17 @@
 package fixture
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"gopkg.in/yaml.v3"
-
-	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
 // fakeKDCDocker puts a docker first on the PATH whose run, of a KDC, writes
@@ -68,24 +63,18 @@ func waitFile(path string) string {
 	return ""
 }
 
-// With Kerberos the KDC starts before dfs, on the server's network, with the
-// server's principal named after {server}, the machine's name, and {user}'s,
-// whose password reaches it through docker's environment, never on the
-// command line. Once the KDC answers on its port, dfs starts with Kerberos
-// on, the KDC's keytab and that principal. The setup's end stops both: the
-// KDC's container is removed, as it is when dfs doesn't start. A KDC that
-// exits before it answers fails the setup at once, before dfs starts, and
-// one that never answers is removed when the setup ends.
-func TestStartKerberos(t *testing.T) {
-	realHostname := hostname
-	hostname = func() (string, error) { return "kdc-host.test", nil }
-	t.Cleanup(func() { hostname = realHostname })
+// The KDC starts on the server's network, with the server's principal named
+// after the host it is given and {user}'s, whose password reaches it through
+// docker's environment, never on the command line, and is ready once it
+// answers on its port; stopping it removes its container. A KDC that exits
+// before it answers fails at once, and one that never answers is removed
+// when ctx ends.
+func TestStartKDC(t *testing.T) {
 	for _, tc := range []struct {
-		name                 string
-		answers, fail, noDFS bool
+		name          string
+		answers, fail bool
 	}{
 		{name: "answers", answers: true},
-		{name: "dfs doesn't start", answers: true, noDFS: true},
 		{name: "exits", fail: true},
 		{name: "never answers"},
 	} {
@@ -94,59 +83,65 @@ func TestStartKerberos(t *testing.T) {
 			if tc.fail {
 				t.Setenv("FAKE_KDC_FAIL", "1")
 			}
-			bin := t.TempDir()
-			if !tc.noDFS {
-				dfs := "#!/bin/sh\ncp \"$4\" " + state + "/copy && mv " + state + "/copy " + state + "/config.yaml\nexec sleep 60\n"
-				if err := os.WriteFile(filepath.Join(bin, "dfs"), []byte(dfs), 0o755); err != nil {
-					t.Fatal(err)
-				}
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
 			}
+			port := l.Addr().(*net.TCPAddr).Port
+			_ = l.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			go func() {
-				port := waitFile(filepath.Join(state, "port"))
-				if !tc.answers {
-					time.Sleep(300 * time.Millisecond)
-					cancel()
-					return
-				}
-				l, err := net.Listen("tcp", "127.0.0.1:"+port)
-				if err != nil {
-					return
-				}
-				defer func() { _ = l.Close() }()
+			if tc.answers {
+				// The KDC answers once the fake has started: its port is
+				// then bound, as the real KDC's is.
 				go func() {
+					if waitFile(filepath.Join(state, "port")) == "" {
+						return
+					}
+					l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+					if err != nil {
+						return
+					}
+					go func() { <-ctx.Done(); _ = l.Close() }()
 					for conn, err := l.Accept(); err == nil; conn, err = l.Accept() {
 						_ = conn.Close()
 					}
 				}()
-				for ctx.Err() == nil {
-					if _, err := os.Stat(filepath.Join(state, "config.yaml")); err == nil {
+			} else if !tc.fail {
+				// The bounded wait is the assertion: a KDC that never
+				// answers is removed when ctx ends.
+				go func() {
+					if waitFile(filepath.Join(state, "port")) != "" {
 						cancel()
 					}
-					time.Sleep(10 * time.Millisecond)
-				}
-			}()
+				}()
+			}
 			out := t.TempDir()
-			var w bytes.Buffer
-			_, err := Start(ctx, registry.Fixture{Profile: "memory", SMB: registry.SMB{Enabled: true}, Kerberos: true}, nil, bin, out, &w)
-			data, _ := os.ReadFile(filepath.Join(state, "calls"))
-			calls := strings.Split(strings.TrimSpace(string(data)), "\n")
+			dir := filepath.Join(out, "kdc")
+			password := secret()
+			k, err := startKDC(ctx, dir, "kdc-host.test", password, port, out)
 			if tc.fail {
 				log, _ := os.ReadFile(filepath.Join(out, "kdc.log"))
 				if err == nil || !strings.Contains(err.Error(), "the KDC exited before it answered (exit status 1)") || !strings.Contains(string(log), "kdb5_util: broke") {
-					t.Errorf("Start: %v; kdc.log %q", err, log)
-				}
-				if _, err := os.Stat(filepath.Join(state, "config.yaml")); err == nil {
-					t.Error("dfs started")
+					t.Errorf("startKDC: %v; kdc.log %q", err, log)
 				}
 				return
 			}
-			if err == nil || errors.Is(err, context.Canceled) == tc.noDFS {
-				t.Fatalf("Start: %v\n%s", err, w.String())
+			if tc.answers {
+				if err != nil {
+					t.Fatalf("startKDC: %v", err)
+				}
+				if got := k.principal(); got != "cifs/kdc-host.test" {
+					t.Errorf("principal %q, want cifs/kdc-host.test", got)
+				}
+				k.stop()
+			} else if !errors.Is(err, context.Canceled) {
+				t.Fatalf("startKDC: %v, want %v", err, context.Canceled)
 			}
+			data, _ := os.ReadFile(filepath.Join(state, "calls"))
+			calls := strings.Split(strings.TrimSpace(string(data)), "\n")
 			run := regexp.MustCompile(`^run --rm --name (dt-kdc-[0-9a-f]{8}) --network ` + regexp.QuoteMeta(Network()) +
-				` -v (\S+):/keytabs -e KRB5_REALM=DITTOFS.TEST -e KDC_HOST=127.0.0.1 -e KDC_PORT=(\d+)` +
+				` -v ` + regexp.QuoteMeta(dir) + `:/keytabs -e KRB5_REALM=DITTOFS.TEST -e KDC_HOST=127.0.0.1 -e KDC_PORT=` + strconv.Itoa(port) +
 				` -e DITTOFS_SPN=cifs/kdc-host.test -e DITTOFS_UID=` + strconv.Itoa(os.Getuid()) + ` -e DITTOFS_GID=` + strconv.Itoa(os.Getgid()) +
 				` -e USER_PRINCIPAL=dt-user -e USER_PASSWORD dittofs-dt-kdc$`).FindStringSubmatch(calls[0])
 			if run == nil || len(calls) != 2 || calls[1] != "rm -f "+run[1] {
@@ -155,31 +150,27 @@ func TestStartKerberos(t *testing.T) {
 			if !ended(waitFile(filepath.Join(state, "pid"))) {
 				t.Error("the KDC still runs")
 			}
-			if _, err := os.Stat(run[2]); !os.IsNotExist(err) || !strings.HasPrefix(run[2], filepath.Join(out, "dfs")) {
-				t.Errorf("the KDC's directory %s stays with the server's data: %v", run[2], err)
-			}
-			password := waitFile(filepath.Join(state, "password"))
-			if len(password) != 32 || strings.Contains(string(data), password) || strings.Contains(w.String(), password) {
-				t.Errorf("USER_PASSWORD %q, on the command line or in dt's lines:\n%s\n%s", password, data, w.String())
-			}
-			if !tc.answers || tc.noDFS {
-				return
-			}
-			if want := fmt.Sprintf("[dt] fixture: the KDC of DITTOFS.TEST answers on port %s,", run[3]); !strings.Contains(w.String(), want) {
-				t.Errorf("dt's lines lack %q:\n%s", want, w.String())
-			}
-			var config struct {
-				Kerberos map[string]any `yaml:"kerberos"`
-			}
-			raw, _ := os.ReadFile(filepath.Join(state, "config.yaml"))
-			if err := yaml.Unmarshal(raw, &config); err != nil {
-				t.Fatal(err)
-			}
-			k := config.Kerberos
-			if k["enabled"] != true || k["keytab_path"] != filepath.Join(run[2], "dittofs.keytab") || k["krb5_conf"] != filepath.Join(run[2], "krb5.conf") ||
-				k["service_principal"] != "cifs/kdc-host.test@DITTOFS.TEST" {
-				t.Errorf("dfs's kerberos: %v", k)
+			if got := waitFile(filepath.Join(state, "password")); got != password || strings.Contains(string(data), password) {
+				t.Errorf("USER_PASSWORD %q, want %q, off the command line:\n%s", got, password, data)
 			}
 		})
 	}
+}
+
+// alive reports whether the process pid runs; one that ended and waits to be
+// reaped doesn't.
+func alive(pid int) bool {
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	return err == nil && !strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
+}
+
+// ended waits up to 10 seconds for the process pid to end.
+func ended(pid string) bool {
+	n, err := strconv.Atoi(pid)
+	for end := time.Now().Add(10 * time.Second); err == nil && time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if !alive(n) {
+			return true
+		}
+	}
+	return false
 }

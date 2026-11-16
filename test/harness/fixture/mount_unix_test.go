@@ -8,15 +8,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/cubbit/dittofs/test/harness/registry"
 )
 
@@ -46,7 +43,6 @@ for dir; do :; done
 [ -z "$DT_FAKE_VERS" ] || echo "600 28 0:58 / $dir rw shared:1 - nfs4 10.0.0.9:/export rw,vers=$DT_FAKE_VERS" >> "$DT_FAKE_MOUNTINFO"`,
 		"umount": `echo "umount $*" >> "$DT_FAKE_LOG"
 for dir; do :; done
-[ -n "$DT_FAKE_DFS" ] && kill -0 "$DT_FAKE_DFS" 2>/dev/null && echo "dfs runs" >> "$DT_FAKE_LOG"
 case "$1,$DT_FAKE_UMOUNT" in
 -f,stuck | [!-]*,stuck | [!-]*,busy) echo "umount: $dir: target is busy" >&2; exit 32 ;;
 [!-]*,hang) exec sleep 5 ;;
@@ -163,7 +159,7 @@ func TestMountSMB(t *testing.T) {
 			t.Setenv("DT_FAKE_VERS", tc.vers)
 			t.Setenv("DT_FAKE_MOUNT_FAIL", tc.fail)
 			var w bytes.Buffer
-			s := &Server{f: registry.Fixture{SMB: registry.SMB{Dialect: tc.dialect}}, smbPort: 40002, data: t.TempDir(), shares: []apiclient.CreateShareRequest{{Name: "/smbbasic"}, {Name: "/other"}}, out: &w}
+			s := &Server{f: registry.Fixture{SMB: registry.SMB{Dialect: tc.dialect}}, smbPort: 40002, data: t.TempDir(), shares: []string{"/smbbasic", "/other"}, out: &w}
 			err := s.mountSMB(context.Background(), "10.0.0.9", "s3cret")
 			if tc.goos != "windows" {
 				t.Cleanup(func() { _ = os.Remove(s.mount) })
@@ -303,36 +299,6 @@ func TestUnmount(t *testing.T) {
 	}
 }
 
-// Stop unmounts the share while dfs still runs, since an unmount waits on a
-// server that is gone, and then stops dfs.
-func TestStopUnmountsFirst(t *testing.T) {
-	calls := fakeMounts(t)
-	t.Setenv("DT_FAKE_VERS", "4.1")
-	bin, _ := fakeDFS(t)
-	cmd := exec.Command(filepath.Join(bin, "dfs"))
-	ownGroup(cmd)
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	log, err := os.Create(filepath.Join(t.TempDir(), "dfs.log"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := &Server{cmd: cmd, exited: make(chan struct{}), log: log, data: t.TempDir(), nfsPort: 40001, out: &bytes.Buffer{}}
-	go func() { s.err = cmd.Wait(); close(s.exited) }()
-	if err := s.mountShare(context.Background(), "10.0.0.9", registry.NFS{Version: "4.1"}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Remove(s.mount) })
-	t.Setenv("DT_FAKE_DFS", strconv.Itoa(cmd.Process.Pid))
-	if err := s.Stop(); err != nil {
-		t.Fatal(err)
-	}
-	if got := calls(); !strings.Contains(strings.Join(got, "\n"), "umount "+s.mount+"\ndfs runs") || alive(cmd.Process.Pid) {
-		t.Errorf("calls %q; dfs runs after Stop: %t", got, alive(cmd.Process.Pid))
-	}
-}
-
 // With a namespaced client the client mounts the share, as dt does there:
 // root's mount and umount enter its namespaces, and the check reads its
 // mount table, not this machine's.
@@ -368,17 +334,5 @@ exec "$@"`
 	}
 	if _, err := os.Stat(s.mount); !os.IsNotExist(err) {
 		t.Errorf("{mount} stays: %v", err)
-	}
-}
-
-// users: self runs the tests as the user dt runs as, which dt running as
-// root can't give: the fixture doesn't start.
-func TestSelfNeedsAnOrdinaryUser(t *testing.T) {
-	realEuid := geteuid
-	t.Cleanup(func() { geteuid = realEuid })
-	geteuid = func() int { return 0 }
-	_, err := Start(context.Background(), registry.Fixture{Profile: "memory", Users: []string{"self"}}, nil, t.TempDir(), t.TempDir(), &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "dt runs as root here") {
-		t.Errorf("got %v", err)
 	}
 }

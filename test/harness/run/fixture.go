@@ -24,7 +24,8 @@ type fixtureServer interface {
 	Stop() error
 }
 
-// startFixture starts a cell's server; the tests replace it.
+// startFixture starts a cell's server; the tests replace it. It starts the
+// kernel's NFS server, and refuses a DittoFS one (fixture.ErrNoServer).
 var startFixture = func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error) {
 	if f.Server == "knfsd" {
 		k, err := fixture.StartKnfsd(ctx, f, out, w)
@@ -33,11 +34,7 @@ var startFixture = func(ctx context.Context, f registry.Fixture, services []stri
 		}
 		return k, nil
 	}
-	s, err := fixture.Start(ctx, f, services, bin, out, w)
-	if err != nil {
-		return nil, err
-	}
-	return s, nil
+	return nil, fixture.ErrNoServer
 }
 
 // cellFixture is fixture f with a cell's matrix values filled in.
