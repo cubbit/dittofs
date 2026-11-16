@@ -266,7 +266,7 @@ rfc28 / 4.2 / C / "spares are re-adopted":
 rfc28 / 4.2 / C / "a spare is whole or absent":
   tests: [TestRFC28C_SpareIsWholeOrAbsent]
 rfc28 / 4.2 / C / "retired segments are recycled":
-  tests: [TestRFC28C_RetiredSegmentsAreRecycled]
+  tests: [TestRFC28C_RetiredSegmentsAreRecycled, TestAwaitSpareWhoseRollReleasesAHeldCreate]
 rfc28 / 4.2 / C / "a recycled segment's old catalog is never read":
   tests: [TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead]
 rfc28 / 4.2 / C / "interrupted `Init`":
