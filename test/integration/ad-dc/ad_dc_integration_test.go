@@ -40,6 +40,11 @@ const (
 	adUserAlice = "alice"
 	adUserPass  = "TestPassword01!"
 
+	// The SMB service principal, in the form gokrb5 requests a ticket for (no
+	// realm). The fixture puts it on an AES-only service account and exports
+	// its keys into dittofs.keytab.
+	adSMBSPNShort = "cifs/dittofs.dittofs.ad"
+
 	// The domain administrator, whose bind the online join uses.
 	adAdminPassword = "Passw0rd!2024"
 	adBindDN        = "CN=Administrator,CN=Users,DC=dittofs,DC=ad"
