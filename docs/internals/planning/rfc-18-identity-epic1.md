@@ -97,12 +97,12 @@ number and title and not copied.
 | rule 2, fuzz every decoder of untrusted bytes | none | epic 1 decodes nothing |
 | rule 3, observability follows RFC 25 | T1.4 | `Deps` takes the metrics registry and the logger; epic 1 owns none of RFC 18 §9.2's series and opens no span, since its methods are stubs, so `Deps.Tracer` arrives with E3's `identity.resolve` span, the first that reads it (D4) |
 | rule 4, profiling | T1.4 | the lifecycle tests run under `prof.Watch` (`internal/prof`), which is how R11 and R14 are proven |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T1.4, T1.5 | R10 is held by the type: `*kvstore.Store` has no `Close`, so the server cannot close what it was handed; each import rule by the check that reports its seeded violation |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T1.4, T1.5 | R10 is held by the type: the `Store` interface identity declares has no `Close` (D5), so the server cannot close what it was handed; each import rule by the check that reports its seeded violation |
 | rule 6, known failures shrink | none | no suite RFC 18 names keeps a `known.yaml`; nothing lands red |
 | rule 7, v2 ignores v1 | T1.1, T1.6 | the types move from `pkg/vfs`, which is v2; nothing of v1's `pkg/identity` is read or kept, its path reused only after S0 |
 | rule 8, real dependencies for properties of those dependencies | none | no external system is reached |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T1.2, T1.4, T1.6 | RFC 18 §2.6's `decision:` (identity is one component, not part of `vfs`) at `Server`; D2, D4 and D7's markers at their sites |
-| rule 10, a test must be able to fail | all | R7, R15 and R16 are held by the compiler, R10 by `*kvstore.Store` having no `Close`, R3 and R4 by RFC 20's existing import test, each named as such; every other row by a test that fails on its assertion |
+| rule 10, a test must be able to fail | all | R7, R15 and R16 are held by the compiler, R10 by identity's `Store` interface having no `Close` (D5), R3 and R4 by RFC 20's existing import test, each named as such; every other row by a test that fails on its assertion |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T1.1, T1.3, T1.4 | `Key`, `Stored` and `TokenVerifier` are left out (D3, §1.2); `internal/identity` exports only what `internal/node` and the API call; `Deps` and `State` gain fields after S1, as the rule and RFC 18 §2.6 allow (D4) |
 | rule 12, each subtask creates only what it declares | all | no empty package; the stub bodies behind final signatures are the one exception the Design principles allow, and the `vfs.Deps` fields are the seam S1 freezes (D7) |
 
@@ -119,7 +119,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R2 | `pkg/identity` is a leaf importing metadata types only | invariant | §2.7 | T1.1, T1.5 |
 | R3 | `pkg/vfs` aliases the value types an adapter needs, so an adapter imports `pkg/vfs` alone and neither identity package | invariant | §2.7; RFC 17 §3.0; RFC 20 §2.3 | T1.1, T1.5 |
 | R4 | Adapters map, squash and grant nothing; every spelling goes through `vfs.Service`'s `Spell` and `Find`, held by RFC 20 §7.1's import test (ID11) | invariant | §9.1 ID11; RFC 20 §7.1 | T1.5 |
-| R5 | Only `internal/node` imports the server, `internal/identity` or any package under it, besides identity's own packages, `pkg/identity/identitytest` among them, which imports `internal/identity/directory` and `internal/identity/netlogon` and never the server (E6's T6.4, E7's T7.3), and `pkg/vfs/vfstest/memory`, which imports `internal/identity/identitymem` alone (E3's T3.6); `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use the real server | invariant | §2.7; §10 "Who stands in for what" | T1.5 |
+| R5 | Only `internal/node` and `internal/node/nodetest`, which builds a real installation as `node` does, import the server, `internal/identity` or any package under it, besides identity's own packages, `pkg/identity/identitytest` among them, which imports `internal/identity/directory` and `internal/identity/netlogon` and never the server (E6's T6.4, E7's T7.3), and `pkg/vfs/vfstest/memory`, which imports `internal/identity/identitymem` alone (E3's T3.6); `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use the real server | invariant | §2.7; §10 "Who stands in for what" | T1.5 |
 | R6 | Only `internal/identity/directory` imports LDAP; `internal/auth/netlogon`, which S0 leaves and whose `join.go` imports it, is exempt by a `decision:` until E7's T7.6 moves it into `internal/identity/netlogon` and removes the exemption | invariant | §2.7 | T1.5 |
 | R7 | `Authenticator` is the same shape as `vfs.Principals.SignIn`, so the filesystem passes it through | invariant | §3.1 | T1.3, T1.6 |
 | R8 | `ErrLogonFailure` and `ErrUnknownPrincipal` are `vfserr`'s, and `vfs.Errors()` returns both; the adapter rows that map them are the RFC 21 and RFC 22 plans' (the plan's deferral row) | MUST | §2.7; RFC 17 §4.3; RFC 20 §7.3 | T1.2 |
@@ -174,10 +174,19 @@ held by the compiler: E1's interface assertions (T1.4, T1.6) and the consumers E
   `internal/node` and tests build costs no migration, and epic 1 then waits on nothing of
   #4059. Prior art: RFC 17 §2.3's `vfs.Deps` grew its fields the same way on
   `feat/storage-v2`.
-- **D5, withdrawn:** RFC 18 §2.6 now declares the store field as `Store *kvstore.Store`, the
-  choice D5 made.
-- **D6, `SharePolicy` is declared in `entity` as RFC 16 §3 states it.** `Resolver.Resolve`
-  takes it, so the type must exist at S1; the read that fills it is E3's. RFC 18's `metadata.`
+- **D5, `Deps.Store` is an interface identity declares.** RFC 18 §2.6 declares the field as
+  `Store *kvstore.Store`; epic 1 declares `Store{ Principals() kvstore.Principals }` in
+  `internal/identity` instead, so RFC 23's plan's epic 2, which changes kvstore's write
+  signatures (`expect`, `Alloc`), changes nothing in identity. The `Minter` calls join the
+  interface with the first subtask that makes them (E2); epic 1 reads nothing through it. The
+  interface has no `Close`, which holds R10. `*kvstore.Store` satisfies it, so the node and the
+  tests pass it unchanged. Agreed on #4419.
+- **D6, `SharePolicy` is declared in `entity` as RFC 16 §3 states it, without `ManageGIDs`.**
+  `Resolver.Resolve` takes it, so the type must exist at S1. Its one reader is
+  `Principals.SharePolicy`, which RFC 23's plan's epic 2 (T2.3) implements over one snapshot,
+  reading the export policy and `S‖id‖gv` in one transaction; E3 calls it. `ManageGIDs` is left
+  out until RFC 21 gives it a source: `ExportPolicy` has none, and a field that is always false
+  would be trusted by its readers. Agreed on #4419. RFC 18's `metadata.`
   prefix is `entity` on this branch, where the store's value types live. Prior art: RFC 16 §3.
 - **D7, the stubs answer `ErrUnavailable`.** Every stubbed method of `*Server`, and
   `NewHashes`, returns `ErrUnavailable`: one of the three errors RFC 18 §3.1 allows `SignIn`,
@@ -279,7 +288,10 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
   - `entity.SharePolicy` as RFC 16 §3 declares it (D6), consumed by `Resolver`;
   - `APISignIn{ Lookup(ctx, name string) (entity.Principal, error); VerifyPassword(ctx,
     entity.Principal, password []byte) error; Account(ctx, entity.Principal) (entity.User,
-    error) }` (§8.1), consumed by RFC 23's plan's epic 5;
+    error) }` (§8.1), consumed by RFC 23's plan's epic 5. A `decision:` at `Account` states that
+    it reads the principals generation (`PGEN`, RFC 23's plan's epic 2 T2.6) per call, never
+    the one `Apply` last delivered, and keys anything it caches under that read, so a disable or
+    a raised not-before reaches the API within RFC 23 §5.3's second; the behaviour is E2's;
   - `NewHashes(u entity.User, password []byte, ntlm NTLMSetting) (PasswordHashes, error)`,
     `PasswordHashes{ Password, NTHash []byte }` and `NTLMSetting{ On bool; Revision uint64 }`
     (§8.1), with D7's stub body, consumed by E2 and RFC 23's plan's epic 5.
@@ -295,8 +307,9 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
 
 - **Track:** the team. **Depends on:** T1.3.
 - **Covers:** R10, R11, R12, R13, R14, R15.
-- **Deliverables:** `internal/identity`: `Deps{ Store *kvstore.Store; Clock Clock; Metrics
-  *metrics.Registry; Logger *slog.Logger }` (RFC 18 §2.6, D4); `Clock{ Now() time.Time }`, the
+- **Deliverables:** `internal/identity`: `Deps{ Store Store; Clock Clock; Metrics
+  *metrics.Registry; Logger *slog.Logger }` (RFC 18 §2.6, D4) and `Store{ Principals()
+  kvstore.Principals }` (D5); `Clock{ Now() time.Time }`, the
   package's own subset, to which E2's T2.6 adds `After`; `State{ Generation uint64 }` (D4); `New(Deps) (*Server, error)`;
   `Apply(State) error`, swapping an `atomic.Pointer`; `Start(ctx) error`; `Stop(ctx) error`;
   the stubbed `SignIn`, `Spell`, `Find`, `Resolve`, `Lookup`, `VerifyPassword` and `Account`
@@ -305,8 +318,8 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
 - **Acceptance criteria:**
   - `New` refuses a `Deps` with no store, and starts no goroutine.
   - `Start` before any `Apply` is refused; after one it succeeds.
-  - `Stop` leaves no goroutine; the store it was handed has no `Close`, so R10 is held by the
-    type.
+  - `Stop` leaves no goroutine; the `Store` interface has no `Close`, so R10 is held by the
+    type (D5).
 - **Tests:** at the lifecycle `internal/node` will call, over the memory KV store, each
   under `prof.Watch`: `New` with a nil `Store`, refused (catches a server built with nothing to
   read); `New` then `Stop` with no `Start` (catches work started in `New`,
@@ -327,14 +340,14 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
 - **Deliverables:**
   - `pkg/identity/arch_test.go`, walking the module as `internal/vfs/arch_test.go` does:
     `pkg/identity` imports only the standard library, `entity`, `pkg/auth/sid` and `vfserr`;
-    no non-test package but `internal/node` and identity's own packages imports
+    no non-test package but `internal/node`, `internal/node/nodetest` and identity's own
+    packages imports
     `internal/identity` or any package under it, `pkg/identity/identitytest` counting as one of
     identity's own packages for `internal/identity/directory` and `internal/identity/netlogon`
     only, never for the server, except `internal/identity/identitymem`, whose one
-    importer E3's T3.6 restricts to `pkg/vfs/vfstest/memory`; `internal/node` is the package
-    alone, so `internal/node/nodetest` imports nothing under `internal/identity` (a `node_test`
-    test hands the node identity's in-memory seams through `nodetest.WithNew` and
-    `internal/node`'s `export_test.go`, E8's D4); `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use
+    importer E3's T3.6 restricts to `pkg/vfs/vfstest/memory`; `internal/node/nodetest` is
+    allowed beside `internal/node`, since it builds a real installation as `node` does (RFC 23's
+    plan's epic 3, D3), and no package below either is; `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use
     the real server (RFC 18 §10). `pkg/vfs/vfstest/memory`, the verified in-memory
     `vfs.Service`, needs the real server too once E3's T3.6 makes `vfs.New` require it; it
     reaches it through `internal/identity/identitymem` (E3's T3.6), one of identity's own
@@ -348,7 +361,8 @@ test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in th
     violations of each in its `testdata/arch`, among them a non-test `internal/vfs` file
     importing `internal/identity`, a non-test `pkg/identity/identitytest` file importing
     `internal/identity`, and a non-test package importing
-    `internal/identity/directory`, `internal/node/nodetest` among them;
+    `internal/identity/directory`; `internal/node/nodetest` importing
+    `internal/identity/directory` is seeded as allowed;
   - `internal/identity/**` and `pkg/identity/**` in `test/suites.yaml`'s `e2e` `kerberos`
     cell's `paths:`, so a change to the server or the contract runs the Kerberos cell.
 - **Acceptance criteria:**
