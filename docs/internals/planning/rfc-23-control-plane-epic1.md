@@ -45,8 +45,8 @@ its drift test; the architecture tests that need no package this epic does not c
 - The behaviour behind the stubs: the node, and `dfs start` stopping on a termination signal (E3);
   the API server and its handlers (E4); accounts and sign-in (E5); the commands of `dfsctl` (E6).
 - The `ControlPlane` view's signatures (`expect` on every write, `DeleteGrant`, `PutOperation`,
-  `Write`), the records they name and `WriteMeta` and `ControlPlaneTx`, which go in the root
-  `pkg/metadata` beside RFC 16 §3's views: E2 declares and fills them together, so no stub of
+  `Write`), the records they name and `WriteMeta` and `ControlPlaneTx`, which go in
+  `pkg/metadata/entity` (D3): E2 declares and fills them together, so no stub of
   them is frozen here. `Alloc` on `PutUser` and `PutGroup` comes with the RFC 18 plan's RID counter.
 - `pkg/apiclient`: the package goes with its v1 body (D6), and E4 lands it whole, one generic
   `Resource[Spec, Status]` with its core.
