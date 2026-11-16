@@ -75,12 +75,22 @@ func putAudit(tx kv.Txn, a *entity.AuditRecord) error {
 	if err := tx.Set(auditKey(a.Time, a.ID), encodeAudit(*a)); err != nil {
 		return err
 	}
-	for _, prefix := range [][]byte{auditActorPrefix(a.Actor), auditTargetPrefix(a.Target), auditNodePrefix(a.Node)} {
-		if err := tx.Set(append(prefix, auditPos(a.Time, a.ID)...), nil); err != nil {
+	for _, k := range auditIndexKeys(*a, auditPos(a.Time, a.ID)) {
+		if err := tx.Set(k, nil); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// auditIndexKeys are a's AUX rows, at its position pos under its actor's,
+// its target's and its node's index.
+func auditIndexKeys(a entity.AuditRecord, pos []byte) [][]byte {
+	return [][]byte{
+		append(auditActorPrefix(a.Actor), pos...),
+		append(auditTargetPrefix(a.Target), pos...),
+		append(auditNodePrefix(a.Node), pos...),
+	}
 }
 
 // auditMatches reports whether f's actor, target and node select a.

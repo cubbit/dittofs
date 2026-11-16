@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"iter"
+	"math"
 	"net/netip"
 	"time"
 
@@ -214,9 +215,13 @@ func (c controlTx) SessionByRefresh(hash [32]byte) (entity.Session, bool, error)
 	return sessionByRefreshIn(c.tx, hash)
 }
 
-// beforeEpoch reports a time the expiry index cannot order, the zero time
-// among them.
-func beforeEpoch(t time.Time) bool { return t.Before(time.Unix(0, 0)) }
+// unindexable reports a time t, expiring life after it, that the expiry
+// index cannot order: one before 1970, the zero time among them, or an
+// expiry past 2262, whose nanoseconds overflow an int64 and would sort the
+// row among the long-due ones.
+func unindexable(t time.Time, life time.Duration) bool {
+	return t.Before(time.Unix(0, 0)) || t.Add(life).After(time.Unix(0, math.MaxInt64))
+}
 
 // hashFree refuses a hash indexed under key to an ID other than id, whose
 // index row deleting that ID would then delete.
@@ -258,8 +263,8 @@ func (c controlTx) UpdateSession(s entity.Session) error {
 
 // writeSession writes s, moving its expiry row from oldExpiry.
 func (c controlTx) writeSession(s entity.Session, oldExpiry []byte) error {
-	if s.Account.Kind != entity.PrincipalUser || beforeEpoch(s.Expires) {
-		return merrs.NewInvalidArgumentError("a session needs a user account and an expiry after 1970")
+	if s.Account.Kind != entity.PrincipalUser || unindexable(s.Expires, 0) {
+		return merrs.NewInvalidArgumentError("a session needs a user account and an expiry from 1970 to 2262")
 	}
 	if err := accountLive(c.tx, s.Account); err != nil {
 		return err
@@ -325,8 +330,8 @@ func (c controlTx) APITokenByHash(hash [32]byte) (entity.APIToken, bool, error) 
 }
 
 func (c controlTx) PutAPIToken(t entity.APIToken) error {
-	if t.Account.Kind != entity.PrincipalUser || beforeEpoch(t.Expires) {
-		return merrs.NewInvalidArgumentError("a token needs a user account and an expiry after 1970")
+	if t.Account.Kind != entity.PrincipalUser || unindexable(t.Expires, 0) {
+		return merrs.NewInvalidArgumentError("a token needs a user account and an expiry from 1970 to 2262")
 	}
 	if err := accountLive(c.tx, t.Account); err != nil {
 		return err
@@ -389,8 +394,8 @@ func (c controlTx) PutSignInFailures(k entity.SignInKey, f entity.SignInFailures
 	if err != nil {
 		return err
 	}
-	if tag == keys.SFSource && beforeEpoch(f.Failed) || tag == keys.SFPair && beforeEpoch(f.Last) {
-		return merrs.NewInvalidArgumentError("a count's expiry follows a time after 1970")
+	if tag == keys.SFSource && unindexable(f.Failed, sourceCountLife) || tag == keys.SFPair && unindexable(f.Last, pairCountLife) {
+		return merrs.NewInvalidArgumentError("a count's expiry follows a time from 1970 to 2262")
 	}
 	if k.Account != (entity.Principal{}) {
 		if err := accountLive(c.tx, k.Account); err != nil {

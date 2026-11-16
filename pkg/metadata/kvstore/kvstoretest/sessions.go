@@ -1,6 +1,7 @@
 package kvstoretest
 
 import (
+	"math"
 	"net/netip"
 	"slices"
 	"testing"
@@ -107,16 +108,18 @@ func testSessionTxReads(t *testing.T, kvo Opener) {
 	}))
 }
 
-// A session or a token needs a user account and an expiry after 1970, a
-// session keeps its account, and neither takes a hash indexed to another; a
-// source's count needs a Failed and a pair's a Last after 1970. Each refusal
-// leaves the store as it was.
+// A session or a token needs a user account and an expiry the expiry index
+// orders, from 1970 to 2262, a session keeps its account, and neither takes
+// a hash indexed to another; a source's count needs a Failed and a pair's a
+// Last whose expiry the index orders too. Each refusal leaves the store as it
+// was.
 func testSessionRefusals(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
 	alice := account(t, s)
 	e := time.Unix(1_900_000_000, 0).UTC()
 	pre := time.Unix(-1, 0)
+	last := time.Unix(0, math.MaxInt64) // the latest time the expiry index orders
 	sess := entity.Session{ID: uuid.New(), Account: alice, Refresh: [32]byte{1}, Expires: e}
 	tok := entity.APIToken{ID: uuid.New(), Account: alice, Hash: [32]byte{2}, Expires: e}
 	must(t, cp.PutSession(ctx, sess))
@@ -151,6 +154,14 @@ func testSessionRefusals(t *testing.T, kvo Opener) {
 		{"session expiring before 1970", merrs.ErrInvalidArgument, func(tx entity.ControlPlaneTx) error {
 			return tx.PutSession(withSession(func(s *entity.Session) { s.Expires = pre }))
 		}},
+		{"session expiring after 2262", merrs.ErrInvalidArgument, func(tx entity.ControlPlaneTx) error {
+			return tx.PutSession(withSession(func(s *entity.Session) { s.Expires = last.Add(time.Nanosecond) }))
+		}},
+		{"session refreshed to expire after 2262", merrs.ErrInvalidArgument, func(tx entity.ControlPlaneTx) error {
+			later := sess
+			later.Expires = last.Add(time.Nanosecond)
+			return tx.UpdateSession(later)
+		}},
 		{"session moved to another account", merrs.ErrInvalidArgument, func(tx entity.ControlPlaneTx) error {
 			moved := sess
 			moved.Account = entity.NewUser()
@@ -179,6 +190,9 @@ func testSessionRefusals(t *testing.T, kvo Opener) {
 		{"token expiring before 1970", merrs.ErrInvalidArgument, func(tx entity.ControlPlaneTx) error {
 			return tx.PutAPIToken(withToken(func(t *entity.APIToken) { t.Expires = pre }))
 		}},
+		{"token expiring after 2262", merrs.ErrInvalidArgument, func(tx entity.ControlPlaneTx) error {
+			return tx.PutAPIToken(withToken(func(t *entity.APIToken) { t.Expires = last.Add(time.Nanosecond) }))
+		}},
 		{"token taking another's hash", merrs.ErrAlreadyExists, func(tx entity.ControlPlaneTx) error {
 			return tx.PutAPIToken(withToken(func(t *entity.APIToken) { t.Hash = tok.Hash }))
 		}},
@@ -188,11 +202,17 @@ func testSessionRefusals(t *testing.T, kvo Opener) {
 		{"source count failed before 1970", merrs.ErrInvalidArgument, func(tx entity.ControlPlaneTx) error {
 			return tx.PutSignInFailures(src, entity.SignInFailures{Count: 1, Last: e, Failed: pre})
 		}},
+		{"source count expiring after 2262", merrs.ErrInvalidArgument, func(tx entity.ControlPlaneTx) error {
+			return tx.PutSignInFailures(src, entity.SignInFailures{Count: 1, Last: e, Failed: last.Add(-15*time.Minute + time.Nanosecond)})
+		}},
 		{"pair count with no Last", merrs.ErrInvalidArgument, func(tx entity.ControlPlaneTx) error {
 			return tx.PutSignInFailures(pair, entity.SignInFailures{Count: 1, Failed: e})
 		}},
 		{"pair count last before 1970", merrs.ErrInvalidArgument, func(tx entity.ControlPlaneTx) error {
 			return tx.PutSignInFailures(pair, entity.SignInFailures{Count: 1, Last: pre, Failed: e})
+		}},
+		{"pair count expiring after 2262", merrs.ErrInvalidArgument, func(tx entity.ControlPlaneTx) error {
+			return tx.PutSignInFailures(pair, entity.SignInFailures{Count: 1, Last: last.Add(-24*time.Hour + time.Nanosecond), Failed: e})
 		}},
 	} {
 		if err := cp.Write(ctx, entity.WriteMeta{}, c.fn); !isCode(err, c.code) {
