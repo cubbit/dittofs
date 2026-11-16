@@ -98,9 +98,9 @@ func basicStory() []beat {
 				st := d.j.Stats()
 				d.printf("    dir:            %s\n", d.dir)
 				d.printf("    state file:     %s\n", statePath(d.dir))
-				d.printf("      id, _ := journal.Init(ctx, dir, install, opts...)          // ran only on a fresh dir\n")
-				d.printf("      j, _ := journal.Open(ctx, dir, floor, id, nil, opts...)\n")
-				d.printf("      j.SetVersionLimit(journal.Version{Counter: %d})          // spares ready: %d\n", st.VersionLimit.Counter, st.Spares)
+				d.codef("      id, _ := journal.Init(ctx, dir, install, opts...)            // ran only on a fresh dir")
+				d.codef("      j, _ := journal.Open(ctx, dir, floor, id, nil, opts...)")
+				d.codef("      j.SetVersionLimit(journal.Version{Counter: %d})            // spares ready: %d", st.VersionLimit.Counter, st.Spares)
 			},
 		},
 		{
@@ -108,13 +108,13 @@ func basicStory() []beat {
 			caption: "the engine works through one handle per share; every record it writes carries the share's tag",
 			run: func(d *demo) {
 				h, err := d.j.Share(d.tag, 0, journal.Version{})
-				d.printf("    h, err := j.Share(%d, 0, journal.Version{})\n", d.tag)
+				d.codef("    h, err := j.Share(%d, 0, journal.Version{})", d.tag)
 				if err != nil {
-					d.printf("    // → %v\n", err)
+					d.yellowf("    // → %v", err)
 					return
 				}
 				d.h[d.tag] = h
-				d.printf("    // → handle attached, records carry tag %d\n", d.tag)
+				d.yellowf("    // → handle attached, records carry tag %d", d.tag)
 			},
 		},
 		{
@@ -130,7 +130,7 @@ func basicStory() []beat {
 			run: func(d *demo) {
 				h := d.h[d.tag]
 				v, err := h.WriteAt(context.Background(), FILE, 0, []byte("hello world"), 0)
-				d.printf("    v, err := h.WriteAt(ctx, FILE, 0, []byte(\"hello world\"), 0)\n")
+				d.codef("    v, err := h.WriteAt(ctx, FILE, 0, []byte(\"hello world\"), 0)")
 				d.stash(v, err)
 			},
 		},
@@ -145,7 +145,7 @@ func basicStory() []beat {
 			run: func(d *demo) {
 				h := d.h[d.tag]
 				v, err := h.WriteAt(context.Background(), FILE, 2, []byte("XY"), 0)
-				d.printf("    v, err := h.WriteAt(ctx, FILE, 2, []byte(\"XY\"), 0)\n")
+				d.codef("    v, err := h.WriteAt(ctx, FILE, 2, []byte(\"XY\"), 0)")
 				d.stash(v, err)
 			},
 		},
@@ -166,7 +166,7 @@ func basicStory() []beat {
 					payload[i] = pattern[i%len(pattern)]
 				}
 				v, err := h.WriteAt(context.Background(), FILE, 4096, payload, 0)
-				d.printf("    v, err := h.WriteAt(ctx, FILE, 4096, pattern300MB, 0)      // 300,000,000 bytes\n")
+				d.codef("    v, err := h.WriteAt(ctx, FILE, 4096, pattern300MB, 0)         // 300,000,000 bytes")
 				d.stash(v, err)
 			},
 		},
@@ -177,17 +177,17 @@ func basicStory() []beat {
 				h := d.h[d.tag]
 				p := make([]byte, 16)
 				n, missing, held, asOf, err := h.ReadAt(context.Background(), FILE, 0, p)
-				d.printf("    n, missing, held, asOf, err := h.ReadAt(ctx, FILE, 0, p16)\n")
+				d.codef("    n, missing, held, asOf, err := h.ReadAt(ctx, FILE, 0, p16)")
 				if err != nil {
-					d.printf("    // → err %v\n", err)
+					d.yellowf("    // → err %v", err)
 				}
-				d.printf("    // → n=%d, asOf=v%d\n", n, asOf.Counter)
+				d.yellowf("    // → n=%d, asOf=v%d", n, asOf.Counter)
 				d.hexdump(p[:n], 16)
 				for _, m := range missing {
-					d.printf("    // → missing %d–%d\n", m.Off, m.Off+m.Len)
+					d.yellowf("    // → missing %d–%d", m.Off, m.Off+m.Len)
 				}
 				for _, hv := range held {
-					d.printf("    // → held %d–%d at v%d\n", hv.Extent.Off, hv.Extent.Off+hv.Extent.Len, hv.Version.Counter)
+					d.yellowf("    // → held %d–%d at v%d", hv.Extent.Off, hv.Extent.Off+hv.Extent.Len, hv.Version.Counter)
 				}
 			},
 		},
@@ -196,10 +196,10 @@ func basicStory() []beat {
 			caption: "Since walks the versions above the floor: every held extent and removal marker, version by version — the journal's own changelog",
 			run: func(d *demo) {
 				h := d.h[d.tag]
-				d.printf("    for ch := range h.Since(ctx, FILE, journal.Version{}) {\n")
+				d.codef("    for ch := range h.Since(ctx, FILE, journal.Version{}) {")
 				for ch, err := range h.Since(context.Background(), FILE, journal.Version{}) {
 					if err != nil {
-						d.printf("    // → %v\n", err)
+						d.yellowf("    // → %v", err)
 						return
 					}
 					d.printf("        %s\n", changeLine(ch))
@@ -219,7 +219,7 @@ func basicStory() []beat {
 			run: func(d *demo) {
 				h := d.h[d.tag]
 				v, err := h.Truncate(context.Background(), FILE, 32)
-				d.printf("    v, err := h.Truncate(ctx, FILE, 32)\n")
+				d.codef("    v, err := h.Truncate(ctx, FILE, 32)")
 				d.stash(v, err)
 			},
 		},
@@ -232,13 +232,13 @@ func basicStory() []beat {
 			},
 			run: func(d *demo) {
 				h := d.h[d.tag]
-				d.printf("    h.Settle(FILE, journal.Version{Counter: %d})   // the truncate's version\n", d.version.Counter)
+				d.codef("    h.Settle(FILE, journal.Version{Counter: %d})      // the truncate's version", d.version.Counter)
 				h.Settle(FILE, d.version)
-				d.printf("    for ch := range h.Since(ctx, FILE, journal.Version{}) {\n")
+				d.codef("    for ch := range h.Since(ctx, FILE, journal.Version{}) {")
 				any := false
 				for ch, err := range h.Since(context.Background(), FILE, journal.Version{}) {
 					if err != nil {
-						d.printf("    // → %v\n", err)
+						d.yellowf("    // → %v", err)
 						return
 					}
 					any = true
@@ -246,7 +246,7 @@ func basicStory() []beat {
 				}
 				d.printf("    }\n")
 				if !any {
-					d.printf("    // → nothing owed\n")
+					d.yellowf("    // → nothing owed")
 				}
 			},
 		},
@@ -263,12 +263,12 @@ func basicStory() []beat {
 				h := d.h[d.tag]
 				res, err := h.Reserve(8192, 2)
 				if err != nil {
-					d.printf("    res, err := h.Reserve(8192, 2)\n    // → %v\n", err)
+					d.codef("    res, err := h.Reserve(8192, 2)")
 					return
 				}
 				v, werr := res.WriteAt(context.Background(), FILE, 65536, []byte("reserved"), 0)
-				d.printf("    res, _ := h.Reserve(8192, 2)\n")
-				d.printf("    v, err := res.WriteAt(ctx, FILE, 65536, []byte(\"reserved\"), 0)\n")
+				d.codef("    res, _ := h.Reserve(8192, 2)")
+				d.codef("    v, err := res.WriteAt(ctx, FILE, 65536, []byte(\"reserved\"), 0)")
 				d.stash(v, werr)
 				_ = res.Close()
 			},
@@ -282,8 +282,8 @@ func basicStory() []beat {
 					func(context.Context, journal.Offer, func([]journal.Extent) error) error {
 						return nil
 					})
-				d.printf("    err := h.Offload(ctx, FILE, through=d.version, limit=0, widen=0, sink)\n")
-				d.printf("    // → %v\n", err)
+				d.codef("    err := h.Offload(ctx, FILE, through=d.version, limit=0, widen=0, sink)")
+				d.yellowf("    // → %v", err)
 			},
 		},
 		{
@@ -291,12 +291,12 @@ func basicStory() []beat {
 			caption: "the index checked against the segments, the report rather than the repair; it lands with the same subtask as the per-segment accounting",
 			run: func(d *demo) {
 				rep, err := d.j.Inspect().Verify(context.Background())
-				d.printf("    rep, err := j.Inspect().Verify(ctx)\n")
+				d.codef("    rep, err := j.Inspect().Verify(ctx)")
 				if err != nil {
-					d.printf("    // → %v\n", err)
+					d.yellowf("    // → %v", err)
 					return
 				}
-				d.printf("    // → %+v\n", rep)
+				d.yellowf("    // → %+v", rep)
 			},
 		},
 	}
@@ -306,11 +306,11 @@ func basicStory() []beat {
 // name it back (settle names the truncate's version; offload a through).
 func (d *demo) stash(v journal.Version, err error) {
 	if err != nil {
-		d.printf("    // → %v\n", err)
+		d.yellowf("    // → %v", err)
 		return
 	}
 	d.version = v
-	d.printf("    // → v%d\n", v.Counter)
+	d.yellowf("    // → v%d", v.Counter)
 }
 
 // changeLine renders one change the way Since prints it: kind, extent,

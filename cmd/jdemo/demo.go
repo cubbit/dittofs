@@ -262,7 +262,12 @@ func (d *demo) beat(n, total int, b beat) {
 		after := d.j.Stats()
 		d.printf("\n")
 		for _, w := range b.watch {
-			d.printf("  %s\n", w.confirmed(before, after))
+			text := w.confirmed(before, after)
+			if strings.HasPrefix(text, "✓") {
+				d.printf("  %s\n", c.green(text))
+			} else {
+				d.printf("  %s\n", c.dim(text))
+			}
 		}
 	}
 	d.printf("\n")
@@ -342,3 +347,21 @@ func firstRune(s string) rune {
 	}
 	return 0
 }
+
+// codef prints a source-style call in the code colour, set apart from
+// the narration around it: on a real terminal the journal's API reads as
+// a different voice than the caption prose.
+func (d *demo) codef(format string, args ...any) {
+	c := d.colours()
+	_, _ = io.WriteString(d.out, c.code(fmt.Sprintf(format, args...))+"\n")
+}
+
+// yellowf prints a result line — the journal's answer — in the colour
+// the room learns to read as "what happened".
+func (d *demo) yellowf(format string, args ...any) {
+	c := d.colours()
+	_, _ = io.WriteString(d.out, c.yellow(fmt.Sprintf(format, args...))+"\n")
+}
+
+// colours is the demo's palette, computed per render from the writer.
+func (d *demo) colours() colour { return coloursFor(d.out) }
