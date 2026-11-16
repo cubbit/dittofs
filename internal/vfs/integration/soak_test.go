@@ -166,9 +166,9 @@ type soakRun struct {
 	ids         []entity.FileID
 	fakeJournal sim.Fault
 	lossSeen    uint64 // the newest event of the fake's loss ring the run has read
-	// doomed holds, per file, a condemned write that landed and whose window
-	// has not failed yet.
-	doomed map[int]*soakOp
+	// doomed holds, per file, the condemned writes that landed and whose
+	// windows have not failed yet.
+	doomed map[int][]*soakOp
 
 	// clock is the test clock the run moves, and clockSteps the seed's stream
 	// of the steps it moves it by while a call waits, apart from the calls'
@@ -339,7 +339,7 @@ func (r *soakRun) startProcess() {
 	defer r.log.set(0, "", false)
 
 	r.proc++
-	r.doomed = map[int]*soakOp{} // a restart drops the windows not yet failed
+	r.doomed = map[int][]*soakOp{} // a restart drops the windows not yet failed
 	r.smb = r.c.smb(r.t, fmt.Sprintf("soak-%d", r.proc), r.c.FS.Admin.Principal)
 	r.refs, r.opens = r.refs[:0], r.opens[:0]
 
@@ -476,7 +476,7 @@ func (r *soakRun) step() {
 			r.fake.FailNextWrite(journal.NewFileID(r.ids[i]), false)
 
 			if err == nil {
-				r.doomed[i] = op
+				r.doomed[i] = append(r.doomed[i], op)
 			}
 		}
 
@@ -776,8 +776,20 @@ func (r *soakRun) failedWindows() {
 
 		for i, id := range r.ids {
 			if journal.NewFileID(id) == ev.File {
-				r.m.failWindow(r.m.files[i], r.proc, r.doomed[i])
-				delete(r.doomed, i)
+				// The event names the dropped write's extent, which picks it
+				// among the file's condemned writes.
+				var w *soakOp
+
+				for k, o := range r.doomed[i] {
+					if o.off == ev.Extent.Off && int64(len(o.data)) == ev.Extent.Len {
+						w = o
+						r.doomed[i] = slices.Delete(r.doomed[i], k, k+1)
+
+						break
+					}
+				}
+
+				r.m.failWindow(r.m.files[i], r.proc, w)
 			}
 		}
 	}
@@ -1405,7 +1417,7 @@ func TestSoakFaultFake(t *testing.T) {
 			&soakOp{kind: opWrite, off: 3, data: []byte("new"), proc: 1, done: true},
 			false,
 		)
-		w.r.doomed = map[int]*soakOp{0: op}
+		w.r.doomed = map[int][]*soakOp{0: {op}}
 		write(t, w)
 
 		if !op.dropped {
@@ -1420,6 +1432,50 @@ func TestSoakFaultFake(t *testing.T) {
 		if err := w.f.nfsCommit(1, vfs.Verifier{}, nil); err == nil {
 			t.Error("the file's next Commit may answer the dropped write's verifier " +
 				"after its failed window")
+		}
+	})
+
+	t.Run("two failed windows of one file before a Sync", func(t *testing.T) {
+		w := setup(t, sim.FaultAction{Err: errInjected}, kit.OpSync, -1)
+		w.r.doomed = map[int][]*soakOp{}
+
+		var ops []*soakOp
+
+		for k, off := range []int64{3, 10} {
+			if !w.r.doomWrite(0, off, off+3, false) {
+				t.Fatalf("a failed window drawn over [%d, %d) was not armed", off, off+3)
+			}
+
+			if _, err := w.h.WriteAt(t.Context(), w.id, off, []byte("new"), 0); err != nil {
+				t.Fatal(err)
+			}
+
+			op := w.f.add(&soakOp{
+				kind:     opWrite,
+				off:      off,
+				data:     []byte("new"),
+				proc:     1,
+				done:     true,
+				verifier: vfs.Verifier{byte(k + 1)},
+			}, false)
+			w.r.doomed[0] = append(w.r.doomed[0], op)
+			ops = append(ops, op)
+		}
+
+		if _, err := w.h.Sync(t.Context(), journal.NewFileID(entity.FileID{2})); err != nil {
+			t.Fatal(err)
+		}
+
+		w.r.failedWindows()
+
+		for _, op := range ops {
+			if !op.dropped {
+				t.Errorf("the write at %d whose window failed may still read back", op.off)
+			}
+		}
+
+		if w.f.window == nil || w.f.window.verifier == (vfs.Verifier{}) {
+			t.Error("the second failed window lost the verifier of the write it dropped")
 		}
 	})
 
