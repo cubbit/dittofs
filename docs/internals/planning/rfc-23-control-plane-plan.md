@@ -889,7 +889,10 @@ func (n *Node) apply(ctx context.Context) error {
 		return err // a failed read: the loop backs off, then runs a full pass
 	}
 	n.restartPending(settings.Diff(n.applied, next)) // node_restart_pending
-	n.identity.Apply(settings.Get[identity.Settings](next, n.nodeID))
+	st := identity.State{Generation: n.pgen, Settings: settings.Get[identity.Settings](next, n.nodeID)}
+	if err := n.identity.Apply(st); err != nil { // before identity starts, the first one (RFC 18 §2.6)
+		n.refused(identity.Section, err) // reported with the other refusals (epic 3's D10)
+	}
 	// ... *vfs.Filesystem and the engine, each with its own section
 	n.smbRefused = n.applySMB(ctx, settings.Get[adaptersettings.SMB](next, n.nodeID)) // D12
 	if n.smbRefused != nil {
@@ -990,20 +993,27 @@ The runner drives an operation no component drives on its own, `resolve-principa
 identity's step (A5, D8, epic 3):
 
 ```go
-func (r *runner) drive(ctx context.Context, op metadata.Operation, version uint64) {
-	step := r.steps[op.Kind] // resolve-principal: identity's, the RFC 18 plan's epic 7
+func (r *runner) drive(ctx context.Context, op entity.Operation, version uint64) {
+	run := r.steps[op.Kind] // a step.Step (internal/node/step); resolve-principal: the RFC 18 plan's epic 7
 	for {
-		next, done, err := step(ctx, op) // its Params and last durable Step: resumes from there
-		was := op.State
-		op.Step, op.Updated, op.State = next, r.clock.Now(), stateOf(done, err)
-		meta := entity.WriteMeta{}
-		if op.State != was {
-			meta.Audit = r.auditOf(op) // every state change carries its audit (RFC 16 §3)
+		res, err := run(ctx, op) // its Params and last durable Step: resumes from there
+		was, wasStep := op.State, op.Step
+		op.Step, op.State = res.Next, stateOf(res, err) // ErrStepFailed or a problem fails; other errors retry
+		if op.State == was && bytes.Equal(op.Step, wasStep) {
+			r.backoff(ctx) // an unchanged turn commits nothing
+			continue
 		}
+		op.Updated, op.Result = r.clock.Now(), res.Result
+		meta := entity.WriteMeta{Audit: r.auditOf(op)} // every recorded turn carries its audit (RFC 16 §3)
 		err = r.store.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
+			if res.Done && res.End != nil {
+				if err := res.End(tx); err != nil { // the step's own end writes, in the same transaction
+					return err
+				}
+			}
 			return tx.PutOperation(op, version)
 		})
-		if err != nil || op.State != metadata.OpRunning {
+		if err != nil || op.State != entity.OpRunning {
 			return // a failed write leaves the record running, resumed at the next start (§4.3 above)
 		}
 		version++
@@ -1037,7 +1047,14 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// the principal counted is the principal checked; the zero one does the dummy work and fails
-	if err := h.signin.VerifyPassword(r.Context(), acct, req.Password); err != nil { // APISignIn (X2)
+	err = h.signin.VerifyPassword(r.Context(), acct, req.Password) // APISignIn (X2)
+	if errors.Is(err, identity.ErrUnavailable) {
+		// the store could not answer: 503, nothing settled or audited, the source's raise taken back
+		h.unraise(r.Context(), src, nonce)
+		h.problem(w, err)
+		return
+	}
+	if errors.Is(err, identity.ErrLogonFailure) {
 		// the refusal's audit, and no idempotency record (RFC 16 §3, RFC 23 §4.5); it settles the
 		// failure, moving the source's Failed and its XP row, the only write after creation that
 		// moves them, and doing nothing on a source count missing or holding another Nonce (§5.3)
@@ -1045,6 +1062,10 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 			func(tx entity.ControlPlaneTx) error { return h.settleFailure(tx, src, nonce) }); werr != nil {
 			h.log.Error("sign-in refusal not audited", "err", werr) // the attempt stays counted
 		}
+		h.problem(w, err)
+		return
+	}
+	if err != nil {
 		h.problem(w, err)
 		return
 	}
@@ -1061,6 +1082,9 @@ func (h *handlers) authenticate(r *http.Request) (metadata.User, error) {
 		return metadata.User{}, err
 	}
 	u, err := h.signin.Account(r.Context(), claims.Principal) // per call (RFC 23 §5.3)
+	if errors.Is(err, identity.ErrUnavailable) {
+		return metadata.User{}, err // 503, never 401: the store could not answer
+	}
 	if err != nil || claims.IssuedAt.Before(u.NotBefore) || h.revoked(r.Context(), claims.Session) {
 		return metadata.User{}, errUnauthenticated
 	}
