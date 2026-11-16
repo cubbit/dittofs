@@ -215,7 +215,7 @@ them.
   view, `APISignIn`, the sealer, `apisettings.Settings`, the clock and the registry), whose methods
   take decoded values and return results and errors; it never imports `internal/node/api`. Its
   sign-in, refresh and password change are rows on E4's call adapter; `:set-password`, token
-  creation and revocation on the write adapter; sign-out on the call adapter. `node.New` sets
+  creation and revocation, and sign-out (which sends a key, E4's R67) on the write adapter. `node.New` sets
   `Deps.Authenticate` to `Service.Authenticate`, which reads the request's peer address and E4's
   local-socket mark. Its throttle error answers `RetryAfter()`, which E4's problem writer turns
   into the header. No marker. Prior art: Vault's `logical` backends behind its `http` layer (from
@@ -404,8 +404,8 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 
 **Subtask T5.5 estimate: 3.5 man-days.**
 
-- **Track:** C. **Depends on:** T5.2, T5.4; E4 (the call adapter, `Deps.Authenticate`); the RFC 18
-  plan's epic 8's T8.1 (identity composed in `node.New`).
+- **Track:** C. **Depends on:** T5.2, T5.4; E4 (the call adapter, `Deps.Authenticate`, the
+  client's `WithTokenSource`); the RFC 18 plan's epic 8's T8.1 (identity composed in `node.New`).
 - **Covers:** R9, R10, R13, R14, R16, R25, R32, R33, R39, R40, R41, R47.
 - **Deliverables:** `auth.Service` and `Authenticate` (D1), `node.New` setting
   `Deps.Authenticate`; in `signin.go`: sign-in (`Lookup`, `reserve`, `VerifyPassword` on that
@@ -436,8 +436,12 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   (R40, R41); a captured log, the audit records and the series' labels holding no password or
   token (R39); a `kvtest` fault on the user read under the real identity: a sign-in answering `503`,
   no settled failure and no refusal audit record, the source's count as before, and a refresh and a
-  call with a valid access token each `503`, not `401` (R47); the benchmark under `-count=10`, setup
-  before `b.ResetTimer()` (R33).
+  call with a valid access token each `503`, not `401` (R47); E4's client with a token source of
+  the test's own over `Client.SignIn` and `Client.Refresh` on these routes, the clock advanced past
+  the access token's lifetime: a create answered `401` refreshed once through the real `Refresh`
+  and replayed with its body and key, one record and one idempotency record under that key, and a
+  `Wait` poll refreshed the same way (E4's R67); the benchmark under `-count=10`, setup before
+  `b.ResetTimer()` (R33).
 
 ### T5.6 The per-call check, roles and `last_admin`
 

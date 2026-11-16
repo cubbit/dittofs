@@ -505,8 +505,8 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   	Share(id ShareID) (Share, bool, error)
   	EnabledAdmins() (int, error) // D18
 	Installation() (Installation, error) // tracked: NTLMOff for RFC 23 §4.1's rule
-	SetNTLMOff(gen uint64) error          // NTLMOff.Off, by E4's settings route alone
-	SetNTHashDeleted(op OperationID) error // NTLMOff.Deleted, by identity.nt-hash-delete's StepResult.End alone
+	SetNTLMOff(gen uint64) error          // NTLMOff.Off, and clears Deleted on a turn-off, by E4's settings route alone
+	SetNTHashDeleted(op OperationID) error // sets NTLMOff.Deleted, by identity.nt-hash-delete's StepResult.End alone
 	Now() time.Time // kv.Txn's Now: on feat/storage-v2 taken when the transaction starts, fixed for its life; a retry gets a new one
   	DeleteUser(p Principal, expect uint64) error // the mark
   	DeleteGroup(p Principal, expect uint64) error

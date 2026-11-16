@@ -135,7 +135,7 @@ database or configuration refuses and names it. No migration tool.
   counters before the commit, is never joined. The wait ends with the call and after at most one
   second, RFC 18 §7.2's bound; a write whose wait ends first answers as every committed write
   does, its resource's status saying where it is applied. This touches RFC 23 §2.3 and §2.4, and
-  is what the RFC 18 plan's epic 8's T8.3 calls through `api.Deps.Applied`.
+  is what the RFC 18 plan's epic 8's T8.3 tests over identity, through `api.Deps.Applied`.
 
 ## 1. Introduction
 

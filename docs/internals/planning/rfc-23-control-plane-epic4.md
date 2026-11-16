@@ -165,7 +165,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | R22 | `join-domain`, online or offline, carries no `Idempotency-Key`, one being refused `400`, and keeps no idempotency record | MUST NOT | RFC 23 §4.5, §3.5 | T4.11 |
 | R23 | A node runs at most 64 API calls at once and answers the next `503` with `Retry-After`; a long poll holds no call slot while parked, at most 256 are parked, and the next is `503`; API calls draw on none of the data path's pools | bound | RFC 23 §4.3 | T4.3, T4.5 |
 | R64 | A step that needs a running component runs before the transaction and enters it as an input; one that fails refuses the write before anything is written, with the component's error | MUST | RFC 23 §4.3 (as amended here) | T4.4, T4.9, T4.11 |
-| R68 | A write whose commit raised the principals or settings generation answers only once the node that served it has applied it, its reconciled-through positions covering the counters read after the commit, never on a pass already running; the wait ends with the call or after 1 s on the API's clock, and the answer is then the write's own, committed | MUST, MUST NOT | RFC 23 §2.3 (as amended by A8); RFC 18 §2.6, §7.2 | T4.4 |
+| R68 | A write whose commit raised the principals or settings generation answers only once the node that served it has applied it, its reconciled-through positions covering the counters read after the commit, never on a pass already running; the wait ends with the call or after 1 s on the API's clock, and the answer is then the write's own, committed | MUST, MUST NOT | RFC 23 §2.3 (as amended by A8); RFC 18 §2.6, §7.2 | T4.4, T4.10 |
 
 **Operations**
 
@@ -243,7 +243,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | R58 | `GET /api/version` answers the major versions served, with no authentication and nothing else; `GET /api/v1/nodes` gives each node's binary version, for `viewer` | MUST | RFC 23 §9 | T4.2, T4.6 |
 | R59 | The client reaches a server named by a URL or by the local socket's path; resolves names to IDs with the list filters; echoes the `ETag` it read, opaque, in `If-Match`; generates one idempotency key per command and reuses it across that command's retries; stops on `412`; follows an operation with `?wait=`; ignores a response field it does not know; and refuses a server that serves no major version it speaks, naming both | MUST | RFC 23 §7, §9 | T4.8 |
 | R66 | `GET /api/v1/health` answers, for `viewer`, the node's readiness and its health conditions and those of the installation, each with its cause; it is the one `/api/v1` route that answers before the node is ready, and without a token it is `401`; `/health/live` and `/health/ready` stay one word and unauthenticated | MUST | RFC 23 §2.5, §12 ("§2.5 health") | T4.6 |
-| R67 | A call that carries or issues a credential (sign-in, refresh, sign-out, password change, API-token creation, `:set-password`, `join-domain`) is sent with no `Idempotency-Key`, and the client never retries it on a lost answer; any other request answered `401` is refreshed once and replayed with its body and the same key | MUST, MUST NOT | RFC 23 §4.5, §5.3, §7 | T4.8 |
+| R67 | A call that carries or issues a credential (sign-in, refresh, password change, API-token creation, `:set-password`, `join-domain`) is sent with no `Idempotency-Key`, and the client never retries it on a lost answer; sign-out, a `POST` outside RFC 23 §4.5's list, carries one like any other; any other request answered `401` is refreshed once and replayed with its body and the same key | MUST, MUST NOT | RFC 23 §4.5, §5.3, §7 | T4.8 |
 | R65 | Authorization is checked by the API per action against the caller's right; a caller without the right to read a resource gets `404`, one without the right to change it `403` | MUST | RFC 23 §5.2 | T4.2 |
 
 **Observability, layering and secrets**
@@ -331,8 +331,8 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
   plan's epic 8, which composes identity and hands it to the API, and by X1; nil, the route
   refuses `503` `unavailable`, or the RFC's own refusal where it names one. No marker.
 - **D14, the `identity.ntlm` rule is one function of the write's transaction**, called by the
-  settings route, writing `Off` through E2's `ControlPlaneTx.SetNTLMOff(gen)`, its one writer
-  (`Deleted` is RFC 18's step's, through `SetNTHashDeleted`); a provisioning apply calls the same function once the provisioning file exists (a
+  settings route, writing `Off` and clearing `Deleted` through E2's `ControlPlaneTx.SetNTLMOff(gen)`, its one writer
+  (setting `Deleted` is RFC 18's step's, through `SetNTHashDeleted`); a provisioning apply calls the same function once the provisioning file exists (a
   ledger row). No marker.
 - **D15, `api_operations` and `api_operation_oldest_seconds` are read at scrape** from E2's running
   index, which holds only running operations, so a scrape reads O(running).
@@ -361,7 +361,8 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
   interface so a nil one refuses. No marker beyond the count's.
 - **D21, the credential calls are the client's, their routes E5's.** `SignIn`, `Refresh`,
   `SignOut` and `ChangePassword` sit in `pkg/apiclient` beside the core that sends them, since their
-  rule (no key, no transport retry) is the core's; E5's routes serve them and E5's tests drive them
+  rule (no transport retry, and no key but on `SignOut`, which RFC 23 §4.5 does not exempt) is the
+  core's; E5's routes serve them and E5's tests drive them
   end to end. No marker.
 - **D19, the problem writer reads `Retry-After` from the error.** An error implementing
   `RetryAfter() time.Duration` sets the header: the call bound, `starting`, a store unreachable, and
@@ -453,7 +454,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   Clock        clock        // Now, After (D18)
   Health       conditions   // E3's health.Evaluator (RFC 25 §8.2's Source set), read whole by GET /api/v1/health (T4.6)
   Progress     func(apiv1.OpKind, []byte) apiv1.Progress // E3's runner table (T4.6)
-  Applied      func(ctx context.Context) error // declared and filled by E3's T3.5 (A8); nil answers at commit (D22)
+  Applied      func(ctx context.Context) error // declared and filled by E3's D16, in T3.5 (A8); nil answers at commit (D22)
   // Directory, Joins and Sealer land with T4.9 and T4.11
   ```
   `auth/caller.go` (`Caller`, `CallerFrom`); `apiv1.Role`; `rights.go`, the role table's rights
@@ -500,7 +501,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 ### T4.4 The write path
 
-**Subtask T4.4 estimate: 4.5 man-days.**
+**Subtask T4.4 estimate: 4.25 man-days.**
 
 - **Track:** B. **Depends on:** T4.2.
 - **Covers:** R2, R10, R11, R12, R14, R15, R16, R17, R19, R20, R21, R24, R27, R52, R54, R60, R61,
@@ -536,18 +537,14 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   naming it (R27); a pre-write step failing, nothing written and the step's error answered, and a
   conflict retry not running the step again (R64); the write rule over planted cases, a store write
   outside `Write`, a type assertion on `Deps.Store` reaching `PutUser`, a `Write` from a resource
-  handler, and one from `auth` with no `Audit` other than the count (R62, R54, R61). In
-  `internal/node`'s `node_test`, over `nodetest` with a real node, `Deps.Applied` E3's and the clock
-  never advanced but where named: a user created through T4.10's route once it lands (it raises
-  `PGEN`) answers only once the node's reconciled-through principals position, read through E3's
-  `export_test.go` accessor as soon as the answer arrives, is at least the `PGEN` read back through
-  `Nodes.Counters` (catches an answer at commit: with the clock still, no pass runs unless the
-  write wakes one, R68; a pass already running is E3's T3.5's case); with reconcile held after its
-  counters read by E3's per-node pause from `export_test.go`, the same create parked until
-  `Pending` on the clock counts its wait, then the clock advanced 1 s: the answer is the create's own `201`, the user read back committed, and the
-  position still below it (catches an unbounded wait, or a committed write answered as refused,
-  R68); a grant written while reconcile is held answered with the clock untouched (catches a wait
-  on a write that raised neither generation, R68). Doubles: the injected clock (kind 1).
+  handler, and one from `auth` with no `Audit` other than the count (R62, R54, R61); the writer's
+  wait at the adapter, no production row raising `PGEN` or `CFGGEN` before T4.10, so a row is
+  marked as raising one per instance from `export_test.go`, with E3's `Deps.Applied` behind a
+  pass-through wrapper that records each call and whether the write's record already reads back
+  (CLAUDE.md's recording wrapper): a marked row's write calls it once, after its commit, and a
+  refused write and an idempotent replay never call it; a fault wrapper making `Applied` return an
+  error, the answer still the commit's own (R68, D22; the node-level wait is T4.10's). Doubles: the
+  recording wrapper and the fault wrapper (kind 3).
 
 ### T4.5 Reads, listings and long polls
 
@@ -652,8 +649,9 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   ```
   The credential calls are this epic's client methods; E5's routes serve them and E5 adds
   `apiv1.Tokens` with its other sign-in types, so these four land with E5's first route (D21). Each
-  is sent with no `Idempotency-Key` and never retried by the transport: RFC 23 refuses a key `400`,
-  and a retried refresh revokes the session. A `401` on any other call, `Wait`'s polls included,
+  is never retried by the transport, since a retried refresh revokes the session; `SignIn`,
+  `Refresh` and `ChangePassword` are sent with no `Idempotency-Key`, which RFC 23 refuses `400`, and
+  `SignOut` with one, like any other `POST` outside §4.5's list. A `401` on any other call, `Wait`'s polls included,
   calls `Refresh` once and replays the request with its body and the same key, which is safe
   because a `401` applied nothing.
   with the version check at first contact, `*apiv1.Problem` returned as the error with its code a
@@ -670,11 +668,10 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   (R59); a `412` returned as the problem with no retry (R59); `Action` returning an operation and a
   resource, and one sent without a key (R59); a response with an unknown field decoded (R59); a
   server with no `v1` refused (R59); `Wait` following an operation to its end (R59); with the
-  harness's `Authenticate` accepting only a second token and a token source of the test's own (an
-  input, returning a first token and the second on `Refresh`): a create answered `401` refreshed once
-  and replayed, one share and one idempotency record under the same key, and a `Wait` poll refreshed
-  the same way; a token source whose `Refresh` fails returning the `401`'s problem with no second
-  replay (R67); `Create` and `Action` with `WithoutIdempotencyKey` sending no key, read from a
+  harness's `Authenticate` refusing every token, a token source of the test's own whose `Refresh`
+  fails (a fault, kind 3, since no `Refresh` route exists before E5): the `401`'s problem returned
+  with no second replay (R67; refreshed once and replayed runs over the real `Refresh` route in
+  E5's T5.5); `Create` and `Action` with `WithoutIdempotencyKey` sending no key, read from a
   pass-through wrapper on the listener that records each request's headers (a recording wrapper,
   CLAUDE.md "Writing tests"), and a credential call's answer dropped by the fault wrapper returning
   the error with no second request recorded (R67). The credential methods' answers through their
@@ -710,18 +707,20 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 ### T4.10 Users, groups, grants, netgroups and quotas
 
-**Subtask T4.10 estimate: 3.5 man-days.**
+**Subtask T4.10 estimate: 3.75 man-days.**
 
 - **Track:** B. **Depends on:** T4.8; the allocating create on the RFC 18 plan's epic 2's T2.2 (the
   ID counters, until which E2's D2 refuses an `Alloc` naming an ID) and the machine-principal refusal
   on its T2.1 (`PrincipalMachine`).
-- **Covers:** R42, R43, R45, R46, R47, R48.
+- **Covers:** R42, R43, R45, R46, R47, R48, R68.
 - **Deliverables:** `res_users.go` and `res_groups.go` (create passing `entity.Alloc{UID, GID, RID,
   Range}` for each ID the request leaves out, the range read from `identity.id_range` through the
   settings table; edit, `disabled`, `email` parsed with `net/mail`, delete as an operation,
   memberships), `res_grants.go` (`PUT` and `DELETE` by principal
   ID, `none` included, a machine principal refused), `res_netgroups.go` (put and delete whole),
-  `res_quotas.go`; their wire types. Consumed by E5 (the role field, `last_admin`, `email`'s
+  `res_quotas.go`; their wire types; each user, group, membership and spelling row marked as
+  raising `PGEN`, so T4.4's adapter waits on `Deps.Applied` after its commit (D22), the first
+  production rows to do so. Consumed by E5 (the role field, `last_admin`, `email`'s
   visibility) and E6.
 - **Acceptance criteria:**
   - A grant naming a machine principal is refused `ErrInvalid` and writes nothing.
@@ -731,7 +730,19 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   one in `identity.id_range`, and a second create a different one (R42); an invalid address and a directory
   principal's address refused (R43); a delete answered `202` after the mark (R45); a `none` grant
   read back apart from no grant, `DELETE` falling through to a group's grant, a machine principal
-  refused (R46); a netgroup replaced whole, a quota set (R47); `disabled` read back (R48).
+  refused (R46); a netgroup replaced whole, a quota set (R47); `disabled` read back (R48). In
+  `internal/node`'s `node_test`, over `nodetest` with a real node, `Deps.Applied` E3's and the clock
+  never advanced but where named: a user created through this route (it raises `PGEN`) answers only
+  once the node's reconciled-through principals position, read through E3's `export_test.go`
+  accessor as soon as the answer arrives, is at least the `PGEN` read back through
+  `Nodes.Counters` (catches an answer at commit: with the clock still, no pass runs unless the
+  write wakes one, R68; a pass already running is E3's T3.5's case); with reconcile held after its
+  counters read by E3's per-node pause from `export_test.go`, the same create parked until
+  `Pending` on the clock counts its wait, then the clock advanced 1 s: the answer is the create's
+  own `201`, the user read back committed, and the position still below it (catches an unbounded
+  wait, or a committed write answered as refused, R68); a grant written while reconcile is held
+  answered with the clock untouched (catches a wait on a write that raised neither generation,
+  R68). Doubles: the injected clock (kind 1).
 
 ### T4.11 The domain's routes and the `identity.ntlm` rule
 
@@ -799,10 +810,10 @@ its commands on the client.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T4.1, T4.2 | 6 | — | the server's core, the seam E5 builds on |
-| 2 | T4.3, T4.4 | 6.5 | PR 1 | the transport and the write path |
+| 2 | T4.3, T4.4 | 6.75 | PR 1 | the transport and the write path |
 | 3 | T4.5, T4.6 | 5.5 | PR 1 | reads, operations, nodes and the audit |
 | 4 | T4.7, T4.8 | 7 | PR 2, PR 3 | shares and the client that first drives them |
-| 5 | T4.9, T4.10 | 6.5 | PR 4 | the remaining resources |
+| 5 | T4.9, T4.10 | 6.75 | PR 4 | the remaining resources |
 | 6 | T4.11 | 4.5 | PR 5 | the domain |
 
 PR 2 and PR 3 can be open at once. A suggestion only: one pull request per subtask works as well.
@@ -833,7 +844,8 @@ Other open points:
   a `retire-keytab-version` action do its route row and `OpKind` join T4.11, with an RFC 23 §3.3
   amendment.
 - What this epic reads from E3: `internal/node/api` and `New(Deps)`, `Deps.Ready` and `Deps.Live`,
-  its two architecture rules, the harness, and the runner's pickup of a new operation.
+  `Deps.Applied` (filled by E3's D16), its two architecture rules, the harness, and the runner's
+  pickup of a new operation.
 - The least certain estimates: T4.4, whose order of checks and audit diff cross every resource, and
   T4.11, whose success paths depend on two plans outside RFC 23's.
 - Review passes still to run independently before the pull request: none; the four ran on the first
