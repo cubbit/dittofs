@@ -45,6 +45,11 @@ type Deps struct {
 	// version that signs now, which keys each idempotency key's digest; nil,
 	// a write carrying an Idempotency-Key answers 503.
 	SigningKey func(context.Context) ([]byte, error)
+	// Reads is the metadata store's reads; nil, a read of the store
+	// answers 503.
+	Reads reads
+	// Clock is the API's time, which a parked poll waits on.
+	Clock clock
 	// Node is the node serving the API, as its audit records name it.
 	Node entity.NodeID
 	// Applied returns once the node has applied what was committed before
@@ -70,6 +75,7 @@ type Server struct {
 	api, met *http.Server
 	serving  sync.WaitGroup
 	stopped  atomic.Bool
+	parked   chan struct{}
 
 	tracer             trace.Tracer
 	requests           *prometheus.CounterVec
@@ -91,6 +97,7 @@ var requestBuckets = []float64{100e-6, 250e-6, 500e-6, 1e-3, 2.5e-3, 5e-3, 10e-3
 func newServer(d Deps, rows []route) *Server {
 	s := &Server{
 		d:      d,
+		parked: make(chan struct{}, maxParked),
 		tracer: d.Tracer,
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dittofs_api_requests_total",
 			Help: "API calls, by op and outcome: ok or the problem's code."}, []string{"op", "outcome"}),

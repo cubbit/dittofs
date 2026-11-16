@@ -21,14 +21,15 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // served is the API over a harness's store, serving the test rows beside the
-// production table, its series in reg, its spans in spans and its log lines
-// in log.
+// production table, its series in reg, its spans in spans, its log lines in
+// log and its time on clock.
 type served struct {
 	url    string
 	client *http.Client
@@ -36,6 +37,7 @@ type served struct {
 	spans  *tracetest.SpanRecorder
 	store  kvstore.ControlPlane
 	log    *lockedBuffer
+	clock  *sim.TestClock
 }
 
 // lockedBuffer is a log the server writes and the test reads.
@@ -62,8 +64,14 @@ var testNode = entity.NodeID{'a', 'p', 'i'}
 // serve starts the API over d's defaults, each of edit then changing them.
 func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), edit ...func(*api.Deps)) *served {
 	t.Helper()
+	return serveWith(t, authenticate, func(*api.Server) {}, edit...)
+}
+
+// serveWith is serve, calling before on the server before it starts.
+func serveWith(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), before func(*api.Server), edit ...func(*api.Deps)) *served {
+	t.Helper()
 	h := nodetest.New(t, nodetest.InMemory(), nodetest.Watch())
-	s := &served{reg: metrics.New("test", "test"), spans: tracetest.NewSpanRecorder(), store: h.Store().ControlPlane(), log: &lockedBuffer{}}
+	s := &served{reg: metrics.New("test", "test"), spans: tracetest.NewSpanRecorder(), store: h.Store().ControlPlane(), log: &lockedBuffer{}, clock: h.Clock()}
 	d := api.Deps{
 		Ready:        func() string { return "ready" },
 		Live:         func() bool { return true },
@@ -74,6 +82,8 @@ func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), 
 		Authenticate: authenticate,
 		Store:        s.store,
 		SigningKey:   signingKey("installation-a"),
+		Reads:        s.store,
+		Clock:        s.clock,
 		Node:         testNode,
 		Tracer:       sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(s.spans)).Tracer("api"),
 	}
@@ -84,6 +94,7 @@ func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), 
 		s.store = cp
 	}
 	srv := api.NewWithTestRows(d)
+	before(srv)
 	addr, _, err := srv.Start()
 	if err != nil {
 		t.Fatalf("Start: %v", err)

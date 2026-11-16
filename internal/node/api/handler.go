@@ -106,6 +106,7 @@ func requestID(ctx context.Context) string {
 func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 	start := time.Now()
 	ctx := context.WithValue(r.Context(), requestIDKey{}, rand.Text())
+	ctx = context.WithValue(ctx, controllerKey{}, http.NewResponseController(w))
 	rt, id := pick(rows, r)
 	op := "unmatched"
 	if rt != nil {
