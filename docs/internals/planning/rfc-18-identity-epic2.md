@@ -1,20 +1,21 @@
 # Epic 2: identity v2 principals and accounts
 
-**Sources:** [RFC 18](../rfcs/rfc-18-identity.md) §2.1 to §2.3, §2.4's API-only accounts and
-machine record, §2.5's group records, §2.6's settings, `Apply` and `Deps.Secrets`, §3.5's NT-hash
-rules and NTLM-off deletion, §4.1 (but its mint, §1.2), §4.4, §4.6, §8 and §8.1, §9.1's ID2, ID3,
-ID4 and ID5, §9.2's `identity_unmapped_total`, §10's "name case", "no local password for a
-directory user" (its `NewHashes` half), its Fuzz and Unit paragraphs, and §12 item 1, as pull
-request #4058 merged them (83232b441); [RFC 16](../rfcs/rfc-16-metadata-store.md) §2.2 (root's
-fixed ID, uid and gid 0 and 65534), §2.3 (`User`'s `Password` and `NTHash`, the machine record,
-`Installation.NTLMOff`), §3 (`Minter.Create`, `Alloc`, `MintBatch`, `ControlPlane.PutUser` and
-`PutGroup`) and §4.2's `NX‖kind‖name`, `PGEN`, `CFGGEN`, `IN` and `IDS‖kind` rows;
-[RFC 23](../rfcs/rfc-23-control-plane.md) §4.1 and §4.6, for the `identity.nt-hash-delete`
-operation; [RFC 13](../rfcs/rfc-13-configuration.md) Appendix B's `identity.id_range`,
-`identity.ntlm` and `identity.netbios_name` rows; RFC 23's epic 1 document (pull request #4314),
-§1.2, which hands `Alloc` on `PutUser` and `PutGroup` to this epic.
+**Sources:** [RFC 18](../rfcs/rfc-18-identity.md) §2.1 to §2.3, §2.4's API-only accounts and machine
+record, §2.5's group records, §2.6's settings, `Apply` and `Deps.Secrets`, §3.5's NT-hash rules and
+NTLM-off deletion, §3.7's marked-deleted account, §4.1 (but its mint, §1.2), §4.4, §4.6, §8 and
+§8.1, §9.1's ID2, ID3, ID4 and ID5, §9.2's `identity_unmapped_total`, §10's "name case", "no local
+password for a directory user" (its `NewHashes` half), its Fuzz and Unit paragraphs, and §12 item 1,
+as pull request #4058 merged them (83232b441); [RFC 16](../rfcs/rfc-16-metadata-store.md) §2.2
+(root's fixed ID, uid and gid 0 and 65534), §2.3 (`User`'s `Password` and `NTHash`, the machine
+record, `Installation.NTLMOff`), §3 (`Minter.Create`, `Alloc`, `MintBatch`, `ControlPlane.PutUser`
+and `PutGroup`, and `DeleteUser`'s secret deletion) and §4.2's `NX‖kind‖name`, `PGEN`, `CFGGEN`,
+`IN` and `IDS‖kind` rows; [RFC 13](../rfcs/rfc-13-configuration.md) §7's "a user's secrets go with
+the user"; [RFC 23](../rfcs/rfc-23-control-plane.md) §4.1 and §4.6, for the
+`identity.nt-hash-delete` operation; RFC 13 Appendix B's `identity.id_range`, `identity.ntlm` and
+`identity.netbios_name` rows; RFC 23's epic 1 document (pull request #4314), §1.2, which hands
+`Alloc` on `PutUser` and `PutGroup` to this epic.
 **Track:** C.
-**Epic 2 estimate: 7 subtasks, 13.25 man-days.**
+**Epic 2 estimate: 7 subtasks, 13.75 man-days.**
 **Depends on:** **S1**, epic 1's identity surface frozen. **#4059's S1 and S2**: `pkg/settings`
 and `pkg/secrets` frozen, with `Seal` taking the kind, the owner and `secrets.Meta`, the kvstore
 secrets view (`Secret`, `PutSecret`, `PruneSecret`) on the view and on `ControlPlaneTx`, and
@@ -56,7 +57,8 @@ a password is derived and checked, and while NTLM is off it is never kept as an 
 - `NewHashes`, `Lookup`, `VerifyPassword` and `Account` have bodies;
 - `State` carries identity's settings, `Apply` refuses an invalid one, and `Deps` takes the secret
   provider;
-- turning NTLM off runs `identity.nt-hash-delete`, which leaves no NT hash in the store.
+- turning NTLM off runs `identity.nt-hash-delete`, which leaves no NT hash in the store, and
+  deleting a user deletes its NT hash with its password hash.
 
 ### 1.1 In scope
 
@@ -66,8 +68,8 @@ SID change and of a file principal without its uid or gid and SID; the name fold
 the `IDS‖uid`, `IDS‖gid` and `IDS‖rid` counters and the installation's domain SID; `Alloc` on
 `PutUser` and `PutGroup`; `Minter.Create`; identity's settings section, `State.Settings`,
 `Apply`'s refusal and `Deps.Secrets`; `Scheme.Stored()`, `Spell` and `Find`; `FuzzSID`;
-`NewHashes`, `Lookup`, `VerifyPassword` and `Account`; the `identity.nt-hash-delete` step function
-and its store calls.
+`NewHashes`, `Lookup`, `VerifyPassword` and `Account`; `DeleteUser`'s deletion of the `NTHash`
+versions; the `identity.nt-hash-delete` step function and its store calls.
 
 ### 1.2 Out of scope
 
@@ -197,9 +199,9 @@ tests can cite them. Sources are RFC 18 unless named.
 | --- | --- | --- | --- | --- |
 | R24 | `NewHashes` is pure, reading and writing nothing; it derives the argon2id password hash and, only while `ntlm` is on and the user holds file spellings and is not a directory principal, the NT hash; for a directory principal it fails `ErrInvalid`; it is the one place the NT-hash rule is applied | MUST | §3.5, §8.1, §10 "no local password for a directory user", §10 Unit | T2.6 |
 | R25 | `Lookup` resolves a name to its account's principal by the user part, without its domain or realm, folded as §4.6 folds names; the zero principal for a user part with no account; it reads the store only, never queries a directory, never mints | MUST | §8.1 | T2.6 |
-| R26 | `VerifyPassword` fails `ErrLogonFailure` alike for a wrong password, the zero principal, a disabled or deleted account and an account with no password, and `ErrUnavailable` when the store cannot answer | MUST | §8.1 | T2.6 |
+| R26 | `VerifyPassword` fails `ErrLogonFailure` alike for a wrong password, the zero principal, a disabled or deleted account, one marked deleted whose deletion is still running, and an account with no password, and `ErrUnavailable` when the store cannot answer | MUST | §3.7, §8.1 | T2.6 |
 | R27 | `VerifyPassword` compares in constant time, and the zero principal does the same work as a wrong password, a verification against a fixed dummy hash | MUST | §8.1 | T2.6 |
-| R28 | `Account` returns p's current record, `ErrLogonFailure` if disabled or deleted | MUST | §8.1 | T2.6 |
+| R28 | `Account` returns p's current record, `ErrLogonFailure` if disabled, deleted or marked deleted | MUST | §3.7, §8.1 | T2.6 |
 
 **Settings and NTLM off**
 
@@ -210,6 +212,12 @@ tests can cite them. Sources are RFC 18 unless named.
 | R31 | Turning NTLM off deletes every stored NT hash, as an operation in bounded batches | MUST | §3.5; RFC 23 §4.1, §4.6 | T2.7 |
 | R32 | The deletion records each step durably and makes each idempotent, so a restart resumes it from its record | MUST | RFC 23 §4.6 | T2.7 |
 | R33 | The deletion's last step sets `Installation.NTLMOff.Deleted` in the transaction that ends it, and nothing else of identity writes `NTLMOff` | invariant | RFC 16 §2.3, §4.2 `IN`; RFC 23 §4.1 | T2.7 |
+
+**Deleting a user**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R34 | `DeleteUser`'s last transaction, the one that deletes the user record, deletes every version of each `Secret` the record names, `NTHash` as well as `Password`, so no NT hash outlives its user | MUST | RFC 13 §7; RFC 16 §3 `DeleteUser` | T2.6 |
 
 Which test or enforcer holds each row is in its subtask's **Tests**.
 
@@ -309,6 +317,7 @@ pkg/metadata/entity/
 pkg/metadata/kvstore/
   users.go          T2.1  shape checks (D3), the @ rule, cross-kind uniqueness
                     T2.2  Alloc on PutUser and PutGroup, SID immutable
+                    T2.6  DeleteUser deletes the NTHash versions (R34)
   ControlPlaneTx    T2.2  Alloc on its PutUser and PutGroup, where RFC 23's epic 2 puts it
   alloc.go          T2.2  IDS‖uid, IDS‖gid, IDS‖rid; the installation's domain SID
   keys.go           T2.1  nameFold (D2)
@@ -341,7 +350,8 @@ internal/identity/
 - **Deliverables:**
   - `entity.RootPrincipal`, `WellKnown()` accepting `0x01` to `0x0D`, with RFC 18 §2.1's
     `decision:` on root; `entity.PrincipalMachine`; `entity.SchemeDir` (D7); `User.Secret` renamed
-    `User.Password` and `User.NTHash` added, with kvstore's codec;
+    `User.Password` and `User.NTHash` added, with kvstore's codec; `NTHash`'s deletion with its
+    user is T2.6's (R34), which lands with `NewHashes`, the one producer of an NT hash;
   - in `PutUser` and `PutGroup`: D3's shape checks but the file-principal one (T2.2's), uid or gid
     0 or 65534 refused, a name holding `@` refused, and the fold `nameFold` (D2) keying `NX‖user`
     and `NX‖group`, the value keeping the name as written.
@@ -394,8 +404,11 @@ internal/identity/
   while a gid of that value is not (R11); a range spanning 65534 allocates past it (R2); a range
   change between two creates: the second drawn from the new range, the first unchanged (R11); a
   write refused by a held name, then the next create: its ID is the one the refused write would
-  have had (catches allocation outside the transaction, R10); a user with no SID and no
-  `Alloc.RID`, refused, and one with no uid entry and no `Alloc.UID`, refused (R12, R5); an update
+  have had (catches allocation outside the transaction, R10); a user holding a uid, no SID and no
+  `Alloc.RID`, refused, and one holding a SID, no uid entry and no `Alloc.UID`, refused (R12, R5);
+  an API-only account with no uid, gid or SID, and a machine record with only its `krb` row, each
+  accepted (catches a check that refuses every user without a uid, which would block the bootstrap
+  administrator, R5, RFC 18 §2.4); an update
   carrying `Alloc`, refused (R12); a SID changed on update, refused (R13); each of a user with a uid
   and no SID, with a SID and no uid, a group with no gid and a group with no SID, refused (R5); the
   allocated SID read back equal to `S-1-5-21-a-b-c-RID` computed in the test from the installation
@@ -479,10 +492,10 @@ internal/identity/
 
 ### T2.6 `NewHashes` and the API's sign-in interface
 
-**Subtask T2.6 estimate: 2.5 man-days.**
+**Subtask T2.6 estimate: 3 man-days.**
 
 - **Track:** C. **Depends on:** T2.1, T2.2, T2.4.
-- **Covers:** R4, R24, R25, R26, R27, R28.
+- **Covers:** R4, R24, R25, R26, R27, R28, R34.
 - **Deliverables:**
   - `NewHashes`'s body: argon2id per D10 and the NT hash, MD4 over the password's UTF-16LE form,
     only while `ntlm.On` and the user holds a uid and no `dir` spelling; `ErrInvalid` for a directory
@@ -492,9 +505,16 @@ internal/identity/
     name; `VerifyPassword`, resolving `User.Password` through `Deps.Secrets` with the `password` kind
     and the user's owner, verifying with argon2 and `subtle.ConstantTimeCompare`, and against a dummy
     hash computed at `New` for the zero principal and a disabled, deleted or password-less account;
-    `Account`; D8's semaphore; RFC 18 §8's `decision:` at `Account`; epic 1's stub markers removed.
+    `Account`; D8's semaphore; RFC 18 §8's `decision:` at `Account`; epic 1's stub markers removed;
+  - kvstore's `DeleteUser` deleting every version of the `Secret` `User.NTHash` names beside
+    `Password`'s, in the transaction that deletes the record (R34). If the RFC 13 plan's epic 4 has
+    added `Password`'s deletion to `DeleteUser` when this lands, T2.6 extends it to `NTHash`; if
+    not, T2.6 writes it for both references and that epic's item finds it in place. RFC 23's plan's
+    resumable deletion keeps it in its last transaction, as the RFC 13 plan's epic 4 states. It
+    lands with `NewHashes`, the one producer of an NT hash (R24), so no build makes an NT hash that
+    `DeleteUser` leaves behind.
   Consumed by RFC 23's plan's epic 5 through `APISignIn` and `NewHashes`, and by E4, whose tests
-  seed users with `NewHashes`.
+  seed users with `NewHashes`; the deletion by every caller of `DeleteUser`.
 - **Acceptance criteria:**
   - The password hash is the PHC string `$argon2id$v=19$m=19456,t=2,p=1$…`.
   - `Lookup` of `alice`, `ALICE`, `CORP\alice` and `alice@CORP.EXAMPLE` gives one principal, and
@@ -508,15 +528,22 @@ internal/identity/
   - At `Server`, over the memory KV store with #4059's provider over `keyprovider`'s local
     provider, users seeded through `NewHashes` and a sealed `Secret`: the four spellings above, and
     `Lookup("nobody")` the zero principal (R25); a wrong password, the zero principal, a disabled
-    user, a deleted one and one with no password, each `ErrLogonFailure` (R26); through `kvtest`'s
+    user, a deleted one, one marked deleted through `ControlPlaneTx.DeleteUser` whose batches have
+    not run, and one with no password, each `ErrLogonFailure` (R26, RFC 18 §3.7); through `kvtest`'s
     fault wrapper failing the user's read, then the secret's read: `ErrUnavailable` each (catches an
     outage answered as a wrong password, R26); the zero principal's call reaching the argon2id
     verification, observed through an `export_test.go` hook that delivers the hash verified
     (catches a short-cut for an unknown name, R27; the comparison itself is held by
-    `subtle.ConstantTimeCompare`, rule 10); `Account` of a deleted user, and of one disabled
-    after an `Apply`: `ErrLogonFailure` (R28); the semaphore's slots held through the hook and the
-    injected clock advanced past 5 s: `ErrUnavailable`, no goroutine left (D8). Doubles: `kvtest`'s
-    fault wrapper (kind 3), the injected clock (kind 1).
+    `subtle.ConstantTimeCompare`, rule 10); `Account` of a deleted user, of one marked deleted
+    whose batches have not run, and of one disabled after an `Apply`: `ErrLogonFailure` (catches
+    `Account` returning a marked record to an API token issued before the delete, R28, RFC 18 §3.7);
+    the semaphore's slots held through the hook and the injected clock advanced past 5 s:
+    `ErrUnavailable`, no goroutine left (D8).
+  - In kvstore's conformance suite, on the memory KV and Badger: a user's `Password` and `NTHash`
+    sealed through #4059's provider, each at two versions, then `DeleteUser` run to completion:
+    no version of either `Secret` left (catches a deletion of `Password`'s versions only, or of
+    the current version only, R34).
+  - Doubles: `kvtest`'s fault wrapper (kind 3), the injected clock (kind 1).
 
 ### T2.7 The `identity.nt-hash-delete` step
 
@@ -574,7 +601,7 @@ T2.6 RFC 23's plan's epic 5 has its sign-in interface.
 | --- | --- | --- | --- | --- |
 | 1 | T2.1, T2.2, T2.3 | 5 | — | principals in the store: the records, the name fold, allocation and `Create`, one review of kvstore |
 | 2 | T2.4, T2.5 | 3.25 | PR 1 | identity's settings and the naming it serves |
-| 3 | T2.6 | 2.5 | PR 2 | the accounts RFC 23's plan's epic 5 waits for |
+| 3 | T2.6 | 3 | PR 2 | the accounts RFC 23's plan's epic 5 waits for, and the NT hash's deletion with its user |
 | 4 | T2.7 | 2.5 | PR 1 | the NT-hash deletion, once RFC 23's runner lands; may be open beside PR 2 and PR 3 |
 
 A suggestion only: one pull request per subtask works as well.
@@ -586,8 +613,9 @@ the version this document was written against. RFC 18 §8.1 declares `Lookup` an
 principal-based `VerifyPassword`, which epic 1 freezes.
 
 The plan's figure for this epic is 8 subtasks, 13 man-days; this document's is 7 subtasks,
-13.25 man-days: the mint path goes to the first epic that mints (below), and `Alloc` on `PutUser`
-and `PutGroup`, which #4314 hands to this epic and the plan lists nowhere, comes in (T2.2).
+13.75 man-days: the mint path goes to the first epic that mints (below), and `Alloc` on `PutUser`
+and `PutGroup`, which #4314 hands to this epic and the plan lists nowhere, comes in (T2.2), as
+does `DeleteUser`'s deletion of the NT hash, which the plan lists nowhere either (T2.6, R34).
 
 **Pending the user's answer** (the recommended option is written in place):
 
@@ -628,6 +656,9 @@ and `PutGroup`, which #4314 hands to this epic and the plan lists nowhere, comes
   state it.
 - **A cancelled deletion.** RFC 18 §10's "NTLM off" row turns NTLM on "after it is cancelled", while
   RFC 23 §4.1 says a deletion has no cancel. T2.7 builds no cancel; the row needs mending.
+- **`DeleteUser`'s secrets (R34).** RFC 16 §3 deletes "every version of the secret it names",
+  singular, from before `User` held two references; RFC 13 §7 says each `Secret`, the NT hash
+  among them. R34 follows RFC 13, and RFC 16 §3's comment needs the plural.
 - **Root's SID (D9).** Neither RFC 18 §2.1 nor RFC 22 §16.3 gives root one (Samba uses
   `S-1-22-1-0`, from memory); an RFC 22 amendment, or a decision that root has none.
 - **`State.Settings`' type (D6).** RFC 18 §2.6 names `config.Identity`, which no plan builds.
