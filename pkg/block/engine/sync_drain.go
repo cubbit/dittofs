@@ -138,7 +138,16 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 		// semaphore here would nest inside the dispatcher's own window and make
 		// the PUTs in flight their product, which is both a bound nobody
 		// declared and a peak the controller cannot see.
-		sink := engineBlockSink{sealer: sealer, rbs: rbs, committer: committer, commitLocks: &carveCommitLocks{}, onPutInFlight: m.notePutInFlight, onBlockUploaded: m.noteBlockUploaded, onBlockCommitted: m.noteBlockCommitted}
+		sink := engineBlockSink{
+			sealer:           sealer,
+			rbs:              rbs,
+			committer:        committer,
+			commitLocks:      &carveCommitLocks{},
+			onPutInFlight:    m.notePutInFlight,
+			onBlockUploaded:  m.noteBlockUploaded,
+			onBlockCommitted: m.noteBlockCommitted,
+			onPutResult:      m.notePutResult,
+		}
 		// The dedup Skip hook consults the per-share synced-hash store: without
 		// it every flush treats every chunk as novel and uploads whole new
 		// blocks instead of landing manifest-only rows for content the remote

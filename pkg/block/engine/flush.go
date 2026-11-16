@@ -365,6 +365,10 @@ type engineBlockSink struct {
 	// supervisor reads this counter as a liveness signal. Nil in fixtures
 	// that don't care.
 	onBlockCommitted func(bytes int64)
+	// onPutResult reports how each PutBlock ended, on every carve path, so a
+	// run of failed uploads is seen whether the background dispatcher or an
+	// explicit flush made them. Nil in fixtures that don't care.
+	onPutResult func(err error)
 }
 
 func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []CarveChunk) error {
@@ -446,6 +450,9 @@ func (s engineBlockSink) CommitBlock(ctx context.Context, chunks []CarveChunk) e
 	err = s.rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes))
 	if s.onPutInFlight != nil {
 		s.onPutInFlight(-1)
+	}
+	if s.onPutResult != nil {
+		s.onPutResult(err)
 	}
 	if err != nil {
 		return fmt.Errorf("flush: put block %s: %w", blockID, err)

@@ -92,6 +92,10 @@ func printBlockStoreStatsTable(resp *apiclient.BlockStoreStatsResponse) error {
 		{"Pending Remote (bytes)", formatBytes(t.UnsyncedBytes)},
 		{"Completed Syncs", fmt.Sprintf("%d", t.CompletedSyncs)},
 		{"Failed Syncs", fmt.Sprintf("%d", t.FailedSyncs)},
+		{
+			"Uploads Failing",
+			fmt.Sprintf("%v (%d in a row)", t.UploadsFailing, t.ConsecutiveUploadFailures),
+		},
 	}
 
 	if err := output.SimpleTable(os.Stdout, pairs); err != nil {

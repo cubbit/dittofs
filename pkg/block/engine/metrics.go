@@ -1,6 +1,12 @@
 package engine
 
-import "time"
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/cubbit/dittofs/internal/logger"
+)
 
 // DataplaneMetrics is the engine-side metrics seam for the carve/upload path.
 // It follows the nil-safe Record* convention of pkg/metrics, which *Metrics
@@ -82,4 +88,39 @@ func (m *RemoteSync) SyncCounts() (completed, failed int) {
 // goes to noteBlockUploaded instead, one step earlier.
 func (m *RemoteSync) noteBlockCommitted(int64) {
 	m.completedSyncs.Add(1)
+}
+
+// uploadsFailingThreshold is how many block uploads in a row must fail before
+// block stats report uploads as failing.
+const uploadsFailingThreshold = 3
+
+// notePutResult tracks the run of failed block uploads behind UploadsFailing.
+// A success ends the run; a cancellation says nothing about the remote, since
+// it is the syncer stopping, so it neither counts nor ends one.
+//
+// decision: every other error counts, throttling included, although RFC 3
+// §2.8 leaves throttling out of a store's health. This is a report, not
+// health: it refuses no work and the health flag never reads it, so a remote
+// that throttles every upload is exactly what an operator should see here.
+func (m *RemoteSync) notePutResult(err error) {
+	if err == nil {
+		if m.putFailuresInARow.Swap(0) >= uploadsFailingThreshold {
+			logger.Info("uploads to the remote store succeed again")
+		}
+
+		return
+	}
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	if n := m.putFailuresInARow.Add(1); n == uploadsFailingThreshold {
+		logger.Warn("uploads to the remote store are failing",
+			"consecutive_failures", n, "error", err)
+	}
+}
+
+// UploadFailuresInARow returns how many block uploads failed since the last
+// one that succeeded.
+func (m *RemoteSync) UploadFailuresInARow() int {
+	return int(m.putFailuresInARow.Load())
 }
