@@ -113,8 +113,12 @@ func TestWriteCommitsWholeOrNothing(t *testing.T) {
 	if got := s.knob(t, id); got.Generation != 0 {
 		t.Errorf("knob after the faulted commit: %+v, want none", got)
 	}
-	if got := outcomes(s.audits(t)); !slices.Equal(got, []string{"refused: unavailable"}) {
-		t.Errorf("audit outcomes after the faulted commit: %q, want only the refusal", got)
+	refusals := s.audits(t)
+	if got := outcomes(refusals); !slices.Equal(got, []string{"refused: unavailable"}) {
+		t.Fatalf("audit outcomes after the faulted commit: %q, want only the refusal", got)
+	}
+	if a := refusals[0]; a.Change != nil || a.After != 0 {
+		t.Errorf("refusal's audit record: change %s after %d, want no change and no generation after", a.Change, a.After)
 	}
 	disk.fault.SetFault(nil)
 	if r := put(); r.status != http.StatusOK || r.header.Get("ETag") != `"1"` {

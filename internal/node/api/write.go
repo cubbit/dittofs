@@ -37,7 +37,8 @@ type writing[B any] struct {
 // the record's tag, read tracked; then h runs. So a key recorded for another
 // request answers 422 before a missing If-Match answers 428, and two writes
 // naming one tag cannot both commit. prepare, when not nil, runs once before
-// Write, never on a conflict retry, and its result is h's in. A PATCH body is
+// Write, never on a conflict retry, and its result is h's in; for a PATCH it
+// sees the patch, decoded as the body. A PATCH body is
 // a merge patch of the document read returns, and the result is decoded as
 // strictly as a PUT's body, so a patch can set nothing a PUT could not.
 //
@@ -53,9 +54,10 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		key := r.Header.Get("Idempotency-Key")
 		rec := entity.AuditRecord{Actor: c.Principal, Node: s.d.Node, Source: r.RemoteAddr,
 			Request: requestOf(ctx, r, key), Target: entity.ResourceRef{Kind: w.kind, ID: id[:]}}
+		refused := rec // as the request arrived, holding nothing a failed attempt set
 		defer func() {
 			if err != nil {
-				s.refuse(ctx, rec, err)
+				s.refuse(ctx, refused, err)
 			}
 		}()
 		if s.d.Store == nil {
