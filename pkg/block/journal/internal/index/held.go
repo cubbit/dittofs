@@ -281,7 +281,7 @@ func (s *heldSet) dropOverBy(by core.Version, e core.Extent) {
 }
 
 // dropOverWas forgets the runs superseding the write of version was lying
-// inside e, a torn record's repair does with the chains that name it: a
+// inside e, a torn write's repair does with the chains that name it: a
 // write the index holds no more has no run any caller can be told of, and a
 // rebuild that was never fed the record chained the surviving write over
 // what it displaced instead — so the fold re-notes that chain itself.

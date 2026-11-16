@@ -535,7 +535,12 @@ func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentSca
 // repairTornPlacement restores what the torn record's replay displaced: the
 // index comes out exactly as the rebuild would have produced it had the
 // record never been fed, over the span the record's replay reached — its
-// extent, or the removal to the end a truncate's and a delete's reach names.
+// extent, or the removal to the end a truncate's and a delete's reach
+// names — and over no span at all the same, where only the teardown runs:
+// the whole repair reaches DropTorn whatever the span is, so a removal
+// whose reach holds no byte — a truncate past every offset, a shape the
+// open's own verdicts cannot produce, a removal carrying no body that a
+// mid-append tear could fail — still takes the marker its replay left.
 // The records to re-apply are every record of the file that reaches the span,
 // from any attached segment — the one the torn record sits in and the named
 // and unverified ones beside it, cross-segment overwrites included — read
@@ -552,8 +557,8 @@ func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentSca
 // fed while the torn placement is not, and minus the placements the
 // rebuild's own scan judged — its catalogue's confines and its clone targets
 // whose bodies failed — so a record the rebuild never indexed never comes
-// back through a repair. The index then takes the torn record's own drop with
-// the fold, placements and marker alike.
+// back through a repair. The index then answers the torn record's own
+// teardown with the fold, its kind deciding it — runs, marker, or nothing.
 //
 // ponytail: the records to re-apply are re-read from disk, once per torn
 // record over every attached segment — the scans the rebuild kept drop their
@@ -568,12 +573,6 @@ func dropTornRecord(rd *reader, st *State, expect core.JournalID, sc *segmentSca
 // journal's open shows these re-reads in a profile.
 func repairTornPlacement(rd *reader, st *State, expect core.JournalID, torn index.Record, tornSoFar map[index.RecordAt]bool) error {
 	window := torn.Reach()
-	if window.Len <= 0 {
-		// A record whose replay reached nothing — a marks kind over no
-		// extent, a truncate past every offset — placed and cut nothing the
-		// index holds.
-		return nil
-	}
 	// The named set is the same one the run built for the rebuild and the
 	// classing, and the collect's own condition mirrors the rebuild's
 	// dispatch: there is no force-scan switch here, and a rebuild that
