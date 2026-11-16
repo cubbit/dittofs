@@ -1,52 +1,67 @@
-# jdemo session sheet
+# jdemo — the interactive session
 
-The beat-by-beat command/pane sequence for a live journal demo. All commands
-assume the daemon is up and the socket `--socket` points at it; viewer panes
-re-run their command after each beat.
+One binary, one journal, one story at a time:
 
-Setup: `jdemo start --dir journal --socket /tmp/jdemo.sock` in the driving
-pane (it prints the journal dir and the offload dir). A fresh empty directory
-is initialised; a stopped journal is refused until recovery lands (`start`
-says so itself — the honest answer, verbatim).
+```sh
+go run ./cmd/jdemo                       # a fresh journal under $TMPDIR, the basic story
+go run ./cmd/jdemo --dir talk-journal    # name the directory (a used one opens or says why it cannot)
+```
 
-| # | Beat | Command pane | What a viewer pane shows after |
-| --- | --- | --- | --- |
-| 1 | init + open | `jdemo start --dir journal …` | `ls journal`: the format file plus the spare segments the open made |
-| 2 | attach a share | `jdemo share --tag 1` | `jdemo stats`: share 1's row appears, all zeros |
-| 3 | a small write | `jdemo write-at --tag 1 FILE 0 --str hello` | `jdemo stats`: held/dirty +5; `jdemo index --file FILE` (once T7.6 lands): one held entry, v1 |
-| 4 | over-write part of it | `jdemo write-at --tag 1 FILE 2 --str XYZ` | `index`: the old entry narrowed, the new one at v2; the superseded range retained until settle |
-| 5 | a big write (roll!) | `jdemo write-at --tag 1 FILE 4096 --size 300000000` | `jdemo stats`: segments 2 (1 sealed) — the 256 MiB cap rolled a segment |
-| 6 | read with a gap | `jdemo read-at --tag 1 FILE 0 16` | the pane itself: mixed `held` extents at different versions, `missing 5–8` for the gap between the two writes |
-| 7 | changes feed | `jdemo since --tag 1 FILE 0` | one line per change, version order |
-| 8 | truncate | `jdemo truncate --tag 1 FILE 32` | `since`: the write narrowed, a `truncate` marker beyond 32 |
-| 9 | settle it | `jdemo settle --tag 1 FILE v3` | `since` from v0: the marker gone |
-| 10 | reserved write | `jdemo reserve --tag 1 4096 1`, `jdemo reserve-write …` | versions keep flowing; the reservation is exempt from limits |
-| 11 | offload (once it lands) | `jdemo offload --tag 1 FILE v999` | `ls journal-offload/<file hex>/`: payload files named by range; `jdemo index`: entries' offloaded bits turn |
-| 12 | verify (once E9a lands) | `jdemo verify` | counts, zero on a clean journal |
+## Driving
 
-## What answers what today, and why
+- **`Enter`** runs the beat the screen shows; every beat prints its public API
+  call source-style and what it returned — the version drawn, the bytes read,
+  or the journal's own answer verbatim.
+- Between beats the chooser offers the views, as often as you like:
+  `(i)` index, `(s)` segments, `(f)` filesystem, `(d)` data dump, `(+)` stats.
+  An empty line moves to the next beat; `q` ends the story.
+- Every mutating beat refreshes the diff snapshots: the next look at a view
+  marks its rows — `+` new, `~` changed, `- removed` — colourised on a real
+  terminal, glyphed on a piped one.
 
-`sync`, `forget`, `index --file FILE`, `verify`, the offload family,
-`hold`/`unhold`/`stamp` and `repack` answer the journal's own
-`journal: not implemented` verbatim — the tool never claims a layer beneath
-the built ones.
+## The views
 
-`index` with no `--file`, `segments` and `held` answer **nothing at all**:
-their stubs carry no error to surface, so the pane shows the empty view
-(`no index entries`, `no segments`, `0 bytes held`) even while `stats`
-counts real entries and segments. Don't narrate a bug there — narrate the
-boundary: the figures `stats` reports are measured by the journal itself,
-the read-outs behind those three views are what recovery's assembly (and
-per-segment accounting) still owe.
+| key | what it shows |
+| --- | --- |
+| `i` | the story file's placement entries, straight from `Inspect()` |
+| `s` | per-segment accounting (`Inspect().Segments()`) |
+| `f` | the journal directory: `format`, the 20-digit segments, spooling spares, human sizes |
+| `d` | the on-disk truth: every record decoded and hexdumped with an ASCII lane — headers' columns (kind, file, extent, version, tag, seq) and the payload bytes right where they sit |
+| `+` | the journal's totals and per-share rows (`Stats()`) |
 
-Each lands with its subtask; rebase `demo/journal-cli` onto fresh
-`feat/storage-v2` and re-run the beat to see each view fill in.
+## The basic story
+
+1. **journal online** — init/open/SetVersionLimit, the state file, the spare pool
+2. **attach the share** — one handle, tag 1
+3. **a first write** — `hello world` at v1
+4. **overwrite half of it** — the superseded range goes retained
+5. **a 300 MB write, the roll** — the segment crosses its cap, a spare becomes a segment
+6. **read across the gap** — served extents, `missing` for what is not held
+7. **the change feed** — `Since`'s changelog, version by version
+8. **truncate** — the removal marker, durable on return
+9. **settle it** — metadata recorded, the marker goes
+10. **a reserved write** — bytes held up front, no limit refuses it
+11. **offload** — the remote tier's beat
+12. **verify** — the index checked, reported, never repaired
+
+## What answers "not implemented" today, and why
+
+`sync`, the offload family, holds/stamps, `repack`, `Inspect().File`,
+`Inspect().Verify` answer the journal's own `journal: not implemented`
+verbatim, and the story walks on — the tool never claims a layer beneath
+the built ones. The `index` all-entries view and the per-segment
+accounting answer empty (no error to print): the view says so in one
+line. Rebase this branch onto fresh `feat/storage-v2` as those subtasks
+land and the same story fills in — recovery's assembly (T7.6) brings the
+reopen and the index rows, epic 9a the segment accounting and the
+offload flow.
 
 ## Numbers worth narrating
 
-- `used` counts each segment at the format's 256 MiB cap — so five segments
-  read as 1.25 GiB whatever the payload.
-- `versions left` falls one per write; the daemon raises the limit by 2³²
-  per start, mirroring an engine recording its window durably.
-- `read-at` prints `n=…` even with gaps: missing bytes are reported as
-  extents, never zeros.
+- `used` counts each segment at the format's 256 MiB cap: the roll beat's
+  two segments read as 512 MiB whatever the payload.
+- Every write draws a version: hello is v1, the overwrite v2, the roll v3,
+  the truncate v4 — `versions left` falls one each.
+- The `(d)` tail lines: an active segment's unwritten tail reads as
+  "torn (or sealed)", because the slots past the last record are not a
+  record — that is the honest decode of a segment mid-append.
