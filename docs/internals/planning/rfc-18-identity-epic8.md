@@ -10,12 +10,12 @@ reports), §3.5 (the domain's actions) and §4.1 (the rule for turning `identity
 [RFC 13](../rfcs/rfc-13-configuration.md) §6, §7 (a new secret version resolved again and reported)
 and Appendix B's `identity.*` rows; [RFC 25](../rfcs/rfc-25-observability.md) §3.9, §5.4 and §7.
 **Track:** the team.
-**Epic 8 estimate: 11 subtasks, 15 man-days.**
+**Epic 8 estimate: 11 subtasks, 14.75 man-days.**
 **Depends on:** **E2**: T2.4's `Settings`, `State.Settings` and `Deps.Secrets` and T2.6's
 `APISignIn` (T8.1), T2.7's `identity.nt-hash-delete` step (T8.10). **E3**: T3.1's span, T3.6's
 admission through identity and T3.10's resolution over the caller cache (T8.2, T8.3, T8.9). **E4**:
 T4.2's local sign-in and T4.5's `Deps.Logons` (T8.2, T8.3, T8.9, T8.11). **E5**: T5.2's
-`State.Keytab`, T5.5's Kerberos branch, T5.10's `Step` and `Progress` and its test realm (T8.2),
+`State.Keytab`, T5.5's Kerberos branch and T5.3's test realm (T8.2),
 T5.8b's binding (T8.5), T5.1's fixture part and T5.11's ticket fetch (T8.4). **E6**: T6.3's record,
 T6.5's `Deps.Directory`, T6.8's `Conditions` and T6.9's directory principals and `KerberosLinkSID`
 (T8.2, T8.5, T8.9), T6.6 and T6.11's groups and resolution step (T8.4, T8.5), T6.13's check (T8.8)
@@ -268,11 +268,10 @@ epic's test holds it.
   copy here could fail on nothing that one misses (rule 10). Should that test leave T5.7, T8.10
   takes it. Prior art: none needed.
 - **D10, the node fills identity's runner steps and the API's identity fields, pending the user's
-  answer (§9).** Only `internal/node` imports the server, so the step functions of E2, E5 and E7 and
+  answer (§9).** Only `internal/node` imports the server, so the step functions of E2 and E7 and
   the API's `Deps.Directory` and `Deps.Joins` are filled in `node.New` by this epic, each by the
-  subtask that first runs it: E5's keytab retention (T5.10's `Step` and `Progress`) and
-  `Deps.Directory` (E6's `KerberosLinkSID`) by T8.2, E7's kinds and `Deps.Joins` by T8.6, E2's
-  deletion by T8.10. E2's, E5's and E7's methods are typed by `internal/node/step` (E7's D4) and
+  subtask that first runs it: `Deps.Directory` (E6's `KerberosLinkSID`) by T8.2, E7's kinds and `Deps.Joins` by T8.6, E2's
+  deletion by T8.10. E2's and E7's methods are typed by `internal/node/step` (E7's D4) and
   go in the table as they are, with no adapter. RFC 23's plan's
   epic 3 (its D7) and epic 4 (its D13) name this epic as the one that registers the steps and fills
   the fields. Prior art: none found.
@@ -288,7 +287,7 @@ internal/node/
   identity.go           T8.1   identity built at row 7 from Deps{Store, Secrets, Clock, Metrics,
                                Logger}; handed to vfs.Deps and the API; the first State
                         T8.2   D2's retry; Deps.Logons, Tracer, Directory; State.Keytab,
-                               State.Directory; T5.10's Step and Progress; api.Deps.Directory;
+                               State.Directory; api.Deps.Directory;
                                secret versions reported; the server added to the evaluator
                         T8.6   Deps.DomainController, State.Machine, State.Join, E7's four
                                kinds, api.Deps.Joins
@@ -347,10 +346,10 @@ test/integration/ad-dc/
 
 ### T8.2 Reconfiguration, Kerberos and the directory in the node
 
-**Subtask T8.2 estimate: 3.25 man-days.**
+**Subtask T8.2 estimate: 3 man-days.**
 
 - **Track:** the team. **Depends on:** T8.1. E3's T3.1, T3.6 and T3.10; E4's T4.2 and T4.5; E5's
-  T5.2, T5.5 and T5.10; E6's T6.3, T6.5, T6.8 and T6.9; #4059's epic 4 (version reads) and epic 5
+  T5.2 and T5.5; E6's T6.3, T6.5, T6.8 and T6.9; #4059's epic 4 (version reads) and epic 5
   (`apply` on `settings.Diff`, the secret-version report); the RFC 13 pull request adding the
   `identity.keytab` row to Appendix B, without which the table check fails on the `identity`
   section (§1.2, §9).
@@ -363,8 +362,8 @@ test/integration/ad-dc/
   `State.Keytab` from the provider's versions of the `identity.keytab` reference, and
   `State.Directory` from the `identity.directory` section (pending E6's D2), both rebuilt when the
   settings generation moves, which a new `Secret` version raises; the keytab's current version, the
-  one the node now holds, reported through #4059's slot (RFC 13 §7); T5.10's `RetireKeytabStep` and
-  `RetireKeytabProgress` in the runner's table as they are (pending E5's D13); `api.Deps.Directory`
+  one the node now holds, reported through #4059's slot (RFC 13 §7), which RFC 23 §3.3's credential rotation waits on
+  before it prunes the previous version (E5's D13); `api.Deps.Directory`
   filled with E6's `KerberosLinkSID` (D10); the server added to the node's evaluator as a `Source`
   (`Evaluator.Add`, RFC 23's plan's epic 3's D4); the `identity.directory` section in the table.
   Consumed by T8.3, T8.4, T8.6, T8.9, and by RFC 23's plan's epic 5's T5.7 (`Deps.Logons`).
@@ -397,12 +396,6 @@ test/integration/ad-dc/
   - after one sign-in, the metrics listener's answer holds `identity_authentications_total` with
     `mechanism="kerberos"` and no label value holding alice's name or SID (catches identity's series
     on a registry the node does not serve, R12);
-  - the keytab's retention through the node's runner, under E5's D13 (a): versions 1 and 2 held,
-    the retirement operation started through the API and the clock moved 5 hours, `nodetest`'s
-    `Restart`, then the clock moved 5 hours 5 minutes more: the operation `succeeded` with
-    version 1 reported revocable, and its `Progress` read through the API before then (catches
-    the step missing from the node's table, which leaves the operation `pending`, or a start
-    re-recorded at restart, R5, R10);
   - a user's `krb` link written through the API for alice's name: accepted, and the spelling read
     back raw linked for alice's entry SID (catches `Deps.Directory` left nil, which refuses every
     link `503`, R2);
@@ -646,7 +639,7 @@ flowchart TD
   X1(["S1, E2 T2.4 and T2.6, RFC 23 plan epic 3, #4059 S1, S2 and epic 5"]):::sync --> T8_1["T8.1 Identity in node.New"]
   T8_1 --> C0(["after T8.1: E3's T3.6 and RFC 23 epic 5 unblocked"]):::sync
   T8_1 --> T8_2["T8.2 Kerberos and the directory in the node"]
-  X2(["E3 T3.1, T3.6 and T3.10, E4 T4.2 and T4.5, E5 T5.2, T5.5 and T5.10, E6 T6.3, T6.5, T6.8 and T6.9, #4059 epics 4 and 5, RFC 13 PR adding the identity.keytab row"]):::sync --> T8_2
+  X2(["E3 T3.1, T3.6 and T3.10, E4 T4.2 and T4.5, E5 T5.2 and T5.5, E6 T6.3, T6.5, T6.8 and T6.9, #4059 epics 4 and 5, RFC 13 PR adding the identity.keytab row"]):::sync --> T8_2
   T8_2 --> T8_3["T8.3 Applied at once"]
   X3(["E3 T3.6, RFC 23 plan epic 3 T3.5 (D16), epic 4 write path"]):::sync --> T8_3
   T8_2 --> T8_4["T8.4 alice's Samba ticket"]
@@ -675,7 +668,7 @@ passes through; after T8.11, E9 can start once S3 is reached.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T8.1 | 1.5 | E2's T2.4 and T2.6, RFC 23's plan's epic 3, #4059's epic 5 | identity in the node, which E3's T3.6 and RFC 23's plan's epic 5 wait for |
-| 2 | T8.2, T8.3, T8.4 | 5 | PR 1, E3's T3.6, E4, E5, E6, the RFC 13 PR adding the `identity.keytab` row | the node delivering every principal, Kerberos and directory change, checked against Samba |
+| 2 | T8.2, T8.3, T8.4 | 4.75 | PR 1, E3's T3.6, E4, E5, E6, the RFC 13 PR adding the `identity.keytab` row | the node delivering every principal, Kerberos and directory change, checked against Samba |
 | 3 | T8.5 | 2 | E5's T5.8b, E6's T6.11 | the Kerberos clauses in identity alone; may be open beside PR 2 |
 | 4 | T8.6, T8.7, T8.8 | 4 | PR 2, E7 | the machine account in the node and what pass-through and the join close |
 | 5 | T8.9, T8.10, T8.11 | 2.5 | PR 4, RFC 23's plan's epics 4 and 5 | the rows through the API, and the capture over everything above |
@@ -707,19 +700,19 @@ T6.6 test only the CLI's arguments and refusal, and the success paths run in its
   `State.Join` from `Installation.Join`, and E7's D11 is (a), so identity creates the scheduled
   rotation itself and T8.6 does not.
 - **Who fills identity's runner steps and API fields (D10).** Options: (a) E8, each with the
-  subtask that first runs it, as RFC 23's plan's epics 3 and 4 now say; (b) E2, E5 and E7 each
+  subtask that first runs it, as RFC 23's plan's epics 3 and 4 now say; (b) E2 and E7 each
   edit `node.New` for their own. Recommended: (a), since only E8 composes identity.
 
 **Where the RFC 18 plan and this document differ:**
 
-- The figure here is 15 man-days over 11 subtasks, against the RFC 18 plan's 10.5 over 5. It
+- The figure here is 14.75 man-days over 11 subtasks, against the RFC 18 plan's 10.5 over 5. It
   holds work the RFC 18 plan's list does not name: the writer's at-once apply held at identity
   (T8.3, 0.5; RFC 23's plan's epic 3 builds it, D3), the
   enabled state at sign-in (in T8.5, 0.75), the NetBIOS check (T8.8, 0.75), the machine account's
   composition, the node's seams, `State.Join`, the four kinds registered with no adapter and the
   refused join's hold (T8.6, 2.25), the live Samba sign-in
-  moved from E5 (T8.4, 1.25), and the keytab retention's run through the runner and both halves of
-  the `krb` link through the API (in T8.2, 0.75).
+  moved from E5 (T8.4, 1.25), and both halves of
+  the `krb` link through the API (in T8.2, 0.5).
   It holds less of the rows: the review found every clause of "admin needs proof", "deny-only
   lookup error" and "NTLM without a domain controller", and the resolution halves of "disabled
   directory account" and "directory deadline", already tested by E3, E4, E5 and E6, so §3 names
