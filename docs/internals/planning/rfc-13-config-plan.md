@@ -138,7 +138,8 @@ green with the epic that makes it pass.
     per key, and its options (write role, required keys, the thing a "per *thing*" scope is per,
     and the secret references it holds with their kind);
   - the table, the snapshot, `Read`, `Get`, `Diff` and `Keep`;
-  - the write-path check, its `Put` and `Delete` writes, and its errors. Whether the scope holds
+  - the write-path check, its `Put` and `Delete` writes, and its errors; `Check` itself once RFC 23's
+    T2.4 declares the `ControlPlaneTx` it takes (§3.2). Whether the scope holds
     content is an input to the check, which its caller reads in the write's transaction, so
     `pkg/settings` declares no store interface.
 - **`pkg/secrets`' provider:** RFC 13 §7's `SecretProvider`, as A2 completes it: `Seal` with its kind, role, owner and
@@ -278,7 +279,8 @@ Out of scope, each named in O1:
     change it guards: not the compiler, not the diff, not a later epic's tests.
 11. **A symbol is exported only if RFC 13's interfaces use it, or a component declares through it.**
     `pkg/bootstrap`, `pkg/settings` and `pkg/secrets` export what the node, the API and each
-    component's settings package call. All of it is frozen at S1.
+    component's settings package call. All of it is frozen at S1, but `Check`, which waits for RFC
+    23's T2.4 (§3.2).
 12. **Each subtask creates only what it declares.** No empty package and no stub without a caller.
     A package, an option or a test helper lands with its first consumer.
 
@@ -346,11 +348,13 @@ flowchart TD
   Unblocks epic 1, which renames what is left to `pkg/bootstrap`.
 - **S1, the configuration surface frozen.** `pkg/bootstrap`, `pkg/settings` and `pkg/secrets` build
   with stub bodies, with everything a later epic calls: `Load`, `NodeID`, `InitNodeID` and
-  `WriteMissingNodeIDs`; `Of` and its options, `Read`, `Get`, `Diff`, `Keep`, `Check` with `Put` and
-  `Delete`; `Seal` with its kind, role, owner and `Meta`, returning the `Secret` unwritten,
+  `WriteMissingNodeIDs`; `Of` and its options, `Read`, `Get`, `Diff`, `Keep`, the `Put` and
+  `Delete` writes; `Seal` with its kind, role, owner and `Meta`, returning the `Secret` unwritten,
   `Resolve` with the expected kind, role and owner, `Versions`, and `Prune` and `Delete` with the
   expected kind and owner; the kvstore views'
-  delete, cross-scope read and secrets. Unblocks epics 2, 3 and 4; with S2, the RFC 18 plan's epic 2, which
+  delete, cross-scope read and secrets. `Check` is not frozen at S1: it takes RFC 23's
+  `ControlPlaneTx`, which RFC 23's T2.4 (#4362) declares, so its stub lands once that type exists.
+  Unblocks epics 2, 3 and 4; with S2, the RFC 18 plan's epic 2, which
   adds `pkg/secrets` to identity's `Deps`.
 - **S2, secrets sealed.** A `Secret` seals, resolves and versions under each role's key. It is
   reached partway through epic 4, once the move, the record and sealing are in; rotation's `Prune`,
@@ -370,6 +374,7 @@ flowchart TD
 | Epic | Blocks | Why |
 | --- | --- | --- |
 | E1 ⛔ | every epic | Every epic builds on the frozen surface. |
+| RFC 23's T2.4 (#4362) | E1 and E3, `Check` only | `Check` takes `entity.ControlPlaneTx`, which RFC 23's T2.4 declares; no stub of it is frozen before then, and E3's write check fills it after. |
 | E2, E3, E4 | E5 | Integration wires all three into the node and the API. |
 | E1 | RFC 18's plan's epic 2 (S1) | Identity's `Deps` gain the frozen `pkg/secrets` surface there. |
 | E4 | RFC 18's plan's epic 2 (S2) | Identity seals and resolves its secrets here. |
@@ -1032,7 +1037,8 @@ the three packages and the views compile with stub bodies.
   them, and `Bootstrap` holding RFC 13 §2.2's facts but its scratch paths; `NodeID`, `InitNodeID`
   and `WriteMissingNodeIDs`.
 - `pkg/settings`' types: classes, section and its options, table, snapshot, `Read`, `Get`, `Diff`,
-  `Keep`, `Check` with its holds-content input and its `Put` and `Delete` writes, and their errors.
+  `Keep`, `Check` with its holds-content input and its `Put` and `Delete` writes, and their errors;
+  `Check` once RFC 23's T2.4 declares `ControlPlaneTx` (§3.2).
 - `pkg/secrets`' provider (RFC 13 §7): `Seal` with its `Meta`, returning the `Secret` its caller's
   `Write` commits with `tx.PutSecret`, `Resolve`, `Versions`, `Prune` and `Delete` with the kind and
   owner they check, and their errors.
