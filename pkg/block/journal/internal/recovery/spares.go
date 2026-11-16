@@ -24,13 +24,17 @@ import (
 // durable was ever written into such a segment — a take is made durable only
 // with the records after it — so re-adopting one loses nothing. A segment a
 // successor names is not among them whatever its records hold: it was sealed
-// before its successor was made. The successor's own re-adoption — its header
-// slot zeroed — leaves the predecessor unnamed at the next open, and that is
-// the unnamed path the classing keeps safe: a predecessor nothing names is
-// one that could have been open at a crash, its tail proven on the device
-// rather than trusted, its synced drops still corrupt by their own
-// synced-through, and a marker rotted into the bytes the successor's claim
-// covered cuts as a torn tail below which no acknowledged record sits.
+// before its successor was made. The naming successor itself is withheld
+// while the predecessor it names is still on disk, as the decision below
+// says; once that predecessor is retired — its name on no file, or its whole
+// life re-decided by a later open — the take is a plain spare again, its
+// claim answering nothing on disk, and its re-adoption then leaves the
+// predecessor unnamed at the next open: the unnamed path the classing keeps
+// safe, a predecessor nothing names being one that could have been open at a
+// crash, its tail proven on the device rather than trusted, its synced drops
+// still corrupt by their own synced-through, and a marker rotted into the
+// bytes the successor's claim covered cutting as a torn tail below which no
+// acknowledged record sits.
 //
 // The identity is checked before any record-less test, so a segment whose
 // header verifies naming another journal is never a candidate: no record of
@@ -49,7 +53,25 @@ import (
 // find the segment as it stands. The ceiling is the withholding alone, a
 // filter at this one choke point; withdraw it when the marks phases land and
 // own the named segments' fates under their own rules.
-func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID]bool, marks []core.SyncMark) []core.SegmentID {
+//
+// decision: a record-less take whose verified header names a predecessor
+// whose end is not yet proven — a predecessor still on disk, with no seal
+// marker its own bytes verify — is withheld with it, never re-adopted,
+// zeroed or unlinked, for the take's naming header is evidence the tail
+// classing reasons from — its claim is what the marker-alone-rotted and
+// missing-end checks judge the predecessor by — and nothing that reasons
+// from evidence releases it before the conclusion is durable: wipe the
+// take's header early and the first open may report a predecessor the
+// second finds nothing wrong with, the verdict gone with the claim that
+// grounded it. The holding ends where the verdict does — a predecessor
+// whose seal marker verifies releases its take at the open that reads the
+// marker whole, and so does one unlinked, its claim answering nothing on
+// disk. Withdrawn when the phases that write the open's loss records and
+// reconcile run before the spares phase, at which point the take is
+// re-adopted at once as any other spare. The ceiling is the held take
+// itself: it leaks no cap, counting toward the headroom for as long as it
+// is held.
+func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID]bool, marks []core.SyncMark) (cands []core.SegmentID, held []core.SegmentID) {
 	scanned := make(map[core.SegmentID]segmentScan, len(scans))
 	for _, sc := range scans {
 		scanned[sc.ID] = sc
@@ -60,6 +82,39 @@ func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID
 	marked := make(map[core.SegmentID]bool, len(marks))
 	for _, m := range marks {
 		marked[core.SegmentID(m.Segment)] = true
+	}
+
+	// Every segment the attach pass found on disk: the own, unverified and
+	// zero-header classes, the ones this open writes its verdicts on. A
+	// foreign segment is nobody's predecessor here, and a predecessor with
+	// no class is one a header read failed on, an open this phase never
+	// starts over.
+	onDisk := make(map[core.SegmentID]bool, len(att.Own)+len(att.Unverified)+len(att.ZeroHeader))
+	for _, s := range att.Own {
+		onDisk[s.ID] = true
+	}
+	for _, id := range slices.Concat(att.Unverified, att.ZeroHeader) {
+		onDisk[id] = true
+	}
+
+	// The takes naming a predecessor whose end is not yet proven: a
+	// predecessor still on disk, its seal marker not verifying at this open.
+	// Each such take stays with the predecessor it names, withheld by the
+	// decision above; a predecessor whose marker verifies has its verdict on
+	// its own bytes — the marker releases the take at this open — and a name
+	// no file holds is retired.
+	naming := make(map[core.SegmentID]bool, len(att.Own))
+	for _, s := range att.Own {
+		p := s.Header.Predecessor
+		if p == 0 || p == s.ID || !onDisk[p] {
+			continue
+		}
+		// A predecessor with no scan is one a read failed on: the open
+		// refuses on its ranges before this phase, so the hold is
+		// conservative and unreachable.
+		if psc, pok := scanned[p]; !pok || !psc.Sealed {
+			naming[s.ID] = true
+		}
 	}
 
 	// The classes that name a segment of this journal; the foreign class is
@@ -73,6 +128,7 @@ func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID
 	slices.Sort(ids)
 
 	var out []core.SegmentID
+	var heldOut []core.SegmentID
 	for _, id := range ids {
 		sc, ok := scanned[id]
 		switch {
@@ -80,11 +136,16 @@ func spareCandidates(att Attached, scans []segmentScan, named map[core.SegmentID
 			// Unreadable, a sealed predecessor, a segment a sync mark names,
 			// or a segment in which a record header verified: nothing the
 			// spares phase may take.
+		case naming[id]:
+			// The take naming a predecessor whose end is not yet proven: it
+			// stays with the predecessor it names, and the phase records it
+			// as held rather than taking it.
+			heldOut = append(heldOut, id) // ids ascend, so heldOut does too
 		default:
 			out = append(out, id)
 		}
 	}
-	return out
+	return out, heldOut
 }
 
 // allocProber is the platform's optional allocation query, asserted on the
@@ -109,8 +170,9 @@ type allocProber interface{ Allocated() (bool, error) }
 
 // Spares is what the spares phase did with the candidates it re-adopted:
 // each adoption, naming the id the allocator owns again and the class of the
-// pool's thirds a take draws it from, and each id the phase unlinked. Both
-// lists are ascending by id.
+// pool's thirds a take draws it from, each id the phase unlinked, and each
+// record-less take it held for its predecessor's sake. All three lists are
+// ascending by id.
 //
 // This state is what the pool gets: the open's own later step hands each
 // adoption to the pool — id and class together — and starts the pool after
@@ -121,6 +183,14 @@ type Spares struct {
 	// Adopted holds one entry per re-adopted spare, ascending by id, each
 	// with the class the pool's targets' fill order gave its id.
 	Adopted []AdoptedSpare
+	// Held holds each id the phase withheld because its header names a
+	// predecessor whose end is not yet proven, ascending by id: the take is
+	// left exactly as it stands — not adopted, not unlinked, no slot of it
+	// touched — and its count toward the headroom is what keeps it from
+	// leaking a cap, the accounting the open's pool wiring reads here. A
+	// later open re-adopts it once its predecessor's marker verifies or its
+	// predecessor is unlinked.
+	Held []core.SegmentID
 	// Unlinked holds each id the phase unlinked, ascending by id.
 	Unlinked []core.SegmentID
 }
@@ -202,7 +272,7 @@ func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.Jou
 		return &core.UnreadableRangesError{Ranges: ranges}
 	}
 
-	cand := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), marks)
+	cand, held := spareCandidates(st.Attached, st.Rebuilt.Scans, successorSet(st.Attached.Own), marks)
 	sizes := make(map[core.SegmentID]int64, len(st.Rebuilt.Scans))
 	for _, sc := range st.Rebuilt.Scans {
 		sizes[sc.ID] = sc.Size
@@ -303,6 +373,7 @@ func runSpares(ctx context.Context, deps Deps, rd *reader, st *State, _ core.Jou
 		adopted[i].Class = classes[i] // candidates ascend, so the i-th class is the i-th id's
 	}
 	st.Spares.Adopted = adopted
+	st.Spares.Held = held
 	st.Spares.Unlinked = unlinked
 
 	taken := make(map[core.SegmentID]bool, len(adopted)+len(unlinked))
