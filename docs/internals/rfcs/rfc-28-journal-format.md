@@ -902,10 +902,20 @@ checks its size against the cap and, where the platform reports it, that no
 extent is left unallocated or unwritten; one that fails is unlinked and made
 again rather than adopted. A re-adopted spare whose header slot or trailer slot
 is not zeros — a recycle interrupted before its zeroing was synced — has both
-slots zeroed and synced before a stream may take it ([§2.2](#2.2%20Segments)). Recovery **MUST** re-adopt a segment that passes as a spare ([§2.2](#2.2%20Segments)), unless a sync mark names its id ([§3.3](#3.3%20Torn%20and%20corrupt%20records)), counted first toward the reconcile spare while the journal has none ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), then toward the
+slots zeroed and synced before a stream may take it ([§2.2](#2.2%20Segments)). Recovery **MUST** re-adopt a segment that passes as a spare ([§2.2](#2.2%20Segments)), unless a sync mark names its id ([§3.3](#3.3%20Torn%20and%20corrupt%20records)) or its header names a predecessor still on disk, counted first toward the reconcile spare while the journal has none ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), then toward the
 headroom, the repack reserve or a stream's next segment, and **MUST NOT** treat it
 as an orphan: unlinking it after an age gate would leave the reserves the re-appends
-below draw on short at the very start that needs them. Open syncs the
+below draw on short at the very start that needs them. A record-less take whose
+header names a predecessor still on disk is held rather than re-adopted, and left
+as it stands: that header is the evidence its predecessor was sealed ([§2.2](#2.2%20Segments)),
+and until a phase writes the open's verdict on the predecessor before the spares
+phase runs, re-adopting would zero the only surviving header that names it — the
+next open would then judge the predecessor with less evidence than the first had,
+and a truncation could read as a crash once the missing-end refusal no longer stops
+it. The exception holds at most one segment per stream, and is withdrawn once the
+phases that write the open's loss records and the reconcile record run before the
+spares phase: the predecessor's verdict is then durable before the take's slots are
+touched, and the take is re-adopted at once. Open syncs the
 directory once before any re-adopted spare is taken: a process that died may
 have left a spare's entry whose directory sync it never reached ([§2.2](#2.2%20Segments)).
 If that sync fails, the open fails and takes no spare: one taken anyway could
