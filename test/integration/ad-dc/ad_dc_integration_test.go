@@ -14,6 +14,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,7 +69,32 @@ var adNamePrefix = strings.ToLower(cmp.Or(os.Getenv("DITTOFS_AD_DC_NAME_PREFIX")
 // other run on the same Docker host, so two runs never remove each other's DC.
 var adRunID = strings.ToLower(rand.Text()[:8])
 
-// adStaleAge is how old a labelled container, network or image must be before
+// adImage is the DC image, built once per run by the first setupADDC and
+// removed by TestMain when the run ends. Its tag is this run's own, so a
+// concurrent run's build cannot retag it between this run's build and its
+// docker run.
+var adImage = adNamePrefix + ":" + adRunID
+
+var (
+	buildADImageOnce sync.Once
+	adImageErr       error
+	adImageBuilt     bool
+)
+
+// TestMain removes the run's DC image once every test is done with it. Removing
+// it per test would also drop the legacy builder's cache, its untagged parent
+// images, so every test would rebuild the image from scratch.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if adImageBuilt {
+		if out, err := adDockerCombined("rmi", adImage); err != nil {
+			fmt.Fprintf(os.Stderr, "rm AD-DC image %s: %v\n%s", adImage, err, out)
+		}
+	}
+	os.Exit(code)
+}
+
+// adStaleAge is how old a container or labelled network must be before
 // a later run removes it as left behind by a run that was killed before its
 // t.Cleanup ran. It is well above the suite's 20-minute timeout, so a run still
 // in flight on the same host keeps its DC.
@@ -79,17 +105,28 @@ var sweepADLeftoversOnce sync.Once
 // sweepADLeftovers removes what earlier runs under the same name prefix left
 // behind: a go test timeout panic, Ctrl-C or SIGKILL skips t.Cleanup, and each
 // leaked network holds one of Docker's few default bridge subnets. Containers
-// go first, since Docker refuses to remove a network or image still in use.
-// Failures are only logged: a leftover that stays costs a subnet, not this run.
+// are matched by name rather than label, so those of a fixture that labelled
+// none go too, and go first, since Docker refuses to remove a network still in
+// use. Failures are only logged: a leftover that stays costs a subnet, not this
+// run.
+//
+// decision: images are not pruned. A fully cached build keeps the Created time
+// of its layers, so no age filter tells a live run's freshly tagged image from a
+// leftover, and pruning one between its build and its docker run fails that
+// run. A killed run therefore leaves its image tag behind; a cached build points
+// it at the image the next run builds anyway, so it costs a tag rather than
+// disk until the Dockerfile changes.
 func sweepADLeftovers(t *testing.T) {
 	t.Helper()
-	out, err := adDockerOutput("ps", "-a", "--filter", "label="+adNamePrefix,
-		"--format", "{{.ID}}\t{{.CreatedAt}}")
+	// Docker's name filter is an unanchored pattern; staleADContainers checks
+	// the prefix itself.
+	out, err := adDockerOutput("ps", "-a", "--filter", "name="+adNamePrefix+"-",
+		"--format", "{{.ID}}\t{{.Names}}\t{{.CreatedAt}}")
 	if err != nil {
 		t.Logf("list leftover AD-DC containers: %v", err)
 		return
 	}
-	if ids := staleADContainers(string(out), time.Now(), adStaleAge); len(ids) > 0 {
+	if ids := staleADContainers(string(out), adNamePrefix+"-", time.Now(), adStaleAge); len(ids) > 0 {
 		t.Logf("Removing %d AD-DC container(s) left by killed runs", len(ids))
 		if out, err := adDockerCombined("rm", append([]string{"-f"}, ids...)...); err != nil {
 			t.Logf("remove leftover AD-DC containers: %v\n%s", err, out)
@@ -99,21 +136,21 @@ func sweepADLeftovers(t *testing.T) {
 	if out, err := adDockerCombined("network", "prune", "-f", "--filter", "label="+adNamePrefix, "--filter", until); err != nil {
 		t.Logf("prune leftover AD-DC networks: %v\n%s", err, out)
 	}
-	if out, err := adDockerCombined("image", "prune", "-a", "-f", "--filter", "label="+adNamePrefix, "--filter", until); err != nil {
-		t.Logf("prune leftover AD-DC images: %v\n%s", err, out)
-	}
 }
 
-// staleADContainers returns the IDs in `docker ps --format '{{.ID}}\t{{.CreatedAt}}'`
-// output whose container was created more than maxAge before now. A line whose
-// time does not parse is left out, so an unexpected format never removes a DC.
-func staleADContainers(psOut string, now time.Time, maxAge time.Duration) []string {
+// staleADContainers returns the IDs in `docker ps --format
+// '{{.ID}}\t{{.Names}}\t{{.CreatedAt}}'` output whose container's name starts
+// with namePrefix and which was created more than maxAge before now. A line
+// whose fields or time do not parse is left out, so an unexpected format never
+// removes a DC.
+func staleADContainers(psOut, namePrefix string, now time.Time, maxAge time.Duration) []string {
 	var ids []string
 	for _, line := range strings.Split(strings.TrimSpace(psOut), "\n") {
-		id, created, ok := strings.Cut(line, "\t")
-		if !ok {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 || !strings.HasPrefix(fields[1], namePrefix) {
 			continue
 		}
+		id, created := fields[0], fields[2]
 		at, err := time.Parse("2006-01-02 15:04:05 -0700 MST", created)
 		if err == nil && now.Sub(at) > maxAge {
 			ids = append(ids, id)
@@ -167,53 +204,58 @@ func adDockerExec(args ...string) ([]byte, error) {
 
 // AD-DC Docker Setup
 
-// setupADDC builds the Samba AD-DC image and runs it on a Docker network of
-// its own, letting its entrypoint provision the domain, and returns the DC's
-// IP on that network. t.Cleanup removes the container, network and image.
+// setupADDC runs the run's Samba AD-DC image, building it on first use, on a
+// Docker network of its own, letting its entrypoint provision the domain, and
+// returns the DC's IP on that network. t.Cleanup removes the container and
+// network.
 //
 // The DC is reached on its container IP, with no port published on the host,
-// so a run never takes a host port another run or user holds. That needs a
-// container IP the host can route to: true of a Linux Docker host, not of
-// Docker Desktop, where these tests fail rather than skip.
+// so a run never takes a host port another run or user holds, and NETLOGON's
+// endpoint mapper (port 135) can send clients to dynamic RPC ports without
+// NAT. That needs a container IP the host can route to: true of a Linux Docker
+// host, not of Docker Desktop, where setupADDC fails rather than skips.
 func setupADDC(t *testing.T) (dcIP string) {
 	t.Helper()
 
 	sweepADLeftoversOnce.Do(func() { sweepADLeftovers(t) })
 
 	// Address a container private to this test so no other test's teardown can
-	// remove the DC out from under an in-flight docker exec. The image is tagged
-	// for this run, so a concurrent run's build cannot retag it between this
-	// run's build and its docker run.
+	// remove the DC out from under an in-flight docker exec.
 	container := uniqueContainerName(t)
 	network := container + "-net"
-	image := adNamePrefix + ":" + adRunID
 	label := adNamePrefix + "=" + adRunID
 	adContainerName = container
 
 	// Register the teardown before the container exists, so a t.Fatalf anywhere
-	// below cannot orphan the container or its network. The network and image go
-	// last: Docker refuses to remove either while a container uses it.
+	// below cannot orphan the container or its network. The network goes last:
+	// Docker refuses to remove it while a container uses it.
 	t.Cleanup(func() {
 		t.Log("Cleaning up AD-DC container...")
-		_ = exec.Command("docker", "rm", "-f", container).Run()
-		_ = exec.Command("docker", "network", "rm", network).Run()
-		_ = exec.Command("docker", "rmi", image).Run()
+		if out, err := adDockerCombined("rm", "-f", container); err != nil {
+			t.Logf("rm AD-DC container: %v\n%s", err, out)
+		}
+		if out, err := adDockerCombined("network", "rm", network); err != nil {
+			t.Logf("rm AD-DC network: %v\n%s", err, out)
+		}
 	})
 
-	dockerfileDir := findADDockerfileDir(t)
-
-	// Build the image (cached after first run). Force linux/amd64: samba-ad-dc
-	// has no native arm64 path in our base and runs fine under emulation.
-	t.Log("Building Samba AD-DC image (slow on first run)...")
-	buildCmd := exec.Command("docker", "build",
-		"--platform", "linux/amd64",
-		"--label", label,
-		"-t", image, dockerfileDir,
-	)
-	buildCmd.Stdout = os.Stdout
-	buildCmd.Stderr = os.Stderr
-	if err := buildCmd.Run(); err != nil {
-		t.Fatalf("docker build failed: %v", err)
+	// Build the image once per run, cached by Docker across runs. Force
+	// linux/amd64: samba-ad-dc has no native arm64 path in our base and runs
+	// fine under emulation.
+	buildADImageOnce.Do(func() {
+		t.Log("Building Samba AD-DC image (slow on first run)...")
+		buildCmd := exec.Command("docker", "build",
+			"--platform", "linux/amd64",
+			"--label", label,
+			"-t", adImage, findADDockerfileDir(t),
+		)
+		buildCmd.Stdout = os.Stdout
+		buildCmd.Stderr = os.Stderr
+		adImageErr = buildCmd.Run()
+		adImageBuilt = adImageErr == nil
+	})
+	if adImageErr != nil {
+		t.Fatalf("docker build failed: %v", adImageErr)
 	}
 
 	if out, err := adDockerCombined("network", "create", "--label", label, network); err != nil {
@@ -236,7 +278,7 @@ func setupADDC(t *testing.T) (dcIP string) {
 		"--network", network,
 		"--hostname", adDCHostname,
 		"-e", fmt.Sprintf("RPC_PORT_RANGE=%d-%d", adRPCPortLow, adRPCPortHigh),
-		image,
+		adImage,
 	); err != nil {
 		t.Fatalf("docker run failed: %v\n%s", err, out)
 	}
@@ -248,15 +290,16 @@ func setupADDC(t *testing.T) (dcIP string) {
 	waitForADReady(t, 10*time.Minute)
 
 	dcIP = getContainerIP(t)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(dcIP, "389"), 5*time.Second)
+	if err != nil {
+		t.Fatalf("DC at %s is not reachable from this host (%v); the fixture needs a Linux Docker host that routes to container IPs, not Docker Desktop", dcIP, err)
+	}
+	_ = conn.Close()
 	t.Logf("AD-DC reachable at %s on network %s", dcIP, network)
 	return dcIP
 }
 
 // getContainerIP returns the IP of adContainerName on its fixture network.
-// On a Linux Docker host this IP is directly reachable from the host, which
-// NETLOGON requires: the endpoint mapper (port 135) and the dynamic RPC ports
-// must all be reachable without NAT. On Docker Desktop container IPs are not
-// host-reachable, so the tests time out and FAIL there (they do not skip).
 func getContainerIP(t *testing.T) string {
 	t.Helper()
 	// Newer Docker engines drop the legacy top-level .NetworkSettings.IPAddress
