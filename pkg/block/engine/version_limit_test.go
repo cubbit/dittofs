@@ -1313,7 +1313,7 @@ func TestOneRaiseCarriesEveryShare(t *testing.T) {
 	all := append([]engine.Share{s.one, s.two}, s.more...)
 	removing := s.more[0].ID
 
-	err := s.fs.Store.ControlPlane().DeleteShare(t.Context(), removing, entity.SnapshotsRefuse, 0)
+	err := s.fs.Store.ControlPlane().DeleteShare(t.Context(), removing, entity.SnapshotsRefuse, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
