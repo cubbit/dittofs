@@ -29,7 +29,7 @@ Kerberos branch joins the dispatch, the throttle, the logon event and the series
 and T4.5 build. **E7, partly**: pass-through is a row of T4.2's domain table, and it reuses
 T4.1's key exchange and MIC check keyed by the reply's `UserSessionKey`, T4.2's NTLMv1 refusal,
 which sits before routing, and T4.4's throttle for the domain controller's count. **E6, partly**:
-its T6.7 cache keys names with E2's `entity.FoldPrincipalName`, as T4.4's throttle does. RFC 22's plan, whose S6a is this
+its T6.7 cache keys names with E2's `entity.FoldPrincipalName`, which T4.4's throttle reaches through `entity.PrincipalUserPart`. RFC 22's plan, whose S6a is this
 epic's S2.
 
 ---
@@ -127,7 +127,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no external system: NTLM is checked against published vectors |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T4.1, T4.2, T4.4, T4.5 | RFC 18's `decision:` notes of §3.5 (an alternate UPN suffix) at the domain table and §3.6 (no map to guest) at `SignIn`'s error path; its `ponytail:` notes of §3.1 and §7.3 at the throttle; this document's `decision:` markers for D1 and D2 (T4.1), D3, D4 and D10 (T4.2), D5 (T4.4), and D7's `ponytail:` (T4.5); epic 1's stub marker on `SignIn` narrowed to the Kerberos branch |
 | rule 10, a test must be able to fail | all | each R row's test is named with the bug it catches; R10's constant-time compare is held by `hmac.Equal` and R24 by the event's one emit site, each named as such |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T4.5 | `LogonSink`, `LogonEvent` and `LogLines`, which `internal/node` calls to fill `Deps.Logons`; the throttle imports E2's `entity.FoldPrincipalName`, so this epic exports no fold; the cryptography stays unexported |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T4.5 | `LogonSink`, `LogonEvent` and `LogLines`, which `internal/node` calls to fill `Deps.Logons`; the throttle imports E2's `entity.PrincipalUserPart`, so this epic exports no fold; the cryptography stays unexported |
 | rule 12, each subtask creates only what it declares | all | `Deps.Logons` lands with T4.5, its first reader; the pass-through row with E7; no `State` field is added |
 
 ## 3. Requirements and invariants
@@ -218,8 +218,9 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   `decision:` marker. Prior art: `develop`'s `authMicOffset` (checked); Samba's
   `NTLMSSP_MIC_OFFSET` (from memory).
 - **D3, how a step is classified, pending the user's answer for the first point (§9).**
-  - A step with neither or both of `NTLM` and `Kerberos`, or an AUTHENTICATE with no user name,
-    is `ErrInvalid` before the throttle, with no logon event and no count: it is no attempt of
+  - A step with neither or both of `NTLM` and `Kerberos`, or an AUTHENTICATE with no user name
+    (the unclassified step), is `ErrInvalid` before the throttle, with no logon event and no
+    count: it is no attempt of
     either mechanism, and null and guest sessions are `gss`'s to set up without `SignIn` (RFC 20
     §4.4; RFC 22's plan's S4), so one that reaches identity is a caller's bug, refused, never a
     session.
@@ -228,7 +229,10 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   - A response that is not a well-formed NTLMv2 response (MS-NLMP 2.2.2.7: its header, or an AV
     pair list without `MsvAvEOL` or overrunning the buffer) is `ErrInvalid`, as `develop`
     answers `smb2.session.ntlmssp_bug14932` with `STATUS_INVALID_PARAMETER`. It is decided
-    before the proof is computed, so `ErrInvalid` never depends on the password.
+    before the proof is computed, so `ErrInvalid` never depends on the password. Unlike the
+    unclassified step it is an NTLM attempt by a named user, so it is recorded: one logon event
+    and one `identity_authentications_total` count, outcome `invalid`. It is not throttled: it is
+    refused before the throttle is asked, and does not count toward it (D5).
   - Every failure once the proof has been computed (the proof, the key exchange, the MIC, a
     disabled user) is `ErrLogonFailure`, counted by the throttle, so no answer tells a right
     password from a wrong one.
@@ -255,10 +259,12 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   24's pool can be charged. `decision:` marker for the throttled-attempt rule; RFC 18's §3.1 and
   §7.3 `ponytail:` notes and a `ponytail:` on the fixed count at the table. Prior art: Samba
   counts only checked failures toward `bad password` (from memory).
-- **D6, the throttle folds with the name index's fold.** E2's fold, which keys `NX‖user`, is
-  `entity.FoldPrincipalName`, beside `entity.FoldShareName`, so a spelling the store finds as one user is one pair and no
-  second copy can drift from it; E6's T6.7 folds its cache keys with the same export. The user part is stripped of a `DOMAIN\` prefix and an
-  `@realm` suffix as E2's `Lookup` strips it. Prior art: none found.
+- **D6, the throttle keys on E2's user part.** The pair's name is E2's
+  `entity.PrincipalUserPart` (its D2, T2.1), which strips a `DOMAIN\` prefix and an `@realm`
+  suffix and folds with `entity.FoldPrincipalName`, the fold that keys `NX‖user`; E2's `Lookup`
+  calls the same function, so a spelling the store finds as one user is one pair and no second
+  copy of the stripping or the fold can drift from it. E6's T6.7 folds its cache keys with
+  `entity.FoldPrincipalName`. Prior art: none found.
 - **D7, logon events go to `Deps.Logons`, written as log lines without the presented name,
   pending the user's answer (§9).** `LogonSink` has RFC 25's method shape, `Logon(ctx,
   *LogonEvent)`, and `LogonEvent` holds RFC 25 §4.2's logon fields this epic has: the outcome,
@@ -389,7 +395,9 @@ internal/vfs/
     markers;
   - an unexported outcome per path, which T4.5 records: `ok`; `logon_failure` for a wrong
     proof, a missing user or hash, NTLM off, NTLMv1 or LM, and a key or MIC failure; `disabled`;
-    `invalid` for a malformed response; `unavailable`; `unknown_domain`;
+    `invalid` for a malformed response, which T4.5 records though it is `ErrInvalid` (D3);
+    `unavailable`; `unknown_domain`; the unclassified step has no outcome and returns before
+    any is recorded;
   - the `export_test.go` hook that delivers the NT hash a proof was computed with;
   - `internal/identity/identitymem` (E3's T3.6) passing #4059's provider over `keyprovider`'s
     local provider, with its key files under the test's `t.TempDir()`, as `Deps.Secrets`, so
@@ -529,7 +537,10 @@ internal/vfs/
     and the histogram's count, read from the registry (R25);
   - one `identity.authenticate`, its parent the context's span, its attributes exactly the proof
     kind, outcome and principal ID (catches a name or SID attribute, R26);
-  - D3's `ErrInvalid` rows: no event, no count;
+  - D3's unclassified step (neither or both mechanisms, or no user name): no event, no count;
+  - a malformed response: one event and one count, outcome `invalid`, and after ten of them
+    from one address the right password still signs in (catches a malformed response left
+    unrecorded, or counted toward the throttle, D3, D5);
   - across the whole table, every event, `LogLines`' output, every `Deps.Logger` line at `Debug`,
     every error text and every span attribute, searched for the response, the MIC, the session
     key and the NT hash, and the log for the presented name: none found (catches a credential

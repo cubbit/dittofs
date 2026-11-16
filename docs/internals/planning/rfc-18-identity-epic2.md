@@ -18,7 +18,7 @@ counters land, T2.2 (`Installation.NTLMOff`, its R54), T2.6 (positions and the `
 D8 and T2.11 (`DeleteUser`'s mark, batches and secret deletion); RFC 23's epic 3 document (pull
 request #4336), D7 and T3.4 (the runner's `StepResult`, `Step` and `Progress`).
 **Track:** C.
-**Epic 2 estimate: 8 subtasks, 13.75 man-days.**
+**Epic 2 estimate: 8 subtasks, 14 man-days.**
 **Depends on:** **S1**, epic 1's identity surface frozen. **#4059's S1 and S2**: `pkg/settings`
 and `pkg/secrets` frozen, with `Seal` taking the kind, the owner and `secrets.Meta`, the kvstore
 secrets view (`Secret`, `PutSecret`, `PruneSecret`) on the view and on `ControlPlaneTx`, and
@@ -151,7 +151,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no external system is reached |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T2.1, T2.2, T2.4, T2.5, T2.6, T2.7 | RFC 18's `decision:` notes of §2.1 (root) at root's ID, §2.3 (a missing uid is allocated) at `Alloc`, §3.5 (NTLM on by default) at the setting's default, §4.4 (a deleted principal is the null SID) at `Spell`, §8 (one `User` record) at `Account`; D1's, D3's and D8's `decision:` markers, D2's and D4's `ponytail:` markers, and the NT-hash cost marker at `NewHashes`; epic 1's stub `ponytail:` markers removed from each body this epic fills |
 | rule 10, a test must be able to fail | all | each R-row's test is named in its subtask with the bug it catches; R24's purity, R27's constant-time compare and R33's single writer are held by the code's shape, each named as such |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T2.1, T2.2, T2.4, T2.5 | the exports are `entity`'s and kvstore's fields and methods RFC 16 declares, `Scheme.Stored()` (RFC 18 §2.2), `entity.FoldPrincipalName` (D2), identity's settings struct, `Deps.Secrets`, and the deletion's step and progress, typed by `internal/node/step` |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T2.1, T2.2, T2.4, T2.5 | the exports are `entity`'s and kvstore's fields and methods RFC 16 declares, `Scheme.Stored()` (RFC 18 §2.2), `entity.FoldPrincipalName` and `entity.PrincipalUserPart` (D2), kvstore's `IDHighWater` (D1), identity's settings struct, `Deps.Secrets`, and the deletion's step and progress, typed by `internal/node/step` |
 | rule 12, each subtask creates only what it declares | all | each deliverable names its consumer; `SchemeDir` lands with `Stored()` and `NewHashes`, `Rename` and `SetEmail` with E6, the mint path with E6's T6.2 |
 
 ## 3. Requirements and invariants
@@ -184,7 +184,7 @@ spells it `merrs.NewInvalidArgumentError`, as RFC 23's plan's epic 2 does (its D
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R10 | A uid, gid or RID the installation allocates is drawn from a counter per scheme that only rises, inside the transaction that writes the record, and is never allocated again, even after its principal is deleted | MUST NOT | §2.3 item 2, §9.1 ID2; RFC 16 §4.2 `IDS‖kind` | T2.2, T2.3 |
-| R11 | A uid or gid is allocated from `identity.id_range` (default 1 000 000 to 1 999 999 999), skipping one any principal holds; a change of the range applies to the next allocation and moves no existing ID | MUST | §2.3 item 4, §2.6; RFC 16 §4.2 `IDS‖kind`; RFC 13 Appendix B | T2.2, T2.4 |
+| R11 | A uid or gid is allocated from `identity.id_range` (default 1 000 000 to 1 999 999 999), skipping one any principal holds; a change of the range applies to the next allocation and moves no existing ID: the next value is `max(counter+1, Range.Lo)`, `ErrNoSpace` when it passes `Range.Hi`, and `Apply` refuses `ErrInvalid` a range whose `Hi` is below the uid or gid counter's high-water mark (D1) | MUST | §2.3 item 4, §2.6; RFC 16 §4.2 `IDS‖kind`; RFC 13 Appendix B | T2.2, T2.4 |
 | R12 | A missing uid or gid is never filled with a default: the write names the IDs the store allocates (`Alloc`), on `Minter.Create` and on `PutUser` and `PutGroup` alike; a zero ID it does not name is refused `ErrInvalid`, never read as "allocate one"; `Alloc` applies only to a create, and a later put allocates nothing | MUST NOT | §2.3 item 4; RFC 16 §3; RFC 23's plan's epic 2, D2 | T2.2, T2.3 |
 | R13 | A SID never changes once the principal has one | MUST NOT | §2.3, §9.1 ID4 | T2.2 |
 | R14 | A local principal's SID is the installation's domain SID followed by a RID from the RID counter; the domain SID is `S-1-5-21-a-b-c`, `a`, `b` and `c` the installation ID's first twelve bytes as three little-endian 32-bit numbers, derived, never stored; a RID is never derived from a uid | invariant | §4.4 | T2.2 |
@@ -247,7 +247,12 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   range it read: identity's minting callers from `State.Settings`, the API from `pkg/settings`. A
   zero range with `UID` or `GID` set is refused with `merrs.NewInvalidArgumentError`; a range
   with no free ID left refuses the write `ErrNoSpace`,
-  as `IDS‖shard` does; the RID counter starts at 1000, above Windows' reserved RIDs. The
+  as `IDS‖shard` does; the RID counter starts at 1000, above Windows' reserved RIDs. The next
+  uid or gid is `max(counter+1, Range.Lo)`, skipping held IDs, and `Alloc` answers `ErrNoSpace`
+  when it passes `Range.Hi`. Since the counters never rewind (R10), a range whose `Hi` is below
+  a counter's high-water mark could never allocate again, so `Apply` refuses one with
+  `ErrInvalid` and keeps the last applied range (R29), reading the marks through kvstore's
+  `IDHighWater` (T2.4). The
   alternative, kvstore reading the setting's raw row in the write's transaction, couples the store
   to a section's encoding. Needs an RFC 16 §3 amendment. `decision:` marker at `Alloc`. Prior art:
   Samba's `idmap_tdb` takes its range from the caller's configuration (from memory).
@@ -260,8 +265,10 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   changes a fold needs a re-key of `NX‖user` and `NX‖group`. Prior art: Go's `strings.EqualFold` is
   simple Unicode case folding; Windows compares account names case-insensitively (from memory).
   It is `entity.FoldPrincipalName`, exported beside `entity.FoldShareName`, whose precedent
-  `kvstore/keys.go` already calls, so E4's throttle keys and E6's T6.7 cache keys import it from
-  `entity`.
+  `kvstore/keys.go` already calls, so E6's T6.7 cache keys import it from `entity`. Beside it,
+  `entity.PrincipalUserPart(name string) string` strips a `DOMAIN\` prefix and an `@realm`
+  suffix, then folds; `Lookup` (T2.6) and E4's throttle key both call it, so a spelling one
+  strips and the other does not cannot map to a second throttle pair.
 - **D3, a record's shape is checked on every write.** kvstore refuses, with
   `merrs.NewInvalidArgumentError`, on `Minter.Create` and on
   `PutUser` and `PutGroup`, a well-known principal, a `Machine` record with a `Name`, a scheme other
@@ -272,14 +279,20 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
 - **D4, the NT-hash deletion's store call, pending the user's answer (§9).** RFC 16 §3 declares no
   call that lists or deletes secrets by kind, RFC 18 §2.6 says the `Minter`'s are identity's only
   writes, and RFC 16 says the `Minter` never overwrites. The deletion needs one call:
-  `DropNTHashes(ctx, after SecretRef, n int) (next SecretRef, done bool, err error)`, deleting every
-  version of up to `n` `Secret`s of kind nt-hash after `after` and zeroing each owner's
+  `DropNTHashes(ctx, after entity.SecretRef, n int) (next entity.SecretRef, dropped int, done
+  bool, err error)`, deleting every version of up to `n` `Secret`s of kind nt-hash after `after`,
+  returning how many it deleted, and zeroing each owner's
   `User.NTHash`, raising its `Generation` so a `PutUser` holding the old one is refused, in one
   `kv.Update` that raises `PGEN` once through RFC 23's epic 2 T2.6 helper, writing each record's
   `Position` (its R28), and raises `CFGGEN`. The end is not a kvstore call: the step's `End` calls
   RFC 23's `ControlPlaneTx.SetNTHashDeleted(op)`, which sets `NTLMOff.Deleted` in the transaction
   that ends the operation (RFC 23 epic 3's R52). `n` is 256, a constant under the KV's
-  per-transaction limit, with a `ponytail:` naming it. It needs amendments to RFC 16 §3 and RFC 18
+  per-transaction limit, with a `ponytail:` naming it. The step adds `dropped`, not `n`, to the
+  count its cursor holds, so a short last batch counts what it held; a turn re-fed after a
+  crash drops nothing already dropped and adds that zero, so the count never doubles, but the
+  batch committed before the crash goes uncounted. Progress has `Total` -1 and is advisory, so a
+  `ponytail:` at the step names that ceiling rather than storing the count in the batch's
+  transaction. It needs amendments to RFC 16 §3 and RFC 18
   §2.6. Prior art: RFC 16 §3's `DeleteUser`, whose batches resume from a mark the same way.
 - **D5, the password set's write stays the API's.** RFC 18 §8.1 makes `NewHashes` pure and says
   the API writes the result with the record, conditional on the `identity.ntlm` revision. RFC 23's
@@ -336,7 +349,7 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
 ```text
 pkg/metadata/entity/
   id.go             T2.1  RootPrincipal (0x0D), WellKnown up to 0x0D, PrincipalMachine
-  fold.go           T2.1  FoldPrincipalName (D2), beside FoldShareName
+  fold.go           T2.1  FoldPrincipalName and PrincipalUserPart (D2), beside FoldShareName
   control.go        T2.1  User.Password, User.NTHash (User.Secret renamed), SchemeDir (D7)
                     T2.2  IDRange, Alloc.Range (D1)
 pkg/metadata/kvstore/
@@ -344,6 +357,7 @@ pkg/metadata/kvstore/
                     T2.2  the allocation behind Alloc on PutUser and PutGroup, SID immutable
                     T2.8  NTHash among the references DeleteUser's last batch deletes (R34)
   alloc.go          T2.2  IDS‖0x04 uid, IDS‖0x05 gid, IDS‖0x06 RID; the installation's domain SID
+                    T2.4  IDHighWater (D1)
   minter.go         T2.3  Minter, Create
   nthash.go         T2.7  DropNTHashes (D4)
   codecs.go         T2.1  User's two references, the machine record
@@ -378,7 +392,8 @@ internal/identity/
     user is T2.8's (R34), which lands before the first code that stores an NT hash;
   - in `PutUser` and `PutGroup`: D3's shape checks but the file-principal one (T2.2's), uid or gid
     0 or 65534 refused, a name holding `@` refused, and the fold `entity.FoldPrincipalName` (D2) keying `NX‖user`
-    and `NX‖group`, the value keeping the name as written.
+    and `NX‖group`, the value keeping the name as written;
+  - `entity.PrincipalUserPart` beside the fold (D2), for T2.6's `Lookup` and E4's throttle key.
   - `PrincipalMachine` named `machine` in `principalKinds`, so `PrincipalKind.MarshalText` and
     `Principal.MarshalText` accept a machine principal.
   Consumed by T2.2, T2.3, T2.5 to T2.8, by E3's T3.10 (root; anonymous already exists), E4 (`NTHash`), E5 (`Machine`) and E6.
@@ -396,7 +411,9 @@ internal/identity/
   with U+212A in place of `K` colliding with `kelvin` (catches an ASCII-only or `ToLower` fold, R7);
   a group `finance` beside a user `finance`, both accepted (catches a fold across kinds, R7); in
   `entity`, a machine principal round-tripping through `MarshalText` and `ParsePrincipal`
-  (catches `PrincipalMachine` left out of `principalKinds`, R3). No test double.
+  (catches `PrincipalMachine` left out of `principalKinds`, R3); in `entity`, `PrincipalUserPart`
+  of `alice`, `ALICE`, `CORP\alice` and `Alice@CORP.EXAMPLE` each equal to
+  `FoldPrincipalName("alice")` (catches a form left unstripped or unfolded, D2). No test double.
 
 ### T2.2 The ID counters and the domain SID: the allocation behind RFC 23's `Alloc`
 
@@ -476,27 +493,33 @@ internal/identity/
 
 ### T2.4 Identity's settings, `State` and `Deps.Secrets`
 
-**Subtask T2.4 estimate: 1.25 man-days.**
+**Subtask T2.4 estimate: 1.5 man-days.**
 
-- **Track:** C. **Depends on:** S1. #4059's S1 and S2.
+- **Track:** C. **Depends on:** S1, T2.2. #4059's S1 and S2.
 - **Covers:** R11, R29, R30, R35.
 - **Deliverables:** `internal/identity.Settings{IDRange entity.IDRange; NTLM bool; NetBIOSName
   string}` with RFC 13 Appendix B's defaults and `Validate`, declared through `pkg/settings`'s `Of`,
   with RFC 18 §3.5's `decision:` (NTLM on by default) at the default; `State.Settings`; `Apply`
-  refusing a `State` whose settings fail `Validate` and keeping the last applied; `SecretProvider`
+  refusing a `State` whose settings fail `Validate` and keeping the last applied; kvstore's
+  `IDHighWater(ctx) (uid, gid uint32, err error)`, reading T2.2's `IDS‖0x04` and `IDS‖0x05`
+  counters, and `Apply` refusing `ErrInvalid` a range whose `Hi` is below either (D1); `SecretProvider`
   and `Deps.Secrets` (D6). Consumed by T2.5 (`identity.netbios_name`), T2.6 (`Deps.Secrets`), E3's T3.10 (the `NTLM` key),
   E4, E6's T6.3 and T6.5, E6's T6.9 (the range) and E8, which lists the section in the node's
   table. Later keys join the section: `identity.keytab` from E5's T5.2 and `DirectoryStaleGrace`
   from E6's T6.7.
 - **Acceptance criteria:**
-  - A `nil` `Secrets` makes `VerifyPassword` answer `ErrUnavailable` (fail closed); `New` does not
-    require it, so no earlier caller changes.
+  - `Apply` of an `identity.id_range` whose `Hi` is below the uid or gid counter's high-water mark
+    is refused `ErrInvalid`, and the last applied range is kept (D1).
 - **Tests:** over the memory KV store, under the leak check: `Apply` of a valid `State`, then of one
   with `NetBIOSName` `"dittofs.lab"`, then reading the current `State` through `export_test.go`:
   the first kept (catches an invalid setting applied, R29); a section with no rows yields `NTLM`
   on, `NetBIOSName` `DITTOFS` and the default range (R30); `Validate` table: 16 bytes, lower case,
   `_`, empty, each refused, `DITTOFS` and `NAS-01` accepted; an `IDRange` with `Lo > Hi` refused
-  (R30, R11); concurrent `Apply`s of matched `{Generation, Settings}` pairs, each `Settings`
+  (R30, R11); uids allocated through T2.2 until the uid counter reaches 1 000 006, then `Apply` of
+  `[1000, 2000]`: `ErrInvalid`, the previous range kept, and the next create draws 1 000 007
+  (catches a lowered range accepted, which leaves every later `Alloc` `ErrNoSpace`, R11, D1); the
+  same with the gid counter alone past `Hi`: refused (catches a check of the uid counter only);
+  concurrent `Apply`s of matched `{Generation, Settings}` pairs, each `Settings`
   naming its `Generation` in `NetBIOSName`, and a reader through `export_test.go` asserting every
   `State` it reads is one of the pairs (catches `State` written field by field, R35; it can fail
   without `-race`). No test double.
@@ -542,8 +565,7 @@ internal/identity/
     only while `ntlm.On` and the user holds a uid and no `dir` spelling; `ErrInvalid` for a directory
     principal; a `decision:` at `NewHashes` that an NT hash undoes argon2id for its user while NTLM
     is on, overturned by turning NTLM off;
-  - `Lookup`, stripping a `DOMAIN\` prefix or `@realm` suffix and finding the folded user part by
-    name; `VerifyPassword`, resolving `User.Password` through `Deps.Secrets` with the `password` kind
+  - `Lookup`, finding by name the user part T2.1's `entity.PrincipalUserPart` gives (D2); `VerifyPassword`, resolving `User.Password` through `Deps.Secrets` with the `password` kind
     and the user's owner, verifying with argon2 and `subtle.ConstantTimeCompare`, and against a dummy
     hash computed at `New` for the zero principal and a disabled, deleted or password-less account;
     `Account`; D8's semaphore, waiting on `After`, which T2.6 adds to epic 1's `Clock` (E6's T6.5
@@ -554,6 +576,8 @@ internal/identity/
   - The password hash is the PHC string `$argon2id$v=19$m=19456,t=2,p=1$…`.
   - `Lookup` of `alice`, `ALICE`, `CORP\alice` and `alice@CORP.EXAMPLE` gives one principal, and
     leaves `PGEN` unchanged.
+  - A `nil` `Secrets` makes `VerifyPassword` answer `ErrUnavailable` (fail closed); `New` does not
+    require it, so no earlier caller changes.
 - **Tests:**
   - RFC 18 §10's Unit table, in `pkg/identity`: (NTLM on, file user) → both hashes, the NT hash
     equal to MS-NLMP §4.2.2.1.2's published value for `Password`; (NTLM off, file user) → no NT
@@ -572,7 +596,9 @@ internal/identity/
     `subtle.ConstantTimeCompare`, rule 10); `Account` of a user disabled in the store with no
     `Apply` since: `ErrLogonFailure` (catches an `Account` answering from the last `Apply`, R28);
     the semaphore's slots held through the hook and the injected clock advanced past 5 s:
-    `ErrUnavailable`, no goroutine left (D8).
+    `ErrUnavailable`, no goroutine left (D8); a `New` built without `Secrets`: `VerifyPassword` of
+    alice with her right password, `ErrUnavailable` (catches a nil provider answered as a wrong
+    password or a panic, D6).
   - Doubles: `kvtest`'s fault wrapper (kind 3), the injected clock (kind 1).
 
 ### T2.7 The `identity.nt-hash-delete` step
@@ -587,12 +613,12 @@ internal/identity/
 - **Deliverables:** kvstore's `DropNTHashes` (D4), with its `ponytail:` on the batch size;
   identity's step and progress as methods on `*Server` typed by RFC 23's leaf package
   `internal/node/step` (its epic 3 D7): `NTHashDeleteStep(ctx, op entity.Operation)
-  (step.StepResult, error)`, its cursor `op.Step`, holding the last `SecretRef` dropped and the
-  count dropped so far, its `End`, set with `Done`, calling `tx.SetNTHashDeleted(op.ID)`; a
+  (step.StepResult, error)`, its cursor `op.Step`, holding the last `entity.SecretRef` dropped and
+  the count dropped so far, to which each turn adds `DropNTHashes`' `dropped` (D4), its `End`, set with `Done`, calling `tx.SetNTHashDeleted(op.ID)`; a
   record `DropNTHashes` cannot decode returned wrapping RFC 23's `ErrStepFailed`, which fails the
   operation and leaves `Deleted` zero, and every other error plain, so the runner retries it;
-  `NTHashDeleteProgress(next []byte) apiv1.Progress`, the count read from the cursor with `Total`
-  -1. Consumed by E8's T8.10, which puts both in the runner's table in `node.New`, by
+  `NTHashDeleteProgress(next []byte) apiv1.Progress`, the count read from the cursor, decoded as
+  the step encodes it with the same `entity.SecretRef`, with `Total` -1. Consumed by E8's T8.10, which puts both in the runner's table in `node.New`, by
   RFC 23's plan's epic 4, whose settings route starts the operation, and by E8's "NTLM off" row.
 - **Acceptance criteria:**
   - After the loop below ends, no `Secret` of kind nt-hash exists and every user's `NTHash` is
@@ -602,12 +628,14 @@ internal/identity/
 - **Tests:** calling the step in a loop over the memory KV store and Badger, NT hashes sealed
   through #4059's provider, feeding each turn's `Next` back in as `op.Step` and committing the last
   turn's `End` through `ControlPlane.Write`: 600 users, run to `done`: none left, `NTLMOff.Deleted` set,
-  and each turn's progress at most 256 more than the last (R31, R33); `kvtest`'s fault wrapper
+  each turn's progress at most 256 more than the last, and the last counting 600 (catches a short
+  last batch counted as `n`, R31, R33); `kvtest`'s fault wrapper
   failing the third batch's commit: an error, and the turn retried with the same cursor completes;
   the third turn's input cursor fed again after that turn committed, the store reopened first (a
-  crash before the runner recorded `Next`): the turn succeeds, the run ends with none left, the
-  last progress counting 600, and no user's `Password` touched (catches a step that fails or
-  double-counts on a batch already dropped, R32); a `User` record holding bytes its codec refuses:
+  crash before the runner recorded `Next`): the turn succeeds with `dropped` 0, the run ends with
+  none left, the last progress counting 512, the crashed batch's 88 not counted twice, and no
+  user's `Password` touched (catches a step that fails or double-counts on a batch already
+  dropped, R32, D4); a `User` record holding bytes its codec refuses:
   the step's error wraps `ErrStepFailed`, and `NTLMOff.Deleted` stays zero (catches a deletion
   that can never fail, so RFC 23 §4.1's second turn-off has nothing to finish, R36); a `PutUser` holding a generation read before a batch zeroed
   its `NTHash`: refused, the reference stays zero (catches a stale reference written back, R4); a
@@ -656,6 +684,7 @@ flowchart TD
   T2_3 --> C1(["after T2.3: the store mints"]):::sync
   X59(["#4059 S1 and S2"]):::sync --> T2_4["T2.4 Settings, State, Secrets"]
   S1 --> T2_4
+  T2_2 --> T2_4
   T2_3 & T2_4 --> T2_5["T2.5 Spell, Find, FuzzSID"]
   T2_1 & T2_2 & T2_4 --> T2_6["T2.6 NewHashes, APISignIn"]
   T2_6 --> C2(["after T2.6: RFC 23's accounts epic signs in"]):::sync
@@ -678,7 +707,7 @@ RFC 23's user deletion; after T2.8 RFC 23's plan's epic 5's password writes may 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T2.1, T2.2, T2.3 | 4.75 | — | principals in the store: the records, the name fold, allocation and `Create`, one review of kvstore |
-| 2 | T2.4, T2.5 | 3.5 | PR 1 | identity's settings and the naming it serves |
+| 2 | T2.4, T2.5 | 3.75 | PR 1 | identity's settings and the naming it serves |
 | 3 | T2.6 | 2 | PR 2 | the accounts RFC 23's plan's epic 5 and E4 wait for |
 | 4 | T2.7 | 2.5 | PR 1 | the NT-hash deletion, once RFC 23's `StepResult` and `SetNTHashDeleted` land; may be open beside PR 2 and PR 3 |
 | 5 | T2.8 | 1 | PR 3 | the NT hash's deletion with its user and the marked-deleted sign-in cases, once RFC 23's plan's epic 2's T2.11 lands, and before RFC 23's plan's epic 5's password write |
@@ -692,17 +721,18 @@ the version this document was written against. RFC 18 §8.1 declares `Lookup` an
 principal-based `VerifyPassword`, which epic 1 freezes.
 
 The plan's figure for this epic is 8 subtasks, 13 man-days; this document's is 8 subtasks,
-13.75 man-days: the mint path goes to E6's T6.2 (below); the allocation behind RFC 23's
+14 man-days: the mint path goes to E6's T6.2 (below); the allocation behind RFC 23's
 `entity.Alloc` on `PutUser` and `PutGroup` comes in (T2.2), which RFC 23's plan's epic 2 refuses
 until it lands (its D2), as does `NTHash` among the secrets `DeleteUser` deletes, which the plan lists
 nowhere (T2.8, R34); `Installation.NTLMOff` is RFC 23's plan's epic 2's (its T2.2, R54); and the
-deletion's step can fail on a record it cannot decode (T2.7, R36).
+deletion's step can fail on a record it cannot decode (T2.7, R36); and `Apply` refuses a range below a counter's high-water mark (T2.4, D1).
 
 **Pending the user's answer** (the recommended option is written in place):
 
 - **Where `Alloc`'s range comes from (D1).** RFC 16 §3's `Alloc` is silent, and so are the RID
-  counter's start and an exhausted range. Recommended: a `Range` field set by the caller, `ErrNoSpace`
-  on exhaustion and RIDs from 1000, in an RFC 16 amendment. Alternative: kvstore reads the setting's
+  counter's start and an exhausted range. Recommended: a `Range` field set by the caller, the next
+  value `max(counter+1, Range.Lo)`, `ErrNoSpace` on exhaustion, `Apply` refusing a range below a
+  counter's high-water mark, and RIDs from 1000, in an RFC 16 amendment. Alternative: kvstore reads the setting's
   row in the write's transaction.
 - **The NT-hash deletion's store calls (D4).** RFC 16 §3 has no call that drops secrets by kind,
   RFC 18 §2.6 says the `Minter`'s are identity's only writes, and zeroing `User.NTHash` overwrites a
