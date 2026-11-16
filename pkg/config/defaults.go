@@ -1,12 +1,6 @@
 package config
 
-import (
-	"strings"
-	"time"
-
-	"github.com/cubbit/dittofs/pkg/controlplane/api"
-	"github.com/cubbit/dittofs/pkg/controlplane/store"
-)
+import "strings"
 
 // ApplyDefaults sets default values for any unspecified configuration fields.
 //
@@ -16,25 +10,9 @@ import (
 // Default Strategy:
 //   - Zero values (0, "", false, nil) are replaced with defaults
 //   - Explicit values are preserved
-func ApplyDefaults(cfg *Config) {
+func ApplyDefaults(cfg *Bootstrap) {
 	applyLoggingDefaults(&cfg.Logging)
-	applyShutdownTimeoutDefaults(cfg)
-	applyDatabaseDefaults(&cfg.Database)
-	applyControlPlaneDefaults(&cfg.ControlPlane)
-	applyAdminDefaults(&cfg.Admin)
-	applyKerberosDefaults(&cfg.Kerberos)
-	cfg.GC.ApplyDefaults()
-	cfg.Integrity.ApplyDefaults()
-	cfg.Snapshot.ApplyDefaults()
 	cfg.Blockstore.ApplyDefaults()
-	// The upgrade that stops a share from referencing its own block store
-	// compares the journal root against where each share's data was recorded,
-	// and only the store layer is open at that moment. Carried after the
-	// blockstore defaults so the resolved, expanded path is what travels.
-	cfg.Database.JournalRoot = cfg.Blockstore.Journal.Path
-	cfg.Metadata.ApplyDefaults()
-	cfg.Metrics.ApplyDefaults()
-	cfg.LDAP.ApplyDefaults()
 }
 
 // applyLoggingDefaults sets logging defaults and normalizes values.
@@ -56,110 +34,25 @@ func applyLoggingDefaults(cfg *LoggingConfig) {
 	// Only MaxSize is defaulted here; MaxBackups and MaxAge are left at 0
 	// (meaning "keep all" and "no age limit" respectively in lumberjack)
 	// so that users can explicitly set them to 0 without being overridden.
-	// The generated config template (dfs init) provides sensible starting values.
+	// GetDefaultConfig provides sensible starting values.
 	if cfg.Rotation.MaxSize == 0 {
 		cfg.Rotation.MaxSize = 100 // 100 MB
 	}
 }
 
-// applyShutdownTimeoutDefaults sets shutdown timeout defaults.
-func applyShutdownTimeoutDefaults(cfg *Config) {
-	if cfg.ShutdownTimeout == 0 {
-		cfg.ShutdownTimeout = 30 * time.Second
-	}
-}
-
-// applyDatabaseDefaults sets control plane database defaults.
-func applyDatabaseDefaults(cfg *store.Config) {
-	cfg.ApplyDefaults()
-}
-
-// applyControlPlaneDefaults sets control plane API server defaults.
-// API is always enabled (mandatory for managing shares and users).
-// Delegates to APIConfig.ApplyDefaults so this path and NewServer share one
-// source of truth and cannot drift as fields are added.
-func applyControlPlaneDefaults(cfg *api.APIConfig) {
-	cfg.ApplyDefaults()
-}
-
-// applyAdminDefaults sets admin user defaults.
-func applyAdminDefaults(cfg *AdminConfig) {
-	// Default username is "admin"
-	if cfg.Username == "" {
-		cfg.Username = "admin"
-	}
-	// Email and PasswordHash have no defaults - they're optional or set during init
-}
-
-// applyKerberosDefaults sets Kerberos authentication defaults.
-//
-// When Kerberos is enabled, the keytab path and service principal must
-// be configured either in the config file or via environment variables:
-//   - DITTOFS_KERBEROS_KEYTAB overrides KeytabPath (DITTOFS_KERBEROS_KEYTAB_PATH for compat)
-//   - DITTOFS_KERBEROS_PRINCIPAL overrides ServicePrincipal (DITTOFS_KERBEROS_SERVICE_PRINCIPAL for compat)
-func applyKerberosDefaults(cfg *KerberosConfig) {
-	// Enabled defaults to false (opt-in for Kerberos)
-	// No need to set, zero value is false
-
-	// Krb5Conf is intentionally left empty here. Nothing on this branch reads
-	// it; the Kerberos authenticator of RFC 18 (§3.3) brings back the path
-	// resolution, which layers the DITTOFS_KERBEROS_KRB5CONF override, the
-	// configured krb5_conf value, the standard KRB5_CONFIG env var, and a
-	// platform-appropriate default. Stamping one platform's default path here
-	// would shadow KRB5_CONFIG and break the others.
-
-	// AD domain identity (AD-4): all optional and back-compatible.
-	//
-	// Realm defaults to the "@REALM" suffix of the service principal so an
-	// operator who already set service_principal=nfs/host@CONTOSO.COM gets a
-	// realm without restating it. NetBIOSDomain is intentionally NOT derived
-	// (it cannot be inferred from the realm) — leaving it empty keeps the
-	// standalone WORKGROUP behavior. DNSDomain defaults to the lowercased
-	// realm, the conventional AD mapping (CONTOSO.COM -> contoso.com).
-	if cfg.Realm == "" {
-		if idx := strings.LastIndex(cfg.ServicePrincipal, "@"); idx >= 0 && idx < len(cfg.ServicePrincipal)-1 {
-			cfg.Realm = cfg.ServicePrincipal[idx+1:]
-		}
-	}
-	if cfg.DNSDomain == "" && cfg.Realm != "" {
-		cfg.DNSDomain = strings.ToLower(cfg.Realm)
-	}
-
-	// Default max clock skew: 5 minutes (standard Kerberos default)
-	if cfg.MaxClockSkew == 0 {
-		cfg.MaxClockSkew = 5 * time.Minute
-	}
-
-	// Default context TTL: 8 hours (typical workday)
-	if cfg.ContextTTL == 0 {
-		cfg.ContextTTL = 8 * time.Hour
-	}
-
-	// Default max concurrent contexts
-	if cfg.MaxContexts == 0 {
-		cfg.MaxContexts = 10000
-	}
-}
-
-// GetDefaultConfig returns a Config struct with all default values applied.
+// GetDefaultConfig returns a Bootstrap with all default values applied.
 //
 // This is useful for:
 //   - Generating sample configuration files
 //   - Testing
 //   - Documentation
-func GetDefaultConfig() *Config {
-	cfg := &Config{
+func GetDefaultConfig() *Bootstrap {
+	cfg := &Bootstrap{
 		Logging: LoggingConfig{
 			Rotation: LogRotationConfig{
 				MaxBackups: 5,
 				MaxAge:     30,
 			},
-		},
-		Database: store.Config{
-			Type: store.DatabaseTypeSQLite, // Default to SQLite for single-node
-		},
-		Admin: AdminConfig{
-			Username: "admin",
 		},
 	}
 

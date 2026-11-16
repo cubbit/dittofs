@@ -1,8 +1,6 @@
 package share
 
 import (
-	"fmt"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
@@ -32,26 +30,9 @@ Examples:
 
   # Drain clients first, then remove without prompting
   dfsctl share disable /archive && dfsctl share remove /archive --force`,
-	Args: cobra.ExactArgs(1),
-	RunE: runRemove,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
 	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false, "Skip confirmation prompt")
-}
-
-func runRemove(cmd *cobra.Command, args []string) error {
-	name := args[0]
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	return cmdutil.RunDeleteWithConfirmation("Share", name, removeForce, func() error {
-		if err := client.RemoveShare(name); err != nil {
-			return fmt.Errorf("failed to remove share: %w", err)
-		}
-		return nil
-	})
 }

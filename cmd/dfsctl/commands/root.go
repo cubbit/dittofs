@@ -33,27 +33,17 @@ var rootCmd = &cobra.Command{
 	Short: "DittoFS Control - Remote management client",
 	Long: `dfsctl is the command-line client for managing DittoFS servers remotely.
 
-It communicates with the DittoFS control-plane REST API (default port 8080) and
-persists credentials in ~/.config/dfsctl/config.json. Run dfsctl login first to
-authenticate, then use the subcommands to manage users, groups, shares, stores
-and server settings. Multiple server contexts are supported via the
-context subcommand.
+Its commands for users, groups, shares, stores and server settings return with
+the server's v2 API; until then each refuses. The context subcommand manages
+the server contexts kept in ~/.config/dfsctl/config.json.
 
 Use "dfsctl [command] --help" for more information about a command.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		// Sync flags to cmdutil.Flags for subcommands
-		cmdutil.Flags.ServerURL, _ = cmd.Flags().GetString("server")
-		cmdutil.Flags.Token, _ = cmd.Flags().GetString("token")
 		cmdutil.Flags.Output, _ = cmd.Flags().GetString("output")
 		cmdutil.Flags.NoColor, _ = cmd.Flags().GetBool("no-color")
-		cmdutil.Flags.Verbose, _ = cmd.Flags().GetBool("verbose")
-		cmdutil.Flags.CACert, _ = cmd.Flags().GetString("cacert")
-		cmdutil.Flags.ClientCert, _ = cmd.Flags().GetString("client-cert")
-		cmdutil.Flags.ClientKey, _ = cmd.Flags().GetString("client-key")
-		cmdutil.Flags.TLSSkipVerify, _ = cmd.Flags().GetBool("tls-skip-verify")
-		cmdutil.Flags.TLSSkipVerifySet = cmd.Flags().Changed("tls-skip-verify")
 	},
 }
 

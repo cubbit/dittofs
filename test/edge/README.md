@@ -196,7 +196,7 @@ iptables -X DITTOFS_EDGE_TEST 2>/dev/null
 ```
 
 ### NFS mount fails
-Verify DittoFS is running: `ssh root@<server> "dfs status"`. Check NFS port:
+Verify DittoFS is running: `ssh root@<server> "pgrep -a dfs"`. Check NFS port:
 `ssh root@<server> "ss -tlnp | grep 12049"`.
 
 ## Cost

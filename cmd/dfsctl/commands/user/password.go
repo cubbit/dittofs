@@ -1,10 +1,7 @@
 package user
 
 import (
-	"fmt"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/prompt"
 	"github.com/spf13/cobra"
 )
 
@@ -25,39 +22,9 @@ Examples:
 
   # Reset password non-interactively (use with caution)
   dfsctl user password alice --password newsecret`,
-	Args: cobra.ExactArgs(1),
-	RunE: runPassword,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
 	passwordCmd.Flags().StringVarP(&resetPassword, "password", "p", "", "New password (prompts if not provided)")
-}
-
-func runPassword(cmd *cobra.Command, args []string) error {
-	username := args[0]
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	// Get password interactively if not provided
-	password := resetPassword
-	if password == "" {
-		password, err = prompt.PasswordWithConfirmation("New password", "Confirm password", 8)
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-	}
-
-	if err := client.ResetUserPassword(username, password); err != nil {
-		return fmt.Errorf("failed to reset password: %w", err)
-	}
-
-	cmdutil.PrintSuccessWithInfo(
-		fmt.Sprintf("Password reset for user '%s'", username),
-		"User will be required to change password on next login.",
-	)
-
-	return nil
 }

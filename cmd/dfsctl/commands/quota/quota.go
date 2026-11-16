@@ -2,47 +2,8 @@
 package quota
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
-
-// scope constants mirror models.QuotaScope* (kept local to avoid a control-plane
-// import from the CLI layer).
-const (
-	scopeUser        = "user"
-	scopeGroup       = "group"
-	scopeDefaultUser = "default-user"
-)
-
-// isValidScope reports whether s is a supported quota scope.
-func isValidScope(s string) bool {
-	switch s {
-	case scopeUser, scopeGroup, scopeDefaultUser:
-		return true
-	default:
-		return false
-	}
-}
-
-// resolveID maps the --id flag (default -1 = unset) to the *uint32 identity the
-// API expects. user/group require a non-negative id; default-user forbids one.
-func resolveID(scope string, id int64) (*uint32, error) {
-	if scope == scopeDefaultUser {
-		if id >= 0 {
-			return nil, fmt.Errorf("--id must not be set for scope default-user")
-		}
-		return nil, nil
-	}
-	if id < 0 {
-		return nil, fmt.Errorf("--id is required for scope %s", scope)
-	}
-	if id > int64(^uint32(0)) {
-		return nil, fmt.Errorf("--id %d out of range for a 32-bit identity", id)
-	}
-	v := uint32(id)
-	return &v, nil
-}
 
 // Cmd is the parent command for per-identity quota management.
 var Cmd = &cobra.Command{

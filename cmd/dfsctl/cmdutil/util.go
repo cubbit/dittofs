@@ -2,183 +2,37 @@
 package cmdutil
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"os"
-	"strings"
-	"sync"
 
-	"github.com/cubbit/dittofs/internal/cli/credentials"
 	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/cubbit/dittofs/internal/cli/prompt"
-	"github.com/cubbit/dittofs/pkg/apiclient"
+	"github.com/spf13/cobra"
 )
-
-// ConfirmInput is the source ConfirmDestructive reads its Y/N answer from.
-// Tests override this with a strings.Reader to inject answers.
-var ConfirmInput io.Reader = os.Stdin
-
-// ConfirmOutput is the writer ConfirmDestructive prints the prompt to.
-// Tests override this with a bytes.Buffer to capture output.
-var ConfirmOutput io.Writer = os.Stdout
-
-// ConfirmDestructive prints prompt to ConfirmOutput and reads a Y/N
-// answer from ConfirmInput. If yes is true, the prompt is skipped and
-// (true, nil) is returned immediately. Empty input or any non-y/yes
-// answer returns false (the prompt is biased toward refusing).
-func ConfirmDestructive(prompt string, yes bool) (bool, error) {
-	if yes {
-		return true, nil
-	}
-	_, _ = fmt.Fprintln(ConfirmOutput, prompt)
-	_, _ = fmt.Fprint(ConfirmOutput, "Type 'y' to confirm: ")
-
-	reader := bufio.NewReader(ConfirmInput)
-	line, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return false, err
-	}
-	answer := strings.ToLower(strings.TrimSpace(line))
-	return answer == "y" || answer == "yes", nil
-}
 
 // Flags stores global flag values accessible by subcommands.
 var Flags = &GlobalFlags{}
 
-// GlobalFlags holds the global flag values.
+// GlobalFlags holds the global flag values a command reads. The root's other
+// persistent flags stay registered, so every invocation of them still parses,
+// and return to the struct with the commands that read them.
 type GlobalFlags struct {
-	ServerURL string
-	Token     string
-	Output    string
-	NoColor   bool
-	Verbose   bool
-
-	// TLS escape-hatch overrides. When set they take precedence over the TLS
-	// material stored in the active login context. TLSSkipVerifySet records
-	// whether --tls-skip-verify was explicitly passed, so the stored value is
-	// only overridden on an explicit flag (a bare false flag would otherwise
-	// silently re-enable verification).
-	CACert           string
-	ClientCert       string
-	ClientKey        string
-	TLSSkipVerify    bool
-	TLSSkipVerifySet bool
+	Output  string
+	NoColor bool
 }
 
-// skipVerifyWarnOnce ensures the man-in-the-middle warning is printed at most
-// once per process, even though TLSClientOptions may be called several times
-// per command (e.g. token refresh followed by the final client build).
-var skipVerifyWarnOnce sync.Once
-
-// TLSClientOptions translates resolved TLS parameters into apiclient options.
-// It also emits the man-in-the-middle warning (once per process) when
-// verification is disabled. Empty parameters produce no options (default
-// transport behavior).
-func TLSClientOptions(caCert, clientCert, clientKey string, skipVerify bool) []apiclient.ClientOption {
-	var opts []apiclient.ClientOption
-	if caCert != "" {
-		opts = append(opts, apiclient.WithCACert(caCert))
-	}
-	if clientCert != "" || clientKey != "" {
-		opts = append(opts, apiclient.WithClientCert(clientCert, clientKey))
-	}
-	if skipVerify {
-		skipVerifyWarnOnce.Do(func() {
-			_, _ = fmt.Fprintln(os.Stderr,
-				"WARNING: TLS certificate verification disabled (--tls-skip-verify); "+
-					"the connection is vulnerable to man-in-the-middle attacks")
-		})
-		opts = append(opts, apiclient.WithInsecureSkipVerify(true))
-	}
-	return opts
-}
-
-// GetAuthenticatedClient returns an API client configured from the current context.
-// It uses the --server and --token flags if provided, otherwise falls back to stored credentials.
-// If the access token is expired but a refresh token exists, it will automatically refresh.
-func GetAuthenticatedClient() (*apiclient.Client, error) {
-	// Check for explicit flags first
-	if Flags.ServerURL != "" && Flags.Token != "" {
-		opts := TLSClientOptions(Flags.CACert, Flags.ClientCert, Flags.ClientKey, Flags.TLSSkipVerify)
-		return apiclient.New(Flags.ServerURL, opts...).WithToken(Flags.Token), nil
-	}
-
-	// Load credential store
-	store, err := credentials.NewStore()
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize credential store: %w", err)
-	}
-
-	// Get current context
-	ctx, err := store.GetCurrentContext()
-	if err != nil {
-		return nil, fmt.Errorf("not logged in. Run 'dfsctl login' first")
-	}
-
-	// Use flag overrides if provided
-	url := ctx.ServerURL
-	if Flags.ServerURL != "" {
-		url = Flags.ServerURL
-	}
-
-	if url == "" {
-		return nil, fmt.Errorf("no server URL configured. Run 'dfsctl login --server <url>' first")
-	}
-
-	tok := ctx.AccessToken
-	if Flags.Token != "" {
-		tok = Flags.Token
-	}
-
-	// Resolve TLS material: stored context is the baseline; root override flags
-	// take precedence when present.
-	caCert := ctx.CACert
-	if Flags.CACert != "" {
-		caCert = Flags.CACert
-	}
-	clientCert := ctx.ClientCert
-	if Flags.ClientCert != "" {
-		clientCert = Flags.ClientCert
-	}
-	clientKey := ctx.ClientKey
-	if Flags.ClientKey != "" {
-		clientKey = Flags.ClientKey
-	}
-	skipVerify := ctx.TLSSkipVerify
-	if Flags.TLSSkipVerifySet {
-		skipVerify = Flags.TLSSkipVerify
-	}
-	tlsOpts := TLSClientOptions(caCert, clientCert, clientKey, skipVerify)
-
-	// Check if token is expired and try to refresh
-	if ctx.IsExpired() && ctx.HasRefreshToken() {
-		client := apiclient.New(url, tlsOpts...)
-		newTokens, err := client.RefreshToken(ctx.RefreshToken)
-		if err != nil {
-			// Refresh failed, user needs to re-login
-			return nil, fmt.Errorf("session expired. Run 'dfsctl login' to re-authenticate")
-		}
-
-		// If either token is missing, UpdateTokens would overwrite the stored
-		// refresh token with "" and poison the next refresh cycle.
-		if newTokens == nil || newTokens.AccessToken == "" || newTokens.RefreshToken == "" {
-			return nil, fmt.Errorf("token refresh succeeded but server returned incomplete tokens; run 'dfsctl login' to re-authenticate")
-		}
-
-		// Save new tokens
-		if err := store.UpdateTokens(newTokens.AccessToken, newTokens.RefreshToken, newTokens.ExpiresAt); err != nil {
-			return nil, fmt.Errorf("failed to save refreshed tokens: %w", err)
-		}
-
-		tok = newTokens.AccessToken
-	}
-
-	if tok == "" {
-		return nil, fmt.Errorf("no access token. Run 'dfsctl login' first")
-	}
-
-	return apiclient.New(url, tlsOpts...).WithToken(tok), nil
+// Unavailable is the body of every v1 command dfsctl still lists: it refuses,
+// naming the command, and the command exits non-zero.
+//
+// decision: dfsctl keeps v1's command tree, its names, arguments and flags,
+// after the server those commands spoke to is gone, with each body refusing.
+// Deleting the commands would leave every invocation of them in the docs and
+// in Go strings naming a command that does not exist, and the CLI's rebuild
+// on the v2 API rewrites those invocations anyway, command by command. A
+// command stops calling this when it is rebuilt; once none does, delete it.
+func Unavailable(cmd *cobra.Command, _ []string) error {
+	return fmt.Errorf("%s: not available until the CLI is rebuilt on the v2 API", cmd.CommandPath())
 }
 
 // GetOutputFormatParsed returns the parsed output format.
@@ -189,11 +43,6 @@ func GetOutputFormatParsed() (output.Format, error) {
 // IsColorDisabled returns whether color output is disabled.
 func IsColorDisabled() bool {
 	return Flags.NoColor
-}
-
-// IsVerbose returns whether verbose output is enabled.
-func IsVerbose() bool {
-	return Flags.Verbose
 }
 
 // PrintOutput prints data in the specified format (JSON, YAML, or table).
@@ -218,6 +67,14 @@ func PrintOutput(w io.Writer, data any, isEmpty bool, emptyMsg string, tableRend
 	}
 }
 
+// BoolToYesNo converts a boolean to "yes" or "no" string.
+func BoolToYesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
+}
+
 // PrintSuccess prints a success message if the output format is table.
 func PrintSuccess(msg string) {
 	format, err := GetOutputFormatParsed()
@@ -226,58 +83,6 @@ func PrintSuccess(msg string) {
 	}
 	printer := output.NewPrinter(os.Stdout, !IsColorDisabled())
 	printer.Success(msg)
-}
-
-// PrintSuccessWithInfo prints a success message followed by additional info lines.
-// The info lines are only printed in table format.
-func PrintSuccessWithInfo(msg string, infoLines ...string) {
-	format, err := GetOutputFormatParsed()
-	if err != nil || format != output.FormatTable {
-		return
-	}
-	printer := output.NewPrinter(os.Stdout, !IsColorDisabled())
-	printer.Success(msg)
-	for _, line := range infoLines {
-		fmt.Println(line)
-	}
-}
-
-// PrintResourceWithSuccess prints a resource in the specified format.
-// For table format, it displays a success message. For JSON/YAML, it outputs the resource.
-// This is useful for create, update, and similar operations.
-func PrintResourceWithSuccess(w io.Writer, data any, successMsg string) error {
-	format, err := GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	switch format {
-	case output.FormatJSON:
-		return output.PrintJSON(w, data)
-	case output.FormatYAML:
-		return output.PrintYAML(w, data)
-	default:
-		PrintSuccess(successMsg)
-		return nil
-	}
-}
-
-// PrintResource prints a resource in the specified format.
-// For table format, it uses the provided tableRenderer. For JSON/YAML, it outputs the resource.
-func PrintResource(w io.Writer, data any, tableRenderer output.TableRenderer) error {
-	format, err := GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	switch format {
-	case output.FormatJSON:
-		return output.PrintJSON(w, data)
-	case output.FormatYAML:
-		return output.PrintYAML(w, data)
-	default:
-		return output.PrintTable(w, tableRenderer)
-	}
 }
 
 // RunDeleteWithConfirmation prompts for confirmation (unless force is true) and runs deleteFn.
@@ -301,57 +106,4 @@ func RunDeleteWithConfirmation(resourceType, name string, force bool, deleteFn f
 
 	PrintSuccess(fmt.Sprintf("%s '%s' removed successfully", resourceType, name))
 	return nil
-}
-
-// ParseCommaSeparatedList parses a comma-separated string into a slice of trimmed strings.
-func ParseCommaSeparatedList(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var result []string
-	for _, item := range strings.Split(s, ",") {
-		item = strings.TrimSpace(item)
-		if item != "" {
-			result = append(result, item)
-		}
-	}
-	return result
-}
-
-// BoolToYesNo converts a boolean to "yes" or "no" string.
-func BoolToYesNo(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
-}
-
-// EmptyOr returns the value if not empty, otherwise returns the fallback.
-// Useful for table display where empty fields should show "-".
-func EmptyOr(value, fallback string) string {
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-// GetConfigString extracts a string value from a config map with a default fallback.
-func GetConfigString(config map[string]any, key, defaultValue string) string {
-	if config == nil {
-		return defaultValue
-	}
-	if v, ok := config[key].(string); ok {
-		return v
-	}
-	return defaultValue
-}
-
-// HandleAbort checks if error is an abort (Ctrl+C) and prints a message.
-// Returns nil for abort (user cancelled), otherwise returns the original error.
-func HandleAbort(err error) error {
-	if prompt.IsAborted(err) {
-		fmt.Println("\nAborted.")
-		return nil
-	}
-	return err
 }

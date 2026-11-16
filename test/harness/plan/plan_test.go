@@ -311,15 +311,14 @@ func TestChangedPaths(t *testing.T) {
 	}
 	for _, p := range []string{
 		"internal/adapter/nfs/v4/handlers/open.go", "pkg/adapter/smb/adapter.go", "pkg/metadata/file.go",
-		"pkg/vfs/service.go", "internal/vfs/server.go", "test/e2e/cross_protocol_lock_test.go",
+		"pkg/vfs/service.go", "internal/vfs/server.go", "test/e2e/framework/mount.go",
 	} {
 		if got := plan(p); !slices.Contains(got, "e2e/cross-protocol") {
 			t.Errorf("a change to %s doesn't plan e2e/cross-protocol", p)
 		}
 	}
 	for _, p := range []string{
-		"internal/adapter/smb/handlers/session_setup.go", "pkg/metadata/file.go", "test/e2e/smb_kerberos_test.go",
-		"pkg/controlplane/runtime/export_auth_policy.go", "internal/controlplane/api/handlers/identity_mappings.go",
+		"internal/adapter/smb/handlers/session_setup.go", "pkg/metadata/file.go", "test/e2e/framework/kerberos.go",
 		"pkg/config/config.go", "cmd/dfs/commands/start.go",
 	} {
 		if got := plan(p); !slices.Contains(got, "e2e/kerberos") {

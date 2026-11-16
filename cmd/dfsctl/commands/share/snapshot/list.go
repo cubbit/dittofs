@@ -1,16 +1,7 @@
 package snapshot
 
 import (
-	"fmt"
-	"os"
-	"sort"
-	"strings"
-	"time"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/bytesize"
-	"github.com/cubbit/dittofs/internal/cli/output"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
 
@@ -37,174 +28,11 @@ Examples:
 
   # JSON output
   dfsctl share snapshot list /archive -o json`,
-	Args: cobra.ExactArgs(1),
-	RunE: runList,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
 	listCmd.Flags().StringVar(&listState, "state", "", "Filter by state (creating|ready|failed)")
 	listCmd.Flags().StringVar(&listNamePrefix, "name-prefix", "", "Filter by name prefix")
 	listCmd.Flags().BoolVar(&listNoRelative, "no-relative", false, "Print absolute timestamps instead of relative")
-}
-
-// snapshotRow renders one row of the snapshot list table.
-type snapshotRow struct {
-	ID      string
-	Name    string
-	State   string
-	Durable string
-	Created string
-	Size    string
-}
-
-// SnapshotList renders a slice of snapshots as a 6-column table.
-type SnapshotList []snapshotRow
-
-// Headers implements TableRenderer.
-func (sl SnapshotList) Headers() []string {
-	return []string{"ID", "NAME", "STATE", "DURABLE", "CREATED", "SIZE"}
-}
-
-// Rows implements TableRenderer.
-func (sl SnapshotList) Rows() [][]string {
-	rows := make([][]string, 0, len(sl))
-	for _, r := range sl {
-		rows = append(rows, []string{r.ID, r.Name, r.State, r.Durable, r.Created, r.Size})
-	}
-	return rows
-}
-
-// truncID truncates a snapshot ID to 8 characters for column display.
-func truncID(id string) string {
-	if len(id) <= 8 {
-		return id
-	}
-	return id[:8]
-}
-
-// formatCreated returns either a relative ("3h ago") or absolute string.
-func formatCreated(t time.Time, noRelative bool) string {
-	if t.IsZero() {
-		return "-"
-	}
-	if noRelative {
-		return t.UTC().Format(time.RFC3339)
-	}
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	}
-}
-
-// formatSize renders DumpBytes for the list view. In list mode the
-// handler does not populate ManifestCount, so we render DumpBytes if
-// present and "-" otherwise.
-func formatSize(snap apiclient.Snapshot) string {
-	if snap.DumpBytes <= 0 {
-		return "-"
-	}
-	return bytesize.ByteSize(snap.DumpBytes).String()
-}
-
-// applyFilters returns only snapshots matching the configured filters,
-// sorted newest-first.
-func applyFilters(snaps []apiclient.Snapshot, state, namePrefix string) []apiclient.Snapshot {
-	out := make([]apiclient.Snapshot, 0, len(snaps))
-	for _, s := range snaps {
-		if state != "" && s.State != state {
-			continue
-		}
-		if namePrefix != "" && !strings.HasPrefix(s.Name, namePrefix) {
-			continue
-		}
-		out = append(out, s)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].CreatedAt.After(out[j].CreatedAt)
-	})
-	return out
-}
-
-// validateState rejects a --state filter that is not a known snapshot
-// state, so a typo errors loudly instead of silently returning nothing.
-func validateState(state string) error {
-	switch state {
-	case "", "creating", "ready", "failed":
-		return nil
-	default:
-		return fmt.Errorf("invalid --state %q: must be one of creating, ready, failed", state)
-	}
-}
-
-// emptyListMessage describes an empty result, reflecting any active filters
-// so the operator knows the share may have snapshots that the filter
-// excluded.
-func emptyListMessage(share, state, namePrefix string) string {
-	var filters []string
-	if state != "" {
-		filters = append(filters, fmt.Sprintf("state=%s", state))
-	}
-	if namePrefix != "" {
-		filters = append(filters, fmt.Sprintf("name-prefix=%s", namePrefix))
-	}
-	if len(filters) == 0 {
-		return fmt.Sprintf("No snapshots on share %q.", share)
-	}
-	return fmt.Sprintf("No snapshots on share %q matching %s.", share, strings.Join(filters, ", "))
-}
-
-func runList(cmd *cobra.Command, args []string) error {
-	share := args[0]
-
-	if err := validateState(listState); err != nil {
-		return err
-	}
-
-	client, err := getClient()
-	if err != nil {
-		return err
-	}
-
-	snaps, err := client.ListSnapshots(share)
-	if err != nil {
-		return fmt.Errorf("failed to list snapshots: %w", err)
-	}
-
-	snaps = applyFilters(snaps, listState, listNamePrefix)
-
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	switch format {
-	case output.FormatJSON:
-		return output.PrintJSON(os.Stdout, snaps)
-	case output.FormatYAML:
-		return output.PrintYAML(os.Stdout, snaps)
-	default:
-		rows := make(SnapshotList, 0, len(snaps))
-		for _, s := range snaps {
-			rows = append(rows, snapshotRow{
-				ID:      truncID(s.ID),
-				Name:    cmdutil.EmptyOr(s.Name, "-"),
-				State:   s.State,
-				Durable: cmdutil.BoolToYesNo(s.RemoteDurable),
-				Created: formatCreated(s.CreatedAt, listNoRelative),
-				Size:    formatSize(s),
-			})
-		}
-		if len(rows) == 0 {
-			fmt.Println(emptyListMessage(share, listState, listNamePrefix))
-			return nil
-		}
-		return output.PrintTable(os.Stdout, rows)
-	}
 }

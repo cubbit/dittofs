@@ -1,11 +1,7 @@
 package permission
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/spf13/cobra"
 )
 
@@ -50,8 +46,7 @@ Examples:
 
   # Grant to a raw Windows SID (no directory lookup)
   dfsctl share permission grant /archive --sid S-1-5-21-1111-2222-3333-1104 --level read`,
-	Args: cobra.ExactArgs(1),
-	RunE: runGrant,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
@@ -60,45 +55,4 @@ func init() {
 	grantCmd.Flags().StringVar(&grantSID, "sid", "", "Raw Windows SID to grant permission to (e.g. S-1-5-21-...)")
 	grantCmd.Flags().StringVar(&grantLevel, "level", "", "Permission level (none|read|read-write|admin)")
 	_ = grantCmd.MarkFlagRequired("level")
-}
-
-func runGrant(cmd *cobra.Command, args []string) error {
-	shareName := args[0]
-
-	// A raw SID short-circuits to the SID endpoint; a name goes to the local
-	// user/group endpoint, which falls back to the directory when no local
-	// object exists (#1528).
-	kind, value, isGroup, target, err := selectPrincipal(grantUser, grantGroup, grantSID)
-	if err != nil {
-		return err
-	}
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	switch kind {
-	case principalSID:
-		err = client.SetSIDSharePermission(shareName, value, grantLevel, isGroup, "")
-	case principalUserName:
-		err = client.SetUserSharePermission(shareName, value, grantLevel)
-	case principalGroupName:
-		err = client.SetGroupSharePermission(shareName, value, grantLevel)
-	}
-	if err != nil {
-		return fmt.Errorf("failed to grant permission: %w", err)
-	}
-
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	if format == output.FormatTable {
-		printer := output.NewPrinter(os.Stdout, !cmdutil.IsColorDisabled())
-		printer.Success(fmt.Sprintf("Granted '%s' permission to %s on '%s'", grantLevel, target, shareName))
-	}
-
-	return nil
 }

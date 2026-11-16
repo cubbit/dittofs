@@ -1,14 +1,7 @@
 package commands
 
 import (
-	"fmt"
-	"net/url"
-	"path/filepath"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/credentials"
-	"github.com/cubbit/dittofs/internal/cli/prompt"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
 
@@ -29,12 +22,9 @@ var loginCmd = &cobra.Command{
 	Short: "Authenticate with DittoFS server",
 	Long: `Authenticate with a DittoFS server and store credentials locally.
 
-Contacts the control-plane API at the given server URL, exchanges credentials
-for an access/refresh token pair, and saves them to ~/.config/dfsctl/config.json
-under a named context (default: auto-derived from the server URL). Subsequent
-commands reuse the stored token and refresh it automatically when it expires.
-TLS client certificates and a custom CA bundle can be pinned at login time and
-are persisted into the context for later commands.
+Not available until the CLI is rebuilt on the v2 API: signing in returns with
+that API's accounts. Credentials are kept in ~/.config/dfsctl/config.json under
+a named context, which the context subcommand manages.
 
 Examples:
   # First login to a local server (prompts for password)
@@ -47,8 +37,7 @@ Examples:
   dfsctl login --server http://localhost:8080 -u admin -p secret
 
   # Re-login to the already-stored server (password prompt only)
-  dfsctl login`,
-	RunE: runLogin,
+  dfsctl login`, RunE: cmdutil.Unavailable,
 }
 
 func init() {
@@ -60,127 +49,4 @@ func init() {
 	loginCmd.Flags().StringVar(&loginClientCert, "client-cert", "", "Path to a PEM client certificate for mutual TLS")
 	loginCmd.Flags().StringVar(&loginClientKey, "client-key", "", "Path to the PEM client private key for mutual TLS")
 	loginCmd.Flags().BoolVar(&loginTLSSkipVerify, "tls-skip-verify", false, "Disable TLS certificate verification (insecure)")
-}
-
-// absPath resolves p to an absolute path so it can be persisted and re-read
-// from a different working directory. An empty path stays empty (unset).
-func absPath(p string) (string, error) {
-	if p == "" {
-		return "", nil
-	}
-	return filepath.Abs(p)
-}
-
-func runLogin(cmd *cobra.Command, args []string) error {
-	// Load credential store
-	store, err := credentials.NewStore()
-	if err != nil {
-		return fmt.Errorf("failed to initialize credential store: %w", err)
-	}
-
-	// Determine server URL (defaults to http://localhost:8080)
-	serverURLStr := loginServer
-
-	// Validate server URL
-	parsedURL, err := url.Parse(serverURLStr)
-	if err != nil {
-		return fmt.Errorf("invalid server URL: %w", err)
-	}
-	if parsedURL.Scheme == "" {
-		parsedURL.Scheme = "http"
-		serverURLStr = parsedURL.String()
-	}
-
-	// Get username (prompt if not provided)
-	username := loginUsername
-	if username == "" {
-		username, err = prompt.InputRequired("Username")
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-	}
-
-	// Get password (prompt if not provided)
-	password := loginPassword
-	if password == "" {
-		password, err = prompt.PasswordWithValidation("Password", 8)
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-	}
-
-	// Normalize TLS cert paths to absolute before they are captured and
-	// persisted. The stored paths are re-read by later commands from a
-	// potentially different working directory, so a relative path supplied here
-	// (e.g. --cacert ca.pem) would otherwise resolve against the wrong cwd.
-	if loginCACert, err = absPath(loginCACert); err != nil {
-		return fmt.Errorf("resolve --cacert: %w", err)
-	}
-	if loginClientCert, err = absPath(loginClientCert); err != nil {
-		return fmt.Errorf("resolve --client-cert: %w", err)
-	}
-	if loginClientKey, err = absPath(loginClientKey); err != nil {
-		return fmt.Errorf("resolve --client-key: %w", err)
-	}
-
-	// Create API client. TLS material is captured here and persisted into the
-	// context below so later commands reuse it without re-specifying flags.
-	tlsOpts := cmdutil.TLSClientOptions(loginCACert, loginClientCert, loginClientKey, loginTLSSkipVerify)
-	client := apiclient.New(serverURLStr, tlsOpts...)
-
-	// Attempt login
-	fmt.Printf("Logging in to %s as %s...\n", serverURLStr, username)
-	tokens, err := client.Login(username, password)
-	if err != nil {
-		return fmt.Errorf("login failed: %w", err)
-	}
-
-	// Guard against empty tokens — a server that omits them from the response
-	// body would cause every later command to fail with "no access token".
-	if tokens == nil {
-		return fmt.Errorf("login succeeded but server returned an empty response body")
-	}
-	if tokens.AccessToken == "" || tokens.RefreshToken == "" {
-		return fmt.Errorf(
-			"login succeeded but server returned no tokens (access=%t, refresh=%t); "+
-				"the server may be misconfigured or returning a stripped response",
-			tokens.AccessToken != "", tokens.RefreshToken != "",
-		)
-	}
-
-	// Determine context name
-	contextName := loginContextName
-	if contextName == "" {
-		contextName = store.GetCurrentContextName()
-	}
-	if contextName == "" {
-		contextName = credentials.GenerateContextName(serverURLStr)
-	}
-
-	// Save credentials
-	ctx := &credentials.Context{
-		ServerURL:     serverURLStr,
-		Username:      username,
-		AccessToken:   tokens.AccessToken,
-		RefreshToken:  tokens.RefreshToken,
-		ExpiresAt:     tokens.ExpiresAt,
-		CACert:        loginCACert,
-		ClientCert:    loginClientCert,
-		ClientKey:     loginClientKey,
-		TLSSkipVerify: loginTLSSkipVerify,
-	}
-
-	if err := store.SetContext(contextName, ctx); err != nil {
-		return fmt.Errorf("failed to save credentials: %w", err)
-	}
-
-	if err := store.UseContext(contextName); err != nil {
-		return fmt.Errorf("failed to set current context: %w", err)
-	}
-
-	fmt.Printf("Logged in successfully as %s\n", username)
-	fmt.Printf("Context: %s\n", contextName)
-	fmt.Printf("Credentials saved to: %s\n", store.ConfigPath())
-
-	return nil
 }

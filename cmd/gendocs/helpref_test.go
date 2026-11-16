@@ -78,6 +78,9 @@ type invocation struct {
 // when it is quoted or backticked, or when it starts its own line — which is how
 // Example blocks and copy-pasteable log messages are written.
 func findInvocations(s, where string) []invocation {
+	// A shell line ending in a backslash continues on the next, so its flags
+	// belong to the command the first line starts.
+	s = strings.ReplaceAll(s, "\\\n", " ")
 	var out []invocation
 	for bin := range roots() {
 		for i := 0; i+len(bin)+1 < len(s); i++ {
@@ -397,9 +400,16 @@ func TestDocsCommandReferences(t *testing.T) {
 			return nil //nolint:nilerr // ditto
 		}
 		rel := filepath.ToSlash(strings.TrimPrefix(path, "../../"))
-		for i, line := range strings.Split(string(body), "\n") {
+		lines := strings.Split(string(body), "\n")
+		for i := 0; i < len(lines); i++ {
 			where := rel + ":" + strconv.Itoa(i+1)
-			for _, inv := range findInvocations(line, where) {
+			// A line ending in a backslash is checked with the lines it continues on.
+			text := lines[i]
+			for strings.HasSuffix(text, "\\") && i+1 < len(lines) {
+				i++
+				text += "\n" + lines[i]
+			}
+			for _, inv := range findInvocations(text, where) {
 				problems = append(problems, checkInvocation(inv)...)
 			}
 		}
@@ -436,10 +446,11 @@ func TestCheckerAcceptsAndRejects(t *testing.T) {
 	}
 
 	reject := []string{
-		"`dfsctl user update alice`",                // it is `user edit`
-		"`dfs config init`",                         // it is `dfs init`
-		"`dfsctl store block health --kind remote`", // no such flag
-		"`dfs init --admin`",                        // no such flag
+		"`dfsctl user update alice`",                   // it is `user edit`
+		"`dfs config init`",                            // it is `dfs init`
+		"`dfsctl store block health --kind remote`",    // no such flag
+		"`dfs init --admin`",                           // no such flag
+		"dfs start --config c.yaml \\\n  --pid-file p", // a flag on a continued line
 	}
 	for _, s := range reject {
 		var problems []string

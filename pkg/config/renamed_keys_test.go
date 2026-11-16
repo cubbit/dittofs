@@ -55,9 +55,6 @@ func TestCheckRenamedKeys_DoesNotMatchSiblingPrefix(t *testing.T) {
 // never got reported, leaving the guard unable to fire.
 func TestLoad_RefusesRenamedBlockstoreLocalSection(t *testing.T) {
 	content := `
-controlplane:
-  jwt:
-    secret: "test-secret-key-for-testing-minimum-32-chars"
 blockstore:
   local:
     path: /srv/dittofs/blocks
@@ -82,9 +79,6 @@ func TestLoad_AcceptsRenamedBlockstoreJournalSection(t *testing.T) {
 	// The path must be absolute on every OS, so it is built, not written.
 	want := filepath.Join(t.TempDir(), "blocks")
 	content := fmt.Sprintf(`
-controlplane:
-  jwt:
-    secret: "test-secret-key-for-testing-minimum-32-chars"
 blockstore:
   journal:
     path: '%s'

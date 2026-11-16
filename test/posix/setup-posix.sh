@@ -272,7 +272,7 @@ start_server() {
     local admin_password="$TEST_PASSWORD"
 
     DITTOFS_ADMIN_INITIAL_PASSWORD="$admin_password" \
-        "$DITTOFS_BIN" start --foreground --config "$CONFIG_FILE" > "$log_file" 2>&1 &
+        "$DITTOFS_BIN" start --config "$CONFIG_FILE" > "$log_file" 2>&1 &
     local server_pid=$!
 
     # Wait a bit for the server to start.

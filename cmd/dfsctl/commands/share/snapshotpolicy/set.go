@@ -1,9 +1,7 @@
 package snapshotpolicy
 
 import (
-	"fmt"
-
-	"github.com/cubbit/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
 
@@ -31,8 +29,7 @@ run clock (it does not reset the next-run time).
 Examples:
   dfsctl share snapshot-policy set /archive --interval @daily --keep-last 7 --ttl 720h
   dfsctl share snapshot-policy set /archive --interval 6h --disabled`,
-	Args: cobra.ExactArgs(1),
-	RunE: runSet,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
@@ -42,26 +39,4 @@ func init() {
 	setCmd.Flags().BoolVar(&setDisabled, "disabled", false, "Create the policy disabled (no automatic snapshots)")
 	setCmd.Flags().StringVar(&setNamePrefix, "name-prefix", "", "Name prefix for scheduler-created snapshots (default \"scheduled\")")
 	_ = setCmd.MarkFlagRequired("interval")
-}
-
-func runSet(cmd *cobra.Command, args []string) error {
-	share := args[0]
-
-	client, err := getClient()
-	if err != nil {
-		return err
-	}
-
-	enabled := !setDisabled
-	policy, err := client.UpsertSnapshotPolicy(share, apiclient.UpsertSnapshotPolicyRequest{
-		Interval:   setInterval,
-		KeepLast:   setKeepLast,
-		TTL:        setTTL,
-		Enabled:    &enabled,
-		NamePrefix: setNamePrefix,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to set snapshot policy: %w", err)
-	}
-	return printPolicy(policy)
 }

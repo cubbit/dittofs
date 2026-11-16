@@ -36,6 +36,11 @@ const (
 
 	adUserAlice = "alice"
 	adUserPass  = "TestPassword01!"
+
+	// The domain administrator, whose bind the online join uses.
+	adAdminPassword = "Passw0rd!2024"
+	adBindDN        = "CN=Administrator,CN=Users,DC=dittofs,DC=ad"
+	adBaseDN        = "DC=dittofs,DC=ad"
 )
 
 // adContainerName is the container the current test's fixture is running in. It
@@ -226,26 +231,6 @@ func waitForADPort(t *testing.T, port int, timeout time.Duration) {
 	}
 	dumpADLogs(t)
 	t.Fatalf("KDC port %d not ready within %s", port, timeout)
-}
-
-// lookupGroupSID queries the running DC for a group's object SID via samba-tool.
-func lookupGroupSID(t *testing.T, group string) string {
-	t.Helper()
-	out, err := adDockerExec("samba-tool", "group", "show", group, "--attributes=objectSid")
-	if err != nil {
-		t.Fatalf("samba-tool group show %s: %v\n%s", group, err, out)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(strings.ToLower(line), "objectsid:") {
-			sid := strings.TrimSpace(line[len("objectsid:"):])
-			if sid != "" {
-				return sid
-			}
-		}
-	}
-	t.Fatalf("could not parse objectSid for group %s from:\n%s", group, out)
-	return ""
 }
 
 func dumpADLogs(t *testing.T) {

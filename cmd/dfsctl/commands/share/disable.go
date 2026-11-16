@@ -1,9 +1,6 @@
 package share
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
@@ -28,22 +25,5 @@ Examples:
 
   # Emit the updated Share record as JSON
   dfsctl share disable /archive -o json`,
-	Args: cobra.ExactArgs(1),
-	RunE: runDisable,
-}
-
-func runDisable(cmd *cobra.Command, args []string) error {
-	name := args[0]
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	share, err := client.DisableShare(name)
-	if err != nil {
-		return fmt.Errorf("failed to disable share: %w", err)
-	}
-
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, share, fmt.Sprintf("Share %s disabled.", name))
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }

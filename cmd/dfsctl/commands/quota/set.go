@@ -1,11 +1,7 @@
 package quota
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
 
@@ -39,8 +35,7 @@ Examples:
 
   # Per-group quota with soft thresholds and a 7-day grace period
   dfsctl quota set /archive --scope group --id 2000 --limit-bytes 50GiB --soft-bytes 45GiB --grace-seconds 604800`,
-	Args: cobra.ExactArgs(1),
-	RunE: runSet,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
@@ -52,38 +47,4 @@ func init() {
 	setCmd.Flags().Int64Var(&setSoftFiles, "soft-files", 0, "Soft inode threshold. 0 = none.")
 	setCmd.Flags().Int64Var(&setGraceSeconds, "grace-seconds", 0, "Seconds usage may exceed a soft threshold before it is enforced as hard. 0 = grace disabled.")
 	_ = setCmd.MarkFlagRequired("scope")
-}
-
-func runSet(cmd *cobra.Command, args []string) error {
-	share := args[0]
-
-	if !isValidScope(setScope) {
-		return fmt.Errorf("invalid --scope %q (want user|group|default-user)", setScope)
-	}
-
-	id, err := resolveID(setScope, setID)
-	if err != nil {
-		return err
-	}
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	req := &apiclient.UpsertQuotaRequest{
-		LimitBytes:   setLimitBytes,
-		SoftBytes:    setSoftBytes,
-		LimitFiles:   setLimitFiles,
-		SoftFiles:    setSoftFiles,
-		GraceSeconds: setGraceSeconds,
-	}
-
-	q, err := client.SetQuota(share, setScope, id, req)
-	if err != nil {
-		return fmt.Errorf("failed to set quota: %w", err)
-	}
-
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, q,
-		fmt.Sprintf("Quota for scope '%s' on share '%s' set successfully", setScope, share))
 }

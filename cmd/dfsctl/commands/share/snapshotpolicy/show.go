@@ -1,8 +1,7 @@
 package snapshotpolicy
 
 import (
-	"fmt"
-
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
 
@@ -22,21 +21,5 @@ Examples:
 
   # Emit the policy record as JSON
   dfsctl share snapshot-policy show /archive -o json`,
-	Args: cobra.ExactArgs(1),
-	RunE: runShow,
-}
-
-func runShow(cmd *cobra.Command, args []string) error {
-	share := args[0]
-
-	client, err := getClient()
-	if err != nil {
-		return err
-	}
-
-	policy, err := client.GetSnapshotPolicy(share)
-	if err != nil {
-		return fmt.Errorf("failed to get snapshot policy: %w", err)
-	}
-	return printPolicy(policy)
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }

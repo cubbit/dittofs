@@ -1,8 +1,6 @@
 package group
 
 import (
-	"fmt"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
@@ -24,26 +22,9 @@ Examples:
 
   # Remove a group non-interactively (for scripts and automation)
   dfsctl group remove editors --force`,
-	Args: cobra.ExactArgs(1),
-	RunE: runRemove,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
 	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false, "Skip confirmation prompt")
-}
-
-func runRemove(cmd *cobra.Command, args []string) error {
-	name := args[0]
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	return cmdutil.RunDeleteWithConfirmation("Group", name, removeForce, func() error {
-		if err := client.RemoveGroup(name); err != nil {
-			return fmt.Errorf("failed to remove group: %w", err)
-		}
-		return nil
-	})
 }

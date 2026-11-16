@@ -32,8 +32,8 @@ func TestMustLoad_NoConfigFileFallsBackToDefaults(t *testing.T) {
 		t.Fatal("MustLoad returned nil config without an error")
 	}
 	// Sanity: defaults were applied.
-	if cfg.ControlPlane.Port == 0 {
-		t.Fatalf("expected default control-plane port to be applied, got %d", cfg.ControlPlane.Port)
+	if cfg.Logging.Level != "INFO" {
+		t.Fatalf("expected the default log level to be applied, got %q", cfg.Logging.Level)
 	}
 }
 

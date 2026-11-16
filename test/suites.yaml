@@ -183,12 +183,8 @@ suites:
           - pkg/metadata/**
           - internal/auth/**
           - pkg/auth/**
-          - pkg/identity/**
-          - pkg/controlplane/**             # export auth policy, users and identity mappings
-          - internal/controlplane/**        # the identity mapping and provider API
           - pkg/config/**                   # the Kerberos keytab and principal
           - cmd/dfs/**                      # the server's Kerberos capability at start
-          - "test/e2e/*kerberos*"
           - test/e2e/framework/kerberos.go
           - test/integration/kerberos/**
       # The tests that reach one file through both protocols, on pull requests that can break
@@ -208,13 +204,8 @@ suites:
           - internal/vfs/**
           - pkg/vfs/**
           - pkg/metadata/**
-          - pkg/controlplane/runtime/**       # the share registry and policy both adapters read
-          - pkg/auth/**                       # the SID mapper both adapters call
-          - "test/e2e/cross_protocol*"
-          - test/e2e/helpers/**               # error_triggers.go, used by CrossProtocol_ErrorConformance
+          - pkg/auth/**                       # the SIDs both adapters encode
           - test/e2e/framework/**             # the mount and fixture code the option runs on
-          - test/e2e/grace_period_test.go    # the reclaim across both protocols
-          - test/e2e/nfsv4_acl_test.go        # a file with an NFSv4 ACL, read over SMB
 
   # Conformance runs the production profile, badger-s3, only.
   pjdfstest:

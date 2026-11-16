@@ -2,27 +2,9 @@ package share
 
 import (
 	"fmt"
-	"net/url"
-	"os"
-	"strings"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/credentials"
-	"github.com/cubbit/dittofs/internal/cli/prompt"
-	"github.com/cubbit/dittofs/pkg/controlplane/models"
 	"github.com/spf13/cobra"
-)
-
-// Ports the client mounts: each protocol's default, aliased to the server-side
-// defaults so the value has a single source.
-//
-// decision: the mount does not ask the server which port a protocol listens
-// on, because the server publishes no listener to ask about. A server whose
-// protocol listens elsewhere is not reachable through this command until
-// the listening ports are published again.
-const (
-	defaultNFSPort = models.DefaultNFSPort
-	defaultSMBPort = models.DefaultSMBPort
 )
 
 var (
@@ -78,8 +60,7 @@ Examples:
 			return fmt.Errorf("accepts 2 args, received %d", len(args))
 		}
 		return nil
-	},
-	RunE: runMount,
+	}, RunE: cmdutil.Unavailable,
 }
 
 func init() {
@@ -93,128 +74,4 @@ func init() {
 	mountCmd.Flags().StringVar(&mountDirMode, "dir-mode", defaultMode, "Directory permissions for SMB mount (octal)")
 
 	_ = mountCmd.MarkFlagRequired("protocol")
-}
-
-func runMount(cmd *cobra.Command, args []string) error {
-	sharePath := args[0]
-	mountPoint := args[1]
-
-	protocol := strings.ToLower(mountProtocol)
-	if protocol != "nfs" && protocol != "smb" {
-		return fmt.Errorf("invalid protocol '%s': must be 'nfs' or 'smb'\nHint: Use --protocol nfs or --protocol smb", mountProtocol)
-	}
-
-	if err := validatePlatform(); err != nil {
-		return err
-	}
-
-	if err := validateMountPoint(mountPoint); err != nil {
-		return err
-	}
-
-	if err := checkMountPrivileges(mountPoint, protocol, sharePath); err != nil {
-		return err
-	}
-
-	// Resolve server host from current context
-	serverHost := resolveServerHost()
-
-	switch protocol {
-	case "nfs":
-		return mountNFS(sharePath, mountPoint, defaultNFSPort, serverHost, mountNFSVersion)
-	default:
-		return mountSMB(sharePath, mountPoint, defaultSMBPort, serverHost)
-	}
-}
-
-func resolveSMBUsername() (string, error) {
-	if mountUsername != "" {
-		return mountUsername, nil
-	}
-
-	// Try to get username from current login context
-	store, err := credentials.NewStore()
-	if err == nil {
-		if ctx, err := store.GetCurrentContext(); err == nil && ctx.Username != "" {
-			return ctx.Username, nil
-		}
-	}
-
-	return "", fmt.Errorf("username required for SMB mount\nHint: Use --username flag or login with 'dfsctl login'")
-}
-
-func resolveSMBPassword(username string) (string, error) {
-	// Priority: flag > environment > prompt
-	if mountPassword != "" {
-		return mountPassword, nil
-	}
-
-	if envPassword := os.Getenv("DITTOFS_PASSWORD"); envPassword != "" {
-		return envPassword, nil
-	}
-
-	password, err := prompt.Password(fmt.Sprintf("Password for %s", username))
-	if err != nil {
-		return "", cmdutil.HandleAbort(err)
-	}
-	return password, nil
-}
-
-// resolveServerHost extracts the hostname from the current context's server URL.
-// Falls back to "localhost" if no context is available.
-func resolveServerHost() string {
-	store, err := credentials.NewStore()
-	if err != nil {
-		return "localhost"
-	}
-
-	ctx, err := store.GetCurrentContext()
-	if err != nil {
-		return "localhost"
-	}
-
-	parsed, err := url.Parse(ctx.ServerURL)
-	if err != nil {
-		return "localhost"
-	}
-
-	if host := parsed.Hostname(); host != "" {
-		return host
-	}
-
-	return "localhost"
-}
-
-func formatMountError(err error, output, protocol string, port int) error {
-	combined := strings.ToLower(output + " " + err.Error())
-
-	// Match known error patterns to user-friendly hints.
-	hints := []struct {
-		keywords []string
-		hint     string
-	}{
-		{[]string{"connection refused"}, fmt.Sprintf("Is the server serving %s on its default port?", protocol)},
-		{[]string{"not found", "no such file", "does not exist"}, "Does the share exist? Check with 'dfsctl share list'"},
-		{[]string{"permission denied", "operation not permitted"}, "Mount commands may require sudo privileges"},
-		{[]string{"already mounted", "busy"}, "The mount point may already be in use. Check with 'mount' command"},
-		{[]string{"authentication", "login", "access denied"}, "Check your credentials with 'dfsctl login'"},
-	}
-
-	for _, h := range hints {
-		for _, kw := range h.keywords {
-			if strings.Contains(combined, kw) {
-				return fmt.Errorf("mount failed: %w\nOutput: %s\nHint: %s", err, output, h.hint)
-			}
-		}
-	}
-
-	// Broken pipe / connection reset has protocol-specific hints.
-	if strings.Contains(combined, "broken pipe") || strings.Contains(combined, "connection reset") {
-		if protocol == "SMB" {
-			return fmt.Errorf("mount failed: %w\nOutput: %s\nHint: This often indicates wrong password or authentication failure. Verify your credentials and try again", err, output)
-		}
-		return fmt.Errorf("mount failed: %w\nOutput: %s\nHint: Server closed the connection unexpectedly. Check %s adapter logs with 'dfs logs'", err, output, protocol)
-	}
-
-	return fmt.Errorf("mount failed: %w\nOutput: %s\nHint: The mount used port %d. Is the server serving it there?", err, output, port)
 }

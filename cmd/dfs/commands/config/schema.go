@@ -47,7 +47,7 @@ func runSchema(cmd *cobra.Command, args []string) error {
 		FieldNameTag: "yaml",
 	}
 
-	schema := reflector.Reflect(&config.Config{})
+	schema := reflector.Reflect(&config.Bootstrap{})
 	schema.Version = "https://json-schema.org/draft/2020-12/schema"
 	schema.Title = "DittoFS Configuration"
 	schema.Description = "Configuration schema for DittoFS server"

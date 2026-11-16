@@ -2,14 +2,10 @@ package block
 
 import (
 	"errors"
-	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/output"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 )
 
 // ErrNoGCRunYet signals that the share has no `last-run.json` to read —
@@ -41,70 +37,5 @@ Examples:
 
   # Show as YAML
   dfsctl store block gc-status myshare -o yaml`,
-	Args: cobra.ExactArgs(1),
-	RunE: runBlockStoreGCStatus,
-}
-
-func runBlockStoreGCStatus(cmd *cobra.Command, args []string) error {
-	share := args[0]
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	summary, err := client.BlockStoreGCStatus(share)
-	if err != nil {
-		var apiErr *apiclient.APIError
-		if errors.As(err, &apiErr) && apiErr.IsNotFound() {
-			// "No run yet" is a distinct, expected state. Surface it as a
-			// recognizable error so scripts and tests can branch on it
-			// (cobra's RunE-error path already produces a non-zero exit).
-			return ErrNoGCRunYet
-		}
-		return fmt.Errorf("failed to read GC status: %w", err)
-	}
-
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	switch format {
-	case output.FormatJSON:
-		return output.PrintJSON(os.Stdout, summary)
-	case output.FormatYAML:
-		return output.PrintYAML(os.Stdout, summary)
-	default:
-		pairs := [][2]string{
-			{"Run ID", summary.RunID},
-			{"Started At", summary.StartedAt.Format("2006-01-02T15:04:05Z07:00")},
-			{"Completed At", summary.CompletedAt.Format("2006-01-02T15:04:05Z07:00")},
-			{"Duration", fmt.Sprintf("%dms", summary.DurationMs)},
-			{"Hashes Marked", fmt.Sprintf("%d", summary.HashesMarked)},
-			{"Objects Found", fmt.Sprintf("%d", summary.ObjectsScanned)},
-			{"Objects Swept", fmt.Sprintf("%d", summary.ObjectsSwept)},
-			{"Bytes Freed", formatBytes(summary.BytesFreed)},
-			{"Errors", fmt.Sprintf("%d", summary.ErrorCount)},
-			{"Dry Run", fmt.Sprintf("%v", summary.DryRun)},
-		}
-		if err := output.SimpleTable(os.Stdout, pairs); err != nil {
-			return err
-		}
-		if len(summary.FirstErrors) > 0 {
-			fmt.Println()
-			fmt.Println("First errors:")
-			for _, e := range summary.FirstErrors {
-				fmt.Printf("  - %s\n", e)
-			}
-		}
-		if len(summary.DryRunCandidates) > 0 {
-			fmt.Println()
-			fmt.Printf("Dry-run candidates (%d):\n", len(summary.DryRunCandidates))
-			for _, c := range summary.DryRunCandidates {
-				fmt.Printf("  %s\n", c)
-			}
-		}
-		return nil
-	}
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }

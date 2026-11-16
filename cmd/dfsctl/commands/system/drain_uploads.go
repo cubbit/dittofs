@@ -1,12 +1,9 @@
 package system
 
 import (
-	"fmt"
-	"os"
 	"time"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/spf13/cobra"
 )
 
@@ -29,39 +26,10 @@ Examples:
   dfsctl system drain-uploads --timeout 15m
 
   # Get drain result as JSON (includes duration)
-  dfsctl system drain-uploads -o json`,
-	RunE: runDrainUploads,
+  dfsctl system drain-uploads -o json`, RunE: cmdutil.Unavailable,
 }
 
 func init() {
 	drainUploadsCmd.Flags().DurationVar(&drainTimeout, "timeout", 0,
 		"client-side wait for the drain (0 or negative uses the built-in default, 6m)")
-}
-
-func runDrainUploads(cmd *cobra.Command, args []string) error {
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	resp, err := client.DrainUploads(drainTimeout)
-	if err != nil {
-		return fmt.Errorf("failed to drain uploads: %w", err)
-	}
-
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
-	}
-
-	switch format {
-	case output.FormatJSON:
-		return output.PrintJSON(os.Stdout, resp)
-	case output.FormatYAML:
-		return output.PrintYAML(os.Stdout, resp)
-	default:
-		fmt.Printf("All uploads drained (took %s)\n", resp.Duration)
-	}
-
-	return nil
 }

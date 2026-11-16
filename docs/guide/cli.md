@@ -16,14 +16,9 @@ This page is generated from the command definitions (`go run ./cmd/gendocs`). Do
     - [`dfs config schema`](#dfs-config-schema) — Generate JSON schema for configuration
     - [`dfs config show`](#dfs-config-show) — Display current configuration
     - [`dfs config validate`](#dfs-config-validate) — Validate configuration file
-  - [`dfs init`](#dfs-init) — Initialize a sample configuration file
-  - [`dfs logs`](#dfs-logs) — Tail server logs
-  - [`dfs migrate`](#dfs-migrate) — Run database migrations
-  - [`dfs netlogon`](#dfs-netlogon) — Inspect and test NETLOGON machine-account (NTLM pass-through) setup
-    - [`dfs netlogon test`](#dfs-netlogon-test) — Probe the NETLOGON secure channel to the domain controller
+  - [`dfs init`](#dfs-init) — Initialize a new installation
+  - [`dfs reset-admin`](#dfs-reset-admin) — Reset the administrator's credentials
   - [`dfs start`](#dfs-start) — Start the DittoFS server
-  - [`dfs status`](#dfs-status) — Show server status
-  - [`dfs stop`](#dfs-stop) — Stop the DittoFS server
   - [`dfs version`](#dfs-version) — Show version information
 
 
@@ -33,7 +28,7 @@ DittoFS - Modular virtual filesystem
 
 DittoFS is an experimental modular virtual filesystem that decouples
 file interfaces from storage backends, with pluggable metadata and content
-stores. This build runs the control plane and serves no file protocol.
+stores. This build serves no file protocol.
 
 Use "dfs [command] --help" for more information about a command.
 
@@ -92,9 +87,7 @@ Global flags:
 
 Configuration management
 
-Manage DittoFS configuration files.
-
-Use 'dfs init' to create a new configuration file.
+Manage the DittoFS server's configuration file.
 
 Subcommands:
 
@@ -246,84 +239,20 @@ Global flags:
 
 ### `dfs init`
 
-Initialize a sample configuration file
+Initialize a new installation
 
-Initialize a sample DittoFS server configuration file.
-
-Creates a commented YAML configuration template at
-$XDG_CONFIG_HOME/dittofs/config.yaml (typically ~/.config/dittofs/config.yaml).
-The generated file includes a randomly generated JWT secret suitable for
-development; replace it with a strong secret (or use DITTOFS_CONTROLPLANE_SECRET)
-before deploying to production. Use --config to write to a non-default path.
+Initialize a new DittoFS installation: its first administrator and its
+signing key, kept in the metadata store the server's configuration names.
 
 ```
-dfs init [flags]
-```
-
-**Examples:**
-
-```bash
-# Create config at the default location
 dfs init
-
-# Create config at a custom path
-dfs init --config /etc/dittofs/config.yaml
-
-# Overwrite an existing config file
-dfs init --force
-```
-
-Flags:
-
-```
-      --force   Force overwrite existing config file
-```
-
-Global flags:
-
-```
-      --config string   config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
-```
-
-### `dfs logs`
-
-Tail server logs
-
-Display and optionally follow the DittoFS server log file.
-
-Reads the log file path configured under logging.output in the active config
-and prints the most recent lines. Pass -f to stream new entries as they are
-written (similar to tail -f). The --since flag filters output to entries
-timestamped at or after a given RFC3339 instant. Note: this command requires
-logging.output to be a file path; it returns an error when the server is
-configured to log to stdout or stderr.
-
-```
-dfs logs [flags]
 ```
 
 **Examples:**
 
 ```bash
-# Show the last 100 log lines (default)
-dfs logs
-
-# Show the last 50 lines
-dfs logs -n 50
-
-# Stream new log entries in real-time
-dfs logs -f
-
-# Show entries written since a specific time
-dfs logs --since "2024-01-15T10:00:00Z"
-```
-
-Flags:
-
-```
-  -f, --follow         Follow log output
-  -n, --lines int      Number of lines to show (default 100)
-      --since string   Show logs since timestamp (RFC3339 format)
+# Initialize the installation the default configuration names
+dfs init
 ```
 
 Global flags:
@@ -332,85 +261,22 @@ Global flags:
       --config string   config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
 ```
 
-### `dfs migrate`
+### `dfs reset-admin`
 
-Run database migrations
+Reset the administrator's credentials
 
-Run database migrations for the control plane database.
-
-This command applies pending schema migrations to the configured control-plane
-database (SQLite by default, or PostgreSQL). Run it once after upgrading DittoFS
-to a new version that includes schema changes; it is safe to run multiple times.
+Reset the credentials of the installation's administrator, on the host
+that holds its metadata store, for when no administrator can sign in.
 
 ```
-dfs migrate
+dfs reset-admin
 ```
 
 **Examples:**
 
 ```bash
-# Run migrations with default config
-dfs migrate
-
-# Run migrations with a custom config file
-dfs migrate --config /etc/dittofs/config.yaml
-```
-
-Global flags:
-
-```
-      --config string   config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
-```
-
-### `dfs netlogon`
-
-Inspect and test NETLOGON machine-account (NTLM pass-through) setup
-
-NETLOGON machine-account tooling for SMB NTLM pass-through of AD domain users.
-
-When a client connects by a name with no Kerberos SPN (an IP, or the Explorer →
-Network discovery name), Windows falls back to NTLM. DittoFS validates that NTLM
-response against a domain controller over a NETLOGON secure channel, using a
-machine (computer) account configured under 'kerberos.machine_account'. Use these
-subcommands to verify that setup.
-
-Global flags:
-
-```
-      --config string   config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
-```
-
-### `dfs netlogon test`
-
-Probe the NETLOGON secure channel to the domain controller
-
-Validate that the configured machine account can establish a NETLOGON secure
-channel to a domain controller — the channel NTLM pass-through for AD domain users
-rides.
-
-It authenticates the machine account and brings up the sealed secure channel (the
-same handshake a real domain-user NTLM logon triggers), then tears it down. No user
-logon (NetrLogonSamLogon) is performed. Use it to verify machine-account
-credentials, DC reachability, and Kerberos configuration before relying on Explorer
-double-click / NTLM logons.
-
-This probes the OFFLINE machine-account channel (kerberos.machine_account with an
-account_name + secret). Online join provisions the computer object lazily on the
-first domain logon against the running server — start the server and check its log
-for the join result instead.
-
-```
-dfs netlogon test
-```
-
-**Examples:**
-
-```bash
-# Probe using the default config location
-dfs netlogon test
-
-# Probe using an explicit config file
-dfs netlogon test --config /etc/dittofs/config.yaml
+# Reset the administrator of the installation the default configuration names
+dfs reset-admin
 ```
 
 Global flags:
@@ -423,127 +289,26 @@ Global flags:
 
 Start the DittoFS server
 
-Start the DittoFS server with the specified configuration.
+Start the DittoFS server in the foreground with the specified configuration.
 
-By default, the server daemonizes into the background and writes its PID to
-$XDG_STATE_HOME/dittofs/dittofs.pid. Use --foreground when running under a
-process supervisor (systemd, Docker) or for interactive debugging. The
-server serves no file protocol: it runs the control plane, whose REST API is
-available at http://localhost:8080, and the metrics endpoint when enabled.
+The server runs until it is stopped. Run it under a process supervisor
+(systemd, Docker) to keep it in the background.
 
 ```
-dfs start [flags]
+dfs start
 ```
 
 **Examples:**
 
 ```bash
-# Start in background (daemon mode)
+# Start with the default configuration
 dfs start
 
-# Start in foreground with debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG dfs start --foreground
+# Start with debug logging
+DITTOFS_LOGGING_LEVEL=DEBUG dfs start
 
-# Start with a custom config file and explicit PID file path
-dfs start --config /etc/dittofs/config.yaml --pid-file /var/run/dittofs.pid
-
-# Set admin password via environment on first boot instead of the generated one
-DITTOFS_ADMIN_INITIAL_PASSWORD=changeme dfs start --foreground
-```
-
-Flags:
-
-```
-  -f, --foreground        Run in foreground (default: background/daemon mode)
-      --log-file string   Path to log file for daemon mode (default: $XDG_STATE_HOME/dittofs/dittofs.log)
-      --pid-file string   Path to PID file (default: $XDG_STATE_HOME/dittofs/dittofs.pid)
-```
-
-Global flags:
-
-```
-      --config string   config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
-```
-
-### `dfs status`
-
-Show server status
-
-Display the current status of the DittoFS server.
-
-Checks the health endpoint at http://localhost:8080/health and reports whether
-the server is running, how long it has been up, and whether the control-plane
-database is reachable. When an API token is provided, per-entity status (shares,
-stores) is also fetched and rendered as a color-coded table.
-
-```
-dfs status [flags]
-```
-
-**Examples:**
-
-```bash
-# Check status using default settings
-dfs status
-
-# Check status when the control-plane API runs on a non-default port
-dfs status --api-port 9080
-
-# Include per-entity (share, store) detail
-dfs status --api-token <token>
-
-# Emit machine-readable JSON output
-dfs status --output json
-```
-
-Flags:
-
-```
-      --api-port int       API server port (default 8080)
-      --api-token string   API token for per-entity status (or set DFS_API_TOKEN)
-  -o, --output string      Output format (table|json|yaml) (default "table")
-      --pid-file string    Path to PID file (default: $XDG_STATE_HOME/dittofs/dittofs.pid)
-```
-
-Global flags:
-
-```
-      --config string   config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
-```
-
-### `dfs stop`
-
-Stop the DittoFS server
-
-Stop a running DittoFS server.
-
-Sends SIGTERM to the server process identified by the PID file, which triggers
-a graceful shutdown: in-flight requests are drained, snapshot jobs are
-flushed, and block stores are closed before the process exits. Use --force to
-send SIGKILL instead when a graceful stop is not responding.
-
-```
-dfs stop [flags]
-```
-
-**Examples:**
-
-```bash
-# Graceful stop (reads default PID file)
-dfs stop
-
-# Stop using a custom PID file location
-dfs stop --pid-file /var/run/dittofs.pid
-
-# Immediately kill the server process
-dfs stop --force
-```
-
-Flags:
-
-```
-  -f, --force             Force kill instead of graceful shutdown
-      --pid-file string   Path to PID file (default: $XDG_STATE_HOME/dittofs/dittofs.pid)
+# Start with a custom config file
+dfs start --config /etc/dittofs/config.yaml
 ```
 
 Global flags:
@@ -707,11 +472,9 @@ DittoFS Control - Remote management client
 
 dfsctl is the command-line client for managing DittoFS servers remotely.
 
-It communicates with the DittoFS control-plane REST API (default port 8080) and
-persists credentials in ~/.config/dfsctl/config.json. Run dfsctl login first to
-authenticate, then use the subcommands to manage users, groups, shares, stores
-and server settings. Multiple server contexts are supported via the
-context subcommand.
+Its commands for users, groups, shares, stores and server settings return with
+the server's v2 API; until then each refuses. The context subcommand manages
+the server contexts kept in ~/.config/dfsctl/config.json.
 
 Use "dfsctl [command] --help" for more information about a command.
 
@@ -1933,12 +1696,9 @@ Authenticate with DittoFS server
 
 Authenticate with a DittoFS server and store credentials locally.
 
-Contacts the control-plane API at the given server URL, exchanges credentials
-for an access/refresh token pair, and saves them to ~/.config/dfsctl/config.json
-under a named context (default: auto-derived from the server URL). Subsequent
-commands reuse the stored token and refresh it automatically when it expires.
-TLS client certificates and a custom CA bundle can be pinned at login time and
-are persisted into the context for later commands.
+Not available until the CLI is rebuilt on the v2 API: signing in returns with
+that API's accounts. Credentials are kept in ~/.config/dfsctl/config.json under
+a named context, which the context subcommand manages.
 
 ```
 dfsctl login [flags]
@@ -2034,8 +1794,7 @@ response against a domain controller over a NETLOGON secure channel using a
 machine account. These commands report the live machine-account / secure-channel
 state and force a machine-password rotation.
 
-Unlike 'dfs netlogon test' (a self-contained probe run from the config file),
-these talk to the RUNNING server over the API and require admin credentials.
+These talk to the RUNNING server over the API and require admin credentials.
 
 **Examples:**
 

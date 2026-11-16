@@ -1,11 +1,7 @@
 package group
 
 import (
-	"fmt"
-	"os"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
 
@@ -31,8 +27,7 @@ Examples:
   dfsctl group create --name editors --gid 1001
 
   # Create a group with a description
-  dfsctl group create --name editors --gid 1001 --description "Content editors"`,
-	RunE: runCreate,
+  dfsctl group create --name editors --gid 1001 --description "Content editors"`, RunE: cmdutil.Unavailable,
 }
 
 func init() {
@@ -40,33 +35,4 @@ func init() {
 	createCmd.Flags().Uint32Var(&createGID, "gid", 0, "Group ID (auto-generated if not set)")
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Group description")
 	_ = createCmd.MarkFlagRequired("name")
-}
-
-func runCreate(cmd *cobra.Command, args []string) error {
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	req := &apiclient.CreateGroupRequest{
-		Name:        createName,
-		Description: createDescription,
-	}
-
-	// Only set GID if explicitly provided
-	if cmd.Flags().Changed("gid") {
-		gid := createGID
-		req.GID = &gid
-	}
-
-	group, err := client.CreateGroup(req)
-	if err != nil {
-		return fmt.Errorf("failed to create group: %w", err)
-	}
-
-	gidStr := "auto"
-	if group.GID != nil {
-		gidStr = fmt.Sprintf("%d", *group.GID)
-	}
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, group, fmt.Sprintf("Group '%s' created successfully (GID: %s)", group.Name, gidStr))
 }

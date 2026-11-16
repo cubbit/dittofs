@@ -74,7 +74,7 @@ func runConfigShow(cmd *cobra.Command, args []string) error {
 // marshalling to YAML and unmarshalling back into an interface{}. This yields
 // the same lowercase key namespace config.Load consumes, so the JSON encoding
 // of the result round-trips through Load.
-func yamlKeyedView(cfg *config.Config) (interface{}, error) {
+func yamlKeyedView(cfg *config.Bootstrap) (interface{}, error) {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal config: %w", err)

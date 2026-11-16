@@ -22,7 +22,7 @@ var rootCmd = &cobra.Command{
 	Short: "DittoFS - Modular virtual filesystem",
 	Long: `DittoFS is an experimental modular virtual filesystem that decouples
 file interfaces from storage backends, with pluggable metadata and content
-stores. This build runs the control plane and serves no file protocol.
+stores. This build serves no file protocol.
 
 Use "dfs [command] --help" for more information about a command.`,
 	SilenceUsage:  true,
@@ -46,13 +46,9 @@ func init() {
 
 	// Add subcommands
 	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(initCmd)
-	rootCmd.AddCommand(migrateCmd)
-	rootCmd.AddCommand(stopCmd)
-	rootCmd.AddCommand(statusCmd)
-	rootCmd.AddCommand(logsCmd)
-	rootCmd.AddCommand(netlogonCmd)
+	rootCmd.AddCommand(startCmd)
+	rootCmd.AddCommand(resetAdminCmd)
 	rootCmd.AddCommand(config.Cmd)
 	rootCmd.AddCommand(completionCmd)
 

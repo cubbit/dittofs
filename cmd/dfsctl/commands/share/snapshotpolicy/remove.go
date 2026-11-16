@@ -1,8 +1,6 @@
 package snapshotpolicy
 
 import (
-	"fmt"
-
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/spf13/cobra"
 )
@@ -25,35 +23,9 @@ Examples:
 
   # Remove without a confirmation prompt (useful in scripts)
   dfsctl share snapshot-policy remove /archive --yes`,
-	Args: cobra.ExactArgs(1),
-	RunE: runRemove,
+	Args: cobra.ExactArgs(1), RunE: cmdutil.Unavailable,
 }
 
 func init() {
 	removeCmd.Flags().BoolVar(&removeYes, "yes", false, "Skip confirmation prompt")
-}
-
-func runRemove(cmd *cobra.Command, args []string) error {
-	share := args[0]
-
-	client, err := getClient()
-	if err != nil {
-		return err
-	}
-
-	prompt := fmt.Sprintf("Remove snapshot policy for share %s? Automatic snapshots will stop.", share)
-	ok, err := cmdutil.ConfirmDestructive(prompt, removeYes)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		fmt.Println("Aborted.")
-		return nil
-	}
-
-	if err := client.RemoveSnapshotPolicy(share); err != nil {
-		return fmt.Errorf("failed to remove snapshot policy: %w", err)
-	}
-	fmt.Printf("Snapshot policy for share %s removed.\n", share)
-	return nil
 }

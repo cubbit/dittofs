@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
-	"time"
 )
 
 func TestLoad_DefaultConfig(t *testing.T) {
@@ -18,13 +17,9 @@ func TestLoad_DefaultConfig(t *testing.T) {
 logging:
   level: "INFO"
 
-database:
-  type: sqlite
-
-controlplane:
-  port: 8080
-  jwt:
-    secret: "test-secret-key-for-testing-minimum-32-chars"
+blockstore:
+  journal:
+    path: /var/lib/dittofs/blocks
 `
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("Failed to write config file: %v", err)
@@ -43,11 +38,8 @@ controlplane:
 	if cfg.Logging.Output != GetDefaultLogPath() {
 		t.Errorf("Expected default output %q, got %q", GetDefaultLogPath(), cfg.Logging.Output)
 	}
-	if cfg.ShutdownTimeout != 30*time.Second {
-		t.Errorf("Expected default shutdown_timeout 30s, got %v", cfg.ShutdownTimeout)
-	}
-	if cfg.ControlPlane.Port != 8080 {
-		t.Errorf("Expected control plane port 8080, got %d", cfg.ControlPlane.Port)
+	if cfg.Blockstore.Journal.Path != "/var/lib/dittofs/blocks" {
+		t.Errorf("Expected journal path /var/lib/dittofs/blocks, got %q", cfg.Blockstore.Journal.Path)
 	}
 }
 
@@ -67,9 +59,8 @@ func TestLoad_NoConfigFile(t *testing.T) {
 		t.Fatal("Expected default config to be returned")
 	}
 
-	// Verify default API port
-	if cfg.ControlPlane.Port != 8080 {
-		t.Errorf("Expected default API port 8080, got %d", cfg.ControlPlane.Port)
+	if cfg.Logging.Level != "INFO" {
+		t.Errorf("Expected default log level 'INFO', got %q", cfg.Logging.Level)
 	}
 }
 
@@ -102,15 +93,6 @@ func TestLoad_TOML(t *testing.T) {
 [logging]
 level = "WARN"
 format = "json"
-
-[database]
-type = "sqlite"
-
-[controlplane]
-port = 8080
-
-[controlplane.jwt]
-secret = "test-secret-key-for-testing-minimum-32-chars"
 `
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("Failed to write config file: %v", err)
@@ -140,12 +122,13 @@ func TestLoad_IgnoresUnknownKey(t *testing.T) {
 		"lock":   "lock:\n  lease_break_timeout: 5s\n",
 		"syncer": "syncer:\n  upload_concurrency: 4\n",
 		"typo":   "loging:\n  level: DEBUG\n",
+		"v1":     "database:\n  type: sqlite\ncontrolplane:\n  port: 8080\n",
 	}
 	for name, extra := range cases {
 		t.Run(name, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			configPath := filepath.Join(tmpDir, "config.yaml")
-			content := "logging:\n  level: INFO\n  format: text\n  output: stdout\ndatabase:\n  type: sqlite\n" + extra
+			content := "logging:\n  level: INFO\n  format: text\n  output: stdout\n" + extra
 			if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 				t.Fatalf("write config: %v", err)
 			}
@@ -169,24 +152,9 @@ func TestGetDefaultConfig(t *testing.T) {
 	if cfg.Logging.Output != GetDefaultLogPath() {
 		t.Errorf("Expected default log output %q, got %q", GetDefaultLogPath(), cfg.Logging.Output)
 	}
-	if cfg.ShutdownTimeout != 30*time.Second {
-		t.Errorf("Expected default shutdown timeout 30s, got %v", cfg.ShutdownTimeout)
+	if !filepath.IsAbs(cfg.Blockstore.Journal.Path) {
+		t.Errorf("Expected an absolute default journal path, got %q", cfg.Blockstore.Journal.Path)
 	}
-	if cfg.ControlPlane.Port != 8080 {
-		t.Errorf("Expected default API port 8080, got %d", cfg.ControlPlane.Port)
-	}
-	if cfg.Admin.Username != "admin" {
-		t.Errorf("Expected default admin username 'admin', got %q", cfg.Admin.Username)
-	}
-}
-
-func TestConfigExists(t *testing.T) {
-	// Should return false for non-existent config
-	// Note: This test assumes there's no config in the default location
-	// or we're in a test environment where XDG_CONFIG_HOME is not set
-
-	// We can't easily test this without mocking the environment
-	// So we'll skip for now or make it a table test with temp dirs
 }
 
 func TestGetDefaultConfigPath(t *testing.T) {
@@ -202,7 +170,7 @@ func TestGetDefaultConfigPath(t *testing.T) {
 }
 
 func TestGetConfigDir(t *testing.T) {
-	dir := GetConfigDir()
+	dir := getConfigDir()
 
 	// Should contain dittofs
 	if filepath.Base(dir) != "dittofs" {
@@ -216,20 +184,20 @@ func TestGetConfigDir_PlatformEnvVars(t *testing.T) {
 			tmpDir := t.TempDir()
 			t.Setenv("APPDATA", tmpDir)
 
-			dir := GetConfigDir()
+			dir := getConfigDir()
 			expected := filepath.Join(tmpDir, "dittofs")
 			if dir != expected {
-				t.Errorf("GetConfigDir() = %q, expected %q", dir, expected)
+				t.Errorf("getConfigDir() = %q, expected %q", dir, expected)
 			}
 		})
 
 		t.Run("FallbackWithoutAPPDATA", func(t *testing.T) {
 			t.Setenv("APPDATA", "")
 
-			dir := GetConfigDir()
+			dir := getConfigDir()
 			// Should contain "AppData/Roaming/dittofs" or "dittofs" at minimum
 			if filepath.Base(dir) != "dittofs" {
-				t.Errorf("GetConfigDir() = %q, expected directory name 'dittofs'", dir)
+				t.Errorf("getConfigDir() = %q, expected directory name 'dittofs'", dir)
 			}
 		})
 	} else {
@@ -237,20 +205,20 @@ func TestGetConfigDir_PlatformEnvVars(t *testing.T) {
 			tmpDir := t.TempDir()
 			t.Setenv("XDG_CONFIG_HOME", tmpDir)
 
-			dir := GetConfigDir()
+			dir := getConfigDir()
 			expected := filepath.Join(tmpDir, "dittofs")
 			if dir != expected {
-				t.Errorf("GetConfigDir() = %q, expected %q", dir, expected)
+				t.Errorf("getConfigDir() = %q, expected %q", dir, expected)
 			}
 		})
 
 		t.Run("FallbackWithoutXDG", func(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", "")
 
-			dir := GetConfigDir()
+			dir := getConfigDir()
 			// Should end with .config/dittofs
 			if filepath.Base(dir) != "dittofs" {
-				t.Errorf("GetConfigDir() = %q, expected directory name 'dittofs'", dir)
+				t.Errorf("getConfigDir() = %q, expected directory name 'dittofs'", dir)
 			}
 			parent := filepath.Base(filepath.Dir(dir))
 			if parent != ".config" {
@@ -262,12 +230,8 @@ func TestGetConfigDir_PlatformEnvVars(t *testing.T) {
 
 func TestLoad_EnvironmentVariables(t *testing.T) {
 	// Set environment variables
-	_ = os.Setenv("DITTOFS_LOGGING_LEVEL", "ERROR")
-	_ = os.Setenv("DITTOFS_CONTROLPLANE_PORT", "9090")
-	defer func() {
-		_ = os.Unsetenv("DITTOFS_LOGGING_LEVEL")
-		_ = os.Unsetenv("DITTOFS_CONTROLPLANE_PORT")
-	}()
+	t.Setenv("DITTOFS_LOGGING_LEVEL", "ERROR")
+	t.Setenv("DITTOFS_BLOCKSTORE_JOURNAL_PATH", "/srv/blocks")
 
 	// Create minimal config file
 	tmpDir := t.TempDir()
@@ -277,13 +241,9 @@ func TestLoad_EnvironmentVariables(t *testing.T) {
 logging:
   level: "INFO"
 
-database:
-  type: sqlite
-
-controlplane:
-  port: 8080
-  jwt:
-    secret: "test-secret-key-for-testing-minimum-32-chars"
+blockstore:
+  journal:
+    path: /var/lib/dittofs/blocks
 `
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("Failed to write config file: %v", err)
@@ -298,18 +258,7 @@ controlplane:
 	if cfg.Logging.Level != "ERROR" {
 		t.Errorf("Expected level 'ERROR' from env var, got %q", cfg.Logging.Level)
 	}
-	if cfg.ControlPlane.Port != 9090 {
-		t.Errorf("Expected port 9090 from env var, got %d", cfg.ControlPlane.Port)
-	}
-}
-
-func TestKerberosMachineAccountParses(t *testing.T) {
-	var k KerberosConfig
-	k.MachineAccount = MachineAccountConfig{
-		Enabled: true, AccountName: "DITTOFS$", Secret: "x",
-		DCAddresses: []string{"dc1"},
-	}
-	if !k.MachineAccount.Enabled || k.MachineAccount.AccountName != "DITTOFS$" {
-		t.Fatal("machine account fields not wired")
+	if cfg.Blockstore.Journal.Path != "/srv/blocks" {
+		t.Errorf("Expected journal path /srv/blocks from env var, got %q", cfg.Blockstore.Journal.Path)
 	}
 }
