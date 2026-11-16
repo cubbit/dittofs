@@ -1751,12 +1751,12 @@ against the grant like every other call; the filesystem service calls it when
 a client mounts or tree-connects ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)).
 
 **The store names different read-only causes from `Caller`.** RFC 18's
-`ReadOnlyCause` is `ReadOnlyNotNarrowed`, `ReadOnlyGrant` or `ReadOnlyShare`.
-The identity this component receives carries `NotNarrowed`, `NarrowedByShare`
-(the policy's `ReadOnly` flag) or `NarrowedByClient` (a client rule): it splits
-RFC 18's `ReadOnlyShare` in two, so a refusal names which of them narrowed the
-caller, and has no `ReadOnlyGrant` cause, since `Authorize` reads the grant's
-own level itself.
+`ReadOnlyCause` is `ReadOnlyNotNarrowed`, `ReadOnlyGrant`, `ReadOnlyShare` or
+`ReadOnlyClient`. The identity this component receives carries `NotNarrowed`,
+`NarrowedByShare` (the policy's `ReadOnly` flag, RFC 18's `ReadOnlyShare`) or
+`NarrowedByClient` (a client rule, RFC 18's `ReadOnlyClient`), so a refusal
+names which of them narrowed the caller, and has no `ReadOnlyGrant` cause,
+since `Authorize` reads the grant's own level itself.
 
 An identity **MUST** carry every field any check reads — including the ones a
 particular backend's checks do not read — because the component that builds it

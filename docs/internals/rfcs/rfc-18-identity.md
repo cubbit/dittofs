@@ -476,7 +476,7 @@ reaches calls forwarded from every node.
 package identity // internal/identity
 
 type Deps struct {
-	Store      *kvstore.Store      // RFC 16 §3.2: its Principals, Records and Minter views, as vfs.Deps.Meta (RFC 17 §2.3); the Minter's are the only writes (§2.4, §5.1)
+	Store      Store               // the node passes its *kvstore.Store unchanged, as vfs.Deps.Meta (RFC 17 §2.3)
 	Secrets    SecretProvider      // RFC 13 §7: keytab, NT hashes, API password hashes, the bind credential, the machine-account password
 	Logons     LogonSink           // RFC 25 §4.1's logon stream
 	Issuers    IssuerKeys          // fetches each OpenID Connect issuer's keys over verified TLS (§8.2)
@@ -484,6 +484,14 @@ type Deps struct {
 	Metrics    *metrics.Registry
 	Tracer     trace.Tracer        // §9.2's identity.authenticate span
 	Logger     *slog.Logger
+}
+
+// Store is the store's calls identity makes, RFC 16 §3.2's views, declared
+// here. It has no Close, so the server cannot close what it was handed.
+type Store interface {
+	Principals() kvstore.Principals
+	Records() kvstore.Records
+	Minter() kvstore.Minter // its writes are identity's only ones (§2.4, §5.1)
 }
 
 // New takes no settings and starts nothing. *Server implements Authenticator,
@@ -1710,7 +1718,9 @@ the file. It runs five steps, and each fills part of the `Caller`:
    installation's defaults and never a share's
    ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
 2. **Squash** — does this share want the caller treated as somebody else
-   (§6.2)? Fills `Principal`: the mapped one, or the share's `Anonymous`.
+   (§6.2)? Fills `Principal`: the mapped one, or the share's `Anonymous`. An
+   unsquashed claimed caller also fills `Group`, the principal holding its
+   claimed gid (§4.3); every other caller leaves it zero.
 3. **Collect** — which groups is it in (§6.3)? Fills `Groups` and `DenyOnly`.
 4. **Grant** — what does this share allow it (§6.4)? Fills `Access` and
    `ReadOnly`, read for the squashed principal of a claimed identity and for
@@ -1777,9 +1787,11 @@ func (id Identity) Key() ProofKey
 
 // Resolver is admission's step 4 (RFC 17 §4.9); *vfs.Filesystem is its only caller.
 // p is the share's policy, read in one snapshot (RFC 16 §3's SharePolicy);
-// readOnly says admission's step 3 narrowed the call to read-only.
+// narrowed is why admission held the call to read-only before resolution:
+// ReadOnlyNotNarrowed, ReadOnlyShare or ReadOnlyClient, never ReadOnlyGrant,
+// which step 4 sets itself.
 type Resolver interface {
-	Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, readOnly bool) (*Caller, error)
+	Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, narrowed ReadOnlyCause) (*Caller, error)
 }
 
 // Caller is what one call acts as on one share. Every field any check reads
@@ -1787,21 +1799,32 @@ type Resolver interface {
 type Caller struct {
 	Principal     metadata.Principal   // after squashing: what the permission check and grants read
 	Mapped        metadata.Principal   // before squashing: what state protection and a client record's creator compare (RFC 14); the permission check never reads it
+	Group         metadata.Principal   // the credential's primary group, an unsquashed claimed caller's gid: what a create stamps; zero for any other caller
 	Groups        []metadata.Principal // the closure, sorted
 	DenyOnly      []metadata.Principal // principals the proof marked deny-only (§3.4); empty when squashed
 	Access        metadata.ShareAccess // the grant's level, narrowed to read where admission narrowed it (§6.4)
-	ReadOnly      ReadOnlyCause        // why Access is read: ReadOnlyNotNarrowed, ReadOnlyGrant (the grant's own level) or ReadOnlyShare (a client rule or the policy's ReadOnly flag)
+	ReadOnly      ReadOnlyCause        // why Access is read
 	Authenticated bool                 // §6.5
 	Admin         bool                 // §6.5
 	Privileged    bool                 // §6.5; a protocol may confine it to an open (RFC 19 §3.5)
 	Built         uint64               // the State it was resolved under (§7.2); no check reads it
 	Fresh         time.Time            // no cache serves it after this (§7.1); no check reads it
 }
+
+// ReadOnlyCause is why a Caller's Access is read.
+type ReadOnlyCause uint8
+
+const (
+	ReadOnlyNotNarrowed ReadOnlyCause = iota // Access is not read, or nothing narrowed it
+	ReadOnlyGrant                            // the grant's own level is read
+	ReadOnlyShare                            // the policy's ReadOnly flag
+	ReadOnlyClient                           // a client rule admits the caller's address read-only
+)
 ```
 
-- **The read-only cause** lets a refusal say why: a mutation refused because the
-  share or a client rule is read-only is `ErrReadOnly`, which the adapters answer
-  as a read-only filesystem; one refused by a `read` grant is `ErrAccess`
+- **The read-only cause** lets a refusal say why, and which narrowed it: a
+  mutation refused because the share or a client rule is read-only is
+  `ErrReadOnly`, which the adapters answer as a read-only filesystem; one refused by a `read` grant is `ErrAccess`
   ([RFC 19 §3.1](rfc-19-authorization.md#3.1%20One%20request%2C%20in%20order)).
 - **Proof kind and protection.** A share's policy sets a floor on each part,
   `MinProof` and `MinProtection`

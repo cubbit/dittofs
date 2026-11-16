@@ -177,9 +177,10 @@ that needs it.
 - **A12. Fifth review's fixes** (RFC 18 §2.6, §3.1, §3.3, §3.4, §3.5, §4.1, §5.1, §7.2, §7.3, §8.1,
   §9.2 and §10; RFC 13 Appendix B's `identity.netbios_name` and `identity.directory`; RFC 17 §4.3;
   RFC 23 §2.1's sketch; RFC 18's two figures):
-  - identity's `Deps` takes the one `*kvstore.Store`, as `vfs.Deps.Meta` does; §8.1 gives
-    `PasswordHashes` and `NTLMSetting` their shapes; RFC 17 §4.3 lists `ErrLogonFailure` and
-    `ErrUnknownPrincipal`; `Keys.Session`'s chain is stated on `Keys` (§3.1);
+  - identity's `Deps` takes the one `*kvstore.Store`, as `vfs.Deps.Meta` does, through the `Store`
+    interface identity declares (A19); §8.1 gives `PasswordHashes` and `NTLMSetting` their shapes;
+    RFC 17 §4.3 lists `ErrLogonFailure` and `ErrUnknownPrincipal`; `Keys.Session`'s chain is stated
+    on `Keys` (§3.1);
   - the throttle keys on the user part without its domain or realm, so every spelling of one user
     shares a count, and §7.3's row and §10's are mended;
   - a mint's re-runs continue while each binds a principal the one before did not, and a name
@@ -291,12 +292,27 @@ that needs it.
   - an operator's `krb` link takes the directory's SID from a fresh answer only, as a rename does;
   - O3 records the tree kept across a guest or anonymous re-authentication, RFC 22's to close; O5
     closes what #4050 now names; O9 records which `identity.directory` row is kept.
-- **A19. Leftovers from the epic breakdowns' reviews** (RFC 18 §3.7 and §6.1):
+- **A19. Leftovers from the epic breakdowns' reviews** (RFC 18 §2.6, §3.7 and §6.1; RFC 7 §7.4):
   - a principal marked deleted signs in as an unknown name does, logon outcome `logon_failure`, and
     only a `Disabled` one gets `disabled`: RFC 16 §3's `DeleteUser` deletes the name indexes in the
     mark's transaction (RFC 23 epic 2's R39, R40), so sign-in finds it by no name (epic 4's R14);
-  - `ReadOnlyCause`'s values are `ReadOnlyNotNarrowed`, `ReadOnlyGrant` and `ReadOnlyShare`, the
-    prefixed names epic 1 declares.
+  - `ReadOnlyCause`'s values are `ReadOnlyNotNarrowed`, `ReadOnlyGrant`, `ReadOnlyShare` and
+    `ReadOnlyClient`, the prefixed names epic 1 declares;
+  - `Deps.Store` is a `Store` interface identity declares, `Principals()`, `Records()` and
+    `Minter()`, epic 1 declaring `Principals()` alone and each later epic adding the view it calls.
+    It has no `Close`, so the server cannot close what it was handed, which the type holds rather
+    than a test; a node passes its `*kvstore.Store` unchanged. It is not narrowed further to a read
+    interface: `ErrUnavailable`'s tests run over a real kvstore on `kvtest.FaultKV`, which a
+    narrower interface would not make easier;
+  - §6.1's `Caller` gains `Group`, the credential's primary group a create stamps, as admission's
+    `entity.Identity.Group` carries it today: an unsquashed claimed caller's gid, zero otherwise.
+    Without it, a file an `AUTH_SYS` caller creates gets its stored primary group, not its gid,
+    and the caller loses the access it had through that gid. `Resolve` takes the narrowing cause,
+    a `ReadOnlyCause`, in place of `readOnly bool`, and `ReadOnlyShare` splits into
+    `ReadOnlyShare` (the policy's `ReadOnly` flag) and `ReadOnlyClient` (a client rule), so the
+    cause admission knows reaches `Caller` and maps one to one onto RFC 7's `NarrowedByShare` and
+    `NarrowedByClient`. The change that routes admission's resolution through `Deps.Identity`
+    lands after this one. Epic 1's T1.3 signature and epic 3's T3.6 follow it.
 
 ## 1. Introduction
 
@@ -977,7 +993,7 @@ key := callerKey{id.Key(), share, pol.Version, pol.GrantsVersion, s.identityGen(
 ch := s.callers.DoChan(key, func() (any, error) { // single flight per key (§7.1)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resolveBound) // not the first caller's ctx
 	defer cancel()
-	return s.deps.Identity.Resolve(ctx, id, pol, readOnly) // stale while it ran: once more, served (§7.2)
+	return s.deps.Identity.Resolve(ctx, id, pol, narrowed) // stale while it ran: once more, served (§7.2)
 })
 select { // each waiter keeps its own deadline
 case r := <-ch:
@@ -986,7 +1002,7 @@ case <-ctx.Done():
 	return nil, ctx.Err()
 }
 
-func (s *Server) Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, ro bool) (*Caller, error) {
+func (s *Server) Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, ro ReadOnlyCause) (*Caller, error) {
 	st := s.state.Load() // read before any store read; stamps Built (§7.2)
 	c := &Caller{Built: st.Generation}
 	if err := id.consistent(); err != nil { // a forwarded identity inconsistent with itself: ErrInvalid (§2.6), first
@@ -996,7 +1012,7 @@ func (s *Server) Resolve(ctx context.Context, id Identity, p metadata.SharePolic
 	if err != nil {                   //    ErrAccess (§4.3); Secret with NTLM off refused (§3.5)
 		return nil, err
 	}
-	c.Mapped, c.Principal = m, squash(p, m, id.Proof) // 2. squash (§6.2)
+	c.Mapped, c.Principal, c.Group = m, squash(p, m, id.Proof), group(p, m, id) // 2. squash (§6.2)
 	c.Groups, c.DenyOnly, c.Fresh, err = s.groups(ctx, st, c.Principal, id.Evidence) // 3. (§6.3)
 	if err != nil {
 		return nil, err // incomplete closure: ErrUnavailable
