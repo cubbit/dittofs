@@ -176,7 +176,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R5 | A ticket is accepted only for a service name the keytab holds, compared with ASCII letters folded; a ticket for any other name, one whose service name was rewritten under the same key among them, is refused `ErrLogonFailure` | MUST | §3.3, §4.6; §10 "service name" | T5.3 |
 | R6 | A ticket under DES or RC4, or one whose session key or authenticator subkey is not AES, is refused `ErrLogonFailure` | MUST | §3.3; §10 "AES only" | T5.3 |
 | R7 | `SignIn` verifies the ticket's encryption, and its start and end times and the authenticator's time within a clock skew of 5 minutes, on the injected clock | MUST | §3.3; §10 "clock skew" | T5.3 |
-| R8 | Over SMB, only a ticket's IPv4 and IPv6 addresses restrict it: a ticket with none is accepted from any address, and one with any is refused `ErrLogonFailure` unless `SignInStep.Client` is one of them; a NetBIOS address is ignored | MUST | §3.3; RFC 22 §4.1; §10 "ticket addresses" | T5.3 |
+| R8 | Over SMB, only a ticket's IPv4 and IPv6 addresses restrict it: a ticket with none is accepted from any address, and one with any is refused `ErrLogonFailure` unless `SignInStep.Client` is one of them; a NetBIOS address is ignored. "Over SMB" is the step's `Transport`, never its `Service`, so a `host/` ticket presented over SMB is checked too | MUST | §3.3; RFC 22 §4.1; §10 "ticket addresses" | T5.3 |
 | R9 | An authenticator seen before is refused, counted with outcome `replay`, by a replay cache held in the node's memory | MUST | §3.3, §9.2; §10 "replay" | T5.4 |
 | R10 | The replay cache holds each entry until its authenticator's time plus the clock skew, on the injected clock, so an authenticator stamped ahead cannot be replayed once its entry is gone | invariant | §7.3; §10 "replay" | T5.4 |
 | R11 | The replay cache is bounded, and a sign-in that would need one more entry fails `ErrUnavailable` | bound | §7.3 | T5.4 |
@@ -343,10 +343,12 @@ record are E6's and E8's to drive, on the rule this epic builds.
   T6.3; the record reaches T5.8b as E6's D2 decides (`State.Directory`, recommended). The
   alternative, T5.8b declaring schema, realm and `require_pac` itself, makes two epics declare one
   section.
-- **D15, a Kerberos attempt's `protocol` label comes from `SignInStep.Service`:** `CIFS` is
-  `smb`, `NFS` and `Host` are `nfs`, since `SignInStep` carries no protocol and SMB asks for
-  `cifs/` names. Over SMB only, the ticket's addresses are checked (R8). A `decision:` marker at
-  the mapping. Prior art: none found.
+- **D15, `SignInStep` gains `Transport`, `TransportNFS` or `TransportSMB`, which the adapter
+  sets.** R8's address check runs when `Transport` is `TransportSMB`, and a Kerberos attempt's
+  `protocol` label is read from it. `Service` cannot stand in: RFC 18 §3.3 accepts `host/` tickets,
+  and `Host` names no transport, so a `host/` ticket over SMB would skip R8, which RFC 22 §4.1
+  forbids. Amends RFC 18 §3.1's `SignInStep` (§9). A `decision:` marker at the check. Prior art:
+  none found.
 
 ## 5. Target tree
 
@@ -429,9 +431,9 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   through `pkg/settings` (§9: RFC 13 Appendix B has no row for it); `pkg/identity.CheckKeytab(b
   []byte) error`, refusing a keytab that does not parse, holds no key, or holds any key that is
   not `aes128-cts-hmac-sha1-96` or `aes256-cts-hmac-sha1-96` (D3); RFC 18 §3.3's AES-only
-  `decision:`. `New` refuses no `State` or `Deps` for want of a keytab; while `State.Keytab` holds
-  no version, T5.5 answers a Kerberos step `ErrUnavailable`, as every field added after S1
-  answers while unset (E1's D4), and a ticket for a name a non-empty ring lacks is
+  `decision:`. `New` refuses no `State` or `Deps` for want of a keytab; while the ring holds
+  no key (`State.Keytab` is empty, or D2 dropped every version as not AES), T5.5 answers a
+  Kerberos step `ErrUnavailable`, as every field added after S1 answers while unset (E1's D4), and a ticket for a name a non-empty ring lacks is
   `ErrLogonFailure` (R5). Consumed by T5.3, T5.5, T5.10, E7 (which adds derived keys to the ring)
   and E8 (which reads `Versions` into `State.Keytab`), and `CheckKeytab` by RFC 23's plan's
   secret route.
@@ -454,13 +456,13 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
 
 - **Track:** B. **Depends on:** T5.2.
 - **Covers:** R5, R6, R7, R8, R12, R21, R44.
-- **Deliverables:** `identitytest.Realm` (D10); `verifyAPReq(st *state, b []byte, svc
-  identity.Service, client netip.Addr, now time.Time) (ticket, error)`: parse, select the key by
+- **Deliverables:** `identitytest.Realm` (D10); `SignInStep.Transport` (D15); `verifyAPReq(st *state, b []byte, svc
+  identity.Service, tr identity.Transport, client netip.Addr, now time.Time) (ticket, error)`: parse, select the key by
   the ticket's service name, key version number and encryption type (D2), decrypt the ticket and
   the authenticator, check that the ticket's, the session key's and the subkey's types are AES
   (R6), the service name (D4, R5), the start and end times and the authenticator's time within
   5 minutes of `now` (R7), the authenticator's client equal to the ticket's, and the addresses
-  (R8, over SMB only (D15), lifted from `develop`'s `ticketAllowsClientIP` without gokrb5's
+  (R8, when `Transport` is SMB (D15), lifted from `develop`'s `ticketAllowsClientIP` without gokrb5's
   workaround); a parse error
   `ErrInvalid`, every refusal `ErrLogonFailure`; `Keys.Session` and `Keys.APRep`, the AP-REP
   lifted from `develop`'s `BuildMutualAuth`, with no subkey (R12); RFC 18 §3.3's `ponytail:` on
@@ -482,7 +484,9 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   R5), a `cifs/` ticket presented as NFS refused (D4); §10's "ticket addresses", a ticket listing
   `192.0.2.1` from `192.0.2.1` then `192.0.2.2`, accepted then refused, one listing only a NetBIOS
   address and one listing none, each accepted from any address (catches addresses ignored or a
-  NetBIOS entry treated as a restriction, R8); §10's "AES only", tickets under RC4 and under DES,
+  NetBIOS entry treated as a restriction, R8); a `host/nas.test` ticket listing `192.0.2.1`, from
+  `192.0.2.2` with `Transport` SMB: refused, and with `Transport` NFS: accepted (catches the SMB
+  check keyed on `Service`, R8, D15); §10's "AES only", tickets under RC4 and under DES,
   an AES ticket whose session key is RC4 and one whose authenticator subkey is RC4, each refused,
   AES128 and AES256 accepted (catches an RC4 ticket forged from an NT hash, R6); an authenticator
   naming another client refused; an AP-REQ with no subkey gives the ticket's session key, one with
@@ -555,9 +559,10 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   the ticket's end time (R13, R19); a context whose `Expires` passed re-authenticates with a new
   ticket and holds the new `Expires` (R20); the store failing the `krb` read through `kvtest`'s
   fault wrapper: `ErrUnavailable`, never `ErrLogonFailure` (catches an outage read as an unknown
-  name, R21); a `State` with no keytab version: `ErrUnavailable`, no throttle count (catches an
-  unconfigured keytab answered as a wrong ticket, R21); E4's recording `LogonSink`: one event per attempt, each field asserted, `Protocol`
-  `smb` for a `cifs/` ticket and `nfs` for an `nfs/` one, and no field holding the ticket's bytes
+  name, R21); a `State` with no keytab version, and one whose only version holds an AES key and an RC4 key:
+  each `ErrUnavailable`, no throttle count (catches an unconfigured keytab, or a ring D2 emptied,
+  answered as a wrong ticket, R21); E4's recording `LogonSink`: one event per attempt, each field asserted, `Protocol`
+  `smb` for a step whose `Transport` is SMB and `nfs` for one over NFS, and no field holding the ticket's bytes
   or a key (R22); the counter's value per (protocol, outcome) after each, `replay` among them
   (R24); 9 failures for unknown `bob@TEST.REALM` from `192.0.2.1` and one NTLM failure as
   `CORP\bob`, then a `krb` row naming `bob` added and a valid ticket presented: refused
@@ -622,7 +627,8 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
 - **Acceptance criteria:**
   - A PAC carrying alice's SID, `Finance`, an `S-1-5-32-544`, a SID of the installation's domain,
     a SID of another domain and a deny-only `Payroll` gives `SIDs` alice then `Finance`,
-    `DenyOnly` `Payroll`, and four drops counted by reason.
+    `DenyOnly` `Payroll`, and three drops counted by reason (`builtin`, `own_domain`,
+    `other_domain`).
 - **Tests:** at `Resolve` after `SignIn`, over the memory KV store, alice reached through a `krb`
   row, which binds before T5.8b's check exists and which T5.8b then links for the PAC's user SID:
   §10's "PAC" clause, a SID of the installation's own domain naming a local group with a share
@@ -724,7 +730,8 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
 
 - **Track:** B. **Depends on:** T5.2, RFC 23's plan's epic 3's T3.4, #4059's epic 4.
 - **Placement:** `RetireKeytabStep` and `RetireKeytabProgress`, methods on `*Server` typed by
-  the leaf `internal/node/step`, which E8 registers in `node.New`'s step table; identity imports
+  the leaf `internal/node/step`, the runner's shape RFC 23 epic 3's D7 declares and its T3.4
+  builds (`rfc-23-control-plane-epic3.md`), which E8 registers in `node.New`'s step table; identity imports
   only that leaf, never `internal/node`.
 - **Covers:** R3, R4.
 - **Deliverables:** identity's `SecretProvider` interface gains `Prune` and `Versions`, #4059's
@@ -895,8 +902,9 @@ the version this document was written against.
 - RFC 18 §7.3 refuses a sign-in when the replay cache is full and counts nothing; a full cache
   is visible only as outcome `unavailable`. §9.2 could name a series, as E3 asks for the caller
   cache's.
-- RFC 18 §9.2's `protocol` label has no source in `SignInStep`; D15 derives it from `Service`,
-  as E4's document asks.
+- RFC 18 §3.1's `SignInStep` has no transport, so §9.2's `protocol` label and RFC 22 §4.1's
+  SMB-only address check have no source; D15 adds `Transport`, which the RFC 21 and RFC 22 plans'
+  adapters set.
 - RFC 18 §3.3 says "each key a `Secret` of kind keytab", while §2.6's `State.Keytab` holds a
   keytab's versions; this document reads it as one `Secret` whose versions are whole keytabs.
 
@@ -935,8 +943,8 @@ the version this document was written against.
 - `identity_mints_total` and the mint path's re-run are E6's T6.2 (D12), as E2's §1.2 names
   them.
 - RFC 23's plan's epic 6 has no command that imports a keytab and no flag for a user's Kerberos
-  name: both are RFC 23's plan's §6.1 deferral ledger row "The keytab import command" (added by
-  #4408), unowned; until that row's trigger brings them back, the keytab and the `krb` link are
+  name: both are RFC 23's plan's §6.1 deferral ledger row "The keytab import command"
+  (`rfc-23-control-plane-plan.md`, merged with #4408), unowned; until that row's trigger brings them back, the keytab and the `krb` link are
   written through the API alone.
 - The surface was designed twice. The independent architect pass proposed the same tree
   (gokrb5's decryption with identity's checks, a key ring at `Apply`, the PAC walked over raw
@@ -963,11 +971,11 @@ the version this document was written against.
   match has an owner; T5.7's deny-only SIDs reach that refusal, which T5.7's share-grant test
   exercises.
 
-**Field ownership.** This epic adds `State.Keytab` (T5.2), the `identity.keytab` key to E2's
+**Field ownership.** This epic adds `State.Keytab` (T5.2), `SignInStep.Transport` (T5.3, D15), the `identity.keytab` key to E2's
 `identity.Settings` (T5.2), `entity.ProtocolID.Linked` (T5.8a), `RequirePAC` to E6's T6.3
 `directory.Record` (T5.8b, pending D14), and `Prune` and `Versions` to E2's `SecretProvider`
 interface, which #4059's provider implements (T5.10). It adds no `Deps` field, and `New` refuses
-nothing for want of a keytab, a Kerberos step answering `ErrUnavailable` while `State.Keytab` is
-empty: the clock is E1's, `Deps.Secrets` E2's, `Deps.Tracer` E3's (T3.1), the logon sink E4's
+nothing for want of a keytab, a Kerberos step answering `ErrUnavailable` while the ring holds no
+key: the clock is E1's, `Deps.Secrets` E2's, `Deps.Tracer` E3's (T3.1), the logon sink E4's
 (T4.5), the directory record and `State.Directory` E6's (T6.3, pending E6's D2) and the mint path
 E6's (T6.2).
