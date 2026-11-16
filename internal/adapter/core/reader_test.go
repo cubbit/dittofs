@@ -121,10 +121,11 @@ func TestRecordsComeOutWhole(t *testing.T) {
 }
 
 // A burst of small records written at once is cut into every record, in
-// order.
+// order. The reader's deadline is set so a record it never finishes comes back
+// as an error rather than hanging the test.
 func TestABurstIsEveryRecord(t *testing.T) {
 	srv, cli := pair(t)
-	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 0)
+	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), time.Second)
 	var all []byte
 	for i := range 100 {
 		all = append(all, record(payload(10+i%40), true)...)
