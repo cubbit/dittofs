@@ -203,7 +203,7 @@ without it.
 **The seams it exposes:**
 
 - `node.Config`'s fields, which are the test harness's injection points: the KV, the clock, the
-  fault seam, the metrics registry and the logger;
+  metrics registry and the logger; RFC 23 §2.1's `Transport` and `Fault` wait in §6.1's ledger;
 - the API's `Deps`: the store view, the sign-in interface of RFC 18 §8.1, the RFC 13 plan's settings
   table (RFC 23 §4.3's validators), the health registry, the clock, the logger and the registry.
 
@@ -1639,6 +1639,8 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | Server-sent changes, a watch (RFC 23 §13 item 3, §7) | open in the RFC | unowned | the operator moves onto the new wire shapes |
 | Signalling parked long polls instead of a per-second re-read (§4.3's `ponytail:`) | one read per parked poll per second | unowned | parked polls near RFC 23 §4.3's bound show in a profile |
 | Per-kind sweep schedules (§4.3's `ponytail:`) | one pass per kind per interval | unowned | a profile shows the sweep |
+| `node.Config.Transport` (RFC 23 §2.1, epic 1's D2) | it is nil on one node, and nothing reads it | RFC 15, with the cluster rows | a second node |
+| `node.Config.Fault`, the fault seam (RFC 23 §2.1, RFC 8 §2.1; epic 1's D2) | no component's `Deps` takes a fault seam; the store's faults come through the KV, which `kvtest` wraps | unowned | a component's `Deps` takes a fault seam |
 
 ## 7. RFC coverage
 

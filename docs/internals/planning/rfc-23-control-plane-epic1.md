@@ -57,6 +57,8 @@ its drift test; the architecture tests that need no package this epic does not c
 - `pkg/bootstrap`, the refused v1 keys and the node identity: the RFC 13 plan's epic 2.
 - The two architecture rules over `internal/node/api` (its imports, and its writes only through
   `Write`): E4 lands them with the package (D7).
+- `node.Config`'s `Transport` and `Fault` (D2): two rows of
+  [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger).
 - The harness's server fixture on `dfs init` and `dfs start` (the integration epic), and the e2e
   helpers on the new client (E8).
 - The node view RFC 23 §2.1 sketches as `Records`, and the `Node` and `NodeStatus` records (E2,
@@ -101,7 +103,7 @@ and title and not copied.
 | rule 6, known failures shrink | T1.4 | no test lands red and no `known.yaml` entry changes; T1.4 edits `test/posix/setup-posix.sh`, which the `pjdfstest` suite runs and whose `test/posix/known.yaml` it leaves as it is, since that cell is filtered on `feat/storage-v2` |
 | rule 7, v2 ignores v1 | T1.1–T1.3, T1.8 | v1 is deleted before any v2 code lands; T1.8's rule fails on an import of a v1 path that never returns; the kept pieces are R2's list, kept in place |
 | rule 8, real dependencies for properties of those dependencies | none | no property of a store, a listener or a kernel client is tested here |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T1.2, T1.3, T1.7, T1.8 | D2's, D4's and D11's `decision:` markers at `node.Config`, at the view's writes and at `dfsctl`'s refusal; the import rule's exemption of the harness says why at its site. RFC 23's own notes go with the code that implements them, in later epics |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T1.2, T1.7, T1.8 | D4's and D11's `decision:` markers at the view's writes and at `dfsctl`'s refusal; the import rule's exemption of the harness says why at its site. RFC 23's own notes go with the code that implements them, in later epics |
 | rule 10, a test must be able to fail | T1.4, T1.5, T1.8 | every architecture rule runs over a planted violation on every run; the closed-set test compares to RFC 23's literal lists; the reference test fails on a stale `cli.md`. The stubs are not tested: "stub bodies are never called by production" stays a review rule |
 | rule 11, a symbol is exported only if RFC 23's interface uses it | T1.3, T1.5–T1.8 | the frozen surface is R9, R11–R18, R19 and R20–R24, less `PutUser` and `PutGroup` (§1.2); T1.8 pins `internal/node`'s exports; the closed lists stay unexported (D5) |
 | rule 12, each subtask creates only what it declares | all | no `internal/node/api`, `auth` or `nodetest` package yet (D7); each new package lands with the subtask that fills its surface |
@@ -186,13 +188,19 @@ numbered so that subtasks and tests can cite them.
   seam on `feat/storage-v2`; the store's faults come through the KV, which `kvtest` wraps). Adding
   either later is a new field, which costs no caller anything. `Records` is not declared: the node
   holds kvstore's view directly, and an interface with one implementation and one caller is rule
-  12's stub. A `decision:` marker at `Config` names the two fields and what brings each in: a
+  12's stub. The two fields are deferrals, not a gate skipped, so each is a row of
+  [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger) with what brings it in: a
   second node, or a component whose `Deps` takes a fault seam. Prior art: Kubernetes' kubelet
   takes its dependencies as one struct the command builds (from memory).
-- **D3, `ControlPlaneTx` and `WriteMeta` live in `pkg/metadata/entity`, pending the user's
-  answer (§9).** The API must not import kvstore (CP16), and kvstore's `Write` must name the type
-  of its `fn`'s argument, so that type lives in a package both import. `entity` already is one.
-  The alternative is a new `pkg/metadata/view` leaf holding RFC 16 §3's view interfaces. The API
+- **D3, `ControlPlaneTx` and `WriteMeta` live in `pkg/metadata`, where RFC 16 §3 declares the
+  views, pending the user's answer (§9).** The API must not import kvstore (CP16), and
+  kvstore's `Write` must name the type of its `fn`'s argument, so that type lives in a package both
+  import. RFC 16 §3 declares the views as interfaces, and the RFC 13 plan and RFC 18 already name
+  them `metadata.ControlPlane` and `metadata.Principals`, so the root `pkg/metadata` is where the
+  view and its transaction belong; on `feat/storage-v2` neither `pkg/metadata` nor kvstore imports
+  the other, so no cycle. `entity` keeps the records only, as it holds today. The alternatives:
+  `pkg/metadata/entity`, which has never held a behavioural interface, or a new
+  `pkg/metadata/view` leaf, one package more for what RFC 16 already names. The API
   declares its own unexported interface over the view's reads and `Write` (E4), as
   `engine.Lifecycle` and `vfs.Principals` do. No marker. Prior art: a `*Tx` passed into a closure,
   as `pgx`'s `BeginFunc` does (from memory).
@@ -223,7 +231,10 @@ numbered so that subtasks and tests can cite them.
 - **D10, an architecture rule is a function of a source tree.** Each rule takes a root directory
   and returns its violations; the test runs it over the repository, expecting none, and over a
   `testdata` tree holding one planted violation, expecting exactly that one. So every rule keeps
-  failing on its assertion on every run. They walk sources with `go/build` and `go/parser`, as
+  failing on its assertion on every run. A rule reads every file under each build tag `lint-go`
+  names (the `go vet -tags=` list in `test/suites.yaml`), not only the default context, since a
+  tagged file is invisible to a gate that reads without its tag. They walk sources with
+  `go/build` and `go/parser`, as
   `pkg/block/journal/imports_test.go` and `internal/adapter/adaptertest`'s import test do
   (checked). No marker.
 - **D11, `dfsctl` keeps its command tree until the CLI epic, pending the user's answer (§9).**
@@ -266,7 +277,8 @@ pkg/node/apiv1/
   share.go exportpolicy.go store.go namespace.go adapter.go setting.go user.go group.go
   grant.go netgroup.go quota.go node.go installation.go token.go session.go audit.go   T1.5
   closedsets_test.go wire_test.go          T1.5
-pkg/metadata/entity/controlplane.go        T1.7  the records; WriteMeta, ControlPlaneTx (D3)
+pkg/metadata/entity/controlplane.go        T1.7  the records
+pkg/metadata/controlplane.go               T1.7  WriteMeta, ControlPlaneTx (D3)
 pkg/metadata/kvstore/
   write.go                                 T1.7  Write
   users.go shares.go settings.go ...       T1.7  expect on every write; DeleteGrant
@@ -349,7 +361,7 @@ internal/node/
     `kerberos`, `ldap`, `identity`, `gc`, `integrity`, `snapshot`, `metadata`, `metrics`,
     `shutdown_timeout`, and `blockstore` but its journal path), leaving the loader, logging and the
     journal path; its `Config` renamed `Bootstrap` (D8); `dfs config` follows;
-  - the node's surface, with D2's `decision:` marker and stub bodies:
+  - the node's surface, with stub bodies:
     ```go
     package node // internal/node
 
@@ -489,7 +501,8 @@ internal/node/
 - **Deliverables:**
   - `pkg/metadata/entity/controlplane.go` (pending the user's answer on D3): `Operation`,
     `IdempotencyRecord`, `Session`, `APIToken`, `SignInFailures` with `SignInKey` (by principal, by
-    source, by the two), `AuditRecord`, with their fields as RFC 16 §2.3 gives them; `WriteMeta`;
+    source, by the two), `AuditRecord`, with their fields as RFC 16 §2.3 gives them;
+  - `pkg/metadata/controlplane.go` (pending the user's answer on D3): `WriteMeta`, and
     `ControlPlaneTx`, an interface with R23's methods;
   - on kvstore's `ControlPlane`: `expect uint64` on `PutUser`, `PutGroup`, `DeleteUser`,
     `DeleteGroup`, `PutShare`, `DeleteShare`, `SetGrant`, `PutExportPolicy`, `SetQuota`,
@@ -520,7 +533,9 @@ internal/node/
     rule names neither;
   - **who imports the node** (R25): only `cmd/dfs/commands/start.go` and files under
     `internal/node/nodetest` import `internal/node`; a `decision:` marker says the harness is the
-    one exemption RFC 23 names;
+    one exemption RFC 23 names. `nodetest` does not exist until E3, so the rule's `testdata` tree
+    plants both branches: an allowed file under a `nodetest` path, and a forbidden one under a
+    look-alike (`nodetest2`), so an over-broad prefix match fails now rather than in E3;
   - **the CLI's closure** (R11, R19, R26): the transitive imports of `cmd/dfsctl/...`,
     `pkg/apiclient` and `pkg/node/apiv1`, of this module, stay within `cmd/dfsctl/...`,
     `pkg/apiclient`, `pkg/node/apiv1` and `internal/cli/...`, and `pkg/node/apiv1`'s within the
@@ -573,8 +588,9 @@ Pending the user's answer, each written in the document in the recommended form:
   first, which unblocks the RFC 13 and RFC 18 plans sooner and keeps each pull request under the
   15-day guide. Doing so amends RFC 23's plan, §3.3, §3.4 and §5 epic 1, which say the epic lands
   as one pull request because the deletion cannot build alone.
-- **D3, where `ControlPlaneTx` and `WriteMeta` live:** `pkg/metadata/entity` (written), or a new
-  `pkg/metadata/view` leaf with RFC 16 §3's view interfaces.
+- **D3, where `ControlPlaneTx` and `WriteMeta` live:** `pkg/metadata`, where RFC 16 §3 declares the
+  `ControlPlane` view and the other plans already call `metadata.ControlPlane` (written,
+  recommended); `pkg/metadata/entity`; or a new `pkg/metadata/view` leaf.
 - **D6, the client's shape:** one generic `Resource[Spec, Status]` with accessors added by their
   first consumer (written), or every resource's methods declared now as stubs.
 - **D11, `dfsctl`'s tree kept until E6:** kept with refusing bodies (written), or every v1 command
@@ -589,8 +605,6 @@ Pending the user's answer, each written in the document in the recommended form:
 
 Mismatches with RFC 23's plan these edits do not settle:
 
-- Plan §1.3 lists the fault seam among `node.Config`'s injection points; D2 leaves `Fault` out
-  until a component's `Deps` takes one.
 - Plan §1.3 lists the API's `Deps` as a seam epic 1 exposes; D7 leaves the package, and so its
   `Deps`, to E4 under rule 12.
 - RFC 23 §2.1 sketches `Records` as an exported interface of `node`; D2 does not declare it.
