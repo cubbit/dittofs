@@ -35,6 +35,9 @@ const (
 	StatusReplyTooBig                // core.ErrReplyTooBig: a reply's charge past a quarter of the reply pool's ceiling
 )
 
+// Name is the protocol label testproto's tables and stages record under.
+const Name = "testproto"
+
 // HoldFor is how long version 2 holds a request the service answered
 // ErrDelay before it answers StatusDelay.
 const HoldFor = 10 * time.Second
@@ -114,7 +117,7 @@ func (p *Protocol) Framer() core.Framer { return framer{} }
 func (p *Protocol) NewConn(c *core.Conn) core.Stages {
 	cs := &connState{p: p, c: c}
 	if p.bare {
-		return core.Stages{Header: headerCodec{}, Router: &router{cs}}
+		return core.Stages{Header: headerCodec{}, Router: &router{cs}, Protocol: Name}
 	}
 	credits := newFlow()
 	cs.replay = &replay{pool: p.pool, flow: credits, m: map[replayKey][]byte{}}
@@ -128,6 +131,7 @@ func (p *Protocol) NewConn(c *core.Conn) core.Stages {
 		Hold:       hold{flow: credits},
 		MaxPending: 8,
 		OnClose:    func(context.Context) { p.reg.leave(cs) },
+		Protocol:   Name,
 	}
 }
 
@@ -225,10 +229,15 @@ func (p *Protocol) build() [2]*core.OpTable {
 	members := core.NewOpTable(errs, false, memberRows(p.ops())...)
 	members.ReadOp = readOp
 
-	return [2]*core.OpTable{
+	tables := [2]*core.OpTable{
 		core.NewOpTable(errs, false, append(p.ops(), compound(members))...),
 		core.NewOpTable(core.NewErrorTable(StatusFault, errorRows(true)...), true, p.ops()...),
 	}
+	for _, t := range tables {
+		t.Protocol = Name
+	}
+
+	return tables
 }
 
 // errorRows is a table's rows, with the hold row's Hold set where the table

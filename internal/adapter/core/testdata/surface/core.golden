@@ -153,6 +153,8 @@ type OpTable struct {
 	Errors *ErrorTable
 	Holds  bool
 
+	Protocol string
+
 	ReadOp func(b []byte) (op uint32, n int, err error)
 }
 
@@ -200,6 +202,7 @@ type Stages struct {
 	Hold       HoldCodec
 	MaxPending int
 	OnClose    func(ctx context.Context)
+	Protocol   string
 }
 
 type Status uint32

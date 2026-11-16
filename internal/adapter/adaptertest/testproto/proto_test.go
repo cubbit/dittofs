@@ -58,6 +58,20 @@ func TestTablesBuild(t *testing.T) {
 	if got, reply := v2.Errors.Map(vfs.ErrDelay, v2.Ops[OpCreate], 2); got != StatusDelay || !reply {
 		t.Errorf("version 2 maps ErrDelay to %d, reply %v; want %d", got, reply, StatusDelay)
 	}
+	if v1.Protocol != Name || v2.Protocol != Name {
+		t.Errorf("the tables record under %q and %q, want %q", v1.Protocol, v2.Protocol, Name)
+	}
+}
+
+// Every connection's stages, on the full protocol and on Bare, record under
+// testproto's name.
+func TestStagesNameTheProtocol(t *testing.T) {
+	p := New(adapter.Deps{})
+	for name, q := range map[string]core.Protocol{"full": p, "bare": p.Bare()} {
+		if got := q.NewConn(nil).Protocol; got != Name {
+			t.Errorf("the %s protocol's stages record under %q, want %q", name, got, Name)
+		}
+	}
 }
 
 func TestEchoAnswersItsPayloadUnderItsOwnRole(t *testing.T) {

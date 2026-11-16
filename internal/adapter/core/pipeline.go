@@ -5,12 +5,44 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
+
+// shared is what every connection of one server shares: the request path's
+// series, resolved once per server.
+//
+// decision: the series are kept here, never in a table: two servers may
+// share a table, and each records into its own registry. A table's are
+// resolved at the first Route that returns it and a label's at the first
+// accept that names it, into copy-on-write maps that every request reads with
+// no lock and no label lookup, and that mu fills. Overturned if a profile
+// shows a first resolution's copy to matter, which it cannot at a handful of
+// tables.
+type shared struct {
+	fam      [vecs]family
+	wire     histFamily
+	holdPool adder // no protocol label
+	mu       sync.Mutex
+	tables   atomic.Pointer[map[*OpTable]*tableSeries]
+	labels   atomic.Pointer[map[string]*labelSeries]
+}
+
+// newShared is a server's shared state, its vectors registered on
+// d.Metrics, or recording nothing without one.
+func newShared(d adapter.Deps) *shared {
+	sh := &shared{}
+	sh.fam, sh.wire = newFamilies(d.Metrics)
+	sh.holdPool = sh.fam[vHoldPoolBytes]()
+	sh.tables.Store(&map[*OpTable]*tableSeries{})
+	sh.labels.Store(&map[string]*labelSeries{})
+	return sh
+}
 
 // flowCap is how many requests a connection has in flight, counted at admit,
 // where its protocol has no flow control of its own (RFC 20 §6.3).

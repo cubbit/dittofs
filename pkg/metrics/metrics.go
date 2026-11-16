@@ -20,8 +20,9 @@ type Metrics struct {
 	in       *instruments
 }
 
-// ponytail: an alias, which cannot resolve a counter once at table build; grow
-// Metrics with those methods and rename it Registry, turning the alias around.
+// ponytail: an alias of Metrics, which has RFC 25 §8.2's Counter, Gauge and
+// Histogram; rename Metrics to Registry, turning the alias around, when RFC
+// 25's registry replaces it.
 type Registry = Metrics
 
 // New creates a Metrics with an owned registry pre-populated with the Go
