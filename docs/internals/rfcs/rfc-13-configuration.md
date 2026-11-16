@@ -271,6 +271,14 @@ RFC 25 §4.6 requires. A value set for the whole
 installation could not be checked this way, since one node's scratch disk can
 be another's journal filesystem.
 
+**One file, one name per fact.** The host's facts are read from one YAML file,
+`~/.config/dittofs/config.yaml` unless `--config`, or else `DITTOFS_CONFIG`,
+names another, and from the environment, which wins over the file; a fact
+neither sets takes its default. Each fact has one key in the file and one
+environment name, and [Appendix C](#Appendix%20C%3A%20the%20bootstrap%20file)
+lists them with their types and defaults. A key or a `DITTOFS_` name that is not
+there refuses the start ([§6](#6.%20Validation)).
+
 A bootstrap fact **MUST NOT** also be a record field, and a record field
 **MUST NOT** be overridable from the host. An override from the host is a
 second source ([§2.1](#2.1%20The%20control%20plane%20is%20the%20source)): nodes of one installation then disagree, silently.
@@ -709,6 +717,33 @@ misspelling of one it does, and ignoring it silently runs the default.
 **A record that does not validate stops only what it configures.** A share whose
 record is invalid does not start; the rest of the installation does.
 
+**A refusal says where, what and why, in one shape.** Every refusal of
+configuration, of the host's file, of the environment or of a record, reads:
+
+```text
+<where>: <key>: <rule>[; <what to do>]
+```
+
+*Where* is the file's path, `environment`, or `setting` with the scope the
+record is written at. *Key* is the key as declared, or the environment name.
+*Rule* is the rule broken, in the component's words. *What to do* names the
+replacement of a key that moved, the closest declared key to an unknown one, or
+the way to change a value that is not the host's. All the refusals of one file,
+one environment or one write are reported together, so one pass fixes them. A
+refusal **MUST NOT** print the value of an environment variable or of a key that
+holds a credential, since either may hold a secret ([§7](#7.%20Secrets)); it
+prints any other value it refuses, which a setting may print since it never
+holds a secret.
+
+```text
+/etc/dittofs/config.yaml: database.type: no longer read; the metadata store is store.backend
+/etc/dittofs/config.yaml: loging.level: unknown key; did you mean logging.level?
+/etc/dittofs/config.yaml: adapters.smb.port: a setting, not a host fact; set it through the management API
+environment: DITTOFS_CONTROLPLANE_SECRET: no longer read; remove it
+setting (node 3f2a…): adapters.smb.port: must be between 1 and 65535, got 70000
+setting (namespace ns-1): prefix: bound to the namespace's content, refused while it holds any; moving it is a migration (RFC 27)
+```
+
 ## 7. Secrets
 
 Configuration **MUST NOT** hold a secret value: not a credential, not a key, not
@@ -1030,6 +1065,19 @@ requirement, and RFC text cites the setting rather than restating its number as 
 A row still reading "open in RFC n" has no starting value yet; its owning RFC
 supplies one before the setting is built.
 
+**How a key and a value are written.** One way, in every section and in the
+host's file, so a value valid in one place is valid in all:
+
+- a key is lower case, its parts joined by dots and its words by underscores
+  (`adapters.smb.drain_timeout`), matched exactly as declared;
+- a duration is a string of a number and a unit, `ms`, `s`, `m` or `h`
+  (`"30s"`, `"1h30m"`); a bare number is refused, since it names no unit;
+- a size is a string of a number and a unit, decimal `KB` to `TB` or binary
+  `KiB` to `TiB` (`"512MiB"`), or an integer of bytes;
+- a boolean is `true` or `false`, and nothing else;
+- a list and a map are JSON's in a record and YAML's in the host's file; in the
+  environment a list is comma-separated.
+
 | Setting | Defined in | Scope | Class | Default |
 | --- | --- | --- | --- | --- |
 | journal devices and paths | [RFC 1](rfc-1-journal.md) | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | required |
@@ -1239,3 +1287,48 @@ supplies one before the setting is built.
 > index requires. A copy drifts: replace the trust in the copy with a test that
 > diffs these rows against the owners' tables once a copied row is found
 > drifted again.
+
+## Appendix C: the bootstrap file
+
+Every host fact of [§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap) but
+the scratch paths, which join this table with their first reader, and the
+process memory limit, which is read from the runtime, the container and the host
+(RFC 24 §2.1) and has no key. The environment name is `DITTOFS_` and the key in
+upper case, its dots as underscores; no two keys share one. A path is absolute
+and written in its clean form: a journal's path is its identity in the metadata
+store ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)'s
+`JournalDir`), so `/data/j1/` beside `/data/j1` would be a second journal, and a
+relative path, a `~` or a trailing slash is refused rather than rewritten.
+
+| Key | Type | Default | Fact |
+| --- | --- | --- | --- |
+| `node.id` | UUID | none: the `node-id` copies give it | the node's identity, needed only when every copy is lost |
+| `node.roles` | list of `protocol`, `storage` | `[protocol, storage]` | the node's roles; both is the only accepted value |
+| `store.backend` | `badger` or `foundationdb` | `badger` | which metadata store |
+| `store.path` | path | the state directory's `metadata` | Badger's directory |
+| `store.cluster_file` | path | required with `foundationdb` | FoundationDB's cluster file |
+| `store.credential_file` | path | none | a file holding the store's credential, for a backend that asks for one; the credential is never written in this file |
+| `journals` | list of paths | required | the journal devices, one directory each |
+| `api.listen` | list of `host:port` | `127.0.0.1:8080` | the management API's addresses |
+| `api.tls.cert_file`, `api.tls.key_file` | path | required when an `api.listen` address is not loopback | the API's certificate and key (RFC 23 §5.3) |
+| `api.socket` | path | the runtime directory's `dfs.sock` | the API's local socket (RFC 23 §5.3) |
+| `metrics.listen` | `host:port` | `127.0.0.1:9090` | the metrics listener, served over the API's TLS off loopback (RFC 25 §2.8) |
+| `logging.level` | `debug`, `info`, `warn`, `error` | `info` | the log level |
+| `logging.format` | `text` or `json` | `text` | the log format |
+| `logging.output` | `stdout`, `stderr` or a path | the state directory's `dittofs.log` | where logs go |
+| `logging.rotation.max_size` | size | `"100MiB"` | a log file's size before it rotates |
+| `logging.rotation.max_backups`, `logging.rotation.max_age` | integer, duration | `5`, `"720h"` | rotated files kept |
+| `logging.rotation.compress` | boolean | `false` | whether rotated files are compressed |
+| `keys.protocol`, `keys.storage` | key location | required, both, and two different keys | each role's wrapping key ([§7](#7.%20Secrets)) |
+
+A **key location** is `kind`, `local` or `kmip`. A `local` one names `file`, the
+current key file, and `retired_files`, the files whose keys still open what they
+sealed; a `kmip` one names `endpoint`, `server_ca`, `client_cert`, `client_key`,
+`key_uid`, `timeout` and `retired_key_uids`. A key file's passphrase is read from
+`DITTOFS_ENCRYPTION_PASSPHRASE`.
+
+**The file's commands.** `dfs config show` prints the effective bootstrap, each
+value with where it came from (the file, a variable, or the default), and a
+credential's file by its path only. `dfs config validate` refuses what a start
+would refuse, in §6's shape, and starts nothing. `dfs config schema` prints this
+table as a JSON Schema.
