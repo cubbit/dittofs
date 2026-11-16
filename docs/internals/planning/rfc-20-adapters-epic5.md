@@ -1427,9 +1427,9 @@ registry. Nothing else is exported.
   every step of both is checked as R93 says. `judge(ms, r)` takes each member's role from
   `Op.Role` or its `Invocation.Role`, counts a member that did not decode as refused,
   collects every `Invocation.Handle`, and answers whether the compound runs whole. The runner,
-  for a compound row: the members decoded, one reply buffer of their `Bound() +
-  ReplyLen(h)` summed through `reserveReply`, and each member's own reservation the same
-  formula, answered `ErrReplyTooBig` when its charge passes a quarter of the reply pool's
+  for a compound row: the members decoded, one reply buffer of the members' bounds summed
+  plus the compound's `ReplyLen(h)`, its one header counted once, through `reserveReply`,
+  answered `ErrReplyTooBig` when its charge passes a quarter of the reply pool's
   ceiling (D11), the members run
   in turn through T5.2b's checks and the chain, the `Request` carried between them, the first
   failure ending the reply; while draining, read once, `judge` first. For a chain: each member
