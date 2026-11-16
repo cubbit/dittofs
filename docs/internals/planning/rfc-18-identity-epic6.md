@@ -26,7 +26,8 @@ T6.11; the rest does not wait. **E4, partly**: T4.4's `kvstore.FoldName`, which 
 with. **#4059's S1** (the RFC 13
 plan's): `pkg/settings`' `Of`, for T6.3. **#4059's epic 3, partly**: its write check `Check` with
 tracked reads, for T6.13 alone. **RFC 23's plan's epic 3, partly**: `pkg/health`'s `Condition`,
-for T6.8's source.
+for T6.8's source. **RFC 23's plan's epic 2 (#4326), partly**: its T2.2's `User.Email` and its
+T2.6's `PGEN` raise and positions, for T6.10's `Rename` and `SetEmail`.
 **Blocks:** **E5**, partly: its T5.9's machine mints call T6.2's mint path, and its T5.8 adds
 `require_pac` to T6.3's record and reads its schema and realm; T6.9's step 3 joins E5's Kerberos
 branch, called by whichever of T6.9 and E5's T5.5 lands second. **E7**, partly: `resolve-principal`
@@ -103,7 +104,7 @@ directory step; the benchmarks; the NetBIOS cross-check and the section's write 
 ### 1.3 Names used here
 
 - **E1**, the contract and the server's surface: `pkg/identity`, `internal/identity`'s lifecycle.
-- **E2**, principals and accounts: `Minter.Create`, `Alloc`, identity's settings section, `Spell`
+- **E2**, principals and accounts: `Minter.Create`, the allocation behind `Alloc`, identity's settings section, `Spell`
   and `Find`, and `Clock.After` with its hashing bound's wait (T2.6).
 - **E3**, resolution: `Resolve`, the group closure, admission's caller cache, `Deps.Tracer`.
 - **E4**, local NTLMv2 sign-in, whose T4.4 exports E2's name fold as `kvstore.FoldName`.
@@ -295,7 +296,7 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   which `pkg/sim`'s test clock already has, in T6.5, whose 5-second query timeout is the first
   wait, unless an earlier subtask has added it: E2's T2.6, whose hashing bound waits 5 s on the
   injected clock, is the first wait in the order of work, so by the field rule it adds `After` and
-  this epic uses it, pending E2's document saying so (§9). Prior art: `context.WithDeadline`, here driven by the injected clock (from memory).
+  this epic uses it, as E2's D8 and T2.6 say. Prior art: `context.WithDeadline`, here driven by the injected clock (from memory).
 - **D8, fixed bounds, held at their sites by `ponytail:` markers.** The directory cache holds
   65 536 entries, least recently used evicted and counted; in-flight queries are capped at 64 per
   node, the rest waiting within the bound; a SID lookup carries at most 64 SIDs in one OR filter,
@@ -689,10 +690,12 @@ pkg/settings/
 
 **Subtask T6.10 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T6.9. RFC 16 §3's amendment (D5).
+- **Track:** C. **Depends on:** T6.9. RFC 16 §3's amendment (D5). RFC 23's plan's epic 2's T2.2
+  (`User.Email`) and T2.6 (the `PGEN` raise and the records' `Position`).
 - **Covers:** R44, R48, R49, R51, R52, R53, R54, R55.
 - **Deliverables:** kvstore's `Minter.Rename(ctx, []Renaming)` (D5) and `SetEmail`, each raising
-  `PGEN` once in its transaction, with their rows in kvstore's conformance suite; identity's
+  `PGEN` once in its transaction through RFC 23's T2.6 and writing each record's `Position` from
+  the raised value, with their rows in kvstore's conformance suite; identity's
   refresh of a minted principal from each new answer by its entry ID: an unchanged name or address
   writes nothing; a new name free taken; a new name held by a local principal leaves the record
   unnamed; a new name held by a directory principal asks the holder's entry fresh-only (D11), one hop and
@@ -817,6 +820,7 @@ flowchart TD
   T6_9 --> C1(["after T6.9: Find, step 3 for E5 and E7"]):::sync
   T6_9 --> T6_10["T6.10 Later answers"]
   A16(["RFC 16 §3 amendment: Rename takes a list"]):::sync -. "D5" .-> T6_10
+  X23b(["RFC 23 epic 2 T2.2, T2.6: User.Email, PGEN raise"]):::sync -. "Email, PGEN" .-> T6_10
   T6_10 --> T6_11["T6.11 Resolution"]
   E3X -. "T3.4, T3.8" .-> T6_11
   T6_11 --> C2(["after T6.11: directory principals resolve"]):::sync
@@ -870,13 +874,8 @@ transaction.
 - **The swap's one transaction (D5).** RFC 16 §3's `Rename` takes one principal; RFC 18 §5.1
   wants a swap's renames in one transaction. Recommended: `Rename` takes a list, amending RFC 16 §3.
   Alternative: a `Renames` call beside the single one.
-- **The timer on identity's `Clock` (D7).** E2's T2.6 waits 5 s on the injected clock without
-  naming the method. Recommended: the first subtask that waits adds `After`, the method
-  `pkg/sim`'s test clock already has; in the order of work that is E2's T2.6, and E2's document
-  should say so. This epic then uses it; if E2's document leaves it out, T6.5 adds it.
 
-**Settled here:** the mint path's owner. E2's document leaves it to "the first epic that mints, E6
-or E5". T6.2 owns it: it needs only E2's T2.3 and comes second in this epic, while E5's machine
+**Settled here:** the mint path's owner, which E2's §1.2 now names as T6.2. T6.2 owns it: it needs only E2's T2.3 and comes second in this epic, while E5's machine
 mint, T5.9, is late in E5, which depends on T6.2 for it.
 
 **Where the RFC 18 plan and the RFCs disagree:**
