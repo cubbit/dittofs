@@ -24,6 +24,7 @@ import (
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -335,6 +336,12 @@ func newSeam(t *testing.T, proto core.Protocol, reply int64) *seam {
 // and tracer.
 func newSeamWith(t *testing.T, proto core.Protocol, reply int64, d adapter.Deps) *seam {
 	t.Helper()
+	return newSeamSet(t, proto, reply, d, nil)
+}
+
+// newSeamSet is newSeamWith on a connection that loaded set at accept.
+func newSeamSet(t *testing.T, proto core.Protocol, reply int64, d adapter.Deps, set settings.Settings) *seam {
+	t.Helper()
 	s := &seam{
 		t:       t,
 		budgets: &resources.Budgets{Receive: resources.NewWaitBudget("receive", 64<<20), Reply: resources.NewWaitBudget("reply", reply)},
@@ -349,7 +356,7 @@ func newSeamWith(t *testing.T, proto core.Protocol, reply int64, d adapter.Deps)
 	}
 	out, stop, conn, _ := newRecorder(s.f)
 	s.stop, s.client = stop, testproto.NewClient(conn)
-	s.p = core.NewPipeline(core.NewShared(d, s.reply), st, context.Background(), peer, out, func(err error) {
+	s.p = core.NewPipeline(core.NewShared(d, s.reply), st, context.Background(), peer, set, out, func(err error) {
 		select {
 		case s.closed <- err:
 		default:
@@ -1162,6 +1169,72 @@ func TestLogLinesCarryTheTraceID(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The row's checks, each alone: an unknown code, whose arguments do not
+// decode, and an Echo switched off by name answered not supported, beside a
+// Negotiate served; Park in version 1 the version status; then, as the
+// connection reaches each level, Tree before a session, PutFH before a tree
+// and Create with no filehandle their own statuses, and Create before a
+// session the session status, not the filehandle's.
+func TestTheRowChecks(t *testing.T) {
+	off := testproto.Settings{Adapter: settings.Adapter{DisabledOperations: []string{"Echo"}}}
+	s := newSeamSet(t, testproto.New(adapter.Deps{}), 1<<20, adapter.Deps{}, off)
+	noRole := body(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2})
+	garbage := body(s.f, testproto.Msg{Op: 99, Version: 1, ID: 1})
+	for _, c := range []struct {
+		name string
+		send func()
+		want core.Status
+	}{
+		{"an unknown code with arguments that do not decode", func() { s.serveBody(append(garbage, 0xff)) }, testproto.StatusNotSupported},
+		{"a switched-off Echo, its arguments never decoded", func() { s.serveBody(noRole[:len(noRole)-1]) }, testproto.StatusNotSupported},
+		{"Park in version 1", func() { s.serve(testproto.Msg{Op: testproto.OpPark, Version: 1, ID: 3}) }, testproto.StatusVersion},
+		{"Create before a session", func() { s.serve(testproto.Msg{Op: testproto.OpCreate, Version: 1, ID: 4, Name: "f"}) }, testproto.StatusNotNegotiated},
+		{"Negotiate", func() { s.serve(testproto.Msg{Op: testproto.OpNegotiate, Version: 1, ID: 5}) }, testproto.StatusOK},
+		{"Create before a session, negotiated", func() { s.serve(testproto.Msg{Op: testproto.OpCreate, Version: 1, ID: 6, Session: 7, Name: "f"}) }, testproto.StatusNoSession},
+		{"Tree before a session", func() { s.serve(testproto.Msg{Op: testproto.OpTree, Version: 1, ID: 7, Session: 7}) }, testproto.StatusNoSession},
+		{"Session", func() { s.serve(testproto.Msg{Op: testproto.OpSession, Version: 1, ID: 8, Session: 7}) }, testproto.StatusOK},
+		{"PutFH before a tree", func() {
+			s.serve(testproto.Msg{Op: testproto.OpPutFH, Version: 1, ID: 9, Session: 7, Handle: []byte("h")})
+		}, testproto.StatusNoTree},
+		{"Tree", func() { s.serve(testproto.Msg{Op: testproto.OpTree, Version: 1, ID: 10, Session: 7, Tree: 1}) }, testproto.StatusOK},
+		{"Create with a tree and no filehandle", func() {
+			s.serve(testproto.Msg{Op: testproto.OpCreate, Version: 1, ID: 11, Session: 7, Tree: 1, Name: "f"})
+		}, testproto.StatusNoFH},
+	} {
+		c.send()
+		if r := s.read(); r.Status != c.want {
+			t.Errorf("%s: answered %d, want %d", c.name, r.Status, c.want)
+		}
+	}
+}
+
+// On an expired session Tree is answered the expired status, Session and
+// Logoff run, and an Echo runs only when its argument says release: one that
+// says flush, which the drain serves, is refused.
+func TestAnExpiredCredential(t *testing.T) {
+	s := newSeam(t, testproto.New(adapter.Deps{}), 1<<20)
+	ended := time.Now().Add(-time.Hour)
+	for _, c := range []struct {
+		name string
+		m    testproto.Msg
+		want core.Status
+	}{
+		{"Negotiate", testproto.Msg{Op: testproto.OpNegotiate, Version: 1, ID: 1}, testproto.StatusOK},
+		{"a session whose credential has ended", testproto.Msg{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7, Expires: ended}, testproto.StatusOK},
+		{"Tree", testproto.Msg{Op: testproto.OpTree, Version: 1, ID: 3, Session: 7, Tree: 1}, testproto.StatusExpired},
+		{"an Echo that says flush", testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 4, Session: 7, Role: core.RoleFlush}, testproto.StatusExpired},
+		{"an Echo that says none", testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 5, Session: 7, Role: core.RoleNone}, testproto.StatusExpired},
+		{"an Echo that says release", testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 6, Session: 7, Role: core.RoleRelease}, testproto.StatusOK},
+		{"Session again", testproto.Msg{Op: testproto.OpSession, Version: 1, ID: 7, Session: 7, Expires: ended}, testproto.StatusOK},
+		{"Logoff", testproto.Msg{Op: testproto.OpLogoff, Version: 1, ID: 8, Session: 7}, testproto.StatusOK},
+	} {
+		s.serve(c.m)
+		if r := s.read(); r.Status != c.want {
+			t.Errorf("%s: answered %d, want %d", c.name, r.Status, c.want)
+		}
 	}
 }
 

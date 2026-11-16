@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
 
@@ -182,8 +183,8 @@ var (
 	ErrNoHold        = errNoHold
 )
 
-func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, out func(*resources.Buf, uint64, uint64) error, close func(error)) *Pipeline {
-	return newPipeline(sh, st, link{ctx: ctx, remote: remote, out: out, close: close})
+func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, set settings.Settings, out func(*resources.Buf, uint64, uint64) error, close func(error)) *Pipeline {
+	return newPipeline(sh, st, link{ctx: ctx, remote: remote, set: set, out: out, close: close})
 }
 
 func (p *pipeline) Serve(rec *resources.Buf)       { p.serve(rec) }

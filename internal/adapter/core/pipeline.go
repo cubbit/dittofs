@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
@@ -184,14 +185,16 @@ func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, close func(
 
 // link is what the pipeline reads of its connection, handed to newPipeline at
 // accept and never read from Conn: the connection's context, which every
-// request's derives from; the remote address, the budgets' key; the writer's
-// enqueue; and Conn.Close, which the pipeline calls where a stage says close. out never blocks its caller, takes
+// request's derives from; the remote address, the budgets' key; the settings
+// snapshot loaded at accept; the writer's enqueue; and Conn.Close, which the
+// pipeline calls where a stage says close. out never blocks its caller, takes
 // msg's reference whatever it returns, fails only once the connection is
 // closed, and sends a message handed with before ahead of the reply of that
 // key; key is the request's HoldCodec.Key in a table that holds, else 0.
 type link struct {
 	ctx    context.Context
 	remote netip.Addr
+	set    settings.Settings // nil: none, so no operation is switched off
 	out    func(msg *resources.Buf, key, before uint64) error
 	close  func(err error)
 }
@@ -267,7 +270,8 @@ type pipeline struct {
 	l      link
 	noHold bool // st.Hold is the default: a table that holds closes the connection
 	label  *labelSeries
-	name   string // the request span's, until Route names its operation
+	name   string          // the request span's, until Route names its operation
+	off    map[string]bool // the operations the snapshot switched off, by name
 
 	misbehaved atomic.Bool // a refusal at Unwrap was logged on this connection
 
@@ -287,6 +291,19 @@ func newPipeline(sh *shared, st Stages, l link) *pipeline {
 	p := &pipeline{sh: sh, st: st, l: l, status: make(chan struct{}, 1)}
 	_, p.noHold = st.Hold.(noHold)
 	p.label, p.name = sh.label(st.Protocol), "adapter."+st.Protocol
+	// decision: a switched-off operation is matched by Op.Name, read once
+	// per connection from the snapshot it loaded at accept, so a change
+	// reaches connections set up after it, as every setting does. Overturned
+	// if an operator must switch an operation off on connections already
+	// open.
+	if l.set != nil {
+		for _, name := range l.set.Common().DisabledOperations {
+			if p.off == nil {
+				p.off = map[string]bool{}
+			}
+			p.off[name] = true
+		}
+	}
 	p.ctx, p.cancel = context.WithCancel(l.ctx)
 	return p
 }
@@ -541,9 +558,8 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		r.trace = tr.id
 	}
 	if err == nil {
-		if op = tb.Ops[h.Op()]; op == nil {
-			err = ErrNotSupported
-		}
+		op = tb.Ops[h.Op()]
+		err = p.check(op, r)
 	}
 	if err != nil && !tr.refused {
 		p.refused(tr, stageRoute)
@@ -572,13 +588,21 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 			p.refused(tr, stageResolveIDs)
 		}
 	}
-	if err == nil && p.draining.Load() {
+	if err == nil {
+		// The role is asked only while draining or on an expired credential,
+		// so a request served normally pays for no second lookup.
+		draining, expired := p.draining.Load(), p.expired(r)
 		role := op.Role
-		if inv.Role != nil {
+		if (draining || expired) && inv.Role != nil {
 			role = inv.Role(r)
 		}
-		if role == RoleNone {
+		switch {
+		case expired && !op.Expired && role != RoleRelease:
+			err = ErrExpired
+		case draining && role == RoleNone:
 			err = drainErr(ctx, r, inv)
+		}
+		if err != nil {
 			p.refused(tr, stageResolveIDs)
 		}
 	}
@@ -791,6 +815,38 @@ func (t *traceIDs) next() (id trace.TraceID) {
 	_, _ = t.src.Read(id[:])
 	t.mu.Unlock()
 	return id
+}
+
+// check is the row's checks between Route and Decode, in their order: an
+// operation the table lacks or the operator switched off, its versions, its
+// needs from the lowest precondition up, then the current filehandle
+// (§4.2). A request it refuses never has its arguments decoded.
+func (p *pipeline) check(op *Op, r *Request) error {
+	if op == nil || p.off[op.Name] {
+		return ErrNotSupported
+	}
+	if r.Version < op.Versions.First || r.Version > op.Versions.Last {
+		return ErrVersion
+	}
+	need, level := op.Needs&^NeedsFH, r.Level&^NeedsFH
+	for _, step := range []struct {
+		needs Needs
+		err   error
+	}{{NeedsNegotiated, ErrNotNegotiated}, {NeedsSession, ErrNoSession}, {NeedsTree, ErrNoTree}} {
+		if need >= step.needs && level < step.needs {
+			return step.err
+		}
+	}
+	if op.Needs&NeedsFH != 0 && r.Level&NeedsFH == 0 {
+		return ErrNoFH
+	}
+	return nil
+}
+
+// expired says r's credential has ended, by the server's clock.
+func (p *pipeline) expired(r *Request) bool {
+	end := r.Call.Identity.Evidence.Expires
+	return !end.IsZero() && !p.sh.clock.Now().Before(end)
 }
 
 // encode appends the reply header with status s and, where the arguments
