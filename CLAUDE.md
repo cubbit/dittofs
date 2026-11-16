@@ -57,8 +57,10 @@ Greps that stay cheap: scope to the package directory rather than the repo root,
 drowning the signal, and `-B2 -A2` instead of reading the whole file afterwards.
 
 Rebuilding is opt-in per machine: run `graphify update .` after changing code.
-`graphify hook install` can automate it with a `post-commit` and a `post-checkout`
-hook, but those are untracked local state, so a fresh clone has neither.
+`graphify hook install` can automate it with `post-commit`, `post-checkout`,
+`post-merge` and `post-rewrite` hooks (0.9.92 and later; 0.9.70 writes only the
+first two). They are untracked local state (see the graphify block in `.gitignore`),
+so a fresh clone has none of them.
 
 `.pi/` and `.claude/` are excluded in `.graphifyignore`; `.tokensave/` is already
 in `.gitignore`, which graphify merges.
