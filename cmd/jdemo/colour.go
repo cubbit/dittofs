@@ -42,10 +42,14 @@ func coloursFor(w io.Writer) colour {
 		return noColours()
 	}
 	return colour{
-		on:     true,
-		green:  func(s string) string { return "\x1b[32m" + s + "\x1b[0m" },
-		yellow: func(s string) string { return "\x1b[33m" + s + "\x1b[0m" },
-		red:    func(s string) string { return "\x1b[31m" + s + "\x1b[0m" },
-		dim:    func(s string) string { return "\x1b[2m" + s + "\x1b[0m" },
+		on: true,
+		// The bright palette: the classic 30s render dark on modern
+		// terminal themes, and a dim room projects them darker still.
+		// Narration takes bright black — reads as calm grey where true
+		// dim borders invisible on half the themes.
+		green:  func(s string) string { return "\x1b[92m" + s + "\x1b[0m" },
+		yellow: func(s string) string { return "\x1b[93m" + s + "\x1b[0m" },
+		red:    func(s string) string { return "\x1b[91m" + s + "\x1b[0m" },
+		dim:    func(s string) string { return "\x1b[90m" + s + "\x1b[0m" },
 	}
 }

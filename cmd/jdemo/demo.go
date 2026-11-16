@@ -100,9 +100,6 @@ func (d *demo) run() error {
 	}
 	defer func() { _ = d.j.Close() }()
 	story := stories[d.storyID]
-	c := coloursFor(d.out)
-	d.printf("\n%s: the journal, live — %d beats, Enter runs each, i s f d + between them\n\n",
-		c.dim("jdemo"), len(story))
 	for n, b := range story {
 		d.beat(n+1, len(story), b)
 		if d.quit {
@@ -229,16 +226,20 @@ func dirEmpty(dir string) (bool, error) {
 // presenter's Enter, runs it, confirms the watched facts with measured
 // deltas, and then offers the views until an Enter moves the story on. An
 // ended stdin still runs the beat — a piped, ended script deserves the
-// full story — and then the story ends. A real terminal clears between
-// beats so one step fills the screen; a piped one draws a rule.
+// full story — and then the story ends. A real terminal clears before
+// EVERY beat, the first included, so one step fills the screen however
+// much history the terminal held; a piped one draws a rule between beats.
 func (d *demo) beat(n, total int, b beat) {
 	c := coloursFor(d.out)
-	if n > 1 {
-		if c.on {
-			d.printf("\x1b[2J\x1b[H")
-		} else {
-			d.printf("──────────────────────────────────────────────\n\n")
-		}
+	if c.on {
+		d.printf("\x1b[2J\x1b[H")
+	} else if n > 1 {
+		d.printf("──────────────────────────────────────────────\n\n")
+	}
+	if n == 1 {
+		// The welcome rides the first beat's own clear, so the opening
+		// screen is one frame: the story's shape, then its first step.
+		d.printf("%s: the journal, live — %d beats\n\n", c.dim("jdemo"), total)
 	}
 	d.printf("%s STEP %d OF %d %s\n\n", c.dim("·"), n, total, c.dim("·"))
 	d.printf("%s\n%s\n", c.green(b.title), c.dim(b.caption))
