@@ -348,6 +348,9 @@ func TestAppendErrorWritesTheNineByteBody(t *testing.T) {
 	if want := append([]byte{0xaa}, readGolden(t, "error_body")...); !bytes.Equal(got, want) {
 		t.Errorf("AppendError after one byte = % x; want % x", got, want)
 	}
+	if len(got)-1 != ErrorLen {
+		t.Errorf("AppendError writes %d bytes; ErrorLen says %d", len(got)-1, ErrorLen)
+	}
 }
 
 // A related member stays as the client signed it - all-ones IDs, or an

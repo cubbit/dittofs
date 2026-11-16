@@ -10,6 +10,10 @@ const (
 	// HeaderLen is the SMB2 header's length, which its StructureSize states
 	// (MS-SMB2 2.2.1).
 	HeaderLen = 64
+	// ErrorLen is the length of the ERROR response's body AppendError
+	// writes: its StructureSize of 9 counts one byte of ErrorData (MS-SMB2
+	// 2.2.2).
+	ErrorLen = 9
 )
 
 // ProtocolSMB2 is the protocol ID that opens a server's own SMB2 message on
