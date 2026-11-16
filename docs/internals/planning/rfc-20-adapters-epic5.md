@@ -78,7 +78,7 @@ Eleven changes to `testproto`, each made by the subtask whose tests need it:
 8. A row for `ErrDecode`, with a status of its own, in every table (T5.7, D7); the row that
    names `context.Canceled` naming `ErrCancelled` instead (T5.2a, D17), both landed with #4229;
    a row for
-   `ErrReplyTooBig`, with a status of its own, naming neither `Ops` nor `Versions` (T5.4,
+   `ErrReplyTooBig`, with a status of its own, naming neither `Ops` nor `Versions` (T5.3,
    D11); a typed row for
    `&vfs.Delay{Cause: vfs.DelayResources}`, its status `StatusDelay` and no `Hold`, in both
    tables, with the `decision:` on `errorRows` saying so (T5.2a, D17).
@@ -627,7 +627,7 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   still holds (RFC 24 §3.3). The try is on the pool, not the budget: the status, the chain's
   member and `Park` each need a `*Buf`, which a `Reservation` cannot become, so
   `WaitBudget`'s own try and ceiling stay unexported (RFC 24 §2.5). `decision:` at the wait,
-  its 30 s a constant against RFC 20 §6.9's timeouts as settings until a status is seen waiting
+  its 30 s a constant against RFC 20 §6.4's timeouts as settings until a status is seen waiting
   past it, and naming the ceiling: a pool held full for 30 s
   by parks across connections closes the connection whose status waited, not those whose
   parks fill the pool, so an SMB client there loses its non-durable opens, and a status can
@@ -800,7 +800,8 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   `shared`'s mutex, which reads the map again first, so two first `Route`s at once register
   each series once. The once is per server and table, not a `sync.Once` in the table: two
   servers can share a table (one `testproto.Protocol`, or it and its `Bare`, handed to both),
-  and each registers into its own registry. A table whose `Protocol` is empty is refused
+  and the series are registered once in the one registry their node holds, a second server's
+  resolution taking the vectors already there (#4444). A table whose `Protocol` is empty is refused
   there, the first place `core` sees it, since `NewOpTable` runs before the field is set: the
   connection is closed with an error naming the table, as D25 does; stages whose `Protocol`
   is empty are refused by `withDefaults` (D1). Nothing is written into the table. A compound
@@ -981,12 +982,12 @@ registry. Nothing else is exported.
   matches it in `NewErrorTable`'s order, the typed row with no `Hold` in both tables, and the
   `decision:` on `errorRows` no longer calling `ErrDelay` the protocol's only delay; the
   holding tables `dispatch_test.go` builds gain the typed row, or they panic.
-- **Landed in part:** #4194 gave `NewOpTable` its body and its first three checks, and moved
+- **Landed:** #4194 gave `NewOpTable` its body and its first three checks, and moved
   the end-to-end entry's message in `test/adapter/known.yaml` to `core: new server`, where the
   specification now stops, with `TestNewOpTableChecksItsRows` and `testproto`'s
   `TestTablesBuild`; #4229 gave `ErrCancelled`, its two checks, its row and its golden line,
-  and #4266 widened them to a row answering success. The `DelayResources` check and row are
-  what this subtask still adds.
+  #4266 widened them to a row answering success, and #4426 added D17's `DelayResources` check
+  and `testproto`'s typed row. T5.2a is delivered.
 - **Consumers:** T5.9, T5.4, T5.1a; T5.5b and T5.11, which answer `ErrCancelled`;
   `testproto`, whose tables build from here on.
 - **Acceptance criteria:** a holding table with no typed `DelayResources` row naming neither,
@@ -1072,7 +1073,9 @@ registry. Nothing else is exported.
   of four `Middleware`: recovery (the panic logged at error with the operation and the stack,
   counted, returned as D21's error), trace span (a child per operation of a compound, none
   for a single operation, its attributes R90's, ended in a deferred call), metrics (the stage
-  clock of `adapter_wire_seconds` around the call, observed in a deferred call), deadline
+  clock's hinge: `resolve_ids`'s stage observed at entry and the call's end marked, so
+  `adapter_wire_seconds` records each stage from `decode_header` to `send` but `call_service`,
+  as RFC 20 §10.1 has them (#4440)), deadline
   (D24's context, 30 s from the attempt's start or at the hold's deadline if sooner, which the
   pipeline keeps in the context: the request's arrival or a re-drive's start, R81; with no start in the context, the clock's now,
   until T5.8 stores the arrival; T5.8 runs `reserveReply` under the same deadline).
@@ -1092,8 +1095,9 @@ registry. Nothing else is exported.
   tracer the test supplies as `Deps.Tracer` and a `slog` handler it supplies as `Deps.Logger`.
   The panic (catches a chain without recovery, a log without the stack, a count on another
   operation). The order: the probe panics, and the span is found ended and the stage observed
-  (catches a span or a clock closed without a deferred call, and recovery placed inside
-  either, which then never sees the panic pass); the probe's context is done at 30 s on the
+  at the chain's entry and its end (catches a span or a clock closed without a deferred call,
+  a hinge that marks neither boundary, and recovery placed inside either, which then never
+  sees the panic pass); the probe's context is done at 30 s on the
   clock while the span is still open (catches the deadline placed outside the span); a start
   set 10 s before the clock gives a deadline 20 s ahead (catches a deadline counted from the
   call, not from the attempt's start). The
@@ -1129,15 +1133,17 @@ registry. Nothing else is exported.
   ceiling.
 - **Deliverables:** in `pipeline.go`, the default `FlowControl`, a counting semaphore of 64
   whose `Admit` waits under its context, tries once under one already ended (RFC 20 §4.7), and
-  whose release is idempotent, with RFC 20 §6.3's `ponytail:`; `reserveReply(ctx, key, bound)
-  (*resources.Buf, error)`, a `Get` on the reply
-  pool (D9) that turns the wait's end at the context's deadline into
+  whose release is idempotent, with RFC 20 §6.3's `ponytail:`; `reserveReply(ctx, pool, key,
+  bound) (*resources.Buf, error)`, a `Get` on the reply
+  pool it is handed, until T5.1a's shared state owns the pool (D9), that turns the wait's end at
+  the context's deadline into
   `&vfs.Delay{Cause: vfs.DelayResources}`, leaves a cancellation as it is, answers
   `ErrReplyTooBig` for `resources.ErrTooLarge`, which `WaitBudget.Reserve` wraps when it refuses
   at once, under any context, a charge past the reply pool's ceiling (D11), and passes any
   other error on as it is; `ErrTooLarge` in `pkg/resources`, with `resources.golden`'s line, the
   sentinel #4221 left to this subtask;
-  `reserveStatus(ctx, key, close func(error))`, a status's buffer (D9): a `TryGet` first,
+  `reserveStatus(ctx, pool, key, close func(error)) *resources.Buf`, a status's buffer (D9),
+  nil once its wait ended: a `TryGet` first,
   then a wait under `ctx`, the connection's, so a close ends it at once, of at most 30 s from
   when it starts, past which it calls `close` with D9's error, which E4's close count records
   as `reply_wait`; T5.1a passes `link`'s context and `close`, so T5.3 declares neither; its
@@ -1431,8 +1437,8 @@ registry. Nothing else is exported.
   row with `Members` and no `MaxMembers` (D10), and a table with such a row whose error table
   has no row for `ErrReplyTooBig`, or none for `ErrTooLong`, naming neither `Ops` nor
   `Versions` (D11); `testproto`'s
-  compound row sets it to 8 (§1.1's change 4), and its tables gain the row for
-  `ErrReplyTooBig` (change 8).
+  compound row sets it to 8 (§1.1's change 4); the row for `ErrReplyTooBig` is
+  change 8's, added by T5.3, which gains the sentinel.
   RFC 20 §4.3 and §4.7 say these, as this pull request amends them.
   `FuzzRecordWalk`, its crashers kept under `testdata/fuzz/FuzzRecordWalk/`.
 - **Consumers:** T5.8, T5.5b, T5.5c, T5.11, whose tests reach the service through a chain;
@@ -1963,7 +1969,7 @@ T5.2a goes first because `testproto`'s holding table builds on it.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T5.2a | 1 | none | D17's `DelayResources` check and `testproto`'s typed row; #4194, #4229 and #4266 delivered the rest of T5.2a and the whole of T5.7 |
+| 1 | T5.2a | 1 | none | D17's `DelayResources` check and `testproto`'s typed row; delivered by #4194, #4229, #4266 and #4426, with the whole of T5.7 |
 | 2 | T5.9 | 2.5 | PR 1 | the registry's calls and `core`'s series under D18's two labels |
 | 3 | T5.6 | 1.5 | PR 2 | the chain |
 | 4 | T5.3, T5.5a | 2 | E3 | what reserves: the cap, the reply reservation, the status's bounded wait, `TryGet` and the ceiling, `Recharge`; open beside PR 1 to PR 3 |
@@ -1994,7 +2000,8 @@ A suggestion only: one pull request per subtask works as well.
   compound whose charge passes a quarter of the reply pool's ceiling, with its own error, and
   `BufPool.Ceiling`, which reads it; D18's once per server and table, through
   a map every request indexes with no lock, in place of the `sync.Once` per table he asked
-  for, since two servers can share a table and each registers into its own registry, and
+  for, since two servers can share a table and the series are registered once in the node's
+  one registry, and
   `Stages.Protocol`, the architect's own fix for what comes before `Route`, with an NFS connection's stages
   naming `nfs3` and a request's in-flight count moving to its table's label at `Route`. Also
   his to say before T5.2a lands: `ErrCancelled` follows RFC 20's spelling and `testproto`'s
@@ -2141,8 +2148,7 @@ A suggestion only: one pull request per subtask works as well.
   first pull request (#4177, the budgets) has merged and its second (#4178, `BufPool`) has
   merged too; T5.3 and everything after it need both. `vfstest.Null`, `memory.New`,
   `vfstest.Faults`, `vfstest.RecordMutations` and `adaptertest.CheckLeaks` are on the branch
-  as named. #4194, #4229 and #4266 delivered T5.7 whole and T5.2a but for D17's
-  `DelayResources` check and row.
+  as named. #4194, #4229, #4266 and #4426 delivered T5.7 whole and T5.2a.
 - **Not taken from the third review, with the reason.** Checking D22's switched-off names
   against the tables when settings load: `settings.Adapter`'s check already refuses an empty
   or repeated name, and a name no table has is the protocol's to refuse in its shape's
