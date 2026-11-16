@@ -384,13 +384,13 @@ pkg/identity/
 internal/identity/
   settings.go       T2.4  Settings, its defaults and Validate, the section's registration and its
                           CheckTx against the ID marks (D1)
-  server.go         T2.4  SecretProvider, Deps.Secrets, State.Settings, Apply's refusal
-pkg/settings/
-  table.go          T2.4  the CheckTx option, run by Check after Validate (D1)
+  server.go         T2.4  SecretProvider, Deps.Secrets, State.Settings
                     T2.6  Clock.After (D8)
   names.go          T2.5  Spell, Find
   account.go        T2.6  Lookup, VerifyPassword, Account, the hashing semaphore
   ntlmoff.go        T2.7  NTHashDeleteStep, NTHashDeleteProgress
+pkg/settings/
+  table.go          T2.4  the CheckTx option, run by Check after Validate (D1)
 ```
 
 ## 6. Subtasks
