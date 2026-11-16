@@ -196,7 +196,7 @@ them.
 | R50 | A share's create or rebind reads its namespace's record tracked and refuses a namespace that names no remote block store | MUST | RFC 8 §2.1; RFC 16 §3 (`ControlPlaneTx`); RFC 23 §3.2 | T2.13 |
 | R52 | `ControlPlaneTx.Now` is the transaction's store time, fixed for its life, so a value derived from it (a token's not-before) and the tracked reads beside it commit together | MUST | RFC 16 §3 (`ControlPlaneTx`); RFC 23 §5.3 | T2.4 |
 | R53 | Whether any share names a namespace is one range read of `NS‖ns‖share‖`, written and deleted in the share's own transaction and read under a range guard, so a share created into the namespace concurrently conflicts with its deletion | MUST | RFC 16 §4.2 (`NS‖ns‖share‖ShareID`), §3; RFC 23 §3.3 | T2.13 |
-| R54 | The `Installation` record holds `NTLMOff`, `Off` (the settings generation of the last write turning `identity.ntlm` off) and `Deleted` (the `identity.nt-hash-delete` that completed since), read tracked inside a write so RFC 23 §4.1's rule for turning NTLM back on sits in the write's transaction | MUST | RFC 16 §2.3 (`Installation`), §4.2 (`IN`); RFC 23 §4.1 | T2.2 |
+| R54 | The `Installation` record holds `NTLMOff`, `Off` (the settings generation of the last write turning `identity.ntlm` off) and `Deleted` (the `identity.nt-hash-delete` that completed since), read tracked inside a write so RFC 23 §4.1's rule for turning NTLM back on sits in the write's transaction | MUST | RFC 16 §2.3 (`Installation`), §4.2 (`IN`); RFC 23 §4.1 | T2.2, T2.4 |
 | R51 | The `Installation` record names the management API's signing key as `SigningKey`, a `SecretRef` owned by the record under `signing_key` | MUST | RFC 16 §2.3 (`Installation`, `SecretOwner`) | T2.2 |
 
 **Nodes**
