@@ -159,8 +159,8 @@ cited by number and title, and how it applies here or why it does not.
 | --- | --- | --- | --- | --- |
 | R1 | An adapter moves through configured, serving, draining and stopped, by `Start` and `Stop`; `Health` reports the state, and is ready only while serving with no condition raised | MUST | §3.1, §3.4, §3.7 | T4.1, T4.2a |
 | R2 | While configured no socket is open, `NewServer` opens nothing, and a setting the adapter cannot apply fails there, not at the first request: a listener on a network `core` serves no listener for is refused | MUST | §3.1, §3.4; the deferral ledger's row "`core`'s datagram listener" | T4.1 |
-| R3 | `NewServer` refuses a listener naming no service, an empty one or one twice, and two listeners naming the same `Socket` or the same network and nonzero port | MUST | §4.7 (`NewServer`) | T4.1 |
-| R4 | `Start` succeeds only once every listener is bound on each of the settings' `Addrs` at its port; a partial bind is a failed start that closes what it opened, and its error names what failed | MUST | §3.1, §3.4, §4.7 (`NewServer`, `Listener`) | T4.1 |
+| R3 | `NewServer` refuses an empty listener set, a listener naming no service, an empty one or one twice, and two listeners naming the same `Socket` or the same network and nonzero port | MUST | §4.7 (`NewServer`) | T4.1 |
+| R4 | `Start` succeeds only once every listener is bound on each of the settings' `Addrs` at its port; a partial bind is a failed start that closes what it opened, and its error names what failed; with an empty `Addrs` it binds nothing and the adapter serves, ready, on no address | MUST | §3.1, §3.4, §4.7 (`NewServer`, `Listener`) | T4.1 |
 | R5 | `Start` after `Stop` is refused; `Stop` is idempotent, a second call returning once the adapter is stopped | MUST | §3.4 | T4.1, T4.5a |
 | R6 | `Addrs` is every address each listener is bound on now, one `Socket` per service it names on its network, each address as the settings name it with the port bound there, a port of 0 resolved and `0.0.0.0` reported as itself; a fresh map the caller owns, slices included; an address `Reconfigure` added present and one it removed gone; empty before `Start` and after `Stop` | MUST | §3.4 (`Addrs`), §4.7 (`Listener`) | T4.1, T4.6 |
 
@@ -263,6 +263,7 @@ cited by number and title, and how it applies here or why it does not.
 | R53 | A close's `reason` is from a closed set that holds `pool`, `limit` and `per_address` for a connection closed at accept and `reply_wait` for one whose status found no reply buffer within 30 s | MUST | §10.1; RFC 24 §10 | T4.11, T4.2b |
 | R54 | `Conn.Close`'s error is logged and counted; a misbehaving client is logged once per connection, not once per request | MUST | §4.7 (`Conn.Close`), §10.3 | T4.11 |
 | R55 | No metric carries a client, principal, share or path label | MUST NOT | §10.1; RFC 25 §2.4 | T4.11 |
+| R59 | `NewServer` calls each listener's `Protocol.NewConn` once with a nil `Conn`, keeps its `Stages.Protocol` as the label of a connection closed before its stages are built, and refuses a listener whose stages accept would refuse, so a wiring fault fails at configured | MUST | §4.7 (`Protocol.NewConn`, `NewServer`), §10.1 | T4.11 |
 
 **Sidecars**
 
@@ -408,9 +409,9 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 - **Waits for:** G5 (#4533), for `Stop` on a configured adapter and `Start` on one that is not.
 - **Covers:** R1 (the states), R2, R3, R4, R5 (with no connection), R6 (but `Reconfigure`'s
   addresses).
-- **Deliverables:** in `server.go`: `Server`'s fields (its `Deps`, listeners, state, the
-  settings snapshot in an `atomic.Pointer` as RFC 20 §3.6 sketches it, the bound sockets and a
-  mutex); `NewServer`'s refusals of R3, and of a listener on another network than TCP with an
+- **Deliverables:** in `server.go`: `Server`'s fields (listeners, state, the settings snapshot
+  in an `atomic.Pointer` as RFC 20 §3.6 sketches it, the bound sockets and a mutex; its `Deps`
+  field lands with T4.2a, its first reader); `NewServer`'s refusals of R3, and of a listener on another network than TCP with an
   error wrapping `errors.ErrUnsupported` and a `decision:` withdrawn by the ledger's datagram
   listener (R2); `Start` binding each listener on each address by its family (D1), all or none;
   `Stop` closing the listeners and moving to stopped, idempotent; `Addrs`; `Health`'s state.
@@ -418,8 +419,11 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   failure, the reply's read past its backstop (`i/o timeout`), since nothing accepts yet.
   Consumed by every later subtask; by E6's `New` and E7.
 - **Acceptance criteria:**
-  - `NewServer` refuses each malformed set of R3 and a `udp` listener, naming the listener, and
-    opens nothing; a valid set returns a configured server whose `Addrs` is empty.
+  - `NewServer` refuses each malformed set of R3, no listener at all included, and a `udp`
+    listener, naming the listener, and opens nothing; a valid set returns a configured server
+    whose `Addrs` is empty.
+  - `Start` with an empty `Addrs` binds nothing and reports serving, and `Health().Ready()`
+    holds, with `Addrs` empty.
   - `Start` with `Addrs` `127.0.0.1` and `::1` and two listeners at port 0 binds four sockets;
     `Addrs` reports each service of each listener under its `Socket`, each address with a
     nonzero port. One with `0.0.0.0` reports `0.0.0.0:<port>`, and a dial to `::1` at that port
@@ -435,7 +439,8 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   `CheckLeaks`. The refusals (catch a check left out, which E6's `New` would pass to a server
   that binds one port twice). The two addresses and the wildcard (catch a bind on `tcp`, under
   which the wildcard is reported `[::]` or its port answers IPv6; skipped where `::1` cannot be
-  bound). The held port (catches a partial bind left open, R4). The mutated map (catches the
+  bound). The empty `Addrs` (catches a `Start` that refuses it or reports the adapter not
+  ready, R4). The held port (catches a partial bind left open, R4). The mutated map (catches the
   server's own map handed out). `Stop` twice and `Start` after `Stop` (catch a second `Stop`
   that errors and a stopped server started again, R5).
 - **Rules:** rule 7: D1's `decision:`, and the `udp` refusal's; rule 8: the end-to-end entry's
@@ -783,22 +788,30 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 - **Track:** B. **Depends on:** T4.5a, T4.6, T5.9.
 - **Waits for:** G2 (#4533), for the reasons, the `state` values, the label of a connection closed at
   accept and each reason's log level.
-- **Covers:** R52, R53 (`pool` and `reply_wait`), R54, R55.
+- **Covers:** R52, R53 (`pool` and `reply_wait`), R54, R55, R59.
 - **Deliverables:** in `metrics.go`, `adapter_connections`, `adapter_connection_closes_total`
   and `adapter_bytes_total`, through T5.9's registry calls, resolved once per server and label;
   counted at accept, in the reader and writer, and at the teardown with the reason of its
   error; the pipeline's own closes, at decode, unwrap, the walk and the wiring, given errors
-  the reason can tell apart, in `pipeline.go`; one log line per close. This brings back
+  the reason can tell apart, in `pipeline.go`; one log line per close. In `server.go`,
+  `NewServer` calls each listener's `Protocol.NewConn(nil)` once, keeps its `Stages.Protocol`
+  as the label a connection closed at accept is counted under, and refuses a listener whose
+  stages `withDefaults` refuses (R59, RFC 20 §4.7 as #4533 amends it). This brings back
   develop's `dittofs_client_connections_active{protocol}`. Consumed by E7's alert rules and
   dashboards.
 - **Acceptance criteria:** for each reason G2 settles, a loopback test causing that close finds
   the series under that reason moved by one and the others unchanged; the gauge returns to its
   level when connections close; bytes in and out equal what the client sent and read, framing
-  included; no series carries an address.
+  included; no series carries an address. A protocol declared in the test whose stages lack
+  `Errors` is refused by `NewServer`, naming the listener, with nothing bound; a connection
+  closed at accept, the connection-state budget short, counts under its listener's label.
 - **Tests:** loopback tests in `conn_test.go`, one per reason (catch a close counted under
   another reason or not at all, and a gauge not decremented, R52, R53); the byte counts (catch a
   header left uncounted); a scan of the registry's series for a label holding an address
-  (catches a remote address used as a label, R55).
+  (catches a remote address used as a label, R55). The refused stages, in `server_test.go`
+  (catch `NewConn(nil)` never called, so a wiring fault reaches accept, R59); the close at
+  accept (catches its label read from somewhere other than its listener's stages, or left
+  empty, R59).
 - **Rules:** rule 3.
 
 ### T4.2b The connection limit
