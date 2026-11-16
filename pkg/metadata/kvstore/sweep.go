@@ -3,6 +3,7 @@ package kvstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -11,14 +12,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
-// SweepBatch is K, the most records one Sweep call deletes.
-//
-// ponytail: K counts records, not keys, so a batch's size follows its
-// sessions' refresh hashes, about 100 keys for a 12 h session refreshed every
-// 15 min, some 6,400 keys at K. Bound the batch by the store's key budget
-// instead once sessions live long enough to bring that near it.
-const SweepBatch = 64
-
 // Swept is what one Sweep call deleted, by kind, and whether another
 // record was already due when it stopped.
 type Swept struct {
@@ -26,10 +19,12 @@ type Swept struct {
 	More                                                      bool
 }
 
-// Sweep deletes, in one bounded batch, every record whose XP entry is at or
-// before the store time, with its index rows, and every audit record older
-// than auditRetention, with its AUX rows. Expired records go first, then
-// audit records, at most SweepBatch in all; More reports one still due.
+// Sweep deletes, in one batch within the store's key budget, every record
+// whose XP entry is at or before the store time, with its index rows, and
+// every audit record older than auditRetention, with its AUX rows. Expired
+// records go first, then audit records; More reports one still due. A
+// session too large for one batch loses as many of its refresh hashes as
+// the batch holds, and is deleted by a later call once the rest fit.
 //
 // Each record is read in the transaction that deletes it, and deleted only
 // when its expiry is still the one the row names, so a refresh that moved it
@@ -40,31 +35,41 @@ type Swept struct {
 // swept once per interval of the caller's, and a backlog of one kind holds
 // the others back. Give each kind its own schedule once a profile shows the
 // sweep.
-func (n Nodes) Sweep(ctx context.Context, auditRetention time.Duration) (sw Swept, err error) {
+func (n Nodes) Sweep(ctx context.Context, auditRetention time.Duration) (Swept, error) {
 	// decision: a retention of zero or less is refused rather than read as
 	// "keep nothing", since it would delete every audit record at once; a
 	// setting that means to keep none needs its own value.
 	if auditRetention <= 0 {
-		return sw, merrs.NewInvalidArgumentError("audit retention is a positive duration")
+		return Swept{}, merrs.NewInvalidArgumentError("audit retention is a positive duration")
 	}
-	err = n.s.kv.Update(ctx, func(tx kv.Txn) error {
+	var sw Swept
+	err := n.s.kv.Update(ctx, func(tx kv.Txn) error {
 		sw = Swept{}
+		b := &sweepBatch{tx: tx, left: n.s.k}
 		now := tx.Now()
-		rows, more, err := due(tx, []byte{keys.KindXP}, SweepBatch, func(t time.Time) bool { return !t.After(now) })
+		rows, more, err := due(tx, []byte{keys.KindXP}, b.left, func(t time.Time) bool { return xpDue(t, now) })
 		if err != nil {
 			return err
 		}
 		for _, row := range rows {
-			if err := sweepExpired(tx, row, &sw); err != nil {
+			// decision: a row that does not decode stops this call and every
+			// later one, audit retention included, until it is repaired, rather
+			// than being skipped: skipping would leave its record and rows
+			// forever with nothing to report them. SweepRowUndecodable names it.
+			if err := b.expired(row, &sw); err != nil || b.full {
+				sw.More = true
 				return err
 			}
 		}
 		if !more {
-			cut := now.Add(-auditRetention)
-			if rows, more, err = due(tx, []byte{keys.KindAU}, SweepBatch-len(rows), cut.After); err != nil {
+			if rows, more, err = due(tx, []byte{keys.KindAU}, b.left, func(t time.Time) bool { return auditDue(t, now, auditRetention) }); err != nil {
 				return err
 			}
 			for _, row := range rows {
+				if !b.take(auditCost) {
+					sw.More = true
+					return nil
+				}
 				if err := sweepAudit(tx, row); err != nil {
 					return err
 				}
@@ -74,7 +79,51 @@ func (n Nodes) Sweep(ctx context.Context, auditRetention time.Duration) (sw Swep
 		sw.More = more
 		return nil
 	})
-	return sw, err
+	if err != nil {
+		return Swept{}, err
+	}
+	return sw, nil
+}
+
+// SweepRowUndecodable reports that err is a Sweep stopped by an expiry row,
+// or the record it names, that does not decode: every later Sweep stops on
+// it the same way until it is repaired.
+func SweepRowUndecodable(err error) bool { return errors.Is(err, errMalformed) }
+
+// xpDue reports whether an expiry row at t is due at store time now.
+func xpDue(t, now time.Time) bool { return !t.After(now) }
+
+// auditDue reports whether an audit record written at t is past retention
+// ret at store time now.
+func auditDue(t, now time.Time, ret time.Duration) bool { return t.Before(now.Add(-ret)) }
+
+// The keys each kind's deletion takes, its XP row among them: a session
+// takes sessionKeys plus two per refresh hash it has had.
+const (
+	tokenCost   = 4 // AT, ATH, ATA, XP
+	countCost   = 2 // the record and its XP row: an idempotency record, an ended operation, a sign-in count
+	staleCost   = 1 // the XP row alone
+	auditCost   = 4 // AU and its three AUX rows
+	sessionKeys = 3 // SS, SSA, XP
+)
+
+// sweepBatch is what one Sweep call may still delete.
+type sweepBatch struct {
+	tx   kv.Txn
+	left int  // keys it may still delete
+	took bool // whether it has taken a record
+	full bool // whether it left a due record for the next call
+}
+
+// take reports whether a deletion of cost keys fits, charging it. The
+// batch's first deletion always fits, so every call makes progress.
+func (b *sweepBatch) take(cost int) bool {
+	if b.took && cost > b.left {
+		b.full = true
+		return false
+	}
+	b.left, b.took = b.left-cost, true
+	return true
 }
 
 // due returns up to k keys under prefix, in order, whose time, the eight
@@ -91,7 +140,7 @@ func due(tx kv.Txn, prefix []byte, k int, isDue func(time.Time) bool) (rows [][]
 		if !isDue(time.Unix(0, int64(ns))) {
 			break
 		}
-		if len(rows) == k {
+		if len(rows) >= k {
 			return rows, true, nil
 		}
 		rows = append(rows, bytes.Clone(kvp.Key))
@@ -99,10 +148,12 @@ func due(tx kv.Txn, prefix []byte, k int, isDue func(time.Time) bool) (rows [][]
 	return rows, false, nil
 }
 
-// sweepExpired deletes the expiry row row and, when its record still
-// expires there, the record with all its rows. A row whose record is gone,
-// or expires elsewhere, is deleted alone.
-func sweepExpired(tx kv.Txn, row []byte, sw *Swept) error {
+// expired deletes the expiry row row and, when its record still expires
+// there, the record with all its rows. A row whose record is gone, or
+// expires elsewhere, is deleted alone. A session larger than the whole batch
+// loses refresh hashes instead, and keeps its record and row for a later
+// call.
+func (b *sweepBatch) expired(row []byte, sw *Swept) error {
 	if len(row) < 10 {
 		return errMalformed
 	}
@@ -110,51 +161,77 @@ func sweepExpired(tx kv.Txn, row []byte, sw *Swept) error {
 	if tag != keys.XPIdempotency && tag != keys.XPSource && tag != keys.XPPair && len(tail) != keys.IDLen {
 		return errMalformed
 	}
-	current, n, del, err := expiringIn(tx, tag, tail, sw)
+	e, err := expiringIn(b.tx, tag, tail, sw)
 	if err != nil {
 		return err
 	}
-	if n != nil && bytes.Equal(current, row) {
-		*n++
-		if err := del(); err != nil {
-			return err
+	if e.count == nil || !bytes.Equal(e.row, row) {
+		if !b.take(staleCost) {
+			return nil
 		}
+		return b.tx.Delete(row)
 	}
-	return tx.Delete(row)
+	if e.hashes != nil && !b.took && e.cost > b.left {
+		b.took, b.full = true, true
+		return deleteRows(b.tx, e.hashes[:min(len(e.hashes), 2*max(1, b.left/2))])
+	}
+	if !b.take(e.cost) {
+		return nil
+	}
+	*e.count++
+	if err := e.del(); err != nil {
+		return err
+	}
+	return b.tx.Delete(row)
 }
 
-// expiringIn reads the record an expiry row's tag and tail name: when it is
-// there, the expiry row its writer keeps for it, the count in sw it adds to and how to delete it with
-// its other rows; a nil count when it is not.
-func expiringIn(tx kv.Txn, tag byte, tail []byte, sw *Swept) ([]byte, *int, func() error, error) {
+// expiring is a record an expiry row names: the row its writer keeps for it,
+// the count in Swept it adds to, the keys its deletion takes and how to
+// delete it with its other rows. A session also lists its refresh hash rows,
+// each followed by its SSH mirror.
+type expiring struct {
+	row    []byte
+	count  *int
+	cost   int
+	del    func() error
+	hashes [][]byte
+}
+
+// expiringIn reads the record an expiry row's tag and tail name; a nil count
+// when it is not there, or is an operation still running.
+func expiringIn(tx kv.Txn, tag byte, tail []byte, sw *Swept) (expiring, error) {
 	c := controlTx{tx, new(uint64)}
 	switch tag {
 	case keys.XPIdempotency:
 		key := append([]byte{keys.KindIK}, tail...)
 		b, found, err := get(tx, key)
 		if err != nil || !found {
-			return nil, nil, nil, err
+			return expiring{}, err
 		}
 		i, err := decodeIdempotency(entity.Principal{}, "", b)
-		return expiryKey(i.Expires, tag, tail), &sw.Idempotency, func() error { return tx.Delete(key) }, err
+		return expiring{expiryKey(i.Expires, tag, tail), &sw.Idempotency, countCost, func() error { return tx.Delete(key) }, nil}, err
 	case keys.XPOperation:
 		op, found, err := operationIn(tx, entity.OperationID(tail))
 		if err != nil || !found || !op.State.Ended() {
-			return nil, nil, nil, err
+			return expiring{}, err
 		}
-		return operationExpiryKey(op), &sw.Operations, func() error { return tx.Delete(operationKey(op.ID)) }, nil
+		return expiring{operationExpiryKey(op), &sw.Operations, countCost, func() error { return tx.Delete(operationKey(op.ID)) }, nil}, nil
 	case keys.XPSession:
 		s, found, err := sessionIn(tx, [16]byte(tail))
 		if err != nil || !found {
-			return nil, nil, nil, err
+			return expiring{}, err
 		}
-		return sessionExpiryKey(s), &sw.Sessions, func() error { return c.DeleteSession(s.ID) }, nil
+		hashes, err := sessionHashRows(tx, s.ID)
+		if err != nil {
+			return expiring{}, err
+		}
+		return expiring{sessionExpiryKey(s), &sw.Sessions, sessionKeys + len(hashes), func() error { return c.DeleteSession(s.ID) }, hashes}, nil
 	case keys.XPToken:
 		t, found, err := tokenIn(tx, [16]byte(tail))
 		if err != nil || !found {
-			return nil, nil, nil, err
+			return expiring{}, err
 		}
-		return tokenExpiryKey(t), &sw.Tokens, func() error { return c.DeleteAPIToken(t.ID) }, nil
+		return expiring{tokenExpiryKey(t), &sw.Tokens, tokenCost, func() error { return c.DeleteAPIToken(t.ID) }, nil}, nil
 	case keys.XPSource, keys.XPPair:
 		sf := keys.SFSource
 		if tag == keys.XPPair {
@@ -162,11 +239,11 @@ func expiringIn(tx kv.Txn, tag byte, tail []byte, sw *Swept) ([]byte, *int, func
 		}
 		f, found, err := signInIn(tx, sf, tail)
 		if err != nil || !found {
-			return nil, nil, nil, err
+			return expiring{}, err
 		}
-		return signInExpiryKey(sf, tail, f), &sw.SignIns, func() error { return tx.Delete(signInKey(sf, tail)) }, nil
+		return expiring{signInExpiryKey(sf, tail, f), &sw.SignIns, countCost, func() error { return tx.Delete(signInKey(sf, tail)) }, nil}, nil
 	}
-	return nil, nil, nil, errMalformed
+	return expiring{}, errMalformed
 }
 
 // sweepAudit deletes the audit record at key with its three index rows.
@@ -180,10 +257,5 @@ func sweepAudit(tx kv.Txn, key []byte) error {
 	if err != nil {
 		return err
 	}
-	for _, prefix := range [][]byte{auditActorPrefix(a.Actor), auditTargetPrefix(a.Target), auditNodePrefix(a.Node)} {
-		if err := tx.Delete(append(prefix, pos...)); err != nil {
-			return err
-		}
-	}
-	return tx.Delete(key)
+	return deleteRows(tx, append(auditIndexKeys(a, pos), key))
 }
