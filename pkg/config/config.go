@@ -13,7 +13,6 @@ import (
 	"github.com/cubbit/dittofs/internal/logger"
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
-	"gopkg.in/yaml.v3"
 )
 
 // Bootstrap is what the server reads before it opens any store: where it
@@ -187,30 +186,6 @@ func MustLoad(configPath string) (*Bootstrap, error) {
 	}
 
 	return cfg, nil
-}
-
-// SaveConfig saves the configuration to the specified file path.
-// The configuration is saved in YAML format using proper yaml tags.
-func SaveConfig(cfg *Bootstrap, path string) error {
-	// Create parent directory if it doesn't exist
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
-	}
-
-	// Use yaml.Marshal directly to respect yaml tags
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	// Write to file with restricted permissions (0600 = owner read/write only).
-	// This is important because config files may contain sensitive data like password hashes.
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("failed to write config file: %w", err)
-	}
-
-	return nil
 }
 
 // setupViper configures viper with environment variables and config file settings.

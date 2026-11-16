@@ -1450,10 +1450,7 @@ user before any LDAP search is issued.
 auto-generated TLS certificate that commonly has a *negative serial number*.
 Go's `crypto/x509` rejects such certificates at parse time — before TLS
 verification runs — so `ldap.tls.insecure_skip_verify` does **not** bypass it.
-The `dfs` binary is built with `x509negativeserial=1` so `ldaps://` against a
-default Samba AD-DC works out of the box. For production directories, prefer a
-properly-issued DC certificate (the Go toggle is slated for removal in a future
-release).
+Use a properly-issued DC certificate.
 
 **Managing identity providers over the API (no restart).** The `ldap.*` and
 `kerberos.*` keys above seed the configuration on first boot. After that, both

@@ -267,10 +267,8 @@ dfsctl identity-provider list
 > `ldaps://`.
 
 > **Samba AD-DC self-signed certs.** A default Samba AD-DC serves a cert with a
-> negative serial number, which Go's `crypto/x509` rejects at parse time. The
-> `dfs` binary is built with `x509negativeserial=1` so `ldaps://` against a
-> default Samba AD-DC works out of the box. For production, use a properly
-> issued DC certificate. (See [docs/CONFIGURATION.md §15](configuration.md).)
+> negative serial number, which Go's `crypto/x509` rejects at parse time, so
+> `ldaps://` against it fails. Use a properly issued DC certificate. (See [docs/CONFIGURATION.md §15](configuration.md).)
 
 ### Config-file / environment equivalents (first-boot seed)
 

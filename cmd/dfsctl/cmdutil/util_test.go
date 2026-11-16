@@ -2,65 +2,10 @@ package cmdutil
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/cli/output"
 )
-
-func TestParseCommaSeparatedList(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected []string
-	}{
-		{
-			name:     "empty string",
-			input:    "",
-			expected: nil,
-		},
-		{
-			name:     "single item",
-			input:    "foo",
-			expected: []string{"foo"},
-		},
-		{
-			name:     "multiple items",
-			input:    "foo,bar,baz",
-			expected: []string{"foo", "bar", "baz"},
-		},
-		{
-			name:     "items with spaces",
-			input:    "foo, bar , baz",
-			expected: []string{"foo", "bar", "baz"},
-		},
-		{
-			name:     "empty items filtered out",
-			input:    "foo,,bar,",
-			expected: []string{"foo", "bar"},
-		},
-		{
-			name:     "only whitespace filtered out",
-			input:    "foo, , bar",
-			expected: []string{"foo", "bar"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := ParseCommaSeparatedList(tt.input)
-			if len(result) != len(tt.expected) {
-				t.Errorf("ParseCommaSeparatedList(%q) = %v, want %v", tt.input, result, tt.expected)
-				return
-			}
-			for i, v := range result {
-				if v != tt.expected[i] {
-					t.Errorf("ParseCommaSeparatedList(%q)[%d] = %q, want %q", tt.input, i, v, tt.expected[i])
-				}
-			}
-		})
-	}
-}
 
 func TestBoolToYesNo(t *testing.T) {
 	tests := []struct {
@@ -225,84 +170,5 @@ func TestIsColorDisabled(t *testing.T) {
 	Flags.NoColor = false
 	if IsColorDisabled() {
 		t.Error("IsColorDisabled() = true, want false")
-	}
-}
-
-func TestIsVerbose(t *testing.T) {
-	Flags.Verbose = true
-	if !IsVerbose() {
-		t.Error("IsVerbose() = false, want true")
-	}
-
-	Flags.Verbose = false
-	if IsVerbose() {
-		t.Error("IsVerbose() = true, want false")
-	}
-}
-
-func TestConfirmDestructive_YesShortCircuits(t *testing.T) {
-	var inCalls, outBuf bytes.Buffer
-	origIn, origOut := ConfirmInput, ConfirmOutput
-	ConfirmInput, ConfirmOutput = &inCalls, &outBuf
-	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
-
-	ok, err := ConfirmDestructive("delete?", true)
-	if err != nil || !ok {
-		t.Fatalf("yes flag must return (true,nil); got (%v,%v)", ok, err)
-	}
-	if outBuf.Len() != 0 {
-		t.Errorf("yes flag must not print a prompt; got %q", outBuf.String())
-	}
-}
-
-func TestConfirmDestructive_YInputConfirms(t *testing.T) {
-	var outBuf bytes.Buffer
-	origIn, origOut := ConfirmInput, ConfirmOutput
-	ConfirmInput, ConfirmOutput = strings.NewReader("y\n"), &outBuf
-	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
-
-	ok, err := ConfirmDestructive("delete?", false)
-	if err != nil || !ok {
-		t.Fatalf("y input must confirm; got (%v,%v)", ok, err)
-	}
-	if !strings.Contains(outBuf.String(), "delete?") {
-		t.Errorf("expected prompt in output, got %q", outBuf.String())
-	}
-}
-
-func TestConfirmDestructive_NInputAborts(t *testing.T) {
-	var outBuf bytes.Buffer
-	origIn, origOut := ConfirmInput, ConfirmOutput
-	ConfirmInput, ConfirmOutput = strings.NewReader("n\n"), &outBuf
-	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
-
-	ok, err := ConfirmDestructive("delete?", false)
-	if err != nil || ok {
-		t.Fatalf("n input must not confirm; got (%v,%v)", ok, err)
-	}
-}
-
-func TestConfirmDestructive_EmptyInputAborts(t *testing.T) {
-	origIn, origOut := ConfirmInput, ConfirmOutput
-	ConfirmInput, ConfirmOutput = strings.NewReader(""), &bytes.Buffer{}
-	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
-
-	ok, err := ConfirmDestructive("delete?", false)
-	if err != nil {
-		t.Fatalf("EOF must not be a hard error; got %v", err)
-	}
-	if ok {
-		t.Errorf("empty input must not confirm")
-	}
-}
-
-func TestConfirmDestructive_YesWord(t *testing.T) {
-	origIn, origOut := ConfirmInput, ConfirmOutput
-	ConfirmInput, ConfirmOutput = strings.NewReader("YES\n"), &bytes.Buffer{}
-	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
-
-	ok, err := ConfirmDestructive("delete?", false)
-	if err != nil || !ok {
-		t.Fatalf("YES (uppercase) must confirm; got (%v,%v)", ok, err)
 	}
 }

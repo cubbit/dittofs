@@ -44,16 +44,8 @@ Use "dfsctl [command] --help" for more information about a command.`,
 	SilenceErrors: true,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		// Sync flags to cmdutil.Flags for subcommands
-		cmdutil.Flags.ServerURL, _ = cmd.Flags().GetString("server")
-		cmdutil.Flags.Token, _ = cmd.Flags().GetString("token")
 		cmdutil.Flags.Output, _ = cmd.Flags().GetString("output")
 		cmdutil.Flags.NoColor, _ = cmd.Flags().GetBool("no-color")
-		cmdutil.Flags.Verbose, _ = cmd.Flags().GetBool("verbose")
-		cmdutil.Flags.CACert, _ = cmd.Flags().GetString("cacert")
-		cmdutil.Flags.ClientCert, _ = cmd.Flags().GetString("client-cert")
-		cmdutil.Flags.ClientKey, _ = cmd.Flags().GetString("client-key")
-		cmdutil.Flags.TLSSkipVerify, _ = cmd.Flags().GetBool("tls-skip-verify")
-		cmdutil.Flags.TLSSkipVerifySet = cmd.Flags().Changed("tls-skip-verify")
 	},
 }
 
