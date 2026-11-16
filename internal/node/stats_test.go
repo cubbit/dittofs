@@ -98,3 +98,15 @@ func TestEngineConditions(t *testing.T) {
 		t.Errorf("conditions after removing the engine's source: got %+v, want none", got)
 	}
 }
+
+// Only a pointer to the engine's adapter is a health.Source: Remove finds a
+// source by identity, and a value holding a func can't be compared.
+func TestEngineConditionsIsAPointerSource(t *testing.T) {
+	src := reflect.TypeFor[health.Source]()
+	if reflect.TypeFor[engineConditions]().Implements(src) {
+		t.Error("engineConditions as a value implements health.Source, want only *engineConditions")
+	}
+	if !reflect.TypeFor[*engineConditions]().Implements(src) {
+		t.Error("*engineConditions does not implement health.Source")
+	}
+}
