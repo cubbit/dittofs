@@ -46,8 +46,8 @@ func TestADPACCapture(t *testing.T) {
 		t.Skip("docker not found, skipping AD-DC integration test")
 	}
 
-	_, serviceKeytab, _, cleanup := setupADDC(t)
-	defer cleanup()
+	setupADDC(t)
+	serviceKeytab := copyADKeytab(t)
 
 	// alice signs in and fetches her cifs/ ticket inside the DC, with MIT's
 	// tools, so the ccache keeps her TGT too; the krbtgt key is exported

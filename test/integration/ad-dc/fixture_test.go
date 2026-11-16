@@ -54,6 +54,7 @@ func TestADFixture(t *testing.T) {
 	// keytab holds no RC4 key for them. DES is not tried: Samba refuses it
 	// whatever the account allows, so that leg could not fail.
 	t.Run("service names on an AES-only account", func(t *testing.T) {
+		krb5ConfPath := writeADKrb5Conf(t, dcIP)
 		out, err := adDockerExec("samba-tool", "spn", "list", "Administrator")
 		if err != nil {
 			t.Fatalf("samba-tool spn list Administrator: %v\n%s", err, out)
@@ -103,7 +104,7 @@ func TestADFixture(t *testing.T) {
 		// The account keeps an RC4 key, its NT hash, whatever its
 		// msDS-SupportedEncryptionTypes; exportkeytab leaves it out of a
 		// service name's export only while that attribute excludes RC4.
-		kt, err := keytab.Load(keytabPath)
+		kt, err := keytab.Load(copyADKeytab(t))
 		if err != nil {
 			t.Fatalf("load the exported keytab: %v", err)
 		}
