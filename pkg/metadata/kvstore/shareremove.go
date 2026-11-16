@@ -52,12 +52,12 @@ var removalSteps = [...]uint8{
 //
 // The mark refuses a share a cut is freezing, one with a re-home running, one
 // any of whose namespaces a move has paused,
-// one with snapshots when the call neither deletes nor detaches them, and,
-// when it deletes them, one any use record still holds. Snapshot and use
-// records are found under a range guard, and the re-home record by a tracked
-// read, so a cut, a re-home or a use record that starts concurrently
-// conflicts with the mark in either commit order: each of those reads the
-// state the mark writes.
+// one with snapshots when the call neither deletes nor detaches them, when it
+// deletes them one any use record still holds, and one whose file is the
+// source of a clone not done onto another share's file. Snapshot and use
+// records and durable opens are found under a range guard, and the re-home
+// record by a tracked read, so a cut, a re-home, a use record or a clone that
+// starts concurrently conflicts with the mark in either commit order.
 //
 // The rest of the removal runs in the background: ContinueRemoval's batches,
 // RecordShardRemoval for step 3 and ContinueShardRemoval for step 4.
@@ -110,6 +110,9 @@ func (c controlTx) DeleteShare(share entity.ShareID, snapshots entity.SnapshotDi
 			}
 			return err
 		}
+	}
+	if err := noForeignCloneHold(c.tx, share); err != nil {
+		return err
 	}
 	ib, ok, err := get(c.tx, shareKey(share, keys.SInfo))
 	if err != nil {
@@ -171,28 +174,78 @@ func noPausedNamespace(tx kv.Txn, share entity.ShareID) error {
 	return nil
 }
 
-// errRemovalOrder is a shard's removal step asked for before the step it
-// follows: a shard's forget before every shard is offloaded, or its files'
-// drop before it has forgotten the tag.
-var errRemovalOrder = errors.New("kvstore: a share removal's step is not due yet")
+// noForeignCloneHold refuses a share one of whose files is the source of a
+// clone not done onto another share's file, as its durable opens show.
+//
+// decision: the mark is refused rather than the removal keeping the source's
+// refs until the clone is done, since step 4 would otherwise retire blocks
+// the clone has yet to adopt. A clone ends on its own, so the caller retries.
+// Keep the refs instead if a long clone blocks removals in practice.
+//
+// ponytail: the mark reads every durable open of the share in its one
+// transaction. Keep a share's clone holds in an index of their own once its
+// durable opens approach the key budget.
+func noForeignCloneHold(tx kv.Txn, share entity.ShareID) error {
+	prefix := shareKey(share, keys.SDo)
+	if err := tx.GuardRange(prefix); err != nil {
+		return err
+	}
+	for row, err := range tx.Scan(prefix, nil) {
+		if err != nil {
+			return err
+		}
+		_, rest, err := keys.ReadUint64(row.Key[len(prefix):])
+		if err != nil {
+			return err
+		}
+		file, rest, err := keys.ReadID(rest, keys.IDLen)
+		if err != nil {
+			return err
+		}
+		id, _, err := keys.ReadUint64(rest)
+		if err != nil {
+			return err
+		}
+		b, ok, err := get(tx, openKey(share, entity.FileID(file), entity.OpenID(id)))
+		if err != nil || !ok {
+			return err
+		}
+		op, err := decodeOpen(entity.FileID(file), entity.OpenID(id), b)
+		if err != nil || op.Kind != entity.OpenCloneSource {
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if _, here, err := get(tx, fileKey(share, op.CloneDst)); err != nil {
+			return err
+		} else if !here {
+			return merrs.NewConflictError("delete share", "a clone onto another share reads from it; retry once the clone is done")
+		}
+	}
+	return nil
+}
 
-// ContinueRemoval runs one bounded batch of a share's removal, from the pass
-// and cursor its state record holds, and reports the step of RFC 16 §2.3.2
-// the removal stands at after it. At step 3 the node ends each shard's live
-// state and records it with RecordShardRemoval; at step 4 it forgets the tag
-// on each shard, records that, and drops the shard's files with
-// ContinueShardRemoval. Neither moves on until every shard has: each batch of
-// those two steps reads its shards and their rm rows with tracking and
-// advances its cursor past the shards found there, and only the batch that
-// finds the last one moves the record to the next step. done is the removal
-// finished, its state record gone; a share with no state record answers done,
-// so an operation whose last batch committed before a crash ends.
+// ErrRemovalOrder is a shard's removal step asked for before it is due: its
+// offload or forget recorded before ContinueRemoval has answered 3 or 4, or
+// its files' drop before it has forgotten the tag. The driver retries later.
+var ErrRemovalOrder = errors.New("kvstore: a share removal's step is not due yet")
+
+// ContinueRemoval runs one bounded batch of a share's removal from where its
+// state record stands, and reports the step of RFC 16 §2.3.2 it stands at
+// after. A driver calls it first and acts on its answer: at 3 it ends each
+// shard's live state and records that with RecordShardRemoval, and at 4 it
+// forgets the tag on each shard, records that, and drops the shard's files
+// with ContinueShardRemoval. Neither step is passed until every shard's rm row
+// has reached it. done is the removal finished; asked again, it is done.
 func (n Nodes) ContinueRemoval(ctx context.Context, share entity.ShareID) (step uint8, done bool, err error) {
-	err = n.s.kv.Update(ctx, func(tx kv.Txn) (err error) {
+	if err := n.s.kv.Update(ctx, func(tx kv.Txn) (err error) {
 		step, done, err = n.s.removalBatch(tx, share)
 		return err
-	})
-	return step, done, err
+	}); err != nil {
+		return 0, false, err
+	}
+	return step, done, nil
 }
 
 func (s *Store) removalBatch(tx kv.Txn, share entity.ShareID) (step uint8, done bool, err error) {
@@ -205,7 +258,9 @@ func (s *Store) removalBatch(tx kv.Txn, share entity.ShareID) (step uint8, done 
 	case stepMarked:
 		// ponytail: step 2 has nothing to do, since no snapshot record exists
 		// until RFC 12's snapshots land, so a detach ends as a delete does.
-		// Delete or detach the share's snapshots here when they do.
+		// Delete or detach the share's snapshots here when they do, and make
+		// ContinueShardRemoval keep the refs a detached snapshot reads rather
+		// than drop them all.
 		finished = true
 	case stepLive:
 		st.Cursor, finished, err = walk(tx, shardsPrefix(share), st.Cursor, n, shardReached(tx, share, stepOffloaded))
@@ -265,8 +320,8 @@ func (s *Store) removalBatch(tx kv.Txn, share entity.ShareID) (step uint8, done 
 }
 
 // removingState reads a share's state record with tracking, so two batches
-// of one removal serialise on it: ok is false once the removal has deleted
-// it, and a share not being removed is refused.
+// of one removal serialise on it: ok is false once the removal has ended,
+// and a share not being removed is refused.
 func removingState(tx kv.Txn, share entity.ShareID) (shareState, bool, error) {
 	b, ok, err := get(tx, shareKey(share, keys.SSt))
 	if err != nil || !ok {
@@ -275,6 +330,9 @@ func removingState(tx kv.Txn, share entity.ShareID) (shareState, bool, error) {
 	st, err := decodeState(b)
 	if err != nil {
 		return shareState{}, false, err
+	}
+	if st.State == entity.ShareRetired {
+		return shareState{}, false, nil
 	}
 	if st.State != entity.ShareRemoving {
 		return shareState{}, false, merrs.NewInvalidArgumentError("the share is not being removed")
@@ -294,13 +352,18 @@ func shardReached(tx kv.Txn, share entity.ShareID, step removalStep) func(kv.Key
 		if _, _, err := get(tx, shardKey(shard)); err != nil {
 			return false, err
 		}
-		b, ok, err := get(tx, shardRemovalKey(shard))
-		if err != nil || !ok {
-			return true, err
-		}
-		got, err := decodeRemovalStep(b)
+		got, err := shardStepIn(tx, shard)
 		return got < step, err
 	}
+}
+
+// shardStepIn reads a shard's rm row with tracking; zero for none.
+func shardStepIn(r kv.Reader, shard uint64) (removalStep, error) {
+	b, ok, err := get(r, shardRemovalKey(shard))
+	if err != nil || !ok {
+		return 0, err
+	}
+	return decodeRemovalStep(b)
 }
 
 // dropClientRows deletes, in one batch, the shard marks of every client
@@ -334,7 +397,7 @@ func dropClientRows(tx kv.Txn, share entity.ShareID, after []byte, n int) ([]byt
 // Drop a shard's rows in batches of their own once shards hold request
 // records.
 func dropShards(tx kv.Txn, share entity.ShareID, after []byte, n int) ([]byte, bool, error) {
-	info, err := shareInfoIn(tx, share)
+	info, err := shareIn(tx, share)
 	if err != nil {
 		return nil, false, err
 	}
@@ -351,44 +414,48 @@ func dropShards(tx kv.Txn, share entity.ShareID, after []byte, n int) ([]byte, b
 }
 
 // removeLast is the removal's last transaction: the root's shard record with
-// its rows, the share's info, namespaces and state record, raising
-// ShareList. The ShareID and the journal tag are never given again: their
-// counters stay where they are.
+// its rows, the share's info and its namespaces with its keys in their share
+// indexes, retiring its state record and raising ShareList. The journal tag
+// is never given again: its counter stays where it is.
+//
+// decision: the state record stays, retired, so a PutShare naming the
+// removed ShareID is refused: ShareIDs come from the caller, and nothing else
+// remembers which were given. It costs a key per removed share, which every
+// walk over the shares reads. Delete it here once the store mints ShareIDs.
 //
 // ponytail: step 7, the drain of the namespaces nsg names, is not run, and no
 // drain mark is written: nothing reads one until GC exists. GC's first start
 // finds a namespace this left undrained by one scan of the NS records
 // against every share's nsg.
 func removeLast(tx kv.Txn, share entity.ShareID) error {
-	info, err := shareInfoIn(tx, share)
+	info, err := shareIn(tx, share)
 	if err != nil {
 		return err
 	}
 	if err := deleteUnder(tx, shardKey(uint64(info.Shard))); err != nil {
 		return err
 	}
-	if err := dropNamespaces(tx, share); err != nil {
+	if err := putShareNamespaces(tx, share, shareNamespaces{Namespaces: info.Namespaces, Write: info.Write}, shareNamespaces{}); err != nil {
 		return err
 	}
 	if err := deleteKeys(tx, keys.Uint64(shardsPrefix(share), uint64(info.Shard)), shareKey(share, keys.SInfo),
-		shareKey(share, keys.SSt)); err != nil {
+		namespacesKey(share)); err != nil {
+		return err
+	}
+	if err := tx.Set(shareKey(share, keys.SSt), encodeState(shareState{State: entity.ShareRetired})); err != nil {
 		return err
 	}
 	_, err = raise(tx, shareListKey)
 	return err
 }
 
-// dropNamespaces deletes the share's namespace list, nsg.
-func dropNamespaces(tx kv.Txn, share entity.ShareID) error {
-	return tx.Delete(namespacesKey(share))
-}
-
 // RecordShardRemoval records in shard's rm row how far a share's removal has
 // gone on it, as the shard's primary reports: offloaded, once its live state
-// has ended, or forgotten, once it has forgotten the share's tag. A shard
-// forgets only after every shard is offloaded, so forgotten is refused until
-// ContinueRemoval has found them all so. A step recorded already, or a share
-// whose removal has finished, changes nothing.
+// has ended, or forgotten, once it has forgotten the share's tag. Offloaded is
+// refused with ErrRemovalOrder until ContinueRemoval has answered 3, and
+// forgotten until it has answered 4, which it does only once every shard is
+// offloaded. A step recorded already, or a share whose removal has finished,
+// changes nothing.
 func (n Nodes) RecordShardRemoval(ctx context.Context, share entity.ShareID, shard entity.ShardID, reached entity.TagState) error {
 	step := map[entity.TagState]removalStep{entity.TagOffloaded: stepOffloaded, entity.TagForgotten: stepForgotten}[reached]
 	if step == 0 {
@@ -400,59 +467,59 @@ func (n Nodes) RecordShardRemoval(ctx context.Context, share entity.ShareID, sha
 			return err
 		}
 		if st.Step < stepLive || step == stepForgotten && st.Step < stepForget {
-			return errRemovalOrder
+			return ErrRemovalOrder
 		}
-		if _, ok, err := get(tx, keys.Uint64(shardsPrefix(share), uint64(shard))); err != nil {
+		if err := shardOfShare(tx, share, uint64(shard)); err != nil {
 			return err
-		} else if !ok {
-			return merrs.NewNotFoundError(fmt.Sprint(shard), "shard of the share")
 		}
-		key := shardRemovalKey(uint64(shard))
-		var cur removalStep
-		if b, ok, err := get(tx, key); err != nil {
+		if cur, err := shardStepIn(tx, uint64(shard)); err != nil || cur >= step {
 			return err
-		} else if ok {
-			if cur, err = decodeRemovalStep(b); err != nil {
-				return err
-			}
 		}
-		switch {
-		case cur >= step:
-			return nil
-		case step == stepForgotten && cur < stepOffloaded:
-			return errRemovalOrder
-		}
-		return tx.Set(key, encodeShardStep(step, nil))
+		return tx.Set(shardRemovalKey(uint64(shard)), encodeRemovalStep(step))
 	})
 }
 
-// ContinueShardRemoval runs one bounded batch of step 4 on shard: it drops
-// the share's files in key order from the cursor its rm row holds, a ref
-// through the ref accounting every removal uses — its chunk's count falls,
-// its reverse key goes, a block whose live count reaches zero is retired —
-// and every other row of a file deleted as it is. The batch is a metadata
-// transaction alone: the tag is forgotten, so it takes no journal version.
-// done is the shard's files all dropped, its rm row done; a shard whose
-// record or whose share's state record is gone answers done.
+// shardOfShare refuses a shard not in the share's shard list.
+func shardOfShare(r kv.Reader, share entity.ShareID, shard uint64) error {
+	if _, ok, err := get(r, keys.Uint64(shardsPrefix(share), shard)); err != nil || ok {
+		return err
+	}
+	return merrs.NewNotFoundError(fmt.Sprint(shard), "shard of the share")
+}
+
+// ContinueShardRemoval runs one bounded batch of step 4 on shard, one of the
+// share's: it drops the share's files in key order, each ref through the ref
+// accounting every removal uses, and every other row of a file as it goes.
+// done is every file dropped and the shard's rm row done; a shard whose
+// record, or whose share's removal, is gone answers done. It is refused with
+// ErrRemovalOrder until the shard has forgotten the tag.
 //
-// No holder is checked and no fence written: the share serves nothing since
-// step 3, so a link, an open or a pending release holds nothing. Every ref
-// is dropped, as a removal at one above the share's version floor would drop
-// them, since no write follows.
+// decision: no holder is checked, no fence written and no journal version
+// taken, and every ref is dropped as at one above the share's version floor:
+// the share has served nothing since step 3, so no link, open or pending
+// release holds a file, and no write follows. Withdraw it if a file of a share
+// past step 3 can be reached.
 //
 // ponytail: the share's files are the shard's, as a share has one shard. Drop
 // only the files whose Shard names it once a share can have more.
 //
 // ponytail: a clone not done onto a file here keeps its hold on a source in
-// another share; none can exist while every share has a namespace of its own,
-// and a clone never crosses namespaces. Drop that hold with the clone's
-// removal record here once shares share one.
+// another share, which is then never released; reachable once two shares
+// name one namespace. Drop that hold with the clone's removal record here,
+// tolerating a source already removed.
+//
+// ponytail: each batch scans from the share's first file key, since every
+// row before it is gone; on a store whose scan steps over deleted keys until
+// compaction, a share's drop reads O(n²) of them. Keep the last key in the rm
+// row if a large share's drop shows in a profile.
 func (n Nodes) ContinueShardRemoval(ctx context.Context, share entity.ShareID, shard entity.ShardID) (done bool, err error) {
-	err = n.s.kv.Update(ctx, func(tx kv.Txn) (err error) {
+	if err := n.s.kv.Update(ctx, func(tx kv.Txn) (err error) {
 		done, err = n.s.shardDropBatch(tx, share, uint64(shard))
 		return err
-	})
-	return done, err
+	}); err != nil {
+		return false, err
+	}
+	return done, nil
 }
 
 func (s *Store) shardDropBatch(tx kv.Txn, share entity.ShareID, shard uint64) (bool, error) {
@@ -462,22 +529,16 @@ func (s *Store) shardDropBatch(tx kv.Txn, share entity.ShareID, shard uint64) (b
 	if _, ok, err := get(tx, shardKey(shard)); err != nil || !ok {
 		return err == nil, err
 	}
-	key := shardRemovalKey(shard)
-	b, ok, err := get(tx, key)
-	if err != nil {
+	if err := shardOfShare(tx, share, shard); err != nil {
 		return false, err
 	}
-	if !ok {
-		return false, errRemovalOrder
-	}
-	step, cursor, err := decodeShardStep(b)
-	switch {
+	switch step, err := shardStepIn(tx, shard); {
 	case err != nil:
 		return false, err
 	case step == stepDone:
 		return true, nil
 	case step < stepForgotten:
-		return false, errRemovalOrder
+		return false, ErrRemovalOrder
 	}
 	nss, err := shareNamespacesOf(tx, share)
 	if err != nil {
@@ -485,7 +546,7 @@ func (s *Store) shardDropBatch(tx kv.Txn, share entity.ShareID, shard uint64) (b
 	}
 	deltas := map[uint32]counts{}
 	files := keys.ID([]byte{keys.KindF}, share[:])
-	cursor, finished, err := walk(tx, files, cursor, max(1, (s.k-1)/batchItemKeys), func(row kv.KeyValue) (bool, error) {
+	_, finished, err := walk(tx, files, nil, max(1, (s.k-1)/batchItemKeys), func(row kv.KeyValue) (bool, error) {
 		rest := row.Key[len(files):]
 		if len(rest) <= keys.IDLen || rest[keys.IDLen] != keys.FRef {
 			return false, tx.Delete(row.Key)
@@ -511,13 +572,10 @@ func (s *Store) shardDropBatch(tx kv.Txn, share entity.ShareID, shard uint64) (b
 	if err != nil {
 		return false, err
 	}
-	if err := applyDeltas(tx, nss, deltas); err != nil {
+	if err := applyDeltas(tx, nss, deltas); err != nil || !finished {
 		return false, err
 	}
-	if step = stepFour; finished {
-		step, cursor = stepDone, nil
-	}
-	return finished, tx.Set(key, encodeShardStep(step, cursor))
+	return true, tx.Set(shardRemovalKey(shard), encodeRemovalStep(stepDone))
 }
 
 // walk visits, in key order, at most n rows under prefix after the key
@@ -560,14 +618,6 @@ func shardOfRow(share entity.ShareID, key []byte) (uint64, error) {
 		return 0, fmt.Errorf("%w: a share's shard row", errMalformed)
 	}
 	return shard, nil
-}
-
-func shareInfoIn(r kv.Reader, share entity.ShareID) (entity.Share, error) {
-	b, err := r.Get(shareKey(share, keys.SInfo))
-	if err != nil {
-		return entity.Share{}, err
-	}
-	return decodeShareInfo(share, b)
 }
 
 func deleteKeys(tx kv.Txn, ks ...[]byte) error {

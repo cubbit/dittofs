@@ -3,8 +3,8 @@ package kvstore
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"errors"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -12,9 +12,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
-	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -146,26 +146,49 @@ func (f *cfix) counter(key []byte) uint64 {
 	return v
 }
 
-// A share with linked and open files carrying content, grants, share-scoped
-// settings, a client's marks and a second shard is removed in batches of one
-// row, each first crashed before its commit and the store restarted around
-// it, and every row of it goes, in RFC 16 §2.3.2's order, while every row of
-// another share stays.
-func TestShareRemovalResumesAcrossRestarts(t *testing.T) {
-	if testing.Short() {
-		t.Skip("syncs every commit")
+// removing reports whether the share's removal is under way: its state
+// record says being removed, not retired or absent.
+func (f *cfix) removing(share entity.ShareID) bool {
+	f.t.Helper()
+	var st shareState
+	if err := f.s.kv.View(context.Background(), func(r kv.Reader) error {
+		b, ok, err := get(r, shareKey(share, keys.SSt))
+		if err != nil || !ok {
+			return err
+		}
+		st, err = decodeState(b)
+		return err
+	}); err != nil {
+		f.t.Fatal(err)
 	}
+	return st.State == entity.ShareRemoving
+}
+
+// removeInBatches is the whole removal of a share, made after the share the
+// fixture starts with, through batches of one row. Each batch runs through
+// batch, which may crash and restart around it. The share has linked and
+// open files carrying content, grants, share-scoped settings, a client's
+// marks and a second shard; every row of it goes, in RFC 16 §2.3.2's order,
+// while every row of the other two shares stays.
+func removeInBatches(t *testing.T, f *cfix, batch func(call func() error)) {
 	ctx := context.Background()
-	d := newDiskStore(t)
-	f := d.f
-	cp := f.s.ControlPlane()
-	admin, id, root := adminRoot(t, f)
-	info, _, err := f.s.ShareIndex().Share(ctx, f.share)
+	first, _, err := f.s.ShareIndex().Share(ctx, f.share)
 	if err != nil {
 		t.Fatal(err)
 	}
+	info := namedShare(t, f.s, "gone")
+	f.share = info.ID
+	f.ns = f.namespaces().Namespaces[0].Namespace
+	admin, id, root := adminRoot(t, f)
+	info, _, err = f.s.ShareIndex().Share(ctx, f.share)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Shard == first.Shard || info.Shard > extraShard {
+		t.Fatalf("the removed share's shard %d, want one above the first share's %d and below %d", info.Shard, first.Shard, extraShard)
+	}
 	other := namedShare(t, f.s, "other")
-	if _, err := cp.SetGrant(ctx, entity.ShareGrant{Share: other.ID, Principal: admin.Principal, Access: entity.AccessRead}, 0); err != nil {
+	if _, err := f.s.ControlPlane().SetGrant(ctx, entity.ShareGrant{Share: other.ID, Principal: admin.Principal, Access: entity.AccessRead}, 0); err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range []entity.Setting{
@@ -173,7 +196,7 @@ func TestShareRemovalResumesAcrossRestarts(t *testing.T) {
 		{Scope: shareScope(f.share), Key: "b", Value: []byte{2}},
 		{Scope: shareScope(other.ID), Key: "a", Value: []byte{3}},
 	} {
-		if _, err := cp.PutSetting(ctx, s, 0); err != nil {
+		if _, err := f.s.ControlPlane().PutSetting(ctx, s, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -219,27 +242,25 @@ func TestShareRemovalResumesAcrossRestarts(t *testing.T) {
 	}
 
 	cfgBefore := f.counter(cfgGenKey)
-	if err := cp.DeleteShare(ctx, f.share, entity.SnapshotsDelete, info.Generation); err != nil {
-		t.Fatal(err)
-	}
+	batch(func() error {
+		return f.s.ControlPlane().DeleteShare(ctx, f.share, entity.SnapshotsDelete, info.Generation)
+	})
 	slMarked := f.counter(shareListKey)
-	d.reopen()
 
-	// The last pass deletes these four with st, raising ShareList, so they
+	// The last pass deletes these with st's removal, raising ShareList, so they
 	// stand or go together; the extra shard goes before them, and only once
 	// the share's other records have.
-	last := [][]byte{shareKey(f.share, keys.SInfo), namespacesKey(f.share), shardKey(uint64(info.Shard))}
+	last := [][]byte{shareKey(f.share, keys.SInfo), namespacesKey(f.share), shardKey(uint64(info.Shard)), namespaceShareKey(f.ns, f.share)}
 	check := func() {
 		t.Helper()
-		f := d.f
-		st := f.present(shareKey(f.share, keys.SSt))
+		removing := f.removing(f.share)
 		for _, k := range last {
-			if f.present(k) != st {
-				t.Fatalf("%s present %v while the state record is present %v", keys.Describe(k), !st, st)
+			if f.present(k) != removing {
+				t.Fatalf("%s present %v while the removal is under way %v", keys.Describe(k), !removing, removing)
 			}
 		}
-		if want := slMarked + map[bool]uint64{true: 0, false: 1}[st]; f.counter(shareListKey) != want {
-			t.Fatalf("ShareList with the state record present %v: got %d, want %d", st, f.counter(shareListKey), want)
+		if want := slMarked + map[bool]uint64{true: 0, false: 1}[removing]; f.counter(shareListKey) != want {
+			t.Fatalf("ShareList with the removal under way %v: got %d, want %d", removing, f.counter(shareListKey), want)
 		}
 		if f.present(shardKey(extraShard)) {
 			return
@@ -252,56 +273,75 @@ func TestShareRemovalResumesAcrossRestarts(t *testing.T) {
 		}
 	}
 
+	var limit []byte
 	var batches int
 	for done := false; !done; {
 		var step uint8
-		d.batch(func() (err error) { step, done, err = d.f.s.Nodes().ContinueRemoval(ctx, f.share); return err })
+		batch(func() (err error) { step, done, err = f.s.Nodes().ContinueRemoval(ctx, f.share); return err })
 		check()
 		switch step {
 		case 3, 4:
 			reached := map[uint8]entity.TagState{3: entity.TagOffloaded, 4: entity.TagForgotten}[step]
 			for _, sh := range []entity.ShardID{info.Shard, extraShard} {
-				if err := d.f.s.Nodes().RecordShardRemoval(ctx, f.share, sh, reached); err != nil {
+				if err := f.s.Nodes().RecordShardRemoval(ctx, f.share, sh, reached); err != nil {
 					t.Fatalf("recording shard %d %v at step %d: %v", sh, reached, step, err)
 				}
 			}
 		}
 		if step == 4 {
+			if limit == nil {
+				limit = append([]byte{}, f.limit()...)
+			}
 			for _, sh := range []entity.ShardID{info.Shard, extraShard} {
 				for shardDone := false; !shardDone; {
-					d.batch(func() (err error) { shardDone, err = d.f.s.Nodes().ContinueShardRemoval(ctx, f.share, sh); return err })
+					batch(func() (err error) { shardDone, err = f.s.Nodes().ContinueShardRemoval(ctx, f.share, sh); return err })
 					check()
-					batches++
+					if batches++; batches > 200 {
+						t.Fatalf("shard %d's files are not dropped after 200 batches", sh)
+					}
 				}
+			}
+			if got := f.limit(); !bytes.Equal(got, limit) {
+				t.Fatalf("the share's version limit across step 4: got %x, want %x, as the drop takes no journal version", got, limit)
 			}
 		}
 		if batches++; batches > 200 {
 			t.Fatal("the removal has not finished after 200 batches")
 		}
 	}
-	f = d.f
 
+	if got := keysUnder(t, f.s, sharePrefix(f.share)); len(got) != 1 || !bytes.Equal(got[0], shareKey(f.share, keys.SSt)) || f.removing(f.share) {
+		t.Errorf("share records after the removal: %d keys, want the retired state record alone", len(got))
+	}
 	for name, prefix := range map[string][]byte{
-		"share records": sharePrefix(f.share),
-		"files":         keys.ID([]byte{keys.KindF}, f.share[:]),
-		"root shard":    shardKey(uint64(info.Shard)),
-		"extra shard":   shardKey(extraShard),
-		"settings":      scopePrefix(shareScope(f.share)),
-		"grant index":   grantRevKey(admin.Principal.ID, f.share),
-		"client's mark": clientShardKey(client.ID, info.Shard),
-		"name and path": pathKey(info.Path),
+		"files":           keys.ID([]byte{keys.KindF}, f.share[:]),
+		"root shard":      shardKey(uint64(info.Shard)),
+		"extra shard":     shardKey(extraShard),
+		"settings":        scopePrefix(shareScope(f.share)),
+		"grant index":     grantRevKey(admin.Principal.ID, f.share),
+		"client's mark":   clientShardKey(client.ID, info.Shard),
+		"name and path":   pathKey(info.Path),
+		"namespace index": namespaceShareKey(f.ns, f.share),
 	} {
 		if got := keysUnder(t, f.s, prefix); len(got) != 0 {
 			t.Errorf("%s after the removal: %d keys, want none, first %s", name, len(got), keys.Describe(got[0]))
 		}
 	}
 	for name, key := range map[string][]byte{
-		"other share's grant":   grantKey(other.ID, admin.Principal.ID),
-		"other share's index":   grantRevKey(admin.Principal.ID, other.ID),
-		"other share's setting": settingKey(shareScope(other.ID), "a"),
-		"client record":         clientKey(client.ID),
-		"client's other mark":   clientShardKey(client.ID, other.Shard),
-		"other share's state":   shareKey(other.ID, keys.SSt),
+		"other share's grant":       grantKey(other.ID, admin.Principal.ID),
+		"other share's index":       grantRevKey(admin.Principal.ID, other.ID),
+		"other share's setting":     settingKey(shareScope(other.ID), "a"),
+		"client record":             clientKey(client.ID),
+		"client's other mark":       clientShardKey(client.ID, other.Shard),
+		"other share's state":       shareKey(other.ID, keys.SSt),
+		"first share's shard":       shardKey(uint64(first.Shard)),
+		"first share's shard row":   keys.Uint64(shardsPrefix(first.ID), uint64(first.Shard)),
+		"first share's info":        shareKey(first.ID, keys.SInfo),
+		"other share's shard":       shardKey(uint64(other.Shard)),
+		"other share's shard row":   keys.Uint64(shardsPrefix(other.ID), uint64(other.Shard)),
+		"other share's namespaces":  namespacesKey(other.ID),
+		"first share's namespaces":  namespacesKey(first.ID),
+		"first share's root's file": fileKey(first.ID, first.Root),
 	} {
 		if !f.present(key) {
 			t.Errorf("%s is gone after another share's removal", name)
@@ -329,8 +369,19 @@ func TestShareRemovalResumesAcrossRestarts(t *testing.T) {
 		t.Errorf("the store after the removal: %v", err)
 	}
 
-	// The share's tag and shard are never given again, and its removal,
-	// asked again, is done.
+	// The share's ID, tag and shard are never given again, its settings are
+	// refused, and its removal, asked again, is done.
+	again := entity.Share{ID: f.share, Name: "again", Path: "/again", Root: entity.NewFileID(),
+		Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: f.ns}}}
+	if _, err := f.s.ControlPlane().PutShare(ctx, again, 0); !errors.Is(err, entity.ErrStale) {
+		t.Errorf("PutShare naming the removed share's ID: %v, want %v", err, entity.ErrStale)
+	}
+	if _, err := f.s.ControlPlane().PutSetting(ctx, entity.Setting{Scope: shareScope(f.share), Key: "c", Value: []byte{4}}, 0); !errors.Is(err, entity.ErrStale) {
+		t.Errorf("PutSetting on the removed share: %v, want %v", err, entity.ErrStale)
+	}
+	if got := keysUnder(t, f.s, scopePrefix(shareScope(f.share))); len(got) != 0 {
+		t.Errorf("settings of the removed share after a refused put: %d, want none", len(got))
+	}
 	next := namedShare(t, f.s, "next")
 	if next.Tag == info.Tag || next.Shard == info.Shard {
 		t.Errorf("the next share's tag %d and shard %d, want neither the removed share's %d and %d", next.Tag, next.Shard, info.Tag, info.Shard)
@@ -344,6 +395,220 @@ func TestShareRemovalResumesAcrossRestarts(t *testing.T) {
 	}
 	if err := nodes.RecordShardRemoval(ctx, f.share, info.Shard, entity.TagForgotten); err != nil {
 		t.Errorf("RecordShardRemoval after the removal: %v, want nil", err)
+	}
+}
+
+// limit is the raw version limit of the fixture's share, nil for none.
+func (f *cfix) limit() []byte {
+	f.t.Helper()
+	var b []byte
+	if err := f.s.kv.View(context.Background(), func(r kv.Reader) (err error) {
+		b, _, err = get(r, versionLimitKey(f.share))
+		return err
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	return b
+}
+
+func TestShareRemovalInBatches(t *testing.T) {
+	f := newContentFix(t, nil)
+	f.s.SetKeyBudget(oneItem)
+	removeInBatches(t, f, func(call func() error) {
+		t.Helper()
+		if err := call(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// The same removal on disk, each batch first crashed before its commit and
+// the store restarted around it.
+func TestShareRemovalResumesAcrossRestarts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("syncs every commit")
+	}
+	d := newDiskStore(t)
+	removeInBatches(t, d.f, d.batch)
+}
+
+// removalAt drives a share's removal on a store of one shard to its files'
+// drop: every shard offloaded and forgotten.
+func removalAt4(t *testing.T, s *Store, sh entity.Share) {
+	t.Helper()
+	ctx := context.Background()
+	if err := s.ControlPlane().DeleteShare(ctx, sh.ID, entity.SnapshotsDelete, sh.Generation); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		want    uint8
+		reached entity.TagState
+	}{{3, entity.TagOffloaded}, {4, entity.TagForgotten}} {
+		if step, _, err := s.Nodes().ContinueRemoval(ctx, sh.ID); err != nil || step != c.want {
+			t.Fatalf("ContinueRemoval: step %d, %v; want %d", step, err, c.want)
+		}
+		if err := s.Nodes().RecordShardRemoval(ctx, sh.ID, sh.Shard, c.reached); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Step 4 drops a shard's files, and step 5 a share's grants, a batch's worth
+// at a time: with room for one row a batch, the first leaves the rest.
+func TestShareRemovalBatchesAreBounded(t *testing.T) {
+	ctx := context.Background()
+	f := newContentFix(t, nil)
+	f.s.SetKeyBudget(oneItem)
+	a, b := f.file(0), f.file(0)
+	if bytes.Compare(a[:], b[:]) > 0 {
+		a, b = b, a
+	}
+	cp := f.s.ControlPlane()
+	for _, p := range []entity.Principal{entity.AuthenticatedUsers, entity.Everyone} {
+		if _, err := cp.SetGrant(ctx, entity.ShareGrant{Share: f.share, Principal: p, Access: entity.AccessRead}, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sh, _, err := f.s.ShareIndex().Share(ctx, f.share)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removalAt4(t, f.s, sh)
+
+	if done, err := f.s.Nodes().ContinueShardRemoval(ctx, f.share, sh.Shard); err != nil || done {
+		t.Fatalf("the first drop batch: done %v, %v; want not done", done, err)
+	}
+	if got := keysUnder(t, f.s, fileKey(f.share, b)); len(got) == 0 {
+		t.Errorf("the later file's keys after the first drop batch: none, want them left to a later batch")
+	}
+	for done := false; !done; {
+		if done, err = f.s.Nodes().ContinueShardRemoval(ctx, f.share, sh.Shard); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if step, _, err := f.s.Nodes().ContinueRemoval(ctx, f.share); err != nil || step != 5 {
+		t.Fatalf("ContinueRemoval once the files are dropped: step %d, %v; want 5", step, err)
+	}
+	if step, _, err := f.s.Nodes().ContinueRemoval(ctx, f.share); err != nil || step != 5 {
+		t.Fatalf("the first grants batch: step %d, %v; want 5", step, err)
+	}
+	if got := keysUnder(t, f.s, shareKey(f.share, keys.SG)); len(got) != 1 {
+		t.Errorf("grants after the first grants batch: %d, want 1", len(got))
+	}
+}
+
+// A share's removal drops only its own shards' files: naming another share's
+// shard is refused, and changes neither share.
+func TestShardRemovalRefusesAnotherSharesShard(t *testing.T) {
+	ctx := context.Background()
+	f := newContentFix(t, nil)
+	f.file(0)
+	sh, _, err := f.s.ShareIndex().Share(ctx, f.share)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := namedShare(t, f.s, "other")
+	rows(t, f.s, shardRemovalKey(uint64(other.Shard)), encodeRemovalStep(stepForgotten))
+	removalAt4(t, f.s, sh)
+	files := keys.ID([]byte{keys.KindF}, f.share[:])
+	before := len(keysUnder(t, f.s, files))
+
+	if _, err := f.s.Nodes().ContinueShardRemoval(ctx, f.share, other.Shard); !merrs.IsNotFoundError(err) {
+		t.Errorf("dropping another share's shard: %v, want not found", err)
+	}
+	if got := len(keysUnder(t, f.s, files)); got != before {
+		t.Errorf("the share's file keys after the refused drop: %d, want %d", got, before)
+	}
+	var step removalStep
+	if err := f.s.kv.View(ctx, func(r kv.Reader) (err error) { step, err = shardStepIn(r, uint64(other.Shard)); return err }); err != nil || step != stepForgotten {
+		t.Errorf("the other shard's rm row after the refused drop: %d, %v; want %d", step, err, stepForgotten)
+	}
+}
+
+// Step 3's batch reads each shard's rm row with tracking: an rm row written
+// between the batch's reads and its commit sends it round again, and it holds
+// at that shard rather than pass it.
+func TestShareRemovalRereadsAnRmRowWrittenUnderIt(t *testing.T) {
+	ctx := context.Background()
+	clk := sim.NewTestClock(time.Unix(0, 0))
+	var faults *kvtest.FaultKV
+	s := openStoreOver(t, func(db kv.KV) kv.KV { faults = kvtest.NewFaultKV(db); return faults })
+	sh := namedShare(t, s, "s")
+	if err := s.ControlPlane().DeleteShare(ctx, sh.ID, entity.SnapshotsDelete, sh.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if step, _, err := s.Nodes().ContinueRemoval(ctx, sh.ID); err != nil || step != 3 {
+		t.Fatalf("ContinueRemoval: step %d, %v; want 3", step, err)
+	}
+	if err := s.Nodes().RecordShardRemoval(ctx, sh.ID, sh.Shard, entity.TagOffloaded); err != nil {
+		t.Fatal(err)
+	}
+	sched, err := sim.NewSchedule(1, clk, sim.Rule{Op: kvtest.OpSet, Key: keys.Describe(shareKey(sh.ID, keys.SSt)), Count: 1,
+		Action: sim.FaultAction{Delay: time.Second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	faults.SetFault(sched)
+	type result struct {
+		step uint8
+		err  error
+	}
+	got := make(chan result, 1)
+	go func() {
+		step, _, err := s.Nodes().ContinueRemoval(ctx, sh.ID)
+		got <- result{step, err}
+	}()
+	// Bounded in real time: the clock is not advanced until the batch waits on it.
+	for deadline := time.Now().Add(10 * time.Second); clk.Pending() < 1; runtime.Gosched() {
+		if time.Now().After(deadline) {
+			t.Fatal("the batch never reached its state record's write")
+		}
+	}
+	rows(t, s, shardRemovalKey(uint64(sh.Shard)), encodeRemovalStep(stepThree))
+	clk.Advance(time.Second)
+	if r := <-got; r.err != nil || r.step != 3 {
+		t.Errorf("the batch over an rm row moved back under it: step %d, %v; want 3", r.step, r.err)
+	}
+}
+
+// A share one of whose files is the source of a clone not done onto another
+// share's file is not marked for removal until the clone is done.
+func TestDeleteShareWaitsForAnotherSharesClone(t *testing.T) {
+	ctx := context.Background()
+	f := newContentFix(t, nil)
+	src := f.file(0)
+	f.exist(src, write(1, 0, 4*mib))
+	cp := f.s.ControlPlane()
+	other := entity.Share{ID: entity.NewShareID(), Name: "other", Path: "/other", Root: entity.NewFileID(),
+		Namespaces: []entity.NamespaceGen{{Generation: 1, Namespace: f.ns}}}
+	if _, err := cp.PutShare(ctx, other, 0); err != nil {
+		t.Fatal(err)
+	}
+	dst := entity.NewFileID()
+	if err := f.s.kv.Update(ctx, func(tx kv.Txn) error {
+		x := entity.File{ID: dst, Share: other.ID, Type: entity.Regular, Number: 9, Nlink: 1, Version: entity.VersionOf(1)}
+		if err := putFile(tx, entity.JournalVersion{}, x); err != nil {
+			return err
+		}
+		return chargeFile(tx, other.ID, nil, &x)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.clone(CloneOp{Share: other.ID, File: dst, Version: entity.VersionOf(5), Time: time.Unix(1_900_000_005, 0),
+		Spec: entity.CloneSpec{SrcShare: f.share, Src: src, Len: mib}})
+	sh, _, err := f.s.ShareIndex().Share(ctx, f.share)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cp.DeleteShare(ctx, f.share, entity.SnapshotsDelete, sh.Generation); !merrs.IsConflictError(err) {
+		t.Fatalf("removing a clone's source share while the clone runs: %v, want a conflict", err)
+	}
+	if _, err := f.s.Content().Resume(ctx, other.ID, dst); err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.DeleteShare(ctx, f.share, entity.SnapshotsDelete, sh.Generation); err != nil {
+		t.Errorf("removing the source share once the clone is done: %v, want nil", err)
 	}
 }
 
@@ -380,18 +645,18 @@ func TestShareRemovalWaitsForEveryShard(t *testing.T) {
 		}
 	}
 
-	record(sh.Shard, entity.TagOffloaded, errRemovalOrder) // the removal is not at step 3 yet
+	record(sh.Shard, entity.TagOffloaded, ErrRemovalOrder) // the removal is not at step 3 yet
 	cont(3)
 	cont(3) // no shard offloaded: the batch holds at the first
-	record(sh.Shard, entity.TagForgotten, errRemovalOrder)
-	drop(sh.Shard, errRemovalOrder)
+	record(sh.Shard, entity.TagForgotten, ErrRemovalOrder)
+	drop(sh.Shard, ErrRemovalOrder)
 	record(sh.Shard, entity.TagOffloaded, nil)
 	cont(3) // passes the root's shard
 	cont(3) // holds at the extra one
-	record(sh.Shard, entity.TagForgotten, errRemovalOrder)
+	record(sh.Shard, entity.TagForgotten, ErrRemovalOrder)
 	record(extraShard, entity.TagOffloaded, nil)
 	cont(4) // passes the extra shard, the last
-	drop(sh.Shard, errRemovalOrder)
+	drop(sh.Shard, ErrRemovalOrder)
 	record(sh.Shard, entity.TagForgotten, nil)
 	record(sh.Shard, entity.TagOffloaded, nil) // a step behind the one recorded changes nothing
 	for done := false; !done; {
@@ -407,30 +672,4 @@ func TestShareRemovalWaitsForEveryShard(t *testing.T) {
 		t.Fatalf("dropping the extra shard's files, none left: done %v, %v; want done", done, err)
 	}
 	cont(5)
-}
-
-// An rm row's bytes: its step, and at step 4 the cursor the drop resumes
-// after; a row of another step carries none.
-func TestShardStepCodec(t *testing.T) {
-	for _, c := range []struct {
-		step   removalStep
-		cursor []byte
-		golden string
-	}{
-		{stepOffloaded, nil, "01" + "02"},
-		{stepFour, []byte{0x01, 0x07}, "01" + "04" + "02" + "0107"},
-		{stepDone, nil, "01" + "05"},
-	} {
-		b := encodeShardStep(c.step, c.cursor)
-		if got := hex.EncodeToString(b); got != c.golden {
-			t.Errorf("rm row at step %d: got %s, want %s", c.step, got, c.golden)
-		}
-		step, cursor, err := decodeShardStep(b)
-		if err != nil || step != c.step || !bytes.Equal(cursor, c.cursor) {
-			t.Errorf("rm row %s read back: step %d cursor %x, %v; want step %d cursor %x", c.golden, step, cursor, err, c.step, c.cursor)
-		}
-		if _, _, err := decodeShardStep(append(b, 0)); !errors.Is(err, codec.ErrTrailing) {
-			t.Errorf("rm row %s with a trailing byte: %v, want %v", c.golden, err, codec.ErrTrailing)
-		}
-	}
 }

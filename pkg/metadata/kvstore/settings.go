@@ -89,7 +89,7 @@ func (c ControlPlane) Settings(ctx context.Context, scope entity.SettingScope) i
 // PutSetting writes one setting, the generation expect names or zero for a
 // new one, raising its generation and the settings generation every node
 // polls, in one transaction. A share's setting is refused while the share is
-// being removed.
+// being removed, and once it is gone.
 func (c ControlPlane) PutSetting(ctx context.Context, s entity.Setting, expect uint64) (uint64, error) {
 	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutSetting(s, expect) })
 }

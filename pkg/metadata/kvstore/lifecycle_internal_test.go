@@ -385,7 +385,7 @@ func TestTagsDerivesEachShareState(t *testing.T) {
 			upper: c.upper,
 		} {
 			if step != none {
-				rows(t, s, shardRemovalKey(shard), encodeShardStep(step, nil))
+				rows(t, s, shardRemovalKey(shard), encodeRemovalStep(step))
 			}
 		}
 
@@ -417,7 +417,7 @@ func TestTagsDerivesEachShareState(t *testing.T) {
 func TestTagsRefusesAMalformedRow(t *testing.T) {
 	s := lifecycleStore(t, nil)
 	sh := namedShare(t, s, "a")
-	rows(t, s, shardRemovalKey(uint64(sh.Shard)), encodeShardStep(stepDone+1, nil))
+	rows(t, s, shardRemovalKey(uint64(sh.Shard)), encodeRemovalStep(stepDone+1))
 
 	if got, err := s.Lifecycle().Tags(context.Background()); err == nil {
 		t.Errorf("Tags over an rm row at step %d: %v, want an error", stepDone+1, got)
@@ -483,14 +483,13 @@ func TestRecordJournalMovesTheIndex(t *testing.T) {
 
 // The values the lifecycle view decodes were written by another process, so
 // each decoder accepts or refuses any bytes and never panics. An rm row is
-// accepted exactly when a known step follows the codec's version byte; what
-// follows the step belongs to the later steps and is ignored. A J‖journal or
-// JD value that is accepted decodes to the same value once written again.
+// accepted exactly when a known step alone follows the codec's version byte.
+// An rm row, J‖journal or JD value that is accepted decodes to the same value
+// once written again.
 func FuzzLifecycleValues(f *testing.F) {
 	for _, seed := range [][]byte{
 		nil, {1}, {1, 0}, {1, 1}, {1, 2}, {1, 3}, {1, 4}, {1, 5}, {1, 6}, {2, 1},
-		{1, 4, 0, 0, 0, 0, 0, 0, 0, 7}, // step 4 with a cursor after it
-		{1, 4, 2, 0x01, 0x07},          // step 4 with its cursor, as the drop writes it
+		{1, 4, 0, 0, 0, 0, 0, 0, 0, 7}, // step 4 with bytes after it
 	} {
 		f.Add(seed)
 	}
@@ -506,7 +505,7 @@ func FuzzLifecycleValues(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, b []byte) {
 		step, err := decodeRemovalStep(b)
-		known := len(b) >= 2 && b[0] == v1 && b[1] >= byte(stepThree) && b[1] <= byte(stepDone)
+		known := len(b) == 2 && b[0] == v1 && b[1] >= byte(stepThree) && b[1] <= byte(stepDone)
 
 		if (err == nil) != known {
 			t.Errorf("rm row %x: %v, %v; want accepted %v", b, step, err, known)
@@ -528,10 +527,8 @@ func FuzzLifecycleValues(f *testing.F) {
 			}
 		}
 
-		if step, cursor, err := decodeShardStep(b); err == nil {
-			if s, c, err := decodeShardStep(encodeShardStep(step, cursor)); err != nil || s != step || !bytes.Equal(c, cursor) {
-				t.Errorf("rm row %x: step %d cursor %x, written again step %d cursor %x, %v", b, step, cursor, s, c, err)
-			}
+		if err == nil && !bytes.Equal(encodeRemovalStep(step), b) {
+			t.Errorf("rm row %x: step %d, written again %x", b, step, encodeRemovalStep(step))
 		}
 	})
 }
@@ -962,10 +959,10 @@ func TestTagsInBatches(t *testing.T) {
 	upper := lower + 1000 // above every shard the test's shares were given
 	rows(t, s,
 		keys.Uint64(shardsPrefix(removing.ID), upper), encodeEmpty(),
-		shardRemovalKey(lower), encodeShardStep(stepOffloaded, nil),
-		shardRemovalKey(upper), encodeShardStep(stepForgotten, nil),
+		shardRemovalKey(lower), encodeRemovalStep(stepOffloaded),
+		shardRemovalKey(upper), encodeRemovalStep(stepForgotten),
 		shareKey(retired.ID, keys.SSt), encodeState(shareState{State: entity.ShareRetired}),
-		shardRemovalKey(uint64(retired.Shard)), encodeShardStep(stepDone, nil),
+		shardRemovalKey(uint64(retired.Shard)), encodeRemovalStep(stepDone),
 	)
 
 	err := s.kv.Update(ctx, func(tx kv.Txn) error {

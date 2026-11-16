@@ -122,6 +122,8 @@ func codecCases() []codecCase {
 			encodeState(shareState{State: entity.ShareRemoving, Step: 5, Snapshots: entity.SnapshotsDelete, Cursor: []byte{0x24, 7}}),
 			"01" + "03" + "05" + "01" + "02" + "2407",
 			func(b []byte) (any, error) { return decodeState(b) }},
+		{"rm row", stepForgotten, encodeRemovalStep(stepForgotten), "01" + "03",
+			func(b []byte) (any, error) { return decodeRemovalStep(b) }},
 		{"grant", grant, encodeGrant(grant), "01" + "02" + "02" + "0000000000000003",
 			func(b []byte) (any, error) { return decodeGrant(sid, gid, b) }},
 		{"policy", policy, encodePolicy(policy),
