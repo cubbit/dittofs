@@ -117,7 +117,7 @@ func TestRunCollectsEachAttachedRecordsPlacementAndAccounting(t *testing.T) {
 		collectLoss(tag5, collectF2, 40, 41, 941, 0x200, 64, 1<<8),
 	))
 
-	st, err := r.asideRun(nil, []core.Seq{50})
+	st, err := r.asideRun([]core.Seq{50})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestRunCountsAConfinedCopyAmongALossesHolders(t *testing.T) {
 	r.writeFormat()
 	seg := buildSeg(1,
 		writeRec(60, 5, 0, 128),
-		lossRec(file, 60, 61, 9, 0, 64, 1|4<<8), // synced, superseded: the kept run is [64,128)
+		plantLossRec(file, 60, 61, 9, 0, 64, 1|4<<8), // synced, superseded: the kept run is [64,128)
 	)
 	// One payload byte of the kept run rotted after its writer built it.
 	seg[format.SegmentHeaderSize+format.RecordHeaderSize+8+70] ^= 0xff

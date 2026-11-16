@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -590,6 +592,16 @@ type reopenFigures struct {
 	dirtySets         map[ShareTag]map[FileID]bool
 	dirtyZeroOfShare  bool // every dirty file's write time is the zero time
 	dirtyDatedOfShare bool // at least one dirty file names a write time
+
+	// segFiles is the number of .seg files the directory held at the
+	// figure's read. For a before figure, taken on the journal the crash
+	// is about to end, it is the file count the crash hands the reopen.
+	segFiles int
+	// freshSegBytes is the bytes of the segment files the directory grew
+	// by since the figure's journal opened: for a reopened journal, whole
+	// fresh spares its own pool made above every name the crash left, the
+	// storage the reopen allocated itself.
+	freshSegBytes int64
 }
 
 // figuresOf captures the figures of j for tags, reading each share's file
@@ -671,11 +683,41 @@ func equalityFixture(t *testing.T) (before, after reopenFigures) {
 	}
 	mustWaitSpares(t, j)
 	before = figuresOf(t, j, []ShareTag{tagA, tagB})
+	crashFiles := f.segmentFileNames(t)
+	before.segFiles = len(crashFiles)
 
 	f.crash(t, j)
 	j2 := f.reopen(t, Version{}, nil)
 	after = figuresOf(t, j2, []ShareTag{tagA, tagB})
+	after.segFiles = len(f.segmentFileNames(t))
+	after.freshSegBytes = freshSegBytes(t, f, crashFiles)
 	return before, after
+}
+
+// freshSegBytes answers the bytes of the segment files the directory holds
+// that crash did not: whole fresh spares the reopened journal's pool made
+// above every name the crash kept, the storage the reopen allocated
+// itself. Their sizes are read straight off the directory, for the fresh
+// spare is a whole segment at the cap the pool made durable under its
+// final name.
+func freshSegBytes(t *testing.T, f *assembledJournal, crash []string) int64 {
+	t.Helper()
+	kept := make(map[string]bool, len(crash))
+	for _, name := range crash {
+		kept[name] = true
+	}
+	var sum int64
+	for _, name := range f.segmentFileNames(t) {
+		if kept[name] {
+			continue
+		}
+		fi, err := os.Stat(filepath.Join(f.dir, name))
+		if err != nil {
+			t.Fatalf("stat the fresh segment %s: %v", name, err)
+		}
+		sum += fi.Size()
+	}
+	return sum
 }
 
 // TestReopenAssembled_EqualityOfFiles holds that the file sets the running
@@ -743,16 +785,22 @@ func TestReopenAssembled_EqualityOfShareFigures(t *testing.T) {
 }
 
 // TestReopenAssembled_EqualityOfUsedBytes holds the journal-wide footprint
-// equality: the reopened journal accounts the same bytes the running one
-// did, its own spares included, both pools settled.
+// equality: the reopened journal accounts the crash's whole footprint — the
+// same bytes the running journal's own figure named, its pool's spare files
+// and the sealed segments alike, every empty spare-origin segment among the
+// set's entries at the cap it takes on disk — and the only storage its
+// figure names over that is what its own spare pool allocated after the
+// reopen: whole fresh spares, made above every file the crash kept, both
+// pools settled.
 func TestReopenAssembled_EqualityOfUsedBytes(t *testing.T) {
 	before, after := equalityFixture(t)
-	if after.usedBytes != before.usedBytes {
-		t.Fatalf("Stats().UsedBytes after the reopen = %d, want %d: a segment the first journal accounted is not the second's or the seed changed its size",
-			after.usedBytes, before.usedBytes)
+	want := before.usedBytes + after.freshSegBytes
+	if after.usedBytes != want {
+		t.Fatalf("Stats().UsedBytes after the reopen = %d, want %d: the crash's whole footprint (%d, the running journal's own figure) plus the fresh spares its own pool made (%d): a segment the first journal accounted is not the second's or the seed changed its size",
+			after.usedBytes, want, before.usedBytes, after.freshSegBytes)
 	}
-	if after.segments != before.segments {
-		t.Fatalf("Stats().Segments after the reopen = %d, want %d", after.segments, before.segments)
+	if after.segments != before.segFiles {
+		t.Fatalf("Stats().Segments after the reopen = %d, want %d: one ledger entry per segment file the crash left, empty spare-origin ones among the loaded segments", after.segments, before.segFiles)
 	}
 }
 
