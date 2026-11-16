@@ -224,15 +224,21 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
     either mechanism, and null and guest sessions are `gss`'s to set up without `SignIn` (RFC 20
     §4.4; RFC 22's plan's S4), so one that reaches identity is a caller's bug, refused, never a
     session.
+  - The throttle is asked next, before every refusal below: NTLM off, NTLMv1 and LM, and the
+    malformed response. So the NTLM-off and NTLMv1 refusals are `ErrLogonFailure` results the
+    throttle counts (D5), and a pair it refuses gets `throttled` whichever of them its attempt
+    would have met: no mechanism the installation refuses lets a client try names uncounted.
   - An `NtChallengeResponse` of 24 bytes (NTLMv1), or empty with a user (LM only), is
-    `ErrLogonFailure` before any check (R7).
+    `ErrLogonFailure` before any credential check (R7).
   - A response that is not a well-formed NTLMv2 response (MS-NLMP 2.2.2.7: its header, or an AV
     pair list without `MsvAvEOL` or overrunning the buffer) is `ErrInvalid`, as `develop`
     answers `smb2.session.ntlmssp_bug14932` with `STATUS_INVALID_PARAMETER`. It is decided
     before the proof is computed, so `ErrInvalid` never depends on the password. Unlike the
     unclassified step it is an NTLM attempt by a named user, so it is recorded: one logon event
-    and one `identity_authentications_total` count, outcome `invalid`. It is not throttled: it is
-    refused before the throttle is asked, and does not count toward it (D5).
+    and one `identity_authentications_total` count, outcome `invalid`. It is the one refusal after
+    the throttle that does not count toward it (D5): it is decided before the proof, so it tells
+    nothing of the password. From a pair the throttle already refuses, it is answered `throttled`
+    like any other attempt.
   - Every failure once the proof has been computed (the proof, the key exchange, the MIC, a
     disabled user) is `ErrLogonFailure`, counted by the throttle, so no answer tells a right
     password from a wrong one.
@@ -251,8 +257,8 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   on the injected clock; an attempt is refused while the oldest of 10 is under 10 minutes old.
   A throttled attempt is not counted, since counting it would keep a retrying client refused for
   ever, the lockout §3.1 rules out; a success does not reset the count. Every `ErrLogonFailure`
-  result counts, `unknown_domain` and `disabled` included; `ErrInvalid` and `ErrUnavailable` do
-  not. A pair's key is the SHA-256 of the folded user part beside the unmapped client address
+  result counts, NTLM off, NTLMv1, `unknown_domain` and `disabled` included; `ErrInvalid` and
+  `ErrUnavailable` do not. A pair's key is the SHA-256 of the folded user part beside the unmapped client address
   (`netip.Addr.Unmap`), an IPv6 address cut to its /64 as RFC 23 §5.3 keys its sources, so an
   attacker's 64 KiB name costs 32 bytes, `::ffff:a.b.c.d` is `a.b.c.d`, and one host's /64
   cannot spread its failures over 2⁶⁴ pairs; a `decision:` marker at the key says so. The table holds 65 536 pairs, about 5 MiB with their times, a fixed count until RFC
@@ -379,7 +385,8 @@ internal/vfs/
 - **Deliverables:** `(*Server).SignIn`'s body, reading one `State` for the call:
   - D3's `ErrInvalid` for a step with neither or both mechanisms, or no user; a Kerberos step
     keeps epic 1's stub until E5;
-  - for NTLM, in order: `State.Settings`' `NTLM` key off, `ErrLogonFailure` (R15); the NTLMv1
+  - for NTLM, in order: T4.4's throttle, asked here once T4.4 lands (D3); `State.Settings`'
+    `NTLM` key off, `ErrLogonFailure` (R15); the NTLMv1
     refusal (R7); the malformed-response refusal (D3); the domain table (D8), ASCII letters
     folded, with RFC 18 §3.5's alternate-suffix `decision:` at it (R5, R6);
   - the local check: E2's `Find` with the `UserName` scheme; the user's record; a disabled,
@@ -475,9 +482,10 @@ internal/vfs/
 - **Covers:** R18, R19, R20, R21, R30.
 - **Deliverables:** `throttle` in
   `internal/identity`, keyed and sized as D5 says, the oldest pair evicted and counted in
-  `identity_logon_throttle_evictions_total` (the name pending §9); `SignIn` asking it after
-  D3's `ErrInvalid` refusals and before anything reads a credential, and counting each
-  `ErrLogonFailure` but a throttled one, with outcome `throttled`; RFC 18 §3.1's and §7.3's
+  `identity_logon_throttle_evictions_total` (the name pending §9); `SignIn` asking it right after
+  D3's unclassified step and before the NTLM-off, NTLMv1 and malformed-response refusals (D3),
+  and counting each `ErrLogonFailure` but a throttled one, NTLM off and NTLMv1 included, with
+  outcome `throttled`; RFC 18 §3.1's and §7.3's
   `ponytail:` notes and D5's markers. Consumed by T4.5, E5 (whose Kerberos branch asks it once the
   ticket decrypts, E5's D9) and E7.
 - **Acceptance criteria:**
@@ -486,6 +494,11 @@ internal/vfs/
   - "logon throttle", local half: 10 wrong passwords for alice from one address, then the right
     one with `kvtest`'s fault wrapper failing every read: `ErrLogonFailure`, not
     `ErrUnavailable` (catches a throttle that still reads or checks the credential, R18, R21);
+  - 10 24-byte NTLMv1 responses for alice from A, then the right password: refused, and the same
+    with 10 attempts while `identity.ntlm` is off, then the right one once it is on (catches the
+    throttle asked after the NTLMv1 or NTLM-off refusal, which leaves them uncounted, D3, D5);
+    with alice throttled from A, a malformed response from A: `ErrLogonFailure`, not `ErrInvalid`
+    (catches the malformed check run before the throttle, D3);
   - 10 failures spread over `alice`, `ALICE`, `CORP\alice` (refused `unknown_domain` here) and
     `alice@CORP.EXAMPLE`, then the right password as `alice`: refused (catches a spelling that
     resets the count, R21);
