@@ -247,9 +247,12 @@ func TestParkedPollAnswersOnTheClock(t *testing.T) {
 func TestWaitBounds(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	for _, w := range []string{"61s", "0s", "-1s", "soon"} {
-		r := s.do(t, http.MethodGet, knobAt(uuid.NewString())+"?wait="+w, "")
-		if p := r.problem(t); r.status != http.StatusBadRequest || p.Field != "wait" {
-			t.Errorf("GET knob?wait=%s: answered %d field %q, want 400 naming wait", w, r.status, p.Field)
+		// Polled, so a wait accepted in error parks and is reported, not
+		// waited out.
+		r := answered(t, "GET knob?wait="+w, s.poll(t, knobAt(uuid.NewString())+"?wait="+w))
+		var p apiv1.Problem
+		if err := json.Unmarshal(r.body, &p); err != nil || r.status != http.StatusBadRequest || p.Field != "wait" {
+			t.Errorf("GET knob?wait=%s: answered %d %s, want 400 naming wait", w, r.status, r.body)
 		}
 	}
 	if r := s.do(t, http.MethodGet, knobAt(uuid.NewString()), ""); r.status != http.StatusOK || string(r.body) != `{"generation":0,"spec":{"value":""}}` {
