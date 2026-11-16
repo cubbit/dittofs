@@ -20,7 +20,7 @@ import (
 // component started.
 func TestNewStartsNothing(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
-	if err := h.Stop(t.Context()); err != nil {
+	if err := h.Node().Stop(t.Context()); err != nil {
 		t.Fatalf("Stop after New: got %v, want nil", err)
 	}
 }

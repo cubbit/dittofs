@@ -1,9 +1,9 @@
 // Package nodetest builds a node in process for a test: an installation
-// initialised under t.TempDir(), over Badger on disk, on a test clock.
+// initialised under t.TempDir(), over Badger on disk or in memory, on a test
+// clock.
 package nodetest
 
 import (
-	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -30,33 +30,46 @@ var (
 	nodeID  = entity.NodeID{'n', 'o', 'd', 'e'}
 )
 
-// Harness is one node built over its own installation. Its embedded Node
-// is the node built last; Restart replaces it.
+// Harness is one node built over its own installation.
 type Harness struct {
-	*node.Node
+	node    *node.Node
+	newNode func(node.Config) (*node.Node, error)
 	cfg     node.Config
-	dir     string // Badger's directory
+	dir     string // Badger's directory, empty when it is in memory
 	clock   *sim.TestClock
 	store   *kvstore.Store
-	stopped bool
 }
 
 // Option changes how New builds the harness.
 type Option func(*options)
 
-type options struct{ watch bool }
+type options struct {
+	watch    bool
+	inMemory bool
+	newNode  func(node.Config) (*node.Node, error)
+}
 
 // Watch has New watch the test with prof.Watch, registered before anything
 // the harness opens so that its check runs after the harness closed it all.
 // Watch a top-level test only, never a subtest on its own.
 func Watch() Option { return func(o *options) { o.watch = true } }
 
+// InMemory keeps Badger in memory rather than on disk. Such a harness
+// cannot Restart: nothing outlives the KV it closes.
+func InMemory() Option { return func(o *options) { o.inMemory = true } }
+
+// WithNew is the constructor New and Restart build the node through;
+// without it they call node.New.
+func WithNew(f func(node.Config) (*node.Node, error)) Option {
+	return func(o *options) { o.newNode = f }
+}
+
 // New initialises an installation, the metadata store and one journal under
 // t.TempDir(), records the journal for the node's one device, and builds a
-// node over them. The node is stopped when the test ends.
+// node over them. Every KV the harness opens is closed when the test ends.
 func New(t testing.TB, opts ...Option) *Harness {
 	t.Helper()
-	var o options
+	o := options{newNode: node.New}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -65,7 +78,10 @@ func New(t testing.TB, opts ...Option) *Harness {
 	}
 	ctx := t.Context()
 	root := t.TempDir()
-	h := &Harness{dir: filepath.Join(root, "store"), clock: sim.NewTestClock(start)}
+	h := &Harness{newNode: o.newNode, clock: sim.NewTestClock(start)}
+	if !o.inMemory {
+		h.dir = filepath.Join(root, "store")
+	}
 	dev := filepath.Join(root, "device")
 	if err := os.Mkdir(dev, 0o700); err != nil {
 		t.Fatalf("nodetest: device directory: %v", err)
@@ -88,11 +104,6 @@ func New(t testing.TB, opts ...Option) *Harness {
 		t.Fatalf("nodetest: record the journal: %v", err)
 	}
 	h.build(t)
-	t.Cleanup(func() {
-		if err := h.Stop(context.Background()); err != nil {
-			t.Errorf("nodetest: stop at the test's end: %v", err)
-		}
-	})
 	return h
 }
 
@@ -100,7 +111,10 @@ func New(t testing.TB, opts ...Option) *Harness {
 // directories, with a new metrics registry.
 func (h *Harness) Restart(t testing.TB) {
 	t.Helper()
-	if err := h.Stop(t.Context()); err != nil {
+	if h.dir == "" {
+		t.Fatal("nodetest: Restart of an in-memory harness: its KV keeps nothing once closed, so there is no installation to reopen")
+	}
+	if err := h.node.Stop(t.Context()); err != nil {
 		t.Fatalf("nodetest: stop before the restart: %v", err)
 	}
 	h.openKV(t)
@@ -108,15 +122,8 @@ func (h *Harness) Restart(t testing.TB) {
 	h.build(t)
 }
 
-// Stop stops the node once; a later Stop, the test's end's included, does
-// nothing.
-func (h *Harness) Stop(ctx context.Context) error {
-	if h.stopped {
-		return nil
-	}
-	h.stopped = true
-	return h.Node.Stop(ctx)
-}
+// Node is the node built last: after Restart, the new one.
+func (h *Harness) Node() *node.Node { return h.node }
 
 // Clock is the node's clock, which only the test advances.
 func (h *Harness) Clock() *sim.TestClock { return h.clock }
@@ -125,13 +132,21 @@ func (h *Harness) Clock() *sim.TestClock { return h.clock }
 // and read them back, as another node's would.
 func (h *Harness) Store() *kvstore.Store { return h.store }
 
-// openKV opens Badger in the harness's directory as the next node's KV.
+// openKV opens Badger as the next node's KV and closes it when the test
+// ends, so a New or Restart failing after the open leaves nothing open.
+// Close is idempotent, so a KV its node already closed closes again
+// harmlessly.
 func (h *Harness) openKV(t testing.TB) {
 	t.Helper()
 	db, err := badgerkv.Open(badgerkv.Options{Dir: h.dir, NodeID: nodeID, Clock: h.clock.Now})
 	if err != nil {
 		t.Fatalf("nodetest: open the KV: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("nodetest: close the KV: %v", err)
+		}
+	})
 	h.cfg.KV = db
 }
 
@@ -148,9 +163,9 @@ func (h *Harness) openStore(t testing.TB) {
 func (h *Harness) build(t testing.TB) {
 	t.Helper()
 	h.cfg.Metrics = metrics.New("test", "test")
-	n, err := node.New(h.cfg)
+	n, err := h.newNode(h.cfg)
 	if err != nil {
-		t.Fatalf("nodetest: node.New: %v", err)
+		t.Fatalf("nodetest: build the node: %v", err)
 	}
-	h.Node, h.stopped = n, false
+	h.node = n
 }
