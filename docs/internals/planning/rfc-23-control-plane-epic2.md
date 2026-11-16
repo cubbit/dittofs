@@ -119,7 +119,7 @@ them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | A `User` carries `Role` (none, viewer, operator, admin), `NotBefore` (store time, whole seconds) and `MustChange`, the management API's fields, which grant nothing on files | MUST | RFC 16 §2.3; RFC 23 §5.1, §5.3 | T2.2 |
-| R2 | A `User`, a `Group` and a `Share` carry `Generation`, raised by every `PutUser`, `PutGroup` and `PutShare`; a share's is `S‖id‖info`'s, not its state's or its namespaces' | MUST | RFC 16 §2.3, §3 | T2.2, T2.3 |
+| R2 | A `User`, a `Group` and a `Share` carry `Generation`, raised by every write of the record, the RFC 18 plan's `Minter` `Rename`, `SetEmail` and `DropNTHashes` included; a share's is `S‖id‖info`'s, not its state's or its namespaces' | MUST | RFC 16 §2.3, §3 | T2.2, T2.3 |
 | R3 | A grant, an export policy, a netgroup and a quota are versioned, and their version is what their write takes as `expect` | MUST | RFC 16 §3; RFC 23 §4.4; RFC 23 plan A4 | T2.2, T2.3 |
 | R4 | An `Operation` holds `ID`, `Kind`, `Target`, `Account`, `State`, `Claim`, `Step`, `Params`, `Started`, `Updated`, `Error` and `Result`; `Progress` is not stored | MUST | RFC 16 §2.3; RFC 23 §4.6 | T2.7 |
 | R5 | An `IdempotencyRecord` holds the `Account`, the `Key`, the `Digest` of method, path and body, the `Answer` first given and `Expires`, 24 h after the request | MUST | RFC 16 §2.3; RFC 23 §4.5 | T2.5 |
@@ -161,7 +161,7 @@ them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R27 | Every record of a reconciled kind — a setting, a share, a principal — carries its position, the value its last change raised its kind's counter to (`CFGGEN`, `SL`, `PGEN`), written in that change's transaction; a grant, an export policy, a netgroup and a quota carry none | MUST | RFC 23 §2.4; RFC 16 §3; RFC 23 plan A4 | T2.6 |
-| R28 | `PGEN` is raised once in each transaction that writes a `User`, a `Group` or a `Membership` or writes or deletes a `PX‖` row, however many it writes, so every record that transaction writes carries one position | MUST | RFC 16 §4.2 (`PGEN`), §3 | T2.6 |
+| R28 | `PGEN` is raised once in each transaction that writes a `User`, a `Group` or a `Membership` or writes or deletes a `PX‖` row, however many it writes, so every record that transaction writes carries one position | MUST | RFC 16 §4.2 (`PGEN`), §3 | T2.6, T2.11 |
 
 **Operations**
 
@@ -260,10 +260,10 @@ them.
   and T2.4 puts `DeleteSetting`, `PutSecret` and `PruneSecret` on `ControlPlaneTx` as well. If this
   epic lands first, the RFC 13 plan adds its writes to `ControlPlaneTx` in the change that adds
   them to the view. Neither waits for the other. No marker. Prior art: none needed.
-- **D20, `S‖id‖gv` meets the RFC 18 plan's epic 3 the same way.** That epic's T3.6 also writes
-  the grant-list version in `SetGrant`. Whichever lands second keeps the other's write, and T2.3
-  removes the `ponytail:` above `SetGrant` only if it is still there. No marker. Prior art: none
-  needed.
+- **D20, this epic alone writes `S‖id‖gv`.** RFC 16 §4.2 has it written by `SetGrant`,
+  `DeleteGrant` and the deletion batches, which are T2.3's and T2.11's; the RFC 18 plan's epic 3
+  only reads it, through `ShareIndex.Share` in the same view as the share's policy. T2.3 removes
+  the `ponytail:` above `SetGrant`. No marker. Prior art: none needed.
 - **D5, kvstore exports no series.** The store has no metrics today, and the count that matters is
   of committed records, which the caller knows when `Write` returns. So the API counts
   `audit_records_total` (E4), and the sweep returns how many records of each kind it deleted, for
@@ -463,7 +463,8 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   `DeleteNetgroup` and `PutSetting`, and `entity.Alloc` on `PutUser` and `PutGroup` (D2);
   `RemoveGrant` renamed `DeleteGrant(ctx, share, p, expect)`; `entity.ErrGenerationMismatch`. The
   `S‖id‖gv` sub-kind, written by `SetGrant` and `DeleteGrant` as the writing commit's version,
-  with the `ponytail:` above `SetGrant` removed if it is still there (D20). `liveShare`, which `PutShare`, `SetGrant`,
+  with the `ponytail:` above `SetGrant` removed (D20); `ShareIndex.Share` returning the
+  `GrantVersion` read in the same view as the policy. `liveShare`, which `PutShare`, `SetGrant`,
   `PutExportPolicy` and `SetQuota` already call, added to `DeleteGrant` and a share-scoped
   `PutSetting` (R17). Every body moved into an unexported function of a `kv.Txn` (D3). Every caller
   on `feat/storage-v2` updated, the tests of `internal/vfs` and `pkg/block/engine` among them (38
@@ -480,8 +481,9 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   changed, a create-only write refused over an existing record, two writes from one read where the
   second is refused (catches a check outside the transaction, R15, CP5); `gv` read through the
   share index after a `SetGrant` and after a `DeleteGrant`, each later than before (catches a
-  write that skips it, R16); `DeleteGrant` then a principal's access read through its groups
-  (R16); `DeleteGrant` and a share-scoped `PutSetting` against a removed share (R17). An `Alloc`
+  write that skips it, R16); `DeleteGrant` then `Grant` answering `ok == false` for the principal, and
+  `Files.Authorize` of a group member admitting through the group's grant (R16); the policy and
+  `GrantVersion` read from one commit through `ShareIndex.Share` (D20); `DeleteGrant` and a share-scoped `PutSetting` against a removed share (R17). An `Alloc`
   naming an ID refused (D2). No double.
 
 ### T2.4 `Write`, `ControlPlaneTx` and the audit record
@@ -503,6 +505,8 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   	Share(id ShareID) (Share, bool, error)
   	EnabledAdmins() (int, error) // D18
 	Installation() (Installation, error) // tracked: NTLMOff for RFC 23 §4.1's rule
+	SetNTLMOff(gen uint64) error          // NTLMOff.Off, by E4's settings route alone
+	SetNTHashDeleted(op OperationID) error // NTLMOff.Deleted, by identity.nt-hash-delete's StepResult.End alone
 	Now() time.Time // kv.Txn's Now: on feat/storage-v2 taken when the transaction starts, fixed for its life; a retry gets a new one
   	DeleteUser(p Principal, expect uint64) error // the mark
   	DeleteGroup(p Principal, expect uint64) error
@@ -596,7 +600,7 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   the value its transaction raised its counter to; the `PGEN` kind, raised once per transaction
   that writes a principal, a membership or a `PX‖` row, through one unexported helper over
   `kv.Txn` that every such transaction calls, `Write`'s and those that commit through their own
-  `kv.Update` (the RFC 18 plan's `Minter.Create`, its epic 2, and its renames, its epic 6), so R28
+  `kv.Update` (the RFC 18 plan's `Minter.Create` and `DropNTHashes`, its epic 2, and its renames, its epic 6), so R28
   holds off the `Write` path too; `Store.Nodes() Nodes` and
   `Nodes.Counters(ctx) (Counters, error)`, reading `CFGGEN`, `SL`, `PGEN` and, while it is absent,
   a claim generation of zero; `SettingsGeneration` and `ShareList` deleted, their suite cases moved
@@ -723,14 +727,17 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
 **Subtask T2.11 estimate: 3 man-days.**
 
 - **Track:** C. **Depends on:** T2.1, T2.6, T2.9.
-- **Covers:** R33, R39, R40.
+- **Covers:** R28, R33, R39, R40.
 - **Deliverables:** the mark as `DeleteUser`'s and `DeleteGroup`'s first transaction (their
   `ControlPlaneTx` form, T2.4); on `Nodes`, `ContinueDelete(ctx, p entity.Principal) (done bool,
   err error)`, one bounded batch from the mark: grants through `GR`, setting each share's `gv` in
   the batch that drops its grant, memberships, quota records, a user's API tokens through `ATA` and
   its account's `SF` count; the last batch deleting the record and, for a user, the `SEC` rows of
   the references it holds, raising `CFGGEN` (D8, its `decision:` marker); an absent record answers
-  `done` (D14). The principals view treats a marked user as absent, a marked group's memberships as
+  `done` (D14). The mark deletes the user's name index, so identity's sign-in outcome for a marked
+  user is `logon_failure`, not RFC 18 §3.7's `disabled`; a `decision:` at the mark names that
+  narrowing. The `SEC` rows of the references a user holds are its `Password` and, once the RFC 18
+  plan's T2.1 lands, its `NTHash`, every version of each. The principals view treats a marked user as absent, a marked group's memberships as
   none, and a `Primary` naming one as zero. Consumed by E3, which drives the batches and resumes
   them at start.
 - **Acceptance criteria:**
@@ -739,10 +746,11 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
     remains, and every share it held a grant on has a later `gv`.
   - A group's members lose its grants from the mark on.
 - **Tests:** in `RunDurable`: a user with grants on two shares, memberships, a quota, an API token,
-  a sign-in count and a secret, deleted in batches of 1, the store reopened between two batches and
+  a sign-in count and two secrets at two versions each, deleted in batches of 1, the store reopened between two batches and
   the deletion resumed to the end (catches a cursor kept in memory, R39; rule 8), with each row
   checked gone and `CFGGEN` raised by the last batch (R33, R39); `ContinueDelete` on an already
-  deleted principal answering `done` (D14); principal reads after the mark (R40). No double.
+  deleted principal answering `done` (D14); `DeleteUser`'s and `DeleteGroup`'s marks each raising
+  `PGEN` by exactly one (R28); principal reads after the mark (R40). No double.
 
 ### T2.12 A share's removal past the mark
 
@@ -844,7 +852,7 @@ nothing and can run beside T2.2–T2.9.
 | 2 | T2.4, T2.5 | 5.75 | PR 1 | `Write` with its audit and idempotency records: E4's write path |
 | 3 | T2.6, T2.7, T2.8 | 6 | PR 2 | positions, operations and nodes: what E3's node reads and writes |
 | 4 | T2.9, T2.10 | 5.25 | PR 3 | E5's records and the sweep that expires them |
-| 5 | T2.11 | 3 | PR 4 | a user's and a group's deletion, which the RFC 18 plan's epic 2 T2.6 waits for |
+| 5 | T2.11 | 3 | PR 4 | a user's and a group's deletion, which the RFC 18 plan's epic 2 T2.8 waits for |
 | 6 | T2.12 | 5 | PR 4 | a share's removal past the mark, resumed from its record |
 | 7 | T2.13 | 4 | PR 2 | the namespace record and its index, which E3's and E4's share refusal and store delete read |
 

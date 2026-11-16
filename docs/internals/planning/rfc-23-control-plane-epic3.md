@@ -20,7 +20,7 @@ T3.9 reads; X1 (that plan's epic 2) provides `WriteMissingNodeIDs`, which only T
 epic creates; E5, partly, whose signed-in callers extend the harness; E6, partly, whose tests run
 against the harness's node; E7, which runs every row on the node `New` builds; RFC 20's plan's epic
 7 at S2, which writes the adapter rows into reconcile; the RFC 13 plan's S3, the `apply` slot X3
-fills; the RFC 18 plan's epics 2 and 7, whose operation kinds run on the runner, and its epic 8,
+fills; the RFC 18 plan's epics 2, 5 and 7, whose operation kinds run on the runner, and its epic 8,
 which composes identity into `New`.
 
 ---
@@ -53,7 +53,7 @@ health and drives its records, with no adapter yet.
 ### 1.1 In scope
 
 `New`'s composition and the root's adapters; start and stop; health, readiness and the metrics
-listener, with the health registry and watchdog the node's loops need; `internal/node/api`'s
+listener, with the health evaluator and watchdog the node's loops need; `internal/node/api`'s
 listener and two health rows, with the two architecture rules over that package; reconcile with
 `addShare`, `removeShare` and the `apply` slot; the node-status writer and its series; the
 operation runner; the deletions driven past the mark; the sweep; `dfs start` and its v1 refusal;
@@ -119,7 +119,7 @@ and title and not copied.
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T3.3, T3.4, T3.6, T3.9 | a resumed deletion and a resumed operation restart a node over the same Badger and journal directories; listeners are real, on `127.0.0.1:0`; `dfs start` runs as a child process |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T3.1–T3.6 | RFC 23's notes at their sites: §2.1's two `decision:` notes at `New` and `Start`, §2.5's at the metrics listener, §2.1's and §2.4's `ponytail:` notes at `New` and the status writer; RFC 23's plan's §4.3 `ponytail:` notes (every namespace held, the runner's missing claim, the health registry's reach); D5's, D6's, D7's and D8's markers |
 | rule 10, a test must be able to fail | all | each test names the requirement it catches; where the code holds a requirement by construction, or another epic's test holds it, the row names that |
-| rule 11, a symbol is exported only if RFC 23's interface uses it | all | `internal/node` keeps E1's five exports, which its pin holds; `internal/node/api` exports `New` and `Deps`, whose fields E4 adds to; `nodetest` is the harness RFC 23 names; `pkg/health` gains the registry and watchdog the node and the API share; `pkg/openstate` gains the engine's `CloneHold` adapter (D12) |
+| rule 11, a symbol is exported only if RFC 23's interface uses it | all | `internal/node` keeps E1's five exports, which its pin holds; `internal/node/api` exports `New` and `Deps`, whose fields E4 adds to; `nodetest` is the harness RFC 23 names; `pkg/health` gains RFC 25 §8.2's `Source` and evaluator and the watchdog the node and the API share; `internal/node/step` exports the three step types outside steps need (D7); `pkg/openstate` gains the engine's `CloneHold` adapter (D12) |
 | rule 12, each subtask creates only what it declares | all | each package lands with its first `_test.go`, which `lint-repo`'s new-package check requires; no remote client, factory or settings package is built for a consumer outside this epic (D5, D9) |
 
 ## 3. Requirements and invariants
@@ -164,7 +164,7 @@ that subtasks and tests can cite them.
 | R18 | No adapter starts before the first full reconcile completes | withdrawn | RFC 23 §2.2 (steps 8, 9): this epic builds no adapter; RFC 20's plan's epic 7 and E8 own it | — |
 | R19 | Readiness turns true once every adapter the records enable is serving or was refused at configured; with none enabled, once the first full reconcile completes | MUST | RFC 23 §2.2 | T3.3 |
 | R20 | A failure at any start step stops the start, closes what earlier steps opened in reverse but the health listener and the store, raises `start_failed` and leaves `/health/ready` answering `not_ready`; `Stop` then closes the health listener just before the store | MUST | RFC 23 §2.2; RFC 25 §3.6 | T3.3 |
-| R21 | `Stop` turns readiness false and stops reconcile, then the runner (each operation left at its last durable step), the filesystem (`Drain`, then `Stop`), the engine, open state after the engine, the API listener, and the metadata store last | MUST | RFC 23 §2.2; CP4 | T3.3 |
+| R21 | `Stop` turns readiness false and stops reconcile, then the runner (each operation left at its last durable step), the filesystem (`Drain`, then `Stop`), the API's calls, identity (a slot the RFC 18 plan's epic 8 fills), the engine, open state after the engine, the health listener, and the metadata store last | MUST | RFC 23 §2.2; CP4 | T3.3 |
 | R22 | The store outlives everything; that the API outlives the adapters is RFC 20's plan's epic 7's, which inserts their stop before the API's | invariant | CP4 | T3.3 |
 | R23 | A stop step that misses its bound leaves open every component a later step would close under it, goes on to the steps that do not depend on it, and the error names the step | MUST | RFC 23 §2.2, §8.1 | T3.3, T3.9 |
 
@@ -196,7 +196,7 @@ that subtasks and tests can cite them.
 | R35 | The unauthenticated endpoints carry nothing but that one word | MUST NOT | RFC 23 §2.5; CP13 | T3.2 |
 | R36 | The metrics listener has an address of its own, separate from the API's, asks for no token, and opens at start step 2 | MUST | RFC 23 §2.5 | T3.2, T3.3 |
 | R37 | Liveness fails only when a watched loop has neither completed a turn nor reported idle within 60 s; a waiting loop reports at least every 30 s; liveness reads no condition, store, network or disk. Watched here: reconcile, the runner, the sweep and the status writer, each bounding its store calls under 30 s | MUST | RFC 25 §3.5 | T3.2, T3.5 |
-| R38 | The engine's `Stats` reach the registry as conditions and series | MUST | RFC 23 plan §5 epic 3; RFC 8 §2.6 | T3.2 |
+| R38 | The engine's `Stats` reach the health evaluator as conditions and the metrics registry as series | MUST | RFC 23 plan §5 epic 3; RFC 8 §2.6 | T3.2 |
 | R51 | A stalled watchdog makes the node neither live nor ready | MUST | RFC 25 §3.6 | T3.2 |
 
 **Operations and deletions**
@@ -237,13 +237,17 @@ that subtasks and tests can cite them.
   rules over the package (R49, R50) land with it; `internal/node/nodetest`, which imports Badger,
   kvstore and the journal to build an installation, is the harness RFC 23 names and is outside
   R49's tree, as `node` is. No marker. Prior art: none needed.
-- **D4, the health registry holds conditions; readiness and liveness are functions.** `pkg/health`
-  gains a `Registry` of conditions (set and cleared by their owner, read whole) and a `Watchdog`
-  on its own `Now`/`After` interface, handing out a `Loop` per watched loop. The API's `Deps` take
-  `Ready() string` and `Live() bool`, which the node implements from its start and stop state and
-  the watchdog. RFC 23's plan's §4.3 `ponytail:` at the registry: only the conditions this epic
-  raises, and the engine's work scheduler and RFC 25's health evaluator are not watched. Prior
-  art: Kubernetes' `healthz` checks (from memory).
+- **D4, `pkg/health` takes RFC 25 §8.2's shape; readiness and liveness are functions.**
+  `pkg/health` gains `Condition`, the `Source` interface (`Conditions(dst []Condition)
+  []Condition`) and an `Evaluator` with `Add(Source)` and `Remove(Source)`, which reads every
+  source when asked, so a component publishes its conditions without a goroutine pushing them; and
+  a `Watchdog` on its own `Now`/`After` interface, handing out a `Loop` per watched loop. The
+  engine's `Stats` become a `Source` through the root's adapter; the RFC 18 plan's epic 8 adds
+  identity's `(*Server).Conditions` the same way. The API's `Deps` take `Ready() string` and
+  `Live() bool`, which the node implements from its start and stop state and the watchdog. RFC
+  23's plan's §4.3 `ponytail:` at the evaluator: only the sources this epic adds, and the engine's
+  work scheduler and RFC 25's health evaluator loop are not watched. Prior art: Kubernetes'
+  `healthz` checks (from memory).
 - **D5, no remote client is built; the refusal reads the record.** The user's decision. RFC 8
   §2.1's refusal needs to know that a share's namespace names a remote store, not a client of it:
   nothing in the journal-only engine calls one. So `addShare` checks the record and builds
@@ -252,7 +256,11 @@ that subtasks and tests can cite them.
 - **D6, every namespace answers held.** RFC 23's plan's §4.3 note, at `addShare`: no `Claim`, no
   `Fenced` binding, no `namespace_unclaimed`. Its upgrade path is RFC 27's `Claim` at step 5.
 - **D7, the runner's step table is handed to it by `New`.** `newRunner(store, clock, steps)`, keyed
-  on `entity.Operation`'s kind type, each row a `Step` and its `Progress`:
+  on `entity.Operation`'s kind type, each row a `Step` and its `Progress`. The three types live in
+  a leaf package, `internal/node/step`, importing only `entity` and `pkg/node/apiv1`, because a
+  step defined outside `internal/node` (the RFC 18 plan's `identity.nt-hash-delete`, its epics 5
+  and 7, and E5) cannot import `internal/node`, which imports it; an adapter in `New` would lose
+  `End`. `internal/node` keeps E1's five exports:
   ```go
   type StepResult struct {
   	Next   []byte                               // the step's durable cursor, recorded as Operation.Step
@@ -326,6 +334,8 @@ internal/node/
   node_test.go                             T3.1  package node_test
   lifecycle.go                             T3.3  Start and Stop, undo, stop bounds (D14)
   runner.go, runner_test.go                T3.4  the runner and its step table (D7)
+internal/node/step/
+  step.go, step_test.go                    T3.4  StepResult, Step, Progress (D7)
   removal.go                               T3.4, T3.6  user, group and share deletions (D8)
   reconcile.go, shares.go                  T3.5  the loop, addShare, removeShare, apply (D10)
   status.go                                T3.7  the status writer and the node_ series
@@ -337,7 +347,7 @@ internal/node/api/
 internal/node/nodetest/
   harness.go, harness_test.go              T3.1  New, Watch, Restart, Clock, Store
 pkg/health/
-  registry.go, watchdog.go                 T3.2  conditions and loops (D4)
+  evaluator.go, watchdog.go                T3.2  sources, conditions and loops (D4)
 internal/vfs/
   admission.go, filesystem.go              T3.6  the filesystem's own removal join deleted (D15)
 cmd/dfs/commands/
@@ -423,7 +433,8 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Track:** A. **Depends on:** T3.1.
 - **Covers:** R34, R35, R36, R37, R38, R49, R50, R51.
 - **Deliverables:**
-  - `pkg/health`: `Registry` (`Set`, `Clear`, `Conditions`) and `Watchdog` on its own clock
+  - `pkg/health`: `Condition`, `Source`, `Evaluator` (`Add`, `Remove`, `Conditions`) and
+    `Watchdog` on its own clock
     interface, `Loop(name)` with `Turn()` and `Idle()`, `Live()`, 60 s and 30 s, with RFC 23's
     plan's §4.3 `ponytail:` (D4);
   - `internal/node/api`: `New(Deps{Ready, Live, Addr, MetricsAddr, Metrics, Logger})`, `Start`
@@ -431,7 +442,7 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
     `/health/ready` writing one word; every other path `404`; the metrics listener serving
     `(*metrics.Metrics).Handler()`; RFC 23 §2.5's `decision:` at it (D3);
   - the engine's `Stats` registered in `Config.Metrics` as a collector read at scrape, and its
-    conditions set and cleared in the registry;
+    conditions read through a `Source` the evaluator holds;
   - in `internal/node/arch_test.go`, two rules beside E1's: no package under `internal/node` but
     `node` and `nodetest` imports a component's implementation (R49), and no type `internal/node/api`
     uses has a method that writes the store but `Write` (R50), each over the module and a planted
@@ -458,7 +469,8 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
   B's defaults through `engine.Apply` (X3 later changes their source, not the call); step 5 open
   state started with the filesystem as `Sink` and its admission as `Order`, which raises the node
   epoch (`RegisterNode` reads it, as E2 has it), then the engine with every attached share in one
-  call; step 6 the filesystem; step 7 T3.4's runner started, with its watchdog `Loop` (R17); step 8 a full-reconcile slot T3.5
+  call; a slot after step 4's `apply` and before step 6 where the RFC 18 plan's epic 8 starts identity,
+  after its first `Apply` (RFC 18 §2.6), empty here; step 6 the filesystem; step 7 T3.4's runner started, with its watchdog `Loop` (R17); step 8 a full-reconcile slot T3.5
   fills; readiness `ready`. A failed step undoes the earlier ones in reverse but the health
   listener and the store, raises `start_failed`, and sets readiness `not_ready`. `Stop`: readiness
   `draining`, then the reverse, each step bounded on `cfg.Clock.After` (D14), a missed one leaving
@@ -545,7 +557,7 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
 - **Track:** A. **Depends on:** T3.5.
 - **Covers:** R30, R31, R32, R33.
 - **Deliverables:** the status built from the reconciled positions, the refused and
-  restart-pending sets and the registry's conditions, compared by its canonical bytes and written
+  restart-pending sets and the evaluator's conditions, compared by its canonical bytes and written
   through `Nodes.PutNodeStatus` at most once a second and only on a change, the last written moved
   only after a commit; RFC 23 §2.4's `ponytail:`; the `node_` series,
   `config_generation_lag_seconds{kind}` from the time a counter was first read above the reconciled
