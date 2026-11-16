@@ -626,8 +626,8 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// pool. The reclaim worker's stop registers right after the retirer's
 	// so reverse order stops the worker before the retirer it hands to —
 	// no candidate reaches a stopped executor — and it registers whether
-	// the freshSet guard started the worker, since Stop joins a worker
-	// that never started too. Stopping the pool before the idle sealer is
+	// the freshSet guard started the worker, since Stop is safe to call
+	// on a worker that never started. Stopping the pool before the idle sealer is
 	// safe not because of the drain — the sealer is a background worker,
 	// not a data-path call — but because an idle seal never takes from the
 	// pool: it never rolls, and a roll in the seal's window belongs to the
