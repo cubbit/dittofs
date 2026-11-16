@@ -160,17 +160,21 @@ const module = "github.com/cubbit/dittofs/"
 func under(p, root string) bool { return p == root || strings.HasPrefix(p, root+"/") }
 
 // standard reports whether an import path is the standard library's: its
-// first element has no dot.
+// first element has no dot, and it is not cgo's "C", which links C code.
 func standard(imp string) bool {
 	first, _, _ := strings.Cut(imp, "/")
-	return !strings.Contains(first, ".")
+	return imp != "C" && !strings.Contains(first, ".")
 }
 
 // walkImports calls fn with each .go file under root, as a slash path relative
 // to root, and the paths it imports; test files are read only when tests is
-// set. It leaves out testdata, hidden directories and nested modules. It
-// ignores build constraints, so a file behind any tag or for any platform is
-// read: a gate that reads only the default build hides a tagged file.
+// set. It leaves out testdata, hidden directories and nested modules.
+//
+// decision: every file is parsed with go/parser, ignoring build constraints
+// and GOOS or GOARCH file-name suffixes, rather than listed through go/build,
+// which reads only the files of one build; so no file behind a tag or for
+// another platform can hide an import from a rule. Its ceiling is the source
+// on disk: an import that only a build-time generator writes is not seen.
 func walkImports(root string, tests bool, fn func(file string, imports []string)) error {
 	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -241,7 +245,7 @@ func nodeImporters(root string) ([]string, error) {
 		// decision: the harness under internal/node/nodetest is the one
 		// importer besides dfs start, because it drives a whole node in tests
 		// as dfs start does in production; no other exemption is named.
-		if file == "cmd/dfs/commands/start.go" || under(path.Dir(file), "internal/node/nodetest") {
+		if file == "cmd/dfs/commands/start.go" || under(file, "internal/node/nodetest") {
 			return
 		}
 		if slices.Contains(imports, module+"internal/node") {
@@ -313,13 +317,23 @@ func TestImportRules(t *testing.T) {
 		want []string
 	}{
 		{"no v1 import", v1Imports, "no-v1",
-			[]string{"pkg/store/store.go imports " + module + "pkg/controlplane/runtime"}},
+			[]string{
+				"pkg/store/store.go imports " + module + "pkg/controlplane/runtime",
+				"pkg/store/store_test.go imports " + module + "pkg/controlplane/models",
+			}},
 		{"who imports the node", nodeImporters, "node-importers",
-			[]string{"internal/node/nodetest2/harness.go imports the node"}},
+			[]string{
+				"cmd/dfs/commands/stop.go imports the node",
+				"internal/cli/cli_test.go imports the node",
+				"internal/node/nodetest2/harness.go imports the node",
+			}},
 		{"the CLI's closure", cliClosure, "cli-closure",
 			[]string{"internal/cli/output reaches pkg/metadata"}},
 		{"the wire types' imports", cliClosure, "apiv1-stdlib",
-			[]string{"pkg/node/apiv1 imports github.com/spf13/cobra outside the standard library"}},
+			[]string{
+				"pkg/node/apiv1 imports C outside the standard library",
+				"pkg/node/apiv1 imports github.com/spf13/cobra outside the standard library",
+			}},
 	} {
 		got, err := tc.rule(filepath.Join("..", ".."))
 		if err != nil {
