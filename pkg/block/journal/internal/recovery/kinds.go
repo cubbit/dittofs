@@ -267,17 +267,11 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, failed [
 		ks.Losses = append(ks.Losses, OpenLoss{Ev: ev, Dropped: d.l.Dropped})
 	}
 
-	highest := map[core.ShareTag]core.Seq{}
-	for i := range df {
-		if !effForget[i] {
-			continue
-		}
-		if f, ok := highest[df[i].h.Tag]; !ok || df[i].h.Seq > f {
-			highest[df[i].h.Tag] = df[i].h.Seq
-		}
-	}
-	for _, tag := range slices.Sorted(maps.Keys(highest)) {
-		ks.Forgets = append(ks.Forgets, OpenForget{Tag: tag, Seq: highest[tag]})
+	// The forget map above is the tag maxima over the effective forgets
+	// alone; the collected answer reads it rather than re-maxing the same
+	// records a second map in, so the pass holds the forget facts once.
+	for _, tag := range slices.Sorted(maps.Keys(ks.forget)) {
+		ks.Forgets = append(ks.Forgets, OpenForget{Tag: tag, Seq: ks.forget[tag]})
 	}
 
 	for _, d := range dh {
@@ -398,10 +392,8 @@ func (ks *kindState) withheldWhole(rec index.Record) bool {
 	if ks.failed[seq] || ks.whole[seq] {
 		return true
 	}
-	for i := range ks.Forgets {
-		if ks.Forgets[i].Tag == rec.Tag && seq < ks.Forgets[i].Seq {
-			return true
-		}
+	if f, ok := ks.forget[rec.Tag]; ok && seq < f {
+		return true
 	}
 	return false
 }

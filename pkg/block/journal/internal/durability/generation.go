@@ -144,8 +144,12 @@ func (s *dirState) pushLocked(ev core.LossEvent) core.LossEvent {
 }
 
 // losses returns a copy of the ring's events, oldest first, with the
-// generation, read in the section a raise and its event are published in, so
-// the pair never holds the raise without its event.
+// generation. The raise of a generation and the publishing of its event are
+// paired per publishing instance only, in the section this reader locks with
+// the publishing one; across the Durability instances of one directory the
+// generation may lead the events -- a later instance can read a generation
+// its own events do not reach. The engine tolerates a generation ahead of
+// its events.
 func (s *dirState) losses() ([]core.LossEvent, uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

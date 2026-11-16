@@ -19,13 +19,15 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
 
-// The durability layer is the loss sink the journal's assembly wires into
-// recovery's Deps.Losses: it publishes the loss records an open finds on
-// disk. The records a read-only journal failed earlier in this process
+// The durability layer must satisfy the loss sink, so that the journal's
+// assembly step, once it is built, can hand it to recovery's Deps.Losses:
+// it is the layer that will publish the loss records an open finds on disk,
+// and the records a read-only journal failed earlier in this process will
 // reach the open the other way round, as the data Deps.Failed carries —
-// Durability.Failed() answers it at the same wiring point. The assertion
-// pins the interface that wiring needs; it lives here — not in recovery —
-// so the recovery package keeps clear of the layer it is handed.
+// Durability.Failed() answering it at the same wiring point. The
+// assertion pins the interface that wiring will need; it lives here — not
+// in recovery — so the recovery package keeps clear of the layer it is
+// handed.
 var _ recovery.LossSink = (*durability.Durability)(nil)
 
 // resolveConfig resolves the options Init or Open was called with, over
