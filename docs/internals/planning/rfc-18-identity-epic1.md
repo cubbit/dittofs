@@ -56,8 +56,9 @@ three `vfs.Deps` fields; the import checks; `internal/identity/**` in the `e2e` 
   §2.6): E6.
 - Every other `Deps` and `State` field RFC 18 §2.6 names, the tracer among them, each with
   the first subtask that reads it, as §2.6 says (D4).
-- `HoldJoinCredential`, which keeps the online join's administrator credential in memory
-  under the operation's ID: E7, its first consumer, once RFC 23's runner brings that ID.
+- `HoldJoinCredential(id, cred) (release func())`, which keeps the online join's administrator
+  credential in memory under the operation's ID: called by RFC 23's plan's epic 4 (its T4.11,
+  whose D13 declares it), built in E7. The plan's §3 sketch gains the return value.
 - `TokenVerifier`, `TokenClaims`, `IssuerKeys` and `Deps.Issuers` (RFC 18 §8.2): deferred, the
   plan's deferral ledger row "OpenID Connect's `TokenVerifier`".
 - `identitytest`'s in-memory directory and domain controller: E6 and E7.
@@ -88,16 +89,16 @@ number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T1.1, T1.2, T1.4, T1.5 | no test double: the lifecycle tests use the memory KV store and the leak check; the import checks walk the repository's own files |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T1.1, T1.2, T1.4, T1.5 | no test double: the lifecycle tests use the memory KV store and the leak check, `prof.Watch` (`internal/prof`); the import checks walk the repository's own files |
 | rule 2, fuzz every decoder of untrusted bytes | none | epic 1 decodes nothing |
 | rule 3, observability follows RFC 25 | T1.4 | `Deps` takes the metrics registry and the logger; epic 1 owns none of RFC 18 §9.2's series and opens no span, since its methods are stubs, so `Deps.Tracer` arrives with E3's `identity.resolve` span, the first that reads it (D4) |
-| rule 4, profiling | T1.4 | the lifecycle tests run under the leak check, which is how R11 and R14 are proven |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T1.4, T1.5 | R10 is checked by the handed store still serving after `Stop`, not by a flag; each import rule by the check that reports its seeded violation |
+| rule 4, profiling | T1.4 | the lifecycle tests run under `prof.Watch` (`internal/prof`), which is how R11 and R14 are proven |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T1.4, T1.5 | R10 is held by the type: `*kvstore.Store` has no `Close`, so the server cannot close what it was handed; each import rule by the check that reports its seeded violation |
 | rule 6, known failures shrink | none | no suite RFC 18 names keeps a `known.yaml`; nothing lands red |
 | rule 7, v2 ignores v1 | T1.1, T1.6 | the types move from `pkg/vfs`, which is v2; nothing of v1's `pkg/identity` is read or kept, its path reused only after S0 |
 | rule 8, real dependencies for properties of those dependencies | none | no external system is reached |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T1.2, T1.4, T1.6 | RFC 18 §2.6's `decision:` (identity is one component, not part of `vfs`) at `Server`; D2, D4 and D7's markers at their sites |
-| rule 10, a test must be able to fail | all | R7, R15 and R16 are held by the compiler, R3 and R4 by RFC 20's existing import test, each named as such; every other row by a test that fails on its assertion |
+| rule 10, a test must be able to fail | all | R7, R15 and R16 are held by the compiler, R10 by `*kvstore.Store` having no `Close`, R3 and R4 by RFC 20's existing import test, each named as such; every other row by a test that fails on its assertion |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T1.1, T1.3, T1.4 | `Key`, `Stored` and `TokenVerifier` are left out (D3, §1.2); `internal/identity` exports only what `internal/node` and the API call; `Deps` and `State` gain fields after S1, as the rule and RFC 18 §2.6 allow (D4) |
 | rule 12, each subtask creates only what it declares | all | no empty package; the stub bodies behind final signatures are the one exception the Design principles allow, and the `vfs.Deps` fields are the seam S1 freezes (D7) |
 
@@ -114,10 +115,10 @@ tests can cite them. Sources are RFC 18 unless named.
 | R2 | `pkg/identity` is a leaf importing metadata types only | invariant | §2.7 | T1.1, T1.5 |
 | R3 | `pkg/vfs` aliases the value types an adapter needs, so an adapter imports `pkg/vfs` alone and neither identity package | invariant | §2.7; RFC 17 §3.0; RFC 20 §2.3 | T1.1, T1.5 |
 | R4 | Adapters map, squash and grant nothing; every spelling goes through `vfs.Service`'s `Spell` and `Find`, held by RFC 20 §7.1's import test (ID11) | invariant | §9.1 ID11; RFC 20 §7.1 | T1.5 |
-| R5 | Only `internal/node` imports the server, `internal/identity`, besides `internal/identity`'s own packages; `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use the real server | invariant | §2.7; §10 "Who stands in for what" | T1.5 |
-| R6 | Only `internal/identity/directory` imports LDAP | invariant | §2.7 | T1.5 |
+| R5 | Only `internal/node` imports the server, `internal/identity` or any package under it, besides identity's own packages; `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use the real server | invariant | §2.7; §10 "Who stands in for what" | T1.5 |
+| R6 | Only `internal/identity/directory` imports LDAP; `internal/auth/netlogon`, which S0 leaves and whose `join.go` imports it, is exempt by a `decision:` until it goes | invariant | §2.7 | T1.5 |
 | R7 | `Authenticator` is the same shape as `vfs.Principals.SignIn`, so the filesystem passes it through | invariant | §3.1 | T1.3, T1.6 |
-| R8 | `ErrLogonFailure` and `ErrUnknownPrincipal` are `vfserr`'s, and `vfs.Errors()` returns both, so an adapter's error table that does not map them fails its totality check | MUST | §2.7; RFC 17 §4.3; RFC 20 §7.3 | T1.2 |
+| R8 | `ErrLogonFailure` and `ErrUnknownPrincipal` are `vfserr`'s, and `vfs.Errors()` returns both; the adapter rows that map them are the RFC 21 and RFC 22 plans' (the plan's deferral row) | MUST | §2.7; RFC 17 §4.3; RFC 20 §7.3 | T1.2 |
 | R9 | `Evidence` holds no key, and `Keys` travel beside an `Identity`, never in it | invariant | §3.1 | T1.1 |
 
 **The server's surface and lifecycle**
@@ -128,7 +129,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R11 | `New` takes no settings and starts nothing | invariant | §2.6 | T1.4 |
 | R12 | `Apply` delivers `State` as one snapshot, swapped in whole, so no reader sees part of one `Apply` and part of another | invariant | §2.6 | T1.4 |
 | R13 | The first `Apply` comes before `Start`: a `Start` with no `State` applied is refused | invariant | §2.6 | T1.4 |
-| R14 | `Stop` drops every in-memory table and leaves no goroutine | invariant | §2.6 | T1.4 |
+| R14 | `Stop` leaves no goroutine; dropping the in-memory tables is owed by the first epic that keeps one (E4's T4.4 throttle) | invariant | §2.6 | T1.4 |
 | R15 | `*Server` implements `Authenticator`, `Identities`, `Resolver` and `APISignIn` (`TokenVerifier` deferred) | invariant | §2.6 | T1.4 |
 | R16 | Each consumer is handed only the interface it calls: `vfs.Deps.Identity` a `Resolver`, `vfs.Deps.Auth` an `Authenticator`, `vfs.Deps.Names` an `Identities`; the API an `APISignIn` | invariant | §2.6, §8.1; RFC 17 §2.3 | T1.3, T1.6 |
 
@@ -159,21 +160,8 @@ held by the compiler: E1's interface assertions (T1.4, T1.6) and the consumers E
   sketch the composed shape, each field added with the first code that reads it; D4 applies
   that rule to epic 1. Epic 1's `Deps` is `Store`, `Clock`, `Metrics` and `Logger`; its
   `State` is `{Generation uint64}`, the principals generation. Each later field arrives with
-  the first subtask that reads it, and one epic adds each: `Deps.Secrets` and `State.Settings`
-  (E2's T2.4, the epic's first subtask that needs the provider built: `Apply` reads
-  `State.Settings`, and E2's T2.5 and T2.6 read `netbios_name` and `Deps.Secrets`),
-  `Deps.Tracer` (E3's T3.1,
-  whose `identity.resolve` span is the first span identity opens; E4's
-  `identity.authenticate` reads the same field), `Deps.Logons` (E4's T4.5), `State.Keytab` (E5's
-  T5.2), `Deps.Directory` (E6's T6.5), `State.Directory` (E6's T6.3, pending E6's D2),
-  `Clock.After` (E2's T2.6, for its hashing bound's wait; E6's T6.5 waits on it too),
-  `State.Machine` (E7); `Deps.Issuers` is deferred with `TokenVerifier`. Later keys and fields
-  join the types E2 adds: the settings keys `identity.keytab` (E5's T5.2) and
-  `DirectoryStaleGrace` (E6's T6.7), `RequirePAC` on E6's directory record (E5's T5.8), and
-  `Prune` and `Versions` on `SecretProvider` (E5's T5.10). `State.NTLM`, the
-  `identity.ntlm` revision, has no reader in E2 or E3: the on-or-off value, by which resolution
-  refuses `Secret` callers (E3's T3.10), is the `NTLM` key of `State.Settings`; the revision
-  lands with its first reader, pending E2's D6. `Generation` is the one field E1 adds before its
+  the first subtask that reads it, and each later epic's document names the field it adds;
+  `Deps.Issuers` is deferred with `TokenVerifier`. `Generation` is the one field E1 adds before its
   reader (E3's T3.3), so `Apply` has a value to swap and R12 and R13 can be tested. The serial
   E3 stamps callers with is the server's, raised by `Apply`, not a `State` field (E3's D2). A
   field that lands after S1 is never required by `New`: while it is unset, a method that needs
@@ -190,9 +178,11 @@ held by the compiler: E1's interface assertions (T1.4, T1.6) and the consumers E
 - **D7, the stubs answer `ErrUnavailable`.** Every stubbed method of `*Server`, and
   `NewHashes`, returns `ErrUnavailable`: one of the three errors RFC 18 §3.1 allows `SignIn`,
   never "unknown principal" (§4.1) and never a session, so a premature wiring fails closed.
-  Each carries a `ponytail:` naming the epic that fills it. The three `vfs.Deps` fields carry a
+  Each carries a `ponytail:` naming the behaviour that replaces it (an epic's ID never goes in
+  a comment). The three `vfs.Deps` fields carry a
   `decision:` note: read by nothing until E3 and E4, they are the seam S1 freezes. Prior art:
-  `internal/vfs/shares.go`'s `errUnsigned` fails closed the same way today.
+  `internal/vfs/shares.go`'s `errUnsigned` fails closed today, but with `ErrAccess`, which §3.1
+  does not allow; E4's T4.3 removes it.
 - **D8, withdrawn:** RFC 18 §8.1 now gives `PasswordHashes` and `NTLMSetting` the shapes D8
   chose.
 - **D9, withdrawn:** RFC 18 §8.1 as merged declares `Lookup(ctx, name) (Principal, error)`
@@ -222,7 +212,7 @@ internal/identity/
   stubs.go          T1.4  SignIn, Spell, Find, Resolve, Lookup, VerifyPassword, Account
   server_test.go    T1.4  the lifecycle
 internal/vfs/filesystem.go  T1.6  Deps.Identity, Auth, Names
-test/suites.yaml            T1.5  internal/identity/** in the e2e kerberos cell's paths
+test/suites.yaml            T1.5  internal/identity/** and pkg/identity/** in the e2e kerberos cell's paths
 ```
 
 ## 6. Subtasks
@@ -243,7 +233,7 @@ test/suites.yaml            T1.5  internal/identity/** in the e2e kerberos cell'
   aliases each (D1). Consumed by T1.3, by every adapter through `pkg/vfs`, and by E2 to E7.
 - **Acceptance criteria:**
   - `go build ./...` and `go vet` pass with no importer of `pkg/vfs` changed.
-  - `pkg/identity` imports only the standard library, `entity` and `pkg/auth/sid`.
+  - `pkg/identity` imports only the standard library, `entity`, `pkg/auth/sid` and `vfserr`.
 - **Tests:** in `pkg/identity`: a reflection walk over `Identity`, recursively, that fails on
   any field of type `Keys` or of a byte-slice type (catches a session key added to the
   identity, R9). The leaf rule is T1.5's. No test double.
@@ -279,8 +269,9 @@ test/suites.yaml            T1.5  internal/identity/** in the e2e kerberos cell'
     FindOpts) (entity.Principal, error) }` and `FindOpts{ Mint bool }` (§4.1), which the
     filesystem sets from the call's proof (E3 routes it), consumed by `vfs.Deps.Names`;
   - `Resolver{ Resolve(ctx, Identity, entity.SharePolicy, readOnly bool) (*Caller, error) }`,
-    `Caller` with every field §6.1 lists, and `ReadOnlyCause` with `NotNarrowed`, `Grant`,
-    `Share` (§6.1), consumed by `vfs.Deps.Identity` and by E3;
+    `Caller` with every field §6.1 lists, and `ReadOnlyCause` with `ReadOnlyNotNarrowed`,
+    `ReadOnlyGrant`, `ReadOnlyShare` (§6.1's `NotNarrowed`, `Grant`, `Share`, prefixed so they do
+    not read as `identity.Share`), consumed by `vfs.Deps.Identity` and by E3;
   - `entity.SharePolicy` as RFC 16 §3 declares it (D6), consumed by `Resolver`;
   - `APISignIn{ Lookup(ctx, name string) (entity.Principal, error); VerifyPassword(ctx,
     entity.Principal, password []byte) error; Account(ctx, entity.Principal) (entity.User,
@@ -310,14 +301,17 @@ test/suites.yaml            T1.5  internal/identity/** in the e2e kerberos cell'
 - **Acceptance criteria:**
   - `New` refuses a `Deps` with no store, and starts no goroutine.
   - `Start` before any `Apply` is refused; after one it succeeds.
-  - `Stop` leaves no goroutine, and the store it was handed still serves.
+  - `Stop` leaves no goroutine; the store it was handed has no `Close`, so R10 is held by the
+    type.
 - **Tests:** at the lifecycle `internal/node` will call, over the memory KV store, each
-  under the leak check: `New` then `Stop` with no `Start` (catches work started in `New`,
-  R11); `Start` with no `Apply` (catches a server that runs with no `State`, R13); `Stop`
-  then a read through the handed store (catches a server that closes what it was handed,
-  R10); `Start`, `Stop` and the leak check (catches a goroutine left behind, R14); concurrent
+  under `prof.Watch`: `New` with a nil `Store`, refused (catches a server built with nothing to
+  read); `New` then `Stop` with no `Start` (catches work started in `New`,
+  R11); `Start` with no `Apply` (catches a server that runs with no `State`, R13); `Start`, `Stop` and the leak check (catches a goroutine left behind, R14); concurrent
   `Apply` calls and a reader of the current `State`, through an `export_test.go` accessor,
-  under `-race` (catches a `State` written field by field, R12). No test double: the memory KV
+  under `-race`, the only run in which it can fail (catches an unsynchronised write of `State`; with one field, R12's "part of one
+  `Apply` and part of another" cannot happen here, so E2's T2.4, where `State` gains `Settings`,
+  owes the snapshot test: concurrent `Apply`s of matched `{Generation, Settings}` pairs and a
+  reader asserting each `Settings` belongs to its `Generation`). No test double: the memory KV
   store is the real implementation RFC 16's suite holds.
 
 ### T1.5 The import rules
@@ -329,17 +323,24 @@ test/suites.yaml            T1.5  internal/identity/** in the e2e kerberos cell'
 - **Deliverables:**
   - `pkg/identity/arch_test.go`, walking the module as `internal/vfs/arch_test.go` does:
     `pkg/identity` imports only the standard library, `entity`, `pkg/auth/sid` and `vfserr`;
-    no non-test package but `internal/node` and `internal/identity`'s own imports
-    `internal/identity`; `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use
+    no non-test package but `internal/node` and identity's own packages imports
+    `internal/identity` or any package under it, except `internal/identity/identitymem`, whose one
+    importer E3's T3.6 restricts to `pkg/vfs/vfstest/memory`, and `internal/node/nodetest`, which
+    imports `internal/identity/directory` and E7's package as the node's seams if E8's D4 is
+    agreed, never `internal/identity` itself; `_test.go` files are not checked, since `*vfs.Filesystem`'s tests use
     the real server (RFC 18 §10). `pkg/vfs/vfstest/memory`, the verified in-memory
     `vfs.Service`, needs the real server too once E3's T3.6 makes `vfs.New` require it; it
     reaches it through `internal/identity/identitymem` (E3's T3.6), one of identity's own
     packages, and passes the value it returns as `vfs.Deps`' three fields without naming
-    `internal/identity`, so the rule keeps no exception;
-    no package but `internal/identity/directory` imports `github.com/go-ldap/ldap/v3`. Seeded
+    `internal/identity`;
+    no package but `internal/identity/directory` imports `github.com/go-ldap/ldap/v3`, with
+    `internal/auth/netlogon` exempt by a `decision:` at the check, since S0 leaves it and its
+    `join.go` imports LDAP: the exemption goes with the package. Seeded
     violations of each in its `testdata/arch`, among them a non-test `internal/vfs` file
-    importing `internal/identity`;
-  - `internal/identity/**` in `test/suites.yaml`'s `e2e` `kerberos` cell's `paths:`.
+    importing `internal/identity` and a non-test package importing
+    `internal/identity/directory`;
+  - `internal/identity/**` and `pkg/identity/**` in `test/suites.yaml`'s `e2e` `kerberos`
+    cell's `paths:`, so a change to the server or the contract runs the Kerberos cell.
 - **Acceptance criteria:**
   - Each check reports each of its seeded violations, once, and nothing in the repository.
 - **Tests:** the seeded-violation tests are the tests: removing a rule, or widening one so
@@ -399,7 +400,13 @@ document, with its recommendation:
   refuse a stale caller (RFC 18 §7.2), and `Resolver` declares only `Resolve`. Recommended
   there: add the method, amending RFC 18 §6.1. If it is agreed before S1, T1.3 declares it and
   T1.4 stubs it; otherwise E3's T3.3 adds it to the frozen surface, whose only implementer is
-  `*Server`.
+  `*Server`. Epic 1's implementation (#4334) declares it, so the answer decides only whether it
+  stays.
+- **`ProofKind` and `Protection`: identity's own, or aliases of `entity`'s.** `pkg/vfs` declares
+  both today, and `entity` (`control.go`) declares its own with the same values for the share
+  policy. T1.1 moves `pkg/vfs`'s, which #4334 implements, so E3's `Resolve` compares an
+  `Identity`'s proof against `SharePolicy`'s across two types. Aliasing `entity`'s instead keeps
+  R2 (a metadata type) and removes the conversion. Recommended: alias `entity`'s.
 - **`State.NTLM`, the `identity.ntlm` revision (E2's D6).** Recommended there: it lands with its
   first reader, and RFC 18 §2.6 names that reader or drops the field.
 
