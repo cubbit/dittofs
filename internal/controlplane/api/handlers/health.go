@@ -73,7 +73,7 @@ func (h *HealthHandler) Liveness(w http.ResponseWriter, r *http.Request) {
 
 	data := map[string]any{
 		"service":          "dittofs",
-		"started_at":       h.startTime.UTC().Format(time.RFC3339),
+		"started_at":       h.startTime.UTC().Format(time.RFC3339Nano),
 		"uptime":           uptime.Round(time.Second).String(),
 		"uptime_sec":       int64(uptime.Seconds()),
 		"control_plane_db": dbStatus,

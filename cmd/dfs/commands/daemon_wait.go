@@ -110,11 +110,11 @@ func apiHealthProbe(cp api.APIConfig, launched time.Time) func() bool {
 }
 
 // healthReadyFunc reports whether url answers 200 with a started_at that is
-// not before since.
+// not before since. started_at carries the sub-second part, so since is
+// compared as is: a server that started earlier in the same second is not the
+// one launched. A server that sends whole seconds reports a time never after
+// its real start, so it is still rejected when it started before since.
 func healthReadyFunc(client *http.Client, url string, since time.Time) func() bool {
-	// started_at has one-second resolution.
-	since = since.Truncate(time.Second)
-
 	return func() bool {
 		resp, err := client.Get(url)
 		if err != nil {
