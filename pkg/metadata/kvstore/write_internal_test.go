@@ -49,3 +49,33 @@ func TestIdempotencyRecordAndExpiryTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An index row whose record retention has deleted is skipped: a read by
+// actor lists the records still kept and fails on none.
+func TestAuditIndexRowWithoutRecordSkipped(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t)
+	cp := s.ControlPlane()
+	alice := entity.NewUser()
+	var written []entity.AuditRecord
+	for _, src := range []string{"cut", "kept"} {
+		a := &entity.AuditRecord{Actor: alice, Source: src, Target: entity.ResourceRef{Kind: entity.ResourceUser}}
+		if err := cp.Write(ctx, entity.WriteMeta{Audit: a}, func(entity.ControlPlaneTx) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		written = append(written, *a)
+	}
+	if err := s.kv.Update(ctx, func(tx kv.Txn) error { return tx.Delete(auditKey(written[0].Time, written[0].ID)) }); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for a, err := range cp.AuditRecords(ctx, entity.AuditFilter{Actor: &alice}, nil) {
+		if err != nil {
+			t.Fatalf("audit by actor over a deleted record's index row: %v, want it skipped", err)
+		}
+		got = append(got, a.Source)
+	}
+	if len(got) != 1 || got[0] != "kept" {
+		t.Errorf("audit by actor: got %q, want only %q", got, "kept")
+	}
+}

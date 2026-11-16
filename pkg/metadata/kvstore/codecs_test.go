@@ -74,9 +74,9 @@ func codecCases() []codecCase {
 	in.Join.LastRotation.At, in.Join.LastRotation.Failed = time.Unix(2, 3).UTC(), true
 	in.Join.LastRotation.Tag, in.Join.LastRotation.Read, in.Join.LastRotation.Version = 4, 5, 6
 	in.Join.LastRotation.Confirmed = time.Unix(7, 0).UTC()
-	audit := entity.AuditRecord{ID: [16]byte{7: 0xAD}, Time: time.Unix(0, 1_000).UTC(), Actor: group,
+	audit := entity.AuditRecord{ID: [16]byte{7: 0xAD}, Time: time.Unix(0, 1_000).UTC(), Actor: group, ActorName: "n", Credential: "k",
 		Node: entity.NodeID{15: 1}, Source: "s", Request: []byte("r"),
-		Target: entity.ResourceRef{Kind: "share", ID: []byte{9}}, Before: 1, After: 2, Change: []byte("c"), Outcome: []byte("o")}
+		Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{9}}, Before: 1, After: 2, Change: []byte("c"), Outcome: []byte("o")}
 	apos := auditPos(audit.Time, audit.ID)
 	idem := entity.IdempotencyRecord{Account: group, Key: "k", Digest: [32]byte{31: 1}, Answer: []byte("a"), Expires: time.Unix(8, 9).UTC()}
 	set := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "k", Value: []byte("v"), Generation: 6, Schema: 1}
@@ -119,8 +119,8 @@ func codecCases() []codecCase {
 				"0000000000000007" + "00000000",
 			func(b []byte) (any, error) { return decodeInstallation(b) }},
 		{"audit", audit, encodeAudit(audit),
-			"01" + "02" + "bb000000000000000000000000000002" + "00000000000000000000000000000001" + "0173" + "0172" +
-				"057368617265" + "0109" + "0000000000000001" + "0000000000000002" + "0163" + "016f",
+			"01" + "02" + "bb000000000000000000000000000002" + "016e" + "016b" + "00000000000000000000000000000001" + "0173" + "0172" +
+				"05" + "0109" + "0000000000000001" + "0000000000000002" + "0163" + "016f",
 			func(b []byte) (any, error) { return decodeAudit(apos, b) }},
 		{"idempotency", idem, encodeIdempotency(idem),
 			"01" + "0000000000000000000000000000000000000000000000000000000000000001" + "0161" +
@@ -177,6 +177,13 @@ func TestUserUnknownRole(t *testing.T) {
 	b := encodeUser(entity.User{Name: "u", Role: entity.APIRole(200)})
 	if _, err := decodeUser(entity.PrincipalID{}, b); !errors.Is(err, errMalformed) {
 		t.Errorf("user with role byte 200: %v, want %v", err, errMalformed)
+	}
+}
+
+func TestAuditUnknownKind(t *testing.T) {
+	a := entity.AuditRecord{Target: entity.ResourceRef{Kind: entity.ResourceSession + 1}}
+	if _, err := decodeAudit(auditPos(a.Time, a.ID), encodeAudit(a)); !errors.Is(err, errMalformed) {
+		t.Errorf("audit record targeting kind %d: %v, want %v", a.Target.Kind, err, errMalformed)
 	}
 }
 

@@ -2,7 +2,6 @@ package kvstoretest
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"testing"
 	"time"
@@ -10,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -18,7 +18,7 @@ import (
 var instScope = entity.SettingScope{Kind: entity.ScopeInstallation}
 
 // audits is every audit record f selects.
-func audits(t *testing.T, cp kvstore.ControlPlane, f kvstore.AuditFilter) []entity.AuditRecord {
+func audits(t *testing.T, cp kvstore.ControlPlane, f entity.AuditFilter) []entity.AuditRecord {
 	t.Helper()
 	return all(t, cp.AuditRecords(ctx, f, nil))
 }
@@ -33,7 +33,7 @@ func testWriteAllOrNothing(t *testing.T, kvo Opener) {
 	cp := s.ControlPlane()
 	u := user("alice")
 	write := func() error {
-		return cp.Write(ctx, entity.WriteMeta{Audit: &entity.AuditRecord{Source: "10.0.0.1"}},
+		return cp.Write(ctx, entity.WriteMeta{Audit: &entity.AuditRecord{Source: "10.0.0.1", Target: entity.ResourceRef{Kind: entity.ResourceUser}}},
 			func(tx entity.ControlPlaneTx) error { return errOf(tx.PutUser(u, 0, entity.Alloc{})) })
 	}
 	failed := errors.New("audit write failed")
@@ -46,7 +46,7 @@ func testWriteAllOrNothing(t *testing.T, kvo Opener) {
 	if _, err := s.Principals().User(ctx, u.Principal); err == nil {
 		t.Errorf("user after a write whose audit record failed: found, want absent")
 	}
-	if got := audits(t, cp, kvstore.AuditFilter{}); len(got) != 0 {
+	if got := audits(t, cp, entity.AuditFilter{}); len(got) != 0 {
 		t.Errorf("audit records after a failed write: got %d, want 0", len(got))
 	}
 	f.SetFault(nil)
@@ -54,7 +54,7 @@ func testWriteAllOrNothing(t *testing.T, kvo Opener) {
 	if _, err := s.Principals().User(ctx, u.Principal); err != nil {
 		t.Errorf("user after a write that committed: %v, want found", err)
 	}
-	if got := audits(t, cp, kvstore.AuditFilter{}); len(got) != 1 || got[0].Source != "10.0.0.1" {
+	if got := audits(t, cp, entity.AuditFilter{}); len(got) != 1 || got[0].Source != "10.0.0.1" {
 		t.Errorf("audit records after a write that committed: got %+v, want one from 10.0.0.1", got)
 	}
 }
@@ -68,7 +68,7 @@ func testWriteRestoresMeta(t *testing.T, kvo Opener) {
 			s, h := heldStore(t, b)
 			cp := s.ControlPlane()
 			must(t, errOf(cp.PutSetting(ctx, entity.Setting{Scope: instScope, Key: "k", Value: []byte("1")}, 0)))
-			meta := entity.WriteMeta{Audit: &entity.AuditRecord{Source: "client"}}
+			meta := entity.WriteMeta{Audit: &entity.AuditRecord{Source: "client", Target: entity.ResourceRef{Kind: entity.ResourceNetgroup}}}
 			attempts := 0
 			outer, inner := race(h,
 				func() error {
@@ -92,7 +92,7 @@ func testWriteRestoresMeta(t *testing.T, kvo Opener) {
 			if attempts != 2 {
 				t.Fatalf("attempts of a write whose read moved: got %d, want 2", attempts)
 			}
-			got := audits(t, cp, kvstore.AuditFilter{})
+			got := audits(t, cp, entity.AuditFilter{})
 			if len(got) != 1 {
 				t.Fatalf("audit records: got %d, want 1", len(got))
 			}
@@ -158,14 +158,14 @@ func testAuditReads(t *testing.T, kvo Opener) {
 	cp := s.ControlPlane()
 	alice, bob := entity.NewUser(), entity.NewUser()
 	n1, n2 := entity.NodeID{15: 1}, entity.NodeID{15: 2}
-	photos := entity.ResourceRef{Kind: "share", ID: []byte("photos")}
-	docs := entity.ResourceRef{Kind: "share", ID: []byte("docs")}
+	photos := entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte("photos")}
+	docs := entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte("docs")}
 	written := []entity.AuditRecord{
-		{Actor: alice, Node: n1, Target: photos},
+		{Actor: alice, ActorName: "alice", Credential: "session 1", Node: n1, Target: photos},
 		{Actor: bob, Node: n2, Target: docs},
 		{Actor: alice, Node: n2, Target: docs},
 		{Node: n1, Target: photos}, // the schedule
-		{Actor: bob, Node: n1, Target: entity.ResourceRef{Kind: "user", ID: []byte("photos")}},
+		{Actor: bob, Node: n1, Target: entity.ResourceRef{Kind: entity.ResourceUser, ID: []byte("photos")}},
 	}
 	for i := range written {
 		written[i].Source = string(rune('a' + i))
@@ -181,25 +181,37 @@ func testAuditReads(t *testing.T, kvo Opener) {
 	schedule := entity.Principal{}
 	for _, c := range []struct {
 		name string
-		f    kvstore.AuditFilter
+		f    entity.AuditFilter
 		want string
 	}{
-		{"all", kvstore.AuditFilter{}, "abcde"},
-		{"actor", kvstore.AuditFilter{Actor: &alice}, "ac"},
-		{"schedule", kvstore.AuditFilter{Actor: &schedule}, "d"},
-		{"target", kvstore.AuditFilter{Target: &photos}, "ad"},
-		{"node", kvstore.AuditFilter{Node: &n2}, "bc"},
-		{"actor and node", kvstore.AuditFilter{Actor: &bob, Node: &n1}, "e"},
-		{"time range", kvstore.AuditFilter{From: written[1].Time, To: written[3].Time}, "bc"},
-		{"node from a time", kvstore.AuditFilter{Node: &n1, From: written[1].Time}, "de"},
+		{"all", entity.AuditFilter{}, "abcde"},
+		{"actor", entity.AuditFilter{Actor: &alice}, "ac"},
+		{"schedule", entity.AuditFilter{Actor: &schedule}, "d"},
+		{"target", entity.AuditFilter{Target: &photos}, "ad"},
+		{"node", entity.AuditFilter{Node: &n2}, "bc"},
+		{"actor and node", entity.AuditFilter{Actor: &bob, Node: &n1}, "e"},
+		{"time range", entity.AuditFilter{From: written[1].Time, To: written[3].Time}, "bc"},
+		{"node from a time", entity.AuditFilter{Node: &n1, From: written[1].Time}, "de"},
 	} {
 		if got := sources(audits(t, cp, c.f)); got != c.want {
 			t.Errorf("audit by %s: got records %q, want %q", c.name, got, c.want)
 		}
 	}
-	after := append(binary.BigEndian.AppendUint64(nil, uint64(written[2].Time.UnixNano())), written[2].ID[:]...)
-	if got := sources(all(t, cp.AuditRecords(ctx, kvstore.AuditFilter{}, after))); got != "de" {
+	after := kvstore.AuditPosition(written[2])
+	if got := sources(all(t, cp.AuditRecords(ctx, entity.AuditFilter{}, after))); got != "de" {
 		t.Errorf("audit after the third record's position: got %q, want %q", got, "de")
+	}
+	if got := audits(t, cp, entity.AuditFilter{Actor: &alice}); len(got) == 0 || got[0].ActorName != "alice" || got[0].Credential != "session 1" {
+		t.Errorf("actor's name and credential read back: got %+v, want alice under session 1 first", got)
+	}
+	for _, kind := range []entity.ResourceKind{0, entity.ResourceSession + 1} {
+		a := &entity.AuditRecord{Target: entity.ResourceRef{Kind: kind}}
+		if err := cp.Write(ctx, entity.WriteMeta{Audit: a}, func(entity.ControlPlaneTx) error { return nil }); !isCode(err, merrs.ErrInvalidArgument) {
+			t.Errorf("audit record targeting kind %d: %v, want invalid argument", kind, err)
+		}
+	}
+	if got := len(audits(t, cp, entity.AuditFilter{})); got != len(written) {
+		t.Errorf("audit records after refused ones: got %d, want %d", got, len(written))
 	}
 }
 
@@ -411,7 +423,8 @@ func testIdempotency(t *testing.T, kvo Opener) {
 }
 
 // Two requests under one key that both miss its record conflict on it: one
-// commits, and the other then replays its answer.
+// commits, and the other then replays its answer. They write netgroups of
+// different names, so the key's record is all they share.
 func testIdempotencyRace(t *testing.T, kvo Opener) {
 	for _, b := range kvo.backends() {
 		t.Run(b.name, func(t *testing.T) {
@@ -420,7 +433,7 @@ func testIdempotencyRace(t *testing.T, kvo Opener) {
 			alice := entity.NewUser()
 			var outerRan, innerRan int
 			outer, inner := race(h,
-				func() error { return keyed(cp, alice, "k", "create lab", "outer", "lab", &outerRan) },
+				func() error { return keyed(cp, alice, "k", "create lab", "outer", "lab2", &outerRan) },
 				func() error { return keyed(cp, alice, "k", "create lab", "inner", "lab", &innerRan) })
 			must(t, inner)
 			if answer, ok := replayed(outer); !ok || string(answer) != "inner" {

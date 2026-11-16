@@ -42,7 +42,7 @@ func TestKeyGolden(t *testing.T) {
 		{"enabled admin", adminKey(pid), "4a" + p},
 		{"audit", auditKey(time.Unix(0, 1), [16]byte(gid)), "45" + "0000000000000001" + g},
 		{"audit by actor", auditActorPrefix(group), "4601" + g},
-		{"audit by target", auditTargetPrefix(entity.ResourceRef{Kind: "share", ID: []byte{0}}), "4602" + "73686172650001" + "00ff0001"},
+		{"audit by target", auditTargetPrefix(entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{0}}), "4602" + "05" + "00ff0001"},
 		{"audit by node", auditNodePrefix(entity.NodeID(sid)), "4603" + s},
 		{"idempotency", idempotencyKey(group, "k"), "3e" + g + "6b0001"},
 		{"idempotency expiry", idempotencyExpiryKey(entity.IdempotencyRecord{Account: group, Key: "k", Expires: time.Unix(0, 2)}),

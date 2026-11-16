@@ -84,6 +84,17 @@ func (c ControlPlane) updateGen(ctx context.Context, fn func(entity.ControlPlane
 
 // replay refuses a request whose key its account already used: with the
 // answer it was given, or as a mismatch when the digest differs.
+//
+// decision: a record past its Expires still replays until the expiry sweep
+// deletes it, so a key is held for 24 hours plus the sweep's lag. Honouring
+// Expires here would let a new request write a record under the same key,
+// which the sweep would then delete on reaching the old record's XP row.
+//
+// decision: the key is read tracked, as the store's contract asks, but no
+// test can observe that: the record's Set already conflicts with any
+// concurrent write of the key, since the kv contract conflicts blind writes,
+// so the tracked read is redundant today. It decides only on a backend that
+// stops conflicting blind writes.
 func replay(tx kv.Txn, i entity.IdempotencyRecord) error {
 	b, ok, err := get(tx, idempotencyKey(i.Account, i.Key))
 	if err != nil || !ok {
