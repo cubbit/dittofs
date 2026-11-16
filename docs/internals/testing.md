@@ -127,23 +127,20 @@ On the macOS/Linux host:
 go build -o dfs cmd/dfs/main.go
 go build -o dfsctl cmd/dfsctl/main.go
 
-# 2. Initialize config (first time only)
-./dfs init
-
-# 3. Start DittoFS
+# 2. Start DittoFS
 ./dfs start
 
-# 4. Create test stores
+# 3. Create test stores
 ./dfsctl store metadata add --name test-meta --in-memory
 ./dfsctl store block add --name test-blocks --type memory
 
-# 5. Create a test share
+# 4. Create a test share
 ./dfsctl share create --name /smbbasic --metadata test-meta --block-store test-blocks
 
-# 6. Create a test user
+# 5. Create a test user
 ./dfsctl user create --username testuser    # enter password when prompted
 
-# 7. Grant permissions
+# 6. Grant permissions
 ./dfsctl share permission grant /smbbasic --user testuser --level read-write
 ```
 

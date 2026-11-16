@@ -373,9 +373,9 @@ Then stop the server:
 # Package install (.deb, .rpm, Arch)
 sudo systemctl disable --now dfs
 
-# Quick install script, Homebrew, or source build
-# (press Ctrl+C instead if the server runs in the foreground)
-dfs stop
+# Quick install script, Homebrew, or source build: the server runs in the
+# foreground, so press Ctrl+C in its terminal, or
+pkill -TERM -x dfs
 ```
 
 ### 2. Remove the binaries

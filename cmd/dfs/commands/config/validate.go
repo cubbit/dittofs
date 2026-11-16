@@ -28,6 +28,7 @@ Examples:
 
 func runConfigValidate(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
+	out := cmd.OutOrStdout()
 
 	cfg, err := config.MustLoad(configPath)
 	if err != nil {
@@ -41,36 +42,28 @@ func runConfigValidate(cmd *cobra.Command, _ []string) error {
 
 	var warnings []string
 
-	if !cfg.ControlPlane.HasJWTSecret() {
-		warnings = append(warnings, "JWT secret not configured - API authentication will fail")
-	}
-
 	if legacyWarnings := checkLegacyPayloadKey(displayPath); len(legacyWarnings) > 0 {
 		warnings = append(warnings, legacyWarnings...)
 	}
 
-	fmt.Printf("Configuration file: %s\n", displayPath)
+	_, _ = fmt.Fprintf(out, "Configuration file: %s\n", displayPath)
 	if len(warnings) > 0 {
 		// Do not print a bare "OK" when warnings are present: a warning
-		// such as "JWT secret not configured - API authentication will
-		// fail" means the config loads but cannot serve authenticated
-		// requests. Surfacing the count keeps `config validate` honest
-		// for an operator eyeballing the output before `dfs start`.
-		fmt.Printf("Validation: OK (with %d warning(s))\n", len(warnings))
-		fmt.Println("\nWarnings:")
+		// means the config loads but carries a key the server ignores.
+		// Surfacing the count keeps `config validate` honest for an
+		// operator eyeballing the output before `dfs start`.
+		_, _ = fmt.Fprintf(out, "Validation: OK (with %d warning(s))\n", len(warnings))
+		_, _ = fmt.Fprintln(out, "\nWarnings:")
 		for _, w := range warnings {
-			fmt.Printf("  - %s\n", w)
+			_, _ = fmt.Fprintf(out, "  - %s\n", w)
 		}
 	} else {
-		fmt.Println("Validation: OK")
+		_, _ = fmt.Fprintln(out, "Validation: OK")
 	}
 
-	fmt.Printf("\nConfiguration summary:\n")
-	fmt.Printf("  Database type:   %s\n", cfg.Database.Type)
-	fmt.Printf("  API host:        %s\n", cfg.ControlPlane.Host)
-	fmt.Printf("  API port:        %d\n", cfg.ControlPlane.Port)
-	fmt.Printf("  API TLS:         %t\n", cfg.ControlPlane.TLS.Enabled())
-	fmt.Printf("  Log level:       %s\n", cfg.Logging.Level)
+	_, _ = fmt.Fprintf(out, "\nConfiguration summary:\n")
+	_, _ = fmt.Fprintf(out, "  Log level:       %s\n", cfg.Logging.Level)
+	_, _ = fmt.Fprintf(out, "  Journal path:    %s\n", cfg.Blockstore.Journal.Path)
 
 	return nil
 }

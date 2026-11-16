@@ -50,16 +50,9 @@ Runtime state — the log file (`dittofs.log`) and PID file — lives in a separ
 
 ### Initialization
 
-```bash
-# Generate default configuration file
-./dfs init
-
-# Generate with custom path
-./dfs init --config /etc/dittofs/config.yaml
-
-# Force overwrite existing config
-./dfs init --force
-```
+Without a configuration file the server starts on the defaults, overridden by
+`DITTOFS_*` variables. A file is written by hand, at the default path or the one
+`--config` names; `dfs config validate` checks it.
 
 ### Supported Formats
 
@@ -1781,7 +1774,7 @@ On the **first** start (when no `admin` user exists yet) the initial admin passw
 
 1. **`DITTOFS_ADMIN_INITIAL_PASSWORD`** (env, plaintext) — sets a known password and also derives the NT hash, so the admin can authenticate over **SMB** as well as the REST/control-plane API.
 2. **`admin.password_hash`** (config, bcrypt `$2a$`/`$2b$`/`$2y$`) — sets a known credential without writing a plaintext secret to disk. No NT hash is derivable from a bcrypt hash, so an admin bootstrapped this way works for the **control-plane/REST API only, not SMB** (use option 1 for SMB). A value that is not a valid bcrypt hash is rejected at startup.
-3. **Auto-generated** — a random password is generated. It is printed once **only when `dfs start` runs with stdout attached to an interactive terminal** (i.e. `dfs start --foreground` in a real TTY). In background/daemon mode, and under Docker/systemd/CI where stdout is a pipe, the password is **not written to the log and cannot be recovered** — the log only records that an admin user was created. Recovery via `dfsctl user password admin` is not possible in this state (it requires an authenticated admin session). Options 1 and 2 are consulted **only while bootstrapping a new admin**, so once this first start has created the admin user, setting them and restarting will **not** change the password — you must delete the `admin` row from the `users` table of the control-plane database (not the database itself, which also holds your shares, stores, mounts and other users) and re-bootstrap with option 1 or 2 set. For any non-interactive deployment, set option 1 or 2 before the very first start.
+3. **Auto-generated** — a random password is generated. It is printed once **only when `dfs start` runs with stdout attached to an interactive terminal** (i.e. `dfs start` in a real TTY). Under Docker/systemd/CI where stdout is a pipe, the password is **not written to the log and cannot be recovered** — the log only records that an admin user was created. Recovery via `dfsctl user password admin` is not possible in this state (it requires an authenticated admin session). Options 1 and 2 are consulted **only while bootstrapping a new admin**, so once this first start has created the admin user, setting them and restarting will **not** change the password — you must delete the `admin` row from the `users` table of the control-plane database (not the database itself, which also holds your shares, stores, mounts and other users) and re-bootstrap with option 1 or 2 set. For any non-interactive deployment, set option 1 or 2 before the very first start.
 
 Options 1 and 2 also skip the forced first-login password change (the operator already chose the password). All three apply only on first start; later starts never change an existing admin's password.
 

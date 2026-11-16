@@ -100,6 +100,8 @@ change the command definitions and rerun `go run ./cmd/gendocs`.
 
 ## Architecture invariants
 
+These describe v1's control plane, which RFC 23 deleted; they stand until its integration epic rewrites them for the node.
+
 The Runtime (`pkg/controlplane/runtime/`) is the single entrypoint for all operations — a
 composition layer over its sub-services: `blockstoreprobe/`, `lifecycle/`, `shares/`,
 `snapshotsched/`, `stores/`, `trash/`. API handlers go through it.

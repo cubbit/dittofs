@@ -9,9 +9,7 @@ import (
 var Cmd = &cobra.Command{
 	Use:   "config",
 	Short: "Configuration management",
-	Long: `Manage DittoFS configuration files.
-
-Use 'dfs init' to create a new configuration file.
+	Long: `Manage the DittoFS server's configuration file.
 
 Subcommands:
   edit      Open configuration in editor

@@ -13,18 +13,11 @@ import (
 )
 
 // expectedTopLevelYAMLKeys mirrors the yaml/mapstructure tags on the top-level
-// dfsconfig.Config fields. If a field is added/removed there this test fails
+// dfsconfig.Bootstrap fields. If a field is added/removed there this test fails
 // loudly, which is the point: the schema must track the real YAML namespace.
 var expectedTopLevelYAMLKeys = []string{
 	"logging",
-	"shutdown_timeout",
-	"database",
-	"controlplane",
-	"admin",
-	"kerberos",
 	"blockstore",
-	"gc",
-	"snapshot",
 }
 
 // TestConfigSchema_TopLevelKeysAreYAMLKeys asserts the generated JSON schema's
@@ -37,7 +30,7 @@ func TestConfigSchema_TopLevelKeysAreYAMLKeys(t *testing.T) {
 		DoNotReference:            true,
 		FieldNameTag:              "yaml",
 	}
-	schema := reflector.Reflect(&dfsconfig.Config{})
+	schema := reflector.Reflect(&dfsconfig.Bootstrap{})
 
 	raw, err := json.Marshal(schema)
 	if err != nil {
@@ -93,11 +86,8 @@ func TestConfigShowJSON_RoundTripsThroughLoad(t *testing.T) {
 	if reloaded.Logging.Level != cfg.Logging.Level {
 		t.Errorf("round-trip logging.level mismatch: got %q want %q", reloaded.Logging.Level, cfg.Logging.Level)
 	}
-	if reloaded.ShutdownTimeout != cfg.ShutdownTimeout {
-		t.Errorf("round-trip shutdown_timeout mismatch: got %v want %v", reloaded.ShutdownTimeout, cfg.ShutdownTimeout)
-	}
-	if reloaded.Database.Type != cfg.Database.Type {
-		t.Errorf("round-trip database.type mismatch: got %q want %q", reloaded.Database.Type, cfg.Database.Type)
+	if reloaded.Blockstore.Journal.Path != cfg.Blockstore.Journal.Path {
+		t.Errorf("round-trip blockstore.journal.path mismatch: got %q want %q", reloaded.Blockstore.Journal.Path, cfg.Blockstore.Journal.Path)
 	}
 }
 

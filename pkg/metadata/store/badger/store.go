@@ -361,7 +361,7 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		if isDirLockErr(err) {
 			return nil, fmt.Errorf("metadata store at %s is locked by another process — "+
 				"a DittoFS server is almost certainly already running against this data directory. "+
-				"Stop it ('dfs stop', or kill the running dfs) before starting another, or point "+
+				"Stop it (kill the running dfs) before starting another, or point "+
 				"this share at a different db_path: %w", config.DBPath, err)
 		}
 		return nil, fmt.Errorf("failed to open BadgerDB at %s: %w", config.DBPath, err)

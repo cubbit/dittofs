@@ -18,56 +18,11 @@ func init() {
 // Uses go-playground/validator for declarative validation via struct tags,
 // with additional custom rules that cannot be expressed in tags.
 // Log level normalization is handled in ApplyDefaults, not here.
-func Validate(cfg *Config) error {
+func Validate(cfg *Bootstrap) error {
 	if err := validate.Struct(cfg); err != nil {
 		return formatValidationError(err)
 	}
-
-	if err := cfg.Database.Validate(); err != nil {
-		return err
-	}
-
-	if err := cfg.Blockstore.Validate(); err != nil {
-		return err
-	}
-
-	if err := cfg.Metadata.Validate(); err != nil {
-		return err
-	}
-
-	if err := cfg.Kerberos.Validate(); err != nil {
-		return err
-	}
-
-	if err := cfg.GC.Validate(); err != nil {
-		return err
-	}
-
-	if err := cfg.Integrity.Validate(); err != nil {
-		return err
-	}
-
-	if err := cfg.Snapshot.Validate(); err != nil {
-		return err
-	}
-
-	if err := cfg.ControlPlane.Validate(); err != nil {
-		return err
-	}
-
-	if err := cfg.Metrics.Validate(); err != nil {
-		return err
-	}
-
-	if err := cfg.Identity.Validate(); err != nil {
-		return err
-	}
-
-	if err := cfg.LDAP.Validate(); err != nil {
-		return err
-	}
-
-	return nil
+	return cfg.Blockstore.Validate()
 }
 
 // formatValidationError converts validator errors into user-friendly messages.

@@ -338,7 +338,7 @@ func (a *Authenticator) RotatePassword(ctx context.Context, newPassword string) 
 // machine-account credentials, DC reachability, and Kerberos configuration
 // without a user logon.
 //
-// It backs the operator "dfs netlogon test" command: a nil return means the
+// A nil return means the
 // channel is ready for pass-through; an error names what failed (a wrong machine
 // password, an unreachable DC, or a Kerberos misconfiguration). Note that for an
 // online-join provider the Credential() call performs the AD join as a side

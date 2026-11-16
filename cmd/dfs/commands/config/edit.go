@@ -35,10 +35,7 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 
 	// Check if file exists
 	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("configuration file not found: %s\n\n"+
-			"Create it first with:\n"+
-			"  dfs init --config %s",
-			configPath, configPath)
+		return fmt.Errorf("configuration file not found: %s", configPath)
 	}
 
 	// Get editor from environment

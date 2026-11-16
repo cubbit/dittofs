@@ -435,8 +435,8 @@ wireshark nfs.pcap
 ### Check Server Health
 
 ```bash
-# Check if server is responding
-./dfs status
+# Check if the server is running
+pgrep -a dfs
 
 # Check metrics (if enabled)
 curl http://localhost:9090/metrics

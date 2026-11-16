@@ -55,11 +55,8 @@ go build -o dfsctl cmd/dfsctl/main.go
 # Run tests
 go test ./...
 
-# Initialize the development configuration (overwrites an existing config)
-./dfs init --force
-
-# Run in the foreground
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start --foreground
+# Run the server
+DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 ```
 
 ### Mount for Testing

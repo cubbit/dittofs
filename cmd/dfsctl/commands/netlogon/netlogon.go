@@ -21,8 +21,7 @@ response against a domain controller over a NETLOGON secure channel using a
 machine account. These commands report the live machine-account / secure-channel
 state and force a machine-password rotation.
 
-Unlike 'dfs netlogon test' (a self-contained probe run from the config file),
-these talk to the RUNNING server over the API and require admin credentials.
+These talk to the RUNNING server over the API and require admin credentials.
 
 Examples:
   # Show live machine-account and secure-channel state

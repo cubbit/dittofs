@@ -70,7 +70,7 @@ SMB again.
 1. **Install the new version beside the old one**, with its own configuration:
 
    ```bash
-   dfs init --config /etc/dittofs-new/config.yaml
+   mkdir -p /etc/dittofs-new && cp /etc/dittofs/config.yaml /etc/dittofs-new/config.yaml
    ```
 
    In that file, change everything the two servers would otherwise share:

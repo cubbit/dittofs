@@ -50,7 +50,7 @@ func TestNetworkLogonRequiresCredential(t *testing.T) {
 }
 
 // TestProbe verifies that Probe connects a secure channel and tears it down,
-// leaving no cached channel behind (backing `dfs netlogon test`, #1629).
+// leaving no cached channel behind.
 func TestProbe(t *testing.T) {
 	st := &fakeState{}
 	withFakeChannels(t, st)

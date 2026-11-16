@@ -33,7 +33,6 @@ make setup-hooks
 
 # Build and run
 go build -o dfs cmd/dfs/main.go
-./dfs init
 ./dfs start
 ```
 
@@ -112,7 +111,6 @@ go mod download
 go build -o dfs cmd/dfs/main.go
 
 # Run with development settings
-./dfs init
 DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 ```
 

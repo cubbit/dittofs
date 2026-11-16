@@ -297,21 +297,8 @@ kerberos:
 Restart the server. The log should show
 `NETLOGON machine account: offline provider active account=DITTOFS$`.
 
-Verify the machine account can reach the DC before testing a real logon:
-
-```bash
-dfs netlogon test --config /etc/dittofs/config.yaml
-# OK — NETLOGON secure channel established and torn down successfully.
-```
-
-`dfs netlogon test` authenticates the machine account and brings up the NETLOGON
-secure channel (no user logon), so it isolates a machine-account/DC/Kerberos
-problem from an NTLM-logon problem. It probes the **offline** machine account;
-online join provisions on the first logon (check the server log).
-
-**Inspecting / rotating against the running server.** `dfs netlogon test` runs
-from the config file; to interrogate the **live** server instead use `dfsctl`
-(admin credentials required):
+Verify the machine account can reach the DC before testing a real logon, by
+interrogating the **live** server with `dfsctl` (admin credentials required):
 
 ```bash
 # Live machine-account and secure-channel state

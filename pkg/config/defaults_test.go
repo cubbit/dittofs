@@ -2,11 +2,10 @@ package config
 
 import (
 	"testing"
-	"time"
 )
 
 func TestApplyDefaults_Logging(t *testing.T) {
-	cfg := &Config{}
+	cfg := &Bootstrap{}
 	ApplyDefaults(cfg)
 
 	if cfg.Logging.Level != "INFO" {
@@ -20,64 +19,8 @@ func TestApplyDefaults_Logging(t *testing.T) {
 	}
 }
 
-func TestApplyDefaults_ShutdownTimeout(t *testing.T) {
-	cfg := &Config{}
-	ApplyDefaults(cfg)
-
-	if cfg.ShutdownTimeout != 30*time.Second {
-		t.Errorf("Expected default shutdown timeout 30s, got %v", cfg.ShutdownTimeout)
-	}
-}
-
-func TestApplyDefaults_ControlPlane(t *testing.T) {
-	cfg := &Config{}
-	ApplyDefaults(cfg)
-
-	if cfg.ControlPlane.Port != 8080 {
-		t.Errorf("Expected default API port 8080, got %d", cfg.ControlPlane.Port)
-	}
-	if cfg.ControlPlane.ReadTimeout != 10*time.Second {
-		t.Errorf("Expected default read timeout 10s, got %v", cfg.ControlPlane.ReadTimeout)
-	}
-	if cfg.ControlPlane.WriteTimeout != 10*time.Second {
-		t.Errorf("Expected default write timeout 10s, got %v", cfg.ControlPlane.WriteTimeout)
-	}
-	if cfg.ControlPlane.IdleTimeout != 60*time.Second {
-		t.Errorf("Expected default idle timeout 60s, got %v", cfg.ControlPlane.IdleTimeout)
-	}
-	// pprof off by default → sampling rates stay disabled (0). The global Load
-	// path must reach APIConfig.ApplyDefaults; a regression that bypasses it
-	// would silently drop pprof rate defaults.
-	if cfg.ControlPlane.PprofMutexRate != 0 || cfg.ControlPlane.PprofBlockRateNs != 0 {
-		t.Errorf("Expected pprof rates 0 when pprof off, got mutex=%d block=%d",
-			cfg.ControlPlane.PprofMutexRate, cfg.ControlPlane.PprofBlockRateNs)
-	}
-}
-
-func TestApplyDefaults_ControlPlanePprofRates(t *testing.T) {
-	cfg := &Config{}
-	cfg.ControlPlane.Pprof = true
-	ApplyDefaults(cfg)
-
-	if cfg.ControlPlane.PprofMutexRate != 100 {
-		t.Errorf("Expected default pprof mutex rate 100 when pprof on, got %d", cfg.ControlPlane.PprofMutexRate)
-	}
-	if cfg.ControlPlane.PprofBlockRateNs != 1_000_000 {
-		t.Errorf("Expected default pprof block rate 1_000_000ns when pprof on, got %d", cfg.ControlPlane.PprofBlockRateNs)
-	}
-}
-
-func TestApplyDefaults_Admin(t *testing.T) {
-	cfg := &Config{}
-	ApplyDefaults(cfg)
-
-	if cfg.Admin.Username != "admin" {
-		t.Errorf("Expected default admin username 'admin', got %q", cfg.Admin.Username)
-	}
-}
-
 func TestApplyDefaults_RotationDefaults(t *testing.T) {
-	cfg := &Config{}
+	cfg := &Bootstrap{}
 	ApplyDefaults(cfg)
 
 	if cfg.Logging.Rotation.MaxSize != 100 {
@@ -94,7 +37,7 @@ func TestApplyDefaults_RotationDefaults(t *testing.T) {
 }
 
 func TestApplyDefaults_PreservesZeroRotationValues(t *testing.T) {
-	cfg := &Config{
+	cfg := &Bootstrap{
 		Logging: LoggingConfig{
 			Rotation: LogRotationConfig{
 				MaxSize:    50,
@@ -117,16 +60,11 @@ func TestApplyDefaults_PreservesZeroRotationValues(t *testing.T) {
 }
 
 func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
-	cfg := &Config{
+	cfg := &Bootstrap{
 		Logging: LoggingConfig{
 			Level:  "DEBUG",
 			Format: "json",
 			Output: "/var/log/dittofs.log",
-		},
-		ShutdownTimeout: 60 * time.Second,
-		Admin: AdminConfig{
-			Username: "customadmin",
-			Email:    "admin@example.com",
 		},
 	}
 
@@ -141,12 +79,6 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 	}
 	if cfg.Logging.Output != "/var/log/dittofs.log" {
 		t.Errorf("Expected explicit output to be preserved, got %q", cfg.Logging.Output)
-	}
-	if cfg.ShutdownTimeout != 60*time.Second {
-		t.Errorf("Expected explicit timeout 60s to be preserved, got %v", cfg.ShutdownTimeout)
-	}
-	if cfg.Admin.Username != "customadmin" {
-		t.Errorf("Expected explicit admin username to be preserved, got %q", cfg.Admin.Username)
 	}
 }
 
@@ -167,32 +99,7 @@ func TestGetDefaultConfig_HasRequiredFields(t *testing.T) {
 	if cfg.Logging.Level == "" {
 		t.Error("Default config missing logging level")
 	}
-	if cfg.ControlPlane.Port == 0 {
-		t.Error("Default config missing API port")
-	}
-	if cfg.Admin.Username == "" {
-		t.Error("Default config missing admin username")
-	}
-}
-
-// The upgrade that stops a share from referencing its own block store compares
-// the journal root against where each share's data was recorded, and the store
-// layer can only see what is carried onto its own config. Without this the
-// comparison is skipped and a misplaced share opens an empty journal.
-func TestApplyDefaults_CarriesTheJournalRootToTheDatabaseConfig(t *testing.T) {
-	cfg := &Config{}
-	cfg.Blockstore.Journal.Path = "/srv/dittofs/blocks"
-	ApplyDefaults(cfg)
-
-	if cfg.Database.JournalRoot != "/srv/dittofs/blocks" {
-		t.Errorf("Database.JournalRoot = %q, want the configured journal path", cfg.Database.JournalRoot)
-	}
-
-	// An operator who configured nothing still gets the defaulted root, not an
-	// empty one that would skip the comparison.
-	bare := &Config{}
-	ApplyDefaults(bare)
-	if bare.Database.JournalRoot == "" || bare.Database.JournalRoot != bare.Blockstore.Journal.Path {
-		t.Errorf("Database.JournalRoot = %q, want the defaulted %q", bare.Database.JournalRoot, bare.Blockstore.Journal.Path)
+	if cfg.Blockstore.Journal.Path == "" {
+		t.Error("Default config missing the journal path")
 	}
 }
