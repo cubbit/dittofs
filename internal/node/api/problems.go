@@ -50,7 +50,8 @@ func (c storeCode) Error() string { return merrs.ErrorCode(c).String() }
 // is, so vfserr's *AccessError answers as ErrAccess.
 //
 // Identity's errors join this table with the package that declares them:
-// its ErrUnavailable 503 and its ErrUnknownPrincipal 400.
+// its ErrUnavailable 503 unavailable, its ErrUnknownPrincipal 400 naming the
+// name, and its ErrLogonFailure 401 unauthenticated.
 var components = []struct {
 	err error
 	answerOf
