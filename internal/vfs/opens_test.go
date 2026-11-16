@@ -106,7 +106,7 @@ func (f *fixture) restart(t *testing.T) *fixture {
 	_ = f.Stop()
 	f.tab.Stop()
 	clock := sim.NewTestClock(time.Unix(0, 0))
-	tab, err := openstate.New(openstate.Deps{Records: f.fs.Store, Clock: clock, Rand: rand.Reader})
+	tab, err := openstate.New(openstate.Deps{Records: f.fs.Store, Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1023,7 +1023,7 @@ func TestEachFailedStartStepLeavesItBuilt(t *testing.T) {
 			cp := fx.Store.ControlPlane()
 			live := entity.Share{ID: entity.NewShareID(), Name: "b", Path: "/b", Root: entity.NewFileID()}
 			clock := sim.NewTestClock(time.Unix(0, 0))
-			tab, err := openstate.New(openstate.Deps{Records: fx.Store, Clock: clock, Rand: rand.Reader})
+			tab, err := openstate.New(openstate.Deps{Records: fx.Store, Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
 			s, err2 := New(Deps{Meta: fx.Store, Open: tab, Engine: contentOver(clock, fx.Store, live.ID)})
 			if err := errors.Join(err, err2, errOf(kvstoretest.CreateShare(t.Context(), cp, live)), cp.DeleteShare(ctx, fx.Share.ID, entity.SnapshotsRefuse, 1)); err != nil {
 				t.Fatal(err)

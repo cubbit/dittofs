@@ -1048,7 +1048,7 @@ func TestAListingFailsWithTheStore(t *testing.T) {
 	db := &failKV{}
 	fx := kvstoretest.NewFS(t, func(tb testing.TB) kv.KV { db.KV = memKV(tb); return db })
 	clock := sim.NewTestClock(time.Unix(0, 0))
-	tab, err := openstate.New(openstate.Deps{Records: fx.Store, Clock: clock, Rand: rand.Reader})
+	tab, err := openstate.New(openstate.Deps{Records: fx.Store, Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
 	s, err2 := New(Deps{Meta: fx.Store, Open: tab, Engine: contentOver(clock, fx.Store, fx.Share.ID)})
 	if err = errors.Join(err, err2); err != nil {
 		t.Fatal(err)
