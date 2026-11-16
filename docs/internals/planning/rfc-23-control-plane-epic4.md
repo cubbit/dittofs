@@ -10,7 +10,7 @@ on the API's side; [RFC 13](../rfcs/rfc-13-configuration.md) §6 and §7 as a ca
 [RFC 23's plan](rfc-23-control-plane-plan.md) D2, D5 and D14, and its amendment A8 to RFC 23 §2.3
 (the writing node's wait).
 **Track:** B.
-**Epic 4 estimate: 11 subtasks, 36.5 man-days.**
+**Epic 4 estimate: 11 subtasks, 37 man-days.**
 **Depends on:** S1 (E1 merged): the shared wire types in `pkg/node/apiv1` and the node's surface. E2:
 `ControlPlane.Write` with `entity.WriteMeta` and `entity.ControlPlaneTx`, `expect` on every write,
 the idempotency, audit and operation records with their errors in `entity`, the operation record's
@@ -326,8 +326,10 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
   `Deps.Directory` (`KerberosLinkSID(ctx, name string) (sid.SID, error)`, this epic's to declare:
   its `ErrUnavailable`, a stale answer included, refuses the write `503`; its `ErrUnknownPrincipal`
   refuses it naming the name; a zero SID, a name in another realm, stores none), `Deps.Joins`
-  (`HoldJoinCredential(id entity.OperationID, cred JoinCredential) (release func())`, the signature
-  the RFC 18 plan's epic 7 shares) and `Deps.Sealer` (`Seal`) are filled in `node.New` by the RFC 18
+  (`HoldJoinCredential(id entity.OperationID, cred identity.JoinCredential) (release func())`, the
+  signature the RFC 18 plan's epic 7 shares; `identity.JoinCredential` is `pkg/identity`'s
+  `{User string; Password []byte}`, declared there by that epic's D12, and the release zeroes
+  `Password`) and `Deps.Sealer` (`Seal`) are filled in `node.New` by the RFC 18
   plan's epic 8, which composes identity and hands it to the API, and by X1; nil, the route
   refuses `503` `unavailable`, or the RFC's own refusal where it names one. No marker.
 - **D14, the `identity.ntlm` rule is one function of the write's transaction**, called by the
@@ -746,7 +748,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 ### T4.11 The domain's routes and the `identity.ntlm` rule
 
-**Subtask T4.11 estimate: 4.5 man-days.**
+**Subtask T4.11 estimate: 5 man-days.**
 
 - **Track:** B. **Depends on:** T4.9, T4.10; its success paths on the RFC 18 plan's epics 6 and 7
   (identity's calls and `pkg/identity/identitytest`'s in-memory directory and domain controller),
@@ -759,13 +761,23 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   sealed before the transaction and written in its own audited write, refused while a join or
   rotation runs; the online join's pre-write step picking the operation's ID and calling
   `Deps.Joins.HoldJoinCredential` under it, the write using that ID, and the returned release called
-  when the write is refused; each refusing `503` `unavailable` while its
+  when the write is refused; before that hold, an online join's organisational unit that is not a
+  distinguished name under the directory record's base, or host name that is not a DNS name,
+  refused `400` `ErrInvalid` with nothing written (RFC 18 §3.5, the RFC 18 plan's epic 7's R30; the
+  defaults stay identity's first step's); `pkg/node/apiv1`'s `JoinDomainParams` (online or
+  offline; the account name; the online join's `OU`, `DNSHostName` and `Takeover`; the offline
+  join's secret version; no credential field) and `ResolvePrincipalParams` (a name or a SID), the
+  `Operation.Params` these routes write and identity's steps decode (RFC 16's "encoded by that
+  kind"), consumed by the RFC 18 plan's epic 7's T7.5 and T7.14; once that epic's D6 (a) stores
+  `Installation.Join.Names`, T4.9's keytab pre-write step also refusing `400` `ErrInvalid` a key
+  for a name in it, with no `Secret` version written (RFC 18 §3.3, that epic's R27); each refusing `503` `unavailable` while its
   interface is nil (D13); `ntlm.go`, the rule (D14), called by the settings route; the
-  installation's wire type; the import rule extended with identity's interface package. Consumed by
+  installation's wire type; the import rule extended with `pkg/identity`, for `JoinCredential`. Consumed by
   the RFC 18 plan's epic 7 and E7.
 - **Acceptance criteria:**
   - A `krb` link whose directory cannot answer is refused `ErrUnavailable` and writes nothing.
   - An offline join's retry while the first runs writes no version.
+  - An online join whose OU or host name is refused writes no operation and holds no credential.
 - **Tests:** with each interface nil, every domain route refused and nothing written (R64, D13);
   over the in-memory directory and domain controller held to their suites: a `krb` link with the
   directory answering, unreachable, holding no entry, and in another realm; alice's entry cached
@@ -777,7 +789,13 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   refusal record), log line, problem body or metric (R49, R63); the online join's credential found
   nowhere (R49, R63); that the hold ends after a refused creating write cannot be observed here
   without a recording double, so it is the RFC 18 plan's epic 8's test, which builds both sides: a
-  join started, its creating write refused, and no credential held after; each kind's operation
+  join started, its creating write refused, and no credential held after; an online join with an
+  OU outside the record's base, and one with a host name that is not a DNS name, each refused `400`
+  with no operation written and no credential held, and one with neither given answered `202`
+  (catches a check run after the write, or one refusing the defaults); `JoinDomainParams` and
+  `ResolvePrincipalParams` read back raw from the operation record as each route wrote them, the
+  online join's holding no credential (R49); once D6 (a) lands, a keytab holding a key for a name
+  in `Join.Names` refused `400` with no `Secret` version written; each kind's operation
   record written with its target (R50); the `identity.ntlm` rule as a function of a transaction over
   the store: a turn-off from on setting `Off` to the generation and clearing `Deleted`; a second
   turn-off changing neither and starting no deletion while one runs; a turn-on refused while a fresh
@@ -814,7 +832,7 @@ its commands on the client.
 | 3 | T4.5, T4.6 | 5.5 | PR 1 | reads, operations, nodes and the audit |
 | 4 | T4.7, T4.8 | 7 | PR 2, PR 3 | shares and the client that first drives them |
 | 5 | T4.9, T4.10 | 6.75 | PR 4 | the remaining resources |
-| 6 | T4.11 | 4.5 | PR 5 | the domain |
+| 6 | T4.11 | 5 | PR 5 | the domain |
 
 PR 2 and PR 3 can be open at once. A suggestion only: one pull request per subtask works as well.
 

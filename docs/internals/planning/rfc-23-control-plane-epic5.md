@@ -470,7 +470,8 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 **Subtask T5.7 estimate: 3 man-days.**
 
 - **Track:** C. **Depends on:** T5.6; the RFC 18 plan's epic 2, T2.8 (an NT hash deleted with its
-  user), and its epic 4, T4.2 (`SignIn` resolving the NT hash).
+  user), and its epic 8, T8.2 (identity in `node.New` with `Deps.Logons`, after its epic 4's T4.2
+  and T4.5).
 - **Covers:** R8, R14, R29, R31, R32, R34, R35, R36, R37, R39.
 - **Deliverables:** in `password.go`, the RFC 18 plan's password write: `POST /auth/password`, its
   current-password check through `reserve` and settled as a sign-in's; `NewHashes` on the
