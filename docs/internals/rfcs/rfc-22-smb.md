@@ -2626,16 +2626,27 @@ error response, which the header codec writes after the header, and a command's
 encoder handed no reply writes nothing
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
 `HeaderCodec.Encode`). The exceptions are the command's encoder's, and the
-header codec leaves them to it: the responses MS-SMB2 3.3.4.4 does not count as
-failures, `STATUS_MORE_PROCESSING_REQUIRED` on `SESSION_SETUP` and
-`STATUS_BUFFER_OVERFLOW` on `READ`, `QUERY_INFO` and `IOCTL` among them, and an
-error response carrying the command's error data, as
-`STATUS_STOPPED_ON_SYMLINK`'s does ([§12.4](#12.4%20Reparse%20points)).
+header codec leaves them to it. They are the statuses MS-SMB2 3.3.4.4 does not
+count as failures: `STATUS_MORE_PROCESSING_REQUIRED` in a `SESSION_SETUP`
+response; `STATUS_BUFFER_OVERFLOW` in a `QUERY_INFO` response, in an
+`FSCTL_PIPE_TRANSCEIVE`, `FSCTL_PIPE_PEEK` or `FSCTL_DFS_GET_REFERRALS`
+response, and in a `READ` response on a named pipe; `STATUS_INVALID_PARAMETER`
+in an `FSCTL_SRV_COPYCHUNK` or `FSCTL_SRV_COPYCHUNK_WRITE` response returning an
+`SRV_COPYCHUNK_RESPONSE`; `STATUS_NOTIFY_ENUM_DIR` in a `CHANGE_NOTIFY` response.
+They are also `STATUS_BUFFER_OVERFLOW` in an `FSCTL_GET_REPARSE_POINT` response,
+which this server serves (Appendix F) and Windows answers so (MS-SMB2
+Appendix A, note 244), and an error response carrying the command's error data,
+as `STATUS_STOPPED_ON_SYMLINK`'s does ([§12.4](#12.4%20Reparse%20points)). The
+named-pipe `READ` case never arises here: a pipe `READ` that does not fit is
+answered a short read with `STATUS_SUCCESS` ([§3.3](#3.3%20Sizes%20and%20credits)).
 
-**Malformed headers.** A header too short to hold its message ID, or whose
-protocol ID is none the server reads (SMB2's, the transform header's,
+**Malformed headers.** A message shorter than the 64-byte SMB2 header, a header
+whose command code MS-SMB2 2.2.1 does not define (MS-SMB2 3.3.5.2.6), and a
+protocol ID the server does not read (it reads SMB2's, the transform header's,
 [§4.1](#4.1%20Signing%20in), and an SMB1 `NEGOTIATE`'s,
-[§3.1](#3.1%20Dialects)), closes the connection. Any other, a `StructureSize`
+[§3.1](#3.1%20Dialects)) close the connection with no error response; an
+encrypted message's inner headers close it as RFC 20 §4.1's unwrap row says.
+Any other, a `StructureSize`
 other than 64 or a `NextCommand` not a multiple of 8 or leaving no room for a
 header before the message's end, is answered `STATUS_INVALID_PARAMETER` from the
 row for `ErrDecode`; a `NextCommand` so refused ends the chain there, and the

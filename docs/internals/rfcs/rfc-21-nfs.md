@@ -363,8 +363,8 @@ MiB and 4 KiB, in at most 64 fragments: a record mark that would take it past
 either closes the connection ([RFC 20 §5.2](rfc-20-adapters.md#5.2%20Decoding%20is%20bounded),
 [RFC 24 §3.2](rfc-24-resources.md#3.2%20Receive%3A%20charged%20at%20frame%2C%20and%20the%20reader%20waits)).
 
-> ponytail: 64 fragments let a record of the cap arrive in fragments of 16 KiB
-> and more; common clients send one. Raise it when a client is seen sending
+> ponytail: 64 fragments let a record of the cap arrive in fragments of 16.5
+> KiB and more; common clients send one. Raise it when a client is seen sending
 > smaller ones.
 
 The size is fixed, not a setting ([RFC 13](rfc-13-configuration.md)). A client
@@ -2102,20 +2102,23 @@ no Kerberos level:
 The identity also carries the connection's source address, which client rules
 are checked against.
 
-- **Refused credentials.** A credential that does not decode, an `AUTH_SYS`
+- **Refused credentials.** A credential whose body does not decode inside its opaque, an `AUTH_SYS`
   credential over RFC 5531's limits — more than 16 gids, a machine name over
   255 bytes — and every flavour other than `AUTH_NONE`, `AUTH_SYS` and
   `RPCSEC_GSS` **MUST** be rejected `AUTH_BADCRED` and run nothing. None is ever
   treated as anonymous: that would turn a malformed credential into the share's
   everyone grant.
 - **Where they are judged.** Decoding the call's header only bounds its
-  credential and verifier: one whose body runs past the record is a decode
-  error, answered `GARBAGE_ARGS`
-  ([RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline)). The flavour and an
-  `AUTH_SYS` body are judged when the call is routed, so a body truncated inside
-  a whole credential is `AUTH_BADCRED`, and a verifier other than `AUTH_NONE`
-  beside an `AUTH_NONE` or `AUTH_SYS` credential is rejected `AUTH_BADVERF`; an
-  `RPCSEC_GSS` credential is the GSS stage's, at unwrap (§10).
+  credential and verifier: one whose body runs past the record, or past the 400
+  bytes RFC 5531 §8.2's `opaque_auth` allows, is a decode error, answered
+  `GARBAGE_ARGS` ([RFC 20 §4.1](rfc-20-adapters.md#4.1%20One%20pipeline)). The
+  flavour and an `AUTH_SYS` body are judged when the call is routed, so a body
+  truncated inside a whole credential is `AUTH_BADCRED`; an `RPCSEC_GSS`
+  credential is the GSS stage's, at unwrap (§10). A verifier other than an
+  empty `AUTH_NONE` beside an `AUTH_NONE` or `AUTH_SYS` credential is rejected
+  `AUTH_BADVERF`: RFC 5531 Appendix A says only that it should be `AUTH_NONE`,
+  and names no status, so the answer is the implementations', the Linux
+  server's here.
 - **Root.** A claimed uid 0 maps to RFC 18's root principal
   ([RFC 18 §2.1](rfc-18-identity.md#2.1%20Kinds%20and%20well-known%20principals)).
 - **Export flavour policy.** "Requires Kerberos" is the share's `MinProof`
@@ -2553,8 +2556,9 @@ reply.
 
 **A reply carrying a status alone** is written whole by the header codec
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
-`HeaderCodec.Encode`): the RPC reply header, `PROG_MISMATCH` with the lowest and
-highest versions the connection serves, and for an NFSv4 `COMPOUND` its status,
+`HeaderCodec.Encode`): the RPC reply header, with `mismatch_info`'s lowest and
+highest versions for `PROG_MISMATCH`, those the connection serves, and for
+`RPC_MISMATCH`, 2 and 2 (RFC 5531 §9), and for an NFSv4 `COMPOUND` its status,
 its tag and an empty results array. A procedure's encoder handed no reply writes
 only what its result carries beside the status.
 

@@ -527,7 +527,7 @@ internal/adapter/
   adaptertest/              import test; testproto/, the test-only protocol `core` is proven on (§7); golden/, golden-vector and capture helpers
   nfs/  smb/                one shape for both protocols:
     nfs.go | smb.go         New: builds the stages, handler sets and operation tables; returns *core.Server
-    wire/                   pure codecs (§5): NFS's generated from the XDR, one file per program; SMB's hand-written, one file per command
+    wire/                   pure codecs (§5): NFS's operation codecs generated from the XDR, one file per program, and its RPC header (call and reply envelope, credentials, verifier) hand-written; SMB's hand-written, one file per command
     protocol/               the Protocol and its stages (§4.7): framer, header, router, security, flow, replay, session registry
     ops/                    the operation tables, one subpackage per table (§4.8): Handlers, table, errors; one file per operation
                               nfs: v3/ v4/ mount/ nlm/ nsm/   smb: one table for every dialect, ioctl/ one file per control code
@@ -1366,10 +1366,10 @@ How each stage refuses:
 | --- | --- |
 | frame | length past the cap: connection closed. No room in the receive pool: not refused — the record is not read until room frees |
 | decode header, decode args | the protocol's garbage-args or invalid-parameter answer, from the table's row for `ErrDecode` (§4.7). A header that did not decode far enough to address a reply: connection closed. Which malformed headers each protocol closes on: [RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors), [RFC 22 §16.5](rfc-22-smb.md#16.5%20Errors) |
-| unwrap | SMB: `STATUS_ACCESS_DENIED` on the request's message ID, or, for a malformed inner header of an encrypted message, `STATUS_INVALID_PARAMETER` from the row for `ErrDecode`, each wrapped as §5.5 says, connection kept; a message that fails decryption, or an inner header too short to be one, misaligned, or, for an unrelated member, naming another session than the transform header, closes it (`Conn.Close`, MS-SMB2 3.3.5.2.1.1, 3.3.5.2.6) ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). `RPCSEC_GSS`: a failed verifier `RPCSEC_GSS_CREDPROBLEM`; a sequence number below the window, or already seen, dropped unanswered and counted under `unwrap` (§10.1); one above it advances the window only once its verifier checks, so a call with a forged verifier leaves the window as it was ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
+| unwrap | SMB: `STATUS_ACCESS_DENIED` on the request's message ID, or, for a malformed inner header of an encrypted message, `STATUS_INVALID_PARAMETER` from the row for `ErrDecode`, each wrapped as §5.5 says, connection kept; a message that fails decryption, or an inner header too short to be one, misaligned, naming a command MS-SMB2 2.2.1 does not define, or, for an unrelated member, naming another session than the transform header, closes it (`Conn.Close`, MS-SMB2 3.3.5.2.1.1, 3.3.5.2.6) ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)). `RPCSEC_GSS`: a failed verifier `RPCSEC_GSS_CREDPROBLEM`; a sequence number below the window, or already seen, dropped unanswered and counted under `unwrap` (§10.1); one above it advances the window only once its verifier checks, so a call with a forged verifier leaves the window as it was ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
 | admit | the default cap never refuses, since the connection is not read until a request completes; a protocol's `Flow` may refuse, and a `Stages.Errors` row maps that refusal |
 | replay check | the cached reply, or the protocol's sequence error; past the deadline, the reply reservation's `ErrDelay` with `DelayResources` (§4.7's `ReplayCache`) |
-| route | NFS: an RPC version other than 2 `RPC_MISMATCH`; a credential [RFC 21 §11.1](rfc-21-nfs.md#11.1%20Identity) refuses `AUTH_BADCRED`, and a verifier its flavour does not allow `AUTH_BADVERF`; a program with no version served `PROG_UNAVAIL`, a version not served `PROG_MISMATCH`, a minor version not served `NFS4ERR_MINOR_VERS_MISMATCH` (§4.8); a message that is not a call, and answers no callback sent on the connection (§3.3), dropped unanswered through a `NoReply` row |
+| route | NFS: an RPC version other than 2 `RPC_MISMATCH`; a credential [RFC 21 §11.1](rfc-21-nfs.md#11.1%20Identity) refuses `AUTH_BADCRED`, and a verifier it does not allow `AUTH_BADVERF`; a program, version or minor version not served, as §4.8 says; a message that is not a call, and answers no callback sent on the connection (§3.3), dropped unanswered through a `NoReply` row. SMB: §4.8 |
 | resolve IDs | a table ID not in its table: the protocol's bad-ID answer. A client-held name is never refused here |
 | send | connection closed |
 
@@ -1920,6 +1920,12 @@ type Framer interface {
 	// always ends it. Past the protocol's cap: an error, and the connection
 	// closes.
 	BodyLen(hdr []byte) (n int, last bool, err error)
+	// MaxRecord is the protocol's record cap and the most fragments a record
+	// may come in, 1 where every header ends its record: the reader reserves
+	// the class that holds the cap before a fragment that does not end its
+	// record, counts the fragments it reads, and closes the connection past
+	// either (RFC 24 §3.2).
+	MaxRecord() (bytes, fragments int)
 	// Frame appends to dst the header of a record whose body is body bytes, in
 	// one piece, and returns it. The writer calls it for every record it sends,
 	// a reply, an interim or a Conn.Send message, after Wrap, and writes the
@@ -1956,7 +1962,8 @@ type HeaderCodec interface {
 	// so the answer is wrapped. A header refused for its own next step
 	// reports, as Next, a step the walk refuses, so the chain ends there.
 	Decode(rec *Buf, off int) (Header, error)
-	// Encode writes the reply's header for s and, where s is not success,
+	// Encode writes the reply's header for s and, where s is a failure
+	// answered with a status alone (RFC 22 §16.5 names SMB's exceptions),
 	// what a reply carrying s alone needs, which is the whole reply of a
 	// request refused before its arguments decoded: SMB's error response
 	// (RFC 22 §16.5), an NFSv4 COMPOUND's status, tag and empty results, RPC
@@ -1967,8 +1974,9 @@ type HeaderCodec interface {
 	// Unwrap left them: past an RPC call's credential and verifier, or in an
 	// encrypted SMB message's decrypted payload.
 	Args(rec *Buf, h Header) []byte
-	// ReplyLen is the most the reply's header, and the transform Wrap adds in
-	// place, add to a reply of h, so the pipeline reserves Bound() + ReplyLen(h).
+	// ReplyLen is the most Encode writes for h, a status-alone body included,
+	// with Chain's padding to 8 and the transform Wrap adds in place: the
+	// pipeline reserves Bound() + ReplyLen(h).
 	ReplyLen(h Header) int
 }
 type Router interface {
@@ -1993,8 +2001,8 @@ type Security interface {
 	// kept. A nil Header with its error says close: nothing is answered, and
 	// the pipeline closes the connection through Conn.Close with that error (a
 	// message that fails decryption, or an inner header too short to be one,
-	// misaligned, or, for an unrelated member, naming another session than the
-	// transform header).
+	// misaligned, naming a command MS-SMB2 2.2.1 does not define, or, for an
+	// unrelated member, naming another session than the transform header).
 	Unwrap(h Header, rec *Buf, prev Header) (Header, error)
 	// Wrap signs or encrypts in place, a chain once per record (§4.7). The
 	// refusal of a header that failed Decode is not passed to it, alone or
@@ -2094,7 +2102,7 @@ type Op struct {
 // compound row, whose Decode the protocol writes and which builds its
 // Invocation directly, setting Count from the arguments it decoded.
 type Invocation struct {
-	Bound   func() int                                 // the reply bound (§4.2): the reply's arguments alone, reserved with HeaderCodec.ReplyLen
+	Bound   func() int                                 // the reply bound (§4.2): the operation's own reply, without ReplyLen(h)
 	Resolve func(r *Request) error                     // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
 	// Encode runs on every request that gets a final reply, so its reply may
@@ -2750,7 +2758,7 @@ is tested once, on its own.
 | neutral ↔ wire values | all protocols | `translate` | ACLs and security descriptors ([RFC 19 §5.1](rfc-19-authorization.md#5.1%20One%20translation%2C%20two%20spellings)), access masks, times, file types and modes, `vfs.File` to the attributes each protocol reports |
 | fitting a listing to the client's buffer | `READDIR`, `READDIRPLUS`, NFSv4 `READDIR`, SMB `QUERY_DIRECTORY` | `translate` | `Fit(entries []vfs.DirEntry, budget int, size func(vfs.DirEntry) int) int`: how many entries of the service's page fit; each protocol supplies its encoded size and resumes from the cursor of the last entry sent |
 | the RPC layer | NFSv3, NFSv4, the auxiliary services | `nfs/protocol`, `nfs/wire` | record marking, RPC header, AUTH_SYS, `RPCSEC_GSS`, routing by program and version |
-| XDR primitives | every NFS program | `nfs/wire` | integers, opaques, strings, bitmaps, file handles — generated |
+| XDR primitives | every NFS program | `nfs/wire` | integers, opaques, strings, bitmaps, file handles, generated; the RPC header's, hand-written (§2.5) |
 | file handles, cookies, verifiers | NFSv3, NFSv4 | `nfs/wire` | opaque bytes from the service ([RFC 17 §4.4](rfc-17-vfs.md#4.4%20Handles%20are%20opaque)); one encoding |
 | handlers | SMB 2.1 to 3.1.1 | `smb/ops` | one handler per command for every dialect (§4.8) |
 | handlers | NFSv4.0 to 4.2 | `nfs/ops/v4` | one handler per operation for every minor version it spans (§4.8) |
@@ -2865,7 +2873,9 @@ Codecs **MAY** be generated from the protocol's machine-readable definitions —
 XDR specifications for the NFS family — or written by hand where none exists,
 as for SMB2. Either way the constants — operation codes, status codes, flag
 bits, structure sizes — are taken from the specification once, in one place per
-protocol, and every use names them.
+protocol, and every use names them. NFS's RPC header, the call and reply
+envelope with its credentials and verifier, is written by hand, and its
+operation codecs generated (§2.5).
 
 ### 5.2 Decoding is bounded
 
@@ -2971,7 +2981,8 @@ encrypted SMB message, the inner one. A connection with no transform has no
   `STATUS_INVALID_PARAMETER` (§4.1; MS-SMB2 3.3.5.2.6) and encrypted under the
   transform's session, as 3.3.4.1.4 encrypts every response to an encrypted
   request; one MS-SMB2 disconnects for (too short to be a header, misaligned,
-  or naming another session) closes the connection (3.3.5.2.1.1, 3.3.5.2.6). A
+  naming an undefined command, or naming another session) closes the connection
+  (3.3.5.2.1.1, 3.3.5.2.6). A
   message `Unwrap` refused is answered under the header `Unwrap` returns with
   its refusal, which carries two facts for `Wrap`: the key to sign the answer
   under, or none, and whether the answer may be sealed. Both are the
