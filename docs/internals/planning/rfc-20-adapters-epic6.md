@@ -22,7 +22,7 @@ lands `HeaderCodec.Args` and `ReplyLen` and `Framer.Frame`, for T6.3a and T6.4a.
 serves `testproto` end to end, for the two subtasks that wire the framer and `New` to the real
 runner, T6.3b and T6.4b: E4's reader brings `Framer.BodyLen`'s `last` and `MaxRecord`, and E5's
 T5.1a and T5.9 the `Stages.Errors`, `Stages.Protocol` and `OpTable.Protocol` that `NewConn`
-and the tables set. **The RFC 20 amendment PR on `docs/rfc-20-e6-gaps`**, which settles §9's
+and the tables set. **The RFC 20 amendment, #4478**, which settles §9's
 G1 to G10.
 **Blocks:** the RFC 22 plan: its epic 2, whose handler harness decodes T6.1's header and which
 starts at RFC 20's S2 with T6.1; its SMB scaffold point, which is RFC 20's S3 with T6.3b; its
@@ -410,7 +410,7 @@ framer's.
 
 **Subtask T6.1 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** S2, and the RFC 20 amendment PR on `docs/rfc-20-e6-gaps`.
+- **Track:** C. **Depends on:** S2, and the RFC 20 amendment (#4478).
 - **Needs E4 or E5:** nothing.
 - **Covers:** R1 (the length and the cap), R2, R4 (the bytes), R5, R6, R7, R8, R9, R12 (the
   padding and the pointer), R15, R16, R39 (the decoder).
@@ -599,7 +599,7 @@ framer's.
 
 **Subtask T6.2 estimate: 3 man-days.**
 
-- **Track:** C. **Depends on:** S2, and the RFC 20 amendment PR on `docs/rfc-20-e6-gaps`.
+- **Track:** C. **Depends on:** S2, and the RFC 20 amendment (#4478).
 - **Needs E4 or E5:** nothing.
 - **Covers:** R1 (the length and the cap), R3 (the record mark's fields), R4 (the bytes), R5,
   R6, R7, R8, R9, R14, R15, R16, R21 (the decoders), R40 (the decoder).
@@ -815,7 +815,7 @@ framer's.
 ```mermaid
 flowchart TD
   S2(["S2 testproto and the import test in CI"]):::sync --> T6_1["T6.1 smb/wire"]
-  A(["the RFC 20 amendment PR on docs/rfc-20-e6-gaps"]):::sync --> T6_1
+  A(["the RFC 20 amendment, #4478"]):::sync --> T6_1
   T6_1 --> C1(["after T6.1: the RFC 22 plan's harness can decode a header"]):::sync
   T6_1 --> T6_3a["T6.3a smb/protocol header stage and router"]
   H(["E5's T5.1a: HeaderCodec.Args, ReplyLen, Framer.Frame"]):::sync --> T6_3a
@@ -835,7 +835,7 @@ flowchart TD
 T6.1 to T6.4, and the RFC 23 plan and the epic 2 document cite T6.3 and T6.4, which keep their
 numbers. T6.3 and T6.4 are split by letter, and work mapped to either covers both parts. SMB
 goes first because the RFC 22 plan waits on it; no plan builds on NFS yet. Every subtask
-follows RFC 20, 21 and 22 as the RFC 20 amendment PR on `docs/rfc-20-e6-gaps` leaves them,
+follows RFC 20, 21 and 22 as the RFC 20 amendment (#4478) leaves them,
 which lands first.
 
 | When | Subtasks | Man-days |
@@ -853,8 +853,8 @@ man-days, fill those waits. The least certain subtasks are T6.2, T6.4a and T6.4b
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T6.1, T6.3a | 3.75 | the RFC 20 amendment PR; E5's T5.1a for T6.3a | SMB's bytes and header stage: what the RFC 22 plan's harness and stages build on |
-| 2 | T6.2, T6.4a | 5.75 | the RFC 20 amendment PR; E5's T5.1a for T6.4a | the RPC layer: the call header, the credential, the router; open beside PR 1 |
+| 1 | T6.1, T6.3a | 3.75 | the RFC 20 amendment (#4478); E5's T5.1a for T6.3a | SMB's bytes and header stage: what the RFC 22 plan's harness and stages build on |
+| 2 | T6.2, T6.4a | 5.75 | the RFC 20 amendment (#4478); E5's T5.1a for T6.4a | the RPC layer: the call header, the credential, the router; open beside PR 1 |
 | 3 | T6.3b | 2 | PR 1, S3 | SMB's framer and server end to end, the RFC 22 plan's SMB scaffold point |
 | 4 | T6.4b | 2.25 | PR 2, S3 | NFS's framer and server end to end; open beside PR 3 |
 
@@ -862,8 +862,8 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **RFC gaps, settled** as this document recommended them, by the RFC 20 amendment PR on
-  `docs/rfc-20-e6-gaps`, which also amends RFC 21, RFC 22 and RFC 13 and lands before this
+- **RFC gaps, settled** as this document recommended them, by the RFC 20 amendment
+  (#4478), which also amends RFC 21, RFC 22 and RFC 13 and lands before this
   epic's subtasks.
   - **G1, who writes a record's frame header:** RFC 20 §4.7's `Framer.Frame`, and §6.2.
   - **G2, a status-alone reply's body:** RFC 20 §4.7's `HeaderCodec.Encode` and
@@ -900,7 +900,7 @@ A suggestion only: one pull request per subtask works as well.
     of T6.3 had the pick, which this document leaves to the RFC 22 plan's T3.2. An edit to that
     subtask should name it.
   - The epic 1 document's R55 and the program's §4.1 sketch restated `Framer` as it was; the
-    amendment PR brings both to RFC 20 §4.7.
+    amendment, #4478, brings both to RFC 20 §4.7.
 - **Edits this document proposes to the program's implementation plan**, for the coordinator's
   pull request, not made here:
   - epic 6's description, its row in §2 and its estimate line: 6 subtasks, 13.75 man-days,
