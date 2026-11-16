@@ -2,7 +2,7 @@
 
 **Sources:** [RFC 18](../rfcs/rfc-18-identity.md) §2.6 and §2.7 as declarations, the interfaces
 of §3.1, §4.1, §6.1 and §8.1 (without `TokenVerifier`), and §9.1's ID11, in the version of
-pull request #4058 at 4e23c54a6, with §8.1's `APISignIn` as pull request #4050's A7 amends it
+pull request #4058 at 38b6e745d, with §8.1's `APISignIn` as pull request #4050's A7 amends it
 (D9); [RFC 17](../rfcs/rfc-17-vfs.md) §2.3 (`vfs.Deps`), §3.0 (aliases) and §4.3 (errors);
 [RFC 20](../rfcs/rfc-20-adapters.md) §2.3, §7.1 (the import test) and §7.3 (error-table
 totality); [RFC 16](../rfcs/rfc-16-metadata-store.md) §3, for `SharePolicy` only.
@@ -55,8 +55,8 @@ three `vfs.Deps` fields; the import checks; `internal/identity/**` in the `e2e` 
   first epic that declares a setting, since epic 1's `State` holds none that can be invalid.
 - The directory client dialling lazily, so a down directory does not fail `Start` (RFC 18
   §2.6): E6.
-- Every other `Deps` and `State` field RFC 18 §2.6 names, each with the first epic that reads
-  it (D4).
+- Every other `Deps` and `State` field RFC 18 §2.6 names, the tracer among them, each with
+  the first epic that reads it, as §2.6 says (D4).
 - `HoldJoinCredential`, which keeps the online join's administrator credential in memory
   under the operation's ID: E7, its first consumer, once RFC 23's runner brings that ID.
 - `TokenVerifier`, `TokenClaims`, `IssuerKeys` and `Deps.Issuers` (RFC 18 §8.2): deferred, the
@@ -91,7 +91,7 @@ number and title and not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T1.1, T1.2, T1.4, T1.5 | no test double: the lifecycle tests use the memory KV store and the leak check; the import checks walk the repository's own files |
 | rule 2, fuzz every decoder of untrusted bytes | none | epic 1 decodes nothing |
-| rule 3, observability follows RFC 25 | T1.4 | `Deps` takes the metrics registry and the logger; epic 1 owns none of RFC 18 §9.2's series and opens no span, since its methods are stubs |
+| rule 3, observability follows RFC 25 | T1.4 | `Deps` takes the metrics registry and the logger; epic 1 owns none of RFC 18 §9.2's series and opens no span, since its methods are stubs, so `Deps.Tracer` arrives with E4's `identity.authenticate` span (D4) |
 | rule 4, profiling | T1.4 | the lifecycle tests run under the leak check, which is how R11 and R14 are proven |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T1.4, T1.5 | R10 is checked by the handed store still serving after `Stop`, not by a flag; each import rule by the check that reports its seeded violation |
 | rule 6, known failures shrink | none | no suite RFC 18 names keeps a `known.yaml`; nothing lands red |
@@ -99,7 +99,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no external system is reached |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T1.2, T1.4, T1.6 | RFC 18 §2.6's `decision:` (identity is one component, not part of `vfs`) at `Server`; D2, D4 and D7's markers at their sites |
 | rule 10, a test must be able to fail | all | R7, R15 and R16 are held by the compiler, R3 and R4 by RFC 20's existing import test, each named as such; every other row by a test that fails on its assertion |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T1.1, T1.3, T1.4 | `Key`, `Stored` and `TokenVerifier` are left out (D3, §1.2); `internal/identity` exports only what `internal/node` and the API call; `Deps` and `State` gain fields after S1, as the rule allows (D4) |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T1.1, T1.3, T1.4 | `Key`, `Stored` and `TokenVerifier` are left out (D3, §1.2); `internal/identity` exports only what `internal/node` and the API call; `Deps` and `State` gain fields after S1, as the rule and RFC 18 §2.6 allow (D4) |
 | rule 12, each subtask creates only what it declares | all | no empty package; the stub bodies behind final signatures are the one exception the Design principles allow, and the `vfs.Deps` fields are the seam S1 freezes (D7) |
 
 ## 3. Requirements and invariants
@@ -154,14 +154,16 @@ held by the compiler: E1's interface assertions (T1.4, T1.6) and the consumers E
   `Evidence`'s unexported digest land in E3 with the caller cache; `Scheme.Stored()` in E2
   with the index rows. Adding a method or an unexported field later breaks no caller, so
   nothing migrates. Prior art: none found.
-- **D4, `Deps` and `State` hold only what exists and is read.** Epic 1's `Deps` is `Store`,
-  `Clock`, `Metrics` and `Logger`; its `State` is `{Generation uint64}`. Each later epic adds
-  the field it is the first to read: `Secrets`, `Settings` and the NTLM revision (E2),
-  `Logons` and the tracer (E4), `Keytab` (E5), `Machine` (E7); `Issuers` is deferred with
-  `TokenVerifier`. A field added to a struct only `internal/node` and tests build costs no
-  migration, and epic 1 then waits on nothing of #4059. RFC 18 §2.6's sketch still declares
-  every field at once (§9). Prior art: RFC 17 §2.3's `vfs.Deps` grew its fields the same way
-  on `feat/storage-v2`.
+- **D4, `Deps` and `State` hold only what exists and is read.** RFC 18 §2.6 calls its
+  sketch the composed shape, each field added with the first code that reads it; D4 applies
+  that rule to epic 1. Epic 1's `Deps` is `Store`, `Clock`, `Metrics` and `Logger`; its
+  `State` is `{Generation uint64}`. Each later epic adds the field it is the first to read:
+  `Secrets`, `Settings` and the NTLM revision (E2), `Logons` and `Tracer` (E4, whose sign-in
+  first emits §9.2's `identity.authenticate` span; epic 1's stubs emit none), `Keytab` (E5),
+  `Machine` (E7); `Issuers` is deferred with `TokenVerifier`. A field added to a struct only
+  `internal/node` and tests build costs no migration, and epic 1 then waits on nothing of
+  #4059. Prior art: RFC 17 §2.3's `vfs.Deps` grew its fields the same way on
+  `feat/storage-v2`.
 - **D5, withdrawn:** RFC 18 §2.6 now declares the store field as `Store *kvstore.Store`, the
   choice D5 made.
 - **D6, `SharePolicy` is declared in `entity` as RFC 16 §3 states it.** `Resolver.Resolve`
@@ -179,8 +181,9 @@ held by the compiler: E1's interface assertions (T1.4, T1.6) and the consumers E
   `VerifyPassword(ctx, name, password) (Principal, error)`; #4050's A7, which merges first,
   replaces it with `Lookup(ctx, name) (Principal, error)` and
   `VerifyPassword(ctx, p, password) error`, so the API counts an attempt against the principal
-  before checking it (RFC 23 §5.3). S1 freezes the second shape, so RFC 23's plan's epic 5
-  never builds on a signature that is about to change. Pending #4050's merge (§9). Prior art:
+  before checking it (RFC 23 §5.3). #4058 leaves §8.1 as it is because #4050 rewrites it, and
+  merges after #4050. S1 freezes the second shape, so RFC 23's plan's epic 5 never builds on a
+  signature that is about to change. Pending #4050's merge (§9). Prior art:
   none found.
 
 ## 5. Target tree
@@ -260,8 +263,8 @@ test/suites.yaml            T1.5  internal/identity/** in the e2e kerberos cell'
   - `Authenticator{ SignIn(ctx, SignInStep) (SignInResult, error) }` (§3.1), consumed by
     `vfs.Deps.Auth` (T1.6) and implemented by `*Server` (T1.4);
   - `Identities{ Spell(ctx, entity.Principal, Scheme) (Spelling, error); Find(ctx, Spelling,
-    FindOpts) (entity.Principal, error) }` and `FindOpts{ Mint bool }` (§4.1), consumed by
-    `vfs.Deps.Names`;
+    FindOpts) (entity.Principal, error) }` and `FindOpts{ Mint bool }` (§4.1), which the
+    filesystem sets from the call's proof (E3 routes it), consumed by `vfs.Deps.Names`;
   - `Resolver{ Resolve(ctx, Identity, entity.SharePolicy, readOnly bool) (*Caller, error) }`,
     `Caller` with every field §6.1 lists, and `ReadOnlyCause` with `NotNarrowed`, `Grant`,
     `Share` (§6.1), consumed by `vfs.Deps.Identity` and by E3;
@@ -369,25 +372,18 @@ A suggestion only: one pull request per subtask works as well.
 ## 9. Open points
 
 Pull request #4058, which holds the plan and RFC 18's amendments, is open with changes
-requested. This document cites its version at 4e23c54a6; a change there that touches §2.6,
+requested. This document cites its version at 38b6e745d; a change there that touches §2.6,
 §2.7, §3.1, §4.1, §6.1 or §8.1 needs this document revised. The plan's link in §2 resolves
 once it merges.
 
 The four questions decided on 2026-11-14 are now in the sources: the store field (D5) and
 `NewHashes`'s types (D8) in RFC 18 §2.6 and §8.1, the errors in RFC 17 §4.3, `Keys.Session`'s
-chain in RFC 18 §3.1, and `SharePolicy` stays D6.
+chain in RFC 18 §3.1, and `SharePolicy` stays D6. #4058 has since settled three more: RFC 18
+§2.6 says its `Deps` and `State` gain each field with the first code that reads it (D4), and
+declares `Tracer`, which E4 adds; §4.1 has the filesystem set `FindOpts.Mint`.
 
 **RFC text epic 1 depends on, to raise on #4058 or after it:**
 
-- **`Deps` and `State` grown per epic (D4).** RFC 18 §2.6's sketch declares every field of
-  both, `Secrets`, `Logons`, `Issuers`, `Settings`, `Keytab`, `Machine` and `NTLM` among them,
-  while D4 adds each with its first reader. RFC 18 §2.6 needs a line saying the fields arrive
-  with their readers, or the sketch marked indicative as §3.1's is.
 - **`APISignIn`'s shape (D9).** #4058's RFC 18 §8.1 and #4050's A7 disagree; S1 freezes
   #4050's. If #4050's A7 changes or #4058 merges first, T1.3's `APISignIn` follows RFC 18 §8.1
   as merged.
-- RFC 18 §4.1 says the server sets `FindOpts.Mint`; it is the filesystem, from
-  `Call.Identity.Proof`, that does, since `vfs.Principals.Find` takes a `Call`. Wording only;
-  E3 routes it.
-- RFC 18 §2.6's `Deps` has no tracer, while §9.2 names the `identity.authenticate` span; D4
-  has E4 add one.
