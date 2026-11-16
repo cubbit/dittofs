@@ -70,7 +70,12 @@ func v22CopyAndClone(t *testing.T, opts ...enginetest.Option) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := compose(t, opts...)
+			// Every journal write holds a spare while it runs, and each of the
+			// fixture's two streams takes one more at its first roll: the
+			// fixture's pool of two can refuse the row's byte write
+			// retry-later whenever its refill lags behind the row's first
+			// writes. Four covers two writes at once and both first rolls.
+			c := compose(t, append(opts, enginetest.WithSpares(2+2))...)
 			src := c.written(t, "src", c.alice.Principal, 0o644, []byte("copy"))
 			dst := c.written(t, "dst", c.alice.Principal, 0o6777, []byte("data"))
 			ctx, cancel := context.WithTimeout(t.Context(), backstop)
