@@ -702,9 +702,12 @@ func (r *soakRun) check() {
 				err error
 			)
 
+			r.calls++
+			r.log.set(r.calls, "check flush of "+f.name, false)
 			r.waiting(func() {
 				v, err = r.c.fs.Commit(cctx, r.smb, r.refs[i], 0, 0)
 			})
+			r.log.set(0, "", false)
 			ccancel()
 			r.slow("the flush of "+f.name+" after its loss", start)
 			// Attribute first, so a record lost in this Commit credits the
@@ -728,9 +731,12 @@ func (r *soakRun) check() {
 		err error
 	)
 
+	r.calls++
+	r.log.set(r.calls, "check verifier Commit", false)
 	r.waiting(func() {
 		v, err = r.c.fs.Commit(vctx, r.c.admin, vfs.Anonymous(r.files[0]), 0, 0)
 	})
+	r.log.set(0, "", false)
 	vcancel()
 	r.slow("the verifier's Commit", start)
 	faulted := r.attribute()
@@ -954,10 +960,9 @@ func TestSoakWaitingMovesTheClock(t *testing.T) {
 			got, want)
 	}
 
+	start = time.Now()
 	wedge, cancelWedge := context.WithTimeout(t.Context(), soakSlowCall)
 	defer cancelWedge()
-
-	start = time.Now()
 
 	r.waiting(func() {
 		<-wedge.Done()
