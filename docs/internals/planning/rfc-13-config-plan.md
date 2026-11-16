@@ -416,7 +416,7 @@ internal/node/settings.go   the one settings table, naming every declared sectio
 ### 4.2 Decisions
 
 **D1. A setting is one record per key.** There is one `Setting` record per (scope, key), as kvstore
-has today and as RFC 23's plan's generic `dfsctl setting` command assumes. A component's typed
+has today and as RFC 23's plan's generic `setting` command of `dfsctl` assumes. A component's typed
 settings are decoded from its rows over its defaults. This is the user's decision.
 - **Prior art (from memory).** CockroachDB's `system.settings` and Consul's KV hold one row per key.
 - **Applied by** epic 3.
