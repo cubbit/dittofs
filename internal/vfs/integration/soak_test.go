@@ -474,7 +474,7 @@ func (r *soakRun) step() {
 			r.fail("GetAttr of %s before call %d: %v", f.name, r.calls, gerr)
 		}
 
-		grow := size >= before.Size
+		grow := truncateGrows(size, before)
 
 		r.waiting(func() {
 			_, err = r.c.fs.SetAttr(
@@ -591,6 +591,14 @@ func (r *soakRun) slow(desc string, start time.Time) {
 	if err := stalled(desc, time.Since(start)); err != nil {
 		r.fail("%v", err)
 	}
+}
+
+// truncateGrows reports whether a truncate to size is a grow to the engine:
+// a size at or past the one the service reports for the file just before
+// the call, which is what the engine's replayed operations leave after any
+// crash, not what every call that answered would leave.
+func truncateGrows(size int64, reported vfs.File) bool {
+	return size >= reported.Size
 }
 
 // stalled is slow's verdict on a call that took d: no fault before it and no
@@ -958,5 +966,25 @@ func TestSoakWaitingMovesTheClock(t *testing.T) {
 	if stalled("a wedged call", time.Since(start)) == nil {
 		t.Errorf("a call waiting on no timer of the clock returned after %v and is not failed",
 			time.Since(start))
+	}
+}
+
+// TestSoakTruncateGrows holds the grow rule: a truncate to the size the
+// service reports, or past it, is a grow, and one below it a shrink, whatever
+// the writes a crash dropped would have left.
+func TestSoakTruncateGrows(t *testing.T) {
+	for _, c := range []struct {
+		size, reported int64
+		want           bool
+	}{
+		{32, 8, true},   // a crash dropped a write to 64: the engine sees 8
+		{8, 8, true},    // the same size is a grow, as the engine counts it
+		{7, 8, false},   // below the reported size is a shrink
+		{32, 64, false}, // the service still holds 64
+	} {
+		if got := truncateGrows(c.size, vfs.File{Size: c.reported}); got != c.want {
+			t.Errorf("a truncate to %d with %d reported: grow %v, want %v",
+				c.size, c.reported, got, c.want)
+		}
 	}
 }
