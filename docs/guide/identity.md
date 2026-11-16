@@ -512,9 +512,11 @@ IP, with no port published on the host, and Docker Desktop (macOS, Windows)
 does not route the host to container IPs, so there the tests fail rather than
 skip. Every image, container and network the fixture makes is named and
 labelled with the prefix `dittofs-ad-dc-test`; set `DITTOFS_AD_DC_NAME_PREFIX`
-to use another on a Docker host shared between users. A run removes what an
-earlier run under the same prefix left behind when it was killed, once it is
-more than an hour old.
+to use another on a Docker host shared between users. A run force-removes any
+container whose name starts with the prefix and a dash, and prunes the networks
+labelled with it, once they are more than an hour old: what an earlier run
+under the same prefix left behind when it was killed. A killed run's image tag
+stays.
 
 It verifies, among other things:
 
