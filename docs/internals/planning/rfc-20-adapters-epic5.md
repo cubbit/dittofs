@@ -257,7 +257,7 @@ cited by number and title, and how it applies here or why it does not.
 | --- | --- | --- | --- | --- |
 | R35 | A compound runs as a sequence of handlers, one per operation, each its own service call; the runner keeps nothing between them but the compound state in the `Request`, and holds no lock across two | invariant | §4.3, §9 A6 | T5.4 |
 | R36 | A compound past its protocol's operation cap is refused `ErrTooLong` before any of its operations is decoded or run | MUST | §4.3, §4.7 | T5.4 |
-| R37 | The runner decodes exactly `Count` members, each's code read with `ReadOp` and its arguments with that row's `Decode`, moving on by the bytes each returned; bytes left after the last are the compound's decode error, before any member runs | MUST | §4.7 | T5.4 |
+| R37 | The runner decodes exactly `Count` members, each's code read with `ReadOp`, its arguments read from `HeaderCodec.Args` and decoded by that row's `Decode`, moving on by the bytes each returned; bytes left after the last are the compound's decode error, before any member runs | MUST | §4.7 | T5.4 |
 | R38 | Outside a drain, a member that does not decode, or names a code its table lacks, is answered with that error once the members before it have run; the runner stops at the first failure, and the reply ends there | MUST | §4.3, §4.7 | T5.4 |
 | R39 | Each operation's reply bound is reserved before it runs, not after, and a single-reply compound's one reservation, or a chain's held reservations with its next member's, never passes a quarter of the reply pool's ceiling, though one member's own charge may (D8, D11; one operation's own bound is its protocol's to cap; a session's own reply budget: the RFC 21 plan) | MUST | §4.3, amended (D11); RFC 24 §3.3 | T5.4 |
 | R40 | A chain's members come from one record, each with its header at its own offset; `Decode`, `Unwrap`, `Admit` and `Lookup` run per member, and so does everything from the row checks to the encoding. Each member's admission is released once its reply is encoded, before the next member is admitted (D8) | MUST | §4.7, amended (D8, §9) | T5.4 |
@@ -366,7 +366,7 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
     `remote netip.Addr`, the budgets' key; `set settings.Settings`, the snapshot loaded at
     accept (D22); `out func(msg *resources.Buf, key, before uint64) error`, the writer's
     enqueue of a buffer that holds the reply's body alone, which the writer frames with
-    `Framer.Frame` (the RFC 20 amendment, `docs/rfc-20-e6-gaps`); `close func(err error)`,
+    `Framer.Frame` (the RFC 20 amendment, #4478); `close func(err error)`,
     `Conn.Close`; and `idle func()`, which the pipeline calls each time nothing runs, is
     held, is parked or waits for a status's buffer any more, the moment `wait` returns, for
     the idle timeout: E4's T4.7a adds it to `link`, an edit to `pipeline.go` it owns (the
@@ -604,7 +604,7 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   amends it, has every reply reserved from the reply pool, the receive reservation's overhead
   being the request's own. **The pipeline calls `Get` on the reply pool for every reply, of
   `Bound() + ReplyLen(h)`**, `ReplyLen` being the most the reply's header, a status-only body,
-  `Chain`'s padding and `Wrap`'s transform add (the RFC 20 amendment, `docs/rfc-20-e6-gaps`).
+  `Chain`'s padding and `Wrap`'s transform add (the RFC 20 amendment, #4478).
   A small request is then charged 12 KiB twice while it runs.
   **A reply that carries a status alone and holds no reservation yet (a refusal before the
   reply was reserved, or R24's delay once a reservation's wait ends) waits for its buffer at
@@ -654,8 +654,8 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
   row's other columns.
 - **D11, the runner reserves the reply; it does not know a session's reply budget.** Every
   member of a single-reply compound is decoded before any runs (R37), so every bound is known:
-  **the runner takes one reply buffer of the bounds' sum before the first member runs**, which
-  meets "before each operation, not after". **A buffer whose charge passes a quarter of the
+  **the runner takes one reply buffer of the members' bounds summed plus the compound's
+  `ReplyLen(h)`, before the first member runs**, which meets "before each operation, not after". **A buffer whose charge passes a quarter of the
   reply pool's ceiling is answered `ErrReplyTooBig`, a new member of `Errors()`, at once**,
   the compound refused whole before any member runs, as a count past its cap is. The
   reservation is held
@@ -1154,7 +1154,8 @@ registry. Nothing else is exported.
   as `reply_wait`; T5.1a passes `link`'s context and `close`, so T5.3 declares neither; its
   caller keeps the request's record, and so its receive charge, until the status goes out or
   the wait ends (RFC 24 §6.1).
-  `ErrReplyTooBig`, added to `Errors()` as RFC 20 §4.7 now lists it, with `core.golden`. In
+  `ErrReplyTooBig`, added to `Errors()` as RFC 20 §4.7 now lists it, with `core.golden`, and
+  `testproto`'s row for it (§1.1's change 8), with its own status. In
   `pkg/resources`, `BufPool.TryGet(key, n) (*Buf, bool)` and `BufPool.Ceiling() int64`, as
   RFC 24 §2.5 now declares them, over a try and a ceiling on `WaitBudget` that stay
   unexported; T5.4's try and quarter and T5.11's park read them (D8, D9, D11), with
@@ -1237,7 +1238,7 @@ registry. Nothing else is exported.
   `pipeline.go`, `link`, `shared`, `pipeline` and D1's functions:
   `withDefaults` (R6, D6, D25), `serve` as D8 splits it, one request from `Route` to `out` in
   RFC 20 §4.7's order, a message's arguments read from `HeaderCodec.Args` (the RFC 20
-  amendment, `docs/rfc-20-e6-gaps`), D6's paths (an error before a table, an `Unwrap` refusal
+  amendment, #4478), D6's paths (an error before a table, an `Unwrap` refusal
   wrapped under the header it returned and that of a header that failed `Decode` not passed
   to `Wrap`, as
   RFC 20 §5.5 says, `Unwrap`'s nil header closing the connection), decode errors wrapped in
@@ -1467,10 +1468,10 @@ registry. Nothing else is exported.
     build, and so does one with no `ErrReplyTooBig` row or whose only one names an operation
     or a range of versions. A table with no `Members` row and no `ErrReplyTooBig` row builds
     without a panic.
-  - A compound whose charge passes a quarter of the reply pool's ceiling (the class of its
-    bounds' sum and the header, plus `BufPool`'s 8 KiB) is answered `ErrReplyTooBig`'s status
-    at once, under a context with no deadline, with no member run and nothing reserved; one
-    charged at a quarter runs. With the reply budget full, a compound makes
+  - A compound whose charge passes a quarter of the reply pool's ceiling (the class of the
+    members' bounds' sum, the compound's `ReplyLen(h)`, plus `BufPool`'s 8 KiB) is answered
+    `ErrReplyTooBig`'s status at once, under a context with no deadline, with no member run and
+    nothing reserved; one charged at a quarter runs. With the reply budget full, a compound makes
     no call until room is freed.
   - `judge` serves a compound of a `PutFH` and an `Echo` whose argument says release, and
     refuses one whose `Echo` says none, or whose last member does not decode; it returns the
@@ -2077,9 +2078,10 @@ A suggestion only: one pull request per subtask works as well.
   connection, close and byte series are E4's, and so are D1's calls into the pipeline.
 - **Against the epic's first description.** That description had eleven subtasks at 26.5
   man-days. The eleven ids stand for the same work. T5.2 is split by order: T5.2a, which
-  #4194 delivered in part, builds the table before the pipeline, and T5.2b checks rows in
-  it. T5.1 is split by concern: the pipeline at its seam, its observability, and what a
-  socket decides (T5.1c); the end-to-end specification turns green with E4's T4.2a. T5.5 is
+  #4194, #4229, #4266 and #4426 delivered, builds the table before the pipeline, and T5.2b
+  checks rows in it. T5.1 is split by concern: the pipeline at its seam, its observability,
+  and what a socket decides (T5.1c); the end-to-end specification turns green with E4's
+  T4.2a. T5.5 is
   split in four: it would pass the 5 man-day ceiling whole, T5.5a needs E3 and no
   connection, and T5.5d needs neither. T5.4 is whole: its earlier split by what needs a
   connection went with D2. The total is 30.5 man-days: 26.5, plus about 1 for the amendments
