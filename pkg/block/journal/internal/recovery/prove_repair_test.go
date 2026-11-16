@@ -447,6 +447,39 @@ func TestTheRepairReappliesTheSyncedLossCutsItsFoldUndid(t *testing.T) {
 	}
 }
 
+// TestTheRepairReportsAReappliedLossOnce holds the marker dedup over a loss
+// that leaves one: a synced corrupt loss drops the extent of the write it
+// names and leaves a marker saying so, and when a torn write over that
+// extent makes the repair fold the write back, the re-applied cut names the
+// same loss again — the one change Since owes the caller, never one per
+// application.
+func TestTheRepairReportsAReappliedLossOnce(t *testing.T) {
+	const KiB = 1024
+	file := tailFile()
+	w := writeRec(5, 3, 0, 8*KiB)                      // W, v3 seq5 over [0,8K)
+	l := plantLossRec(file, 5, 8, 4, 0, 4*KiB, 1|1<<8) // a synced corrupt loss dropping seq5 over [0,4K) at v4, leaving its marker
+	seg1 := buildSeg(1, w, l)
+	tornSeg := buildSeg(2, writeRec(9, 6, 0, 4*KiB)) // the torn write over the loss extent
+	copy(tornSeg, raw.SegmentHeader{Identity: journalID, ID: 2}.Bytes())
+	tornAt := int64(format.SegmentHeaderSize)
+	tornSeg[tornAt+format.RecordHeaderSize+8+2] ^= 0xff
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, seg1)
+	r.plantSeg(2, tornSeg)
+
+	st := runTails(t, r)
+
+	noTornReport(t, st)
+	if p, ok := st.Rebuilt.Index.Lookup(file, 0); ok {
+		t.Errorf("Lookup at 0 got %+v, want a miss: the synced corrupt cut takes the extent the repair's fold re-placed, again", p)
+	}
+	if got := len(st.Rebuilt.Index.Since(file, core.Version{})); got != 1 {
+		t.Errorf("Since: got %d changes, want 1: the repair's re-applied loss cut reports once", got)
+	}
+}
+
 // TestTheTornRecordsOwnCopyKeepsItsMarkerWhenItsReachIsEmpty holds the
 // survivor rule over a reach that spans no byte: a truncate past every
 // offset reaches nothing, yet its copy in a surviving home names a record
