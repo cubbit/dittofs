@@ -54,3 +54,40 @@ func TestHistogramWithoutBucketsPanics(t *testing.T) {
 	}()
 	New("v", "c").Histogram(Spec{Name: "t_seconds", Help: "h"})
 }
+
+// A spec registered twice returns the vector registered first, so two
+// components on one registry record into one series; the same name with
+// other labels, or as another kind, panics.
+func TestRegistryCallsReturnTheVectorAlreadyRegistered(t *testing.T) {
+	m := New("v", "c")
+	spec := Spec{Name: "t_events_total", Help: "h", Labels: []string{"protocol"}}
+	a, b := m.Counter(spec), m.Counter(spec)
+	if a != b {
+		t.Error("a counter registered twice gave two vectors")
+	}
+	a.WithLabelValues("smb").Inc()
+	b.WithLabelValues("smb").Inc()
+	if !strings.Contains(scrape(t, m), `dittofs_t_events_total{protocol="smb"} 2`+"\n") {
+		t.Error("two records through the two calls are not one series of 2")
+	}
+	gauge := Spec{Name: "t_depth", Help: "h", Labels: []string{"protocol"}}
+	hist := Spec{Name: "t_seconds", Help: "h", Labels: []string{"stage"}, Buckets: Request}
+	g1, g2 := m.Gauge(gauge), m.Gauge(gauge)
+	h1, h2 := m.Histogram(hist), m.Histogram(hist)
+	if g1 != g2 || h1 != h2 {
+		t.Error("a gauge or histogram registered twice gave two vectors")
+	}
+	for name, register := range map[string]func(){
+		"other labels": func() { m.Counter(Spec{Name: "t_events_total", Help: "h", Labels: []string{"stage"}}) },
+		"another kind": func() { m.Gauge(spec) },
+	} {
+		func() {
+			defer func() {
+				if p := recover(); p == nil {
+					t.Errorf("t_events_total registered again with %s: no panic", name)
+				}
+			}()
+			register()
+		}()
+	}
+}

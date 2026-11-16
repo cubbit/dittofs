@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -31,27 +32,42 @@ var buckets = [...][]float64{
 	Request: {100e-6, 250e-6, 500e-6, 1e-3, 2.5e-3, 5e-3, 10e-3, 25e-3, 50e-3, 100e-3, 250e-3, 500e-3, 1, 2.5, 5, 10, 30, 60},
 }
 
-// Counter registers s as a counter vector.
+// Counter registers s as a counter vector, or returns the one registered
+// under it already.
 func (m *Metrics) Counter(s Spec) *prometheus.CounterVec {
-	v := prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: Namespace, Name: s.Name, Help: s.Help}, s.Labels)
-	m.registry.MustRegister(v)
-	return v
+	return register(m, prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: Namespace, Name: s.Name, Help: s.Help}, s.Labels))
 }
 
-// Gauge registers s as a gauge vector.
+// Gauge registers s as a gauge vector, or returns the one registered under
+// it already.
 func (m *Metrics) Gauge(s Spec) *prometheus.GaugeVec {
-	v := prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: Namespace, Name: s.Name, Help: s.Help}, s.Labels)
-	m.registry.MustRegister(v)
-	return v
+	return register(m, prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: Namespace, Name: s.Name, Help: s.Help}, s.Labels))
 }
 
-// Histogram registers s as a histogram vector over its bucket set; a Spec
-// with none panics, since the client library would fill in its default set.
+// Histogram registers s as a histogram vector over its bucket set, or
+// returns the one registered under it already; a Spec with none panics,
+// since the client library would fill in its default set.
 func (m *Metrics) Histogram(s Spec) *prometheus.HistogramVec {
 	if s.Buckets == None || int(s.Buckets) >= len(buckets) {
 		panic(fmt.Sprintf("metrics: histogram %s: no bucket set", s.Name))
 	}
-	v := prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: Namespace, Name: s.Name, Help: s.Help, Buckets: buckets[s.Buckets]}, s.Labels)
-	m.registry.MustRegister(v)
-	return v
+	return register(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: Namespace, Name: s.Name, Help: s.Help, Buckets: buckets[s.Buckets]}, s.Labels))
+}
+
+// register registers v, or returns the vector of v's kind registered under
+// its spec already: a node's components share its registry, and each
+// registers what it records, as each adapter does. A vector registered
+// under the same name with another spec or kind panics, naming it.
+func register[V prometheus.Collector](m *Metrics, v V) V {
+	err := m.registry.Register(v)
+	if err == nil {
+		return v
+	}
+	var dup prometheus.AlreadyRegisteredError
+	if errors.As(err, &dup) {
+		if existing, ok := dup.ExistingCollector.(V); ok {
+			return existing
+		}
+	}
+	panic(fmt.Sprintf("metrics: register: %v", err))
 }

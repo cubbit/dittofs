@@ -254,10 +254,26 @@ func TestSeriesStageValues(t *testing.T) {
 	}
 }
 
-// The error label names every sentinel of the service's closed set once, in
-// snake case, and each typed value of the set matches exactly one of them.
+// The error label names every sentinel of the service's closed set once, by
+// its name without Err in snake case (§10.1), and each typed value of the
+// set matches exactly one of them.
 func TestServiceErrorsNameEverySentinel(t *testing.T) {
 	names := core.ServiceErrorNames()
+	want := map[error]string{
+		vfs.ErrNotFound: "not_found", vfs.ErrExist: "exist", vfs.ErrNotEmpty: "not_empty",
+		vfs.ErrNotDir: "not_dir", vfs.ErrIsDir: "is_dir", vfs.ErrAccess: "access",
+		vfs.ErrPerm: "perm", vfs.ErrStale: "stale", vfs.ErrReadOnly: "read_only",
+		vfs.ErrNameTooLong: "name_too_long", vfs.ErrInvalid: "invalid", vfs.ErrNoSpace: "no_space",
+		vfs.ErrQuota: "quota", vfs.ErrLocked: "locked", vfs.ErrRangeNotLocked: "range_not_locked",
+		vfs.ErrShareViolation: "share_violation", vfs.ErrDeletePending: "delete_pending", vfs.ErrGrace: "grace",
+		vfs.ErrDelay: "delay", vfs.ErrBlocked: "blocked", vfs.ErrWrongSecurity: "wrong_security",
+		vfs.ErrState: "state", vfs.ErrCross: "cross", vfs.ErrIncomplete: "incomplete",
+		vfs.ErrInconsistent: "inconsistent", vfs.ErrLost: "lost", vfs.ErrUnavailable: "unavailable",
+		vfs.ErrCorrupt: "corrupt", vfs.ErrIO: "io", vfs.ErrPastEnd: "past_end",
+	}
+	if !maps.Equal(names, want) {
+		t.Errorf("the error label names %v, want %v", names, want)
+	}
 	snake := regexp.MustCompile(`^[a-z]+(_[a-z]+)*$`)
 	seen := map[string]bool{}
 	for err, name := range names {
@@ -373,23 +389,49 @@ func TestSeriesRefuseATableWithoutProtocol(t *testing.T) {
 	}
 }
 
-// One table on two servers records into each server's own registry.
-func TestSeriesOneTableOnTwoServers(t *testing.T) {
-	m1, m2 := metrics.New("v", "c"), metrics.New("v", "c")
+// Two servers on one registry, as a node's adapters are, register each
+// vector once and record into the same series.
+func TestSeriesTwoServersOnOneRegistry(t *testing.T) {
+	m := metrics.New("v", "c")
 	tb := routed(t)[0]
-	if _, err := core.NewShared(adapter.Deps{Metrics: m1}).Table(tb); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		ts, err := core.NewShared(adapter.Deps{Metrics: m}).Table(tb)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ts.UnmappedErr()
 	}
-	s2, err := core.NewShared(adapter.Deps{Metrics: m2}).Table(tb)
+	got, _ := scrape(t, m)
+	if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 2 {
+		t.Errorf("%s = %v after one record on each server, want 2", k, got[k])
+	}
+}
+
+// A compound member's panic counts under its own operation, with its
+// parent's label; an operation outside the table counts nothing and does
+// not crash.
+func TestSeriesPanicsByOperation(t *testing.T) {
+	m := metrics.New("v", "c")
+	sh := core.NewShared(adapter.Deps{Metrics: m})
+	tb := routed(t)[0]
+	ts, err := sh.Table(tb)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s2.UnmappedErr()
-	k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"
-	got1, _ := scrape(t, m1)
-	got2, _ := scrape(t, m2)
-	if got1[k] != 0 || got2[k] != 1 {
-		t.Errorf("%s = %v on the first server and %v on the second, which recorded it; want 0 and 1", k, got1[k], got2[k])
+	members := tb.Ops[testproto.OpCompound].Members
+	ms, err := sh.Table(members)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := members.Ops[testproto.OpEcho]
+	ms.Panicked(member)
+	ts.Panicked(&core.Op{Code: 1 << 30, Name: "Absent"})
+	got, _ := scrape(t, m)
+	if k := "adapter_handler_panics_total{op=" + strings.ToLower(member.Name) + ",protocol=" + testproto.Name + "}"; got[k] != 1 {
+		t.Errorf("%s = %v after one member's panic, want 1", k, got[k])
+	}
+	if k := "adapter_handler_panics_total{op=absent,protocol=" + testproto.Name + "}"; got[k] != 0 {
+		t.Errorf("%s = %v, want no series for an operation outside the table", k, got[k])
 	}
 }
 
@@ -420,7 +462,7 @@ func record(sh *core.Shared, ts *core.TableSeries, ls *core.LabelSeries, op *cor
 }
 
 // Recording on resolved series allocates nothing, with a registry and with
-// none.
+// none, and nor does finding the series Route finds once per request.
 func TestSeriesRecordAllocatesNothing(t *testing.T) {
 	if prof.RaceEnabled {
 		t.Skip("the race detector changes allocation counts")
@@ -436,6 +478,12 @@ func TestSeriesRecordAllocatesNothing(t *testing.T) {
 		op := tb.Ops[testproto.OpEcho]
 		if n := testing.AllocsPerRun(100, func() { record(sh, ts, ls, op) }); n != 0 {
 			t.Errorf("with %s, recording allocates %v times per run, want 0", name, n)
+		}
+		if n := testing.AllocsPerRun(100, func() {
+			_, _ = sh.Table(tb)
+			sh.Label(testproto.Name)
+		}); n != 0 {
+			t.Errorf("with %s, finding a resolved table's and label's series allocates %v times per run, want 0", name, n)
 		}
 	}
 }

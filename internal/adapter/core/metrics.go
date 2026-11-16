@@ -198,10 +198,17 @@ func (t *tableSeries) routed(from *labelSeries) {
 	t.inFlight.Add(1)
 }
 
-func (t *tableSeries) unmappedErr()    { t.unmapped.Add(1) }
-func (t *tableSeries) holdRefused()    { t.holdRefusals.Add(1) }
-func (t *tableSeries) split(r split)   { t.splits[r].Add(1) }
-func (t *tableSeries) panicked(op *Op) { t.panics[op.Code].Add(1) }
+func (t *tableSeries) unmappedErr()  { t.unmapped.Add(1) }
+func (t *tableSeries) holdRefused()  { t.holdRefusals.Add(1) }
+func (t *tableSeries) split(r split) { t.splits[r].Add(1) }
+
+// panicked counts op's panic. An op outside the table counts nothing: a
+// recovered panic is never turned into a crash.
+func (t *tableSeries) panicked(op *Op) {
+	if c := t.panics[op.Code]; c != nil {
+		c.Add(1)
+	}
+}
 
 // statusMapped counts a service error a row answered under the sentinel it
 // matches; an error of core's own matches none and is not counted.
