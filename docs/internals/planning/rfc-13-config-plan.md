@@ -70,16 +70,13 @@ start and names the record that replaced it.
   service records, and the base and name attributes choose which entry a name maps to, so every
   field of the record is admin's, as `identity.oidc` is. The row's text is the RFC 18 plan's pull request's, word for
   word, which carries this clause too, so the two merge cleanly in either order.
-- **A2. RFC 13 §7 names the provider's full surface**: below the interface #4050 amends, which
-  this plan leaves as #4050 writes it, one block declares the built-in provider's methods,
-  `Resolve`, `Seal`, `Versions`, `Prune` and `Delete` with their kind and owner and `Seal` with
-  its `Meta`, and `Meta` and `Version`. `Seal` returns the sealed `Secret` unwritten, and its
-  caller commits it with `ControlPlaneTx.PutSecret` inside its own audited `Write` (§4.4), so a
-  secret's change commits with its audit record or not at all (RFC 23 §6); RFC 16 is unchanged. So the surface the RFC 18 plan's O9 freezes lives in the RFC rather than
-  only here. Editing #4050's lines now would conflict with it, so the two blocks fold on this
-  plan's rebase after #4050 merges: the upper block becomes the one `SecretProvider`, its `Seal`
-  taking `m Meta` and returning the unwritten `Secret`, `Delete` taking the kind and owner, and the lower keeps only what the built-in provider adds, a
-  `RotatingProvider` embedding it with `Versions` and `Prune`, then `Meta` and `Version`.
+- **A2. RFC 13 §7 names the provider's full surface**: one `SecretProvider` block declares the
+  built-in provider's methods, `Resolve`, `Seal`, `Versions`, `Prune` and `Delete` with their kind
+  and owner and `Seal` with its `Meta`, followed by `Meta` and `Version`. `Seal` returns the sealed
+  `Secret` unwritten, and its caller commits it with `ControlPlaneTx.PutSecret` inside its own
+  audited `Write` (§4.4), so a secret's change commits with its audit record or not at all
+  (RFC 23 §6); RFC 16 is unchanged. So the surface the RFC 18 plan's O9 freezes lives in the RFC
+  rather than only here.
 
 The amendments this plan relies on land with the plans that need them:
 - the adapter `port` row and the `node-id` files, in #4050;

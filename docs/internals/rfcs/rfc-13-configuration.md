@@ -730,7 +730,9 @@ A deployment **MAY** split a key further by secret kind.
 interface. The built-in provider above — sealed `Secret` records under the role
 wrapping keys — ships now; an external key-management provider comes later,
 behind the same interface and the same references, so adding it changes no
-record. Signatures are indicative:
+record. Signatures are indicative; besides the kind and owner checks, the
+built-in provider carries the three things a rotating holder needs — `Meta`,
+`Versions` and `Prune`:
 
 ```go
 // SecretProvider resolves a secret reference to its value. It never lists
@@ -742,29 +744,14 @@ type SecretProvider interface {
 	// owner ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)'s `Secret`) is not the caller's, so a
 	// reference cannot be pointed at another holder's secret.
 	Resolve(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef) ([]byte, error)
-	// Seal stores value under ref, sealed with role's wrapping key, and
-	// returns the reference to record in configuration; a new version of an
-	// existing ref keeps its kind and owner, and one naming others is refused.
-	Seal(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef, value []byte) (SecretRef, error)
-	// Delete destroys every version of the secret; a later Resolve of ref
-	// fails.
-	Delete(ctx context.Context, ref SecretRef) error
-}
-```
-
-The built-in provider's full surface, with the kind and owner `Resolve` and
-`Seal` check, and the three things a rotating holder needs — `Meta`, `Versions`
-and `Prune`:
-
-```go
-type SecretProvider interface {
-	Resolve(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef) ([]byte, error)
-	// Seal wraps value as the next version of ref and returns it unwritten.
-	// The caller commits it with ControlPlaneTx.PutSecret(s, s.Version-1)
-	// inside its own Write, beside the record naming ref and its audit record
-	// (RFC 16 §3, RFC 23 §6), so a sealed version commits with its change or
-	// not at all. Wrapping runs before that Write, so a rerun of its function
-	// does not wrap again; a concurrent seal since fails the commit's expect.
+	// Seal wraps value with role's wrapping key as the next version of ref and
+	// returns it unwritten; a new version of an existing ref keeps its kind
+	// and owner, and one naming others is refused. The caller commits it with
+	// ControlPlaneTx.PutSecret(s, s.Version-1) inside its own Write, beside the
+	// record naming ref and its audit record (RFC 16 §3, RFC 23 §6), so a
+	// sealed version commits with its change or not at all. Wrapping runs
+	// before that Write, so a rerun of its function does not wrap again; a
+	// concurrent seal since fails the commit's expect.
 	Seal(ctx context.Context, role Role, kind SecretKind, owner SecretOwner, ref SecretRef, value []byte, m Meta) (Secret, error)
 	// Versions opens every version still held, current first, checked
 	// against the caller's kind and owner as Resolve checks the current one,
@@ -776,6 +763,8 @@ type SecretProvider interface {
 	// Resolve does, so a wrong reference neither destroys another holder's
 	// secret nor cuts its retention short.
 	Prune(ctx context.Context, kind SecretKind, owner SecretOwner, ref SecretRef) error
+	// Delete destroys every version of the secret; a later Resolve of ref
+	// fails.
 	Delete(ctx context.Context, kind SecretKind, owner SecretOwner, ref SecretRef) error
 }
 
