@@ -27,8 +27,7 @@ func TestADFixture(t *testing.T) {
 		t.Skip("docker not found, skipping AD-DC integration test")
 	}
 
-	dcIP, keytabPath, krb5ConfPath, cleanup := setupADDC(t)
-	defer cleanup()
+	dcIP := setupADDC(t)
 
 	// A client reaching the DC by its host name verifies its certificate
 	// against the exported CA alone, with Go's default verification.
@@ -122,4 +121,29 @@ func TestADFixture(t *testing.T) {
 			}
 		}
 	})
+
+	// The DC's smb.conf names the certificate files the entrypoint writes, so
+	// a Samba whose default TLS location moves still serves them.
+	t.Run("smb.conf names the TLS files", func(t *testing.T) {
+		for param, want := range map[string]string{
+			"tls certfile": "/var/lib/samba/private/tls/cert.pem",
+			"tls keyfile":  "/var/lib/samba/private/tls/key.pem",
+			"tls cafile":   "/var/lib/samba/private/tls/ca.pem",
+		} {
+			out, err := adDockerExec("testparm", "-s", "--parameter-name", param)
+			if err != nil {
+				t.Fatalf("testparm %q: %v\n%s", param, err, out)
+			}
+			if got := lastLine(string(out)); got != want {
+				t.Errorf("smb.conf %q = %q, want %q", param, got, want)
+			}
+		}
+	})
+}
+
+// lastLine returns the last non-empty line of out, trimmed: testparm prints
+// its warnings before the value.
+func lastLine(out string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
 }

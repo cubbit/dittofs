@@ -65,9 +65,7 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 	}
 
 	// Start the AD-DC fixture (reuses setupADDC from ad_dc_integration_test.go).
-	setupADDC(t)
-
-	dcIP := getContainerIP(t)
+	dcIP := setupADDC(t)
 	t.Logf("AD-DC container IP: %s", dcIP)
 
 	// NETLOGON needs EPM (135) + SMB (445); LDAP join needs 389 (StartTLS).

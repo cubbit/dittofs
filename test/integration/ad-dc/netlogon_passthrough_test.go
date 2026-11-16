@@ -6,7 +6,6 @@ import (
 	"context"
 	"net"
 	"os/exec"
-	"strings"
 	"testing"
 	"time"
 
@@ -23,38 +22,6 @@ const (
 	machineAccountPass = "MachinePass01!"
 )
 
-// getContainerIP returns the IP of adContainerName on its fixture network.
-// In CI (Linux) this IP is directly reachable from the host, which is required
-// for NETLOGON: the endpoint mapper (port 135) and dynamic RPC ports must all
-// be reachable without NAT. On macOS/Docker Desktop container IPs are not
-// host-reachable, so the NetworkLogon call times out and the test FAILS there
-// (it does not skip) — run this only in CI (Linux) or inside a Linux VM.
-func getContainerIP(t *testing.T) string {
-	t.Helper()
-	// Newer Docker engines drop the legacy top-level .NetworkSettings.IPAddress
-	// field, so a {{json .NetworkSettings.IPAddress}} template errors out; use the
-	// per-network Networks map, populated on both old and new engines. In CI
-	// (Linux) this bridge IP is host-reachable, which NETLOGON requires (EPM
-	// port 135 + the dynamic RPC port, no NAT).
-	// Emit one IP per line so multiple attached networks don't concatenate into
-	// a single invalid address; the AD-DC fixture attaches only its own
-	// network, so the first non-empty line is the IP we want.
-	out, err := adDockerOutput("inspect",
-		"--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}\n{{end}}",
-		adContainerName,
-	)
-	if err != nil {
-		t.Fatalf("docker inspect network IP: %v", err)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if ip := strings.TrimSpace(line); ip != "" {
-			return ip
-		}
-	}
-	t.Fatal("could not determine container IP address from docker inspect")
-	return ""
-}
-
 // TestNetlogonPassthroughAlice validates the full NETLOGON passthrough path:
 // the Authenticator opens a sealed NETLOGON secure channel to the AD-DC using
 // the machine account DITTOFS$ and calls NetrLogonSamLogon with alice's NTLMv2
@@ -69,11 +36,7 @@ func TestNetlogonPassthroughAlice(t *testing.T) {
 		t.Skip("docker not found, skipping NETLOGON passthrough test")
 	}
 
-	// setupADDC starts this test's Samba AD-DC container; the DC address comes
-	// from docker inspect.
-	setupADDC(t)
-
-	dcIP := getContainerIP(t)
+	dcIP := setupADDC(t)
 	t.Logf("AD-DC container IP: %s", dcIP)
 
 	// Wait for the DC's DCE-RPC endpoint mapper (port 135) AND the SMB server

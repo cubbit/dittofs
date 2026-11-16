@@ -79,7 +79,10 @@ if [ ! -f /var/lib/samba/.provisioned ]; then
         --domain="$DOMAIN" \
         --server-role=dc \
         --dns-backend=SAMBA_INTERNAL \
-        --adminpass="$ADMIN_PASSWORD"
+        --adminpass="$ADMIN_PASSWORD" \
+        --option="tls certfile = /var/lib/samba/private/tls/cert.pem" \
+        --option="tls keyfile = /var/lib/samba/private/tls/key.pem" \
+        --option="tls cafile = /var/lib/samba/private/tls/ca.pem"
 
     # Samba writes its own krb5.conf during provision; expose it to other
     # containers / the Go test on the shared volume.
@@ -93,8 +96,8 @@ fi
 # The DC serves LDAPS and StartTLS with a certificate from a CA made here once
 # per domain and exported as $KEYTAB_DIR/ca.pem, so a client verifies the DC
 # rather than skipping verification. Samba's own generated certificate names
-# the DC in its CN only, which Go refuses. Writing Samba's default tls/ paths
-# before it starts stops it generating its own. The certificate is issued again
+# the DC in its CN only, which Go refuses. The provisioned smb.conf names the
+# tls/ files written here, so Samba serves them rather than generating its own. The certificate is issued again
 # at every start because its SANs carry the container's IPs, which a restart
 # can change; its DNS SAN is the DC's host name, fixed by the container's
 # --hostname.
