@@ -246,7 +246,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R60 | The API exports `api_requests_total`, `api_request_seconds`, `api_calls_in_flight`, `api_calls_in_flight_limit`, `api_precondition_failures_total`, `api_idempotent_replays_total`, `api_idempotency_records_written_total`, `api_operations`, `api_operation_oldest_seconds`, `api_unmapped_errors_total` and `audit_records_total`, and opens one span per call named by its `op`, never carrying a body field | MUST | RFC 23 §11; RFC 23 plan §1.5 rule 3 | T4.2, T4.3, T4.4, T4.6 |
 | R61 | No package under `internal/node` but `node` itself imports an adapter, a sidecar or a component's implementation | MUST NOT | RFC 23 CP16 | T4.2, T4.4, T4.9, T4.11 |
-| R62 | `internal/node/api` reaches the control-plane store's writes only inside `Write`, from the write adapter, which always sets the audit record | invariant | RFC 23 CP12 | T4.4 |
+| R62 | `internal/node/api` reaches the control-plane store's writes only inside `Write`, called from the write adapter or from `internal/node/api/auth`, each call setting the audit record but auth's sign-in count (D20) | invariant | RFC 23 CP12 | T4.4 |
 | R63 | No secret value appears in an API answer, an audit record, an idempotency record, a log line or a metric | MUST NOT | RFC 23 CP11 | T4.4, T4.9, T4.11 |
 
 R9 is withdrawn: the connections route lands with its producer (§1.2).
@@ -334,6 +334,17 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
   webhooks run before the storage write (from memory).
 - **D18, the API's clock is its own `Now` and `After`**, which `engine.Clock` and `sim.TestClock`
   both satisfy, so `internal/node/api` imports no engine package. No marker.
+- **D20, what the write rule and the import rule allow `auth`.** `internal/node/api/auth` may
+  call `Write`, since its writes carry no request the write adapter decodes. Each of its calls sets
+  `Audit` but one: the sign-in count, the transaction that raises the counts before the password is
+  checked, writes no audit record, because RFC 23 §6 audits the attempt when it settles, in the
+  settle's own `Write`, and an attempt that never settles was never checked, so it is counted and
+  not recorded. A `decision:` marker at the count names that rule and its overturn: a count that
+  must be recorded on its own. `pkg/secrets` passes the import allow-list, for `auth` and the API
+  alike: it is the RFC 13 plan's library of sealing and resolving over records, holding no running
+  component, and the key providers it seals under are built and handed in by the node, so
+  `pkg/keyprovider`'s implementations stay off the list. The API's `Deps.Sealer` (D13) stays an
+  interface so a nil one refuses. No marker beyond the count's.
 - **D19, the problem writer reads `Retry-After` from the error.** An error implementing
   `RetryAfter() time.Duration` sets the header: the call bound, `starting`, a store unreachable, and
   E5's `429` `throttled`. No marker.
@@ -466,8 +477,11 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   (D12); `api_precondition_failures_total`, `api_idempotent_replays_total`,
   `api_idempotency_records_written_total` and `audit_records_total`; E3's write rule extended: an
   allow-list of the store methods the API may call, `entity.ControlPlaneTx`'s exempt by name, and,
-  with `go/types`, `Write` called only from the write adapter, which always sets `Audit`. Consumed
-  by every resource subtask and E5, whose own writes go through the same adapter.
+  with `go/types`, `Write` called only from the write adapter and from functions of
+  `internal/node/api/auth`, each passing a `WriteMeta` whose `Audit` is set, but auth's sign-in
+  count, exempt by name (D20); `pkg/secrets` on the import allow-list (D20). Consumed by every
+  resource subtask and E5, whose own writes (the sign-in count and settle, sessions, tokens,
+  passwords) call `Write` from `auth` with their own `WriteMeta`.
 - **Acceptance criteria:**
   - A write commits its records and its audit record or neither; a replay changes nothing and
     answers what was first sent.
@@ -483,7 +497,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   read raw holding no value (R63); a second operation on one target `409` `operation_running`
   naming it (R27); a pre-write step failing, nothing written and the step's error answered, and a
   conflict retry not running the step again (R64); the write rule over planted cases, a store write
-  outside `Write` and a type assertion on `Deps.Store` reaching `PutUser` (R62, R54, R61).
+  outside `Write`, a type assertion on `Deps.Store` reaching `PutUser`, a `Write` from a resource
+  handler, and one from `auth` with no `Audit` other than the count (R62, R54, R61).
 
 ### T4.5 Reads, listings and long polls
 
