@@ -197,14 +197,14 @@ func TestParseMountCall(t *testing.T) {
 	if c.XID() != 0x11223344 || c.Program() != 100005 || c.Version() != 3 || c.Procedure() != 0 {
 		t.Errorf("the MOUNT call parses as %#x %d %d %d", c.XID(), c.Program(), c.Version(), c.Procedure())
 	}
-	if fl != wire.AuthSys || len(cred) != 28 {
-		t.Fatalf("the credential is %d/%d bytes, want AUTH_SYS of 28", fl, len(cred))
+	if fl != wire.AuthSys || len(cred) != 32 {
+		t.Fatalf("the credential is %d/%d bytes, want AUTH_SYS of 32", fl, len(cred))
 	}
 	a, err := wire.DecodeAuthSys(cred)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Stamp != 0 || string(a.MachineName()) != "host" || a.UID != 1000 || a.GID != 100 || a.NGIDs != 1 || a.GIDs[0] != 27 {
+	if a.Stamp != 0x55667788 || string(a.MachineName()) != "host1" || a.UID != 1000 || a.GID != 100 || a.NGIDs != 1 || a.GIDs[0] != 27 {
 		t.Errorf("the MOUNT credential is %+v", a)
 	}
 	if _, ok := c.MinorVersion(); ok {
@@ -280,7 +280,8 @@ func TestParseRefusals(t *testing.T) {
 		}
 		// The credential's length claims a body the record does not hold; a
 		// version other than 2 stops the parse before it, so the router can
-		// answer RPC_MISMATCH (RFC 21 section 11.4).
+		// answer RPC_MISMATCH rather than a decode refusal (RFC 20 section
+		// 4.1's route row).
 		b = binary.BigEndian.AppendUint32(b, 1)
 		b = binary.BigEndian.AppendUint32(b, 400)
 		call, err := wire.ParseCall(b)

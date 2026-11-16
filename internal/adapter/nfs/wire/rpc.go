@@ -63,26 +63,23 @@ func ParseCall(rec []byte) (Call, error) {
 func walk(c []byte) (fields, error) {
 	var f fields
 	r := reader{b: c}
-	xid, ok := r.u32()
-	if !ok {
+	if _, ok := r.u32(); !ok {
 		return f, ErrUnaddressable
 	}
-	_ = xid
+	var ok bool
 	if f.typ, ok = r.u32(); !ok {
 		return f, ErrUnaddressable
 	}
 	if f.typ != callType {
 		return f, ErrNotCall
 	}
-	target := []*uint32{&f.rpcvers, &f.prog, &f.vers, &f.proc}
-	for i, p := range target {
-		v, isOK := r.u32()
-		if !isOK {
+	for i, p := range []*uint32{&f.rpcvers, &f.prog, &f.vers, &f.proc} {
+		v, ok := r.u32()
+		if !ok {
 			return f, fmt.Errorf("nfs/wire: %w: the call's field %d", errPastRecord, i)
 		}
 		*p = v
 	}
-	_ = target
 	if f.rpcvers != rpcVersion {
 		return f, nil
 	}
