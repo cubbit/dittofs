@@ -447,11 +447,10 @@ type rebuilt struct {
 // index discarded unbuilt, so a refused open returns no half-built state.
 // A read no bounded attempt completed is collected by its worker's reader
 // and merged into rd here, so the open refuses on every range the phase
-// could not read, as the attach pass's own are. losses is the loss sink the
-// kinds pass delivers to, nil when the open runs without one, and failed the
-// directory's failed list the pass withholds by, plain data from Deps; att
-// is the attach pass's answer for the segments in own, which the classing
-// reads for what a segment's fate depends on.
+// could not read, as the attach pass's own are. failed is the directory's
+// failed list the pass withholds by, plain data from Deps; att is the
+// attach pass's answer for the segments in own, which the classing reads
+// for what a segment's fate depends on.
 //
 // Nothing is written: the phase reads, feeds and finishes; the phases after
 // it own every change the open makes.
@@ -461,7 +460,7 @@ type rebuilt struct {
 // catalogued offsets — walking the two halves of one segment on two
 // readers, merging the scans — when a start-up profile of a journal with
 // huge segments shows the rebuild bound by one.
-func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, named map[core.SegmentID]bool, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool, losses LossSink, failed []core.Seq, att Attached) (rebuilt, kindResults, tails, error) {
+func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, named map[core.SegmentID]bool, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool, failed []core.Seq, att Attached) (rebuilt, kindResults, tails, error) {
 	ix := index.New(extentLimit)
 	ctr := &index.Counters{}
 	b := ix.Rebuilder(ctr)
@@ -580,7 +579,7 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	// hold, unhold, stamp and forget record the scans carry — and decides
 	// them against their own rules, before the tail's classing judges the
 	// corrupt drops the decode confines onto the same scans.
-	ks, kerr := decodeAsides(rd, identity, losses, failed, scans)
+	ks, kerr := decodeAsides(rd, identity, failed, scans)
 	if kerr != nil {
 		return rebuilt{}, kindResults{}, tails{}, kerr
 	}

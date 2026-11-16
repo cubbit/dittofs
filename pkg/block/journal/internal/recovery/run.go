@@ -40,8 +40,11 @@ type Deps struct {
 	// list.
 	Failed []core.Seq
 
-	// Losses is where the kinds pass delivers the loss records it finds on
-	// disk.
+	// Losses is where Run publishes the loss records the open found on
+	// disk, once the phases and the unreadable-ranges check have all
+	// passed: an open that refuses publishes nothing and takes no piece,
+	// so a retry re-entering the same directory finds the loss records on
+	// disk unreported and reports them then.
 	//
 	// decision: a nil Losses means no placement. Run never requires one
 	// non-nil, and every run before the journal's assembly opens — the
@@ -161,7 +164,7 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 	for _, id := range slices.Concat(st.Attached.Unverified, st.Attached.ZeroHeader) {
 		segs = append(segs, SegmentInfo{ID: id, Unverified: true})
 	}
-	out, kinds, tl, err := rebuildIndex(ctx, rd, expect, segs, named, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan, deps.Losses, deps.Failed, st.Attached)
+	out, kinds, tl, err := rebuildIndex(ctx, rd, expect, segs, named, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan, deps.Failed, st.Attached)
 	if err != nil {
 		return err
 	}
@@ -234,6 +237,16 @@ func Run(ctx context.Context, deps Deps, floor core.Version, expect core.Journal
 	ranges := rd.Unreadable()
 	if len(ranges) > 0 {
 		return State{}, &core.UnreadableRangesError{Ranges: ranges}
+	}
+	// The loss records the open found on disk are published only now, at
+	// the success exit: every refusal above serves nothing and publishes
+	// nothing, and the sink's piece-dedup keeps the records unreported
+	// for the retry. The events carry SeqNum zero — the sink assigns the
+	// numbers, in the ring it owns.
+	if deps.Losses != nil {
+		for _, lo := range st.Kinds.Losses {
+			deps.Losses.Place(lo.Ev, lo.Dropped)
+		}
 	}
 	return st, nil
 }

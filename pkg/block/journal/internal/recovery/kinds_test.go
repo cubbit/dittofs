@@ -877,10 +877,16 @@ func TestRunRefusesAReadTheRemainderVerifyCannotComplete(t *testing.T) {
 	if err := r.seam.Schedule(kit.FailingFrom(kit.OpRead, name, verify, 0, syscall.EIO)); err != nil {
 		t.Fatalf("schedule: %v", err)
 	}
-	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	sink := &lossSink{}
+	d = r.runDeps()
+	d.Losses = sink
+	_, err := Run(context.Background(), d, core.Version{}, journalID, nil)
 	var ure *core.UnreadableRangesError
 	if !errors.As(err, &ure) {
 		t.Fatalf("Run over the read the verify could not complete got err %v, want an UnreadableRangesError naming the range no bound cleared", err)
+	}
+	if len(sink.placed) != 0 {
+		t.Errorf("the refused open published %d loss events, want none: an open that serves nothing publishes nothing", len(sink.placed))
 	}
 	if errors.Is(err, core.ErrCorrupt) {
 		t.Errorf("the refusal %v matches ErrCorrupt, want ErrUnreadable alone: a read the bound never cleared earns no verdict on bytes it never returned", err)
@@ -941,10 +947,16 @@ func TestRunRefusesAReadTheAsideBodyCannotComplete(t *testing.T) {
 	if err := r.seam.Schedule(kit.FailingFrom(kit.OpRead, name, want, 0, syscall.EIO)); err != nil {
 		t.Fatalf("schedule: %v", err)
 	}
-	_, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+	sink := &lossSink{}
+	d = r.runDeps()
+	d.Losses = sink
+	_, err := Run(context.Background(), d, core.Version{}, journalID, nil)
 	var ure *core.UnreadableRangesError
 	if !errors.As(err, &ure) {
 		t.Fatalf("Run over the read the aside body could not complete got err %v, want an UnreadableRangesError naming the range no bound cleared", err)
+	}
+	if len(sink.placed) != 0 {
+		t.Errorf("the refused open published %d loss events, want none: an open that serves nothing publishes nothing", len(sink.placed))
 	}
 	ranges := []core.SegmentRange{{Segment: id, Off: at, Len: 16}}
 	if !slices.Equal(ure.Ranges, ranges) {
@@ -1374,26 +1386,29 @@ func TestRunCollectsForgetsByTheirGreatestSeq(t *testing.T) {
 // record on disk does cover.
 func TestRunRefusesAVerifiedHoldKindRecord(t *testing.T) {
 	for _, tc := range []struct {
+		// name labels the subtest; kind is the record's own kind, the word
+		// the refusal names it by.
 		name string
+		kind string
 		rec  raw.Record
 		// with plants extra records beside the write of segment 1.
 		with []raw.Record
 	}{
-		{"hold", rec(11, func(rc *raw.Record) {
+		{"hold", "hold", rec(11, func(rc *raw.Record) {
 			rc.Offset, rc.Length = 0, 0
 			rc.Cut = &raw.CutBody{Cut: 3}
 		}), nil},
-		{"unhold", rec(12, func(rc *raw.Record) {
+		{"unhold", "unhold", rec(12, func(rc *raw.Record) {
 			rc.FileID = [16]byte{}
 			rc.Version = raw.Version{}
 			rc.Offset, rc.Length = 0, 0
 			rc.Cut = &raw.CutBody{Cut: 4}
 		}), nil},
-		{"stamp", rec(13, func(rc *raw.Record) {
+		{"stamp", "stamp", rec(13, func(rc *raw.Record) {
 			rc.Offset, rc.Length = 0, 0
 			rc.Cut = &raw.CutBody{Cut: 5}
 		}), nil},
-		{"hold", rec(11, func(rc *raw.Record) { // the seq just past the forget
+		{"hold past a forget", "hold", rec(11, func(rc *raw.Record) { // the seq just past the forget
 			rc.Seq = 31
 			rc.Offset, rc.Length = 0, 0
 			rc.Cut = &raw.CutBody{Cut: 3}
@@ -1406,14 +1421,22 @@ func TestRunRefusesAVerifiedHoldKindRecord(t *testing.T) {
 				rc.Offset, rc.Length = 0, 16
 				rc.Write = &raw.WriteBody{MTime: 1, Payload: make([]byte, 16)}
 			})}, tc.with...)...))
+			// A loss the open would publish: the refusal below must publish
+			// nothing, for the open serves nothing and the piece it would
+			// take belongs to the retry.
+			r.plantSeg(3, buildSeg(3, plantLossRec(kindsFile(3), 1, 99, 9, 0x100, 16, 1<<8)))
 			r.plantSeg(2, buildSeg(2, tc.rec))
 
-			st, err := r.asideRun(nil, nil)
+			sink := &lossSink{}
+			st, err := r.asideRun(sink, nil)
 			if !errors.Is(err, core.ErrNotImplemented) {
 				t.Fatalf("Run over a %s record got err %v, want one matching %v", tc.name, err, core.ErrNotImplemented)
 			}
-			if !strings.Contains(err.Error(), tc.name) {
-				t.Errorf("Run: the refusal %q names no %s, the record's own kind", err, tc.name)
+			if len(sink.placed) != 0 {
+				t.Errorf("the refused open published %d loss events, want none: an open that serves nothing publishes nothing", len(sink.placed))
+			}
+			if !strings.Contains(err.Error(), tc.kind) {
+				t.Errorf("Run: the refusal %q names no %s, the record's own kind", err, tc.kind)
 			}
 			if !strings.Contains(err.Error(), "segment 2") {
 				t.Errorf("Run: the refusal %q names no segment 2, the record's own segment", err)
@@ -1572,7 +1595,7 @@ func TestDecodeAsidesRefusesALossRecordThatNamesNoFile(t *testing.T) {
 		},
 	}}}}
 
-	_, err := decodeAsides(rd, journalID, nil, nil, scs)
+	_, err := decodeAsides(rd, journalID, nil, scs)
 	if !errors.Is(err, core.ErrCorrupt) {
 		t.Fatalf("decodeAsides over a loss record naming no file got err %v, want one matching %v", err, core.ErrCorrupt)
 	}

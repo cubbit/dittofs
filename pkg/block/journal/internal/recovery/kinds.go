@@ -150,15 +150,17 @@ type lossPiece struct {
 // same one, so a record whose body does not verify confines as a corrupt
 // drop on its own scan whatever its segment's source, and never reaches
 // this pass — and each aside carries the body that read decoded, which the
-// pass consumes. loss deliveries reach the sink when one is given, and none
-// is required: a nil one means no placement; the failed list the pass
-// withholds by is plain data the caller hands over, empty for none.
+// pass consumes. The collected losses land in State.Kinds.Losses, and the
+// run publishes them to the loss sink at its success exit: an open that
+// refuses publishes nothing and takes no piece, so the retry finds the
+// records on disk still unreported; the failed list the pass withholds by
+// is plain data the caller hands over, empty for none.
 //
 // A loss record whose header names a zero-length extent, or one that names
 // no file, refuses the open naming its segment and its offset. A body that
 // fails its checksum never reached the pass: a lost loss record errs toward
 // fetching the extent again.
-func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, failed []core.Seq, scs []segmentScan) (kindState, error) {
+func decodeAsides(rd *reader, identity core.JournalID, failed []core.Seq, scs []segmentScan) (kindState, error) {
 	ks := kindState{
 		whole:      map[core.Seq]bool{},
 		superseded: map[core.Seq]supersededLoss{},
@@ -260,9 +262,6 @@ func decodeAsides(rd *reader, identity core.JournalID, losses LossSink, failed [
 			Offloaded: d.l.Offloaded,
 			Synced:    d.l.Synced,
 			AtOpen:    true,
-		}
-		if losses != nil {
-			losses.Place(ev, d.l.Dropped)
 		}
 		ks.Losses = append(ks.Losses, OpenLoss{Ev: ev, Dropped: d.l.Dropped})
 	}
