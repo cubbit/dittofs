@@ -321,7 +321,7 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   provider built: `Apply` reads `State.Settings`, and T2.5 and T2.6 read `netbios_name` and
   `Deps.Secrets`. `New` does not require `Secrets`: while it is unset, `VerifyPassword` answers
   `ErrUnavailable` (fail closed), as epic 1's D4 rules, so no earlier caller of `New` changes.
-  E5's T5.10 adds `Prune` and `Versions` to `SecretProvider`, for its keytab.
+  E7's T7.12 adds `Prune` and `Versions` to `SecretProvider`, for the machine password's rotation.
   The section is one struct, so its `NTLM` key lands with it; its first reader is E3's T3.10, which refuses
   `Secret` callers while it is off, and E4's sign-in. `State.NTLM`, the revision, is a separate
   field with no reader in this epic or in E3: the conditional write that uses it is the API's
