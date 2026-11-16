@@ -91,4 +91,24 @@ type ControlPlaneTx interface {
 	NamespaceNamed(ns NamespaceID) (bool, error)
 	PutNamespace(n Namespace, expect uint64) (uint64, error)
 	DeleteNamespace(id NamespaceID, expect uint64) error
+	Session(id [16]byte) (Session, bool, error)
+	// SessionByRefresh finds the session a refresh hash was issued to,
+	// whether it is the session's current hash or one it replaced.
+	SessionByRefresh(hash [32]byte) (Session, bool, error)
+	// PutSession writes s and indexes s.Refresh beside every hash the
+	// session had before.
+	PutSession(s Session) error
+	// DeleteSession deletes the session and every refresh hash it had; an
+	// absent session is already deleted.
+	DeleteSession(id [16]byte) error
+	APITokenByHash(hash [32]byte) (APIToken, bool, error)
+	// PutAPIToken creates t; a token is never rewritten.
+	PutAPIToken(t APIToken) error
+	DeleteAPIToken(id [16]byte) error
+	SignInFailures(key SignInKey) (SignInFailures, bool, error)
+	// PutSignInFailures writes the count and moves its expiry with it: a
+	// source's 15 min after Failed, a pair's 24 h after Last; an account's
+	// does not expire.
+	PutSignInFailures(key SignInKey, f SignInFailures) error
+	DeleteSignInFailures(key SignInKey) error
 }
