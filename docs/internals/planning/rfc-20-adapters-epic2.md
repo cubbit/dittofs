@@ -225,7 +225,7 @@ names the epic that owns the rest.
   marker says a table check failing shows at the first request rather than at `New`, which a
   test protocol can afford.
 - **D8, the error tables are not total.** They map `core`'s refusals, `vfs.ErrDelay` (with a
-  bounded `Hold` in version 2), `context.Canceled` (`StatusCancelled`, what a parked or held
+  bounded `Hold` in version 2), `core.ErrCancelled` (`StatusCancelled`, what a parked or held
   request its client cancelled is answered), `core.ErrDraining` and `core.ErrMoved` (`NoReply`, as
   RFC 20 §4.7 maps `ErrMoved` where no move signal fits), each status named with the later test
   that reads it, and nothing else, so an unmapped service error, answered server fault and
