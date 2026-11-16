@@ -330,6 +330,12 @@ func (p *pipeline) serve(rec *resources.Buf) {
 	}
 	u, err := p.st.Security.Unwrap(h, rec, nil)
 	if u == nil {
+		if err == nil {
+			// Unwrap returns a header or an error, never neither (§4.7):
+			// one that breaks that closes the connection as a nil header
+			// does, under core's own error.
+			err = errUnwrapNeither
+		}
 		rec.Release()
 		p.l.close(err)
 		return
@@ -363,6 +369,10 @@ func (p *pipeline) serve(rec *resources.Buf) {
 
 // errChain closes a connection whose record chains more than one message.
 var errChain = errors.New("core: a record of more than one message")
+
+// errUnwrapNeither closes a connection whose Unwrap returned no header and
+// no error.
+var errUnwrapNeither = errors.New("core: Unwrap returned no header and no error")
 
 // refuse answers on the reader a refusal before Route, as the stages' table
 // maps it, under h, wrapped where wrap, and closes the connection after where

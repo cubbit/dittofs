@@ -176,9 +176,10 @@ var ErrFrame = errFrame
 type Pipeline = pipeline
 
 var (
-	WithDefaults = withDefaults
-	ErrChain     = errChain
-	ErrNoHold    = errNoHold
+	WithDefaults     = withDefaults
+	ErrChain         = errChain
+	ErrUnwrapNeither = errUnwrapNeither
+	ErrNoHold        = errNoHold
 )
 
 func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, out func(*resources.Buf, uint64, uint64) error, close func(error)) *Pipeline {

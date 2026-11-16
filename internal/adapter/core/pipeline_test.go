@@ -535,19 +535,39 @@ func (s *seam) sentNothing() bool {
 	return !sent
 }
 
+// unwrapsNeither is a Security whose Unwrap breaks its contract, returning
+// neither a header nor an error: an input.
+type unwrapsNeither struct{ core.Security }
+
+func (unwrapsNeither) Unwrap(core.Header, *resources.Buf, core.Header) (core.Header, error) {
+	return nil, nil
+}
+
 // A message whose Unwrap returns no header closes the connection with
-// Unwrap's error, and nothing is sent.
+// Unwrap's error, and nothing is sent; one whose Unwrap returns neither a
+// header nor an error closes it the same way, with core's own error.
 func TestUnwrapsNilHeaderClosesTheConnection(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		s := newSeam(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Security = undecryptable{st.Security} }}, 1<<20)
-		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
-		if err := <-s.closed; !errors.Is(err, errUndecryptable) {
-			t.Errorf("the connection closed with %v, want Unwrap's error", err)
-		}
-		if !s.sentNothing() {
-			t.Error("a message Unwrap said close for was answered")
-		}
-	})
+	for _, c := range []struct {
+		name string
+		sec  func(core.Security) core.Security
+		want error
+	}{
+		{"no header", func(s core.Security) core.Security { return undecryptable{s} }, errUndecryptable},
+		{"neither", func(s core.Security) core.Security { return unwrapsNeither{s} }, core.ErrUnwrapNeither},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				s := newSeam(t, edited{testproto.New(adapter.Deps{}), func(st *core.Stages) { st.Security = c.sec(st.Security) }}, 1<<20)
+				s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+				if err := <-s.closed; !errors.Is(err, c.want) {
+					t.Errorf("the connection closed with %v, want %v", err, c.want)
+				}
+				if !s.sentNothing() {
+					t.Error("a message Unwrap said close for was answered")
+				}
+			})
+		})
+	}
 }
 
 // Stages without Errors, or without Protocol, are refused, naming the field.
