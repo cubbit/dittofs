@@ -1035,7 +1035,8 @@ registry. Nothing else is exported.
 - **Acceptance criteria:**
   - Resolving one table twice on one server registers each series once, and so do two first
     resolutions of it at once; two tables under one label share their per-protocol series;
-    one table on two servers records into each server's own registry.
+    two servers on the node's one registry share its series, the second resolving the vectors
+    already there (#4444).
   - A table whose `Protocol` is empty is refused, naming it, and registers nothing.
   - A stages label resolves its own series once per server, beside each table's, and a label
     shared by stages and a table registers each series once.
