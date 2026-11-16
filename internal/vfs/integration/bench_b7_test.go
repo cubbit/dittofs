@@ -304,6 +304,69 @@ func (s *storm) latency(from, to time.Time) time.Duration {
 	return sum / time.Duration(n)
 }
 
+// stormWindow is what the storm did in one burst's window, to tell a slow
+// burst's cause: the chmods still running at its end and the oldest of them,
+// and the chmods that fell on the writers' files against the others.
+type stormWindow struct {
+	running    int           // started before the end and not returned by it
+	oldest     time.Duration // the age at the end of the oldest of those
+	onWriters  int           // started in the window on a writer's file
+	writersLat time.Duration // mean latency of those that returned in it
+	othersLat  time.Duration // and of the chmods on the other files
+}
+
+// window is the storm's stormWindow between from and to.
+func (s *storm) window(from, to time.Time) stormWindow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var w stormWindow
+
+	var writersSum, othersSum time.Duration
+
+	writersCount, othersCount := 0, 0
+
+	for _, c := range s.chmods {
+		if !c.start.Before(to) {
+			continue
+		}
+
+		if c.end.IsZero() || c.end.After(to) {
+			w.running++
+			w.oldest = max(w.oldest, to.Sub(c.start))
+		}
+
+		if c.start.Before(from) {
+			continue
+		}
+
+		onWriter := c.file < benchWriters
+		if onWriter {
+			w.onWriters++
+		}
+
+		if c.end.IsZero() || c.end.After(to) {
+			continue
+		}
+
+		if onWriter {
+			writersSum, writersCount = writersSum+c.end.Sub(c.start), writersCount+1
+		} else {
+			othersSum, othersCount = othersSum+c.end.Sub(c.start), othersCount+1
+		}
+	}
+
+	if writersCount > 0 {
+		w.writersLat = writersSum / time.Duration(writersCount)
+	}
+
+	if othersCount > 0 {
+		w.othersLat = othersSum / time.Duration(othersCount)
+	}
+
+	return w
+}
+
 // workersFor is the pool that keeps b7Rate chmods a second in flight when
 // each takes latency, at least one and at most b7MaxWorkers.
 func workersFor(latency time.Duration) int64 {
@@ -436,6 +499,7 @@ func benchB7(b *testing.B) {
 			touched := s.touched(from, now)
 			rate := float64(s.started(from, now)) / last.Seconds()
 			lat = s.latency(from, now)
+			win := s.window(from, now)
 
 			if rate > 0 {
 				measured = min(rate, b7Rate)
@@ -470,6 +534,22 @@ func benchB7(b *testing.B) {
 				b.ReportMetric(
 					float64(lat)/float64(time.Millisecond),
 					fmt.Sprintf("b%d-chmod-ms", k+1),
+				)
+				// Metrics rather than log lines: go test cuts a benchmark's log
+				// after a few lines, and these must survive for every burst.
+				b.ReportMetric(float64(s.pool.Load()), fmt.Sprintf("b%d-pool", k+1))
+				b.ReportMetric(float64(touched), fmt.Sprintf("b%d-k", k+1))
+				b.ReportMetric(milliseconds(last), fmt.Sprintf("b%d-window-ms", k+1))
+				b.ReportMetric(float64(win.running), fmt.Sprintf("b%d-running", k+1))
+				b.ReportMetric(milliseconds(win.oldest), fmt.Sprintf("b%d-oldest-ms", k+1))
+				b.ReportMetric(float64(win.onWriters), fmt.Sprintf("b%d-writer-chmods", k+1))
+				b.ReportMetric(
+					milliseconds(win.writersLat),
+					fmt.Sprintf("b%d-writer-chmod-ms", k+1),
+				)
+				b.ReportMetric(
+					milliseconds(win.othersLat),
+					fmt.Sprintf("b%d-other-chmod-ms", k+1),
 				)
 
 				if workers == b7MaxWorkers && rate < b7Rate {
@@ -562,4 +642,9 @@ func stormPool(last time.Duration, rate float64) int64 {
 	n := int64(float64(benchWriters) * rate * last.Seconds() / b7WantK)
 
 	return min(max(n, benchWriters), b7Files)
+}
+
+// milliseconds is d in milliseconds, as a metric value.
+func milliseconds(d time.Duration) float64 {
+	return float64(d) / float64(time.Millisecond)
 }

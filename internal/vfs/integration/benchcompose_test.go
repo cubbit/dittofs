@@ -133,8 +133,9 @@ func composeBench(b *testing.B, n int, age time.Duration, heapSlack uint64) *ben
 	c.signIn(b)
 
 	c.files, c.ids = make([]entity.Handle, n), make([]entity.FileID, n)
+	created := time.Now()
 
-	if err := together(ctx, benchCreators, func(ctx context.Context, w int) error {
+	if err := togetherWithin(ctx, benchCreators, benchSetupDeadline, func(ctx context.Context, w int) error {
 		for i := w; i < n; i += benchCreators {
 			name := []byte(fmt.Sprintf("f%05d", i))
 			ns := store.Store.Namespace()
@@ -151,6 +152,8 @@ func composeBench(b *testing.B, n int, age time.Duration, heapSlack uint64) *ben
 	}); err != nil {
 		b.Fatalf("bench: files: %v", err)
 	}
+
+	b.Logf("bench: %d files created in %v", n, time.Since(created))
 
 	printBox(b, base)
 
@@ -682,12 +685,27 @@ func microseconds(d time.Duration) float64 {
 // writers still running, rather than hanging it.
 const benchBurstDeadline = time.Minute
 
+// benchSetupDeadline bounds the creation of a composition's files: 100 000
+// files take 10 to 17 s on a quiet box and passed a minute while the disk was
+// busy, which is not a burst and must not fail as one.
+const benchSetupDeadline = 10 * time.Minute
+
 // together runs fn(ctx, i) for every i below n at once and waits for all of
 // them: the calls between two of its barriers are one burst, and the return
 // of one call of together is the barrier the next one's writers start from. The first error
 // cancels the others' ctx; it returns that error, naming the writer, or, once
 // benchBurstDeadline passes, the writers still running.
 func together(ctx context.Context, n int, fn func(ctx context.Context, i int) error) error {
+	return togetherWithin(ctx, n, benchBurstDeadline, fn)
+}
+
+// togetherWithin is together, with deadline in place of benchBurstDeadline.
+func togetherWithin(
+	ctx context.Context,
+	n int,
+	deadline time.Duration,
+	fn func(ctx context.Context, i int) error,
+) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -723,7 +741,7 @@ func together(ctx context.Context, n int, fn func(ctx context.Context, i int) er
 
 	select {
 	case <-done:
-	case <-time.After(benchBurstDeadline):
+	case <-time.After(deadline):
 		mu.Lock()
 		defer mu.Unlock()
 
@@ -742,12 +760,12 @@ func together(ctx context.Context, n int, fn func(ctx context.Context, i int) er
 					i,
 					err,
 					stuck,
-					benchBurstDeadline,
+					deadline,
 				)
 			}
 		}
 
-		return fmt.Errorf("writers %v still running after %v", stuck, benchBurstDeadline)
+		return fmt.Errorf("writers %v still running after %v", stuck, deadline)
 	}
 
 	for i, err := range errs {
