@@ -110,12 +110,14 @@ func decodeIdempotency(account entity.Principal, key string, b []byte) (entity.I
 	}
 	i := entity.IdempotencyRecord{Account: account, Key: key}
 	copy(i.Digest[:], r.Fixed(32))
-	i.Answer, i.Expires = copied(r.Bytes()), readTime(r)
+	i.Answer, i.Expires = cloneOrNil(r.Bytes()), readTime(r)
 	return i, r.Done()
 }
 
-// controlTx is entity.ControlPlaneTx over one transaction: each write is the
-// same function the view's method runs.
+// controlTx is entity.ControlPlaneTx over one transaction; the view's
+// methods run their writes through it. The transaction is a named field, not
+// embedded, so a caller holding a ControlPlaneTx cannot assert it back to a
+// kv.Txn and write rows no method checks.
 type controlTx struct{ tx kv.Txn }
 
 var _ entity.ControlPlaneTx = controlTx{}
@@ -198,60 +200,3 @@ func (c controlTx) SetMachineJoin(j entity.MachineJoin) error {
 }
 
 func (c controlTx) Now() time.Time { return c.tx.Now() }
-
-func (c controlTx) DeleteUser(p entity.Principal, expect uint64) error {
-	return deleteUser(c.tx, p, expect)
-}
-
-func (c controlTx) DeleteGroup(p entity.Principal, expect uint64) error {
-	return deleteGroup(c.tx, p, expect)
-}
-
-func (c controlTx) DeleteShare(share entity.ShareID, snapshots entity.SnapshotDisposition, expect uint64) error {
-	return deleteShare(c.tx, share, snapshots, expect)
-}
-
-func (c controlTx) PutUser(u entity.User, expect uint64, a entity.Alloc) error {
-	return putUser(c.tx, u, expect, a)
-}
-
-func (c controlTx) PutGroup(g entity.Group, expect uint64, a entity.Alloc) error {
-	return putGroup(c.tx, g, expect, a)
-}
-
-func (c controlTx) PutShare(s entity.Share, expect uint64) error { return putShare(c.tx, s, expect) }
-
-func (c controlTx) SetShareState(share entity.ShareID, from, to entity.ShareState) error {
-	return setShareState(c.tx, share, from, to)
-}
-
-func (c controlTx) SetGrant(g entity.ShareGrant, expect uint64) error {
-	return setGrant(c.tx, g, expect)
-}
-
-func (c controlTx) DeleteGrant(share entity.ShareID, p entity.Principal, expect uint64) error {
-	return deleteGrant(c.tx, share, p, expect)
-}
-
-func (c controlTx) PutExportPolicy(p entity.ExportPolicy, expect uint64) error {
-	return putExportPolicy(c.tx, p, expect)
-}
-
-func (c controlTx) SetQuota(share entity.ShareID, q entity.Quota, expect uint64) error {
-	return setQuota(c.tx, share, q, expect)
-}
-
-func (c controlTx) PutNetgroup(n entity.Netgroup, expect uint64) error {
-	return putNetgroup(c.tx, n, expect)
-}
-
-func (c controlTx) DeleteNetgroup(name string, expect uint64) error {
-	return deleteNetgroup(c.tx, name, expect)
-}
-
-func (c controlTx) PutSetting(s entity.Setting, expect uint64) error {
-	return putSetting(c.tx, s, expect)
-}
-
-func (c controlTx) AddMember(m entity.Membership) error    { return addMember(c.tx, m) }
-func (c controlTx) RemoveMember(m entity.Membership) error { return removeMember(c.tx, m) }

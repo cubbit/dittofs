@@ -100,7 +100,7 @@ func (c ControlPlane) SetQuota(ctx context.Context, share entity.ShareID, q enti
 	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.SetQuota(share, q, expect) })
 }
 
-func setQuota(tx kv.Txn, share entity.ShareID, q entity.Quota, expect uint64) error {
+func (c controlTx) SetQuota(share entity.ShareID, q entity.Quota, expect uint64) error {
 	q.Share = share
 	t := QuotaTarget{q.Principal, q.Project}
 	suffix, err := quotaSuffix(t)
@@ -115,22 +115,22 @@ func setQuota(tx kv.Txn, share entity.ShareID, q entity.Quota, expect uint64) er
 	if q.Grace < 0 {
 		return merrs.NewInvalidArgumentError("a quota's grace is not negative")
 	}
-	if _, ok, err := get(tx, shareKey(q.Share, keys.SInfo)); err != nil || !ok {
+	if _, ok, err := get(c.tx, shareKey(q.Share, keys.SInfo)); err != nil || !ok {
 		if err == nil {
 			err = merrs.NewNotFoundError(q.Share.String(), "share")
 		}
 		return err
 	}
-	if err := liveShare(tx, q.Share); err != nil {
+	if err := liveShare(c.tx, q.Share); err != nil {
 		return err
 	}
 	if q.Principal != (entity.Principal{}) {
-		if _, ok, err := get(tx, principalKey(q.Principal)); err != nil || !ok {
+		if _, ok, err := get(c.tx, principalKey(q.Principal)); err != nil || !ok {
 			return notFound(err, q.Principal)
 		}
 	}
 	key, since := quotaKey(q.Share, keys.SQt, suffix), quotaKey(q.Share, keys.SQx, suffix)
-	b, ok, err := get(tx, key)
+	b, ok, err := get(c.tx, key)
 	if err != nil {
 		return err
 	}
@@ -144,27 +144,27 @@ func setQuota(tx kv.Txn, share entity.ShareID, q entity.Quota, expect uint64) er
 		return err
 	}
 	if q.Unlimited() {
-		if err := tx.Delete(key); err != nil {
+		if err := c.tx.Delete(key); err != nil {
 			return err
 		}
-		return tx.Delete(since)
+		return c.tx.Delete(since)
 	}
 	if !ok || old.Soft != q.Soft {
-		d, err := usageIn(tx, q.Share)
+		d, err := usageIn(c.tx, q.Share)
 		if err != nil {
 			return err
 		}
 		if above(d.of(t), q.Soft) {
-			err = tx.Set(since, encodeSince(tx.Now()))
+			err = c.tx.Set(since, encodeSince(c.tx.Now()))
 		} else {
-			err = tx.Delete(since)
+			err = c.tx.Delete(since)
 		}
 		if err != nil {
 			return err
 		}
 	}
-	q.Version = nextVersion(tx, old.Version)
-	return tx.Set(key, encodeQuota(q))
+	q.Version = nextVersion(c.tx, old.Version)
+	return c.tx.Set(key, encodeQuota(q))
 }
 
 // above reports usage past a limit in either of its counts; a zero count

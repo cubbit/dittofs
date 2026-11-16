@@ -350,7 +350,7 @@ func decodeInstallation(b []byte) (entity.Installation, error) {
 	copy(in.NTLMOff.Deleted[:], r.Fixed(16))
 	copy(in.SigningKey[:], r.Fixed(16))
 	j := &in.Join
-	j.Joined, j.Account, j.Owner, j.Delegation = r.Bool(), r.String(), copied(r.Bytes()), copied(r.Bytes())
+	j.Joined, j.Account, j.Owner, j.Delegation = r.Bool(), r.String(), cloneOrNil(r.Bytes()), cloneOrNil(r.Bytes())
 	if n := r.Len(); n > 0 {
 		j.Names = make([]string, n)
 		for i := range j.Names {

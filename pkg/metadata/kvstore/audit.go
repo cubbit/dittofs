@@ -145,17 +145,9 @@ func decodeAudit(pos, b []byte) (entity.AuditRecord, error) {
 	}
 	a.Actor = readPrincipal(r)
 	copy(a.Node[:], r.Fixed(16))
-	a.Source, a.Request = r.String(), copied(r.Bytes())
-	a.Target = entity.ResourceRef{Kind: r.String(), ID: copied(r.Bytes())}
+	a.Source, a.Request = r.String(), cloneOrNil(r.Bytes())
+	a.Target = entity.ResourceRef{Kind: r.String(), ID: cloneOrNil(r.Bytes())}
 	a.Before, a.After = r.Uint64(), r.Uint64()
-	a.Change, a.Outcome = copied(r.Bytes()), copied(r.Bytes())
+	a.Change, a.Outcome = cloneOrNil(r.Bytes()), cloneOrNil(r.Bytes())
 	return a, r.Done()
-}
-
-// copied copies b, an empty b as nil.
-func copied(b []byte) []byte {
-	if len(b) == 0 {
-		return nil
-	}
-	return bytes.Clone(b)
 }
