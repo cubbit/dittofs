@@ -18,11 +18,13 @@ counters land, T2.2 (`Installation.NTLMOff`, its R54), T2.6 (positions and the `
 D8 and T2.11 (`DeleteUser`'s mark, batches and secret deletion); RFC 23's epic 3 document (pull
 request #4336), D7 and T3.4 (the runner's `StepResult`, `Step` and `Progress`).
 **Track:** C.
-**Epic 2 estimate: 8 subtasks, 14 man-days.**
+**Epic 2 estimate: 8 subtasks, 14.25 man-days.**
 **Depends on:** **S1**, epic 1's identity surface frozen. **#4059's S1 and S2**: `pkg/settings`
 and `pkg/secrets` frozen, with `Seal` taking the kind, the owner and `secrets.Meta`, the kvstore
 secrets view (`Secret`, `PutSecret`, `PruneSecret`) on the view and on `ControlPlaneTx`, and
-secrets sealed and resolved under each role's key (T2.4, T2.6, T2.7). **RFC 23's plan's epic 2**
+secrets sealed and resolved under each role's key (T2.4, T2.6, T2.7). **The RFC 13 plan's epic
+3**, for T2.4 only: its `Check`, which runs the identity section's check against the ID counters
+(D1). **RFC 23's plan's epic 2**
 (#4326), partly: T2.2 waits for its T2.3 and T2.4 (`entity.Alloc` on `PutUser` and `PutGroup`,
 on the view and on `ControlPlaneTx`, refused until T2.2 lands, its D2); T2.3 for its T2.6 (the
 once-per-transaction `PGEN` raise and the records' `Position`); T2.8 for its T2.11 (`DeleteUser`'s
@@ -151,7 +153,7 @@ number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no external system is reached |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T2.1, T2.2, T2.4, T2.5, T2.6, T2.7 | RFC 18's `decision:` notes of §2.1 (root) at root's ID, §2.3 (a missing uid is allocated) at `Alloc`, §3.5 (NTLM on by default) at the setting's default, §4.4 (a deleted principal is the null SID) at `Spell`, §8 (one `User` record) at `Account`; D1's, D3's and D8's `decision:` markers, D2's and D4's `ponytail:` markers, and the NT-hash cost marker at `NewHashes`; epic 1's stub `ponytail:` markers removed from each body this epic fills |
 | rule 10, a test must be able to fail | all | each R-row's test is named in its subtask with the bug it catches; R24's purity, R27's constant-time compare and R33's single writer are held by the code's shape, each named as such |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T2.1, T2.2, T2.4, T2.5 | the exports are `entity`'s and kvstore's fields and methods RFC 16 declares, `Scheme.Stored()` (RFC 18 §2.2), `entity.FoldPrincipalName` and `entity.PrincipalUserPart` (D2), kvstore's `IDHighWater` (D1), identity's settings struct, `Deps.Secrets`, and the deletion's step and progress, typed by `internal/node/step` |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T2.1, T2.2, T2.4, T2.5 | the exports are `entity`'s and kvstore's fields and methods RFC 16 declares, `Scheme.Stored()` (RFC 18 §2.2), `entity.FoldPrincipalName` and `entity.PrincipalUserPart` (D2), `ControlPlaneTx.IDHighWater` and `pkg/settings`' `CheckTx` option (D1), identity's settings struct, `Deps.Secrets`, and the deletion's step and progress, typed by `internal/node/step` |
 | rule 12, each subtask creates only what it declares | all | each deliverable names its consumer; `SchemeDir` lands with `Stored()` and `NewHashes`, `Rename` and `SetEmail` with E6, the mint path with E6's T6.2 |
 
 ## 3. Requirements and invariants
@@ -184,7 +186,7 @@ spells it `merrs.NewInvalidArgumentError`, as RFC 23's plan's epic 2 does (its D
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R10 | A uid, gid or RID the installation allocates is drawn from a counter per scheme that only rises, inside the transaction that writes the record, and is never allocated again, even after its principal is deleted | MUST NOT | §2.3 item 2, §9.1 ID2; RFC 16 §4.2 `IDS‖kind` | T2.2, T2.3 |
-| R11 | A uid or gid is allocated from `identity.id_range` (default 1 000 000 to 1 999 999 999), skipping one any principal holds; a change of the range applies to the next allocation and moves no existing ID: the next value is `max(counter+1, Range.Lo)`, `ErrNoSpace` when it passes `Range.Hi`, and `Apply` refuses `ErrInvalid` a range whose `Hi` is below the uid or gid counter's high-water mark (D1) | MUST | §2.3 item 4, §2.6; RFC 16 §4.2 `IDS‖kind`; RFC 13 Appendix B | T2.2, T2.4 |
+| R11 | A uid or gid is allocated from `identity.id_range` (default 1 000 000 to 1 999 999 999), skipping one any principal holds; a change of the range applies to the next allocation and moves no existing ID: the next value is `max(counter+1, Range.Lo)`, `ErrNoSpace` when it passes `Range.Hi`, and the settings write refuses `ErrInvalid`, before it commits, a range whose `Hi` is at or below the uid or gid counter's high-water mark (`Range.Hi <= counter`, D1) | MUST | §2.3 item 4, §2.6; RFC 16 §4.2 `IDS‖kind`; RFC 13 Appendix B | T2.2, T2.4 |
 | R12 | A missing uid or gid is never filled with a default: the write names the IDs the store allocates (`Alloc`), on `Minter.Create` and on `PutUser` and `PutGroup` alike; a zero ID it does not name is refused `ErrInvalid`, never read as "allocate one"; `Alloc` applies only to a create, and a later put allocates nothing | MUST NOT | §2.3 item 4; RFC 16 §3; RFC 23's plan's epic 2, D2 | T2.2, T2.3 |
 | R13 | A SID never changes once the principal has one | MUST NOT | §2.3, §9.1 ID4 | T2.2 |
 | R14 | A local principal's SID is the installation's domain SID followed by a RID from the RID counter; the domain SID is `S-1-5-21-a-b-c`, `a`, `b` and `c` the installation ID's first twelve bytes as three little-endian 32-bit numbers, derived, never stored; a RID is never derived from a uid | invariant | §4.4 | T2.2 |
@@ -249,10 +251,21 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   with no free ID left refuses the write `ErrNoSpace`,
   as `IDS‖shard` does; the RID counter starts at 1000, above Windows' reserved RIDs. The next
   uid or gid is `max(counter+1, Range.Lo)`, skipping held IDs, and `Alloc` answers `ErrNoSpace`
-  when it passes `Range.Hi`. Since the counters never rewind (R10), a range whose `Hi` is below
-  a counter's high-water mark could never allocate again, so `Apply` refuses one with
-  `ErrInvalid` and keeps the last applied range (R29), reading the marks through kvstore's
-  `IDHighWater` (T2.4). The
+  when it passes `Range.Hi`. Since the counters never rewind (R10), a range with
+  `Range.Hi <= mark`, a counter's high-water mark, could never allocate again: its next value,
+  `mark+1` at least, is past `Hi`. The settings write refuses such a range `ErrInvalid` before
+  it commits, so the operator sees the refusal: the identity section's check, which
+  `pkg/settings`' `Check` runs inside the write's transaction, reads both marks through
+  `ControlPlaneTx.IDHighWater`, a tracked read (T2.4). A create that commits between that read
+  and the write's commit raises a counter the write read, so the write conflicts and retries
+  against the raised mark. The check is advisory against a create that read the previous range
+  before the commit: that create still allocates from the previous range, and can raise a counter
+  past the new `Hi` before the node applies the new range; the next create then gets
+  `ErrNoSpace`, as from an exhausted range, and widening the range ends it. Making it exact would
+  take `Alloc` carrying the settings generation it read its range at, so that every create
+  conflicts with every setting change. `Apply` does not check the marks again: a later read could
+  refuse a range the write committed, which would leave the API's range, read from `pkg/settings`,
+  and identity's minting callers' `State.Settings` apart. `decision:` marker at the check. The
   alternative, kvstore reading the setting's raw row in the write's transaction, couples the store
   to a section's encoding. Needs an RFC 16 §3 amendment. `decision:` marker at `Alloc`. Prior art:
   Samba's `idmap_tdb` takes its range from the caller's configuration (from memory).
@@ -357,7 +370,7 @@ pkg/metadata/kvstore/
                     T2.2  the allocation behind Alloc on PutUser and PutGroup, SID immutable
                     T2.8  NTHash among the references DeleteUser's last batch deletes (R34)
   alloc.go          T2.2  IDS‖0x04 uid, IDS‖0x05 gid, IDS‖0x06 RID; the installation's domain SID
-                    T2.4  IDHighWater (D1)
+                    T2.4  ControlPlaneTx.IDHighWater (D1)
   minter.go         T2.3  Minter, Create
   nthash.go         T2.7  DropNTHashes (D4)
   codecs.go         T2.1  User's two references, the machine record
@@ -369,8 +382,11 @@ pkg/identity/
   hashes.go         T2.6  NewHashes's body
   hashes_test.go    T2.6  the table test
 internal/identity/
-  settings.go       T2.4  Settings, its defaults and Validate, the section's registration
+  settings.go       T2.4  Settings, its defaults and Validate, the section's registration and its
+                          CheckTx against the ID marks (D1)
   server.go         T2.4  SecretProvider, Deps.Secrets, State.Settings, Apply's refusal
+pkg/settings/
+  table.go          T2.4  the CheckTx option, run by Check after Validate (D1)
                     T2.6  Clock.After (D8)
   names.go          T2.5  Spell, Find
   account.go        T2.6  Lookup, VerifyPassword, Account, the hashing semaphore
@@ -446,7 +462,9 @@ internal/identity/
   allocated uid and RID, delete it, create another: no uid or RID repeated (catches a counter read
   from the highest live row, R10); an operator-assigned uid at the counter's next value is skipped,
   while a gid of that value is not (R11); a range spanning 65534 allocates past it (R2); a range
-  change between two creates: the second drawn from the new range, the first unchanged (R11); a
+  change between two creates: the second drawn from the new range, the first unchanged (R11);
+  the range `[1 000 000, 1 000 001]` and two creates drawing both, then a third: `ErrNoSpace` and
+  nothing written (catches a next value allowed past `Hi`, R11, D1); a
   write refused by a held name, then the next create: its ID is the one the refused write would
   have had (catches allocation outside the transaction, R10); a user holding a uid, no SID and no
   `Alloc.RID`, refused, and one holding a SID, no uid entry and no `Alloc.UID`, refused (R12, R5);
@@ -493,32 +511,40 @@ internal/identity/
 
 ### T2.4 Identity's settings, `State` and `Deps.Secrets`
 
-**Subtask T2.4 estimate: 1.5 man-days.**
+**Subtask T2.4 estimate: 1.75 man-days.**
 
-- **Track:** C. **Depends on:** S1, T2.2. #4059's S1 and S2.
+- **Track:** C. **Depends on:** S1, T2.2. #4059's S1 and S2; the RFC 13 plan's epic 3, whose
+  `Check` calls the section's `CheckTx` (D1).
 - **Covers:** R11, R29, R30, R35.
 - **Deliverables:** `internal/identity.Settings{IDRange entity.IDRange; NTLM bool; NetBIOSName
   string}` with RFC 13 Appendix B's defaults and `Validate`, declared through `pkg/settings`'s `Of`,
   with RFC 18 §3.5's `decision:` (NTLM on by default) at the default; `State.Settings`; `Apply`
-  refusing a `State` whose settings fail `Validate` and keeping the last applied; kvstore's
-  `IDHighWater(ctx) (uid, gid uint32, err error)`, reading T2.2's `IDS‖0x04` and `IDS‖0x05`
-  counters, and `Apply` refusing `ErrInvalid` a range whose `Hi` is below either (D1); `SecretProvider`
+  refusing a `State` whose settings fail `Validate` and keeping the last applied;
+  `ControlPlaneTx.IDHighWater() (uid, gid uint32, err error)`, a tracked read of T2.2's `IDS‖0x04`
+  and `IDS‖0x05` counters; `pkg/settings`' `CheckTx[T](func(entity.ControlPlaneTx, T) error)`
+  option on `Of`, which `Check` runs after `Validate` inside the write's transaction; and the
+  identity section's `CheckTx`, refusing `ErrInvalid` an `identity.id_range` with `Hi` at or below
+  either mark, with D1's `decision:` marker (D1); `SecretProvider`
   and `Deps.Secrets` (D6). Consumed by T2.5 (`identity.netbios_name`), T2.6 (`Deps.Secrets`), E3's T3.10 (the `NTLM` key),
   E4, E6's T6.3 and T6.5, E6's T6.9 (the range) and E8, which lists the section in the node's
   table. Later keys join the section: `identity.keytab` from E5's T5.2 and `DirectoryStaleGrace`
   from E6's T6.7.
 - **Acceptance criteria:**
-  - `Apply` of an `identity.id_range` whose `Hi` is below the uid or gid counter's high-water mark
-    is refused `ErrInvalid`, and the last applied range is kept (D1).
+  - A settings write of an `identity.id_range` whose `Hi` is at or below the uid or gid counter's
+    high-water mark is refused `ErrInvalid` and commits nothing (D1).
 - **Tests:** over the memory KV store, under the leak check: `Apply` of a valid `State`, then of one
   with `NetBIOSName` `"dittofs.lab"`, then reading the current `State` through `export_test.go`:
   the first kept (catches an invalid setting applied, R29); a section with no rows yields `NTLM`
   on, `NetBIOSName` `DITTOFS` and the default range (R30); `Validate` table: 16 bytes, lower case,
   `_`, empty, each refused, `DITTOFS` and `NAS-01` accepted; an `IDRange` with `Lo > Hi` refused
-  (R30, R11); uids allocated through T2.2 until the uid counter reaches 1 000 006, then `Apply` of
-  `[1000, 2000]`: `ErrInvalid`, the previous range kept, and the next create draws 1 000 007
-  (catches a lowered range accepted, which leaves every later `Alloc` `ErrNoSpace`, R11, D1); the
-  same with the gid counter alone past `Hi`: refused (catches a check of the uid counter only);
+  (R30, R11); uids allocated through T2.2 until the uid counter reaches 1 000 006, then each of
+  these written through `pkg/settings`' `Check` and `PutSetting` in one `Write`: `[1000, 2000]`
+  refused `ErrInvalid`, `CFGGEN` unchanged and the next create drawing 1 000 007 (catches a
+  lowered range committed, which leaves every later `Alloc` `ErrNoSpace`, R11, D1);
+  `[1 000 000, 1 000 006]` refused (catches `Hi < mark` written for `Hi <= mark`, D1);
+  `[1 000 000, 1 000 007]` committed; the gid counter alone at or past `Hi`: refused (catches a
+  check of the uid counter only); a `State` with a range below the marks, applied by `Apply`
+  (catches a second check at `Apply`, which would split the two range sources, D1);
   concurrent `Apply`s of matched `{Generation, Settings}` pairs, each `Settings`
   naming its `Generation` in `NetBIOSName`, and a reader through `export_test.go` asserting every
   `State` it reads is one of the pairs (catches `State` written field by field, R35; it can fail
@@ -684,6 +710,7 @@ flowchart TD
   T2_3 --> C1(["after T2.3: the store mints"]):::sync
   X59(["#4059 S1 and S2"]):::sync --> T2_4["T2.4 Settings, State, Secrets"]
   S1 --> T2_4
+  X13(["RFC 13 plan epic 3: Check"]):::sync --> T2_4
   T2_2 --> T2_4
   T2_3 & T2_4 --> T2_5["T2.5 Spell, Find, FuzzSID"]
   T2_1 & T2_2 & T2_4 --> T2_6["T2.6 NewHashes, APISignIn"]
@@ -707,7 +734,7 @@ RFC 23's user deletion; after T2.8 RFC 23's plan's epic 5's password writes may 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T2.1, T2.2, T2.3 | 4.75 | — | principals in the store: the records, the name fold, allocation and `Create`, one review of kvstore |
-| 2 | T2.4, T2.5 | 3.75 | PR 1 | identity's settings and the naming it serves |
+| 2 | T2.4, T2.5 | 4 | PR 1 | identity's settings and the naming it serves |
 | 3 | T2.6 | 2 | PR 2 | the accounts RFC 23's plan's epic 5 and E4 wait for |
 | 4 | T2.7 | 2.5 | PR 1 | the NT-hash deletion, once RFC 23's `StepResult` and `SetNTHashDeleted` land; may be open beside PR 2 and PR 3 |
 | 5 | T2.8 | 1 | PR 3 | the NT hash's deletion with its user and the marked-deleted sign-in cases, once RFC 23's plan's epic 2's T2.11 lands, and before RFC 23's plan's epic 5's password write |
@@ -721,18 +748,19 @@ the version this document was written against. RFC 18 §8.1 declares `Lookup` an
 principal-based `VerifyPassword`, which epic 1 freezes.
 
 The plan's figure for this epic is 8 subtasks, 13 man-days; this document's is 8 subtasks,
-14 man-days: the mint path goes to E6's T6.2 (below); the allocation behind RFC 23's
+14.25 man-days: the mint path goes to E6's T6.2 (below); the allocation behind RFC 23's
 `entity.Alloc` on `PutUser` and `PutGroup` comes in (T2.2), which RFC 23's plan's epic 2 refuses
 until it lands (its D2), as does `NTHash` among the secrets `DeleteUser` deletes, which the plan lists
 nowhere (T2.8, R34); `Installation.NTLMOff` is RFC 23's plan's epic 2's (its T2.2, R54); and the
-deletion's step can fail on a record it cannot decode (T2.7, R36); and `Apply` refuses a range below a counter's high-water mark (T2.4, D1).
+deletion's step can fail on a record it cannot decode (T2.7, R36); and the settings write refuses a range at or below a counter's high-water mark inside its
+transaction, through a `CheckTx` option `pkg/settings` gains (T2.4, D1).
 
 **Pending the user's answer** (the recommended option is written in place):
 
 - **Where `Alloc`'s range comes from (D1).** RFC 16 §3's `Alloc` is silent, and so are the RID
   counter's start and an exhausted range. Recommended: a `Range` field set by the caller, the next
-  value `max(counter+1, Range.Lo)`, `ErrNoSpace` on exhaustion, `Apply` refusing a range below a
-  counter's high-water mark, and RIDs from 1000, in an RFC 16 amendment. Alternative: kvstore reads the setting's
+  value `max(counter+1, Range.Lo)`, `ErrNoSpace` on exhaustion, the settings write refusing a range at or
+  below a counter's high-water mark in its own transaction, and RIDs from 1000, in an RFC 16 amendment. Alternative: kvstore reads the setting's
   row in the write's transaction.
 - **The NT-hash deletion's store calls (D4).** RFC 16 §3 has no call that drops secrets by kind,
   RFC 18 §2.6 says the `Minter`'s are identity's only writes, and zeroing `User.NTHash` overwrites a
