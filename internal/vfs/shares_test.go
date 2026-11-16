@@ -127,7 +127,7 @@ func quotaVersion(t *testing.T, cp kvstore.ControlPlane, share entity.ShareID, t
 func (s *shares) addShare(t *testing.T, name, path string) entity.ShareID {
 	t.Helper()
 	sh := entity.Share{ID: entity.NewShareID(), Name: name, Path: path, Root: entity.NewFileID()}
-	s.must(t, errOf(createShare(s.cp, sh)))
+	s.must(t, errOf(kvstoretest.CreateShare(t.Context(), s.cp, sh)))
 	s.content.Bind(sh.ID)
 	return sh.ID
 }
@@ -1126,14 +1126,3 @@ func mustShare(t *testing.T, s *shares, id entity.ShareID) entity.Share {
 
 // errOf is a write's error alone, its returned generation dropped.
 func errOf[T any](_ T, err error) error { return err }
-
-// createShare creates sh in a namespace of its own, put first, as a share's
-// create names a namespace that names a remote store.
-func createShare(cp kvstore.ControlPlane, sh entity.Share) (uint64, error) {
-	ns := entity.Namespace{ID: entity.NewNamespaceID(), Store: [16]byte{15: 1}}
-	if _, err := cp.PutNamespace(context.Background(), ns, 0); err != nil {
-		return 0, err
-	}
-	sh.Namespaces = []entity.NamespaceGen{{Generation: 1, Namespace: ns.ID}}
-	return cp.PutShare(context.Background(), sh, 0)
-}

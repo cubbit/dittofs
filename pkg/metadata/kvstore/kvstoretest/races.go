@@ -110,11 +110,11 @@ func testUniqueClaimsRace(t *testing.T, kvo Opener) {
 						return errOf(cp.PutUser(ctx, user("b", uid("7")), 0, entity.Alloc{}))
 					}},
 				{"share name under the fold",
-					func(cp kvstore.ControlPlane) error { return errOf(createShare(cp, share("Photos", "/a"))) },
-					func(cp kvstore.ControlPlane) error { return errOf(createShare(cp, share("PHOTOS", "/b"))) }},
+					func(cp kvstore.ControlPlane) error { return errOf(CreateShare(ctx, cp, share("Photos", "/a"))) },
+					func(cp kvstore.ControlPlane) error { return errOf(CreateShare(ctx, cp, share("PHOTOS", "/b"))) }},
 				{"nested share paths",
-					func(cp kvstore.ControlPlane) error { return errOf(createShare(cp, share("home", "/home"))) },
-					func(cp kvstore.ControlPlane) error { return errOf(createShare(cp, share("alice", "/home/alice"))) }},
+					func(cp kvstore.ControlPlane) error { return errOf(CreateShare(ctx, cp, share("home", "/home"))) },
+					func(cp kvstore.ControlPlane) error { return errOf(CreateShare(ctx, cp, share("alice", "/home/alice"))) }},
 			} {
 				for _, order := range []string{"a held", "b held"} {
 					t.Run(c.name+"/"+order, func(t *testing.T) {
@@ -165,7 +165,7 @@ func testDeleteRacesAdd(t *testing.T, kvo Opener) {
 						u, g, sh := user("alice"), group("staff"), share("photos", "/photos")
 						must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
 						must(t, errOf(cp.PutGroup(ctx, g, 0, entity.Alloc{})))
-						must(t, errOf(createShare(cp, sh)))
+						must(t, errOf(CreateShare(ctx, cp, sh)))
 						gen := userGeneration(t, s, u.Principal)
 						del := func() error { return cp.DeleteUser(ctx, u.Principal, gen) }
 						add := func() error { return c.add(cp, u.Principal, g.Principal, sh.ID) }
@@ -197,7 +197,7 @@ func testShareStateRace(t *testing.T, kvo Opener) {
 	s, h := heldStore(t, kvo.backends()[0])
 	cp := s.ControlPlane()
 	sh := share("photos", "/photos")
-	must(t, errOf(createShare(cp, sh)))
+	must(t, errOf(CreateShare(ctx, cp, sh)))
 	outer, inner := race(h,
 		func() error { return cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced) },
 		func() error { return cp.SetShareState(ctx, sh.ID, entity.ShareEnabled, entity.ShareQuiesced) })

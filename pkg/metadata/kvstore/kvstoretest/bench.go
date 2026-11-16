@@ -92,7 +92,7 @@ func newBenchFS(b *testing.B, open Opener) *bfs {
 	sh := entity.Share{ID: entity.NewShareID(), Name: "bench", Path: "/bench", Root: entity.NewFileID()}
 	admin := entity.User{Principal: entity.NewUser(), Name: "admin"}
 	for _, err := range []error{
-		errOf(createShare(cp, sh)), errOf(cp.PutUser(ctx, admin, 0, entity.Alloc{})),
+		errOf(CreateShare(ctx, cp, sh)), errOf(cp.PutUser(ctx, admin, 0, entity.Alloc{})),
 		errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: admin.Principal, Access: entity.AccessAdmin}, 0)),
 	} {
 		if err != nil {

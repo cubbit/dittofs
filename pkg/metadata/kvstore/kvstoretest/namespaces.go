@@ -1,6 +1,7 @@
 package kvstoretest
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -13,9 +14,9 @@ import (
 // testStore is the remote store every fixture namespace is created on.
 var testStore = [16]byte{0: 0x5E, 15: 1}
 
-// createShare creates sh in a namespace of its own on testStore, both in one
-// write, as a share's create names a namespace that names a remote store.
-func createShare(cp kvstore.ControlPlane, sh entity.Share) (uint64, error) {
+// CreateShare creates sh in a namespace of its own, both in one write, as a
+// share's create names a namespace that names a remote store.
+func CreateShare(ctx context.Context, cp kvstore.ControlPlane, sh entity.Share) (uint64, error) {
 	var gen uint64
 	err := cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) (err error) {
 		ns := entity.Namespace{ID: entity.NewNamespaceID(), Store: testStore}
@@ -44,8 +45,8 @@ func read(t *testing.T, cp kvstore.ControlPlane, fn func(tx entity.ControlPlaneT
 	must(t, cp.Write(ctx, entity.WriteMeta{}, fn))
 }
 
-// A namespace is named by its store from its put until its deletion, under
-// the store it names now, and lists with the fields it was put with.
+// A namespace is named by its store from its put until its deletion, and
+// lists with the fields it was put with.
 func testNamespaceStoreIndex(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
@@ -77,15 +78,11 @@ func testNamespaceStoreIndex(t *testing.T, kvo Opener) {
 	}
 	must(t, cp.DeleteNamespace(ctx, other.ID, 1))
 
-	n.Store = b
 	gen, err = cp.PutNamespace(ctx, n, gen)
 	must(t, err)
-	if named(a) || !named(b) {
-		t.Errorf("after a move to b: store a named %v, b %v; want false, true", named(a), named(b))
-	}
 	must(t, cp.DeleteNamespace(ctx, n.ID, gen))
-	if named(b) {
-		t.Errorf("store b after its only namespace's deletion: named true, want false")
+	if named(a) {
+		t.Errorf("store a after its only namespace's deletion: named true, want false")
 	}
 	read(t, cp, func(tx entity.ControlPlaneTx) error {
 		if _, ok, err := tx.Namespace(n.ID); err != nil || ok {
@@ -93,6 +90,41 @@ func testNamespaceStoreIndex(t *testing.T, kvo Opener) {
 		}
 		return nil
 	})
+}
+
+// A namespace's store and bound fields are fixed at its creation: a put
+// changing either is refused and leaves the namespace on its store, so the
+// store's deletion is still refused.
+func testNamespaceFixedFields(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	other := [16]byte{15: 0xB}
+	for name, change := range map[string]func(n entity.Namespace) entity.Namespace{
+		"another store":        func(n entity.Namespace) entity.Namespace { n.Store = other; return n },
+		"other bound fields":   func(n entity.Namespace) entity.Namespace { n.Bound = []byte("other"); return n },
+		"no bound fields":      func(n entity.Namespace) entity.Namespace { n.Bound = nil; return n },
+		"store and bound both": func(n entity.Namespace) entity.Namespace { n.Store, n.Bound = other, nil; return n },
+	} {
+		n := entity.Namespace{ID: entity.NewNamespaceID(), Store: testStore, Bound: []byte("bound")}
+		must(t, errOf(cp.PutNamespace(ctx, n, 0)))
+		if _, err := cp.PutNamespace(ctx, change(n), 1); !isCode(err, merrs.ErrInvalidArgument) {
+			t.Errorf("put changing %s: %v, want %v", name, err, merrs.ErrInvalidArgument)
+		}
+		read(t, cp, func(tx entity.ControlPlaneTx) error {
+			n.Generation = 1
+			if got, _, err := tx.Namespace(n.ID); err != nil || !reflect.DeepEqual(got, n) {
+				t.Errorf("namespace after a refused put changing %s: got %+v, %v; want %+v", name, got, err, n)
+			}
+			return nil
+		})
+		must(t, errOf(cp.PutNamespace(ctx, n, 1)))
+	}
+	if err := deleteStore(cp, testStore); !errors.Is(err, errStoreNamed) {
+		t.Errorf("delete of the namespaces' original store: %v, want %v", err, errStoreNamed)
+	}
+	if err := deleteStore(cp, other); err != nil {
+		t.Errorf("delete of the store only refused puts named: %v, want it to commit", err)
+	}
 }
 
 // A namespace naming no remote store is refused, and a put or delete under
@@ -106,6 +138,11 @@ func testNamespaceRefusals(t *testing.T, kvo Opener) {
 	}
 	n.Store = testStore
 	must(t, errOf(cp.PutNamespace(ctx, n, 0)))
+	for _, expect := range []uint64{0, 1} {
+		if err := cp.DeleteNamespace(ctx, entity.NamespaceID{15: 9}, expect); !isCode(err, merrs.ErrNotFound) {
+			t.Errorf("delete of a missing namespace, expect %d: %v, want %v", expect, err, merrs.ErrNotFound)
+		}
+	}
 	for name, err := range map[string]error{
 		"create over an existing one": errOf(cp.PutNamespace(ctx, n, 0)),
 		"put under a stale expect":    errOf(cp.PutNamespace(ctx, n, 2)),
@@ -135,6 +172,11 @@ func testShareNamesNamespace(t *testing.T, kvo Opener) {
 	if _, err := cp.PutShare(ctx, sh, 0); !isCode(err, merrs.ErrInvalidArgument) {
 		t.Errorf("share naming no namespace: %v, want %v", err, merrs.ErrInvalidArgument)
 	}
+	sh.Namespaces = append(inNamespace(t, cp, sh).Namespaces, inNamespace(t, cp, sh).Namespaces...)
+	if _, err := cp.PutShare(ctx, sh, 0); !isCode(err, merrs.ErrInvalidArgument) {
+		t.Errorf("share naming two existing namespaces: %v, want %v", err, merrs.ErrInvalidArgument)
+	}
+	sh.Namespaces = nil
 	if got := all(t, cp.Shares(ctx)); len(got) != 0 {
 		t.Errorf("shares after refused creates: got %d, want 0", len(got))
 	}

@@ -134,6 +134,7 @@ func Run(t *testing.T, open Opener) {
 		{"IdempotencyRace", testIdempotencyRace},
 		{"NamespaceStoreIndex", testNamespaceStoreIndex},
 		{"NamespaceRefusals", testNamespaceRefusals},
+		{"NamespaceFixedFields", testNamespaceFixedFields},
 		{"ShareNamesNamespace", testShareNamesNamespace},
 		{"StoreDeleteRacesNamespace", testStoreDeleteRacesNamespace},
 		{"NamespaceDeleteRacesShare", testNamespaceDeleteRacesShare},
