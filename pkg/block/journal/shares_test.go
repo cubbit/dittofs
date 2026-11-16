@@ -136,20 +136,56 @@ func TestJournalShare_RefusesWhatTheCoreRefuses(t *testing.T) {
 }
 
 // TestJournalShare_RefusedOffTheClosedFlag pins Share's closed-flag check
-// under handlesMu: Close raises the flag before it takes the lock to snapshot
-// the handles, so a Share that entered the lock first — the one window the
-// snapshot cannot collect — must be refused by the flag alone. Without the
-// check the attach would register a handle the snapshot already holds no
-// trace of, one whose Close answers ErrClosed on a fence it never drains and
-// whose reservations nothing would release. The flag is raised by hand so the
-// refusal is the check's own: the core under it stays open for the cleanup's
-// close.
+// under handlesMu and the window that check alone closes: Close raises the
+// flag, and then — as its first act on the core — the fence, both before it
+// takes this lock, so past those two no attach can land behind a close
+// begun; the check's own window is only the sliver between the flag's rise
+// and the fence's, where a racing attach passed the check before the flag
+// rose and the core has not fenced yet, and past that sliver the fence
+// refuses the attach where this check cannot see it. Raising the flag by
+// hand leaves the core unfenced, so the refusal observed is the check's.
 func TestJournalShare_RefusedOffTheClosedFlag(t *testing.T) {
 	j := newTestJournal(t)
 	j.closed.Store(true)
 
 	if _, err := j.Share(1, 0, Version{}); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Share with the close's flag raised before the lock = %v, want ErrClosed", err)
+	}
+}
+
+// TestJournalClose_FencesBeforeItWaitsOnTheHandles pins the close's order
+// against the handles mutex: the core's fence goes up before Close waits on
+// this mutex, so the journal-level calls the fence closes — Draw and
+// SetVersionLimit, which take no handles mutex — already refuse while Close
+// is blocked behind the mutex a Share mid-attach holds across the core's
+// attach. Reordered, with the fence raised only after the snapshot, the
+// whole interval Close spends blocked on the mutex answers both with real
+// results, and the bounded wait below never sees a refused Draw: a Draw
+// succeeding after Close began is the failure it names.
+func TestJournalClose_FencesBeforeItWaitsOnTheHandles(t *testing.T) {
+	j := newTestJournal(t)
+	withLimit(t, j)
+
+	// The mutex is held for the whole test, as a mid-attach Share holds it,
+	// and the deferred release lets the close parked on it run to its end
+	// whatever the test's own outcome was.
+	j.handlesMu.Lock()
+	defer j.handlesMu.Unlock()
+
+	closed := make(chan error, 1)
+	go func() { closed <- j.Close() }()
+
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		_, err := j.Draw()
+		if errors.Is(err, ErrClosed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Draw was never refused while Close was blocked on the handles mutex: last = %v", err)
+		}
+	}
+	if err := j.SetVersionLimit(Version{Counter: 1 << 41}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("SetVersionLimit while Close is blocked on the handles mutex = %v, want ErrClosed", err)
 	}
 }
 

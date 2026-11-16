@@ -19,9 +19,5 @@ func beginCall(ctx context.Context, s *Share) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	exit, err := s.enter()
-	if err != nil {
-		return nil, err
-	}
-	return exit, nil
+	return s.enter()
 }

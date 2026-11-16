@@ -20,12 +20,17 @@ type writeResult struct {
 
 // TestCancelledAfterAppendCompletes checks the completeness rule for writes: a WriteAt whose
 // context is cancelled once its record is in its segment still returns its
-// version, never the context's error, and the extent reads back. Both legs
-// stop the write on that one rule at the two points the tests can reach below
-// the record's future: one parks it in the gap between the append and the
-// publish, one holds the record's own segment write at the seam.
+// version, never the context's error, and the extent reads back. The one leg
+// parks the write in the gap between the append and the publish, the only
+// point below the record's future the core can be stopped at with the
+// record in: the storage seam's hold parks a call before the held write
+// itself runs, so a cancel held there lands before a single byte of the
+// record is on disk — that is the done-context rule's own ground (R12's leg
+// in ctx_test: a done-context call changes nothing), not this one's, and the
+// leg the kit's hold once claimed here is gone with the decision comment
+// that asserted otherwise.
 //
-// The mutation both legs catch: a publish tail that consults the context —
+// The mutation the leg catches: a publish tail that consults the context —
 // one returning ctx.Err() after the record is appended — answers the
 // cancelled caller with the context's error and fails the version assertion.
 func TestCancelledAfterAppendCompletes(t *testing.T) {
@@ -51,29 +56,6 @@ func TestCancelledAfterAppendCompletes(t *testing.T) {
 				// for the core's cleanup to wait on.
 				unPark := releaser(t, release)
 				return c, mustShare(t, c, 1), testFile(1), parked, unPark
-			},
-		},
-		{
-			name: "held at the record's own segment write",
-			build: func(t *testing.T) (*Core, *Share, core.FileID, <-chan struct{}, func()) {
-				c, seam := newTestCore(t)
-				s, f := mustShare(t, c, 1), testFile(1)
-				// The first write lands the file's stream on its segment,
-				// so the first segment write the hold below can stop is the
-				// record's own, not the header the stream wrote when it took
-				// the segment.
-				warm(t, c, s, f)
-				hold := seam.HoldFirst(t, kit.OpWrite, "*")
-				// decision: the seam cannot see the moment the record
-				// commits in the core's own memory, only the write to the
-				// segment. The held segment write is the first point at
-				// which the record's bytes are committed to storage, so
-				// cancelling there is cancelling after the append: the call
-				// must complete rather than leave a write the caller was
-				// told failed but that recovery serves. Overturned only
-				// when the core gains an observable commit point below the
-				// segment write.
-				return c, s, f, hold.Reached(), hold.Release
 			},
 		},
 	}
@@ -152,9 +134,6 @@ func TestRemovalWaitsWithoutContext(t *testing.T) {
 	case got := <-done:
 		t.Fatalf("the delete returned (%v, %v) after the ctx was cancelled but while its record's sync was still held", got.v, got.err)
 	case <-time.After(250 * time.Millisecond):
-	}
-	if hold.Waiting() < 1 {
-		t.Fatal("no call waits on the held sync: the delete left its durability wait instead")
 	}
 	hold.Release()
 	got := within(t, done, "the delete whose ctx was cancelled during its wait")

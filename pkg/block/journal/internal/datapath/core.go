@@ -799,6 +799,3 @@ func (c *Core) retiredSegment(id core.SegmentID) {
 // wait the fixture blocks on is the pool's own settle event, woken by the
 // refill and never by time.
 func (c *Core) WaitSpares(ctx context.Context) error { return c.pool.WaitSpares(ctx) }
-
-// Close stops the core: it fences (BeginClose), drains every call the fence
-// found in flight, and stops the workers. See close.go.

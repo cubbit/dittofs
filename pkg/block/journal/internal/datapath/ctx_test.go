@@ -8,6 +8,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/kit"
 )
 
 // A data-path call's context rules are the one helper every such call starts
@@ -32,22 +33,25 @@ func halfWritePayload(each int64) int64 {
 // filledShare builds a core, one share whose limit one write of fillPayload
 // bytes fills exactly, and the file holding that write, so the share sits at
 // its limit and the next admitting call through it is the limit's to refuse.
-func filledShare(t *testing.T, fillPayload int64) (*Core, *Share, core.FileID) {
+// The seam is the one the core's storage answers through, so a test can
+// census the calls the share's refusals make.
+func filledShare(t *testing.T, fillPayload int64) (*Core, *Share, core.FileID, *kit.Seam) {
 	t.Helper()
-	c, _ := newTestCore(t)
+	c, seam := newTestCore(t)
 	s := mustLimitShare(t, c, 1, recordBytes(fillPayload))
 	f := testFile(1)
 	if _, err := c.WriteAt(context.Background(), s, f, 0, make([]byte, fillPayload), 1); err != nil {
 		t.Fatalf("the limit-filling write: %v", err)
 	}
 	awaitSettledSpares(t, c, 2*testStreams)
-	return c, s, f
+	return c, s, f, seam
 }
 
 // TestDoneContextChangesNothingAndTakesNoReservation calls every
 // context-taking data-path operation with an already-cancelled context and
 // checks each answers the context's error having changed nothing: no seam
-// call, no record on disk, and no reservation taken. The share-limit legs
+// call, no reservation taken, and no record on disk — read back as the
+// absence of the extent the call would have left. The share-limit legs
 // pin the order the two refusals come in: the done context wins over the
 // capacity admission's, and the same write under a live context meets the
 // admission's refusal as itself, never wrapped in the context's error.
@@ -126,6 +130,14 @@ func TestDoneContextChangesNothingAndTakesNoReservation(t *testing.T) {
 			if got := c.ReservedBytes(); got != beforeReserved {
 				t.Fatalf("ReservedBytes = %d after the refused %s, want the %d it found: the refusal took a reservation", got, tc.name, beforeReserved)
 			}
+			// The read-back half of "no record on disk": the extent the
+			// refused call would have left is absent from the index, so both
+			// fixture files still hold none.
+			for _, f := range []core.FileID{fa, fb} {
+				if es, err := c.Extents(s, f); err != nil || len(es) != 0 {
+					t.Fatalf("the refused %s left extents on file %v: got %v (%v), want none", tc.name, f, es, err)
+				}
+			}
 		})
 	}
 
@@ -136,13 +148,7 @@ func TestDoneContextChangesNothingAndTakesNoReservation(t *testing.T) {
 	const each = 4096
 	fillPayload := halfWritePayload(each)
 	t.Run("done context over the share's limit", func(t *testing.T) {
-		c, seam := newTestCore(t)
-		s := mustLimitShare(t, c, 1, recordBytes(fillPayload))
-		f := testFile(1)
-		if _, err := c.WriteAt(context.Background(), s, f, 0, make([]byte, fillPayload), 1); err != nil {
-			t.Fatalf("the limit-filling write: %v", err)
-		}
-		awaitSettledSpares(t, c, 2*testStreams)
+		c, s, f, seam := filledShare(t, fillPayload)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		before := seamCensus(seam)
@@ -162,9 +168,20 @@ func TestDoneContextChangesNothingAndTakesNoReservation(t *testing.T) {
 		if got := c.ReservedBytes(); got != beforeReserved {
 			t.Fatalf("ReservedBytes = %d after the refusal, want the %d it found", got, beforeReserved)
 		}
+		// The refused write at 1<<20 left nothing behind: the file's extents
+		// are still the filling write's, none at or past the offset it named.
+		if es, err := c.Extents(s, f); err != nil {
+			t.Fatalf("Extents after the refused WriteAt = %v, want the filling write's", err)
+		} else {
+			for _, e := range es {
+				if e.Off >= 1<<20 {
+					t.Fatalf("the file holds an extent at %d after the refused write, want none past the filling write's: %v", e.Off, es)
+				}
+			}
+		}
 	})
 	t.Run("the share's limit under a live context", func(t *testing.T) {
-		c, s, f := filledShare(t, fillPayload)
+		c, s, f, _ := filledShare(t, fillPayload)
 		_, err := c.WriteAt(context.Background(), s, f, 1<<20, make([]byte, each), 1)
 		ns, ok := err.(*core.NoSpaceError)
 		if !ok {
@@ -240,7 +257,7 @@ func TestRefusalPastContextReturnsAsItself(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name+" at the share's limit", func(t *testing.T) {
-			c, s, f := filledShare(t, halfWritePayload(4096))
+			c, s, f, _ := filledShare(t, halfWritePayload(4096))
 			err := tc.call(ctx, c, s, f)
 			ns, ok := err.(*core.NoSpaceError)
 			if !ok {
