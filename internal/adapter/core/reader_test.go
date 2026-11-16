@@ -99,7 +99,7 @@ func readerOf(t *testing.T, srv net.Conn, ceiling int64, timeout time.Duration) 
 // each charged at its class while it is held.
 func TestRecordsComeOutWhole(t *testing.T) {
 	srv, cli := pair(t)
-	r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 0)
+	r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), time.Second)
 	for _, n := range []int{0, 40, 4000, 5000, 1 << 20} {
 		body := payload(n)
 		go func() { _, _ = cli.Write(record(body, true)) }()
@@ -320,5 +320,111 @@ func TestASilentConnectionIsNotTimedOut(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the record after silence did not come out")
+	}
+}
+
+// A record's deadline stops when the record ends: the next record's first bytes,
+// already read, wait as long as the client does.
+func TestTheDeadlineStopsAfterARecord(t *testing.T) {
+	srv, cli := pair(t)
+	r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
+	first, second := record(payload(20), true), record(payload(20), true)
+	if _, err := cli.Write(append(append([]byte{}, first...), second[:2]...)); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := r.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rec.B, payload(20)) {
+		t.Errorf("the first record is %x", rec.B)
+	}
+	rec.Release()
+	// The client pauses past read_timeout, two bytes of the next record
+	// already read.
+	time.Sleep(150 * time.Millisecond)
+	if _, err := cli.Write(second[2:]); err != nil {
+		t.Fatal(err)
+	}
+	rec, err = r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("a pause between records: %v", err)
+	}
+	if !bytes.Equal(rec.B, payload(20)) {
+		t.Errorf("the second record is %x", rec.B)
+	}
+	rec.Release()
+	// And with nothing buffered: the deadline does not carry over to a record
+	// that comes after a pause either.
+	time.Sleep(150 * time.Millisecond)
+	if _, err := cli.Write(record(payload(30), true)); err != nil {
+		t.Fatal(err)
+	}
+	rec, err = r.Read(context.Background())
+	if err != nil {
+		t.Fatalf("a record after a pause: %v", err)
+	}
+	if !bytes.Equal(rec.B, payload(30)) {
+		t.Errorf("the third record is %x", rec.B)
+	}
+	rec.Release()
+}
+
+// A header that trickles is timed out: the record's deadline starts at its
+// first byte.
+func TestATrickledHeaderTimesOut(t *testing.T) {
+	srv, cli := pair(t)
+	r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
+	if _, err := cli.Write(record(payload(20), true)[:2]); err != nil {
+		t.Fatal(err)
+	}
+	// A backstop, so a reader that arms no deadline fails here rather than
+	// hanging the test.
+	if err := srv.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err := r.Read(context.Background())
+	if !errors.Is(err, os.ErrDeadlineExceeded) || time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("a trickled header returns %v after %v, want the deadline at 50ms", err, time.Since(start))
+	}
+	if held := budgets.Receive.Reserved(); held != 0 {
+		t.Errorf("a trickled header leaves %d bytes held", held)
+	}
+}
+
+// A record waiting for its receive charge is not timed out: the deadline stops
+// while it waits and starts a full read_timeout once the charge is granted.
+func TestTheDeadlineStopsAtTheReceiveWait(t *testing.T) {
+	srv, cli := pair(t)
+	budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", chargeOf(t, 1<<20))}
+	adaptertest.CheckLeaks(t, budgets)
+	pool := resources.NewBufPool(budgets.Receive)
+	held, err := pool.Get(context.Background(), key, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := core.NewTestReader(srv, framer(), pool, key, 100*time.Millisecond)
+	body := payload(40)
+	if _, err := cli.Write(record(body, true)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		rec, err := r.Read(context.Background())
+		if rec != nil {
+			rec.Release()
+		}
+		done <- err
+	}()
+	time.Sleep(300 * time.Millisecond) // longer than read_timeout, while it waits for the charge
+	held.Release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("after the receive wait: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the record did not come out after the grant")
 	}
 }

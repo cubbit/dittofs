@@ -329,6 +329,19 @@ func loopback(t *testing.T) (client, server net.Conn) {
 	return client, server
 }
 
+// A reply the server sends in fragments is refused: this protocol writes one
+// fragment per reply.
+func TestClientRefusesAFragmentedReply(t *testing.T) {
+	conn, peer := loopback(t)
+	c := NewClient(conn)
+	if _, err := peer.Write([]byte{0x80, 0x00, 0x00, 0x04, 0, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Recv(); err == nil {
+		t.Error("a reply in fragments is accepted")
+	}
+}
+
 // The client writes exactly the bytes Append gives, and its balance is the
 // credits granted, an interim's counted once, less the credits charged.
 func TestClientWritesTheRecordAndKeepsTheBalance(t *testing.T) {
@@ -442,7 +455,7 @@ func TestHeaderDecodeAndEncodeAllocateNothing(t *testing.T) {
 // header that decodes re-encodes, as its reply, to bytes that decode to the
 // same fields.
 func FuzzFrame(f *testing.F) {
-	for _, v := range [][]byte{echoVector, chainVector, replyVector, {0x00, 0x10, 0x00, 0x01}, {}} {
+	for _, v := range [][]byte{echoVector, chainVector, replyVector, {0x00, 0x10, 0x00, 0x01}, {0x80, 0x00, 0x00, 0x10}, {}} {
 		f.Add(v)
 	}
 	f.Fuzz(func(t *testing.T, record []byte) {
@@ -465,8 +478,8 @@ func FuzzFrame(f *testing.F) {
 		if last != (binary.BigEndian.Uint32(record[:lengthLen])&moreFragments == 0) {
 			t.Fatalf("a prefix of %x reads as last %t", record[:lengthLen], last)
 		}
-		if bytes, fragments := (framer{}).MaxRecord(); bytes != maxBody || fragments != maxFragments {
-			t.Fatalf("MaxRecord = %d, %d; want %d, %d", bytes, fragments, maxBody, maxFragments)
+		if n, fragments := (framer{}).MaxRecord(); n != 1<<20 || fragments != 4 {
+			t.Fatalf("MaxRecord = %d, %d; want 1 MiB in 4 fragments", n, fragments)
 		}
 		body := record[lengthLen:]
 		if n < len(body) {

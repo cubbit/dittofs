@@ -171,24 +171,14 @@ func (c *Client) Recv() ([]Reply, error) {
 	if err != nil {
 		return nil, err
 	}
-	var body []byte
-	for {
-		frag := make([]byte, n)
-		if _, err := io.ReadFull(c.c, frag); err != nil {
-			return nil, fmt.Errorf("testproto: receive: %w", err)
-		}
-		body = append(body, frag...)
-		if last {
-			break
-		}
-		if _, err := io.ReadFull(c.c, prefix[:]); err != nil {
-			return nil, fmt.Errorf("testproto: receive: %w", err)
-		}
-		fn, fl, err := framer{}.BodyLen(prefix[:])
-		if err != nil {
-			return nil, err
-		}
-		n, last = fn, fl
+	if !last {
+		// The server never sends a reply in fragments; a client that reads one
+		// would be reading a record this protocol does not write.
+		return nil, fmt.Errorf("testproto: a reply in fragments")
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(c.c, body); err != nil {
+		return nil, fmt.Errorf("testproto: receive: %w", err)
 	}
 
 	replies, err := openReplies(body)

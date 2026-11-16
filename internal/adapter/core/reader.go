@@ -16,9 +16,13 @@ import (
 // burst of small records is read once (RFC 20 section 6.8).
 const readBufLen = 4 << 10
 
+// errFrame wraps every framing refusal, so the connection's close can name the
+// reason `frame` rather than the client's own.
+var errFrame = errors.New("core: the record's framing")
+
 var (
-	errFrameFragments = errors.New("core: a record past its fragment count")
-	errFrameCap       = errors.New("core: a record past the protocol's cap")
+	errFragments = errors.New("a record past its fragment count")
+	errCap       = errors.New("a record past the protocol's cap")
 )
 
 // reader cuts records from one connection: one small-class read buffer, each
@@ -50,18 +54,23 @@ func newReader(nc net.Conn, f Framer, recv *resources.BufPool, key netip.Addr, t
 // reserved; a record in fragments reserves the cap's class once, before the
 // first body is read, and is charged nothing more.
 func (r *reader) Read(ctx context.Context) (*resources.Buf, error) {
-	hdr, err := r.header()
+	// A record's deadline runs while the reader cuts it: from its first byte,
+	// here or already read.
+	if r.n > r.off {
+		if err := r.arm(ctx); err != nil {
+			return nil, err
+		}
+	}
+	hdr, err := r.header(ctx)
 	if err != nil {
 		return nil, err
 	}
 	n, last, err := r.framer.BodyLen(hdr)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errFrame, err)
 	}
 	r.off += r.framer.HeaderLen()
 
-	// The record's first byte has arrived: the frame deadline runs from it.
-	r.arm()
 	reserve, frags := n, 1
 	if !last {
 		reserve, frags = r.framer.MaxRecord()
@@ -70,17 +79,21 @@ func (r *reader) Read(ctx context.Context) (*resources.Buf, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The grant starts the deadline afresh: a full read_timeout for the rest.
-	r.arm()
+	// The grant starts the deadline afresh, once: a full read_timeout for the
+	// rest of the record (RFC 20 section 6.4, as the amendment states it).
+	if err := r.arm(ctx); err != nil {
+		rec.Release()
+		return nil, err
+	}
 	total := 0
 	for i := 0; ; i++ {
 		if i >= frags {
 			rec.Release()
-			return nil, fmt.Errorf("%w: past %d", errFrameFragments, frags)
+			return nil, fmt.Errorf("%w: %w past %d", errFrame, errFragments, frags)
 		}
 		if total+n > reserve {
 			rec.Release()
-			return nil, fmt.Errorf("%w: %d bytes past %d", errFrameCap, total+n, reserve)
+			return nil, fmt.Errorf("%w: %w: %d bytes past %d", errFrame, errCap, total+n, reserve)
 		}
 		if err := r.body(rec.B[total:], n); err != nil {
 			rec.Release()
@@ -90,28 +103,26 @@ func (r *reader) Read(ctx context.Context) (*resources.Buf, error) {
 		if last {
 			break
 		}
-		if hdr, err = r.header(); err != nil {
+		if hdr, err = r.header(ctx); err != nil {
 			rec.Release()
 			return nil, err
 		}
 		if n, last, err = r.framer.BodyLen(hdr); err != nil {
 			rec.Release()
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", errFrame, err)
 		}
 		r.off += r.framer.HeaderLen()
 	}
 	rec.B = rec.B[:total]
-	if r.n == r.off {
-		r.disarm()
-	}
+	r.disarm()
 	return rec, nil
 }
 
 // header returns the next fragment's header, reading until it is whole.
-func (r *reader) header() ([]byte, error) {
+func (r *reader) header(ctx context.Context) ([]byte, error) {
 	l := r.framer.HeaderLen()
 	for r.n-r.off < l {
-		if err := r.fill(); err != nil {
+		if err := r.fill(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -120,6 +131,10 @@ func (r *reader) header() ([]byte, error) {
 
 // body fills dst with the next n bytes of the record: those already read, then
 // the rest straight from the connection.
+//
+// decision: a record that fits in what was read is copied into its own receive
+// buffer rather than cut from the read buffer, since a Buf cannot be a slice of
+// another. Overturned if Buf gains sub-slices.
 func (r *reader) body(dst []byte, n int) error {
 	dst = dst[:n]
 	part := min(n, r.n-r.off)
@@ -135,39 +150,44 @@ func (r *reader) body(dst []byte, n int) error {
 
 // fill compacts the read buffer and reads once into its free part; the first
 // bytes of a record arm the frame deadline.
-func (r *reader) fill() error {
+func (r *reader) fill(ctx context.Context) error {
 	if r.off > 0 {
 		copy(r.buf, r.buf[r.off:r.n])
 		r.n -= r.off
 		r.off = 0
 	}
 	if r.n == len(r.buf) {
-		return fmt.Errorf("%w: a header of %d bytes", errFrameCap, r.framer.HeaderLen())
+		return fmt.Errorf("%w: %w: a header of %d bytes", errFrame, errCap, r.framer.HeaderLen())
 	}
 	m, err := r.nc.Read(r.buf[r.n:])
 	r.n += m
 	if m > 0 && !r.armed {
-		r.arm()
+		if aerr := r.arm(ctx); aerr != nil {
+			return aerr
+		}
 	}
 	return err
 }
 
-// reserve takes the record's charge, its deadline stopped while it waits, and
-// starts a full read_timeout once the charge is granted (RFC 20 section 6.4).
+// reserve takes the record's charge, its deadline stopped while it waits, so a
+// reader at the receive ceiling is not timed out (RFC 20 section 6.4).
 func (r *reader) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 	r.disarm()
-	rec, err := r.recv.Get(ctx, r.key, n)
-	r.arm()
-	return rec, err
+	return r.recv.Get(ctx, r.key, n)
 }
 
-// arm starts the frame deadline, and disarm stops it: a connection that sends
-// nothing, or waits for receive room, is not timed out.
-func (r *reader) arm() {
+// arm starts the frame deadline, and stops the reader at once if its context
+// has ended: a connection's close cancels the context before it sets a deadline
+// in the past, so the stop is never overwritten by an arm.
+func (r *reader) arm(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if r.timeout > 0 {
 		_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout))
 	}
 	r.armed = true
+	return ctx.Err()
 }
 
 func (r *reader) disarm() {
