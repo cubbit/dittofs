@@ -48,8 +48,10 @@ func buildWriter(t *testing.T) newOut {
 	}
 }
 
-// The writer passes the suite of out.
+// The writer passes the suite of out, and leaves no goroutine or descriptor
+// behind.
 func TestTheWriterPassesTheSuiteOfOut(t *testing.T) {
+	adaptertest.CheckLeaks(t, nil)
 	testOut(t, buildWriter(t))
 }
 
@@ -60,6 +62,7 @@ func TestTheGatheredWrite(t *testing.T) {
 	conn, peer := net.Pipe()
 	defer func() { _ = peer.Close() }()
 	budget := resources.NewWaitBudget("reply", 1<<30)
+	adaptertest.CheckLeaks(t, &resources.Budgets{Reply: budget})
 	pool := resources.NewBufPool(budget)
 	w := core.NewTestWriter(conn, f, 0, func(error) {})
 	defer w.Stop()
@@ -226,19 +229,17 @@ func TestTheClosedPeerCloses(t *testing.T) {
 }
 
 // readRecord reads one framed record from peer.
-func readRecord(t *testing.T, peer net.Conn, f core.Framer) {
-	t.Helper()
+func readRecord(peer net.Conn, f core.Framer) error {
 	hdr := make([]byte, f.HeaderLen())
 	if _, err := io.ReadFull(peer, hdr); err != nil {
-		t.Fatal(err)
+		return err
 	}
 	n, _, err := f.BodyLen(hdr)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
-	if _, err := io.ReadFull(peer, make([]byte, n)); err != nil {
-		t.Fatal(err)
-	}
+	_, err = io.ReadFull(peer, make([]byte, n))
+	return err
 }
 
 // The deadline is armed for each gathered write, not once for the connection: a
@@ -267,7 +268,9 @@ func TestTheDeadlineIsArmedForEachBatch(t *testing.T) {
 		}
 		synctest.Wait()
 		time.Sleep(500 * time.Millisecond)
-		readRecord(t, peer, f) // the first batch's write ends here
+		if err := readRecord(peer, f); err != nil { // the first batch's write ends here
+			t.Fatal(err)
+		}
 		if err := w.Out(msg("second"), 0, 0); err != nil {
 			t.Fatal(err)
 		}
@@ -343,7 +346,13 @@ func TestStopEndsAHeldWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 		synctest.Wait() // the writer is in the write; the peer reads nothing
+		before := time.Now()
 		w.Stop()
+		// The stop ended the write rather than waiting out write_timeout: the
+		// bubble's clock has not moved.
+		if moved := time.Since(before); moved != 0 {
+			t.Errorf("stop waited %v on the held write, want none", moved)
+		}
 		if r := budget.Reserved(); r != 0 {
 			t.Errorf("%d bytes are still reserved after stop returned", r)
 		}
@@ -377,16 +386,29 @@ func TestTheBoundReleasesTheReader(t *testing.T) {
 		if !at || room == nil {
 			t.Fatalf("64 messages held, pause says %v", at)
 		}
+		select {
+		case <-room:
+			t.Fatal("the bound's channel is closed while every message is still held")
+		default:
+		}
+		read := make(chan error, 1)
 		go func() {
 			for range 64 {
-				readRecord(t, peer, f)
+				if err := readRecord(peer, f); err != nil {
+					read <- err
+					return
+				}
 			}
+			read <- nil
 		}()
 		synctest.Wait()
 		select {
 		case <-room:
 		default:
 			t.Fatal("the bound never released the reader once the messages were written")
+		}
+		if err := <-read; err != nil {
+			t.Fatalf("reading the records: %v", err)
 		}
 	})
 }

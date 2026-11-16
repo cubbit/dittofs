@@ -138,7 +138,7 @@ func (w *writer) stop() {
 }
 
 // run writes each wake's messages in gathered writes, until the queue is
-// empty: a take that stops at a keyed reply leaves the rest for the next.
+// empty.
 func (w *writer) run() {
 	defer close(w.done)
 	for {
