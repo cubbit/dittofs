@@ -58,8 +58,8 @@ clone marker.
 - An incomplete source: the filesystem service refuses it (RFC 17 §5.9 step 2), and the
   store records no `Incomplete` flag in this part (D2).
 - RFC 17 §5.9's admission of both handles, authorisation, the charge reservation and the
-  setuid clear, the hold of a call behind a clone (`WithHold`), and the adapters' mapping:
-  the filesystem service's, stage 2's piece 11.
+  setuid clear, and the adapters' mapping: the filesystem service's, stage 2's piece 11; the
+  hold of a call behind a clone (`WithHold`): stage 2's piece 13.
 - Phase 2's batches themselves (`Content.Resume`), the clone `Removal` record, the source's
   durable open record and their prune: built in `kvstore` (`clone.go`, `removal.go`,
   `release.go`).

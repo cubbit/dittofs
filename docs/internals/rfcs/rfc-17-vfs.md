@@ -1265,7 +1265,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `Write` | `Checks.CheckIO`; `Files.Authorize`; `Files.SetAttrs` to clear setuid; `Capacity.Usage` for quota; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw`, `Allocation` for the reservation, `Write`, `Overlay`, `Commit` when stable | primary |
 | `Commit` | `Opens.Flushed` through an SMB open | `Commit` | primary |
 | `Deallocate`, `Seek` | `Checks.CheckIO`; for `Deallocate`, `Opens.Entry` and `Watches.Changed` for the change (below) | `Deallocate`; `Allocation` | primary |
-| `Copy`, `Clone` | `Checks.CheckIO` on both | `Copy`, `Clone`; across shards `Read` and `Write` | the destination's primary, reading at the source's across shards through `Peers.ReadAt` |
+| `Copy`, `Clone` | `Checks.CheckIO` on both | `Copy`, `Clone`, each with the admitted hook (`WithAdmitted`, §5.9 step 4); across shards `Read` and `Write` | the destination's primary, reading at the source's across shards through `Peers.ReadAt` |
 | `Lock`, `CancelLock`, `TestLock`, `Unlock` | `Locks.Lock`, `CancelLock`, `TestLock`, `Unlock`, each passing the call's `LockOwner`, and `Unlock` its `LockSequence`; `Files.Authorize` through `authz.LockState` for a `Lock` or `TestLock` under no open (§5.11) | — | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)); an NFSv4.0 owner's sequence at its home primary through `Peers.Sequence` |
 | `AckRecall` | `Grants.AckRecall`, `GrantNone` included | — | the primary of the shard the `GrantID` names |
 | `Watch`, `Unwatch` | `Watches.Watch`, `Unwatch` | — | the directory's primary; `Unwatch`, the primary of the shard the `WatchID` names |
@@ -2425,9 +2425,23 @@ carved refs adopted, all resolved at one point in the source's history.
    `ErrCross` (`CrossNamespace`) one RFC 8 §9.1's admission rule refuses, since
    no chunk can be adopted across namespaces; with `ErrIncomplete` one whose
    source is `Incomplete`, before anything changes;
-3. reserve the destination's charge (§5.6), and clear setuid and setgid on the
-   destination as a write does (§5.1 step 5);
-4. call the engine.
+3. reserve the destination's charge (§5.6);
+4. call the engine with the admitted hook
+   ([RFC 8 §12.1](rfc-8-engine.md#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)).
+   Once the engine has passed its admission's refusals and registered the
+   clone's extents, and before it changes the destination, the hook clears
+   setuid and setgid on the destination as a write does (§5.1 step 5), reads
+   `WCC.Before` under the destination's accept lock, and releases both files'
+   admission locks; from there the clone's registrations hold off what meets
+   its extents, so no sync, phase 1 or wait for the clone runs under either
+   lock. A refusal at the engine's admission changes nothing, the mode
+   included; one in the engine's step 1 or at its journal step leaves the bits
+   cleared, as a write the engine refuses does. A removal of either extent
+   still in flight when the engine registers the clone answers `ErrDelay`
+   (`DelayConflict`) at once rather than being waited out under both locks.
+   A copy's later chunks call the hook too, and it does nothing past the
+   first; a removal one of them meets ends the copy short, as any later
+   chunk's refusal does.
 
 **Calls behind a running clone wait, within what the adapter allows.** While a
 clone or a copy's current chunk runs, a write, truncate, deallocate or clone
@@ -2644,7 +2658,7 @@ Every test runs in §8's integration tier unless it names another tier. A row is
 | V28 | A create — an `Open` that creates included —, link or rename into a directory marked delete on close is refused, over every protocol. | With a directory marked over SMB, a create, a creating `Open`, a link and a rename into it, over SMB and over NFS, are each refused. |
 | V29 | Every call takes open-state steps, then fold admission, then accept locks, each in file-ID order; a held call holds none of them and re-runs §5.1's steps 3–6. | An open of an existing child and an unlink of it race 10⁴ times, with the child's ID below its parent's and above it, and so do a creating open of a new name and an unlink of that name: neither waits for its deadline; a write and an unlink of the file's last name race 10⁴ times with a deny-delete open: neither waits for its deadline and no deny-delete is granted between the unlink's check and its commit; a 1 GiB clone of a VM disk under writes, with a lease break pending: each held write gives up its open-state step and accept lock, the break's acknowledgement and a new open proceed during the clone, and each held write completes after re-running its checks. |
 | V30 | The service waits inside a call only behind a running clone or copy chunk, and at most the call's `WithHold`. | An NFSv3 write into a cloning extent with `WithHold(10s)` is held and completes when the clone ends; with `WithHold(0)` it returns `DelayClone` at once. |
-| V31 | Every mutating call returns the `WCC` of each object it changed, from one hold of its accept lock. | For each mutating method, a concurrent write between the call and a later `GetAttr` does not appear in the returned `WCC`; a directory's `Before` is nil over NFSv3. |
+| V31 | Every mutating call returns the `WCC` of each object it changed, from one hold of its accept lock, except `Copy` and `Clone`: their `Before` is read under the destination's accept lock in the admitted hook (§5.9 step 4) and their `After` once the engine answers, with no lock held across the clone, since no adapter answers their pre-operation attributes (NFSv4.2 `COPY` and `CLONE`, SMB copychunk and duplicate-extents carry none). | For each mutating method other than `Copy` and `Clone`, a concurrent write between the call and a later `GetAttr` does not appear in the returned `WCC`; for `Copy` and `Clone`, a write outside the extents during the clone may appear in `After` and never in `Before`; a directory's `Before` is nil over NFSv3. |
 | V32 | The service imports no adapter and no network code; the gateway and `Serve` call no store, engine, open state or identity and hold the filesystem only as a `vfs.Service`; the engine imports no open state, reaching it only through its `CloneHold`; `Authorize` and `Granted` are called only from `authz`. | §8's architecture check, which must report each of its seeded violations. |
 | V33 | `Start` is all or nothing, `New` starts nothing, and `Stop` leaves no goroutine and closes nothing it was handed. | Fail each start step in turn: `Start` returns the error and the goroutine count is back to the built state's; after `Stop`, none of the service's goroutines remain and the store, engine and open state still serve a direct call. Leave a release pending behind a clone across `Drain` and `Stop`: after `Stop` no waiter remains, and the engine's `Close` then joins every loop within its bound. |
 | V34 | `Drain` joins every admitted call and admits none after. | With 64 writes in flight, `Drain` returns only once each has answered; a call made after `Drain` begins returns `ErrUnavailable`; a lease break pending at `Drain` is neither forced nor revoked. |
