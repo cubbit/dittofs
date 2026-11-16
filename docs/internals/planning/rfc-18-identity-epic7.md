@@ -36,8 +36,8 @@ adapts these steps into, a `*apiv1.Problem` failing an operation and any other e
 join's ID and call `HoldJoinCredential` before the creating `Write`, and seal the offline join's
 password with `secrets.Meta{HandedOver: true}` in a write of their own. **#4059**: `secrets.Seal`,
 `secrets.Meta`, `secrets.Version`, `Prune`. **The fixture branch** `test/ad-dc-join` (b4858ccfc,
-869cdc2c5, 98540128a): `dittofs$`, `offjoinaes$` and `offjoinlegacy$` pre-staged, the RPC range
-50000-50019 pinned.
+869cdc2c5, 98540128a), rebased onto `feat/storage-v2` by E6's T6.1: `dittofs$`, `offjoinaes$`
+and `offjoinlegacy$` pre-staged, the RPC range 50000-50019 pinned.
 **Blocks:** **E8**, whose T8.6 fills `Deps.DomainController`, `State.Machine` and, under D6
 (pending), `State.Join`, and registers this epic's four kinds; whose T8.7 bounds a pass-through and
 whose T8.8 reads `Installation.Join`; **RFC 23's plan's epic 4**, whose T4.11 success paths need
@@ -97,8 +97,8 @@ Kerberos and pass-through on an installation joined offline to an explicit contr
 - The secret-free capture across both joins and a rotation: E8's T8.11.
 - The alert rows of the two conditions: RFC 25 §3.9 names them and no Go table holds them yet
   (E8's D8).
-- Cherry-picking the fixture's branches onto `feat/storage-v2` and taking `integration/ad-dc` out of
-  its plan job's filter: whichever of E5 and E6 first runs a v2 test there (§9).
+- Rebasing the fixture's branches onto `feat/storage-v2`, `test/ad-dc-join` among them, and the
+  `integration/ad-dc` cell's place in its plan job's select: E6's T6.1, their one owner.
 - Leaving the domain: the deferral ledger row "Leaving the domain".
 - A rotation waiting on every node, and `test-directory`'s answer from every node: the deferral
   ledger row "A machine password's rotation waiting on every node", which §9 asks to widen.
@@ -1011,26 +1011,17 @@ epic documents of RFC 18's epics 1 to 6 and 8 (#4315, #4316, #4318, #4339, #4340
   ledger row "A machine password's rotation waiting on every node" should name it too.
 - R61 is held by review of the guides alone; no test can check what an operator is told.
 
-**Changes the other epic documents need:**
+**Changes the other documents need:** E1's, E5's, E6's and E8's documents (#4315, #4340, #4341,
+#4385) carry this epic's edges: `JoinCredential` admitted after S1 and T7.6's removal of the
+`go-ldap` exemption; T5.7's filter consumed by T7.11 and T5.3's selection calling T7.9's fallback;
+the computer-account functions in `internal/identity/directory` outside `Conn`; T8.6's fields, the
+four kinds, the `*apiv1.Problem` passed through, and the refused creating `Write`'s hold. Still
+owed elsewhere:
 
-- **E1 (#4315):** S1's freeze admits `pkg/identity.JoinCredential`, added by T7.4 (D12); T1.5's
-  `go-ldap` exemption for `internal/auth/netlogon` is removed by T7.6.
-- **E5 (#4340):** T5.7's SID filter and counter named as consumed by T7.11; T5.3's key selection
-  calls T7.9's fallback for a name the account holds; the cherry-pick of the fixture's branches and
-  the filter on `feat/storage-v2` given to E5 or E6, whichever runs first, rather than to every
-  epic that might.
-- **E6 (#4341):** `internal/identity/directory` gains T7.6's and T7.7's concrete computer-account
-  functions, outside `Conn`; T6.5's domain SID and test call consumed by T7.11 and T7.5.
-- **E8 (#4385):** §1.3's "E7 has no epic document yet" goes; T8.6 fills `Deps.DomainController`
-  with T7.7's `Dialer`, or the in-memory one through D4's `export_test.go` constructor, fills
-  `State.Machine` and, under D6, `State.Join`, registers `JoinStep`, `RotateStep`,
-  `ResolvePrincipalStep` and `TestDirectoryStep` with their `Progress`, passing a `*apiv1.Problem`
-  through as the terminal failure (D4); it gains the test RFC 23's plan's epic 4 hands it, a join
-  whose creating `Write` is refused leaving no credential held; under D11 (b) it also creates the
-  scheduled rotation.
 - **RFC 23's plan's epic 4 (#4337):** T4.11 validates the online join's OU and host name before the
   creating write (R30), refuses at the secret route a keytab key for a name in `Join.Names` (R27,
   under D6), and declares the kinds' parameter types in `pkg/node/apiv1`.
+- Under D11 (b), E8 also creates the scheduled rotation.
 
 **Field and import notes.** This epic adds `State.Machine` and `State.Join` (D6) with T7.9 and
 `Deps.DomainController` with T7.10, their first readers; `New` refuses none, a zero `State.Join`
