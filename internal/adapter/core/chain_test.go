@@ -273,9 +273,10 @@ func TestAnUnwrapRefusalWithErrDecodeIsCountedUnwrap(t *testing.T) {
 	})
 }
 
-// gatedFlow is the stages' own FlowControl, which once armed answers the
-// second admission's try under an ended context as full, and holds the
-// admission's wait until gate closes: a fault injection.
+// gatedFlow is the stages' own FlowControl, which once armed answers every
+// admission after the first as full: a try under an ended context is told
+// it would wait, and a wait under a live one is held until gate closes or
+// its context ends. A fault injection.
 type gatedFlow struct {
 	core.FlowControl
 	armed atomic.Bool
@@ -284,22 +285,53 @@ type gatedFlow struct {
 }
 
 func (f *gatedFlow) Admit(ctx context.Context, h core.Header) (func(), error) {
-	if f.armed.Load() {
-		switch f.n.Add(1) {
-		case 2:
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			fallthrough
-		case 3:
-			select {
-			case <-f.gate:
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
+	if f.armed.Load() && f.n.Add(1) > 1 {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		select {
+		case <-f.gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
 	return f.FlowControl.Admit(ctx, h)
+}
+
+// A chain whose second member waits in Admit when the connection closes ends
+// with nothing counted: the close's cancel is no refusal and no error no row
+// maps, and nothing logs at error.
+func TestAChainMembersAdmissionTheCloseEndsIsNoError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, logs := metrics.New("v", "c"), &logSink{}
+		flow := &gatedFlow{gate: make(chan struct{})}
+		s := newChained(t, 1<<20, adapter.Deps{Metrics: m, Logger: logs.logger()}, func(st *core.Stages) {
+			flow.FlowControl = st.Flow
+			st.Flow = flow
+		})
+		flow.armed.Store(true)
+		s.serve(echoIn(80, 7), echoIn(81, 7))
+		if r := s.recvOne(); r.ID != 80 {
+			t.Fatalf("the first record is %+v, want the first Echo, sent before the second waits", r)
+		}
+		synctest.Wait()
+		s.p.Close()
+		if err := s.p.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := scrape(t, m)
+		for _, k := range []string{
+			"adapter_unmapped_errors_total{protocol=" + testproto.Name + "}",
+			"adapter_refusals_total{protocol=" + testproto.Name + ",stage=admit}",
+		} {
+			if got[k] != 0 {
+				t.Errorf("%s = %v after the close ended a member's admission, want 0", k, got[k])
+			}
+		}
+		if e := logs.at(t, "ERROR"); len(e) != 0 {
+			t.Errorf("a member's admission the close ended logged at error: %v", e)
+		}
+	})
 }
 
 // A chain whose second member would wait in Admit sends the first member's
@@ -1552,10 +1584,10 @@ func TestASuccessClearsAChainsFailure(t *testing.T) {
 		s.serve(
 			testproto.Msg{Op: 99, Version: 1, ID: 1},
 			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2},
-			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3, Related: true},
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3, Related: true, Payload: []byte("z")},
 		)
 		rs, err := s.client.Recv()
-		if err != nil || len(rs) != 3 || rs[0].Status != testproto.StatusNotSupported || rs[1].Status != testproto.StatusOK || rs[2].ID != 3 || rs[2].Status != testproto.StatusOK {
+		if err != nil || len(rs) != 3 || rs[0].Status != testproto.StatusNotSupported || rs[1].Status != testproto.StatusOK || rs[2].ID != 3 || rs[2].Status != testproto.StatusOK || string(rs[2].Body) != "z" {
 			t.Errorf("the chain is answered %+v, %v: want the refusal, then both Echo answered", rs, err)
 		}
 	})
@@ -1971,6 +2003,320 @@ func TestALaterMemberAdmitRefusesSharesTheRecord(t *testing.T) {
 		got, _ := scrape(t, m)
 		if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=flow}"; got[k] != 0 {
 			t.Errorf("%s = %v, want 0", k, got[k])
+		}
+	})
+}
+
+// With the reply pool full, chains whose first member Unwrap refuses hold
+// the connection's one status wait, as refusals alone do: a reader serving
+// ten in turn is held at the second until the first's status is reserved,
+// so no more than one record waits for a status, and all ten are served once
+// the pool has room.
+func TestChainsWaitingForAStatusHoldTheReader(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		synctest.Wait() // the setup's last reply released, so the pool is filled whole
+		held, err := s.budgets.Reply.Reserve(context.Background(), peer, (1<<20)-s.budgets.Reply.Reserved())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var served atomic.Int32
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for i := range uint64(10) {
+				b, offs := chainOf(s.f, echoIn(10*i+1, 7), echoIn(10*i+2, 7))
+				b[headerLen+1] ^= 1         // the first member fails Unwrap
+				b[offs[1]+headerLen+1] ^= 1 // and so does the second
+				s.serveBody(b)
+				served.Add(1)
+			}
+		}()
+		synctest.Wait()
+		if n := served.Load(); n != 1 {
+			t.Errorf("the reader served %d chains while one waited for a status, want 1", n)
+		}
+		held.Release()
+		<-done
+	})
+}
+
+// A chain's later member waiting for its status holds the connection's one
+// status wait too: with the pool's room taken by the chain's first reply,
+// unread, a refusal alone served after it holds the reader until the
+// chain's status is reserved.
+func TestAChainsLaterStatusHoldsTheOneStatusWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		synctest.Wait() // the setup's last reply released, so the pool is filled exactly
+		held, err := s.budgets.Reply.Reserve(context.Background(), peer, (1<<20)-s.budgets.Reply.Reserved()-s.reply.Charge(0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, offs := chainOf(s.f, echoIn(1, 7), echoIn(2, 7))
+		b[offs[1]+headerLen+1] ^= 1 // the second member fails Unwrap
+		s.serveBody(b)
+		synctest.Wait()
+		lone := body(s.f, echoIn(3, 7))
+		lone[len(lone)-1] ^= 0x01
+		served := make(chan struct{})
+		go func() {
+			s.serveBody(lone)
+			close(served)
+		}()
+		synctest.Wait()
+		select {
+		case <-served:
+			t.Error("a refusal alone was served while the chain's member waited for its status")
+		default:
+		}
+		held.Release()
+		<-served
+	})
+}
+
+// A related member after a replay hit is routed under the request from
+// before the hit: sent again, a sequenced chain's Create is a hit, and the
+// related Create after it still finds the PutFH's handle.
+func TestARelatedMemberAfterAHitKeepsTheHandle(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{Budgets: serverBudgets(1 << 20)})
+		after := func(name string) testproto.Msg {
+			return testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 152, Session: inherited, Tree: 1, Name: name, Related: true}
+		}
+		s.serve(sequenced(s, 150, after("first"))...)
+		recvIDs(t, s, 1)
+		s.serve(sequenced(s, 150, after("second"))...)
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 3 || rs[2].Status != testproto.StatusOK {
+			t.Errorf("the chain sent again is answered %+v, %v: want the Create after the hit answered OK", rs, err)
+		}
+	})
+}
+
+// A compound row reached as a chain's member is refused not supported, and
+// none of its members runs.
+func TestACompoundAsAChainMemberIsRefused(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newSeam(t, testproto.New(adapter.Deps{}).Bare(), 1<<20)
+		s.serve(
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1},
+			testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 2, Members: []testproto.Msg{{Op: testproto.OpEcho, Payload: []byte("m")}}, Tag: []byte{1, 2, 3, 4}},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[1].ID != 2 || rs[1].Status != testproto.StatusNotSupported {
+			t.Fatalf("the chain is answered %+v, %v: want the compound refused not supported", rs, err)
+		}
+		if _, results, _ := testproto.Results(rs[1].Body); len(results) != 0 {
+			t.Errorf("the refused compound answered %d results, want none", len(results))
+		}
+	})
+}
+
+// With a client that reads slowly, chains whose later member waits for its
+// status hold no more records at once than the flow cap bounds: an Echo
+// whose checksum fails after a valid Echo, and a related Echo after a member
+// refused at route, each wait while their chain holds one place.
+func TestChainsWaitingForAStatusStayWithinTheFlowCap(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		chain func(f core.Framer, i uint64) []byte
+	}{
+		{"an Unwrap refusal after an Echo", func(f core.Framer, i uint64) []byte {
+			b, offs := chainOf(f, echoIn(10*i+1, 7), echoIn(10*i+2, 7))
+			b[offs[1]+headerLen+1] ^= 1 // the second member fails Unwrap
+			return b
+		}},
+		{"a related member after a failure", func(f core.Framer, i uint64) []byte {
+			b, _ := chainOf(f, testproto.Msg{Op: 99, Version: 2, ID: 10*i + 1, Session: 7, Tree: 1}, echoIn(10*i+2, inherited))
+			return b
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const room = 70
+				s := newChained(t, room*smallCharge, adapter.Deps{}, func(st *core.Stages) { st.Flow = core.NewCapped() })
+				synctest.Wait()
+				per := s.recv.Charge(len(c.chain(s.f, 0)))
+				const chains = 1000
+				go func() {
+					for i := range uint64(chains) {
+						s.serveBody(c.chain(s.f, i))
+					}
+				}()
+				most := int64(0)
+				for replies := 0; replies < 2*chains; {
+					synctest.Wait()
+					if held := s.budgets.Receive.Reserved() / per; held > most {
+						most = held
+					}
+					rs, err := s.client.Recv()
+					if err != nil {
+						t.Fatal(err)
+					}
+					replies += len(rs)
+				}
+				// At most 2×64+1: the chains holding a place under the cap of
+				// 64, as many waiting at flow control with their records, and
+				// the reader's own. Without the kept place they grow with the
+				// chains sent.
+				if most > 2*64+1 {
+					t.Errorf("%d records held at once, past twice the flow cap and one", most)
+				}
+			})
+		})
+	}
+}
+
+// placesFlow is the stages' FlowControl counting the places held at once:
+// a pass-through, where how many a chain holds is what is checked.
+type placesFlow struct {
+	core.FlowControl
+	mu   sync.Mutex
+	held int
+}
+
+func (f *placesFlow) Admit(ctx context.Context, h core.Header) (func(), error) {
+	release, err := f.FlowControl.Admit(ctx, h)
+	if err != nil {
+		return release, err
+	}
+	f.mu.Lock()
+	f.held++
+	f.mu.Unlock()
+	return func() {
+		f.mu.Lock()
+		f.held--
+		f.mu.Unlock()
+		release()
+	}, nil
+}
+
+func (f *placesFlow) places() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.held
+}
+
+// onePlace is a FlowControl declared in the test with a single place: under
+// an ended context it tries once and answers that context's error.
+type onePlace chan struct{}
+
+func (o onePlace) Admit(ctx context.Context, _ core.Header) (func(), error) {
+	select {
+	case o <- struct{}{}:
+		return func() { <-o }, nil
+	default:
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case o <- struct{}{}:
+		return func() { <-o }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// A chain never waits at flow control holding a place, and splits only
+// where it would wait without one: under a flow of one place, a chain of
+// five Echo is answered in one record, each member admitted in the place the
+// one before it gave back, with no split.
+func TestAChainNeverWaitsForAPlaceHoldingOne(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newSeamWith(t, edited{testproto.New(adapter.Deps{}).Bare(), func(st *core.Stages) { st.Flow = make(onePlace, 1) }}, 1<<20, adapter.Deps{Metrics: m})
+		var msgs []testproto.Msg
+		for i := range 5 {
+			msgs = append(msgs, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: uint64(i + 1)})
+		}
+		s.serve(msgs...)
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 5 {
+			t.Errorf("the chain's first record holds %d replies (%v), want all 5", len(rs), err)
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=flow}"; got[k] != 0 {
+			t.Errorf("%s = %v, want 0", k, got[k])
+		}
+	})
+}
+
+// A later member refused while its chain's earlier reply holds the pool's
+// last room waits for its status holding the chain's one place: refused by
+// Unwrap after an Echo, answered a failure's status after a member refused
+// at route, or refused by Admit for an overdraw.
+func TestARefusedLaterMemberWaitsHoldingOnePlace(t *testing.T) {
+	over := echoIn(2, 7)
+	over.Credits = 1000
+	for _, c := range []struct {
+		name  string
+		chain func(f core.Framer) []byte
+	}{
+		{"an Unwrap refusal after an Echo", func(f core.Framer) []byte {
+			b, offs := chainOf(f, echoIn(1, 7), echoIn(2, 7))
+			b[offs[1]+headerLen+1] ^= 1
+			return b
+		}},
+		{"a related member after a failure", func(f core.Framer) []byte {
+			b, _ := chainOf(f, testproto.Msg{Op: 99, Version: 2, ID: 1, Session: 7, Tree: 1}, echoIn(2, inherited))
+			return b
+		}},
+		{"an Admit refusal after an Echo", func(f core.Framer) []byte {
+			b, _ := chainOf(f, echoIn(1, 7), over)
+			return b
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				flow := &placesFlow{}
+				s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
+					flow.FlowControl = st.Flow
+					st.Flow = flow
+				})
+				synctest.Wait()
+				held, err := s.budgets.Reply.Reserve(context.Background(), peer, (1<<20)-s.budgets.Reply.Reserved()-s.reply.Charge(0))
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.serveBody(c.chain(s.f))
+				synctest.Wait() // the second member waits for its status, the first's reply unread
+				if n := flow.places(); n != 1 {
+					t.Errorf("while the refused member waits for its status the chain holds %d places, want 1", n)
+				}
+				held.Release()
+				for replies := 0; replies < 2; {
+					rs, err := s.client.Recv()
+					if err != nil {
+						t.Fatal(err)
+					}
+					replies += len(rs)
+				}
+			})
+		})
+	}
+}
+
+// A member in its call holds the chain's one place: the place of the member
+// before it is given back once this one is admitted.
+func TestAMemberInItsCallHoldsTheChainsOnePlace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		flow := &placesFlow{}
+		s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
+			flow.FlowControl = st.Flow
+			st.Flow = flow
+		})
+		hold := s.faults.Hold(vfs.OpCreate)
+		s.serve(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 1, Session: 7, Tree: 1, Handle: s.root},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 2, Session: inherited, Tree: 1, Name: "one", Related: true},
+		)
+		<-hold.Reached()
+		if n := flow.places(); n != 1 {
+			t.Errorf("while the Create is in its call the chain holds %d places, want 1", n)
+		}
+		hold.Release()
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
+			t.Errorf("the chain is answered %+v, %v", rs, err)
 		}
 	})
 }

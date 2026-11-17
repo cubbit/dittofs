@@ -58,8 +58,10 @@ type chain struct {
 	prevR    *Request
 	failed   bool // the member before failed, with failS
 	failS    Status
-	cur      entry // the member running
-	stopped  bool  // a NoReply member ended the chain, or the connection closed
+	cur      entry  // the member running
+	stopped  bool   // a NoReply member ended the chain, or the connection closed
+	slot     bool   // the chain holds the connection's one status wait
+	kept     func() // the place of the last member admitted, until the next is admitted or would wait
 }
 
 // serveChain takes a record whose messages chain (§4.7). On the reader it
@@ -96,9 +98,24 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 			}
 		}
 	}
+	// A first member refused takes the connection's one status wait here,
+	// on the reader, as a refusal alone does: the next such chain then holds
+	// the reader until this one's status is reserved, so the records waiting
+	// for a status stay one per connection.
+	slot := false
+	if e.err != nil {
+		select {
+		case p.status <- struct{}{}:
+			slot = true
+		case <-p.ctx.Done():
+		}
+	}
 	p.add()
 	if p.ctx.Err() != nil {
 		p.done()
+		if slot {
+			<-p.status
+		}
 		if e.release != nil {
 			e.release()
 		}
@@ -106,7 +123,7 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 		rec.Release()
 		return
 	}
-	c := &chain{p: p, rec: rec}
+	c := &chain{p: p, rec: rec, slot: slot}
 	go c.run(e)
 }
 
@@ -119,8 +136,11 @@ func (c *chain) run(e entry) {
 	p := c.p
 	defer p.done()
 	defer c.rec.Release()
+	defer c.free()
+	defer c.giveBack()
 	for {
 		c.one(&e)
+		c.free() // a first member answered with no status wait gives the slot back
 		if c.stopped {
 			return
 		}
@@ -212,10 +232,11 @@ func (c *chain) one(e *entry) {
 				break
 			}
 			c.admit(e)
-			if c.stopped || (e.err == nil && p.ctx.Err() != nil) {
-				// A member admitted after close, or after a split that
-				// closed the connection, is not run, as a first message is
-				// not: nothing more is sent.
+			if c.stopped || (p.ctx.Err() != nil && (e.err == nil || p.endedByClose(e.err))) {
+				// A member admitted after close, one whose admission the
+				// close ended, or one after a split that closed the
+				// connection, is not run, as a first message is not:
+				// nothing more is sent, counted or logged.
 				if e.release != nil {
 					e.release()
 				}
@@ -249,23 +270,43 @@ func (c *chain) one(e *entry) {
 	if related {
 		prev = c.prevR
 	}
-	c.prevR = p.message(e.tr, c.rec, e.u, prev, e.release, c)
+	// decision: a replay hit builds no request, so a related member after it
+	// is handed the request from before the hit, whose state the cached
+	// reply's call had started from. Overturned if a protocol that chains
+	// returns cached copies and a hit's own state must carry over.
+	release := e.release
+	keep := func() { c.keep(release) }
+	if r := p.message(e.tr, c.rec, e.u, prev, keep, c); r != nil || !e.tr.cached {
+		c.prevR = r
+	}
 }
 
-// admit admits a member after the first: tried once under an ended context,
-// and where it would wait while the chain holds replies, those go out first,
-// so a chain never waits on flow control holding reply reservations (§4.7).
+// admit admits a member after the first, as §4.7 has it: tried once under
+// an ended context in the place of the member before it, so a member flow
+// control refuses waits for its status in that place, and a try that admits
+// holds both places for that moment; where the try would wait, the place is
+// given back and it is tried once more; and where it would still wait, the
+// replies the chain holds go out first. A chain splits only where it would
+// wait anyway, and never waits on flow control holding reply reservations or
+// a place.
 func (c *chain) admit(e *entry) {
 	p := c.p
 	release, err := p.st.Flow.Admit(ended, e.u)
 	if err != nil && errors.Is(err, ended.Err()) {
-		c.flush(splitFlow, e.tr)
-		release, err = p.st.Flow.Admit(e.tr.ctx, e.u)
+		c.giveBack() // never wait at flow control holding a place
+		if release, err = p.st.Flow.Admit(ended, e.u); err != nil && errors.Is(err, ended.Err()) {
+			c.flush(splitFlow, e.tr)
+			release, err = p.st.Flow.Admit(e.tr.ctx, e.u)
+		}
 	}
 	if err != nil {
+		// Refused on the first try, the member keeps the chain's place for
+		// its status; refused once the place was given back, it holds none,
+		// which core's cap does only on close.
 		e.st, e.err = stageAdmit, err
 		return
 	}
+	c.giveBack()
 	e.release = release
 }
 
@@ -292,7 +333,7 @@ func (c *chain) refusal(e *entry, h Header) {
 // member's status, with no call (§4.3).
 func (c *chain) answerFailed(e *entry) {
 	if e.release != nil {
-		e.release()
+		c.keep(e.release)
 	}
 	c.status1(e, e.u, c.failS, nil)
 }
@@ -352,15 +393,61 @@ func (c *chain) quarter(n int) {
 	}
 }
 
-// status takes a status's buffer for the chain, as reserve takes a reply's.
+// status takes a status's buffer for the chain, as reserve takes a reply's,
+// and waits for it only holding the connection's one status wait, the slot
+// a refusal alone holds too.
+//
+// A later member's status takes the slot on the chain's own goroutine, not
+// the reader's, while the chain holds the place of the last member it
+// admitted (keep), so the chains waiting for the slot stay within the flow
+// cap.
 func (c *chain) status(ctx context.Context, n int) *resources.Buf {
 	p := c.p
 	c.quarter(n)
 	if buf, ok := p.sh.reply.TryGet(p.l.remote, n); ok {
+		c.free()
 		return buf
 	}
 	c.flush(splitReplyPool, c.cur.tr)
+	if !c.slot {
+		select {
+		case p.status <- struct{}{}:
+			c.slot = true
+		case <-ctx.Done():
+			return nil
+		}
+	}
+	defer c.free()
 	return p.sh.reserveStatus(ctx, p.l.remote, n, p.l.close)
+}
+
+// keep holds the place of a member just answered, where message would give
+// it back: the chain gives it back once the next member is admitted, once
+// that member's first try would wait, or at the chain's end. A refused
+// member, which holds no admission of its own, so waits for its status while
+// the chain still holds one place, and the chains waiting for a status stay
+// within the flow cap (§4.7). The chain never waits holding a place; admit
+// makes its first try in one.
+func (c *chain) keep(release func()) {
+	c.giveBack()
+	c.kept = release
+}
+
+// giveBack gives back the place keep holds, if any.
+func (c *chain) giveBack() {
+	if c.kept != nil {
+		k := c.kept
+		c.kept = nil
+		k()
+	}
+}
+
+// free gives back the connection's status wait, where the chain holds it.
+func (c *chain) free() {
+	if c.slot {
+		c.slot = false
+		<-c.p.status
+	}
 }
 
 // lookup asks the replay cache under an ended context first: when its
@@ -378,6 +465,11 @@ func (c *chain) lookup(ctx context.Context, h Header) (*resources.Buf, error) {
 }
 
 func (c *chain) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, err error) {
+	// decision: every status but success fails the member, and a related one
+	// after it is answered it (§4.3), though a protocol may answer a warning
+	// with a non-zero status. The ceiling: a related member after a warning
+	// makes no call. Overturned once a protocol's table can mark its warning
+	// statuses.
 	c.failed, c.failS = s != 0, s
 	if tr.cached {
 		// A hit's copy is reserved under no client's key, which Join refuses
@@ -519,8 +611,10 @@ func (c *chain) flush(why split, tr *track) {
 	}
 }
 
-// chainPadding is the most HeaderCodec.Chain adds before a reply: SMB2's
-// NextCommand aligns each reply to 8 bytes.
+// chainPadding is the room a joined record keeps for what HeaderCodec.Chain
+// adds before each reply, a capacity hint only: each member's ReplyLen
+// already counts its padding, and a record that grows past its room
+// reallocates.
 const chainPadding = 7
 
 // join makes one record of the held replies: one alone as it is, more
