@@ -2107,7 +2107,9 @@ are checked against.
 
 - **Refused credentials.** A credential whose body does not decode inside its opaque, an `AUTH_SYS`
   credential over RFC 5531's limits — more than 16 gids, a machine name over
-  255 bytes — and every flavour other than `AUTH_NONE`, `AUTH_SYS` and
+  255 bytes, bytes left after its group list: the body is one `authsys_parms`
+  (RFC 5531 Appendix A), so bytes left after it are a decode error — and every
+  flavour other than `AUTH_NONE`, `AUTH_SYS` and
   `RPCSEC_GSS` **MUST** be rejected `AUTH_BADCRED` and run nothing. None is ever
   treated as anonymous: that would turn a malformed credential into the share's
   everyone grant.
