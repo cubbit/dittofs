@@ -743,7 +743,7 @@ The start: the host file, the node's identity, then the node RFC 23's plan build
 
 ```go
 func start(ctx context.Context, configFlag string) error {
-	b, err := bootstrap.Load(configFlag, os.Environ()) // "" is ~/.config/dittofs/config.yaml (D7)
+	b, err := bootstrap.Load(configFlag, os.Environ()) // "" is $XDG_CONFIG_HOME/dittofs/config.yaml, else ~/.config/dittofs/config.yaml (D7)
 	if err != nil {
 		return err
 	}

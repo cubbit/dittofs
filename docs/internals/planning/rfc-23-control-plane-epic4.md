@@ -243,7 +243,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R55 | The API is served over TLS on every address but loopback (`127.0.0.0/8` and `::1`, an IPv4-mapped address read as its IPv4 address), its certificate and key bootstrap facts of the host; a listen address with an empty host (`:8080`) is refused as a form, not read as every interface (RFC 13 Appendix C) | MUST | RFC 23 §5.3 | T4.3 |
-| R56 | It is also served without TLS on a local socket at the bootstrap's `api.socket` path, `dfs.sock` in the runtime directory by default, readable and writable by the server's user only; a start probes a socket left over, refusing while one answers and replacing only one that does not | MUST | RFC 23 §5.3 | T4.3 |
+| R56 | It is also served without TLS on a local socket at the bootstrap's `api.socket` path, `dfs.sock` in the runtime directory by default, readable and writable by the server's user only, in a directory only that user owns (a start refuses one that group or others can write, and on a group-owned volume creates a `0700` subdirectory for it, RFC 13 Appendix C); a start probes a socket left over, refusing while one answers and replacing only one that does not | MUST | RFC 23 §5.3 | T4.3 |
 | R57 | Until epic 5's authentication is in, every route but the public ones (the health rows and `/api/version`) answers `401` | MUST | RFC 23 plan §5 epic 4 | T4.2 |
 | R58 | `GET /api/version` answers the major versions served, with no authentication and nothing else; `GET /api/v1/nodes` gives each node's binary version, for `viewer` | MUST | RFC 23 §9 | T4.2, T4.6 |
 | R59 | The client reaches a server named by a URL or by the local socket's path; resolves names to IDs with the list filters; echoes the `ETag` it read, opaque, in `If-Match`; generates one idempotency key per command and reuses it across that command's retries; stops on `412`; follows an operation with `?wait=`; ignores a response field it does not know; and refuses a server that serves no major version it speaks, naming both | MUST | RFC 23 §7, §9 | T4.8 |
@@ -520,7 +520,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   refused at start, for both listeners, a `decision:` at `Start` naming its overturn, the API
   reached by client certificate; the
   local socket, at the bootstrap's `api.socket` path, `dfs.sock` in the runtime directory by default,
-  created `0600`, a socket left over probed before it, refused while one answers and replaced once
+  created `0600` in a directory only the server's user owns (a `0700` subdirectory of a group-owned volume), a socket left over probed before it, refused while one answers and replaced once
   dead, its requests marked local on the context
   for E5 (`auth.Local`, D3); the call
   bound (D8) with `api_calls_in_flight` and its limit; `503` `starting` until `Deps.Ready()` says
@@ -535,7 +535,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   `::1` and `::ffff:127.0.0.1`, a non-loopback address with no certificate refused,
   `localhost:8080` refused as a host name, not an IP, and `:8080` refused for its empty host
   (R55, RFC 13 Appendix C); the metrics listener on a non-loopback address held to the same rule, and a start with a
-  client CA refused; the socket's mode read back and a call through it marked local (R56); 65 calls held by a
+  client CA refused; the socket's mode read back and a call through it marked local, a start with a `0770` runtime directory and one with a directory owned by root refused, and one on a group-writable volume the node does not own serving from a `0700` subdirectory (R56); 65 calls held by a
   handler blocked on a channel, the 65th `503` with `Retry-After`, and a health probe still answered
   (R23, D8); `Ready` returning `starting`, a call `503` `starting` with `Retry-After`, and
   `/api/version` and `/api/v1/health` still answered (R31, D16); an error's `RetryAfter` of 6.5 s

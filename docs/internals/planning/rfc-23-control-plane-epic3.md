@@ -157,7 +157,7 @@ that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R11 | `Start` runs its steps in order, each completing before the next: refuse, open the listeners, register the node, read the records and apply them, start open state and the engine, start the filesystem and join interrupted removals, start the runner, complete the first full reconcile, then reconcile until `Stop`; step 9, the adapters, is RFC 20's plan's epic 7 | MUST | RFC 23 §2.2 | T3.3 |
 | R12 | Once the store is open, step 1 writes a missing `node-id` copy into each journal directory whose `format` names the journal the store records for this node and device, and into no other | MUST | RFC 23 §2.2 (step 1); RFC 13 §2.2 | T3.10 |
-| R13 | From step 2 the health endpoints answer, live and not ready, and the metrics listener is open | MUST | RFC 23 §2.2 (step 2), §2.5 | T3.3 |
+| R13 | From step 2 the health endpoints answer, live and not ready, and the metrics listener is open unless `metrics.listen` is `off` | MUST | RFC 23 §2.2 (step 2), §2.5 | T3.3 |
 | R14 | Step 3 registers the node before the engine's start transactions run; a refused registration stops the node there, with no component started | MUST | RFC 23 §2.2 (step 3) | T3.3 |
 | R15 | Step 5 starts open state with the built filesystem as its `Sink`, raising the node epoch, then the engine with the whole set of attached shares in one call | MUST | RFC 23 §2.2 (step 5); RFC 16 §3 | T3.3 |
 | R16 | Step 6 starts `*vfs.Filesystem`, then runs step 3 of every removal a crash interrupted, `JoinShare` then `DropShare`, before any adapter serves | MUST | RFC 23 §2.2 (step 6); RFC 16 §2.3.2 | T3.6 |
@@ -196,7 +196,7 @@ that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R34 | `/health/live` answers `200` with `live` while the watchdog holds and `503` with `stalled` otherwise; `/health/ready` answers `200` when ready and `503` when not, with one of `ready`, `starting`, `draining`, `not_ready`; any other path answers `404` with `not_found`; neither asks for authentication | MUST | RFC 23 §2.5; D3 | T3.2 |
 | R35 | The unauthenticated endpoints carry nothing but that one word | MUST NOT | RFC 23 §2.5; CP13 | T3.2 |
-| R36 | The metrics listener has an address of its own, separate from the API's, asks for no token, and opens at start step 2 | MUST | RFC 23 §2.5 | T3.2, T3.3 |
+| R36 | The metrics listener has an address of its own, separate from the API's, asks for no token, and opens at start step 2, unless `metrics.listen` is `off` | MUST | RFC 23 §2.5 | T3.2, T3.3 |
 | R37 | Liveness fails only when a watched loop has neither completed a turn nor reported idle within 60 s; a waiting loop reports at least every 30 s; liveness reads no condition, store, network or disk. Watched here: reconcile, the runner, the sweep and the status writer, each bounding its store calls under 30 s | MUST | RFC 25 §3.5 | T3.2, T3.5 |
 | R38 | The engine's `Stats` reach the health evaluator as conditions and the metrics registry as series; T3.2 delivers the engine's adapter, tested, and the evaluator's wiring lands with its first reader | MUST | RFC 23 plan §5 epic 3; RFC 8 §2.6 | T3.2, T3.3, T3.7 |
 | R51 | A stalled watchdog makes the node neither live nor ready | MUST | RFC 25 §3.6 | T3.2 |
@@ -575,7 +575,7 @@ Dockerfile                                 T3.9  HEALTHCHECK on http://localhost
     and the store, readiness `not_ready`, and `start_failed` raised; `Stop` then closes both.
 - **Tests:** in `node_test`, watched, each observed at its consumer (D11): the order read from
   the engine's series and records written by each step, with `/health/ready` answering
-  `starting` until step 8 ends and the metrics listener answering from step 2 (R11, R13, R15,
+  `starting` until step 8 ends and the metrics listener answering from step 2, and a start with `metrics.listen: off` opening none and answering the rest (R11, R13, R15,
   R21, R22, R36); a clone after start succeeding, which the engine refuses with "no settings
   applied" unless step 4 applied its settings (R5); faults, each from what exists: step 2 a port
   the test holds, step 3 a `FaultKV` error on registration's commit (asserting no engine series,
