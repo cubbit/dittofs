@@ -393,13 +393,7 @@ func TestReopenAssembled_SparesDrawAboveTheRebuiltSegments(t *testing.T) {
 	// collide with were the seam to keep the drawing fresh.
 	writeReady(t, h, file, "the first segment's record")
 	for len(segmentsOfFile(t, j, file)) < 2 {
-		if _, err := h.WriteAt(t.Context(), file, 16<<10, payload(16<<10), 1); err != nil {
-			var ns *NoSpaceError
-			if errors.As(err, &ns) && ns.Limit == LimitSpare {
-				t.Fatalf("the write rolled with no spare ready: %v", err)
-			}
-			t.Fatalf("write until the file spans two segments: %v", err)
-		}
+		writeAtReady(t, h, file, 16<<10, payload(16<<10))
 	}
 	if _, err := h.Sync(t.Context(), file); err != nil {
 		t.Fatalf("Sync the two segments' records: %v", err)
@@ -655,9 +649,7 @@ func equalityFixture(t *testing.T) (before, after reopenFigures) {
 	ha := shareOf(t, j, tagA)
 	writeReady(t, ha, fa, "the file the first tag holds")
 	for len(segmentsOfFile(t, j, fa)) < 2 {
-		if _, err := ha.WriteAt(t.Context(), fa, 16<<10, payload(16<<10), 1); err != nil {
-			t.Fatalf("write the first tag's file onto a second segment: %v", err)
-		}
+		writeAtReady(t, ha, fa, 16<<10, payload(16<<10))
 	}
 	hb := shareOf(t, j, tagB)
 	writeReady(t, hb, fb, "the file the second tag holds")
