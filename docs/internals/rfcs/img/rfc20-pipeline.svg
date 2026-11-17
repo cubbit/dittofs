@@ -55,7 +55,7 @@
   <text x="64" y="302" class="s">to the writer</text>
 
   <text x="36" y="350" class="h">↺ re-entry</text>
-  <text x="36" y="370" class="s">compound: the next operation re-enters at its row checks, with the compound's current handle or open</text>
+  <text x="36" y="370" class="s">compound: the next operation re-enters at its row checks, before "resolve IDs", with the compound's current handle or open</text>
   <text x="36" y="388" class="s">ErrDelay on SMB: the request is held, a timer and no worker, then re-driven from "resolve IDs"</text>
   <text x="16" y="420" class="s">Wrapped around every handler, outside in: panic recovery → trace span → metrics → deadline.</text>
 </svg>

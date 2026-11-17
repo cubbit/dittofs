@@ -1178,8 +1178,8 @@ them.
 > change either without a restart.
 
 > decision: the collector is trusted with what a span carries, which §5.4 and
-> §6.1 keep to closed sets, sizes and the share and file by ID, never a path, a
-> name, a principal or a client address. `tracing.endpoint` is a URL whose
+> §6.1 keep to closed sets, sizes and IDs, never a path, a name, a principal
+> or a client address. `tracing.endpoint` is a URL whose
 > scheme picks the transport: `https` exports over TLS, verifying the
 > collector's certificate against the system's roots, and `http` in clear, for
 > a collector on the node's own host or network. Refuse `http` at validation if
@@ -1553,7 +1553,7 @@ row, which needs two nodes.
 | §3.5 | liveness reads no dependency | the liveness answer probes the control-plane database (cached 5 s) and reports degraded when it is unreachable, always with HTTP 200 (`internal/controlplane/api/handlers/health.go`) |
 | §3.6, §3.7 | readiness false only while starting, draining, with the store or a listener lost, or after a failed start step; no detail without credentials | readiness answers 200 whenever the runtime exists, and reports share and store counts, running adapters and NFS grace state, unauthenticated (`internal/controlplane/api/handlers/health.go`, `pkg/controlplane/api/router.go`) |
 | §4 | three spooled event streams | no access, quota or administrative event stream exists; no event sink type |
-| §5.3 | trace ID on every request-scoped line | the logger defines `trace_id` and `span_id` keys but nothing sets them, and its context-taking functions ignore the context (`internal/logger/fields.go`, `internal/logger/logger.go`); the management API logs a request ID from its router middleware |
+| §5.3 | trace ID on the adapter's request-scoped lines, and below it on a sampled request's | the logger defines `trace_id` and `span_id` keys but nothing sets them, and its context-taking functions ignore the context (`internal/logger/fields.go`, `internal/logger/logger.go`); the management API logs a request ID from its router middleware |
 | §5.4 | no user-chosen name at `Info` or above | SMB handlers log paths and names at `Warn` on write, commit and create failures (`internal/adapter/smb/handlers/write.go`, `create_complete.go`); secrets are redacted in API answers only (`internal/controlplane/api/handlers/helpers.go`), not by the logger |
 | §5.2 | debug turns itself off | the level is set from configuration or the environment and stays (`internal/logger/logger.go`) |
 | §6 | spans per request and per service call | no tracing; the tracing library is only an indirect dependency (`go.mod`) |
