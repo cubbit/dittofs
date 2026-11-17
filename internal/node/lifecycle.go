@@ -25,17 +25,13 @@ const (
 	readyNot      = "not_ready"
 )
 
-// The names of the start steps, as a failed Start's error and a stop step
-// that missed its bound name them, and of the parts a step starts.
+// The names of the start steps that start a part, as a failed Start's error
+// and a stop that missed its bound name them.
 const (
-	stepRefuse     = "refuse"
 	stepListeners  = "listeners"
-	stepRegister   = "register"
-	stepApply      = "apply"
 	stepEngine     = "engine"
 	stepFilesystem = "filesystem"
 	stepRunner     = "runner"
-	stepReconcile  = "reconcile"
 )
 
 // stopBound is how long Stop waits for one part to stop, on the node's clock.
@@ -53,10 +49,10 @@ type lifecycle struct {
 	mu       sync.Mutex // serialises Start and Stop
 	started  bool       // a Start ran: the node does not start again
 	parts    []*part    // what Start started and Stop has not stopped, in start order
-	failed   error      // the error a failed Start stopped at, kept for start_failed
 	shares   []entity.Share
 	api, met net.Addr
-	ready    atomic.Value // the readiness word
+	failed   atomic.Pointer[error] // the error a failed Start stopped at, kept for start_failed
+	ready    atomic.Value          // the readiness word
 	stepped  func(step string)
 }
 
@@ -67,48 +63,54 @@ func (l *lifecycle) readiness() string { return l.ready.Load().(string) }
 type part struct {
 	name string
 	// uses names the other parts it calls while it runs: when its stop
-	// misses its bound, they are left open under it.
+	// misses its bound or fails, they are left open under it.
 	uses []string
 	stop func(ctx context.Context) error
 
-	once sync.Once
-	done chan struct{}
-	err  error // written before done closes
+	running chan struct{} // closed once the stop in flight ends; nil when none is
+	err     error         // the ended stop's answer, written before running closes
 }
 
-// stopped runs p's stop once, and waits for it until bound ends: false when
-// it is still running then. A later call waits again for the same stop.
+// stopped runs p's stop unless one is in flight, and waits for it until bound
+// ends: false when it is still running then. A later call waits again for
+// the same stop, or, once one ended, runs a new one, so a stop that failed is
+// tried again. Only the clock bounds the wait: a Stop whose context ended
+// still stops every part.
 func (p *part) stopped(ctx context.Context, bound <-chan struct{}) (bool, error) {
-	p.once.Do(func() {
-		p.done = make(chan struct{})
+	if p.running == nil {
+		running := make(chan struct{})
+		p.running = running
 		go func() {
-			defer close(p.done)
+			defer close(running)
 			p.err = p.stop(context.WithoutCancel(ctx))
 		}()
-	})
+	}
 	select {
-	case <-p.done:
+	case <-p.running:
+		p.running = nil
 		return true, p.err
 	case <-bound:
-	case <-ctx.Done():
+		return false, nil
 	}
-	return false, nil
 }
 
-// Start runs RFC 23 §2.2's start, each step complete before the next: refuse
-// a foreign installation, open the API and metrics listeners, register the
-// node, read the records and apply them, start open state and the engine
-// over every attached share, then the filesystem and the operation runner,
-// and the first full reconcile; then the node is ready. A step that fails
-// stops the start: what earlier steps started is stopped in reverse but the
-// listeners and the store, readiness answers not_ready, start_failed is
-// raised, and the error names the step. Stop then closes the rest.
+// Start runs RFC 23 §2.2's start, each step complete before the next, and
+// then the node is ready. A step that fails stops the start: what earlier
+// steps started is stopped in reverse but the listeners and the store,
+// readiness answers not_ready, start_failed is raised, and the error names
+// the step. Stop then closes the rest.
 //
 // decision: the node is not restartable: a second Start is an error, after a
-// failed Start or a Stop too. Reconcile's calls are unexported, so no caller,
-// the API included, can change a component by a second path. Overturned if
-// something other than the server's start command and the test harness must
-// drive a node, and then by a second root, not by exporting the calls.
+// failed Start or a Stop too, because what it starts is single-use: the API
+// server refuses a Start after its Stop, and stopped open state answers
+// ErrStopped. Overturned if a node must restart in process, and then by
+// building a new node, not by restarting its parts.
+//
+// decision: the API writes records and the node applies them. Reconcile's
+// calls are unexported, so no caller, the API included, can change a
+// component by a second path. Overturned if something other than the server's
+// start command and the test harness must drive a node, and then by a second
+// root, not by exporting the calls.
 func (n *Node) Start(ctx context.Context) error {
 	l := &n.life
 	l.mu.Lock()
@@ -121,26 +123,28 @@ func (n *Node) Start(ctx context.Context) error {
 		name string
 		run  func(context.Context) error
 	}{
-		{stepRefuse, n.refuse},
+		{"refuse", n.refuse},
 		{stepListeners, n.openListeners},
-		{stepRegister, n.register},
-		{stepApply, n.apply},
-		// A slot for identity, started after its first Apply.
+		{"register", n.register},
+		{"apply", n.apply},
 		{stepEngine, n.startEngine},
+		// A slot for identity, started after its first Apply, and stopped
+		// after the filesystem and before the engine.
 		{stepFilesystem, n.startFilesystem},
 		{stepRunner, n.startRunner},
+		// ponytail: the management API starts accepting calls here, and
+		// stops accepting them, its calls in flight answered, before the
+		// runner stops, while health goes on answering. The API serves no
+		// call but health yet, so there is nothing to start or drain: add
+		// the part with the API's first call.
+		//
 		// A slot for the first full reconcile.
-		{stepReconcile, func(context.Context) error { return nil }},
 	} {
 		if err := s.run(ctx); err != nil {
 			err = fmt.Errorf("node: start step %s: %w", s.name, err)
-			l.failed = err
+			l.failed.Store(&err)
 			l.ready.Store(readyNot)
-			keep := 0
-			if len(l.parts) > 0 && l.parts[0].name == stepListeners {
-				keep = 1
-			}
-			return errors.Join(err, n.halt(ctx, keep))
+			return errors.Join(err, n.halt(ctx, 1))
 		}
 		if l.stepped != nil {
 			l.stepped(s.name)
@@ -152,17 +156,18 @@ func (n *Node) Start(ctx context.Context) error {
 
 // Stop turns readiness to draining, then stops what Start started in
 // reverse, each part bounded by stopBound on the node's clock, and closes the
-// metadata store's KV last. A part that misses its bound leaves open every
-// part it uses, and the store, and the error names it; the parts that do not
-// depend on it still stop. A later Stop waits again for what the last one
-// left. With no Start, Stop closes only the KV. A Stop during a Start waits
-// for it: ending Start's context ends a Start that waits.
+// metadata store's KV last. A part that misses its bound or whose stop fails
+// leaves open every part it uses, and the store, and the error names it; the
+// parts that do not depend on it still stop. A later Stop waits again for a
+// stop still running, and runs a failed one again. With no Start, Stop closes
+// only the KV. A Stop during a Start waits for it: ending Start's context ends
+// a Start that waits. Ending Stop's own context stops nothing sooner.
 func (n *Node) Stop(ctx context.Context) error {
 	l := &n.life
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.started = true
-	if l.failed == nil {
+	if l.failed.Load() == nil {
 		l.ready.Store(readyDraining)
 	}
 	if err := n.halt(ctx, 0); err != nil {
@@ -175,31 +180,36 @@ func (n *Node) Stop(ctx context.Context) error {
 }
 
 // halt stops the parts from keep on, in reverse start order. Each that stops
-// is dropped from the started parts; each that misses its bound, and each
-// part it uses, is kept, and named in the error.
+// is dropped from the started parts; each that misses its bound or fails,
+// and each part it uses, is kept, and named in the error.
 func (n *Node) halt(ctx context.Context, keep int) error {
 	l := &n.life
 	held := map[string]bool{}
 	var errs []error
 	for i := len(l.parts) - 1; i >= keep; i-- {
 		p := l.parts[i]
+		var err error
 		if held[p.name] {
-			errs = append(errs, fmt.Errorf("node: stop %s: left open, as a part using it did not stop", p.name))
-			hold(held, p)
-			continue
-		}
-		bound := n.cfg.Clock.After(stopBound)
-		if l.stepped != nil {
-			l.stepped("wait " + p.name)
-		}
-		done, err := p.stopped(ctx, bound)
-		if !done {
-			errs = append(errs, fmt.Errorf("node: stop %s: not stopped within %v", p.name, stopBound))
-			hold(held, p)
-			continue
+			err = fmt.Errorf("node: stop %s: left open, as a part using it did not stop", p.name)
+		} else {
+			bound := n.cfg.Clock.After(stopBound)
+			if l.stepped != nil {
+				l.stepped("wait " + p.name)
+			}
+			done, stopErr := p.stopped(ctx, bound)
+			switch {
+			case !done:
+				err = fmt.Errorf("node: stop %s: not stopped within %v", p.name, stopBound)
+			case stopErr != nil:
+				err = fmt.Errorf("node: stop %s: %w", p.name, stopErr)
+			}
 		}
 		if err != nil {
-			errs = append(errs, fmt.Errorf("node: stop %s: %w", p.name, err))
+			errs = append(errs, err)
+			for _, u := range p.uses {
+				held[u] = true
+			}
+			continue
 		}
 		l.parts = slices.Delete(l.parts, i, i+1)
 		if l.stepped != nil {
@@ -209,21 +219,15 @@ func (n *Node) halt(ctx context.Context, keep int) error {
 	return errors.Join(errs...)
 }
 
-// hold marks the parts p uses as held open.
-func hold(held map[string]bool, p *part) {
-	for _, u := range p.uses {
-		held[u] = true
-	}
-}
-
 // started records a part Start started, for Stop and a failed Start's undo.
 func (n *Node) started(name string, stop func(context.Context) error, uses ...string) {
 	n.life.parts = append(n.life.parts, &part{name: name, stop: stop, uses: uses})
 }
 
 // refuse refuses a KV of another installation than the one each device's
-// journal names, before Start writes to it. A device holding no journal is
-// left to the engine, which refuses it at its own start.
+// journal names, and a device whose journal cannot be read, before Start
+// writes to it. A device holding no journal is left to the engine, which
+// refuses it at its own start.
 func (n *Node) refuse(ctx context.Context) error {
 	in, err := n.meta.Installation(ctx)
 	if err != nil {
@@ -234,20 +238,28 @@ func (n *Node) refuse(ctx context.Context) error {
 		// journal it found and that journal's installation.
 		_, err := journal.Open(ctx, dir, journal.Version{}, journal.JournalID{}, nil, journal.WithClock(n.cfg.Clock))
 		var id *journal.IdentityError
-		if errors.As(err, &id) && id.Installation != journal.InstallationID(in.ID) {
-			return fmt.Errorf("the journal in %s belongs to installation %x, and the metadata store to installation %x", dir, id.Installation, in.ID)
+		switch {
+		case errors.As(err, &id):
+			if id.Installation != journal.InstallationID(in.ID) {
+				return fmt.Errorf("the journal in %s belongs to installation %x, and the metadata store to installation %x", dir, id.Installation, in.ID)
+			}
+		case errors.Is(err, journal.ErrNoJournal):
+		default:
+			return fmt.Errorf("the journal in %s: %w", dir, err)
 		}
 	}
 	return nil
 }
 
-// openListeners opens the API and the metrics listeners: from here the
-// health endpoints answer, live and starting.
+// openListeners opens the API and the metrics listeners, and logs the
+// addresses they bound: from here the health endpoints answer, live and
+// starting.
 func (n *Node) openListeners(context.Context) error {
 	a, m, err := n.api.Start()
 	if err != nil {
 		return err
 	}
+	n.cfg.Logger.Info("node: listening", "api", a.String(), "metrics", m.String())
 	n.life.api, n.life.met = a, m
 	n.started(stepListeners, n.api.Stop)
 	return nil
@@ -277,7 +289,6 @@ func (n *Node) apply(ctx context.Context) error {
 	if _, err := n.meta.Nodes().Counters(ctx); err != nil {
 		return err
 	}
-	n.life.shares = n.life.shares[:0]
 	for r, err := range n.meta.Nodes().List(ctx, entity.ResourceShare, nil) {
 		if err != nil {
 			return err
@@ -297,27 +308,13 @@ func (n *Node) apply(ctx context.Context) error {
 func (n *Node) startEngine(ctx context.Context) error {
 	bound := make([]engine.Share, 0, len(n.life.shares))
 	for _, s := range n.life.shares {
-		bound = append(bound, binding(s))
+		bound = append(bound, enginewire.Binding(s, 0))
 	}
 	if err := enginewire.Start(ctx, n.open, n.engine, n.fs, n.fs.Admission, bound); err != nil {
 		return err
 	}
 	n.started(stepEngine, func(ctx context.Context) error { return enginewire.Stop(ctx, n.open, n.engine) })
 	return nil
-}
-
-// binding is share s as the engine binds it.
-func binding(s entity.Share) engine.Share {
-	b := engine.Share{ID: s.ID, Tag: journal.ShareTag(s.Tag), Shard: s.Shard, State: engine.Serving}
-	for _, ns := range s.Namespaces {
-		if ns.Generation == s.Write {
-			b.Namespace = ns.Namespace
-		}
-	}
-	if s.State == entity.ShareQuiesced {
-		b.State = engine.Quiesced
-	}
-	return b
 }
 
 // startFilesystem starts the filesystem, which serves every share's shard.
@@ -350,20 +347,20 @@ func (n *Node) startRunner(context.Context) error {
 	return nil
 }
 
-// conditions appends the node's own conditions to dst: start_failed after a
-// Start that failed, naming the step and its error.
+// startFailed is the node's start_failed condition after a Start that
+// failed, naming the step and its error, and nil otherwise. It does not wait
+// for a Start or a Stop in progress.
 //
-// ponytail: nothing reads them yet but tests. The node status writer reports
-// them with the engine's once it exists.
-func (n *Node) conditions(dst []health.Condition) []health.Condition {
-	n.life.mu.Lock()
-	defer n.life.mu.Unlock()
-	if n.life.failed != nil {
-		dst = append(dst, health.Condition{
-			Name:    "start_failed",
-			Subject: health.Subject{Scope: health.ScopeNode, ID: fmt.Sprintf("%x", n.cfg.Bootstrap.Node[:])},
-			Cause:   n.life.failed,
-		})
+// ponytail: nothing reads it yet but tests. The node status writer reports
+// it with the engine's conditions once it exists.
+func (n *Node) startFailed() []health.Condition {
+	err := n.life.failed.Load()
+	if err == nil {
+		return nil
 	}
-	return dst
+	return []health.Condition{{
+		Name:    "start_failed",
+		Subject: health.Subject{Scope: health.ScopeNode, ID: fmt.Sprintf("%x", n.cfg.Bootstrap.Node[:])},
+		Cause:   *err,
+	}}
 }

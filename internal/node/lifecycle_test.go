@@ -1,9 +1,12 @@
 package node_test
 
 import (
+	"bytes"
+	"context"
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -27,6 +30,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -177,9 +181,8 @@ func TestStartAndStopInOrder(t *testing.T) {
 		"engine":     {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 1},
 		"filesystem": {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 		"runner":     {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
-		"reconcile":  {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 	}
-	steps := []string{"refuse", "listeners", "register", "apply", "engine", "filesystem", "runner", "reconcile"}
+	steps := []string{"refuse", "listeners", "register", "apply", "engine", "filesystem", "runner"}
 	if got := s.reported(); !slices.Equal(got, steps) {
 		t.Fatalf("start steps: got %v, want %v", got, steps)
 	}
@@ -318,7 +321,7 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 			if got := get(t, api, "/health/ready"); got != wantReady {
 				t.Errorf("readiness after the failed Start: got %+v, want %+v", got, wantReady)
 			}
-			conds := h.Node().Conditions()
+			conds := h.Node().StartFailed()
 			if len(conds) != 1 || conds[0].Name != "start_failed" || !strings.Contains(conds[0].Cause.Error(), "start step "+tc.step) {
 				t.Errorf("conditions after the failed Start: got %+v, want start_failed naming step %s", conds, tc.step)
 			}
@@ -354,7 +357,8 @@ func stopsIn(reported []string) []string {
 }
 
 // A node starts once: a second Start is refused before it runs a step, so
-// the node goes on serving, and a Start after Stop is refused.
+// the node goes on serving, and a Start after Stop is refused before any
+// step, whether the node started before its Stop or not.
 func TestStartOnce(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	if err := h.Node().Start(t.Context()); err != nil {
@@ -367,15 +371,137 @@ func TestStartOnce(t *testing.T) {
 	if got := get(t, api, "/health/ready"); got != (answer{http.StatusOK, "ready"}) {
 		t.Errorf("readiness after a second Start: got %+v, want 200 ready", got)
 	}
-	if got := h.Node().Conditions(); len(got) != 0 {
+	if got := h.Node().StartFailed(); len(got) != 0 {
 		t.Errorf("conditions after a second Start: got %+v, want none", got)
 	}
 	if err := h.Node().Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if err := h.Node().Start(t.Context()); err == nil {
-		t.Error("Start after Stop: got nil, want refused")
+	if err := h.Node().Start(t.Context()); err == nil || strings.Contains(err.Error(), "start step") {
+		t.Errorf("Start after Stop: got %v, want refused before any step", err)
 	}
+
+	fresh := nodetest.New(t, nodetest.InMemory())
+	if err := fresh.Node().Stop(t.Context()); err != nil {
+		t.Fatalf("Stop of a node never started: %v", err)
+	}
+	if err := fresh.Node().Start(t.Context()); err == nil || strings.Contains(err.Error(), "start step") {
+		t.Errorf("Start after a Stop with no Start: got %v, want refused before any step", err)
+	}
+}
+
+// A Stop whose context has already ended still stops every part in reverse,
+// and the store, and answers nil: only the node's clock bounds a part's stop.
+func TestStopWithAnEndedContext(t *testing.T) {
+	var h *nodetest.Harness
+	s := newSteps(t, &h)
+	h = nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewStepping(s.stepped)))
+	if err := h.Node().Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := h.Node().Stop(ctx); err != nil {
+		t.Errorf("Stop with an ended context: got %v, want nil", err)
+	}
+	stops := []string{"stop runner", "stop filesystem", "stop engine", "stop listeners", "stop store"}
+	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
+		t.Errorf("parts stopped with an ended context: got %v, want %v", got, stops)
+	}
+}
+
+// A device whose journal cannot be read, a segment and no format file, fails
+// the start at its first step, naming the device, before anything opens.
+func TestStartRefusesAnUnreadableDevice(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "segment-only")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "x.seg"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		cfg.Bootstrap.Devices = append(cfg.Bootstrap.Devices, dir)
+		return node.New(cfg)
+	}))
+	err := h.Node().Start(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "start step refuse:") || !strings.Contains(err.Error(), dir) {
+		t.Errorf("Start with a device holding only a segment: got %v, want start step refuse naming %s", err, dir)
+	}
+	if api, _ := h.Node().Addrs(); api != "" {
+		t.Errorf("listeners after the refused Start: API bound at %s, want none opened", api)
+	}
+	if err := h.Node().Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+// The start_failed condition answers while Start holds the node at a step:
+// it does not wait for the Start to end.
+func TestStartFailedAnswersDuringStart(t *testing.T) {
+	answered := make(chan int, 1)
+	h := nodetest.New(t, nodetest.WithNew(node.NewStepping(func(n *node.Node, step string) {
+		if step != "apply" {
+			return
+		}
+		go func() { answered <- len(n.StartFailed()) }()
+		select {
+		case got := <-answered:
+			if got != 0 {
+				t.Errorf("start_failed during a Start that has not failed: got %d conditions, want none", got)
+			}
+		case <-time.After(10 * time.Second):
+			t.Error("start_failed during Start: no answer 10 s later, want one while Start holds the node")
+		}
+	})))
+	if err := h.Node().Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := h.Node().Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+// Start logs the addresses the API and the metrics listeners bound, which a
+// host reads to reach a node it gave port 0.
+func TestStartLogsTheBoundAddresses(t *testing.T) {
+	var logged syncBuffer
+	h := nodetest.New(t, nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		cfg.Logger = slog.New(slog.NewTextHandler(&logged, nil))
+		return node.New(cfg)
+	}))
+	if err := h.Node().Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	api, met := h.Node().Addrs()
+	if err := h.Node().Stop(t.Context()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	out := logged.String()
+	for name, addr := range map[string]string{"api": api, "metrics": met} {
+		if !strings.Contains(out, name+"="+addr) {
+			t.Errorf("the log after Start: %s=%s missing from %q", name, addr, out)
+		}
+	}
+}
+
+// syncBuffer is a buffer the node's goroutines can log to while the test
+// reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // deleteUser creates a user, marks it deleted and records its pending
@@ -420,17 +546,18 @@ func TestStartRunsTheOperationRunner(t *testing.T) {
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	pending := func() bool { return h.Clock().Pending() > 0 }
 	deadline := time.Now().Add(10 * time.Second)
 	for opState(t, h, id) != entity.OpSucceeded {
 		if time.Now().After(deadline) {
 			t.Fatalf("the user's deletion after Start: state %v after 10 s of turns, want succeeded", opState(t, h, id))
 		}
+		wait(t, "a timer on the node's clock", pending)
 		h.Clock().Advance(time.Second)
-		runtime.Gosched()
 	}
 	for range 61 {
+		wait(t, "a timer on the node's clock", pending)
 		h.Clock().Advance(time.Second)
-		runtime.Gosched()
 	}
 	api, _ := h.Node().Addrs()
 	if got := get(t, api, "/health/live"); got != (answer{http.StatusOK, "live"}) {
@@ -491,6 +618,69 @@ func TestStopStepPastItsBound(t *testing.T) {
 	}
 	if got := stopsIn(s.reported())[len(stops):]; !slices.Equal(got, []string{"stop runner", "stop store"}) {
 		t.Errorf("parts the second Stop stopped: got %v, want [stop runner stop store]", got)
+	}
+}
+
+// The filesystem uses the engine: a filesystem whose Drain misses its bound,
+// as a call it admitted is held on a read, leaves the engine open under it,
+// and the store, while the runner and the listeners stop; a later Stop, once
+// the call answered, stops the rest.
+func TestStopLeavesTheEngineUnderAHeldFilesystem(t *testing.T) {
+	var h *nodetest.Harness
+	s := newSteps(t, &h)
+	var f *kvtest.FaultKV
+	h = nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		f = kvtest.NewFaultKV(cfg.KV)
+		cfg.KV = f
+		return node.NewStepping(s.stepped)(cfg)
+	}))
+	if err := h.Node().Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The delay waits on a clock of its own, so advancing the node's clock
+	// past the stop bound does not release it.
+	held := sim.NewTestClock(time.Unix(0, 0))
+	sched, err := sim.NewSchedule(1, held, sim.Rule{Op: kvtest.OpGet, Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.SetFault(sched)
+	// The read answers whatever it answers, no client 1 being recorded: only
+	// that it returned matters.
+	recorded := make(chan struct{})
+	go func() {
+		defer close(recorded)
+		_, _ = h.Node().Filesystem().Record(context.Background(), vfs.Call{}, 1)
+	}()
+	wait(t, "the filesystem's read to be held", func() bool { return held.Pending() == 1 })
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- h.Node().Stop(t.Context()) }()
+	waitFor(t, s.waits, "filesystem")
+	h.Clock().Advance(30 * time.Second)
+	stopErr := answered(t, stopped)
+	for _, want := range []string{"stop filesystem: not stopped within", "stop engine: left open", "stop store: left open"} {
+		if stopErr == nil || !strings.Contains(stopErr.Error(), want) {
+			t.Errorf("Stop with the filesystem's call held: got %v, want it to say %q", stopErr, want)
+		}
+	}
+	stops := []string{"stop runner", "stop listeners"}
+	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
+		t.Errorf("parts stopped with the filesystem held: got %v, want %v", got, stops)
+	}
+
+	held.Advance(time.Hour)
+	select {
+	case <-recorded:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the filesystem's call still held 10 s after its read was released")
+	}
+	go func() { stopped <- h.Node().Stop(t.Context()) }()
+	if err := answered(t, stopped); err != nil {
+		t.Errorf("Stop once the filesystem's call answered: got %v, want nil", err)
+	}
+	if got, want := stopsIn(s.reported())[len(stops):], []string{"stop filesystem", "stop engine", "stop store"}; !slices.Equal(got, want) {
+		t.Errorf("parts the second Stop stopped: got %v, want %v", got, want)
 	}
 }
 

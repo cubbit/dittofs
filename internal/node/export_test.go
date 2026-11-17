@@ -1,6 +1,7 @@
 package node
 
 import (
+	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/health"
 )
@@ -28,8 +29,11 @@ func (n *Node) Addrs() (api, metrics string) {
 	return n.life.api.String(), n.life.met.String()
 }
 
-// Conditions is the node's own health conditions.
-func (n *Node) Conditions() []health.Condition { return n.conditions(nil) }
+// StartFailed is the node's start_failed condition, nil unless a Start failed.
+func (n *Node) StartFailed() []health.Condition { return n.startFailed() }
+
+// Filesystem is the filesystem the node built.
+func (n *Node) Filesystem() *vfs.Filesystem { return n.fs }
 
 // Engine is the engine the node built.
 func (n *Node) Engine() *engine.Engine { return n.engine }

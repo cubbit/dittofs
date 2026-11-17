@@ -86,6 +86,10 @@ func build(cfg Config) (*Node, error) {
 	if cfg.Metrics == nil {
 		return nil, errors.New("node: Config.Metrics is missing")
 	}
+	// An empty address would bind a random port on every interface.
+	if cfg.Bootstrap.APIAddr == "" || cfg.Bootstrap.MetricsAddr == "" {
+		return nil, errors.New("node: Config.Bootstrap.APIAddr and MetricsAddr must both be set")
+	}
 	n := &Node{cfg: cfg}
 	var err error
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
