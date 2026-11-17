@@ -121,8 +121,8 @@ and A10 after it merged:
   §8.1's new `Lookup`, counts that principal and checks that principal's password; a source
   address is normalised; an account's count is reset by `:set-password` and deleted with the
   account; `POST /auth/password`'s current-password check is a counted attempt; a `429` raises no
-  count and commits nothing; a caller on the API's local socket, a Unix socket the host's
-  bootstrap names, has no source count and no pair, while a loopback address is a source like any
+  count and commits nothing; a caller on the API's local socket, a Unix socket at the bootstrap's
+  `api.socket` path, `dfs.sock` in the runtime directory by default (RFC 13 Appendix C), has no source count and no pair, while a loopback address is a source like any
   other, since a proxy on the host delivers from one; a source's count is forgotten 15 min after its
   last failure and cleared by the break-glass reset, with a `decision:` for a shared source; a `429`
   has the code `throttled`. This touches RFC 23 §4.7, §5.3, §6, §7 and its "§5.3 throttling" row,
@@ -172,10 +172,10 @@ What replaces what:
 | `pkg/identity/**` (v1 resolver, cache, link store, LDAP provider) and `pkg/auth/sid/mapper.go` | RFC 18's `pkg/identity` and RID counter (RFC 18 plan) | deleted in epic 1, whole: the LDAP provider imports the root files; the RFC 18 plan lifts what it reuses from history. `internal/auth/netlogon` stays, without production importers, for the RFC 18 plan to move |
 | `pkg/config`'s v1 sections | `pkg/bootstrap`, the host's bootstrap only (RFC 13 plan) | stripped in epic 1; renamed and finished by the RFC 13 plan |
 | key `database.*`, the `controlplane.db` file | none | refused by the RFC 13 plan's loader; the database file by epic 3's start |
-| keys `kerberos.*`, `ldap.*`, `identity.machine_sid`, `DITTOFS_KERBEROS_*`, `DITTOFS_LDAP_*` | `identity.*` settings and `Secret` records (RFC 18 plan) | refused by the RFC 13 plan's loader |
+| keys `kerberos.*`, `ldap.*`, `identity.*` (`machine_sid` included), `DITTOFS_KERBEROS_*`, `DITTOFS_LDAP_*` | `identity.*` settings and `Secret` records (RFC 18 plan) | refused by the RFC 13 plan's loader |
 | keys `controlplane.jwt.*`, `DITTOFS_CONTROLPLANE_SECRET`, `admin.*`, `DITTOFS_ADMIN_INITIAL_PASSWORD` | the installation's signing-key `Secret`; the initialisation step's password reference | refused by the RFC 13 plan's loader |
 | keys `controlplane.port`, `controlplane.tls`, `metrics.*`, `shutdown_timeout` | the bootstrap's API and metrics listen addresses and the API's TLS (RFC 13 §2.2); `adapters.<protocol>.drain_timeout` | refused by the RFC 13 plan's loader, naming each |
-| keys `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*`, `blockstore.*` (except the journal path) | settings records (RFC 13 Appendix B) | refused by the RFC 13 plan's loader, naming the setting that replaced each |
+| keys `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*`, `blockstore.*` (the journal path becomes `journals`, and its five tunables are dropped) | settings records (RFC 13 Appendix B) | refused by the RFC 13 plan's loader, naming the setting that replaced each |
 
 v1 is about 45,000 lines of non-test Go. The code that imports it outside the deleted trees is
 `pkg/config`, the harness (`test/harness/fixture` and `test/harness/run` through it), `test/e2e`
@@ -606,8 +606,8 @@ and resource commands carry only their spec's fields.
 - **Prior art (from memory).** `git config`, `kubectl set`.
 - **Applied by** epics 4 and 6.
 
-**D6. The bootstrap is the RFC 13 plan's** (its D7): the path `~/.config/dittofs/config.yaml`,
-`--config` and `DITTOFS_CONFIG`, the refused v1 keys and the node identity's `node-id` files, in
+**D6. The bootstrap is the RFC 13 plan's** (its D7): the path `$XDG_CONFIG_HOME/dittofs/config.yaml`,
+else `~/.config/dittofs/config.yaml`, `--config` and `DITTOFS_CONFIG`, the refused v1 keys and the node identity's `node-id` files, in
 `pkg/bootstrap`. This plan's epics read it through that package. The launchers are that plan's
 too: `docker-compose.yml`, `docker/` and `dfsbench` stop working from this plan's epic 1, which
 deletes the v1 server they start. `dfsbench` comes back first, so v2 is measured against v1 as early
@@ -1346,7 +1346,8 @@ error to a status.
 - The server: TLS through `internal/tlsconfig`, the `Dockerfile`'s `HEALTHCHECK` moved to
   `https`, unverified (D13), and a start that refuses a non-loopback API address
   without the bootstrap's certificate and key (RFC 23 §5.3's Transport), tested on `127.0.0.1` and
-  on a non-loopback address; the local socket at the path the bootstrap names, served without TLS
+  on a non-loopback address; the local socket, at the bootstrap's `api.socket` path, `dfs.sock` in the
+  runtime directory by default, served without TLS
   and created readable and writable by the server's user only, with a test that its mode is
   `0600` and that a connection on it reaches the API as a local caller (RFC 23 §5.3); `dfsctl`'s
   context takes the socket's path in place of a URL (RFC 23 §7, epic 6); the call bound and the parked long polls (RFC 23 §4.3), and
