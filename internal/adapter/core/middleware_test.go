@@ -114,6 +114,9 @@ func TestDeadlineCountsFromTheAttemptStart(t *testing.T) {
 		{"a hold's deadline later", func(ctx context.Context) context.Context {
 			return core.WithHoldDeadline(core.WithAttemptStart(ctx, t0.Add(-10*time.Second)), t0.Add(40*time.Second))
 		}, 20 * time.Second},
+		{"a parent's deadline sooner", func(ctx context.Context) context.Context {
+			return deadlineOnly{core.WithAttemptStart(ctx, t0.Add(-10*time.Second)), t0.Add(5 * time.Second)}
+		}, 5 * time.Second},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			clk := newManualClock()
@@ -524,5 +527,38 @@ func TestChainWithoutATracer(t *testing.T) {
 	}))
 	if err != errHandler {
 		t.Errorf("the chain answered %v, want the handler's", err)
+	}
+}
+
+// deadlineOnly is a parent that reports a deadline and never ends of
+// itself: an input standing for a parent on another clock.
+type deadlineOnly struct {
+	context.Context
+	at time.Time
+}
+
+func (d deadlineOnly) Deadline() (time.Time, bool) { return d.at, true }
+
+// A call under a parent that is itself the deadline's own context leaves the
+// parent nothing to run once the call returns: its watch of the parent is
+// stopped, so a connection's or a held request's context gains nothing per
+// call.
+func TestADeadlineStopsWatchingItsParent(t *testing.T) {
+	sh := core.NewShared(adapter.Deps{})
+	core.SetClock(sh, newManualClock())
+	left := -2
+	outer := sh.Deadline(func(ctx context.Context, r *core.Request) error {
+		inner := sh.Deadline(func(context.Context, *core.Request) error { return nil })
+		if err := inner(ctx, r); err != nil {
+			return err
+		}
+		left = core.Watches(ctx)
+		return nil
+	})
+	if err := outer(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 {
+		t.Errorf("the parent still runs %d functions after the call, want none", left)
 	}
 }

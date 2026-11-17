@@ -154,6 +154,12 @@ var errPanicked = errors.New("core: handler panicked")
 // operation, the panic value's type and the stack, and counted under op in
 // ts. The value is the handler's own text and may hold a name a user chose,
 // which RFC 25 §5.4 keeps below Info, so it is logged at debug.
+//
+// decision: every panic writes its error line, as RFC 20 §4.2 asks, though
+// RFC 25 §5.2 writes a noisy subject once a minute. The ceiling: a client
+// that can make a handler panic can make it write a stack per request.
+// Overturned if §4.2 takes RFC 25's rate, one line per operation a minute
+// with the rest counted, which the panic counter already does.
 func (sh *shared) recovery(op *Op, ts *tableSeries) Middleware {
 	return func(next Call) Call {
 		return func(ctx context.Context, r *Request) (err error) {

@@ -123,6 +123,18 @@ func OnTheDeadline(ctx context.Context) bool {
 	return ok
 }
 
+// Watches is how many functions ctx, the deadline's own context, still runs
+// when it ends: those AfterFunc registered and no stop has removed.
+func Watches(ctx context.Context) int {
+	c, ok := ctx.(*clockCtx)
+	if !ok {
+		return -1
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.funcs)
+}
+
 // NewCapped is the FlowControl a connection gets where its protocol has none.
 func NewCapped() FlowControl { return newCapped() }
 
