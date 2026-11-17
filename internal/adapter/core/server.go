@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
+	"github.com/cubbit/dittofs/pkg/resources"
 )
 
 // Server is one adapter: its listeners, connections, drain and health, for
@@ -33,10 +34,15 @@ type Server struct {
 	// the server is shared.
 	settings atomic.Pointer[settings.Settings] // the protocol's whole shape, as New or the last Reconfigure gave it
 	addrs    []netip.Addr                      // the settings' addresses, the server's own copy: the caller's settings may change under it
+	d        adapter.Deps
+	recv     *resources.BufPool // the receive pool every record is charged to
+	reply    *resources.BufPool // the reply pool every reply is taken from
+	sh       *shared            // the pools, metrics, clock and logger every connection shares
 
 	mu    sync.Mutex
 	state adapter.State
 	bound []bound // every socket open now, by listener, then by address in the settings' order
+	conns []*Conn // every connection open now
 }
 
 // bound is one listener's socket on one address.
@@ -91,17 +97,17 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 	if err := checkListeners(ls); err != nil {
 		return nil, fmt.Errorf("core: new server: %w", err)
 	}
-	// A listener whose stages accept would refuse shows its wiring fault
-	// here, at configured, rather than at its first request (RFC 20 section
-	// 3.1): NewConn(nil) is the one call that reads no connection, and
-	// withDefaults is accept's own check, so the faults one refuses can
-	// never drift from the faults the other would.
 	for i := range ls {
 		if _, err := withDefaults(ls[i].Protocol.NewConn(nil)); err != nil {
 			return nil, fmt.Errorf("core: new server: listener %d %q: %w", i, ls[i].Services, err)
 		}
 	}
-	srv := &Server{ls: ls, listen: (&net.ListenConfig{}).Listen}
+	srv := &Server{ls: ls, d: d, listen: (&net.ListenConfig{}).Listen}
+	if d.Budgets != nil {
+		srv.recv = resources.NewBufPool(d.Budgets.Receive)
+		srv.reply = resources.NewBufPool(d.Budgets.Reply)
+		srv.sh = newShared(d, srv.reply)
+	}
 	// The server owns the Addrs alone: srv.addrs is its own copy, and Start
 	// binds that. The rest of the settings is the snapshot as New handed it,
 	// shared with the caller where the settings sit behind a pointer - the
@@ -297,14 +303,44 @@ func (s *Server) Reconfigure(ctx context.Context, next settings.Settings) error 
 	return fmt.Errorf("core: reconfigure: %w", errors.ErrUnsupported)
 }
 
-// Stop closes every listener and moves the server to stopped, from any
-// state; a second call returns nil.
+// Stop closes every listener, closes every connection and moves the server to
+// stopped, from any state; a second call returns nil.
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	conns := slices.Clone(s.conns)
 	s.closeBound()
 	s.state = adapter.StateStopped
+	s.mu.Unlock()
+	for _, c := range conns {
+		c.Close(errStop)
+	}
+	for _, c := range conns {
+		select {
+		case <-c.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return nil
+}
+
+// errStop is a connection's close, the server stopping.
+var errStop = errors.New("core: the server stopped")
+
+// register adds a connection to the registry. A connection served on a server
+// that is not serving closes at once: its reader's first arm sees the ended
+// context.
+func (s *Server) register(c *Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.conns = append(s.conns, c)
+}
+
+// unregister drops a connection from the registry once its teardown ended.
+func (s *Server) unregister(c *Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.conns = slices.DeleteFunc(s.conns, func(o *Conn) bool { return o == c })
 }
 
 // Addrs is every address each listener is bound on now, by service and
@@ -335,7 +371,18 @@ func (s *Server) Health() adapter.Health {
 	return adapter.Health{State: s.state}
 }
 
-// Connections lists the connections open now.
+// Connections lists the connections open now, as the API's client list reads
+// them; a connection whose protocol names no session reports none.
 func (s *Server) Connections() iter.Seq[adapter.ConnInfo] {
-	panic("not implemented")
+	s.mu.Lock()
+	conns := slices.Clone(s.conns)
+	s.mu.Unlock()
+	return func(yield func(adapter.ConnInfo) bool) {
+		for _, c := range conns {
+			info := adapter.ConnInfo{Protocol: c.protocol(), Remote: netip.AddrPortFrom(c.remote, 0)}
+			if !yield(info) {
+				return
+			}
+		}
+	}
 }

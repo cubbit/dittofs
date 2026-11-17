@@ -278,3 +278,13 @@ func Judge(row *Op, inv Invocation, rest []byte, v Version, r *Request) (whole b
 func SetListen(s *Server, f func(ctx context.Context, network, addr string) (net.Listener, error)) {
 	s.listen = f
 }
+
+// ServeConn hands the server a socket, which its accept loop does in
+// production, and returns the connection it serves on it.
+func ServeConn(s *Server, nc net.Conn, l *Listener) *Conn { return s.serveConn(nc, l) }
+
+// ConnDone is a connection's teardown end, for a test that waits for it.
+func ConnDone(c *Conn) <-chan struct{} { return c.done }
+
+// ConnPipeline is a connection's pipeline, for a test that reads what runs.
+func ConnPipeline(c *Conn) *Pipeline { return c.p }

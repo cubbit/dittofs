@@ -219,3 +219,38 @@ func (r *reader) disarm() {
 		r.armed = false
 	}
 }
+
+// readLoop cuts the connection's records and hands each to the pipeline: it
+// waits while the writer is at its bound, holding no record, then cuts one and
+// serves it. Its end runs the connection's teardown (RFC 20 sections 6.1 and
+// 6.2).
+func (c *Conn) readLoop() {
+	defer c.teardown()
+	for {
+		if err := c.waitForRoom(); err != nil {
+			return
+		}
+		rec, err := c.rd.Read(c.ctx)
+		if err != nil {
+			c.Close(err)
+			return
+		}
+		c.p.serve(rec)
+	}
+}
+
+// waitForRoom waits while the writer's queue is at its bound, so a client that
+// reads nothing stops being read rather than growing the queue (RFC 20 section
+// 6.2, R32).
+func (c *Conn) waitForRoom() error {
+	room, at := c.w.pause()
+	if !at {
+		return nil
+	}
+	select {
+	case <-room:
+		return nil
+	case <-c.ctx.Done():
+		return c.ctx.Err()
+	}
+}
