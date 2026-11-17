@@ -646,11 +646,12 @@ func TestWriterWaits(t *testing.T) {
 }
 
 // A refusal of an authenticated caller before the write adapter runs is
-// audited once, as refused with its code, against the row's kind and naming
-// the caller by principal, name and credential: a role that may not call the
-// row, an ID that does not parse, a caller that must change its password; a
-// write's own refusal is audited once, by the adapter. A refused GET and a
-// path no row names are not audited, nor tried and failed.
+// audited once, as refused with its code, against the row's kind and the
+// path's ID when it parses, and naming the caller by principal, name and
+// credential: a role that may not call the row, an ID that does not parse, a
+// caller that must change its password; a write's own refusal is audited
+// once, by the adapter. A refused GET and a path no row names are not
+// audited, nor tried and failed.
 func TestRefusalsAudited(t *testing.T) {
 	var role atomic.Uint32
 	var mustChange atomic.Bool
@@ -666,13 +667,14 @@ func TestRefusalsAudited(t *testing.T) {
 		status       int
 		outcome      string
 		kind         entity.ResourceKind
+		named        bool
 	}{
-		{"role", entity.RoleViewer, false, http.MethodPost, thing + ":poke", 403, "refused: forbidden", entity.ResourceShare},
-		{"ID", entity.RoleOperator, false, http.MethodPost, "/api/v1/things/payroll:poke", 404, "refused: not_found", entity.ResourceShare},
-		{"password", entity.RoleAdmin, true, http.MethodPut, knobPath, 403, "refused: password_change_required", entity.ResourceSetting},
-		{"write", entity.RoleOperator, false, http.MethodPut, knobPath, 428, "refused: precondition_required", entity.ResourceSetting},
-		{"GET", entity.RoleViewer, false, http.MethodGet, "/api/v1/accounts/" + api.TestID, 404, "", 0},
-		{"no row", entity.RoleOperator, false, http.MethodPost, "/api/v1/no-such", 404, "", 0},
+		{"role", entity.RoleViewer, false, http.MethodPost, thing + ":poke", 403, "refused: forbidden", entity.ResourceShare, true},
+		{"ID", entity.RoleOperator, false, http.MethodPost, "/api/v1/things/payroll:poke", 404, "refused: not_found", entity.ResourceShare, false},
+		{"password", entity.RoleAdmin, true, http.MethodPut, knobPath, 403, "refused: password_change_required", entity.ResourceSetting, true},
+		{"write", entity.RoleOperator, false, http.MethodPut, knobPath, 428, "refused: precondition_required", entity.ResourceSetting, true},
+		{"GET", entity.RoleViewer, false, http.MethodGet, "/api/v1/accounts/" + api.TestID, 404, "", 0, false},
+		{"no row", entity.RoleOperator, false, http.MethodPost, "/api/v1/no-such", 404, "", 0, false},
 	} {
 		role.Store(uint32(tc.role))
 		mustChange.Store(tc.mustChange)
@@ -695,6 +697,14 @@ func TestRefusalsAudited(t *testing.T) {
 		a := recs[0]
 		if string(a.Outcome) != tc.outcome || a.Target.Kind != tc.kind || a.Actor != who || a.ActorName != "eli" || a.Credential != "token-7" {
 			t.Errorf("%s: audited %s against %v by %v %q under %q, want %s against %v by %v eli under token-7", tc.name, a.Outcome, a.Target.Kind, a.Actor, a.ActorName, a.Credential, tc.outcome, tc.kind, who)
+		}
+		var want []byte
+		if tc.named {
+			sid, _ := entity.ParseShareID(api.TestID)
+			want = sid[:]
+		}
+		if !bytes.Equal(a.Target.ID, want) {
+			t.Errorf("%s: audited against ID %x, want %x", tc.name, a.Target.ID, want)
 		}
 	}
 	if strings.Contains(s.log.String(), "audit record was not written") {

@@ -152,8 +152,9 @@ func pick(rows []route, r *http.Request) (*route, string) {
 // run authenticates r unless its row is public, refuses a caller the row
 // does not admit, parses the path's ID and runs the row's adapter. With no
 // Authenticate, every caller is refused 401. A refusal of an authenticated
-// caller here, before the adapter, is audited against the row's kind unless
-// r is a GET or a HEAD; the write adapter audits its own.
+// caller here, before the adapter, is audited against the row's kind and
+// the path's ID when it parses, unless r is a GET or a HEAD; the write
+// adapter audits its own.
 //
 // decision: a path no row names is refused unaudited. It names no resource,
 // and the store refuses an audit record whose target has no kind, so its
@@ -184,6 +185,9 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 		if _, authed := auth.CallerFrom(ctx); authed && rt != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
 			rec := s.auditOf(ctx, r)
 			rec.Target.Kind = rt.kind
+			if sid, perr := entity.ParseShareID(rawID); perr == nil && strings.Contains(rt.pattern, "{id}") {
+				rec.Target.ID = sid[:]
+			}
 			s.refuse(ctx, rec, err)
 		}
 		return answer{}, err
