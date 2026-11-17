@@ -30,7 +30,7 @@ type ShareState uint8
 
 const (
 	Serving  ShareState = iota + 1 // reads and writes
-	Quiesced                       // nothing new admitted
+	Quiesced                       // nothing new admitted: every content call but LossSeq answers ErrDelay (DelayFrozen)
 )
 
 // Stats is the engine's counters and conditions, per journal and per share.
