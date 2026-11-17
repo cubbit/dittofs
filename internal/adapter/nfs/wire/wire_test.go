@@ -358,6 +358,10 @@ func TestDecodeAuthSys(t *testing.T) {
 	if _, err := wire.DecodeAuthSys(cut[:len(cut)-4]); err == nil {
 		t.Error("a body cut inside its group list is accepted")
 	}
+	over := append(parms([]byte("host"), 2), 9, 9, 9, 9)
+	if _, err := wire.DecodeAuthSys(over); err == nil {
+		t.Error("a body with bytes after its group list is accepted")
+	}
 }
 
 // Each reply is written byte for byte: the capture's NULL reply for the same

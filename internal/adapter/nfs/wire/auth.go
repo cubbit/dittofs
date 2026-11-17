@@ -25,8 +25,10 @@ func (a AuthSysParms) Groups() []uint32 { return a.GIDs[:a.NGIDs] }
 
 // DecodeAuthSys reads an AUTH_SYS credential's body: the stamp, the machine
 // name, the uid and gid, and the group list (RFC 5531 section 8.2, Appendix A).
-// It refuses a machine name over 255 bytes, more than 16 groups, and a body cut
-// before any of their bytes.
+// It refuses a machine name over 255 bytes, more than 16 groups, a body cut
+// before any of their bytes, and one with bytes left after the group list: the
+// body is one authsys_parms, so bytes left after it mean its length and its
+// contents disagree.
 func DecodeAuthSys(body []byte) (AuthSysParms, error) {
 	var a AuthSysParms
 	r := reader{b: body}
@@ -72,6 +74,9 @@ func DecodeAuthSys(body []byte) (AuthSysParms, error) {
 	for i := range a.NGIDs {
 		a.GIDs[i] = binary.BigEndian.Uint32(r.b[r.off:])
 		r.off += 4
+	}
+	if r.off != len(r.b) {
+		return a, fmt.Errorf("nfs/wire: %d bytes after the group list", len(r.b)-r.off)
 	}
 	return a, nil
 }
