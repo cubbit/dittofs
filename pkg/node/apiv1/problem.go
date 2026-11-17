@@ -6,13 +6,14 @@ import "fmt"
 const MediaTypeProblem = "application/problem+json"
 
 // Problem is an error body. Code is the refusing component's error value by
-// its name, or one of the API's own codes; Title and Detail are text for a
-// person and are never parsed; Field and Rule name a refused value and the
-// rule it broke; Names lists what the refusal names; Retryable says whether
-// the same request may succeed later unchanged.
+// its name, or one of the API's own codes, and absent from a 500 nothing
+// names; Title and Detail are text for a person and are never parsed; Field
+// and Rule name a refused value and the rule it broke; Names lists what the
+// refusal names; Retryable says whether the same request may succeed later
+// unchanged.
 type Problem struct {
 	Status    int      `json:"status"`
-	Code      Code     `json:"code"`
+	Code      Code     `json:"code,omitempty"`
 	Title     string   `json:"title"`
 	Detail    string   `json:"detail,omitempty"`
 	Field     string   `json:"field,omitempty"`

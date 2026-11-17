@@ -92,7 +92,7 @@ func answer(status, word string) string {
 
 // Each probe answers its status with one word and no header but its type and
 // length, byte for byte, while the registry the server also serves names a
-// share; every other path on the API listener is 404. Deps holds no health
+// share; every other path on the API listener outside /api/ is 404. Deps holds no health
 // condition, so no condition's share name can reach a probe's answer.
 func TestHealthAnswers(t *testing.T) {
 	prof.Watch(t, prof.Options{})
@@ -110,7 +110,7 @@ func TestHealthAnswers(t *testing.T) {
 		{"ready", "/health", answer("404 Not Found", "not_found")},
 		{"ready", "/health/ready/payroll", answer("404 Not Found", "not_found")},
 		{"ready", "/metrics", answer("404 Not Found", "not_found")},
-		{"ready", "/api/v1/health", answer("404 Not Found", "not_found")},
+		{"ready", "/api", answer("404 Not Found", "not_found")},
 	} {
 		n.ready.Store(tc.ready)
 		if got := raw(t, n.addr, tc.path); got != tc.want {

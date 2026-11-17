@@ -386,15 +386,54 @@ func TestImportRules(t *testing.T) {
 // componentAllowed reports whether a package under internal/node but node
 // and nodetest may import the module's package rel: none it allows is a
 // component's implementation, the entity and wire packages holding data
-// types only, and nodetest, which imports Badger, is not allowed. Everything
+// types only, the metadata store's and filesystem's packages of error values,
+// which the API answers by name, and KV, of which errorsOnly admits only the
+// error values; nodetest, which imports Badger, is not allowed. Everything
 // else it reaches through an interface it declares or a value the node hands
 // it.
 func componentAllowed(rel string) bool {
 	switch rel {
-	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1":
+	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1",
+		"pkg/metadata/errors", "pkg/metadata/kv", "pkg/vfs/vfserr":
 		return true
 	}
 	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest")
+}
+
+// errorsOnly are the allowed packages that also declare a store's interface
+// and an implementation of it, of which a file may use only the error values,
+// the names starting Err.
+var errorsOnly = []string{"pkg/metadata/kv"}
+
+// nonErrorUses returns each name f uses from the package it imports as imp
+// that is not an error value: every name, under a dot import.
+func nonErrorUses(f *ast.File, imp *ast.ImportSpec, p string) []string {
+	name := path.Base(p)
+	if imp.Name != nil {
+		name = imp.Name.Name
+	}
+	if name == "." {
+		return []string{p + ".*"}
+	}
+	var bad []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok {
+			if x, ok := sel.X.(*ast.Ident); ok && x.Name == name && !strings.HasPrefix(sel.Sel.Name, "Err") {
+				bad = append(bad, p+"."+sel.Sel.Name)
+			}
+		}
+		return true
+	})
+	return bad
+}
+
+// libraries are the third-party packages a package under internal/node may
+// import: the metrics and tracing APIs, neither of them a component.
+var libraries = []string{
+	"github.com/prometheus/client_golang/prometheus",
+	"go.opentelemetry.io/otel/attribute",
+	"go.opentelemetry.io/otel/trace",
+	"go.opentelemetry.io/otel/trace/noop",
 }
 
 // componentImports returns, for every package below root but root itself,
@@ -415,18 +454,24 @@ func componentImports(root string) ([]string, error) {
 		if filepath.Dir(path) == root || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
 		if err != nil {
 			return err
 		}
+		r, _ := filepath.Rel(root, path)
 		for _, imp := range f.Imports {
 			p, _ := strconv.Unquote(imp.Path.Value)
 			rel, inModule := strings.CutPrefix(p, module)
 			std := !strings.Contains(strings.Split(p, "/")[0], ".")
-			if std || inModule && componentAllowed(rel) {
+			if inModule && slices.Contains(errorsOnly, rel) {
+				for _, u := range nonErrorUses(f, imp, p) {
+					bad = append(bad, filepath.ToSlash(r)+" uses "+u)
+				}
 				continue
 			}
-			r, _ := filepath.Rel(root, path)
+			if std || inModule && componentAllowed(rel) || slices.Contains(libraries, p) {
+				continue
+			}
 			bad = append(bad, filepath.ToSlash(r)+" imports "+p)
 		}
 		return nil
@@ -443,6 +488,9 @@ func TestNoComponentImports(t *testing.T) {
 	}{
 		{".", nil},
 		{"testdata/arch/component-import", []string{
+			"api/allowed.go imports github.com/dgraph-io/badger/v4",
+			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.KV",
+			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.Counting",
 			"api/server.go imports github.com/cubbit/dittofs/pkg/block/engine",
 			"nodetest-import/harness.go imports github.com/cubbit/dittofs/internal/node/nodetest",
 		}},
@@ -711,8 +759,8 @@ func TestAPIWritesOnlyThroughWrite(t *testing.T) {
 
 // apiExports returns the api package's exported names, each exported type's
 // with its exported methods, the pointer's included, as Type.Method.
-func apiExports(dir string) ([]string, error) {
-	pkg, _, _, err := typeCheck(dir, module+"internal/node/api")
+func apiExports(dir, path string) ([]string, error) {
+	pkg, _, _, err := typeCheck(dir, module+path)
 	if err != nil {
 		return nil, err
 	}
@@ -739,17 +787,23 @@ func apiExports(dir string) ([]string, error) {
 }
 
 // The api package exports New, Deps and Server, and Server's Start and Stop,
-// and nothing else; a planted extra method is caught.
+// and its auth package Caller, CallerFrom, the With its authentication step
+// calls, and the role table's Right, its rights and Allowed, and nothing
+// else; a planted extra method is caught.
 func TestAPIExports(t *testing.T) {
 	want := []string{"Deps", "New", "Server", "Server.Start", "Server.Stop"}
 	for _, tc := range []struct {
-		dir  string
-		want []string
+		dir, path string
+		want      []string
 	}{
-		{"api", want},
-		{"testdata/arch/api-exports", []string{"Deps", "New", "Server", "Server.Handler", "Server.Start", "Server.Stop"}},
+		{"api", "internal/node/api", want},
+		{"api/auth", "internal/node/api/auth", []string{
+			"Accounts", "Allowed", "Audit", "Caller", "CallerFrom", "Drain", "Installation", "Principals",
+			"Public", "QuotaEvents", "Right", "Self", "Shares", "Stores", "View", "With",
+		}},
+		{"testdata/arch/api-exports", "internal/node/api", []string{"Deps", "New", "Server", "Server.Handler", "Server.Start", "Server.Stop"}},
 	} {
-		got, err := apiExports(tc.dir)
+		got, err := apiExports(tc.dir, tc.path)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.dir, err)
 		}
