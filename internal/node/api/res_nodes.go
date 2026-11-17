@@ -93,6 +93,13 @@ func healthOf(_ context.Context, d Deps, _ request[none]) (apiv1.Health, error) 
 		// puts a credential in an error it raises. Overturned by the first
 		// cause that can carry one, and then by setting Cause from a typed
 		// reason rather than an error's text.
+		//
+		// decision: the cause is the condition's whole error text, not the
+		// closed reason its owner reports, because health.Condition holds no
+		// closed reason yet. Each condition's severity and since, the status
+		// of the installation, the node and each scope, the share counts and
+		// the worst shares wait on the same change. Overturned when the
+		// health registry grows those fields.
 		if c.Cause != nil {
 			w.Cause = c.Cause.Error()
 		}
