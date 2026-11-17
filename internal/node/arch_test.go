@@ -2,6 +2,7 @@ package node
 
 import (
 	"go/ast"
+	gobuild "go/build"
 	"go/importer"
 	"go/parser"
 	"go/token"
@@ -506,8 +507,9 @@ func TestNoComponentImports(t *testing.T) {
 	}
 }
 
-// typeCheck type-checks the package whose non-test sources are in dir as
-// import path path, with every import read from source.
+// typeCheck type-checks the package whose non-test sources for this host's
+// platform are in dir as import path path, with every import read from
+// source.
 func typeCheck(dir, path string) (*types.Package, []*ast.File, *types.Info, error) {
 	fset, imp := sourceImporter()
 	entries, err := os.ReadDir(dir)
@@ -517,6 +519,12 @@ func typeCheck(dir, path string) (*types.Package, []*ast.File, *types.Info, erro
 	var files []*ast.File
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		if ok, err := gobuild.Default.MatchFile(dir, e.Name()); err != nil || !ok {
+			if err != nil {
+				return nil, nil, nil, err
+			}
 			continue
 		}
 		f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, 0)

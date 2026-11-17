@@ -231,19 +231,31 @@ func bindable(t *testing.T, addrs ...string) {
 	}
 }
 
-// A socket a node that did not stop left at the path is replaced; any other
-// file there refuses the start and leaves neither TCP address bound. The
-// socket's file is named s because a socket path is bounded at 104 bytes on
-// some hosts, and t.TempDir() holds it.
+// A socket a node that did not stop left at the path is replaced; a socket
+// whose dial fails other than refused, here one its mode forbids connecting
+// through, and any other file there refuse the start, leave the file in
+// place, and leave neither TCP address bound. The sockets' files are named
+// briefly because a socket path is bounded at 104 bytes on some hosts, and
+// t.TempDir() holds it.
 func TestStaleSocket(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root connects through any socket's mode, so the locked socket would dial refused")
+	}
 	dir := t.TempDir()
-	stale := filepath.Join(dir, "s")
-	l, err := net.Listen("unix", stale)
-	if err != nil {
+	left := func(name string) string {
+		p := filepath.Join(dir, name)
+		l, err := net.Listen("unix", p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.(*net.UnixListener).SetUnlinkOnClose(false)
+		_ = l.Close()
+		return p
+	}
+	stale, locked := left("s"), left("l")
+	if err := os.Chmod(locked, 0); err != nil {
 		t.Fatal(err)
 	}
-	l.(*net.UnixListener).SetUnlinkOnClose(false)
-	_ = l.Close()
 	plain := filepath.Join(dir, "plain")
 	if err := os.WriteFile(plain, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -251,7 +263,7 @@ func TestStaleSocket(t *testing.T) {
 	for _, tc := range []struct {
 		path   string
 		starts bool
-	}{{stale, true}, {plain, false}} {
+	}{{stale, true}, {locked, false}, {plain, false}} {
 		addr, maddr := freeAddr(t), freeAddr(t)
 		s := api.New(api.Deps{Addr: addr, MetricsAddr: maddr, Socket: tc.path, Metrics: metrics.New("test", "test")})
 		_, _, err := s.Start()
@@ -260,6 +272,9 @@ func TestStaleSocket(t *testing.T) {
 		}
 		if !tc.starts {
 			bindable(t, addr, maddr)
+			if _, err := os.Lstat(tc.path); err != nil {
+				t.Errorf("%s after the refused start: %v, want it left in place", filepath.Base(tc.path), err)
+			}
 		}
 		if err := s.Stop(context.Background()); err != nil {
 			t.Errorf("Stop: %v", err)
