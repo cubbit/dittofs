@@ -1,6 +1,9 @@
 package wire
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	errFrameShort   = errors.New("smb: a Direct TCP header shorter than 4 bytes")
@@ -28,8 +31,13 @@ func FrameLen(hdr []byte) (int, error) {
 	return n, nil
 }
 
-// AppendFrame appends to dst the Direct TCP header of a message of n bytes,
-// n below 2^24, and returns it.
+// AppendFrame appends to dst the Direct TCP header of a message of n bytes and
+// returns it. n past MaxRecord or 2^24's three bytes panics: the length the
+// writer states is what the reader refuses, a program bug the same mark on
+// the wire could never be, so it is not written at all.
 func AppendFrame(dst []byte, n int) []byte {
+	if n < 0 || n > MaxRecord {
+		panic(fmt.Sprintf("smb: a frame of %d bytes, past %d", n, MaxRecord))
+	}
 	return append(dst, 0, byte(n>>16), byte(n>>8), byte(n))
 }

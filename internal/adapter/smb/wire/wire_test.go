@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/cubbit/dittofs/internal/prof"
 )
 
 // The vectors in testdata/golden are written by hand from MS-SMB2's field
@@ -318,22 +320,28 @@ func TestChainPadsToEightAndPointsAtTheNextReply(t *testing.T) {
 	}
 
 	// Each reply is a 64-byte header and the 9-byte error body: 73 bytes,
-	// padded to 80.
+	// padded to 80. The chain's last member is padded with more false, so its
+	// NextCommand stays 0 and every member still decodes (MS-SMB2 2.2.1.2).
 	out := AppendError(AppendReply(nil, first, StatusNotSupported, 1))
-	if out, err = Chain(out, 0); err != nil {
+	if out, err = Chain(out, 0, true); err != nil {
 		t.Fatal(err)
 	}
 	out = AppendError(AppendReply(out, second, StatusNotSupported, 1))
-	if out, err = Chain(out, 80); err != nil {
+	if out, err = Chain(out, 80, false); err != nil {
 		t.Fatal(err)
 	}
 
 	if len(out) != 160 {
-		t.Fatalf("two chained 73-byte replies take %d bytes, want 160", len(out))
+		t.Fatalf("two padded 73-byte replies take %d bytes, want 160", len(out))
 	}
 	nextCommand := func(off int) uint32 { return binary.LittleEndian.Uint32(out[off+20:]) } // MS-SMB2 2.2.1.2
-	if nextCommand(0) != 80 || nextCommand(80) != 80 {
-		t.Errorf("the replies' NextCommand are %d and %d, want 80 and 80", nextCommand(0), nextCommand(80))
+	if nextCommand(0) != 80 || nextCommand(80) != 0 {
+		t.Errorf("the replies' NextCommand are %d and %d, want 80 and the last 0", nextCommand(0), nextCommand(80))
+	}
+	for _, at := range []int{0, 80} {
+		if _, err := DecodeHeader(out, at); err != nil {
+			t.Fatalf("member %d does not decode: %v", at, err)
+		}
 	}
 	if pad := out[73:80]; !bytes.Equal(pad, make([]byte, 7)) {
 		t.Errorf("the padding after the first reply is % x, want zeros", pad)
@@ -342,8 +350,43 @@ func TestChainPadsToEightAndPointsAtTheNextReply(t *testing.T) {
 		t.Errorf("the related member's reply has Flags %#x, want SERVER_TO_REDIR and RELATED_OPERATIONS", flags)
 	}
 
-	if _, err := Chain(out, len(out)-HeaderLen+1); !errors.Is(err, errChain) {
+	if _, err := Chain(out, len(out)-HeaderLen+1, true); !errors.Is(err, errChain) {
 		t.Errorf("Chain of a reply with 63 bytes in the buffer = %v, want %v", err, errChain)
+	}
+}
+
+// AppendFrame states no length the reader refuses: a body past the cap panics
+// rather than writes a header the connection would close on.
+func TestAppendFramePastTheCapPanics(t *testing.T) {
+	if MaxRecord >= 1<<24 {
+		t.Fatal("the cap itself would not fit the header's three bytes")
+	}
+	rec := AppendFrame(nil, MaxRecord)
+	if n, err := FrameLen(rec); err != nil || n != MaxRecord {
+		t.Fatalf("the cap's frame reads %d, %v; want %d", n, err, MaxRecord)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("a frame past the cap is written")
+		}
+	}()
+	AppendFrame(nil, MaxRecord+1)
+}
+
+// The accepted path allocates nothing: a header decoded out of the message
+// bytes, the reply appended into the caller's buffer and the frame written
+// around it all hand out views or take the room they were given.
+func TestTheAcceptedPathAllocatesNothing(t *testing.T) {
+	if prof.RaceEnabled {
+		t.Skip("the allocation count says nothing under the detector")
+	}
+	msg := readGolden(t, "sync_request")
+	out := make([]byte, 0, 256)
+	if n := testing.AllocsPerRun(100, func() {
+		h, _ := DecodeHeader(msg, 0)
+		_ = AppendFrame(AppendReply(out[:0], h, 0, 1), 64)[:0]
+	}); n != 0 {
+		t.Errorf("decoding and replying allocated %v, want nothing", n)
 	}
 }
 

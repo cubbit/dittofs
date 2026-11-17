@@ -142,16 +142,21 @@ func AppendError(out []byte) []byte {
 	)
 }
 
-// Chain points the reply at prev in out to the one appended after it: it pads
-// out with zeros to prev plus a multiple of 8 and sets the NextCommand of the
-// reply at prev to that step (MS-SMB2 3.3.4.1.3). It returns out.
-func Chain(out []byte, prev int) ([]byte, error) {
+// Chain pads the reply at prev in out to a multiple of 8 and, when more is
+// true, points it at the member appended after it: its NextCommand becomes
+// that step, and the last member of a chain, which MS-SMB2 2.2.1.2 has end
+// with 0, is padded with more false so the field stays as AppendReply left
+// it (MS-SMB2 3.3.4.1.3). Chain is called between a chain's members, never
+// after the last one. It returns out.
+func Chain(out []byte, prev int, more bool) ([]byte, error) {
 	if prev < 0 || len(out)-prev < HeaderLen {
 		return out, errChain
 	}
 	step := (len(out) - prev + 7) &^ 7
 	out = append(out, make([]byte, prev+step-len(out))...)
-	binary.LittleEndian.PutUint32(out[prev+offNextCommand:], uint32(step))
+	if more {
+		binary.LittleEndian.PutUint32(out[prev+offNextCommand:], uint32(step))
+	}
 
 	return out, nil
 }
