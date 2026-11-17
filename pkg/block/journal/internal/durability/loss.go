@@ -149,9 +149,7 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 		// The registry entry the copy that retires l.Seg builds its loss
 		// record from, stored once the piece is taken: the deferral ends on
 		// EndDeferral alone.
-		d.lmu.Lock()
-		d.deferredLosses[l.Seg] = append(d.deferredLosses[l.Seg], l)
-		d.lmu.Unlock()
+		d.dir.deferAgainst(l.Seg, l)
 	}
 
 	firstErr := recErr
@@ -339,11 +337,10 @@ func (d *Durability) Failed() []core.Seq { return d.dir.failedSeqs() }
 // DeferredAgainst returns the losses whose record the copy that retires seg
 // owes, the entries Lose deferred against it, in the order they deferred.
 // Each entry names its Seg; the caller hands the entry back on EndDeferral
-// once the copy has the record durable.
+// once the copy has the record durable. The entries are the directory's own,
+// so they reach this instance through whichever one deferred them.
 func (d *Durability) DeferredAgainst(seg core.SegmentID) []Loss {
-	d.lmu.Lock()
-	defer d.lmu.Unlock()
-	return append([]Loss(nil), d.deferredLosses[seg]...)
+	return d.dir.deferredAgainst(seg)
 }
 
 // EndDeferral ends one deferred loss of seg: the copy that retires it has
@@ -352,22 +349,7 @@ func (d *Durability) DeferredAgainst(seg core.SegmentID) []Loss {
 // so the call is idempotent: a second one, or a call whose entry already
 // left, answers false and changes nothing; true says an entry left.
 func (d *Durability) EndDeferral(seg core.SegmentID, l Loss) bool {
-	d.lmu.Lock()
-	defer d.lmu.Unlock()
-	es := d.deferredLosses[seg]
-	for i, e := range es {
-		if e != l {
-			continue
-		}
-		es = append(es[:i], es[i+1:]...)
-		if len(es) == 0 {
-			delete(d.deferredLosses, seg)
-		} else {
-			d.deferredLosses[seg] = es
-		}
-		return true
-	}
-	return false
+	return d.dir.endDeferral(seg, l)
 }
 
 // Place publishes ev, a loss record found at open, for the dropped record
