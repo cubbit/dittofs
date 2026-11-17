@@ -71,7 +71,7 @@ type Assembled struct {
 // one nothing on disk carries still raises the sequence counter, so the
 // first number the next open issues stays above the record whose loss the
 // read-only one failed to write.
-func runAssemble(_ context.Context, deps Deps, _ *reader, st *State, _ core.JournalID, _ core.Version) error {
+func runAssemble(_ context.Context, deps Deps, _ *reader, st *State, _ core.JournalID, _ core.Version, _ []core.SyncMark) error {
 	ctr := st.Rebuilt.Counters
 	for _, seq := range deps.Failed {
 		if err := ctr.Observe(index.Numbers{Seq: seq}); err != nil {

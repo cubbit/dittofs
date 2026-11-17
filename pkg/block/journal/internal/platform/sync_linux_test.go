@@ -17,14 +17,15 @@ import (
 
 // call is one entry of a recorder's log.
 type call struct {
-	op   string // open, fsync, fdatasync, close, fallocate or pwrite
+	op   string // open, fsync, fdatasync, close, fallocate, pwrite, fiemap or lseek
 	fd   int    // the descriptor acted on, or open's result; -1 for a failed open
 	path string // open: the path opened
 	mode int    // open: its flags; fallocate: its mode
 
 	// fallocate: the range asked for. pwrite: the offset, the bytes asked
 	// for, the bytes the call reported written and whether every byte asked
-	// for was zero.
+	// for was zero. lseek: the offset and the whence of Allocated's fallback
+	// question.
 	off, n  int64
 	asked   int
 	zero    bool
@@ -72,12 +73,25 @@ func (c call) String() string {
 // fallocate, pwrite and pread then do not run, and close runs, as Linux
 // releases the descriptor even when close reports an error. A short count
 // queued for pwrite makes its next call write only that many bytes, and a
-// count of 0 makes it write nothing and report no error.
+// count of 0 makes it write nothing and report no error. A seek answer
+// queued for lseek makes its next call report that answer instead of asking
+// the operating system, so a leg names the hole report itself; a window
+// filler queued for fiemap makes its next call hand the filler the request
+// the walk built, so a leg answers the extents it names.
 type recorder struct {
 	mu    sync.Mutex
 	log   []call
 	fail  map[string][]error // per op, what its next calls return, oldest first
 	short []int              // what the next pwrite calls write at most, oldest first
+	seek  []seekAnswer       // what the next lseek calls answer, oldest first
+	fm    []func(*fiemap)    // what the next fiemap calls answer, oldest first
+}
+
+// seekAnswer is one forced answer of an lseek call: the offset it reports,
+// or the error it fails with when one is set.
+type seekAnswer struct {
+	off int64
+	err error
 }
 
 // failNext makes the next calls of op return errs, one each, in order.
@@ -114,6 +128,51 @@ func (r *recorder) nextShort() int {
 	r.short = r.short[1:]
 
 	return n
+}
+
+// seekNext queues the answers the next lseek calls give, one each, in order;
+// a queued error still fails its own call first.
+func (r *recorder) seekNext(answers ...seekAnswer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.seek = append(r.seek, answers...)
+}
+
+// nextSeek returns the answer queued for the next lseek, or none.
+func (r *recorder) nextSeek() (seekAnswer, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.seek) == 0 {
+		return seekAnswer{}, false
+	}
+	a := r.seek[0]
+	r.seek = r.seek[1:]
+	return a, true
+}
+
+// windowNext queues the answers the next FIEMAP calls give: each filler
+// writes one window's extents into the request the walk hands it, which
+// carries the window's start and the room it offered.
+func (r *recorder) windowNext(windows ...func(*fiemap)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.fm = append(r.fm, windows...)
+}
+
+// nextWindow returns the filler queued for the next FIEMAP call, or none.
+func (r *recorder) nextWindow() (func(*fiemap), bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.fm) == 0 {
+		return nil, false
+	}
+	w := r.fm[0]
+	r.fm = r.fm[1:]
+	return w, true
 }
 
 // take returns the calls logged since the last take.
@@ -255,6 +314,43 @@ func (r *recorder) table() calls {
 			}
 
 			return unix.Pread(fd, p, off)
+		},
+		fiemap: func(fd int, fm *fiemap) error {
+			c := call{
+				op: "fiemap",
+				fd: fd,
+			}
+			c.dev, c.ino = fdIdentity(fd)
+
+			if err := r.add(c); err != nil {
+				return err
+			}
+
+			if w, ok := r.nextWindow(); ok {
+				w(fm)
+				return nil
+			}
+
+			return fiemapIoctl(fd, fm)
+		},
+		lseek: func(fd int, off int64, whence int) (int64, error) {
+			c := call{
+				op:    "lseek",
+				fd:    fd,
+				off:   off,
+				asked: whence,
+			}
+			c.dev, c.ino = fdIdentity(fd)
+
+			if err := r.add(c); err != nil {
+				return -1, err
+			}
+
+			if a, ok := r.nextSeek(); ok {
+				return a.off, a.err
+			}
+
+			return unix.Seek(fd, off, whence)
 		},
 	}
 }

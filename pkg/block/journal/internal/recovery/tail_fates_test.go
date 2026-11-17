@@ -8,6 +8,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
 )
 
@@ -244,18 +245,30 @@ func TestTailsClassifyEverySegmentFate(t *testing.T) {
 	named, _ := buildSealed(1, tailRec(200, 0x4100))
 	unnamed, _ := buildSealed(3, tailRec(201, 0x8100))
 	r.plantSeg(1, named)
-	r.plantSeg(2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
+	plantTake(r, 2, 1)
 	r.plantSeg(3, unnamed)
 	st := runTails(t, r)
 
 	wantFate(t, st, 1, fateSealed, 0)
-	wantFate(t, st, 2, fateIntact, 0)
 	wantFate(t, st, 3, fateSealToProve, 0)
 	if sc, _ := scanOf(st, 2); sc.RecordsEnd != format.SegmentHeaderSize {
 		t.Errorf("the empty segment's RecordsEnd got %d, want %d", sc.RecordsEnd, format.SegmentHeaderSize)
 	}
-	if len(st.Tails.Fates) != 3 || len(st.Tails.Damaged) != 0 {
-		t.Errorf("Tails got %+v, want three fates and nothing damaged", st.Tails)
+	// Segment 2 is a record-less take, so the spares phase re-adopted it:
+	// its fate is nobody's to hold, and only the two sealed lives keep one.
+	// Its re-adoption zeroes the only header naming segment 1, and the next
+	// open over this directory still decides segment 1 truthfully: a
+	// predecessor nothing names is one that could have been open at a
+	// crash, its tail proven on the device rather than trusted — its synced
+	// records still read back, a synced drop still corrupts by its own
+	// synced-through, and its sole wrong end cuts as a torn tail below
+	// which no acknowledged record sits, as the pinning row at this file's
+	// end holds.
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Errorf("the re-adopted spares got %v, want %v", got, want)
+	}
+	if len(st.Tails.Fates) != 2 || len(st.Tails.Damaged) != 0 {
+		t.Errorf("Tails got %+v, want two fates and nothing damaged", st.Tails)
 	}
 }
 
@@ -263,11 +276,16 @@ func TestTheTopologyIgnoresNamesOfSegmentsNotOnDisk(t *testing.T) {
 	r := newRig(t)
 	r.writeFormat()
 	r.plantSeg(5, buildSeg(5, tailRec(200, 0x4100)))
-	r.plantSeg(6, raw.SegmentHeader{Identity: journalID, ID: 6, Predecessor: 99}.Bytes())
+	plantTake(r, 6, 99)
 	st := runTails(t, r)
 
 	wantFate(t, st, 5, fateIntact, 0)
-	wantFate(t, st, 6, fateIntact, 0)
+	// Segment 6's claim of a predecessor no directory holds seals nothing,
+	// and its record-less take is the spares phase's: re-adopted, so it
+	// keeps no fate.
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 6, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Errorf("the re-adopted spares got %v, want %v", got, want)
+	}
 }
 
 func TestTwoSuccessorsMayNameOnePredecessor(t *testing.T) {
@@ -275,13 +293,21 @@ func TestTwoSuccessorsMayNameOnePredecessor(t *testing.T) {
 	r.writeFormat()
 	sealed, _ := buildSealed(1, tailRec(200, 0x4100))
 	r.plantSeg(1, sealed)
-	r.plantSeg(2, raw.SegmentHeader{Identity: journalID, ID: 2, Predecessor: 1}.Bytes())
-	r.plantSeg(3, raw.SegmentHeader{Identity: journalID, ID: 3, Predecessor: 1}.Bytes())
+	plantTake(r, 2, 1)
+	plantTake(r, 3, 1)
 	st := runTails(t, r)
 
 	wantFate(t, st, 1, fateSealed, 0)
-	wantFate(t, st, 2, fateIntact, 0)
-	wantFate(t, st, 3, fateIntact, 0)
+	// Both successors are record-less takes, so the spares phase re-adopted
+	// both: the predecessor's fate stays the one their headers named. Their
+	// re-adoption zeroes the only headers naming it, and the next open
+	// still decides it truthfully as a predecessor nothing names — the
+	// unnamed segment's tail proven on the device, its synced drops still
+	// corrupt by their own synced-through — the pinning row beside the
+	// classing's own test holds.
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}, {ID: 3, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Errorf("the re-adopted spares got %v, want %v", got, want)
+	}
 }
 
 func TestAZeroSlotAProofCoversRefusesTheOpen(t *testing.T) {
@@ -349,5 +375,151 @@ func TestACataloguedDropIsCorruptAndItsSegmentDamaged(t *testing.T) {
 	}
 	if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
 		t.Errorf("Damaged got %v, want [1]", st.Tails.Damaged)
+	}
+}
+
+// TestTheOpenAfterAZeroedNamingSuccessorNamesThePredecessorTruthfully plants
+// the shape the spares phase's re-adoption leaves behind — a predecessor P
+// whose header its record-less successor W names, holding verifying records,
+// a synced clone target whose body rotted, and a rotted seal marker beside
+// it — and runs the open twice: W is adopted and zeroed the first time, and
+// its zeroed header names nothing any more, so the second open reads P as
+// the unnamed segment it now is — one that could have been open at a crash,
+// whose tail is proven on the device rather than trusted. That open must
+// keep every acknowledged record P holds — A reads back through the rebuilt
+// index — still report the synced target whose body rotted as corrupt by its
+// own synced-through, and still cut P's rotted marker as the torn tail it
+// is: the tail starts where the last verifying record ends, so no
+// acknowledged record is in it. A second open that lost P's records,
+// misclassed its drop or served it silently is what this fails.
+func TestTheOpenAfterAZeroedNamingSuccessorNamesThePredecessorTruthfully(t *testing.T) {
+	// P: A's header and body verify synced; the clone target C's header
+	// verifies and its own synced-through covers the whole of it, its body
+	// rotted; the seal marker rotted while the trailer and the footer's
+	// entries stay whole, so P's marker is the one thing wrong with its end.
+	endA := endAfter(tailRec(200, 0x4100))
+	a := syncedRec(200, 0x4100, endA)
+	c := cloneRec()
+	cOff := format.SegmentHeaderSize + int64(len(a.Bytes()))
+	// C's synced-through covers the whole of its own bytes, the shape the
+	// recycle fixture's synced record takes: a sync proved the bytes its
+	// header names, so the drop classing judges the rotted body against a
+	// proof, never as a crash's tear.
+	c.SyncedThrough = uint64(cOff + int64(len(c.Bytes())))
+	p, ents := buildSealed(1, a, c)
+	p[cOff+format.RecordHeaderSize] ^= 0xff // C's body: the target rotted under its synced header
+	markerOff := len(p) - raw.TrailerSize - raw.CatalogEntrySize*len(ents) - format.SealMarkerSize
+	p[markerOff+31] ^= 0xff // the seal marker rotted
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, p)
+	plantTake(r, 2, 1) // W: the record-less take whose header names P
+
+	// The first open: P is a named predecessor, its rotted marker alone
+	// wrong with its end, so it is damaged and sealed; the synced drop it
+	// holds is corrupt; and W is adopted with its two slots zeroed.
+	st := runTails(t, r)
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Fatalf("spares: the take naming P got adoptions %v, want %v", got, want)
+	}
+	if wq := r.fileBytes(format.SegmentName(2)); anyHeaderByte(wq) {
+		t.Errorf("spares: the adopted take's slots were left unzeroed, got %x", wq[:format.SegmentHeaderSize])
+	}
+	wantFate(t, st, 1, fateSealed, 0)
+	if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+		t.Errorf("tails: the first open's Damaged got %v, want [1]", st.Tails.Damaged)
+	}
+	if len(st.Tails.Corrupt) != 1 || st.Tails.Corrupt[0].Segment != 1 ||
+		st.Tails.Corrupt[0].Drop.Header.Offset != cOff || !st.Tails.Corrupt[0].Drop.Synced {
+		t.Fatalf("tails: the first open's Corrupt got %+v, want the synced clone target at %d of segment 1, synced", st.Tails.Corrupt, cOff)
+	}
+
+	// The second open: W's header is zeros on disk, so nothing names P any
+	// more — exactly the predecessor that could have been open at a crash.
+	before := r.snapshot()
+	st2 := runTails(t, r)
+
+	// Every acknowledged record reads back: A attached again, whole.
+	if got := planted(st2); got != 1 {
+		t.Errorf("the second open's index holds %d entries of the predecessor's file, want 1: the unnamed P keeps every record it holds", got)
+	}
+	if !slices.Equal(st2.Tails.Damaged, []core.SegmentID{1}) {
+		t.Errorf("tails: the second open's Damaged got %v, want [1]: the rotted target stays reported", st2.Tails.Damaged)
+	}
+	if len(st2.Tails.Corrupt) != 1 || st2.Tails.Corrupt[0].Segment != 1 ||
+		st2.Tails.Corrupt[0].Drop.Header.Offset != cOff || !st2.Tails.Corrupt[0].Drop.Synced {
+		t.Fatalf("tails: the second open's Corrupt got %+v, want the synced clone target at %d of segment 1: a drop its own synced-through names corrupts still corrupts unnamed", st2.Tails.Corrupt, cOff)
+	}
+	// The rotted marker is the torn tail: the cut starts where the last
+	// record that verified ends, so no acknowledged record is in it.
+	wantFate(t, st2, 1, fateTornTail, cOff+int64(len(c.Bytes())))
+	// W is a zero-header spare again — a candidate that re-adopts clean —
+	// and nothing wrote: the directory is the one the first open left.
+	if got, want := st2.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Errorf("spares: the re-open's adoptions got %v, want %v", got, want)
+	}
+	for name, was := range before {
+		if got := r.fileBytes(name); !bytes.Equal(got, was) {
+			t.Errorf("the second open changed %s's bytes, want the directory as it stood", name)
+		}
+	}
+}
+
+// TestATrailerProvenPredecessorReleasesItsTake plants P with one synced
+// record and its seal marker rotted alone — the trailer and footer intact,
+// naming a footer just past the marker, the proof the classing's
+// marker-alone exemption reads — beside W, a record-less take whose header
+// names P: the trailer settles P's end on its own bytes, so the take is
+// released at the very open that reads the proof, adopted with its slots
+// zeroed there, never held. The second open — W's header zeros, nothing
+// naming P — re-proves the tail on the device: every acknowledged record
+// still reads back, the rotted marker cut as a torn tail below which no
+// acknowledged record sits, and nothing reported damaged — a re-proof, not
+// an evidence loss, for the verdict the trailer had already settled is
+// settled again from the bytes alone.
+func TestATrailerProvenPredecessorReleasesItsTake(t *testing.T) {
+	endA := endAfter(tailRec(200, 0x4100))
+	a := syncedRec(200, 0x4100, endA)
+	p, ents := buildSealed(1, a)
+	markerOff := len(p) - raw.TrailerSize - raw.CatalogEntrySize*len(ents) - format.SealMarkerSize
+	p[markerOff+31] ^= 0xff // the marker rotted; the trailer names the footer just past it
+
+	r := newRig(t)
+	r.writeFormat()
+	r.plantSeg(1, p)
+	plantTake(r, 2, 1) // W: the record-less take whose header names P
+
+	st := runTails(t, r)
+	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Fatalf("spares: the take naming a trailer-proven predecessor got adoptions %v, want %v: the trailer settles P's end on its own bytes", got, want)
+	}
+	if got := st.Spares.Held; len(got) != 0 {
+		t.Fatalf("spares: the take naming a trailer-proven predecessor got held %v, want none", got)
+	}
+	if wq := r.fileBytes(format.SegmentName(2)); anyHeaderByte(wq) {
+		t.Errorf("spares: the released take's slots were left unzeroed, got %x", wq[:format.SegmentHeaderSize])
+	}
+	wantFate(t, st, 1, fateSealed, 0)
+	if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
+		t.Errorf("tails: the first open's Damaged got %v, want [1]: the marker-alone rot is still reported", st.Tails.Damaged)
+	}
+
+	before := r.snapshot()
+	st2 := runTails(t, r)
+	if got := planted(st2); got != 1 {
+		t.Errorf("the second open's index holds %d entries of the predecessor's file, want 1: the re-prove keeps every acknowledged record", got)
+	}
+	wantFate(t, st2, 1, fateTornTail, endA)
+	if len(st2.Tails.Damaged) != 0 {
+		t.Errorf("tails: the second open's Damaged got %v, want none: the unnamed re-prove cuts the rotted marker as a torn tail, never a damage report", st2.Tails.Damaged)
+	}
+	if got, want := st2.Spares.Adopted, []AdoptedSpare{{ID: 2, Class: segment.Content}}; !slices.Equal(got, want) {
+		t.Errorf("spares: the re-open's adoptions got %v, want %v: W is a zero-header spare again, adopting clean", got, want)
+	}
+	for name, was := range before {
+		if got := r.fileBytes(name); !bytes.Equal(got, was) {
+			t.Errorf("the second open changed %s's bytes, want the directory the first open left", name)
+		}
 	}
 }

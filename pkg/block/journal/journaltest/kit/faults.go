@@ -57,6 +57,24 @@ func FailingRandomly(op, key string, p float64, err error) Rule {
 	}
 }
 
+// NotWhole returns a rule that makes the first count Allocated queries of a
+// file matching key answer not whole, or every such query when count is 0:
+// the answer a cap-sized file whose body a punch holed gives — the shape the
+// journal's open unlinks a spare candidate over. The seam cannot see such a
+// hole itself, so the rule is what names one: it is a loss on the query
+// (sim.Lose), which the seam answers at Allocated, never a call that acts on
+// the file.
+func NotWhole(key string, count int) Rule {
+	return Rule{
+		Op:    OpAllocated,
+		Key:   key,
+		Count: count,
+		Action: sim.FaultAction{
+			TearAfter: sim.Lose,
+		},
+	}
+}
+
 // Dropping returns a rule that loses the first count calls of op on a file
 // matching key, or every such call when count is 0: each reports success
 // and does not become durable, as SetFault describes for the op.

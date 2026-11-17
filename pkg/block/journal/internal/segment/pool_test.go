@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -2273,5 +2274,266 @@ func TestPoolAnAbandonedAskIsClearedByTheSpareThatCoversIt(t *testing.T) {
 		func(c segment.PoolCounters) bool { return c.Spares == 4 })
 	if got := p.PendingForTest(); got != 0 {
 		t.Fatalf("the made spare that covered the ask left the level at %d, want 0", got)
+	}
+}
+
+// TestTargetsAdoptClassesFollowsTheRefillsFillOrder drives the pool's own
+// refill over an empty pool and records the class of each spare it makes,
+// one make at a time: every make but the last is parked at the seam on the
+// allocation its making owes, and between parks exactly one class's ready
+// count has grown — the class of the make that completed — so the sequence
+// the leaves read off is the fill order the refill itself ran in. The last
+// make's class is the one each class's total is still short of at the end.
+// AdoptClasses over the same Targets must return that same sequence, for the
+// classes the spares phase records are the ones the pool's own worker would
+// have filled.
+func TestTargetsAdoptClassesFollowsTheRefillsFillOrder(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	for _, row := range []struct {
+		name string
+		t    segment.Targets
+	}{
+		{"a pool filling every class", segment.Targets{Content: 2, Headroom: 1, Reserve: 1}},
+		{"a pool whose reserve keeps none", segment.Targets{Content: 1, Headroom: 3, Reserve: 0}},
+		{"a pool whose content class keeps none", segment.Targets{Content: 0, Headroom: 0, Reserve: 2}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			seam, _, _, p := poolOf(t, row.t, noMax, 0, nil)
+
+			n := row.t.Content + row.t.Headroom + row.t.Reserve
+			if n < 2 {
+				t.Fatal("the row needs at least two makes to record a fill order")
+			}
+
+			// ready reads each class's ready spares out of the pool's counters:
+			// the counts one make moves.
+			ready := func(c segment.PoolCounters) [4]int {
+				return [4]int{0,
+					int(c.Spares),
+					int(c.HeadroomBytes / segCap),
+					int(c.RepackReserveBytes / segCap)}
+			}
+			// Each make is parked at the allocation its making owes, the next
+			// parking hold armed before the parked one is released — so no
+			// make slips past unheld — and, being the only making goroutine,
+			// exactly one make lands between two parks: the counters read at
+			// each park name the class of the make that just landed, never a
+			// race between two. The read at the first park is the baseline:
+			// nothing has landed yet.
+			held := seam.HoldFirst(t, kit.OpAllocate, "*")
+			p.Start()
+
+			// A refusal releases the parked make first, for the deferred Stop
+			// joins the worker and would wait on it forever.
+			refuse := func(format string, args ...any) {
+				held.Release()
+				p.Stop()
+				t.Fatalf(format, args...)
+			}
+
+			<-held.Reached()
+			var seq []segment.Class
+			was := ready(p.Counters())
+			for range n - 1 {
+				next := seam.HoldFirst(t, kit.OpAllocate, "*")
+				held.Release()
+				held = next
+				select {
+				case <-held.Reached():
+				case <-time.After(10 * time.Second):
+					refuse("the refill parked no next make after %d landed: the pool reports %+v", len(seq), p.Counters())
+				}
+				now := ready(p.Counters())
+				grew := 0
+				for _, cls := range []segment.Class{segment.Content, segment.Headroom, segment.Reserve} {
+					switch d := now[cls] - was[cls]; {
+					case d < 0:
+						refuse("a class's ready count fell between two makes: %+v then %+v", was, now)
+					case d > 1:
+						refuse("more than one spare landed between two parks: %+v before, %+v after", was, now)
+					case d == 1:
+						grew++
+						seq = append(seq, cls)
+					}
+				}
+				if grew != 1 {
+					refuse("a park saw %d classes grow, want exactly the one spare the completed make landed in: %+v", grew, now)
+				}
+				was = now
+			}
+			// The last armed hold parks the final make or is gone before it
+			// reaches storage: releasing it lets the pass end either way.
+			held.Release()
+
+			// The last make is the one no further call parks: its class is
+			// the one each class's total is still short of once it lands.
+			awaitCounters(t, "every target filled", p, func(c segment.PoolCounters) bool {
+				return int(c.Spares) == row.t.Content && int(c.HeadroomBytes/segCap) == row.t.Headroom &&
+					int(c.RepackReserveBytes/segCap) == row.t.Reserve
+			})
+			final := ready(p.Counters())
+			last := [4]int{0, row.t.Content, row.t.Headroom, row.t.Reserve}
+			missing := 0
+			for _, cls := range []segment.Class{segment.Content, segment.Headroom, segment.Reserve} {
+				switch d := last[cls] - was[cls]; {
+				case d < 0 || d > 1:
+					t.Fatalf("the last make moved class %v by %d, want exactly one spare short: before %+v, after %+v", cls, d, was, final)
+				case d == 1:
+					missing++
+					seq = append(seq, cls)
+				}
+			}
+			if missing != 1 {
+				t.Fatalf("the last make filled %d classes, want the one each class was short of: %+v", missing, final)
+			}
+
+			if got := row.t.AdoptClasses(len(seq)); !slices.Equal(got, seq) {
+				t.Errorf("AdoptClasses over %d adoptions got %v, want %v, the classes the refill itself made its spares in", len(seq), got, seq)
+			}
+			p.Stop()
+		})
+	}
+}
+
+// TestTargetsAdoptClassesNamesTheFillOrder pins the fill order the spares
+// phase reads through the one method that owns it: the headroom first, then
+// the repack reserve, then the content class, and every spare past every
+// target takes the content class — the order the pool's own refill fills a
+// short pool in, so a re-adopted spare lands in the class its own worker
+// would have made it in.
+func TestTargetsAdoptClassesNamesTheFillOrder(t *testing.T) {
+	same := segment.Targets{Content: 2, Headroom: 1, Reserve: 1}
+	for _, row := range []struct {
+		name string
+		t    segment.Targets
+		n    int
+		want []segment.Class
+	}{
+		{"none adopted", same, 0, nil},
+		{"the headroom first", same, 1, []segment.Class{segment.Headroom}},
+		{"then the repack reserve", same, 2, []segment.Class{segment.Headroom, segment.Reserve}},
+		{"then the content class", same, 4,
+			[]segment.Class{segment.Headroom, segment.Reserve, segment.Content, segment.Content}},
+		{"every spare past every target takes the content class", segment.Targets{}, 3,
+			[]segment.Class{segment.Content, segment.Content, segment.Content}},
+	} {
+		if got := row.t.AdoptClasses(row.n); !slices.Equal(got, row.want) {
+			t.Errorf("AdoptClasses over %d adoptions of %s got %v, want %v", row.n, row.name, got, row.want)
+		}
+	}
+}
+
+// TestPoolHoldTakenStandsInTheHeadroom: the count the open's held takes stand
+// at rides the pool's own shortage decisions over the headroom. With a
+// headroom target of one and one held take, the refill pass that starts the
+// pool makes nothing — the held take occupies the target's only slot — while
+// the same pool over a zero count fills it; and the recycle's reservation
+// answers the reserve the headroom's taken slot leaves short, never the
+// headroom itself.
+func TestPoolHoldTakenStandsInTheHeadroom(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("the refill makes no spare a held take occupies the slot of", func(t *testing.T) {
+		seam, _, _, p := poolOf(t, segment.Targets{Headroom: 1}, noMax, 0, nil)
+		p.HoldTaken(1)
+		p.Start()
+		defer p.Stop()
+
+		// A bounded wait is the assertion, for the pass may make nothing and
+		// so move no counter: it has run once its kick drained and a yield
+		// had it, and a spare made over the held take would show in the
+		// counters or the creates either side of it.
+		creates := seam.Calls(kit.OpCreate)
+		for range 1 << 20 {
+			if !p.KickQueuedForTest() && !p.FillingForTest() {
+				// the queued kick behind this check lets the pass run once
+				// more before the wait ends
+				for range 16 {
+					runtime.Gosched()
+				}
+				break
+			}
+			runtime.Gosched()
+		}
+		c := p.Counters()
+		if c.HeadroomBytes != 0 || c.Spares != 0 {
+			t.Fatalf("the pool over a held take reports headroom %d and content %d, want none made: the held take occupies the headroom's only slot", c.HeadroomBytes, c.Spares)
+		}
+		if got, want := seam.Calls(kit.OpCreate), creates; got != want {
+			t.Fatalf("the pool made %d new files over a held take, want %d, the count before: no spare is created for a slot a held take occupies", got, want)
+		}
+
+		// The count standing down frees the slot: the kick HoldTaken sends
+		// fills the headroom it kept empty.
+		p.HoldTaken(0)
+		awaitCounters(t, "the freed headroom refilled", p,
+			func(c segment.PoolCounters) bool { return c.HeadroomBytes == segCap })
+		p.Stop()
+	})
+
+	t.Run("a recycle reserves past the taken headroom, never over it", func(t *testing.T) {
+		_, _, _, p := poolOf(t, segment.Targets{Headroom: 1, Reserve: 1}, noMax, 0, nil)
+		p.HoldTaken(1)
+
+		if c, ok := p.WantRecycleForTest(); !ok || c != segment.Reserve {
+			t.Fatalf("a recycle was wanted for %v over a held-taken headroom, want Reserve: the held take occupies the headroom's only slot", c)
+		}
+		if _, ok := p.WantRecycleForTest(); ok {
+			t.Fatal("a second recycle was wanted over a reserve one reservation fills, want none")
+		}
+		p.RecycleFailedForTest(segment.Reserve)
+		if c, ok := p.WantRecycleForTest(); !ok || c != segment.Reserve {
+			t.Fatalf("after the giveback no recycle was wanted for the reserve, want it short again: %v", c)
+		}
+		p.Stop()
+	})
+}
+
+// TestPoolAWaitReadsTheHeadroomTheHoldsFill: the wait answers by the same
+// accounting the refill fills to. With one held take standing in a
+// one-spare headroom, the refill's own pass makes nothing — the slot is
+// occupied — and the settled pool the wait then reads is exactly at that
+// filled-to target: the wait returns satisfied, never a refusal over a
+// headroom its own refill will not fill. A wait that read the ready
+// spares alone would refuse a pool holding exactly what its refill fills
+// to once the hold is set.
+func TestPoolAWaitReadsTheHeadroomTheHoldsFill(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Headroom: 1}, noMax, 0, nil)
+	p.HoldTaken(1)
+	p.Start()
+	defer p.Stop()
+
+	// The pass has run once the kick it owed has drained and a yield had
+	// it: over a held take it makes nothing, moves no counter and leaves
+	// only its end behind.
+	creates := seam.Calls(kit.OpCreate)
+	for range 1 << 20 {
+		if !p.KickQueuedForTest() && !p.FillingForTest() {
+			for range 16 {
+				runtime.Gosched()
+			}
+			break
+		}
+		runtime.Gosched()
+	}
+	if got, want := seam.Calls(kit.OpCreate), creates; got != want {
+		t.Fatalf("the pool made %d new files over a held take, want %d: the headroom's slot is occupied", got, want)
+	}
+
+	// A settled pool, no pass running or queued, answering the wait.
+	if p.FillingForTest() || p.KickQueuedForTest() {
+		t.Fatal("the pool still owes a pass; the wait below would park on it, not read the settled state")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := p.WaitSpares(ctx); err != nil {
+		var ns *core.NoSpaceError
+		if errors.As(err, &ns) {
+			t.Fatalf("WaitSpares refused a pool holding exactly what its refill fills to, naming %d missing: the one held take stands in the headroom's only slot", ns.Missing)
+		}
+		t.Fatalf("WaitSpares: %v, want nil over a pool whose held take fills the headroom the refill leaves empty", err)
 	}
 }

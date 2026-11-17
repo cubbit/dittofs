@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that verifies is read by scanning it, as one with no footer is. The open
   still refuses a named predecessor that ends without its seal marker, at any
   length, and a range inside a sealed segment that no footer names.
+- **The journal's open settles a crash's spare segments before it answers.**
+  A record-less segment a crash left untaken has its header and trailer slots
+  zeroed when its file holds exactly the segment cap and its body is allocated
+  whole, and is unlinked when it does not. A segment a sync mark names is left
+  as it stands, and so is a record-less take whose header names a
+  predecessor still on disk, until that predecessor's end is proven.
+  Opening a journal that holds segments still fails with
+  `ErrNotImplemented`, so these spares are not yet handed to the pool.
 
 ## [0.36.0] — 2026-10-19
 

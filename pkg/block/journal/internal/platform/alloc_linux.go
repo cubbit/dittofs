@@ -143,3 +143,156 @@ func (f *file) allocate(fd int, off, n int64) (string, error) {
 
 	return "", nil
 }
+
+// fiemapOp names FIEMAP's calls in the errors Allocated answers with, and
+// lseekOp the hole seek's.
+const (
+	fiemapOp = "fiemap"
+	lseekOp  = "lseek"
+)
+
+// Allocated reports whether every byte of the file lies in an extent the
+// filesystem holds allocated and written. FIEMAP is asked over [0, size); a
+// hole between extents or FIEMAP_EXTENT_UNWRITTEN answers false. The
+// descriptor is reached through the file's own reference, as Allocate and
+// Sync reach theirs, so a concurrent Close cannot release it during the
+// calls, and a closed file fails before any system call, with the size read
+// first.
+//
+// decision: a filesystem that answers ENOTTY or EOPNOTSUPP for the ioctl has
+// no extent report to give, not a fault to report, so the query falls back to
+// the hole lseek names: a holed spare differs from a made one exactly where a
+// hole starts below the size, and SEEK_HOLE answers that where extents cannot
+// be asked. Failing open is left only for a filesystem that answers neither
+// extents nor holes — there nothing distinguishes a holed spare from a made
+// one, and the file answers whole rather than failing the open over a device
+// that never refused one. tmpfs was the shape that rode the fail-open — the
+// directory check passes it, it serves no FIEMAP, and its holes are the
+// ones its own SEEK_HOLE reports — so it is covered by the fallback, which
+// is the withdrawal condition the earlier fail-open named, met.
+func (f *file) Allocated() (bool, error) {
+	size, err := f.Size()
+	if err != nil {
+		return false, err
+	}
+	if size == 0 {
+		// Nothing to cover: an empty file is whole by the size alone.
+		return true, nil
+	}
+
+	rc, rerr := f.f.SyscallConn()
+	if rerr != nil {
+		return false, &fs.PathError{Op: fiemapOp, Path: f.f.Name(), Err: rerr}
+	}
+
+	var whole bool
+	var op string
+	var aerr error
+	if err := rc.Control(func(fd uintptr) {
+		whole, op, aerr = f.allocated(int(fd), size)
+	}); err != nil {
+		return false, &fs.PathError{Op: fiemapOp, Path: f.f.Name(), Err: fs.ErrClosed}
+	}
+	if aerr != nil {
+		return false, &fs.PathError{Op: op, Path: f.f.Name(), Err: aerr}
+	}
+	return whole, nil
+}
+
+// allocated makes Allocated's FIEMAP calls on fd and walks what they answer
+// over [0, size): the file is whole iff every byte lies in an extent that is
+// neither a hole — a gap between the extents a window returns — nor
+// unwritten, the state a fallocate no write reached leaves, which reads as
+// zeros until its first write. A window holds what remains of the range and
+// nothing is asked past size, so a file whose whole body one window covers
+// costs one call. A call interrupted by a signal is made again, as Allocate
+// remakes its own: both give the same answer over the same range. A window
+// refused with ENOTTY or EOPNOTSUPP answers no extent report exists to read,
+// and the hole seek decides instead, as Allocated's decision says.
+func (f *file) allocated(fd int, size int64) (bool, string, error) {
+	covered := int64(0)
+	for covered < size {
+		fm := fiemap{start: uint64(covered), length: uint64(size - covered), count: fiemapWindow}
+
+		err := f.calls.fiemap(fd, &fm)
+		for errors.Is(err, unix.EINTR) {
+			err = f.calls.fiemap(fd, &fm)
+		}
+		if errors.Is(err, unix.ENOTTY) || errors.Is(err, unix.EOPNOTSUPP) {
+			return f.holeSeekWhole(fd, size) // no extent report exists to read, see Allocated
+		}
+		if err != nil {
+			return false, fiemapOp, err
+		}
+		if fm.mapped == 0 {
+			return false, fiemapOp, nil // a hole where the window begins
+		}
+
+		was := covered
+		for i := range fm.extents[:min(fm.mapped, fiemapWindow)] {
+			e := &fm.extents[i]
+			if e.flags&fiemapExtentUnwritten != 0 {
+				return false, fiemapOp, nil
+			}
+			// The extents a window returns cover from where it was asked in
+			// ascending file order, so one starting past what the ones
+			// before it covered is the hole between them.
+			if e.logical > uint64(covered) {
+				return false, fiemapOp, nil
+			}
+			end := e.logical + e.length
+			if end < e.logical {
+				return false, fiemapOp, io.ErrUnexpectedEOF // a length no file can hold
+			}
+			if end > math.MaxInt64 {
+				// covered is an int64 offset: an extent whose end runs past
+				// the largest one would wrap it negative and end the walk
+				// over bytes nothing covered.
+				return false, fiemapOp, io.ErrUnexpectedEOF // an end no offset can name
+			}
+			if end > uint64(covered) {
+				covered = int64(end)
+			}
+		}
+		if covered == was {
+			// A window that advanced nothing would repeat for ever; the
+			// lengths it answered are not ones the file holds.
+			return false, fiemapOp, io.ErrUnexpectedEOF
+		}
+	}
+	return true, fiemapOp, nil
+}
+
+// holeSeekWhole answers Allocated over a filesystem with no extent report,
+// by the hole lseek names: SEEK_HOLE answers the offset of the first hole —
+// the end of the file where none is, for the one past the last byte is
+// implicit — so the file is whole iff the seek answers at or past the size.
+// A file truncated and never written, whose first hole is at offset 0,
+// answers not whole here exactly as a punched one does to FIEMAP.
+//
+// A call interrupted by a signal is made again, as the FIEMAP walk remakes
+// its own: the seek answers the same hole over the same offset.
+//
+// decision: a seek refused with EINVAL, ENOSYS, ENOTTY or EOPNOTSUPP is the
+// one refusal the filesystem can make that says no hole report exists either:
+// the query cannot be asked there any more than the extent one could, so the
+// file answers whole rather than failing the open over a device that never
+// refused one — the fail-open Allocated names for a filesystem that answers
+// neither extents nor holes. Anything else the seek answers is a fault, and
+// fails the query naming the call — a device that refused the seek was asked
+// a question it received.
+func (f *file) holeSeekWhole(fd int, size int64) (bool, string, error) {
+	off, err := f.calls.lseek(fd, 0, unix.SEEK_HOLE)
+	for errors.Is(err, unix.EINTR) {
+		off, err = f.calls.lseek(fd, 0, unix.SEEK_HOLE)
+	}
+	switch {
+	case err == nil:
+		return off >= size, lseekOp, nil
+	case errors.Is(err, unix.EINVAL), errors.Is(err, unix.ENOSYS),
+		errors.Is(err, unix.ENOTTY), errors.Is(err, unix.EOPNOTSUPP):
+		return true, lseekOp, nil // neither extents nor holes, see Allocated
+	default:
+		return false, lseekOp, err
+	}
+}
