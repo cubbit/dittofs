@@ -15,7 +15,7 @@ type fateKind uint8
 
 const (
 	fateIntact      fateKind = iota // could have been open at a crash; whole; the tail's proof owns it
-	fateSealed                      // sealed, the seal proven: a successor names it
+	fateSealed                      // sealed, the seal proven: a successor names it, or a marker no successor names was proven on the device at this open
 	fateSealToProve                 // sealed by a marker no successor names; re-proven on the device later
 	fateTornTail                    // a torn tail from Offset; truncated there and sealed
 	fateEnded                       // ended at Offset; truncated there and then emptied
@@ -301,6 +301,77 @@ func classifyTails(rd *reader, identity core.JournalID, named, unverified map[co
 		return cmp.Or(cmp.Compare(a.Segment, b.Segment), cmp.Compare(a.at(), b.at()))
 	})
 	return out, nil
+}
+
+// unsealByProof re-answers one segment's verdicts the moment the marker
+// proof judges its seal marker absent: the segment never sealed, so what
+// the sealed classing raised on the seal's word alone comes back off it —
+// the corrupt entries whose drops an unsealed classing answers a torn slot
+// or a torn tail instead (a drop the catalogue confined, or one a sync
+// covers, stays corrupt: those never were the seal's doing), and the
+// damaged verdict that hung on the corrupt ones with them. The fate is the
+// one an unsealed classing draws: the segment ended where a torn slot or a
+// torn header answers, the tail otherwise, its cut at the end of the last
+// record that verified — never past it at the sealed area's end, where the
+// absent marker left nothing but the seal's own claim.
+//
+// The drops that leave Corrupt answer their place exactly as the classing's
+// own switch answers them, judged on the placement each corrupt entry
+// names, over the scan's own copy of the drop — the one with the Synced the
+// decode left on it, for the classing's copy in the corrupt entry sets
+// every one. A torn slot below the last verifying record ends the segment
+// as the loss record's own body failing to read would have had the
+// journal never sealed; the tail the unsealed one draws always exists, for
+// the seal slot itself is one once its marker goes.
+func unsealByProof(tl *tails, fate *segmentFate, sc *segmentScan, unverified map[core.SegmentID]bool) {
+	// The corrupt entry set: keep what an unsealed classing corrupts — a
+	// drop the catalogue confined names no scanned header, and stays; one
+	// a scan's own Synced or a synced-through covering it names stays; the
+	// rest answer their place and leave.
+	syncedAt := make(map[int64]bool, len(sc.Dropped))
+	for _, d := range sc.Dropped {
+		if d.Synced || d.Header.Offset < sc.SyncedThrough {
+			syncedAt[d.Header.Offset] = true
+		}
+	}
+	damaged := unverified[sc.ID] && sc.SyncedThrough >= format.SegmentHeaderSize
+	tornSlot := false
+	out := tl.Corrupt[:0]
+	for _, c := range tl.Corrupt {
+		if c.Segment != sc.ID {
+			out = append(out, c)
+			continue
+		}
+		if c.Drop.Entry.RecordOffset != 0 || syncedAt[c.Drop.Header.Offset] {
+			damaged = true
+			out = append(out, c)
+			continue
+		}
+		if c.Drop.Header.Offset < sc.VerifiedEnd {
+			tornSlot = true
+		}
+	}
+	tl.Corrupt = out
+	if damaged {
+		if !slices.Contains(tl.Damaged, sc.ID) {
+			tl.Damaged = append(tl.Damaged, sc.ID)
+			slices.Sort(tl.Damaged)
+		}
+	} else {
+		tl.Damaged = slices.DeleteFunc(tl.Damaged, func(id core.SegmentID) bool { return id == sc.ID })
+	}
+	// The unsealed fate: a torn header, or a torn slot below the last
+	// verifying record, ends the segment as the classing's own switch
+	// would; the seal slot alone makes the tail otherwise, drawn at the
+	// same floor the classing draws one at, clamped to the file's size as
+	// the flow's own cut rule clamps.
+	tailAt := min(max(sc.VerifiedEnd, sc.SyncedThrough), sc.Size)
+	if tornSlot || (unverified[sc.ID] && sc.SyncedThrough < format.SegmentHeaderSize) {
+		fate.Kind = fateEnded
+	} else {
+		fate.Kind = fateTornTail
+	}
+	fate.Offset = tailAt
 }
 
 // refuseRange is the open's refusal of a range inside a segment whose

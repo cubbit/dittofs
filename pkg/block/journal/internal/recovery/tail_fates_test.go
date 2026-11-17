@@ -185,7 +185,8 @@ func TestATornSegmentHeaderIsDamageWhenASealMarkerFollowsIt(t *testing.T) {
 		if got := planted(st); got != 2 {
 			t.Errorf("the index holds %d entries, want 2", got)
 		}
-		wantFate(t, st, 1, fateSealToProve, 0)
+		// Its marker is durable, so the proof sealed it at this open.
+		wantFate(t, st, 1, fateSealed, 0)
 		if !slices.Equal(st.Tails.Damaged, []core.SegmentID{1}) {
 			t.Errorf("Damaged got %v, want [1]", st.Tails.Damaged)
 		}
@@ -250,7 +251,9 @@ func TestTailsClassifyEverySegmentFate(t *testing.T) {
 	st := runTails(t, r)
 
 	wantFate(t, st, 1, fateSealed, 0)
-	wantFate(t, st, 3, fateSealToProve, 0)
+	// No successor names segment 3, but its marker is durable on the
+	// device, so the tail's proof sealed it at this open.
+	wantFate(t, st, 3, fateSealed, 0)
 	if sc, _ := scanOf(st, 2); sc.RecordsEnd != format.SegmentHeaderSize {
 		t.Errorf("the empty segment's RecordsEnd got %d, want %d", sc.RecordsEnd, format.SegmentHeaderSize)
 	}
@@ -286,6 +289,64 @@ func TestTheTopologyIgnoresNamesOfSegmentsNotOnDisk(t *testing.T) {
 	if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: 6, Class: segment.Content}}; !slices.Equal(got, want) {
 		t.Errorf("the re-adopted spares got %v, want %v", got, want)
 	}
+}
+
+// TestTheProofKeepsAFateTheClassingEnded holds the seam between the classing
+// and the proof: a segment the classing ended — over a torn slot, over a
+// torn header its bytes never covered a proof of — keeps that fate when
+// the tail's proof finds a torn record in its tail, and the ended cut
+// deepens to the last record that held rather than the tail becoming a
+// torn one its cut-and-seal would seal over the very tear the classing
+// answered for. The next open over such a seal would read bytes below it
+// a crash cannot have torn, and refuse as corruption.
+func TestTheProofKeepsAFateTheClassingEnded(t *testing.T) {
+	t.Run("over a torn slot", func(t *testing.T) {
+		endA := endAfter(tailRec(200, 0x4100))
+		seg := buildSeg(1, syncedRec(200, 0x4100, endA))
+		seg = append(seg, make([]byte, 16)...) // the torn slot
+		rr := tailRec(201, 0x8100)             // R, nothing proving the slot's bytes
+		rr.Identity, rr.Segment, rr.RecordOffset = journalID, 1, uint32(len(seg))
+		seg = append(seg, rr.Bytes()...)
+		endR := int64(len(seg))
+		tt := tailRec(202, 0xc100)
+		tt.Identity, tt.Segment, tt.RecordOffset = journalID, 1, uint32(len(seg))
+		seg = append(seg, tt.Bytes()...)
+		seg[endR+format.RecordHeaderSize+8+2] ^= 0xff // T's payload
+
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, seg)
+		st := runUnchanged(t, r, 1)
+
+		// The classing ended the segment over its torn slot; the proof found
+		// the torn T past it and keeps the ended fate, its cut deepened to
+		// R's end, the last record that held.
+		wantFate(t, st, 1, fateEnded, endR)
+		if got := planted(st); got != 2 {
+			t.Errorf("the index holds %d entries, want 2: A and R attach, T drops as never written", got)
+		}
+		noTornReport(t, st)
+		wantDamaged(t, st)
+	})
+	t.Run("over a torn header", func(t *testing.T) {
+		endA := endAfter(tailRec(200, 0x4100))
+		seg := buildSeg(1, tailRec(200, 0x4100), tailRec(201, 0x8100))
+		seg[endA+format.RecordHeaderSize+8+2] ^= 0xff // B's payload
+
+		r := newRig(t)
+		r.writeFormat()
+		r.plantSeg(1, damageHeader(seg))
+		st := runUnchanged(t, r, 1)
+
+		// The classing ended the segment over its torn header slot; the torn
+		// B under it drops, and the ended fate stands at A's end.
+		wantFate(t, st, 1, fateEnded, endA)
+		if got := planted(st); got != 1 {
+			t.Errorf("the index holds %d entries, want 1: A attaches, B drops as never written", got)
+		}
+		noTornReport(t, st)
+		wantDamaged(t, st)
+	})
 }
 
 func TestTwoSuccessorsMayNameOnePredecessor(t *testing.T) {

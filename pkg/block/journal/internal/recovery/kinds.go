@@ -84,6 +84,15 @@ type kindResults struct {
 	// scans.
 	Withheld index.Numbers
 
+	// WithheldAt holds the locations of the records the rules named by
+	// Withheld's failed-list, whole-loss and forget axes withheld — by their
+	// numbers, wherever they sit — one entry per placement the feed served
+	// nothing of. The confined copies stay out: the classing already carries
+	// them as corrupt drops on their own scans. The tail's proof reads this
+	// set so a record the feed withheld whole is proven, handed over and
+	// re-placed nowhere.
+	WithheldAt map[index.RecordAt]bool
+
 	// Records holds one Rec per header-only record the scans attached — a
 	// release, truncate, deallocate, delete, clone target, offloaded or
 	// unmark record — filled by the feed, one entry per copy at the
@@ -215,13 +224,14 @@ type lossPiece struct {
 // fetching the extent again.
 func decodeAsides(rd *reader, identity core.JournalID, failed []core.Seq, scs []segmentScan) (kindState, error) {
 	ks := kindState{
-		whole:      map[core.Seq]bool{},
-		superseded: map[core.Seq]supersededLoss{},
-		forget:     map[core.ShareTag]core.Seq{},
-		failed:     map[core.Seq]bool{},
-		pieces:     map[lossPiece]bool{},
-		confined:   map[index.RecordAt]bool{},
-		copies:     map[copyKey][]index.RecordAt{},
+		whole:       map[core.Seq]bool{},
+		superseded:  map[core.Seq]supersededLoss{},
+		forget:      map[core.ShareTag]core.Seq{},
+		failed:      map[core.Seq]bool{},
+		pieces:      map[lossPiece]bool{},
+		confined:    map[index.RecordAt]bool{},
+		copies:      map[copyKey][]index.RecordAt{},
+		kindResults: kindResults{WithheldAt: map[index.RecordAt]bool{}},
 	}
 	for _, seq := range failed {
 		ks.failed[seq] = true
@@ -620,13 +630,14 @@ func (ks *kindState) verifyRemainders(rd *reader, identity core.JournalID, scs [
 }
 
 // applyCuts is each synced loss record's release into the index the rebuild
-// finished: the extent and the version it cuts over come from the loss
-// record's own header — the version of the record the journal dropped — and
-// the cut drops every record below it inside its extent. A superseded one
-// cuts with no unsettled marker, as its own rule decides; every other reason
-// leaves one, unsettled until the caller settles at or above its version.
-// The cuts apply in the decode's read order, and markers insert by version,
-// so the order the cuts apply in decides nothing the rebuilt state shows.
+// finished: the losses' whole pass over every file, where each cut lands
+// over the index Finish built. The extent and the version come from the
+// loss record's own header — the version of the record the journal dropped
+// — and a superseded one cuts with no marker, as its own rule decides,
+// while every other reason leaves one, unsettled until the caller settles
+// at or above its version. The cuts apply in the decode's read order, and
+// markers insert by version, so the order the cuts apply in decides
+// nothing the rebuilt state shows.
 //
 // decision: an unsynced loss record applies no cut — the record it names was
 // never proven whole, and a cut would drop, as lost, content the journal
@@ -960,6 +971,13 @@ func (f *feedFilter) feed(rec index.Record, do func(index.Record) error) error {
 	withheld := ks.withheldWhole(rec) ||
 		ks.confined[index.RecordAt{Segment: rec.Segment, Offset: rec.At}]
 	if withheld {
+		if ks.withheldWhole(rec) {
+			// The location joins the withheld set the later phases read: a
+			// record the rules drop whole is judged nowhere past this feed.
+			// The confined copies stay out, for the classing already names
+			// them as corrupt drops where they sit.
+			ks.WithheldAt[index.RecordAt{Segment: rec.Segment, Offset: rec.At}] = true
+		}
 		// The withheld numbers fold by their two axes, the highest sequence
 		// number and the highest version among the withheld independently:
 		// no one record need carry both, and the counters a later pass
@@ -1039,7 +1057,9 @@ func (f *feedFilter) charge(seg core.SegmentID, tag core.ShareTag, size, payload
 // and tag its own header names — the whole size of its slot, no payload —
 // beside the content records the feed charges: the append charged each of
 // them too, so a segment holding nothing but asides still answers the
-// figures the running journal left on it.
+// figures the running journal left on it. skip keeps out an aside placement
+// the tail proof judged torn, which charges like any other record the
+// journal never wrote.
 //
 // decision: a record the walk confined as a corrupt drop — a clone target
 // whose body did not verify, an aside body that failed — charges nothing,
@@ -1048,8 +1068,11 @@ func (f *feedFilter) charge(seg core.SegmentID, tag core.ShareTag, size, payload
 // figures of a reopened journal therefore miss only bytes that are on their
 // way out; overturned by a tail phase that ever leaves a confined record's
 // bytes on the segment it keeps.
-func (f *feedFilter) chargeAsides(sc *segmentScan) {
+func (f *feedFilter) chargeAsides(sc *segmentScan, skip map[index.RecordAt]bool) {
 	for _, a := range sc.Aside {
+		if skip[index.RecordAt{Segment: a.Header.Segment, Offset: uint32(a.Header.Offset)}] {
+			continue
+		}
 		f.charge(a.Header.Segment, a.Header.Tag, a.Header.Size(), 0)
 	}
 }
