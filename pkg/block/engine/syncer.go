@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/block"
+	"github.com/cubbit/dittofs/pkg/block/gc"
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/remote"
 	"github.com/cubbit/dittofs/pkg/block/syncer"
@@ -163,12 +164,16 @@ type RemoteSync struct {
 
 // blockCommitter is the narrow consumer-side slice of metadata.Store the carver
 // needs: transactional block-record commit (DefaultCommitBlock takes a
-// Transactor+SyncedHashStore) and the synced-marker writes it performs. The
-// production per-share metadata store satisfies both; defining it here keeps the
-// engine off the wider metadata.Store surface.
+// Transactor+SyncedHashStore), the synced-marker writes it performs, and the
+// block-record reads the dedup oracle makes (gc.DedupView). The production
+// per-share metadata store satisfies all three; defining it here keeps the
+// engine off the wider metadata.Store surface. A store without block records is
+// not a blockCommitter, so the carve stays off for it at wiring time instead of
+// every flush failing at run time.
 type blockCommitter interface {
 	metadata.Transactor
 	metadata.SyncedHashStore
+	gc.DedupView
 }
 
 // UnsyncedBytes returns the on-disk size of local ranges not yet carved to the

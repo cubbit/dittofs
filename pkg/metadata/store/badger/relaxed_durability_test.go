@@ -75,6 +75,39 @@ func TestRelaxedDurability_DurablePathFsyncsInline(t *testing.T) {
 		"relaxed WithTransactionRelaxed must NOT fsync inline")
 }
 
+// TestRelaxedDurability_DecrToZeroFsyncsInline pins the order the GC dedup guard
+// relies on: a decrement that reaches 0 is on disk before the caller deletes the
+// remote block, so a power loss cannot bring the old count back. A decrement
+// that leaves live chunks stays relaxed, and the count survives a reopen.
+func TestRelaxedDurability_DecrToZeroFsyncsInline(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "metadata.db")
+	store := openRelaxed(t, dbPath)
+
+	require.NoError(t, store.PutBlockRecord(ctx, block.BlockRecord{BlockID: "b1", LiveChunkCount: 2}))
+
+	before := store.InlineSyncCountForTest()
+	remaining, err := store.DecrLiveChunkCount(ctx, "b1", 1)
+	require.NoError(t, err)
+	require.Equal(t, uint32(1), remaining)
+	require.Equal(t, before, store.InlineSyncCountForTest(),
+		"a decrement that leaves live chunks must not fsync inline")
+
+	remaining, err = store.DecrLiveChunkCount(ctx, "b1", 1)
+	require.NoError(t, err)
+	require.Equal(t, uint32(0), remaining)
+	require.Equal(t, before+1, store.InlineSyncCountForTest(),
+		"a decrement to 0 must fsync inline before the caller deletes the block")
+
+	require.NoError(t, store.Close())
+	store = openRelaxed(t, dbPath)
+	t.Cleanup(func() { _ = store.Close() })
+	rec, found, err := store.GetBlockRecord(ctx, "b1")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, uint32(0), rec.LiveChunkCount, "the 0 must read back after a reopen")
+}
+
 // TestRelaxedDurability_StrictModeNoInlineSync verifies that with relaxed
 // durability disabled (the opt-out), no inline db.Sync() runs — durability is
 // carried by SyncWrites=true on every commit, exactly reproducing the pre-#1573

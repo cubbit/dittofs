@@ -116,7 +116,7 @@ func TestFlushReapSpanStopsAtTheCommittedFrontier(t *testing.T) {
 	write(run1Off, run1Recs)
 
 	fn, reap := newFlushClosure(j, chunker.Params{Min: 4 << 10, Avg: 8 << 10, Max: 16 << 10},
-		blockSize, engineDeduper{synced: ms}, sink, nil)
+		blockSize, engineDeduper{view: ms}, sink, nil)
 	err = j.Flush(ctx, "f", journal.FlushOptions{Force: true, AfterFile: reap}, fn)
 	if !errors.Is(err, boom) {
 		t.Fatalf("Flush = %v, want the seeded failure", err)
