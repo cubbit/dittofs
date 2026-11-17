@@ -1,16 +1,19 @@
 // Package enginewire composes the engine's dependencies over the metadata
-// store and open state. The node and the engine's test fixture both build
-// the engine from it, so the fixture runs the wiring the node ships.
+// store and open state, and starts and stops the two. The node and the
+// engine's test fixture both build, start and stop the engine through it, so
+// the fixture runs the wiring and the order the node ships.
 //
 // decision: this is the one composition code imported by another package:
-// the node and enginetest both build the engine from it, so the fixture runs
-// the wiring the node ships, departing from RFC 8 §2.1's "nothing imports
-// it". Only internal/node and enginetest import it.
+// the node and enginetest both build, start and stop the engine through it,
+// so the fixture runs the wiring and the order the node ships, departing
+// from RFC 8 §2.1's "nothing imports it". Only internal/node and enginetest
+// import it.
 package enginewire
 
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"log/slog"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
@@ -42,12 +45,8 @@ type Params struct {
 // Compose builds open state over p.Store and returns it with the engine's
 // Deps: each device's journal opened by journal.Open, the store's views, open
 // state's hold on a clone's source, and a Tracer that starts no span. It
-// opens and starts nothing; the caller passes the Deps to engine.New.
-//
-// decision: Compose shares construction only. Starting and stopping, the
-// table started before the engine and stopped after it, is still sequenced
-// by each caller; share it the same way when the node's Start lands, so the
-// fixture runs the order the node ships.
+// opens and starts nothing; the caller passes the Deps to engine.New, and
+// Start and Stop start and stop the two in the order the node ships.
 func Compose(p Params) (*openstate.Table, engine.Deps, error) {
 	open, err := openstate.New(openstate.Deps{Records: p.Store, Node: p.Node, Clock: p.Clock, Rand: rand.Reader, Logger: p.Logger})
 	if err != nil {
@@ -76,4 +75,30 @@ func Compose(p Params) (*openstate.Table, engine.Deps, error) {
 
 func noTrace(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
 	return ctx, func(error) {}
+}
+
+// Start starts open state with sink and order, which raises the node epoch,
+// then the engine over shares in one call. When the engine refuses to
+// start, open state is stopped again, so a failed Start leaves both as
+// built. Its error names which of the two failed.
+func Start(ctx context.Context, open *openstate.Table, e *engine.Engine, sink openstate.Sink, order openstate.Order, shares []engine.Share) error {
+	if err := open.Start(ctx, sink, order); err != nil {
+		return fmt.Errorf("open state: %w", err)
+	}
+	if err := e.Start(ctx, shares); err != nil {
+		open.Stop()
+		return fmt.Errorf("engine: %w", err)
+	}
+	return nil
+}
+
+// Stop closes the engine, then stops open state. An engine whose close
+// fails, a join of its clone batches unfinished among the causes, leaves
+// open state running, since those batches still send it their CloneClose.
+func Stop(ctx context.Context, open *openstate.Table, e *engine.Engine) error {
+	if err := e.Close(ctx); err != nil {
+		return fmt.Errorf("engine: %w", err)
+	}
+	open.Stop()
+	return nil
 }

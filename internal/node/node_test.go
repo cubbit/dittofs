@@ -13,6 +13,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
 
@@ -34,7 +35,7 @@ func TestNewRefusesAKVWithNoInstallation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = node.New(node.Config{KV: db, Clock: sim.NewTestClock(time.Unix(0, 0)), Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})
+	_, err = node.New(node.Config{KV: db, Clock: sim.NewTestClock(time.Unix(0, 0)), Metrics: metrics.New("test", "test"), Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})
 	if !errors.Is(err, kvstore.ErrNotInitialised) {
 		t.Fatalf("New over an empty KV: got %v, want ErrNotInitialised", err)
 	}

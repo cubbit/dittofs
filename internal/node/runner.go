@@ -13,6 +13,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node/step"
 	"github.com/cubbit/dittofs/pkg/block/engine"
+	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
@@ -61,16 +62,17 @@ func newRunner(cp kvstore.ControlPlane, clock engine.Clock, node entity.NodeID, 
 		retries: map[entity.OperationID]retry{}, refused: map[string]bool{}}
 }
 
-// run takes a turn every runInterval on the runner's clock until ctx ends.
-// A step ctx interrupts commits nothing, so each operation is left at its
-// last durable step.
+// run takes a turn every runInterval on the runner's clock until ctx ends,
+// reporting each to loop. A step ctx interrupts commits nothing, so each
+// operation is left at its last durable step.
 //
 // ponytail: an operation moves one step a turn, so a deletion of n batches
 // takes n seconds. Run a step again at once while it reports work left when
 // an operation's batches make that wait show.
-func (r *runner) run(ctx context.Context) {
+func (r *runner) run(ctx context.Context, loop *health.Loop) {
 	for {
 		r.turn(ctx)
+		loop.Turn()
 		select {
 		case <-ctx.Done():
 			return

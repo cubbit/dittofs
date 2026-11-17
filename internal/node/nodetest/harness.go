@@ -91,7 +91,7 @@ func New(t testing.TB, opts ...Option) *Harness {
 		t.Fatalf("nodetest: journal init: %v", err)
 	}
 	h.cfg = node.Config{
-		Bootstrap: config.Bootstrap{Node: nodeID, Devices: []string{dev}},
+		Bootstrap: config.Bootstrap{Node: nodeID, Devices: []string{dev}, APIAddr: "127.0.0.1:0", MetricsAddr: "127.0.0.1:0"},
 		Clock:     h.clock,
 		Logger:    slog.New(slog.NewTextHandler(t.Output(), nil)),
 	}
@@ -130,6 +130,9 @@ func (h *Harness) Clock() *sim.TestClock { return h.clock }
 
 // Metrics is the registry the node built last registers its series in.
 func (h *Harness) Metrics() *metrics.Registry { return h.cfg.Metrics }
+
+// NodeID is the node's identity, which its records are kept under.
+func (h *Harness) NodeID() entity.NodeID { return nodeID }
 
 // Store is a metadata store over the node's KV, for a test to write records
 // and read them back, as another node's would.

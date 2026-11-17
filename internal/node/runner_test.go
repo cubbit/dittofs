@@ -15,6 +15,7 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node/step"
 	"github.com/cubbit/dittofs/internal/prof"
+	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
@@ -699,7 +700,7 @@ func TestRunTurnsOnTheClock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		r.run(ctx)
+		r.run(ctx, health.NewWatchdog(b.clock).Loop("runner"))
 	}()
 	waitFor(t, "the loop to wait on its clock", func() bool { return b.clock.Pending() > 0 })
 	op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpPending})

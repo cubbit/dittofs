@@ -1,11 +1,14 @@
 package enginewire_test
 
 import (
+	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
@@ -16,6 +19,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
+	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/sim"
 )
 
@@ -98,5 +102,72 @@ func TestCompose(t *testing.T) {
 	}
 	if err := table.Opens().CloneClose(ctx, o); err != nil {
 		t.Errorf("CloneClose on Compose's table of the hold Holds took: got %v, want the table holding it", err)
+	}
+}
+
+// composed is Compose over a real store and an initialised journal, and the
+// engine built from it.
+func composed(t *testing.T) (*kvstoretest.FS, *openstate.Table, *engine.Engine) {
+	t.Helper()
+	fs := kvstoretest.NewFS(t, func(tb testing.TB) kv.KV {
+		db, err := badgerkv.Open(badgerkv.Options{})
+		if err != nil {
+			tb.Fatal(err)
+		}
+		tb.Cleanup(func() { _ = db.Close() })
+		return db
+	})
+	dir := t.TempDir()
+	if _, err := journal.Init(t.Context(), dir, journal.InstallationID{1}, journaltest.SuitableMount()); err != nil {
+		t.Fatalf("journal init: %v", err)
+	}
+	table, d, err := enginewire.Compose(enginewire.Params{
+		Node:    entity.NodeID{1},
+		Devices: []string{dir},
+		Store:   fs.Store,
+		Clock:   sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Journal: []journal.Option{journaltest.SuitableMount()},
+	})
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	e, err := engine.New(d)
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	return fs, table, e
+}
+
+// Open state is running between Start and Stop, and stopped once Stop closed
+// the engine; a Start the engine refuses stops open state again. A stopped
+// table refuses serving a shard.
+func TestStartAndStop(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+	noOrder := func(entity.FileID) func() { return func() {} }
+
+	fs, table, e := composed(t)
+	if err := enginewire.Start(t.Context(), table, e, &enginetest.Sink{}, noOrder, nil); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := table.Recovery().ServeShard(t.Context(), fs.Share.ID, fs.Share.Shard, 1); err != nil {
+		t.Errorf("serve a shard after Start: got %v, want open state running", err)
+	}
+	if err := enginewire.Stop(t.Context(), table, e); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := table.Recovery().ServeShard(t.Context(), fs.Share.ID, fs.Share.Shard, 2); !errors.Is(err, openstate.ErrStopped) {
+		t.Errorf("serve a shard after Stop: got %v, want ErrStopped", err)
+	}
+
+	fs, table, e = composed(t)
+	if err := e.Close(t.Context()); err != nil {
+		t.Fatalf("close the engine before its start: %v", err)
+	}
+	if err := enginewire.Start(t.Context(), table, e, &enginetest.Sink{}, noOrder, nil); err == nil || !strings.HasPrefix(err.Error(), "engine: ") {
+		t.Fatalf("Start of a closed engine: got %v, want the engine's refusal", err)
+	}
+	if err := table.Recovery().ServeShard(t.Context(), fs.Share.ID, fs.Share.Shard, 1); !errors.Is(err, openstate.ErrStopped) {
+		t.Errorf("serve a shard after a Start the engine refused: got %v, want ErrStopped", err)
 	}
 }
