@@ -18,8 +18,12 @@ import (
 // Server is one adapter: its listeners, connections, drain and health, for
 // every protocol.
 type Server struct {
-	ls       []Listener
+	ls []Listener
+	// decision: the pointer is atomic because Reconfigure (T4.6's subtask) swaps
+	// the snapshot while connections read it; the one other store is
+	// NewServer's, before the server is shared.
 	settings atomic.Pointer[settings.Settings] // the protocol's whole shape, as New or the last Reconfigure gave it
+	addrs    []netip.Addr                      // the settings' addresses, the server's own copy: the caller's settings may change under it
 
 	mu    sync.Mutex
 	state adapter.State
@@ -69,7 +73,19 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 	if err := checkListeners(ls); err != nil {
 		return nil, fmt.Errorf("core: new server: %w", err)
 	}
+	// A listener whose stages accept would refuse shows its wiring fault
+	// here, at configured, rather than at its first request (RFC 20 section
+	// 3.1): NewConn(nil) is the one call that reads no connection.
+	for i := range ls {
+		st := ls[i].Protocol.NewConn(nil)
+		if st.Header == nil || st.Router == nil || st.Protocol == "" {
+			return nil, fmt.Errorf("core: new server: listener %d %q: stages without Header, Router or Protocol", i, ls[i].Services)
+		}
+	}
 	srv := &Server{ls: ls}
+	// The settings are the server's own snapshot from here: the caller's copy
+	// may change under it, its Addrs included (RFC 20 section 3.6).
+	srv.addrs = slices.Clone(s.Common().Addrs)
 	srv.settings.Store(&s)
 	return srv, nil
 }
@@ -91,6 +107,9 @@ func checkListeners(ls []Listener) error {
 		// Withdraw it when core reads datagrams.
 		if l.Network != "tcp" {
 			return fmt.Errorf("listener %d %q: network %q: %w", i, l.Services, l.Network, errors.ErrUnsupported)
+		}
+		if l.Protocol == nil {
+			return fmt.Errorf("listener %d %q names no protocol", i, l.Services)
 		}
 		if len(l.Services) == 0 {
 			return fmt.Errorf("listener %d %q names no service", i, l.Services)
@@ -129,10 +148,21 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.state != adapter.StateConfigured {
 		return fmt.Errorf("core: start: the server is %s", s.state)
 	}
-	addrs := (*s.settings.Load()).Common().Addrs
+	if s.settings.Load() == nil {
+		// A Server is what NewServer builds: a zero value carries no snapshot
+		// and never served. Reading its absent settings would panic.
+		return fmt.Errorf("core: start: the server was not built by NewServer")
+	}
 	for i := range s.ls {
-		for _, a := range addrs {
-			b, err := bind(ctx, &s.ls[i], a)
+		port := s.ls[i].Port
+		for j, a := range s.addrs {
+			// One listener is one port: one the system picked is resolved on
+			// the first address it binds and used on the rest, so a service
+			// never reports a port of its own per address.
+			if j > 0 && port == 0 {
+				port = s.bound[len(s.bound)-1].addr.Port()
+			}
+			b, err := bind(ctx, &s.ls[i], a, port)
 			if err != nil {
 				s.closeBound()
 				return fmt.Errorf("core: start: %w", err)
@@ -144,8 +174,9 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// bind opens l's socket on a, at l's port. An IPv4-mapped address binds the
-// IPv4 address it maps, as the settings read it.
+// bind opens l's socket on a, at port (l's own, or the one the first address's
+// socket resolved). An IPv4-mapped address binds the IPv4 address it maps, as
+// the settings read it.
 //
 // decision: each address is bound on its family's network, tcp4 or tcp6,
 // never tcp, and is reported as the settings name it with the port its socket
@@ -153,18 +184,19 @@ func (s *Server) Start(ctx context.Context) error {
 // reports [::] and collides with a second listener on :: at the same port; on
 // tcp6 it sets IPV6_V6ONLY. Withdraw it if a deployment needs one dual-stack
 // socket per wildcard.
-func bind(ctx context.Context, l *Listener, a netip.Addr) (bound, error) {
+func bind(ctx context.Context, l *Listener, a netip.Addr, port uint16) (bound, error) {
 	ip, network := a.Unmap(), "tcp6"
 	if ip.Is4() {
 		network = "tcp4"
 	}
 	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, network, netip.AddrPortFrom(ip, l.Port).String())
+	ln, err := lc.Listen(ctx, network, netip.AddrPortFrom(ip, port).String())
 	if err != nil {
-		return bound{}, fmt.Errorf("listener %q on %s: %w", l.Services, netip.AddrPortFrom(a, l.Port), err)
+		return bound{}, fmt.Errorf("listener %q on %s: %w", l.Services, netip.AddrPortFrom(a, port), err)
 	}
-	port := ln.Addr().(*net.TCPAddr).AddrPort().Port()
-	return bound{l: l, addr: netip.AddrPortFrom(a, port), ln: ln}, nil
+	bound := bound{l: l, ln: ln}
+	bound.addr = netip.AddrPortFrom(a, ln.Addr().(*net.TCPAddr).AddrPort().Port())
+	return bound, nil
 }
 
 // closeBound closes every socket open now. The caller holds s.mu.

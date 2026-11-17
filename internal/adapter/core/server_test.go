@@ -8,7 +8,6 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
@@ -41,6 +40,12 @@ func on(addrs ...string) testproto.Settings {
 }
 
 // tcp is a listener of p at port carrying services.
+// emptyStages is a protocol whose NewConn builds no stages: a wiring fault,
+// the one NewServer refuses at configured, never at the first request.
+type emptyStages struct{ core.Protocol }
+
+func (emptyStages) NewConn(*core.Conn) core.Stages { return core.Stages{} }
+
 func tcp(p core.Protocol, port uint16, services ...string) core.Listener {
 	return core.Listener{Services: services, Network: "tcp", Port: port, Protocol: p}
 }
@@ -82,11 +87,7 @@ func dialRefused(t *testing.T, a netip.AddrPort) {
 	c, err := net.Dial("tcp", a.String())
 	if err == nil {
 		_ = c.Close()
-		t.Errorf("dial %s connected; want it refused, nothing bound there", a)
-		return
-	}
-	if !errors.Is(err, syscall.ECONNREFUSED) {
-		t.Errorf("dial %s: %v; want connection refused", a, err)
+		t.Fatalf("a dial to %s connects; want it refused", a)
 	}
 }
 
@@ -106,9 +107,11 @@ func TestNewServerRefusesMalformedListeners(t *testing.T) {
 		unsupported bool   // wraps errors.ErrUnsupported
 	}{
 		{"no listener", nil, "no listener", false},
-		{"no service", []core.Listener{tcp(p, 0)}, "listener 0", false},
-		{"an empty service", []core.Listener{tcp(p, 0, "a", "")}, "listener 0", false},
-		{"a service twice", []core.Listener{tcp(p, 0, "a", "b", "a")}, "listener 0", false},
+		{"no service", []core.Listener{tcp(p, 0)}, "names no service", false},
+		{"an empty service", []core.Listener{tcp(p, 0, "a", "")}, "names an empty service", false},
+		{"a service twice", []core.Listener{tcp(p, 0, "a", "b", "a")}, "names a twice", false},
+		{"no protocol", []core.Listener{tcp(p, 0, "b"), {Services: []string{"b"}, Network: "tcp"}}, "names no protocol", false},
+		{"stages accept would refuse", []core.Listener{tcp(p, 0, "b", "c"), {Services: []string{"d"}, Network: "tcp", Protocol: emptyStages{p}}}, "stages without Header, Router or Protocol", false},
 		{"two listeners on one Socket", []core.Listener{tcp(p, 0, "a"), tcp(p, 0, "b", "a")}, "listener 1", false},
 		{"two listeners on one port", []core.Listener{tcp(p, 2049, "a"), tcp(p, 2049, "b")}, "listener 1", false},
 		{"a udp listener", []core.Listener{tcp(p, 0, "a"), {Services: []string{"b"}, Network: "udp", Protocol: p}}, "listener 1", true},
@@ -296,43 +299,98 @@ func TestStartThatFailsClosesWhatItOpened(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = held.Close() })
 	heldAt := held.Addr().(*net.TCPAddr).AddrPort()
-	// The first listener's port is known, so a dial can find its socket closed;
-	// the leak check cannot, since a listener nobody holds is closed when it is
-	// collected. Another process can take that port between its release and
-	// Start, failing "a" before "b": then the test takes another port.
-	var srv *core.Server
-	var freeAt netip.AddrPort
-	for try := 1; ; try++ {
-		free, lerr := net.Listen("tcp4", "127.0.0.1:0")
-		if lerr != nil {
-			t.Fatal(lerr)
-		}
-		freeAt = free.Addr().(*net.TCPAddr).AddrPort()
-		_ = free.Close()
-		srv, err = core.NewServer(deps, on("127.0.0.1"), tcp(p, freeAt.Port(), "a"), tcp(p, heldAt.Port(), "b"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		stopAtEnd(t, srv)
-		err = srv.Start(t.Context())
-		if err == nil {
-			t.Fatal("Start bound a port the test holds")
-		}
-		if strings.Contains(err.Error(), `["a"]`) && try < 3 {
-			continue
-		}
-		break
+
+	// "a" asks the system for its port, so no port is freed for another to
+	// steal; "b" cannot bind the socket the test holds, so Start names it, and
+	// every socket "a" opened, the system-picked one too, must be closed by
+	// the failed Start.
+	srv, err := core.NewServer(deps, on("127.0.0.1"), tcp(p, 0, "a"), tcp(p, heldAt.Port(), "b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	err = srv.Start(t.Context())
+	if err == nil {
+		t.Fatal("Start bound nothing it would refuse")
 	}
 	if !strings.Contains(err.Error(), `["b"]`) || !strings.Contains(err.Error(), heldAt.String()) {
-		t.Errorf("Start: %v; want it to name the listener [\"b\"] and the address %s", err, heldAt)
+		t.Errorf("Start: %v; want it to name the listener [b] and the address %s", err, heldAt)
 	}
 	if got := srv.Health().State; got != adapter.StateConfigured {
 		t.Errorf("after a failed Start the server is %s, want configured", got)
 	}
 	if got := srv.Addrs(); len(got) != 0 {
-		t.Errorf("after a failed Start Addrs is %v, want empty", got)
+		t.Errorf("after a failed Start Addrs is %v, want empty: every socket it opened was closed by the failure", got)
 	}
-	dialRefused(t, freeAt)
+}
+
+// The settings' addresses are the server's own copy: changing the caller's
+// settings after NewServer, the slice included, leaves what Start binds and
+// Addrs reports as they were given.
+func TestTheServerKeepsItsOwnAddresses(t *testing.T) {
+	deps := newDeps()
+	adaptertest.CheckLeaks(t, deps.Budgets)
+	p := testproto.New(deps)
+	one := settings.DefaultNFS()
+	one.Addrs = []netip.Addr{netip.MustParseAddr("127.0.0.1")}
+	srv, err := core.NewServer(deps, one, tcp(p, 0, "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+
+	// In place with a different address, by append from another array, and
+	// through the settings value itself: none of the three reaches what Start
+	// binds.
+	one.Addrs[0] = netip.IPv6Loopback()
+	one.Addrs = append(one.Addrs, netip.MustParseAddr("127.0.0.2"))
+
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	k := key("a")
+	addrs := srv.Addrs()
+	if len(addrs[k]) != 1 || addrs[k][0].Addr() != netip.MustParseAddr("127.0.0.1") {
+		t.Errorf("Start binds %v, want the one address it was given", addrs[k])
+	}
+}
+
+// A listener at port 0 is one port: the system picks it on the first address
+// it binds and every other address uses the same one, so a service reports no
+// port of its own per address.
+func TestAPortZeroListenerIsOnePort(t *testing.T) {
+	deps := newDeps()
+	adaptertest.CheckLeaks(t, deps.Budgets)
+	p := testproto.New(deps)
+	srv, err := core.NewServer(deps, on("127.0.0.1", "::1"), tcp(p, 0, "a", "b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	addrs := srv.Addrs()
+	seen := map[uint16]bool{}
+	for _, k := range []adapter.Socket{key("a"), key("b")} {
+		for _, a := range addrs[k] {
+			seen[a.Port()] = true
+		}
+	}
+	if len(seen) != 1 {
+		t.Errorf("a port-0 listener reports the ports %v, want one", seen)
+	}
+}
+
+// A Server is what NewServer builds: a zero value refuses to start by error,
+// not by panic.
+func TestAZeroServerRefusesToStart(t *testing.T) {
+	var srv core.Server
+	if err := srv.Start(t.Context()); err == nil {
+		t.Fatal("a zero Server started")
+	} else if !strings.Contains(err.Error(), "not built by NewServer") {
+		t.Errorf("a zero Server: %v", err)
+	}
 }
 
 // Addrs hands out a fresh map each call, slices included: what a caller does

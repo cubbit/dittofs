@@ -3,7 +3,7 @@
 # in the change that turned it green. Each entry's message is the failure it is known by: a test
 # failing for any other reason is unexpected.
 - test: TestConformanceEchoEndToEnd
-  message: 'i/o timeout'
+  message: 'testproto: receive: read tcp'
   status: fail
   fix: planned
   category: feature

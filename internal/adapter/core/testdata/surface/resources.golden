@@ -32,8 +32,7 @@ func NewBufPool(b *WaitBudget) *BufPool
 
 func NewWaitBudget(name string, ceiling int64) *WaitBudget
 
-type Budget struct {
-}
+type Budget struct{}
 
 type Budgets struct {
 	Receive, Reply   *WaitBudget
@@ -44,14 +43,11 @@ type Buf struct {
 	B []byte
 }
 
-type BufPool struct {
-}
+type BufPool struct{}
 
-type Reservation struct {
-}
+type Reservation struct{}
 
-type WaitBudget struct {
-}
+type WaitBudget struct{}
 
 var ErrTooLarge = errors.New("resources: charge past the ceiling")
 

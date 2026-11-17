@@ -49,12 +49,15 @@ type Adapter interface {
 	// as the settings name it, its port the one bound, so a port of 0 is
 	// resolved and a wildcard such as 0.0.0.0 is reported as itself, never as
 	// the [::] its socket reports; an address Reconfigure added included and
-	// one it removed gone. It is empty before Start and after Stop. The node
-	// builds each Serving from it.
+	// one it removed gone. It is empty before Start and after Stop, and while
+	// serving on an empty Addrs, which a node with every listener on no
+	// address of its own is: serving, bound nowhere, ready. The node builds
+	// each Serving from it.
 	Addrs() map[Socket][]netip.AddrPort
 
 	// Health is ready when serving with every listener bound; configured and
-	// draining report not ready.
+	// draining report not ready. A server serving on an empty Addrs, none of
+	// its listeners bound anywhere, is ready.
 	Health() Health
 
 	// Connections lists the connections open now, for the API's client list.
