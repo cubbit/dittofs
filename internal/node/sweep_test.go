@@ -54,22 +54,35 @@ func storeNow(t *testing.T, h *nodetest.Harness) time.Time {
 	return a.Time
 }
 
-// sweptAt moves the node's clock to at, waits until the store's time, which
-// follows the clock once a second of real time, has reached it, and then
-// advances one sweep interval and returns the one turn that releases. Each
-// advance releases exactly one turn, as the turn before it was awaited.
+// sweptAt returns the first sweep turn that reads a store time past at, and
+// so deletes what is due at at. The turns before it read a store time before
+// at, and delete nothing due there.
+//
+// It advances the node's clock to a millisecond before at, which releases one
+// turn it discards, as the turn before it was awaited. The store's time can
+// run ahead of a clock that stands still, but by only a nanosecond per
+// transaction, so that turn reads a time before at. It then waits until the
+// store's time, which catches up with the clock once its ceiling is raised,
+// about once a second of real time, has reached the clock; and then advances
+// one sweep interval, releasing the turn it returns. That raise put the
+// ceiling two seconds past the clock, so the turn reads a store time over a
+// second past at: the records a test wrote while the clock stood still expire
+// within nanoseconds of each other, and are all due then.
 func sweptAt(t *testing.T, h *nodetest.Harness, ch <-chan []kvstore.Swept, at time.Time) []kvstore.Swept {
 	t.Helper()
-	if d := at.Sub(h.Clock().Now()); d > 0 {
-		h.Clock().Advance(max(d, sweepInterval))
-		awaitSweep(t, ch)
+	before := at.Add(-time.Millisecond)
+	d := before.Sub(h.Clock().Now())
+	if d < sweepInterval {
+		t.Fatalf("sweptAt %v: only %v ahead of the clock, want at least a sweep interval, so the advance releases one turn", at, d)
 	}
+	h.Clock().Advance(d)
+	awaitSweep(t, ch)
 	// Polling the store's time is the wait: its ceiling is raised on real
 	// time, which no clock the test holds moves.
 	deadline := time.Now().Add(10 * time.Second)
-	for storeNow(t, h).Before(at) {
+	for storeNow(t, h).Before(before) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the store's time did not reach %v within 10 s", at)
+			t.Fatalf("the store's time did not reach %v within 10 s", before)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -126,8 +139,11 @@ func TestSweepDeletesExpiredRecords(t *testing.T) {
 	target := entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte("swept")}
 	a, audit := keyed(t, h, "a", target)
 	b, _ := keyed(t, h, "b", target)
+	if b.Expires.Sub(a.Expires) > time.Second {
+		t.Fatalf("expiries %v and %v: more than a second apart, want them written while the clock stood still", a.Expires, b.Expires)
+	}
 
-	sweptAt(t, h, ch, b.Expires)
+	sweptAt(t, h, ch, a.Expires)
 	for _, i := range []entity.IdempotencyRecord{a, b} {
 		if kept(t, h, i) {
 			t.Errorf("idempotency record %q one sweep turn past its expiry: still in the store, want it deleted", i.Key)
@@ -182,7 +198,10 @@ func TestSweepClearsABacklogInOneTurn(t *testing.T) {
 		recs = append(recs, i)
 	}
 
-	got := sweptAt(t, h, ch, recs[fit].Expires)
+	if d := recs[fit].Expires.Sub(recs[0].Expires); d > time.Second {
+		t.Fatalf("expiries %v apart, want the records written while the clock stood still", d)
+	}
+	got := sweptAt(t, h, ch, recs[0].Expires)
 	if want := []kvstore.Swept{{Idempotency: fit, More: true}, {Idempotency: 1}}; !slices.Equal(got, want) {
 		t.Errorf("Sweep answers in the turn past %d records' expiry: got %+v, want %+v", fit+1, got, want)
 	}
