@@ -35,12 +35,13 @@ func eventually(t *testing.T, what string, cond func() bool) {
 }
 
 // settled runs call and returns its error once it returns, failing the test
-// if the client instead waits on clock to send again.
+// if the client instead waits on clock to send again, or does neither within
+// a generous bound.
 func settled(t *testing.T, what string, clock *sim.TestClock, call func(context.Context) error) error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- call(t.Context()) }()
-	for {
+	for end := time.Now().Add(10 * time.Second); ; {
 		select {
 		case err := <-done:
 			return err
@@ -48,6 +49,9 @@ func settled(t *testing.T, what string, clock *sim.TestClock, call func(context.
 		}
 		if clock.Pending() > 0 {
 			t.Fatalf("%s: the client waits to send again, want it returned", what)
+		}
+		if time.Now().After(end) {
+			t.Fatalf("%s: neither returned nor waited", what)
 		}
 		time.Sleep(time.Millisecond)
 	}
