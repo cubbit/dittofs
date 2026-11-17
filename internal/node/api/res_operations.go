@@ -26,7 +26,6 @@ type opRead struct {
 
 // viewOp is op on the wire, its progress read by d.Progress, unknown when
 // the node has none.
-//
 func viewOp(ctx context.Context, d Deps, op entity.Operation) (opRead, error) {
 	v := apiv1.Operation{ID: idString(op.ID), Kind: apiv1.OpKind(op.Kind), Target: refOf(op.Target),
 		State: apiv1.OpState(op.State.String()), Progress: apiv1.Progress{Total: -1},

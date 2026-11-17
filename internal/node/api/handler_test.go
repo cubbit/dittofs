@@ -555,7 +555,7 @@ func sample(t *testing.T, reg *metrics.Registry, name string, labels map[string]
 	next:
 		for _, m := range f.GetMetric() {
 			for _, l := range m.GetLabel() {
-				if labels[l.GetName()] != l.GetValue() {
+				if labels != nil && labels[l.GetName()] != l.GetValue() {
 					continue next
 				}
 			}
