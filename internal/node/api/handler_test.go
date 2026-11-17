@@ -129,7 +129,7 @@ func (s *served) do(t *testing.T, method, path, body string, hdr ...string) repl
 		t.Fatal(err)
 	}
 	for i := 0; i+1 < len(hdr); i += 2 {
-		req.Header.Set(hdr[i], hdr[i+1])
+		req.Header.Add(hdr[i], hdr[i+1])
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {

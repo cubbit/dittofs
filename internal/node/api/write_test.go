@@ -179,7 +179,7 @@ func TestWriteCommitsWholeOrNothing(t *testing.T) {
 // the spec among them; a tag that is not the record's, If-None-Match: * on a
 // record and If-Match on none 412, each naming the record's tag when there is
 // one; a key over 255 bytes, If-Match beside If-None-Match, and an If-Match
-// of * or of a list 400. None of them writes, and each 412 and 428 is
+// of * or of a list, on one line or two, 400. None of them writes, and each 412 and 428 is
 // counted by kind. With them right, a PUT, a PATCH (a null resetting its
 // field), an action and a DELETE commit, each answering the record's new tag.
 func TestPreconditions(t *testing.T) {
@@ -213,6 +213,8 @@ func TestPreconditions(t *testing.T) {
 		{"If-Match beside If-None-Match", http.MethodPut, k, []string{"If-Match", `"1"`, "If-None-Match", "*"}, 400, "invalid", "If-Match", nil},
 		{"If-Match of *", http.MethodPut, k, []string{"If-Match", "*"}, 400, "invalid", "If-Match", nil},
 		{"If-Match of a list", http.MethodPut, k, []string{"If-Match", `"1", "2"`}, 400, "invalid", "If-Match", nil},
+		{"If-Match on two lines", http.MethodPut, k, []string{"If-Match", `"1"`, "If-Match", `"9"`}, 400, "invalid", "If-Match", nil},
+		{"If-Match on two lines, the stale first", http.MethodPut, k, []string{"If-Match", `"9"`, "If-Match", `"1"`}, 400, "invalid", "If-Match", nil},
 	} {
 		body := `{"spec":{"value":"b"}}`
 		if tc.method == http.MethodPost || tc.method == http.MethodDelete {

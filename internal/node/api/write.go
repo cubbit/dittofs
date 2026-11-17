@@ -247,7 +247,9 @@ func conditionOf(r *http.Request, key string, changesSpec bool) (condition, erro
 	if key == "" && (m == http.MethodPost || m == http.MethodDelete) {
 		return condition{}, &refusal{code: apiv1.CodePreconditionRequired, detail: "a " + m + " carries an Idempotency-Key"}
 	}
-	match, none := r.Header.Get("If-Match"), r.Header.Get("If-None-Match")
+	// A header sent on several lines is one list, as HTTP joins them.
+	match := strings.Join(r.Header.Values("If-Match"), ", ")
+	none := strings.Join(r.Header.Values("If-None-Match"), ", ")
 	switch {
 	case match != "" && none != "":
 		return condition{}, &fieldError{field: "If-Match", detail: "a request carries If-Match or If-None-Match, not both"}
