@@ -81,7 +81,7 @@ func answers200(client *http.Client, url string) bool {
 
 // Both listeners are served over TLS on every address but loopback, and
 // plainly on a loopback one, an IPv4-mapped loopback address and localhost
-// among them.
+// among them. A host with no IPv6 loopback skips the ::1 row.
 func TestListenersServeTLSButOnLoopback(t *testing.T) {
 	certs, pool := certFiles(t)
 	tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}
@@ -94,30 +94,39 @@ func TestListenersServeTLSButOnLoopback(t *testing.T) {
 		{"0.0.0.0:0", true}, {":0", true},
 		{"127.0.0.1:0", false}, {"localhost:0", false}, {"[::1]:0", false}, {"[::ffff:127.0.0.1]:0", false},
 	} {
-		s := api.New(api.Deps{Ready: func() string { return "ready" }, Live: func() bool { return true },
-			Addr: tc.addr, MetricsAddr: tc.addr, TLS: certs, Metrics: metrics.New("test", "test"), Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})
-		a, m, err := s.Start()
-		if err != nil {
-			t.Fatalf("Start on %s: %v", tc.addr, err)
-		}
-		for _, l := range []struct {
-			addr net.Addr
-			path string
-		}{{a, "/health/live"}, {m, "/metrics"}} {
-			ta := l.addr.(*net.TCPAddr)
-			host := ta.IP.String()
-			if ta.IP.IsUnspecified() {
-				host = "127.0.0.1"
+		t.Run(tc.addr, func(t *testing.T) {
+			if tc.addr == "[::1]:0" {
+				l, err := net.Listen("tcp", tc.addr)
+				if err != nil {
+					t.Skipf("the host has no IPv6 loopback ::1: %v", err)
+				}
+				_ = l.Close()
 			}
-			hp := net.JoinHostPort(host, strconv.Itoa(ta.Port))
-			gotTLS, gotPlain := answers200(client, "https://"+hp+l.path), answers200(client, "http://"+hp+l.path)
-			if gotTLS != tc.wantTLS || gotPlain == tc.wantTLS {
-				t.Errorf("%s on %s: answered over TLS %v and plainly %v, want TLS %v", l.path, tc.addr, gotTLS, gotPlain, tc.wantTLS)
+			s := api.New(api.Deps{Ready: func() string { return "ready" }, Live: func() bool { return true },
+				Addr: tc.addr, MetricsAddr: tc.addr, TLS: certs, Metrics: metrics.New("test", "test"), Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})
+			a, m, err := s.Start()
+			if err != nil {
+				t.Fatalf("Start on %s: %v", tc.addr, err)
 			}
-		}
-		if err := s.Stop(context.Background()); err != nil {
-			t.Errorf("Stop on %s: %v", tc.addr, err)
-		}
+			for _, l := range []struct {
+				addr net.Addr
+				path string
+			}{{a, "/health/live"}, {m, "/metrics"}} {
+				ta := l.addr.(*net.TCPAddr)
+				host := ta.IP.String()
+				if ta.IP.IsUnspecified() {
+					host = "127.0.0.1"
+				}
+				hp := net.JoinHostPort(host, strconv.Itoa(ta.Port))
+				gotTLS, gotPlain := answers200(client, "https://"+hp+l.path), answers200(client, "http://"+hp+l.path)
+				if gotTLS != tc.wantTLS || gotPlain == tc.wantTLS {
+					t.Errorf("%s on %s: answered over TLS %v and plainly %v, want TLS %v", l.path, tc.addr, gotTLS, gotPlain, tc.wantTLS)
+				}
+			}
+			if err := s.Stop(context.Background()); err != nil {
+				t.Errorf("Stop on %s: %v", tc.addr, err)
+			}
+		})
 	}
 }
 
@@ -193,9 +202,39 @@ func TestLocalSocket(t *testing.T) {
 	}
 }
 
+// freeAddr is a loopback address a listener bound and released. Another
+// process taking it before the test binds it fails the test rather than
+// passing it.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return l.Addr().String()
+}
+
+// bindable fails the test for each of addrs that cannot be bound at once,
+// which a listener a refused Start left open would hold.
+func bindable(t *testing.T, addrs ...string) {
+	t.Helper()
+	for _, a := range addrs {
+		l, err := net.Listen("tcp", a)
+		if err != nil {
+			t.Errorf("bind %s after the refused Start: %v, want it free", a, err)
+			continue
+		}
+		_ = l.Close()
+	}
+}
+
 // A socket a node that did not stop left at the path is replaced; any other
-// file there refuses the start. The test's name is short because a socket
-// path is bounded at 104 bytes on some hosts, and t.TempDir() holds it.
+// file there refuses the start and leaves neither TCP address bound. The
+// socket's file is named s because a socket path is bounded at 104 bytes on
+// some hosts, and t.TempDir() holds it.
 func TestStaleSocket(t *testing.T) {
 	dir := t.TempDir()
 	stale := filepath.Join(dir, "s")
@@ -213,10 +252,14 @@ func TestStaleSocket(t *testing.T) {
 		path   string
 		starts bool
 	}{{stale, true}, {plain, false}} {
-		s := api.New(api.Deps{Addr: "127.0.0.1:0", MetricsAddr: "127.0.0.1:0", Socket: tc.path, Metrics: metrics.New("test", "test")})
+		addr, maddr := freeAddr(t), freeAddr(t)
+		s := api.New(api.Deps{Addr: addr, MetricsAddr: maddr, Socket: tc.path, Metrics: metrics.New("test", "test")})
 		_, _, err := s.Start()
 		if (err == nil) != tc.starts {
 			t.Errorf("Start with the socket at %s: got %v, want it to start: %v", filepath.Base(tc.path), err, tc.starts)
+		}
+		if !tc.starts {
+			bindable(t, addr, maddr)
 		}
 		if err := s.Stop(context.Background()); err != nil {
 			t.Errorf("Stop: %v", err)
@@ -276,6 +319,12 @@ func TestCallBound(t *testing.T) {
 			t.Errorf("a held write once let go: answered %d %s, want 200", r.status, r.body)
 		}
 	}
+	eventually(t, "dittofs_api_calls_in_flight back to 0 once the held calls answered", func() bool {
+		return sample(t, s.reg, "dittofs_api_calls_in_flight", nil) == 0
+	})
+	if got := sample(t, s.reg, "dittofs_api_calls_in_flight_limit", nil); got != 64 {
+		t.Errorf("dittofs_api_calls_in_flight_limit once the held calls answered: got %v, want 64", got)
+	}
 	if r := s.do(t, http.MethodGet, thing, ""); r.status != http.StatusOK {
 		t.Errorf("a call once the held ones answered: %d %s, want 200", r.status, r.body)
 	}
@@ -283,7 +332,8 @@ func TestCallBound(t *testing.T) {
 
 // While the node is starting, every /api/v1 call but its health is 503
 // starting with Retry-After, before the caller is authenticated; the public
-// version and the probes answer. Once ready, the same call is answered.
+// version and the probes answer. Ready, draining or not_ready, the same
+// call is answered.
 func TestStartingRefusesCalls(t *testing.T) {
 	var word atomic.Value
 	word.Store("starting")
@@ -307,21 +357,26 @@ func TestStartingRefusesCalls(t *testing.T) {
 			t.Errorf("GET %s while starting: answered %d %s, want 200", path, r.status, r.body)
 		}
 	}
-	word.Store("ready")
-	if r := s.do(t, http.MethodGet, thing, ""); r.status != http.StatusOK {
-		t.Errorf("GET %s once ready: answered %d %s, want 200", thing, r.status, r.body)
+	for _, w := range []string{"ready", "draining", "not_ready"} {
+		word.Store(w)
+		if r := s.do(t, http.MethodGet, thing, ""); r.status != http.StatusOK {
+			t.Errorf("GET %s while %s: answered %d %s, want 200", thing, w, r.status, r.body)
+		}
 	}
 }
 
 // A live node's socket at the path refuses a second node's start, and the
-// second's Stop leaves the first serving on it.
+// second's Stop leaves the first serving on it. The refused start leaves
+// neither of its TCP addresses bound.
 func TestLiveSocket(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s")
 	serve(t, as(entity.RoleViewer, false), func(d *api.Deps) { d.Socket = path })
-	second := api.New(api.Deps{Addr: "127.0.0.1:0", MetricsAddr: "127.0.0.1:0", Socket: path, Metrics: metrics.New("test", "test")})
+	addr, maddr := freeAddr(t), freeAddr(t)
+	second := api.New(api.Deps{Addr: addr, MetricsAddr: maddr, Socket: path, Metrics: metrics.New("test", "test")})
 	if _, _, err := second.Start(); err == nil || !strings.Contains(err.Error(), "a node is serving the local socket "+path) {
 		t.Errorf("a second Start on a live socket: got %v, want a refusal naming the socket", err)
 	}
+	bindable(t, addr, maddr)
 	if err := second.Stop(context.Background()); err != nil {
 		t.Errorf("the second's Stop: %v", err)
 	}
