@@ -608,6 +608,7 @@ flowchart TD
   X0(["S0 RFC 23 epic 1 deleted v1 identity"]):::sync --> E1["E1 Contract and surface ⛔"]:::blocker
   X2(["#4059 S1 and S2: pkg/secrets frozen, secrets sealed"]):::sync --> E2
   X5(["#4059 epic 3: write check, tracked reads"]):::sync -. "NetBIOS cross-check, write role" .-> E6
+  X5 -. "id_range CheckTx" .-> E2
   E1 --> S1(["S1 identity surface frozen"]):::sync
   X1(["RFC 23 epic 2: principals generation, positions"]):::sync -. "PGEN" .-> E3
   X1 -. "PGEN raised by mints" .-> E2
@@ -651,7 +652,8 @@ flowchart TD
   - #4059's S1 and S2, its `pkg/secrets` surface frozen and secrets sealed and versioned, unblock
     epic 2, which adds `Deps.Secrets` and is the first epic that seals;
   - #4059's epic 3, its write check with tracked reads, carries epic 6's NetBIOS cross-check and
-    its write-role test on `identity.directory`;
+    its write-role test on `identity.directory`, and epic 2's T2.9, the `identity.id_range` check
+    that reads the ID counters;
   - RFC 23's plan's epic 2 lands the principals generation and positions, which epic 2's `Minter`
     raises and epic 3's `State` reads;
   - RFC 23's plan's epic 3 lands the operation runner (RFC 23 §4.6), which epic 7's kinds and
@@ -680,7 +682,7 @@ flowchart TD
 | RFC 23's plan's epic 2 | partly E2, E3 | The `State`'s generation is the principals generation that epic writes, and E2's `Minter` raises it in each batch. E3 starts on squash, groups and grants before it lands, and E2 on everything but the `Minter`'s raise. |
 | RFC 23's plan's epic 3 | E7; partly E2 | The joins and the rotation are runner kinds (D8). E2's NT-hash deletion is one too; the rest of E2 does not wait. |
 | #4059's S1 and S2 | E2 | E2 adds `Deps.Secrets` and is the first epic that seals a `Secret`. |
-| #4059's epic 3 | partly E6 | E6's NetBIOS cross-check is a tracked read through its write check, and E6's write-role test runs that check on `identity.directory`; the rest of E6 does not wait. NTLM turned back on is refused at #4050's route, not by a validator (A13). |
+| #4059's epic 3 | partly E2, E6 | E2's T2.9, the refusal of an `identity.id_range` at or below the ID counters' marks, is a `CheckTx` that write check runs. E6's NetBIOS cross-check is a tracked read through its write check, and E6's write-role test runs that check on `identity.directory`; the rest of E2 and E6 does not wait. NTLM turned back on is refused at #4050's route, not by a validator (A13). |
 | E2 | E6; partly E3, E4, E5; RFC 23's plan's E5 | The directory mints through E2's `Minter`. E5 mints machine principals through E2's `Minter` and `Machine` kind, and starts on the keytab and AP-REQ before they land. E4 verifies against E2's NT hashes, and starts on its throttle and MIC before they land. E3 starts on squash, groups and grants before the well-known principals land; its `ntlm_off` refusal, and E4's routing, read the `identity.ntlm` and `identity.netbios_name` settings E2 declares. RFC 23's plan's epic 5 builds its accounts directly on `APISignIn` and `NewHashes`, after this external synchronisation point. |
 | E3 | E7, E8; partly E5, E6 | Pass-through maps by its verified user SID into a resolved caller. E5 binds a PAC to a record, and its deny-only SIDs reach E3's groups. E6's "mint burst" row resolves through E3's `Resolver`; the rest of E6 does not wait. |
 | E4 | E5; partly E7 | Kerberos joins the `SignIn` E4 builds. Pass-through is a route of E4's NTLM domain table. |
