@@ -49,7 +49,9 @@ var resourceKinds = []string{ResourceInstallation: "installation", ResourceNode:
 	ResourceOperation: "operation", ResourceAPIToken: "api-token", ResourceSession: "session"}
 
 // String is the kind's name, empty for one no constant names.
-func (k ResourceKind) String() string { return enumString(resourceKinds, k) }
+func (k ResourceKind) String() string                { return enumString(resourceKinds, k) }
+func (k ResourceKind) MarshalText() ([]byte, error)  { return enumMarshal(resourceKinds, k) }
+func (k *ResourceKind) UnmarshalText(b []byte) error { return enumUnmarshal(resourceKinds, k, b) }
 
 // SettingRef names one setting as a resource: its scope's kind, its scope's
 // ID below installation, then its key. The key comes last, and the kind
@@ -140,7 +142,9 @@ const (
 var opStates = []string{OpPending: "pending", OpRunning: "running", OpSucceeded: "succeeded",
 	OpFailed: "failed", OpCancelling: "cancelling", OpCancelled: "cancelled"}
 
-func (s OpState) String() string { return enumString(opStates, s) }
+func (s OpState) String() string                { return enumString(opStates, s) }
+func (s OpState) MarshalText() ([]byte, error)  { return enumMarshal(opStates, s) }
+func (s *OpState) UnmarshalText(b []byte) error { return enumUnmarshal(opStates, s, b) }
 
 // Ended reports a state an operation never leaves.
 func (s OpState) Ended() bool { return s == OpSucceeded || s == OpFailed || s == OpCancelled }
