@@ -638,13 +638,17 @@ pkg/settings/
 - **Covers:** R4, R31, R32, R33, R36.
 - **Deliverables:** kvstore's `DropNTHashes` (D4), with its `ponytail:` on the batch size;
   identity's step and progress as methods on `*Server` typed by RFC 23's leaf package
-  `internal/node/step` (its epic 3 D7): `NTHashDeleteStep(ctx, op entity.Operation)
-  (step.StepResult, error)`, its cursor `op.Step`, holding the last `entity.SecretRef` dropped and
+  `internal/node/step` (its epic 3 D7), with no adapter between them:
+  `NTHashDeleteStep(ctx, op entity.Operation) (step.StepResult, error)`, a `step.Step` returning
+  `StepResult{Next, Done, Result, End}`, its cursor `op.Step`, holding the last
+  `entity.SecretRef` dropped and
   the count dropped so far, to which each turn adds `DropNTHashes`' `dropped` (D4), its `End`, set with `Done`, calling `tx.SetNTHashDeleted(op.ID)`; a
   record `DropNTHashes` cannot decode returned wrapping RFC 23's `ErrStepFailed`, which fails the
   operation and leaves `Deleted` zero, and every other error plain, so the runner retries it;
-  `NTHashDeleteProgress(next []byte) apiv1.Progress`, the count read from the cursor, decoded as
-  the step encodes it with the same `entity.SecretRef`, with `Total` -1. Consumed by E8's T8.10, which puts both in the runner's table in `node.New`, by
+  `NTHashDeleteProgress(ctx, op entity.Operation) apiv1.Progress`, typed by `step.Progress`, the
+  count read from the cursor `op.Step`, decoded as the step encodes it with the same
+  `entity.SecretRef`, with `Total` -1. Consumed by E8's T8.10, which puts both in the runner's
+  table in `node.New`, by
   RFC 23's plan's epic 4, whose settings route starts the operation, and by E8's "NTLM off" row.
 - **Acceptance criteria:**
   - After the loop below ends, no `Secret` of kind nt-hash exists and every user's `NTHash` is
