@@ -1,4 +1,4 @@
-package apiclient
+package client
 
 import (
 	"context"
@@ -40,5 +40,5 @@ func ended(s apiv1.OpState) (bool, error) {
 	case apiv1.OpPending, apiv1.OpRunning, apiv1.OpCancelling:
 		return false, nil
 	}
-	return false, fmt.Errorf("apiclient: an operation in state %q, which this client does not know", s)
+	return false, fmt.Errorf("client: an operation in state %q, which this client does not know", s)
 }

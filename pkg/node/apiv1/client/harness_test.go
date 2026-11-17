@@ -1,4 +1,4 @@
-package apiclient_test
+package client_test
 
 import (
 	"bytes"
@@ -20,11 +20,11 @@ import (
 	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
-	"github.com/cubbit/dittofs/pkg/apiclient"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/google/uuid"
 )
@@ -105,7 +105,7 @@ func (s *served) socket(t *testing.T) string {
 	t.Helper()
 	// A directory of its own under the temporary root, not t.TempDir(),
 	// whose path can pass the length a socket's path may have.
-	dir, err := os.MkdirTemp("", "apiclient")
+	dir, err := os.MkdirTemp("", "client")
 	if err != nil {
 		t.Fatalf("make the socket's directory: %v", err)
 	}
@@ -121,10 +121,10 @@ func (s *served) socket(t *testing.T) string {
 	return path
 }
 
-// client is a client of url waiting its retries on clock.
-func client(t *testing.T, url string, clock apiclient.Clock, opts ...apiclient.Option) *apiclient.Client {
+// dial is a client of url waiting its retries on clock.
+func dial(t *testing.T, url string, clock client.Clock, opts ...client.Option) *client.Client {
 	t.Helper()
-	c, err := apiclient.New(url, append([]apiclient.Option{apiclient.WithClock(clock)}, opts...)...)
+	c, err := client.New(url, append([]client.Option{client.WithClock(clock)}, opts...)...)
 	if err != nil {
 		t.Fatalf("New(%q): %v", url, err)
 	}

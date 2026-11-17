@@ -164,7 +164,7 @@ What replaces what:
 | `pkg/controlplane/api`, `internal/controlplane/api/**` | `internal/node/api` | deleted in epic 1 |
 | `pkg/controlplane/models`, `pkg/controlplane/store` (GORM, SQLite/PostgreSQL) | records in `pkg/metadata/kvstore` | deleted in epic 1 |
 | `pkg/controlplane/api/dto` | `pkg/node/apiv1` | deleted in epic 1 |
-| `pkg/apiclient` | `pkg/apiclient`, rewritten on `pkg/node/apiv1` | bodies deleted in epic 1 |
+| `pkg/apiclient` | `pkg/node/apiv1/client`, rewritten on `pkg/node/apiv1` | bodies deleted in epic 1 |
 | `cmd/dfs` (`start` composes v1) | `cmd/dfs`: `init`, `start`, `reset-admin` over `node.New`; `config`, `version` and `completion` kept | rewritten in epic 1; every other command's fate is D13's |
 | `cmd/dfsctl` command bodies | the same tree, rebuilt | bodies deleted in epic 1 |
 | `pkg/health`'s `share.go` and `cache.go` | `pkg/health`, with RFC 25's registry and watchdog beside the `Checker`, `Report` and `wrap.go` helpers the stores implement | those two deleted in epic 1 |
@@ -222,7 +222,7 @@ without it.
 - the new `cmd/dfs`, whose commands are wired to stub bodies.
 
 The kvstore view's methods with `expect` and amendment A3's entry point are epic 2's, which
-declares and fills them together; `pkg/apiclient`'s client is epic 4's, which lands it whole with
+declares and fills them together; the client, `pkg/node/apiv1/client`, is epic 4's, which lands it whole with
 its core.
 
 **The seams it exposes:**
@@ -390,11 +390,11 @@ registers no suite and no group, and changes no `lint-go` tag.
 11. **A symbol is exported only if RFC 23's interface uses it.** The exported surface is:
     - `internal/node`'s `New`, `Start`, `Stop` and `Config`;
     - `pkg/node/apiv1`'s wire types;
-    - `pkg/apiclient`'s client;
+    - the client, `pkg/node/apiv1/client`;
     - kvstore's view methods.
 
     The node's surface and the shared wire types are frozen at S1; kvstore's view methods when
-    epic 2 lands them, `pkg/apiclient`'s client when epic 4 lands it, and each resource's wire
+    epic 2 lands them, the client, `pkg/node/apiv1/client`, when epic 4 lands it, and each resource's wire
     types with the epic that serves it. A deferred action or resource adds an `OpKind`, a code or a type
     additively, as RFC 23 §9 allows within a major version. The route table, the write path and the
     problem table stay unexported inside `internal/node/api`. The token code is the one exception:
@@ -553,7 +553,7 @@ internal/node/api/auth/       sign-in, tokens, sessions, roles, throttling, the 
                               signing key; imported by internal/node/api only (rule 11)
 internal/node/nodetest/       in-process node harness (KV, clock, 127.0.0.1:0)          E3, E5
 pkg/node/apiv1/               wire types, standard library only, one file per resource  E1 shared, E4, E5
-pkg/apiclient/                client on pkg/node/apiv1 (same path as v1's): its core,   E4, E6
+pkg/node/apiv1/client/        client of pkg/node/apiv1's wire: its core,               E4, E6
                               one generic resource, the accessors in one file
 cmd/dfsctl/commands/<noun>/   CLI: one sub-package per noun, bodies rebuilt             E6
 pkg/health/                   + RFC 25's registry and watchdog, the parts used          E3
@@ -1318,7 +1318,7 @@ error to a status.
 - RFC 23 §7, the client's transport and core;
 - RFC 23 §4.1 to §4.4, §4.5's server side, §4.6's reading and cancel, §4.7;
 - RFC 23 §6's write and reading;
-- RFC 23 §9, version discovery, and its client rules in `pkg/apiclient`'s core;
+- RFC 23 §9, version discovery, and its client rules in `pkg/node/apiv1/client`'s core;
 - RFC 23 §11's `api_` series;
 - RFC 13 §6 as a caller: the write path leaves the slot that the RFC 13 plan's epic 5 fills with
   `Check` (X3).
@@ -1400,7 +1400,7 @@ error to a status.
   package uses.
 - Each resource's spec and status types in `pkg/node/apiv1`, with the route that serves it; the
   token, session and sign-in types are epic 5's.
-- After the shares' routes, `pkg/apiclient`, landed whole with the API tests that are its first consumer: one generic
+- After the shares' routes, `pkg/node/apiv1/client`, landed whole with the API tests that are its first consumer: one generic
   `Resource[Spec, Status]` (`List`, `Get`, `Create`, `Replace`, `Patch`, `Delete`), each resource's
   accessor added with its route, and its core: the transport over a URL or the local socket, problem decoding, the `ETag` echoed, one
   idempotency key per command reused across its retries, `?wait=`, and the version check at first
