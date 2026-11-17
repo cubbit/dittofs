@@ -1083,17 +1083,17 @@ func (s *Server) JoinStep(ctx context.Context, op entity.Operation) (step.StepRe
 	case 3: // online: done; End writes identity.netbios_name, upper-cased, [A-Z0-9-], at most 15 bytes
 		// (A2, A10), and Installation.Join's Joined, with the operation's end;
 		// offline writes them after its second rotation is confirmed, at the end of the default branch
-		if !offline(op) {
-			return step.StepResult{Done: true, End: s.joined(op)}, nil
+		if !offline(op) { // Next kept, so JoinProgress reads a finished join's last phase
+			return step.StepResult{Next: stepBytes(n + 1), Done: true, End: s.joined(op)}, nil
 		}
 	default: // offline only: rotateMachinePassword's steps twice, so the join is done once the second is confirmed
 		rotated, err := s.rotateStep(ctx, op, n)
 		if err != nil {
-			return step.StepResult{}, err // retried from the same op.Step; a *apiv1.Problem fails the join
+			return step.StepResult{}, err // retried: the runner commits nothing, so op.Step stays; a *apiv1.Problem fails the join
 		}
 		if rotated { // the second closing rotation's confirm read step 1's kvno plus two at a DC accepting
 			// its version; any other number failed the join in rotateStep (RFC 18 §3.5, A17)
-			return step.StepResult{Done: true, End: s.joined(op)}, nil
+			return step.StepResult{Next: stepBytes(n + 1), Done: true, End: s.joined(op)}, nil
 		}
 	}
 	return step.StepResult{Next: stepBytes(n + 1)}, nil
