@@ -108,9 +108,9 @@ func requestID(ctx context.Context) string {
 }
 
 // handle answers r by the row of rows it names, none naming it when rows is
-// nil, once enter admits it, and records the call: its series and its span, named by the row's op,
-// and, for an error the problem table does not name, a log line carrying
-// the request's ID. The span carries the resource's pattern, the path's ID
+// nil, once enter admits it, and records the call: its series and its span,
+// named by the row's op, and, for an error the problem table does not name,
+// a log line carrying the request's ID. The span carries the resource's pattern, the path's ID
 // once it parses and the outcome, never a body field.
 func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 	start := time.Now()
