@@ -52,6 +52,7 @@ type Node struct {
 	runner   *runner
 	rec      reconciler
 	status   statusWriter
+	sweep    sweeper
 	health   *health.Evaluator
 	watchdog *health.Watchdog
 	api      *api.Server
@@ -99,7 +100,7 @@ func build(cfg Config) (*Node, error) {
 	if cfg.Bootstrap.APIAddr == "" || cfg.Bootstrap.MetricsAddr == "" {
 		return nil, errors.New("node: Config.Bootstrap.APIAddr and MetricsAddr must both be set")
 	}
-	n := &Node{cfg: cfg, rec: newReconciler()}
+	n := &Node{cfg: cfg, rec: newReconciler(), sweep: newSweeper()}
 	var err error
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
 		return nil, fmt.Errorf("node: metadata store: %w", err)
@@ -125,6 +126,9 @@ func build(cfg Config) (*Node, error) {
 	}
 	if err := reg.Register(nodeSeries{n}); err != nil {
 		return nil, fmt.Errorf("node: node series: %w", err)
+	}
+	if err := reg.Register(n.sweep.idempotency); err != nil {
+		return nil, fmt.Errorf("node: sweep series: %w", err)
 	}
 	n.health = &health.Evaluator{}
 	n.health.Add(&engineConditions{n.engine.Stats})

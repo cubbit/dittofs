@@ -462,8 +462,8 @@ func (n *Node) applied(ctx context.Context) error {
 	}
 }
 
-// startReconcile runs the first full reconcile, then the loop and the
-// status writer, each watched by the watchdog, until Stop.
+// startReconcile runs the first full reconcile, then the loop, the status
+// writer and the expiry sweep, each watched by the watchdog, until Stop.
 func (n *Node) startReconcile(ctx context.Context) error {
 	n.rec.again = true
 	if err := n.pass(ctx); err != nil {
@@ -471,7 +471,7 @@ func (n *Node) startReconcile(ctx context.Context) error {
 	}
 	loopCtx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	for name, run := range map[string]func(context.Context, *health.Loop){stepReconcile: n.reconcileLoop, stepStatus: n.statusLoop} {
+	for name, run := range map[string]func(context.Context, *health.Loop){stepReconcile: n.reconcileLoop, stepStatus: n.statusLoop, stepSweep: n.sweepLoop} {
 		loop := n.watchdog.Loop(name)
 		wg.Go(func() {
 			defer loop.Close()
