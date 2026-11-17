@@ -517,7 +517,11 @@ func TestTwoChainsAreAnsweredOutOfOrder(t *testing.T) {
 			}
 		}
 		s.serve(pair(120, "first")...)
-		<-hold.Reached()
+		select {
+		case <-hold.Reached():
+		case <-time.After(time.Hour):
+			t.Fatal("the first chain's Create never reached the service")
+		}
 		s.serve(pair(130, "second")...)
 		rs, err := s.client.Recv()
 		if err != nil || len(rs) != 2 || rs[0].ID != 130 {
@@ -1927,6 +1931,46 @@ func TestAChainRunsOffTheReader(t *testing.T) {
 		hold.Release()
 		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
 			t.Errorf("the chain is answered %+v, %v", rs, err)
+		}
+	})
+}
+
+// An Unwrap refusal of a related member after a Decode refusal's record goes
+// out in a record of its own, wrapped, where the Decode refusal's is not.
+func TestAnUnwrapRefusalAfterADecodeRefusalIsWrapped(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		codec := &refusesAt{off: -1}
+		s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
+			codec.HeaderCodec = st.Header
+			st.Header = codec
+		})
+		b, offs := chainOf(s.f, echoIn(1, 7), echoIn(2, 7), echoIn(3, inherited))
+		codec.off = offs[1]
+		b[offs[2]+headerLen+1] ^= 1 // a byte of the third's payload
+		s.serveBody(b)
+		ids, sums := recordsOf(t, s, 3)
+		if !slices.EqualFunc(ids, [][]uint64{{1}, {2}, {3}}, slices.Equal) || sums[1][0] || !sums[2][0] {
+			t.Errorf("the records are %v, checksummed %v: want each member alone, the Decode refusal unwrapped and the Unwrap refusal wrapped", ids, sums)
+		}
+	})
+}
+
+// A later member Admit refuses outright, not for a wait, is answered its
+// refusal in the chain's record, with no split: only a wait splits.
+func TestALaterMemberAdmitRefusesSharesTheRecord(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newChained(t, 1<<20, adapter.Deps{Metrics: m})
+		over := echoIn(2, 7)
+		over.Credits = 1000
+		s.serve(echoIn(1, 7), over)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[0].Status != testproto.StatusOK || rs[1].ID != 2 || rs[1].Status != testproto.StatusOverdraw {
+			t.Errorf("the chain is answered %+v, %v: want the Echo and the overdraw refused, in one record", rs, err)
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=flow}"; got[k] != 0 {
+			t.Errorf("%s = %v, want 0", k, got[k])
 		}
 	})
 }
