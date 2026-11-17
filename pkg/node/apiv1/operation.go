@@ -27,12 +27,16 @@ type Ref struct {
 	ID   string `json:"id"`
 }
 
-// Principal is an account: its kind and its ID. The zero value on an
-// Operation means no account started it, as for a scheduled operation.
+// Principal is an account: its kind and its ID. The schedule, which acts
+// as no account, is the kind ScheduleKind with no ID.
 type Principal struct {
 	Kind string `json:"kind"`
-	ID   string `json:"id"`
+	ID   string `json:"id,omitempty"`
 }
+
+// ScheduleKind is the schedule's kind, as a read spells an actor and as the
+// audit's actor filter takes it.
+const ScheduleKind = "schedule"
 
 // OpState is where an operation is in its life.
 type OpState string

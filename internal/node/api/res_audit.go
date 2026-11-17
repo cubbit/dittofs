@@ -69,7 +69,7 @@ func auditFilter(q map[string]string) (f entity.AuditFilter, err error) {
 	}
 	if v, ok := q["actor"]; ok {
 		p := entity.Principal{}
-		if v != "schedule" {
+		if v != apiv1.ScheduleKind {
 			if p, err = entity.ParsePrincipal(v); err != nil {
 				return f, &fieldError{field: "actor", detail: "not kind:id or schedule"}
 			}

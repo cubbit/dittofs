@@ -9,7 +9,7 @@ import (
 // name and credential, on which node and from where, the request, its
 // target with the target's generation before and after, the spec fields it
 // changed, and its outcome: applied, refused with its problem code, or the
-// operation it started. A zero Actor is the schedule.
+// operation it started.
 type AuditRecord struct {
 	ID         string          `json:"id"`
 	Time       time.Time       `json:"time"`

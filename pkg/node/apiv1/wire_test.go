@@ -49,6 +49,7 @@ func TestWireBodies(t *testing.T) {
 		{"progress", op.Progress, new(Progress), []string{"done", "phase", "total", "unit"}},
 		{"target", op.Target, new(Ref), []string{"id", "kind"}},
 		{"account", op.Account, new(Principal), []string{"id", "kind"}},
+		{"the schedule", Principal{Kind: ScheduleKind}, new(Principal), []string{"kind"}},
 		{"version", Version{Majors: []string{"v1"}}, new(Version), []string{"majors"}},
 		{"sign-in", SignIn{Name: "alice", Password: "pw"}, new(SignIn), []string{"name", "password"}},
 		{"tokens", Tokens{Access: "a.b.c", Refresh: "r1"}, new(Tokens), []string{"access_token", "refresh_token"}},
