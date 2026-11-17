@@ -810,9 +810,10 @@ var Settings = settings.Table{
 // entity.ControlPlaneTx, settings.Write, T) error), a check that reads store state beyond settings,
 // tracked, in the write's transaction, handed the write so it can return at once for a key it does
 // not guard (RFC 13 §6; RFC 18's plan's E2 refusing an identity.id_range at or below the ID counters'
-// marks). Of panics on a missing or unknown class, a duplicate field name, or a Required or SecretRef
-// name that is not a field of T, so a typo fails the table's first test instead of making a restart
-// or bound key live.
+// marks). Of panics on a missing or unknown class, a field with no explicit json name (its key
+// is the field's Go name, not a lower-case setting key), a duplicate field name, or a Required
+// or SecretRef name that is not a field of T, so a typo fails the table's first test instead of
+// making a restart or bound key live.
 func Of[T interface{ Validate() error }](prefix string, scope Scope, def T, opts ...Option) Section
 ```
 
@@ -914,7 +915,7 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 		case settings.NextWrite: // nothing to apply: each write loads n.settings, tested at a consumer (epic 5)
 		}
 	}
-	n.settings.Store(&cur) // atomic.Pointer[settings.Snapshot]: Read decoded and validated each value once; Get only looks one up
+	n.settings.Store(cur) // *Snapshot into the atomic.Pointer[settings.Snapshot]: Read decoded and validated each value once; Get only looks one up
 	return n.reportGeneration(ctx, cur.Generation) // NodeStatus.Settings (RFC 16 §2.4)
 }
 
@@ -1034,8 +1035,10 @@ func (p *Provider) Prune(ctx context.Context, kind entity.SecretKind, owner enti
 The three packages' exported surfaces and the kvstore views' signatures, frozen for the epics that
 fill them in.
 
-**Owns:** RFC 13 §2.2's facts (but its scratch paths), §5's classes and §7's provider, as
-declarations; RFC 16's `Setting` and `Secret` signatures.
+**Owns:** the user surface E1's breakdown (`rfc-13-config-epic1.md`) settles as RFC 13 text in
+its T1.1 (Appendix C, the refusal's §6 shape, Appendix B's value conventions); RFC 13 §2.2's
+facts (but its scratch paths), §5's classes and §7's provider, as declarations; RFC 16's
+`Setting` and `Secret` signatures.
 
 **Done when:** `pkg/config` is gone and `pkg/bootstrap` builds in its place, with every importer;
 the three packages and the views compile with stub bodies.
@@ -1052,6 +1055,11 @@ the three packages and the views compile with stub bodies.
 - The kvstore settings view's delete and cross-scope read, and the secrets view.
 - The freeze review: the surface is S1, so every symbol S1 lists is checked against its first
   caller.
+- The user surface settled first, as RFC 13 text: Appendix C, the refusal's §6 shape and
+  Appendix B's value conventions, on `develop` and reviewed before any code of E1 to E3 builds
+  on them (E1's breakdown, its T1.1).
+- `keyprovider` moved to `pkg/keyprovider`, with its importers (D5), which E1's breakdown does
+  as its D3.
 
 ### Epic 2 — Bootstrap, node identity and versions
 
@@ -1148,7 +1156,9 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   for the sections RFC 13 Appendix B writes by `admin` only (`identity.oidc`, `api.oidc_role_map`,
   `identity.directory`, A1, and the others RFC 23 §5.2 lists), compared by `entity.APIRole`'s order; its `PerThing` scope for Appendix B's
   "per journal" rows; its `SecretRef` fields with their kinds (D10); and `Of` refusing a class,
-  `Required` or `SecretRef` name that is not a field of `T`.
+  a field with no explicit `json` name (whose key would be the field's Go name), a
+  duplicate name after the flattening, or a `Required` or `SecretRef` name that is not a field
+  of `T`.
 - The snapshot, `Read` and `Get`: `Read` decodes each section on its own, takes the installation
   value, then the narrower override, per thing where the scope is per thing, decoded strictly over
   the defaults with keys matched exactly as declared (Go's JSON decode matches field names
@@ -1443,6 +1453,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | Reconcile reading only records above its position, with an index by position (§4.3's `ponytail:`) | one prefix scan per generation move | unowned | the scan shows at the settings count of 10⁴ shares |
 | The cross-component rule, RFC 13 §6's example (§4.3's `ponytail:`) | its second setting, `migration.freeze_timeout`, does not exist | unowned | that setting is declared |
 | A per-role passphrase variable for key files (§4.3's `ponytail:`) | `keyprovider` reads one variable | unowned | two roles need distinct passphrases |
+| The replacement of `kmip_fake_test.go`'s canned KMIP server, a fake that passes a conformance suite; the canned server itself moves with `keyprovider` (D5, E1's D3) | the move changes no line of it, so the "no canned stub" rule does not fire on it | unowned | the fake's first change, or its first new caller |
 | Appendix B sections no component has declared (D3, O4) | each section is its component's plan's | each component's plan | that plan declares the section |
 | "§5 adapter port" (O1, §1.4) | needs a serving adapter and its rebuild | RFC 20 plan, epic 7 | RFC 20's epic 7 lands |
 | RFC 13 §6's port rule at start: a port equal to the API's or metrics port taking that adapter or the port mapper out (epic 5, O1) | needs a serving adapter | RFC 20 plan, epic 7 | RFC 20's epic 7 lands |
