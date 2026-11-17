@@ -2,6 +2,7 @@ package core_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -401,6 +402,36 @@ func TestADrainedCompound(t *testing.T) {
 		}
 		if got, _ := scrape(t, m); got["adapter_refusals_total{protocol="+testproto.Name+",stage=resolve_ids}"] != 1 {
 			t.Errorf("the drained compound counted %v under resolve_ids, want 1", got["adapter_refusals_total{protocol="+testproto.Name+",stage=resolve_ids}"])
+		}
+	})
+}
+
+// A member whose call the connection's close ended ends the compound with
+// nothing sent and no member after it run: the close's cancel is no error, so
+// nothing counts as an error no row maps and nothing logs at error. The second
+// Create's call is ended as a call under the closed connection's context
+// ends, with its cancel.
+func TestAMemberCallTheCloseEndsIsNoError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, logs := metrics.New("v", "c"), &logSink{}
+		s := newServed(t, 1<<20, adapter.Deps{Metrics: m, Logger: logs.logger()})
+		hold := s.faults.Hold(vfs.OpCreate)
+		s.faults.Fail(vfs.OpCreate, context.Canceled)
+		s.compound(1, testproto.Msg{Op: testproto.OpPutFH, Handle: s.root}, testproto.Msg{Op: testproto.OpCreate, Name: "a"}, testproto.Msg{Op: testproto.OpCreate, Name: "b"}, testproto.Msg{Op: testproto.OpCreate, Name: "c"})
+		<-hold.Reached()
+		s.p.Close()
+		if err := s.p.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 0 {
+			t.Errorf("%s = %v after the close ended a member's call, want 0", k, got[k])
+		}
+		if e := logs.at(t, "ERROR"); len(e) != 0 {
+			t.Errorf("a member's call the close ended logged at error: %v", e)
+		}
+		if n := s.creates(); n != 1 {
+			t.Errorf("the compound made %d files, want only the first: no member runs after the one the close ended", n)
 		}
 	})
 }

@@ -255,7 +255,8 @@ func (p *pipeline) compound(tr *track, h Header, r *Request, tb *OpTable, row *O
 // before left it. A refusal counts under the stage that refused it, in the
 // members' table's series. send is false for an error a NoReply row maps,
 // which leaves the whole compound unanswered (RFC 20 §4.3): a results array
-// cut short under a success is malformed.
+// cut short under a success is malformed; and for a call the connection's
+// close ended, which is mapped as no error.
 func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m member, r *Request, v Version) (s Status, send bool, err error) {
 	err = p.check(m.op, r)
 	if err != nil {
@@ -283,6 +284,10 @@ func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m membe
 		return 0, true, nil
 	case errors.Is(err, errPanicked):
 		return errs.fault, true, err
+	case p.endedByClose(err):
+		// A call the close ended is no error: the compound ends unsent, as
+		// unanswered ends it.
+		return 0, false, err
 	}
 	s, send = p.mapped(tr, errs, err, m.op, v, true)
 	return s, send, err
