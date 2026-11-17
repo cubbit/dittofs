@@ -412,8 +412,9 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   `fixture_test.go`'s AES-only subtest); `capture-pacs.sh`, which runs `TestADPACCapture` with
   `DITTOFS_AD_DC_PAC_OUT` set and writes `tgt.pac` with `krbtgt.keytab` and `service.pac` with
   `service.keytab`; `docs/guide/identity.md`'s account of the fixture, and its instruction to
-  change the KDC at once when every node reports a new keytab version, since RFC 23 §3.3's
-  rotation prunes the old version 10 hours plus the skew after that report. The fixture's TLS part is
+  change the KDC at once when every node reports a new keytab version: RFC 13 §7 starts the
+  old version's retention at the change at the KDC, which the rotation cannot observe (§9), so a
+  KDC changed late can find its key pruned. The fixture's TLS part is
   E6's and its join part E7's.
 - **Acceptance criteria:**
   - The KDC refuses a service ticket for the imported `cifs/` name under RC4 and issues one under
@@ -858,13 +859,11 @@ the version this document was written against.
 - RFC 18 §3.1's `SignInStep` has no transport, so §9.2's `protocol` label and RFC 22 §4.1's
   SMB-only address check have no source; D15 adds `Transport`, which the RFC 21 and RFC 22 plans'
   adapters set.
-- RFC 18 §3.3 and RFC 13 §7 count an imported key's retention from "the change at the KDC",
-  which identity cannot see; RFC 23 §3.3's rotation, which removes the old version (D13), counts
-  it from every node reporting the new one. RFC 18 §3.3 should defer to RFC 23 §3.3. RFC 23 §3.3
-  counts the retention from every node reporting the new version, not from the KDC change, so a
-  KDC changed later than the nodes' report loses the only key it still uses when the rotation
-  prunes it, and every Kerberos sign-in fails until it changes; `docs/guide/identity.md` says to
-  change the KDC at once.
+- RFC 23 §3.3 keeps the old version for the retention RFC 13 §7 names for a keytab (RFC 18
+  §3.3's 10 hours plus the skew after the change at the KDC). The rotation cannot observe that
+  event, so a rotation that starts the retention at the nodes' report prunes early, and a KDC
+  changed later loses the only key still in use. RFC 23 §3.3 should say where the retention starts
+  and how the rotation learns of the KDC change.
 - RFC 13 §7 has the control plane report that an old keytab version may be revoked at its
   service; RFC 23 §3.3's rotation reports the nodes still holding the old version and deletes it,
   and names no revocation report. RFC 23 §3.3 should name it, at the prune, so the report has an
