@@ -19,8 +19,13 @@ var (
 	errNotCall     = errors.New("nfs: the message is not a call")
 )
 
-// the statuses are the refusals', the two high bits of a status naming its
-// layer: an accept state, RPC_MISMATCH, or AUTH_ERROR with its auth_stat.
+// decision: the two high bits of a status name a refusal's layer, since one
+// uint32 holds a program's status or an RPC accept or reject state (RFC 20
+// section 4.7): 0 a program's status inside an accepted success, 1 an accept
+// state, 2 RPC_MISMATCH, 3 AUTH_ERROR with its auth_stat in the low bits. No
+// program's status reaches those bits: nfsstat3, nfsstat4, mountstat3, NLM's
+// and NSM's codes all lie below 2^16. A row of the RFC 21 plan that names
+// these constants carries its status among them.
 var (
 	statusRPCMismatch  = core.Status(wire.StatusMismatch)
 	statusProgUnavail  = core.Status(wire.StatusAccept | wire.AcceptProgUnavail)
