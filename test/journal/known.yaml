@@ -470,7 +470,7 @@
   category: feature
   reason: 'Stats serves UsedBytes; the check now stops on a stub call after it reads it. Needs segments, their accounting and the data path.'
   issue: '#3378'
-  message: 'after an idle seal: UsedBytes = 9704400 with its listed segments accounted at 0'
+  message: 'with its listed segments accounted at 0'
 
 - test: TestRFC1D_BacklogAge
   status: fail
