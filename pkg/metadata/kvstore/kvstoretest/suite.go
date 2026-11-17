@@ -147,6 +147,8 @@ func Run(t *testing.T, open Opener) {
 		{"SignInFailures", testSignInFailures},
 		{"SignInFailuresRace", testSignInFailuresRace},
 		{"ClearSourceSignIns", testClearSourceSignIns},
+		{"SweepRacesRefresh", testSweepRacesRefresh},
+		{"SweepStaleRows", testSweepStaleRows},
 		{"Positions", testPositions},
 		{"PrincipalsRaisedOncePerWrite", testPrincipalsRaisedOncePerWrite},
 		{"PrincipalRemovalsRaise", testPrincipalRemovalsRaise},
