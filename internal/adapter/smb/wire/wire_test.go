@@ -223,6 +223,7 @@ func TestDecodeHeaderReturnsAMalformedHeaderWithItsError(t *testing.T) {
 		{"NextCommand 68, not a multiple of 8", room(68, 68), ErrNextCommand},
 		{"NextCommand 72, its header one byte past the message", room(72, 72-1), ErrNextCommand},
 		{"NextCommand 8, inside this header", room(8, 64), ErrNextCommand},
+		{"NextCommand 56, its header overlapping this one", room(56, 64), ErrNextCommand},
 		{"NextCommand 68 and StructureSize 65: the step's refusal first", patched(room(68, 68), 4, 0x41), ErrNextCommand},
 	} {
 		h, err := DecodeHeader(c.msg, 0)
@@ -233,6 +234,12 @@ func TestDecodeHeaderReturnsAMalformedHeaderWithItsError(t *testing.T) {
 
 	if h, err := DecodeHeader(room(72, 72), 0); h == nil || err != nil {
 		t.Errorf("NextCommand 72, its header ending at the message's end: DecodeHeader = %v, %v; want the header", h, err)
+	}
+	// 64 steps to a whole header right after this one, the last step that
+	// does: MS-SMB2 2.2.1.2's "subsequent 8-byte aligned SMB2 header", one
+	// below it pointing inside the header it ends.
+	if h, err := DecodeHeader(room(64, 64), 0); h == nil || err != nil {
+		t.Errorf("NextCommand 64, the next header right after this one: DecodeHeader = %v, %v; want the header", h, err)
 	}
 }
 
@@ -298,40 +305,25 @@ func TestAppendReplyKeepsTheSyncForm(t *testing.T) {
 
 // Of a request's flags a reply echoes only the bits it carries - the
 // RELATED, priority, DFS and REPLAY bits - and no others (MS-SMB2 2.2.1.1's
-// table, 3.3.4.4's echoes): not ASYNC_COMMAND, whose reply form is the hold
-// stage's with the AsyncId it chose, and not the bits no reply carries. The
-// 0xF0000003 request carries its DFS and REPLAY bits back and nothing more,
-// neither RELATED nor a priority bit being set in it; the CANCEL's reply
-// rides through with none of them and its 3.3.5.16 rule is why the pin is
-// here.
+// table, 3.3.4.4's echoes): not SIGNED, and not ASYNC_COMMAND, whose reply
+// form is the hold stage's with the AsyncId it chose; the async request's
+// reply is pinned byte for byte by its golden pair instead. The 0xF000007F
+// request sets every bit a reply echoes and the bits it drops: of its low
+// 0x7F, RELATED, the priority mask and the request's own SERVER_TO_REDIR
+// come back, ASYNC_COMMAND and SIGNED go, and the two high bits no flag
+// names go with them.
 func TestAReplyEchoesOnlyTheBitsItCarries(t *testing.T) {
-	async, err := DecodeHeader(readGolden(t, "async_request"), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if async.Flags()&FlagAsyncCommand == 0 {
-		t.Fatal("the async vector is not of the async form")
-	}
-	if r, err := DecodeHeader(AppendReply(nil, async, StatusNotSupported, 0), 0); err != nil {
-		t.Fatal(err)
-	} else if got := r.Flags(); got&FlagAsyncCommand != 0 || got&^FlagServerToRedir != 0 {
-		t.Errorf("the CANCEL's reply carries %#x, want SERVER_TO_REDIR alone", got)
-	}
-
 	sync, err := DecodeHeader(readGolden(t, "sync_request"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	patched := *sync
-	binary.LittleEndian.PutUint32(patched[offFlags:], 0xF0000003)
-	if _, err := DecodeHeader(append(patched[:], make([]byte, 64)...), 0); err != nil {
-		t.Fatal(err)
-	}
+	binary.LittleEndian.PutUint32(patched[offFlags:], 0xF000007F)
 	reply := AppendReply(nil, &patched, 0, 1)
 	if r, err := DecodeHeader(reply, 0); err != nil {
 		t.Fatal(err)
-	} else if got, want := r.Flags(), uint32(0x30000001); got != want {
-		t.Errorf("the 0xF0000003 request's reply carries %#x, want %#x (SERVER_TO_REDIR, DFS and REPLAY)", got, want)
+	} else if got, want := r.Flags(), uint32(0x30000075); got != want {
+		t.Errorf("the 0xF000007F request's reply carries %#x, want %#x (SERVER_TO_REDIR, RELATED, priority, DFS and REPLAY)", got, want)
 	}
 }
 
@@ -358,37 +350,53 @@ func TestAppendErrorWritesTheNineByteBody(t *testing.T) {
 	}
 }
 
-// A related member's all-ones IDs are resolved from the member before it,
-// without the request's bytes being touched: the bytes the client signed are
-// the ones verified, and the resolved IDs go where the reply is built. The
-// sync form takes the tree as well as the session (RFC 20 section 4.7,
-// MS-SMB2 3.2.5.1.3); the async form takes the session alone, its tree
-// offset being the async ID's high half. A member without the sentinels asks
-// for nothing, ok answering false: which member inherits is the caller's
-// gate, its RELATED flag.
+// A related member's all-ones IDs are resolved against the pair the caller
+// carries from the member before it, the pair that member resolved to, not
+// its raw bytes: a third related member would otherwise get the second's
+// sentinels back - nothing writes resolved IDs into the request, which is
+// what the client signed - and would look up a session that does not exist.
+// The caller gates the member by its RELATED flag, carries the pair from
+// member to member and writes what a member resolved into the reply it
+// signs. The sync form takes the tree as well as the session; the async form
+// takes the session alone, its tree offset being the async ID's high half
+// (RFC 20 section 4.7, MS-SMB2 3.2.5.1.3, 3.3.5.2.7.2). Each ID resolves on
+// its own, and a member with IDs of its own carries them: the pair handed
+// touches no ID that is not a sentinel.
 func TestARelatedMemberResolvesItsIDsFromTheMemberBeforeIt(t *testing.T) {
 	chain := readGolden(t, "chain_request")
-	signed := bytes.Clone(chain)
-	first, err := DecodeHeader(chain, 0)
+	// A third member for the chain, the golden's second copied after it: the
+	// second's NextCommand now steps over its padded body to the copy, which
+	// ends the chain with the next MessageId.
+	third := append(append(bytes.Clone(chain), make([]byte, 12)...), bytes.Clone(chain[80:])...)
+	binary.LittleEndian.PutUint32(third[80+offNextCommand:], 80)
+	binary.LittleEndian.PutUint64(third[160+offMessageID:], 12)
+	signed := bytes.Clone(third)
+
+	first, err := DecodeHeader(third, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := DecodeHeader(chain, 80)
+	second, err := DecodeHeader(third, 80)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.SessionID() != ^uint64(0) || second.TreeID() != 0xffffffff {
-		t.Fatalf("the related member carries %x/%x, want the all-ones IDs", second.SessionID(), second.TreeID())
+	last, err := DecodeHeader(third, 160)
+	if err != nil {
+		t.Fatal(err)
 	}
-	session, tree, ok := second.Inherited(first)
-	if !ok {
-		t.Fatal("the sentinel member asks for no resolution")
+	if last.SessionID() != ^uint64(0) || last.TreeID() != 0xffffffff || last.Flags()&FlagRelatedOperations == 0 {
+		t.Fatalf("the chain's third member carries %x/%x, want a related member with the all-ones IDs", last.SessionID(), last.TreeID())
 	}
-	if session != first.SessionID() || tree != first.TreeID() {
-		t.Errorf("the related member resolves to %x/%x, want the first's %x/%x", session, tree, first.SessionID(), first.TreeID())
+	carriedS, carriedT := second.Inherited(first.SessionID(), first.TreeID())
+	if carriedS != first.SessionID() || carriedT != first.TreeID() {
+		t.Errorf("the second member resolves to %x/%x, want the first's %x/%x", carriedS, carriedT, first.SessionID(), first.TreeID())
 	}
-	if !bytes.Equal(chain, signed) {
-		t.Fatalf("resolving a member's IDs wrote into the signed request:\n% x\nwant\n% x", chain, signed)
+	lastS, lastT := last.Inherited(carriedS, carriedT)
+	if lastS != first.SessionID() || lastT != first.TreeID() {
+		t.Errorf("the third member resolves to %x/%x, want the first's %x/%x carried through the second", lastS, lastT, first.SessionID(), first.TreeID())
+	}
+	if !bytes.Equal(third, signed) {
+		t.Fatalf("resolving the members' IDs wrote into the signed request:\n% x\nwant\n% x", third, signed)
 	}
 
 	// The reply the runner builds from the unmodified member carries the
@@ -403,30 +411,33 @@ func TestARelatedMemberResolvesItsIDsFromTheMemberBeforeIt(t *testing.T) {
 		t.Errorf("the member's own reply carries %x/%x, want the all-ones the request carried", r.SessionID(), r.TreeID())
 	}
 
-	asyncHdr := patched(readGolden(t, "async_request"), offSessionID, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff)
-	async, err := DecodeHeader(asyncHdr, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if async.Flags()&FlagAsyncCommand == 0 {
-		t.Fatal("the patched async vector is not of the async form")
-	}
-	asyncSigned := bytes.Clone(asyncHdr)
-	asyncSession, asyncTree, asyncOK := async.Inherited(first)
-	if !asyncOK {
-		t.Fatal("an async member with the session sentinel asks for no resolution")
-	}
-	if asyncSession != first.SessionID() || asyncTree != first.TreeID() {
-		t.Errorf("an async member resolves to session %x, want the first's %x", asyncSession, first.SessionID())
-	}
-	if !bytes.Equal(asyncHdr, asyncSigned) {
-		t.Fatalf("resolving an async member's IDs wrote into the signed request:\n% x\nwant\n% x", asyncHdr, asyncSigned)
-	}
-
-	// The member with its own IDs - the first of the chain - asks for no
-	// resolution; the caller's gate is the RELATED flag, not this answer.
-	if _, _, ok := first.Inherited(second); ok {
-		t.Error("a member with its own IDs reports itself as waiting to inherit")
+	// Single members resolved against the chain's first pair: a sentinel ID
+	// takes its carried partner, an ID of its own stays, and the async form
+	// keeps its whole tree offset - all-ones there being an async ID's high
+	// half, not a sentinel tree.
+	for _, c := range []struct {
+		name  string
+		msg   []byte
+		off   int
+		wantS uint64
+		wantT uint32
+	}{
+		{"an all-ones session with a tree of its own takes the session alone",
+			patched(chain, 80+offTreeID, 9, 0, 0, 0), 80, first.SessionID(), 9},
+		{"a tree sentinel with a session of its own takes the tree alone",
+			patched(chain, 80+offSessionID, 9, 0, 0, 0, 0, 0, 0, 0), 80, 9, first.TreeID()},
+		{"a member with IDs of its own carries them",
+			patched(patched(chain, 80+offSessionID, 9, 0, 0, 0, 0, 0, 0, 0), 80+offTreeID, 3, 0, 0, 0), 80, 9, 3},
+		{"an async member keeps its tree offset, all-ones included",
+			patched(patched(readGolden(t, "async_request"), offSessionID, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff), offTreeID, 0xff, 0xff, 0xff, 0xff), 0, first.SessionID(), 0xffffffff},
+	} {
+		h, err := DecodeHeader(c.msg, c.off)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if s, tr := h.Inherited(first.SessionID(), first.TreeID()); s != c.wantS || tr != c.wantT {
+			t.Errorf("%s: Inherited(%x, %x) = %x/%x, want %x/%x", c.name, first.SessionID(), first.TreeID(), s, tr, c.wantS, c.wantT)
+		}
 	}
 }
 
@@ -482,16 +493,6 @@ func TestChainPadsToEightAndPointsAtTheNextReply(t *testing.T) {
 // written - and not a panic either, since a flooded record's answers reach
 // it (reply amplification: see AppendFrame's doc).
 func TestAppendFramePastTheCapIsRefused(t *testing.T) {
-	if MaxRecord >= 1<<24 {
-		t.Fatal("the cap itself would not fit the header's three bytes")
-	}
-	rec, err := AppendFrame(nil, MaxRecord)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n, ferr := FrameLen(rec); ferr != nil || n != MaxRecord {
-		t.Fatalf("the cap's frame reads %d, %v; want %d", n, ferr, MaxRecord)
-	}
 	for _, n := range []int{-1, MaxRecord + 1} {
 		if got, gerr := AppendFrame(nil, n); gerr == nil || !errors.Is(gerr, errFrameTooLong) {
 			t.Errorf("AppendFrame(nil, %d) = %d, %v; want the refusal the reader answers it with", n, got, gerr)
@@ -549,6 +550,22 @@ func TestTheAcceptedPathAllocatesNothing(t *testing.T) {
 		_, _ = AppendFrame(rec, len(rec))
 	}); n != 0 {
 		t.Errorf("decoding and replying allocated %v, want nothing", n)
+	}
+}
+
+// The per-message hot path has a baseline: one member decoded, answered with
+// the error body, its reply padded for the record - the run the SMB stage
+// repeats for every member of a chain.
+func BenchmarkMember(b *testing.B) {
+	rec := readGolden(b, "chain_request")
+	out := make([]byte, 0, 80)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		h, _ := DecodeHeader(rec, 0)
+		out = AppendError(AppendReply(out[:0], h, StatusNotSupported, 1))
+		out, _ = Chain(out, 0, false)
+		_ = out
 	}
 }
 

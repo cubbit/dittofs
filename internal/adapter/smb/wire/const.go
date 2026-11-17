@@ -12,21 +12,13 @@ const (
 	HeaderLen = 64
 )
 
-// The protocol IDs that open a message on the Direct TCP stream, read the
-// little-endian field they are (MS-SMB2 2.2.1.2): the stage that sorts a
-// message by what opens it - the reader the RFC 22 plan's sorting belongs
-// to - tells a server's own header, a transform header the reader unwraps
-// (RFC 22 section 4.1), and an SMB1 NEGOTIATE the server answers (RFC 22
-// section 3.1) apart. DecodeHeader runs after that sort; the sort needs the
-// IDs, and no other export does.
-const (
-	ProtocolSMB2      = 0x424D53FE // SMB2, 0xFE 'S' 'M' 'B'
-	ProtocolTransform = 0x424D53FD // the transform header the reader unwraps
-	ProtocolSMB1      = 0x424D53FF // SMB1, an 0xFF NEGOTIATE among others
-)
-
-// protocolID is SMB2's own ID, the one DecodeHeader compares (MS-SMB2 2.2.1.2).
-const protocolID = ProtocolSMB2
+// ProtocolSMB2 is the protocol ID that opens a server's own SMB2 message on
+// the Direct TCP stream, 0xFE 'S' 'M' 'B' read as the little-endian field it
+// is (MS-SMB2 2.2.1.2), the one header DecodeHeader decodes. A transform
+// header the reader unwraps (RFC 22 section 4.1) and an SMB1 NEGOTIATE the
+// server answers (RFC 22 section 3.1) are told apart upstream, and their IDs
+// arrive with the reader that reads them.
+const ProtocolSMB2 = 0x424D53FE
 
 // lastCommand is OPLOCK_BREAK, the highest of the command codes MS-SMB2
 // 2.2.1.2 defines, all those from 0 to it. MS-SMB2 2.2.1.1 adds 0x0013,
@@ -38,7 +30,6 @@ const (
 	FlagServerToRedir     = 0x00000001 // the message is a response
 	FlagAsyncCommand      = 0x00000002 // the header is in its async form
 	FlagRelatedOperations = 0x00000004 // the request is a related member of a chain
-	FlagSigned            = 0x00000008 // the message is signed
 )
 
 // replyFlags is the request's flag bits a reply carries: RELATED_OPERATIONS,
@@ -55,7 +46,4 @@ const (
 const replyFlags = FlagRelatedOperations | 0x00000070 /* PRIORITY_MASK */ | 0x10000000 /* DFS_OPERATION */ | 0x20000000 /* REPLAY_OPERATION */
 
 // The statuses the server's tables name (MS-ERREF 2.3.1).
-const (
-	StatusInvalidParameter = 0xC000000D
-	StatusNotSupported     = 0xC00000BB
-)
+const StatusNotSupported = 0xC00000BB

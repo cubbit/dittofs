@@ -91,24 +91,30 @@ func (h *Header) TreeID() uint32 { return binary.LittleEndian.Uint32(h[offTreeID
 func (h *Header) SessionID() uint64 { return binary.LittleEndian.Uint64(h[offSessionID:]) }
 
 // Inherited is the session and tree a related member of a chain takes from
-// the member before it: its all-ones IDs resolved. ok reports whether h
-// carries those sentinels, a session of all ones with the sync form's tree
-// all ones too, the async form having no tree of its own. It writes
-// nothing: the request's bytes are the ones the client signed, and the IDs
-// are resolved where the reply is built and signed, not in place, or a
-// signed related compound would verify different bytes than the client sent.
-// The caller gates the member: its RELATED flag says it inherits, and the
-// stage that resolves the IDs writes them into the reply, never into the
-// request (RFC 20 section 4.7 has Unwrap take the IDs "from prev before the
-// check"; v1 resolves them on a parsed copy too and verifies the raw bytes).
-func (h *Header) Inherited(prev *Header) (session uint64, tree uint32, ok bool) {
-	session, tree = prev.SessionID(), prev.TreeID()
-	if h.Flags()&FlagAsyncCommand != 0 {
-		ok = h.SessionID() == ^uint64(0)
-	} else {
-		ok = h.SessionID() == ^uint64(0) && h.TreeID() == ^uint32(0)
+// the member before it: its own IDs with their all-ones sentinels resolved
+// against prevSession and prevTree, the pair the caller resolved that member
+// to. Each ID resolves on its own, v1's shape: a member with the session
+// sentinel and a tree of its own takes the session alone, and the other way
+// round. The tree resolves only in the sync form: the async form's tree
+// offset is its async ID's high half, no tree of its own. The caller gates
+// the member by its RELATED flag and carries the resolved pair from member
+// to member, writing the IDs it resolved into the reply it signs, since
+// request bytes also cannot carry a tree the server returned mid-chain
+// (MS-SMB2 3.3.5.2.7.2's previous operation's IDs). It writes nothing: the
+// request's bytes are the ones the client signed, and the IDs are resolved
+// where the reply is built and signed, not in place, or a signed related
+// compound would verify different bytes than the client sent (RFC 20 section
+// 4.7 has Unwrap take the IDs from prev before the check; v1 resolves them
+// on a parsed copy too and verifies the raw bytes).
+func (h *Header) Inherited(prevSession uint64, prevTree uint32) (session uint64, tree uint32) {
+	session, tree = h.SessionID(), h.TreeID()
+	if session == ^uint64(0) {
+		session = prevSession
 	}
-	return session, tree, ok
+	if h.Flags()&FlagAsyncCommand == 0 && tree == ^uint32(0) {
+		tree = prevTree
+	}
+	return session, tree
 }
 
 // DecodeHeader returns the SMB2 header at off in msg, as a view of msg's
@@ -139,16 +145,15 @@ func DecodeHeader(msg []byte, off int) (*Header, error) {
 		return nil, errShort
 	}
 	h := (*Header)(msg[off : off+HeaderLen])
-	if binary.LittleEndian.Uint32(h[offProtocolID:]) != protocolID {
+	if binary.LittleEndian.Uint32(h[offProtocolID:]) != ProtocolSMB2 {
 		return nil, errProtocolID
 	}
 	// decision: a command code MS-SMB2 2.2.1.2 does not define closes the
-	// connection here, though the header is answerable: neither MS-SMB2
-	// 3.3.5.2 nor RFC 22 section 16.5 says which a server owes an unknown
-	// command, and v1 answered STATUS_INVALID_PARAMETER keeping the
-	// connection. Move it to the answerable branch when RFC 22 settles the
-	// row; until then a future or vendor command ends the connection with a
-	// refused decode naming it.
+	// connection, though the header is answerable: MS-SMB2 3.3.5.2.6
+	// disconnects for it and RFC 22 section 16.5 follows, where v1 answered
+	// STATUS_INVALID_PARAMETER and kept the connection. A request carrying
+	// SERVER_TO_CLIENT_NOTIFICATION (0x0013) matches no request structure
+	// and closes the same way.
 	if h.Command() > lastCommand {
 		return nil, errCommand
 	}
@@ -171,13 +176,17 @@ func DecodeHeader(msg []byte, off int) (*Header, error) {
 //
 // The reply is req's header with MS-SMB2 3.3.4.4's changes: the status
 // written, NextCommand 0 until Chain sets it, SERVER_TO_REDIR set, and the
-// grant written as handed, which MS-SMB2 3.3.4.4 has be 0 for a request with
-// an async ID. Of the request's flags it carries the bits replyFlags'
+// grant written as handed. The choice of grant is the answering stage's,
+// which knows what the request was put off with - 3.3.4.4 grants no credits
+// for a request with an async ID - and this codec writes what it is handed.
+// Of the request's flags it carries the bits replyFlags'
 // decision names - RELATED_OPERATIONS, the priority mask, DFS_OPERATION and
 // REPLAY_OPERATION - and not ASYNC_COMMAND, whose reply form belongs to the
 // stage that puts a request off with the AsyncId it chose. So it carries
 // req's command, credit charge (MS-SMB2 3.3.4.1), bits of its flags, message
-// ID, async ID or Reserved and tree ID, and session. SIGNED is cleared and
+// ID, async ID or Reserved and tree ID, and session; the sync form's
+// Reserved and tree ID ride through as copied, where v1 zeroed the
+// Reserved: the capture's replies back the echo. SIGNED is cleared and
 // the signature is zero: a reply is signed, when it is, after it is encoded.
 // Its StructureSize is 64, whatever req's.
 func AppendReply(out []byte, req *Header, status uint32, credits uint16) []byte {
@@ -213,13 +222,16 @@ func AppendError(out []byte) []byte {
 
 // Chain pads the reply at prev in out to a multiple of 8 and, when more is
 // true, points it at the member appended after it: its NextCommand becomes
-// that step. A chain's last member, which MS-SMB2 2.2.1.2 has end with 0, is
-// padded too, with more false so the field stays as AppendReply left it
-// (MS-SMB2 3.3.4.1.3; RFC 20 section 4.7 counts Chain's padding for every
-// reply). The two are separate calls on purpose: core's Chain runs between
-// members, the more here, and the last member's pad - which nothing between
-// members calls - is the SMB stage's own when its record is complete.
-// It returns out.
+// that step. The pad is a chain's, not the reply's: the record that joins
+// replies pads every one of them (RFC 20 section 4.7 joins the members'
+// replies into it, and their summed bounds count Chain's padding), while a
+// reply sent alone is not padded - the capture's standalone reply, frame
+// 127, is its 73 bytes. A chain's last member, which MS-SMB2 2.2.1.2 has end
+// with 0, is padded with more false, so the field stays as AppendReply left
+// it (MS-SMB2 3.3.4.1.3). The two are separate calls on purpose: core's
+// Chain runs between members, the more here, and the last member's pad -
+// which nothing between members calls - is the SMB stage's own when its
+// record is complete. It returns out.
 func Chain(out []byte, prev int, more bool) ([]byte, error) {
 	if prev < 0 || len(out)-prev < HeaderLen {
 		return out, errChain

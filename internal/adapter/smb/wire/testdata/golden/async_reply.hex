@@ -15,7 +15,7 @@ bb 00 00 c0                 # [8,12)  Status 0xC00000BB, STATUS_NOT_SUPPORTED
 01 00 00 00                 # [16,20) Flags 0x00000001, SERVER_TO_REDIR: no request bit echoed
 00 00 00 00                 # [20,24) NextCommand 0
 31 32 33 34 35 36 37 38     # [24,32) MessageId, the request's
-41 42 43 44 45 46 47 48     # [32,40) AsyncId, the request's
+41 42 43 44 45 46 47 48     # [32,36) Reserved, [36,40) TreeId: the request's AsyncId bytes, copied
 21 22 23 24 25 26 27 28     # [40,48) SessionId, the request's
 00 00 00 00 00 00 00 00     # [48,64) Signature: not signed
 00 00 00 00 00 00 00 00
