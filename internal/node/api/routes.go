@@ -25,6 +25,9 @@ type route struct {
 	starts          apiv1.OpKind
 	beforeReady     bool
 	serve           adapter
+	// query is the query parameters a write row takes; a write naming any
+	// other is refused. A read row's adapter checks its own.
+	query []string
 }
 
 // op names the row in its metrics and its span: its method and pattern, and
@@ -56,6 +59,16 @@ var routes = []route{
 	{method: http.MethodGet, pattern: "/api/v1/nodes", kind: entity.ResourceNode, right: auth.View, serve: list(nodes)},
 	{method: http.MethodGet, pattern: "/api/v1/nodes/{id}", kind: entity.ResourceNode, right: auth.View, serve: read(node)},
 	{method: http.MethodGet, pattern: "/api/v1/audit", kind: entity.ResourceInstallation, right: auth.Audit, serve: list(audit)},
+	{method: http.MethodGet, pattern: "/api/v1/shares", kind: entity.ResourceShare, right: auth.View, serve: list(shares)},
+	{method: http.MethodPost, pattern: "/api/v1/shares", kind: entity.ResourceShare, right: auth.Shares, serve: write(newShares, nil, createShare)},
+	{method: http.MethodGet, pattern: "/api/v1/shares/{id}", kind: entity.ResourceShare, right: auth.View, serve: watch(share)},
+	{method: http.MethodPatch, pattern: "/api/v1/shares/{id}", kind: entity.ResourceShare, right: auth.Shares, serve: write(shareSpecs, nil, patchShare)},
+	{method: http.MethodPost, pattern: "/api/v1/shares/{id}", verb: "quiesce", kind: entity.ResourceShare, right: auth.Shares, serve: write(shareTags, nil, setState(entity.ShareEnabled, entity.ShareQuiesced))},
+	{method: http.MethodPost, pattern: "/api/v1/shares/{id}", verb: "resume", kind: entity.ResourceShare, right: auth.Shares, serve: write(shareTags, nil, setState(entity.ShareQuiesced, entity.ShareEnabled))},
+	{method: http.MethodDelete, pattern: "/api/v1/shares/{id}", kind: entity.ResourceShare, right: auth.Shares, starts: apiv1.OpShareDelete, query: []string{"snapshots"}, serve: write(shareTags, nil, deleteShare)},
+	{method: http.MethodGet, pattern: "/api/v1/shares/{id}/export-policy", kind: entity.ResourceShare, right: auth.View, serve: watch(exportPolicy)},
+	{method: http.MethodPut, pattern: "/api/v1/shares/{id}/export-policy", kind: entity.ResourceShare, right: auth.Shares, serve: write(policies, nil, putPolicy)},
+	{method: http.MethodPatch, pattern: "/api/v1/shares/{id}/export-policy", kind: entity.ResourceShare, right: auth.Shares, serve: write(policies, nil, putPolicy)},
 }
 
 // version answers the API's major versions and nothing else.

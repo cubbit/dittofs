@@ -19,6 +19,16 @@ import (
 type reads interface {
 	Netgroups(ctx context.Context, after string) iter.Seq2[entity.Netgroup, error]
 	Settings(ctx context.Context, scope entity.SettingScope) iter.Seq2[entity.Setting, error]
+	// Share is one share with its state and its export policy, a share
+	// with none stored having the default one; a share never created, or
+	// whose removal has ended, is not found.
+	Share(ctx context.Context, id entity.ShareID) (entity.Share, entity.ExportPolicy, error)
+	// SharesAfter lists the shares in folded-name order, after the one
+	// named after; ShareNamed is the one a name names; NamespaceShares lists
+	// those counted in a namespace, in ID order, after the ID after.
+	SharesAfter(ctx context.Context, after string) iter.Seq2[entity.Share, error]
+	ShareNamed(ctx context.Context, name string) (entity.Share, bool, error)
+	NamespaceShares(ctx context.Context, ns entity.NamespaceID, after entity.ShareID) iter.Seq2[entity.Share, error]
 	Operation(ctx context.Context, id entity.OperationID) (entity.Operation, bool, error)
 	Operations(ctx context.Context, after entity.OperationID) iter.Seq2[entity.Operation, error]
 	RunningOperations(ctx context.Context, after entity.Operation) iter.Seq2[entity.Operation, error]

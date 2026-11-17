@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,7 +30,9 @@ const maxKey = 255
 // there is none; whether its commit raises the principals or settings
 // generation; whether the row is a POST action that changes the spec, and so
 // carries If-Match as a PUT does; secret, which names the fields of the
-// body whose values its audit record holds only as "set", nil for none.
+// body whose values its audit record holds only as "set", nil for none; and
+// auditAs, the name its audit record's change gives the body's spec, empty
+// keeping spec, for a record written as part of another resource's.
 // The operation a write starts, if any, is its row's.
 type writing[B any] struct {
 	kind        entity.ResourceKind
@@ -37,9 +40,11 @@ type writing[B any] struct {
 	raises      bool
 	changesSpec bool
 	secret      func(path string) bool
+	auditAs     string
 }
 
-// write adapts a write. Its checks run in this order: the body is decoded;
+// write adapts a write. Its checks run in this order: a query parameter its
+// row does not take is refused, 400 naming it; the body is decoded;
 // the request's idempotency key is looked up, a recorded one answering its
 // replay or 422; the headers its method requires are required, 428, or
 // refused when they contradict each other, 400; prepare runs; then, inside
@@ -89,6 +94,11 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 				s.refuse(ctx, refused, err)
 			}
 		}()
+		for k := range r.URL.Query() {
+			if !slices.Contains(rt.query, k) {
+				return answer{}, &fieldError{field: k, detail: "not a parameter of this write"}
+			}
+		}
 		body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBody))
 		if err != nil {
 			return answer{}, &fieldError{detail: err.Error()}
@@ -97,7 +107,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		if len(key) > maxKey {
 			return answer{}, &fieldError{field: "Idempotency-Key", detail: "longer than " + strconv.Itoa(maxKey) + " bytes"}
 		}
-		rq := request[B]{ID: id}
+		rq := request[B]{ID: id, Query: r.URL.Query()}
 		if err := decode(bytes.NewReader(body), &rq.Body); err != nil {
 			return answer{}, err
 		}
@@ -176,7 +186,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			if err != nil {
 				return err
 			}
-			if rec.Change, err = change(present(doc, ok), present(after, exists), w.secret); err != nil {
+			if rec.Change, err = change(present(doc, ok), present(after, exists), w.auditAs, w.secret); err != nil {
 				return err
 			}
 			rec.Target.ID = wrote[:]
@@ -394,8 +404,9 @@ func present(doc any, ok bool) any {
 // change is what differs between the JSON of old and new, each field that
 // does named by its dotted path with its old and new values, or with "set"
 // when secret names the path, nil when nothing does; a nil side, a record
-// that does not exist, has every field null.
-func change(old, new any, secret func(path string) bool) ([]byte, error) {
+// that does not exist, has every field null. A spec is named as, when as is
+// not empty.
+func change(old, new any, as string, secret func(path string) bool) ([]byte, error) {
 	o, err := asJSON(old)
 	if err != nil {
 		return nil, err
@@ -403,6 +414,12 @@ func change(old, new any, secret func(path string) bool) ([]byte, error) {
 	n, err := asJSON(new)
 	if err != nil {
 		return nil, err
+	}
+	for _, side := range []any{o, n} {
+		if m, ok := side.(map[string]any); ok && as != "" {
+			m[as] = m["spec"]
+			delete(m, "spec")
+		}
 	}
 	out := map[string]any{}
 	diff("", o, n, secret, out)

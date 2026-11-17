@@ -16,7 +16,18 @@ import (
 
 // Shares lists every share with its state, in folded-name order.
 func (c ControlPlane) Shares(ctx context.Context) iter.Seq2[entity.Share, error] {
-	return pages(ctx, c.s.kv, []byte{keys.KindNX, keys.NXShare}, nil,
+	return c.SharesAfter(ctx, "")
+}
+
+// SharesAfter is Shares resuming after the share named after, compared
+// under the share-name fold; empty starts from the first. A share being
+// removed has freed its name, so neither lists it.
+func (c ControlPlane) SharesAfter(ctx context.Context, after string) iter.Seq2[entity.Share, error] {
+	var cursor []byte
+	if after != "" {
+		cursor = nameKey(keys.NXShare, after)
+	}
+	return pages(ctx, c.s.kv, []byte{keys.KindNX, keys.NXShare}, cursor,
 		func(r kv.Reader, row kv.KeyValue) (entity.Share, error) {
 			id, err := decodeID(row.Value)
 			if err != nil {
@@ -24,6 +35,40 @@ func (c ControlPlane) Shares(ctx context.Context) iter.Seq2[entity.Share, error]
 			}
 			return shareIn(r, id)
 		})
+}
+
+// ShareNamed is the share an SMB client names, compared under the
+// share-name fold, read in one snapshot; false when none is, a share being
+// removed among them.
+func (c ControlPlane) ShareNamed(ctx context.Context, name string) (sh entity.Share, found bool, err error) {
+	err = c.s.kv.View(ctx, func(r kv.Reader) error {
+		b, ok, err := get(r, nameKey(keys.NXShare, name))
+		if err != nil || !ok {
+			return err
+		}
+		id, err := decodeID(b)
+		if err != nil {
+			return err
+		}
+		sh, err = shareIn(r, id)
+		found = err == nil
+		return err
+	})
+	return sh, found, err
+}
+
+// NamespaceShares lists the shares the namespace index counts in ns, a
+// share being removed among them, with their state, in share ID order,
+// resuming after the share after, the zero ID starting from the first.
+func (c ControlPlane) NamespaceShares(ctx context.Context, ns entity.NamespaceID, after entity.ShareID) iter.Seq2[entity.Share, error] {
+	prefix := namespaceSharesPrefix(ns)
+	var cursor []byte
+	if !after.IsZero() {
+		cursor = namespaceShareKey(ns, after)
+	}
+	return pages(ctx, c.s.kv, prefix, cursor, func(r kv.Reader, row kv.KeyValue) (entity.Share, error) {
+		return shareIn(r, entity.ShareID(row.Key[len(prefix):]))
+	})
 }
 
 func shareIn(r kv.Reader, id entity.ShareID) (entity.Share, error) {
@@ -528,6 +573,22 @@ func (c ControlPlane) ExportPolicy(ctx context.Context, share entity.ShareID) (e
 		return err
 	})
 	return p, err
+}
+
+// ExportPolicy reads a share's export policy, tracked, as ControlPlane's
+// read does: defaultPolicy's, version zero, when none is stored.
+func (c controlTx) ExportPolicy(share entity.ShareID) (entity.ExportPolicy, error) {
+	b, ok, err := get(c.tx, shareKey(share, keys.SXp))
+	if err != nil || !ok {
+		return defaultPolicy(share), err
+	}
+	return decodePolicy(share, b)
+}
+
+// Share is one share with its state and its export policy, read in one
+// snapshot, as ShareIndex reads them.
+func (c ControlPlane) Share(ctx context.Context, id entity.ShareID) (entity.Share, entity.ExportPolicy, error) {
+	return c.s.ShareIndex().Share(ctx, id)
 }
 
 // defaultPolicy is the export policy of a share none is stored for: root

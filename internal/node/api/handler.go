@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ type request[B any] struct {
 	ID     [16]byte
 	Body   B
 	Expect uint64
+	Query  url.Values // a write's query, holding only parameters its row takes
 }
 
 // none is the body of a request that carries none.

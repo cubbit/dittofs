@@ -74,11 +74,11 @@ var testRows = []route{
 	})},
 	{method: http.MethodPost, pattern: "/api/v1/things/{id}", verb: "poke", kind: entity.ResourceShare, right: auth.Shares, serve: call(verb("poke"))},
 	{method: http.MethodPost, pattern: "/api/v1/things/{id}", verb: "prod", kind: entity.ResourceShare, right: auth.Shares, serve: call(verb("prod"))},
-	{method: http.MethodPost, pattern: "/api/v1/knobs", kind: entity.ResourceSetting, right: auth.Stores, serve: write(knobs, nil, func(ctx context.Context, rq request[knob], _ struct{}, tx entity.ControlPlaneTx) (knob, [16]byte, error) {
+	{method: http.MethodPost, pattern: "/api/v1/knobs", kind: entity.ResourceSetting, right: auth.Stores, query: []string{"v"}, serve: write(knobs, nil, func(ctx context.Context, rq request[knob], _ struct{}, tx entity.ControlPlaneTx) (knob, [16]byte, error) {
 		rq.ID = entity.NewShareID()
 		return putKnob(ctx, rq, struct{}{}, tx)
 	})},
-	{method: http.MethodPut, pattern: "/api/v1/knobs/{id}", kind: entity.ResourceSetting, right: auth.Stores, serve: write(knobs, nil, putKnob)},
+	{method: http.MethodPut, pattern: "/api/v1/knobs/{id}", kind: entity.ResourceSetting, right: auth.Stores, query: []string{"trace"}, serve: write(knobs, nil, putKnob)},
 	{method: http.MethodPatch, pattern: "/api/v1/knobs/{id}", kind: entity.ResourceSetting, right: auth.Stores, serve: write(knobs, nil, putKnob)},
 	{method: http.MethodDelete, pattern: "/api/v1/knobs/{id}", kind: entity.ResourceSetting, right: auth.Stores, serve: write(knobs, nil, func(ctx context.Context, rq request[knob], _ struct{}, tx entity.ControlPlaneTx) (knob, [16]byte, error) {
 		_, err := tx.PutSetting(entity.Setting{Scope: nodeScope(rq.ID), Key: "knob"}, rq.Expect)
@@ -275,9 +275,9 @@ func readKnob(ctx context.Context, d Deps, rq request[none]) (knobRead, error) {
 const KnobOn = "on"
 
 // knobWait is a knob's ?wait=: a duration, until its tag changes, or KnobOn.
-func knobWait(w string) (time.Duration, func(first, now knobRead) bool, error) {
+func knobWait(w string) (time.Duration, func(first, now knobRead) (bool, error), error) {
 	if w == KnobOn {
-		return maxWait, func(_, now knobRead) bool { return now.Spec.Value == KnobOn }, nil
+		return maxWait, func(_, now knobRead) (bool, error) { return now.Spec.Value == KnobOn, nil }, nil
 	}
 	return changes(func(first, now knobRead) bool { return first.Generation != now.Generation })(w)
 }
