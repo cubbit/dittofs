@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -2176,6 +2177,37 @@ func TestACompoundAsAChainMemberIsRefused(t *testing.T) {
 		}
 		if _, results, _ := testproto.Results(rs[1].Body); len(results) != 0 {
 			t.Errorf("the refused compound answered %d results, want none", len(results))
+		}
+	})
+}
+
+// A compound row refused as a chain's member is answered its status alone:
+// its own Invocation's Encode, which here appends a marker, writes nothing
+// into a refusal sized only by its header's ReplyLen.
+func TestACompoundRefusedAsAChainMemberEncodesNothingOfItsOwn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		marker := []byte("compound's own encode")
+		mark := func(inv core.Invocation) core.Invocation {
+			if inv.EncodeHead == nil { // only a compound row sets a head
+				return inv
+			}
+			inv.Encode = func(out *resources.Buf, _ core.Version) error {
+				out.B = append(out.B, marker...)
+				return nil
+			}
+			return inv
+		}
+		s := newSeam(t, wrapRows(testproto.New(adapter.Deps{}).Bare(), mark, nil), 1<<20)
+		s.serve(
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1},
+			testproto.Msg{Op: testproto.OpCompound, Version: 1, ID: 2, Members: []testproto.Msg{{Op: testproto.OpEcho, Payload: []byte("m")}}},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[1].Status != testproto.StatusNotSupported {
+			t.Fatalf("the chain is answered %+v, %v: want the compound refused not supported", rs, err)
+		}
+		if bytes.Contains(rs[1].Body, marker) {
+			t.Errorf("the refused compound's reply %q carries its own Encode's bytes", rs[1].Body)
 		}
 	})
 }
