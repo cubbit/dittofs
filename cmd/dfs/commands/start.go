@@ -9,10 +9,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var startCmd = &cobra.Command{
-	Use:   "start",
-	Short: "Start the DittoFS server",
-	Long: `Start the DittoFS server in the foreground with the specified configuration.
+func newStartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "start",
+		Short: "Start the DittoFS server",
+		Long: `Start the DittoFS server in the foreground with the specified configuration.
 
 The server runs until it is stopped. Run it under a process supervisor
 (systemd, Docker) to keep it in the background.
@@ -26,12 +27,14 @@ Examples:
 
   # Start with a custom config file
   dfs start --config /etc/dittofs/config.yaml`,
-	Args: cobra.NoArgs,
-	RunE: runStart,
+		Args: cobra.NoArgs,
+		RunE: runStart,
+	}
 }
 
 func runStart(cmd *cobra.Command, _ []string) error {
-	cfg, err := config.MustLoad(GetConfigFile())
+	configPath, _ := cmd.Flags().GetString("config")
+	cfg, err := config.MustLoad(configPath)
 	if err != nil {
 		return err
 	}

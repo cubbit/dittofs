@@ -36,13 +36,17 @@ import (
 	dfsctl "github.com/cubbit/dittofs/cmd/dfsctl/commands"
 )
 
-// dfsctlRoot is one dfsctl tree, built once for every check to walk.
-var dfsctlRoot = dfsctl.NewRoot(cmdutil.Env{})
+// dfsRoot and dfsctlRoot are one tree of each binary, built once for every
+// check to walk.
+var (
+	dfsRoot    = dfs.NewRoot()
+	dfsctlRoot = dfsctl.NewRoot(cmdutil.Env{})
+)
 
 // roots maps a binary name to its command tree.
 func roots() map[string]*cobra.Command {
 	return map[string]*cobra.Command{
-		"dfs":    dfs.GetRootCmd(),
+		"dfs":    dfsRoot,
 		"dfsctl": dfsctlRoot,
 	}
 }

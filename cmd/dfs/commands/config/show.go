@@ -10,12 +10,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var showOutput string
-
-var showCmd = &cobra.Command{
-	Use:   "show",
-	Short: "Display current configuration",
-	Long: `Display the current DittoFS configuration.
+func newShowCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "show",
+		Short: "Display current configuration",
+		Long: `Display the current DittoFS configuration.
 
 By default outputs YAML format. Use --output to change format.
 
@@ -28,11 +27,10 @@ Examples:
 
   # Show specific config file
   dfs config show --config /etc/dittofs/config.yaml`,
-	RunE: runConfigShow,
-}
-
-func init() {
-	showCmd.Flags().StringVarP(&showOutput, "output", "o", "yaml", "Output format (yaml|json)")
+		RunE: runConfigShow,
+	}
+	cmd.Flags().StringP("output", "o", "yaml", "Output format (yaml|json)")
+	return cmd
 }
 
 func runConfigShow(cmd *cobra.Command, args []string) error {
@@ -46,7 +44,8 @@ func runConfigShow(cmd *cobra.Command, args []string) error {
 	}
 
 	// Parse output format
-	format, err := output.ParseFormat(showOutput)
+	f, _ := cmd.Flags().GetString("output")
+	format, err := output.ParseFormat(f)
 	if err != nil {
 		return err
 	}
