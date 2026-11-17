@@ -10,6 +10,9 @@ import (
 // replyType is an RPC reply, the word after the transaction ID.
 const replyType = 1
 
+// roundTo4 pads a length to the four bytes XDR aligns it to.
+func roundTo4(n int) int { return n + (4-n%4)%4 }
+
 // overTheCapCall is an AUTH_SYS NULL call whose group list is 17, past RFC
 // 5531's 16: its seed runs the fuzz's own assertion on every go test, with the
 // caps refused where they are checked.
@@ -70,6 +73,12 @@ func FuzzRecord(f *testing.F) {
 			a, err := wire.DecodeAuthSys(cred)
 			if err == nil && (a.NameLen > 255 || a.NGIDs > 16) {
 				t.Fatalf("an AUTH_SYS credential past RFC 5531's limits is decoded: %+v", a)
+			}
+			// A decode that succeeds consumes the whole body: the stamp, the
+			// name and its padding, the uid, gid, count and groups (RFC 5531
+			// Appendix A).
+			if err == nil && len(cred) != 20+roundTo4(a.NameLen)+4*a.NGIDs {
+				t.Fatalf("a decoded AUTH_SYS body of %d bytes holds a name of %d and %d groups", len(cred), a.NameLen, a.NGIDs)
 			}
 		}
 	})
