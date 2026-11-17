@@ -46,7 +46,7 @@ func TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag(t *testing.T) {
 	_, pending := f.File("pending")
 
 	write(t, f, removed, 0, make([]byte, 4096))
-	f.HoldBatches()
+	held := f.HoldBatches()
 
 	if err := f.E.Truncate(ctx, f.Share.ID, removed, 0); err != nil {
 		t.Fatalf("Truncate: %v", err)
@@ -59,6 +59,14 @@ func TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag(t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("Write: %v", err)
+	}
+
+	// Truncate answers once its batch is queued, not running: an Unbind that
+	// shuts the share before the loop takes it parks it unrun and returns.
+	select {
+	case <-held:
+	case <-ctx.Done():
+		t.Fatal("the truncate's removal batch never reached the loop")
 	}
 
 	unbound := make(chan error, 1)
