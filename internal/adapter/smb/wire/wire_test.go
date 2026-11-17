@@ -120,7 +120,7 @@ func TestDecodeHeaderReadsEachFieldInPlace(t *testing.T) {
 			messageID: 0x0807060504030201, id: 0x14131211, sessionID: 0x2827262524232221,
 		}},
 		{"an async header", async, 0, true, fields{
-			command: 0x000c, flags: 0x0000000a, creditCharge: 1,
+			command: 0x000c, flags: 0x0000000a, creditCharge: 1, credits: 1,
 			messageID: 0x3837363534333231, id: 0x4847464544434241, sessionID: 0x2827262524232221,
 		}},
 		{"a chain's first member", chain, 0, false, fields{
