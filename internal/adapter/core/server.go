@@ -66,6 +66,12 @@ type Listener struct {
 // so a later change to the caller's leaves the server as checked. It opens
 // nothing: the server is configured.
 func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, error) {
+	if s == nil {
+		// Settings are the protocol's whole shape; a nil one is a program bug
+		// that would panic at the first snapshot read, so it is refused here,
+		// as an empty listener set is.
+		return nil, errors.New("no settings")
+	}
 	ls = slices.Clone(ls)
 	for i := range ls {
 		ls[i].Services = slices.Clone(ls[i].Services)

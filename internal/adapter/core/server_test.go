@@ -102,21 +102,23 @@ func TestNewServerRefusesMalformedListeners(t *testing.T) {
 
 	for _, tc := range []struct {
 		name        string
+		snap        settings.Settings
 		ls          []core.Listener
 		want        string // what the refusal names
 		unsupported bool   // wraps errors.ErrUnsupported
 	}{
-		{"no listener", nil, "no listener", false},
-		{"no service", []core.Listener{tcp(p, 0)}, "names no service", false},
-		{"an empty service", []core.Listener{tcp(p, 0, "a", "")}, "names an empty service", false},
-		{"a service twice", []core.Listener{tcp(p, 0, "a", "b", "a")}, "names a twice", false},
-		{"no protocol", []core.Listener{tcp(p, 0, "b"), {Services: []string{"b"}, Network: "tcp"}}, "names no protocol", false},
-		{"stages accept would refuse", []core.Listener{tcp(p, 0, "b", "c"), {Services: []string{"d"}, Network: "tcp", Protocol: emptyStages{p}}}, "stages without Header, Router or Protocol", false},
-		{"two listeners on one Socket", []core.Listener{tcp(p, 0, "a"), tcp(p, 0, "b", "a")}, "listener 1", false},
-		{"two listeners on one port", []core.Listener{tcp(p, 2049, "a"), tcp(p, 2049, "b")}, "listener 1", false},
-		{"a udp listener", []core.Listener{tcp(p, 0, "a"), {Services: []string{"b"}, Network: "udp", Protocol: p}}, "listener 1", true},
+		{"no settings", nil, nil, "no settings", false},
+		{"no listener", set, nil, "no listener", false},
+		{"no service", set, []core.Listener{tcp(p, 0)}, "names no service", false},
+		{"an empty service", set, []core.Listener{tcp(p, 0, "a", "")}, "names an empty service", false},
+		{"a service twice", set, []core.Listener{tcp(p, 0, "a", "b", "a")}, "names a twice", false},
+		{"no protocol", set, []core.Listener{tcp(p, 0, "b"), {Services: []string{"b"}, Network: "tcp"}}, "names no protocol", false},
+		{"stages accept would refuse", set, []core.Listener{tcp(p, 0, "b", "c"), {Services: []string{"d"}, Network: "tcp", Protocol: emptyStages{p}}}, "stages without Header, Router or Protocol", false},
+		{"two listeners on one Socket", set, []core.Listener{tcp(p, 0, "a"), tcp(p, 0, "b", "a")}, "listener 1", false},
+		{"two listeners on one port", set, []core.Listener{tcp(p, 2049, "a"), tcp(p, 2049, "b")}, "listener 1", false},
+		{"a udp listener", set, []core.Listener{tcp(p, 0, "a"), {Services: []string{"b"}, Network: "udp", Protocol: p}}, "listener 1", true},
 	} {
-		srv, err := core.NewServer(deps, set, tc.ls...)
+		srv, err := core.NewServer(deps, tc.snap, tc.ls...)
 		if err == nil || srv != nil {
 			t.Errorf("%s: NewServer returned %v, %v; want it refused", tc.name, srv, err)
 			continue
