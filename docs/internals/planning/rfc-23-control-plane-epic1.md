@@ -468,9 +468,9 @@ internal/node/
 - **Deliverables:** three rules added to `internal/node/arch_test.go`, each a function of a source root (D10), run
   over the module and over `internal/node/testdata/arch/<rule>/`:
   - **no v1 import** (R3): no `.go` file outside `testdata` imports a path under
-    `pkg/controlplane`, `internal/controlplane` or `pkg/snapshot`. `pkg/identity` and
-    `pkg/apiclient` return in v2 at the same paths, so the compiler guards their deletion and the
-    rule names neither;
+    `pkg/controlplane`, `internal/controlplane` or `pkg/snapshot`. `pkg/identity`
+    returns in v2 at the same path, so the compiler guards its deletion and the
+    rule does not name it; `pkg/apiclient` returns as `pkg/node/apiv1/client`;
   - **who imports the node** (R19): only `cmd/dfs/commands/start.go` and files under
     `internal/node/nodetest` import `internal/node`; a `decision:` marker says the harness is the
     one exemption RFC 23 names. `nodetest` does not exist until E3, so the rule's `testdata` tree
@@ -479,8 +479,8 @@ internal/node/
   - **the CLI's closure** (R11, R20), over the binary's dependencies, `go list -deps ./cmd/dfsctl`
     without `-test`, so a test's import of the harness is not counted: the transitive imports of
     `cmd/dfsctl/...` and
-    `pkg/node/apiv1`, and of `pkg/apiclient` once E4 lands it, stay, of this module, within
-    `cmd/dfsctl/...`, `pkg/apiclient`, `pkg/node/apiv1` and `internal/cli/...`, and
+    `pkg/node/apiv1`, and of `pkg/node/apiv1/client` once E4 lands it, stay, of this module, within
+    `cmd/dfsctl/...`, `pkg/node/apiv1/client`, `pkg/node/apiv1` and `internal/cli/...`, and
     `pkg/node/apiv1`'s within the standard library;
   Beside T1.3's export pin, in the file T1.3 created. Consumed by every later epic, whose changes these rules hold; E4 adds the two rules over
   `internal/node/api` to the same file.

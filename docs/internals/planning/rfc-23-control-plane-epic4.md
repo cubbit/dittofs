@@ -22,7 +22,7 @@ reads `Namespace(id)` and `StoreNamed(store)` on `entity.ControlPlaneTx`. E3: `i
 identity's directory and join calls and their in-memory doubles, and on X1's `pkg/secrets`.
 **Blocks:** E5, which fills `Deps.Authenticate` from `internal/node/api/auth`, adds its rights to the
 role table and its routes to the route table on the call and write adapters; E6, which builds the
-commands on `pkg/apiclient` and the wire types; E7, which runs RFC 23 §12's rows through these
+commands on `pkg/node/apiv1/client` and the wire types; E7, which runs RFC 23 §12's rows through these
 routes; X3, which hands in the settings table this epic's routes call; the RFC 18 plan's epic 7,
 which wires identity into `Deps` and drives the domain's operation kinds recorded here.
 
@@ -32,7 +32,7 @@ which wires identity into `Deps` and drives the domain's operation kinds recorde
 
 The management API answers every in-scope resource and action of RFC 23, changes nothing but
 records, commits each change with its audit record in one transaction, and maps every error to a
-status by one table. `pkg/apiclient` comes back as the one typed client of it.
+status by one table. `pkg/node/apiv1/client` comes back as the one typed client of it.
 
 **At the end of the epic:**
 
@@ -48,7 +48,7 @@ status by one table. `pkg/apiclient` comes back as the one typed client of it.
   are served;
 - the API is served over TLS on every address but loopback and on a local socket, bounded at 64
   calls and 256 parked polls;
-- `pkg/apiclient` reaches the API over `https`, `http` on loopback or the local socket, with problem
+- `pkg/node/apiv1/client` reaches the API over `https`, `http` on loopback or the local socket, with problem
   decoding, the `ETag` echoed, one idempotency key per command and the version check.
 
 ### 1.1 In scope
@@ -99,7 +99,7 @@ span per call; RFC 23 §4.3's amendment for the pre-write step.
   health rows, the two architecture rules over it, the harness `internal/node/nodetest`.
 - **E4**, this epic.
 - **E5**, epic 5, accounts and sign-in: the rest of `internal/node/api/auth`.
-- **E6**, epic 6, the CLI: `dfsctl`'s commands on `pkg/apiclient`.
+- **E6**, epic 6, the CLI: `dfsctl`'s commands on `pkg/node/apiv1/client`.
 - **E7**, epic 7, **the integration epic**: RFC 23 §12's single-node rows through the API.
 - **S1**, E1 merged: v1 gone and the surface frozen.
 - **X1**, the RFC 13 plan's bootstrap and secrets (`pkg/bootstrap`, `pkg/secrets`), outside RFC 23's
@@ -125,7 +125,7 @@ and title and not copied.
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T4.3, T4.4 | TLS on a real listener with a generated certificate; the all-or-nothing commit on Badger on disk with the commit faulted through `kvtest`'s `FaultKV` |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T4.2–T4.4, T4.6, T4.7, T4.9 | RFC 23's notes at their sites: §4.3's `ponytail:` at the call bound and its pre-write `decision:` at the step, §4.1's and §4.4's `decision:` at the route table and the precondition check, §3.2's at share create; D6's `decision:` at the cursor, D7's `ponytail:` at the parked polls, D11's `decision:` at a remote store's location, D22's at the writer's wait |
 | rule 10, a test must be able to fail | all | each test names the requirement it breaks on; a row held by construction or by an E2 or E3 test names it |
-| rule 11, a symbol is exported only if RFC 23's interface uses it | all | `internal/node/api` exports `New` and `Deps` only; `internal/node/api/auth` gains `Caller` and `CallerFrom`, internal by rule 11; exported additions are `apiv1.Role`, each resource's wire types and `pkg/apiclient`'s client |
+| rule 11, a symbol is exported only if RFC 23's interface uses it | all | `internal/node/api` exports `New` and `Deps` only; `internal/node/api/auth` gains `Caller` and `CallerFrom`, internal by rule 11; exported additions are `apiv1.Role`, each resource's wire types and `pkg/node/apiv1/client`'s client |
 | rule 12, each subtask creates only what it declares | all | each wire type lands with the route that serves it; `auth` lands with its first consumer, the adapters; the client with its first consumer, T4.8's tests |
 
 ## 3. Requirements and invariants
@@ -363,7 +363,7 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
   `pkg/keyprovider`'s implementations stay off the list. The API's `Deps.Sealer` (D13) stays an
   interface so a nil one refuses. No marker beyond the count's.
 - **D21, the credential calls are the client's, their routes E5's.** `SignIn`, `Refresh`,
-  `SignOut` and `ChangePassword` sit in `pkg/apiclient` beside the core that sends them, since their
+  `SignOut` and `ChangePassword` sit in `pkg/node/apiv1/client` beside the core that sends them, since their
   rule (no transport retry, and no key but on `SignOut`, which RFC 23 §4.5 does not exempt) is the
   core's; E5's routes serve them and E5's tests drive them
   end to end. No marker.
@@ -411,7 +411,7 @@ pkg/node/apiv1/
   user.go, group.go, grant.go, netgroup.go,
   quota.go                                        T4.10
   installation.go                                 T4.11
-pkg/apiclient/
+pkg/node/apiv1/client/
   client.go, problem.go, resource.go, wait.go,
   resources.go                                    T4.8  the core, the generic resource, the accessors
 Dockerfile                                        T4.3  HEALTHCHECK on https, unverified
@@ -628,7 +628,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 - **Track:** B. **Depends on:** T4.7.
 - **Covers:** R21, R59, R67.
-- **Deliverables:** `pkg/apiclient`:
+- **Deliverables:** `pkg/node/apiv1/client`:
   ```go
   func New(server string, opts ...Option) (*Client, error) // https URL, http on loopback, or the local socket's path
   func WithTLS(cfg *tls.Config) Option
@@ -664,7 +664,7 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   string (CP14), one idempotency key per call reused across its transport retries, and the accessors
   of the resources served so far, each later route adding its own. A method lands only with a test
   here; E6 builds `login` and its stored token source on `WithTokenSource`. E1's CLI-closure rule already names
-  `pkg/apiclient`. Consumed by every later subtask's tests, E5, E6 and E7.
+  `pkg/node/apiv1/client`. Consumed by every later subtask's tests, E5, E6 and E7.
 - **Acceptance criteria:**
   - A server serving no `v1` is refused at first contact, naming both versions.
   - A create retried after its answer was lost is one record.
@@ -850,10 +850,10 @@ step (D17).
 Other open points:
 
 - RFC 23's plan, proposals not made here: §5 epic 4's expected content still lists the connections
-  route, `pkg/apiclient`'s core first and the architecture rules as this epic's; a ledger row for
+  route, `pkg/node/apiv1/client`'s core first and the architecture rules as this epic's; a ledger row for
   `GET /nodes/{id}/connections`, owner RFC 20's plan's epic 7, trigger its adapters wired; the line
   on `401` until E5 (plan §5 epic 4, first bullet) should name `/api/version` beside the health rows;
-  §4.1's `pkg/apiclient` "one file per resource" against T4.8's one `resources.go`.
+  §4.1's `pkg/node/apiv1/client` "one file per resource" against T4.8's one `resources.go`.
 - The RFC 13 plan's write-path sketch calls `node.Settings.Check` from the API, which would import
   `node` (a cycle, and outside the export pin); it should read `deps.Settings.Check`, the table the
   node hands in (D4).
