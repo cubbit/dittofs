@@ -834,7 +834,7 @@ empty (epics 3 and 5):
 
 ```go
 func start(ctx context.Context, path string) error {
-	boot, err := bootstrap.Load(path) // X1, D6: --config or DITTOFS_CONFIG; v1 keys refused
+	boot, err := bootstrap.Load(path, os.Environ()) // X1, D6: --config or DITTOFS_CONFIG; v1 keys refused
 	if err != nil {
 		return err
 	}
@@ -927,12 +927,19 @@ func (n *Node) apply(ctx context.Context) error {
 		return err // a failed read: the loop backs off, then runs a full pass
 	}
 	n.restartPending(settings.Diff(n.applied, next)) // node_restart_pending
-	st := identity.State{Generation: n.pgen, Settings: settings.Get[identity.Settings](next, n.nodeID)}
-	if err := n.identity.Apply(st); err != nil { // before identity starts, the first one (RFC 18 §2.6)
+	ids, err := settings.Get[identity.Settings](next, identity.Section, n.nodeID) // an error for a held section
+	if err == nil {
+		err = n.identity.Apply(identity.State{Generation: n.pgen, Settings: ids}) // before identity starts, the first one (RFC 18 §2.6)
+	}
+	if err != nil {
 		n.refused(identity.Section, err) // reported with the other refusals (epic 3's D10)
 	}
 	// ... *vfs.Filesystem and the engine, each with its own section
-	n.smbRefused = n.applySMB(ctx, settings.Get[adaptersettings.SMB](next, n.nodeID)) // D12
+	smb, err := settings.Get[adaptersettings.SMB](next, adaptersettings.SectionSMB, n.nodeID)
+	if err == nil {
+		err = n.applySMB(ctx, smb) // D12
+	}
+	n.smbRefused = err
 	if n.smbRefused != nil {
 		// RFC 23 §2.3, §2.4: reported refused; while an adapter serves, not retried until the
 		// settings generation moves, so a lasting port conflict restarts nothing on later ticks.
@@ -947,7 +954,11 @@ func (n *Node) apply(ctx context.Context) error {
 // D12: the loop's retry while nothing serves SMB. n.smbRefused, a Node field beside n.smb,
 // holds the last refusal of SMB's section and is nil once it serves.
 func (n *Node) retrySMB(ctx context.Context) error {
-	n.smbRefused = n.applySMB(ctx, settings.Get[adaptersettings.SMB](n.applied, n.nodeID))
+	smb, err := settings.Get[adaptersettings.SMB](n.applied, adaptersettings.SectionSMB, n.nodeID)
+	if err == nil {
+		err = n.applySMB(ctx, smb)
+	}
+	n.smbRefused = err
 	if n.smbRefused != nil {
 		n.refused(adaptersettings.SectionSMB, n.smbRefused)
 	}
