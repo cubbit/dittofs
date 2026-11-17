@@ -98,7 +98,9 @@ func (s *stage) Decode(rec *resources.Buf, _ int) (core.Header, error) {
 }
 
 // Encode writes the reply for s, the two high bits telling a program's status
-// from an accept or reject state (RFC 20 section 4.7).
+// from an accept or reject state (RFC 20 section 4.7). A success is the
+// accepted header alone: the procedure's encoder writes its result, a
+// COMPOUND's status, tag and results among them.
 func (s *stage) Encode(h core.Header, st core.Status, out *resources.Buf) error {
 	hd, ok := h.(header)
 	if !ok {
@@ -109,6 +111,9 @@ func (s *stage) Encode(h core.Header, st core.Status, out *resources.Buf) error 
 	switch uint32(st) >> 30 {
 	case wire.StatusProgram >> 30:
 		out.B = wire.AppendAccepted(out.B, xid, wire.AcceptSuccess)
+		if layer == 0 {
+			return nil
+		}
 		if hd.compound() {
 			out.B = wire.AppendCompoundStatus(out.B, layer, c.Tag(), 0)
 			return nil

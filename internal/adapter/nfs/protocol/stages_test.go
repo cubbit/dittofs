@@ -1,8 +1,12 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -89,6 +93,55 @@ func decode(t *testing.T, s *stage, body []byte) (core.Header, error) {
 func status(s *stage, err error) core.Status {
 	st, _ := s.errs.Map(err, nil, 0)
 	return st
+}
+
+// record reads one of the wire package's golden records, hex with # comments,
+// and returns its body, past the record mark.
+func record(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile("../wire/testdata/golden/" + name + ".hex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var digits strings.Builder
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line, _, _ = strings.Cut(line, "#")
+		digits.WriteString(strings.Join(strings.Fields(line), ""))
+	}
+	b, err := hex.DecodeString(digits.String())
+	if err != nil {
+		t.Fatalf("golden %s: %v", name, err)
+	}
+	n, last, err := wire.Fragment(b)
+	if err != nil || !last || n != len(b)-wire.RecordMarkLen {
+		t.Fatalf("golden %s: a mark of %d bytes, last %v, %v", name, n, last, err)
+	}
+	return b[wire.RecordMarkLen:]
+}
+
+// A success is the accepted header alone, as the reference server answers frame
+// 4's NULL in frame 6, a COMPOUND's too: its encoder writes its status, tag and
+// results.
+func TestASuccessIsTheHeaderAlone(t *testing.T) {
+	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
+	frame6 := record(t, "nfsv4-null-reply")
+	for _, name := range []string{"nfsv4-null-call", "nfsv4-compound-call", "nfsv4-compound-short-tag"} {
+		t.Run(name, func(t *testing.T) {
+			call := record(t, name)
+			h, err := decode(t, s, call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := &resources.Buf{}
+			if err := s.Encode(h, 0, out); err != nil {
+				t.Fatal(err)
+			}
+			want := append(append([]byte{}, call[:4]...), frame6[4:]...) // frame 6 under this call's xid
+			if !bytes.Equal(out.B, want) {
+				t.Errorf("a success writes %x, want %x", out.B, want)
+			}
+		})
+	}
 }
 
 // A call to each served pair of a range routes to its table, and a version the
