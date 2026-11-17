@@ -73,6 +73,7 @@ func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), 
 		Logger:       slog.New(slog.NewJSONHandler(io.MultiWriter(t.Output(), s.log), nil)),
 		Authenticate: authenticate,
 		Store:        s.store,
+		SigningKey:   signingKey("installation-a"),
 		Node:         testNode,
 		Tracer:       sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(s.spans)).Tracer("api"),
 	}
@@ -379,6 +380,15 @@ func TestWriteWithNoStore(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) { d.Store = nil })
 	if r := s.do(t, http.MethodPut, knobPath, `{"spec":{}}`, "If-None-Match", "*"); r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
 		t.Errorf("PUT with no store: answered %d %s, want 503 unavailable", r.status, r.body)
+	}
+}
+
+// With no signing key, a write carrying an Idempotency-Key answers 503
+// unavailable, since its digest cannot be keyed.
+func TestWriteWithNoSigningKey(t *testing.T) {
+	s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) { d.SigningKey = nil })
+	if r := s.do(t, http.MethodPut, knobPath, `{"spec":{}}`, "If-None-Match", "*", "Idempotency-Key", "k1"); r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
+		t.Errorf("keyed PUT with no signing key: answered %d %s, want 503 unavailable", r.status, r.body)
 	}
 }
 

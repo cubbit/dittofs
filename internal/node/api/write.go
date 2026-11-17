@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -105,8 +107,19 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 		}
 		var idem *entity.IdempotencyRecord
 		if key != "" {
+			if s.d.SigningKey == nil {
+				return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no signing key to key an idempotency digest"}
+			}
+			signing, err := s.d.SigningKey(ctx)
+			if err != nil {
+				return answer{}, err
+			}
+			sum, err := digest(signing, r, body)
+			if err != nil {
+				return answer{}, err
+			}
 			c, _ := auth.CallerFrom(ctx)
-			idem = &entity.IdempotencyRecord{Account: c.Principal, Key: key, Digest: digest(r, body)}
+			idem = &entity.IdempotencyRecord{Account: c.Principal, Key: key, Digest: sum}
 			if err := s.d.Store.Replay(ctx, *idem); err != nil {
 				return s.replayed(err)
 			}
@@ -300,13 +313,33 @@ func mismatch(tag uint64) error {
 // etag is a record's tag as the ETag header carries it.
 func etag(tag uint64) string { return `"` + strconv.FormatUint(tag, 10) + `"` }
 
-// digest is a request's identity under its idempotency key: its method, its
-// path with its query, and its body.
-func digest(r *http.Request, body []byte) [32]byte {
-	h := sha256.New()
+// digestInfo is the HKDF info string the digest's key is derived under.
+const digestInfo = "dittofs idempotency digest v1"
+
+// digest is a request's identity under its idempotency key: an HMAC-SHA256
+// of its method, its path with its query, and its body, keyed by the
+// HKDF-SHA256 derivation of signing under digestInfo.
+//
+// decision: the digest is keyed, never a plain hash of the body, because the
+// body can carry a secret before the pre-write step seals it, and a plain
+// hash in the store lets whoever holds a dump test guesses at a low-entropy
+// one offline. The key comes from the installation's signing key, sealed
+// outside the store and the same on every node, so every node computes the
+// same digest. It is derived per request from the version that signs now,
+// since the signing key rotates: a retry of a request first answered before
+// a rotation computes another digest and is answered 422, never applied
+// twice. Overturned if a client must replay across a rotation; then each
+// signing key version is kept for an idempotency record's life, and a
+// mismatch is checked again under the previous one.
+func digest(signing []byte, r *http.Request, body []byte) ([32]byte, error) {
+	k, err := hkdf.Key(sha256.New, signing, nil, digestInfo, sha256.Size)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	h := hmac.New(sha256.New, k)
 	h.Write([]byte(r.Method + " " + r.URL.RequestURI() + "\n"))
 	h.Write(body)
-	return [32]byte(h.Sum(nil))
+	return [32]byte(h.Sum(nil)), nil
 }
 
 // recorded is an answer as an idempotency record holds it.

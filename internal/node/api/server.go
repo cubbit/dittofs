@@ -41,6 +41,10 @@ type Deps struct {
 	Authenticate func(*http.Request) (auth.Caller, error)
 	// Store is the metadata store's control plane; nil, a write answers 503.
 	Store controlPlane
+	// SigningKey returns the installation's access-token signing key at the
+	// version that signs now, which keys each idempotency key's digest; nil,
+	// a write carrying an Idempotency-Key answers 503.
+	SigningKey func(context.Context) ([]byte, error)
 	// Node is the node serving the API, as its audit records name it.
 	Node entity.NodeID
 	// Applied returns once the node has applied what was committed before

@@ -2,6 +2,8 @@ package api_test
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -472,6 +474,55 @@ func TestReplay(t *testing.T) {
 		if got := sample(t, s.reg, name, nil); got != want {
 			t.Errorf("%s: got %v, want %v", name, got, want)
 		}
+	}
+}
+
+// signingKey is an installation's signing key, the same at every version.
+func signingKey(k string) func(context.Context) ([]byte, error) {
+	return func(context.Context) ([]byte, error) { return []byte(k), nil }
+}
+
+// An idempotency key's digest is keyed by the installation's signing key:
+// under the same key a request replays, under another key it computes
+// another digest and answers 422, and the store holds no plain SHA-256 of
+// the request.
+func TestDigestKeyed(t *testing.T) {
+	disk := newOnDisk(t)
+	caller, _ := one(entity.RoleOperator)
+	var key atomic.Pointer[string]
+	key.Store(new("installation-a"))
+	s := serve(t, caller, disk.use, func(d *api.Deps) {
+		d.SigningKey = func(context.Context) ([]byte, error) { return []byte(*key.Load()), nil }
+	})
+	const body = `{"spec":{"value":"a"}}`
+	create := func() reply {
+		return s.do(t, http.MethodPost, "/api/v1/knobs", body, "Idempotency-Key", "c1")
+	}
+	first := create()
+	if first.status != http.StatusCreated {
+		t.Fatalf("create: answered %d %s, want 201", first.status, first.body)
+	}
+	if r := create(); r.status != first.status || !bytes.Equal(r.body, first.body) {
+		t.Errorf("replay under the same signing key: answered %d %s, want the first answer %d %s", r.status, r.body, first.status, first.body)
+	}
+	key.Store(new("installation-b"))
+	if r := create(); r.status != http.StatusUnprocessableEntity || r.problem(t).Code != apiv1.CodeIdempotencyMismatch {
+		t.Errorf("replay under another signing key: answered %d %s, want 422 %s", r.status, r.body, apiv1.CodeIdempotencyMismatch)
+	}
+	plain := sha256.Sum256([]byte(http.MethodPost + " /api/v1/knobs\n" + body))
+	err := disk.raw.View(t.Context(), func(rd kv.Reader) error {
+		for kvp, err := range rd.Scan(nil, nil) {
+			if err != nil {
+				return err
+			}
+			if bytes.Contains(kvp.Value, plain[:]) {
+				t.Errorf("record %q holds the request's plain SHA-256", kvp.Key)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan of the KV: %v", err)
 	}
 }
 
