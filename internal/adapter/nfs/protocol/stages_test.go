@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -82,11 +83,15 @@ func compoundCall(minor uint32, tag string) []byte {
 	return binary.BigEndian.AppendUint32(b, 1) // one operation, the tag's own count
 }
 
-// decode decodes a call through the stage, as the pipeline does.
+// decode decodes a call through the stage and wraps its error in ErrDecode,
+// as the pipeline does.
 func decode(t *testing.T, s *stage, body []byte) (core.Header, error) {
 	t.Helper()
-	buf := &resources.Buf{B: body}
-	return s.Decode(buf, 0)
+	h, err := s.Decode(&resources.Buf{B: body}, 0)
+	if err != nil {
+		err = fmt.Errorf("%w: %v", core.ErrDecode, err)
+	}
+	return h, err
 }
 
 // status maps an error through the stages' table, as the pipeline does.
@@ -423,39 +428,32 @@ func TestTheCredentials(t *testing.T) {
 	}
 }
 
-// A message that is not a call is dropped, and a record the wire cannot address
-// is answered nothing.
+// A message that is not a call decodes, and Route drops it with no table
+// through a NoReply row, answered nothing; a record too short to address a
+// reply yields no header, so core closes the connection.
 func TestTheNonCalls(t *testing.T) {
 	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
 	reply := binary.BigEndian.AppendUint32(nil, 0x11223344)
 	reply = binary.BigEndian.AppendUint32(reply, 1)
 	h, err := decode(t, s, reply)
-	if h == nil || !errors.Is(err, errNotCall) {
-		t.Fatalf("a reply: %v, %v", h, err)
+	if h == nil || err != nil {
+		t.Fatalf("a reply: %v, %v; want its header and no error", h, err)
 	}
-	if st, answer := s.errs.Map(err, nil, 0); answer {
+	table, _, err := s.Route(h, nil)
+	if table != nil || !errors.Is(err, errNotCall) {
+		t.Fatalf("a reply is routed: %p, %v", table, err)
+	}
+	if st, answer := s.errs.Map(err, nil, h.Version()); answer {
 		t.Errorf("a reply is answered with %#x, want a NoReply row", uint32(st))
 	}
-	if h, err := decode(t, s, make([]byte, 7)); h != nil {
-		t.Errorf("a seven-byte record yields a header with %v", err)
-	}
-	if got := status(s, decodeErr(t, s, make([]byte, 7))); got != core.Status(wire.StatusAccept|wire.AcceptGarbageArgs) {
-		t.Errorf("a seven-byte record maps to %#x, want GARBAGE_ARGS", uint32(got))
+	if h, err := s.Decode(&resources.Buf{B: make([]byte, 7)}, 0); h != nil || !errors.Is(err, wire.ErrUnaddressable) || errors.Is(err, core.ErrDecode) {
+		t.Errorf("a seven-byte record: %v, %v; want no header and the wire's own error", h, err)
 	}
 }
 
-// decodeErr is the error a decode of body returns.
-func decodeErr(t *testing.T, s *stage, body []byte) error {
-	t.Helper()
-	_, err := decode(t, s, body)
-	if err == nil {
-		t.Fatal("decode succeeded")
-	}
-	return err
-}
-
-// A call whose later fields do not decode comes back with its header, and the
-// stages' table answers GARBAGE_ARGS.
+// A call whose later fields do not decode comes back with its header and the
+// wire's own error, which core wraps in ErrDecode once, and the stages' table
+// answers GARBAGE_ARGS.
 func TestTheDecodeRefusals(t *testing.T) {
 	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
 	over := nullCall(progNFS, 3, 0, wire.AuthSys, nil, wire.AuthNone, nil, nil)
@@ -473,13 +471,15 @@ func TestTheDecodeRefusals(t *testing.T) {
 		{"a verifier past the record", short},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			h, err := decode(t, s, c.body)
-			if h == nil || !errors.Is(err, core.ErrDecode) {
-				t.Fatalf("%v, %v; want a header and ErrDecode", h, err)
+			h, err := s.Decode(&resources.Buf{B: c.body}, 0)
+			if h == nil || err == nil || errors.Is(err, core.ErrDecode) {
+				t.Fatalf("%v, %v; want a header and the wire's own error", h, err)
 			}
+			_, err = decode(t, s, c.body)
 			if got := status(s, err); got != core.Status(wire.StatusAccept|wire.AcceptGarbageArgs) {
 				t.Errorf("status %#x, want GARBAGE_ARGS", uint32(got))
 			}
+			reply(t, s, h, status(s, err), golden(t, "accept-garbage-args"))
 		})
 	}
 }

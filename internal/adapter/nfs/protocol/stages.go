@@ -79,22 +79,20 @@ type stage struct {
 }
 
 // Decode reads the call at offset 0 in rec, the only one an RPC record holds:
-// nil with the error for a message the wire cannot address, the header with it
-// for one it can (RFC 20 section 4.7). Its header's Next is 0, so no other
+// nil with the wire's error for a message too short to address a reply, the
+// header with it for a call whose later fields do not decode, each wrapped in
+// ErrDecode by core (RFC 20 section 4.7). A message that is not a call comes
+// back with no error, for Route to drop. Its header's Next is 0, so no other
 // offset is asked for.
 func (s *stage) Decode(rec *resources.Buf, _ int) (core.Header, error) {
 	c, err := wire.ParseCall(rec.B)
 	if len(c) == 0 {
-		return nil, fmt.Errorf("%w: %w", core.ErrDecode, err)
+		return nil, err
 	}
-	h := header{rec}
-	switch {
-	case errors.Is(err, wire.ErrNotCall):
-		return h, errNotCall
-	case err != nil:
-		return h, fmt.Errorf("%w: %w", core.ErrDecode, err)
+	if errors.Is(err, wire.ErrNotCall) {
+		return header{rec}, nil
 	}
-	return h, nil
+	return header{rec}, err
 }
 
 // Encode writes the reply for s, the two high bits telling a program's status
@@ -164,7 +162,8 @@ func (s *stage) ReplyLen(h core.Header) int {
 func pad(n int) int { return (4 - n%4) % 4 }
 
 // Route chooses the table and builds the request, one of the call's own, in
-// the order of RFC 20 section 4.1's route row: the RPC version, then the
+// the order of RFC 20 section 4.1's route row: a message that is not a call
+// is dropped, which has no RPC version to judge; then the RPC version, the
 // credential and the verifier (RFC 21 section 11.1), then the program, its
 // version and, for a COMPOUND alone, its minor version (RFC 20 section 4.8, RFC
 // 21 section 2.1). The connection's first routed call ends its handshake
@@ -175,6 +174,9 @@ func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.R
 		return nil, nil, fmt.Errorf("%w: a header of another protocol", core.ErrDecode)
 	}
 	c := hd.call()
+	if _, err := wire.ParseCall(c); errors.Is(err, wire.ErrNotCall) {
+		return nil, nil, errNotCall
+	}
 	if c.RPCVersion() != 2 {
 		return nil, nil, errRPCMismatch
 	}
