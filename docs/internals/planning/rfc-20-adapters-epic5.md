@@ -108,7 +108,7 @@ Eleven changes to `testproto`, each made by the subtask whose tests need it:
   write, idle and handshake deadlines, `Conn`'s fields, `Established`, `Keep` and `Settings`,
   the drain's deadline, asking the service for a draining request's move target: E4. D1 is the
   seam between the two epics.
-- **`Conn.Close`'s body: E4.** It orders the reader's stop, the context's cancelling, the
+- **`Conn.Close`'s body: E4.** It orders the context's cancelling, the reader's stop, the
   pipeline's close, `OnClose` and the writer's stop, and all but one of those are E4's. The
   pipeline's close that it calls is T5.1a's, which T5.5b and T5.11 extend to holds and parks
   (§9).
@@ -413,8 +413,10 @@ service error has a row (those plans, D5); the one-call rule (§1.2).
     requests already admitted or pending, at most one of each per request, and `Conn.Send`'s
     callbacks, which recall caching grants the open-state pool bounds (RFC 24 §2.3, §5.1),
     until the write deadline closes the connection (RFC 20 §6.4).
-  - **Close order**, idempotent: the reader stops, the connection's context is cancelled,
-    `close()` is called, E4 calls `wait()`, then `OnClose`, then stops the writer.
+  - **Close order**, idempotent: the connection's context is cancelled, then the reader
+    stops (a read deadline in the past, set second so that a reader re-arming its deadline
+    never overwrites it: the epic 4 document's D2), `close()` is called, E4 calls `wait()`,
+    then `OnClose`, then stops the writer.
   - **`close()` never blocks**: it starts the teardown (every hold and park ended, their
     replies dropped) and returns. So `Conn.Close` may be entered from a handler's own
     goroutine, and from the reader when `Unwrap`, which runs there (D8), says close (D6);
@@ -1254,7 +1256,10 @@ registry. Nothing else is exported.
   interim where the table holds, `Lookup` and `Store`, `wait`, and `close`, which never
   blocks, for a pipeline that holds nothing yet. `Stages.Errors` (D6), as RFC 20 §4.1,
   §4.7 and §5.5 say since this pull request, and `core.golden`; `testproto`'s changes 1, 2,
-  9 and 10 of §1.1. Every reply buffer from the reply pool (D9), as RFC 24 §3.3 says since
+  9 and 10 of §1.1. `HeaderCodec.Args` and `ReplyLen` and `Framer.Frame` added to `core`'s
+  interfaces as the RFC 20 amendment (#4478) states them, to `testproto`'s stages and to
+  `core.golden`: this subtask owns all three, and `ReplyLen`'s coverage of a compound's head
+  and one result's head is T5.4's. Every reply buffer from the reply pool (D9), as RFC 24 §3.3 says since
   this pull request.
 - **Consumers:** every later subtask; E4, whose writer must pass the suite of `out`, and
   whose accept and reader call D1's functions.
@@ -1454,7 +1459,8 @@ registry. Nothing else is exported.
   row with `Members` and no `MaxMembers` (D10), and a table with such a row whose error table
   has no row for `ErrReplyTooBig`, or none for `ErrTooLong`, naming neither `Ops` nor
   `Versions` (D11); `testproto`'s
-  compound row sets it to 8 (§1.1's change 4); the row for `ErrReplyTooBig` is
+  compound row sets it to 8 (§1.1's change 4), and its `ReplyLen` covers the compound's head
+  and one result's head, which T5.1a's left out; the row for `ErrReplyTooBig` is
   change 8's, added by T5.3, which gains the sentinel.
   RFC 20 §4.3 and §4.7 say these, as this pull request amends them.
   `FuzzRecordWalk`, its crashers kept under `testdata/fuzz/FuzzRecordWalk/`.
@@ -1500,8 +1506,9 @@ registry. Nothing else is exported.
   - A chain of two `Echo` on stages whose `FlowControl`, declared in the test, answers the
     second member's try as full sends the first reply as a record of its own, counted `flow`,
     before the second member waits in `Admit`, and both are answered once the test lets it in.
-  - A chain of two members whose replies, joined, would pass `Framer`'s `MaxRecord` sends the
-    first reply as a record of its own, counted `record`, before the second reserves.
+  - A chain of two members whose replies, joined, would pass `Framer`'s `MaxRecord`, on a reply
+    pool whose quarter holds both replies' charges so that only the record cap splits it, sends
+    the first reply as a record of its own, counted `record`, before the second reserves.
   - At the 16 MiB floor, a compound whose members' bounds plus its `ReplyLen(h)` fit the
     transfer class's capacity is answered, and one whose bounds alone equal that capacity is
     refused `ErrReplyTooBig` (D11).
@@ -1511,13 +1518,18 @@ registry. Nothing else is exported.
     answered `ErrDecode`'s status, sealed under A, its checksum verifying.
   - A chain's replies arrive as one record whose checksum verifies.
   - A chain of 65 `Echo` on `Bare` is answered whole.
-  - On a server whose reply budget the test sets to the charge of three `Echo` replies (each
-    its class plus `BufPool`'s 8 KiB), a chain of four such `Echo` on `Bare` is answered in two
-    records, the first three replies and then the fourth, counted `reply_pool`, and an `Echo` on a second connection of that server, sent after the chain, is
+  - On a server with a large reply budget, all of it but three `Echo` replies' charges (each
+    its class plus `BufPool`'s 8 KiB) held by a raw reservation the test takes, a chain of
+    four such `Echo` on `Bare` is answered in two records, the first three replies and then
+    the fourth, counted `reply_pool`, since the quarter of that large ceiling is far above four
+    charges and only the pool's room splits the chain; a budget of three charges alone would
+    put the quarter at 0.75 of one charge, so the second member would split it first, counted
+    `quarter`. An `Echo` on a second connection of that server, sent after the chain, is
     answered too, with no time passing on the clock. Two chains of a `PutFH`, a related
-    `Create` and an `Echo`, on two connections of a server whose reply budget the test sets to
-    the four replies before the `Echo`s, each `Create` held in the service until both are
-    reached, are both answered once the test releases them, with no time passing on the clock.
+    `Create` and an `Echo`, on two connections of a server with a large reply budget, all of
+    it but the four replies before the `Echo`s held by a raw reservation, each `Create` held in the
+    service until both are reached, are both answered once the test releases them, with no
+    time passing on the clock.
   - A chain of two `Echo` whose charges each pass a quarter of the reply pool's ceiling, on an
     idle pool, is answered in two records, counted `quarter`; with a request of another
     connection waiting on the reply pool, a chain of three small `Echo` goes out one record per
