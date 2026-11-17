@@ -446,8 +446,11 @@ func (t *Tracker) lowerCount(seg core.SegmentID, st *segState, n *atomic.Int64) 
 // each entry against the segment holding the dropped record, and the pass
 // that retires the segment reads them through DeferredAgainst and ends
 // each with EndDeferral and SetDeferred(seg, false) once the record's
-// place is durable; the deferring path raises the count with its own
-// SetDeferred call beside its Lose. The count clamps at zero: an end
+// place is durable; no production path raises the count today — the
+// open's loss pass refuses the corrupt losses that would defer rather
+// than publish a deferral no retirement gate reads, and the emptying that
+// copies the deferred records into its target is the count's first
+// raiser. The count clamps at zero: an end
 // without a start, or a repeated end, lowers nothing. The last end on a
 // segment holding nothing else crosses to not held and fires the candidate,
 // exactly as any release does.

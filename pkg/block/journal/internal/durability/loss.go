@@ -242,7 +242,9 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	// decision: a drop whose record could not be appended is never undone.
 	// The journal stops holding what it cannot produce, and a loss only errs
 	// toward fetching the extent again, so the caller's drop stands, the
-	// event is published and the sequence number joins the directory's
+	// event is published — unless the caller already reported the failure,
+	// when the suppression above holds no event for the ring and the zero
+	// event answers — and the sequence number joins the directory's
 	// failed list for the next open to name. A deferred loss is not on that
 	// list: its record is owed to the copy that retires the segment.
 	//
