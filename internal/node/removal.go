@@ -91,7 +91,10 @@ func (n *Node) shareDeletion(ctx context.Context, op entity.Operation) (step.Ste
 // decision: step 4 waits for the journal to forget a share's tag: the
 // engine's Drop runs the journal's whole-tag Forget, which answers
 // ErrNotImplemented, so a removal that reaches step 4 is retried on the
-// runner's backoff and never ends. Drop the tag, record the shard forgotten
+// runner's backoff and never ends. A DELETE of a share through the API
+// therefore ends the share's live state and then parks here, its operation
+// running at phase "files" and a retry logged at every backoff turn: that is
+// this decision, not a fault. Drop the tag, record the shard forgotten
 // and drop its files with Nodes.ContinueShardRemoval here once Forget exists;
 // then startEngine must also leave out a share whose tag the store records
 // forgotten, rather than attach it again.
@@ -130,7 +133,11 @@ const liveStateBound = 30 * time.Second
 // Run it for each shard of the share this node is primary of once shares
 // have more than one, or nodes more than one.
 func (n *Node) removeShare(ctx context.Context, id entity.ShareID) error {
-	sh, _, err := n.meta.ShareIndex().Share(ctx, id)
+	var sh entity.Share
+	_, err := n.bounded(ctx, func(ctx context.Context) (err error) {
+		sh, _, err = n.meta.ShareIndex().Share(ctx, id)
+		return err
+	})
 	if err != nil {
 		return err
 	}
@@ -153,7 +160,10 @@ func (n *Node) removeShare(ctx context.Context, id entity.ShareID) error {
 		return err
 	}
 	n.rec.unbound(id)
-	return n.meta.Nodes().RecordShardRemoval(ctx, id, sh.Shard, entity.TagOffloaded)
+	_, err = n.bounded(ctx, func(ctx context.Context) error {
+		return n.meta.Nodes().RecordShardRemoval(ctx, id, sh.Shard, entity.TagOffloaded)
+	})
+	return err
 }
 
 // endLiveState unbinds share id in the engine, joins the filesystem's calls
@@ -195,7 +205,11 @@ func (n *Node) joinRemovals(ctx context.Context) error {
 		at, done := uint8(0), false
 		for at < 3 && !done {
 			var err error
-			if at, done, err = n.meta.Nodes().ContinueRemoval(ctx, sh.ID); err != nil {
+			_, err = n.bounded(ctx, func(ctx context.Context) (err error) {
+				at, done, err = n.meta.Nodes().ContinueRemoval(ctx, sh.ID)
+				return err
+			})
+			if err != nil {
 				return fmt.Errorf("share %s's removal: %w", sh.ID, err)
 			}
 		}
