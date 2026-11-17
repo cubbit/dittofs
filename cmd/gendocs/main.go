@@ -47,7 +47,7 @@ func generate(out string) error {
 		root *cobra.Command
 		name string
 	}{
-		{dfs.GetRootCmd(), "dfs"},
+		{dfs.NewRoot(), "dfs"},
 		{dfsctl.NewRoot(cmdutil.Env{}), "dfsctl"},
 	} {
 		bin.root.DisableAutoGenTag = true
