@@ -220,6 +220,13 @@ func (f *assembledJournal) tryReopen(t *testing.T, floor Version, set func(*Sett
 		_ = j.Close()
 		return nil, err
 	}
+	// The seam skips the loss pass — its directories hold no loss records
+	// an open owes — and keeps the rest of the public order: the retirement
+	// worker starts once the pass it stands in for would be done.
+	if err := c.StartRetiring(); err != nil {
+		_ = j.Close()
+		return nil, err
+	}
 	return j, nil
 }
 

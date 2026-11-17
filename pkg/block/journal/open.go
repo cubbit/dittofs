@@ -401,6 +401,17 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			}
 			return nil, err
 		}
+		// The retirement worker starts once the loss pass has landed: its
+		// tick's scan answers a segment holding only corrupt drops, and
+		// starting it ahead of the pass would unlink such a segment while
+		// the mask the pass has not yet made durable is its only gate —
+		// the marker at StartRetiring names the whole rule. A failure here
+		// leaves the core closed, unlinked nothing, for the worker never
+		// started.
+		if err := c.StartRetiring(); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
 		if cfg.SparesReady != nil {
 			cfg.SparesReady(c)
 		}

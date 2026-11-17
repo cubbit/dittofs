@@ -2,6 +2,7 @@ package datapath
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -236,6 +237,7 @@ type Core struct {
 	retirer       *segment.Retirer    // the retirement executor
 	liveness      *reclaim.Tracker    // the segment liveness the retirement worker asks
 	retiring      *reclaim.Worker     // the retirement worker that turns liveness into retirements
+	openPayload   bool                // the set carried the open registration StartRetiring asks the credential of
 	sealer        *segment.IdleSealer // the idle sealer; nil when Deps.IdleSealBytes is zero
 
 	held, dirty, retained atomic.Int64
@@ -681,6 +683,9 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// so the journal-wide axes and the per-share figures open at the
 	// figures the rebuilt index holds rather than at zero; the zero write
 	// time the deltas carry is the time restored content opens with.
+	// openPayload is StartRetiring's credential: the set this core runs was
+	// continued from a recovery whose open registration the tracker holds.
+	c.openPayload = state.Open != nil
 	if o := state.Open; o != nil {
 		tr.RegisterAtOpen(o.Live, o.Forgets, o.Unsynced)
 		tr.OpenDone()
@@ -710,17 +715,23 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 	// stream's appends, not the sealer, so a stopped pool cannot starve or
 	// deadlock a sealer in flight.
 	c.retirer.Start()
-	// decision: the retirement worker runs only once its set's header-only
-	// records are registered with the liveness tracker, whatever built the
-	// set. A fresh set owns none, so its start is unconditional; a continued
-	// set starts with the open registration above, registered before this
-	// line, so the worker's first pass re-checks segments the tracker already
-	// pins. A caller's set without an Open payload stays refused: its
-	// records carry no registration, and the worker's tick would hand their
-	// not-held segments to the retirer while the records the disk still
-	// holds ride in them. Overturned by the rebuild hand-off always
-	// carrying its open payload, which would close this to every set.
-	if freshSet || state.Open != nil {
+	// decision: the retirement worker runs only once its set's records are
+	// registered with the liveness tracker, whatever built the set, and —
+	// over a set continued from an open payload — only once the open that
+	// continues it has landed the loss records it owes, through
+	// StartRetiring: the worker's candidate scan answers a segment holding
+	// only corrupt drops, and its unlink would strip the mask an in-flight
+	// loss record has not yet made durable, serving the older copies the
+	// crash superseded. New starts the worker itself only over a set it
+	// built fresh, which owns no seen records and owes no loss record; the
+	// offers a continued set's registration fires while the worker waits
+	// are drained by the first pass. A caller's set without an Open payload
+	// carries no registration and no StartRetiring either: the worker's
+	// tick would hand its records' not-held segments to the retirer while
+	// the records the disk still holds ride in them. Overturned by the
+	// rebuild hand-off always carrying its open payload, which would close
+	// this to every set.
+	if freshSet {
 		c.retiring.Start()
 	}
 	c.addStop(c.retirer.Stop)
@@ -860,3 +871,23 @@ func (c *Core) retiredSegment(id core.SegmentID) {
 // wait the fixture blocks on is the pool's own settle event, woken by the
 // refill and never by time.
 func (c *Core) WaitSpares(ctx context.Context) error { return c.pool.WaitSpares(ctx) }
+
+// StartRetiring starts the retirement worker over the set this core's open
+// payload registered with the liveness tracker: the caller — the open whose
+// loss records have just landed — holds the worker's start until the last
+// mask the open owes is durable, so the tick's scan cannot unlink a segment
+// whose within-reserve loss record is still in flight. It answers an error
+// and starts nothing over a set that carried no open payload: such a
+// caller's records hold no registration with the tracker, and the worker's
+// tick would hand its not-held segments to the retirer while the records
+// the disk still holds ride in them — the same refusal New's own start
+// decision makes. Idempotent, the worker's own Start being so; a fresh set
+// needs no call, for New started its worker itself and its own figure
+// answers no open payload.
+func (c *Core) StartRetiring() error {
+	if !c.openPayload {
+		return errors.New("datapath: the core's set carried no open payload, so nothing registered its records for a retirement worker")
+	}
+	c.retiring.Start()
+	return nil
+}

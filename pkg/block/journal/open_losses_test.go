@@ -652,3 +652,111 @@ func TestFailedRecordsTakeTheReserveFirst(t *testing.T) {
 		t.Fatalf("the loss records on disk name the failed list's %v among them, got %v of %v", failedSorted, got, records)
 	}
 }
+
+// TestRetiringHoldsUntilTheOpenLossRecordLands pins the order the open
+// starts its retirement worker: only once the loss pass has landed. A
+// segment whose whole content is one corrupt drop holds nothing the
+// tracker pins once the open registered, so its retirement is owed to the
+// loss record alone — a worker started before the pass could not see that
+// debt, and stopping the record's own append at the device holds the open
+// inside its loss pass with the record unborn, no location in any pending
+// window and nothing durable owed: the tick would retire the segment and
+// serve the older copies the crash superseded. The worker therefore waits
+// for the whole pass; the hold here is the seam's own choreography — the
+// first write a "*.seg" file of this directory sees is the loss record's
+// own append, for the planted segment is sealed and no earlier phase
+// writes one — and one full tick plus the poll's steps past it is the
+// bounded wait that proves the hold, for the worker's timer is real time
+// no injected clock advances.
+func TestRetiringHoldsUntilTheOpenLossRecordLands(t *testing.T) {
+	f := seededJournal(t)
+	file := fileOf(7)
+	drop := plantRecord(1, ownerTag, file, 20, 20, 0, 32)
+	offs := plantSealedAt(t, f.seam, f.id, 949, drop)
+	f.rotHeader(t, format.SegmentName(949), int64(offs[0]))
+	name := format.SegmentName(949)
+
+	hold := f.seam.Hold(t, kit.OpWrite, "*.seg")
+	opened := make(chan error, 1)
+	go func() {
+		_, err := Open(context.Background(), f.dir, Version{}, f.id, nil, f.opts(nil)...)
+		opened <- err
+	}()
+	select {
+	case <-hold.Reached():
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the open reached no segment write to hold: the loss record's own append never came")
+	}
+
+	// The bounded wait is the assertion: the worker's prompt-only candidate
+	// waits one full tick from its offer, so a worker running before the
+	// pass hands the segment over inside this window. The poll watches the
+	// segment's own file, never a clock alone.
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if !slices.Contains(f.segmentFileNames(t), name) {
+			t.Fatalf("the corrupt-drop segment 949 was unlinked while its loss record's append was held: the retirement ran ahead of the open's loss record, want it held until the pass lands the mask")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	hold.Release()
+	if err := <-opened; err != nil {
+		t.Fatalf("the open whose loss record's append was held: %v", err)
+	}
+	if n := len(f.lossRecords(t)); n != 1 {
+		t.Fatalf("%d loss records on disk after the held open, want the one naming the dropped record", n)
+	}
+}
+
+// TestAFailedOpenUnlinksNothing holds the debris of the loss pass's own
+// failure: an open whose loss record could not be made durable — a device
+// refusing the record's sync — answers no journal, and the segment the
+// record was to mask still stands when it is gone, file whole and
+// readable. Nothing a refused or failed open started may unlink, for the
+// unlink of the masked record's holder is the one write the recovery
+// cannot take back. The directory it leaves answers every later open
+// with the ended-segment refusal over the empty spare the failed sync
+// ended — the honest closed word until the emptying exists, for a mask
+// the device cannot make durable must not be traded for a served journal.
+func TestAFailedOpenUnlinksNothing(t *testing.T) {
+	f := seededJournal(t)
+	file := fileOf(7)
+	drop := plantRecord(1, ownerTag, file, 20, 20, 0, 32)
+	offs := plantSealedAt(t, f.seam, f.id, 950, drop)
+	f.rotHeader(t, format.SegmentName(950), int64(offs[0]))
+	name := format.SegmentName(950)
+
+	// The device refuses the loss record's own sync — the second "*.seg"
+	// sync the open makes, for the tail proof's sync of the rotted segment
+	// came first: the pass's Lose fails, the open is refused, and the
+	// directory keeps the rotted segment.
+	if err := f.seam.Schedule(kit.FailingFrom(kit.OpSync, "*.seg", 2, 1, syscall.EIO)); err != nil {
+		t.Fatalf("schedule the sync-refusing device: %v", err)
+	}
+	_, err := Open(context.Background(), f.dir, Version{}, f.id, nil, f.opts(nil)...)
+	if err == nil {
+		t.Fatalf("the open over a device refusing the loss record's sync served, want the refusal")
+	}
+	if errors.Is(err, ErrNotImplemented) || !strings.Contains(err.Error(), "input/output error") {
+		t.Fatalf("the failed open answered %v, want the device's own sync failure of the loss record", err)
+	}
+	if _, aerr := f.seam.Durable(name); aerr != nil {
+		t.Fatalf("the failed open left no readable segment 950, the record the loss was to mask: %v", aerr)
+	}
+
+	f.seam.SetFault(nil)
+	// The empty spare the failed sync ended leaves every later open
+	// refusing — the standing ended-segment seam — and the rotted
+	// segment stands under it, unlinked by nothing.
+	again, aerr := Open(context.Background(), f.dir, Version{}, f.id, nil, f.opts(nil)...)
+	if aerr == nil {
+		t.Cleanup(func() { _ = again.Close() })
+		t.Fatalf("the open after the failed one served the directory, want the ended-segment refusal")
+	}
+	if !errors.Is(aerr, ErrNotImplemented) || !strings.Contains(aerr.Error(), "the open ends segment") {
+		t.Fatalf("the open after the failed one answered %v, want the refusal naming the ended empty spare", aerr)
+	}
+	if _, derr := f.seam.Durable(name); derr != nil {
+		t.Fatalf("the refusing reopen left no readable segment 950: %v", derr)
+	}
+}

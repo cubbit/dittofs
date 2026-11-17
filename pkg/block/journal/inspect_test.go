@@ -215,6 +215,11 @@ func reopenedJournal(t *testing.T) (*Journal, map[core.SegmentID][]uint32) {
 	if err != nil {
 		t.Fatalf("the core over the rebuilt state: %v", err)
 	}
+	// The public order the seam stands in for: the worker starts once the
+	// open's loss pass would be done.
+	if err := c.StartRetiring(); err != nil {
+		t.Fatalf("starting the retirement worker over the reopened set: %v", err)
+	}
 	j := newJournal(c)
 	t.Cleanup(func() {
 		if err := j.Close(); err != nil && !errors.Is(err, ErrClosed) {

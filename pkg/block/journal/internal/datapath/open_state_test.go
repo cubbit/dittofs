@@ -241,6 +241,12 @@ func openedCore(t *testing.T) *Core {
 	if err != nil {
 		t.Fatalf("New over the rebuilt state: %v", err)
 	}
+	// The worker starts once the loss pass the public open runs here is
+	// done — this fixture's rebuild owes no loss records, so the start is
+	// the open's own last step, the public order StartRetiring names.
+	if err := c.StartRetiring(); err != nil {
+		t.Fatalf("starting the retirement worker over the rebuilt set: %v", err)
+	}
 	t.Cleanup(func() {
 		if err := c.Close(); err != nil {
 			t.Errorf("Close: %v", err)
