@@ -169,7 +169,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R5 | A ticket is accepted only for a service name the keytab holds, compared with ASCII letters folded; a ticket for any other name, one whose service name was rewritten under the same key among them, is refused `ErrLogonFailure` | MUST | §3.3, §4.6; §10 "service name" | T5.3 |
 | R6 | A ticket under DES or RC4, or one whose session key or authenticator subkey is not AES, is refused `ErrLogonFailure` | MUST | §3.3; §10 "AES only" | T5.3 |
 | R7 | `SignIn` verifies the ticket's encryption, and its start and end times and the authenticator's time within a clock skew of 5 minutes, on the injected clock | MUST | §3.3; §10 "clock skew" | T5.3 |
-| R8 | Over SMB, only a ticket's IPv4 and IPv6 addresses restrict it: a ticket with none is accepted from any address, and one with any is refused `ErrLogonFailure` unless `SignInStep.Client` is one of them; a NetBIOS address is ignored. "Over SMB" is the step's `Transport`, never its `Service`, so a `host/` ticket presented over SMB is checked too | MUST | §3.3; RFC 22 §4.1; §10 "ticket addresses" | T5.3 |
+| R8 | Over SMB, only a ticket's IPv4 and IPv6 addresses restrict it: a ticket with none is accepted from any address, and one with any is refused `ErrLogonFailure` unless `SignInStep.Client` is one of them; a NetBIOS address is ignored. "Over SMB" is the step's `Transport`, never its `Service`, so a `host/` ticket presented over SMB is checked too, and an unset `Transport` is refused `ErrInvalid` (D15) | MUST | §3.3; RFC 22 §4.1; §10 "ticket addresses" | T5.3 |
 | R9 | An authenticator seen before is refused, counted with outcome `replay`, by a replay cache held in the node's memory | MUST | §3.3, §9.2; §10 "replay" | T5.4 |
 | R10 | The replay cache holds each entry until its authenticator's time plus the clock skew, on the injected clock, so an authenticator stamped ahead cannot be replayed once its entry is gone | invariant | §7.3; §10 "replay" | T5.4 |
 | R11 | The replay cache is bounded, and a sign-in that would need one more entry fails `ErrUnavailable` | bound | §7.3 | T5.4 |
@@ -351,7 +351,9 @@ record are E6's and E8's to drive, on the rule this epic builds.
   missing row.
 - **D15, `SignInStep` gains `Transport`, `TransportNFS` or `TransportSMB`, which the adapter
   sets.** R8's address check runs when `Transport` is `TransportSMB`, and a Kerberos attempt's
-  `protocol` label is read from it. `Service` cannot stand in: RFC 18 §3.3 accepts `host/` tickets,
+  `protocol` label is read from it. `verifyAPReq` returns `ErrInvalid` unless `Transport` is
+  `TransportSMB` or `TransportNFS`, so a caller that leaves it at its zero value is refused rather
+  than skipping R8. `Service` cannot stand in: RFC 18 §3.3 accepts `host/` tickets,
   and `Host` names no transport, so a `host/` ticket over SMB would skip R8, which RFC 22 §4.1
   forbids. Amends RFC 18 §3.1's `SignInStep` (§9). A `decision:` marker at the check. Prior art:
   none found.
@@ -387,7 +389,7 @@ test/integration/ad-dc/
   entrypoint.sh, fixture_test.go                         T5.1  service names on dittofs-svc, AES only
   pac_capture_test.go, capture-pacs.sh                   T5.1  the PAC capture
   pac_capture_test.go                                    T5.11 also writes alice's AP-REQ for cifs/
-docs/guide/identity.md                                   T5.1  the fixture's service account
+docs/guide/identity.md                                   T5.1  the fixture's service account, change the KDC at once
 ```
 
 ## 6. Subtasks
@@ -409,7 +411,9 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   `msDS-SupportedEncryptionTypes` `0x18`, so the exported keytab holds no RC4 key (`entrypoint.sh`,
   `fixture_test.go`'s AES-only subtest); `capture-pacs.sh`, which runs `TestADPACCapture` with
   `DITTOFS_AD_DC_PAC_OUT` set and writes `tgt.pac` with `krbtgt.keytab` and `service.pac` with
-  `service.keytab`; `docs/guide/identity.md`'s account of the fixture. The fixture's TLS part is
+  `service.keytab`; `docs/guide/identity.md`'s account of the fixture, and its instruction to
+  change the KDC at once when every node reports a new keytab version, since RFC 23 §3.3's
+  rotation prunes the old version 10 hours plus the skew after that report. The fixture's TLS part is
   E6's and its join part E7's.
 - **Acceptance criteria:**
   - The KDC refuses a service ticket for the imported `cifs/` name under RC4 and issues one under
@@ -467,7 +471,7 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   (R6), the service name (D4, R5), the start and end times and the authenticator's time within
   5 minutes of `now` (R7), the authenticator's client equal to the ticket's, and the addresses
   (R8, when `Transport` is SMB (D15), lifted from `develop`'s `ticketAllowsClientIP` without gokrb5's
-  workaround); a parse error
+  workaround); an unset `Transport` `ErrInvalid` (D15); a parse error
   `ErrInvalid`, every refusal `ErrLogonFailure`; `Keys.Session` and `Keys.APRep`, the AP-REP
   lifted from `develop`'s `BuildMutualAuth`, with no subkey (R12); RFC 18 §3.3's `ponytail:` on
   the skew constant; D1's and D4's markers; `FuzzAPReq`. Consumed by T5.4, T5.5, T5.6 (the key that
@@ -485,12 +489,13 @@ docs/guide/identity.md                                   T5.1  the fixture's ser
   of the wrong width, R7); §10's "service name", a `cifs/nas.test` ticket whose service name is
   rewritten to `cifs/other.test` under the same key, and one for a name the ring lacks, each
   refused, and `CIFS.NAS.TEST`'s spelling accepted (catches an unchecked or byte-compared name,
-  R5), a `cifs/` ticket presented as NFS refused (D4); §10's "ticket addresses", a ticket listing
-  `192.0.2.1` from `192.0.2.1` then `192.0.2.2`, accepted then refused, one listing only a NetBIOS
+  R5), a `cifs/` ticket presented as NFS refused (D4); §10's "ticket addresses", with `Transport`
+  SMB, a ticket listing `192.0.2.1` from `192.0.2.1` then `192.0.2.2`, accepted then refused, one listing only a NetBIOS
   address and one listing none, each accepted from any address (catches addresses ignored or a
   NetBIOS entry treated as a restriction, R8); a `host/nas.test` ticket listing `192.0.2.1`, from
   `192.0.2.2` with `Transport` SMB: refused, and with `Transport` NFS: accepted (catches the SMB
-  check keyed on `Service`, R8, D15); §10's "AES only", tickets under RC4 and under DES,
+  check keyed on `Service`, R8, D15); a `cifs/` ticket listing `192.0.2.1` from `192.0.2.2` with
+  `Transport` unset: `ErrInvalid` (catches R8 failing open on the zero value, D15); §10's "AES only", tickets under RC4 and under DES,
   an AES ticket whose session key is RC4 and one whose authenticator subkey is RC4, each refused,
   AES128 and AES256 accepted (catches an RC4 ticket forged from an NT hash, R6); an authenticator
   naming another client refused; an AP-REQ with no subkey gives the ticket's session key, one with
@@ -855,7 +860,11 @@ the version this document was written against.
   adapters set.
 - RFC 18 §3.3 and RFC 13 §7 count an imported key's retention from "the change at the KDC",
   which identity cannot see; RFC 23 §3.3's rotation, which removes the old version (D13), counts
-  it from every node reporting the new one. RFC 18 §3.3 should defer to RFC 23 §3.3.
+  it from every node reporting the new one. RFC 18 §3.3 should defer to RFC 23 §3.3. RFC 23 §3.3
+  counts the retention from every node reporting the new version, not from the KDC change, so a
+  KDC changed later than the nodes' report loses the only key it still uses when the rotation
+  prunes it, and every Kerberos sign-in fails until it changes; `docs/guide/identity.md` says to
+  change the KDC at once.
 - RFC 13 §7 has the control plane report that an old keytab version may be revoked at its
   service; RFC 23 §3.3's rotation reports the nodes still holding the old version and deletes it,
   and names no revocation report. RFC 23 §3.3 should name it, at the prune, so the report has an
