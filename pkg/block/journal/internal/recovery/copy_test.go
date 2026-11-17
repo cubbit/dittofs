@@ -141,6 +141,70 @@ func TestDeviceLostTailReappendsFromItsFirstCopy(t *testing.T) {
 	}
 }
 
+// TestReappendIsIdempotentAcrossOpens opens the device-lost directory
+// twice: the first open re-appends the lost B into a sealed spare — the
+// crash shape between the copy's seal and its source's unlink, for the open
+// that seals keeps the source on disk — and the second open meets the same
+// loss over the same bytes. A copy of the record's own numbers already
+// verifying in a sealed segment is the answer the re-append exists to
+// write, so the second open draws nothing for it: the spare planted for it
+// stays a pool spare, no second target is drawn or sealed, the index
+// serves B off the sealed copy — and where the second open
+// has no spare at all, it serves instead of refusing.
+func TestReappendIsIdempotentAcrossOpens(t *testing.T) {
+	t.Run("the second open draws nothing", func(t *testing.T) {
+		r, good, bAt := deviceLostB(t)
+		want := reappendOf(t, 2, bAt, good)
+		first, next := core.SegmentID(9), core.SegmentID(10)
+		st := runReserve(t, r, first) // the first open seals B's copy into 9
+		wantTheCopy(t, r, st, 0x8100, want, format.SegmentHeaderSize, first)
+		nameNext := format.SegmentName(next)
+		d := r.reserveDeps(next) // one fresh reserve spare planted for the second open
+
+		st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
+
+		if err != nil {
+			t.Fatalf("the second open over the same directory answered err %v, want it to serve off the sealed copy", err)
+		}
+		if got, wantN := len(st.Proof.Reappends), 1; got != wantN {
+			t.Fatalf("Reappends got %d records, want %d: the tail's proof still hands the lost B over — the skip is the phase's, not the proof's", got, wantN)
+		}
+		if got, want := st.Spares.Adopted, []AdoptedSpare{{ID: next, Class: segment.Reserve}}; !slices.Equal(got, want) {
+			t.Errorf("spares: the second open left adoptions %v, want %v: it drew nothing, so the planted spare stays a pool spare", got, want)
+		}
+		if got, wantAt := st.Rebuilt.Index.Lookup(tailFile(), 0x8100); !wantAt || got.Record.Segment != first || int64(got.Record.Offset) != format.SegmentHeaderSize {
+			t.Errorf("the second open serves B at %+v (found %v), want the sealed copy of segment %d at %d", got.Record, wantAt, first, format.SegmentHeaderSize)
+		}
+		if b := r.fileBytes(nameNext); !allZero(b) {
+			t.Errorf("the fresh spare holds %d non-zero bytes, want none: no second open drew and sealed a target any copy needed", countNonZero(b))
+		}
+	})
+
+	t.Run("the no-spare second open serves instead of refusing", func(t *testing.T) {
+		r, good, bAt := deviceLostB(t)
+		want := reappendOf(t, 2, bAt, good)
+		first := core.SegmentID(9)
+		st := runReserve(t, r, first) // the first open seals B's copy into 9
+		wantTheCopy(t, r, st, 0x8100, want, format.SegmentHeaderSize, first)
+		before := r.fileBytes(format.SegmentName(first))
+
+		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, nil)
+
+		if err != nil {
+			t.Fatalf("the second open with no spare answered err %v, want it to serve off the sealed copy instead of refusing for a spare the sealed copy made redundant", err)
+		}
+		if len(st.Proof.Reappends) != 1 {
+			t.Fatalf("Reappends got %+v, want B alone again: the skip is the phase's answer to it", st.Proof.Reappends)
+		}
+		if got, wantAt := st.Rebuilt.Index.Lookup(tailFile(), 0x8100); !wantAt || got.Record.Segment != first || int64(got.Record.Offset) != format.SegmentHeaderSize {
+			t.Errorf("the second open serves B at %+v (found %v), want the sealed copy of segment %d at %d", got.Record, wantAt, first, format.SegmentHeaderSize)
+		}
+		if after := r.fileBytes(format.SegmentName(first)); !slices.Equal(after, before) {
+			t.Errorf("the second open changed the sealed copy's bytes, want them unchanged: it drew and sealed nothing")
+		}
+	})
+}
+
 // TestFailedTailSyncCopiesEverything holds the failed window's half of R49:
 // a tail whose proof sync fails hands every record the first read verified
 // over — the device is never asked for them — so each is re-appended with
@@ -267,18 +331,22 @@ func TestAFailedReappendTargetTakesAnEndedFate(t *testing.T) {
 	}
 }
 
-// TestOpenAtMaximumStillReappends holds R54: the open's re-appends draw on the
-// repack reserve — never on a share's limit, and charging no share a byte —
-// so a journal whose every other spare class is spent before the crash still
-// opens and serves the record the device lost from its re-append.
+// TestOpenAtMaximumStillReappends holds the reserve-only answer: the open's
+// re-appends draw on the repack reserve — never on a share's limit, never a
+// headroom or content spare, and charging no share a byte — so a journal
+// whose every other spare class is spent before the crash still opens and
+// serves the record the device lost from its re-append. The reserve spare
+// is NOT the lowest id planted, so the phase drawing the headroom or the
+// content spare instead fails the adoption assertion below.
 func TestOpenAtMaximumStillReappends(t *testing.T) {
 	r, good, bAt := deviceLostB(t)
 	want := reappendOf(t, 2, bAt, good)
-	// One spare for the reserve and one the fill order classes as content:
-	// the content class alone is what a re-append must never draw.
-	reserve, content := core.SegmentID(3), core.SegmentID(5)
-	d := r.reserveDeps(reserve, content)
-	d.SpareTargets = segment.Targets{Reserve: 1} // the first adopted spare takes the reserve, the second the content class
+	// One spare for each class in the fill order — headroom, then the repack
+	// reserve, then content — so the class each remaining adoption names pins
+	// the one the re-append drew from.
+	head, reserve, content := core.SegmentID(3), core.SegmentID(4), core.SegmentID(5)
+	d := r.reserveDeps(head, reserve, content)
+	d.SpareTargets = segment.Targets{Headroom: 1, Reserve: 1} // the first adopted spare takes the headroom, the second the reserve, the third the content class
 
 	st, err := Run(context.Background(), d, core.Version{}, journalID, nil)
 	if err != nil {
@@ -286,8 +354,10 @@ func TestOpenAtMaximumStillReappends(t *testing.T) {
 	}
 
 	wantTheCopy(t, r, st, 0x8100, want, format.SegmentHeaderSize, reserve)
-	if got, wantAd := st.Spares.Adopted, []AdoptedSpare{{ID: content, Class: segment.Content}}; !slices.Equal(got, wantAd) {
-		t.Errorf("spares: the re-append left adoptions %v, want %v: it draws the repack reserve alone", got, wantAd)
+	if got, wantAd := st.Spares.Adopted, []AdoptedSpare{
+		{ID: head, Class: segment.Headroom}, {ID: content, Class: segment.Content},
+	}; !slices.Equal(got, wantAd) {
+		t.Errorf("spares: the re-append left adoptions %v, want %v: it draws the repack reserve alone, so the headroom and content spares both survive it", got, wantAd)
 	}
 	// No share gained the record's bytes: the figures the feed charged — A's
 	// and B's whole slots on their source, which holds them below its cut

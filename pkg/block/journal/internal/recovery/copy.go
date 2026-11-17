@@ -243,11 +243,18 @@ func (c *copier) writeTarget(id core.SegmentID, recs []format.RecordHeader, bodi
 // ended, so the cutting phase truncates it without a marker and the emptying
 // unlinks it.
 //
+// The phase is idempotent across opens: a record's numbers already
+// verifying in a segment the open's fates hold sealed is the very answer the
+// copy exists to write, so the phase draws nothing for it — an open that
+// crashed between the copy's seal and its source's unlink leaves the source
+// on disk to hand the same record over again, and the second open must not
+// spend a second spare re-writing what the first already sealed.
+//
 // The phase draws on the repack reserve alone — the spare the spares phase
 // adopted for that class — and consults no share's figures and no journal
-// limit, so a journal opened at its maximum still re-appends (R54): the
-// reserve is the pool's own byte, and the running journal's refill returns
-// it after the open.
+// limit, so a journal opened at its maximum still re-appends: the repack
+// reserve, never a share's limit, is the pool's own byte, and the running
+// journal's refill returns it after the open.
 //
 // The phase keeps the proof's state untouched: st.Proof still names the
 // records it handed over and the segments whose sync failed, the answers the
@@ -262,9 +269,36 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 		return nil
 	}
 
+	// The skip-rule shape the emptying gives a record that verifies in a
+	// sealed segment, applied to the re-append here: the sealed copy's
+	// marker proved its bytes reached the device, so the phase draws no
+	// spare for the record — and the sources the proof ended keep their
+	// cuts, for the later phases read the proof's own endings.
+	//
+	// decision: the skip deliberately does not cover an unsealed duplicate —
+	// a copy of the record's numbers that verifies nowhere the seal proved
+	// — for such a copy may be the warm answer of a cache alone and is
+	// worth nothing the next crash, so the record still draws and the copy
+	// the seal writes stands in for it. A write or fill whose sealed copy
+	// the index's equal-numbers collapse does not serve draws too, for the
+	// phase moves the pieces it copies and nothing else may. Upgrade to
+	// trusting the duplicate where it sits, and to a placement answer that
+	// finds the collapsed-away copies, when a warm-cache duplicate ever
+	// burns spares in the field.
+	pending := make([]tailRecord, 0, len(st.Proof.Reappends))
+	for _, rec := range st.Proof.Reappends {
+		if sealedCopy(st, rec.Header) {
+			continue
+		}
+		pending = append(pending, rec)
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
 	c := &copier{deps: deps, identity: expect, reserve: reserveSpares(st)}
-	recs := make([]copyInput, len(st.Proof.Reappends))
-	for i, rec := range st.Proof.Reappends {
+	recs := make([]copyInput, len(pending))
+	for i, rec := range pending {
 		recs[i] = copyInput{Bytes: rec.First, Segment: rec.Segment, At: rec.At, Seq: rec.Header.Seq, Version: rec.Header.Version}
 	}
 	target, err := c.copy(ctx, recs)
@@ -297,7 +331,7 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 	// never a served byte, and served bytes are what the device lost.
 	at := int64(format.SegmentHeaderSize)
 	var sources []core.SegmentID
-	for _, rec := range st.Proof.Reappends {
+	for _, rec := range pending {
 		if h := rec.Header; h.Kind == format.KindWrite || h.Kind == format.KindFill {
 			if _, _, rerr := st.Rebuilt.Index.RepointRecord(h.File,
 				index.RecordAt{Segment: rec.Segment, Offset: uint32(rec.At)},
@@ -323,6 +357,57 @@ func runReappend(ctx context.Context, deps Deps, rd *reader, st *State, expect c
 		}
 	}
 	return nil
+}
+
+// sealedCopy answers whether a copy of record h's own two numbers already
+// verifies in a segment the open's fates hold sealed, so nothing this open
+// must re-append for it. Each kind answers from the home the rebuilt state
+// keeps its copies in: a write or a fill from the index, whose equal-numbers
+// collapse serves one placement of the record's copies; every other content
+// kind from the per-copy records the feed collected; an aside kind from the
+// headers the scans keep. Every answer is cross-checked against the
+// record's own sequence number and version, so only a copy the journal
+// issued this record's numbers may stand in for it — and the sealed fate is
+// the proof's own answer, a segment whose marker verified on the device or
+// whose successor's name proved it, never the walk's marker alone.
+func sealedCopy(st *State, h format.RecordHeader) bool {
+	switch {
+	case h.Kind == format.KindWrite || h.Kind == format.KindFill:
+		p, ok := st.Rebuilt.Index.Lookup(h.File, h.Extent.Off)
+		return ok && p.Seq == h.Seq && p.Version == h.Version &&
+			sealedFate(st, p.Record.Segment)
+	case h.Kind <= format.KindUnmark:
+		for _, rc := range st.Kinds.Records {
+			if rc.Pair.Seq == h.Seq && rc.Pair.Version == h.Version && sealedFate(st, rc.Seg) {
+				return true
+			}
+		}
+		return false
+	default: // the aside kinds, which never feed: their headers stay on the scans
+		for i := range st.Rebuilt.Scans {
+			if !sealedFate(st, st.Rebuilt.Scans[i].ID) {
+				continue
+			}
+			for _, a := range st.Rebuilt.Scans[i].Aside {
+				if a.Header.Seq == h.Seq && a.Header.Version == h.Version {
+					return true
+				}
+			}
+		}
+		return false
+	}
+}
+
+// sealedFate answers whether the settled fates hold segment id sealed: the
+// fate the classing wrote and the tail's proof settled, a marker verified on
+// the device or a successor's name.
+func sealedFate(st *State, id core.SegmentID) bool {
+	for _, f := range st.Tails.Fates {
+		if f.ID == id {
+			return f.Kind == fateSealed
+		}
+	}
+	return false
 }
 
 // reserveSpares names the spares the open may draw its re-appends from, in
