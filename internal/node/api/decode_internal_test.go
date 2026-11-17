@@ -5,9 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -20,6 +23,7 @@ type sample struct {
 	Sub  *struct {
 		On bool `json:"on"`
 	} `json:"sub"`
+	At time.Time `json:"at"`
 }
 
 type inner struct {
@@ -116,13 +120,24 @@ func TestDecodeWrongTypeInJSONTerms(t *testing.T) {
 	}
 }
 
-// What decode accepts, encoding/json's own lenient decoding reads alike, and
-// re-encoded it decodes strictly to the same value; what it refuses is a
-// *fieldError, never a panic.
+// sampleKeys are a sample's JSON names at each path holding an object,
+// written out by hand so that FuzzDecode holds decode to them and not to
+// jsonFields, which decode itself uses.
+var sampleKeys = map[string][]string{
+	"":    {"note", "name", "size", "tags", "sub", "at"},
+	"sub": {"on"},
+}
+
+// What decode accepts holds no key but a sample's own JSON names, none
+// repeated in one object, and re-encoded it decodes strictly to the same
+// value; what it refuses is a *fieldError, never a panic.
 func FuzzDecode(f *testing.F) {
-	for _, s := range []string{`{"name":"a","size":18446744073709551615,"tags":["x"],"sub":{"on":true}}`, `{"x":1}`, `{}`, ``, `{"size":-1}`, `null`,
+	for _, s := range []string{
+		`{"name":"a","size":18446744073709551615,"tags":["x"],"sub":{"on":true}}`, `{"x":1}`, `{}`, ``, `{"size":-1}`, `null`,
+		`{"at":"2027-11-16T09:30:00+01:00"}`,
 		strings.Repeat("[", maxDepth+1) + strings.Repeat("]", maxDepth+1),
-		strings.Repeat(`{"sub":`, maxDepth+1) + "null" + strings.Repeat("}", maxDepth+1)} {
+		strings.Repeat(`{"sub":`, maxDepth+1) + "null" + strings.Repeat("}", maxDepth+1),
+	} {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
@@ -138,12 +153,8 @@ func FuzzDecode(f *testing.F) {
 		if len(bytes.TrimSpace(b)) == 0 {
 			return
 		}
-		var lenient sample
-		if err := json.Unmarshal(b, &lenient); err != nil {
-			t.Fatalf("decode accepted %q, encoding/json refuses it: %v", b, err)
-		}
-		if !reflect.DeepEqual(got, lenient) {
-			t.Fatalf("decode read %+v, encoding/json %+v", got, lenient)
+		if err := onlySampleKeys(json.NewDecoder(bytes.NewReader(b)), ""); err != nil {
+			t.Fatalf("decode accepted %q: %v", b, err)
 		}
 		out, err := json.Marshal(got)
 		if err != nil {
@@ -154,6 +165,55 @@ func FuzzDecode(f *testing.F) {
 			t.Fatalf("re-encoded %s decodes to %+v (%v), want %+v", out, again, err, got)
 		}
 	})
+}
+
+// onlySampleKeys reads the next value from dec, at path, and returns the
+// first key in it that is not one of sampleKeys at its path or repeats in
+// its object, and any object at a path sampleKeys does not name.
+func onlySampleKeys(dec *json.Decoder, path string) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch tok {
+	case json.Delim('{'):
+		names, ok := sampleKeys[path]
+		if !ok {
+			return fmt.Errorf("an object at %q, where a sample holds none", path)
+		}
+		seen := map[string]bool{}
+		for dec.More() {
+			kt, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			k := kt.(string)
+			if !slices.Contains(names, k) {
+				return fmt.Errorf("key %q at %q, want one of %q", k, path, names)
+			}
+			if seen[k] {
+				return fmt.Errorf("key %q repeated at %q", k, path)
+			}
+			seen[k] = true
+			sub := k
+			if path != "" {
+				sub = path + "." + k
+			}
+			if err := onlySampleKeys(dec, sub); err != nil {
+				return err
+			}
+		}
+	case json.Delim('['):
+		for dec.More() {
+			if err := onlySampleKeys(dec, path+"[]"); err != nil {
+				return err
+			}
+		}
+	default:
+		return nil
+	}
+	_, err = dec.Token()
+	return err
 }
 
 // RFC 7396's own examples (its Appendix A) whose patch is an object, each

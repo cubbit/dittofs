@@ -336,6 +336,29 @@ func cliClosure(root string) ([]string, error) {
 	return bad, nil
 }
 
+// settingsLeaf is the API's settings section, which imports the standard
+// library only, so every package that reads or stores the section can import
+// it without reaching anything else.
+const settingsLeaf = "internal/node/api/apisettings"
+
+// settingsImports returns each import by a non-test file of settingsLeaf
+// outside the standard library.
+func settingsImports(root string) ([]string, error) {
+	var bad []string
+	err := walkImports(root, false, func(file string, imports []string) {
+		if !under(path.Dir(file), settingsLeaf) {
+			return
+		}
+		for _, imp := range imports {
+			if !standard(imp) {
+				bad = append(bad, file+" imports "+imp)
+			}
+		}
+	})
+	slices.Sort(bad)
+	return bad, err
+}
+
 // Each import rule reports nothing over the module and exactly the violation
 // planted in its testdata tree, beside the allowed look-alikes planted with it.
 func TestImportRules(t *testing.T) {
@@ -365,6 +388,8 @@ func TestImportRules(t *testing.T) {
 				"pkg/node/apiv1 imports C outside the standard library",
 				"pkg/node/apiv1 imports github.com/spf13/cobra outside the standard library",
 			}},
+		{"the API settings' imports", settingsImports, "settings-leaf",
+			[]string{"internal/node/api/apisettings/settings.go imports " + module + "pkg/node/apiv1"}},
 	} {
 		got, err := tc.rule(filepath.Join("..", ".."))
 		if err != nil {
@@ -472,6 +497,7 @@ func componentImports(root string) ([]string, error) {
 			if std || inModule && componentAllowed(rel) || slices.Contains(libraries, p) {
 				continue
 			}
+			r, _ := filepath.Rel(root, path)
 			bad = append(bad, filepath.ToSlash(r)+" imports "+p)
 		}
 		return nil
