@@ -1,4 +1,4 @@
-package main
+package jdemo
 
 import (
 	"context"
@@ -33,12 +33,12 @@ func TestFileSystemViewListsSegments(t *testing.T) {
 	if err := d.open(context.Background()); err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer func() { _ = d.j.Close() }()
-	h, err := d.j.Share(1, 0, journal.Version{})
+	defer func() { _ = d.J.Close() }()
+	h, err := d.J.Share(1, 0, journal.Version{})
 	if err != nil {
 		t.Fatalf("share: %v", err)
 	}
-	if _, err := h.WriteAt(context.Background(), FILE, 0, []byte("hello world"), 0); err != nil {
+	if _, err := h.WriteAt(context.Background(), StoryFile, 0, []byte("hello world"), 0); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -50,7 +50,7 @@ func TestFileSystemViewListsSegments(t *testing.T) {
 	if !strings.Contains(screen, "format") {
 		t.Errorf("filesystem view lacks the format file:\n%s", screen)
 	}
-	if !strings.Contains(screen, statePath(dir)) {
+	if !strings.Contains(screen, StatePath(dir)) {
 		t.Errorf("filesystem view lacks the state file's label:\n%s", screen)
 	}
 	// The state file sits outside the journal dir; the view must not be
@@ -71,12 +71,12 @@ func TestIndexViewAnswersRealRows(t *testing.T) {
 	if err := d.open(context.Background()); err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer func() { _ = d.j.Close() }()
-	h, err := d.j.Share(1, 0, journal.Version{})
+	defer func() { _ = d.J.Close() }()
+	h, err := d.J.Share(1, 0, journal.Version{})
 	if err != nil {
 		t.Fatalf("share: %v", err)
 	}
-	if _, err := h.WriteAt(context.Background(), FILE, 0, []byte("hello world"), 0); err != nil {
+	if _, err := h.WriteAt(context.Background(), StoryFile, 0, []byte("hello world"), 0); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	d.viewIndex()

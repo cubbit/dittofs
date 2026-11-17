@@ -1,4 +1,4 @@
-package main
+package jdemo
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 
 // scanDemo opens a journal and issues one write, the fixture the scan
 // tests stand on.
-func scanDemo(t *testing.T) (*demo, *strings.Builder) {
+func scanDemo(t *testing.T) (*Demo, *strings.Builder) {
 	t.Helper()
 	base := t.TempDir()
 	dir := filepath.Join(base, "journal")
@@ -21,12 +21,12 @@ func scanDemo(t *testing.T) (*demo, *strings.Builder) {
 	if err := d.open(context.Background()); err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	t.Cleanup(func() { _ = d.j.Close() })
-	h, err := d.j.Share(1, 0, journal.Version{})
+	t.Cleanup(func() { _ = d.J.Close() })
+	h, err := d.J.Share(1, 0, journal.Version{})
 	if err != nil {
 		t.Fatalf("share: %v", err)
 	}
-	if _, err := h.WriteAt(context.Background(), FILE, 0, []byte("hello world"), 0); err != nil {
+	if _, err := h.WriteAt(context.Background(), StoryFile, 0, []byte("hello world"), 0); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	return d, out
@@ -265,14 +265,14 @@ func TestScanSegmentFindsTheWrite(t *testing.T) {
 	if !strings.Contains(screen, "68 65 6c 6c 6f 20 77 6f") {
 		t.Errorf("dump: the written payload's hex missing from the lanes:\n%s", screen)
 	}
-	if !strings.Contains(screen, fileHex[:12]) {
+	if !strings.Contains(screen, StoryFileHex[:12]) {
 		t.Errorf("dump: the file's identity missing:\n%s", screen)
 	}
 
 	// The decoder itself, not just the screen: one write record with the
 	// exact fields the format table names, in whichever stream's segment
 	// the write landed.
-	_, recs := findWriteStep(t, d.dir)
+	_, recs := findWriteStep(t, d.Dir)
 	var w *dumpRecord
 	for i := range recs {
 		if recs[i].kindName() == "write" {
@@ -295,7 +295,7 @@ func TestScanSegmentFindsTheWrite(t *testing.T) {
 
 func TestScanStopsAtTornTail(t *testing.T) {
 	d, _ := scanDemo(t)
-	seg, recs := findWriteStep(t, d.dir)
+	seg, recs := findWriteStep(t, d.Dir)
 	var w *dumpRecord
 	for i := range recs {
 		if recs[i].kindName() == "write" {
