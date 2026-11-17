@@ -52,8 +52,8 @@ func runStart(cmd *cobra.Command, _ []string) error {
 	if err := n.Start(ctx); err != nil {
 		return fmt.Errorf("starting the node: %w", err)
 	}
-	// ponytail: a node that starts is stopped at once, since none starts yet
-	// and so none has anything to serve. Wait for a termination signal
-	// before Stop once Start starts anything.
+	// ponytail: Stop runs at once, because New refuses until this command
+	// opens the host's KV and metrics registry, so no node gets here yet.
+	// Wait for a termination signal before Stop once this command does.
 	return n.Stop(ctx)
 }

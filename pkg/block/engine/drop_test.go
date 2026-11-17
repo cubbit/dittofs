@@ -363,7 +363,7 @@ func TestCloseWaitsForADropInProgress(t *testing.T) {
 // never run; the clone item that ran before it is not ended.
 func TestADropEndsTheParkedItemsOfTheShareOnce(t *testing.T) {
 	u := newUnit(t)
-	other := u.bindShare(t, "other", entity.NamespaceID{})
+	other := u.bindShare(t, "other", u.share.Namespace)
 	block := u.post(other, entity.RemoveTruncate, true)
 
 	t.Cleanup(func() {
@@ -604,7 +604,7 @@ func TestDropTakesTheSharesFilesOffTheDueSetAndNoLaterBatchCapturesOne(t *testin
 		t.Fatal(err)
 	}
 
-	other := u.bindShare(t, "other", entity.NamespaceID{})
+	other := u.bindShare(t, "other", u.share.Namespace)
 	mine := []entity.FileID{u.create(t, "a"), u.create(t, "b")}
 	theirs := entity.NewFileID()
 

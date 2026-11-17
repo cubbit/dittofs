@@ -4,14 +4,14 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/block/engine"
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 )
 
-// ShareOf is share id of s as the engine binds it: its tag and shard as the
-// store drew them, limit as its journal limit, serving.
+// ShareOf is share id of s as the engine binds it, as the node binds it,
+// with limit as its journal limit.
 func ShareOf(tb testing.TB, s *kvstore.Store, id entity.ShareID, limit int64) engine.Share {
 	tb.Helper()
 
@@ -20,13 +20,7 @@ func ShareOf(tb testing.TB, s *kvstore.Store, id entity.ShareID, limit int64) en
 		tb.Fatalf("enginetest: read share %v: %v", id, err)
 	}
 
-	return engine.Share{
-		ID:    sh.ID,
-		Tag:   journal.ShareTag(sh.Tag),
-		Shard: sh.Shard,
-		Limit: limit,
-		State: engine.Serving,
-	}
+	return enginewire.Binding(sh, limit)
 }
 
 // AddShare creates a share named name in s, at the path /name, and returns

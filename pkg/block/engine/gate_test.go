@@ -63,7 +63,7 @@ func isStale(err error) bool {
 // DelayFrozen or ErrDelay, and the units entered before it stay counted.
 func TestEnterIsRefusedWithStaleOnceTheGateIsShut(t *testing.T) {
 	u := newUnit(t)
-	other := u.bindShare(t, "other", entity.NamespaceID{})
+	other := u.bindShare(t, "other", u.share.Namespace)
 
 	leave, err := u.e.EnterForTest(u.share.ID)
 	if err != nil {
@@ -105,7 +105,7 @@ func TestEnterIsRefusedWithStaleOnceTheGateIsShut(t *testing.T) {
 // registered on the first, whichever of the two is being removed.
 func TestATwoShareRegistrationWithOneShareRemovingLeavesNothingOnTheOther(t *testing.T) {
 	u := newUnit(t)
-	removing := u.bindShare(t, "removing", entity.NamespaceID{})
+	removing := u.bindShare(t, "removing", u.share.Namespace)
 	src, dst := entity.NewFileID(), entity.NewFileID()
 	x := vfserr.Extent{Len: 1}
 
@@ -227,7 +227,7 @@ func (u *unit) contentCalls(ctx context.Context, other entity.ShareID) []content
 // share's gate is shut, registers nothing, and leaves no clone registration.
 func TestAShutShareMakesEveryContentCallAnswerStale(t *testing.T) {
 	u := newUnit(t)
-	other := u.bindShare(t, "other", entity.NamespaceID{})
+	other := u.bindShare(t, "other", u.share.Namespace)
 	id := u.share.ID
 	ctx := t.Context()
 
@@ -320,7 +320,7 @@ func TestEveryEnterRefusedByARacingUnbindAnswersStale(t *testing.T) {
 // later Unbind has nothing to wait for.
 func TestAContentCallOnAnOpenShareLeavesItsGate(t *testing.T) {
 	u := newUnit(t)
-	other := u.bindShare(t, "other", entity.NamespaceID{})
+	other := u.bindShare(t, "other", u.share.Namespace)
 	id := u.share.ID
 
 	if err := u.e.Apply(engine.Settings{

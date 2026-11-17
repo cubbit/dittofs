@@ -9,15 +9,17 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/block/engine/enginewire"
+	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/config"
+	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/openstate"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Config is what the host supplies and the node cannot build itself.
@@ -33,35 +35,42 @@ type Config struct {
 	Metrics *metrics.Registry
 	// Logger is where the node logs.
 	Logger *slog.Logger
+	// Journal are options for every journal the node opens, after one
+	// reading Clock: the engine's and the one Start reads each device's
+	// identity with. A test passes journaltest.SuitableMount here, so the
+	// host's own mount cannot refuse its temporary directories.
+	Journal []journal.Option
 }
 
 // Node is one running DittoFS node.
 type Node struct {
-	cfg    Config
-	meta   *kvstore.Store
-	open   *openstate.Table
-	engine *engine.Engine
-	fs     *vfs.Filesystem
-	runner *runner
+	cfg      Config
+	meta     *kvstore.Store
+	open     *openstate.Table
+	engine   *engine.Engine
+	fs       *vfs.Filesystem
+	runner   *runner
+	watchdog *health.Watchdog
+	api      *api.Server
+	life     lifecycle
 }
 
 // New opens the metadata store over cfg.KV, refusing a KV that holds no
 // installation or one this binary does not read, then builds open state,
-// the engine and the filesystem, each empty from its own Deps, and the
-// operation runner with the steps of the kinds this node drives. It starts
-// nothing: no journal, goroutine or listener exists until Start.
+// the engine and the filesystem, each empty from its own Deps, the
+// operation runner with the steps of the kinds this node drives, the
+// watchdog and the API's listeners. It starts nothing: no journal, goroutine
+// or listener exists until Start.
 //
 // ponytail: the node both builds and drives its components. Split the
 // builder out when it gains dependencies a multi-node test cannot replace
 // cheaply.
 //
 // decision: New builds over another installation's KV, because nothing in
-// Config names the installation to expect. That KV is refused only at the
-// engine's Start, when it opens each journal and journal.Open checks the
-// journal's identity against the one the store records. By then Start has
-// already written to that KV (the node's record and its epoch come before
-// the engine), so Start must check the installation before its first write.
-// Check it here instead once the bootstrap carries its ID.
+// Config names the installation to expect. Start refuses that KV at its first
+// step, before its first write, by reading the installation each device's
+// journal names and comparing it with the store's. Check it here instead once
+// the bootstrap carries the installation's ID.
 //
 // decision: a node is built once per metrics registry. Stop does not
 // unregister the filesystem's collectors, so a second New on the same
@@ -80,6 +89,13 @@ func New(cfg Config) (*Node, error) {
 }
 
 func build(cfg Config) (*Node, error) {
+	if cfg.Metrics == nil {
+		return nil, errors.New("node: Config.Metrics is missing")
+	}
+	// An empty address would bind a random port on every interface.
+	if cfg.Bootstrap.APIAddr == "" || cfg.Bootstrap.MetricsAddr == "" {
+		return nil, errors.New("node: Config.Bootstrap.APIAddr and MetricsAddr must both be set")
+	}
 	n := &Node{cfg: cfg}
 	var err error
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
@@ -91,6 +107,7 @@ func build(cfg Config) (*Node, error) {
 		Store:   n.meta,
 		Clock:   cfg.Clock,
 		Logger:  cfg.Logger,
+		Journal: cfg.Journal,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("node: %w", err)
@@ -99,27 +116,23 @@ func build(cfg Config) (*Node, error) {
 	if n.engine, err = engine.New(deps); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
-	var reg prometheus.Registerer
-	if cfg.Metrics != nil {
-		reg = cfg.Metrics.Registry()
-		if err := reg.Register(engineSeries{n.engine.Stats}); err != nil {
-			return nil, fmt.Errorf("node: engine series: %w", err)
-		}
+	reg := cfg.Metrics.Registry()
+	if err := reg.Register(engineSeries{n.engine.Stats}); err != nil {
+		return nil, fmt.Errorf("node: engine series: %w", err)
 	}
 	if n.fs, err = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine, Metrics: reg, Logger: cfg.Logger}); err != nil {
 		return nil, fmt.Errorf("node: %w", err)
 	}
 	n.runner = newRunner(n.meta.ControlPlane(), cfg.Clock, cfg.Bootstrap.Node, cfg.Logger, operationSteps(n.meta.Nodes()))
+	n.watchdog = health.NewWatchdog(cfg.Clock)
+	n.life.ready.Store(readyStarting)
+	n.api = api.New(api.Deps{
+		Ready:       n.life.readiness,
+		Live:        n.watchdog.Live,
+		Addr:        cfg.Bootstrap.APIAddr,
+		MetricsAddr: cfg.Bootstrap.MetricsAddr,
+		Metrics:     cfg.Metrics,
+		Logger:      cfg.Logger,
+	})
 	return n, nil
-}
-
-// Start starts the services New built. It does not start one yet: it
-// returns errors.ErrUnsupported.
-func (n *Node) Start(ctx context.Context) error {
-	return errors.ErrUnsupported
-}
-
-// Stop closes what New opened: the KV the metadata store is open on.
-func (n *Node) Stop(ctx context.Context) error {
-	return n.cfg.KV.Close()
 }

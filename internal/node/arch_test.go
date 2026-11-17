@@ -20,7 +20,7 @@ import (
 
 // configFields are the fields of Config: what the host supplies and the node
 // cannot build.
-var configFields = []string{"Bootstrap", "KV", "Clock", "Metrics", "Logger"}
+var configFields = []string{"Bootstrap", "KV", "Clock", "Metrics", "Logger", "Journal"}
 
 // nodeExports returns the violations of the node's surface in the package
 // whose sources are in dir: an exported package-level declaration other than
@@ -145,7 +145,7 @@ func TestNodeExports(t *testing.T) {
 		{"extra-method", []string{"extra export: Node.Pause"}},
 		{"embedded", []string{"embedded field in Node"}},
 		{"exported-field", []string{"exported field: Node.State"}},
-		{"config-field", []string{"Config fields Bootstrap,KV,Clock,Metrics,Logger,Fault"}},
+		{"config-field", []string{"Config fields Bootstrap,KV,Clock,Metrics,Logger,Journal,Fault"}},
 		{"generic", []string{"unresolved receiver of Open"}},
 	} {
 		dir := tc.dir
@@ -933,6 +933,61 @@ func TestWritesThroughTheAdapter(t *testing.T) {
 		}
 		if !slices.Equal(got, tc.want) {
 			t.Errorf("%s: violations %q, want %q", tc.dir, got, tc.want)
+		}
+	}
+}
+
+// lifecycleCalls type-checks the package in dir, as import path path, and
+// returns every reference to a start or a stop of open state or the engine,
+// by its full name: enginewire's Start and Stop, and the table's and the
+// engine's own, called or taken as a value.
+func lifecycleCalls(dir, path string) ([]string, error) {
+	_, _, info, err := typeCheck(dir, path)
+	if err != nil {
+		return nil, err
+	}
+	watched := map[string]bool{
+		module + "pkg/block/engine/enginewire.Start":     true,
+		module + "pkg/block/engine/enginewire.Stop":      true,
+		"(*" + module + "pkg/openstate.Table).Start":     true,
+		"(*" + module + "pkg/openstate.Table).Stop":      true,
+		"(*" + module + "pkg/block/engine.Engine).Start": true,
+		"(*" + module + "pkg/block/engine.Engine).Close": true,
+	}
+	var got []string
+	for _, o := range info.Uses {
+		if fn, ok := o.(*types.Func); ok && watched[fn.FullName()] {
+			got = append(got, fn.FullName())
+		}
+	}
+	slices.Sort(got)
+	return got, nil
+}
+
+// The node starts and stops open state and the engine only through
+// enginewire's Start and Stop, once each, so the order between the two is
+// the one enginewire ships; a node calling the table's or the engine's own
+// Start, Stop or Close is caught.
+func TestNodeStartsThroughEnginewire(t *testing.T) {
+	wire := module + "pkg/block/engine/enginewire."
+	for _, tc := range []struct {
+		dir  string
+		want []string
+	}{
+		{".", []string{wire + "Start", wire + "Stop"}},
+		{"testdata/arch/start-direct", []string{
+			"(*" + module + "pkg/block/engine.Engine).Close",
+			"(*" + module + "pkg/block/engine.Engine).Start",
+			"(*" + module + "pkg/openstate.Table).Start",
+			"(*" + module + "pkg/openstate.Table).Stop",
+		}},
+	} {
+		got, err := lifecycleCalls(tc.dir, module+"internal/node")
+		if err != nil {
+			t.Fatalf("%s: %v", tc.dir, err)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: starts and stops of open state and the engine %q, want %q", tc.dir, got, tc.want)
 		}
 	}
 }

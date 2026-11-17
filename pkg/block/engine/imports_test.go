@@ -20,25 +20,24 @@ const module = "github.com/cubbit/dittofs/"
 // the previous engine, journal, syncer, carver, remote tier or metadata
 // service is on it, and neither is the filesystem's package: the engine takes
 // only its errors, from pkg/vfs/vfserr. Open state is enginewire's, which
-// builds the table and adapts it to the engine's CloneHold for the node and
-// the fixture alike, the fixture's, which starts and stops that table, and
-// the unit tests', which run a clone's hold over the real table.
+// builds, starts and stops it with the engine, and its test's, the
+// fixture's and the unit tests', which run it for real.
 var allowed = map[string][]string{
 	module + "pkg/block/journal":    {"*"},
 	module + "pkg/health":           {"*"},
 	module + "pkg/metadata/entity":  {"*"},
 	module + "pkg/metadata/kvstore": {"*"},
-	module + "pkg/openstate":        {"enginetest", "enginewire", unitTests},
+	module + "pkg/openstate":        {"enginetest", "enginewire", unitTests, wireTests},
 	module + "pkg/vfs/vfserr":       {"*"},
 	// The test fixture composes the engine over the real journal, its seam and
 	// profiler, the real store on an in-memory kv.KV, and a test clock. The
 	// unit tests' start failure tests, and the fixture's rows of the self-fence,
 	// put the fault-injecting kv.KV under that store. enginewire's test runs
-	// Compose over the real store on an in-memory kv.KV, a journal initialised
-	// on a mount taken as suitable, and a test clock.
+	// its calls over the same real store, journal and clock, under the
+	// profiler.
 	module + "pkg/block/journal/journaltest":     {"enginetest", wireTests},
 	module + "pkg/block/journal/journaltest/kit": {"enginetest"},
-	module + "internal/prof":                     {"enginetest", unitTests},
+	module + "internal/prof":                     {"enginetest", unitTests, wireTests},
 	module + "pkg/metadata/kv":                   {"enginetest", unitTests, wireTests},
 	module + "pkg/metadata/kv/badgerkv":          {"enginetest", unitTests, wireTests},
 	module + "pkg/metadata/kv/keys":              {"enginetest", unitTests},

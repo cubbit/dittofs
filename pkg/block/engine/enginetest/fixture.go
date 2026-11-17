@@ -789,10 +789,12 @@ func (f *Fixture) Handle() engine.Handle {
 }
 
 // addSecond creates the second share, with the fixture's administrator
-// granted on it.
+// granted on it, bound in the first share's namespace so a clone between the
+// two is admitted.
 func (f *Fixture) addSecond() {
 	ctx := f.t.Context()
 	f.Second = AddShare(f.t, f.FS.Store, "second", 0)
+	f.Second.Namespace = f.Share.Namespace
 	grant := entity.ShareGrant{
 		Share:     f.Second.ID,
 		Principal: f.FS.Admin.Principal,
@@ -901,23 +903,19 @@ func (f *Fixture) start() {
 		f.svc = f.compose(f, e)
 		sink, order = f.svc, f.svc.Admission
 	}
-	if err := f.Opens.Start(ctx, sink, order); err != nil {
-		t.Fatalf("fixture: open state start: %v", err)
+	if err := e.Apply(Settings); err != nil {
+		t.Fatalf("fixture: engine settings: %v", err)
 	}
+	if err := enginewire.Start(ctx, f.Opens, e, sink, order, []engine.Share{f.Share}); err != nil {
+		t.Fatalf("fixture: start: %v", err)
+	}
+	f.E = e
 	if f.svc == nil {
 		f.starts++
 		if err := f.Opens.Recovery().ServeShard(ctx, f.Share.ID, f.Share.Shard, f.starts); err != nil {
 			t.Fatalf("fixture: serve shard: %v", err)
 		}
 	}
-
-	if err := e.Apply(Settings); err != nil {
-		t.Fatalf("fixture: engine settings: %v", err)
-	}
-	if err := e.Start(ctx, []engine.Share{f.Share}); err != nil {
-		t.Fatalf("fixture: engine start: %v", err)
-	}
-	f.E = e
 
 	if f.svc != nil {
 		if err := f.svc.Start(ctx); err != nil {
@@ -960,15 +958,18 @@ func (f *Fixture) stop(clean bool) {
 		}
 		ctx, cancel := context.WithTimeout(parent, closeDeadline)
 		defer cancel()
-		if err := f.E.Close(ctx); err != nil {
+		if err := enginewire.Stop(ctx, f.Opens, f.E); err != nil {
 			if clean {
-				f.t.Errorf("fixture: engine close: %v", err)
+				f.t.Errorf("fixture: stop: %v", err)
 			} else {
-				f.t.Logf("fixture: closing the crashed engine: %v", err)
+				f.t.Logf("fixture: stopping the crashed engine: %v", err)
 			}
 		}
 		f.E = nil
 	}
+	// Open state is stopped here too, as a stop whose engine close failed
+	// leaves it running, and a test leaves no timer behind; a second Stop
+	// does nothing.
 	if f.Opens != nil {
 		f.Opens.Stop()
 		f.Opens = nil
