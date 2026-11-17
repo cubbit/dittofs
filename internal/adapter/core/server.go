@@ -68,9 +68,9 @@ type Listener struct {
 func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, error) {
 	if s == nil {
 		// Settings are the protocol's whole shape; a nil one is a program bug
-		// that would panic at the first snapshot read, so it is refused here,
-		// as an empty listener set is.
-		return nil, errors.New("no settings")
+		// that would leave the server reading a snapshot it does not have, so
+		// it is refused with the prefix its sibling refusals carry.
+		return nil, fmt.Errorf("core: new server: %w", errNoSettings)
 	}
 	ls = slices.Clone(ls)
 	for i := range ls {
@@ -95,6 +95,9 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 	srv.settings.Store(&s)
 	return srv, nil
 }
+
+// errNoSettings is a NewServer handed no settings at all.
+var errNoSettings = errors.New("no settings")
 
 // checkListeners refuses what NewServer refuses, naming the listener by its
 // position and its services.

@@ -46,6 +46,7 @@ type emptyStages struct{ core.Protocol }
 
 func (emptyStages) NewConn(*core.Conn) core.Stages { return core.Stages{} }
 
+// tcp is a listener of p at port carrying services.
 func tcp(p core.Protocol, port uint16, services ...string) core.Listener {
 	return core.Listener{Services: services, Network: "tcp", Port: port, Protocol: p}
 }
@@ -109,6 +110,7 @@ func TestNewServerRefusesMalformedListeners(t *testing.T) {
 	}{
 		{"no settings", nil, nil, "no settings", false},
 		{"no listener", set, nil, "no listener", false},
+		{"no settings", nil, nil, "core: new server: no settings", false},
 		{"no service", set, []core.Listener{tcp(p, 0)}, "names no service", false},
 		{"an empty service", set, []core.Listener{tcp(p, 0, "a", "")}, "names an empty service", false},
 		{"a service twice", set, []core.Listener{tcp(p, 0, "a", "b", "a")}, "names a twice", false},
@@ -361,6 +363,7 @@ func TestTheServerKeepsItsOwnAddresses(t *testing.T) {
 // it binds and every other address uses the same one, so a service reports no
 // port of its own per address.
 func TestAPortZeroListenerIsOnePort(t *testing.T) {
+	needIPv6Loopback(t)
 	deps := newDeps()
 	adaptertest.CheckLeaks(t, deps.Budgets)
 	p := testproto.New(deps)
