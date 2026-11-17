@@ -109,6 +109,11 @@ func (r *reader) Read(ctx context.Context) (*resources.Buf, error) {
 			break
 		}
 		if hdr, err = r.header(ctx); err != nil {
+			if err == io.EOF {
+				// A fragment of the record is already served: the peer's end
+				// here is the cut record's, not a clean close between records.
+				err = io.ErrUnexpectedEOF
+			}
 			rec.Release()
 			return nil, err
 		}
@@ -147,6 +152,12 @@ func (r *reader) body(dst []byte, n int) error {
 	r.off += part
 	if part < n {
 		if _, err := io.ReadFull(r.nc, dst[part:]); err != nil {
+			if err == io.EOF {
+				// The body the record's mark promised, cut by the peer's end:
+				// the unexpected end inside a record, told apart from a clean
+				// close between them.
+				return io.ErrUnexpectedEOF
+			}
 			return err
 		}
 	}
@@ -170,6 +181,12 @@ func (r *reader) fill(ctx context.Context) error {
 		if aerr := r.arm(ctx); aerr != nil {
 			return aerr
 		}
+	}
+	if err == io.EOF && m == 0 && r.n > r.off {
+		// A part of what the record's mark promised is already in hand, so the
+		// peer cut the record: the unexpected end, told apart from a clean
+		// close between records.
+		err = io.ErrUnexpectedEOF
 	}
 	return err
 }

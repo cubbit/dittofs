@@ -174,7 +174,7 @@ func (c *Client) Recv() ([]Reply, error) {
 	if !last {
 		// The server never sends a reply in fragments; a client that reads one
 		// would be reading a record this protocol does not write.
-		return nil, fmt.Errorf("testproto: a reply in fragments")
+		return nil, ErrFragmentedReply
 	}
 	body := make([]byte, n)
 	if _, err := io.ReadFull(c.c, body); err != nil {

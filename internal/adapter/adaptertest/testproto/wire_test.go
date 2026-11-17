@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"strings"
 	"testing"
 	"time"
 
@@ -189,6 +188,14 @@ func TestVectorsDecodeToTheirFields(t *testing.T) {
 			if err != nil || !last || n != len(c.vector)-lengthLen {
 				t.Fatalf("BodyLen = %d, %t, %v; want %d and the last fragment", n, last, err, len(c.vector)-lengthLen)
 			}
+			// The mark's top bit, read back: a fragment of one byte, not the
+			// record's last.
+			more := append([]byte{}, c.vector[:lengthLen]...)
+			more[0] |= 0x80
+			fn, flast, ferr := framer{}.BodyLen(more)
+			if ferr != nil || flast || fn != n {
+				t.Fatalf("a fragment's mark reads %d, %t, %v; want %d and more to follow", fn, flast, ferr, n)
+			}
 			got := decodeAll(t, c.vector[lengthLen:])
 			if len(got) != len(c.want) {
 				t.Fatalf("decoded %d messages, want %d", len(got), len(c.want))
@@ -218,6 +225,14 @@ func TestAppendEncodesToTheVectors(t *testing.T) {
 	}
 	if got := Append([]byte{0xee}, echoMsgs...); !bytes.Equal(got[1:], echoVector) || got[0] != 0xee {
 		t.Errorf("Append after a byte already there:\n got % x", got)
+	}
+}
+
+// The record cap and its fragment count are the framer's own constants: 1 MiB
+// of body, the transfer class's capacity, in four fragments.
+func TestMaxRecord(t *testing.T) {
+	if n, fragments := (framer{}).MaxRecord(); n != 1<<20 || fragments != 4 {
+		t.Fatalf("MaxRecord = %d, %d; want 1 MiB in 4 fragments", n, fragments)
 	}
 }
 
@@ -341,7 +356,7 @@ func TestClientRefusesAFragmentedReply(t *testing.T) {
 	if _, err := peer.Write(rec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Recv(); err == nil || !strings.Contains(err.Error(), "in fragments") {
+	if _, err := c.Recv(); !errors.Is(err, ErrFragmentedReply) {
 		t.Errorf("a reply in fragments returns %v, want the fragment refusal", err)
 	}
 }
@@ -481,9 +496,6 @@ func FuzzFrame(f *testing.F) {
 		}
 		if last != (binary.BigEndian.Uint32(record[:lengthLen])&moreFragments == 0) {
 			t.Fatalf("a prefix of %x reads as last %t", record[:lengthLen], last)
-		}
-		if n, fragments := (framer{}).MaxRecord(); n != 1<<20 || fragments != 4 {
-			t.Fatalf("MaxRecord = %d, %d; want 1 MiB in 4 fragments", n, fragments)
 		}
 		body := record[lengthLen:]
 		if n < len(body) {

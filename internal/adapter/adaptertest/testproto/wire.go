@@ -9,6 +9,11 @@
 // Every integer is big-endian.
 //
 // A record is a 4-byte length and a body of that many bytes, at most 1 MiB.
+// The length's 31 low bits are the body's size, and its top bit set means the
+// body is one fragment of a record, followed by more such marks until one with
+// the bit clear ends it: every body may come in fragments, at most four of
+// them, and this protocol's own records never use the bit, writing every
+// record as one fragment with the bit clear.
 // The body is one or more messages. A message is a 40-byte header and its
 // arguments, which run to the next message or to the body's end:
 //
@@ -114,6 +119,10 @@ const (
 	OpCancel                      // never routed: HoldCodec.Cancels names the request keyed by Msg.Target
 	OpCompound                    // version 1: the compound row, its members Msg.Members
 )
+
+// ErrFragmentedReply is a reply whose record mark says more fragments follow:
+// this protocol never sends one.
+var ErrFragmentedReply = errors.New("testproto: a reply in fragments")
 
 var (
 	errChecksum = errors.New("testproto: a message whose checksum does not match")

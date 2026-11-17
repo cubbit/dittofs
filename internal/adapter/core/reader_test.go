@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -20,7 +21,7 @@ import (
 )
 
 // readerKey is the address every test's records are charged to.
-var readerKey = netip.MustParseAddr("127.0.0.1") // another name: the server test holds func key
+var readerKey = netip.MustParseAddr("127.0.0.1") // the package's tests use key elsewhere, another name here
 
 // pair returns two ends of a loopback connection: the server's and the
 // client's. The deadline tests use net.Pipe in a synctest bubble instead: its
@@ -61,6 +62,23 @@ func framedRecord(body []byte, last bool) []byte {
 		b[0] |= 0x80
 	}
 	return append(b, body...)
+}
+
+// One connection's read buffer is the small class's capacity, so a burst of
+// small records is read once (RFC 20 section 6.8): the pool's own buffer for a
+// small body pins the coupling, and either side moving without the other
+// fails it.
+func TestTheReadBufferIsTheSmallClass(t *testing.T) {
+	b := resources.NewWaitBudget("probe", 1<<20)
+	buf, err := resources.NewBufPool(b).Get(context.Background(), readerKey, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := cap(buf.B)
+	buf.Release()
+	if c != 4<<10 {
+		t.Errorf("the small class holds %d bytes where the reader buffers %d", c, 4<<10)
+	}
 }
 
 // payload is n bytes.
@@ -171,41 +189,44 @@ func TestAHeaderPastTheCapReservesNothing(t *testing.T) {
 // With the receive budget full, the reader waits after the header and reads
 // nothing past it; once room frees the record comes out.
 func TestAFullBudgetWaits(t *testing.T) {
-	srv, cli := pair(t)
-	budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", chargeOf(t, 1<<20))}
-	adaptertest.CheckLeaks(t, budgets)
-	pool := resources.NewBufPool(budgets.Receive)
-	held, err := pool.Get(context.Background(), readerKey, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := core.NewTestReader(srv, framer(), pool, readerKey, 0)
-	body := payload(40)
-	if _, err := cli.Write(framedRecord(body, true)); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		rec, err := r.Read(context.Background())
-		if rec != nil {
-			rec.Release()
-		}
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		t.Fatalf("the reader returned with %v with no room to reserve", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-	held.Release()
-	select {
-	case err := <-done:
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := net.Pipe()
+		defer func() { _, _ = srv.Close(), cli.Close() }()
+		budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", chargeOf(t, 1<<20))}
+		adaptertest.CheckLeaks(t, budgets)
+		pool := resources.NewBufPool(budgets.Receive)
+		held, err := pool.Get(context.Background(), readerKey, 1<<20)
 		if err != nil {
-			t.Fatalf("once room frees: %v", err)
+			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("the record did not come out once room freed")
-	}
+		r := core.NewTestReader(srv, framer(), pool, readerKey, 0)
+		go func() { _, _ = cli.Write(framedRecord(payload(40), true)) }()
+		done := make(chan error, 1)
+		go func() {
+			rec, err := r.Read(context.Background())
+			if rec != nil {
+				rec.Release()
+			}
+			done <- err
+		}()
+		// The bubble says the reader is durably blocked at the budget, not
+		// merely ahead of a wall-clock race.
+		synctest.Wait()
+		select {
+		case err := <-done:
+			t.Fatalf("the reader returned with %v with no room to reserve", err)
+		default:
+		}
+		held.Release()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("once room frees: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("the record did not come out once room freed")
+		}
+	})
 }
 
 // A record in fragments is one record, charged once at the cap's class, and a
@@ -428,6 +449,131 @@ func TestATrickledHeaderTimesOut(t *testing.T) {
 			t.Errorf("a trickled header leaves %d bytes held", held)
 		}
 	})
+}
+
+// read_timeout is one deadline per record, counted from the record's first
+// byte: a client that trickles a header, each byte inside the last deadline,
+// is still cut at the first one, which is the slowloris case the deadline
+// exists to stop.
+func TestATrickledHeaderIsCutAtItsFirstDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := net.Pipe()
+		defer func() { _, _ = srv.Close(), cli.Close() }()
+		r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 50*time.Millisecond)
+		mark := framedRecord(payload(20), true)[:4]
+		go func() {
+			_, _ = cli.Write(mark[:2])
+			time.Sleep(30 * time.Millisecond)
+			_, _ = cli.Write(mark[2:3])
+			time.Sleep(30 * time.Millisecond)
+			_, _ = cli.Write(mark[3:4])
+		}()
+		// A backstop, so a reader that arms no deadline fails here rather than
+		// deadlocking the bubble.
+		if err := srv.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		_, err := r.Read(context.Background())
+		if d := time.Since(start); !errors.Is(err, os.ErrDeadlineExceeded) || d != 50*time.Millisecond {
+			t.Fatalf("a trickled header returns %v after %v, want its first deadline at 50ms", err, d)
+		}
+	})
+}
+
+// The frame deadline runs across the gap between fragments: a non-last
+// fragment, then silence, is cut at the deadline and releases the reservation
+// its cap drew (RFC 24 section 3.2).
+func TestAFragmentedRecordIsCutAtTheDeadlineBetweenFragments(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := net.Pipe()
+		defer func() { _, _ = srv.Close(), cli.Close() }()
+		r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 100*time.Millisecond)
+		go func() { _, _ = cli.Write(framedRecord(payload(10), false)) }()
+		// A backstop, so a reader that disarms between fragments fails here
+		// rather than deadlocking the bubble.
+		if err := srv.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		_, err := r.Read(context.Background())
+		if d := time.Since(start); !errors.Is(err, os.ErrDeadlineExceeded) || d != 100*time.Millisecond {
+			t.Fatalf("a silent fragmented record returns %v after %v, want its deadline at 100ms", err, d)
+		}
+		if held := budgets.Receive.Reserved(); held != 0 {
+			t.Errorf("a cut fragmented record leaves %d bytes held", held)
+		}
+	})
+}
+
+// A partial fragmented record is refused and releases the reservation its cap
+// drew: the peer's end inside it, or a next header past the cap, leaves nothing
+// held (RFC 24 section 3.2).
+func TestAPartialFragmentedRecordReleases(t *testing.T) {
+	past := binary.BigEndian.AppendUint32(nil, 1<<20+4<<10+1)
+	for _, tc := range []struct {
+		name string
+		then []byte
+		want error
+	}{
+		{"the peer ends before the next header", nil, io.ErrUnexpectedEOF},
+		{"the next header past the cap", past, core.ErrFrame},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, cli := net.Pipe()
+			defer func() { _, _ = srv.Close(), cli.Close() }()
+			r, budgets, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 0)
+			go func() {
+				_, _ = cli.Write(framedRecord(payload(10), false))
+				_, _ = cli.Write(tc.then)
+				if tc.then == nil {
+					_ = cli.Close()
+				}
+			}()
+			if _, err := r.Read(context.Background()); !errors.Is(err, tc.want) {
+				t.Fatalf("Read returns %v, want %v", err, tc.want)
+			}
+			if held := budgets.Receive.Reserved(); held != 0 {
+				t.Errorf("a partial fragmented record leaves %d bytes held", held)
+			}
+		})
+	}
+}
+
+// A record the peer cut inside is told apart from a clean close between
+// records: the cut returns io.ErrUnexpectedEOF, the close io.EOF.
+func TestACutRecordIsToldApartFromACleanClose(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		sends []byte
+		want  error
+	}{
+		{"a cut header", framedRecord(payload(20), true)[:2], io.ErrUnexpectedEOF},
+		{"a cut body", framedRecord(payload(20), true)[:14], io.ErrUnexpectedEOF},
+		{"a clean close between records", nil, io.EOF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, cli := net.Pipe()
+			defer func() { _, _ = srv.Close(), cli.Close() }()
+			r, _, _ := readerOf(t, srv, 2*chargeOf(t, 1<<20), 0)
+			go func() {
+				_, _ = cli.Write(framedRecord(payload(4), true))
+				if len(tc.sends) > 0 {
+					_, _ = cli.Write(tc.sends)
+				}
+				_ = cli.Close()
+			}()
+			first, err := r.Read(context.Background())
+			if err != nil {
+				t.Fatal(err) // the whole record first: the cut one comes next
+			}
+			first.Release()
+			_, err = r.Read(context.Background())
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("Read returns %v, want %v", err, tc.want)
+			}
+		})
+	}
 }
 
 // A record waiting for its receive charge is not timed out: the deadline stops
