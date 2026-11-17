@@ -836,7 +836,9 @@ reaches the client its own way:
   ([RFC 21 §6.1](rfc-21-nfs.md#6.1%20NLM)), its port looked up through the
   host's port mapper (`GETPORT` for NLM version 4 over TCP), and keeps one
   connection per host while that host has a grant or reply to send, closing it
-  after. NSM's `SM_NOTIFY` goes out the same way
+  after. NSM's `SM_NOTIFY` goes out from the same floating address, but by
+  UDP, as statd listens for it: its port is looked up with `GETPORT` for NSM
+  over UDP, and no connection is kept
   ([RFC 21 §6.2](rfc-21-nfs.md#6.2%20NSM)). A host it cannot reach is a
   callback that failed.
 - **NFSv4.0** has no callback path: none is ever opened
@@ -959,12 +961,12 @@ type Deps struct {
 	// accept loop at its accept deadline), Close unregisters it at unbind.
 	// RFC 25's health loop satisfies Loop as it is. nil watches nothing.
 	Watch func(loop string) Loop
-	// DialClient opens a connection back to a client, for a callback (NLM's
-	// GRANTED, NSM's SM_NOTIFY), from the local address the client
-	// reached, so a floating address keeps working after a takeover (§3.3).
-	// nil is a net.Dialer bound to that address; a test supplies one
-	// returning a pipe.
-	DialClient func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+	// DialClient opens a connection back to a client on network, "tcp" or
+	// "udp", for a callback (NLM's GRANTED over TCP, NSM's SM_NOTIFY over
+	// UDP), from the local address the client reached, so a floating address
+	// keeps working after a takeover (§3.3). nil is a net.Dialer on that
+	// network bound to that address; a test supplies one returning a pipe.
+	DialClient func(ctx context.Context, network string, from netip.Addr, to netip.AddrPort) (net.Conn, error)
 }
 
 // Loop is one watched loop (RFC 25 §3.5).
