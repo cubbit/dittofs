@@ -27,6 +27,7 @@ type fields struct {
 	credAt, credLen                int
 	verfFlavour                    uint32
 	verfAt, verfLen                int
+	argsAt                         int // where the call's arguments begin: past the verifier, at a COMPOUND's tag
 	tagAt, tagLen                  int
 	minor                          uint32
 	compound                       bool // a COMPOUND whose prefix the parse entered
@@ -100,6 +101,7 @@ func walk(c []byte) (fields, error) {
 		return f, err
 	}
 	f.verfOK = true
+	f.argsAt = r.off
 	if isCompound(f) {
 		// The flag is set before the prefix is read: a COMPOUND cut past its
 		// tag still reports the tag it read.
@@ -186,6 +188,14 @@ func (c Call) Verifier() (flavour uint32, body []byte) {
 		return 0, nil
 	}
 	return f.verfFlavour, c[f.verfAt : f.verfAt+f.verfLen]
+}
+
+// Args is the call's arguments: its bytes past the verifier, which for a
+// COMPOUND begin at its tag. The stage the header codec calls hands them to
+// its rows' Decode without parsing the call again (RFC 20 section 4.7).
+func (c Call) Args() []byte {
+	f, _ := c.fields()
+	return c[f.argsAt:]
 }
 
 // Tag is a COMPOUND's tag, as a slice of the record; nil for any other call

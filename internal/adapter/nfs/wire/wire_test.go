@@ -630,3 +630,34 @@ func TestClaimedLengths(t *testing.T) {
 		})
 	}
 }
+
+// Args is the call's arguments: the bytes past the verifier, which for a
+// COMPOUND begin at its tag.
+func TestArgsBeginPastTheVerifier(t *testing.T) {
+	c, err := wire.ParseCall(body(t, "nfsv4-compound-call"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag := c.Tag()
+	if args := c.Args(); tag == nil || !bytes.Equal(args[:len(tag)], tag) {
+		t.Fatalf("a COMPOUND's args %x, want them to begin at its tag %x", args, tag)
+	}
+
+	// A v3 call's arguments end where the record does.
+	v3, err := wire.ParseCall(body(t, "nfs-v3-getattr-call"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The v3 vector's layout has the arguments at a known offset: 24 bytes of
+	// call head, an AUTH_NONE credential and an AUTH_NONE verifier, 8 bytes
+	// apiece with no bodies, and the arguments from byte 40 to the record's
+	// end.
+	rec := body(t, "nfs-v3-getattr-call")
+	// The vector's own layout: a 24-byte call head, an AUTH_SYS credential
+	// of 28 bytes with its flavour and length, and an AUTH_NONE verifier of
+	// two words, so the arguments run from byte 68 to the record's end and
+	// are the GETATTR's file handle.
+	if got, want := v3.Args(), rec[68:]; !bytes.Equal(got, want) {
+		t.Fatalf("a v3 call's args are %x, want %x from byte 68", got, want)
+	}
+}
