@@ -89,7 +89,17 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
 - **"That's what the spare pool buys: a roll is a pointer move, not a
   `fsync`'d creation."**
 
-## STEP 6 — read across the gap
+## STEP 6 — make it durable
+
+- **"The write is on the disk — now make it a promise."**
+- `⏎`:
+  - **"Sync returns a MARK, one per stream: which segment, through which
+    offset, at which sequence number. That is durability's receipt."**
+  - Point at the mark — **"The engine records this mark, and hands it to
+    the next Open — recovery checks the scanned tails against it. THIS is
+    the sync mark you have heard named all week."**
+
+## STEP 7 — read across the gap
 
 - **"Read the first 16 bytes. Hello is there, the pattern starts at 4096 —
   everything between is a hole."**
@@ -98,7 +108,7 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
     — **"and `missing 11–16`. NEVER zeros. A hole is reported as an empty
     range, not faked data."**
 
-## STEP 7 — the change feed
+## STEP 8 — the change feed
 
 - `⏎`:
   - **"Everything a file owes, version by version — this is what metadata
@@ -106,7 +116,7 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
   - **"Notice both states of the same range: the write that got superseded
     shows beside the one that replaced it."**
 
-## STEP 8 — truncate
+## STEP 9 — truncate
 
 - **"Drop everything past 32."**
 - `⏎`. Watch line: **"a removal marker appears — the held bytes past 32 go,
@@ -115,14 +125,14 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
   write-ahead promise — but the journal keeps the bookkeeping record until
   the caller confirms metadata has it."**
 
-## STEP 9 — settle the removal
+## STEP 10 — settle the removal
 
 - **"Settle is that confirmation."**
 - `⏎`:
   - **"The marker is gone; Since has nothing more to say about this file.
     The bookkeeping footprint of a settled change is exactly nothing."**
 
-## STEP 10 — a reserved write
+## STEP 11 — a reserved write
 
 - **"The engine doesn't write blind: it reserves BEFORE a burst — bytes,
   entries, versions and SPARES held up front."**
@@ -130,7 +140,7 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
   - **"So a reserved write is exempt — no limit refuses it, and the rolls
     it needs are already held before it starts."**
 
-## STEP 11 — offload (the honest stub)
+## STEP 12 — offload (the honest stub)
 
 - **"Offload is where the journal hands dirty bytes to the remote tier and
   marks them offloaded in the index."**
@@ -141,7 +151,7 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
 - **"The tool never lies about the layer beneath it — the same honesty as
   the engine calling the same API."**
 
-## STEP 12 — verify
+## STEP 13 — verify
 
 - **"Last: the index checked against the segments — the report, never the
   repair."**
@@ -158,7 +168,8 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
   append-only records, in-memory index, one fsync per sync. A database gives
   none of that story.
 - **"What if the process dies right now?"** — Everything synced is on disk;
-  everything else is rebuilt from it on open. The version window means no
+  everything else is rebuilt from it on open. The mark from STEP 6 is what
+  recovery checks the scanned tails against; the version window means no
   version is ever drawn twice.
 - **"Where does `Stats()` come from if the index says 'not implemented'?"** —
   `Stats` is measured by the journal as it runs; the `Inspect` read-outs are

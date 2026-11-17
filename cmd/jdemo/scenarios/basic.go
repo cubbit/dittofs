@@ -101,6 +101,23 @@ func basicBeats() []jdemo.Beat {
 			},
 		},
 		{
+			Title:   "make it durable",
+			Caption: "Sync is durability's receipt: one mark per stream, naming where the durable records reached — the thing the caller records and hands to the next open",
+			Run: func(d *jdemo.Demo) {
+				h := d.H[d.Tag]
+				marks, err := h.Sync(context.Background(), jdemo.StoryFile)
+				d.Codef("    marks, err := h.Sync(ctx, FILE)")
+				if err != nil {
+					d.Yellowf("    // → %v", err)
+					return
+				}
+				for _, m := range marks {
+					d.Yellowf("    // → {Stream:%d Segment:%d Through:%d Offset:%d Sequence:%d}",
+						m.Stream, m.Segment, m.Through, m.Offset, m.Sequence)
+				}
+			},
+		},
+		{
 			Title:   "read across the gap",
 			Caption: "ReadAt serves what the index holds and reports the rest as missing extents — never zeros: the gap between hello and the pattern is right here",
 			Run: func(d *jdemo.Demo) {

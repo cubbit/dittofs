@@ -74,7 +74,7 @@ func TestBeatFramingCarriesBannerHintAndChecks(t *testing.T) {
 	screen := out.String()
 
 	for _, want := range []string{
-		"· STEP 3 OF 12 ·",
+		"· STEP 3 OF 13 ·",
 		"look for:",      // the hints, before the Enter
 		"one held entry", // beat 3's hint prose
 		"✓ index +1 entry",

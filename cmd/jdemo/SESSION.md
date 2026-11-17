@@ -9,7 +9,7 @@ go run ./cmd/jdemo --dir talk-journal    # name the directory (a used one opens 
 
 ## Driving
 
-- Each beat fills the screen with its step banner — `· STEP 3 OF 12 ·` — its
+- Each beat fills the screen with its step banner — `· STEP 3 OF 13 ·` — its
   title and caption, and a **look for** line telling the room what to watch.
 - **`Enter`** runs the beat: the public API call, source-style, and what it
   returned — then each watched fact confirmed with a **✓** and the delta the
@@ -38,17 +38,18 @@ go run ./cmd/jdemo --dir talk-journal    # name the directory (a used one opens 
 3. **a first write** — `hello world` at v1
 4. **overwrite half of it** — the superseded range goes retained
 5. **a 300 MB write, the roll** — the segment crosses its cap, a spare becomes a segment
-6. **read across the gap** — served extents, `missing` for what is not held
-7. **the change feed** — `Since`'s changelog, version by version
-8. **truncate** — the removal marker, durable on return
-9. **settle it** — metadata recorded, the marker goes
-10. **a reserved write** — bytes held up front, no limit refuses it
-11. **offload** — the remote tier's beat
-12. **verify** — the index checked, reported, never repaired
+6. **make it durable** — Sync's mark, the receipt the caller records and hands to the next open
+7. **read across the gap** — served extents, `missing` for what is not held
+8. **the change feed** — `Since`'s changelog, version by version
+9. **truncate** — the removal marker, durable on return
+10. **settle it** — metadata recorded, the marker goes
+11. **a reserved write** — bytes held up front, no limit refuses it
+12. **offload** — the remote tier's beat
+13. **verify** — the index checked, reported, never repaired
 
 ## What answers "not implemented" today, and why
 
-`sync`, the offload family, holds/stamps, `repack` and `Inspect().Verify`
+The offload family, holds/stamps, `repack` and `Inspect().Verify`
 answer the journal's own `journal: not implemented` verbatim, and the
 story walks on — the tool never claims a layer beneath the built ones.
 `(i)` shows the story file's real index rows (the read-out landed with
