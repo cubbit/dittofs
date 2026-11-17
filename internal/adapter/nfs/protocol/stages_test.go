@@ -342,6 +342,14 @@ func TestTheMinorVersions(t *testing.T) {
 	if len(out.B) != 24+4+4+8+4 {
 		t.Errorf("NFS4ERR_MINOR_VERS_MISMATCH writes %d bytes: %x", len(out.B), out.B)
 	}
+	// The tag is the request's own, five bytes and its padding, not merely a
+	// length.
+	if got, want := string(out.B[24+4+4:24+4+4+5]), "abcde"; got != want {
+		t.Errorf("the refusal echoes tag %q, want %q", got, want)
+	}
+	if pad := out.B[24+4+4+5 : 24+4+4+8]; !bytes.Equal(pad, []byte{0, 0, 0}) {
+		t.Errorf("the tag's padding is % x, want zeros", pad)
+	}
 	if h.Version() != 2 {
 		t.Errorf("the header's version is %d, want the minor version 2", h.Version())
 	}
