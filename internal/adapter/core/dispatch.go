@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/resources"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -235,6 +236,14 @@ type Request struct {
 	// filehandle. The Router sets it, from prev for a related member; core
 	// carries it and never reads it.
 	State any
+
+	// What the pipeline keeps with the request for its row's chain: the
+	// handler the chain ends in, and the stage clock's times around the
+	// call, resolve_ids' start and the call's end, from which map_error is
+	// timed (§10.1).
+	invoke       Call
+	resolveStart time.Time
+	callEnd      time.Time
 }
 
 // Park holds the request until done: core sends the interim, and answers

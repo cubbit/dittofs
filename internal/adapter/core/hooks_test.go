@@ -83,6 +83,58 @@ func CountLookups(sh *Shared, n *atomic.Int64) {
 	}
 }
 
+// Clock is the server's clock, which SetClock replaces with a test's, and
+// Timer what its AfterFunc arms.
+type (
+	Clock = clock
+	Timer = timer
+)
+
+var ErrPanicked = errPanicked
+
+func SetClock(sh *Shared, c Clock) { sh.clock = c }
+
+func (sh *shared) Deadline(next Call) Call                     { return sh.deadline(next) }
+func (sh *shared) Recovery(op *Op, ts *TableSeries) Middleware { return sh.recovery(op, ts) }
+
+// WithAttemptStart and WithHoldDeadline keep in ctx what the pipeline keeps
+// there before an attempt.
+func WithAttemptStart(ctx context.Context, t time.Time) context.Context {
+	return context.WithValue(ctx, attemptStartKey{}, t)
+}
+
+func WithHoldDeadline(ctx context.Context, t time.Time) context.Context {
+	return context.WithValue(ctx, holdDeadlineKey{}, t)
+}
+
+// Chain is op's chain, built with the series of its table.
+func (t *tableSeries) Chain(op *Op) Call { return t.chains[op.Code] }
+
+// SetInvoke and SetResolveStart keep with r what the pipeline keeps there
+// before the chain; CallEnd is the call's end the chain marked.
+func SetInvoke(r *Request, call Call)          { r.invoke = call }
+func SetResolveStart(r *Request, at time.Time) { r.resolveStart = at }
+func CallEnd(r *Request) time.Time             { return r.callEnd }
+
+// OnTheDeadline reports whether ctx is the deadline's own context, as the
+// handler's is when the deadline is the chain's innermost middleware.
+func OnTheDeadline(ctx context.Context) bool {
+	_, ok := ctx.(*clockCtx)
+	return ok
+}
+
+// Watches is how many functions ctx, the deadline's own context, still runs
+// when it ends: those AfterFunc registered and no stop has removed.
+func Watches(ctx context.Context) int {
+	c, ok := ctx.(*clockCtx)
+	if !ok {
+		return -1
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.funcs)
+}
+
 // NewCapped is the FlowControl a connection gets where its protocol has none.
 func NewCapped() FlowControl { return newCapped() }
 
