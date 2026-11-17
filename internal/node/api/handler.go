@@ -160,6 +160,14 @@ func pick(rows []route, r *http.Request) (*route, string) {
 // record would fail to write; the refusal is still counted by op, as
 // unmatched. Overturned if the store admits an audit record targeting no
 // resource.
+//
+// decision: a GET or a HEAD refused after authentication is not audited,
+// narrower than auditing every request refused after authentication. A read
+// changes nothing, and auditing each refused read would let any
+// authenticated caller fill the audit with records at the rate it can send;
+// the refusal is still counted by op and outcome. Overturned if a refused
+// read must be attributable to its caller, such as a probe of resources the
+// role cannot see, which then needs a rate-limited or sampled audit.
 func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID string) (answer, error) {
 	if rt == nil || rt.right != auth.Public {
 		if s.d.Authenticate == nil {
