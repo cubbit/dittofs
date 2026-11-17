@@ -2948,17 +2948,19 @@ func TestRFC28C_FormatFile(t *testing.T) {
 // its sealed segment holds as one loss event on that reserve, never serves
 // the older content the corrupted record superseded — masked by the loss
 // record's marker until the caller settles it — and a second open finds the
-// record on disk and appends no second one (R43, R54). The deferral past
+// record on disk and appends no second loss record: one the disk already
+// named is never appended twice, and the corrupt drop that name covers
+// hands its piece to no second record. The deferral past
 // the reserve has its row in the journal's own suite, where the planted
 // sealed segment makes its shape cheap.
 func TestRFC28C_AnOpenAtAnExhaustedHeadroom(t *testing.T) {
 	// Two headroom records leave an open reserve of one; the check's single
 	// corrupt drop takes it and nothing defers, an exhausted headroom
-	// refusing nothing at the open (RFC 1 section 6, R54).
+	// refusing nothing at the open (RFC 1 section 6).
 	f := journaltest.NewWithOptions(t, func(s *journal.Settings) { s.HeadroomRecords = 2 })
 	// The shut journal plants a sealed segment beside its own: the implant
 	// reads at the reopen, whose rotted record the open confines as the
-	// corrupt drop its loss record names (R43).
+	// corrupt drop its loss record names.
 	f.Shutdown()
 	const share = 4 // the planted records' journal tag 5: the fixture's shares number from tag 1
 	file := journaltest.File(7)
@@ -3039,7 +3041,7 @@ func TestRFC28C_AnOpenAtAnExhaustedHeadroom(t *testing.T) {
 // content the unsynced record would have overwritten still reading — and a
 // tear of the record's header counts no refused range either: the tail
 // starts at the last record that verified. The reconcile the rotted halves
-// owe is E7b's and sits outside this row.
+// owe is another step's and sits outside this row.
 func TestRFC28C_AMarkProvesOnlyUpToThrough(t *testing.T) {
 	t.Run("a cut payload past the mark", func(t *testing.T) {
 		f := journaltest.New(t)

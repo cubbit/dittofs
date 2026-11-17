@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"slices"
 	"syscall"
@@ -158,20 +159,58 @@ func TestCutNeverPassesAVerifyingRecord(t *testing.T) {
 		r := newRig(t)
 		r.writeFormat()
 		r.plantSeg(id, seg)
-
-		st := runWithMarks(t, r, []core.SyncMark{
+		marks := []core.SyncMark{
 			{Stream: 1, Segment: uint64(id), Through: droppedEnd, Offset: droppedEnd, Sequence: 200},
-		})
+		}
 
-		// The fold floored the fate at the mark's Through, the end of the
-		// record the sync proved, and the phase truncates exactly there: the
-		// rotted bytes of the corrupt drop stay below the cut, on disk, and
-		// the seal's marker follows the end the mark named — a cursor below
-		// them would answer for the sync with a seal over its own floor.
+		// The phase runs over the same state the open's own phases build —
+		// the fold floored the fate at the mark's Through, the end of the
+		// record the sync proved — with the one stamp the open itself
+		// cannot reach: the fate pressed below the mark, the settled
+		// answer of an open that held no mark. Nothing but the phase's own
+		// floor raises the cut back to the Through before anything is
+		// written, so this leg, unlike a whole-open run, fails the day
+		// that line stops doing its work: a cursor below the mark would
+		// answer for the sync with a seal over its own floor, and a
+		// sealed end below a surviving mark's Offset wedges every later
+		// open on the lost-tail refusal.
+		deps := r.runDeps()
+		ctx := context.Background()
+		rd := newReader(ctx, r.seam.FS(), r.clk, nil)
+		st := State{}
+		for _, step := range []func(context.Context, Deps, *reader, *State, core.JournalID, core.Version, []core.SyncMark) error{
+			runAttach, runRebuild, runMarksRaise, runAssemble,
+		} {
+			if err := step(ctx, deps, rd, &st, journalID, core.Version{}, marks); err != nil {
+				t.Fatalf("the phases before the cut-and-seal: %v", err)
+			}
+		}
+		// The fold floored the fate at the mark's Through first — the end
+		// of the record the sync proved — before the press below takes it
+		// under: the raise's own answer, on record.
 		wantFate(t, st, id, fateTornTail, droppedEnd)
+		pressed := false
+		for i := range st.Tails.Fates {
+			if st.Tails.Fates[i].ID == id {
+				st.Tails.Fates[i].Offset = format.SegmentHeaderSize
+				pressed = true
+			}
+		}
+		if !pressed {
+			t.Fatalf("the classing holds no fate of segment %d", id)
+		}
+
+		if err := runSeal(ctx, deps, rd, &st, journalID, core.Version{}, nil); err != nil {
+			t.Fatalf("the cut-and-seal phase over the pressed fate: %v", err)
+		}
+
+		// The cut the phase kept is the mark's floor, not the pressed
+		// fate's: the rotted bytes of the corrupt drop stay below the cut,
+		// on disk, and the seal's marker follows the end the mark named,
+		// the catalog naming the record the sync proved.
 		wantSealed(t, r, id, seg, droppedEnd, 1)
 		if m := st.Tails.TornTails; m != 1 {
-			t.Errorf("TornTails = %d, want 1", m)
+			t.Errorf("TornTails = %d, want 1: the floored cut counted one torn tail", m)
 		}
 	})
 	t.Run("the synced-through a record names", func(t *testing.T) {
@@ -242,8 +281,9 @@ func TestRecycledOldBytesCutUnreported(t *testing.T) {
 	}
 }
 
-// TestSealSyncFailureLeavesFailedSegment holds R52's arms at the phase that
-// writes: a truncation whose sync fails here leaves its segment failed and
+// TestSealSyncFailureLeavesFailedSegment holds the failed-window hands-off
+// rule's arms at the phase that writes: a truncation whose sync fails here
+// leaves its segment failed and
 // unsealed for the open's continuation — the row the assembly seeded Active
 // is ended, the open succeeds, and the not-durable cut shows nothing on disk
 // — and a segment whose sync failed earlier in this open, at the tail's
@@ -326,7 +366,8 @@ func TestSealSyncFailureLeavesFailedSegment(t *testing.T) {
 	})
 }
 
-// TestEndedSegmentTakesNoMarker holds R51: a segment the open ends — here over
+// TestEndedSegmentTakesNoMarker holds the ended cut's rule: a segment the
+// open ends — here over
 // a torn slot a later record survives, the tail past it torn — is truncated at
 // the end of its last verifying record and takes no seal marker, no footer and
 // no trailer, so the next open cannot read the tear the ended fate answered

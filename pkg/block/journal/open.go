@@ -362,6 +362,14 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// so the set answers the segment what the file's own marker
 		// proves, and no later seal, recycle or stats read takes it for a
 		// segment that appends.
+		//
+		// decision: this seal is unreachable while the refusal above it
+		// stands. The re-append ends every source segment it copies from,
+		// so a non-zero target always arrives beside ended segments and
+		// the refusal answers for them first. The emptying — the phase
+		// whose copy-out withdraws that refusal, and with it the seam this
+		// seal keeps — is what reaches here; the branch is held for that
+		// withdrawal, not for any open this one can answer.
 		if t := st.Proof.ReappendTarget; t != 0 {
 			if err := state.Set.Seal(t, true); err != nil {
 				return nil, err

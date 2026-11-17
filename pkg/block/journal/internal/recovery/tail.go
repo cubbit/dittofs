@@ -81,7 +81,7 @@ type tails struct {
 
 	// TornTails counts the torn tails the cut-and-seal phase truncated, one
 	// per torn-tail fate whose cut it made durable. It is the count the
-	// journal's torn_tails counter reads: R65's, set by the seal phase alone.
+	// journal's torn_tails counter reads: set by the seal phase alone.
 	TornTails int
 }
 

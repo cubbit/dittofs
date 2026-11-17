@@ -21,10 +21,10 @@ import (
 // here keeps once more — the truncation is made durable, and the segment is
 // sealed through the seal writer with the catalog its own bytes answer: one
 // entry per attached record that begins before the cut, and a marker that
-// rises past a record the floor sliced in half (R50); each ended fate with a
+// rises past a record the floor sliced in half; each ended fate with a
 // cut takes the same truncation and no seal marker, so the next open never
-// reads the tear the ended verdict answered for as corruption behind a seal
-// (R51). The ended fate with no cut at all — offset zero, the ending whole —
+// reads the tear the ended verdict answered for as corruption behind a seal.
+// The ended fate with no cut at all — offset zero, the ending whole —
 // is left standing for the emptying that unlinks it, and a sealed or intact
 // fate is left exactly as it stands.
 //
@@ -43,7 +43,7 @@ import (
 // decision: a segment whose sync failed in this open — the tail proof's
 // failed window — is never truncated, sealed or otherwise touched here: it is
 // left standing whole, failed and unsealed, exactly as the proof's verdict
-// left it (R52). A truncation is a write its own sync must prove, and over a
+// left it. A truncation is a write its own sync must prove, and over a
 // window the device already refused a durable cut would claim bytes the fail
 // never reached; the next open re-proves the segment and re-decides. The
 // ceiling is the emptying phase's hands-off-the-link rule, which owns such a
@@ -333,7 +333,7 @@ func corruptLoss(c corruptRecord) durability.Loss {
 // record into its copy's target and lifts the hold that gates the
 // retirement.
 //
-// decision: R27's failed records take the reserve whole before any corrupt
+// decision: the failed leg's records take the reserve whole before any corrupt
 // drop's draws on it — the failed records' loss records are the journal's
 // own debt from the run that failed them, and a corrupt drop's record is
 // owed to the copy that retires its segment, so the failed records could
