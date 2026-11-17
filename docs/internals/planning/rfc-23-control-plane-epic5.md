@@ -50,7 +50,7 @@ guesses a source or an account gets.
 ### 1.1 In scope
 
 The rights this epic's routes need, which `auth`'s role table already holds from E4; RFC 23's own settings section in
-`internal/node/api/apisettings`; the wire types of sign-in, tokens, sessions and password changes;
+`internal/node/api/apisettings`; the wire types of sign-in, tokens and password changes;
 throttling; sessions, access tokens, refresh and sign-out; `Deps.Authenticate`, the per-call
 account check, `last_admin` and the role-raise rule; password changes and `:set-password`; API
 tokens; the signing key and its rotation; the initialisation step, `dfs init` and `dfs`'s
