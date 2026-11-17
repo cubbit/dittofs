@@ -236,8 +236,8 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
     answers `smb2.session.ntlmssp_bug14932` with `STATUS_INVALID_PARAMETER`. It is decided
     before the proof is computed, so `ErrInvalid` never depends on the password. Unlike the
     unclassified step it is an NTLM attempt by a named user, so it is recorded: one logon event
-    and one `identity_authentications_total` count, outcome `invalid`. It is the one refusal after
-    the throttle that does not count toward it (D5): it is decided before the proof, so it tells
+    and one `identity_authentications_total` count, outcome `invalid` (RFC 18 §9.2). It is the one
+    refusal after the throttle that does not count toward it (D5): it is decided before the proof, so it tells
     nothing of the password. From a pair the throttle already refuses, it is answered `throttled`
     like any other attempt.
   - Every failure once the proof has been computed (the proof, the key exchange, the MIC, a
