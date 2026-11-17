@@ -149,6 +149,9 @@ func Watches(ctx context.Context) int {
 // NewCapped is the FlowControl a connection gets where its protocol has none.
 func NewCapped() FlowControl { return newCapped() }
 
+// NewCappedN is that FlowControl with n places.
+func NewCappedN(n int) FlowControl { return make(capped, n) }
+
 var ErrReplyWait = errReplyWait
 
 func (sh *shared) ReserveReply(ctx context.Context, key netip.Addr, bound int) (*resources.Buf, error) {

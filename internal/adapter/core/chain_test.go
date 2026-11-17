@@ -2197,27 +2197,6 @@ func (f *placesFlow) places() int {
 	return f.held
 }
 
-// onePlace is a FlowControl declared in the test with a single place: under
-// an ended context it tries once and answers that context's error.
-type onePlace chan struct{}
-
-func (o onePlace) Admit(ctx context.Context, _ core.Header) (func(), error) {
-	select {
-	case o <- struct{}{}:
-		return func() { <-o }, nil
-	default:
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	select {
-	case o <- struct{}{}:
-		return func() { <-o }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
 // A chain never waits at flow control holding a place, and splits only
 // where it would wait without one: under a flow of one place, a chain of
 // five Echo is answered in one record, each member admitted in the place the
@@ -2225,7 +2204,7 @@ func (o onePlace) Admit(ctx context.Context, _ core.Header) (func(), error) {
 func TestAChainNeverWaitsForAPlaceHoldingOne(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := metrics.New("v", "c")
-		s := newSeamWith(t, edited{testproto.New(adapter.Deps{}).Bare(), func(st *core.Stages) { st.Flow = make(onePlace, 1) }}, 1<<20, adapter.Deps{Metrics: m})
+		s := newSeamWith(t, edited{testproto.New(adapter.Deps{}).Bare(), func(st *core.Stages) { st.Flow = core.NewCappedN(1) }}, 1<<20, adapter.Deps{Metrics: m})
 		var msgs []testproto.Msg
 		for i := range 5 {
 			msgs = append(msgs, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: uint64(i + 1)})
