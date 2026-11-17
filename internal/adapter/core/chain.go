@@ -324,7 +324,7 @@ func (c *chain) admit(e *entry) {
 	e.release = release
 	// A member after the first starts its attempt at its own admission, so
 	// one that waited behind the members before it does not start on their
-	// spent deadline.
+	// spent deadline (§6.4).
 	e.tr.req.start = c.p.sh.clock.Now()
 }
 
