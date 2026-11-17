@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/internal/adapter/nfs/wire"
@@ -28,67 +29,70 @@ var (
 	statusAuthVerf     = core.Status(wire.StatusAuth | wire.AuthBadVerf)
 )
 
-// header is one parsed call: the wire's view, and the version the router chose
-// for it, the minor version of a COMPOUND and 0 for NFS version 4's other
-// procedures (RFC 20 section 4.7).
-type header struct {
-	call wire.Call
-	vers core.Version
+// header is one call, read where it lies: an RPC record holds one message, at
+// offset 0. Its methods read the call through the wire's accessors, which the
+// parse in Decode has bounded.
+//
+// decision: a header is a view of its record, one pointer to its Buf, so
+// handing it to core as a core.Header allocates nothing, and each call has its
+// own, which the calls core runs at once on one connection read apart. It is
+// valid while the record's Buf is retained, which core does for a request's
+// life. Withdraw the view, and copy the fields out, if core ever releases a
+// record before its request ends.
+type header struct{ rec *resources.Buf }
+
+func (h header) call() wire.Call { return wire.Call(h.rec.B) }
+
+func (h header) Op() uint32 { return h.call().Procedure() }
+
+// Version is the call's version, but for NFS version 4: a COMPOUND's minor
+// version, and 0 for its other procedures (RFC 20 section 4.7).
+func (h header) Version() core.Version {
+	c := h.call()
+	if minor, ok := c.MinorVersion(); ok {
+		return core.Version(minor)
+	}
+	if c.Program() == progNFS && c.Version() == versNFS4 {
+		return 0
+	}
+	return core.Version(c.Version())
 }
 
-func (h *header) Op() uint32            { return h.call.Procedure() }
-func (h *header) Version() core.Version { return h.vers }
-func (h *header) Next() int             { return 0 }
-func (h *header) Related() bool         { return false }
+func (h header) Next() int     { return 0 }
+func (h header) Related() bool { return false }
 
 // compound reports whether h is an NFSv4 COMPOUND.
-func (h *header) compound() bool {
-	_, ok := h.call.MinorVersion()
+func (h header) compound() bool {
+	_, ok := h.call().MinorVersion()
 	return ok
 }
 
 // stage is one connection's header stage and router: the served set, the
-// tables, the stages' error table and the connection a reply goes through.
+// tables, the stages' error table, the connection a reply goes through, and
+// whether a call on it has been routed yet.
 type stage struct {
 	served      served
 	tables      Tables
 	errs        *core.ErrorTable
 	conn        *core.Conn
-	established bool
-	hdr         header       // one per connection: Decode's view, refilled per call
-	req         core.Request // one per connection, what Route returns
+	established atomic.Bool
 }
 
-// decision: one header and one request per connection, refilled by Decode and
-// Route. NFS decodes one header per record and the router reads it before the
-// next, so nothing holds two, and a fresh header per call would allocate on the
-// request path. Overturned if a stage's caller ever keeps a header past the next
-// decode.
-
-// Decode reads the call at off in rec: nil with the error for a message the
-// wire cannot address, the header with it for one it can (RFC 20 section 4.7).
-func (s *stage) Decode(rec *resources.Buf, off int) (core.Header, error) {
-	c, err := wire.ParseCall(rec.B[off:])
+// Decode reads the call at offset 0 in rec, the only one an RPC record holds:
+// nil with the error for a message the wire cannot address, the header with it
+// for one it can (RFC 20 section 4.7). Its header's Next is 0, so no other
+// offset is asked for.
+func (s *stage) Decode(rec *resources.Buf, _ int) (core.Header, error) {
+	c, err := wire.ParseCall(rec.B)
 	if len(c) == 0 {
-		if err == nil {
-			err = wire.ErrUnaddressable
-		}
 		return nil, fmt.Errorf("%w: %w", core.ErrDecode, err)
 	}
-	h := &s.hdr
-	h.call = c
-	h.vers = 0
+	h := header{rec}
 	switch {
-	case err != nil && errors.Is(err, wire.ErrNotCall):
+	case errors.Is(err, wire.ErrNotCall):
 		return h, errNotCall
 	case err != nil:
 		return h, fmt.Errorf("%w: %w", core.ErrDecode, err)
-	}
-	if h.compound() {
-		minor, _ := c.MinorVersion()
-		h.vers = core.Version(minor)
-	} else if c.Program() == progNFS && c.Version() == versNFS3 {
-		h.vers = core.Version(versNFS3)
 	}
 	return h, nil
 }
@@ -96,22 +100,23 @@ func (s *stage) Decode(rec *resources.Buf, off int) (core.Header, error) {
 // Encode writes the reply for s, the two high bits telling a program's status
 // from an accept or reject state (RFC 20 section 4.7).
 func (s *stage) Encode(h core.Header, st core.Status, out *resources.Buf) error {
-	hd, ok := h.(*header)
+	hd, ok := h.(header)
 	if !ok {
 		return fmt.Errorf("nfs: a header of another protocol")
 	}
-	xid, layer := hd.call.XID(), uint32(st)&(1<<30-1)
+	c := hd.call()
+	xid, layer := c.XID(), uint32(st)&(1<<30-1)
 	switch uint32(st) >> 30 {
 	case wire.StatusProgram >> 30:
 		out.B = wire.AppendAccepted(out.B, xid, wire.AcceptSuccess)
 		if hd.compound() {
-			out.B = wire.AppendCompoundStatus(out.B, layer, hd.call.Tag(), 0)
+			out.B = wire.AppendCompoundStatus(out.B, layer, c.Tag(), 0)
 			return nil
 		}
 		out.B = binary.BigEndian.AppendUint32(out.B, layer)
 	case wire.StatusAccept >> 30:
 		if layer == wire.AcceptProgMismatch {
-			out.B = wire.AppendProgMismatch(out.B, xid, uint32(s.served.low[hd.call.Program()]), uint32(s.served.high[hd.call.Program()]))
+			out.B = wire.AppendProgMismatch(out.B, xid, uint32(s.served.low[c.Program()]), uint32(s.served.high[c.Program()]))
 			return nil
 		}
 		out.B = wire.AppendAccepted(out.B, xid, layer)
@@ -129,11 +134,11 @@ func (s *stage) Chain(out *resources.Buf, prev int) error { return nil }
 // Args is the call's bytes past its verifier, which for a COMPOUND begin at its
 // tag.
 func (s *stage) Args(rec *resources.Buf, h core.Header) []byte {
-	hd, ok := h.(*header)
+	hd, ok := h.(header)
 	if !ok {
 		return nil
 	}
-	return hd.call.Args()
+	return hd.call().Args()
 }
 
 // ReplyLen is the most Encode writes for h: the reply header with an empty
@@ -142,26 +147,27 @@ func (s *stage) Args(rec *resources.Buf, h core.Header) []byte {
 // 4.7).
 func (s *stage) ReplyLen(h core.Header) int {
 	n := 32
-	hd, ok := h.(*header)
+	hd, ok := h.(header)
 	if !ok || !hd.compound() {
 		return n
 	}
-	tag := len(hd.call.Tag())
+	tag := len(hd.call().Tag())
 	return 24 + 4 + 4 + tag + pad(tag) + 4
 }
 
 // pad is XDR's padding of n bytes to four.
 func pad(n int) int { return (4 - n%4) % 4 }
 
-// Route chooses the table and builds the request, after judging the RPC
-// version, the credential and the verifier (RFC 21 sections 2.1, 11.1 and
-// 11.4).
+// Route chooses the table and builds the request, one of the call's own, after
+// judging the RPC version, the credential and the verifier (RFC 21 sections
+// 2.1, 11.1 and 11.4). The connection's first routed call ends its handshake
+// deadline.
 func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
-	hd, ok := h.(*header)
+	hd, ok := h.(header)
 	if !ok {
 		return nil, nil, fmt.Errorf("%w: a header of another protocol", core.ErrDecode)
 	}
-	c := hd.call
+	c := hd.call()
 	if c.RPCVersion() != 2 {
 		return nil, nil, errRPCMismatch
 	}
@@ -182,7 +188,7 @@ func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.R
 			}
 			table = s.tables.V3
 		case versNFS4:
-			if !s.served.minor(hd.vers) {
+			if !s.served.minor(hd.Version()) {
 				return s.tables.V4, nil, core.ErrVersion
 			}
 			table = s.tables.V4
@@ -202,14 +208,10 @@ func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.R
 	if !s.served.serves(prog, vers) {
 		return nil, nil, core.ErrVersion
 	}
-	s.req = core.Request{Version: hd.vers, Level: core.NeedsNothing, Conn: s.conn}
-	if !s.established {
-		s.established = true
-		if s.conn != nil {
-			s.conn.Established()
-		}
+	if s.conn != nil && s.established.CompareAndSwap(false, true) {
+		s.conn.Established()
 	}
-	return table, &s.req, nil
+	return table, &core.Request{Version: hd.Version(), Level: core.NeedsNothing, Conn: s.conn}, nil
 }
 
 // checkAuth judges the credential and the verifier: AUTH_NONE or a whole

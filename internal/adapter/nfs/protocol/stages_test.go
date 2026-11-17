@@ -3,10 +3,12 @@ package protocol
 import (
 	"encoding/binary"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/internal/adapter/nfs/wire"
+	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
 )
@@ -261,12 +263,9 @@ func TestTheCredentials(t *testing.T) {
 		})
 	}
 	// An RPC version other than 2 is the first refusal.
-	h, _ := decode(t, s, nullCall(progNFS, 3, 0, wire.AuthSys, nil, wire.AuthNone, nil, nil))
-	c := h.(*header).call
-	_ = c
 	b := nullCall(progNFS, 3, 0, wire.AuthSys, nil, wire.AuthNone, nil, nil)
 	b[11] = 3 // the RPC version's low byte: 3
-	h, _ = decode(t, s, b)
+	h, _ := decode(t, s, b)
 	if _, _, err := s.Route(h, nil); !errors.Is(err, errRPCMismatch) {
 		t.Errorf("RPC version 3: %v, want RPC_MISMATCH", err)
 	}
@@ -386,9 +385,13 @@ func TestReplyLenBoundsEncode(t *testing.T) {
 	}
 }
 
-// The header stage's decode, route and encode of an AUTH_SYS call allocate
-// nothing.
+// The header stage's decode, its credential check and its encode of an
+// AUTH_SYS call allocate nothing, and Route allocates once: the call's own
+// request.
 func TestHeaderStageAllocs(t *testing.T) {
+	if prof.RaceEnabled {
+		t.Skip("the race detector changes allocation counts")
+	}
 	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
 	body := nullCall(progNFS, versNFS4, 1, wire.AuthSys, authSys("host", 1000, 100, 27), wire.AuthNone, nil, nil)
 	body = opaque(body, []byte("abcde"))
@@ -402,10 +405,113 @@ func TestHeaderStageAllocs(t *testing.T) {
 	out := &resources.Buf{B: make([]byte, 0, s.ReplyLen(h))}
 	if n := testing.AllocsPerRun(100, func() {
 		h1, _ := s.Decode(buf, 0)
-		_, _, _ = s.Route(h1, nil)
+		if err := checkAuth(h1.(header).call()); err != nil {
+			t.Fatal(err)
+		}
 		out.B = out.B[:0]
 		_ = s.Encode(h1, 0, out)
 	}); n != 0 {
-		t.Errorf("decode, route and encode allocate %v per call", n)
+		t.Errorf("decode, the credential check and encode allocate %v per call", n)
+	}
+	if n := testing.AllocsPerRun(100, func() {
+		if _, _, err := s.Route(h, nil); err != nil {
+			t.Fatal(err)
+		}
+	}); n != 1 {
+		t.Errorf("route allocates %v per call, want its request alone", n)
+	}
+}
+
+// Calls on one connection run at once, as core runs them: the reader decodes
+// each record in turn while the calls before it still run, and each call is
+// routed and answered on a goroutine of its own. Each reply carries its own
+// call's xid, and each request its own call's version.
+func TestConcurrentCallsKeepTheirOwn(t *testing.T) {
+	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
+	calls := []struct {
+		body []byte
+		vers core.Version
+	}{
+		{nullCall(progNFS, versNFS3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 3},
+		{compoundCall(1, "a"), 1},
+		{nullCall(progNFS, versNFS4, 0, wire.AuthSys, authSys("h", 1, 1), wire.AuthNone, nil, nil), 0},
+		{nullCall(progMount, versMount3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 3},
+		{compoundCall(2, "abcde"), 2},
+		{nullCall(progNLM, versNLM4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 4},
+		{nullCall(progNSM, versNSM1, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 1},
+		{compoundCall(0, "t"), 0},
+	}
+	running := make(chan struct{})
+	replies := make([][]byte, len(calls))
+	versions := make([]core.Version, len(calls))
+	var wg sync.WaitGroup
+	for i, c := range calls {
+		binary.BigEndian.PutUint32(c.body, uint32(0x1000+i))
+		h, err := s.Decode(&resources.Buf{B: c.body}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wg.Go(func() {
+			_, r, err := s.Route(h, nil)
+			if err != nil {
+				t.Errorf("call %d: %v", i, err)
+				return
+			}
+			<-running // the call runs on while the reader decodes the next
+			out := &resources.Buf{}
+			if err := s.Encode(h, 0, out); err != nil {
+				t.Errorf("call %d: %v", i, err)
+				return
+			}
+			replies[i], versions[i] = out.B, r.Version
+		})
+	}
+	close(running)
+	wg.Wait()
+	for i, c := range calls {
+		if len(replies[i]) < 4 {
+			continue
+		}
+		if got := binary.BigEndian.Uint32(replies[i]); got != uint32(0x1000+i) {
+			t.Errorf("call %d is answered with xid %#x, want %#x", i, got, 0x1000+i)
+		}
+		if versions[i] != c.vers {
+			t.Errorf("call %d is routed at version %d, want %d", i, versions[i], c.vers)
+		}
+	}
+}
+
+// A header's version is its call's, but for NFS version 4: a COMPOUND's minor
+// version and 0 for its other procedures; the request Route builds carries it.
+func TestTheHeaderVersions(t *testing.T) {
+	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
+	for _, c := range []struct {
+		name string
+		body []byte
+		want core.Version
+	}{
+		{"NFS v3", nullCall(progNFS, versNFS3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 3},
+		{"MOUNT v3", nullCall(progMount, versMount3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 3},
+		{"NLM v4", nullCall(progNLM, versNLM4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 4},
+		{"NSM v1", nullCall(progNSM, versNSM1, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 1},
+		{"NFS v4 NULL", nullCall(progNFS, versNFS4, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil), 0},
+		{"a COMPOUND of minor 2", compoundCall(2, "t"), 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, err := decode(t, s, c.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if h.Version() != c.want {
+				t.Errorf("the header's version is %d, want %d", h.Version(), c.want)
+			}
+			_, r, err := s.Route(h, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.Version != c.want {
+				t.Errorf("the request's version is %d, want %d", r.Version, c.want)
+			}
+		})
 	}
 }
