@@ -144,8 +144,8 @@ func TestOperationWait(t *testing.T) {
 // :cancel answers 409 not_cancellable, naming the operation, for every kind
 // of the closed set; 403 for a caller that may not start its kind, the right
 // of the row that starts it; 404 for an operation that does not exist; 428
-// without an Idempotency-Key, before the operation is read; each refusal
-// audited.
+// without an Idempotency-Key, before the operation is read; 400 for a key
+// longer than 255 bytes; each refusal audited.
 func TestCancel(t *testing.T) {
 	var role atomic.Uint32
 	role.Store(uint32(entity.RoleAdmin))
@@ -189,8 +189,17 @@ func TestCancel(t *testing.T) {
 	if r := s.do(t, http.MethodPost, opPath(none)+":cancel", ""); r.status != http.StatusPreconditionRequired || r.problem(t).Code != apiv1.CodePreconditionRequired {
 		t.Errorf("cancel of no operation without an Idempotency-Key: answered %d %s, want 428 precondition_required", r.status, r.body)
 	}
+	for _, tc := range []struct {
+		key  int
+		want int
+	}{{255, http.StatusConflict}, {256, http.StatusBadRequest}} {
+		r := s.do(t, http.MethodPost, opPath(ids[apiv1.OpShareDelete])+":cancel", "", "Idempotency-Key", strings.Repeat("k", tc.key))
+		if r.status != tc.want || (tc.want == http.StatusBadRequest && r.problem(t).Field != "Idempotency-Key") {
+			t.Errorf("cancel with a %d-byte Idempotency-Key: answered %d %s, want %d", tc.key, r.status, r.body, tc.want)
+		}
+	}
 	recs := s.audits(t)
-	if want := len(kinds) + 5; len(recs) != want {
+	if want := len(kinds) + 7; len(recs) != want {
 		t.Fatalf("cancels audited: %d records %q, want %d", len(recs), outcomes(recs), want)
 	}
 	if !strings.HasPrefix(string(recs[0].Outcome), "refused: not_cancellable") || recs[0].Target.Kind != entity.ResourceOperation {
