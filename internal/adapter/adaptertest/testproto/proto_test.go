@@ -323,8 +323,55 @@ func TestRouteRefusesAVersionItDoesNotServe(t *testing.T) {
 		v    core.Version
 	}{{"version 0", full, 0}, {"version 3", full, 3}, {"version 2 on Bare", full.Bare(), 2}} {
 		st := c.p.NewConn(nil)
-		if _, _, err := st.Router.Route(header(c.v), nil); !errors.Is(err, core.ErrVersion) {
-			t.Errorf("%s: Route = %v, want ErrVersion", c.name, err)
+		if tb, _, err := st.Router.Route(header(c.v), nil); !errors.Is(err, core.ErrVersion) || tb != nil {
+			t.Errorf("%s: Route = %v, %v; want ErrVersion and no table", c.name, tb, err)
+		}
+	}
+
+	// A refusal after the table is chosen comes back with it: version 2 on
+	// a connection that negotiated 1.
+	st := full.NewConn(nil)
+	st.Router.(*router).cs.version.Store(1)
+	if tb, _, err := st.Router.Route(header(2), nil); !errors.Is(err, core.ErrVersion) || tb != full.tables()[1] {
+		t.Errorf("version 2 after negotiating 1: Route = %v, %v; want version 2's table with ErrVersion", tb, err)
+	}
+}
+
+// A router built with no connection, as the seam builds it, negotiates up to
+// version 2 without reading settings.
+func TestRouteNegotiatesWithNoConnection(t *testing.T) {
+	b := Append(nil, Msg{Op: OpNegotiate, Version: 1})[lengthLen:]
+	h, err := headerCodec{}.Decode(&resources.Buf{B: b}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, r, err := New(adapter.Deps{}).NewConn(nil).Router.Route(h, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, ok := r.State.(*state); !ok || s.max != 2 {
+		t.Errorf("a negotiate with no connection may pick up to %v, want 2", r.State)
+	}
+}
+
+// Both stage sets carry the table that answers a refusal before Route.
+func TestStagesMapTheirRefusals(t *testing.T) {
+	p := New(adapter.Deps{})
+	for name, q := range map[string]core.Protocol{"full": p, "bare": p.Bare()} {
+		errs := q.NewConn(nil).Errors
+		if errs == nil {
+			t.Fatalf("the %s protocol's stages have no Errors", name)
+		}
+		for err, want := range map[error]core.Status{
+			core.ErrDecode:                        StatusDecode,
+			errChecksum:                           StatusChecksum,
+			errOverdraw:                           StatusOverdraw,
+			core.ErrVersion:                       StatusVersion,
+			&vfs.Delay{Cause: vfs.DelayResources}: StatusDelay,
+		} {
+			if got, reply := errs.Map(err, nil, 1); got != want || !reply {
+				t.Errorf("the %s protocol's stages map %v to %d (reply %v), want %d", name, err, got, reply, want)
+			}
 		}
 	}
 }

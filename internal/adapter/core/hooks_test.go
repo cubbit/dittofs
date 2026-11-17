@@ -13,6 +13,13 @@ import (
 // What the package's external tests reach of core's unexported parts. It is
 // the standard library's export_test.go by another name, since
 // exports_test.go here is the surface test.
+//
+// decision: each part of the pipeline is tested once, at its seam with the
+// connection: a test builds a pipeline through these hooks, hands serve the
+// records a reader would, and reads the replies from a recorder in out's
+// place, which passes the suite of out the connection's writer passes too;
+// what only a socket decides is tested on the connection itself. Overturned
+// if a part can only be observed through a socket.
 
 type (
 	Shared      = shared
@@ -138,11 +145,15 @@ func Watches(ctx context.Context) int {
 // NewCapped is the FlowControl a connection gets where its protocol has none.
 func NewCapped() FlowControl { return newCapped() }
 
-var (
-	ReserveReply  = reserveReply
-	ReserveStatus = reserveStatus
-	ErrReplyWait  = errReplyWait
-)
+var ErrReplyWait = errReplyWait
+
+func (sh *shared) ReserveReply(ctx context.Context, key netip.Addr, bound int) (*resources.Buf, error) {
+	return sh.reserveReply(ctx, key, bound)
+}
+
+func (sh *shared) ReserveStatus(ctx context.Context, key netip.Addr, close func(error)) *resources.Buf {
+	return sh.reserveStatus(ctx, key, close)
+}
 
 // TestReader is one connection's record cut, reached by the reader's tests.
 type TestReader struct{ r *reader }
@@ -159,3 +170,30 @@ func (t *TestReader) Read(ctx context.Context) (*resources.Buf, error) { return 
 // ErrFrame is the framing refusal every record-level error wraps, so a close
 // can name its reason.
 var ErrFrame = errFrame
+
+// The pipeline at its seam: a test builds one over a link of its own parts
+// and hands serve the records a reader would.
+type Pipeline = pipeline
+
+var (
+	WithDefaults     = withDefaults
+	ErrChain         = errChain
+	ErrUnwrapNeither = errUnwrapNeither
+	ErrNoHold        = errNoHold
+)
+
+func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, out func(*resources.Buf, uint64, uint64) error, close func(error)) *Pipeline {
+	return newPipeline(sh, st, link{ctx: ctx, remote: remote, out: out, close: close})
+}
+
+func (p *pipeline) Serve(rec *resources.Buf)       { p.serve(rec) }
+func (p *pipeline) Drain()                         { p.drain() }
+func (p *pipeline) Wait(ctx context.Context) error { return p.wait(ctx) }
+func (p *pipeline) Close()                         { p.close() }
+
+// Runs is how many requests and refusals the pipeline counts as running.
+func (p *pipeline) Runs() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.runs
+}

@@ -94,7 +94,7 @@ func sortedValues(m map[int]string) []string { return slices.Sorted(maps.Values(
 // in-flight count from the connection's label to the table's at Route.
 func TestSeriesRecordEachIntoItsOwnSeries(t *testing.T) {
 	m := metrics.New("v", "c")
-	sh := core.NewShared(adapter.Deps{Metrics: m})
+	sh := core.NewShared(adapter.Deps{Metrics: m}, nil)
 	tb := routed(t)[0]
 	ts, err := sh.Table(tb)
 	if err != nil {
@@ -198,7 +198,7 @@ func orderedValues(m map[int]string) []string {
 // operations lower-cased, the service's errors, the reasons of a split.
 func TestSeriesCarryOnlyTheirLabels(t *testing.T) {
 	m := metrics.New("v", "c")
-	sh := core.NewShared(adapter.Deps{Metrics: m})
+	sh := core.NewShared(adapter.Deps{Metrics: m}, nil)
 	tb := routed(t)[0]
 	if _, err := sh.Table(tb); err != nil {
 		t.Fatal(err)
@@ -324,7 +324,7 @@ func TestServiceErrorsNameEverySentinel(t *testing.T) {
 // name; a compound row's Members are resolved with their parent.
 func TestSeriesResolvedOncePerServer(t *testing.T) {
 	m := metrics.New("v", "c")
-	sh := core.NewShared(adapter.Deps{Metrics: m})
+	sh := core.NewShared(adapter.Deps{Metrics: m}, nil)
 	var n atomic.Int64
 	core.CountLookups(sh, &n)
 	tables := routed(t)
@@ -367,7 +367,7 @@ func TestSeriesResolvedOncePerServer(t *testing.T) {
 // once: both get the series a later call gets.
 func TestSeriesTwoFirstResolutionsAtOnce(t *testing.T) {
 	for range 20 {
-		sh := core.NewShared(adapter.Deps{Metrics: metrics.New("v", "c")})
+		sh := core.NewShared(adapter.Deps{Metrics: metrics.New("v", "c")}, nil)
 		tb := routed(t)[0]
 		var got [2]*core.TableSeries
 		var wg sync.WaitGroup
@@ -398,7 +398,7 @@ func TestSeriesTwoFirstResolutionsAtOnce(t *testing.T) {
 // and resolves no series.
 func TestSeriesRefuseATableWithoutProtocol(t *testing.T) {
 	m := metrics.New("v", "c")
-	sh := core.NewShared(adapter.Deps{Metrics: m})
+	sh := core.NewShared(adapter.Deps{Metrics: m}, nil)
 	tb := core.NewOpTable(table(), false, &core.Op{Code: 7, Name: "Read", Versions: core.Range{First: 1, Last: 1}})
 	for range 2 {
 		if _, err := sh.Table(tb); err == nil || !strings.Contains(err.Error(), "Read") {
@@ -416,7 +416,7 @@ func TestSeriesTwoServersOnOneRegistry(t *testing.T) {
 	m := metrics.New("v", "c")
 	tb := routed(t)[0]
 	for range 2 {
-		ts, err := core.NewShared(adapter.Deps{Metrics: m}).Table(tb)
+		ts, err := core.NewShared(adapter.Deps{Metrics: m}, nil).Table(tb)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -433,7 +433,7 @@ func TestSeriesTwoServersOnOneRegistry(t *testing.T) {
 // not crash.
 func TestSeriesPanicsByOperation(t *testing.T) {
 	m := metrics.New("v", "c")
-	sh := core.NewShared(adapter.Deps{Metrics: m})
+	sh := core.NewShared(adapter.Deps{Metrics: m}, nil)
 	tb := routed(t)[0]
 	ts, err := sh.Table(tb)
 	if err != nil {
@@ -489,7 +489,7 @@ func TestSeriesRecordAllocatesNothing(t *testing.T) {
 		t.Skip("the race detector changes allocation counts")
 	}
 	for name, d := range map[string]adapter.Deps{"a registry": {Metrics: metrics.New("v", "c")}, "no registry": {}} {
-		sh := core.NewShared(d)
+		sh := core.NewShared(d, nil)
 		tb := routed(t)[0]
 		ts, err := sh.Table(tb)
 		if err != nil {
@@ -511,7 +511,7 @@ func TestSeriesRecordAllocatesNothing(t *testing.T) {
 
 // Recording looks up no child: every one was resolved with its series.
 func TestSeriesRecordLooksNothingUp(t *testing.T) {
-	sh := core.NewShared(adapter.Deps{Metrics: metrics.New("v", "c")})
+	sh := core.NewShared(adapter.Deps{Metrics: metrics.New("v", "c")}, nil)
 	var n atomic.Int64
 	core.CountLookups(sh, &n)
 	tb := routed(t)[0]

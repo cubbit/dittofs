@@ -85,6 +85,8 @@ type Framer interface {
 	BodyLen(hdr []byte) (n int, last bool, err error)
 
 	MaxRecord() (bytes, fragments int)
+
+	Frame(dst []byte, body int) []byte
 }
 
 type Handler[Req, Rep any] func(ctx context.Context, r *Request, req *Req) (*Rep, error)
@@ -100,6 +102,8 @@ type HeaderCodec interface {
 	Decode(rec *resources.Buf, off int) (Header, error)
 	Encode(h Header, s Status, out *resources.Buf) error
 	Chain(out *resources.Buf, prev int) error
+	Args(rec *resources.Buf, h Header) []byte
+	ReplyLen(h Header) int
 }
 
 type HoldCodec interface {
@@ -199,6 +203,7 @@ type Server struct{}
 type Stages struct {
 	Header     HeaderCodec
 	Router     Router
+	Errors     *ErrorTable
 	Security   Security
 	Flow       FlowControl
 	Replay     ReplayCache
@@ -224,8 +229,9 @@ var (
 	ErrExpired        = errors.New("core: credential expired")
 	ErrNotLast        = errors.New("core: not the last member of a chain")
 	ErrTooManyPending = errors.New("core: too many pending requests")
-	ErrDecode         = errors.New("core: cannot decode")
-	ErrCancelled      = errors.New("core: cancelled by its client")
+
+	ErrDecode    = errors.New("core: cannot decode")
+	ErrCancelled = errors.New("core: cancelled by its client")
 
 	ErrMoved    = errors.New("core: moved")
 	ErrDraining = errors.New("core: draining")

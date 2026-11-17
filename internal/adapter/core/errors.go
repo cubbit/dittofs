@@ -201,12 +201,6 @@ func describe(r ErrorRow) string {
 
 // core's own refusals. Each table maps every one, and the tables' totality
 // test takes them from Errors beside the service's errors.
-//
-// decision: a decode error wraps ErrDecode once, with %w, and formats its
-// cause with %v. A second %w would let a row for the cause, narrower than
-// ErrDecode's catch-all or listed before it, answer the error instead, which
-// NewErrorTable's check cannot see. Overturned if a caller must match a
-// decode error's cause.
 var (
 	ErrNotSupported   = errors.New("core: operation not supported")                // absent from the table, or switched off
 	ErrVersion        = errors.New("core: version not served")                     // outside Op.Versions
@@ -219,8 +213,17 @@ var (
 	ErrExpired        = errors.New("core: credential expired")                     // an expired credential, Op.Expired false
 	ErrNotLast        = errors.New("core: not the last member of a chain")         // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")              // Stages.MaxPending
-	ErrDecode         = errors.New("core: cannot decode")                          // a header, an operation's or a member's arguments, a step of the record's walk (§4.1)
-	ErrCancelled      = errors.New("core: cancelled by its client")                // a held or parked request its client cancelled (§6.5); wraps nothing
+	// ErrDecode refuses a header, an operation's arguments, or a step of the
+	// record's walk that does not decode (§4.1). The pipeline wraps every
+	// error a header's or a row's Decode returns, once, as
+	// fmt.Errorf("%w: %v", ErrDecode, err): the cause's text survives, the
+	// cause itself is not matched, so no row for it answers in ErrDecode's
+	// place. A codec returns its own error and never ErrDecode. Unwrap's
+	// refusals are the stage's to name, since they answer differently (access
+	// denied, ErrDecode for a malformed inner header, or close); core passes
+	// them unchanged.
+	ErrDecode    = errors.New("core: cannot decode")
+	ErrCancelled = errors.New("core: cancelled by its client") // a held or parked request its client cancelled (§6.5); wraps nothing
 	// ErrMoved and ErrDraining are what a request the drain does not serve
 	// gets while the adapter drains: ErrMoved where the service names a
 	// gateway node for the request's share (the move signal), ErrDraining

@@ -33,6 +33,8 @@ const (
 	StatusCancelled                  // core.ErrCancelled: a parked or held request its client cancelled
 	StatusDecode                     // core.ErrDecode: a record or arguments it cannot decode
 	StatusReplyTooBig                // core.ErrReplyTooBig: a reply's charge past a quarter of the reply pool's ceiling
+	StatusChecksum                   // a checksum that does not match, or a message sent clear under a session: the stages' table
+	StatusOverdraw                   // a message that charges more credits than the connection holds: the stages' table
 )
 
 // Name is the protocol label testproto's tables and stages record under.
@@ -79,6 +81,7 @@ type Protocol struct {
 	reg    *registry
 	pool   *resources.BufPool // over the reply budget; nil when d has no budgets
 	tables func() [2]*core.OpTable
+	errs   *core.ErrorTable // the stages' own, for a refusal before Route returns a table
 }
 
 // New returns the protocol over d: its handlers call d.VFS, and the replay
@@ -95,6 +98,7 @@ func New(d adapter.Deps) *Protocol {
 		p.pool = resources.NewBufPool(d.Budgets.Reply)
 	}
 	p.tables = sync.OnceValue(p.build)
+	p.errs = stagesErrors()
 
 	return p
 }
@@ -117,7 +121,7 @@ func (p *Protocol) Framer() core.Framer { return framer{} }
 func (p *Protocol) NewConn(c *core.Conn) core.Stages {
 	cs := &connState{p: p, c: c}
 	if p.bare {
-		return core.Stages{Header: headerCodec{}, Router: &router{cs}, Protocol: Name}
+		return core.Stages{Header: headerCodec{}, Router: &router{cs}, Errors: p.errs, Protocol: Name}
 	}
 	credits := newFlow()
 	cs.replay = &replay{pool: p.pool, flow: credits, m: map[replayKey][]byte{}}
@@ -125,6 +129,7 @@ func (p *Protocol) NewConn(c *core.Conn) core.Stages {
 	return core.Stages{
 		Header:     headerCodec{flow: credits},
 		Router:     &router{cs},
+		Errors:     p.errs,
 		Security:   security{},
 		Flow:       credits,
 		Replay:     cs.replay,
@@ -157,14 +162,20 @@ type state struct {
 type router struct{ cs *connState }
 
 // Route answers the table of the header's version: 1 or 2, and 1 alone on
-// Bare.
+// Bare. A refusal after it has chosen that table comes back with it, and is
+// mapped there; a version with no table, with none.
 func (rt *router) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	v := h.Version()
+	if v < 1 || v > 2 || (rt.cs.p.bare && v != 1) {
+		return nil, nil, fmt.Errorf("testproto: version %d: %w", v, core.ErrVersion)
+	}
+	tb := rt.cs.p.tables()[v-1]
 	r, err := rt.request(h, prev)
 	if err != nil {
-		return nil, nil, err
+		return tb, nil, err
 	}
 
-	return rt.cs.p.tables()[r.Version-1], r, nil
+	return tb, r, nil
 }
 
 // request builds the Request: its level is what the connection negotiated
@@ -176,9 +187,6 @@ func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, err
 		return nil, errors.New("testproto: route a header of another protocol")
 	}
 	v := h.Version()
-	if v < 1 || v > 2 || (rt.cs.p.bare && v != 1) {
-		return nil, fmt.Errorf("testproto: version %d: %w", v, core.ErrVersion)
-	}
 	// A connection keeps what it negotiated: a request in a version above it
 	// is refused, one below it is served by that version's table.
 	if n := rt.cs.version.Load(); n != 0 && uint32(v) > n {
@@ -191,13 +199,17 @@ func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, err
 	if s == nil {
 		s = &state{conn: rt.cs}
 	}
+	// A router built by NewConn(nil), as the seam builds it, has no
+	// connection to read settings from, and negotiates up to version 2.
 	if h.Op() == OpNegotiate {
 		s.max = 2
-		switch set := rt.cs.c.Settings().(type) {
-		case Settings:
-			s.max = set.MaxVersion
-		case *Settings:
-			s.max = set.MaxVersion
+		if rt.cs.c != nil {
+			switch set := rt.cs.c.Settings().(type) {
+			case Settings:
+				s.max = set.MaxVersion
+			case *Settings:
+				s.max = set.MaxVersion
+			}
 		}
 		if s.max == 0 {
 			s.max = 2
@@ -280,6 +292,20 @@ func errorRows(holds bool) []core.ErrorRow {
 		{Err: core.ErrDraining, NoReply: true},
 		{Err: core.ErrMoved, NoReply: true},
 	}
+}
+
+// stagesErrors is the stages' own table, which answers with no operation a
+// refusal before Route returns a table: a header's decode error, a bad
+// checksum or a message sent clear under a session, an overdraw, a version
+// the router serves no table of, and the replay copy's delay.
+func stagesErrors() *core.ErrorTable {
+	return core.NewErrorTable(StatusFault,
+		core.ErrorRow{Err: core.ErrDecode, Status: StatusDecode},
+		core.ErrorRow{Err: errChecksum, Status: StatusChecksum},
+		core.ErrorRow{Err: errOverdraw, Status: StatusOverdraw},
+		core.ErrorRow{Err: core.ErrVersion, Status: StatusVersion},
+		core.ErrorRow{Err: &vfs.Delay{Cause: vfs.DelayResources}, Status: StatusDelay},
+	)
 }
 
 // ops is the rows both tables hold, each with the versions it is served in:
