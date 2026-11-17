@@ -173,6 +173,7 @@ type OpTable struct {
 
 type Protocol interface {
 	Framer() Framer
+
 	NewConn(c *Conn) Stages
 }
 

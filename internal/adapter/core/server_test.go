@@ -6,8 +6,10 @@ import (
 	"maps"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
@@ -39,7 +41,9 @@ func on(addrs ...string) testproto.Settings {
 	return s
 }
 
-// tcp is a listener of p at port carrying services.
+// lcListen is the real socket opener, the one the hooks below step around.
+var lcListen = (&net.ListenConfig{}).Listen
+
 // emptyStages is a protocol whose NewConn builds no stages: a wiring fault,
 // the one NewServer refuses at configured, never at the first request.
 type emptyStages struct{ core.Protocol }
@@ -92,6 +96,17 @@ func dialRefused(t *testing.T, a netip.AddrPort) {
 	}
 }
 
+// fds is the process's open descriptors, or -1 where the platform keeps no
+// /proc/self/fd to read: the count pins a leak only where it can be read, and
+// no test in this package runs in parallel with another.
+func fds() int {
+	es, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return -1
+	}
+	return len(es)
+}
+
 // NewServer refuses no listener, each malformed set of listeners, naming the
 // listener, and a listener on udp as unsupported; a valid set, two listeners
 // at port 0 among them, is a configured server bound nowhere.
@@ -108,13 +123,15 @@ func TestNewServerRefusesMalformedListeners(t *testing.T) {
 		want        string // what the refusal names
 		unsupported bool   // wraps errors.ErrUnsupported
 	}{
-		{"no settings", nil, nil, "no settings", false},
-		{"no listener", set, nil, "no listener", false},
 		{"no settings", nil, nil, "core: new server: no settings", false},
+		{"a typed-nil settings (nfs)", (*settings.NFS)(nil), nil, "core: new server: no settings", false},
+		{"a typed-nil settings (smb)", (*settings.SMB)(nil), nil, "core: new server: no settings", false},
+		{"no listener", set, nil, "no listener", false},
 		{"no service", set, []core.Listener{tcp(p, 0)}, "names no service", false},
 		{"an empty service", set, []core.Listener{tcp(p, 0, "a", "")}, "names an empty service", false},
 		{"a service twice", set, []core.Listener{tcp(p, 0, "a", "b", "a")}, "names a twice", false},
-		{"no protocol", set, []core.Listener{tcp(p, 0, "b"), {Services: []string{"b"}, Network: "tcp"}}, "names no protocol", false},
+		{"no protocol", set, []core.Listener{tcp(p, 0, "b"), {Services: []string{"c"}, Network: "tcp"}}, "names no protocol", false},
+		{"a typed-nil protocol", set, []core.Listener{tcp((*testproto.Protocol)(nil), 0, "a")}, "names no protocol", false},
 		{"stages accept would refuse", set, []core.Listener{tcp(p, 0, "b", "c"), {Services: []string{"d"}, Network: "tcp", Protocol: emptyStages{p}}}, "stages without Header, Router or Protocol", false},
 		{"two listeners on one Socket", set, []core.Listener{tcp(p, 0, "a"), tcp(p, 0, "b", "a")}, "listener 1", false},
 		{"two listeners on one port", set, []core.Listener{tcp(p, 2049, "a"), tcp(p, 2049, "b")}, "listener 1", false},
@@ -218,6 +235,33 @@ func TestStartBindsAWildcardOnItsFamilyAlone(t *testing.T) {
 	dialRefused(t, netip.AddrPortFrom(netip.IPv6Loopback(), port))
 }
 
+// An IPv6 wildcard is bound on its own family too: its port answers no IPv4
+// dial, the widening direction of the tcp4/tcp6 decision: on tcp, Go binds
+// :: as one dual-stack socket nobody configured for.
+func TestStartBindsASixWildcardOnItsFamilyAlone(t *testing.T) {
+	needIPv6Loopback(t)
+	deps := newDeps()
+	adaptertest.CheckLeaks(t, deps.Budgets)
+	p := testproto.New(deps)
+
+	srv, err := core.NewServer(deps, on("::"), tcp(p, 0, "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatalf("Start on ::: %v", err)
+	}
+
+	got := srv.Addrs()[key("a")]
+	if len(got) != 1 || got[0].Addr() != netip.MustParseAddr("::") || got[0].Port() == 0 {
+		t.Fatalf("Addrs[a] %v, want :: at the port bound", got)
+	}
+	port := got[0].Port()
+	dialOK(t, netip.AddrPortFrom(netip.IPv6Loopback(), port))
+	dialRefused(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port))
+}
+
 // An IPv4-mapped address binds the IPv4 address it maps and is reported as
 // the settings name it, at the port bound.
 func TestStartBindsAMappedAddressAsIPv4(t *testing.T) {
@@ -307,12 +351,20 @@ func TestStartThatFailsClosesWhatItOpened(t *testing.T) {
 	// "a" asks the system for its port, so no port is freed for another to
 	// steal; "b" cannot bind the socket the test holds, so Start names it, and
 	// every socket "a" opened, the system-picked one too, must be closed by
-	// the failed Start.
+	// the failed Start. Each listener is bound once: a port the node
+	// configured that is taken is a real refusal, never repicked.
+	var binds atomic.Int64
+	restore := core.SwapListen(func(ctx context.Context, network, addr string) (net.Listener, error) {
+		binds.Add(1)
+		return lcListen(ctx, network, addr)
+	})
+	t.Cleanup(restore)
 	srv, err := core.NewServer(deps, on("127.0.0.1"), tcp(p, 0, "a"), tcp(p, heldAt.Port(), "b"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	stopAtEnd(t, srv)
+	before := fds()
 	err = srv.Start(t.Context())
 	if err == nil {
 		t.Fatal("Start bound nothing it would refuse")
@@ -325,6 +377,63 @@ func TestStartThatFailsClosesWhatItOpened(t *testing.T) {
 	}
 	if got := srv.Addrs(); len(got) != 0 {
 		t.Errorf("after a failed Start Addrs is %v, want empty: every socket it opened was closed by the failure", got)
+	}
+	if before >= 0 {
+		if got := fds(); got != before {
+			t.Errorf("after a failed Start %d descriptors are open, want %d: Start left a socket it opened", got, before)
+		}
+	}
+	if got := binds.Load(); got != 2 {
+		t.Errorf("the failed Start opened %d sockets, want 2: a port the node configured that is taken is a real refusal, never repicked", got)
+	}
+}
+
+// A port-0 listener whose pick a later family holds repicks: IPv4 and IPv6
+// ports are allocated apart, so the port 127.0.0.1's socket picked can be
+// held on ::1 by another socket, and the whole group binds again with a
+// fresh pick, Start reporting one port. The hook holds the pick out before
+// delegating, so the refusal it meets is the runtime's own.
+func TestAPortZeroStartRepicksWhenALaterFamilyHoldsItsPick(t *testing.T) {
+	needIPv6Loopback(t)
+	deps := newDeps()
+	adaptertest.CheckLeaks(t, deps.Budgets)
+	p := testproto.New(deps)
+
+	var held net.Listener
+	var once bool
+	restore := core.SwapListen(func(ctx context.Context, network, addr string) (net.Listener, error) {
+		// The first ::1 bind at the picked port finds it held: by this
+		// listener, so the real call below answers with the runtime's in-use
+		// refusal. The hold stays put for the rest of the test, so a repick
+		// that asks for the same port meets the same answer.
+		if ap, perr := netip.ParseAddrPort(addr); perr == nil && !once && network == "tcp6" && ap.Port() != 0 {
+			if ln, err := net.Listen("tcp6", addr); err == nil {
+				once = true
+				held = ln
+				t.Cleanup(func() { _ = ln.Close() })
+			}
+		}
+		return lcListen(ctx, network, addr)
+	})
+	t.Cleanup(restore)
+
+	srv, err := core.NewServer(deps, on("127.0.0.1", "::1"), tcp(p, 0, "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopAtEnd(t, srv)
+	if err := srv.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v; want it to repick when ::1 holds the port 127.0.0.1 picked", err)
+	}
+	if held == nil {
+		t.Fatal("Start bound ::1 without the hook holding its pick first: the test no longer reaches the repick")
+	}
+	addrs := srv.Addrs()[key("a")]
+	if len(addrs) != 2 || addrs[0].Port() != addrs[1].Port() {
+		t.Fatalf("Addrs[a] %v, want both addresses at the one repicked port", addrs)
+	}
+	if addrs[1].Port() == held.Addr().(*net.TCPAddr).AddrPort().Port() {
+		t.Errorf("Addrs[a] reports the port ::1 held, %d", addrs[1].Port())
 	}
 }
 
@@ -343,9 +452,8 @@ func TestTheServerKeepsItsOwnAddresses(t *testing.T) {
 	}
 	stopAtEnd(t, srv)
 
-	// In place with a different address, by append from another array, and
-	// through the settings value itself: none of the three reaches what Start
-	// binds.
+	// Two changes to the caller's settings, one in place and one by append:
+	// neither reaches what Start binds.
 	one.Addrs[0] = netip.IPv6Loopback()
 	one.Addrs = append(one.Addrs, netip.MustParseAddr("127.0.0.2"))
 

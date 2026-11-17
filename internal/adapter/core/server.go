@@ -7,9 +7,11 @@ import (
 	"iter"
 	"net"
 	"net/netip"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
@@ -19,9 +21,9 @@ import (
 // every protocol.
 type Server struct {
 	ls []Listener
-	// decision: the pointer is atomic because Reconfigure (T4.6's subtask) swaps
-	// the snapshot while connections read it; the one other store is
-	// NewServer's, before the server is shared.
+	// decision: the pointer is atomic because Reconfigure swaps the snapshot
+	// while connections read it; the one other store is NewServer's, before
+	// the server is shared.
 	settings atomic.Pointer[settings.Settings] // the protocol's whole shape, as New or the last Reconfigure gave it
 	addrs    []netip.Addr                      // the settings' addresses, the server's own copy: the caller's settings may change under it
 
@@ -59,14 +61,17 @@ type Listener struct {
 // NewServer returns the adapter New hands back: each listener bound on each
 // of the settings' Addrs, all or none at Start; Reconfigure binds them on an
 // added address the same way. s is the protocol's whole shape, which New was
-// given; core reads its Adapter. It refuses an empty listener set, a listener
-// naming no service, an empty one or one twice, two listeners naming the same Socket or
+// given; core reads its Adapter: a nil one is refused, a typed nil such as an
+// unassigned *settings.NFS among them, so Start never dereferences a
+// snapshot the caller never gave. It refuses an empty listener set, a
+// listener naming no protocol (a typed nil among them), a listener naming no
+// service, an empty one or one twice, two listeners naming the same Socket or
 // the same network and nonzero port, and a listener on any network but tcp,
 // with an error wrapping errors.ErrUnsupported. It keeps its own copy of ls,
 // so a later change to the caller's leaves the server as checked. It opens
 // nothing: the server is configured.
 func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, error) {
-	if s == nil {
+	if isNil(s) {
 		// Settings are the protocol's whole shape; a nil one is a program bug
 		// that would leave the server reading a snapshot it does not have, so
 		// it is refused with the prefix its sibling refusals carry.
@@ -99,6 +104,18 @@ func NewServer(d adapter.Deps, s settings.Settings, ls ...Listener) (*Server, er
 // errNoSettings is a NewServer handed no settings at all.
 var errNoSettings = errors.New("no settings")
 
+// isNil reports v as nil whether it is a nil interface or holds a nil
+// pointer: a Settings or a Protocol that is a typed nil, an unassigned
+// *settings.NFS say, is refused where the check dereferences nothing, as the
+// untyped nil is.
+func isNil(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	return rv.Kind() == reflect.Pointer && rv.IsNil()
+}
+
 // checkListeners refuses what NewServer refuses, naming the listener by its
 // position and its services.
 func checkListeners(ls []Listener) error {
@@ -117,7 +134,7 @@ func checkListeners(ls []Listener) error {
 		if l.Network != "tcp" {
 			return fmt.Errorf("listener %d %q: network %q: %w", i, l.Services, l.Network, errors.ErrUnsupported)
 		}
-		if l.Protocol == nil {
+		if isNil(l.Protocol) {
 			return fmt.Errorf("listener %d %q names no protocol", i, l.Services)
 		}
 		if len(l.Services) == 0 {
@@ -163,25 +180,70 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("core: start: the server was not built by NewServer")
 	}
 	for i := range s.ls {
-		port := s.ls[i].Port
-		for j, a := range s.addrs {
-			// One listener is one port: one the system picked is resolved on
-			// the first address it binds and used on the rest, so a service
-			// never reports a port of its own per address.
-			if j > 0 && port == 0 {
-				port = s.bound[len(s.bound)-1].addr.Port()
-			}
-			b, err := bind(ctx, &s.ls[i], a, port)
-			if err != nil {
-				s.closeBound()
-				return fmt.Errorf("core: start: %w", err)
-			}
-			s.bound = append(s.bound, b)
+		opened, err := s.bindEach(ctx, i)
+		if err != nil {
+			s.closeBound()
+			return fmt.Errorf("core: start: %w", err)
 		}
+		s.bound = append(s.bound, opened...)
 	}
 	s.state = adapter.StateServing
 	return nil
 }
+
+// portRepicks is how many fresh system picks a port-0 listener may take when
+// a later address's family holds the port an earlier one picked.
+const portRepicks = 2
+
+// bindEach binds listener i on each of the settings' Addrs: all of its
+// sockets, or none. At its own configured port each address is bound once,
+// since a taken one is a real refusal; at port 0 the system picks on the
+// first address and the rest reuse that port.
+//
+// decision: a system-picked port that a later address's family still holds
+// is repicked, the whole group at a time, at most portRepicks times, since
+// IPv4 and IPv6 ports are allocated apart and Start cannot plan for a port
+// freedom this process does not own. A port the node configured that is
+// taken is a real refusal, never repicked. Withdraw the repicks when a Start
+// can ask for one port on every family at once.
+func (s *Server) bindEach(ctx context.Context, i int) ([]bound, error) {
+	for repick := 0; ; repick++ {
+		opened := make([]bound, 0, len(s.addrs))
+		port := s.ls[i].Port
+		for j, a := range s.addrs {
+			// One listener is one port: a port the system picked is resolved
+			// on the first address it binds and used on the rest, so a service
+			// never reports a port of its own per address.
+			if j > 0 && port == 0 {
+				port = opened[len(opened)-1].addr.Port()
+			}
+			b, err := bind(ctx, &s.ls[i], a, port)
+			if err == nil {
+				opened = append(opened, b)
+				continue
+			}
+			for _, ob := range opened {
+				_ = ob.ln.Close()
+			}
+			// Only a system pick is repicked, and only on the in-use refusal
+			// of a family the pick could not reach: the group binds again,
+			// from its first address, with a fresh one.
+			if s.ls[i].Port == 0 && repick < portRepicks && errors.Is(err, syscall.EADDRINUSE) {
+				break
+			}
+			return nil, err
+		}
+		if len(opened) == len(s.addrs) {
+			return opened, nil
+		}
+	}
+}
+
+// listen opens the socket a bind names. It is a variable because no address
+// can be made to answer one bind with the runtime's in-use refusal on
+// demand: the Start tests swap it to hold a family's port out from under a
+// port-0 listener, and to count the binds a refusal takes.
+var listen = (&net.ListenConfig{}).Listen
 
 // bind opens l's socket on a, at port (l's own, or the one the first address's
 // socket resolved). An IPv4-mapped address binds the IPv4 address it maps, as
@@ -198,8 +260,7 @@ func bind(ctx context.Context, l *Listener, a netip.Addr, port uint16) (bound, e
 	if ip.Is4() {
 		network = "tcp4"
 	}
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, network, netip.AddrPortFrom(ip, port).String())
+	ln, err := listen(ctx, network, netip.AddrPortFrom(ip, port).String())
 	if err != nil {
 		return bound{}, fmt.Errorf("listener %q on %s: %w", l.Services, netip.AddrPortFrom(a, port), err)
 	}
