@@ -44,7 +44,9 @@ func condition(f *enginetest.Fixture, name string) bool {
 // before the view reads anything, until release. A view reaches the fault
 // with no key (kvtest.FaultKV's view, fault.go:196), so it cannot be scoped to
 // a file: armed with nothing else running, it holds a read's metadata step,
-// which the test checks. Every other call passes.
+// which the test checks. Every other call passes. A view from another
+// goroutine armed first would be held instead; nothing else runs on the still
+// clock between arm and the read, so none does.
 type pauseView struct {
 	once    sync.Once
 	mu      sync.Mutex
@@ -115,7 +117,7 @@ func settle(t *testing.T, f *enginetest.Fixture, h entity.Handle, done func(enti
 // into the source held as capacity, are RFC 8's second part's, which composes
 // the remote tier; what start reserves is not in the engine's Stats.
 func TestRFC8A_CloneResumedAtAFullLimit(t *testing.T) {
-	f := enginetest.New(t)
+	f := enginetest.New(t, enginetest.WithSegmentCap(mib))
 	ctx := t.Context()
 
 	const n = 64 << 10
@@ -151,6 +153,17 @@ func TestRFC8A_CloneResumedAtAFullLimit(t *testing.T) {
 
 	if !full {
 		t.Fatal("the share never reached its journal limit")
+	}
+
+	// The crash drops what is not durable, so the files the row reads after
+	// it are synced first, and used is read once the filler is durable: the
+	// share then stays at its limit through the restart.
+	h := f.HandleOf(f.Second.Tag)
+
+	for _, id := range []entity.FileID{src, other, filler} {
+		if _, err := h.Sync(ctx, journal.NewFileID(id)); err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
 	}
 
 	used := f.E.Stats().Journals[f.Dir].Shares[f.Second.ID].UsedBytes
@@ -289,7 +302,13 @@ func TestRFC8A_ExistenceAboveAsOf(t *testing.T) {
 
 			pause.free()
 
-			r := <-done
+			var r result
+			select {
+			case r = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the read never answered once its metadata step was let go")
+			}
+
 			if errors.Is(r.err, vfserr.ErrLost) {
 				t.Fatalf("the read paused across the commit: %v, want old or new bytes", r.err)
 			}
@@ -323,7 +342,7 @@ func TestRFC8A_ExistenceAboveAsOf(t *testing.T) {
 // in the first share's namespace; a clone across two shards sharing a primary
 // is the cluster's.
 func TestRFC8A_SourceRegistrationRebuilt(t *testing.T) {
-	f := enginetest.NewWithSmallBatches(t, 14)
+	f := enginetest.NewWithSmallBatches(t, 14, enginetest.WithSegmentCap(mib))
 	ctx := t.Context()
 
 	const n = 61440
@@ -333,6 +352,11 @@ func TestRFC8A_SourceRegistrationRebuilt(t *testing.T) {
 
 	for off := int64(0); off < n; off += 8192 {
 		write(t, f, src, off, bytes.Repeat([]byte{'s'}, 4096))
+	}
+
+	// The crash below drops what is not durable, so the source is synced first.
+	if _, err := f.Handle().Sync(ctx, journal.NewFileID(src)); err != nil {
+		t.Fatalf("Sync: %v", err)
 	}
 
 	f.HoldBatches()
@@ -374,6 +398,14 @@ func TestRFC8A_SourceRegistrationRebuilt(t *testing.T) {
 
 		return err == nil
 	})
+
+	// An aborted clone frees the source too, so the destination must hold what
+	// the source held when the clone began (the write above landed after it).
+	got := make([]byte, 4096)
+	if _, err := f.E.Read(ctx, f.Share.ID, dst, 0, got); err != nil ||
+		!bytes.Equal(got, bytes.Repeat([]byte{'s'}, 4096)) {
+		t.Errorf("the destination after the resumed clone: %q, %v, want the source's bytes", got[:8], err)
+	}
 }
 
 // hasCloneSource reports whether opens holds a clone-kind open.
@@ -465,6 +497,16 @@ func TestRFC8B_RemovalWedge(t *testing.T) {
 		return true
 	})
 
+	listed := false
+
+	for _, u := range unfinishedOf(t, f) {
+		listed = listed || u.File == bad
+	}
+
+	if !listed {
+		t.Fatal("the stalled removal is not listed unfinished, so its end below proves nothing")
+	}
+
 	refs.set(false)
 
 	eventually(t, "the stalled removal finishes once its refs read", func() bool {
@@ -500,8 +542,9 @@ func TestRFC8B_RemovalWedge(t *testing.T) {
 // deviceFull is a storage fault that fails every create and allocation, of a
 // segment file or not, with ENOSPC while on is set, as a device with no room does.
 type deviceFull struct {
-	mu sync.Mutex
-	on bool
+	mu      sync.Mutex
+	on      bool
+	refused int
 }
 
 func (d *deviceFull) At(op string, _ []byte) (time.Duration, int, error) {
@@ -509,10 +552,20 @@ func (d *deviceFull) At(op string, _ []byte) (time.Duration, int, error) {
 	defer d.mu.Unlock()
 
 	if d.on && (op == "create" || op == "allocate") {
+		d.refused++
+
 		return 0, 0, syscall.ENOSPC
 	}
 
 	return 0, 0, nil
+}
+
+// fired is how many creates and allocations the fault has refused.
+func (d *deviceFull) fired() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.refused
 }
 
 func (d *deviceFull) set(on bool) {
@@ -535,6 +588,7 @@ func TestRFC8B_JournalFullOnAFullDevice(t *testing.T) {
 	full := &deviceFull{}
 	f.Seam.SetFault(full)
 	full.set(true)
+	t.Cleanup(func() { full.set(false) })
 
 	const chunk = 256 << 10
 
@@ -555,6 +609,11 @@ func TestRFC8B_JournalFullOnAFullDevice(t *testing.T) {
 
 	if refused == nil {
 		t.Fatal("no write was refused on a device with no room")
+	}
+
+	// A refusal with no fault fired is the plain capacity limit, not the device.
+	if full.fired() == 0 {
+		t.Fatalf("no create or allocation was refused ENOSPC; the write was refused for %v", refused)
 	}
 
 	// The device's own refusal is answered ErrNoSpace; a roll with no spare
@@ -627,7 +686,7 @@ func TestRFC8C_Settings(t *testing.T) {
 			bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 
-			err := f.E.Clone(bctx, f.Share.ID, src, f.Share.ID, dst, vfserr.Extent{Len: 8192})
+			err := f.E.Clone(bctx, f.Share.ID, src, f.Share.ID, dst, vfserr.Extent{Len: 4097})
 			if !errors.Is(err, vfserr.ErrInvalid) {
 				t.Errorf(
 					"a clone longer than the clone_max_len in force: %v, want ErrInvalid",
@@ -722,7 +781,8 @@ func TestRFC8A_CarvedRunFailsUnavailable(t *testing.T) {
 	defer cancel()
 
 	_, err = f.E.Read(bctx, f.Share.ID, id, n, make([]byte, 4096))
-	if !errors.Is(err, vfserr.ErrUnavailable) {
-		t.Errorf("a read of the carved run: %v, want ErrUnavailable", err)
+	// ErrUnavailable answers many paths, so the carved run's own text is pinned.
+	if !errors.Is(err, vfserr.ErrUnavailable) || !strings.Contains(err.Error(), "is carved") {
+		t.Errorf("a read of the carved run: %v, want ErrUnavailable naming the carved run", err)
 	}
 }

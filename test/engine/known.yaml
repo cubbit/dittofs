@@ -133,14 +133,14 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'a block of 16 the conformance package cannot set (engine/conformance/rfc8_a_test.go:422): the raise halves of the version limit row, at a block of 16 the conformance package cannot set. Init and Open work; the fixture now attaches the share; the row stops at its own check: the raise halves need a block of 16, which this package cannot set yet. The journal''s Share, Draw and SetVersionLimit are built, so the knob is all the row waits for.'
+  reason: 'a block of 16 the conformance package cannot set (TestRFC8A_VersionLimitRaise): the raise halves of the version limit row, at a block of 16 the conformance package cannot set. Init and Open work; the fixture now attaches the share; the row stops at its own check: the raise halves need a block of 16, which this package cannot set yet. The journal''s Share, Draw and SetVersionLimit are built, so the knob is all the row waits for.'
   issue: '#4206'
 - test: TestRFC8_SelfFenceVersionLimitRaise
   message: 'the failing raise fences the node'
   status: fail
   fix: planned
   category: feature
-  reason: 'the engine''s version block, which the conformance package cannot set (engine/recover.go:19, set only by SetBlockForTest in engine/export_test.go:57): the version limit''s raise failing for 31s fences the node and its commit clears it. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at its own assertion: at a block of 2^24 the raise falls due only after half a block of draws, which one draw per poll never reaches within the bound, until the package can set a small block.'
+  reason: 'the engine''s version block, which the conformance package cannot set (versionBlock in engine/recover.go, set only by SetBlockForTest in engine/export_test.go): the version limit''s raise failing for 31s fences the node and its commit clears it. Init and Open work; the fixture attaches the share and the journal reports its version counter, so the row gets past its first write and stops at its own assertion: at a block of 2^24 the raise falls due only after half a block of draws, which one draw per poll never reaches within the bound, until the package can set a small block.'
   issue: '#4206'
 - test: TestRFC8A_RemovalCrashedBetweenBatchesResumes
   message: 'holds segments; recovering them is not built'
@@ -203,7 +203,7 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'the journal''s timers on the fixture clock (engine/conformance/rfc8_a_test.go:554, engine/enginetest/fixture.go:838): a journal refused as unsuitable at start leaves its share unattached and named, and the retried open attaches it once the check clears. Init and Open work and the journal reports its version counter, so the row gets past its first write; it stops at the retry''s timer check (not within 10s) because the real journal''s own timers sit on the fixture clock, so the pending-timer count reads 6, not 1; the unit tests prove the engine side over the fake journal.'
+  reason: 'the journal''s timers on the fixture clock (TestRFC8A_UnsuitableJournalAtStart, Fixture.start in engine/enginetest/fixture.go): a journal refused as unsuitable at start leaves its share unattached and named, and the retried open attaches it once the check clears. Init and Open work and the journal reports its version counter, so the row gets past its first write; it stops at the retry''s timer check (not within 10s) because the real journal''s own timers sit on the fixture clock, so the pending-timer count reads 6, not 1; the unit tests prove the engine side over the fake journal.'
   issue: '#4206'
 - test: TestTheFilesystemStartsAfterTheEngine/journal/restart
   message: 'fixture: engine start: engine: start: open the journal'
@@ -311,9 +311,9 @@
   reason: 'the journal''s Open recovering segments: a process stopped once a clone''s phase 1 committed restarts with the source''s registration rebuilt, a write into the frozen extent answering ErrDelay until the clone is done. Init and Open work; the row gets past the clone''s phase 1 and the frozen write before the stop, and stops at the restart: the journal it reopens holds segments, and recovering them is not built, until the journal''s Open recovers them.'
   issue: '#4206'
 - test: TestRFC8B_JournalFullOnAFullDevice
-  message: 'want the device''s ErrNoSpace'
+  message: 'answered vfs: retry shortly: capacity, want the device''s ErrNoSpace'
   status: fail
   fix: planned
   category: feature
-  reason: 'the row''s write refused by the spare limit, for which the engine raises nothing (Engine.raiseFull in engine/repack.go): a write refused once the device has no room for a new segment raises journal_full and keeps it while writes into allocated segments are accepted. Init and Open work; with 1 MiB segments and every new create and allocation failing ENOSPC at the seam, the row gets past its writes to the refused roll and stops at its own check: the refused roll answers retry-later capacity by its spare limit, not the device''s ErrNoSpace. Whether the journal or the fixture''s setup keeps the full-device answer from coming is not settled.'
+  reason: 'the row''s write refused by the spare limit, for which the engine raises nothing (Engine.raiseFull in engine/repack.go): a write refused once the device has no room for a new segment raises journal_full and keeps it while writes into allocated segments are accepted. Init and Open work; with 1 MiB segments and every new create and allocation failing ENOSPC at the seam, the row gets past its writes to the refused roll and stops at its own check: the refused write answers retry-later capacity by its spare limit, not the device''s ErrNoSpace, with the fault fired and the pool''s device-full state set. A write reserves its spares through Pool.Hold (journal/internal/segment/pool.go), which refuses with the plain spare limit; only Stream.takeSpare turns that refusal into ENOSPC on a full device, and a reserved write never reaches it. So the cause is the journal''s reserved-write path, not this setup; it stays until the journal answers a Hold refused on a full device as itself (RFC 1 §6, RFC 8 §11.1).'
   issue: '#4206'
