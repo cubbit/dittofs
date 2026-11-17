@@ -660,4 +660,23 @@ func TestArgsBeginPastTheVerifier(t *testing.T) {
 	if got, want := v3.Args(), rec[68:]; !bytes.Equal(got, want) {
 		t.Fatalf("a v3 call's args are %x, want %x from byte 68", got, want)
 	}
+
+	// A call that never reached a verifier hands out no arguments, as it
+	// names no credential: one whose RPC version stops the parse, and a reply
+	// where a call was expected, both give nil rather than the record's own
+	// bytes for a row's Decode.
+	v3mismatch := binary.BigEndian.AppendUint32(nil, 7)
+	for _, v := range []uint32{0, 3, 100003, 3, 0, 0} {
+		v3mismatch = binary.BigEndian.AppendUint32(v3mismatch, v)
+	}
+	unaccepted, _ := wire.ParseCall(append(v3mismatch, 0, 0, 1, 0, 0, 25, 0, 0, 0, 0))
+	if args := unaccepted.Args(); args != nil {
+		t.Fatalf("an unaccepted call's args are %x, want none", args)
+	}
+	reply := binary.BigEndian.AppendUint32(nil, 7)
+	reply = binary.BigEndian.AppendUint32(reply, 1)
+	notCall, _ := wire.ParseCall(reply)
+	if args := notCall.Args(); args != nil {
+		t.Fatalf("a reply's args are %x, want none", args)
+	}
 }
