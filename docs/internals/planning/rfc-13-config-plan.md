@@ -104,7 +104,7 @@ What replaces what:
 | v1 | v2 | Fate |
 | --- | --- | --- |
 | `pkg/config` (full server file, environment overrides, warnings on unknown keys) | `pkg/bootstrap`, the bootstrap only, unknown keys refused (D8) | stripped by RFC 23's plan's epic 1; renamed in epic 1, finished in epic 2 |
-| `pkg/config/renamed_keys.go` (renamed keys refused; other unknown keys only warned) | the refused v1 keys, each naming its replacement (RFC 13 Appendix C's table): `database.*` (dropped: the metadata store is the control plane's database), `metadata.badger.*_cache_mb` (dropped), `controlplane.*` (its `port` and `tls` naming the bootstrap's API listen address and TLS, RFC 13 §2.2), `admin.*`, `kerberos.*`, `ldap.*`, `identity.machine_sid`, `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*` but the keys of Appendix C's metadata block, `blockstore.*` but the journal path, `metrics.*` (the bootstrap's metrics listen address), `shutdown_timeout` (`adapters.<protocol>.drain_timeout`), an upper-case `logging.level` (`use debug`), a bare-integer `logging.rotation.max_size` (megabytes today; refused, a size carries its unit), and their `DITTOFS_*` forms | reworked in epic 2 |
+| `pkg/config/renamed_keys.go` (renamed keys refused; other unknown keys only warned) | the refused v1 keys, each naming its replacement (RFC 13 Appendix C's table): `database.*` (dropped: the metadata store is the control plane's database), `metadata.badger.*_cache_mb` (dropped), `controlplane.*` (its `port` and `tls` naming the bootstrap's API listen address and TLS, RFC 13 §2.2), `admin.*`, `kerberos.*`, `ldap.*`, `identity.*` (`machine_sid` included), `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*` but the keys of Appendix C's metadata block, `blockstore.*`, the journal path naming `journals` and its five tunables dropped, `metrics.*` (the bootstrap's metrics listen address), `shutdown_timeout` (`adapters.<protocol>.drain_timeout`), an upper-case `logging.level` (`use debug`), a bare-integer `logging.rotation.max_size` (megabytes today; refused, a size carries its unit), and their `DITTOFS_*` forms | reworked in epic 2 |
 | `pkg/metadata/kvstore/settings.go` (`Settings`, `PutSetting`, `CFGGEN`, `Setting.Schema`) | the same, with a delete, a read across every scope in one scan, and a newer schema refused; `expect` is RFC 23's plan's (its epics 1 and 2) | extended in epic 3 |
 | `KindSEC` reserved, no code | `Secret` records with versions and sealing | built in epic 4 |
 | `pkg/block/middleware/encryption/keyprovider` | `pkg/keyprovider`, unchanged | moved in epic 1 (D5) |
@@ -473,7 +473,8 @@ a secret reference imports only it. Neither package imports the other: `pkg/secr
 - **Prior art (from memory).** Kubernetes keeps Secrets apart from ConfigMaps.
 - **Applied by** epic 4.
 
-**D7. The bootstrap file keeps its path,** `~/.config/dittofs/config.yaml`, with `--config`, or
+**D7. The bootstrap file keeps its path,** `$XDG_CONFIG_HOME/dittofs/config.yaml` when that is
+set, else `~/.config/dittofs/config.yaml`, with `--config`, or
 else `DITTOFS_CONFIG`, naming another, through the existing viper loader, renamed into
 `pkg/bootstrap`; `DITTOFS_CONFIG` is new code, since nothing reads it today. An unknown key (the
 decode's `Metadata.Unused`, refused after the v1 keys among them are named, since `ErrorUnused`

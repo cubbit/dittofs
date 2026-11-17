@@ -63,7 +63,7 @@ the journal's knowledge of `node-id`; the harness; the reconcile benchmark.
 ### 1.2 Out of scope
 
 - The bootstrap's facts and their loading: the RFC 13 plan's epic 1 (`pkg/bootstrap`, RFC 13
-  §2.2's facts, the default API address `:8080` the `HEALTHCHECK` names). Tests fill
+  §2.2's facts, the default API address `127.0.0.1:8080` the `HEALTHCHECK` names). Tests fill
   `node.Config` directly (D1).
 - The syncer, the remote clients and GC, and their start and stop steps: rows of
   [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger). No remote client is
@@ -227,7 +227,7 @@ that subtasks and tests can cite them.
 - **D1, the node reads no bootstrap file until the start command does.** The user's decision.
   `node.Config.Bootstrap` takes `pkg/bootstrap`'s type from the RFC 13 plan's epic 1, which holds
   RFC 13 §2.2's facts (the node's identity, the store, the devices, the listen addresses) and
-  names the default API address `:8080`. Until that loader reads them, E3 adds two host-set fields
+  names the default API address `127.0.0.1:8080`. Until that loader reads them, E3 adds two host-set fields
   to the bootstrap type, `Node` and `Devices`, tagged so the file loader never reads them, with a
   `ponytail:` naming the RFC 13 plan's loader as their reader; the host sets both before it builds
   the node. Tests fill `node.Config` directly, so only T3.9 reads a file and waits for that epic;

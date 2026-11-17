@@ -250,11 +250,12 @@ only these, come from the host — a file or the environment:
 | the process memory limit — the soft limit the language runtime enforces (on Go, `GOMEMLIMIT`) or the container's, else the host's memory | it sizes every node memory pool, the hold pool among them (RFC 24 §2.3, [§4.3](rfc-24-resources.md#4.3%20Held%20requests%3A%20where%20their%20bytes%20go)), read once at start in RFC 24 §2.1's order, and what memory a process has only its host knows |
 | listen addresses: the adapters', the management API's and the metrics listener's | a port conflict is a host's problem. An adapter's port is not bootstrap: it is the adapter's `adapters.<protocol>.port` setting, at installation scope with a node override (Appendix B), bound on `adapters.listen` |
 | the management API's TLS certificate and key (RFC 23 §5.3) | the API is served over TLS before anything is read from the control plane, and a certificate names its host |
-| the management API's local socket, `dfs.sock` in the runtime directory (RFC 23 §5.3) | a caller on it is a process of that host, which the sign-in throttle exempts from a source count |
+| the management API's local socket, `api.socket`, `dfs.sock` in the runtime directory by default (RFC 23 §5.3) | a caller on it is a process of that host, which the sign-in throttle exempts from a source count |
 | `events.path`, where the node spools its event streams (RFC 25 §4.6) | a path means something only on its host, and whether it shares space with a journal only the host can tell |
 | log destination, format, rotation and level                                                                           | needed before the control plane answers, to say why it did not                                                                            |
 | the node's **roles** — `protocol` and `storage`, and both is the only accepted value ([RFC 15 §2.1](rfc-15-topology.md#2.1%20One%20node%20type)) | kept as a flag so a later split of the roles needs no new setting; a node configured with one refuses to start ([RFC 15 §2.2](rfc-15-topology.md#2.2%20Startup%20refuses%20what%20cannot%20work)); fixed for the life of the process |
 | the location of each wrapping key for `Secret` records ([§7](#7.%20Secrets)) | a key kept in the store it protects protects nothing |
+| the provisioning file's path ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)) | the node applies that file at start, before the control plane could answer, and its path is on the host |
 
 **A scratch path is checked against the journals at every start, in both
 directions.** The node refuses `backups.spill_path`, `salvage.path` or
@@ -272,11 +273,12 @@ installation could not be checked this way, since one node's scratch disk can
 be another's journal filesystem.
 
 **One file, one name per fact.** The host's facts are read from one YAML file,
-`~/.config/dittofs/config.yaml` unless `--config`, or else `DITTOFS_CONFIG`,
+`$XDG_CONFIG_HOME/dittofs/config.yaml` when that is set, else
+`~/.config/dittofs/config.yaml`, unless `--config`, or else `DITTOFS_CONFIG`,
 names another, and from the environment, which wins over the file; a fact
-neither sets takes its default. Each fact has one key in the file and one
-environment name, and [Appendix C](#Appendix%20C%3A%20the%20bootstrap%20file)
-lists them with their types and defaults. A key is matched exactly as declared,
+neither sets takes its default. Each fact [Appendix C](#Appendix%20C%3A%20the%20bootstrap%20file)
+lists has one key in the file and one environment name, and it lists them with
+their types and defaults. A key is matched exactly as declared,
 in the file as in a record, so `Logging.Level` is an unknown key, not `logging.level`.
 A key that is not in Appendix C, and a `DITTOFS_` name that is neither a key's
 environment name nor one of the names Appendix C lists as read elsewhere, refuses
@@ -302,7 +304,8 @@ not record for this node and device, since the node's identity or the directory
 changed, refuses its shares as not recorded, never as the store lost, until
 `RecordJournal` records it ([RFC 8 §2.5](rfc-8-engine.md#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1). All evidence that an installation exists is otherwise inside the
 store, so a store volume that mounts late would look like a first start. A
-start-time option to **initialise if empty** exists for development and tests
+start-time option to **initialise if empty**, given on the command line and
+never a key or a `DITTOFS_` name, exists for development and tests
 only, and **MUST NOT** be on by default.
 
 ### 2.3 A record is versioned
@@ -318,7 +321,8 @@ be the one that mattered.
 
 An operator **MAY** declare records in a **provisioning file**, so a server or a
 test starts in a known state without a script of API calls, and the file can be
-kept under version control. Its path is a bootstrap fact. The file declares
+kept under version control. Its path is a bootstrap fact, which joins
+[Appendix C](#Appendix%20C%3A%20the%20bootstrap%20file) with this file's first reader. The file declares
 records by their API names — settings at any scope, remote stores, namespaces,
 shares, users, groups, grants, quotas, snapshot policies — in the same shape
 the management API accepts.
@@ -741,7 +745,9 @@ value of a key it does not declare or no longer reads, since those are the keys
 most likely to be refused and where today's files hold secrets
 (`controlplane.jwt.secret`, `admin.password_hash`), as would a misspelled
 `pasword:`; it prints any other value it refuses, which a setting may print
-since it never holds a secret.
+since it never holds a secret. A decoder's error is never printed as it comes
+either: a start, a reload or `dfs config show` rewords it into this shape, since
+a decoder puts the value it could not read into its own text.
 
 ```text
 /etc/dittofs/config.yaml: database.type: no longer read; the metadata store is metadata.backend
@@ -866,7 +872,9 @@ type Version struct {
 - **A wrapping key rotates the same way.** A node's bootstrap names, for one
   role, the key that seals, and the retired keys that still open what they
   sealed (Appendix C's `local.file` and `local.retired_files`). To rotate, the next key
-  becomes the one that seals and the old one is retired. Re-sealing every
+  is first listed among every node's retired keys, so each opens what it will
+  seal; only then does it become the one that seals, and the old one is retired,
+  so a node restarted early seals nothing another node cannot open. Re-sealing every
   `Secret` of that role under the new key is one pass, run by a node of that
   role, since it opens each; each record names the key ID it is sealed under, and
   a retired key is removed from bootstraps only once no record names it.
@@ -982,7 +990,7 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 | [§5](#5.%20Binding%20classes) propagation | Change a live setting on a store backend that offers no watch. Assert every node runs the new generation within 5 s. Freeze one node's reads; assert the health condition names it after 5 s. |
 | [§5.5](#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) version gate | Run two nodes; register a third whose range excludes an active version; assert it refuses to start, naming the format. Upgrade one node's binary; raise an active version; assert refused, naming the other node. Upgrade it; assert the raise is accepted. Start the old binary; assert it refuses. A design without a recorded active version accepts the first raise. |
 | [§7](#7.%20Secrets) user secrets | Create a user with a password, rotate it once, delete the user. Read the store's raw keys: assert no version of either secret remains, and a restart mid-`DeleteUser` still leaves none once it resumes. |
-| [§7](#7.%20Secrets) rotation | Rotate a credential while two nodes use it. Assert both report the new version within 5 s, the old version stays resolvable until both do, and only then is it deleted. Rotate a wrapping key with both keys in every bootstrap; assert every `Secret` names the new key ID before the old key can be removed. |
+| [§7](#7.%20Secrets) rotation | Rotate a credential while two nodes use it. Assert both report the new version within 5 s, the old version stays resolvable until both do, and only then is it deleted. Rotate a wrapping key in §7's order, the next key among every node's retired keys before it seals; assert a node restarted before the others seals nothing another node cannot open, and every `Secret` names the new key ID before the old key can be removed. |
 | [§3](#3.%20Scopes) scope forms | Parse Appendix B's scope column. Assert every entry is one of the five scopes in one of §3's three forms, a shard override counting as a refinement of share (§3), or "—" with a class of fixed, derived or bootstrap. |
 | [§6](#6.%20Validation) block target range | Set the block target to 512 KiB and to 128 MiB. Assert both refused, naming the field and the range; assert 1 MiB and 64 MiB accepted. |
 
@@ -1231,7 +1239,7 @@ host's file, so a value valid in one place is valid in all:
 | staging budget: raw transfers held between fetch and upload by every copy and by GC's relocation, one pool per process, in memory and then spilled to disk | [RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound), [RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing) | — | derived | as [RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound) derives it, from the copy flow's cap in the fetcher's pool; staging above it spills under `backups.spill_path`, and a reservation waits once memory plus spill reach `backups.spill_max`, or at the budget when no spill path is set; the spill is cleared at start |
 | `backups.spill_path`: directory staging spills to above its memory budget | [RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound) | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | none: unset, nothing spills and staging waits at the memory budget. Checked against the journals at every start in both directions and refused if it shares space with one ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)); a deployment choice, not a measurement |
 | `salvage.path`: directory stranded journal tags are exported to | [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | none: unset, every export fails and is reported, and the tags stay stranded. Checked as `backups.spill_path` is; a deployment choice, not a measurement |
-| `events.path`: directory the node spools its event streams to | RFC 25 §4.6 | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | required; refused on a journal's filesystem, which refuses the start |
+| `events.path`: directory the node spools its event streams to | RFC 25 §4.6 | — | bootstrap ([§2.2](#2.2%20A%20host%20holds%20only%20its%20bootstrap)) | required with its first reader ([Appendix C](#Appendix%20C%3A%20the%20bootstrap%20file)); refused on a journal's filesystem, which refuses the start |
 | `backups.spill_max`: memory plus spill at which a staging reservation waits for staging to drain, one total per process across every copy and GC's relocation ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) | [RFC 26 §2.4.6](rfc-26-catalog-backups.md#2.4.6%20Cost%20and%20pacing) | installation | live | proposed: 64 GiB; settled by: the spill [RFC 26 §6.5](rfc-26-catalog-backups.md#6.5%20Benchmarks%20and%20targets)'s daily copying backup reaches from a source faster than its folder |
 | `backups.max_copy_time`: bound on one copy attempt; a successor builds on a failed one | [RFC 26 §2.4.3](rfc-26-catalog-backups.md#2.4.3%20Writing%20one%2C%20step%20by%20step) | installation | live | proposed: 48 h; settled by: the longest incremental copy attempt in [RFC 26 §6.5](rfc-26-catalog-backups.md#6.5%20Benchmarks%20and%20targets)'s daily copying backup at `backups.copy_rate`, which selects the value, since an attempt cut short fails into a successor that builds on it rather than losing its work; a first copy spans as many attempts as it needs, so it does not size this |
 | `existence_age`: longest a synced write's existence waits for the group commit | [RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal) | installation | live | proposed: 1 s; settled by: the sync bound it matches ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Syncing)), and E5/E7's existence transactions per second at 1 s and shorter |
@@ -1320,7 +1328,8 @@ relative path, a `~` or a trailing slash is refused rather than rewritten.
 Left out, since they have no reader yet or no key: the scratch paths
 `backups.spill_path`, `salvage.path` and `events.path`, which join this table
 with their first reader (a node that has one reads it from the file, and the
-table then lists all three, so `dfs config schema` stays complete), and the
+table then lists all three, so `dfs config schema` stays complete), the
+provisioning file's path ([§2.4](#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file)), which joins with that file's first reader, and the
 process memory limit, which is read from the runtime, the container and the host
 (RFC 24 §2.1).
 
@@ -1328,7 +1337,12 @@ process memory limit, which is read from the runtime, the container and the host
 `$STATE_DIRECTORY` when the service manager sets it, else `$XDG_STATE_HOME/dittofs`,
 else `$HOME/.local/state/dittofs`; the runtime directory is `$RUNTIME_DIRECTORY`, else
 `$XDG_RUNTIME_DIR/dittofs`, else a directory under the state directory that only
-the process's user owns (mode `0700`). A start without root, `./dfs init` then
+the process's user owns (mode `0700`). A unit may set its variable as a
+colon-separated list, whose first entry is read here. A directory that already
+exists is checked, not merely used: a start refuses one that is a symlink, is
+owned by neither the node's user nor root, or is writable by others, since a
+socket there has to be trusted. The group's write bit is allowed, since a
+platform that mounts a volume for a non-root user sets it (a Kubernetes `fsGroup`). A start without root, `./dfs init` then
 `./dfs start`, writes its metadata, log and `dfs.sock` under the user's home. A
 systemd unit's `StateDirectory=`
 and `RuntimeDirectory=` set the first of each, so two nodes on one host each get
@@ -1342,20 +1356,21 @@ their own from their own unit.
 | `metadata.badger.path` | path | the state directory's `metadata` | Badger's directory |
 | `metadata.foundationdb.cluster_file` | path | required with `foundationdb` | FoundationDB's cluster file |
 | `metadata.foundationdb.tls.cert_file`, `.key_file`, `.ca_file` | path | none: named together, or none | the client certificate, its key and the CA file FoundationDB's TLS options take; the files are the credential, never a value in this file |
-| `journals` | list of entries, each with a `path` | required | the journal devices, one directory each; a path listed twice, or two that name one directory, is refused. The environment, `DITTOFS_JOURNALS=/data/j1,/data/j2`, sets the paths only, and replaces the file's list; a fact of one journal needs the file |
+| `journals` | list of entries, each with a `path` | required | the journal devices, one directory each; a path listed twice, or two that name one directory, is refused. The environment, `DITTOFS_JOURNALS=/data/j1,/data/j2`, sets the paths only, and replaces the file's list; a fact of one journal needs the file. An empty entry, so a trailing or doubled comma as well as an empty value, is refused |
 | `adapters.listen` | list of IP literals, each an address to bind | every interface | the addresses the protocol adapters bind; each adapter's port is its own setting (Appendix B) |
-| `api.listen` | list of `ip:port` | `127.0.0.1:8080` | the management API's addresses |
-| `api.tls.cert_file`, `api.tls.key_file` | path | required when an `api.listen` or `metrics.listen` address is not loopback: an IP in `127.0.0.0/8` or `::1`, as [RFC 23 §5.3](rfc-23-control-plane.md#5.3%20Sign-in%2C%20tokens%20and%20sessions) reads it, so a host name, `localhost` included, and an unspecified address (`0.0.0.0`, `::`) are not; a listen value's host is an IP literal, so a name is refused as that before this rule applies | the API's certificate and key (RFC 23 §5.3) |
-| `metrics.listen` | `ip:port`, or empty for off | `127.0.0.1:9090` | the metrics listener, served over the API's TLS off loopback (RFC 25 §2.8) |
+| `api.listen` | list of `ip:port` | `127.0.0.1:8080` | the management API's addresses. `:8080`, an empty host, is refused, not read as every interface: write `0.0.0.0:8080` or `[::]:8080` |
+| `api.tls.cert_file`, `api.tls.key_file` | path | required when an `api.listen` or `metrics.listen` address is not loopback: an IP in `127.0.0.0/8` or `::1`, as [RFC 23 §5.3](rfc-23-control-plane.md#5.3%20Sign-in%2C%20tokens%20and%20sessions) reads it, so a host name, `localhost` included, and an unspecified address (`0.0.0.0`, `::`) are not; a listen value's host is an IP literal, so a name or an empty host (`:8080`) is refused as that before this rule applies | the API's certificate and key (RFC 23 §5.3) |
+| `api.socket` | path | `dfs.sock` in the runtime directory | the management API's local socket (RFC 23 §5.3), created mode `0600`. A `dfsctl` context names the socket by its path ([RFC 23 §7](rfc-23-control-plane.md#7.%20The%20CLI)), so a shell without the unit's `$RUNTIME_DIRECTORY` passes the path, and two nodes on one host each name their own in their own file. A path past the operating system's socket-address limit (about 104 to 108 bytes) is refused, naming this key |
+| `metrics.listen` | `ip:port`, or `off` | `127.0.0.1:9090` | the metrics listener, served over the API's TLS off loopback (RFC 25 §2.8). `off` is the only way to turn it off, in the file and in the environment, since a YAML null and an empty variable both read as not set |
 | `logging.level` | `debug`, `info`, `warn`, `error` | `info` | the log level, in lower case |
 | `logging.format` | `text` or `json` | `text` | the log format |
 | `logging.output` | `stdout`, `stderr` or a path | the state directory's `dittofs.log` | where logs go |
-| `logging.rotation.max_size` | size | `"100MiB"` | a log file's size before it rotates |
-| `logging.rotation.max_backups`, `logging.rotation.max_age` | integer, duration | `5`, `"720h"` | rotated files kept; `0` keeps all |
+| `logging.rotation.max_size` | size, a whole number of `MiB`, at least `1MiB` | `"100MiB"` | a log file's size before it rotates. The rotation library takes whole MiB and reads a smaller value as none, so a fraction is refused rather than silently turning rotation off |
+| `logging.rotation.max_backups`, `logging.rotation.max_age` | integer; duration, a whole number of days (`0s` is zero) | `5`, `"720h"` | rotated files kept; `0` (and `0s`) keeps all. The age is rounded to whole days by the rotation library, so a value below a day would read as never, and is refused rather than truncated |
 | `logging.rotation.compress` | boolean | `false` | whether rotated files are compressed |
-| `keys.<role>.kind` | `local` or `kmip` | required, for `protocol` and for `storage`, and the two roles name two different keys | each role's wrapping key ([§7](#7.%20Secrets)); only the block `kind` names is read |
+| `keys.<role>.kind` | `local` or `kmip` | required, for `protocol` and for `storage`, and the two roles name two different keys | each role's wrapping key ([§7](#7.%20Secrets)); only the block `kind` names is read, and a key of the other block is refused, naming `kind`, as `metadata.backend` refuses each block it does not name ([§6](#6.%20Validation) runs this rule over the values as the file and the environment leave them) |
 | `keys.<role>.local.file` | path | required with `local` | the key file that seals new `Secret` records |
-| `keys.<role>.local.retired_files` | list of paths | none | the files whose keys still open what they sealed |
+| `keys.<role>.local.retired_files` | list of paths | none | the key files that still open what they sealed, and the next key before it seals, in a rotation's first step ([§7](#7.%20Secrets)) |
 | `keys.<role>.kmip.endpoint`, `.server_ca`, `.client_cert`, `.client_key`, `.key_uid`, `.timeout`, `.retired_key_uids` | strings and paths, `timeout` a duration | none | a role's key held by a KMIP server; `key_uid` is the key that seals, `retired_key_uids` the ones that still open |
 
 `<role>` is `protocol` or `storage`, so a key is `keys.protocol.local.file`, its
@@ -1375,7 +1390,7 @@ unless it is one of these, which are not keys:
 | `DITTOFS_ENCRYPTION_PASSPHRASE` | the local key provider, a key file's passphrase |
 | `DITTOFS_PASSWORD` | `dfsctl`, which a shell that runs both may export |
 | `DITTOFS_<service>_PORT*` and `DITTOFS_<service>_SERVICE_*`, for each Service of the pod's namespace | Kubernetes, which sets them for every Service with an address, none for a headless one: ignored while the value has the shape the kubelet gives to any of the forms the name parses as, a `tcp://`, `udp://` or `sctp://` link then an IP and a port, an IPv6 one in brackets, for a name ending at `_PORT` or at `_PORT_<n>_<proto>`, an IP for `_ADDR` and `_SERVICE_HOST`, a port number for `_SERVICE_PORT*` and `_PORT_<n>_<proto>_PORT`, `tcp`, `udp` or `sctp` for `_PROTO`, and refused otherwise, as unknown when the name is no v1 key's environment name and naming its replacement when it is (the table below), so `DITTOFS_METRICS_PORT=tcp://10.0.0.5:9090` is ignored and `DITTOFS_METRICS_PORT=9091` is refused naming `metrics.listen` |
-| the names and prefixes the repository's development tools export (`DITTOFS_TEST_*`, `DITTOFS_E2E_*`, `DITTOFS_PREPUSH_*`, and the launchers' and git hooks' own names) | the tools, which a server they start inherits |
+| the names and prefixes the repository's development tools export (`DITTOFS_TEST_*`, `DITTOFS_E2E_*`, `DITTOFS_PREPUSH_*`, and the launchers' and git hooks' own names) | the tools, which a server they start inherits. The RFC 13 plan's D7 is the list, its repository scan keeps it true, and a bootstrap key wins over any of these names |
 
 **From the files of today.** The key a start refuses names its replacement
 (§6's *what to do*):
@@ -1384,14 +1399,24 @@ unless it is one of these, which are not keys:
 | --- | --- |
 | `database.*` | dropped: the control plane's database is now the metadata store, `metadata.backend`, `badger` by default; today's `database` block names no Badger path, so `metadata.badger.path` is new |
 | `metadata.badger.block_cache_mb`, `.index_cache_mb` | dropped: no key sizes the Badger caches |
-| `controlplane.host`, `controlplane.port` | `api.listen`; `controlplane.tls` is `api.tls`; its timeouts, `jwt.*` and `pprof*` are dropped |
+| `controlplane.host`, `controlplane.port` | `api.listen`, written `host:port` with an IP host: an empty `host` is read as `127.0.0.1` today, so it becomes `127.0.0.1:<port>`, never `:<port>`, which is refused; `controlplane.tls` is `api.tls`; its timeouts, `jwt.*` and `pprof*` are dropped |
+| `controlplane.tls.client_ca`, `.min_version` | dropped: a start refuses a client CA outright (the RFC 23 plan's epic 4) |
+| `controlplane.require_initial_password_change` | dropped: only a generated first password is must-change, and one the operator gives the initialisation step is not ([RFC 23 §5.4](rfc-23-control-plane.md#5.4%20The%20bootstrap%20administrator%20and%20the%20first%20password)) |
+| `controlplane.drain_stall_timeout` | dropped: it bounded `system drain-uploads`, which v2 deletes (the RFC 23 plan's epic 6) |
 | `metrics.enabled`, `.host`, `.port` | `metrics.listen`; a metrics listener was off by default and is now on, on loopback |
+| `metrics.auth`, `.token_file`, `.path`, `.tls.*` | dropped: the listener carries no token and no TLS of its own, being served over the API's TLS (the row above) |
 | `blockstore.journal.path`, a root directory | `journals`, one entry per device |
-| `logging.level` in upper case | lower case only: `DEBUG` is refused, `use debug` |
+| `blockstore.journal.chunk_size`, `.chunk_max` | dropped: a namespace's chunking is its `Target`, set when the namespace is created, and `Min` and `Max` follow from it ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)), so neither is a host fact |
+| `blockstore.journal.dirty_expire` | dropped: the sync bound, how long a written record waits for a sync, is fixed, proposed at 1 s ([RFC 1 §5.2](rfc-1-journal.md#5.2%20Syncing)) |
+| `blockstore.journal.max_log_bytes` | dropped: a journal's maximum footprint and a share's journal limit bound what the append log did, both settings (Appendix B, [RFC 1 §6](rfc-1-journal.md#6.%20Capacity)) |
+| `blockstore.journal.backpressure_max_wait` | dropped: a writer is slowed by a fixed curve before the limit and refused at it, with no wait to configure ([RFC 8 §10.2.1](rfc-8-engine.md#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)) |
+| `logging.level` in upper case | lower case only: `DEBUG` is refused, `use debug`; the operator's CRD enum and `dfs init`'s template move to lower case with it |
 | `logging.rotation.max_size: 100`, megabytes | a size with its unit, `"100MiB"`: a bare integer is refused in the file |
-| `logging.rotation.max_backups`, `.max_age` | the same keys, but their default moves from `0` (keep all) to `5` and `"720h"` |
-| `shutdown_timeout` | the setting `adapters.<protocol>.drain_timeout` |
+| `logging.rotation.max_backups`, `.max_age` | the same keys, but their default moves from `0` (keep all) to `5` and `"720h"`; `max_age` was an integer number of days |
+| `shutdown_timeout` | the setting `adapters.<protocol>.drain_timeout`; today's value bounds each stage of the process's shutdown and the operator derives a pod's grace period from it, while the setting bounds one adapter's drain alone |
 | `admin.*`, `kerberos.*`, `identity.*` (`machine_sid` included), `ldap.*`, `gc.*`, `snapshot.*`, `integrity.*` | no longer host facts: records and settings, set through the management API |
+| `DITTOFS_ADMIN_INITIAL_PASSWORD` | the initialisation step's password reference, `dfs init --admin-password-env <name>` or `--admin-password-file` ([RFC 23 §5.4](rfc-23-control-plane.md#5.4%20The%20bootstrap%20administrator%20and%20the%20first%20password), the RFC 23 plan's epic 5); a start refuses the old name, never printing its value, and the operator and the compose file that set it move with the RFC 23 plan's O4 and the RFC 13 plan's epic 6 |
+| the `DITTOFS_*` names of the keys above, `DITTOFS_KERBEROS_KEYTAB`, `_PRINCIPAL`, `_KRB5CONF`, `DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET`, `DITTOFS_LDAP_BIND_PASSWORD` and `DITTOFS_DATABASE_POSTGRES_*` among them | the same as their key, which the refusal names, never printing a value |
 | a v1 key not above | refused as unknown, with the closest declared key named |
 
 A start refuses all of these where today's loader only warns, so a file of
@@ -1403,7 +1428,7 @@ launchers, the compose file among them, generate a self-signed one at run time
 same host, which terminates TLS, needs none. [RFC 23 §5.3](rfc-23-control-plane.md#5.3%20Sign-in%2C%20tokens%20and%20sessions)
 already serves nothing off loopback without TLS, and this table only states it.
 
-**The file's commands.** `dfs config show` prints the effective bootstrap, each
+**The file's commands.** `dfs config show` prints the file it read, the state and runtime directories and the socket path, and the effective bootstrap, each
 value with where it came from (the file, a variable, or the default), a
 credential's file by its path only, and a value that came from the environment
 as the variable's name. `dfs config validate` refuses what a start would
