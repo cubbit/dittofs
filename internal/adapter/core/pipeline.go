@@ -616,8 +616,8 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		// so a request served normally pays for no second lookup.
 		draining, expired := p.draining.Load(), p.expired(r)
 		role := op.Role
-		if (draining || expired) && inv.Role != nil {
-			role = inv.Role(r)
+		if draining || expired {
+			role = roleOf(op, inv, r)
 		}
 		switch {
 		case expired && !op.Expired && role != RoleRelease:

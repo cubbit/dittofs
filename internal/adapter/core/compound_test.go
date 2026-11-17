@@ -344,6 +344,13 @@ func TestTheQuarter(t *testing.T) {
 		if r := wide.read(); r.Status != testproto.StatusReplyTooBig {
 			t.Errorf("a compound under a quarter in bytes, past it in its charge, is answered %d, want the too-big status", r.Status)
 		}
+		// With the ceiling four bytes short of four quarters, a compound
+		// charged a quarter is past a quarter of it.
+		tight := newServed(t, 4*quarter-4, adapter.Deps{})
+		tight.compound(1, fits)
+		if r := tight.read(); r.Status != testproto.StatusReplyTooBig {
+			t.Errorf("a compound charged past a quarter of a %d ceiling is answered %d, want the too-big status", 4*quarter-4, r.Status)
+		}
 
 		synctest.Wait()
 		free := s.full()
@@ -696,5 +703,19 @@ func TestAMembersDecodeErrorWrapsItsCauseOnce(t *testing.T) {
 		if errors.Unwrap(err) != core.ErrDecode || errors.Is(err, c.cause) || !strings.Contains(err.Error(), c.cause.Error()) || strings.Count(err.Error(), core.ErrDecode.Error()) != 1 {
 			t.Errorf("%s: the walk refused with %v, want ErrDecode wrapping %q once", c.name, err, c.cause)
 		}
+	}
+}
+
+// On an expired session, a compound's member that says release runs and
+// one that says none is refused the expired status, ending the reply.
+func TestAnExpiredCredentialInACompound(t *testing.T) {
+	s := newServed(t, 1<<20, adapter.Deps{})
+	s.serve(testproto.Msg{Op: testproto.OpSession, Version: 1, Session: 7, Expires: time.Now().Add(-time.Hour)})
+	s.read()
+	release, none := echo, echo
+	release.Role, none.Role = core.RoleRelease, core.RoleNone
+	s.compound(1, release, none)
+	if st, rs := s.results(); st != testproto.StatusExpired || !slices.Equal(rs, []core.Status{testproto.StatusOK, testproto.StatusExpired}) {
+		t.Errorf("a compound on an expired session is answered %d with %v, want the release run and the none refused expired", st, rs)
 	}
 }

@@ -65,6 +65,15 @@ func members(row *Op, inv Invocation, rest []byte, v Version) (ms []member, at i
 	return ms, len(ms), 0, nil
 }
 
+// roleOf is the role of a request to op, decoded as inv: its row's, unless
+// its Invocation's Role, over the decoded arguments, says otherwise.
+func roleOf(op *Op, inv Invocation, r *Request) Role {
+	if inv.Role != nil {
+		return inv.Role(r)
+	}
+	return op.Role
+}
+
 // judge says whether a compound runs whole while draining: each member's
 // role, its row's or its Invocation's over its decoded arguments, asked
 // before Resolve, is one the drain serves, and every member decoded. It
@@ -73,11 +82,7 @@ func members(row *Op, inv Invocation, rest []byte, v Version) (ms []member, at i
 func judge(ms []member, decoded bool, r *Request) (whole bool, handles []vfs.Handle) {
 	whole = decoded
 	for _, m := range ms {
-		role := m.op.Role
-		if m.inv.Role != nil {
-			role = m.inv.Role(r)
-		}
-		if role == RoleNone {
+		if roleOf(m.op, m.inv, r) == RoleNone {
 			whole = false
 		}
 		if m.inv.Handle != nil {
@@ -253,11 +258,7 @@ func (p *pipeline) member(tr *track, mts *tableSeries, errs *ErrorTable, m membe
 		}
 	}
 	if err == nil && p.expired(r) {
-		role := m.op.Role
-		if m.inv.Role != nil {
-			role = m.inv.Role(r)
-		}
-		if !m.op.Expired && role != RoleRelease {
+		if !m.op.Expired && roleOf(m.op, m.inv, r) != RoleRelease {
 			err = ErrExpired
 			mts.refused(stageResolveIDs)
 		}
