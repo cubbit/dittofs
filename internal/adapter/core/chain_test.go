@@ -78,29 +78,33 @@ func (s *served) setUp(session uint32) {
 // A version 2 chain of a PutFH and a related Create makes the file under the
 // handle the first set, both replies in one record whose checksums verify.
 func TestARelatedChainRunsUnderItsFirstMembersHandle(t *testing.T) {
-	s := newChained(t, 1<<20, adapter.Deps{})
-	s.serve(
-		testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 10, Session: 7, Tree: 1, Handle: s.root},
-		testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 11, Session: inherited, Tree: 1, Name: "a", Related: true},
-	)
-	rs, err := s.client.Recv()
-	if err != nil || len(rs) != 2 || rs[0].Status != testproto.StatusOK || rs[1].Status != testproto.StatusOK || s.creates() != 1 {
-		t.Errorf("the chain is answered %+v, %v, with %d files made; want one record of two successes and the file", rs, err, s.creates())
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		s.serve(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 10, Session: 7, Tree: 1, Handle: s.root},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 11, Session: inherited, Tree: 1, Name: "a", Related: true},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[0].Status != testproto.StatusOK || rs[1].Status != testproto.StatusOK || s.creates() != 1 {
+			t.Errorf("the chain is answered %+v, %v, with %d files made; want one record of two successes and the file", rs, err, s.creates())
+		}
+	})
 }
 
 // With the PutFH refused, the related Create is answered the PutFH's status
 // with no call, in the same record, and makes no file.
 func TestARelatedMemberAfterAFailureIsAnsweredItsStatus(t *testing.T) {
-	s := newChained(t, 1<<20, adapter.Deps{})
-	s.serve(
-		testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 20, Session: 7, Handle: s.root},
-		testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 21, Session: inherited, Tree: 1, Name: "b", Related: true},
-	)
-	rs, err := s.client.Recv()
-	if err != nil || len(rs) != 2 || rs[0].Status != testproto.StatusNoTree || rs[1].Status != testproto.StatusNoTree || s.creates() != 0 {
-		t.Errorf("the chain is answered %+v, %v, with %d files made; want the PutFH's no-tree status twice and no file", rs, err, s.creates())
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		s.serve(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 20, Session: 7, Handle: s.root},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 21, Session: inherited, Tree: 1, Name: "b", Related: true},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[0].Status != testproto.StatusNoTree || rs[1].Status != testproto.StatusNoTree || s.creates() != 0 {
+			t.Errorf("the chain is answered %+v, %v, with %d files made; want the PutFH's no-tree status twice and no file", rs, err, s.creates())
+		}
+	})
 }
 
 // chainOf is the body of a record chaining msgs, as the seam serves it, and
@@ -143,77 +147,83 @@ func (s *served) recvOne() testproto.Reply {
 // second's and not sealed, and the third's reply sealed under the first's.
 // Every member's credit comes back.
 func TestAnUnrelatedMemberThatUnwrapRefusesSplitsTheChain(t *testing.T) {
-	m := metrics.New("v", "c")
-	s := newChained(t, 1<<20, adapter.Deps{Metrics: m})
-	s.serve(testproto.Msg{Op: testproto.OpSession, Version: 2, Session: 9})
-	if r := s.read(); r.Status != testproto.StatusOK {
-		t.Fatalf("session 9: %+v", r)
-	}
-	before := s.client.Balance()
-	b, offs := chainOf(s.f, echoIn(30, 7), echoIn(31, 9), echoIn(32, 7))
-	b[offs[1]+headerLen+1] ^= 1 // a byte of the second's payload
-	s.serveBody(b)
-	r1, r2, r3 := s.recvOne(), s.recvOne(), s.recvOne()
-	if r1.ID != 30 || r1.Status != testproto.StatusOK || r1.Session != 7 || r1.Checksum == 0 || r1.Signed {
-		t.Errorf("the first record is %+v, want the first Echo sealed under session 7", r1)
-	}
-	if r2.ID != 31 || r2.Status != testproto.StatusChecksum || r2.Session != 9 || !r2.Signed {
-		t.Errorf("the second record is %+v, want the refusal signed under session 9", r2)
-	}
-	if r3.ID != 32 || r3.Status != testproto.StatusOK || r3.Session != 7 || r3.Checksum == 0 || r3.Signed {
-		t.Errorf("the third record is %+v, want the third Echo sealed under session 7", r3)
-	}
-	if got := s.client.Balance() - before; got != 3 {
-		t.Errorf("the chain gave back %d credits, want one per member", got)
-	}
-	got, _ := scrape(t, m)
-	if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=unwrap}"; got[k] != 1 {
-		t.Errorf("%s = %v, want 1", k, got[k])
-	}
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newChained(t, 1<<20, adapter.Deps{Metrics: m})
+		s.serve(testproto.Msg{Op: testproto.OpSession, Version: 2, Session: 9})
+		if r := s.read(); r.Status != testproto.StatusOK {
+			t.Fatalf("session 9: %+v", r)
+		}
+		before := s.client.Balance()
+		b, offs := chainOf(s.f, echoIn(30, 7), echoIn(31, 9), echoIn(32, 7))
+		b[offs[1]+headerLen+1] ^= 1 // a byte of the second's payload
+		s.serveBody(b)
+		r1, r2, r3 := s.recvOne(), s.recvOne(), s.recvOne()
+		if r1.ID != 30 || r1.Status != testproto.StatusOK || r1.Session != 7 || r1.Checksum == 0 || r1.Signed {
+			t.Errorf("the first record is %+v, want the first Echo sealed under session 7", r1)
+		}
+		if r2.ID != 31 || r2.Status != testproto.StatusChecksum || r2.Session != 9 || !r2.Signed {
+			t.Errorf("the second record is %+v, want the refusal signed under session 9", r2)
+		}
+		if r3.ID != 32 || r3.Status != testproto.StatusOK || r3.Session != 7 || r3.Checksum == 0 || r3.Signed {
+			t.Errorf("the third record is %+v, want the third Echo sealed under session 7", r3)
+		}
+		if got := s.client.Balance() - before; got != 3 {
+			t.Errorf("the chain gave back %d credits, want one per member", got)
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=unwrap}"; got[k] != 1 {
+			t.Errorf("%s = %v, want 1", k, got[k])
+		}
+	})
 }
 
 // A related member whose checksum fails is refused the same way, and a
 // related member after it is answered that status, with no call, in the
 // refusal's record.
 func TestARelatedMemberAfterAnUnwrapRefusalSharesItsRecord(t *testing.T) {
-	s := newChained(t, 1<<20, adapter.Deps{})
-	b, offs := chainOf(s.f, echoIn(40, 7), echoIn(41, inherited), echoIn(42, inherited))
-	b[offs[1]+headerLen+1] ^= 1
-	s.serveBody(b)
-	r1 := s.recvOne()
-	rs, err := s.client.Recv()
-	if r1.ID != 40 || r1.Status != testproto.StatusOK {
-		t.Errorf("the first record is %+v, want the first Echo", r1)
-	}
-	if err != nil || len(rs) != 2 || rs[0].ID != 41 || rs[0].Status != testproto.StatusChecksum || !rs[0].Signed ||
-		rs[1].ID != 42 || rs[1].Status != testproto.StatusChecksum {
-		t.Errorf("the second record is %+v, %v: want the refusal signed, and the related member after it answered its status", rs, err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		b, offs := chainOf(s.f, echoIn(40, 7), echoIn(41, inherited), echoIn(42, inherited))
+		b[offs[1]+headerLen+1] ^= 1
+		s.serveBody(b)
+		r1 := s.recvOne()
+		rs, err := s.client.Recv()
+		if r1.ID != 40 || r1.Status != testproto.StatusOK {
+			t.Errorf("the first record is %+v, want the first Echo", r1)
+		}
+		if err != nil || len(rs) != 2 || rs[0].ID != 41 || rs[0].Status != testproto.StatusChecksum || !rs[0].Signed ||
+			rs[1].ID != 42 || rs[1].Status != testproto.StatusChecksum {
+			t.Errorf("the second record is %+v, %v: want the refusal signed, and the related member after it answered its status", rs, err)
+		}
+	})
 }
 
 // A chain whose second member's next points behind it sends two records,
 // counted decode: the first member's reply alone, sealed, and the second's
 // refusal, its checksum 0; the connection then closes.
 func TestABadStepEndsTheChainAfterWhatItHolds(t *testing.T) {
-	m := metrics.New("v", "c")
-	s := newChained(t, 1<<20, adapter.Deps{Metrics: m})
-	b, offs := chainOf(s.f, echoIn(50, 7), echoIn(51, 7))
-	binary.BigEndian.PutUint32(b[offs[1]:], 3) // the second's next, behind it
-	s.serveBody(b)
-	r1, r2 := s.recvOne(), s.recvOne()
-	if r1.ID != 50 || r1.Status != testproto.StatusOK || r1.Checksum == 0 {
-		t.Errorf("the first record is %+v, want the first Echo sealed", r1)
-	}
-	if r2.ID != 51 || r2.Status != testproto.StatusDecode || r2.Checksum != 0 {
-		t.Errorf("the second record is %+v, want the decode refusal, checksum 0", r2)
-	}
-	if err := <-s.closed; err == nil {
-		t.Error("the connection closed with no error after a bad step")
-	}
-	got, _ := scrape(t, m)
-	if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=decode}"; got[k] != 1 {
-		t.Errorf("%s = %v, want 1", k, got[k])
-	}
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newChained(t, 1<<20, adapter.Deps{Metrics: m})
+		b, offs := chainOf(s.f, echoIn(50, 7), echoIn(51, 7))
+		binary.BigEndian.PutUint32(b[offs[1]:], 3) // the second's next, behind it
+		s.serveBody(b)
+		r1, r2 := s.recvOne(), s.recvOne()
+		if r1.ID != 50 || r1.Status != testproto.StatusOK || r1.Checksum == 0 {
+			t.Errorf("the first record is %+v, want the first Echo sealed", r1)
+		}
+		if r2.ID != 51 || r2.Status != testproto.StatusDecode || r2.Checksum != 0 {
+			t.Errorf("the second record is %+v, want the decode refusal, checksum 0", r2)
+		}
+		if err := s.closeErr(t); err == nil {
+			t.Error("the connection closed with no error after a bad step")
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=decode}"; got[k] != 1 {
+			t.Errorf("%s = %v, want 1", k, got[k])
+		}
+	})
 }
 
 // armedSecurity is the stages' own Security, which once armed answers the
@@ -239,26 +249,28 @@ func (a *armedSecurity) Unwrap(h core.Header, rec *resources.Buf, prev core.Head
 // decode: the first member's reply, and the refusal answered ErrDecode's
 // status, sealed under the session, its checksum verifying.
 func TestAnUnwrapRefusalWithErrDecodeIsCountedUnwrap(t *testing.T) {
-	m := metrics.New("v", "c")
-	sec := &armedSecurity{}
-	s := newChained(t, 1<<20, adapter.Deps{Metrics: m}, func(st *core.Stages) {
-		sec.Security = st.Security
-		st.Security = sec
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		sec := &armedSecurity{}
+		s := newChained(t, 1<<20, adapter.Deps{Metrics: m}, func(st *core.Stages) {
+			sec.Security = st.Security
+			st.Security = sec
+		})
+		sec.armed.Store(true)
+		s.serve(echoIn(60, 7), echoIn(61, 7))
+		r1, r2 := s.recvOne(), s.recvOne()
+		if r1.ID != 60 || r1.Status != testproto.StatusOK {
+			t.Errorf("the first record is %+v, want the first Echo", r1)
+		}
+		if r2.ID != 61 || r2.Status != testproto.StatusDecode || r2.Session != 7 || r2.Checksum == 0 || r2.Signed {
+			t.Errorf("the second record is %+v, want the refusal sealed under session 7", r2)
+		}
+		got, _ := scrape(t, m)
+		k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason="
+		if got[k+"unwrap}"] != 1 || got[k+"decode}"] != 0 {
+			t.Errorf("the split counts %v under unwrap and %v under decode, want 1 and 0", got[k+"unwrap}"], got[k+"decode}"])
+		}
 	})
-	sec.armed.Store(true)
-	s.serve(echoIn(60, 7), echoIn(61, 7))
-	r1, r2 := s.recvOne(), s.recvOne()
-	if r1.ID != 60 || r1.Status != testproto.StatusOK {
-		t.Errorf("the first record is %+v, want the first Echo", r1)
-	}
-	if r2.ID != 61 || r2.Status != testproto.StatusDecode || r2.Session != 7 || r2.Checksum == 0 || r2.Signed {
-		t.Errorf("the second record is %+v, want the refusal sealed under session 7", r2)
-	}
-	got, _ := scrape(t, m)
-	k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason="
-	if got[k+"unwrap}"] != 1 || got[k+"decode}"] != 0 {
-		t.Errorf("the split counts %v under unwrap and %v under decode, want 1 and 0", got[k+"unwrap}"], got[k+"decode}"])
-	}
 }
 
 // gatedFlow is the stages' own FlowControl, which once armed answers the
@@ -320,17 +332,19 @@ func TestAChainSendsWhatItHoldsBeforeWaitingOnFlow(t *testing.T) {
 // A chain of two Echo whose charges each pass a quarter of the reply pool's
 // ceiling, on an idle pool, goes out in two records, counted quarter.
 func TestAChainHoldsNoMoreThanAQuarterOfThePool(t *testing.T) {
-	m := metrics.New("v", "c")
-	s := newChained(t, 200_000, adapter.Deps{Metrics: m})
-	big := func(id uint64) testproto.Msg { e := echoIn(id, 7); e.Payload = make([]byte, 5000); return e }
-	s.serve(big(80), big(81))
-	if r1, r2 := s.recvOne(), s.recvOne(); r1.ID != 80 || r2.ID != 81 || r1.Status != testproto.StatusOK || r2.Status != testproto.StatusOK {
-		t.Errorf("the records are %+v and %+v, want each Echo alone", r1, r2)
-	}
-	got, _ := scrape(t, m)
-	if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=quarter}"; got[k] != 1 {
-		t.Errorf("%s = %v, want 1", k, got[k])
-	}
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newChained(t, 200_000, adapter.Deps{Metrics: m})
+		big := func(id uint64) testproto.Msg { e := echoIn(id, 7); e.Payload = make([]byte, 5000); return e }
+		s.serve(big(80), big(81))
+		if r1, r2 := s.recvOne(), s.recvOne(); r1.ID != 80 || r2.ID != 81 || r1.Status != testproto.StatusOK || r2.Status != testproto.StatusOK {
+			t.Errorf("the records are %+v and %+v, want each Echo alone", r1, r2)
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=quarter}"; got[k] != 1 {
+			t.Errorf("%s = %v, want 1", k, got[k])
+		}
+	})
 }
 
 // On a server with a large reply budget, all of it but three Echo replies'
@@ -405,35 +419,37 @@ func (r *readOffsets) Decode(rec *resources.Buf, off int) (core.Header, error) {
 // second's refusal; the third member's header is never read, and the
 // connection closes.
 func TestANextOntoItsOwnHeaderEndsTheChain(t *testing.T) {
-	m := metrics.New("v", "c")
-	codec := &readOffsets{}
-	s := newChained(t, 1<<20, adapter.Deps{Metrics: m}, func(st *core.Stages) {
-		codec.HeaderCodec = st.Header
-		st.Header = codec
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		codec := &readOffsets{}
+		s := newChained(t, 1<<20, adapter.Deps{Metrics: m}, func(st *core.Stages) {
+			codec.HeaderCodec = st.Header
+			st.Header = codec
+		})
+		codec.mu.Lock()
+		codec.offs = nil
+		codec.mu.Unlock()
+		b, offs := chainOf(s.f, echoIn(110, 7), echoIn(111, 7), echoIn(112, 7))
+		binary.BigEndian.PutUint32(b[offs[1]:], uint32(offs[1]))
+		s.serveBody(b)
+		r1, r2 := s.recvOne(), s.recvOne()
+		if r1.ID != 110 || r1.Status != testproto.StatusOK || r2.ID != 111 || r2.Status != testproto.StatusDecode {
+			t.Errorf("the records are %+v and %+v, want the first Echo and the second's decode refusal", r1, r2)
+		}
+		if err := s.closeErr(t); err == nil {
+			t.Error("the connection closed with no error")
+		}
+		codec.mu.Lock()
+		read := slices.Clone(codec.offs)
+		codec.mu.Unlock()
+		if slices.Contains(read, offs[2]) || !slices.Contains(read, offs[1]) {
+			t.Errorf("headers read at %v, want the second's at %d and never the third's at %d", read, offs[1], offs[2])
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=decode}"; got[k] != 1 {
+			t.Errorf("%s = %v, want 1", k, got[k])
+		}
 	})
-	codec.mu.Lock()
-	codec.offs = nil
-	codec.mu.Unlock()
-	b, offs := chainOf(s.f, echoIn(110, 7), echoIn(111, 7), echoIn(112, 7))
-	binary.BigEndian.PutUint32(b[offs[1]:], uint32(offs[1]))
-	s.serveBody(b)
-	r1, r2 := s.recvOne(), s.recvOne()
-	if r1.ID != 110 || r1.Status != testproto.StatusOK || r2.ID != 111 || r2.Status != testproto.StatusDecode {
-		t.Errorf("the records are %+v and %+v, want the first Echo and the second's decode refusal", r1, r2)
-	}
-	if err := <-s.closed; err == nil {
-		t.Error("the connection closed with no error")
-	}
-	codec.mu.Lock()
-	read := slices.Clone(codec.offs)
-	codec.mu.Unlock()
-	if slices.Contains(read, offs[2]) || !slices.Contains(read, offs[1]) {
-		t.Errorf("headers read at %v, want the second's at %d and never the third's at %d", read, offs[1], offs[2])
-	}
-	got, _ := scrape(t, m)
-	if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=decode}"; got[k] != 1 {
-		t.Errorf("%s = %v, want 1", k, got[k])
-	}
 }
 
 // A chain of 65 Echo on Bare, past the connection's cap of 64, is answered
@@ -491,87 +507,95 @@ func TestADrainedChainMemberGrantsTheCreditsAfterIt(t *testing.T) {
 // Two chains on one connection, the first's Create held in the service, are
 // answered second first.
 func TestTwoChainsAreAnsweredOutOfOrder(t *testing.T) {
-	s := newChained(t, 1<<20, adapter.Deps{})
-	hold := s.faults.Hold(vfs.OpCreate)
-	pair := func(id uint64, name string) []testproto.Msg {
-		return []testproto.Msg{
-			{Op: testproto.OpPutFH, Version: 2, ID: id, Session: 7, Tree: 1, Handle: s.root},
-			{Op: testproto.OpCreate, Version: 2, ID: id + 1, Session: inherited, Tree: 1, Name: name, Related: true},
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		hold := s.faults.Hold(vfs.OpCreate)
+		pair := func(id uint64, name string) []testproto.Msg {
+			return []testproto.Msg{
+				{Op: testproto.OpPutFH, Version: 2, ID: id, Session: 7, Tree: 1, Handle: s.root},
+				{Op: testproto.OpCreate, Version: 2, ID: id + 1, Session: inherited, Tree: 1, Name: name, Related: true},
+			}
 		}
-	}
-	s.serve(pair(120, "first")...)
-	<-hold.Reached()
-	s.serve(pair(130, "second")...)
-	rs, err := s.client.Recv()
-	if err != nil || len(rs) != 2 || rs[0].ID != 130 {
-		t.Errorf("the first record answered is %+v, %v: want the second chain's", rs, err)
-	}
-	hold.Release()
-	if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[0].ID != 120 || rs[1].Status != testproto.StatusOK {
-		t.Errorf("the second record answered is %+v, %v: want the first chain's", rs, err)
-	}
+		s.serve(pair(120, "first")...)
+		<-hold.Reached()
+		s.serve(pair(130, "second")...)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[0].ID != 130 {
+			t.Errorf("the first record answered is %+v, %v: want the second chain's", rs, err)
+		}
+		hold.Release()
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[0].ID != 120 || rs[1].Status != testproto.StatusOK {
+			t.Errorf("the second record answered is %+v, %v: want the first chain's", rs, err)
+		}
+	})
 }
 
 // A chain whose Create is in the service when the drain begins is answered.
 func TestAChainInTheServiceAtTheDrainIsAnswered(t *testing.T) {
-	s := newChained(t, 1<<20, adapter.Deps{})
-	hold := s.faults.Hold(vfs.OpCreate)
-	s.serve(
-		testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 140, Session: 7, Tree: 1, Handle: s.root},
-		testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 141, Session: inherited, Tree: 1, Name: "d", Related: true},
-	)
-	<-hold.Reached()
-	s.p.Drain()
-	hold.Release()
-	if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[1].Status != testproto.StatusOK || s.creates() != 1 {
-		t.Errorf("the chain is answered %+v, %v, with %d files made; want both and the file", rs, err, s.creates())
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		hold := s.faults.Hold(vfs.OpCreate)
+		s.serve(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 140, Session: 7, Tree: 1, Handle: s.root},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 141, Session: inherited, Tree: 1, Name: "d", Related: true},
+		)
+		<-hold.Reached()
+		s.p.Drain()
+		hold.Release()
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[1].Status != testproto.StatusOK || s.creates() != 1 {
+			t.Errorf("the chain is answered %+v, %v, with %d files made; want both and the file", rs, err, s.creates())
+		}
+	})
 }
 
 // A sequenced chain sent twice is answered twice, its Create run once and
 // its reply the second time from the replay cache.
 func TestASequencedChainSentTwiceRunsOnce(t *testing.T) {
-	m := metrics.New("v", "c")
-	// The replay cache copies a reply from the server's reply budget under no
-	// client's key, so the chain takes the copy into a buffer of its own.
-	s := newChained(t, 1<<20, adapter.Deps{Metrics: m, Budgets: serverBudgets(1 << 20)})
-	chain := sequenced(s, 150)
-	for range 2 {
-		s.serve(chain...)
-		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[1].Status != testproto.StatusOK {
-			t.Errorf("the chain is answered %+v, %v", rs, err)
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		// The replay cache copies a reply from the server's reply budget under no
+		// client's key, so the chain takes the copy into a buffer of its own.
+		s := newChained(t, 1<<20, adapter.Deps{Metrics: m, Budgets: serverBudgets(1 << 20)})
+		chain := sequenced(s, 150)
+		for range 2 {
+			s.serve(chain...)
+			if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[1].Status != testproto.StatusOK {
+				t.Errorf("the chain is answered %+v, %v", rs, err)
+			}
 		}
-	}
-	if s.creates() != 1 {
-		t.Errorf("the Create ran %d times, want once", s.creates())
-	}
-	got, _ := scrape(t, m)
-	var hits float64
-	for k, v := range got {
-		if strings.HasPrefix(k, "adapter_replay_hits_total{") {
-			hits += v
+		if s.creates() != 1 {
+			t.Errorf("the Create ran %d times, want once", s.creates())
 		}
-	}
-	if hits != 1 {
-		t.Errorf("the replay cache answered %v times, want once", hits)
-	}
+		got, _ := scrape(t, m)
+		var hits float64
+		for k, v := range got {
+			if strings.HasPrefix(k, "adapter_replay_hits_total{") {
+				hits += v
+			}
+		}
+		if hits != 1 {
+			t.Errorf("the replay cache answered %v times, want once", hits)
+		}
+	})
 }
 
 // Two servers over two services each apply their own chain's Create.
 func TestTwoServersApplyTheirOwnChains(t *testing.T) {
-	a, b := newChained(t, 1<<20, adapter.Deps{}), newChained(t, 1<<20, adapter.Deps{})
-	for _, s := range []*served{a, b} {
-		s.serve(
-			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 160, Session: 7, Tree: 1, Handle: s.root},
-			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 161, Session: inherited, Tree: 1, Name: "own", Related: true},
-		)
-		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[1].Status != testproto.StatusOK {
-			t.Errorf("a server's chain is answered %+v, %v", rs, err)
+	synctest.Test(t, func(t *testing.T) {
+		a, b := newChained(t, 1<<20, adapter.Deps{}), newChained(t, 1<<20, adapter.Deps{})
+		for _, s := range []*served{a, b} {
+			s.serve(
+				testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 160, Session: 7, Tree: 1, Handle: s.root},
+				testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 161, Session: inherited, Tree: 1, Name: "own", Related: true},
+			)
+			if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[1].Status != testproto.StatusOK {
+				t.Errorf("a server's chain is answered %+v, %v", rs, err)
+			}
 		}
-	}
-	if a.creates() != 1 || b.creates() != 1 {
-		t.Errorf("the services made %d and %d files, want one each", a.creates(), b.creates())
-	}
+		if a.creates() != 1 || b.creates() != 1 {
+			t.Errorf("the services made %d and %d files, want one each", a.creates(), b.creates())
+		}
+	})
 }
 
 // Two chains of a PutFH, a related Create and an Echo, on two connections of a
@@ -628,6 +652,9 @@ func TestTwoChainsOnTwoConnectionsShareThePool(t *testing.T) {
 		if a.creates() != 2 {
 			t.Errorf("the service made %d files, want both", a.creates())
 		}
+		// The second connection's cleanup reads the shared budget: wait for
+		// the first's recorder to release what it last wrote.
+		synctest.Wait()
 	})
 }
 
@@ -896,51 +923,55 @@ func walkChain(t *testing.T, body []byte) {
 // child, where a compound's members are children of its one span; each
 // carries its status, its reply's bytes, and its own message's bytes.
 func TestEachChainMemberHasItsOwnRequestSpan(t *testing.T) {
-	spans := tracetest.NewSpanRecorder()
-	tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
-	d := adapter.Deps{Tracer: tracer, SampleRatio: 1}
-	s := newSeamWith(t, testproto.New(d).Bare(), 1<<20, d)
-	b, offs := chainOf(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("a")}, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Payload: []byte("bcd")})
-	s.serveBody(b)
-	if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
-		t.Fatalf("the chain is answered %+v, %v", rs, err)
-	}
-	s.finish()
-	ended := spans.Ended()
-	if len(ended) != 2 {
-		t.Fatalf("%d spans ended for a chain of two", len(ended))
-	}
-	sizes := map[string]bool{strconv.Itoa(offs[1]): true, strconv.Itoa(len(b) - offs[1]): true}
-	for _, sd := range ended {
-		a := map[string]string{}
-		for _, kv := range sd.Attributes() {
-			a[string(kv.Key)] = kv.Value.String()
+	synctest.Test(t, func(t *testing.T) {
+		spans := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+		d := adapter.Deps{Tracer: tracer, SampleRatio: 1}
+		s := newSeamWith(t, testproto.New(d).Bare(), 1<<20, d)
+		b, offs := chainOf(s.f, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("a")}, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2, Payload: []byte("bcd")})
+		s.serveBody(b)
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
+			t.Fatalf("the chain is answered %+v, %v", rs, err)
 		}
-		if sd.Name() != "adapter."+testproto.Name+".Echo" || sd.Parent().IsValid() || a["status"] != "0" || a["reply_bytes"] == "" || a["reply_bytes"] == "0" || !sizes[a["request_bytes"]] {
-			t.Errorf("a member's span is %q under %v with %v, want its own request span with its status and sizes, its request one of %v", sd.Name(), sd.Parent().SpanID(), a, sizes)
+		s.finish()
+		ended := spans.Ended()
+		if len(ended) != 2 {
+			t.Fatalf("%d spans ended for a chain of two", len(ended))
 		}
-		delete(sizes, a["request_bytes"])
-	}
+		sizes := map[string]bool{strconv.Itoa(offs[1]): true, strconv.Itoa(len(b) - offs[1]): true}
+		for _, sd := range ended {
+			a := map[string]string{}
+			for _, kv := range sd.Attributes() {
+				a[string(kv.Key)] = kv.Value.String()
+			}
+			if sd.Name() != "adapter."+testproto.Name+".Echo" || sd.Parent().IsValid() || a["status"] != "0" || a["reply_bytes"] == "" || a["reply_bytes"] == "0" || !sizes[a["request_bytes"]] {
+				t.Errorf("a member's span is %q under %v with %v, want its own request span with its status and sizes, its request one of %v", sd.Name(), sd.Parent().SpanID(), a, sizes)
+			}
+			delete(sizes, a["request_bytes"])
+		}
+	})
 }
 
 // A chain member whose call fails with an error no row maps is answered the
 // fault status in the chain's record, after the member before it.
 func TestAChainMembersUnmappedErrorIsAnsweredTheFault(t *testing.T) {
-	m := metrics.New("v", "c")
-	s := newChained(t, 1<<20, adapter.Deps{Metrics: m})
-	s.faults.Fail(vfs.OpCreate, errors.New("a service error no row maps"))
-	s.serve(
-		testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 190, Session: 7, Tree: 1, Handle: s.root},
-		testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 191, Session: inherited, Tree: 1, Name: "f", Related: true},
-	)
-	rs, err := s.client.Recv()
-	if err != nil || len(rs) != 2 || rs[0].Status != testproto.StatusOK || rs[1].ID != 191 || rs[1].Status != testproto.StatusFault {
-		t.Errorf("the chain is answered %+v, %v: want the PutFH, then the Create answered the fault", rs, err)
-	}
-	got, _ := scrape(t, m)
-	if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 1 {
-		t.Errorf("%s = %v, want 1", k, got[k])
-	}
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newChained(t, 1<<20, adapter.Deps{Metrics: m})
+		s.faults.Fail(vfs.OpCreate, errors.New("a service error no row maps"))
+		s.serve(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 190, Session: 7, Tree: 1, Handle: s.root},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 191, Session: inherited, Tree: 1, Name: "f", Related: true},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 2 || rs[0].Status != testproto.StatusOK || rs[1].ID != 191 || rs[1].Status != testproto.StatusFault {
+			t.Errorf("the chain is answered %+v, %v: want the PutFH, then the Create answered the fault", rs, err)
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 1 {
+			t.Errorf("%s = %v, want 1", k, got[k])
+		}
+	})
 }
 
 // A chain of three small Echo on Bare, each try finding another connection's
@@ -1001,26 +1032,30 @@ func TestAChainBehindAWaiterGoesOutOneRecordPerMember(t *testing.T) {
 // the overdraw status beside the next Echo's reply.
 func TestAChainsFirstMemberRefusalIsAnswered(t *testing.T) {
 	t.Run("unwrap", func(t *testing.T) {
-		s := newChained(t, 1<<20, adapter.Deps{})
-		b, _ := chainOf(s.f, echoIn(40, 7), echoIn(41, 7))
-		b[headerLen+1] ^= 1 // a byte of the first's payload
-		s.serveBody(b)
-		if r := s.recvOne(); r.ID != 40 || r.Status != testproto.StatusChecksum {
-			t.Errorf("the first record is %+v, want the first refused its checksum", r)
-		}
-		if r := s.recvOne(); r.ID != 41 || r.Status != testproto.StatusOK {
-			t.Errorf("the second record is %+v, want the second Echo", r)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			s := newChained(t, 1<<20, adapter.Deps{})
+			b, _ := chainOf(s.f, echoIn(40, 7), echoIn(41, 7))
+			b[headerLen+1] ^= 1 // a byte of the first's payload
+			s.serveBody(b)
+			if r := s.recvOne(); r.ID != 40 || r.Status != testproto.StatusChecksum {
+				t.Errorf("the first record is %+v, want the first refused its checksum", r)
+			}
+			if r := s.recvOne(); r.ID != 41 || r.Status != testproto.StatusOK {
+				t.Errorf("the second record is %+v, want the second Echo", r)
+			}
+		})
 	})
 	t.Run("admit", func(t *testing.T) {
-		s := newChained(t, 1<<20, adapter.Deps{})
-		over := echoIn(42, 7)
-		over.Credits = 1000
-		s.serve(over, echoIn(43, 7))
-		rs, err := s.client.Recv()
-		if err != nil || len(rs) != 2 || rs[0].ID != 42 || rs[0].Status != testproto.StatusOverdraw || rs[1].ID != 43 || rs[1].Status != testproto.StatusOK {
-			t.Errorf("the chain is answered %+v, %v: want the overdraw refused, then the Echo", rs, err)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			s := newChained(t, 1<<20, adapter.Deps{})
+			over := echoIn(42, 7)
+			over.Credits = 1000
+			s.serve(over, echoIn(43, 7))
+			rs, err := s.client.Recv()
+			if err != nil || len(rs) != 2 || rs[0].ID != 42 || rs[0].Status != testproto.StatusOverdraw || rs[1].ID != 43 || rs[1].Status != testproto.StatusOK {
+				t.Errorf("the chain is answered %+v, %v: want the overdraw refused, then the Echo", rs, err)
+			}
+		})
 	})
 }
 
@@ -1073,40 +1108,44 @@ func TestAChainAfterCloseIsNotRun(t *testing.T) {
 // Echo under session 7 and one under session 9, a third that inherits its
 // session is answered under 9.
 func TestARelatedMemberInheritsFromTheMemberJustBefore(t *testing.T) {
-	s := newChained(t, 1<<20, adapter.Deps{})
-	s.serve(testproto.Msg{Op: testproto.OpSession, Version: 2, Session: 9})
-	if r := s.read(); r.Status != testproto.StatusOK {
-		t.Fatalf("session 9: %+v", r)
-	}
-	s.serve(echoIn(50, 7), echoIn(51, 9), echoIn(52, inherited))
-	rs, err := s.client.Recv()
-	if err != nil || len(rs) != 3 || rs[2].ID != 52 || rs[2].Status != testproto.StatusOK || rs[2].Session != 9 {
-		t.Errorf("the chain is answered %+v, %v: want the third answered under session 9", rs, err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		s.serve(testproto.Msg{Op: testproto.OpSession, Version: 2, Session: 9})
+		if r := s.read(); r.Status != testproto.StatusOK {
+			t.Fatalf("session 9: %+v", r)
+		}
+		s.serve(echoIn(50, 7), echoIn(51, 9), echoIn(52, inherited))
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 3 || rs[2].ID != 52 || rs[2].Status != testproto.StatusOK || rs[2].Session != 9 {
+			t.Errorf("the chain is answered %+v, %v: want the third answered under session 9", rs, err)
+		}
+	})
 }
 
 // Two members of one chain that Unwrap refuses are logged once: a client
 // that sends what its connection's security refuses is logged per
 // connection, not per request.
 func TestUnwrapRefusalsInAChainAreLoggedOnce(t *testing.T) {
-	logs := &logSink{}
-	s := newChained(t, 1<<20, adapter.Deps{Logger: logs.logger()})
-	b, offs := chainOf(s.f, echoIn(60, 7), echoIn(61, 7), echoIn(62, 7))
-	b[headerLen+1] ^= 1
-	b[offs[1]+headerLen+1] ^= 1
-	s.serveBody(b)
-	for range 3 {
-		s.recvOne()
-	}
-	n := 0
-	for _, r := range logs.at(t, "WARN") {
-		if r["msg"] == "a message the connection's security refused" {
-			n++
+	synctest.Test(t, func(t *testing.T) {
+		logs := &logSink{}
+		s := newChained(t, 1<<20, adapter.Deps{Logger: logs.logger()})
+		b, offs := chainOf(s.f, echoIn(60, 7), echoIn(61, 7), echoIn(62, 7))
+		b[headerLen+1] ^= 1
+		b[offs[1]+headerLen+1] ^= 1
+		s.serveBody(b)
+		for range 3 {
+			s.recvOne()
 		}
-	}
-	if n != 1 {
-		t.Errorf("the refusals were logged %d times, want once", n)
-	}
+		n := 0
+		for _, r := range logs.at(t, "WARN") {
+			if r["msg"] == "a message the connection's security refused" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("the refusals were logged %d times, want once", n)
+		}
+	})
 }
 
 // A chain of a failed member and 65 related ones after it, on Bare, is
@@ -1140,23 +1179,25 @@ func TestAChainOfFailuresLongerThanTheCapIsAnswered(t *testing.T) {
 // Echo on Bare joins the first two, whose charges reach the quarter but do
 // not pass it, and sends the third in a record of its own, counted quarter.
 func TestAChainJoinsUpToAQuarterOfThePool(t *testing.T) {
-	m := metrics.New("v", "c")
-	d := adapter.Deps{Metrics: m}
-	s := newSeamWith(t, testproto.New(d).Bare(), 8*smallCharge, d)
-	if c := s.reply.Charge(0); c != smallCharge {
-		t.Fatalf("a small reply charges %d, want %d", c, smallCharge)
-	}
-	s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2}, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3})
-	if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[0].ID != 1 || rs[1].ID != 2 {
-		t.Errorf("the first record holds %+v, %v: want the first two", rs, err)
-	}
-	if r := s.read(); r.ID != 3 {
-		t.Errorf("the second record is %+v, want the third", r)
-	}
-	got, _ := scrape(t, m)
-	if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=quarter}"; got[k] != 1 {
-		t.Errorf("%s = %v, want 1", k, got[k])
-	}
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		d := adapter.Deps{Metrics: m}
+		s := newSeamWith(t, testproto.New(d).Bare(), 8*smallCharge, d)
+		if c := s.reply.Charge(0); c != smallCharge {
+			t.Fatalf("a small reply charges %d, want %d", c, smallCharge)
+		}
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2}, testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3})
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[0].ID != 1 || rs[1].ID != 2 {
+			t.Errorf("the first record holds %+v, %v: want the first two", rs, err)
+		}
+		if r := s.read(); r.ID != 3 {
+			t.Errorf("the second record is %+v, want the third", r)
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=quarter}"; got[k] != 1 {
+			t.Errorf("%s = %v, want 1", k, got[k])
+		}
+	})
 }
 
 // wrapsUnder is the stages' Security, recording the operation of the header
@@ -1177,26 +1218,28 @@ func (w *wrapsUnder) Wrap(h core.Header, reply *resources.Buf) error {
 
 // A chain's joined record is wrapped once, under its first member's header.
 func TestAChainsRecordIsWrappedOnceUnderItsFirstHeader(t *testing.T) {
-	w := &wrapsUnder{}
-	s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
-		w.Security = st.Security
-		st.Security = w
+	synctest.Test(t, func(t *testing.T) {
+		w := &wrapsUnder{}
+		s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
+			w.Security = st.Security
+			st.Security = w
+		})
+		w.mu.Lock()
+		w.ops = nil
+		w.mu.Unlock()
+		s.serve(
+			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 70, Session: 7, Tree: 1, Handle: s.root},
+			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 71, Session: inherited, Tree: 1, Name: "w", Related: true},
+		)
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
+			t.Fatalf("the chain is answered %+v, %v", rs, err)
+		}
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if !slices.Equal(w.ops, []uint32{testproto.OpPutFH}) {
+			t.Errorf("Wrap was handed headers of operations %v, want the PutFH's once", w.ops)
+		}
 	})
-	w.mu.Lock()
-	w.ops = nil
-	w.mu.Unlock()
-	s.serve(
-		testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 70, Session: 7, Tree: 1, Handle: s.root},
-		testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 71, Session: inherited, Tree: 1, Name: "w", Related: true},
-	)
-	if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
-		t.Fatalf("the chain is answered %+v, %v", rs, err)
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if !slices.Equal(w.ops, []uint32{testproto.OpPutFH}) {
-		t.Errorf("Wrap was handed headers of operations %v, want the PutFH's once", w.ops)
-	}
 }
 
 // undecryptableAfter is the stages' Security whose Unwrap says close, a nil
@@ -1272,7 +1315,7 @@ func TestAChainWhoseStatusDoesNotEncodeReleasesWhatItHolds(t *testing.T) {
 			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 20, Session: 7, Handle: s.root},
 			testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 21, Session: inherited, Tree: 1, Name: "b", Related: true},
 		)
-		if err := <-s.closed; !errors.Is(err, errEncode) {
+		if err := s.closeErr(t); !errors.Is(err, errEncode) {
 			t.Errorf("the connection closed with %v, want the encoder's error", err)
 		}
 		synctest.Wait()
@@ -1289,36 +1332,22 @@ func TestAChainWhoseStatusDoesNotEncodeReleasesWhatItHolds(t *testing.T) {
 	})
 }
 
-// closesAtUnwrap is the stages' Security that closes the pipeline at its
-// Unwrap numbered at: an input standing for a close that lands as a chain's
-// member is admitted.
-type closesAtUnwrap struct {
-	core.Security
-	n     atomic.Int32
-	at    int32
-	close func()
-}
-
-func (c *closesAtUnwrap) Unwrap(h core.Header, rec *resources.Buf, prev core.Header) (core.Header, error) {
-	if c.n.Add(1) == c.at {
-		c.close()
-	}
-	return c.Security.Unwrap(h, rec, prev)
-}
-
 // A chain member admitted after close does not run, and neither does any
 // member after it: no file is made, nothing is sent, and the reply held
 // before it is released.
 func TestAChainMemberAdmittedAfterCloseDoesNotRun(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		ca := &closesAtUnwrap{}
+		var unwraps atomic.Int32
+		var closeIt func()
 		s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
-			ca.Security = st.Security
-			st.Security = ca
+			st.Security = closesOnUnwrap{st.Security, func() {
+				if unwraps.Add(1) == 2 && closeIt != nil {
+					closeIt()
+				}
+			}}
 		})
-		ca.close = func() { s.p.Close() }
-		ca.n.Store(0)
-		ca.at = 2
+		closeIt = func() { s.p.Close() }
+		unwraps.Store(0)
 		s.serve(
 			echoIn(1, 7),
 			testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 2, Session: 7, Tree: 1, Handle: s.root},
@@ -1347,33 +1376,37 @@ func TestAHitAndAStatusKeepToAQuarterOfThePool(t *testing.T) {
 		return got["adapter_chain_splits_total{protocol="+testproto.Name+",reason=quarter}"]
 	}
 	t.Run("hit", func(t *testing.T) {
-		m := metrics.New("v", "c")
-		s := newChained(t, budget, adapter.Deps{Metrics: m, Budgets: serverBudgets(budget)})
-		s.serve(sequenced(s, 150)...)
-		recvIDs(t, s, 2)
-		before := quarter(t, m)
-		s.serve(sequenced(s, 150)...)
-		if got := recvIDs(t, s, 2); !slices.Equal(got[0], []uint64{150}) || !slices.Equal(got[1], []uint64{151}) {
-			t.Errorf("the records hold %v, want the PutFH, then the hit", got)
-		}
-		if n := quarter(t, m) - before; n != 1 {
-			t.Errorf("the hit counted %v quarter splits, want 1", n)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			m := metrics.New("v", "c")
+			s := newChained(t, budget, adapter.Deps{Metrics: m, Budgets: serverBudgets(budget)})
+			s.serve(sequenced(s, 150)...)
+			recvIDs(t, s, 2)
+			before := quarter(t, m)
+			s.serve(sequenced(s, 150)...)
+			if got := recvIDs(t, s, 2); !slices.Equal(got[0], []uint64{150}) || !slices.Equal(got[1], []uint64{151}) {
+				t.Errorf("the records hold %v, want the PutFH, then the hit", got)
+			}
+			if n := quarter(t, m) - before; n != 1 {
+				t.Errorf("the hit counted %v quarter splits, want 1", n)
+			}
+		})
 	})
 	t.Run("status", func(t *testing.T) {
-		m := metrics.New("v", "c")
-		d := adapter.Deps{Metrics: m}
-		s := newSeamWith(t, testproto.New(d).Bare(), budget, d)
-		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}, testproto.Msg{Op: 99, Version: 1, ID: 2})
-		if r := s.read(); r.ID != 1 {
-			t.Errorf("the first record is %+v, want the Echo alone", r)
-		}
-		if r := s.read(); r.ID != 2 || r.Status != testproto.StatusNotSupported {
-			t.Errorf("the second record is %+v, want the refusal", r)
-		}
-		if n := quarter(t, m); n != 1 {
-			t.Errorf("the status counted %v quarter splits, want 1", n)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			m := metrics.New("v", "c")
+			d := adapter.Deps{Metrics: m}
+			s := newSeamWith(t, testproto.New(d).Bare(), budget, d)
+			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}, testproto.Msg{Op: 99, Version: 1, ID: 2})
+			if r := s.read(); r.ID != 1 {
+				t.Errorf("the first record is %+v, want the Echo alone", r)
+			}
+			if r := s.read(); r.ID != 2 || r.Status != testproto.StatusNotSupported {
+				t.Errorf("the second record is %+v, want the refusal", r)
+			}
+			if n := quarter(t, m); n != 1 {
+				t.Errorf("the status counted %v quarter splits, want 1", n)
+			}
+		})
 	})
 }
 
@@ -1396,16 +1429,18 @@ func (o *overruns) Encode(h core.Header, s core.Status, out *resources.Buf) erro
 // record, as a request alone with such a reply does: the record's room never
 // passes its members' charges.
 func TestAChainOfOverrunRepliesGoesOut(t *testing.T) {
-	o := &overruns{}
-	s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
-		o.HeaderCodec = st.Header
-		st.Header = o
+	synctest.Test(t, func(t *testing.T) {
+		o := &overruns{}
+		s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
+			o.HeaderCodec = st.Header
+			st.Header = o
+		})
+		o.armed.Store(true)
+		s.serve(echoIn(1, 7), echoIn(2, 7))
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[0].ID != 1 || rs[1].ID != 2 {
+			t.Errorf("the chain is answered %+v, %v: want both replies in one record", rs, err)
+		}
 	})
-	o.armed.Store(true)
-	s.serve(echoIn(1, 7), echoIn(2, 7))
-	if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[0].ID != 1 || rs[1].ID != 2 {
-		t.Errorf("the chain is answered %+v, %v: want both replies in one record", rs, err)
-	}
 }
 
 // prevsOf is the stages' Security, recording the member before each Unwrap
@@ -1508,16 +1543,18 @@ func TestARefusedMembersSplitCountsUnderIt(t *testing.T) {
 // unrelated one answered, a related member runs and is answered its own
 // reply, not the refusal's status.
 func TestASuccessClearsAChainsFailure(t *testing.T) {
-	s := newSeam(t, testproto.New(adapter.Deps{}).Bare(), 1<<20)
-	s.serve(
-		testproto.Msg{Op: 99, Version: 1, ID: 1},
-		testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2},
-		testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3, Related: true},
-	)
-	rs, err := s.client.Recv()
-	if err != nil || len(rs) != 3 || rs[0].Status != testproto.StatusNotSupported || rs[1].Status != testproto.StatusOK || rs[2].ID != 3 || rs[2].Status != testproto.StatusOK {
-		t.Errorf("the chain is answered %+v, %v: want the refusal, then both Echo answered", rs, err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := newSeam(t, testproto.New(adapter.Deps{}).Bare(), 1<<20)
+		s.serve(
+			testproto.Msg{Op: 99, Version: 1, ID: 1},
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 2},
+			testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 3, Related: true},
+		)
+		rs, err := s.client.Recv()
+		if err != nil || len(rs) != 3 || rs[0].Status != testproto.StatusNotSupported || rs[1].Status != testproto.StatusOK || rs[2].ID != 3 || rs[2].Status != testproto.StatusOK {
+			t.Errorf("the chain is answered %+v, %v: want the refusal, then both Echo answered", rs, err)
+		}
+	})
 }
 
 // The headers a drain's interim is handed stop at a step that is not
@@ -1545,4 +1582,46 @@ func TestLaterHeadersStopAtABadStep(t *testing.T) {
 	if len(hs) != 2 || !slices.Equal(read, []int{offs[1], offs[2]}) {
 		t.Errorf("the interim is handed %d headers, read at %v: want the second's and the third's, at %d and %d", len(hs), read, offs[1], offs[2])
 	}
+}
+
+// closeErr is the error the connection closed with, failing the test once an
+// hour passes on the bubble's clock with no close.
+func (s *seam) closeErr(t *testing.T) error {
+	t.Helper()
+	select {
+	case err := <-s.closed:
+		return err
+	case <-time.After(time.Hour):
+		t.Fatal("the connection never closed")
+		return nil
+	}
+}
+
+// A chain runs off the reader: serving it returns while its member is held
+// in the service, so the connection is read on.
+func TestAChainRunsOffTheReader(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newChained(t, 1<<20, adapter.Deps{})
+		hold := s.faults.Hold(vfs.OpCreate)
+		served := make(chan struct{})
+		go func() {
+			s.serve(
+				testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 90, Session: 7, Tree: 1, Handle: s.root},
+				testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 91, Session: inherited, Tree: 1, Name: "off", Related: true},
+			)
+			close(served)
+		}()
+		<-hold.Reached()
+		// A second on the bubble's clock is well inside the held call's own
+		// deadline, which would otherwise end the hold and the chain.
+		select {
+		case <-served:
+		case <-time.After(time.Second):
+			t.Error("serving the chain did not return while its member was held")
+		}
+		hold.Release()
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
+			t.Errorf("the chain is answered %+v, %v", rs, err)
+		}
+	})
 }

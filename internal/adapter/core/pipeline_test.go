@@ -383,6 +383,10 @@ func (s *seam) connect(proto core.Protocol, remote netip.Addr, set settings.Sett
 		s.t.Fatal(err)
 	}
 	out, stop, conn, _ := newRecorder(s.f)
+	// A reply that never comes fails the read an hour on, by the bubble's
+	// clock where the test runs in one, rather than holding the test to its
+	// timeout.
+	_ = conn.SetReadDeadline(time.Now().Add(time.Hour))
 	s.stop, s.client = stop, testproto.NewClient(conn)
 	sent := func(msg *resources.Buf, key, before uint64) error {
 		if s.sent != nil {
