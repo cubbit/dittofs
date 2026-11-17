@@ -52,8 +52,8 @@ type chain struct {
 	rec      *resources.Buf
 	held     []held
 	charge   int64 // the held replies' charges
-	clear    bool  // the record is a header's refusal, which no Wrap sees
-	isolated bool  // the record is a refusal's, ended before the next unrelated member
+	clear    bool  // the record is a header's refusal, which no Wrap sees, until it ends
+	isolated bool  // the record is a refusal's, which ends before the next unrelated member
 	prevH    Header
 	prevR    *Request
 	failed   bool // the member before failed, with failS
@@ -180,6 +180,7 @@ func (c *chain) one(e *entry) {
 	related := e.h.Related()
 	if c.isolated && !related {
 		c.flush(splits, nil) // a refusal's record ends before the next unrelated member
+		c.clear, c.isolated = false, false
 	}
 	if e.err != nil && e.st == stageDecodeHeader {
 		c.flush(splitDecode, e.tr)
@@ -211,10 +212,13 @@ func (c *chain) one(e *entry) {
 				break
 			}
 			c.admit(e)
-			if e.err == nil && p.ctx.Err() != nil {
-				// A member admitted after close is not run, as a first
-				// message is not: nothing more is sent.
-				e.release()
+			if c.stopped || (e.err == nil && p.ctx.Err() != nil) {
+				// A member admitted after close, or after a split that
+				// closed the connection, is not run, as a first message is
+				// not: nothing more is sent.
+				if e.release != nil {
+					e.release()
+				}
 				c.drop(e.tr, nil)
 				return
 			}
@@ -228,7 +232,7 @@ func (c *chain) one(e *entry) {
 	case e.err == nil:
 	case e.st == stageUnwrap:
 		c.flush(splitUnwrap, e.tr)
-		c.isolated = true
+		c.clear, c.isolated = false, true
 		c.refusal(e, e.u)
 		return
 	case e.st == stageAdmit:
@@ -407,7 +411,7 @@ func (c *chain) answered(tr *track, h Header, reply *resources.Buf, key uint64, 
 func (c *chain) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
 	p := c.p
 	release()
-	c.stopped = true
+	defer func() { c.stopped = true }() // once its interim, if any, is out
 	if tb == nil || !tb.Holds {
 		if reply != nil {
 			reply.Release()
@@ -463,8 +467,14 @@ func (c *chain) later(hs []Header) []Header {
 	return hs
 }
 
-// hold adds a reply to the record the chain is building.
+// hold adds a reply to the record the chain is building; once the chain has
+// stopped, the reply is dropped and its request ended unsent.
 func (c *chain) hold(m held) {
+	if c.stopped {
+		m.reply.Release()
+		c.p.end(m.tr, false, 0, 0, m.err)
+		return
+	}
 	m.n = len(m.reply.B)
 	c.held = append(c.held, m)
 	c.charge += m.reply.Charge()
@@ -472,13 +482,15 @@ func (c *chain) hold(m held) {
 
 // flush sends the record the chain holds, joined and wrapped once, unless it
 // is a header's refusal, which no Wrap sees; why, where it is one of the
-// split reasons, counts the split under tr's series.
+// split reasons, counts the split under tr's series. A flush that holds
+// nothing changes nothing, and a refusal's record keeps its clear and
+// isolated marks across a split inside it: only its end clears them.
 func (c *chain) flush(why split, tr *track) {
 	p := c.p
-	defer func() { c.held, c.charge, c.clear, c.isolated = c.held[:0], 0, false, false }()
 	if len(c.held) == 0 {
 		return
 	}
+	defer func() { c.held, c.charge = c.held[:0], 0 }()
 	if why < splits && tr != nil {
 		tr.series().split(why)
 	}
@@ -515,10 +527,10 @@ const chainPadding = 7
 // through resources.Join, each appended after HeaderCodec.Chain points the
 // one before at it, and released once copied, so its bytes are held past its
 // charge for that copy alone (RFC 24 §2.5). The record's room is its
-// replies' bytes and Chain's padding between them, never past the members'
-// charges, which Join refuses: a reply an encoder grew past its charge grows
-// the record past its room, uncharged, as a request alone sends such a
-// reply.
+// replies' bytes, Chain's padding between them, and what Wrap adds in place,
+// which the first member's ReplyLen bounds, never past the members' charges,
+// which Join refuses: a reply an encoder grew past its charge grows the
+// record past its room, uncharged, as a request alone sends such a reply.
 func (c *chain) join() (*resources.Buf, error) {
 	if len(c.held) == 1 {
 		return c.held[0].reply, nil
@@ -529,7 +541,8 @@ func (c *chain) join() (*resources.Buf, error) {
 		n += len(m.reply.B)
 		bufs[i] = m.reply
 	}
-	rec := resources.Join(min(n+chainPadding*(len(c.held)-1), int(c.charge)), bufs...)
+	n += chainPadding*(len(c.held)-1) + c.p.st.Header.ReplyLen(c.held[0].h)
+	rec := resources.Join(min(n, int(c.charge)), bufs...)
 	prev := 0
 	var err error
 	for i, m := range c.held {
@@ -562,6 +575,10 @@ func (c *chain) drop(tr *track, err error) {
 	p.end(tr, false, 0, 0, err)
 	c.stopped = true
 }
+
+// halted says the chain has stopped, its connection closed or a NoReply
+// member answered, so the member running neither calls nor answers.
+func (c *chain) halted() bool { return c.stopped }
 
 // close closes the connection with err and stops the chain.
 func (c *chain) close(err error) {

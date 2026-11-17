@@ -1584,6 +1584,311 @@ func TestLaterHeadersStopAtABadStep(t *testing.T) {
 	}
 }
 
+// failsWrap is the stages' Security whose Wrap fails once armed: an input
+// standing for a record that does not seal.
+type failsWrap struct {
+	core.Security
+	armed atomic.Bool
+}
+
+var errWrap = errors.New("a record that does not wrap")
+
+func (f *failsWrap) Wrap(h core.Header, reply *resources.Buf) error {
+	if f.armed.Load() {
+		return errWrap
+	}
+	return f.Security.Wrap(h, reply)
+}
+
+// A split whose record does not wrap closes the connection, and the chain
+// runs nothing more: the member after the split neither calls nor holds a
+// reply, every reservation is released and every request ended.
+func TestASplitThatDoesNotWrapStopsTheChain(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		budget int64
+		serve  func(s *served)
+	}{
+		{"unwrap", 1 << 20, func(s *served) {
+			b, offs := chainOf(s.f, echoIn(1, 7), echoIn(2, 7))
+			b[offs[1]+headerLen+1] ^= 1 // a byte of the second's payload
+			s.serveBody(b)
+		}},
+		{"quarter", 64 << 10, func(s *served) {
+			s.serve(
+				testproto.Msg{Op: testproto.OpPutFH, Version: 2, ID: 10, Session: 7, Tree: 1, Handle: s.root},
+				testproto.Msg{Op: testproto.OpCreate, Version: 2, ID: 11, Session: inherited, Tree: 1, Name: "late", Related: true},
+			)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m := metrics.New("v", "c")
+				fw := &failsWrap{}
+				s := newChained(t, c.budget, adapter.Deps{Metrics: m}, func(st *core.Stages) {
+					fw.Security = st.Security
+					st.Security = fw
+				})
+				fw.armed.Store(true)
+				c.serve(s)
+				if err := s.closeErr(t); !errors.Is(err, errWrap) {
+					t.Errorf("the connection closed with %v, want Wrap's error", err)
+				}
+				synctest.Wait()
+				if n := s.creates(); n != 0 {
+					t.Errorf("a member after the split made %d files", n)
+				}
+				if r := s.budgets.Reply.Reserved(); r != 0 {
+					t.Errorf("the reply budget holds %d bytes after the chain stopped", r)
+				}
+				got, _ := scrape(t, m)
+				for k, v := range got {
+					if strings.HasPrefix(k, "adapter_requests_in_flight{") && v != 0 {
+						t.Errorf("%s = %v after the chain stopped", k, v)
+					}
+				}
+			})
+		})
+	}
+}
+
+// recordsOf reads n records and answers each one's IDs and whether each
+// reply carries a checksum.
+func recordsOf(t *testing.T, s *served, n int) (ids [][]uint64, sums [][]bool) {
+	t.Helper()
+	for range n {
+		rs, err := s.client.Recv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var i []uint64
+		var c []bool
+		for _, r := range rs {
+			i, c = append(i, r.ID), append(c, r.Checksum != 0)
+		}
+		ids, sums = append(ids, i), append(sums, c)
+	}
+	return ids, sums
+}
+
+// A refusal's record keeps its marks across a split inside it: on a pool
+// whose quarter is two small replies, a refused member, two related ones and
+// an unrelated fifth go out as the refusal and the first related, the second
+// related alone, and the fifth alone. After an Unwrap refusal each of them is
+// wrapped; after a Decode refusal the refusal's records are not, and the
+// fifth is.
+func TestARefusalsRecordKeepsItsMarksAcrossASplit(t *testing.T) {
+	want := [][]uint64{{1}, {2, 3}, {4}, {5}}
+	t.Run("unwrap", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			s := newChained(t, 8*smallCharge, adapter.Deps{})
+			s.serve(testproto.Msg{Op: testproto.OpSession, Version: 2, Session: 9})
+			if r := s.read(); r.Status != testproto.StatusOK {
+				t.Fatalf("session 9: %+v", r)
+			}
+			b, offs := chainOf(s.f, echoIn(1, 7), echoIn(2, 9), echoIn(3, inherited), echoIn(4, inherited), echoIn(5, 7))
+			b[offs[1]+headerLen+1] ^= 1
+			s.serveBody(b)
+			if ids, sums := recordsOf(t, s, 4); !slices.EqualFunc(ids, want, slices.Equal) || !sums[2][0] || !sums[3][0] {
+				t.Errorf("the records are %v, checksummed %v: want %v, each wrapped", ids, sums, want)
+			}
+		})
+	})
+	t.Run("decode", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			codec := &refusesAt{off: -1}
+			s := newChained(t, 8*smallCharge, adapter.Deps{}, func(st *core.Stages) {
+				codec.HeaderCodec = st.Header
+				st.Header = codec
+			})
+			b, offs := chainOf(s.f, echoIn(1, 7), echoIn(2, 7), echoIn(3, inherited), echoIn(4, inherited), echoIn(5, 7))
+			codec.off = offs[1]
+			s.serveBody(b)
+			ids, sums := recordsOf(t, s, 4)
+			if !slices.EqualFunc(ids, want, slices.Equal) || sums[1][0] || sums[1][1] || sums[2][0] || !sums[3][0] {
+				t.Errorf("the records are %v, checksummed %v: want %v, the refusal's two unwrapped and the fifth wrapped", ids, sums, want)
+			}
+		})
+	})
+}
+
+// A refusal of a header Decode refused, its status finding no room at once,
+// goes out unwrapped: the flush before its wait holds nothing and changes
+// nothing.
+func TestADecodeRefusalThatWaitsGoesOutUnwrapped(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const budget = 400_000
+		codec := &refusesAt{off: -1}
+		s := newChained(t, budget, adapter.Deps{}, func(st *core.Stages) {
+			codec.HeaderCodec = st.Header
+			st.Header = codec
+		})
+		rest, err := s.budgets.Reply.Reserve(context.Background(), peer, budget-s.reply.Charge(0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, offs := chainOf(s.f, echoIn(1, 7), echoIn(2, 7))
+		codec.off = offs[1]
+		s.serveBody(b)
+		synctest.Wait()
+		r1, r2 := s.recvOne(), s.recvOne()
+		rest.Release()
+		if r1.ID != 1 || r1.Checksum == 0 || r2.ID != 2 || r2.Checksum != 0 {
+			t.Errorf("the records are %+v and %+v, want the Echo wrapped, then the refusal unwrapped", r1, r2)
+		}
+	})
+}
+
+// wrapRoom is the stages' Security recording, at each Wrap, the room past
+// the record's bytes and what the stages' HeaderCodec bounds for the header
+// it is handed: a pass-through, where the room Wrap gets is what is checked.
+type wrapRoom struct {
+	core.Security
+	codec core.HeaderCodec
+	mu    sync.Mutex
+	room  []int
+	need  []int
+}
+
+func (w *wrapRoom) Wrap(h core.Header, reply *resources.Buf) error {
+	w.mu.Lock()
+	w.room = append(w.room, cap(reply.B)-len(reply.B))
+	w.need = append(w.need, w.codec.ReplyLen(h))
+	w.mu.Unlock()
+	return w.Security.Wrap(h, reply)
+}
+
+// A chain's joined record leaves Wrap the room its first member's ReplyLen
+// counts, which bounds what Wrap adds in place.
+func TestAJoinedRecordLeavesWrapItsRoom(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w := &wrapRoom{}
+		s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
+			w.Security, w.codec = st.Security, st.Header
+			st.Security = w
+		})
+		w.mu.Lock()
+		w.room, w.need = nil, nil
+		w.mu.Unlock()
+		s.serve(echoIn(1, 7), echoIn(2, 7), echoIn(3, 7))
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 3 {
+			t.Fatalf("the chain is answered %+v, %v", rs, err)
+		}
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if len(w.room) != 1 || w.room[0] < w.need[0] {
+			t.Errorf("Wrap was handed rooms %v, want one record's of at least %v", w.room, w.need)
+		}
+	})
+}
+
+// nilAt is the stages' HeaderCodec answering no header at off: an input
+// standing for a header that does not decode at all.
+type nilAt struct {
+	core.HeaderCodec
+	off int
+}
+
+func (c *nilAt) Decode(rec *resources.Buf, off int) (core.Header, error) {
+	if off == c.off {
+		return nil, errors.New("a header that does not decode at all")
+	}
+	return c.HeaderCodec.Decode(rec, off)
+}
+
+// A chain whose second header does not decode at all closes the connection
+// with ErrDecode and sends nothing, the first member's reply included.
+func TestAChainWhoseHeaderDoesNotDecodeSendsNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		codec := &nilAt{off: -1}
+		s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
+			codec.HeaderCodec = st.Header
+			st.Header = codec
+		})
+		b, offs := chainOf(s.f, echoIn(1, 7), echoIn(2, 7))
+		codec.off = offs[1]
+		s.serveBody(b)
+		if err := s.closeErr(t); !errors.Is(err, core.ErrDecode) {
+			t.Errorf("the connection closed with %v, want ErrDecode", err)
+		}
+		if !s.sentNothing() {
+			t.Error("a chain whose header did not decode sent a reply")
+		}
+	})
+}
+
+// An unrelated member after a member whose header Decode refused goes out in
+// a record of its own, wrapped, after the refusal's, which is not.
+func TestAnUnrelatedMemberAfterADecodeRefusalIsAlone(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		codec := &refusesAt{off: -1}
+		s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
+			codec.HeaderCodec = st.Header
+			st.Header = codec
+		})
+		b, offs := chainOf(s.f, echoIn(1, 7), echoIn(2, 7), echoIn(3, 7))
+		codec.off = offs[1]
+		s.serveBody(b)
+		ids, sums := recordsOf(t, s, 3)
+		if !slices.EqualFunc(ids, [][]uint64{{1}, {2}, {3}}, slices.Equal) || sums[1][0] || !sums[2][0] {
+			t.Errorf("the records are %v, checksummed %v: want each member alone, the refusal unwrapped and the third wrapped", ids, sums)
+		}
+	})
+}
+
+// The headers a drain's interim is handed end at one that comes back with
+// an error.
+func TestLaterHeadersEndAtOneThatDoesNotDecode(t *testing.T) {
+	codec := &refusesAt{off: -1}
+	st := testproto.New(adapter.Deps{}).Bare().NewConn(nil)
+	codec.HeaderCodec = st.Header
+	st.Header = codec
+	echo := func(id uint64) testproto.Msg { return testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: id} }
+	b, offs := chainOf(testproto.New(adapter.Deps{}).Framer(), echo(1), echo(2), echo(3))
+	codec.off = offs[2]
+	rec := &resources.Buf{B: b}
+	first, err := codec.Decode(rec, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hs := core.Later(st, rec, 0, first); len(hs) != 1 {
+		t.Errorf("the interim is handed %d headers, want the second's alone", len(hs))
+	}
+}
+
+// A flow split whose record does not wrap closes the connection, and the
+// member that was to wait in Admit is dropped once its wait ends on the
+// close: it is neither refused nor answered, and no error is mapped for it.
+func TestAFlowSplitThatDoesNotWrapDropsTheMemberWaiting(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := metrics.New("v", "c")
+		flow, fw := &gatedFlow{gate: make(chan struct{})}, &failsWrap{}
+		s := newChained(t, 1<<20, adapter.Deps{Metrics: m}, func(st *core.Stages) {
+			flow.FlowControl, fw.Security = st.Flow, st.Security
+			st.Flow, st.Security = flow, fw
+		})
+		flow.armed.Store(true)
+		fw.armed.Store(true)
+		s.serve(echoIn(70, 7), echoIn(71, 7))
+		if err := s.closeErr(t); !errors.Is(err, errWrap) {
+			t.Errorf("the connection closed with %v, want Wrap's error", err)
+		}
+		synctest.Wait()
+		if r := s.budgets.Reply.Reserved(); r != 0 {
+			t.Errorf("the reply budget holds %d bytes after the chain stopped", r)
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_unmapped_errors_total{protocol=" + testproto.Name + "}"; got[k] != 0 {
+			t.Errorf("%s = %v, want 0", k, got[k])
+		}
+		for k, v := range got {
+			if strings.HasPrefix(k, "adapter_requests_in_flight{") && v != 0 {
+				t.Errorf("%s = %v after the chain stopped", k, v)
+			}
+		}
+	})
+}
+
 // closeErr is the error the connection closed with, failing the test once an
 // hour passes on the bubble's clock with no close.
 func (s *seam) closeErr(t *testing.T) error {

@@ -525,6 +525,9 @@ type answerer interface {
 	status(ctx context.Context, n int) *resources.Buf
 	// lookup asks the replay cache for h's reply.
 	lookup(ctx context.Context, h Header) (*resources.Buf, error)
+	// halted says the message is to run no further: its chain stopped, its
+	// connection closed by a split, while it looked up or reserved.
+	halted() bool
 	// answered takes the message's encoded reply, its key and its status.
 	answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, err error)
 	// unanswered ends a message a NoReply row answered.
@@ -545,6 +548,8 @@ func (a alone) status(ctx context.Context, n int) *resources.Buf {
 func (a alone) lookup(ctx context.Context, h Header) (*resources.Buf, error) {
 	return a.p.st.Replay.Lookup(ctx, h)
 }
+
+func (alone) halted() bool { return false }
 
 func (a alone) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, err error) {
 	n := len(reply.B)
@@ -655,6 +660,16 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 			r.resolveStart = p.sh.clock.Now()
 			ts.observe(stageReplyWait, r.resolveStart.Sub(start))
 		}
+	}
+	if a.halted() {
+		// Its chain stopped while it looked up or reserved, its connection
+		// closed: it neither calls nor answers.
+		if reply != nil {
+			reply.Release()
+		}
+		release()
+		p.end(tr, false, 0, 0, nil)
+		return r
 	}
 	if err == nil {
 		if err = inv.Resolve(r); err != nil {
