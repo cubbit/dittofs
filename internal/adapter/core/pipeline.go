@@ -109,10 +109,12 @@ func (c capped) Admit(ctx context.Context, _ Header) (release func(), err error)
 }
 
 // reserveReply takes a reply buffer of bound bytes from the reply pool for
-// key, waiting within ctx, the attempt's. A wait that ends at ctx's deadline
-// is the adapter's own refusal for a node memory pool, ErrDelay of
-// DelayResources (RFC 20 §6.3), and a charge past the pool's ceiling, which
-// the pool refuses at once under any ctx, is ErrReplyTooBig (RFC 20 §4.3); a
+// key: at once when the pool has room with no waiter ahead, otherwise
+// waiting until the deadline of ctx's attempt, so a pool held full ends the
+// wait (RFC 20 §6.4; RFC 24 §3.3). A wait that ends at that deadline is the
+// adapter's own refusal for a node memory pool, ErrDelay of DelayResources
+// (RFC 20 §6.3), and a charge past the pool's ceiling, which the pool
+// refuses at once under any ctx, is ErrReplyTooBig (RFC 20 §4.3); a
 // cancellation, and any other error, is returned as it is. On an error
 // nothing is reserved.
 //
@@ -123,6 +125,12 @@ func (c capped) Admit(ctx context.Context, _ Header) (release func(), err error)
 // statuses, when the reply budget is shown to bind before the receive budget
 // does.
 func (sh *shared) reserveReply(ctx context.Context, key netip.Addr, bound int) (*resources.Buf, error) {
+	// A reply that fits at once arms no deadline.
+	if buf, ok := sh.reply.TryGet(key, bound); ok {
+		return buf, nil
+	}
+	ctx, cancel := sh.attempt(ctx)
+	defer cancel()
 	buf, err := sh.reply.Get(ctx, key, bound)
 	switch {
 	case err == nil:
@@ -651,9 +659,6 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 	}
 	var reply *resources.Buf
 	if err == nil {
-		// ponytail: ctx is the connection's, which has no deadline, so the
-		// reservation can wait as long as the pool stays full. Wait under the
-		// attempt's deadline once the request context lands.
 		start := p.sh.clock.Now()
 		n, _ := inv.Bound(r, p.l.record-p.st.Header.ReplyLen(h))
 		if reply, err = a.reserve(ctx, n+p.st.Header.ReplyLen(h)); err != nil {
@@ -710,20 +715,18 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 // finish answers a request whose call, or refusal, gave err: its status
 // mapped by errs, encoded into reply or, with none reserved, a status's
 // buffer, stored where its row is cacheable, and handed to a; or, for a
-// NoReply row, a's unanswered.
+// NoReply row, a's unanswered. A request whose context the connection's
+// close cancelled is dropped instead: its reservations released, nothing
+// encoded, and its span ended unsent (§3.1, §6.5). Its error is still mapped,
+// unless it is the close's own cancel, which is no error.
 func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op *Op, inv Invocation, reply *resources.Buf, err error, release func(), a answerer) {
 	ctx := tr.ctx
-	if err != nil && p.endedByClose(err) {
-		if reply != nil {
-			reply.Release()
-		}
-		release()
-		p.end(tr, false, 0, 0, err)
-		return
-	}
 	var s Status
 	send, notFailure := true, false
 	switch {
+	case p.endedByClose(err):
+		// The close's own cancel is mapped by no row, counted and logged by
+		// none.
 	case errors.Is(err, errPanicked):
 		// decision: a recovered panic is answered the fault status without
 		// Map, so it is counted once, as a panic, and never also as an error
@@ -731,6 +734,14 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 		s = errs.fault
 	case err != nil:
 		s, send, notFailure = p.mapped(tr, errs, err, op, h.Version(), true)
+	}
+	if ctx.Err() != nil {
+		if reply != nil {
+			reply.Release()
+		}
+		release()
+		p.end(tr, false, 0, 0, err)
+		return
 	}
 	if !send {
 		a.unanswered(tr, h, tb, reply, err, release)
@@ -765,9 +776,10 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 // lines and its counts, from serve taking its record to its reply going to
 // out or being dropped.
 type track struct {
-	ctx       context.Context // carries the request span, where there is one
-	span      trace.Span      // nil on a server with no tracer
-	id        trace.TraceID   // drawn even when the request is not traced
+	ctx       context.Context // &req, the request's context
+	req       requestCtx
+	span      trace.Span    // nil on a server with no tracer
+	id        trace.TraceID // drawn even when the request is not traced
 	label     *labelSeries
 	table     *tableSeries // from Route on
 	protocol  string       // the label it records under: the stages', then the table's
@@ -788,16 +800,37 @@ type track struct {
 // nothing for tracing (RFC 25 §6.3). Its span, named after the connection's
 // label until Route names its operation, takes the drawn ID through the
 // root's ID generator; with a provider that draws its own, the request's
-// lines carry the span's.
+// lines carry the span's. The request's context starts its first attempt
+// now, the request's arrival (§6.4).
 func (p *pipeline) begin(rec *resources.Buf) *track {
-	tr := &track{ctx: p.ctx, label: p.label, protocol: p.st.Protocol, bytes: len(rec.B), id: newTraceID()}
+	tr := &track{label: p.label, protocol: p.st.Protocol, bytes: len(rec.B), id: newTraceID()}
+	parent := p.ctx
 	if p.sh.tracer != nil && sampled(tr.id, p.sh.sample) {
-		tr.ctx, tr.span = p.sh.tracer.Start(adapter.ContextWithTraceID(p.ctx, tr.id), p.name)
+		parent, tr.span = p.sh.tracer.Start(adapter.ContextWithTraceID(p.ctx, tr.id), p.name)
 		if id := tr.span.SpanContext().TraceID(); id.IsValid() {
 			tr.id = id
 		}
 	}
+	tr.req = requestCtx{Context: parent, start: p.sh.clock.Now()}
+	tr.ctx = &tr.req
 	return tr
+}
+
+// requestCtx is a request's one context: its connection's, through the
+// request span where it has one, so the connection's close cancels the
+// request (§6.5, §6.9). It keeps the start of the request's attempt and
+// answers attemptStartKey with it, so an attempt adds no context to carry it
+// (§6.4).
+type requestCtx struct {
+	context.Context
+	start time.Time
+}
+
+func (c *requestCtx) Value(key any) any {
+	if _, ok := key.(attemptStartKey); ok {
+		return &c.start
+	}
+	return c.Context.Value(key)
 }
 
 // series is what the request records into now: its connection's label's

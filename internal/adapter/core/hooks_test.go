@@ -109,9 +109,9 @@ func (sh *shared) Deadline(next Call) Call                     { return sh.deadl
 func (sh *shared) Recovery(op *Op, ts *TableSeries) Middleware { return sh.recovery(op, ts) }
 
 // WithAttemptStart and WithHoldDeadline keep in ctx what the pipeline keeps
-// there before an attempt.
+// there before an attempt: the start in a request's own context.
 func WithAttemptStart(ctx context.Context, t time.Time) context.Context {
-	return context.WithValue(ctx, attemptStartKey{}, t)
+	return &requestCtx{Context: ctx, start: t}
 }
 
 func WithHoldDeadline(ctx context.Context, t time.Time) context.Context {

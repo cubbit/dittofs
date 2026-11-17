@@ -324,6 +324,10 @@ func (c *chain) admit(e *entry) {
 	}
 	c.giveBack()
 	e.release = release
+	// A member after the first starts its attempt at its own admission, so
+	// one that waited behind the members before it does not start on their
+	// spent deadline.
+	e.tr.req.start = c.p.sh.clock.Now()
 }
 
 // refusal answers e's refusal at its stage, before Route, as the stages'
@@ -606,13 +610,23 @@ func (c *chain) hold(m held) {
 // is a header's refusal, which no Wrap sees; why, where it is one of the
 // split reasons, counts the split under tr's series. A flush that holds
 // nothing changes nothing, and a refusal's record keeps its clear and
-// isolated marks across a split inside it: only its end clears them.
+// isolated marks across a split inside it: only its end clears them. Once
+// the connection's close has cancelled the members' contexts, what the
+// chain holds is dropped, neither joined nor wrapped, each member ended
+// unsent (§6.5).
 func (c *chain) flush(why split, tr *track) {
 	p := c.p
 	if len(c.held) == 0 {
 		return
 	}
 	defer func() { c.held, c.charge = c.held[:0], 0 }()
+	if p.ctx.Err() != nil {
+		for _, m := range c.held {
+			m.reply.Release()
+			p.end(m.tr, false, 0, 0, m.err)
+		}
+		return
+	}
 	if why < splits && tr != nil {
 		tr.series().split(why)
 	}

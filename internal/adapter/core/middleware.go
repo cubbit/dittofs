@@ -122,28 +122,37 @@ func (runtimeClock) AfterFunc(d time.Duration, f func()) timer { return time.Aft
 
 // The pipeline keeps an attempt's start and the hold's deadline in the
 // context under these keys, before the attempt's reply reservation (§6.4).
+// A request's own context answers the start, as a *time.Time.
 type (
 	attemptStartKey struct{}
 	holdDeadlineKey struct{}
 )
 
-// deadline gives the call a deadline on the server's clock: 30 s from the
-// attempt's start the context carries, or the hold's deadline it carries
-// where that is sooner; with no start, from the clock's now.
+// deadline gives the call its attempt's deadline.
 func (sh *shared) deadline(next Call) Call {
 	return func(ctx context.Context, r *Request) error {
-		start, ok := ctx.Value(attemptStartKey{}).(time.Time)
-		if !ok {
-			start = sh.clock.Now()
-		}
-		at := start.Add(attemptDeadline)
-		if hold, ok := ctx.Value(holdDeadlineKey{}).(time.Time); ok && hold.Before(at) {
-			at = hold
-		}
-		ctx, cancel := withClockDeadline(ctx, sh.clock, at)
+		ctx, cancel := sh.attempt(ctx)
 		defer cancel()
 		return next(ctx, r)
 	}
+}
+
+// attempt is ctx with its attempt's deadline on the server's clock: 30 s
+// from the attempt's start ctx carries, or the hold's deadline it carries
+// where that is sooner; with no start, from the clock's now (§6.4). The
+// call and the attempt's reply reservation each wait under it.
+func (sh *shared) attempt(ctx context.Context) (context.Context, func()) {
+	var start time.Time
+	if s, ok := ctx.Value(attemptStartKey{}).(*time.Time); ok {
+		start = *s
+	} else {
+		start = sh.clock.Now()
+	}
+	at := start.Add(attemptDeadline)
+	if hold, ok := ctx.Value(holdDeadlineKey{}).(time.Time); ok && hold.Before(at) {
+		at = hold
+	}
+	return withClockDeadline(ctx, sh.clock, at)
 }
 
 // errPanicked is recovery's answer for a handler that panicked: the pipeline
