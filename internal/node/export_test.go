@@ -1,9 +1,14 @@
 package node
 
 import (
+	"context"
+	"slices"
+
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
 	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 // NewStepping is New with stepped called after each start step completes,
@@ -37,3 +42,63 @@ func (n *Node) Filesystem() *vfs.Filesystem { return n.fs }
 
 // Engine is the engine the node built.
 func (n *Node) Engine() *engine.Engine { return n.engine }
+
+// NewPausing is New with paused called by each reconcile pass with the
+// counters it read, before it acts on them; the pass waits for it.
+func NewPausing(paused func(read kvstore.Counters)) func(Config) (*Node, error) {
+	return func(cfg Config) (*Node, error) {
+		n, err := New(cfg)
+		if err == nil {
+			n.rec.paused = paused
+		}
+		return n, err
+	}
+}
+
+// OnBind has reconcile call binding with each share before it binds it. Call
+// it before Start.
+func (n *Node) OnBind(binding func(entity.Share)) { n.rec.binding = binding }
+
+// OnApply has reconcile call applying with the counters each apply acts on.
+// Call it before Start.
+func (n *Node) OnApply(applying func(kvstore.Counters)) { n.rec.applying = applying }
+
+// Applied is the wait a write on this node makes.
+func (n *Node) Applied(ctx context.Context) error { return n.applied(ctx) }
+
+// Positions is the counters the node has reconciled through.
+func (n *Node) Positions() kvstore.Counters {
+	n.rec.mu.Lock()
+	defer n.rec.mu.Unlock()
+	return n.rec.pos
+}
+
+// Moved is closed once a pass that read the counters without error ends.
+func (n *Node) Moved() <-chan struct{} {
+	n.rec.mu.Lock()
+	defer n.rec.mu.Unlock()
+	return n.rec.moved
+}
+
+// Woken reports whether a wake waits for reconcile to take it.
+func (n *Node) Woken() bool { return len(n.rec.wake) == 1 }
+
+// Refused is the records the node refused, the shares' first.
+func (n *Node) Refused() []entity.RefusedRecord {
+	n.rec.mu.Lock()
+	defer n.rec.mu.Unlock()
+	var out []entity.RefusedRecord
+	for _, f := range append(slices.Clone(n.rec.shares), n.rec.applied...) {
+		out = append(out, f.rec)
+	}
+	return out
+}
+
+// Bound is share id's state as reconcile last bound it in the engine, and
+// false when it has bound none.
+func (n *Node) Bound(id entity.ShareID) (entity.ShareState, bool) {
+	n.rec.mu.Lock()
+	defer n.rec.mu.Unlock()
+	s, ok := n.rec.bound[id]
+	return s.State, ok
+}

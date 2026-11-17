@@ -27,7 +27,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
-	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -127,18 +126,12 @@ func (s *steps) reported() []string {
 	return slices.Clone(s.order)
 }
 
-// addShare creates a share in the harness's store, which Start binds.
+// addShare creates a share on a configured remote store in the harness's
+// store, which Start binds.
 func addShare(t *testing.T, h *nodetest.Harness) entity.Share {
 	t.Helper()
-	sh := entity.Share{ID: entity.NewShareID(), Name: "a", Path: "/a", Root: entity.NewFileID()}
-	if _, err := kvstoretest.CreateShare(t.Context(), h.Store().ControlPlane(), sh); err != nil {
-		t.Fatalf("create a share: %v", err)
-	}
-	got, _, err := h.Store().ShareIndex().Share(t.Context(), sh.ID)
-	if err != nil {
-		t.Fatalf("read the share back: %v", err)
-	}
-	return got
+	configure(t, h, storeA)
+	return createShare(t, h, "a", storeA)
 }
 
 var (
@@ -181,8 +174,9 @@ func TestStartAndStopInOrder(t *testing.T) {
 		"engine":     {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 1},
 		"filesystem": {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 		"runner":     {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
+		"reconcile":  {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 	}
-	steps := []string{"refuse", "listeners", "register", "apply", "engine", "filesystem", "runner"}
+	steps := []string{"refuse", "listeners", "register", "apply", "engine", "filesystem", "runner", "reconcile"}
 	if got := s.reported(); !slices.Equal(got, steps) {
 		t.Fatalf("start steps: got %v, want %v", got, steps)
 	}
@@ -201,7 +195,7 @@ func TestStartAndStopInOrder(t *testing.T) {
 	if err := h.Node().Stop(t.Context()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	stops := []string{"stop runner", "stop filesystem", "stop engine", "stop listeners", "stop store"}
+	stops := []string{"stop reconcile", "stop runner", "stop filesystem", "stop engine", "stop listeners", "stop store"}
 	if got := s.reported()[len(steps):]; !slices.Equal(got, stops) {
 		t.Fatalf("stop steps: got %v, want %v", got, stops)
 	}
@@ -291,6 +285,7 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 		{step: "apply", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 1) }, registered: true},
 		{step: "engine", fault: func(k string) sim.Rule { return failOn(kvtest.OpSet, k, 2) }, registered: true},
 		{step: "filesystem", fault: func(string) sim.Rule { return failOn(kvtest.OpSet, "SH‖*", 2) }, registered: true, epoch: 1, undone: []string{"stop engine"}},
+		{step: "reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 2) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop engine"}},
 	} {
 		t.Run(tc.step, func(t *testing.T) {
 			var h *nodetest.Harness
@@ -409,7 +404,7 @@ func TestStopWithAnEndedContext(t *testing.T) {
 	if err := h.Node().Stop(ctx); err != nil {
 		t.Errorf("Stop with an ended context: got %v, want nil", err)
 	}
-	stops := []string{"stop runner", "stop filesystem", "stop engine", "stop listeners", "stop store"}
+	stops := []string{"stop reconcile", "stop runner", "stop filesystem", "stop engine", "stop listeners", "stop store"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with an ended context: got %v, want %v", got, stops)
 	}
@@ -608,7 +603,7 @@ func TestStopStepPastItsBound(t *testing.T) {
 	if stopErr == nil || !strings.Contains(stopErr.Error(), "stop runner: not stopped within") || !strings.Contains(stopErr.Error(), "stop store: left open") {
 		t.Errorf("Stop with the runner held: got %v, want the runner named past its bound and the store left open", stopErr)
 	}
-	stops := []string{"stop filesystem", "stop engine", "stop listeners"}
+	stops := []string{"stop reconcile", "stop filesystem", "stop engine", "stop listeners"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with the runner held: got %v, want %v", got, stops)
 	}
@@ -669,7 +664,7 @@ func TestStopLeavesTheEngineUnderAHeldFilesystem(t *testing.T) {
 			t.Errorf("Stop with the filesystem's call held: got %v, want it to say %q", stopErr, want)
 		}
 	}
-	stops := []string{"stop runner", "stop listeners"}
+	stops := []string{"stop reconcile", "stop runner", "stop listeners"}
 	if got := stopsIn(s.reported()); !slices.Equal(got, stops) {
 		t.Errorf("parts stopped with the filesystem held: got %v, want %v", got, stops)
 	}

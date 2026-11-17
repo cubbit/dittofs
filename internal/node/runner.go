@@ -204,7 +204,7 @@ func (r *runner) refusedKinds() []string {
 
 // retry has op's step run again after a wait, doubled from the last one.
 func (r *runner) retry(ctx context.Context, op entity.Operation, now time.Duration, err error) {
-	w := min(max(2*r.retries[op.ID].wait, firstRetry), lastRetry)
+	w := backoff(r.retries[op.ID].wait, true)
 	r.retries[op.ID] = retry{at: now + w, wait: w}
 	if ctx.Err() == nil {
 		r.log.Warn("operation runner: step retried", "operation", op.ID, "kind", op.Kind, "in", w, "error", err)
