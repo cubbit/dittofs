@@ -480,7 +480,7 @@
       "Se ler em lotes as entries de um diretório junto com os seus atributos reduz o bastante a diferença de desempenho no `READDIRPLUS` do NFS.",
       "As chamadas exatas de `Lifecycle`, a view que o engine lê ao iniciar, são uma proposta, a decidir quando esse início for construído.",
       "O store registra qual journal fica em cada dispositivo de um nó. Quando um dispositivo é apagado e preparado de novo, nenhuma regra diz ainda quem regrava a referência dos shards a esse journal.",
-      "As metas do benchmark de commits duráveis são propostas, não medidas: pelo menos 10 commits por segundo para cada sync do dispositivo, e p99 dentro de três tempos de sync."
+      "As metas do benchmark de commits duráveis são propostas, não medidas: pelo menos 10 vezes os syncs por segundo do dispositivo em commits por segundo, e p99 dentro de três tempos de sync."
     ],
     "notes": "§5 (ainda em aberto, para medir no store replicado), §3 (os formatos de Lifecycle são uma proposta), §3.2 (duas propostas em torno de RecordJournal), §7.1 (o marcador decision do gate de durabilidade), §7.4 'Suites'. Redação para a leitura a frio: EntriesPlus é a chamada em lotes de entries com atributos por trás do READDIRPLUS (§5); Lifecycle é a view de início do engine (§3); RecordJournal grava J‖journal e JD‖node‖device, e quem regrava a identidade de journal dos shards quando um dispositivo é reinicializado está em aberto (§3.2); o gate de durabilidade é o §7.1 com o seu marcador decision."
   },

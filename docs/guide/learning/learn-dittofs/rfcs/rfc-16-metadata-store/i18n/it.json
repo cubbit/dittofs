@@ -117,7 +117,7 @@
   },
   "guards": {
     "title": "Due creazioni, una directory",
-    "notes": "'Start here · Scenarios', i primi due; §4.1 (guard), §4.4 (delta dei tempi di directory), §4.6 (fold rule). Nella scena build01 fa commit per secondo; l'RFC dice solo che abortisce chi fa commit per secondo. Il fold dei delta avviene dopo, a cura del primary dello shard della directory, mentre lì non c'è nessuna creazione in corso."
+    "notes": "'Start here · Scenarios', i primi due; §4.1 (guard), §4.4 (delta dei tempi di directory), §4.6 (fold rule). Nella scena è build01 a fare commit per seconda; l'RFC dice solo che abortisce chi fa commit per seconda. Il fold dei delta avviene dopo, a cura del primary dello shard della directory, mentre lì non c'è nessuna creazione in corso."
   },
   "guardrules": {
     "title": "Un [[guard]] vincola solo la propria transazione",
@@ -480,7 +480,7 @@
       "Se leggere a lotti le entry di una directory insieme ai loro attributi riduce abbastanza il divario di prestazioni su `READDIRPLUS` di NFS.",
       "Le chiamate esatte di `Lifecycle`, la view che l'engine legge all'avvio, sono una proposta, da decidere quando si costruirà quell'avvio.",
       "Lo store registra quale journal sta su ciascun dispositivo di un nodo. Quando un dispositivo viene cancellato e preparato di nuovo, nessuna regola dice ancora chi riscrive il riferimento degli shard a quel journal.",
-      "Le soglie del benchmark sui commit durevoli sono proposte, non misurate: almeno 10 commit al secondo per ogni sync del dispositivo, e un p99 entro tre tempi di sync."
+      "Le soglie del benchmark sui commit durevoli sono proposte, non misurate: almeno 10 volte gli sync al secondo del dispositivo come commit al secondo, e un p99 entro tre tempi di sync."
     ],
     "notes": "§5 (ancora aperto, da misurare sullo store replicato), §3 (le forme di Lifecycle sono una proposta), §3.2 (due proposte attorno a RecordJournal), §7.1 (il marker decision del gate di durabilità), §7.4 'Suites'. Formulazione per la lettura a freddo: EntriesPlus è la chiamata a lotti di entry con attributi dietro READDIRPLUS (§5); Lifecycle è la view d'avvio dell'engine (§3); RecordJournal scrive J‖journal e JD‖node‖device, e chi riscrive l'identità di journal degli shard quando un dispositivo viene reinizializzato è aperto (§3.2); il gate di durabilità è il §7.1 con il suo marcatore decision."
   },
