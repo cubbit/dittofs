@@ -85,8 +85,13 @@ func (n *Node) sweepLoop(ctx context.Context, loop *health.Loop) {
 //
 // ponytail: a Sweep that fails is logged at each turn and raises no health
 // condition, though one stopped by a record that does not decode fails the
-// same way at every turn until it is repaired. Raise a condition once an
-// operator must see a stuck sweep from the health call rather than the log.
+// same way at every turn until it is repaired, and its Warn repeats at every
+// turn, one line each sweepInterval for as long as the fault lasts, rather
+// than RFC 25 §5.2's line when a lasting fault starts, a summary at an
+// interval and a line when it ends; reconcile and the status writer log the
+// same way. Raise a condition once an operator must see a stuck sweep from
+// the health call rather than the log, and move the three loops to §5.2's
+// lines together.
 func (n *Node) sweepTurn(ctx context.Context, loop *health.Loop) {
 	w := &n.sweep
 	var calls []kvstore.Swept
