@@ -162,6 +162,7 @@ func Run(t *testing.T, open Opener) {
 		{"ZeroNodeRefused", testZeroNodeRefused},
 		{"NodeStatuses", testNodeStatuses},
 		{"RegisteredStatuses", testRegisteredStatuses},
+		{"NodeRecords", testNodeRecords},
 		{"ListReconciledRecords", testListReconciledRecords},
 		{"ListSharesAcrossRename", testListSharesAcrossRename},
 	} {
