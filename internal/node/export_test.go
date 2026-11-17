@@ -72,6 +72,10 @@ func (n *Node) OnBind(binding func(entity.Share)) { n.rec.binding = binding }
 // reconcile puts it in the running set. Call it before Start.
 func (n *Node) OnBound(bound func(entity.Share)) { n.rec.bound = bound }
 
+// OnEndLiveState has step 3 of each share removal call ending with the
+// share once its bound is set on the node's clock. Call it before Start.
+func (n *Node) OnEndLiveState(ending func(entity.ShareID)) { n.ending = ending }
+
 // OnApply has reconcile call applying with the counters each apply acts on.
 // Call it before Start.
 func (n *Node) OnApply(applying func(kvstore.Counters)) { n.rec.applying = applying }

@@ -65,6 +65,10 @@ func (fs *Filesystem) admitHandleFor(ctx context.Context, c vfs.Call, h vfs.Hand
 // keeps answering it until the configuration changes. Answer ErrUnavailable
 // for a refused share if clients are seen retrying one for long.
 //
+// ponytail: every admitted call asks the node's running set, which takes the
+// node's reconcile mutex, one lock all calls share. Publish the running set
+// as an atomic snapshot if that lock shows in a profile.
+//
 // decision: the share cap on the node's request buffers, admission's last
 // step, is not run: no request-buffer pool exists to charge. Add it, refusing
 // with DelayResources except for a call that only releases or reclaims

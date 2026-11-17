@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/node/step"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -59,9 +60,8 @@ func deletionProgress(context.Context, entity.Operation) apiv1.Progress {
 // shareDeletion is the step of a share's deletion past its mark, its
 // operation's target the share's ID. Each turn runs one batch of the removal
 // with Nodes.ContinueRemoval and acts on the step it answers: at 3 it ends
-// the share's live state on this node, at 4 it drops one batch of the share's
-// files, and done ends the operation. It keeps no cursor: the removal's own
-// records hold where it stands.
+// the share's live state on this node, and done ends the operation. It keeps
+// no cursor: the removal's own records hold where it stands.
 //
 // decision: a share that is not being removed, and a target that names no
 // share, fail the operation rather than retry it, as a principal's deletion
@@ -81,10 +81,21 @@ func (n *Node) shareDeletion(ctx context.Context, op entity.Operation) (step.Ste
 	case at == 3:
 		return step.StepResult{}, n.removeShare(ctx, id)
 	case at == 4:
-		return step.StepResult{}, n.dropFiles(ctx, id)
+		return step.StepResult{}, errForgetMissing
 	}
 	return step.StepResult{}, nil
 }
+
+// errForgetMissing is the answer of a share deletion that stands at step 4.
+//
+// decision: step 4 waits for the journal to forget a share's tag: the
+// engine's Drop runs the journal's whole-tag Forget, which answers
+// ErrNotImplemented, so a removal that reaches step 4 is retried on the
+// runner's backoff and never ends. Drop the tag, record the shard forgotten
+// and drop its files with Nodes.ContinueShardRemoval here once Forget exists;
+// then startEngine must also leave out a share whose tag the store records
+// forgotten, rather than attach it again.
+var errForgetMissing = errors.New("step 4 of a share's removal waits for the journal to forget a share's tag")
 
 // failInvalid has an invalid argument from the store fail the operation.
 func failInvalid(err error) error {
@@ -94,11 +105,21 @@ func failInvalid(err error) error {
 	return err
 }
 
+// liveStateBound is how long step 3 of a share's removal waits for the
+// share's calls and work to end, on the node's clock.
+//
+// ponytail: one fixed bound, as RFC 23 sets none. Make it a setting once an
+// operator needs another.
+const liveStateBound = 30 * time.Second
+
 // removeShare is step 3 of share id's removal on this node: its storage
 // binding unbound, the filesystem's calls into it joined, and its open state
 // dropped, each holder told; then the share leaves reconcile's running set
 // and its refusals, and its shard's removal is recorded offloaded. Each part
-// is idempotent, so a removal interrupted here runs it again.
+// is idempotent, so a removal interrupted here runs it again. The parts wait
+// at most liveStateBound on the node's clock, so a call or an engine call
+// that never ends holds neither the runner nor a start: the step answers an
+// error and is retried.
 //
 // decision: removeShare has two callers, the share deletion's step while
 // serving and Start's filesystem step after a crash; reconcile never calls it
@@ -113,42 +134,38 @@ func (n *Node) removeShare(ctx context.Context, id entity.ShareID) error {
 	if err != nil {
 		return err
 	}
-	if err := n.engine.Unbind(ctx, id, false); err != nil {
-		return err
+	bounded, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func(bound <-chan struct{}) {
+		select {
+		case <-bound:
+			cancel()
+		case <-bounded.Done():
+		}
+	}(n.cfg.Clock.After(liveStateBound))
+	if n.ending != nil {
+		n.ending(id)
 	}
-	if err := n.fs.JoinShare(ctx, id); err != nil {
-		return err
-	}
-	if err := n.open.Recovery().DropShare(ctx, id, netip.Addr{}); err != nil {
+	if err := n.endLiveState(bounded, id); err != nil {
+		if ctx.Err() == nil && bounded.Err() != nil {
+			return fmt.Errorf("share %s's live state did not end within %v: %w", id, liveStateBound, err)
+		}
 		return err
 	}
 	n.rec.unbound(id)
 	return n.meta.Nodes().RecordShardRemoval(ctx, id, sh.Shard, entity.TagOffloaded)
 }
 
-// dropFiles is one batch of step 4 of share id's removal: its files dropped
-// with Nodes.ContinueShardRemoval. While the shard has not forgotten the
-// share's tag, which that refuses with kvstore.ErrRemovalOrder, it first has
-// the engine drop the tag and records the shard forgotten, in that order, so
-// the record never stands for a tag the journal still holds.
-func (n *Node) dropFiles(ctx context.Context, id entity.ShareID) error {
-	sh, _, err := n.meta.ShareIndex().Share(ctx, id)
-	if err != nil {
+// endLiveState unbinds share id in the engine, joins the filesystem's calls
+// into it, then drops its open state, each holder told.
+func (n *Node) endLiveState(ctx context.Context, id entity.ShareID) error {
+	if err := n.engine.Unbind(ctx, id, false); err != nil {
 		return err
 	}
-	nodes := n.meta.Nodes()
-	_, err = nodes.ContinueShardRemoval(ctx, id, sh.Shard)
-	if !errors.Is(err, kvstore.ErrRemovalOrder) {
+	if err := n.fs.JoinShare(ctx, id); err != nil {
 		return err
 	}
-	if err := n.engine.Drop(ctx, id); err != nil {
-		return err
-	}
-	if err := nodes.RecordShardRemoval(ctx, id, sh.Shard, entity.TagForgotten); err != nil {
-		return err
-	}
-	_, err = nodes.ContinueShardRemoval(ctx, id, sh.Shard)
-	return err
+	return n.open.Recovery().DropShare(ctx, id, netip.Addr{})
 }
 
 // removalPhases names the steps of a share's removal, as its progress reads.

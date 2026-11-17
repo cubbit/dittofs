@@ -325,6 +325,10 @@ func (n *Node) startEngine(ctx context.Context) error {
 	}
 	// A share the engine refused at its start is left out of the running
 	// set, so the first full pass binds it again and records the refusal.
+	// The running set is written here without the reconciler's mutex: Start
+	// runs its steps one after another, and reconcile, the only other
+	// writer, starts at a later step, as do the runner and the admitted
+	// calls that read it.
 	refused := n.engine.Stats().Shares
 	for _, s := range n.life.shares {
 		if refused[s.ID].Refused == nil {

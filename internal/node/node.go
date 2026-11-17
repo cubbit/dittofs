@@ -16,6 +16,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/config"
 	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
@@ -57,6 +58,9 @@ type Node struct {
 	watchdog *health.Watchdog
 	api      *api.Server
 	life     lifecycle
+	// ending, when set, is called by step 3 of each share removal once its
+	// bound is set on the clock, before it waits on anything.
+	ending func(entity.ShareID)
 }
 
 // New opens the metadata store over cfg.KV, refusing a KV that holds no
