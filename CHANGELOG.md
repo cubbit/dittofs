@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The request path is measurable, per protocol and per operation.** Prometheus
+  now carries requests in flight, refusals and wire time by stage, replay hits,
+  held requests and bytes, chain splits by reason, and per operation the
+  routed counts, unmapped errors, status mappings, hold refusals and handler
+  panics, as `dittofs_adapter_*`. Each series is registered once per node and
+  resolved once per table or stages label, so recording is one atomic add or
+  histogram observation with no label lookup.
+
 ### Changed
 
 - **The journal's open tells a crash's torn tail from damage.** A record that

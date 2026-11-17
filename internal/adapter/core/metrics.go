@@ -322,7 +322,7 @@ func resolve[K comparable, V any](mu *sync.Mutex, m *atomic.Pointer[map[K]V], k 
 	return v
 }
 
-// opNames names t by its operations, in order.
+// opNames names t by its operations, sorted.
 func opNames(t *OpTable) string {
 	names := make([]string, 0, len(t.Ops))
 	for _, op := range t.Ops {

@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -18,6 +19,9 @@ const Namespace = "dittofs"
 type Metrics struct {
 	registry *prometheus.Registry
 	in       *instruments
+
+	specsMu sync.Mutex
+	specs   map[string]Spec // the first spec registered under each name, for register's comparisons
 }
 
 // ponytail: an alias of Metrics, which has RFC 25 §8.2's Counter, Gauge and
@@ -44,7 +48,7 @@ func New(version, commit string) *Metrics {
 	buildInfo.Set(1)
 	reg.MustRegister(buildInfo)
 
-	return &Metrics{registry: reg, in: newInstruments(reg)}
+	return &Metrics{registry: reg, in: newInstruments(reg), specs: map[string]Spec{}}
 }
 
 // RegisterProvider wires a read-through collector backed by p. The collector

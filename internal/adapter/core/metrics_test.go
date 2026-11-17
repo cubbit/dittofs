@@ -255,16 +255,6 @@ func TestSeriesCarryOnlyTheirLabels(t *testing.T) {
 // The stage values are §10.1's: a refusal counts under the stages that
 // refuse and reply_too_big, adapter_wire_seconds observes decode_header to
 // send but call_service.
-func TestSeriesStageValues(t *testing.T) {
-	refusals, wire := core.StageNames()
-	if got, want := sortedValues(refusals), []string{"admit", "decode_args", "decode_header", "replay_check", "reply_too_big", "reply_wait", "resolve_ids", "route", "unwrap"}; !slices.Equal(got, want) {
-		t.Errorf("a refusal counts under %v, want %v", got, want)
-	}
-	if got, want := sortedValues(wire), []string{"admit", "decode_args", "decode_header", "encode", "map_error", "replay_check", "reply_wait", "resolve_ids", "route", "send", "unwrap", "wrap"}; !slices.Equal(got, want) {
-		t.Errorf("adapter_wire_seconds observes %v, want %v", got, want)
-	}
-}
-
 // The stage values take §10.1's order: reply_wait between decode_args and
 // resolve_ids, and reply_too_big, which only a refusal takes, last.
 func TestStageValuesAreInOrder(t *testing.T) {
@@ -385,12 +375,20 @@ func TestSeriesTwoFirstResolutionsAtOnce(t *testing.T) {
 		for i := range got {
 			wg.Go(func() {
 				<-start
-				got[i], _ = sh.Table(tb)
+				ts, err := sh.Table(tb)
+				if err != nil {
+					t.Errorf("Table: %v", err)
+				}
+				got[i] = ts
 			})
 		}
 		close(start)
 		wg.Wait()
-		if later, _ := sh.Table(tb); got[0] != later || got[1] != later {
+		later, err := sh.Table(tb)
+		if err != nil {
+			t.Fatalf("Table: %v", err)
+		}
+		if got[0] != later || got[1] != later {
 			t.Fatalf("two first resolutions at once gave %p and %p, and a later one %p", got[0], got[1], later)
 		}
 	}

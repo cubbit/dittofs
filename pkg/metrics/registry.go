@@ -3,6 +3,7 @@ package metrics
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -35,13 +36,13 @@ var buckets = [...][]float64{
 // Counter registers s as a counter vector, or returns the one registered
 // under it already.
 func (m *Metrics) Counter(s Spec) *prometheus.CounterVec {
-	return register(m, prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: Namespace, Name: s.Name, Help: s.Help}, s.Labels))
+	return register(m, s, prometheus.NewCounterVec(prometheus.CounterOpts{Namespace: Namespace, Name: s.Name, Help: s.Help}, s.Labels))
 }
 
 // Gauge registers s as a gauge vector, or returns the one registered under
 // it already.
 func (m *Metrics) Gauge(s Spec) *prometheus.GaugeVec {
-	return register(m, prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: Namespace, Name: s.Name, Help: s.Help}, s.Labels))
+	return register(m, s, prometheus.NewGaugeVec(prometheus.GaugeOpts{Namespace: Namespace, Name: s.Name, Help: s.Help}, s.Labels))
 }
 
 // Histogram registers s as a histogram vector over its bucket set, or
@@ -57,14 +58,28 @@ func (m *Metrics) Histogram(s Spec) *prometheus.HistogramVec {
 	if s.Buckets == None || int(s.Buckets) >= len(buckets) {
 		panic(fmt.Sprintf("metrics: histogram %s: no bucket set", s.Name))
 	}
-	return register(m, prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: Namespace, Name: s.Name, Help: s.Help, Buckets: buckets[s.Buckets]}, s.Labels))
+	return register(m, s, prometheus.NewHistogramVec(prometheus.HistogramOpts{Namespace: Namespace, Name: s.Name, Help: s.Help, Buckets: buckets[s.Buckets]}, s.Labels))
 }
 
 // register registers v, or returns the vector of v's kind registered under
 // its spec already: a node's components share its registry, and each
 // registers what it records, as each adapter does. A vector registered
 // under the same name with another spec or kind panics, naming it.
-func register[V prometheus.Collector](m *Metrics, v V) V {
+//
+// The label names are compared in order before the library sees them: it
+// sorts them before it hashes the descriptor, so the same names in another
+// order would share one vector, and every value the second caller records
+// would land under the first order's labels without an error.
+func register[V prometheus.Collector](m *Metrics, s Spec, v V) V {
+	m.specsMu.Lock()
+	prev, seen := m.specs[s.Name]
+	if !seen {
+		m.specs[s.Name] = s
+	}
+	m.specsMu.Unlock()
+	if seen && !slices.Equal(prev.Labels, s.Labels) {
+		panic(fmt.Sprintf("metrics: %s: labels %v, registered as %v", s.Name, s.Labels, prev.Labels))
+	}
 	err := m.registry.Register(v)
 	if err == nil {
 		return v
@@ -75,5 +90,5 @@ func register[V prometheus.Collector](m *Metrics, v V) V {
 			return existing
 		}
 	}
-	panic(fmt.Sprintf("metrics: register: %v", err))
+	panic(fmt.Sprintf("metrics: %s: %v", s.Name, err))
 }

@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"strings"
@@ -80,14 +81,41 @@ func TestRegistryCallsReturnTheVectorAlreadyRegistered(t *testing.T) {
 	for name, register := range map[string]func(){
 		"other labels": func() { m.Counter(Spec{Name: "t_events_total", Help: "h", Labels: []string{"stage"}}) },
 		"another kind": func() { m.Gauge(spec) },
+		"another order": func() {
+			m.Counter(Spec{Name: "t_events_total", Help: "h", Labels: []string{"stage", "protocol"}})
+		},
 	} {
 		func() {
 			defer func() {
-				if p := recover(); p == nil {
+				p := recover()
+				if p == nil {
 					t.Errorf("t_events_total registered again with %s: no panic", name)
+					return
+				}
+				if !strings.Contains(fmt.Sprint(p), "t_events_total") {
+					t.Errorf("t_events_total registered again with %s: %v does not name it", name, p)
 				}
 			}()
 			register()
 		}()
 	}
+}
+
+// The same label names in another order are another spec: the library sorts
+// them before hashing, so they would otherwise share one vector and record
+// under the first order's labels, with no error.
+func TestRegistryRefusesALabelOrderPermutation(t *testing.T) {
+	m := New("v", "c")
+	m.Counter(Spec{Name: "t_permuted_total", Help: "h", Labels: []string{"protocol", "stage"}})
+	defer func() {
+		p := recover()
+		if p == nil {
+			t.Fatal("the same labels in another order registered without a panic")
+		}
+		msg := fmt.Sprint(p)
+		if !strings.Contains(msg, "t_permuted_total") || !strings.Contains(msg, "[protocol stage]") || !strings.Contains(msg, "[stage protocol]") {
+			t.Errorf("the panic is %q, want both orders and the name", msg)
+		}
+	}()
+	m.Counter(Spec{Name: "t_permuted_total", Help: "h", Labels: []string{"stage", "protocol"}})
 }
