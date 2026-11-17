@@ -386,10 +386,11 @@ func TestImportRules(t *testing.T) {
 // componentAllowed reports whether a package under internal/node but node
 // and nodetest may import the module's package rel: none it allows is a
 // component's implementation, the entity and wire packages holding data
-// types only, the metadata store's, KV's and filesystem's packages of error
-// values, which the API answers by name, and nodetest, which imports Badger,
-// is not allowed. Everything else it reaches through an interface it declares
-// or a value the node hands it.
+// types only, the metadata store's and filesystem's packages of error values,
+// which the API answers by name, and KV, of which errorsOnly admits only the
+// error values; nodetest, which imports Badger, is not allowed. Everything
+// else it reaches through an interface it declares or a value the node hands
+// it.
 func componentAllowed(rel string) bool {
 	switch rel {
 	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1",
@@ -397,6 +398,33 @@ func componentAllowed(rel string) bool {
 		return true
 	}
 	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest")
+}
+
+// errorsOnly are the allowed packages that also declare a store's interface
+// and an implementation of it, of which a file may use only the error values,
+// the names starting Err.
+var errorsOnly = []string{"pkg/metadata/kv"}
+
+// nonErrorUses returns each name f uses from the package it imports as imp
+// that is not an error value: every name, under a dot import.
+func nonErrorUses(f *ast.File, imp *ast.ImportSpec, p string) []string {
+	name := path.Base(p)
+	if imp.Name != nil {
+		name = imp.Name.Name
+	}
+	if name == "." {
+		return []string{p + ".*"}
+	}
+	var bad []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok {
+			if x, ok := sel.X.(*ast.Ident); ok && x.Name == name && !strings.HasPrefix(sel.Sel.Name, "Err") {
+				bad = append(bad, p+"."+sel.Sel.Name)
+			}
+		}
+		return true
+	})
+	return bad
 }
 
 // libraries are the third-party packages a package under internal/node may
@@ -426,18 +454,24 @@ func componentImports(root string) ([]string, error) {
 		if filepath.Dir(path) == root || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
 		if err != nil {
 			return err
 		}
+		r, _ := filepath.Rel(root, path)
 		for _, imp := range f.Imports {
 			p, _ := strconv.Unquote(imp.Path.Value)
 			rel, inModule := strings.CutPrefix(p, module)
 			std := !strings.Contains(strings.Split(p, "/")[0], ".")
+			if inModule && slices.Contains(errorsOnly, rel) {
+				for _, u := range nonErrorUses(f, imp, p) {
+					bad = append(bad, filepath.ToSlash(r)+" uses "+u)
+				}
+				continue
+			}
 			if std || inModule && componentAllowed(rel) || slices.Contains(libraries, p) {
 				continue
 			}
-			r, _ := filepath.Rel(root, path)
 			bad = append(bad, filepath.ToSlash(r)+" imports "+p)
 		}
 		return nil
@@ -455,6 +489,8 @@ func TestNoComponentImports(t *testing.T) {
 		{".", nil},
 		{"testdata/arch/component-import", []string{
 			"api/allowed.go imports github.com/dgraph-io/badger/v4",
+			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.KV",
+			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.Counting",
 			"api/server.go imports github.com/cubbit/dittofs/pkg/block/engine",
 			"nodetest-import/harness.go imports github.com/cubbit/dittofs/internal/node/nodetest",
 		}},
