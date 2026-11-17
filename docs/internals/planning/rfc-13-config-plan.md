@@ -237,11 +237,10 @@ Out of scope, each named in O1:
    - a setting's value, decoded strictly over its section's defaults;
    - the `Secret` record's codec and the sealed envelope.
 3. **Observability follows RFC 25.** Each epic owns the series of RFC 13 §8 for what it builds:
-   - settings: `config_refused_total`, `config_bound_refusals_total` and
-     `config_generation_lag_seconds{kind}`, for each of RFC 13 §8's kinds, `settings`, `shares`
-     and `principals`, the store time of the write that raised the generation to the
-     time this node applied it, which RFC 23's node feeds from the positions it reconciles and
-     reads for its `config_generation_behind` condition;
+   - settings: `config_refused_total` and `config_bound_refusals_total`. RFC 13 §8's
+     `config_generation_lag_seconds{kind}` is not this plan's: RFC 23's node exports it from the
+     positions it reconciles, beside its `config_generation_behind` condition (RFC 23's epic 3,
+     R33);
    - secrets: `config_secrets_behind`, recorded by epic 5's reconcile, the one place that knows
      which versions this node holds;
    - versions: `format_active_version`, `format_supported_min`, `format_supported_max`.
@@ -1178,8 +1177,7 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   RFC 4's plan declares; until then a unit test declares the key and asserts the refusal.
 - `Diff`, `Keep` and the classes: live, restart, next write, bound.
 - D11's `decision:` note at `Check`.
-- `config_refused_total`, `config_bound_refusals_total` and `config_generation_lag_seconds{kind}`,
-  its three kinds from the positions RFC 23's node reconciles.
+- `config_refused_total` and `config_bound_refusals_total`.
 
 ### Epic 4 — Secrets
 
