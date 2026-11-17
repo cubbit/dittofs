@@ -46,9 +46,16 @@ func (rt *route) op() string {
 // which no record of the metadata store does.
 var routes = []route{
 	{method: http.MethodGet, pattern: "/api/version", right: auth.Public, serve: read(version)},
+	{method: http.MethodGet, pattern: "/api/v1/health", kind: entity.ResourceNode, right: auth.View, serve: read(healthOf)},
+	{method: http.MethodGet, pattern: "/api/v1/operations", kind: entity.ResourceOperation, right: auth.View, serve: list(operations)},
+	{method: http.MethodGet, pattern: "/api/v1/operations/{id}", kind: entity.ResourceOperation, right: auth.View, serve: watch(operation)},
+	{method: http.MethodPost, pattern: "/api/v1/operations/{id}", verb: "cancel", kind: entity.ResourceOperation, right: auth.View, serve: cancel},
+	{method: http.MethodGet, pattern: "/api/v1/nodes", kind: entity.ResourceNode, right: auth.View, serve: list(nodes)},
+	{method: http.MethodGet, pattern: "/api/v1/nodes/{id}", kind: entity.ResourceNode, right: auth.View, serve: read(node)},
+	{method: http.MethodGet, pattern: "/api/v1/audit", kind: entity.ResourceInstallation, right: auth.Audit, serve: list(audit)},
 }
 
 // version answers the API's major versions and nothing else.
-func version(context.Context, request[none]) (apiv1.Version, error) {
+func version(context.Context, Deps, request[none]) (apiv1.Version, error) {
 	return apiv1.Version{Majors: []string{"v1"}}, nil
 }

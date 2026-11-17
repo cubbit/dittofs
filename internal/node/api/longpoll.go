@@ -18,20 +18,26 @@ const (
 )
 
 // clock is the API's time: Elapsed, the monotonic time a wait is measured
-// on, which a step of the wall clock does not move, and a channel that
-// closes once d has passed.
+// on, which a step of the wall clock does not move; a channel that closes
+// once d has passed; and Now, the wall time, which no wait reads.
+//
+// decision: Now is here only for the operations gauge, which ages an
+// operation from its recorded start, a wall-clock stamp the store wrote, so
+// it has nothing to measure against but wall time. A wall-clock step moves
+// that gauge and never a parked poll.
 type clock interface {
+	Now() time.Time
 	Elapsed() time.Duration
 	After(d time.Duration) <-chan struct{}
 }
 
 // watching is what a read a client may wait on knows of its record: read,
-// which reads it; tag, its tag, which the answer carries as its ETag; and
+// which reads it from the server's Deps; tag, its tag, which the answer carries as its ETag; and
 // until, which parses ?wait=, answering how long the call may park, above
 // zero, and done, whether a read now answers the wait, first being the read
 // the call began with.
 type watching[R any] struct {
-	read  func(context.Context, reads, request[none]) (R, error)
+	read  func(context.Context, Deps, request[none]) (R, error)
 	tag   func(R) uint64
 	until func(wait string) (time.Duration, func(first, now R) bool, error)
 }
@@ -83,10 +89,10 @@ func watch[R any](w watching[R]) adapter {
 			}
 		}
 		if s.d.Store == nil {
-			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
+			return answer{}, errNoStore
 		}
 		rq := request[none]{ID: id}
-		first, err := w.read(ctx, s.d.Store, rq)
+		first, err := w.read(ctx, s.d, rq)
 		if err != nil || wait == 0 || done(first, first) {
 			return w.answer(first, err)
 		}
@@ -113,7 +119,7 @@ func watch[R any](w watching[R]) adapter {
 				case <-ctx.Done():
 					return answer{}, ctx.Err()
 				}
-				if last, err = w.read(ctx, s.d.Store, rq); err != nil || done(first, last) {
+				if last, err = w.read(ctx, s.d, rq); err != nil || done(first, last) {
 					return w.answer(last, err)
 				}
 			}
