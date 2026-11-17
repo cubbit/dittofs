@@ -1,6 +1,7 @@
 package health
 
 import (
+	"fmt"
 	"slices"
 	"sync"
 )
@@ -17,6 +18,19 @@ const (
 	ScopeNode                          // this node: ID its identity
 	ScopeInstallation                  // the installation
 )
+
+// scopeNames is each scope's name, as RFC 25 spells it.
+var scopeNames = [...]string{ScopeStore: "store", ScopeNamespace: "namespace", ScopeJournal: "journal",
+	ScopeShare: "share", ScopeNode: "node", ScopeInstallation: "installation"}
+
+// String is the scope's name, as RFC 25 spells it; a scope it does not
+// define reads as its number.
+func (s Scope) String() string {
+	if int(s) < len(scopeNames) && scopeNames[s] != "" {
+		return scopeNames[s]
+	}
+	return fmt.Sprintf("scope(%d)", s)
+}
 
 // Subject is what a condition is about.
 type Subject struct {

@@ -359,18 +359,19 @@ func (n *Node) startRunner(context.Context) error {
 
 // startFailed is the node's start_failed condition after a Start that
 // failed, naming the step and its error, and nil otherwise. It does not wait
-// for a Start or a Stop in progress.
+// for a Start or a Stop in progress. The health evaluator reads it, but
+// nothing in production reads the evaluator on a node whose Start failed
+// until the health call serves it: the status writer runs only on a started
+// node.
 //
-// ponytail: nothing reads it yet but tests. The node status writer reports
-// it with the engine's conditions once it exists.
+// ponytail: a Start that failed writes no node status, as the status writer
+// runs only on a started node, and the KV a Start refused at its first step
+// must not be written. Write the status once from a failed Start, after its
+// refuse step, once a reader of the status needs start_failed there.
 func (n *Node) startFailed() []health.Condition {
 	err := n.life.failed.Load()
 	if err == nil {
 		return nil
 	}
-	return []health.Condition{{
-		Name:    "start_failed",
-		Subject: health.Subject{Scope: health.ScopeNode, ID: fmt.Sprintf("%x", n.cfg.Bootstrap.Node[:])},
-		Cause:   *err,
-	}}
+	return []health.Condition{{Name: "start_failed", Subject: n.subject(), Cause: *err}}
 }

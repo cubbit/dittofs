@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // Each closed set is RFC 23's literal list, each value once, both as the
@@ -43,6 +45,11 @@ func TestClosedSetsAreRFC23s(t *testing.T) {
 		}
 		if got := slices.Sorted(slices.Values(tc.list)); !slices.Equal(got, want) {
 			t.Errorf("list of %s: got %q, want %q", tc.typ, got, want)
+		}
+	}
+	for _, k := range opKinds {
+		if len(k) == len(entity.OperationID{}) { // PutOperation refuses a kind as long as an operation ID
+			t.Errorf("operation kind %q is %d bytes, which PutOperation refuses", k, len(k))
 		}
 	}
 }

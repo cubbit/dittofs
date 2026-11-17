@@ -23,7 +23,10 @@ func (c ControlPlane) PutOperation(ctx context.Context, op entity.Operation, exp
 	return c.updateGen(ctx, func(tx entity.ControlPlaneTx) (uint64, error) { return tx.PutOperation(op, expect) })
 }
 
-// PutOperation writes op at the transaction's store time. A running
+// PutOperation writes op at the transaction's store time. It refuses a kind
+// as long as an operation's ID, so a node's refusal of a kind, which names
+// the kind where an operation's ID would stand, is told from an operation's
+// by its length. A running
 // operation holds its kind and target's running index, so a second one there
 // is refused with an entity.OperationRunningError naming the one that runs,
 // the index read tracked so that of
@@ -33,6 +36,9 @@ func (c ControlPlane) PutOperation(ctx context.Context, op entity.Operation, exp
 func (c controlTx) PutOperation(op entity.Operation, expect uint64) (uint64, error) {
 	if op.ID == (entity.OperationID{}) || op.Kind == "" || op.Target.Kind.String() == "" || op.State.String() == "" {
 		return 0, merrs.NewInvalidArgumentError("an operation needs an ID, a kind, a target of a known kind and a known state")
+	}
+	if len(op.Kind) == len(op.ID) {
+		return 0, merrs.NewInvalidArgumentError("an operation's kind is not as long as an operation's ID")
 	}
 	key := operationKey(op.ID)
 	b, existed, err := get(c.tx, key)

@@ -49,6 +49,10 @@ type runner struct {
 	steps   map[string]stepRow
 	retries map[entity.OperationID]retry
 
+	// turned, when set, is called after each turn, once the wait for the
+	// next is set on the clock.
+	turned func()
+
 	mu      sync.Mutex
 	refused map[string]bool // the kinds found with no step
 }
@@ -73,10 +77,14 @@ func (r *runner) run(ctx context.Context, loop *health.Loop) {
 	for {
 		r.turn(ctx)
 		loop.Turn()
+		next := r.clock.After(runInterval)
+		if r.turned != nil {
+			r.turned()
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-r.clock.After(runInterval):
+		case <-next:
 		}
 	}
 }
@@ -112,10 +120,7 @@ func (r *runner) turn(ctx context.Context) {
 //
 // decision: an operation whose kind has no step stays pending, so a binary
 // that gains the step later runs it. Its kind is logged once and kept for
-// refusedKinds.
-//
-// ponytail: refusedKinds has no reader yet. Report the kinds among the node
-// status's refused records once the status writer exists.
+// refusedKinds, which the node status reports among its refused records.
 func (r *runner) drive(ctx context.Context, op entity.Operation) {
 	row, ok := r.steps[op.Kind]
 	if !ok {

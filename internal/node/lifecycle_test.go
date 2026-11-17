@@ -26,6 +26,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal"
 	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -543,21 +544,34 @@ func opState(t *testing.T, h *nodetest.Harness, id entity.OperationID) entity.Op
 func TestStartRunsTheOperationRunner(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	id := deleteUser(t, h)
+	turns := make(chan struct{}, 1)
+	h.Node().OnRunnerTurn(func() { turns <- struct{}{} })
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	pending := func() bool { return h.Clock().Pending() > 0 }
-	deadline := time.Now().Add(10 * time.Second)
-	for opState(t, h, id) != entity.OpSucceeded {
-		if time.Now().After(deadline) {
-			t.Fatalf("the user's deletion after Start: state %v after 10 s of turns, want succeeded", opState(t, h, id))
+	// parked waits for the runner to end a turn and set its wait on the
+	// clock, so the clock never moves before the runner waits on it.
+	parked := func() {
+		t.Helper()
+		select {
+		case <-turns:
+		case <-time.After(10 * time.Second):
+			t.Fatal("no runner turn within 10 s")
 		}
-		wait(t, "a timer on the node's clock", pending)
+	}
+	for i := 0; ; i++ {
+		parked()
+		if opState(t, h, id) == entity.OpSucceeded {
+			break
+		}
+		if i == 10 {
+			t.Fatalf("the user's deletion after Start: state %v after 10 runner turns, want succeeded", opState(t, h, id))
+		}
 		h.Clock().Advance(time.Second)
 	}
 	for range 61 {
-		wait(t, "a timer on the node's clock", pending)
 		h.Clock().Advance(time.Second)
+		parked()
 	}
 	api, _ := h.Node().Addrs()
 	if got := get(t, api, "/health/live"); got != (answer{http.StatusOK, "live"}) {
@@ -584,9 +598,10 @@ func TestStopStepPastItsBound(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	// The delay waits on a clock of its own, so advancing the node's clock
-	// past the stop bound does not release it.
+	// past the stop bound does not release it. It holds the operation's own
+	// write, so the status writer's commits pass.
 	held := sim.NewTestClock(time.Unix(0, 0))
-	sched, err := sim.NewSchedule(1, held, sim.Rule{Op: kvtest.OpUpdate, Key: "*", Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+	sched, err := sim.NewSchedule(1, held, sim.Rule{Op: kvtest.OpSet, Key: keys.Describe([]byte{keys.KindOP}) + "‖*", Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
 	if err != nil {
 		t.Fatal(err)
 	}

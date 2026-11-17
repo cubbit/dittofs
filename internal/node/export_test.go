@@ -2,7 +2,6 @@ package node
 
 import (
 	"context"
-	"slices"
 
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/block/engine"
@@ -85,14 +84,26 @@ func (n *Node) Woken() bool { return len(n.rec.wake) == 1 }
 
 // Refused is the records the node refused, the shares' first.
 func (n *Node) Refused() []entity.RefusedRecord {
-	n.rec.mu.Lock()
-	defer n.rec.mu.Unlock()
-	var out []entity.RefusedRecord
-	for _, f := range append(slices.Clone(n.rec.shares), n.rec.applied...) {
-		out = append(out, f.rec)
-	}
-	return out
+	_, refused := n.rec.report()
+	return refused
 }
+
+// Wake wakes reconcile, as a write on this node does, so a pass runs
+// without the clock moving.
+func (n *Node) Wake() {
+	select {
+	case n.rec.wake <- struct{}{}:
+	default:
+	}
+}
+
+// OnRunnerTurn has the operation runner call turned after each turn, once
+// the wait for the next is set on the node's clock. Call it before Start.
+func (n *Node) OnRunnerTurn(turned func()) { n.runner.turned = turned }
+
+// OnStatus has the status writer call turned at the end of each turn with
+// the status it built and whether it committed it. Call it before Start.
+func (n *Node) OnStatus(turned func(s entity.NodeStatus, wrote bool)) { n.status.turned = turned }
 
 // Bound is share id's state as reconcile last bound it in the engine, and
 // false when it has bound none.
