@@ -127,11 +127,16 @@ func forbidden(dir string, test bool, imp string) string {
 func forbiddenToAnAdapter(dir, name string, test bool, imp string) string {
 	p, local := strings.CutPrefix(imp, module)
 	wire := slices.Contains(strings.Split(dir, "/"), "wire")
+	// decision: a wire package's generator, wire/gen, may import os: RFC 20
+	// §2.5 places it in wire/, and it reads and writes source files when go
+	// generate runs it, never a peer's bytes. It stays held to the standard
+	// library and to no network. Withdraw it if a codec imports the generator.
+	generator := strings.HasSuffix(dir, "/wire/gen") && imp == "os"
 	switch {
 	// decision: a wire package's test files may import fileIO, since a codec's
 	// test reads its vectors from files and the rule keeps the codec pure, not
 	// its test. Withdraw it if a wire test opens a connection.
-	case wire && !test && imp != "net/netip" && slices.ContainsFunc(fileIO, func(r string) bool { return under(imp, r) }):
+	case wire && !test && !generator && imp != "net/netip" && slices.ContainsFunc(fileIO, func(r string) bool { return under(imp, r) }):
 		return "a wire package does no file or network I/O"
 	case standard(imp):
 		return ""
@@ -270,6 +275,8 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/adapter/nfs/vfsx.go: imports github.com/cubbit/dittofs/pkg/vfsx: an adapter imports, of the module, only pkg/vfs, pkg/adapter, pkg/adapter/settings, pkg/resources, pkg/metrics, internal/tlsconfig, core and its own packages",
 		"internal/adapter/nfs/wire/errgroup.go: imports golang.org/x/sync/errgroup: a wire package imports only the standard library and pkg/resources",
 		"internal/adapter/nfs/wire/file.go: imports os: a wire package does no file or network I/O",
+		"internal/adapter/nfs/wire/gen/net.go: imports net: a wire package does no file or network I/O",
+		"internal/adapter/nfs/wire/gen/tools.go: imports golang.org/x/tools/go/packages: a wire package imports only the standard library and pkg/resources",
 		"internal/adapter/nfs/wire/http.go: imports net/http: a wire package does no file or network I/O",
 		"internal/adapter/nfs/wire/net.go: imports net: a wire package does no file or network I/O",
 		"internal/adapter/nfs/wire/service.go: imports github.com/cubbit/dittofs/pkg/vfs: a wire package imports only the standard library and pkg/resources",
