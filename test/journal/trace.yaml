@@ -387,8 +387,7 @@ rfc28 / 4.2 / C / "an ended segment is emptied once":
   pending: 2.13b
 rfc28 / 4.2 / C / "an open at an exhausted headroom":
   tests: [TestRFC28C_AnOpenAtAnExhaustedHeadroom]
-  owner: epic 7
-  reason: 'the test checks the sealed-segment half. The ended-segment half is owed by the emptying of ended segments: the deferral of losses past the reserve, the repack of deferred segments and the read-only reopen of the failed list'
+  reason: 'the open''s headroom reserve serves the corrupt record''s one synced loss, and the superseded content under it is never served; the past-the-reserve losses defer now [#4033]''s emptying makes their holders stand, so the in-place reopen answers them at the next open'
 rfc1 / 9.4 / B / "a closed writer forgets its error":
   owner: epic 5
   reason: 'the descriptor cache does not keep a writer''s error past its close yet'
