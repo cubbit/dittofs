@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/netip"
@@ -403,11 +402,22 @@ func TestShareRemovedRefusesWrites(t *testing.T) {
 func TestShareList(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	one, two := s.namespace(t), s.namespace(t)
-	ids := map[string]entity.ShareID{}
-	for _, c := range []struct{ name, ns string }{{"c", one}, {"a", one}, {"b", two}, {"d", one}} {
-		ids[c.name], _ = s.createShare(t, c.name, c.ns)
+	// IDs that sort apart from the names, so a namespace page resuming by
+	// name rather than by ID reads the wrong shares.
+	for _, c := range []struct {
+		id       entity.ShareID
+		name, ns string
+	}{{entity.ShareID{2}, "a", one}, {entity.ShareID{4}, "b", two}, {entity.ShareID{1}, "c", one}, {entity.ShareID{3}, "d", one}} {
+		ns, err := entity.ParseShareID(c.ns)
+		if err != nil {
+			t.Fatalf("namespace %q: %v", c.ns, err)
+		}
+		sh := entity.Share{ID: c.id, Name: c.name, Path: "/" + c.name, Root: entity.NewFileID(), Namespaces: []entity.NamespaceGen{{Namespace: entity.NamespaceID(ns)}}}
+		if _, err := s.store.PutShare(t.Context(), sh, 0); err != nil {
+			t.Fatalf("put share %s: %v", c.name, err)
+		}
 	}
-	s.removing(t, ids["d"])
+	s.removing(t, entity.ShareID{3})
 	s.putStatus(t, entity.NodeStatus{Node: entity.NodeID{1}, ShareList: s.shareList(t)})
 	s.putStatus(t, entity.NodeStatus{Node: entity.NodeID{2}})
 	page := func(query string) apiv1.Page[apiv1.Share] {
@@ -431,10 +441,7 @@ func TestShareList(t *testing.T) {
 		}
 		return out
 	}
-	byID := []string{"a", "c"}
-	if a, c := ids["a"], ids["c"]; bytes.Compare(a[:], c[:]) > 0 {
-		byID = []string{"c", "a"}
-	}
+	byID := []string{"c", "a"}
 	first := page("?limit=2")
 	for _, tc := range []struct {
 		what string
