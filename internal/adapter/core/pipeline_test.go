@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"sync"
@@ -875,10 +876,13 @@ func TestACancelIsAnsweredNothing(t *testing.T) {
 
 // wrapped is a Router whose tables' rows hand each Invocation they decode to
 // wrap: a pass-through the test reads where the call itself is what is
-// checked. It counts the Routes it is asked.
+// checked. It counts the Routes it is asked. With fail set, every row's
+// Decode answers fail instead: a codec declared in the test, an input
+// standing for arguments that do not decode.
 type wrapped struct {
 	core.Router
 	wrap   func(core.Invocation) core.Invocation
+	fail   error
 	routes atomic.Int64
 	mu     sync.Mutex
 	tables map[*core.OpTable]*core.OpTable
@@ -903,6 +907,9 @@ func (w *wrapped) Route(h core.Header, prev *core.Request) (*core.OpTable, *core
 			o := *op
 			dec := op.Decode
 			o.Decode = func(b []byte, v core.Version) (core.Invocation, int, error) {
+				if w.fail != nil {
+					return core.Invocation{}, 0, w.fail
+				}
 				inv, n, err := dec(b, v)
 				if err == nil {
 					inv = w.wrap(inv)
@@ -1083,4 +1090,70 @@ func TestTheInterimGoesOutUnderContention(t *testing.T) {
 			t.Errorf("the drained request got %+v, want an interim granting its credit", r)
 		}
 	})
+}
+
+// A header that does not decode closes the connection with ErrDecode wrapping
+// the codec's own error once: its text kept, and the cause not matched.
+func TestAHeaderDecodeErrorWrapsItsCauseOnce(t *testing.T) {
+	proto := testproto.New(adapter.Deps{}).Bare()
+	s := newSeam(t, proto, 1<<20)
+	short := []byte{1, 2, 3}
+	rec, err := s.recv.Get(context.Background(), peer, len(short))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.B = append(rec.B[:0], short...)
+	h, cause := proto.NewConn(nil).Header.Decode(rec, 0)
+	rec.Release()
+	if h != nil || cause == nil || errors.Is(cause, core.ErrDecode) {
+		t.Fatalf("the codec decoded %v, %v: want no header and its own error", h, cause)
+	}
+	s.serveBody(short)
+	err = <-s.closed
+	if !errors.Is(err, core.ErrDecode) || errors.Unwrap(err) != core.ErrDecode || err.Error() != core.ErrDecode.Error()+": "+cause.Error() {
+		t.Errorf("the connection closed with %v, want ErrDecode wrapping %q once", err, cause)
+	}
+}
+
+// faultyHeader is a HeaderCodec declared in the test whose Decode answers
+// each header it decodes with fail: an input standing for a header whose
+// fields decoded and whose rest did not.
+type faultyHeader struct {
+	core.HeaderCodec
+	fail error
+}
+
+func (f faultyHeader) Decode(rec *resources.Buf, off int) (core.Header, error) {
+	h, err := f.HeaderCodec.Decode(rec, off)
+	if err == nil {
+		err = f.fail
+	}
+	return h, err
+}
+
+// A header's or a row's Decode error that wraps ErrVersion, on tables whose
+// ErrVersion row comes before ErrDecode's, is answered the decode status:
+// the cause is not matched.
+func TestADecodeErrorsCauseIsNotMatched(t *testing.T) {
+	cause := fmt.Errorf("a field of another version: %w", core.ErrVersion)
+	for _, c := range []struct {
+		name string
+		edit func(*core.Stages)
+	}{
+		{"a header's", func(st *core.Stages) {
+			st.Header = faultyHeader{st.Header, cause}
+			st.Errors = core.NewErrorTable(testproto.StatusFault,
+				core.ErrorRow{Err: core.ErrVersion, Status: testproto.StatusVersion},
+				core.ErrorRow{Err: core.ErrDecode, Status: testproto.StatusDecode})
+		}},
+		{"a row's", func(st *core.Stages) { st.Router = &wrapped{Router: st.Router, fail: cause} }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newSeam(t, edited{testproto.New(adapter.Deps{}).Bare(), c.edit}, 1<<20)
+			s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1})
+			if r := s.read(); r.Status != testproto.StatusDecode {
+				t.Errorf("the request is answered %+v, want the decode status", r)
+			}
+		})
+	}
 }
