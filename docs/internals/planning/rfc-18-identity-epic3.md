@@ -225,7 +225,8 @@ row; R12 and R13 its "group cap"; R23 its "steady raises"; R34 its "in-flight di
   when the applied `State` differs from the current one, and keeps it for an equal one, so a
   once-a-second reconcile empties nothing. The principals generation alone would not do:
   `identity.ntlm` turned off changes no principal, and RFC 18 §3.5 has it reach cached
-  callers. The serial is `State.Serial` (RFC 18 §2.6), set by `Apply`, not the node, under one
+  callers. The serial is `State.Serial`, a field RFC 18 §2.6 does not declare yet: the RFC 18
+  fold (§9), #4567, adds it to §2.6. It is set by `Apply`, not the node, under one
   lock across its load of the current `State`, the compare, the serial and the store, so two
   concurrent `Apply`s, the reconcile's and a writer's, never give two differing `State`s one
   serial: serials strictly increase. `State.Generation` stays the principals generation RFC 18 §2.6 declares and E1's T1.4 adds.
@@ -384,9 +385,9 @@ pkg/metadata/kvstore/
 
 **Subtask T3.3 estimate: 1.25 man-days.**
 
-- **Track:** A. **Depends on:** T3.1.
+- **Track:** A. **Depends on:** T3.1; #4567, for `State.Serial` in RFC 18 §2.6 (D2) and `Resolver.Current()` in §6.1 (D3).
 - **Covers:** R22, R23, R24, R28.
-- **Deliverables:** `Apply` raising a serial when the `State` differs, under one lock across
+- **Deliverables:** `Apply` raising `State.Serial` (RFC 18 §2.6 as #4567 amends it) when the `State` differs, under one lock across
   its load, compare, serial and store (D2), D2's marker; `Resolver.Current() uint64` in
   `pkg/identity` and on `*Server`, one load of the current `State`'s serial (D3); `Resolve`
   loading the `State` once before its first read, stamping `Built` with that `State`'s serial,
@@ -741,8 +742,9 @@ text in the sections cited here is the version this document was written against
 
 **The RFC 18 fold, opened with this merge or right after it:** one RFC 18 pull request that
 takes the six RFC 18 points above (§2.6's cache location, §7.1's "steps 1–3", §3.8's expiry
-refusal, the cache-metric names, §6.3's SID-group closure, §3.1's digest timing) and §6.1's
-`Current()` (D3), so E4 to E9 cite RFC text that matches this document. RFC 16 §3 needs no fold:
+refusal, the cache-metric names, §6.3's SID-group closure, §3.1's digest timing), §6.1's
+`Current()` (D3) and §2.6's `State.Serial` (D2), so E4 to E9 cite RFC text that matches this
+document. It is #4567, which T3.3 waits for. RFC 16 §3 needs no fold:
 on `develop` since #4455 it declares `GrantVersion` on `Share` (`S‖id‖gv`), builds `SharePolicy`
 from one `ShareIndex.Share` read with `SharePolicy.GrantVersion` a copy of `Share.GrantVersion`,
 and has no `Principals.SharePolicy`.
