@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/adapter/nfs/wire"
+	"github.com/cubbit/dittofs/internal/prof"
 )
 
 // readGolden reads testdata/golden/name.hex: its bytes as hex digits, a # to
@@ -71,9 +72,11 @@ func TestFragment(t *testing.T) {
 		{"a body that does not end the record", 1024, false, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			mark := wire.AppendRecordMark(nil, int(c.n))
-			if !c.last {
-				mark[0] &^= 0x80
+			// The mark is written by hand: past the cap the writer refuses to
+			// state it, which is TestAppendRecordMarkPastTheCapPanics.
+			mark := binary.BigEndian.AppendUint32(nil, uint32(int(c.n)))
+			if c.last {
+				mark[0] |= 0x80
 			}
 			n, last, err := wire.Fragment(mark)
 			if c.ok && (err != nil || n != int(c.n) || last != c.last) {
@@ -93,6 +96,22 @@ func TestFragment(t *testing.T) {
 
 // A mark written for a body reads back as that body, with its last-fragment
 // bit set.
+func TestAppendRecordMarkPastTheCapPanics(t *testing.T) {
+	if wire.MaxRecord >= 1<<31 {
+		t.Fatal("the cap itself would overflow the mark")
+	}
+	rec := wire.AppendRecordMark(nil, wire.MaxRecord)
+	if n, _, err := wire.Fragment(rec); err != nil || n != wire.MaxRecord {
+		t.Fatalf("the cap's mark reads back %d (%v), want %d", n, err, wire.MaxRecord)
+	}
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("a mark past the cap is written")
+		}
+	}()
+	wire.AppendRecordMark(nil, 1<<31)
+}
+
 func TestAppendRecordMark(t *testing.T) {
 	m := wire.AppendRecordMark(nil, 4096)
 	n, last, err := wire.Fragment(m)
@@ -149,6 +168,9 @@ func TestParseCaptured(t *testing.T) {
 // ParseCall allocates nothing: the call is a view over the record (RFC 20
 // section 5).
 func TestParseCallAllocatesNothing(t *testing.T) {
+	if prof.RaceEnabled {
+		t.Skip("the allocation count says nothing under the detector")
+	}
 	for _, name := range []string{"nfsv4-null-call", "nfsv4-compound-call", "mount-v3-null-call", "nfs-v3-getattr-call"} {
 		rec := body(t, name)
 		if n := testing.AllocsPerRun(1000, func() { _, _ = wire.ParseCall(rec) }); n != 0 {
@@ -523,6 +545,9 @@ func TestReplies(t *testing.T) {
 // A refusal that claims a length allocates nothing for it: the bytes are never
 // read, so a claim of more than 1 MiB costs less than 4 KiB.
 func TestClaimedLengths(t *testing.T) {
+	if prof.RaceEnabled {
+		t.Skip("the allocation count says nothing under the detector")
+	}
 	head := func(prog, vers, proc uint32) []byte {
 		b := binary.BigEndian.AppendUint32(nil, 0x11223344)
 		for _, v := range []uint32{0, 2, prog, vers, proc} {

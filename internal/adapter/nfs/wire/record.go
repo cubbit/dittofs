@@ -41,7 +41,12 @@ func Fragment(mark []byte) (n int, last bool, err error) {
 }
 
 // AppendRecordMark appends a record mark for a body of n bytes, its
-// last-fragment bit set, and returns the record.
+// last-fragment bit set, and returns the record. A body past MaxRecord is a
+// program bug, greater than the bit can state: the mark panics, naming the
+// cap, rather than write one the reader would refuse or truncate.
 func AppendRecordMark(dst []byte, n int) []byte {
+	if n > MaxRecord {
+		panic(fmt.Sprintf("nfs/wire: a record mark of %d bytes, past %d", n, MaxRecord))
+	}
 	return binary.BigEndian.AppendUint32(dst, lastFragment|uint32(n))
 }

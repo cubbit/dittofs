@@ -7,6 +7,9 @@ import (
 	"github.com/cubbit/dittofs/internal/adapter/nfs/wire"
 )
 
+// replyType is an RPC reply, the word after the transaction ID.
+const replyType = 1
+
 // overTheCapCall is an AUTH_SYS NULL call whose group list is 17, past RFC
 // 5531's 16: its seed runs the fuzz's own assertion on every go test, with the
 // caps refused where they are checked.
@@ -60,8 +63,8 @@ func FuzzRecord(f *testing.F) {
 			return
 		}
 		r := wire.AppendAccepted(nil, c.XID(), wire.AcceptProgUnavail)
-		if len(r) < 4 || binary.BigEndian.Uint32(r) != c.XID() {
-			t.Fatalf("the reply to %#x does not begin with its transaction ID", c.XID())
+		if len(r) < 8 || binary.BigEndian.Uint32(r) != c.XID() || binary.BigEndian.Uint32(r[4:]) != replyType {
+			t.Fatalf("the reply to %#x does not begin with the call and a reply", c.XID())
 		}
 		if fl, cred := c.Credential(); fl == wire.AuthSys {
 			a, err := wire.DecodeAuthSys(cred)
