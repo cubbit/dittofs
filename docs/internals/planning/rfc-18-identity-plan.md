@@ -330,6 +330,9 @@ that needs it.
     cause admission knows reaches `Caller` and maps one to one onto RFC 7's `NarrowedByShare` and
     `NarrowedByClient`. The change that routes admission's resolution through `Deps.Identity`
     lands after this one. Epic 1's T1.3 signature and epic 3's T3.6 follow it.
+- **A20. `EvidenceDigest`** (RFC 18 §3.1): `Evidence`'s `digest` is typed `EvidenceDigest`, a
+  named `[32]byte` declared beside it, so epic 1's no-key check exempts that type alone and still
+  rejects any other byte array in a type that must hold no key.
 
 ## 1. Introduction
 

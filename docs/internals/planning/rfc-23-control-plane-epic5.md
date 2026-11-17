@@ -417,7 +417,7 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   beside E4's `ErrUnavailable` row, `503` `unavailable` (R48); in `signin.go`: sign-in (`Lookup`, `reserve`, `VerifyPassword` on that
   principal, then one `Write` with the settlement, the session on a success, its `Created` from
   `tx.Now()` raised to `NotBefore`, and the audit record in its `WriteMeta`, D8; then `issue`), a
-  failure settled and audited only on `errors.Is(err, identity.ErrLogonFailure)`, and
+  failure settled and audited only on `errors.Is(err, vfserr.ErrLogonFailure)`, and
   `ErrUnavailable` answered `503` with no settlement, no refusal audit and the source's raise taken
   back (R47);
   refresh through `Session(id)`, reading the account through `APISignIn.Account` as `Authenticate`
