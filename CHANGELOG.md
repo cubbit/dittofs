@@ -19,8 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The adapter reads each connection's records as framed byte streams.** A
   record is cut from a 4 KiB read buffer into its own receive buffer of the
   matching class, charged before its body is read; a fragmented record is
-  charged once at the protocol's cap and read to its last fragment, at most
-  64; and the rest of a request, once its first byte has arrived, has
+  charged once at the protocol's cap and read to its last fragment, at
+  most the protocol's fragment cap; and the rest of a request, once its first
+  byte has arrived, has
   `read_timeout` to arrive or the connection closes, the deadline resting
   while the receive charge waits. A record the peer cuts mid-stream is an
   unexpected end, told apart from a clean close between records.

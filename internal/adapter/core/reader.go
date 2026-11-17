@@ -191,10 +191,11 @@ func (r *reader) fill(ctx context.Context) error {
 	return err
 }
 
-// reserve takes the record's charge, its deadline stopped while it waits, so a
-// reader at the receive ceiling is not timed out (RFC 20 section 6.4).
+// reserve takes the record's charge. The deadline it holds is not stopped for
+// the wait: nothing reads the connection while it waits, so a deadline set
+// before it cannot expire there, and the grant arms the one that covers the
+// record's rest (RFC 20 section 6.4).
 func (r *reader) reserve(ctx context.Context, n int) (*resources.Buf, error) {
-	r.disarm()
 	return r.recv.Get(ctx, r.key, n)
 }
 

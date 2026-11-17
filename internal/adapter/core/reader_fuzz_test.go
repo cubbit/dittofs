@@ -51,10 +51,16 @@ func FuzzReader(f *testing.F) {
 		// and reports the body bytes the stream's whole records hold, and
 		// whether the stream is exactly records to its end: a fragment without
 		// its last, or a mark or body cut by the end, is not one.
+		capBytes, capFrags := framer().MaxRecord()
+		// paced walks the stream by its own counters, the way the cut does,
+		// refusals included: a mark past the cap, a fragment count past the
+		// framer's, and fragments whose total passes the cap end the record
+		// there, as the reader refuses them.
 		paced := func() (bodies []byte, whole bool) {
 			at := 0
 			for at != len(stream) {
 				var rec []byte
+				frags, total := 0, 0
 				last := false
 				for !last {
 					if at+4 > len(stream) {
@@ -62,11 +68,16 @@ func FuzzReader(f *testing.F) {
 					}
 					m := binary.BigEndian.Uint32(stream[at:])
 					n, more := int(m&^0x80000000), m&0x80000000 != 0
+					if n > capBytes || frags+1 > capFrags || total+n > capBytes {
+						return bodies, false // a refusal: past the caps the framer names
+					}
 					if at+4+n > len(stream) {
 						return bodies, false // a body the stream cut
 					}
 					rec = append(rec, stream[at+4:at+4+n]...)
 					at += 4 + n
+					total += n
+					frags++
 					last = !more
 				}
 				bodies = append(bodies, rec...)
