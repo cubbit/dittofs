@@ -866,13 +866,22 @@ func TestRFC28C_ASealMarkerOnlyTheCacheHolds(t *testing.T) {
 
 	// The seal's second sync fails, and so does the first sync in the spare
 	// the stream takes to leave the failed segment: the journal turns
-	// read-only (RFC 1 section 5.4). The 8 is a bound chosen generously
+	// read-only (RFC 1 section 5.4). A stream takes a spare only to append,
+	// and the failed seal alone leaves the stream resting on its ended
+	// segment, so a second record on another file of the share drives the
+	// take: its write rolls into the spare, and its sync's failure there is
+	// the second segment in a row. The 8 is a bound chosen generously
 	// enough to cover the syncs of the seg files until the journal turns
 	// read-only, not a count anyone measured; the eventually below is the
 	// backstop that fails clean if the journal ever needs more syncs to
 	// reach its read-only state.
 	f.FailNext(kit.OpSync, "*.seg", 8)
 	second.Release()
+	b := pattern("b", 4096)
+	_, werr := f.Share(0).WriteAt(t.Context(), journaltest.File(1), 0, b, 0)
+	stub(t, "WriteAt", werr)
+	_, serr := f.Share(0).Sync(t.Context(), journaltest.File(1))
+	stub(t, "Sync", serr)
 	eventually(t, "the journal to turn read-only", func() bool { return f.J.Stats().ReadOnly.ReadOnly })
 
 	// Precondition kept since the seal: the marker is cache-only, a read

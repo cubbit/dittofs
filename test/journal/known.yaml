@@ -764,9 +764,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call, Inspect.File -- its own synced write answers now. Needs the idle seal and the read-only state; the tail proof this check verifies (open.tail) is landed, and the row waits on the public Open over a directory holding segments, the checkpoint after T7.12.'
+  reason: 'The seal fails, the spare the stream takes fails its sync too and the journal turns read-only; the reopen in place then meets the public Open over a directory holding segments -- the tail proof this check verifies is landed, and the row waits on the checkpoint after T7.12.'
   issue: '#4032'
-  message: 'stub: Inspect.File'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestRFC28A_FooterIsNotAuthoritative
   status: fail
@@ -996,25 +996,25 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The open proves its unproven tail, then refuses: a journal that has run cannot be reopened until recovery lands. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3814'
-  message: 'stub: open_unproven_tail'
+  message: 'holds segments; recovering them is not built'
 
 - test: TestDamage_LostWrites/open_torn_tail_truncation
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The open proves the unproven tail; no truncation of the torn tail follows, for the teardown of a torn tail at the open is not built. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3814'
-  message: 'stub: open_torn_tail_truncation'
+  message: 'the held sync does not follow the truncation of the torn tail'
 
 - test: TestDamage_LostWrites/open_seal_after_truncation
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens; the check fails on a stub call. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
+  reason: 'The open proves the unproven tail and refuses before the torn tail is truncated and sealed: the teardown of a torn tail at the open is not built. Needs the data path, syncs, recovery and the reference model agreeing after a crash at this sync point.'
   issue: '#3814'
-  message: 'stub: the open after a torn crash'
+  message: 'stub: open_seal_after_truncation'
 
 - test: TestDamage_LostWrites/open_reappend
   status: fail
