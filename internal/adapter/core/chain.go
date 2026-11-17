@@ -315,9 +315,7 @@ func (c *chain) status1(e *entry, h Header, s Status, cause error) {
 // go out first, so a chain never waits on the reply pool holding it (§4.7).
 func (c *chain) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 	p := c.p
-	if len(c.held) > 0 && c.charge+p.sh.reply.Charge(n) > p.sh.reply.Ceiling()/4 {
-		c.flush(splitQuarter, c.cur.tr)
-	}
+	c.quarter(n)
 	// decision: a member that does not fit at once is not refused: the
 	// replies before it go out, and it waits under its deadline, since a
 	// refusal's status would itself need a buffer from the pool its chain
@@ -335,9 +333,20 @@ func (c *chain) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 	return p.sh.reserveReply(ctx, p.l.remote, n)
 }
 
+// quarter sends what the chain holds first when a reservation of n bytes
+// would take its held reservations past a quarter of the reply pool's
+// ceiling (§4.7).
+func (c *chain) quarter(n int) {
+	p := c.p
+	if len(c.held) > 0 && c.charge+p.sh.reply.Charge(n) > p.sh.reply.Ceiling()/4 {
+		c.flush(splitQuarter, c.cur.tr)
+	}
+}
+
 // status takes a status's buffer for the chain, as reserve takes a reply's.
 func (c *chain) status(ctx context.Context, n int) *resources.Buf {
 	p := c.p
+	c.quarter(n)
 	if buf, ok := p.sh.reply.TryGet(p.l.remote, n); ok {
 		return buf
 	}
@@ -371,6 +380,7 @@ func (c *chain) answered(tr *track, h Header, reply *resources.Buf, key uint64, 
 		// ponytail: only a test protocol both chains and returns copies.
 		// Drop the copy once Lookup is handed the client's key, when a
 		// protocol that chains returns copies.
+		c.quarter(len(reply.B))
 		own, ok := c.p.sh.reply.TryGet(c.p.l.remote, len(reply.B))
 		if !ok {
 			c.flush(splitReplyPool, tr)
@@ -487,10 +497,18 @@ func (c *chain) flush(why split, tr *track) {
 	}
 }
 
+// chainPadding is the most HeaderCodec.Chain adds before a reply: SMB2's
+// NextCommand aligns each reply to 8 bytes.
+const chainPadding = 7
+
 // join makes one record of the held replies: one alone as it is, more
 // through resources.Join, each appended after HeaderCodec.Chain points the
 // one before at it, and released once copied, so its bytes are held past its
-// charge for that copy alone (RFC 24 §2.5).
+// charge for that copy alone (RFC 24 §2.5). The record's room is its
+// replies' bytes and Chain's padding between them, never past the members'
+// charges, which Join refuses: a reply an encoder grew past its charge grows
+// the record past its room, uncharged, as a request alone sends such a
+// reply.
 func (c *chain) join() (*resources.Buf, error) {
 	if len(c.held) == 1 {
 		return c.held[0].reply, nil
@@ -498,10 +516,10 @@ func (c *chain) join() (*resources.Buf, error) {
 	n := 0
 	bufs := make([]*resources.Buf, len(c.held))
 	for i, m := range c.held {
-		n += cap(m.reply.B)
+		n += len(m.reply.B)
 		bufs[i] = m.reply
 	}
-	rec := resources.Join(n, bufs...)
+	rec := resources.Join(min(n+chainPadding*(len(c.held)-1), int(c.charge)), bufs...)
 	prev := 0
 	var err error
 	for i, m := range c.held {

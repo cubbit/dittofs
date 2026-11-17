@@ -1336,3 +1336,74 @@ func TestAChainMemberAdmittedAfterCloseDoesNotRun(t *testing.T) {
 		}
 	})
 }
+
+// A replay hit's copy and a refusal's status keep to a quarter of the reply
+// pool as a reply does: on a pool whose quarter is 16 KiB, a reply of 12
+// KiB held before either sends that reply first, counted quarter.
+func TestAHitAndAStatusKeepToAQuarterOfThePool(t *testing.T) {
+	const budget = 64 << 10
+	quarter := func(t *testing.T, m *metrics.Registry) float64 {
+		got, _ := scrape(t, m)
+		return got["adapter_chain_splits_total{protocol="+testproto.Name+",reason=quarter}"]
+	}
+	t.Run("hit", func(t *testing.T) {
+		m := metrics.New("v", "c")
+		s := newChained(t, budget, adapter.Deps{Metrics: m, Budgets: serverBudgets(budget)})
+		s.serve(sequenced(s, 150)...)
+		recvIDs(t, s, 2)
+		before := quarter(t, m)
+		s.serve(sequenced(s, 150)...)
+		if got := recvIDs(t, s, 2); !slices.Equal(got[0], []uint64{150}) || !slices.Equal(got[1], []uint64{151}) {
+			t.Errorf("the records hold %v, want the PutFH, then the hit", got)
+		}
+		if n := quarter(t, m) - before; n != 1 {
+			t.Errorf("the hit counted %v quarter splits, want 1", n)
+		}
+	})
+	t.Run("status", func(t *testing.T) {
+		m := metrics.New("v", "c")
+		d := adapter.Deps{Metrics: m}
+		s := newSeamWith(t, testproto.New(d).Bare(), budget, d)
+		s.serve(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1}, testproto.Msg{Op: 99, Version: 1, ID: 2})
+		if r := s.read(); r.ID != 1 {
+			t.Errorf("the first record is %+v, want the Echo alone", r)
+		}
+		if r := s.read(); r.ID != 2 || r.Status != testproto.StatusNotSupported {
+			t.Errorf("the second record is %+v, want the refusal", r)
+		}
+		if n := quarter(t, m); n != 1 {
+			t.Errorf("the status counted %v quarter splits, want 1", n)
+		}
+	})
+}
+
+// overruns is the stages' HeaderCodec whose Encode, once armed, appends 20
+// KiB past each reply: an input standing for an encoder whose bound is short.
+type overruns struct {
+	core.HeaderCodec
+	armed atomic.Bool
+}
+
+func (o *overruns) Encode(h core.Header, s core.Status, out *resources.Buf) error {
+	if err := o.HeaderCodec.Encode(h, s, out); err != nil || !o.armed.Load() {
+		return err
+	}
+	out.B = append(out.B, make([]byte, 20<<10)...)
+	return nil
+}
+
+// A chain whose replies an encoder grew past their charges goes out as one
+// record, as a request alone with such a reply does: the record's room never
+// passes its members' charges.
+func TestAChainOfOverrunRepliesGoesOut(t *testing.T) {
+	o := &overruns{}
+	s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
+		o.HeaderCodec = st.Header
+		st.Header = o
+	})
+	o.armed.Store(true)
+	s.serve(echoIn(1, 7), echoIn(2, 7))
+	if rs, err := s.client.Recv(); err != nil || len(rs) != 2 || rs[0].ID != 1 || rs[1].ID != 2 {
+		t.Errorf("the chain is answered %+v, %v: want both replies in one record", rs, err)
+	}
+}
