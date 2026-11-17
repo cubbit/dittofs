@@ -4,12 +4,15 @@ package apiv1
 type Share = Resource[ShareSpec, ShareStatus]
 
 // ShareSpec is what an operator declares of a share: the name an SMB client
-// tree-connects to, its path in the NFS namespace, and the ID of the
-// namespace its content is counted in, which only a re-home changes.
+// tree-connects to, its path in the NFS namespace, the ID of the namespace
+// its content is counted in, which only a re-home changes, and its case
+// sensitivity, sensitive or insensitive, bound when the share is created and
+// sensitive when the create leaves it empty.
 type ShareSpec struct {
-	Name      string `json:"name"`
-	Path      string `json:"path"`
-	Namespace string `json:"namespace"`
+	Name            string `json:"name"`
+	Path            string `json:"path"`
+	Namespace       string `json:"namespace"`
+	CaseSensitivity string `json:"case_sensitivity"`
 }
 
 // ShareStatus is what the system records of a share: its state, enabled,

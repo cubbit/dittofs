@@ -79,7 +79,7 @@ func TestWireBodies(t *testing.T) {
 			Status: ShareStatus{State: "enabled", Applied: &Applied{Nodes: 1, Of: 2}}}, new(Share),
 			[]string{"generation", "id", "spec", "status"}},
 		{"share spec", ShareSpec{Name: "builds", Path: "/builds", Namespace: "ns_1"}, new(ShareSpec),
-			[]string{"name", "namespace", "path"}},
+			[]string{"case_sensitivity", "name", "namespace", "path"}},
 		{"share status", ShareStatus{State: "quiesced", Applied: &Applied{Nodes: 1, Of: 2}}, new(ShareStatus),
 			[]string{"applied", "state"}},
 		{"share status in a write's answer", ShareStatus{State: "enabled"}, new(ShareStatus), []string{"state"}},
