@@ -399,3 +399,60 @@ func TestASilentClientStopsTheReader(t *testing.T) {
 		}
 	})
 }
+
+// A session spans connections: the first connection's close leaves it to the
+// second, and the second's ends it.
+func TestASessionSurvivesOneConnectionsClose(t *testing.T) {
+	b := budgets()
+	adaptertest.CheckLeaks(t, b)
+	l := core.Listener{Services: []string{"test"}, Network: "tcp", Protocol: testproto.New(adapter.Deps{})}
+	srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	join := func(t *testing.T) (conn *core.Conn, client net.Conn, c *testproto.Client) {
+		t.Helper()
+		var clientConn net.Conn
+		conn, clientConn = servedConn(t, srv, &l)
+		c = testproto.NewClient(clientConn)
+		for _, m := range []testproto.Msg{
+			{Op: testproto.OpNegotiate, Version: 1, ID: 1},
+			{Op: testproto.OpSession, Version: 1, ID: 2, Session: 7},
+		} {
+			if err := c.Send(m); err != nil {
+				t.Fatal(err)
+			}
+			if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+				t.Fatalf("setting the session up: %+v (%v)", rs, err)
+			}
+		}
+		return conn, clientConn, c
+	}
+	connA, clientA, _ := join(t)
+	connB, clientB, bClient := join(t)
+	// The first connection goes; the session stays with the second.
+	_ = clientA.Close()
+	select {
+	case <-core.ConnDone(connA):
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first connection's teardown did not end")
+	}
+	if err := bClient.Send(testproto.Msg{Op: testproto.OpTree, Version: 1, ID: 3, Session: 7, Tree: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if rs, err := bClient.Recv(); err != nil || len(rs) != 1 || rs[0].Status != 0 {
+		t.Fatalf("a tree on the session the second connection carries: %+v (%v)", rs, err)
+	}
+	// The second goes, and the session with it.
+	_ = clientB.Close()
+	select {
+	case <-core.ConnDone(connB):
+	case <-time.After(2 * time.Second):
+		t.Fatal("the second connection's teardown did not end")
+	}
+	// The second's close ends the session, which a third connection would find
+	// gone. That half cannot be asserted at this base: core's row checks, which
+	// compare a row's Needs with the request's level, are the epic 5 stack's and
+	// are not in this branch, so a request that needs a session runs anyway. The
+	// registry's leave runs all the same, on the teardown's OnClose.
+}
