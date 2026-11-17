@@ -257,12 +257,14 @@ func TestRows(t *testing.T) {
 // order, a typed row before a sentinel's, since no row here names operations
 // or versions. Every refusal of core's has a status of its own, the two drain
 // errors answer nothing, and only the table that holds holds ErrDelay, for
-// HoldFor from the hold's start; ErrDelay of DelayResources is answered
-// StatusDelay at once in both tables, by a typed row.
+// HoldFor from the hold's start, or for what SetHold set, read on each call;
+// ErrDelay of DelayResources is answered StatusDelay at once in both tables,
+// by a typed row.
 func TestErrorRows(t *testing.T) {
 	resources := &vfs.Delay{Cause: vfs.DelayResources}
 	for _, holds := range []bool{false, true} {
-		rows := errorRows(holds)
+		p := New(adapter.Deps{})
+		rows := p.errorRows(holds)
 		first := func(err error) *core.ErrorRow {
 			var sentinel *core.ErrorRow
 			for i := range rows {
@@ -307,6 +309,10 @@ func TestErrorRows(t *testing.T) {
 			start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 			if got := r.Hold(vfs.ErrDelay, start); !got.Equal(start.Add(HoldFor)) {
 				t.Errorf("the hold ends at %v, want %v after its start", got, HoldFor)
+			}
+			p.SetHold(time.Minute)
+			if got := r.Hold(vfs.ErrDelay, start); !got.Equal(start.Add(time.Minute)) {
+				t.Errorf("with a minute set the hold ends at %v, want a minute after its start", got)
 			}
 		}
 		if r := first(resources); r == nil || r == first(vfs.ErrDelay) || r.Hold != nil || r.NoReply || r.Status != StatusDelay {

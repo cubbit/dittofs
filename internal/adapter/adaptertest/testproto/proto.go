@@ -57,7 +57,8 @@ const JoinedIO = "not a failure, joined to an I/O error"
 const Name = "testproto"
 
 // HoldFor is how long version 2 holds a request the service answered
-// ErrDelay before it answers StatusDelay.
+// ErrDelay before it answers StatusDelay, until a test sets another with
+// SetHold.
 const HoldFor = 10 * time.Second
 
 // Settings is testproto's shape; its Router reads it from Conn.Settings() at
@@ -99,7 +100,12 @@ type Protocol struct {
 	tables func() [2]*core.OpTable
 	errs   *core.ErrorTable // the stages' own, for a refusal before Route returns a table
 	call   vfs.Call         // what every request's Call starts from
+	hold   *atomic.Int64    // version 2's hold, in nanoseconds; shared by every copy of p
 }
+
+// SetHold makes version 2 hold a request the service answered ErrDelay for d
+// from the hold's start, read afresh on each attempt, as a live setting is.
+func (p *Protocol) SetHold(d time.Duration) { p.hold.Store(int64(d)) }
 
 // WithCall is p with every request's Call starting from c: the identity a
 // session would resolve, which testproto does not model, so a test hands it
@@ -120,7 +126,8 @@ func (p *Protocol) WithCall(c vfs.Call) *Protocol {
 // request, which a test protocol can afford. Withdraw it if a test needs the
 // failure at New.
 func New(d adapter.Deps) *Protocol {
-	p := &Protocol{d: d, reg: newRegistry()}
+	p := &Protocol{d: d, reg: newRegistry(), hold: new(atomic.Int64)}
+	p.hold.Store(int64(HoldFor))
 	if d.Budgets != nil && d.Budgets.Reply != nil {
 		p.pool = resources.NewBufPool(d.Budgets.Reply)
 	}
@@ -264,13 +271,13 @@ func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, err
 // build is both versions' tables: version 1 answers every error at once,
 // version 2 holds.
 func (p *Protocol) build() [2]*core.OpTable {
-	errs := core.NewErrorTable(StatusFault, errorRows(false)...)
+	errs := core.NewErrorTable(StatusFault, p.errorRows(false)...)
 	members := core.NewOpTable(errs, false, memberRows(p.ops())...)
 	members.ReadOp, members.EncodeResult = readOp, encodeResult
 
 	tables := [2]*core.OpTable{
 		core.NewOpTable(errs, false, append(p.ops(), compound(members))...),
-		core.NewOpTable(core.NewErrorTable(StatusFault, errorRows(true)...), true, p.ops()...),
+		core.NewOpTable(core.NewErrorTable(StatusFault, p.errorRows(true)...), true, p.ops()...),
 	}
 	for _, t := range tables {
 		t.Protocol = Name
@@ -280,7 +287,7 @@ func (p *Protocol) build() [2]*core.OpTable {
 }
 
 // errorRows is a table's rows, with the hold row's Hold set where the table
-// holds.
+// holds: p's hold from the hold's start.
 //
 // decision: the tables are not total. They map core's refusals, the service's
 // ErrDelay and its DelayResources delay, a cancel, the two drain errors,
@@ -289,7 +296,7 @@ func (p *Protocol) build() [2]*core.OpTable {
 // reachable and answered StatusFault. Totality is a real protocol's property,
 // checked on NFS's and SMB's tables. Withdraw it if a core test needs a
 // service error this table leaves unmapped to have a status of its own.
-func errorRows(holds bool) []core.ErrorRow {
+func (p *Protocol) errorRows(holds bool) []core.ErrorRow {
 	// decision: this row is testproto's only hold. A request is held because
 	// the service a test supplied answered ErrDelay, never because an
 	// operation here waits or answers an error itself; ErrDelay of
@@ -298,7 +305,7 @@ func errorRows(holds bool) []core.ErrorRow {
 	// it if core gains a hold that no service error can cause.
 	delay := core.ErrorRow{Err: vfs.ErrDelay, Status: StatusDelay}
 	if holds {
-		delay.Hold = func(_ error, start time.Time) time.Time { return start.Add(HoldFor) }
+		delay.Hold = func(_ error, start time.Time) time.Time { return start.Add(time.Duration(p.hold.Load())) }
 	}
 
 	return []core.ErrorRow{
@@ -364,7 +371,7 @@ func (p *Protocol) ops() []*core.Op {
 		{Code: OpEcho, Name: "Echo", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
 			decodeEcho, echoBound, nil, echoRole, nil, echo, encodeEcho)},
 		{Code: OpCreate, Name: "Create", Versions: both, Needs: core.NeedsTree | core.NeedsFH, Cacheable: true, Decode: core.Bind(
-			decodeName, noBound[nameReq], nil, nil, nil, p.create, encodeNothing[empty])},
+			decodeName, noBound[nameReq], p.inSession, nil, nil, p.create, encodeNothing[empty])},
 		{Code: OpPanic, Name: "Panic", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
 			noArguments[empty], noBound[empty], nil, nil, nil, panics, encodeNothing[empty])},
 		{Code: OpRead, Name: "Read", Versions: both, Needs: core.NeedsTree | core.NeedsFH, Decode: core.Bind(
@@ -486,6 +493,20 @@ func decodeName(b []byte, _ core.Version, req *nameReq) (int, error) {
 	req.name = b
 
 	return len(b), nil
+}
+
+// inSession is Create's Resolve: it refuses ErrNoSession once the request's
+// session has ended, as a held Create's re-drive finds after a Logoff.
+func (p *Protocol) inSession(r *core.Request, _ *nameReq) error {
+	s, err := stateOf(r)
+	if err != nil {
+		return err
+	}
+	if carried, _, _ := p.reg.look(s.sid, s.conn, s.tid); !carried {
+		return core.ErrNoSession
+	}
+
+	return nil
 }
 
 // create makes one service call: a Create of a regular file of the name in
