@@ -48,8 +48,9 @@ func codecCases() []codecCase {
 		MustChange: true,
 		Generation: 5,
 		Position:   11,
+		Deleted:    true,
 	}
-	grp := entity.Group{Principal: group, Name: "staff", Generation: 2, Position: 12}
+	grp := entity.Group{Principal: group, Name: "staff", Generation: 2, Position: 12, Deleted: true}
 	share := entity.Share{ID: sid, Name: "Photos", Path: "/photos", Root: entity.FileID{15: 7}, Tag: 9,
 		Fold: entity.FoldUpcase, Names: entity.NamesWindows, DigestKey: [32]byte{31: 0x5A}, Generation: 4, Position: 13}
 	grant := entity.ShareGrant{Share: sid, Principal: group, Access: entity.AccessReadWrite, Version: 3}
@@ -101,9 +102,9 @@ func codecCases() []codecCase {
 	return []codecCase{
 		{"user", user, encodeUser(user),
 			"01" + "05616c696365" + "01" + "0104" + "31303030" + "02" + "bb000000000000000000000000000002" + "01" + "00000000000000000000000000000009" +
-				"03614078" + "03" + "000000006b49d200" + "01" + "0000000000000005" + "000000000000000b",
+				"03614078" + "03" + "000000006b49d200" + "01" + "0000000000000005" + "000000000000000b" + "01",
 			func(b []byte) (any, error) { return decodeUser(pid, b) }},
-		{"group", grp, encodeGroup(grp), "01" + "057374616666" + "00" + "0000000000000002" + "000000000000000c",
+		{"group", grp, encodeGroup(grp), "01" + "057374616666" + "00" + "0000000000000002" + "000000000000000c" + "01",
 			func(b []byte) (any, error) { return decodeGroup(gid, b) }},
 		{"kind", entity.PrincipalGroup, encodeKind(entity.PrincipalGroup), "0102",
 			func(b []byte) (any, error) { return decodeKind(b) }},

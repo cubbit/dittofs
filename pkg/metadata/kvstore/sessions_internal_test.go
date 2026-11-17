@@ -21,6 +21,16 @@ func checkRows(t *testing.T, what string, got [][]byte, want ...[]byte) {
 	}
 }
 
+// storedUser stores a user for a session, a token or a count to name.
+func storedUser(t *testing.T, s *Store) entity.Principal {
+	t.Helper()
+	u := entity.User{Principal: entity.NewUser(), Name: "alice"}
+	if _, err := s.ControlPlane().PutUser(context.Background(), u, 0, entity.Alloc{}); err != nil {
+		t.Fatal(err)
+	}
+	return u.Principal
+}
+
 // A sign-in count's expiry row follows the time its expiry counts from: a
 // source's Failed, not its Last; a pair's Last. An account's count has none,
 // and a deleted count leaves none.
@@ -28,7 +38,7 @@ func TestSignInExpiryRowMoves(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
 	cp := s.ControlPlane()
-	alice := entity.NewUser()
+	alice := storedUser(t, s)
 	addr := netip.MustParsePrefix("192.0.2.1/32")
 	tail := append(addr.Addr().AsSlice(), 32)
 	t0 := time.Unix(1_800_000_000, 0).UTC()
@@ -73,7 +83,7 @@ func TestSessionAndTokenRows(t *testing.T) {
 	ctx := context.Background()
 	s := openStore(t)
 	cp := s.ControlPlane()
-	alice := entity.NewUser()
+	alice := storedUser(t, s)
 	e1 := time.Unix(1_900_000_000, 0).UTC()
 	sess := entity.Session{ID: uuid.New(), Account: alice, Refresh: [32]byte{1}, Expires: e1}
 	xp := []byte{keys.KindXP}

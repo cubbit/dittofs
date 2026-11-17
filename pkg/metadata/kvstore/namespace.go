@@ -348,17 +348,13 @@ func createGroup(r kv.Reader, id entity.Identity, d entity.File) (entity.Princip
 		return id.Group, nil
 	}
 	if id.Principal.Kind == entity.PrincipalUser {
-		b, ok, err := get(r, userKey(id.Principal.ID))
+		u, ok, err := userIn(r, id.Principal.ID)
 		if err != nil {
 			return entity.Principal{}, err
 		}
 		if ok {
-			u, err := decodeUser(id.Principal.ID, b)
-			if err != nil {
-				return entity.Principal{}, err
-			}
-			if !u.Primary.IsZero() {
-				return u.Primary, nil
+			if primary, err := primaryIn(r, u); err != nil || !primary.IsZero() {
+				return primary, err
 			}
 		}
 	}

@@ -135,7 +135,8 @@ func sessionByRefreshIn(r kv.Reader, hash [32]byte) (entity.Session, bool, error
 	if err != nil {
 		return entity.Session{}, false, err
 	}
-	return sessionIn(r, id)
+	s, found, err := sessionIn(r, id)
+	return ofLive(r, s, s.Account, found, err)
 }
 
 func tokenIn(r kv.Reader, id [16]byte) (entity.APIToken, bool, error) {
@@ -156,7 +157,31 @@ func tokenByHashIn(r kv.Reader, hash [32]byte) (entity.APIToken, bool, error) {
 	if err != nil {
 		return entity.APIToken{}, false, err
 	}
-	return tokenIn(r, id)
+	t, found, err := tokenIn(r, id)
+	return ofLive(r, t, t.Account, found, err)
+}
+
+// ofLive is v, found, unless account is deleted or marked deleted: from its
+// account's mark, a session or a token is found by no hash, nor on the view.
+func ofLive[T any](r kv.Reader, v T, account entity.Principal, found bool, err error) (T, bool, error) {
+	if err == nil && found {
+		found, err = live(r, account)
+	}
+	if err != nil || !found {
+		var zero T
+		return zero, false, err
+	}
+	return v, true, nil
+}
+
+// accountLive refuses a write for an account deleted or marked deleted. Its
+// read is tracked, so the write conflicts with the mark and with the batch
+// that deletes the record.
+func accountLive(tx kv.Txn, account entity.Principal) error {
+	if ok, err := live(tx, account); err != nil || !ok {
+		return notFound(err, account)
+	}
+	return nil
 }
 
 func (c controlTx) Session(id [16]byte) (entity.Session, bool, error) { return sessionIn(c.tx, id) }
@@ -212,6 +237,9 @@ func (c controlTx) writeSession(s entity.Session, oldExpiry []byte) error {
 	if s.Account.Kind != entity.PrincipalUser || beforeEpoch(s.Expires) {
 		return merrs.NewInvalidArgumentError("a session needs a user account and an expiry after 1970")
 	}
+	if err := accountLive(c.tx, s.Account); err != nil {
+		return err
+	}
 	if err := hashFree(c.tx, refreshKey(s.Refresh), s.ID); err != nil {
 		return err
 	}
@@ -233,16 +261,30 @@ func (c controlTx) DeleteSession(id [16]byte) error {
 	if err != nil || !found {
 		return err
 	}
+	rows, err := sessionHashRows(c.tx, id)
+	if err != nil {
+		return err
+	}
+	return deleteRows(c.tx, append(rows, sessionKey(id), accountSessionKey(s.Account, id), sessionExpiryKey(s)))
+}
+
+// sessionHashRows lists the rows of every refresh hash session id has had,
+// each followed by its SSH mirror.
+func sessionHashRows(r kv.Reader, id [16]byte) ([][]byte, error) {
 	prefix := sessionHashesPrefix(id)
 	var rows [][]byte
-	for kvp, err := range c.tx.Scan(prefix, nil) {
+	for kvp, err := range r.Scan(prefix, nil) {
 		if err != nil {
-			return err
+			return nil, err
 		}
 		rows = append(rows, bytes.Clone(kvp.Key), refreshKey([32]byte(kvp.Key[len(prefix):])))
 	}
-	for _, k := range append(rows, sessionKey(id), accountSessionKey(s.Account, id), sessionExpiryKey(s)) {
-		if err := c.tx.Delete(k); err != nil {
+	return rows, nil
+}
+
+func deleteRows(tx kv.Txn, rows [][]byte) error {
+	for _, k := range rows {
+		if err := tx.Delete(k); err != nil {
 			return err
 		}
 	}
@@ -258,6 +300,9 @@ func (c controlTx) APITokenByHash(hash [32]byte) (entity.APIToken, bool, error) 
 func (c controlTx) PutAPIToken(t entity.APIToken) error {
 	if t.Account.Kind != entity.PrincipalUser || beforeEpoch(t.Expires) {
 		return merrs.NewInvalidArgumentError("a token needs a user account and an expiry after 1970")
+	}
+	if err := accountLive(c.tx, t.Account); err != nil {
+		return err
 	}
 	if _, found, err := tokenIn(c.tx, t.ID); err != nil || found {
 		if found {
@@ -320,6 +365,11 @@ func (c controlTx) PutSignInFailures(k entity.SignInKey, f entity.SignInFailures
 	if tag == keys.SFSource && beforeEpoch(f.Failed) || tag == keys.SFPair && beforeEpoch(f.Last) {
 		return merrs.NewInvalidArgumentError("a count's expiry follows a time after 1970")
 	}
+	if k.Account != (entity.Principal{}) {
+		if err := accountLive(c.tx, k.Account); err != nil {
+			return err
+		}
+	}
 	old, found, err := signInIn(c.tx, tag, tail)
 	if err != nil {
 		return err
@@ -362,10 +412,12 @@ func (c ControlPlane) SignInFailures(ctx context.Context, k entity.SignInKey) (f
 	return f, found, err
 }
 
-// Session reads one session: the per-call check of an access token's.
+// Session reads one session: the per-call check of an access token's. A
+// session whose account is deleted or marked deleted is not found.
 func (c ControlPlane) Session(ctx context.Context, id [16]byte) (s entity.Session, found bool, err error) {
 	err = c.s.kv.View(ctx, func(r kv.Reader) error {
 		s, found, err = sessionIn(r, id)
+		s, found, err = ofLive(r, s, s.Account, found, err)
 		return err
 	})
 	return s, found, err
@@ -416,10 +468,12 @@ func (c ControlPlane) DeleteSession(ctx context.Context, id [16]byte) error {
 	return c.update(ctx, func(tx entity.ControlPlaneTx) error { return tx.DeleteSession(id) })
 }
 
-// APIToken reads one token.
+// APIToken reads one token; one whose account is deleted or marked deleted
+// is not found.
 func (c ControlPlane) APIToken(ctx context.Context, id [16]byte) (t entity.APIToken, found bool, err error) {
 	err = c.s.kv.View(ctx, func(r kv.Reader) error {
 		t, found, err = tokenIn(r, id)
+		t, found, err = ofLive(r, t, t.Account, found, err)
 		return err
 	})
 	return t, found, err

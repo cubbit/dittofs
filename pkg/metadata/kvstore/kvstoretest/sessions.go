@@ -9,7 +9,17 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
+
+// account stores a user for a session, a token or a count to name: one
+// naming no user is refused.
+func account(t *testing.T, s *kvstore.Store) entity.Principal {
+	t.Helper()
+	u := user("alice")
+	must(t, errOf(s.ControlPlane().PutUser(ctx, u, 0, entity.Alloc{})))
+	return u.Principal
+}
 
 // A session's refresh token rotated twice is found by each of its three
 // hashes, the current one reported as Refresh; deleted, it is found by none,
@@ -17,7 +27,7 @@ import (
 func testSessionRefreshIndex(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
-	alice := entity.NewUser()
+	alice := account(t, s)
 	sess := entity.Session{ID: uuid.New(), Account: alice, Expires: time.Unix(1_900_000_000, 0).UTC()}
 	hashes := [][32]byte{{1}, {2}, {3}}
 	for i, h := range hashes {
@@ -69,7 +79,7 @@ func testSessionRefreshIndex(t *testing.T, kvo Opener) {
 // by hash.
 func testSessionTxReads(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
-	alice := entity.NewUser()
+	alice := account(t, s)
 	e := time.Unix(1_900_000_000, 0).UTC()
 	sess := entity.Session{ID: uuid.New(), Account: alice, Refresh: [32]byte{1}, Expires: e}
 	tok := entity.APIToken{ID: uuid.New(), Account: alice, Hash: [32]byte{2}, Expires: e}
@@ -103,7 +113,7 @@ func testSessionTxReads(t *testing.T, kvo Opener) {
 func testSessionRefusals(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
-	alice := entity.NewUser()
+	alice := account(t, s)
 	e := time.Unix(1_900_000_000, 0).UTC()
 	pre := time.Unix(-1, 0)
 	sess := entity.Session{ID: uuid.New(), Account: alice, Refresh: [32]byte{1}, Expires: e}
@@ -201,7 +211,7 @@ func testSessionRefusals(t *testing.T, kvo Opener) {
 func testAPITokens(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
-	alice := entity.NewUser()
+	alice := account(t, s)
 	tok := entity.APIToken{ID: uuid.New(), Account: alice, Hash: [32]byte{7},
 		Created: time.Unix(1_800_000_000, 0).UTC(), Expires: time.Unix(1_900_000_000, 0).UTC()}
 	must(t, cp.PutAPIToken(ctx, tok))
@@ -241,7 +251,7 @@ func testAPITokens(t *testing.T, kvo Opener) {
 func testSignInFailures(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
-	alice := entity.NewUser()
+	alice := account(t, s)
 	src := netip.MustParsePrefix("192.0.2.1/32")
 	keys := map[string]entity.SignInKey{
 		"account": {Account: alice},

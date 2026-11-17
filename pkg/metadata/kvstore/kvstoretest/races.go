@@ -175,7 +175,7 @@ func testDeleteRacesAdd(t *testing.T, kvo Opener) {
 						} else {
 							addErr, delErr = race(h, add, del)
 						}
-						must(t, delErr)
+						must(t, deleted(s, delErr, u.Principal))
 						if !deleteHeld && !merrs.IsNotFoundError(addErr) {
 							t.Errorf("add after the delete: %v, want not found", addErr)
 						}

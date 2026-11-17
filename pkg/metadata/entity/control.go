@@ -23,6 +23,7 @@ type User struct {
 	MustChange bool      // set with a generated password: until it changes, sign-in permits only that change
 	Generation uint64    // raised by every write of the record; the management API's entity tag
 	Position   uint64    // the principals generation its last change raised
+	Deleted    bool      // marked by its deletion: found by no name or ID and admitted nowhere while its rows are dropped
 }
 
 // APIRole is a user's role in the management API, in increasing order.
@@ -47,6 +48,7 @@ type Group struct {
 	IDs        ProtocolIDs
 	Generation uint64 // raised by every write of the record, as a user's is
 	Position   uint64 // the principals generation its last change raised
+	Deleted    bool   // marked by its deletion: its memberships grant nothing while its rows are dropped
 }
 
 // Membership is one member of one group, its own record in both directions,

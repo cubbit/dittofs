@@ -168,11 +168,11 @@ func (c controlTx) User(p entity.Principal) (entity.User, bool, error) {
 	if p.Kind != entity.PrincipalUser {
 		return entity.User{}, false, nil
 	}
-	b, ok, err := get(c.tx, userKey(p.ID))
+	u, ok, err := userIn(c.tx, p.ID)
 	if err != nil || !ok {
 		return entity.User{}, false, err
 	}
-	u, err := decodeUser(p.ID, b)
+	u.Primary, err = primaryIn(c.tx, u)
 	return u, err == nil, err
 }
 
