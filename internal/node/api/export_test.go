@@ -6,15 +6,22 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"iter"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
+
+// SetWriteTimeout sets the API listener's write timeout; call it before
+// Start.
+func (s *Server) SetWriteTimeout(d time.Duration) { s.api.WriteTimeout = d }
 
 // NewWithTestRows is New serving testRows beside the production table, so
 // the adapters run, through the production mux and authentication, on rows
@@ -82,6 +89,10 @@ var testRows = []route{
 		return none{}, nil
 	})},
 	{method: http.MethodPost, pattern: "/api/v1/password", kind: entity.ResourceUser, right: auth.Self, mustChange: true, serve: call(verb("password"))},
+	{method: http.MethodGet, pattern: "/api/v1/knobs/{id}", kind: entity.ResourceSetting, right: auth.View, serve: watch(watching[knobRead]{read: readKnob, tag: func(k knobRead) uint64 { return k.Generation }, until: knobWait})},
+	{method: http.MethodGet, pattern: "/api/v1/vaults/{id}", kind: entity.ResourceSecret, right: auth.View, serve: watch(watching[vaultRead]{read: readVault, tag: func(v vaultRead) uint64 { return v.Generation }, until: changes(func(vaultRead, vaultRead) bool { return false })})},
+	{method: http.MethodGet, pattern: "/api/v1/readers/{id}", kind: entity.ResourceSetting, right: auth.View, serve: watch(watching[reader]{read: readReader, tag: func(r reader) uint64 { return r.Generation }, until: changes(func(first, now reader) bool { return first.Generation != now.Generation })})},
+	{method: http.MethodGet, pattern: "/api/v1/tags", kind: entity.ResourceNetgroup, right: auth.View, serve: list(tags)},
 	{method: http.MethodGet, pattern: "/api/v1/fail", kind: entity.ResourceInstallation, right: auth.View, serve: read(func(context.Context, request[none]) (none, error) {
 		return none{}, errors.New(UnnamedError)
 	})},
@@ -196,7 +207,8 @@ func Seals(id string) int {
 }
 
 // Hold is a node's Applied that a test holds: each call is delivered on
-// Reached, and returns Err once Release is closed, whatever its context.
+// Reached, and returns Err once Release is closed, or its context's error
+// once that ends.
 type Hold struct {
 	Reached, Release chan struct{}
 	Err              error
@@ -208,8 +220,119 @@ func NewHold(err error) *Hold {
 	return &Hold{Reached: make(chan struct{}, 8), Release: make(chan struct{}), Err: err}
 }
 
-func (h *Hold) Applied(context.Context) error {
+func (h *Hold) Applied(ctx context.Context) error {
 	h.Reached <- struct{}{}
-	<-h.Release
-	return h.Err
+	select {
+	case <-h.Release:
+		return h.Err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// knobRead is a knob as GET reads it: its tag and its spec, generation 0
+// when there is none.
+type knobRead struct {
+	Generation uint64   `json:"generation"`
+	Spec       knobSpec `json:"spec"`
+}
+
+func readKnob(ctx context.Context, st reads, rq request[none]) (knobRead, error) {
+	s, err := settingIn(ctx, st, rq.ID, "knob")
+	if err != nil || s.Generation == 0 {
+		return knobRead{}, err
+	}
+	k := knobRead{Generation: s.Generation}
+	return k, json.Unmarshal(s.Value, &k.Spec)
+}
+
+// KnobOn is the wait word ?wait= takes on a knob, beside a duration: until
+// the knob's value is on, for at most the longest wait.
+const KnobOn = "on"
+
+// knobWait is a knob's ?wait=: a duration, until its tag changes, or KnobOn.
+func knobWait(w string) (time.Duration, func(first, now knobRead) bool, error) {
+	if w == KnobOn {
+		return maxWait, func(_, now knobRead) bool { return now.Spec.Value == KnobOn }, nil
+	}
+	return changes(func(first, now knobRead) bool { return first.Generation != now.Generation })(w)
+}
+
+// reader is a knob as GET /api/v1/readers/{id} reads it, with the role of
+// the caller the context of each read carries.
+type reader struct {
+	knobRead
+	Role string `json:"role"`
+}
+
+func readReader(ctx context.Context, st reads, rq request[none]) (reader, error) {
+	k, err := readKnob(ctx, st, rq)
+	c, _ := auth.CallerFrom(ctx)
+	return reader{k, c.Role.String()}, err
+}
+
+// vaultRead is a vault as GET reads it: the reference its password was
+// sealed under, and its version.
+type vaultRead struct {
+	Generation uint64    `json:"generation"`
+	Spec       vaultSpec `json:"spec"`
+}
+
+func readVault(ctx context.Context, st reads, rq request[none]) (vaultRead, error) {
+	s, err := settingIn(ctx, st, rq.ID, "vault")
+	return vaultRead{Generation: s.Generation, Spec: vaultSpec{Password: string(s.Value)}}, err
+}
+
+// settingIn is the setting key at the node scope id names, the zero one
+// when there is none.
+func settingIn(ctx context.Context, st reads, id [16]byte, key string) (entity.Setting, error) {
+	for s, err := range st.Settings(ctx, nodeScope(id)) {
+		if err != nil || s.Key == key {
+			return s, err
+		}
+	}
+	return entity.Setting{}, nil
+}
+
+// TagsFrom and TagsTo bound the keys a cursor of the test listing may
+// name: [a, {), every lowercase name.
+const TagsFrom, TagsTo = "a", "{"
+
+// tag is a netgroup as the test listing GET /api/v1/tags answers it, in
+// name order, filtered by name, with where it is applied: a netgroup carries
+// no position, and its reference is its name.
+type tag struct {
+	Name    string        `json:"name"`
+	Members []string      `json:"members"`
+	Applied apiv1.Applied `json:"applied"`
+}
+
+var tags = listing[entity.Netgroup, tag]{
+	lo:      []byte(TagsFrom),
+	hi:      []byte(TagsTo),
+	filters: []string{"name"},
+	records: func(ctx context.Context, st reads, after []byte, f map[string]string) iter.Seq2[entity.Netgroup, error] {
+		all := st.Netgroups(ctx, string(after))
+		name, ok := f["name"]
+		if !ok {
+			return all
+		}
+		// The store has no lookup of one netgroup, so the test listing
+		// finds a name by walking to it; a production listing's name
+		// filter reads its name index.
+		return func(yield func(entity.Netgroup, error) bool) {
+			for g, err := range all {
+				if err != nil || g.Name >= name {
+					if err != nil || g.Name == name {
+						yield(g, err)
+					}
+					return
+				}
+			}
+		}
+	},
+	key: func(g entity.Netgroup) []byte { return []byte(g.Name) },
+	item: func(g entity.Netgroup, p perPage) tag {
+		return tag{g.Name, g.Members, p.applied(entity.ResourceRef{Kind: entity.ResourceNetgroup, ID: []byte(g.Name)}, 0, nil)}
+	},
 }
