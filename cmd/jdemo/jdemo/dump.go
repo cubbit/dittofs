@@ -8,7 +8,7 @@
 // data, and nothing merges from here. The two checksum slots are NOT
 // verified: they are seeded with the journal's identity, and the seed
 // algorithm is format internals the demo does not copy.
-package main
+package jdemo
 
 import (
 	"encoding/binary"
@@ -225,10 +225,10 @@ func allZero(b []byte) bool {
 
 // viewDump is the (d) view: every record of every segment, decoded, with
 // the payload bytes showing — the journal's on-disk truth.
-func (d *demo) viewDump() {
-	entries, err := os.ReadDir(d.dir)
+func (d *Demo) viewDump() {
+	entries, err := os.ReadDir(d.Dir)
 	if err != nil {
-		d.printf("data dump: %v\n", err)
+		d.Printf("data dump: %v\n", err)
 		return
 	}
 	var segs []string
@@ -238,47 +238,47 @@ func (d *demo) viewDump() {
 		}
 	}
 	sort.Strings(segs)
-	d.printf("records on disk (checksums not verified by this decoder — the seed is format internals)\n")
+	d.Printf("records on disk (checksums not verified by this decoder — the seed is format internals)\n")
 	if len(segs) == 0 {
-		d.printf("no segments yet\n")
+		d.Printf("no segments yet\n")
 		return
 	}
 	rows := 0
 	for _, name := range segs {
-		recs, end, err := scanSegment(filepath.Join(d.dir, name))
+		recs, end, err := scanSegment(filepath.Join(d.Dir, name))
 		if err != nil {
-			d.printf("%s: %v\n", name, err)
+			d.Printf("%s: %v\n", name, err)
 			continue
 		}
 		if len(recs) == 0 && end == endUntaken {
-			d.printf("  %s: spare, never taken\n", name)
+			d.Printf("  %s: spare, never taken\n", name)
 			continue
 		}
 		for _, r := range recs {
 			rows++
 			text := fmt.Sprintf("%-9s %-10s %s: %3d–%-3d v%-3d tag %d  seq %d  @%d",
 				name, r.kindName(), fileHexShort(r.file), r.off, r.off+r.length, r.counter, r.tag, r.seq, r.recOff)
-			d.printf("  %s\n", text)
+			d.Printf("  %s\n", text)
 			if len(r.body) > 0 {
-				d.hexdump(r.body, 8+8) // 16 lanes
+				d.Hexdump(r.body, 8+8) // 16 lanes
 			}
 		}
 		switch end {
 		case endUntaken: // an active segment's unwritten tail: not a note
 			if len(recs) == 0 {
-				d.printf("  %s: spare, never taken\n", name)
+				d.Printf("  %s: spare, never taken\n", name)
 			}
 		case endSealed:
 			if len(recs) == 0 {
-				d.printf("  %s: sealed empty\n", name)
+				d.Printf("  %s: sealed empty\n", name)
 			}
-			d.printf("  %s: sealed here; %d records before it\n", name, len(recs))
+			d.Printf("  %s: sealed here; %d records before it\n", name, len(recs))
 		case endTorn:
-			d.printf("  %s: tail torn at the next slot; %d records before it\n", name, len(recs))
+			d.Printf("  %s: tail torn at the next slot; %d records before it\n", name, len(recs))
 		}
 	}
 	if rows == 0 {
-		d.printf("no records walked\n")
+		d.Printf("no records walked\n")
 	}
 }
 
@@ -286,7 +286,7 @@ func (d *demo) viewDump() {
 // them; a truncated body says what remains.
 const dumpBodyLimit = 512
 
-func (d *demo) hexdump(b []byte, wide int) {
+func (d *Demo) Hexdump(b []byte, wide int) {
 	limit := len(b)
 	if limit > dumpBodyLimit {
 		limit = dumpBodyLimit
@@ -302,10 +302,10 @@ func (d *demo) hexdump(b []byte, wide int) {
 				ascii.WriteByte('.')
 			}
 		}
-		d.printf("      %-48s  %s\n", hexes.String(), ascii.String())
+		d.Printf("      %-48s  %s\n", hexes.String(), ascii.String())
 	}
 	if len(b) > limit {
-		d.printf("      (+%d more bytes)\n", len(b)-limit)
+		d.Printf("      (+%d more bytes)\n", len(b)-limit)
 	}
 }
 

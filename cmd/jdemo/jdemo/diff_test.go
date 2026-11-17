@@ -1,4 +1,4 @@
-package main
+package jdemo
 
 import (
 	"path/filepath"
@@ -7,10 +7,10 @@ import (
 )
 
 // diffDemo is a demo wired for the layer only: no journal, just a screen.
-func diffDemo(t *testing.T) (*demo, *strings.Builder) {
+func diffDemo(t *testing.T) (*Demo, *strings.Builder) {
 	t.Helper()
 	var out strings.Builder
-	d := newDemo(filepath.Join(t.TempDir(), "journal"), strings.NewReader(""), &out)
+	d := NewDemo(filepath.Join(t.TempDir(), "journal"), strings.NewReader(""), &out)
 	return d, &out
 }
 

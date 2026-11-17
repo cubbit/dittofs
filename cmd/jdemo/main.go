@@ -9,8 +9,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/cubbit/dittofs/pkg/block/journal"
+
+	"github.com/cubbit/dittofs/cmd/jdemo/jdemo"
+	"github.com/cubbit/dittofs/cmd/jdemo/scenarios"
 )
 
 func main() {
@@ -20,7 +24,7 @@ func main() {
 // mainOptions are extra journal options runMain opens with. Production
 // adds none — a real directory is judged by the real mount it lives on;
 // a test running through runMain sets the mount probe its host cannot
-// choose, the same way newTestDemo does for direct runs.
+// choose.
 var mainOptions []journal.Option
 
 // runMain is the binary: flags, the story, and the cleanup. The default
@@ -35,20 +39,18 @@ func runMain(args []string, in io.Reader, out, errw io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if _, ok := stories[*story]; !ok {
-		_, _ = fmt.Fprintf(errw, "jdemo: no such story %q (have: basic)\n", *story)
+	if _, ok := jdemo.Stories()[*story]; !ok {
+		_, _ = fmt.Fprintf(errw, "jdemo: no such story %q (have: %s)\n", *story, strings.Join(scenarios.Names(), ", "))
 		return 2
 	}
 	if flags.Lookup("dir").DefValue == *dir {
-		// A cleanup that reports nowhere: there is nowhere to report a
-		// failure to clean up on the way out of a failed cleanup.
 		defer func() { _ = os.RemoveAll(filepath.Dir(*dir)) }()
 	}
 
-	d := newDemo(*dir, in, out)
+	d := jdemo.NewDemo(*dir, in, out)
 	d.Options = mainOptions
-	d.storyID = *story
-	if err := d.run(); err != nil {
+	d.StoryID = *story
+	if err := d.Run(); err != nil {
 		_, _ = fmt.Fprintf(errw, "jdemo: %v\n", err)
 		return 1
 	}

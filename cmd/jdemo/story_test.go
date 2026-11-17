@@ -1,10 +1,25 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/cubbit/dittofs/cmd/jdemo/jdemo"
+	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
 )
+
+// newStoryDemo wires a demo whose registry the scenarios package filled:
+// the story-level tests live above both the machinery and the stories.
+func newStoryDemo(t *testing.T, dir, stdin string) (*jdemo.Demo, *strings.Builder) {
+	t.Helper()
+	var out strings.Builder
+	d := jdemo.NewDemo(dir, strings.NewReader(stdin), &out)
+	d.Options = []journal.Option{journaltest.SuitableMount()}
+	return d, &out
+}
 
 func TestBasicStoryRunsToQuit(t *testing.T) {
 	// A script of Enters carries the whole story; the (+) look rides the
@@ -15,8 +30,8 @@ func TestBasicStoryRunsToQuit(t *testing.T) {
 	script += strings.Repeat("\n\n", 12)
 
 	base := t.TempDir()
-	d, out := newTestDemo(t, filepath.Join(base, "journal"), script)
-	if err := d.run(); err != nil {
+	d, out := newStoryDemo(t, filepath.Join(base, "journal"), script)
+	if err := d.Run(); err != nil {
 		t.Fatalf("run: %v (out %q)", err, out.String())
 	}
 	screen := out.String()
@@ -52,8 +67,8 @@ func TestBeatFramingCarriesBannerHintAndChecks(t *testing.T) {
 	// from the journal's own stats — ordered as the room sees them.
 	script := strings.Repeat("\n\n", 3) // beats 1–3
 	base := t.TempDir()
-	d, out := newTestDemo(t, filepath.Join(base, "journal"), script)
-	if err := d.run(); err != nil {
+	d, out := newStoryDemo(t, filepath.Join(base, "journal"), script)
+	if err := d.Run(); err != nil {
 		t.Fatalf("run: %v (out %q)", err, out.String())
 	}
 	screen := out.String()
@@ -73,4 +88,42 @@ func TestBeatFramingCarriesBannerHintAndChecks(t *testing.T) {
 	if strings.Index(screen, "look for:") > strings.Index(screen, "✓ index +1 entry") {
 		t.Errorf("framing: the confirmation came before the hint it confirms:\n%s", screen)
 	}
+}
+
+func TestDemoEndToEndInteractive(t *testing.T) {
+	// The whole demo, driven as a presenter would: run every beat, look at
+	// every view once, quit. The stub answers print honestly in their
+	// beats, and the journal closes clean.
+	base := t.TempDir()
+	dir := filepath.Join(base, "journal")
+	// One beat's script: Enter runs it; each view key gets a look at the
+	// chooser; an empty line leaves for the next beat.
+	beatScript := "\n" + "i\n" + "s\n" + "f\n" + "d\n" + "+\n" + "\n"
+	script := strings.Repeat(beatScript, 12) // basic, before Sync grows it to 13
+	script += "q\n"
+	d, out := newStoryDemo(t, dir, script)
+	if err := d.Run(); err != nil {
+		t.Fatalf("run: %v (out tail %q)", err, tailOf(out.String(), 400))
+	}
+	screen := out.String()
+	for _, want := range []string{
+		"(first look)", // a view rendered its rows
+		"→ v1",         // the first write's version
+		"journal: not implemented",
+	} {
+		if !strings.Contains(screen, want) {
+			t.Errorf("end-to-end screen lacks %q (tail: %s)", want, tailOf(screen, 400))
+		}
+	}
+	if _, err := os.Stat(jdemo.StatePath(dir)); os.IsNotExist(err) {
+		t.Errorf("state file missing after the interactive run")
+	}
+}
+
+// tailOf is the screen's last n bytes, for failure messages.
+func tailOf(s string, n int) string {
+	if len(s) > n {
+		return s[len(s)-n:]
+	}
+	return s
 }

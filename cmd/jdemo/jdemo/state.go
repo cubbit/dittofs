@@ -1,4 +1,4 @@
-package main
+package jdemo
 
 import (
 	"encoding/hex"
@@ -23,7 +23,7 @@ type stateFile struct {
 // statePath returns the state file's sibling path: <dir>.jdemo.json, never
 // inside the journal directory itself, so the journal's own listing of its
 // directory stays exactly what the format owns.
-func statePath(dir string) string {
+func StatePath(dir string) string {
 	return filepath.Join(filepath.Dir(dir), filepath.Base(dir)+".jdemo.json")
 }
 

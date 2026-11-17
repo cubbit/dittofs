@@ -1,4 +1,4 @@
-package main
+package jdemo
 
 import (
 	"fmt"
@@ -12,10 +12,10 @@ import (
 
 // viewFS shows the journal's directory as it is: format file, segments,
 // spares — the on-disk story the index, once it lands, names by id.
-func (d *demo) viewFS() {
-	entries, err := os.ReadDir(d.dir)
+func (d *Demo) viewFS() {
+	entries, err := os.ReadDir(d.Dir)
 	if err != nil {
-		d.printf("filesystem: %v\n", err)
+		d.Printf("filesystem: %v\n", err)
 		return
 	}
 	rows := make([]viewRow, 0, len(entries))
@@ -43,7 +43,7 @@ func (d *demo) viewFS() {
 	// ReadDir's ascending names leave growth reading downward: the newest
 	// (highest-id) segment is the last row.
 	d.renderView("filesystem", rows)
-	d.printf("state file (a sibling, outside the journal's dir): %s\n", statePath(d.dir))
+	d.Printf("state file (a sibling, outside the journal's dir): %s\n", StatePath(d.Dir))
 }
 
 // humanSize renders bytes at the scale a screen can carry: at distance,
@@ -64,8 +64,8 @@ func humanSize(n int64) string {
 // viewStats shows the journal's totals and the per-share breakdown as
 // diffable rows — the measured view, honest even where the read-outs
 // behind other views are still stubs.
-func (d *demo) viewStats() {
-	st := d.j.Stats()
+func (d *Demo) viewStats() {
+	st := d.J.Stats()
 	rows := []viewRow{
 		{key: "max bytes", text: fmt.Sprintf("max bytes          %12d", st.MaxBytes)},
 		{key: "used", text: fmt.Sprintf("used               %12d", st.UsedBytes)},
@@ -101,10 +101,10 @@ func (d *demo) viewStats() {
 // index the journal reports. The read-out's honesty rule: the journal's
 // own answer prints verbatim, today's refusal included, and the view never
 // invents rows.
-func (d *demo) viewIndex() {
-	es, err := d.j.Inspect().File(FILE)
+func (d *Demo) viewIndex() {
+	es, err := d.J.Inspect().File(StoryFile)
 	if err != nil {
-		d.printf("index: %v\n", err)
+		d.Printf("index: %v\n", err)
 		return
 	}
 	rows := make([]viewRow, 0, len(es))
@@ -122,10 +122,10 @@ func (d *demo) viewIndex() {
 }
 
 // viewSegments is the (s) view: per-segment accounting.
-func (d *demo) viewSegments() {
-	segs := d.j.Inspect().Segments()
+func (d *Demo) viewSegments() {
+	segs := d.J.Inspect().Segments()
 	if len(segs) == 0 {
-		d.printf("(no per-segment accounting yet — it lands with epic 9a; stats carries the totals today)\n")
+		d.Printf("(no per-segment accounting yet — it lands with epic 9a; stats carries the totals today)\n")
 		return
 	}
 	rows := make([]viewRow, 0, len(segs))

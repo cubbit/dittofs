@@ -1,4 +1,4 @@
-package main
+package jdemo
 
 import (
 	"fmt"
@@ -24,7 +24,7 @@ type viewRow struct {
 // The glyphs are text, not colour: a piped transcript keeps the "+ two"
 // that said "this appeared" even where it keeps no escape bytes. Colours
 // come from the writer's gate.
-func (d *demo) renderView(name string, rows []viewRow) string {
+func (d *Demo) renderView(name string, rows []viewRow) string {
 	c := coloursFor(d.out)
 	if d.lastView == nil {
 		d.lastView = make(map[string]map[string]string)
@@ -43,7 +43,7 @@ func (d *demo) renderView(name string, rows []viewRow) string {
 		sb.WriteString("(first look)\n")
 		d.lastView[name] = cur
 		text := sb.String()
-		d.printf("%s", text)
+		d.Printf("%s", text)
 		return text
 	}
 	for _, r := range rows {
@@ -72,7 +72,7 @@ func (d *demo) renderView(name string, rows []viewRow) string {
 	d.lastView[name] = cur
 
 	text := sb.String()
-	d.printf("%s", text)
+	d.Printf("%s", text)
 	return text
 }
 
