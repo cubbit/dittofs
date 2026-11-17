@@ -160,12 +160,13 @@ func get[T any](ctx context.Context, c *Client, path string) (T, error) {
 }
 
 // list yields every item of the listing at path the filter admits,
-// following each page's cursor to the next. A page whose cursor repeats the
-// one it was read after ends the listing with an error, since following it
-// would read that page again forever.
+// following each page's cursor to the next. A page naming a cursor the
+// listing has already followed ends it with an error, since following it
+// would read the same pages again forever.
 func list[T any](ctx context.Context, c *Client, path string, filter url.Values) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		var zero T
+		seen := map[string]bool{q.Get("after"): true}
 		q := url.Values{}
 		for k, v := range filter {
 			q[k] = v
@@ -184,7 +185,8 @@ func list[T any](ctx context.Context, c *Client, path string, filter url.Values)
 			if page.Next == "" {
 				return
 			}
-			if page.Next == q.Get("after") {
+			seen[page.Next] = true
+			if seen[page.Next] {
 				yield(zero, fmt.Errorf("apiclient: the listing at %s repeated its cursor %q", path, page.Next))
 				return
 			}

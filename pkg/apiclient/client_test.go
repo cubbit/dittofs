@@ -778,40 +778,61 @@ func TestListPages(t *testing.T) {
 	}
 }
 
-// A listing whose page repeats the cursor it was read after ends with an
-// error.
+// A listing whose page names a cursor it has already followed ends with an
+// error: the one the page was read after, or one followed a page earlier,
+// an A, B, A cycle.
 func TestListRefusesARepeatedCursor(t *testing.T) {
-	s := serve(t, admin())
-	c := client(t, s.url, newClock())
-	ns := s.namespace(t)
-	for _, name := range []string{"a", "b", "c"} {
-		if _, err := c.CreateShare(t.Context(), newShare(name, ns)); err != nil {
-			t.Fatalf("CreateShare %s: %v", name, err)
-		}
-	}
-	s.front.add(fault{
-		match: func(r *http.Request) bool {
-			return r.Method == http.MethodGet && r.URL.Path == "/api/v1/shares" && r.URL.Query().Get("after") != ""
-		},
-		edit: func(r *http.Request, b []byte) []byte {
-			var page map[string]any
-			if err := json.Unmarshal(b, &page); err != nil {
-				return b
+	for _, tc := range []struct {
+		name string
+		// at is the page, counted among those read after a cursor, whose
+		// next is set to the first cursor followed.
+		at int
+	}{
+		{"the cursor it was read after", 1},
+		{"a cursor followed a page earlier", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := serve(t, admin())
+			c := client(t, s.url, newClock())
+			ns := s.namespace(t)
+			for _, name := range []string{"a", "b", "c"} {
+				if _, err := c.CreateShare(t.Context(), newShare(name, ns)); err != nil {
+					t.Fatalf("CreateShare %s: %v", name, err)
+				}
 			}
-			page["next"] = r.URL.Query().Get("after")
-			out, _ := json.Marshal(page)
-			return out
-		},
-	})
-	var err error
-	for _, e := range c.Shares().List(t.Context(), url.Values{"limit": {"1"}}) {
-		if e != nil {
-			err = e
-			break
-		}
-	}
-	if err == nil || !strings.Contains(err.Error(), "repeated its cursor") {
-		t.Errorf("List with a page repeating its cursor: error %v, want the repeat refused", err)
+			// followed is written by match, which the front calls under its
+			// lock, and read by edit after the last match.
+			var followed []string
+			s.front.add(fault{
+				match: func(r *http.Request) bool {
+					after := r.URL.Query().Get("after")
+					if r.Method != http.MethodGet || r.URL.Path != "/api/v1/shares" || after == "" {
+						return false
+					}
+					followed = append(followed, after)
+					return len(followed) == tc.at
+				},
+				edit: func(_ *http.Request, b []byte) []byte {
+					var page map[string]any
+					if err := json.Unmarshal(b, &page); err != nil {
+						return b
+					}
+					page["next"] = followed[0]
+					out, _ := json.Marshal(page)
+					return out
+				},
+			})
+			var err error
+			for _, e := range c.Shares().List(t.Context(), url.Values{"limit": {"1"}}) {
+				if e != nil {
+					err = e
+					break
+				}
+			}
+			if err == nil || !strings.Contains(err.Error(), "repeated its cursor") {
+				t.Errorf("List with page %d naming the first cursor again: error %v, want the repeat refused", tc.at, err)
+			}
+		})
 	}
 }
 
