@@ -2311,7 +2311,7 @@ alice's still signs in as alice.
 | Rotation confirms whose key version number differs from the tag (§3.5) | `identity_machine_key_version_mismatches_total` | counter |
 | Unmapped spellings | `identity_unmapped_total{scheme}`: `uid`, `gid`, `sid`, `owner` | counter |
 | SIDs dropped from a PAC or pass-through reply (§3.4) | `identity_pac_sids_dropped_total{reason}`: `own_domain`, `builtin`, `user`, `other_domain`, `well_known` | counter |
-| Calls refused at resolution | `identity_resolution_refusals_total{reason}`: `disabled`, `group_cap`, `store_unavailable`, `directory_unavailable`, `anonymous_missing`, `ntlm_off`, `lookup_cap` | counter |
+| Calls refused at resolution | `identity_resolution_refusals_total{reason}`: `disabled` (a disabled or deleted principal, §3.7), `group_cap`, `store_unavailable`, `directory_unavailable`, `anonymous_missing`, `ntlm_off`, `lookup_cap` | counter |
 | Directory lookups by result | `identity_directory_lookups_total{question, result}`: `question` = `name`, `sid`, `uid`, `gid`, `groups`, `group`; `result` = `fresh`, `queried`, `not_found`, `stale`, `refused`, `ambiguous` | counter |
 | Directory query latency | `identity_directory_seconds` | histogram (`request`) |
 | ID-token verifications by result | `identity_oidc_verifications_total{result}`: `ok`, `invalid`, `unlinked`, `stale`, `unavailable` | counter |
