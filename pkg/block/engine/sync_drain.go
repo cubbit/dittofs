@@ -112,7 +112,7 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 	}
 	// One snapshot of the wired deps, taken under the lock the setters publish
 	// them with — see wiring for why a field-at-a-time read is not equivalent.
-	rbs, sealer, committer, hashStore := m.wiring()
+	rbs, sealer, committer, _ := m.wiring()
 
 	// A tier with no flush shape of its own answers 0 for both and the
 	// defaults below stand in.
@@ -161,7 +161,7 @@ func (m *RemoteSync) flushFn() (journal.FlushFunc, func(context.Context, journal
 		if slots == nil {
 			slots = syncer.NewDynamicSemaphore(window)
 		}
-		return newFlushClosure(m.local, params, blockSize, engineDeduper{synced: hashStore}, sink, slots)
+		return newFlushClosure(m.local, params, blockSize, engineDeduper{view: committer}, sink, slots)
 	}
 	// Local-only (no remote block store): the flush cannot upload, but it must
 	// still populate the FileChunk manifest (and project File.Blocks) so a

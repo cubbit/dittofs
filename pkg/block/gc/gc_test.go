@@ -266,6 +266,10 @@ func TestGCMarkSweep_SweepHappyPath(t *testing.T) {
 		t.Errorf("ErrorCount = %d, want 0; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
 	}
 
+	if stats.EndedOnDeadline {
+		t.Errorf("EndedOnDeadline = true, want false (no remote call timed out)")
+	}
+
 	// Verify live chunks survive.
 	for _, h := range live {
 		if !chunkOnRemote(t, st, h) {

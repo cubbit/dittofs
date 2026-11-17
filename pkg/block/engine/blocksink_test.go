@@ -38,7 +38,7 @@ func newSeamFixture(t *testing.T, dir string, ms *badger.BadgerMetadataStore, me
 	// fn + AfterFile built fresh per Flush call (journal's C9 caller
 	// obligation); the closure is the production wiring under test.
 	f.flushFn = func() (journal.FlushFunc, func(context.Context, journal.FileID) error) {
-		return newFlushClosure(j, chunker.Params{}, 1<<20, engineDeduper{synced: ms}, sink, nil)
+		return newFlushClosure(j, chunker.Params{}, 1<<20, engineDeduper{view: ms}, sink, nil)
 	}
 	return f
 }
@@ -292,7 +292,7 @@ func TestJournalCarveSeam_ScatteredRunsAllFlipSynced(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = j.Close() })
 	fnFactory := func() (journal.FlushFunc, func(context.Context, journal.FileID) error) {
-		return newFlushClosure(j, chunker.Params{}, blockSize, engineDeduper{synced: ms}, realSink(ms, mem), nil)
+		return newFlushClosure(j, chunker.Params{}, blockSize, engineDeduper{view: ms}, realSink(ms, mem), nil)
 	}
 	_ = fnFactory
 

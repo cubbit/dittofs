@@ -257,7 +257,8 @@ func TestCompactRemoteForEntry_LeavesOtherRemotesRecords(t *testing.T) {
 	}
 
 	var total blockgc.GCStats
-	rt.compactRemoteForEntry(ctx, remoteEntryForShare(t, rt, "/cubbit"), false, &GCDefaults{CompactionLiveRatio: 0.5}, &total)
+	rt.compactRemoteForEntry(ctx, remoteEntryForShare(t, rt, "/cubbit"), false,
+		&GCDefaults{CompactionLiveRatio: 0.5}, blockgc.GCStats{}, &total)
 
 	if _, ok, err := mds.GetBlockRecord(ctx, "blk-sparse"); err != nil || !ok {
 		t.Fatalf("/cubbit's compaction dropped the record of /export's block: ok = %v, err = %v", ok, err)

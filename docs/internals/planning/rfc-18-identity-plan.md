@@ -850,8 +850,10 @@ decision.
 - **Applied by** epics 2 and 8.
 
 **D8. Identity's operations run on RFC 23's runner** (RFC 23 §4.6), which RFC 23's plan's epic 3
-builds (its D8): a kind is one step function the runner calls with the operation, its parameters
-and last recorded step included, returning the next. The kinds are #4050's A5 names:
+builds (its D8): a kind is a `step.Step` and a `step.Progress` from `internal/node/step` (that
+plan's epic 3, D7). The runner calls the step with the operation, its parameters and last recorded
+step included, and the step answers a `step.StepResult`: the next step, whether it is done, its
+result, and an `End` whose writes commit with the operation's end. The kinds are #4050's A5 names:
 `resolve-principal`, a wrapper of epic 6's `Find` with `FindOpts.Mint`; `test-directory`, a
 wrapper of epic 6's test call; `join-domain`, online and offline; and `rotate-machine-password`,
 all in epic 7; and `identity.nt-hash-delete`, NTLM-off's deletion of every NT hash, in epic 2. Their
@@ -1083,14 +1085,18 @@ func (s *Server) Find(ctx context.Context, sp Spelling, o FindOpts) (metadata.Pr
 	return s.mint.Directory(ctx, e) // minted once, in this call's one batch with one raise (§4.1, A11, E6)
 }
 
-// Runner kinds (D8, E7): one step function each, called by RFC 23's runner
-// with the operation, its parameters and last recorded step, and returning
-// the next (RFC 23's plan, D8). The parameters (online or offline, takeover,
-// ou, dns_host_name, the handed-over password's Secret reference) are the
-// operation's; the administrator credential is not, and lives only in this
-// node's memory for the join, held by HoldJoinCredential (D8, RFC 18 §3.5).
-func (s *Server) joinDomain(ctx context.Context, op metadata.Operation) (next []byte, done bool, err error) {
-	switch step := stepOf(op.Step); step {
+// Runner kinds (D8, E7): a step.Step and a step.Progress each, from
+// internal/node/step (RFC 23's plan's epic 3, D7), called by RFC 23's runner
+// with the operation, its parameters and op.Step, the cursor its last
+// committed turn answered. A turn answers StepResult{Next, Done, Result, End}:
+// Next is recorded as op.Step, and End writes in the transaction that ends the
+// operation, so both commit or neither does. The parameters (online or
+// offline, takeover, ou, dns_host_name, the handed-over password's Secret
+// reference) are the operation's; the administrator credential is not, and
+// lives only in this node's memory for the join, held by HoldJoinCredential
+// (D8, RFC 18 §3.5).
+func (s *Server) JoinStep(ctx context.Context, op entity.Operation) (step.StepResult, error) {
+	switch n := stepOf(op.Step); n {
 	case 0: // pin one DC for every later step and a resume (RFC 18 §3.5); unanswered for an hour: fail, naming it
 	case 1: // online: seal the password, a Secret version (RFC 13 §7), before the DC sees it
 		// offline: the API's sealed version, refused unless marked HandedOver; verify it, recording the
@@ -1099,19 +1105,28 @@ func (s *Server) joinDomain(ctx context.Context, op metadata.Operation) (next []
 	case 2: // online: create the account, cifs/ and host/ names, 0x18 (A4); skipped if the pinned DC
 		// already accepts the sealed version; "could not ask" retries, never reads as "no";
 		// no credential in memory (a restart, another node) and none accepted: fail, naming it
-	case 3: // online: identity.netbios_name, upper-cased, [A-Z0-9-], at most 15 bytes (A2, A10); done
-		// offline writes it after its second rotation is confirmed, at the end of the default branch
-		done = !offline(op)
-	default: // offline only: rotateMachinePassword's steps twice, so the join is done once the second is confirmed
-		var rotated bool
-		if rotated, err = s.rotateStep(ctx, op, step); err != nil {
-			return op.Step, false, err
+	case 3: // online: done; End writes identity.netbios_name, upper-cased, [A-Z0-9-], at most 15 bytes
+		// (A2, A10), and Installation.Join's Joined, with the operation's end;
+		// offline writes them after its second rotation is confirmed, at the end of the default branch
+		if !offline(op) { // Next kept, so JoinProgress reads a finished join's last phase
+			return step.StepResult{Next: stepBytes(n + 1), Done: true, End: s.joined(op)}, nil
 		}
-		done = rotated // the second closing rotation's confirm read step 1's kvno plus two at a DC accepting
-		// its version; any other number failed the join in rotateStep (RFC 18 §3.5, A17)
+	default: // offline only: rotateMachinePassword's steps twice, so the join is done once the second is confirmed
+		rotated, err := s.rotateStep(ctx, op, n)
+		if err != nil {
+			return step.StepResult{}, err // retried: the runner commits nothing, so op.Step stays; a *apiv1.Problem fails the join
+		}
+		if rotated { // the second closing rotation's confirm read step 1's kvno plus two at a DC accepting
+			// its version; any other number failed the join in rotateStep (RFC 18 §3.5, A17)
+			return step.StepResult{Next: stepBytes(n + 1), Done: true, End: s.joined(op)}, nil
+		}
 	}
-	return stepBytes(step + 1), done, nil
+	return step.StepResult{Next: stepBytes(n + 1)}, nil
 }
+
+// JoinProgress reads the join's phase from op.Step; the other kinds' progress
+// functions have the same shape.
+func (s *Server) JoinProgress(ctx context.Context, op entity.Operation) apiv1.Progress
 
 // rotateMachinePassword's steps, in RFC 18 §3.5's order:
 //   wait until every node reports the previous version (§4.3: this node);
@@ -1307,8 +1322,9 @@ expiry).
 **Done when:**
 - RFC 18 ID12 holds at identity's layer: a `SignIn` with `step.Context` set replaces the context's
   evidence, a failed one ends it; §10's "re-authentication" row is epic 9's, over SMB;
-- RFC 18 §10's rows "NTLM MIC" (its local half), "NTLM domain" (its local and refusal halves) and
-  "logon throttle" (for a local user, its spelling variants included) pass, the cryptography
+- RFC 18 §10's rows "NTLM MIC" (its local half), "NTLM domain" (its local and refusal halves),
+  "logon throttle" (for a local user, its spelling variants included) and "disabled and deleted
+  local sign-in" pass, the cryptography
   checked against MS-NLMP §4.2.4's published vectors;
 - `vfs.Service`'s `SignIn` answers an NTLM step.
 
