@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"iter"
 	"net/http"
@@ -40,12 +41,38 @@ type listing[E, T any] struct {
 	item    func(E, perPage) T
 }
 
-// perPage is what a listing reads once per page and hands every item.
+// nodeStatuses is the store's read of every node's status, in node ID
+// order, resuming after a node; the zero ID starts from the first.
+type nodeStatuses interface {
+	NodeStatuses(ctx context.Context, after entity.NodeID) iter.Seq2[entity.NodeStatus, error]
+}
+
+// perPage is what a listing reads once per page and hands every item: every
+// node's status.
+type perPage struct{ statuses []entity.NodeStatus }
+
+// applied is on how many nodes the record ref names is applied, of every
+// node that reports a status: those whose position of the record's kind,
+// through returns, has reached at, and that hold the record neither refused
+// nor restart-pending. A kind that carries no position passes a nil
+// through, so its records are applied on every node from their commit.
 //
-// ponytail: it holds nothing yet. It gains the node statuses, read once per
-// page, that every item's applied is computed from, once the store this
-// package reads serves them.
-type perPage struct{}
+// ponytail: every node that has written a status counts toward of, a node
+// removed or lapsed included. Count only registered, unlapsed nodes when
+// one that left the installation makes a record read as not applied.
+func (p perPage) applied(ref entity.ResourceRef, at uint64, through func(entity.NodeStatus) uint64) apiv1.Applied {
+	a := apiv1.Applied{Of: len(p.statuses)}
+	is := func(r entity.ResourceRef) bool { return r.Kind == ref.Kind && bytes.Equal(r.ID, ref.ID) }
+	for _, st := range p.statuses {
+		if through != nil && through(st) < at ||
+			slices.ContainsFunc(st.Refused, func(r entity.RefusedRecord) bool { return is(r.Record) }) ||
+			slices.ContainsFunc(st.RestartPending, is) {
+			continue
+		}
+		a.Nodes++
+	}
+	return a
+}
 
 // list adapts a listing: its answer is 200 with one page of at most ?limit=
 // items, 100 without it and never more than 1,000, resuming after the
@@ -54,7 +81,8 @@ type perPage struct{}
 // or deleted behind it make the next page neither skip nor repeat one that
 // was there when the listing started. A query parameter the listing does not
 // filter on is refused, naming it: a filter the store would answer by a scan
-// is not offered.
+// is not offered. Every node's status is read once for the page, whatever
+// its size, and handed to each item.
 func list[E, T any](l listing[E, T]) adapter {
 	return func(ctx context.Context, s *Server, r *http.Request, _ [16]byte) (answer, error) {
 		limit, after, filter := defaultLimit, []byte(nil), map[string]string{}
@@ -79,8 +107,15 @@ func list[E, T any](l listing[E, T]) adapter {
 				return answer{}, &fieldError{field: k, detail: "not a filter of this listing"}
 			}
 		}
-		if s.d.Store == nil {
+		if s.d.Store == nil || s.d.Nodes == nil {
 			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
+		}
+		var pp perPage
+		for st, err := range s.d.Nodes.NodeStatuses(ctx, entity.NodeID{}) {
+			if err != nil {
+				return answer{}, err
+			}
+			pp.statuses = append(pp.statuses, st)
 		}
 		page := apiv1.Page[T]{Items: []T{}}
 		var last []byte
@@ -92,7 +127,7 @@ func list[E, T any](l listing[E, T]) adapter {
 				page.Next = encodeCursor(last)
 				break
 			}
-			page.Items = append(page.Items, l.item(e, perPage{}))
+			page.Items = append(page.Items, l.item(e, pp))
 			last = l.key(e)
 		}
 		return jsonAnswer(http.StatusOK, page)

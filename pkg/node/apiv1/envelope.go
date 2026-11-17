@@ -9,3 +9,10 @@ type Resource[Spec, Status any] struct {
 	Spec       Spec   `json:"spec"`
 	Status     Status `json:"status"`
 }
+
+// Applied is on how many nodes a record is applied, of every node that
+// reports a status.
+type Applied struct {
+	Nodes int `json:"nodes"`
+	Of    int `json:"of"`
+}

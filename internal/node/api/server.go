@@ -42,6 +42,9 @@ type Deps struct {
 	// Store is the metadata store's control plane, which every read and
 	// write of the API reaches; nil, each answers 503.
 	Store controlPlane
+	// Nodes is the store's read of every node's status, which a listing
+	// computes each item's applied from; nil, each listing answers 503.
+	Nodes nodeStatuses
 	// Clock is the API's time, which a parked poll waits on; nil, a read
 	// that would park answers 503.
 	Clock clock

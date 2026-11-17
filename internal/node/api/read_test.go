@@ -16,6 +16,8 @@ import (
 
 	"github.com/cubbit/dittofs/internal/node/api"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -45,7 +47,8 @@ func (s *served) netgroups(t *testing.T, names ...string) {
 
 type tagPage struct {
 	Items []struct {
-		Name string `json:"name"`
+		Name    string        `json:"name"`
+		Applied apiv1.Applied `json:"applied"`
 	} `json:"items"`
 	Next string `json:"next"`
 }
@@ -466,5 +469,66 @@ func TestCursorOutsideListing(t *testing.T) {
 	}
 	if names, _ := s.tags(t, "?after="+cursor("b")); !slices.Equal(names, []string{"d"}) {
 		t.Errorf("GET tags after b: %q, want [d]", names)
+	}
+}
+
+// A page reads every node's status once, whatever its size, and each item's
+// applied is computed from them: with three statuses more, a page of one
+// item and a page of fifty each scan three rows more, where a read per item
+// would scan three more per item.
+func TestListingReadsNodeStatusesOncePerPage(t *testing.T) {
+	db, err := badgerkv.Open(badgerkv.Options{NodeID: testNode})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close the KV: %v", err)
+		}
+	})
+	c := &kv.Counting{KV: db}
+	if err := kvstore.Init(t.Context(), c, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	st, err := kvstore.Open(t.Context(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := serve(t, as(entity.RoleViewer, false), func(d *api.Deps) { d.Store, d.Nodes = st.ControlPlane(), st.Nodes() })
+	var names []string
+	for i := range 60 {
+		names = append(names, fmt.Sprintf("n%02d", i))
+	}
+	s.netgroups(t, names...)
+	nodes := 0
+	addNodes := func(n int) {
+		for range n {
+			if err := st.Nodes().PutNodeStatus(t.Context(), entity.NodeStatus{Node: entity.NodeID(uuid.New())}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		nodes += n
+	}
+	scanned := func(q string) int {
+		c.Take()
+		r := s.do(t, http.MethodGet, "/api/v1/tags"+q, "")
+		var p tagPage
+		if err := json.Unmarshal(r.body, &p); r.status != http.StatusOK || err != nil {
+			t.Fatalf("GET tags%s: answered %d %s", q, r.status, r.body)
+		}
+		for _, it := range p.Items {
+			if want := (apiv1.Applied{Nodes: nodes, Of: nodes}); it.Applied != want {
+				t.Errorf("GET tags%s: %s applied %+v, want %+v", q, it.Name, it.Applied, want)
+			}
+		}
+		return c.Take().Scanned
+	}
+	addNodes(3)
+	for _, q := range []string{"?limit=1", "?limit=50"} {
+		before := scanned(q)
+		addNodes(3)
+		if got := scanned(q) - before; got != 3 {
+			t.Errorf("GET tags%s: three node statuses more scanned %d rows more, want 3, one read of them per page", q, got)
+		}
 	}
 }

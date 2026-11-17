@@ -81,6 +81,7 @@ func serveWith(t *testing.T, authenticate func(*http.Request) (auth.Caller, erro
 		Logger:       slog.New(slog.NewJSONHandler(io.MultiWriter(t.Output(), s.log), nil)),
 		Authenticate: authenticate,
 		Store:        s.store,
+		Nodes:        h.Store().Nodes(),
 		Clock:        s.clock,
 		Node:         testNode,
 		Tracer:       sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(s.spans)).Tracer("api"),
