@@ -72,6 +72,9 @@ type ControlPlaneTx interface {
 	// SetNTHashDeleted records the NT-hash deletion op as completed.
 	SetNTHashDeleted(op OperationID) error
 	SetMachineJoin(j MachineJoin) error
+	// SetMachinePassword names the secret holding the computer account's
+	// password, in the write that seals its version.
+	SetMachinePassword(ref SecretRef) error
 	// Now is the transaction's store time, fixed for its life; a retried
 	// attempt gets a new one.
 	Now() time.Time

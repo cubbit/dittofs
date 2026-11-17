@@ -356,6 +356,10 @@ type Installation struct {
 		Off     uint64      // the settings generation of the last write turning identity.ntlm off; zero if none has
 		Deleted OperationID // the NT-hash deletion completed since that write; zero while none has
 	}
+	// MachinePassword names the computer account's password, a secret owned
+	// by this record under "machine_password"; zero until a join first seals
+	// a version, which a failed join keeps.
+	MachinePassword SecretRef
 	// SigningKey names the management API's access-token signing key, a
 	// secret owned by this record under "signing_key"; zero until the first
 	// version is sealed.

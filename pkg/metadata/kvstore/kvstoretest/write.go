@@ -319,7 +319,8 @@ func testAdminRenameKeepsCount(t *testing.T, kvo Opener) {
 
 // The installation is read tracked: a concurrent turn-off of NTLM that
 // commits first makes the write run again and read it. Turning NTLM off
-// clears a completed NT-hash deletion; the machine join reads back as set.
+// clears a completed NT-hash deletion; the machine join and the machine
+// password read back as set, neither write clearing the other.
 func testInstallationInWrite(t *testing.T, kvo Opener) {
 	for _, b := range kvo.backends() {
 		t.Run(b.name, func(t *testing.T) {
@@ -351,11 +352,16 @@ func testInstallationInWrite(t *testing.T, kvo Opener) {
 			j.LastRotation.At, j.LastRotation.Failed = time.Unix(1_800_000_100, 0).UTC(), true
 			j.LastRotation.Tag, j.LastRotation.Read = 4, 5
 			j.LastRotation.Version, j.LastRotation.Confirmed = 3, time.Unix(1_800_000_000, 0).UTC()
+			pw := entity.SecretRef{15: 0x3C}
+			must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.SetMachinePassword(pw) }))
 			must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error { return tx.SetMachineJoin(j) }))
 			in, err := s.Installation(ctx)
 			must(t, err)
 			if !reflect.DeepEqual(in.Join, j) {
 				t.Errorf("machine join read back: got %+v, want %+v", in.Join, j)
+			}
+			if in.MachinePassword != pw {
+				t.Errorf("machine password read back: got %x, want %x", in.MachinePassword, pw)
 			}
 		})
 	}

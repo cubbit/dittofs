@@ -336,7 +336,8 @@ func decodeNetgroup(name string, b []byte) (entity.Netgroup, error) {
 
 func encodeInstallation(in entity.Installation) []byte {
 	w := codec.NewWriter(v1).Fixed(in.ID[:]).Fixed(in.Instance[:]).Bytes(in.Generation).
-		Uint64(in.NTLMOff.Off).Fixed(in.NTLMOff.Deleted[:]).Fixed(in.SigningKey[:])
+		Uint64(in.NTLMOff.Off).Fixed(in.NTLMOff.Deleted[:]).
+		Fixed(in.MachinePassword[:]).Fixed(in.SigningKey[:])
 	j := in.Join
 	w.Bool(j.Joined).String(j.Account).Bytes(j.Owner).Bytes(j.Delegation).Len(len(j.Names))
 	for _, n := range j.Names {
@@ -360,6 +361,7 @@ func decodeInstallation(b []byte) (entity.Installation, error) {
 	}
 	in.NTLMOff.Off = r.Uint64()
 	copy(in.NTLMOff.Deleted[:], r.Fixed(16))
+	copy(in.MachinePassword[:], r.Fixed(16))
 	copy(in.SigningKey[:], r.Fixed(16))
 	j := &in.Join
 	j.Joined, j.Account, j.Owner, j.Delegation = r.Bool(), r.String(), cloneOrNil(r.Bytes()), cloneOrNil(r.Bytes())
