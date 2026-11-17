@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
@@ -193,9 +194,9 @@ func startRights(rows []route) map[apiv1.OpKind]auth.Right {
 }
 
 // cancel is POST /operations/{id}:cancel: 428 without an Idempotency-Key,
-// 404 for an operation that does not exist, 403 for a caller that may not
-// start its kind, and otherwise 409 not_cancellable naming it, every refusal
-// audited.
+// 400 for one longer than a write takes, 404 for an operation that does not
+// exist, 403 for a caller that may not start its kind, and otherwise 409
+// not_cancellable naming it, every refusal audited.
 //
 // decision: no operation kind defines a cancel, so every cancel is refused
 // and changes nothing; it asks for an Idempotency-Key as every POST does,
@@ -210,8 +211,12 @@ func cancel(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]by
 	rec := s.auditOf(ctx, r)
 	rec.Target = entity.ResourceRef{Kind: entity.ResourceOperation, ID: id[:]}
 	defer func() { s.refuse(ctx, rec, err) }()
-	if r.Header.Get("Idempotency-Key") == "" {
+	key := r.Header.Get("Idempotency-Key")
+	if key == "" {
 		return answer{}, &refusal{code: apiv1.CodePreconditionRequired, detail: "a POST carries an Idempotency-Key"}
+	}
+	if len(key) > maxKey {
+		return answer{}, &fieldError{field: "Idempotency-Key", detail: "longer than " + strconv.Itoa(maxKey) + " bytes"}
 	}
 	if s.d.Store == nil {
 		return answer{}, errNoStore
