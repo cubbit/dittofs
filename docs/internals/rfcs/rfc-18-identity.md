@@ -714,6 +714,9 @@ client asserts them. It is decoded by the NFS adapter and never signs in.
 **Supplementary groups past 16.** A share whose policy sets `ManageGIDs`
 replaces the credential's gids with the closure of the mapped principal's
 memberships (§2.5). Without it, the gids sent are the caller's groups.
+`ManageGIDs` is deferred with `AUTH_SYS` to RFC 21's plan: RFC 16's
+`ExportPolicy` has no such field until that plan adds it, so until then every
+share behaves as with it off.
 
 > decision: `ManageGIDs` is off by default. With it on, a principal's groups are
 > what the store says, which is right where the store is the source of truth
@@ -1912,7 +1915,7 @@ the principal before or after the squash depends on what the proof proved:
 
 | Proof kind | Groups |
 | --- | --- |
-| `Claimed` | the claimed gid and supplementary gids, each mapped (§4.3); with `ManageGIDs`, the mapped principal's closure instead (§3.2), which for a directory principal includes the directory's groups |
+| `Claimed` | the claimed gid and supplementary gids, each mapped (§4.3); with `ManageGIDs` (deferred, §3.2), the mapped principal's closure instead, which for a directory principal includes the directory's groups |
 | `Secret` or `Ticket` | the closure of the principal's store memberships (§2.5), unioned with the groups of the evidence's verified SIDs and, for a directory principal, the directory's groups |
 | squashed, `None`, a principal with no file spelling | the `Anonymous` principal's closure |
 
@@ -1925,7 +1928,7 @@ the principal before or after the squash depends on what the proof proved:
   (§7.2) — maps it; until then no stored entry can name it
   ([RFC 19 §2.8](rfc-19-authorization.md#2.8%20What%20a%20stored%20ACL%20may%20hold)).
 - Claimed groups are the client's assertion, like its uid. A share that must not
-  trust them sets `ManageGIDs`, or requires Kerberos.
+  trust them sets `ManageGIDs` once RFC 21's plan adds it (§3.2), or requires Kerberos.
 
 ### 6.4 Share access from the grants
 
@@ -2009,7 +2012,7 @@ thing.
 | The key **MUST** include | Because |
 | --- | --- |
 | the proof key | the caller is derived from what was proved |
-| the share, `ExportPolicy.Version` and the share's grant-list version | squash, `ManageGIDs`, `Anonymous` and the grants are per share |
+| the share, `ExportPolicy.Version` and the share's grant-list version | squash, `Anonymous`, the grants and, once RFC 21's plan adds it, `ManageGIDs` (§3.2) are per share |
 | the identity `State` it was built under (§7.2) | a principal, membership or mapping change, a changed directory record and `identity.ntlm` all arrive as a new `State` |
 | the client address, where a client rule or netgroup decided | two hosts of one principal can be ruled differently |
 
@@ -2348,6 +2351,7 @@ RFC 16's conformance suite's, not repeated here.
 | root | 2 | `Squash = none`, `AUTH_SYS` uid 0 with no user record: `chown` succeeds, and a file root creates is owned by root. `Squash = root`: refused. A directory entry with `uidNumber` 0: minted with an allocated uid. | root acting as anonymous; a directory supplying uid 0 |
 | stale grace | 1 | Resolve alice and bob; stop the directory. Within the grace both sign in, counted stale; carol, never resolved, is refused; past the grace alice is refused. With the grace zero, alice is refused as soon as her entry passes the TTL. Warm 100 users, stop the directory and step past the TTL with `directory_unreachable` raised: each signs in within the grace while the delaying fault wrapper counts at most one query per 10 seconds on the injected clock; while it is raised, dave, never resolved, is refused `ErrUnavailable` at once, with no query and no timeout waited out; restart the directory: the next probe clears the condition. | fail-open on outage, or no grace; an outage that queries per expired entry and times every sign-in out; a cold sign-in holding a slot for a timeout during an outage |
 | disabled directory account | 1 | A directory user signs in over Kerberos with a PAC. Disable them in the directory and step past the TTL: refused. Repeat with the directory down past the TTL plus the grace: refused. Repeat with the entry deleted: refused, outcome `disabled`. | a PAC keeping a disabled account in |
+| disabled and deleted local sign-in | 1 | Over NTLM, a local user whose record is `Disabled` signs in with its right password: `ErrLogonFailure`, outcome `disabled`. Mark another deleted with `DeleteUser`'s first transaction and sign it in with its right password: `ErrLogonFailure`, outcome `logon_failure`, as an unknown name's (§3.7). | the two outcomes swapped; a marked user still found by name |
 | error is not "unknown" | 2 | Inject a store error on the `uid` index during an `AUTH_SYS` call to a share with an everyone grant of `read-write`: a retryable error and nothing created. | an error read as "not found" |
 | no map to guest | 2 | Over SMB a wrong password, an unknown user and, with the store failing, a known user: `STATUS_LOGON_FAILURE` each time and no session. An anonymous session reaches `IPC$`, and `TREE_CONNECT` to `profiles` is refused. | a failed login answered as guest |
 | squash drops SIDs | 2 | `Squash = all`: a Kerberos caller whose PAC carries `Finance` reads a file whose ACL grants `Finance` only: refused. `Squash = none`: granted. | a squash that kept the SIDs |
