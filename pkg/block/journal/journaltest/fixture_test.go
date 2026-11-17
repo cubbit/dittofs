@@ -222,7 +222,7 @@ func TestAwaitSparesFailsTheTestOnASettlingShortPool(t *testing.T) {
 			r.Fatalf("fixture: schedule the spare fault: %v", err)
 		}
 		f.open(true)
-		f.awaitSpares()
+		f.WaitSpares()
 	}()
 	<-done
 

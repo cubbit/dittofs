@@ -20,7 +20,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.5
 	github.com/invopop/jsonschema v0.14.0
 	github.com/jcmturner/gofork v1.7.6 // indirect
-	github.com/jcmturner/gokrb5/v8 v8.4.4 // indirect
+	github.com/jcmturner/gokrb5/v8 v8.4.4
 	github.com/manifoldco/promptui v0.9.0
 	github.com/oiweiwei/go-msrpc v1.6.4
 	github.com/oiweiwei/gokrb5.fork/v9 v9.0.8
