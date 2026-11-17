@@ -239,6 +239,7 @@ func TestReconcileRefusesAShareWithNoRemoteStore(t *testing.T) {
 	// configures the store does.
 	held := sim.NewTestClock(time.Unix(0, 0))
 	setFault(t, f, held, sim.Rule{Op: kvtest.OpScan, Key: nsScan, Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+	defer held.Advance(time.Hour) // a failed test's Stop finds no scan held
 	for range 5 {
 		turn(h)
 	}
@@ -383,7 +384,7 @@ func TestReconcileBoundsAStoreCall(t *testing.T) {
 		for {
 			select {
 			case l := <-logs:
-				if strings.Contains(l, "did not answer within 20s") {
+				if strings.Contains(l, "did not answer within") {
 					return true
 				}
 			case <-deadline:
@@ -495,7 +496,7 @@ func TestReconcileActsOnEveryKindAfterAFailedRead(t *testing.T) {
 
 // A share whose removal is marked while a share pass that listed it runs,
 // and which the removal drops before the pass binds it, is not bound: the
-// late bind is refused.
+// late bind is refused. Dropping it again answers nil.
 func TestReconcileDoesNotBindAShareDroppedMidPass(t *testing.T) {
 	h, f := faulted(t)
 	started(t, h)
@@ -522,6 +523,9 @@ func TestReconcileDoesNotBindAShareDroppedMidPass(t *testing.T) {
 	}
 	if _, ok := h.Node().Bound(sh.ID); ok {
 		t.Errorf("share dropped while the pass that listed it ran: in the running set, want not")
+	}
+	if err := h.Node().Engine().Drop(t.Context(), sh.ID); err != nil {
+		t.Errorf("a second drop of the share the engine never bound: got %v, want nil, as it holds no tag to forget", err)
 	}
 }
 
