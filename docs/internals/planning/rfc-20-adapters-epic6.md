@@ -1128,8 +1128,8 @@ T6.4a and T6.4b (§9).
 | 5 | T6.3b | 2.25 | PR 1, PR 3, S3, E5's `core.Row` | SMB's framer and server end to end, the RFC 22 plan's SMB scaffold point |
 | 6 | T6.4b | 2.25 | PR 2, PR 4, S3, E5's `core.Row` | NFS's framer and server end to end; open beside PR 5 |
 
-A suggestion only: one pull request per subtask works as well. T6.1 and T6.2 are open as #4539
-and #4540 and stay as they are.
+A suggestion only: one pull request per subtask works as well. T6.1 is open as #4539, and T6.2
+merged as #4540.
 
 ## 9. Open points
 
