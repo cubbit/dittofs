@@ -45,7 +45,7 @@ func Fragment(mark []byte) (n int, last bool, err error) {
 // program bug, greater than the bit can state: the mark panics, naming the
 // cap, rather than write one the reader would refuse or truncate.
 func AppendRecordMark(dst []byte, n int) []byte {
-	if n > MaxRecord {
+	if n < 0 || n > MaxRecord {
 		panic(fmt.Sprintf("nfs/wire: a record mark of %d bytes, past %d", n, MaxRecord))
 	}
 	return binary.BigEndian.AppendUint32(dst, lastFragment|uint32(n))

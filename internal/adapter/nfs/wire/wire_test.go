@@ -94,8 +94,8 @@ func TestFragment(t *testing.T) {
 	}
 }
 
-// A mark written for a body reads back as that body, with its last-fragment
-// bit set.
+// A mark the reader would refuse to state, its body past the cap, panics
+// rather than write it; the cap's own mark reads back.
 func TestAppendRecordMarkPastTheCapPanics(t *testing.T) {
 	if wire.MaxRecord >= 1<<31 {
 		t.Fatal("the cap itself would overflow the mark")
@@ -104,14 +104,26 @@ func TestAppendRecordMarkPastTheCapPanics(t *testing.T) {
 	if n, _, err := wire.Fragment(rec); err != nil || n != wire.MaxRecord {
 		t.Fatalf("the cap's mark reads back %d (%v), want %d", n, err, wire.MaxRecord)
 	}
+	// A negative body is as unstatable as one past the cap: the bit states
+	// neither.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("a negative body's mark is written")
+			}
+		}()
+		wire.AppendRecordMark(nil, -1)
+	}()
 	defer func() {
-		if r := recover(); r == nil {
+		if recover() == nil {
 			t.Error("a mark past the cap is written")
 		}
 	}()
 	wire.AppendRecordMark(nil, 1<<31)
 }
 
+// A mark written for a body reads back as that body, with its last-fragment
+// bit set.
 func TestAppendRecordMark(t *testing.T) {
 	m := wire.AppendRecordMark(nil, 4096)
 	n, last, err := wire.Fragment(m)
@@ -255,6 +267,22 @@ func TestACutCompoundReportsItsTag(t *testing.T) {
 	}
 	if _, ok := c.MinorVersion(); ok {
 		t.Error("a COMPOUND cut after its tag carries a minor version")
+	}
+
+	// A tag the record does not hold, the cut inside it, names no tag at all,
+	// as a non-COMPOUND names none: only a tag read whole is one.
+	inside := binary.BigEndian.AppendUint32(nil, 0x11223344)
+	for _, v := range []uint32{0, 2, 100003, 4, 1} {
+		inside = binary.BigEndian.AppendUint32(inside, v)
+	}
+	inside = append(inside, make([]byte, 16)...)      // AUTH_NONE credential and verifier
+	inside = binary.BigEndian.AppendUint32(inside, 4) // a tag of four bytes, never sent
+	cutInside, perr := wire.ParseCall(inside)
+	if perr == nil {
+		t.Fatal("a COMPOUND cut inside its tag parses whole")
+	}
+	if tag := cutInside.Tag(); tag != nil {
+		t.Errorf("a COMPOUND cut inside its tag reports %q, want no tag", tag)
 	}
 }
 

@@ -30,6 +30,7 @@ type fields struct {
 	tagAt, tagLen                  int
 	minor                          uint32
 	compound                       bool // a COMPOUND whose prefix the parse entered
+	tagOK                          bool // its tag, read whole
 	minorOK                        bool // its minor version, read whole
 	credOK, verfOK                 bool // the credential and verifier, read whole
 }
@@ -48,7 +49,8 @@ type Call []byte
 // A record too short for its transaction ID and message type is refused with
 // ErrUnaddressable, which comes back with no call; a message of another type
 // than a call comes back with ErrNotCall and the record, so its transaction
-// ID can still be read for a reply that says so. An RPC version other than 2 comes back with the
+// ID can still be read for a reply that says so. An RPC version other than
+// 2 comes back with the
 // call and no error, its credential and verifier unread, so the router answers
 // RPC_MISMATCH rather than a decode error. A call whose later fields do not
 // decode comes back with its error (RFC 21 section 11.5).
@@ -105,6 +107,7 @@ func walk(c []byte) (fields, error) {
 		if f.tagAt, f.tagLen, err = r.opaque(); err != nil {
 			return f, fmt.Errorf("nfs/wire: a COMPOUND's tag: %w", err)
 		}
+		f.tagOK = true
 		if f.minor, ok = r.u32(); !ok {
 			return f, fmt.Errorf("nfs/wire: %w: a COMPOUND's minor version", errPastRecord)
 		}
@@ -185,10 +188,12 @@ func (c Call) Verifier() (flavour uint32, body []byte) {
 	return f.verfFlavour, c[f.verfAt : f.verfAt+f.verfLen]
 }
 
-// Tag is a COMPOUND's tag, as a slice of the record; nil for any other call.
+// Tag is a COMPOUND's tag, as a slice of the record; nil for any other call
+// and for one whose tag the record did not hold. A COMPOUND read whole with
+// no tag is not nil: its empty slice is the record's own.
 func (c Call) Tag() []byte {
 	f, _ := c.fields()
-	if !f.compound {
+	if !f.tagOK {
 		return nil
 	}
 	return c[f.tagAt : f.tagAt+f.tagLen]
