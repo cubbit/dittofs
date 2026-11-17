@@ -511,6 +511,7 @@ type State struct {
 	Keytab     []secrets.Version // the keytab's versions in force, opened, current first (§3.3)
 	Machine    []secrets.Version // the machine password's versions in force, opened, current first, each with its KeyVersion and HandedOver mark (RFC 16 §2.3); empty when not joined (§3.3, §3.5)
 	NTLM       uint64          // the identity.ntlm setting's generation (§3.5)
+	Serial     uint64          // set by Apply, not the node: raised only when the State differs from the current one (§7.2)
 }
 ```
 
@@ -1806,9 +1807,9 @@ func (id Identity) Key() ProofKey
 // which step 4 sets itself.
 type Resolver interface {
 	Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, narrowed ReadOnlyCause) (*Caller, error)
-	// Current is the serial of the State a Resolve starting now reads (§7.2),
-	// one atomic load: admission stores and serves a cached Caller only while
-	// its Built equals it.
+	// Current is the Serial of the State a Resolve starting now reads (§7.2),
+	// one atomic load of that State: admission stores and serves a cached
+	// Caller only while its Built equals it.
 	Current() uint64
 }
 
@@ -2072,7 +2073,9 @@ and hands each new value to identity in a new `State` (`Apply`, §2.6); the node
 that wrote the change applies it at once.
 
 - **A resolution reads the `State` once**, before its first store or directory
-  read, and stamps the caller with its serial (`Caller.Built`). `Apply` raises
+  read, and stamps the caller with that `State`'s `Serial` (`Caller.Built`),
+  never with a second load, which an `Apply` between the two would make newer
+  than what the resolution read. `Apply` raises
   the serial when the `State` it applies differs from the current one, and
   keeps it for an equal one, so a once-a-second read that changed nothing
   empties no cache; `Resolver.Current()` answers it (§6.1). A caller whose stamp is
@@ -2389,7 +2392,7 @@ RFC 16's conformance suite's, not repeated here.
 | admin needs proof | 2 | A grant names uid 1500 `admin`. Over `AUTH_SYS` as uid 1500, read a mode-0600 file of another user: refused. Give the principal a Kerberos name; over `sec=krb5`: granted. `S-1-5-32-544` in a test PAC for a non-admin: not `admin`. | `admin` from a uid or a SID |
 | roles grant nothing | 2 | [RFC 23 §12](rfc-23-control-plane.md#12.%20Conformance)'s §5.1 check, which also asserts that the account holds no spelling. | — |
 | disable takes effect | 2 | bob holds an SMB open and an NFS GSS context, both over Kerberos; make one call on each, a cache hit. Disable bob; before the `State` is applied, the next call is still served; apply it (fake clock): every call from both is refused. Over a local NTLM session, never cached (§7.1), bob's first call after the disable is refused with no `State` applied. | a cached caller outliving a disable |
-| in-flight disable | 1 | Block bob's record read with a fault wrapper around the store. Disable bob and apply the new `State`. Release the read: nothing cached under the new `State`, and bob's next call misses and is refused. | a stale resolution stamped with the new generation |
+| in-flight disable | 1 | Block bob's record read with a fault wrapper around the store. Disable bob and apply the new `State`. Release the read: nothing cached under the new `State`, and bob's next call misses and is refused. Again with `Resolve` paused by a hook just after its `State` load, before its first store read: the same outcome. | a stale resolution stamped with the new generation |
 | group cap | 1 | A principal in 1 025 groups: refused, never resolved with fewer. A nested group whose read fails mid-closure: the call fails. A membership cycle: resolved. | truncated group lists; a cycle read as a failure |
 | owner strings | 2 | Over `sec=krb5`, `chown` to `alice@corp.example` and to `alice@other.example`: success, then `NFS4ERR_BADOWNER`. Over `AUTH_SYS`, `GETATTR`: numeric owners. A file owned by a deleted user: `nobody@…`, and over SMB `S-1-0-0`. | names mapped by guesswork |
 | PAC | 1 | A ticket whose PAC server signature is corrupted: refused. A PAC changed only in padding between buffers, which the decoder skips: refused. A server signature of an unkeyed type over the same bytes, and one of the AES128 type under an AES256 key: refused. In a keytab realm other than the directory's, a ticket with no PAC, and one with a PAC holding no logon-information buffer, for a user in a store group: accepted, the group applies. In the directory's realm, the same two tickets for a directory user, and for `backup`, a name only a local user holds: each `ErrLogonFailure`, counted `no_pac`, with the record's schema `ad` and again with it `rfc2307`; with `require_pac` false: accepted. There `backup` is reached only through a `krb` row linked to the local `backup`, which stores the directory `backup`'s SID: its ticket with a PAC binds the local `backup`; delete the directory `backup` and create another under the name: its ticket is refused, never bound to the local one. Linking a name the directory does not hold: refused, naming it. A machine minted from a ticket with a PAC signs in again: bound. A PAC carrying a SID of the installation's own domain for a local group with a share grant: that SID dropped, the grant not given. A PAC carrying a universal group's SID from a second domain of the forest: that SID dropped and counted with reason `other_domain`, and the sign-in succeeds. | an unverified or unfiltered PAC trusted; every modern KDC refused; a PAC-less ticket landing on a same-named local user; an operator's link no ticket can reach, or one a reused name inherits |

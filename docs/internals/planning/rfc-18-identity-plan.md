@@ -336,7 +336,9 @@ that needs it.
 - **A21. Epic 3's breakdown folded into RFC 18** (RFC 18 §2.6, §3.1, §3.8, §6.1, §6.3, §7.1, §7.2,
   §9.2 and §10; epic 3's §9 and its D1, D3, D4 and D6):
   - §6.1's `Resolver` gains `Current() uint64`, the serial of the `State` a resolution starting now
-    reads, so S1's surface gains it; epic 3's T3.3 adds it on `*Server`. `Apply` raises the serial
+    reads, so S1's surface gains it; epic 3's T3.3 adds it on `*Server`. The serial is a field of
+    `State` (§2.6), so `Resolve` stamps the serial of the `State` it loaded and `Current()` is one
+    load of the current `State`. `Apply` raises the serial
     only when the applied `State` differs, and `Caller.Built` holds it, not the principals
     generation, so `identity.ntlm` turned off with no principal change still drops cached callers;
   - the caller cache is admission's, not identity's (§2.6), and holds the whole `Caller`, grants
@@ -1047,7 +1049,7 @@ case <-ctx.Done():
 
 func (s *Server) Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, ro ReadOnlyCause) (*Caller, error) {
 	st := s.state.Load() // read before any store read (§7.2)
-	c := &Caller{Built: s.Current()} // the server's serial, raised by Apply when the State differs (A21)
+	c := &Caller{Built: st.Serial} // the loaded State's own serial, never a second load (A21)
 	if err := id.consistent(); err != nil { // a forwarded identity inconsistent with itself: ErrInvalid (§2.6), first
 		return nil, err
 	}
