@@ -146,7 +146,7 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, dryRun bool, progress fun
 			// per-remote lock is still held and the sweep has just cleared the
 			// synced markers of past-grace dead chunks. Gated by the operator's
 			// gc.compaction_live_ratio (no-op when unset or on dry-run).
-			r.compactRemoteForEntry(ctx, entry, dryRun, gcDefaults, total)
+			r.compactRemoteForEntry(ctx, entry, dryRun, gcDefaults, s, total)
 		}()
 	}
 	return total, nil
@@ -266,7 +266,7 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 			)
 			// Compact partially-dead blocks on this remote (#1487), under the
 			// same per-remote lock and after the sweep. See runBlockGCSweep.
-			r.compactRemoteForEntry(ctx, entry, dryRun, gcDefaults, total)
+			r.compactRemoteForEntry(ctx, entry, dryRun, gcDefaults, s, total)
 		}()
 	}
 	return total, nil
@@ -331,6 +331,10 @@ func accumulateGCStats(total, stats *blockgc.GCStats) blockgc.GCStats {
 	total.Errors += s.Errors
 	if s.DryRun {
 		total.DryRun = true
+	}
+
+	if s.EndedOnDeadline {
+		total.EndedOnDeadline = true
 	}
 	total.DryRunCandidates = append(total.DryRunCandidates, s.DryRunCandidates...)
 	total.FirstErrors = append(total.FirstErrors, s.FirstErrors...)
@@ -485,8 +489,24 @@ func (u unionBlockReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Co
 // cleared the synced markers of past-grace dead chunks — the signal compaction
 // uses to tell live chunks from dead. Errors are logged; per-block failures are
 // counted in the returned engine report and folded into total.BytesReclaimed.
-func (r *Runtime) compactRemoteForEntry(ctx context.Context, entry shares.RemoteStoreEntry, dryRun bool, gcDefaults *GCDefaults, total *blockgc.GCStats) {
+// A sweep that ended on a deadline found the remote not answering, so
+// compaction then makes no remote call under the lock.
+func (r *Runtime) compactRemoteForEntry(
+	ctx context.Context,
+	entry shares.RemoteStoreEntry,
+	dryRun bool,
+	gcDefaults *GCDefaults,
+	sweep blockgc.GCStats,
+	total *blockgc.GCStats,
+) {
 	if dryRun || gcDefaults == nil || gcDefaults.CompactionLiveRatio <= 0 {
+		return
+	}
+
+	if sweep.EndedOnDeadline {
+		logger.Warn("GC compaction: skipped, the sweep ended on a remote call deadline",
+			"configID", entry.ConfigID)
+
 		return
 	}
 	rbs, ok := entry.Store.(remote.RemoteBlockStore)
@@ -531,8 +551,20 @@ func (r *Runtime) compactRemoteForEntry(ctx context.Context, entry shares.Remote
 		return
 	}
 	rep, err := blockgc.CompactBlocks(ctx, views, rbs, blockgc.CompactOptions{LiveRatio: gcDefaults.CompactionLiveRatio})
+	// Fold the pass into the run total, a stopped pass too, so gc-status shows
+	// the space compaction freed and its errors.
+	total.BytesFreed += rep.BytesReclaimed
+	total.BytesReclaimed += rep.BytesReclaimed
+	total.ErrorCount += int(rep.Errors)
+	total.Errors += int(rep.Errors)
+
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			total.EndedOnDeadline = true
+		}
+
 		logger.Warn("GC compaction: aborted", "configID", entry.ConfigID, "err", err)
+
 		return
 	}
 	if rep.BlocksCompacted > 0 || rep.Errors > 0 {
@@ -545,12 +577,6 @@ func (r *Runtime) compactRemoteForEntry(ctx context.Context, entry shares.Remote
 			"errors", rep.Errors,
 		)
 	}
-	// Fold reclaimed bytes into the run's total so `gc-status` reflects the space
-	// compaction freed alongside the sweep's.
-	total.BytesFreed += rep.BytesReclaimed
-	total.BytesReclaimed += rep.BytesReclaimed
-	total.ErrorCount += int(rep.Errors)
-	total.Errors += int(rep.Errors)
 }
 
 // remoteGCLock returns the per-remote serializing mutex for a remote-store

@@ -112,6 +112,10 @@ func TestGCMarkSweep_TimedOutBlockDeleteEndsTheSweep(t *testing.T) {
 		)
 	}
 
+	if !stats.EndedOnDeadline {
+		t.Fatalf("EndedOnDeadline = false, want true (the sweep stopped on a timed-out delete)")
+	}
+
 	for _, h := range dead {
 		if !chunkOnRemote(t, st, h) {
 			t.Fatalf("chunk %s lost its marker or record although no delete succeeded", h)
