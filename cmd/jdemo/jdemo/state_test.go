@@ -32,7 +32,7 @@ func TestStateRoundTrip(t *testing.T) {
 		t.Errorf("state file encoding: got %s, want it to contain \"limit\":42", raw)
 	}
 
-	got, err := loadState(path)
+	got, err := LoadState(path)
 	if err != nil {
 		t.Fatalf("loadState: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestStateRoundTrip(t *testing.T) {
 
 func TestLoadStateMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journal.jdemo.json")
-	if _, err := loadState(path); !os.IsNotExist(err) {
+	if _, err := LoadState(path); !os.IsNotExist(err) {
 		t.Errorf("loadState of missing file: got err %v, want fs.ErrNotExist", err)
 	}
 }
@@ -56,7 +56,7 @@ func TestLoadStateCorrupt(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{{not json"), 0o600); err != nil {
 		t.Fatalf("write corrupt state: %v", err)
 	}
-	_, err := loadState(path)
+	_, err := LoadState(path)
 	if err == nil || !strings.Contains(err.Error(), path) {
 		t.Errorf("loadState of corrupt file: got err %v, want an error naming %s", err, path)
 	}

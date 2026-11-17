@@ -19,10 +19,10 @@ func TestSyncBeatPrintsItsMark(t *testing.T) {
 	screen := out.String()
 	for _, want := range []string{
 		"h.Sync(ctx, FILE)", // the call, storybook-qualified
-		"Through:",           // …the mark's fields
+		"Through:",          // …the mark's fields
 		"Sequence:",
-		"Segment:",           // a real mark, naming a real segment
-		"STEP 6 OF 13",      // the beat's place in the story
+		"Segment:",     // a real mark, naming a real segment
+		"STEP 6 OF 13", // the beat's place in the story
 	} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("sync beat: screen lacks %q:\n%s", want, tailOf(screen, 600))

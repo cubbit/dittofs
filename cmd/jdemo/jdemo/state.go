@@ -45,7 +45,7 @@ func saveState(path string, st stateFile) error {
 // loadState reads the state file at path. A missing file answers the raw
 // fs.ErrNotExist so the caller can tell a fresh start from a refused one;
 // every other failure names the path.
-func loadState(path string) (stateFile, error) {
+func LoadState(path string) (stateFile, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
