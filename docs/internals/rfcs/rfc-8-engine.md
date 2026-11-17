@@ -1412,7 +1412,9 @@ verified in-memory implementation of that component's whole interface ([RFC 29 �
 
 Every mechanism the engine calls is safe by its own definition: `Release` refuses
 an extent whose offloaded bit is unset ([RFC 1 §3.5](rfc-1-journal.md#3.5%20Release)), `Fill` refuses to overwrite held
-bytes ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)), an offloaded bit is set only on an offload report. A
+bytes ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)), an offloaded bit is set only by an offload report, from an
+offload or the reseed's `MarkOffloaded` (§2.5), or by a fill, whose bytes came from the remote tier
+([RFC 0 §6.2](rfc-0-data-lifecycle.md#6.2%20Fill)). A
 policy gate **MUST NOT** be the only thing standing between the system and data
 loss. The test: disable every gate — evict as eagerly as possible, fill
 everything, offload constantly — and the Group A checks still pass ([§15](#15.%20Conformance)).
@@ -1695,10 +1697,16 @@ after a loss, each client resends its recent unstable writes once.
   reconcile-retained ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), and raises the loss generation. The failure is reported to the
   next `Sync` of each file that had a write in the window — one waiting at the
   time, or the first to come later — and then cleared, so that file's next
-  stability point fails once and its clients resend under the new verifier, even
-  when no `Sync` was waiting when the timer's sync failed. A later `Sync` syncs
+  `Commit` succeeds with a new verifier, and its NFS clients resend under it, even
+  when no `Sync` was waiting when the timer's sync failed. A stable write whose
+  `Commit` answers a verifier other than its `Write`'s is answered `ErrDelay`
+  (`DelayCommit`, [§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)), and each SMB open across the loss fails one flush
+  with `ErrLost` (the loss sequence, below). A later `Sync` syncs
   what was written since and does not wait on the failed window, so the file is
-  not wedged until a restart.
+  not wedged until a restart. A `Commit` whose `Sync` returns a failed window's
+  error calls `Sync` again, as often as windows fail, and runs steps 2 to 4
+  (below) over the first that succeeds, so the verifier it answers covers every
+  write made since the failure.
 - **Each file has a loss sequence.** The engine keeps, in memory and monotonic
   for the life of the process, a per-file **loss sequence**, raised each time a
   loss event drops an acknowledged write of the file not yet offloaded — a
@@ -1726,7 +1734,7 @@ after a loss, each client resends its recent unstable writes once.
   raises the loss sequence of every file of every share attached to that
   journal — while running, at the loss; at a start past an acknowledged loss,
   by starting each such file's sequence at 1 rather than 0 — so each SMB open
-  across the loss fails its next flush once, as for a per-record loss
+  across the loss fails its next flush that commits once, as for a per-record loss
   ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
   The sequence starts at 0 with each process, so a durable copy of it would
   compare against the wrong one: open state resets a persistent open's
@@ -3817,8 +3825,8 @@ func (e *Engine) Drop(ctx context.Context, id ShareID) error                   /
 // Content: called only by *vfs.Filesystem, at the file's primary (RFC 17 §2.1).
 // Every call names the file's share, which the filesystem has from the handle. A
 // share being removed or retired answers ErrStale (RFC 16 §2.3.1); any other with
-// no binding here answers ErrDelay (DelayFrozen); LossSeq, which returns no
-// error, answers 0.
+// no binding here, or with a quiesced one, answers ErrDelay (DelayFrozen); LossSeq,
+// which returns no error, answers 0 with no binding and the file's sequence otherwise.
 func (e *Engine) Write(ctx context.Context, s ShareID, f FileID, off int64, p []byte, o WriteOpts) (Verifier, error)
 func (e *Engine) Draw(ctx context.Context, s ShareID, f FileID) (Version, error)                                     // under the file's accept lock (§4.1)
 func (e *Engine) Commit(ctx context.Context, s ShareID, f FileID, off, n int64) (v Verifier, lossSeq uint64, err error) // n 0: the whole file
@@ -3894,7 +3902,7 @@ standard library and which `pkg/vfs` re-exports as aliases
 ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)), `ErrInvalid` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrIncomplete` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrCross` with
 `CrossNamespace` or **(cluster)** `OtherShard` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `ErrDelay` with its
 `Delay` cause: `DelayCapacity`, `DelayCommit`, `DelayConflict`, `DelayClone`, `DelayJournal` (the local journal is read-only for now: a device error that may clear, or a removal past its journal step waiting for the reopen, §8.1, §11.2),
-`DelayFrozen` (a share with no binding here, §12.1, or a file the metadata reconcile has
+`DelayFrozen` (a share with no binding here or a quiesced one, §12.1, or a file the metadata reconcile has
 not yet visited, §2.5), and `ErrFileOpen`, a release a holder aborted ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), which only the service reads.
 
 ### 12.2 A retried mutation is answered, not re-applied
@@ -4073,7 +4081,8 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) cut points | Write and flush A in one file, then write B in another, both unstable and uncommitted; request a cut. Assert the snapshot holds A and B; write C after the cut point and before the gate reopens, and assert the snapshot lacks C and no existence above the cut point committed while the gate was closed. A cut that commits nothing misses A and B. Write and flush `~tmp1`, then rename it over `report.docx`, racing the close; assert the snapshot shows the old `report.docx` or the new one with its bytes, never a zero-length one. Start a primary with its gate closed and a pre-cut commit pending; assert its own commits pass the gate. A cut that takes its points before closing the gate admits the rename against content above them. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal), [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) stalled store | Stall the metadata store. Assert a `Commit` over appends to a file with no committed content is answered after its sync, and one over an overwrite of committed content is answered `ErrDelay` at its deadline, never success, until the store commits. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) marks wait, [§11.2](#11.2%20Every%20condition%20in%20RFC%200%20%C2%A710%20has%20its%20engine%20behaviour%20here) stalled store | Commit a file's content, then stall the metadata store and append to the file. Assert a whole-file `fsync` is answered `ErrDelay` at its deadline, never success, though its sync succeeded and it overwrites nothing; un-stall the store and assert the retried `fsync` succeeds once a transaction records a mark covering its sync. |
-| [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) failed window | Fail one sync window under writes to a file. Assert its stability point fails, the verifier changes, and the file's next `Commit` succeeds without a restart. Fail the timer's sync with no `Commit` waiting: assert the file's next `Commit` fails once and the one after succeeds, another file's `Commit` is unaffected, and an SMB flush through an open across the loss fails once: with the window's error when it is the file's next `Commit`, and otherwise with `ErrLost` from the returned loss sequence. Fail a window over an overwrite of a flushed write: assert the flushed write reads back. A journal that keeps the window pending fails every later `Commit` of the file; one that reports only to a waiting `Sync` lets the next flush succeed over the loss. |
+| [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) failed window | Fail one sync window under writes to a file. Assert its `Commit` succeeds with a changed verifier, and the file's next `Commit` succeeds without a restart. Fail the timer's sync with no `Commit` waiting: assert the file's next `Commit` succeeds with a changed verifier and the one after succeeds, another file's `Commit` is unaffected, and each SMB open across the loss gets `ErrLost` from the returned loss sequence on exactly one flush, then its flushes succeed. Write to the file after the timer's failure and before its next `Commit`: assert that `Commit` answers only once that write is synced. Fail a window over an overwrite of a flushed write: assert the flushed write reads back. A journal that keeps the window pending fails every later `Commit` of the file; an engine that answers the window's `SyncError` as an error fails the file's next `Commit`, and one that answers at the failed `Sync` acknowledges the later write unsynced under its own verifier. |
+| [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) failed window, sync again | Fail a sync window under writes to a file, and fail the next window too, with a `Commit` waiting and a write made between the two failures. Assert the `Commit` calls `Sync` again after each failed window and answers only once a `Sync` succeeded, with a verifier that covers every write made since the first failure, and that the file's next `Commit` succeeds. An engine that answers after the first failed `Sync` acknowledges the later write unsynced under its own verifier; one that stops after one retry fails the `Commit` on the second window. |
 | [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) durable commits | Crash the metadata store's host right after an offload commit is reported and the journal marked it; restart both. Assert every extent the journal marks is covered by a committed ref. |
 | [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) existence above `asOf` | Between a read's journal step and its metadata step, stage and commit an overwrite of the extent without offloading it. Assert the read returns the old bytes or the new ones and never fails as **Lost**. Repeat with a write that fills a hole the read saw, and with one that grows the file past the end the read saw: assert the same. A build that keys the re-ask on overwrite records alone fails the last two as **Lost**. |
 | [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) zero ref under an overwrite | Offload an extent of zeros, write data over it and commit without offloading; ask `SEEK_HOLE` and an allocated-range query from its start. Assert data. |

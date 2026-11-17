@@ -2404,18 +2404,12 @@ read once the sync completes ([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20
 and passes it to open state's `Flushed`, which fails the flush with `ErrLost`
 once for each open that was open across a loss of an acknowledged, unoffloaded
 write of the file ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
-A flush whose engine `Commit` fails with that loss still passes the file's
-loss sequence to `Flushed` before it returns the engine's error, so the loss
-that failed it is not reported to the same open again by its next flush. A
-flush answered a retry (`ErrDelay`), or cancelled, passes nothing: the open
-learns of nothing, and its retried flush still fails with `ErrLost`.
-
-> decision: the engine's `Commit` doesn't name a failed window's error, so a
-> flush whose `Commit` fails for any reason but a retry or a cancel passes the
-> loss sequence, as if its error were the loss's own. A flush failing for an
-> unrelated reason, after a loss from a corrupt record that failed no sync,
-> then marks that loss seen without `ErrLost`. Overturned once `Commit` names
-> the failed window's error, when only that error passes it.
+A flush whose engine `Commit` fails, a retry (`ErrDelay`) or a cancel
+included, passes nothing to `Flushed` and returns the engine's error: the
+open learns of nothing and `LossSeen` stays as it is. Where the file's loss
+sequence has moved since the open's `LossSeen`, its next flush whose `Commit`
+succeeds fails with `ErrLost`; a `Commit` that failed for another cause (a
+`DelayCommit`, a `DelayConflict`) moved nothing and reports no loss.
 
 ### 5.9 Copy and clone
 
