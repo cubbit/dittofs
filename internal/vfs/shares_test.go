@@ -1078,12 +1078,5 @@ func TestAListingFailsWithTheStore(t *testing.T) {
 	}
 }
 
-func mustShare(t *testing.T, s *shares, id entity.ShareID) entity.Share {
-	t.Helper()
-	sh, _, err := s.fs.Store.ShareIndex().Share(t.Context(), id)
-	s.must(t, err)
-	return sh
-}
-
 // errOf is a write's error alone, its returned generation dropped.
 func errOf[T any](_ T, err error) error { return err }

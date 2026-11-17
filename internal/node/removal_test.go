@@ -12,7 +12,6 @@ import (
 	"github.com/cubbit/dittofs/internal/node"
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -64,20 +63,6 @@ func createFiles(t *testing.T, h *nodetest.Harness, sh entity.Share, n int) []en
 		}
 	}
 	return files
-}
-
-// left counts the files the store still holds.
-func left(t *testing.T, h *nodetest.Harness, files []entity.File) int {
-	t.Helper()
-	n := 0
-	for _, f := range files {
-		if _, err := h.Store().Files().Get(t.Context(), anAdmin, entity.NewHandle(f.Share, f.ID)); err == nil {
-			n++
-		} else if !merrs.IsNotFoundError(err) && !errors.Is(err, entity.ErrStale) {
-			t.Fatalf("read a file back: %v", err)
-		}
-	}
-	return n
 }
 
 // gatedRunner has the node's operation runner wait after each turn until
@@ -446,5 +431,3 @@ func TestAdmissionServesOnlyTheRunningSet(t *testing.T) {
 		t.Errorf("the first call into the refused share: got %v, want %v", err, vfs.ErrDelay)
 	}
 }
-
-func errOf[T any](_ T, err error) error { return err }
