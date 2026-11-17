@@ -58,7 +58,7 @@ v2 is RFC 13's lifecycle. No user-visible name carries a version.
 start and names the record that replaced it.
 
 **Defaults used from the skill's inputs:**
-- output path: `docs/internals/planning/rfc-13-config-plan.md`;
+- output path: `.planning/rfc-13-config-plan.md`;
 - dashboards: none.
 
 **RFC amendments in this pull request.** The user agreed to A1:

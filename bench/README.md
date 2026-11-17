@@ -69,6 +69,22 @@ make bench-blockstore > after.txt
 benchstat before.txt after.txt
 ```
 
+## Local perf gates
+
+Two gates fail when a change regresses a benchmark against a number held in a constant:
+
+| Gate | Run it with | Constant |
+| --- | --- | --- |
+| `BenchmarkPerfGate_Phase12RandReadRegression` (`pkg/block/engine`) | `make bench-phase12` | `phase12MicrobenchFloorIOPS`: fails below the floor minus 5% |
+| `TestPhase19_AggregateRandWriteGate_LeqOne` (`internal/bench`) | `DITTOFS_BENCH_LANE=1 go test -run TestPhase19 ./internal/bench/` | `phase11BaselineRandWriteNsPerOp`: fails above the baseline; `0` only logs |
+
+A trip on a laptop is not evidence: rerun on the machine class the constant was measured on
+first. To re-baseline, take a commit with no known regression, run the gate there ten
+times (`-count=10`), and set the constant from the median of those runs (the rand-read floor stays
+a conservative anchor below the slowest machine class's median, not that median). Record the
+machine, the Go version and the commit measured in the commit that changes the constant. Never
+re-baseline to let a change through: a confirmed regression is fixed, not absorbed.
+
 ## Layout
 
 ```

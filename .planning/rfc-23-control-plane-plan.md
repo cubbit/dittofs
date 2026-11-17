@@ -64,7 +64,7 @@ database or configuration refuses and names it. No migration tool.
 
 **Defaults used from the skill's inputs:**
 
-- output path: `docs/internals/planning/rfc-23-control-plane-plan.md`;
+- output path: `.planning/rfc-23-control-plane-plan.md`;
 - dashboards: none;
 - the bootstrap file keeps its path, with a flag to name another (D6, the RFC 13 plan's).
 

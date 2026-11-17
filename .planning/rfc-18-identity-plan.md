@@ -66,7 +66,7 @@ branch, or lifted from `develop`'s history where it is not, and rewritten agains
 that needs it.
 
 **Defaults used from the skill's inputs:**
-- output path: `docs/internals/planning/rfc-18-identity-plan.md`;
+- output path: `.planning/rfc-18-identity-plan.md`;
 - dashboards: none.
 
 **RFC amendments in this pull request.** The user agreed to each:
