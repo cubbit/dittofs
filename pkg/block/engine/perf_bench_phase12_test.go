@@ -2,7 +2,7 @@
 // (Cache OnRead hint, RAM-cache-backed local.Get on miss).
 //
 // This file is the in-tree microbench canary. Real-S3 performance is
-// verified separately at milestone-gate VER-02 against the bench/infra
+// verified separately at milestone-gate VER-02 against the bench-infra lane
 // lane (in-tree microbench and real-S3 numbers are not comparable).
 //
 // Reproduce locally
@@ -28,7 +28,7 @@ import (
 )
 
 // phase12FixtureFileSize is the seeded file size for the rand-read
-// fixture. 64 MiB matches the bench/infra round-2 file size and gives
+// fixture. 64 MiB matches the bench-infra lane's round-2 file size and gives
 // 16 × 4 MiB FastCDC-sized blocks — large enough for the binary search
 // to be measurable without burning fixture-build time on every bench
 // run.
@@ -38,7 +38,7 @@ const phase12FixtureFileSize = 64 * 1024 * 1024
 // FastCDC average chunk target.
 const phase12FixtureBlockSize = 4 * 1024 * 1024
 
-// phase12ReadSize is the rand-read I/O size — matches the bench/infra
+// phase12ReadSize is the rand-read I/O size — matches the bench-infra lane
 // round-2 random-read block size (4 KiB) so the in-tree microbench
 // shape mirrors the real-S3 lane.
 const phase12ReadSize = 4096
@@ -206,7 +206,7 @@ func BenchmarkRandRead_Phase12(b *testing.B) {
 //
 // The microbench uses an in-tree fixture (memory metadata + journal
 // local store), NOT real S3, so its absolute numbers are not
-// comparable with the bench/infra real-S3 lane. The gate here uses the
+// comparable with the bench-infra real-S3 lane. The gate here uses the
 // per-machine microbench floor; bench/README.md, "Local perf gates",
 // has the re-baseline procedure.
 //

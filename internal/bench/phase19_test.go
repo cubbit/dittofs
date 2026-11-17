@@ -57,7 +57,7 @@ const d21MaxRatio = 1.00
 const phase19FixtureFileSize = 64 * 1024 * 1024
 
 // phase19FixtureWriteSize is the per-WriteAt I/O size — 4 KiB matches
-// the bench/infra round-2 random-write block size.
+// the bench-infra lane's round-2 random-write block size.
 const phase19FixtureWriteSize = 4096
 
 // phase19RandSeed makes every rand-write bench walk the same offset
