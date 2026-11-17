@@ -17,6 +17,7 @@ import (
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/cubbit/dittofs/internal/adapter/adaptertest/testproto"
 	"github.com/cubbit/dittofs/internal/adapter/core"
@@ -2208,6 +2209,68 @@ func TestACompoundRefusedAsAChainMemberEncodesNothingOfItsOwn(t *testing.T) {
 		}
 		if bytes.Contains(rs[1].Body, marker) {
 			t.Errorf("the refused compound's reply %q carries its own Encode's bytes", rs[1].Body)
+		}
+	})
+}
+
+// tracingStages is the stages' FlowControl and ReplayCache, each tracing
+// its own work as a protocol's stage may: Admit and Lookup start a span
+// under the context they are handed and end it as they return. An input
+// standing for such a protocol.
+type tracingStages struct {
+	core.FlowControl
+	core.ReplayCache
+	tracer trace.Tracer
+}
+
+func (t tracingStages) Admit(ctx context.Context, h core.Header) (func(), error) {
+	_, span := t.tracer.Start(ctx, "admit")
+	defer span.End()
+	return t.FlowControl.Admit(ctx, h)
+}
+
+func (t tracingStages) Lookup(ctx context.Context, h core.Header) (*resources.Buf, error) {
+	_, span := t.tracer.Start(ctx, "lookup")
+	defer span.End()
+	return t.ReplayCache.Lookup(ctx, h)
+}
+
+// A chain's member is tried at flow control and the replay cache under its
+// own context, ended: a stage that traces its work there has its span in
+// the member's trace, a child of the member's request span, as the first
+// member's admission and a request alone's are.
+func TestAChainMembersTriesAreInItsTrace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		spans := tracetest.NewSpanRecorder()
+		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+		s := newChained(t, 1<<20, adapter.Deps{Tracer: tracer, SampleRatio: 1}, func(st *core.Stages) {
+			tr := tracingStages{FlowControl: st.Flow, ReplayCache: st.Replay, tracer: tracer}
+			st.Flow, st.Replay = tr, tr
+		})
+		s.serve(echoIn(1, 7), echoIn(2, 7))
+		if rs, err := s.client.Recv(); err != nil || len(rs) != 2 {
+			t.Fatalf("the chain is answered %+v, %v: want both Echo in one record", rs, err)
+		}
+		s.finish()
+		var members []sdktrace.ReadOnlySpan
+		children := map[trace.SpanID][]string{}
+		for _, sd := range spans.Ended() {
+			switch sd.Name() {
+			case "adapter." + testproto.Name + ".Echo":
+				members = append(members, sd)
+			case "admit", "lookup":
+				children[sd.Parent().SpanID()] = append(children[sd.Parent().SpanID()], sd.Name())
+			}
+		}
+		if len(members) != 2 {
+			t.Fatalf("%d Echo spans ended, want the chain's two", len(members))
+		}
+		for i, sd := range members {
+			got := children[sd.SpanContext().SpanID()]
+			slices.Sort(got)
+			if !slices.Equal(got, []string{"admit", "lookup"}) {
+				t.Errorf("member %d's span has the stage spans %v under it, want its admit and its lookup", i+1, got)
+			}
 		}
 	})
 }

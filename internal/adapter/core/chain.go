@@ -12,14 +12,22 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// ended is a context whose deadline has passed: Admit under it tries once
-// and, where it would wait, answers its error at once, and Lookup tries its
-// copy's reservation once, answering ErrDelay of DelayResources (§4.7).
-var ended = func() context.Context {
-	ctx, cancel := context.WithDeadline(context.Background(), time.Time{})
-	cancel()
-	return ctx
+// endedCtx is a member's context with its deadline passed: Admit under it
+// tries once and, where it would wait, answers its error at once, and Lookup
+// tries its copy's reservation once, answering ErrDelay of DelayResources
+// (§4.7). It keeps the member's values, its trace ID and span among them.
+type endedCtx struct{ context.Context }
+
+// closedDone is the done channel of every endedCtx.
+var closedDone = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
 }()
+
+func (endedCtx) Deadline() (time.Time, bool) { return time.Time{}, true }
+func (endedCtx) Done() <-chan struct{}       { return closedDone }
+func (endedCtx) Err() error                  { return context.DeadlineExceeded }
 
 // entry is one chain member as the walk reaches it.
 type entry struct {
@@ -58,10 +66,11 @@ type chain struct {
 	prevR    *Request
 	failed   bool // the member before failed, with failS
 	failS    Status
-	cur      entry  // the member running
-	stopped  bool   // a NoReply member ended the chain, or the connection closed
-	slot     bool   // the chain holds the connection's one status wait
-	kept     func() // the place of the last member admitted, until the next is admitted or would wait
+	cur      entry    // the member running
+	stopped  bool     // a NoReply member ended the chain, or the connection closed
+	slot     bool     // the chain holds the connection's one status wait
+	kept     func()   // the place of the last member admitted, until the next is admitted or would wait
+	try      endedCtx // the running member's context, ended, for its first try; reused so a try boxes nothing
 }
 
 // serveChain takes a record whose messages chain (§4.7). On the reader it
@@ -292,10 +301,11 @@ func (c *chain) one(e *entry) {
 // a place.
 func (c *chain) admit(e *entry) {
 	p := c.p
-	release, err := p.st.Flow.Admit(ended, e.u)
-	if err != nil && errors.Is(err, ended.Err()) {
+	try := c.ended(e.tr.ctx)
+	release, err := p.st.Flow.Admit(try, e.u)
+	if err != nil && errors.Is(err, context.DeadlineExceeded) {
 		c.giveBack() // never wait at flow control holding a place
-		if release, err = p.st.Flow.Admit(ended, e.u); err != nil && errors.Is(err, ended.Err()) {
+		if release, err = p.st.Flow.Admit(try, e.u); err != nil && errors.Is(err, context.DeadlineExceeded) {
 			c.flush(splitFlow, e.tr)
 			release, err = p.st.Flow.Admit(e.tr.ctx, e.u)
 		}
@@ -451,12 +461,20 @@ func (c *chain) free() {
 	}
 }
 
+// ended is ctx ended, for a member's first try: the chain's one endedCtx,
+// repointed at ctx, which a stage, as any call's, keeps no further than its
+// return.
+func (c *chain) ended(ctx context.Context) context.Context {
+	c.try.Context = ctx
+	return &c.try
+}
+
 // lookup asks the replay cache under an ended context first: when its
 // copy's reservation would wait, the replies the chain holds go out, and it
 // is asked again under the member's deadline, so the chain never waits on
 // the reply pool holding it (§4.7).
 func (c *chain) lookup(ctx context.Context, h Header) (*resources.Buf, error) {
-	cached, err := c.p.st.Replay.Lookup(ended, h)
+	cached, err := c.p.st.Replay.Lookup(c.ended(ctx), h)
 	var d *vfs.Delay
 	if errors.As(err, &d) && d.Cause == vfs.DelayResources {
 		c.flush(splitReplyPool, c.cur.tr)
