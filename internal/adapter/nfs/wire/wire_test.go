@@ -501,7 +501,9 @@ func TestDecodeAuthSys(t *testing.T) {
 	// A body cut inside its machine name: the name's length says more than the
 	// body holds.
 	whole := parms([]byte("0123456789"), 0)
-	cutName := whole[:len(whole)-20] // past the name's bytes, at its padding
+	// A fresh slice of its own, so nothing past its end is in bounds: a decoder
+	// that read the name past the body's end would reach out of the record.
+	cutName := append([]byte(nil), whole[:len(whole)-20]...)
 	if _, err := wire.DecodeAuthSys(cutName); err == nil {
 		t.Error("a body cut inside its machine name is accepted")
 	}
