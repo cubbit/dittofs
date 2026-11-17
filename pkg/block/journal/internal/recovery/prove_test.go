@@ -701,8 +701,12 @@ func TestASealMarkerThatFailsProofWithUnprovenRecords(t *testing.T) {
 	if f.Kind == fateSealToProve || f.Kind == fateSealed {
 		t.Errorf("segment 2's fate got %v, want it past the seal: the marker the device holds does not verify", f.Kind)
 	}
-	if calls := r.seam.CallsFor(kit.OpSync, name) - synced; calls != 1 {
-		t.Errorf("the open's syncs of the segment got %d, want 1: the marker flow's sync is the segment's sync, spent there", calls)
+	// The segment's two syncs: the marker flow's — the segment's one sync,
+	// spent there, with the tail flow making no second — and the ended cut's
+	// own, which makes its truncation durable before the emptying unlinks
+	// the segment.
+	if calls := r.seam.CallsFor(kit.OpSync, name) - synced; calls != 2 {
+		t.Errorf("the open's syncs of the segment got %d, want 2: the marker flow's and the cut's", calls)
 	}
 	// The tail flow took the unsealed queue in hand: B is lost by the
 	// device, handed over from the copy the first read verified, and the

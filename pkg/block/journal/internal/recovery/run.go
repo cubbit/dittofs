@@ -155,7 +155,7 @@ var phases = [...]phase{
 	{span: core.SpanOpenSpares, run: runSpares},
 	{span: core.SpanOpenReappend, run: runReappend},
 	{span: core.SpanOpenAssembly, run: runAssemble},
-	{span: core.SpanOpenSeal},
+	{span: core.SpanOpenSeal, run: runSeal},
 	{span: core.SpanOpenEmptying},
 }
 
@@ -235,18 +235,20 @@ func rebuildReaders(deps Deps) int {
 // candidates and zeroes their dirty slots after refusing on every range no
 // bounded read completed — and the re-append — which writes the tail the
 // device lost into a sealed spare of the repack reserve — and the assembly
-// are built; the phases around
-// them are named, span-covered steps that change nothing, each checked for
+// and the cut-and-seal — which truncates, syncs and seals every torn-tail
+// fate the earlier phases answered and truncates every ended one — are
+// built; the emptying after it is a named,
+// span-covered step that changes nothing, checked for
 // the context. A cancelled open answers the context's
 // error at the boundary it reached, the directory left as it began for a
-// later open — except for the spares phase and the re-append, the open's
-// writing ones:
-// cancelling under the span of either stops it at its own context check or
+// later open — except for the open's writing phases, the spares phase, the
+// re-append and the cut-and-seal:
+// cancelling under the span of one stops it at its own context check or
 // at the doorstep of its next write — a write already under way finishes
 // and the next open settles what it left idempotently, but no write begins
-// past the cancellation — and a cancellation after it keeps that phase's
-// unlinks, zeroed slots and sealed re-appended copies, which a later open
-// re-reads and re-decides.
+// past the cancellation — and a cancellation after one keeps that phase's
+// unlinks, zeroed slots, sealed re-appended copies and durable cuts and
+// seals, which a later open re-reads and re-decides.
 // floor and marks are carried for the phases that consume them — floor
 // for the rebuild, and marks for the marks raise phase, which reads them
 // into the state the spares phase holds its takes by, for the spares

@@ -582,6 +582,13 @@ type reopenFigures struct {
 	// fresh spares its own pool made above every name the crash left, the
 	// storage the reopen allocated itself.
 	freshSegBytes int64
+	// cutFreed is what the reopen's cut-and-seal phase took off the
+	// segment files the crash kept: each torn tail it truncated shrank on
+	// disk, and the reopened ledger accounts the segment at what the file
+	// holds, so the equality of the footprint is the crash's own bytes
+	// less this. An ended cut frees disk while the row keeps its cap, the
+	// set's own contract, and changes nothing the figure reads.
+	cutFreed int64
 }
 
 // figuresOf captures the figures of j for tags, reading each share's file
@@ -662,6 +669,14 @@ func equalityFixture(t *testing.T) (before, after reopenFigures) {
 	mustWaitSpares(t, j)
 	before = figuresOf(t, j, []ShareTag{tagA, tagB})
 	crashFiles := f.segmentFileNames(t)
+	crashSizes := make(map[string]int64, len(crashFiles))
+	for _, name := range crashFiles {
+		fi, err := os.Stat(filepath.Join(f.dir, name))
+		if err != nil {
+			t.Fatalf("stat the crashed segment %s: %v", name, err)
+		}
+		crashSizes[name] = fi.Size()
+	}
 	before.segFiles = len(crashFiles)
 
 	f.crash(t, j)
@@ -669,6 +684,13 @@ func equalityFixture(t *testing.T) (before, after reopenFigures) {
 	after = figuresOf(t, j2, []ShareTag{tagA, tagB})
 	after.segFiles = len(f.segmentFileNames(t))
 	after.freshSegBytes = freshSegBytes(t, f, crashFiles)
+	for name, was := range crashSizes {
+		fi, err := os.Stat(filepath.Join(f.dir, name))
+		if err != nil {
+			t.Fatalf("stat the kept segment %s: %v", name, err)
+		}
+		after.cutFreed += was - fi.Size()
+	}
 	return before, after
 }
 
@@ -769,16 +791,17 @@ func TestReopenAssembled_EqualityOfShareFigures(t *testing.T) {
 // equality: the reopened journal accounts the crash's whole footprint — the
 // same bytes the running journal's own figure named, its pool's spare files
 // and the sealed segments alike, every empty spare-origin segment among the
-// set's entries at the cap it takes on disk — and the only storage its
-// figure names over that is what its own spare pool allocated after the
+// set's entries at the cap it takes on disk — less what its open's
+// cut-and-seal phase freed of the crash's torn tails, and the only storage
+// its figure names over that is what its own spare pool allocated after the
 // reopen: whole fresh spares, made above every file the crash kept, both
 // pools settled.
 func TestReopenAssembled_EqualityOfUsedBytes(t *testing.T) {
 	before, after := equalityFixture(t)
-	want := before.usedBytes + after.freshSegBytes
+	want := before.usedBytes + after.freshSegBytes - after.cutFreed
 	if after.usedBytes != want {
-		t.Fatalf("Stats().UsedBytes after the reopen = %d, want %d: the crash's whole footprint (%d, the running journal's own figure) plus the fresh spares its own pool made (%d): a segment the first journal accounted is not the second's or the seed changed its size",
-			after.usedBytes, want, before.usedBytes, after.freshSegBytes)
+		t.Fatalf("Stats().UsedBytes after the reopen = %d, want %d: the crash's whole footprint (%d, the running journal's own figure) less the cut-and-seal's freed bytes (%d), plus the fresh spares its own pool made (%d): a segment the first journal accounted is not the second's or the seed changed its size",
+			after.usedBytes, want, before.usedBytes, after.cutFreed, after.freshSegBytes)
 	}
 	if after.segments != before.segFiles {
 		t.Fatalf("Stats().Segments after the reopen = %d, want %d: one ledger entry per segment file the crash left, empty spare-origin ones among the loaded segments", after.segments, before.segFiles)
