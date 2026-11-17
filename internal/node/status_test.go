@@ -1,6 +1,7 @@
 package node_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -192,6 +193,10 @@ func TestStatusWrittenOnlyOnAChange(t *testing.T) {
 
 // A status write that failed is made again at the next turn: the status
 // last written moves only once a write commits.
+//
+// Reconcile catches up through Applied, which wakes a pass without moving the
+// clock, so every status turn here is released by one advance the test waits
+// on, and none is still running when the store is read back.
 func TestStatusWriteRetriedAfterAFault(t *testing.T) {
 	h, f := faulted(t)
 	ch := watchStatus(h)
@@ -201,7 +206,11 @@ func TestStatusWriteRetriedAfterAFault(t *testing.T) {
 	setFault(t, f, nil, sim.Rule{Op: kvtest.OpSet, Key: statusKey(h), Count: 1, Action: sim.FaultAction{Err: errors.New("status write lost")}})
 	configure(t, h, storeA)
 	want := counters(t, h).Settings
-	caughtUp(t, h)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second) // a backstop: Applied returns on the position moving
+	defer cancel()
+	if err := h.Node().Applied(ctx); err != nil {
+		t.Fatalf("Applied after the settings change: %v", err)
+	}
 
 	if tr := turnAt(t, h, ch, "at the settings change", func(tr statusTurn) bool { return tr.s.Settings == want }); tr.wrote {
 		t.Fatalf("status turn whose write the fault failed: reported written, want not")
