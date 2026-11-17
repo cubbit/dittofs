@@ -60,6 +60,19 @@ func TestWireBodies(t *testing.T) {
 		{"created API token", APITokenStatus{Created: at, Token: "t1"}, new(APITokenStatus),
 			[]string{"created", "token"}},
 		{"listed API token", APITokenStatus{Created: at}, new(APITokenStatus), []string{"created"}},
+		{"applied", Applied{Nodes: 2, Of: 3}, new(Applied), []string{"nodes", "of"}},
+		{"node", Node{ID: "n_1", Address: "10.0.0.1:12049", Binary: "v0.20.0", Domain: "rack-1", Lapsed: true}, new(Node),
+			[]string{"address", "binary", "domain", "id", "lapsed"}},
+		{"audit record", AuditRecord{
+			ID: "au_1", Time: at, Actor: Principal{Kind: "user", ID: "us_1"}, ActorName: "eli", Credential: "session-1",
+			Node: "n_1", Source: "10.0.0.9:51234", Request: json.RawMessage(`{"method":"PUT"}`),
+			Target: Ref{Kind: "share", ID: "sh_1"}, Before: 1, After: 2, Change: json.RawMessage(`{"spec.name":["a","b"]}`),
+			Outcome: "applied",
+		}, new(AuditRecord), []string{"actor", "actor_name", "after", "before", "change", "credential", "id", "node", "outcome", "request", "source", "target", "time"}},
+		{"health", Health{Ready: "ready", Conditions: []Condition{{Name: "store_unreachable", Scope: "store", ID: "rs_1", Subject: "s3", Cause: "dial tcp: refused", Detail: "3 failures"}}}, new(Health),
+			[]string{"conditions", "ready"}},
+		{"condition", Condition{Name: "store_unreachable", Scope: "store", ID: "rs_1", Subject: "s3", Cause: "dial tcp: refused", Detail: "3 failures"}, new(Condition),
+			[]string{"cause", "detail", "id", "name", "scope", "subject"}},
 	} {
 		b, err := json.Marshal(tc.in)
 		if err != nil {
