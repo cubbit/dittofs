@@ -261,12 +261,37 @@ func TestUnreadableOperation(t *testing.T) {
 	}
 }
 
+// walk reads the listing at path one item a page, following each page's
+// cursor, and returns each item's id as it came; it stops after max items,
+// so a cursor that never advances ends the walk.
+func walk[T any](t *testing.T, s *served, path string, max int, id func(T) string) (got []string) {
+	t.Helper()
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	for q := sep + "limit=1"; ; {
+		r := s.do(t, http.MethodGet, path+q, "")
+		var page apiv1.Page[T]
+		if err := json.Unmarshal(r.body, &page); err != nil || r.status != http.StatusOK {
+			t.Fatalf("GET %s%s: answered %d %s", path, q, r.status, r.body)
+		}
+		for _, it := range page.Items {
+			got = append(got, id(it))
+		}
+		if page.Next == "" || len(got) > max {
+			return got
+		}
+		q = sep + "limit=1&after=" + url.QueryEscape(page.Next)
+	}
+}
+
 // ?state= lists the operations in a state an operation that has not ended
 // holds, in ID order, and refuses an ended state, naming the filter.
 func TestOperationsByState(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	var running []string
-	for i := range 4 {
+	for i := range 16 {
 		op := s.putOp(t, newOp(apiv1.OpShareDelete, entity.Principal{}), 0)
 		if i%2 == 0 {
 			op.State = entity.OpRunning
@@ -275,26 +300,52 @@ func TestOperationsByState(t *testing.T) {
 		}
 	}
 	slices.Sort(running)
-	var got []string
-	for path := "/api/v1/operations?state=running&limit=1"; ; {
-		r := s.do(t, http.MethodGet, path, "")
-		var page apiv1.Page[apiv1.Operation]
-		if err := json.Unmarshal(r.body, &page); err != nil || r.status != http.StatusOK {
-			t.Fatalf("GET %s: answered %d %s", path, r.status, r.body)
-		}
-		for _, op := range page.Items {
-			got = append(got, op.ID)
-		}
-		if page.Next == "" || len(got) > 4 {
-			break
-		}
-		path = "/api/v1/operations?state=running&limit=1&after=" + url.QueryEscape(page.Next)
-	}
-	if !slices.Equal(got, running) {
+	if got := walk(t, s, "/api/v1/operations?state=running", 16, func(o apiv1.Operation) string { return o.ID }); !slices.Equal(got, running) {
 		t.Errorf("?state=running a page at a time: %q, want %q", got, running)
 	}
 	if r := s.do(t, http.MethodGet, "/api/v1/operations?state=succeeded", ""); r.status != http.StatusBadRequest || r.problem(t).Field != "state" {
 		t.Errorf("?state=succeeded: answered %d %s, want 400 naming state", r.status, r.body)
+	}
+}
+
+// GET /operations, /nodes and /audit, read one item a page, each answer
+// every item once, in the order one page holding all of them answers.
+func TestListingsPageByCursor(t *testing.T) {
+	s := serve(t, as(entity.RoleAdmin, false))
+	for range 3 {
+		s.putOp(t, newOp(apiv1.OpShareDelete, entity.Principal{}), 0)
+		id := entity.NodeID(uuid.New())
+		if _, err := s.db.RaiseNodeEpoch(t.Context(), id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.nodes.RegisterNode(t.Context(), entity.Node{ID: id, Address: "10.0.0.1:12049", Roles: entity.NodeRoleProtocol | entity.NodeRoleStorage, Binary: "v0.20.0"}); err != nil {
+			t.Fatal(err)
+		}
+		if r := s.do(t, http.MethodPut, knobAt(uuid.NewString()), `{"spec":{"value":"x"}}`, "If-None-Match", "*"); r.status != http.StatusOK {
+			t.Fatalf("PUT knob: answered %d %s", r.status, r.body)
+		}
+		s.clock.Advance(500 * time.Millisecond)
+	}
+	pagesOnce(t, s, "/api/v1/operations", func(o apiv1.Operation) string { return o.ID })
+	pagesOnce(t, s, "/api/v1/nodes", func(n apiv1.Node) string { return n.ID })
+	pagesOnce(t, s, "/api/v1/audit", func(a apiv1.AuditRecord) string { return a.ID })
+}
+
+// pagesOnce checks that the three items the listing at path holds, read one
+// a page, come back each once, in the order one page answers them.
+func pagesOnce[T any](t *testing.T, s *served, path string, id func(T) string) {
+	t.Helper()
+	r := s.do(t, http.MethodGet, path, "")
+	var page apiv1.Page[T]
+	if err := json.Unmarshal(r.body, &page); err != nil || r.status != http.StatusOK || len(page.Items) != 3 || page.Next != "" {
+		t.Fatalf("GET %s: answered %d %s, want 200 three items on one page", path, r.status, r.body)
+	}
+	var all []string
+	for _, it := range page.Items {
+		all = append(all, id(it))
+	}
+	if got := walk(t, s, path, 3, id); !slices.Equal(got, all) {
+		t.Errorf("GET %s a page at a time: %q, want %q", path, got, all)
 	}
 }
 
