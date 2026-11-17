@@ -33,8 +33,13 @@ type Deps struct {
 	// Ready is the node's readiness word: ready, starting, draining or
 	// not_ready.
 	Ready func() string
-	// Served reports whether the node has been ready since it started; nil
-	// answers that it has.
+	// Served reports whether the node has been ready since it started.
+	//
+	// decision: nil answers that it has, so a server built without a
+	// lifecycle, the package's own tests among them, serves its calls. A
+	// second production builder of Deps that leaves it nil would serve the
+	// writes of a node whose start failed, which nothing then applies; the
+	// node is the one builder today. Make nil refuse once there is another.
 	Served func() bool
 	// Live reports whether the node's watchdog holds.
 	Live func() bool

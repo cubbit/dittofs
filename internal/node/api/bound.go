@@ -11,7 +11,10 @@ const maxCalls = 64
 
 var (
 	errStarting = &refusal{code: apiv1.CodeStarting, detail: "the node is starting"}
-	errBusy     = &refusal{code: apiv1.CodeUnavailable, detail: "the node runs as many API calls as it may"}
+	// errStartFailed carries no wait: a start that failed does not start
+	// again, so a retry is answered the same way until the node is restarted.
+	errStartFailed = &refusal{code: apiv1.CodeUnavailable, detail: "the node's start failed; it serves no call until it is restarted", wait: -1}
+	errBusy        = &refusal{code: apiv1.CodeUnavailable, detail: "the node runs as many API calls as it may"}
 )
 
 // enter admits a call on rt into one of the 64 slots and returns what gives it back once.
@@ -29,8 +32,13 @@ var (
 // unreachable among them. Overturned if a call answered on a node not ready
 // can do harm a refusal would have prevented.
 func (s *Server) enter(rt *route) (release func(), err error) {
-	if (rt == nil || !rt.beforeReady) && (s.d.Ready() == "starting" || s.d.Served != nil && !s.d.Served()) {
-		return nil, errStarting
+	if rt == nil || !rt.beforeReady {
+		if s.d.Ready() == "starting" {
+			return nil, errStarting
+		}
+		if s.d.Served != nil && !s.d.Served() {
+			return nil, errStartFailed
+		}
 	}
 	select {
 	case s.calls <- struct{}{}:

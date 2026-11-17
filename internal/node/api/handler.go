@@ -173,12 +173,12 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 }
 
 // retryAfter is how long a caller refused with err, answered status, should
-// wait before trying again: the wait err carries, or else one second for a
-// 503 and none for any other status.
+// wait before trying again: the wait err carries, none when it carries a
+// negative one, or else one second for a 503 and none for any other status.
 func retryAfter(err error, status int) time.Duration {
 	var w interface{ RetryAfter() time.Duration }
-	if errors.As(err, &w) && w.RetryAfter() > 0 {
-		return w.RetryAfter()
+	if errors.As(err, &w) && w.RetryAfter() != 0 {
+		return max(w.RetryAfter(), 0)
 	}
 	if status == http.StatusServiceUnavailable {
 		return time.Second

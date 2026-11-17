@@ -144,7 +144,8 @@ func (n *Node) Start(ctx context.Context) error {
 		// record this node applies at its next start, and a write's wait
 		// for this node to apply it runs out its bound. A failed start
 		// leaves the listeners open for health, so the API refuses every call
-		// but health's on a node never ready since it started (Served). Make the calls'
+		// but the rows that answer before ready (health and the version) on a
+		// node never ready since it started (Served), with no retry. Make the calls'
 		// acceptance a part started here, apart from the health listener,
 		// once a call reaches a part the stop closes first.
 		{stepReconcile, n.startReconcile},

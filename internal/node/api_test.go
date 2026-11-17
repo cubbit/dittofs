@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -78,8 +79,8 @@ func TestNodeServesTheAPI(t *testing.T) {
 		t.Errorf("GET the operation: progress %+v, want %+v, the deletion's step's", got.Progress, want)
 	}
 
-	// A poll parks on the node's clock: advanced a second at a time, it
-	// answers once its wait has passed.
+	// A poll parks on the node's clock: it does not answer while the clock
+	// stands short of its wait, and answers once the clock passes it.
 	polled := make(chan error, 1)
 	var poll *http.Response
 	go func() {
@@ -87,19 +88,27 @@ func TestNodeServesTheAPI(t *testing.T) {
 		poll, err = http.Get("http://" + addr + opPath + "?wait=2s")
 		polled <- err
 	}()
-	for deadline, answered := time.After(10*time.Second), false; !answered; {
-		h.Clock().Advance(time.Second)
-		select {
-		case err := <-polled:
-			if err != nil {
-				t.Fatalf("GET the operation with ?wait=2s: %v", err)
-			}
-			_ = poll.Body.Close()
-			answered = true
-		case <-time.After(10 * time.Millisecond):
-		case <-deadline:
-			t.Fatal("the parked poll: no answer within 10 s of advancing the clock")
+	parked := h.Clock().Pending()
+	for deadline := time.Now().Add(10 * time.Second); h.Clock().Pending() <= parked; runtime.Gosched() {
+		if time.Now().After(deadline) {
+			t.Fatal("the poll did not park on the node's clock within 10 s")
 		}
+	}
+	h.Clock().Advance(time.Second)
+	select {
+	case err := <-polled:
+		t.Fatalf("the parked poll answered (%v) with the node's clock a second short of its wait", err)
+	case <-time.After(100 * time.Millisecond): // a bounded wait is the assertion: nothing may answer here
+	}
+	h.Clock().Advance(time.Second)
+	select {
+	case err := <-polled:
+		if err != nil {
+			t.Fatalf("GET the operation with ?wait=2s: %v", err)
+		}
+		_ = poll.Body.Close()
+	case <-time.After(10 * time.Second):
+		t.Fatal("the parked poll: no answer within 10 s of the node's clock passing its wait")
 	}
 	if poll.StatusCode != http.StatusOK {
 		t.Errorf("GET the operation with ?wait=2s: answered %d, want 200 once the wait passed", poll.StatusCode)
@@ -120,9 +129,11 @@ func TestNodeServesTheAPI(t *testing.T) {
 	}
 	var audit apiv1.Page[apiv1.AuditRecord]
 	getJSON(t, addr, "/api/v1/audit", &audit)
-	refused := slices.IndexFunc(audit.Items, func(r apiv1.AuditRecord) bool { return r.ActorName == "admin" })
+	refused := slices.IndexFunc(audit.Items, func(r apiv1.AuditRecord) bool {
+		return r.Target.Kind == "operation" && r.Target.ID == uuid.UUID(op.ID).String() && strings.Contains(r.Outcome, string(apiv1.CodeNotCancellable))
+	})
 	if refused < 0 || audit.Items[refused].Node != nodeID {
-		t.Errorf("GET /api/v1/audit: %+v, want the cancel's refusal on node %s", audit.Items, nodeID)
+		t.Errorf("GET /api/v1/audit: %+v, want the cancel of operation %s refused not_cancellable, on node %s", audit.Items, uuid.UUID(op.ID).String(), nodeID)
 	}
 
 	if err := h.Node().Stop(t.Context()); err != nil {
@@ -191,7 +202,7 @@ func TestTheAPIHealthNamesAFailedStart(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
 		t.Fatalf("GET /api/v1/nodes after the failed Start: decode the answer: %v", err)
 	}
-	if resp.StatusCode != http.StatusServiceUnavailable || p.Code != apiv1.CodeStarting {
-		t.Errorf("GET /api/v1/nodes after the failed Start: %d %q, want %d %q", resp.StatusCode, p.Code, http.StatusServiceUnavailable, apiv1.CodeStarting)
+	if resp.StatusCode != http.StatusServiceUnavailable || p.Code != apiv1.CodeUnavailable || resp.Header.Get("Retry-After") != "" {
+		t.Errorf("GET /api/v1/nodes after the failed Start: %d %q Retry-After %q, want %d %q with none", resp.StatusCode, p.Code, resp.Header.Get("Retry-After"), http.StatusServiceUnavailable, apiv1.CodeUnavailable)
 	}
 }

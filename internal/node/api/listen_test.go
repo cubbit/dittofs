@@ -383,6 +383,25 @@ func TestStartingRefusesCalls(t *testing.T) {
 	}
 }
 
+// A node never ready since it started refuses every call a row does not
+// answer before ready as unavailable, with no Retry-After: its start failed
+// and does not run again, so a retry would loop.
+func TestNeverReadyRefusesCalls(t *testing.T) {
+	s := serve(t, as(entity.RoleViewer, false), func(d *api.Deps) {
+		d.Ready = func() string { return "not_ready" }
+		d.Served = func() bool { return false }
+	})
+	r := s.do(t, http.MethodGet, thing, "")
+	if p := r.problem(t); r.status != http.StatusServiceUnavailable || p.Code != apiv1.CodeUnavailable || p.Retryable || r.header.Get("Retry-After") != "" {
+		t.Errorf("GET %s on a node never ready: answered %d %s Retry-After %q, want 503 unavailable, not retryable, with no Retry-After", thing, r.status, r.body, r.header.Get("Retry-After"))
+	}
+	for _, path := range []string{"/api/v1/health", "/api/version", "/health/live"} {
+		if r := s.do(t, http.MethodGet, path, ""); r.status != http.StatusOK {
+			t.Errorf("GET %s on a node never ready: answered %d %s, want 200", path, r.status, r.body)
+		}
+	}
+}
+
 // A live node's socket at the path refuses a second node's start, and the
 // second's Stop leaves the first serving on it. The refused start leaves
 // neither of its TCP addresses bound.

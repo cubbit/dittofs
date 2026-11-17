@@ -189,6 +189,9 @@ func problemOf(err error) (apiv1.Problem, bool) {
 		p.Detail = "internal error"
 	case errors.As(err, &r):
 		p.Detail, p.Names = r.detail, r.names
+		// A refusal that carries a negative wait is final: no wait makes a
+		// retry answer otherwise.
+		p.Retryable = p.Retryable && r.wait >= 0
 	case errors.As(err, &f):
 		p.Field, p.Detail = f.field, f.detail
 	case errors.As(err, &running):
