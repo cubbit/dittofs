@@ -507,6 +507,17 @@ func TestTheDecodeRefusals(t *testing.T) {
 	}
 }
 
+// An error no row names is the fault, SYSTEM_ERR, an accepted reply with
+// nothing to say (RFC 21 section 11.5).
+func TestTheFaultIsSystemErr(t *testing.T) {
+	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
+	h, err := decode(t, s, call(progNFS, 3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply(t, s, h, status(s, errors.New("an error no row names")), golden(t, "accept-system-err"))
+}
+
 // Args begins past the verifier, which for a COMPOUND is its tag, wherever a
 // credential's length puts it.
 func TestArgsBeginAtTheTag(t *testing.T) {
