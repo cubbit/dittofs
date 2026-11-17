@@ -2,7 +2,6 @@ package api
 
 import (
 	"sync"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
@@ -11,8 +10,8 @@ import (
 const maxCalls = 64
 
 var (
-	errStarting = &refusal{code: apiv1.CodeStarting, detail: "the node is starting", wait: time.Second}
-	errBusy     = &refusal{code: apiv1.CodeUnavailable, detail: "the node runs as many API calls as it may", wait: time.Second}
+	errStarting = &refusal{code: apiv1.CodeStarting, detail: "the node is starting"}
+	errBusy     = &refusal{code: apiv1.CodeUnavailable, detail: "the node runs as many API calls as it may"}
 )
 
 // enter admits a call on rt into one of the 64 slots and returns what gives it back once.
