@@ -19,9 +19,9 @@ var (
 
 	// ErrOpenRefused is matched by every refusal Open itself makes at
 	// recovery: a range or a named predecessor's end that names no
-	// surviving record, a mark's lost synced tail or refused range, corrupt
-	// losses that would run past the open reserve, and a recovery that ends a
-	// segment. A retry can clear each of these. A record kind this journal
+	// surviving record, a mark's lost synced tail or refused range, and an
+	// emptying that cannot read, place or seal the copy of a segment the
+	// open ends. A retry can clear each of these. A record kind this journal
 	// cannot build, a verifying reconcile record or a hold it cannot feed,
 	// answers ErrNotImplemented instead, which is never a refusal of the
 	// open and never retried: a bare one fails the start as any error at open

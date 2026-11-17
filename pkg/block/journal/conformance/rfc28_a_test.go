@@ -481,8 +481,13 @@ func wantVerifiedThenReappended(t *testing.T, f *journaltest.Fixture, u unproven
 	}
 	check("after the open")
 
-	if got := entryAt(t, f, u.a.id, 0).Location; got != u.aLoc {
-		t.Fatalf("A moved from %+v to %+v; it verified on the device and was to stay in place", u.aLoc, got)
+	if got := entryAt(t, f, u.a.id, 0).Location; got == u.aLoc {
+		t.Fatalf("A still sits at %+v: its source was an ended segment, the emptying copies it out whole and unlinks the source", u.aLoc)
+	}
+	for _, s := range f.J.Inspect().Segments() {
+		if s.ID == u.aLoc.Segment {
+			t.Fatalf("the ended source segment %d is still among the journal's segments, want it unlinked by the emptying that copied A out", u.aLoc.Segment)
+		}
 	}
 	if got := entryAt(t, f, u.b.id, u.b.extent.Off).Location; got.Segment == u.bLoc.Segment {
 		t.Fatalf("B is still served from segment %d; it did not verify on the device and was to be re-appended", got.Segment)

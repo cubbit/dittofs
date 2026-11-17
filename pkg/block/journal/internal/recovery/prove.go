@@ -43,6 +43,10 @@ type proof struct {
 	// active row the continuation must seal. Zero when nothing re-appended
 	// or the copy failed; a failed target the fates name, ended whole.
 	ReappendTarget core.SegmentID
+
+	// ReappendedBytes is the payload bytes the re-append phase wrote back,
+	// the figure the served journal's own syncs count beside theirs.
+	ReappendedBytes int64
 }
 
 // markerSync is the marker flow's answer for the one sync it made for a

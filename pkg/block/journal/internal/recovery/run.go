@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
@@ -75,6 +76,24 @@ type Deps struct {
 	// which the emptying reuses for every segment it retires. Nil is no
 	// emptying, the same refusal as Liveness's.
 	Retire func(id core.SegmentID, reason segment.Reason) (segment.Retirement, error)
+
+	// DrawReserve hands back one ready spare of the pool's repack reserve,
+	// the one class an open's copies draw on: the journal the open built
+	// answers it with its pool's own take of that class, so the emptying
+	// draws on the pool the assembled journal runs rather than a list
+	// recovery keeps for itself. Its error — the pool's refusal when no
+	// spare of the class is ready and none can be made, or the wait's word
+	// for why the refill stopped — is the open's when it answers a draw. Nil
+	// is no emptying, the same refusal as Liveness's.
+	DrawReserve func() (core.SegmentID, error)
+
+	// EndDeferral ends one deferred loss whose record the emptying copied
+	// into its target: the durability layer the open built holds the
+	// registry entry — a loss whose record the copy that retires its
+	// segment owes — and gives it up here, once the copy holds the record
+	// durable. Nil ends nothing: the registry keeps the entry and the next
+	// open re-reads it, safe.
+	EndDeferral func(seg core.SegmentID, l durability.Loss) bool
 
 	// Dir is the journal's own directory, the one the per-directory
 	// deferred-loss registry is keyed by: the retire step reads it the way
@@ -157,6 +176,12 @@ type Reporting struct {
 	RejectedSegments int
 	TornTails        int
 	ScanResyncs      int
+
+	// ReappendedBytes is the payload bytes the re-append phase wrote back
+	// into its sealed target: the records a failed sync left unproven on
+	// the device, copied out of whatever the tail's proof read whole. The
+	// running journal's syncs count their own beside them.
+	ReappendedBytes int64
 }
 
 // Reporting collects the phases' counting into the figures the opened
@@ -170,6 +195,7 @@ func (st State) Reporting() Reporting {
 		RejectedSegments: st.Attached.Rejected,
 		TornTails:        st.Tails.TornTails,
 		ScanResyncs:      st.Rebuilt.ScanResyncs,
+		ReappendedBytes:  st.Proof.ReappendedBytes,
 	}
 }
 

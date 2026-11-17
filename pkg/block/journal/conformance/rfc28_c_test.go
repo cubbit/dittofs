@@ -461,8 +461,13 @@ func TestRFC28C_TornTailCutOff(t *testing.T) {
 	if got := f.J.Stats().Counters.TornTails; got != 1 {
 		t.Fatalf("TornTails = %d after a torn record, want 1", got)
 	}
-	if !ownedSegment(t, f, xSeg).Sealed {
-		t.Fatalf("the torn segment %d was not sealed", xSeg)
+	// The cut leaves the segment sealed with nothing held — the write it
+	// ended on was the only record it carried — so the open's retire step
+	// unlinks it right there: the journal's segments answer no row for it.
+	for _, s := range f.J.Inspect().Segments() {
+		if s.ID == xSeg {
+			t.Fatalf("the torn segment %d is still among the journal's segments, want the sealed empty cut retired at the open", xSeg)
+		}
 	}
 	wantExtentMissing(t, f.Share(0), id, x.extent)
 
@@ -899,8 +904,13 @@ func TestRFC28C_ASealMarkerOnlyTheCacheHolds(t *testing.T) {
 	if got := f.Seam.CallsFor(kit.OpReadDirect, name); got < 1 {
 		t.Fatalf("the reopen read %s past the cache %d times, want at least once: a seal marker no successor names is proven on the device", name, got)
 	}
-	if ownedSegment(t, f, seg).Sealed {
-		t.Fatalf("segment %d is sealed after a reopen whose marker did not verify on the device; a segment is not taken as sealed until its own seal of it is durable", seg)
+	// The unsealed source ends: the proof re-answers its fate once the
+	// marker fails on the device, the emptying copies its surviving record
+	// out and unlinks it, so the journal's segments answer no row for it.
+	for _, s := range f.J.Inspect().Segments() {
+		if s.ID == seg {
+			t.Fatalf("segment %d is still among the journal's segments after a reopen whose marker did not verify on the device; the unsealed ended source is emptied and unlinked", seg)
+		}
 	}
 	if bytes.Contains(durable(t, f, name), []byte("DJS1")) {
 		t.Fatalf("the reopen made the marker of segment %d durable through a sync that wrote nothing", seg)

@@ -36,6 +36,7 @@ func (j *Journal) Stats() Stats {
 	s.RejectedSegments += r.RejectedSegments
 	s.Counters.TornTails += uint64(r.TornTails)
 	s.Counters.ScanResyncs += uint64(r.ScanResyncs)
+	s.Counters.SyncReappendedBytes += uint64(r.ReappendedBytes)
 	return s
 }
 

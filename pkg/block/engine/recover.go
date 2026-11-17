@@ -500,17 +500,9 @@ func unsuitableCondition(dir string, id journal.JournalID, cause error) *Conditi
 
 // openRefusedCondition is journal_open_refused for the device dir, whose
 // open the journal itself refused with cause: a recovery rule the open
-// cannot satisfy, retried with the open. A refusal for corrupt losses past
-// the open reserve names the losses and the setting that sizes the reserve,
-// the operator's remedy, read from the error's value.
+// cannot satisfy, retried with the open.
 func openRefusedCondition(dir string, id journal.JournalID, cause error) *Condition {
 	detail := "the journal refuses its own open at recovery; "
-
-	var past *journal.LostPastReserveError
-	if errors.As(cause, &past) {
-		detail = fmt.Sprintf("the open would defer %d corrupt losses past its reserve, the first against segment %d; "+
-			"raise journal.headroom_records to hold them; ", past.N, past.Seg)
-	}
 
 	return &Condition{
 		Name: conditionJournalOpenRefused,

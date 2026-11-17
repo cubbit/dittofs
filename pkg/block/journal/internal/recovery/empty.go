@@ -1,11 +1,19 @@
 package recovery
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"math"
+	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
 
@@ -24,7 +32,7 @@ import (
 // ran under. The two-step shape of the list's one entry — retiring first,
 // emptying the ended segments after, each retirement refilling the reserve
 // before the next ended segment's work draws a spare from it — lives in this
-// file: the retire step below runs first, and the emptying step the list's
+// file: the retire step runs first, and the emptying step the list's
 // span also names joins it here.
 func Emptying(ctx context.Context, deps Deps, st *State, expect core.JournalID, floor core.Version, marks []core.SyncMark) (err error) {
 	if err := ctx.Err(); err != nil {
@@ -33,7 +41,11 @@ func Emptying(ctx context.Context, deps Deps, st *State, expect core.JournalID, 
 	ctx, end := startSpan(ctx, deps, core.SpanOpenEmptying)
 	defer func() { end(err) }()
 	rd := newReader(ctx, deps.FS, deps.Clock, deps.Log)
-	return runRetire(ctx, deps, rd, st, expect, floor, marks)
+	empty := &emptying{deps: deps, rd: rd, st: st, identity: expect, marks: marks}
+	if err := runRetire(ctx, deps, rd, st, expect, floor, marks, empty); err != nil {
+		return err
+	}
+	return runEmptying(ctx, deps, rd, st, expect, floor, marks, empty)
 }
 
 // runRetire is the emptying's first step: every attached segment the
@@ -47,7 +59,7 @@ func Emptying(ctx context.Context, deps Deps, st *State, expect core.JournalID, 
 // corrupted, and the mask its loss record makes is on disk before the
 // segment's unlink takes the record with it. Nothing is asserted of that
 // order here: the caller hands the state the loss pass already gated on.
-func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, marks []core.SyncMark) error {
+func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, _ core.Version, _ []core.SyncMark, empty *emptying) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -59,9 +71,9 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 	}
 	// The deferred-loss registry, read the way the open reads the failed
 	// list: a segment the registry answers as holding a deferred loss's
-	// dropped record is never retired, for its copy has not been made, and
-	// retiring it would take the record the next open's re-detection would
-	// need (RFC 28 §3.3).
+	// dropped record is never retired here, for its copy has not been made,
+	// and retiring it would take the record the copy the deferral owes its
+	// own record to would read (RFC 28 §3.3).
 	deferred, err := durability.DeferredFor(deps.Dir, expect)
 	if err != nil {
 		return err
@@ -97,14 +109,17 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 			continue // the tracker's answer is the whole candidate test: no superset beside it
 		}
 		if len(deferred[row.ID]) > 0 {
-			// decision: the registry is structurally empty at an open whose
-			// loss records are already durable — the loss pass refuses the
-			// past-the-reserve drops it would once have deferred before
-			// anything appends, so no entry exists by the time this step
-			// reads the registry. The guard reads the real registry anyway:
-			// the emptying that writes each deferred record into its copy
-			// lifts the holds by ending its deferrals, and its withdrawal
-			// needs no new wiring here.
+			// decision: a segment the deferred-loss registry names holds a
+			// record the copy that retires the segment owes the deferral a
+			// loss record of, so no retirement may take the record here
+			// before that copy exists. The registry is live in this process —
+			// the loss pass defers the corrupt drops the open reserve cannot
+			// hold, and a running journal's own Lose defers on its headroom
+			// — and the guard reads it the way the open reads the failed
+			// list: an ended holder travels on to the emptying step, which
+			// writes the deferred record into its copy and ends the
+			// deferral; a sealed holder simply stands until a later open's
+			// copy or the deferral's own resolution retires it.
 			continue
 		}
 		// The doorstep of the retirement's writes: a cancellation that
@@ -113,9 +128,737 @@ func runRetire(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := deps.Retire(row.ID, reason); err != nil {
+		ret, err := deps.Retire(row.ID, reason)
+		if err != nil {
+			return err
+		}
+		if ret.Durable {
+			// A retirement the directory sync proved durable frees the takes
+			// naming the retired segment, the same relief the emptying's own
+			// unlinks give: the emptying step below draws them before the
+			// pool's reserve (R53).
+			empty.freed = append(empty.freed, empty.freedTakes(row.ID)...)
+		}
+	}
+	return nil
+}
+
+// runEmptying is the emptying's second step: each segment the open ended —
+// the rows the assembled ledger answers Ended — is copied out and unlinked,
+// one at a time. The order the two steps run in is the whole contract: the
+// loss records the pass above made durable mask what the crash corrupted,
+// and only past them may a segment's file go, for a segment may hold the
+// only copy of a record an older one would otherwise serve over.
+//
+// decision: a segment recovery ends is emptied whole at this open, never
+// re-read as a live row: an ended segment takes no append and no seal, so a
+// journal that kept it would count its cap against every limit until some
+// later open re-decided its fate on the same bytes. Copying its survivors
+// out and unlinking it here is what makes that one open's word final.
+// Withdrawn if an ended segment is ever ruled to stand past the open that
+// ended it.
+func runEmptying(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, _ core.Version, _ []core.SyncMark, empty *emptying) error {
+	var ended []core.SegmentID
+	for _, row := range st.Assembled.Set.Snapshot() {
+		if row.State == segment.Ended {
+			ended = append(ended, row.ID) // rows ascend, so ended does too
+		}
+	}
+	if len(ended) == 0 {
+		return nil
+	}
+	if deps.DrawReserve == nil {
+		return errors.New("recovery: the emptying's deps carry no reserve draw: the open hands the pool's own take of the repack reserve")
+	}
+	// The deferred-loss registry, read the way the retire step read it: each
+	// entry against a segment the open ends becomes the loss record the copy
+	// below writes and this step ends. The read is a snapshot, exactly as
+	// the retire step's is; nothing defers between the two, for no Lose of
+	// the journal the open built runs inside the open.
+	deferred, err := durability.DeferredFor(deps.Dir, expect)
+	if err != nil {
+		return err
+	}
+
+	for _, id := range ended {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := empty.oneSegment(ctx, id, deferred[id]); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// emptying carries the state one run of the emptying step shares across the
+// ended segments it walks: the spares the durable unlinks freed — the takes
+// naming a predecessor the emptying unlinked, which the spares phase's own
+// verdict held back — are drawn front-first, before the pool's reserve, so a
+// freed take is the first spare the next ended segment's copy takes.
+type emptying struct {
+	deps     Deps
+	rd       *reader
+	st       *State
+	identity core.JournalID
+	marks    []core.SyncMark
+
+	// freed holds the takes a durable unlink released, drawn front-first for
+	// the copies that follow. A freed take is the emptying's own spare alone,
+	// exactly the shape a freed successor would reach the running pool
+	// through once the pool's open-time wiring exists; until then the pool
+	// learns nothing of it, as it learns nothing of the spares the spares
+	// phase adopted.
+	freed []core.SegmentID
+}
+
+// carriedCopy is one record travelling to the copy target: the input the
+// copier takes, the repoint the record's served pieces need once the copy
+// landed, and the registration an aside or loss record carries — its copy
+// re-registered at the placement the copier answered, exactly as the
+// journal's own carry places one. reg is zero for a content record; file
+// is the record's own file across all three shapes.
+type carriedCopy struct {
+	in      copyInput
+	file    core.FileID
+	repoint bool
+	reg     reclaim.Rec
+}
+
+// lossWrite is one loss record the emptying of one ended segment owes: the
+// loss itself, the record's encoded bytes and its drawn sequence number
+// where the copy writes it, durable alone where a record on disk already
+// names it, and the registration the copy carries. A deferred entry — one
+// the registry named against the segment — ends its deferral at finish; a
+// read-found loss is no deferral's to end.
+type lossWrite struct {
+	l        durability.Loss
+	at       []byte
+	seq      core.Seq
+	rec      reclaim.Rec
+	durable  bool
+	deferral bool
+}
+
+// oneSegment copies the ended segment id out and unlinks it: the records
+// repack would carry forward — each payload verified whole before it is
+// copied, numbers kept, never merged — through the copier into one sealed
+// spare; the loss record each deferred loss against the segment is owed; the
+// loss record of each record that fails only on this read with no other
+// verifying copy; then the retirement's unlink with the directory sync it
+// carries. A record whose copy already verifies in a segment the open
+// neither ends nor saw fail is skipped and its served pieces repointed
+// there: that segment stays held. A second refusal from the copier, or no
+// spare, fails the open with that error, leaving the segment as it stands
+// (R53).
+func (e *emptying) oneSegment(ctx context.Context, id core.SegmentID, deferred []durability.Loss) error {
+	st, deps := e.st, e.deps
+	// The segment's own walk, read once more: the rebuild's scan keeps what
+	// its later phases read, and the per-record conversions the feed charged
+	// are not among them, so the emptying walks the ended segment once and
+	// reads each payload whole — the one read-back this open makes of it,
+	// never repeated once the segment is gone.
+	sc, serr := scanSegment(e.rd, e.identity, SegmentInfo{ID: id})
+	if serr != nil && !isContextErr(serr) {
+		// Cannot happen: the same walk read the segment at the rebuild, but
+		// a reread the bound did not clear refuses the open on its ranges
+		// like any read the pass makes — never judged on bytes it did not
+		// return.
+		if ranges := e.rd.Unreadable(); len(ranges) > 0 {
+			return &core.UnreadableRangesError{Ranges: ranges}
+		}
+		return serr
+	}
+	if serr != nil {
+		return serr
+	}
+
+	// The moves the served pieces need: one per carried payload to the
+	// placement the copier answers, and one per skipped record to its
+	// standing copy.
+	type moveAt struct {
+		file core.FileID
+		from index.RecordAt
+		to   index.RecordAt
+	}
+	var moves []moveAt
+	var losses []lossWrite
+
+	var ins []carriedCopy
+	// The content records: a payload kind whose placement still serves a
+	// piece, read whole and verified; a record whose copy verifies in a
+	// standing segment is not copied but its served pieces move there.
+	for _, rec := range sc.Records {
+		if rec.Kind != index.RecWrite && rec.Kind != index.RecFill {
+			continue // header-only: the registrations below carry those, never payloads
+		}
+		at := index.RecordAt{Segment: id, Offset: rec.At}
+		if !st.Rebuilt.Index.Names(rec.File, at) {
+			// Repack carries nothing the index answers for from this
+			// placement — no held piece and no retained one, the limit's
+			// own kept extents included — so the record answers droppable by
+			// every rule the index keeps, and it goes with the segment.
+			continue
+		}
+		if other, found := e.standingCopy(rec, id); found {
+			// The copy already verifies in a segment the open neither ends
+			// nor saw fail, so the bytes live on there: nothing is copied and
+			// the served pieces move to the placement that stays.
+			moves = append(moves, moveAt{file: rec.File, from: at, to: other})
+			continue
+		}
+		bytes, synced, refused := e.readPayload(id, rec, sc)
+		if refused != nil {
+			return refused
+		}
+		if bytes == nil {
+			// The record failed only on this read — its header verified at
+			// the open's walk, and the whole the copy leg reads does not —
+			// with no other verifying copy: its loss record rides the copy,
+			// and the pieces it served read lost, never older bytes and
+			// never a placement the unlink takes away.
+			//
+			// decision: the record's served extents leave the index here,
+			// the same cut the data path's corrupt drop makes, for the
+			// segment is about to go and a served piece pointing into an
+			// unlinked file answers a read with the file's absence, not the
+			// loss the mask records. The cut errs the strict way for a
+			// record no sync proved: it masks the extent caller-side too,
+			// which the reveal of an unsynced read-found loss would need
+			// its own rule to unmask. The generation, the counters and the
+			// event are the next open's found record's own, published when
+			// its kinds pass places it; this open's ring holds no event for
+			// a loss nobody could have read. Withdrawn if a ruled loss record
+			// of the running window must raise them at the open that found
+			// the rot.
+			if _, _, lerr := st.Rebuilt.Index.LoseSuperseded(rec.File,
+				core.Extent{Off: rec.Off, Len: rec.Len}, rec.Numbers.Version, rec.Numbers.Seq); lerr != nil {
+				return lerr
+			}
+			lw, lerr := e.newLossWrite(durability.Loss{
+				Share:   rec.Tag,
+				File:    rec.File,
+				Extent:  core.Extent{Off: rec.Off, Len: rec.Len},
+				Version: rec.Numbers.Version,
+				Seq:     rec.Numbers.Seq,
+				Reason:  core.LossCorrupt,
+				Synced:  synced,
+				AtOpen:  true,
+				// The record's own segment carried the loss's bytes in
+				// transport, and the read-found loss names no deferral the
+				// holder would have to stand for.
+				Seg: id,
+			})
+			if lerr != nil {
+				return lerr
+			}
+			losses = append(losses, lw)
+			continue
+		}
+		ins = append(ins, carriedCopy{in: copyInput{
+			Bytes: bytes, Segment: id, At: int64(rec.At),
+			Seq: rec.Numbers.Seq, Version: rec.Numbers.Version,
+		}, file: rec.File, repoint: true})
+	}
+	// The aside records the tracker registered live: judged by the tracker's
+	// own drop test, a record that answers droppable is dead weight the
+	// retirement drops, and a copy of the rest registers at the placement
+	// the copier answers; the forget snapshot rides with its record.
+	for _, rec := range asideRecs(st) {
+		if rec.Seg != id {
+			continue
+		}
+		if deps.Liveness.Droppable(rec) {
+			continue // a loss, a release or a marker the registry and the index already answer dead
+		}
+		if e.asideCopyVerifies(rec, id) {
+			continue // another copy verifies in a standing segment: nothing is carried
+		}
+		bytes, refused := e.readAside(rec)
+		if refused != nil {
+			return refused
+		}
+		// decision: an aside record whose reread does not verify fails the
+		// open rather than trading for a loss record — a loss names a
+		// dropped record and never a marker, a forget or a release — and the
+		// segment stands for the next open to re-read. Overturned by a ruled
+		// loss record for a rotten removal record, which the leg above would
+		// then write in place of the refusal.
+		if bytes == nil {
+			return fmt.Errorf("the record of seq %d at %d of segment %d does not decode or verify on the emptying's read", rec.Seq, rec.Loc.Off, id)
+		}
+		ins = append(ins, carriedCopy{in: copyInput{
+			Bytes: bytes, Segment: id, At: rec.Loc.Off,
+			Seq: rec.Seq, Version: rec.Pair.Version,
+		}, file: rec.File, reg: rec})
+	}
+	// The deferred losses the copy leg owes: each becomes the loss record
+	// its deferral promised, written into the copy and ending its deferral
+	// once durable; an entry a record on disk already names ends its
+	// deferral alone.
+	for _, l := range deferred {
+		if e.lossOnDisk(l) {
+			losses = append(losses, lossWrite{l: l, durable: true, deferral: true})
+			continue
+		}
+		lw, lerr := e.newLossWrite(l)
+		if lerr != nil {
+			return lerr
+		}
+		losses = append(losses, e.deferralOf(lw))
+	}
+
+	// One spare for the whole segment: the copy is one batch or none, so a
+	// half-copied segment never stands. The synthesized loss records ride
+	// the same target — the copier's spare, never the headroom.
+	//
+	// ponytail: in a copy a loss record takes its real bytes, 184 — a
+	// 96-byte header, a 16-byte payload and a 72-byte footer entry — against
+	// at least 168 for the header-only record it replaces, so a segment of
+	// nothing but losses needs a tenth more than one segment's cap of
+	// repack reserve. Upgrade to sizing the reserve at 11/10 of a cap when a
+	// copy heavy in loss records is seen in the field.
+	for i := range losses {
+		if losses[i].at == nil {
+			continue
+		}
+		ins = append(ins, carriedCopy{in: copyInput{
+			Bytes: losses[i].at, Segment: id, At: 0,
+			Seq: losses[i].seq, Version: losses[i].l.Version,
+		}, file: losses[i].l.File, reg: losses[i].rec})
+	}
+
+	if len(ins) == 0 {
+		// Nothing is carried: the segment holds nothing the index and the
+		// tracker answer live, so the unlink takes dead weight and the
+		// deferrals below end on the records already durable.
+		return e.finish(ctx, id, 0, losses)
+	}
+
+	c := &copier{deps: deps, identity: e.identity, draw: e.draw}
+	natural := make([]copyInput, len(ins))
+	for i := range ins {
+		natural[i] = ins[i].in
+	}
+	target, at, err := c.copy(ctx, natural)
+	if err != nil {
+		return err
+	}
+	// The sealed target, sealed in the ledger the continuation runs: the
+	// emptying runs past the open's core build, so the row the pool's take
+	// or a freed take drew Active is sealed here, the same shape the open's
+	// own continuation gives the re-append's target.
+	if err := st.Assembled.Set.Seal(target, true); err != nil {
+		return err
+	}
+	// A draw that failed before the one that landed left a row the draw
+	// took and a file of half-written records: the row ends, for no stream
+	// may append into bytes no marker speaks for, and the next open re-reads
+	// the file and settles it.
+	for _, failed := range c.taken {
+		if failed == target {
+			continue
+		}
+		if err := st.Assembled.Set.End(failed); err != nil {
+			return err
+		}
+		endSegment(st, failed)
+	}
+	// The repoints: the carried payloads move to the placements the copier
+	// answered, and the skipped ones have moved to their standing copies.
+	for i := range ins {
+		if !ins[i].repoint {
+			continue
+		}
+		moves = append(moves, moveAt{
+			file: ins[i].file,
+			from: index.RecordAt{Segment: id, Offset: uint32(ins[i].in.At)},
+			to:   index.RecordAt{Segment: target, Offset: uint32(at[i])},
+		})
+	}
+	for _, mv := range moves {
+		if _, _, rerr := st.Rebuilt.Index.RepointRecord(mv.file, mv.from, mv.to); rerr != nil {
+			return fmt.Errorf("repointing the copy of the record of file %v from segment %d: %w", mv.file, id, rerr)
+		}
+	}
+	// The carried registrations, notes and loss records: each copy registers
+	// at the placement the copier answered — the journal's own carry's
+	// shape, the forget snapshot riding with its record — and the index
+	// notes the extents the copies cover, so none is ever on disk unnoted.
+	for i := range ins {
+		rec := ins[i].reg
+		if rec == (reclaim.Rec{}) {
+			continue
+		}
+		cp := rec
+		cp.Seg = target
+		cp.Loc = segment.Location{Segment: target, Off: at[i], Len: int64(len(ins[i].in.Bytes))}
+		if rec.Kind == format.KindForget {
+			deps.Liveness.RegisterForget(cp, forgetSnapshot(st, rec))
+		} else {
+			deps.Liveness.Register(cp)
+		}
+		if rec.File != (core.FileID{}) {
+			if nerr := st.Rebuilt.Index.NotePlaced(rec.Tag, rec.File, target, coveredRec(rec), rec.Pair); nerr != nil {
+				return nerr
+			}
+		}
+	}
+	return e.finish(ctx, id, target, losses)
+}
+
+// finish completes one ended segment's emptying: the deferrals end — each one
+// whose record rode the copy, sealed and synced where it did, and each one a
+// record on disk already named — and the retirement itself unlinks the
+// segment, its directory sync making the removal durable. A durable unlink
+// frees the takes naming the segment, which the next ended segment's copy
+// draws on first (R53). target names the copy that landed, zero when nothing
+// was carried.
+func (e *emptying) finish(ctx context.Context, id core.SegmentID, target core.SegmentID, losses []lossWrite) error {
+	for _, lo := range losses {
+		if !lo.deferral {
+			continue // a read-found loss is no deferral's to end: the record rides the copy
+		}
+		if e.deps.EndDeferral == nil {
+			if lo.durable {
+				// A deferral whose record an earlier open's copy already
+				// made durable ends through nothing this open wrote: the
+				// entry stands for the next open's own end, itself safe.
+				continue
+			}
+			return errors.New("recovery: the emptying's deps carry no deferral end: the open hands the durability layer's own")
+		}
+		e.deps.EndDeferral(id, lo.l)
+	}
+	// The retirement's doorstep: a cancellation that already landed leaves
+	// the segment standing with its copy durable — the next open re-reads
+	// the same bytes and settles them the same way — but no unlink begins
+	// past it.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ret, err := e.deps.Retire(id, segment.ReasonEnded)
+	if err != nil {
+		return err
+	}
+	if !ret.Durable {
+		// decision: a removal the directory sync never proved durable frees
+		// no take, for a power cut may resurrect the predecessor and its
+		// naming header is the evidence the next open's classing reasons
+		// from. The retirement itself is done — the retirer's own word, with
+		// its durable flag — and the next open's scan settles what the
+		// failed sync left.
+		return nil
+	}
+	e.freed = append(e.freed, e.freedTakes(id)...)
+	return nil
+}
+
+// draw hands the copier one spare the copy may take: a take a durable unlink
+// freed front-first, else the pool's own repack reserve through the closure
+// the open wired.
+func (e *emptying) draw() (core.SegmentID, error) {
+	if len(e.freed) > 0 {
+		id := e.freed[0]
+		e.freed = e.freed[1:]
+		return id, nil
+	}
+	return e.deps.DrawReserve()
+}
+
+// freedTakes answers the takes a durable unlink of predecessor freed, in id
+// order: each withheld take — one the spares phase held back over the verdict
+// its marks raise computed, its header the one that names the predecessor —
+// that still answers the record-less test passes as a spare again, its file
+// cap-sized with no verifying record and no seal, and no mark naming it
+// (R53's relief; the verdict the raise computed decides which takes were
+// held). The take is adopted as the emptying's own spare, copies overwriting
+// the header, the trailer and the record slots its records would take, so
+// none of the old life's bytes outlives a copy into it.
+func (e *emptying) freedTakes(pred core.SegmentID) []core.SegmentID {
+	st := e.st
+	marked := make(map[core.SegmentID]bool, len(e.marks))
+	for _, m := range e.marks {
+		marked[core.SegmentID(m.Segment)] = true
+	}
+	var out []core.SegmentID
+	for _, seg := range st.Attached.Own {
+		if seg.Header.Predecessor != pred || seg.Header.Predecessor == seg.ID {
+			continue
+		}
+		id := seg.ID
+		if marked[id] {
+			continue // a mark names it: the marks steps' own, never a spare's
+		}
+		if !slices.Contains(st.Spares.Held, id) {
+			continue // the spares phase re-adopted it, or never withheld it for this predecessor
+		}
+		sc, ok := markScan(st, id)
+		if !ok || sc.Sealed || sc.RecordsEnd != format.SegmentHeaderSize || sc.Size != e.deps.SegmentCap {
+			continue // not the record-less take the spare test answers
+		}
+		out = append(out, id)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// standingCopy answers the placement a verifying copy of rec already holds in
+// a segment the open neither ends nor saw fail: its own Ended rows are
+// excluded — each is emptied or was, and its records carry through its own
+// leg — and a failed window's whole standing one too, for its bytes are the
+// device's own word nothing proved. Such a segment stays held.
+func (e *emptying) standingCopy(rec index.Record, id core.SegmentID) (index.RecordAt, bool) {
+	scans := slices.Clone(e.st.Rebuilt.Scans)
+	slices.SortFunc(scans, func(a, b segmentScan) int { return cmp.Compare(a.ID, b.ID) })
+	for i := range scans {
+		sc := &scans[i]
+		if sc.ID == id {
+			continue // the ended segment's own copy is no skip: it goes with the segment
+		}
+		state, err := e.st.Assembled.Set.State(sc.ID)
+		if err != nil || state != segment.Active && state != segment.Sealed {
+			// Not in the set, or a row the open ends: the bytes are nobody's
+			// to rely on. A sealed row or an active one stands.
+			continue
+		}
+		for _, other := range sc.Records {
+			if other.Numbers == rec.Numbers && other.File == rec.File && other.Kind == rec.Kind &&
+				other.Off == rec.Off && other.Len == rec.Len {
+				return index.RecordAt{Segment: sc.ID, Offset: other.At}, true
+			}
+		}
+	}
+	return index.RecordAt{}, false
+}
+
+// asideCopyVerifies answers whether a copy of the aside record rec verifies
+// in a segment the open neither ends nor saw fail, the standing test
+// standingCopy runs for content records.
+func (e *emptying) asideCopyVerifies(rec reclaim.Rec, id core.SegmentID) bool {
+	for i := range e.st.Rebuilt.Scans {
+		sc := &e.st.Rebuilt.Scans[i]
+		if sc.ID == id {
+			continue
+		}
+		state, err := e.st.Assembled.Set.State(sc.ID)
+		if err != nil || state != segment.Active && state != segment.Sealed {
+			continue
+		}
+		for _, a := range sc.Aside {
+			if a.Header.Kind == rec.Kind && a.Header.Seq == rec.Seq &&
+				a.Header.File == rec.File && a.Header.Extent == rec.Ext {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// readPayload reads the payload record rec of segment id whole — its header
+// and the body its header sizes — through the open's reader, answering the
+// bytes a verifying read kept and whether a sync the header names covered
+// the record. A read no bounded attempt completed refuses the open on the
+// ranges the reader collected. A record whose bytes do not decode or verify
+// answers nil with a nil error: the record failed only on this read, the
+// caller's loss leg owns it.
+func (e *emptying) readPayload(id core.SegmentID, rec index.Record, sc segmentScan) (bytes []byte, synced bool, refused error) {
+	b, h, rot, rerr := readRecordWhole(e.rd, e.identity, id, int64(rec.At))
+	if rerr != nil {
+		return nil, false, rerr
+	}
+	if rot {
+		// The proof the record was synced: the header's own synced-through
+		// covering the record's whole extent is the corruption leg's synced
+		// flag, the classing's own rule for a drop a sync covered.
+		return nil, false, nil
+	}
+	end := h.Offset + h.Size()
+	return b, h.SyncedThrough >= end, nil
+}
+
+// readAside reads the aside record rec whole at the placement its
+// registration names. A read no bounded attempt completed refuses the open;
+// a record whose bytes do not decode or verify answers nil with a nil error,
+// the caller's refusal owns it.
+func (e *emptying) readAside(rec reclaim.Rec) (bytes []byte, refused error) {
+	b, _, rot, rerr := readRecordWhole(e.rd, e.identity, rec.Loc.Segment, rec.Loc.Off)
+	if rerr != nil {
+		return nil, rerr
+	}
+	if rot {
+		return nil, nil
+	}
+	return b, nil
+}
+
+// readRecordWhole reads the record at off of segment id whole, through the
+// open's bound: its header, decoded and judged against the placement, then
+// the body its header sizes, verified. rot reports a record whose bytes do
+// not decode or verify — a read that returned, bytes nobody may trust. A
+// read no bounded attempt completed answers the open's refusal on the ranges
+// the reader collected.
+func readRecordWhole(rd *reader, identity core.JournalID, id core.SegmentID, off int64) (b []byte, h format.RecordHeader, rot bool, refused error) {
+	name := format.SegmentName(id)
+	hdr := make([]byte, format.RecordHeaderSize)
+	n, rerr := rd.ReadAt(name, hdr, off)
+	if rerr != nil && !errors.Is(rerr, io.EOF) {
+		return nil, h, false, unreadRefusal(rd, rerr)
+	}
+	if int64(n) < format.RecordHeaderSize {
+		return nil, h, true, nil // the file ends short of a header the walk once verified: a rot on this read
+	}
+	h, derr := format.DecodeRecordHeader(hdr[:n], identity, id, off)
+	if derr != nil {
+		return nil, h, true, nil
+	}
+	full := make([]byte, format.RecordHeaderSize+int64(h.BodySize()))
+	fn, rerr := rd.ReadAt(name, full, off)
+	if rerr != nil && !errors.Is(rerr, io.EOF) {
+		return nil, h, false, unreadRefusal(rd, rerr)
+	}
+	if int64(fn) < format.RecordHeaderSize+int64(h.BodySize()) {
+		return nil, h, true, nil // short of the body the header sizes: the same rot
+	}
+	if _, verr := format.VerifyRecordBody(full[format.RecordHeaderSize:], identity, h); verr != nil {
+		return nil, h, true, nil
+	}
+	return full, h, false, nil
+}
+
+// newLossWrite builds one loss record's encoded bytes for l, drawing its own
+// fresh sequence number — a loss record this open never numbered — and the
+// registration the copy carries, keyed where the copy lands by the caller.
+// The record is transported as bytes through the copier, its header carried
+// at the segment it defers against so the copier's placement check verifies
+// it.
+func (e *emptying) newLossWrite(l durability.Loss) (lossWrite, error) {
+	seq, err := e.st.Rebuilt.Counters.NextSeq()
+	if err != nil {
+		return lossWrite{}, fmt.Errorf("numbering the loss record of the dropped record %d: %w", l.Seq, err)
+	}
+	h := format.RecordHeader{
+		Kind:    format.KindLoss,
+		File:    l.File,
+		Extent:  l.Extent,
+		Seq:     seq,
+		Version: l.Version,
+		Tag:     l.Share,
+		Segment: l.Seg,
+		Offset:  0,
+	}
+	body := format.RecordBody{Loss: format.Loss{
+		Dropped:   l.Seq,
+		Synced:    l.Synced,
+		Offloaded: l.Offloaded,
+		Reason:    lossReasonOf(l.Reason),
+	}}
+	at := format.AppendRecord(nil, e.identity, h, body)
+	// The registration the copy carries, mirrors what the kinds pass builds
+	// for a loss record it reads back: the copy registers live at the
+	// placement it lands.
+	reg := reclaim.Rec{
+		Kind:       format.KindLoss,
+		File:       l.File,
+		Seg:        l.Seg,
+		Ext:        l.Extent,
+		Pair:       index.Numbers{Version: l.Version, Seq: seq},
+		Seq:        seq,
+		Named:      l.Seq,
+		Tag:        l.Share,
+		Synced:     l.Synced,
+		Superseded: l.Reason == core.LossSuperseded,
+		Loc:        segment.Location{Segment: l.Seg, Off: 0, Len: int64(len(at))},
+	}
+	return lossWrite{l: l, at: at, seq: seq, rec: reg}, nil
+}
+
+// deferralOf marks one loss write as the record a deferred entry owes, so
+// the deferral ends once the copy holds it durable.
+func (e *emptying) deferralOf(lw lossWrite) lossWrite {
+	lw.deferral = true
+	return lw
+}
+
+// lossOnDisk answers whether a loss record naming the loss l already
+// verifies on disk: the aside records the walks read keep every attached one
+// with its body, so an open that crashed between the copy and the deferral's
+// end finds the record the copy already landed and ends the deferral without
+// a second record.
+func (e *emptying) lossOnDisk(l durability.Loss) bool {
+	for i := range e.st.Rebuilt.Scans {
+		for _, a := range e.st.Rebuilt.Scans[i].Aside {
+			if a.Header.Kind != format.KindLoss ||
+				a.Body.Loss.Dropped != l.Seq || a.Header.Extent != l.Extent {
+				continue
+			}
+			// The read-found case: a record named on disk by reason stands
+			// for the same loss over the same extent whatever its reason's
+			// number is, for a piece is taken once by (seq, extent).
+			return true
+		}
+	}
+	return false
+}
+
+// lossReasonOf maps a loss reason to the number its loss record carries. It
+// panics on a reason that names none, which is a caller bug: the layer that
+// owns the registry refused one at Lose already.
+func lossReasonOf(r core.LossReason) format.LossReason {
+	switch r {
+	case core.LossCorrupt:
+		return format.LossCorrupt
+	case core.LossStale:
+		return format.LossStale
+	case core.LossFailedWindow:
+		return format.LossFailedSync
+	case core.LossSuperseded:
+		return format.LossSuperseded
+	case core.LossAcknowledged:
+		return format.LossAcknowledged
+	}
+	panic(fmt.Sprintf("recovery: loss reason %d names no reason", r))
+}
+
+// asideRecs answers every registered aside record the open rebuilt: the live
+// registrations, the unsynced losses' own and the forgets'. Each is the Rec
+// the assembly handed the tracker, so the registry's own answer — Droppable
+// — judges the record a copy leg carries.
+func asideRecs(st *State) []reclaim.Rec {
+	var out []reclaim.Rec
+	out = append(out, st.Assembled.Live...)
+	for _, u := range st.Assembled.Unsynced {
+		out = append(out, u.Rec)
+	}
+	for _, f := range st.Assembled.Forgets {
+		out = append(out, f.Rec)
+	}
+	return out
+}
+
+// forgetSnapshot answers the snapshot the forget rec's copy re-enters: the
+// segments holding records of its share tag when the journal appended it,
+// exactly what its original registration carried.
+func forgetSnapshot(st *State, rec reclaim.Rec) []core.SegmentID {
+	for _, f := range st.Assembled.Forgets {
+		if f.Rec == rec {
+			return slices.Clone(f.Segs)
+		}
+	}
+	return nil
+}
+
+// coveredRec spells the extent the record rec covers, the way the index's
+// drop ranges keep it: a truncate covers everything past the size its header
+// names, a delete the whole file, and every other kind the header's own
+// extent.
+func coveredRec(rec reclaim.Rec) core.Extent {
+	switch rec.Kind {
+	case format.KindTruncate:
+		return core.Extent{Off: rec.Ext.Off, Len: math.MaxInt64 - rec.Ext.Off}
+	case format.KindDelete:
+		return core.Extent{Off: 0, Len: math.MaxInt64}
+	default:
+		return rec.Ext
+	}
 }

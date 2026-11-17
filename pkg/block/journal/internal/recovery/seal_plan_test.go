@@ -50,80 +50,76 @@ func planCorrupt(seg, seq uint64) corruptRecord {
 
 // TestPlanOpenLossesSpendsTheReserveOnce holds the planner's one accounting
 // of the open reserve — the records the failed leg planned, the corrupt
-// drops after them, nothing twice, and a refusal that answers before any
-// record the plan would strand:
+// drops after them, nothing twice:
 //
 //   - the failed leg's records take the reserve first, and a corrupt drop
-//     past what they left refuses the whole plan, naming its own segment;
+//     past what they left is planned as a deferral against its own segment;
 //   - an exact reserve — what the failed records and the corrupt drops want
-//     together — plans them all, and one record less refuses;
+//     together — plans them all as appends, and one record less defers the
+//     corrupt drop;
 //   - a piece both lists name is spent once, by the failed leg when the
 //     reserve held it, by neither when it ran past — so the corrupt twin of
-//     a failed piece beyond the reserve turns no open into a refusal;
+//     a failed piece beyond the reserve plans no deferral;
 //   - a piece a record on disk already names plans no append, draws nothing
-//     and refuses nothing;
+//     and defers nothing;
 //   - the same corrupt piece twice — the same drop reaching both the marks'
 //     and the proof's corrupt lists — is one plan entry.
 func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 	type wanted struct {
 		seq    core.Seq
-		failed bool // the failed leg planned it; the corrupt leg otherwise
+		failed bool           // the failed leg planned it; the corrupt leg otherwise
+		defers core.SegmentID // the segment a deferred corrupt drop defers against; zero appends
 	}
 	cases := []struct {
-		name      string
-		failed    []ReadOnlyDrop
-		corrupt   []corruptRecord
-		reserve   int
-		named     []core.Seq // the pieces a record on disk already names
-		unsynced  []core.Seq // of those, the pieces a placed but unsynced record holds
-		want      []wanted
-		refuseN   int
-		refuseSeg core.SegmentID
+		name     string
+		failed   []ReadOnlyDrop
+		corrupt  []corruptRecord
+		reserve  int
+		named    []core.Seq // the pieces a record on disk already names
+		unsynced []core.Seq // of those, the pieces a placed but unsynced record holds
+		want     []wanted
 	}{
 		{
 			name:    "an exact reserve holds the failed records and the corrupt drop",
 			failed:  []ReadOnlyDrop{planFailed(10), planFailed(11)},
 			corrupt: []corruptRecord{planCorrupt(951, 12)},
 			reserve: 3,
-			want:    []wanted{{10, true}, {11, true}, {12, false}},
+			want:    []wanted{{10, true, 0}, {11, true, 0}, {12, false, 0}},
 		},
 		{
-			name:      "one record less refuses the corrupt drop",
-			failed:    []ReadOnlyDrop{planFailed(10), planFailed(11)},
-			corrupt:   []corruptRecord{planCorrupt(951, 12)},
-			reserve:   2,
-			refuseN:   1,
-			refuseSeg: 951,
+			name:    "one record less defers the corrupt drop",
+			failed:  []ReadOnlyDrop{planFailed(10), planFailed(11)},
+			corrupt: []corruptRecord{planCorrupt(951, 12)},
+			reserve: 2,
+			want:    []wanted{{10, true, 0}, {11, true, 0}, {12, false, 951}},
 		},
 		{
 			// The failed leg's records take the reserve whole before any
 			// corrupt drop's: none is left for the drop, whose record is owed
-			// to the copy that retires its segment, so the open refuses
-			// rather than defer it.
-			name:      "the failed leg takes the reserve and the corrupt drop refuses",
-			failed:    []ReadOnlyDrop{planFailed(10)},
-			corrupt:   []corruptRecord{planCorrupt(951, 12)},
-			reserve:   1,
-			refuseN:   1,
-			refuseSeg: 951,
+			// to the copy that retires its segment, so it defers.
+			name:    "the failed leg takes the reserve and the corrupt drop defers",
+			failed:  []ReadOnlyDrop{planFailed(10)},
+			corrupt: []corruptRecord{planCorrupt(951, 12)},
+			reserve: 1,
+			want:    []wanted{{10, true, 0}, {12, false, 951}},
 		},
 		{
-			name:   "a corrupt twin of a failed piece past the reserve refuses nothing",
+			name:   "a corrupt twin of a failed piece past the reserve defers nothing",
 			failed: []ReadOnlyDrop{planFailed(10), planFailed(11)},
 			// The twin of the second failed record: the failed leg ran past
 			// the reserve before it, so only the first fits — and the twin
 			// is the failed leg's own piece, an open's answer for the next
-			// open's failed list, never a refusal of this one.
+			// open's failed list, never a deferral of this one.
 			corrupt: []corruptRecord{planCorrupt(951, 11)},
 			reserve: 1,
-			want:    []wanted{{10, true}},
+			want:    []wanted{{10, true, 0}},
 		},
 		{
 			name:    "a corrupt twin of a failed piece the reserve held plans no second",
 			failed:  []ReadOnlyDrop{planFailed(10)},
 			corrupt: []corruptRecord{planCorrupt(951, 10)},
 			reserve: 1,
-			want:    []wanted{{10, true}},
+			want:    []wanted{{10, true, 0}},
 		},
 		{
 			name:    "a piece a disk record already names plans nothing",
@@ -141,7 +137,17 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 			reserve:  2,
 			named:    []core.Seq{12, 13},
 			unsynced: []core.Seq{12},
-			want:     []wanted{{12, false}},
+			want:     []wanted{{12, false, 0}},
+		},
+		{
+			// Past the reserve such a piece defers like any unnamed drop,
+			// still reported and raised.
+			name:     "a piece only a placed but unsynced record names defers past the reserve",
+			corrupt:  []corruptRecord{planCorrupt(951, 12)},
+			reserve:  0,
+			named:    []core.Seq{12},
+			unsynced: []core.Seq{12},
+			want:     []wanted{{12, false, 951}},
 		},
 		{
 			// The failed leg's piece is the failed list's to answer, not the
@@ -158,7 +164,7 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 			// lists, as the marks' and the proof's each answer one drop.
 			corrupt: []corruptRecord{planCorrupt(950, 12), planCorrupt(951, 12)},
 			reserve: 2,
-			want:    []wanted{{12, false}},
+			want:    []wanted{{12, false, 0}},
 		},
 	}
 	for _, c := range cases {
@@ -177,23 +183,8 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 				return slices.Contains(c.unsynced, seq) && ext == planExtent(uint64(seq))
 			}
 
-			plan, refuse := planOpenLosses(st, named, unsynced, c.reserve)
+			plan := planOpenLosses(st, named, unsynced, c.reserve)
 
-			if c.refuseN > 0 {
-				if refuse == nil {
-					t.Fatalf("the plan answered no refusal, want %d losses against segment %d past the reserve", c.refuseN, c.refuseSeg)
-				}
-				if refuse.N != c.refuseN || refuse.Seg != c.refuseSeg {
-					t.Fatalf("the refusal = %d against segment %d, want %d against %d", refuse.N, refuse.Seg, c.refuseN, c.refuseSeg)
-				}
-				if plan != nil {
-					t.Fatalf("a refusing plan holds %+v, want none: the refusal strands no record", plan)
-				}
-				return
-			}
-			if refuse != nil {
-				t.Fatalf("the plan refused with %d losses against segment %d, want none", refuse.N, refuse.Seg)
-			}
 			if len(plan) != len(c.want) {
 				t.Fatalf("the plan holds %d losses (%+v), want the %d of the reserve's arithmetic", len(plan), plan, len(c.want))
 			}
@@ -211,6 +202,9 @@ func TestPlanOpenLossesSpendsTheReserveOnce(t *testing.T) {
 				reported := slices.Contains(c.unsynced, w.seq)
 				if !w.failed && (got.Reason != core.LossCorrupt || got.Reported != reported || got.Raised != reported) {
 					t.Errorf("plan entry %d = %+v, want the corrupt leg's: reason %d, reported and raised %v", i, got, core.LossCorrupt, reported)
+				}
+				if got.Deferred != (w.defers != 0) || got.Seg != w.defers {
+					t.Errorf("plan entry %d = deferred %t against segment %d, want deferred against segment %d (zero appends)", i, got.Deferred, got.Seg, w.defers)
 				}
 				if !got.AtOpen {
 					t.Errorf("plan entry %d is not marked AtOpen", i)

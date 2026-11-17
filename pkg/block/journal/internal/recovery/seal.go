@@ -3,7 +3,6 @@ package recovery
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
@@ -257,8 +256,8 @@ func sealAnswers(rd *reader, identity core.JournalID, id core.SegmentID, sc segm
 // ends — each fate the classing answered with an ending: a torn slot or a torn
 // header the open truncates and the emptying unlinks, or a failed marker
 // window the tail's proof left standing whole. Ascending, like the fates, so
-// the first names the lowest. An open that ends no segment serves; one that
-// ends any is the emptying's to finish, which is not built yet.
+// the first names the lowest. An open that ends no segment has nothing to
+// empty; one that ends any hands them to the emptying.
 func (st State) EndedSegments() []core.SegmentID {
 	var out []core.SegmentID
 	for _, f := range st.Tails.Fates {
@@ -274,9 +273,9 @@ func (st State) EndedSegments() []core.SegmentID {
 // catalogue entry the confined drop carries where none did — a loss record
 // built on zero columns would name no file and no extent, the shape the next
 // open refuses at the record it reads back — with the synced flag the
-// classing proved and the found-at-open mark of its leg. The pass never
-// defers: the refusal above the legs answers the reserve's end before any
-// append, so no Loss the pass sends ever asks for the deferred arm.
+// classing proved and the found-at-open mark of its leg. A drop the open
+// reserve cannot hold reaches the pass's deferred arm; the copy the emptying
+// of the drop's holder makes writes the record the deferral promised.
 func corruptLoss(c corruptRecord) durability.Loss {
 	l := durability.Loss{
 		Share:   c.Drop.Header.Tag,
@@ -301,9 +300,9 @@ func corruptLoss(c corruptRecord) durability.Loss {
 // run it, for the layer is not built until the open's continuation is.
 //
 // The pass plans once, through planOpenLosses, and applies the plan: the
-// planner holds the one accounting of the open reserve and the one refusal
-// decision, so a refusal is made before the first record lands and the
-// appends below spend nothing the plan has not already spent.
+// planner holds the one accounting of the open reserve, so the appends below
+// spend nothing the plan has not already spent, and a drop the reserve
+// cannot hold is planned as a deferral against its holder.
 //
 // The records the plan owes, in the order the pass appends them: first
 // every record a read-only journal failed earlier in this process and the
@@ -361,10 +360,7 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 	// before the crash still opens and still records what the crash
 	// corrupted. Withdrawn when the open draws these records through the
 	// capacity ledger instead of counting its own reserve.
-	plan, pastReserve := planOpenLosses(st, d.Named, d.PlacedUnsynced, capacity.OpenReserveRecords(headroomRecords))
-	if pastReserve != nil {
-		return pastReserve
-	}
+	plan := planOpenLosses(st, d.Named, d.PlacedUnsynced, capacity.OpenReserveRecords(headroomRecords))
 
 	// appends wait for the pool's settle before the first record: asked here
 	// rather than ahead of the pass, for the placement above is what names
@@ -381,11 +377,17 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 	// resumes a stream on a recovered open segment: that stream's room then
 	// holds its records, and counting it as a spare is what keeps a journal
 	// at its maximum opening.
-	if len(plan) > 0 && waitForSpares != nil {
-		streams := map[int]struct{}{}
-		for _, l := range plan {
+	//
+	// A deferred Lose appends nothing and draws no spare, so only the
+	// appending losses count their streams, and a plan of deferrals alone
+	// waits on nothing.
+	streams := map[int]struct{}{}
+	for _, l := range plan {
+		if !l.Deferred {
 			streams[d.StreamIndex(l.File)] = struct{}{}
 		}
+	}
+	if len(streams) > 0 && waitForSpares != nil {
 		if err := waitForSpares(len(streams)); err != nil {
 			return err
 		}
@@ -399,43 +401,36 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 	return nil
 }
 
-// planOpenLosses builds the open's loss plan: the losses the pass appends,
-// in the order it appends them — every failed record first, then the corrupt
-// drops — drawing on the open reserve while it lasts, and the refusal, which
-// is nil unless an unnamed corrupt drop would run past what the failed
-// records left of the reserve. The pieces a record on disk already names,
-// whichever list they reach, plan no append and draw nothing; a piece both
-// lists name — a failed record whose seq and extent reach the corrupt list
-// again as a rotted twin — is spent once, by the failed leg's accounting
-// when the reserve held it and by no leg when it did not, never by the
-// refusal's: the corrupt leg skips it as the failed leg's own, so a failed
-// record past the reserve turns no corrupt twin of itself into a refusal.
+// planOpenLosses builds the open's loss plan: the losses the pass applies,
+// in the order it applies them — every failed record first, then the corrupt
+// drops — drawing on the open reserve while it lasts. The pieces a record on
+// disk already names, whichever list they reach, plan no append and draw
+// nothing; a piece both lists name — a failed record whose seq and extent
+// reach the corrupt list again as a rotted twin — is spent once, by the
+// failed leg's accounting when the reserve held it and by no leg when it did
+// not: the corrupt leg skips it as the failed leg's own.
 //
-// The failed leg's records past the reserve plan no append and no refusal:
-// this process's failed list keeps each for the next open of the process to
-// answer, and a crash takes the unsupported record's own bytes with it — the
-// window that failed the record already answered the writer it never
-// landed, the class the failed window's verdict accepts, so nothing
-// re-detects it and nothing serves it. The emptying copies only ended
-// segments out, and a failed window's segment is left standing whole;
-// withdrawn when the emptying writes the failed records' losses into its
-// copies too.
+// The failed leg's records past the reserve plan no append: this process's
+// failed list keeps each for the next open of the process to answer, and a
+// crash takes the unsupported record's own bytes with it — the window that
+// failed the record already answered the writer it never landed, the class
+// the failed window's verdict accepts, so nothing re-detects it and nothing
+// serves it. The emptying copies only ended segments out, and a failed
+// window's segment is left standing whole; withdrawn when the emptying
+// writes the failed records' losses into its copies too.
 //
-// decision: an unnamed corrupt drop past the reserve refuses the open whole
-// — it would defer, handing its record to the copy that retires the segment
-// holding the drop (the registry the durability layer keeps against that
-// segment), but the retirement's own gates read no deferral: SetDeferred's
-// hold is raised by no production path, so the running journal this open
-// serves would unlink a segment whose only record is the deferred drop and
-// let an older copy serve over a write the crash had synced, and a fresh
-// process keeps neither the registry entry nor the re-detection of the
-// unlinked corruption. Refusing fails the open rather than serve wrong
-// data, and the plan decides it before any record lands, so each retry
-// burns no record and the open of a journal whose reserve holds the drops
-// answers whole — the refusal is the reserve arithmetic's own word, not a
-// wall before the pass. Withdrawn when the emptying exists, which writes
-// each deferred record into its copy's target and lifts the hold that
-// gates the retirement.
+// decision: the past-the-reserve answer is the deferral itself — the corrupt
+// drops the open reserve cannot hold defer, through the same Lose a running
+// journal's deferrals take, against the segment holding each drop. Each
+// deferred record is the copy's own: the emptying of the ended segments
+// writes every deferred loss whose dropped record a segment it empties holds
+// into its sealed copy, ending the deferral, and no retirement gate takes the
+// holder before that copy exists (the retire step reads the registry the
+// deferral keeps). A segment the open does not end simply stands: its
+// records stay, the drop's older content still masked in memory, and a fresh
+// process re-detects the corruption and re-defers over the same reserve
+// arithmetic. Withdrawn if a deferral's registry ever stops being the gate
+// the retirement reads.
 //
 // decision: the failed leg's records take the reserve whole before any
 // corrupt drop's draws on it — the failed records' loss records are the
@@ -461,14 +456,13 @@ func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroo
 // over one piece, which the next open's placement answers once. Withdrawn
 // when the open learns which found loss records are durable, or when an
 // acknowledged loss's record reaches the pass.
-func planOpenLosses(st State, named, unsynced func(seq core.Seq, ext core.Extent) bool, reserve int) ([]durability.Loss, *LostPastReserveError) {
+func planOpenLosses(st State, named, unsynced func(seq core.Seq, ext core.Extent) bool, reserve int) []durability.Loss {
 	type pieceKey struct {
 		seq core.Seq
 		ext core.Extent
 	}
 	seen := make(map[pieceKey]bool)
 	var plan []durability.Loss
-	shortN, firstAgainst := 0, core.SegmentID(0)
 	for _, rd := range st.Kinds.ReadOnlyDrops {
 		k := pieceKey{seq: rd.Dropped, ext: rd.Ev.Extent}
 		if seen[k] || named(rd.Dropped, rd.Ev.Extent) {
@@ -513,29 +507,8 @@ func planOpenLosses(st State, named, unsynced func(seq core.Seq, ext core.Extent
 			plan = append(plan, l)
 			continue
 		}
-		if shortN == 0 {
-			firstAgainst = c.Segment
-		}
-		shortN++
+		l.Deferred, l.Seg = true, c.Segment
+		plan = append(plan, l)
 	}
-	if shortN > 0 {
-		return nil, &LostPastReserveError{N: shortN, Seg: firstAgainst}
-	}
-	return plan, nil
-}
-
-// LostPastReserveError answers the loss pass whose unnamed corrupt drops
-// exceed the open reserve left after the failed leg's unnamed records:
-// N losses would defer, the first against Seg. The open maps it to its own
-// refusal, naming the directory; the error never passes a core boundary,
-// for the pass that answers it runs inside the open alone.
-type LostPastReserveError struct {
-	N   int
-	Seg core.SegmentID
-}
-
-// Error names the losses that would defer and the first segment one would
-// defer against, the refusal's own words.
-func (e *LostPastReserveError) Error() string {
-	return fmt.Sprintf("the open would defer corrupt losses past its reserve: %d of them, the first against segment %d, and the emptying that records them is not built", e.N, e.Seg)
+	return plan
 }

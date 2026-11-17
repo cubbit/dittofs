@@ -584,14 +584,6 @@
   issue: '#3596'
   message: 'the failed write''s zero slot was reported as damage or a torn tail'
 
-- test: TestRFC28C_TornTailCutOff
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The recovery cuts and seals the torn tail; its cut ends the segment, and the open refuses naming it until the emptying that unlinks ended segments and copies out their survivors is built.'
-  issue: '#4033'
-  message: 'the open ends segment'
-
 - test: TestRFC28C_TruncatedSealedSegment
   status: fail
   fix: planned
@@ -628,9 +620,9 @@
   status: fail
   fix: planned
   category: feature
-  reason: 'The journal opens and the tail proof verifies the lost record, but its source takes an ended fate, so the open refuses naming it: serving an open that ends a segment waits on the emptying that unlinks the ended segments and copies out their survivors.'
+  reason: 'The emptying serves the roomy leg: the verified record is copied out of its ended source and the source unlinked. The at-maximum leg still leaves the verified record at its original placement while its source leaves the journal: the emptying of a journal opened at its maximum carries nothing out, and whether that is the retained-extent rule or a deeper gap is the row the reviewer owes.'
   issue: '#4033'
-  message: 'the open ends segment'
+  message: 'still sits at'
 
 - test: TestRFC28C_SourcesAgree
   status: fail
@@ -647,14 +639,6 @@
   reason: 'The journal opens; the check fails on a stub call. Needs catalogs, recovery by scan and Verify.'
   issue: '#3596'
   message: 'segment 3 is not among the journal'
-
-- test: TestRFC28C_ASealMarkerOnlyTheCacheHolds
-  status: fail
-  fix: planned
-  category: feature
-  reason: 'The journal opens over the directory holding segments; the reopen seals the segment the cache-only marker names, and the mark the probe reads back names the open''s emptying as its next wall: the row stops there, and the assemble the emptying''s fate reads reaches the emptying last.'
-  issue: '#4033'
-  message: "segment 3 is not among the journal's"
 
 - test: TestRFC28A_FooterIsNotAuthoritative
   status: fail

@@ -910,12 +910,32 @@ func (c *Core) WaitRecordSpares(ctx context.Context, n int) error {
 	return c.pool.WaitRecordSpares(ctx, n)
 }
 
+// TakeReserve draws one spare of the pool's repack reserve for the open's own
+// copy, waiting for the pool's settle when the class is short — the wait the
+// open's loss records already take before their first append, and the same
+// one here, so an open whose emptying draws first past a refill that has not
+// landed blocks on the pool rather than failing — and returning the pool's
+// error when none can be made and the refill stopped. It is the one shape the
+// open hands the emptying step's copies: the drawn spare enters the set as
+// the segment the copy makes of it, sealed by the step that took it.
+func (c *Core) TakeReserve(ctx context.Context) (core.SegmentID, error) {
+	id, err := c.pool.Take(segment.Reserve)
+	if err == nil || !errors.Is(err, core.ErrNoSpace) {
+		return id, err
+	}
+	if werr := c.pool.WaitSpares(ctx); werr != nil {
+		return 0, werr
+	}
+	return c.pool.Take(segment.Reserve)
+}
+
 // Continue builds the core over a set continued from a recovery's open
-// payload, runs beforeRetire — the open's loss pass, the one step that must
-// land between the core and its retirement worker — and only then starts the
-// worker: the tick's scan answers a segment holding only corrupt drops, and
-// starting it ahead of the pass would unlink such a segment while the mask
-// the pass has not yet made durable is its only gate. A core built over an
+// payload, runs beforeRetire — the open's loss pass and the emptying that
+// gates on it, the steps that must land between the core and its retirement
+// worker — and only then starts the worker: the tick's scan answers a
+// segment holding only corrupt drops, and starting it ahead of the pass
+// would unlink such a segment while the mask the pass has not yet made
+// durable is its only gate. A core built over an
 // open payload is never returned with its worker unstarted. A failure of
 // beforeRetire closes the core and answers the failure; a set that carried no
 // open payload is refused and closed, for its records hold no registration
