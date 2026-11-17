@@ -144,16 +144,17 @@ const statusWait = 30 * time.Second
 // (RFC 20 §10.1).
 var errReplyWait = errors.New("core: no reply buffer for a status within " + statusWait.String())
 
-// reserveStatus takes the small-class reply buffer a status alone goes out
-// in, for key: at once when the pool has room with no waiter ahead, otherwise
+// reserveStatus takes the reply buffer a status alone goes out in, of n
+// bytes, its header's ReplyLen, for key: at once when the pool has room with
+// no waiter ahead, otherwise
 // waiting within ctx, the connection's, so that a close ends the wait at
 // once, for at most statusWait from when it starts. Past that it calls close
 // with errReplyWait. It returns nil, with nothing reserved, when the wait
 // ended. Its caller keeps the request's record, and so its receive charge,
 // until the status goes out or the wait ends (RFC 24 §6.1).
-func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, close func(error)) *resources.Buf {
-	// A status is encoded by appending to B[:0], within the small class.
-	if buf, ok := sh.reply.TryGet(key, 0); ok {
+func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, n int, close func(error)) *resources.Buf {
+	// A status is encoded by appending to B[:0], within n's class.
+	if buf, ok := sh.reply.TryGet(key, n); ok {
 		return buf
 	}
 	// decision: the wait is bounded, and past it the connection closes,
@@ -171,7 +172,7 @@ func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, close func(
 	// parks' reply reservations are capped per client.
 	wait, cancel := context.WithTimeout(ctx, statusWait)
 	defer cancel()
-	buf, err := sh.reply.Get(wait, key, 0)
+	buf, err := sh.reply.Get(wait, key, n)
 	if err != nil {
 		if ctx.Err() == nil {
 			close(errReplyWait)
@@ -445,7 +446,7 @@ func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err
 		}
 		return
 	}
-	if buf, ok := p.sh.reply.TryGet(p.l.remote, 0); ok {
+	if buf, ok := p.sh.reply.TryGet(p.l.remote, p.st.Header.ReplyLen(h)); ok {
 		p.answer(tr, rec, h, s, buf, wrap, closeAfter, err)
 		return
 	}
@@ -469,7 +470,7 @@ func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err
 	go func() {
 		defer p.done()
 		defer func() { <-p.status }()
-		if buf := p.sh.reserveStatus(p.ctx, p.l.remote, p.l.close); buf != nil {
+		if buf := p.sh.reserveStatus(p.ctx, p.l.remote, p.st.Header.ReplyLen(h), p.l.close); buf != nil {
 			p.answer(tr, rec, h, s, buf, wrap, closeAfter, err)
 			return
 		}
@@ -482,6 +483,7 @@ func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err
 // connection after where closeAfter.
 func (p *pipeline) answer(tr *track, rec *resources.Buf, h Header, s Status, buf *resources.Buf, wrap, closeAfter bool, cause error) {
 	defer rec.Release()
+	buf.B = buf.B[:0] // a buffer comes back as long as its reservation
 	if err := p.st.Header.Encode(h, s, buf); err != nil {
 		buf.Release()
 		p.end(tr, false, 0, 0, err)
@@ -575,9 +577,18 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 	}
 	tr.op = op
 	if err == nil {
-		if inv, _, err = op.Decode(p.st.Header.Args(rec, h), h.Version()); err != nil {
+		args := p.st.Header.Args(rec, h)
+		var n int
+		inv, n, err = op.Decode(args, h.Version())
+		if err == nil && op.Members != nil && (n < 0 || n > len(args)) {
+			err = fmt.Errorf("a compound's arguments of %d bytes, %d in its message", n, len(args))
+		}
+		if err != nil {
 			err = fmt.Errorf("%w: %v", ErrDecode, err)
 			p.refused(tr, stageDecodeArgs)
+		} else if op.Members != nil {
+			p.compound(tr, h, r, tb, op, inv, args[n:], release)
+			return
 		}
 	}
 	var reply *resources.Buf
@@ -605,14 +616,14 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		// so a request served normally pays for no second lookup.
 		draining, expired := p.draining.Load(), p.expired(r)
 		role := op.Role
-		if (draining || expired) && inv.Role != nil {
-			role = inv.Role(r)
+		if draining || expired {
+			role = roleOf(op, inv, r)
 		}
 		switch {
 		case expired && !op.Expired && role != RoleRelease:
 			err = ErrExpired
 		case draining && role == RoleNone:
-			err = drainErr(ctx, r, inv)
+			err = drainErr(ctx, handlesOf(inv))
 		}
 		if err != nil {
 			p.refused(tr, stageResolveIDs)
@@ -623,7 +634,15 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		tr.ran = true
 		err = ts.chains[op.Code](ctx, r)
 	}
+	p.finish(tr, h, tb, errs, op, inv, reply, err, release)
+}
 
+// finish answers a request whose call, or refusal, gave err: its status
+// mapped by errs, encoded into reply or, with none reserved, a status's
+// buffer, stored where its row is cacheable, and sent; or, for a NoReply
+// row, nothing, or an interim where the table holds.
+func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op *Op, inv Invocation, reply *resources.Buf, err error, release func()) {
+	ctx := tr.ctx
 	if err != nil && p.endedByClose(err) {
 		if reply != nil {
 			reply.Release()
@@ -644,17 +663,11 @@ func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) 
 		s, send = p.mapped(tr, errs, err, op, h.Version(), true)
 	}
 	if !send {
-		if tb != nil && tb.Holds {
-			p.interim(ctx, h, reply)
-		} else if reply != nil {
-			reply.Release()
-		}
-		release()
-		p.end(tr, false, 0, 0, err)
+		p.unanswered(tr, h, tb, reply, err, release)
 		return
 	}
 	if reply == nil {
-		if reply = p.sh.reserveStatus(ctx, p.l.remote, p.l.close); reply == nil {
+		if reply = p.sh.reserveStatus(ctx, p.l.remote, p.st.Header.ReplyLen(h), p.l.close); reply == nil {
 			release()
 			p.end(tr, false, 0, 0, err)
 			return
@@ -768,6 +781,18 @@ func (p *pipeline) mapped(tr *track, errs *ErrorTable, err error, op *Op, v Vers
 		p.sh.log.LogAttrs(tr.ctx, slog.LevelDebug, "an error its row answers", tr.attrs(err)...)
 	}
 	return s, reply
+}
+
+// unanswered ends a request refused with a NoReply row, err: no final
+// reply, and where tb holds, an interim in reply's place.
+func (p *pipeline) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
+	if tb != nil && tb.Holds {
+		p.interim(tr.ctx, h, reply)
+	} else if reply != nil {
+		reply.Release()
+	}
+	release()
+	p.end(tr, false, 0, 0, err)
 }
 
 // attrs is a request's log line's keys: its trace ID, its span ID where a
@@ -945,7 +970,7 @@ func (p *pipeline) send(h Header, reply *resources.Buf, key uint64) {
 // on the pool and leave the interim, and so the client's credits, behind it.
 func (p *pipeline) interim(ctx context.Context, h Header, buf *resources.Buf) {
 	if buf == nil {
-		if buf = p.sh.reserveStatus(ctx, p.l.remote, p.l.close); buf == nil {
+		if buf = p.sh.reserveStatus(ctx, p.l.remote, p.st.Header.ReplyLen(h), p.l.close); buf == nil {
 			return
 		}
 	}
@@ -958,13 +983,24 @@ func (p *pipeline) interim(ctx context.Context, h Header, buf *resources.Buf) {
 	p.send(h, buf, 0)
 }
 
-// drainErr is what a request the drain does not serve is refused with.
+// handlesOf is the filehandle inv's arguments name, if any.
+func handlesOf(inv Invocation) []vfs.Handle {
+	if inv.Handle != nil {
+		if h, ok := inv.Handle(); ok {
+			return []vfs.Handle{h}
+		}
+	}
+	return nil
+}
+
+// drainErr is what a request the drain does not serve is refused with,
+// decided once from every filehandle it names.
 //
 // decision: ErrDraining, the service's answer while no topology names a
 // target for the request's share; asking the service for a move target, and
 // answering ErrMoved where it names one, comes with the drain. Withdraw it
 // then.
-func drainErr(context.Context, *Request, Invocation) error { return ErrDraining }
+func drainErr(context.Context, []vfs.Handle) error { return ErrDraining }
 
 // drain begins the connection's drain: from here on a request whose role is
 // none is refused with drainErr.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -29,9 +30,14 @@ type OpTable struct {
 	// table is built per server.
 	Protocol string
 	// ReadOp reads the operation code at the head of a compound member's bytes,
-	// and how many bytes it took: NFSv4's argop. Set on a table that is a
-	// compound row's Members; nil elsewhere.
+	// and how many bytes it took: NFSv4's argop. Its error is its own, which
+	// the runner wraps (ErrDecode). Set on a table that is a compound row's
+	// Members; nil elsewhere.
 	ReadOp func(b []byte) (op uint32, n int, err error)
+	// EncodeResult writes a member's operation code and status before the
+	// member's own Encode appends its reply: NFSv4's nfs_resop4 head. Set on
+	// a compound row's Members; nil elsewhere.
+	EncodeResult func(out *resources.Buf, op uint32, s Status, v Version) error
 }
 
 // Op is one operation's row: its preconditions and versions are columns the
@@ -53,12 +59,21 @@ type Op struct {
 	// refuse trailing bytes before any member runs. Revisit if a protocol's
 	// compound cannot state its count before its members.
 	Members *OpTable
+	// MaxMembers is a compound row's cap on its members: a Count past it is
+	// refused ErrTooLong before any member is decoded. NewOpTable refuses a
+	// row with Members and none.
+	//
+	// decision: the cap is a column of the compound row, read by the runner,
+	// since a cap each compound's Decode checked would be a check a protocol
+	// can forget. Overturned if a protocol's cap must vary per request.
+	MaxMembers int
 }
 
 // Invocation is one decoded operation: closures over the decoded request and
 // its reply. A struct, not an interface. Bind produces it for every row but a
 // compound row, whose Decode the protocol writes and which builds its
-// Invocation directly, setting Count from the arguments it decoded.
+// Invocation directly, setting Count and EncodeHead from the arguments it
+// decoded.
 type Invocation struct {
 	Bound   func() int                                  // the reply bound
 	Resolve func(r *Request) error                      // wire IDs to service values
@@ -77,6 +92,13 @@ type Invocation struct {
 	// Count is a compound row's: the members its arguments say follow, set by
 	// that row's own Decode. 0 on every other row.
 	Count int
+	// EncodeHead is a compound row's, set by that row's own Decode over what
+	// it decoded: it writes the compound reply's head, ahead of its results,
+	// NFSv4's status, the request's tag and the count of results. Its size
+	// must not depend on s or n, so the runner writes it once before the
+	// members run and again, over its own bytes, once their status and count
+	// are known. nil on every other row.
+	EncodeHead func(out *resources.Buf, s Status, n int, v Version) error
 	// Role says what this request does to state: an SMB LOCK whose elements
 	// unlock releases it, a WRITE to an open under a break flushes it, an
 	// NFSv4 OPEN that claims a delegated open flushes it. It is called in two
@@ -175,7 +197,24 @@ func NewOpTable(errs *ErrorTable, holds bool, ops ...*Op) *OpTable {
 		if !labelName(op.Name) {
 			panic(fmt.Sprintf("core: op table: %q, lower-cased, is not lower-case letters, digits and underscores alone", op.Name))
 		}
+		if op.Members != nil && op.MaxMembers <= 0 {
+			panic(fmt.Sprintf("core: op table: %s has members and no MaxMembers", op.Name))
+		}
+		if m := op.Members; m != nil && (m.ReadOp == nil || m.EncodeResult == nil) {
+			panic(fmt.Sprintf("core: op table: %s's members table lacks ReadOp or EncodeResult", op.Name))
+		}
 		t.Ops[op.Code] = op
+	}
+	// A compound is refused whole, with no operation, past its cap or past a
+	// quarter of the reply pool's ceiling, so a table with a compound row
+	// maps both refusals for every operation and version; one without needs
+	// neither, since nothing else raises them.
+	if slices.ContainsFunc(ops, func(op *Op) bool { return op.Members != nil }) {
+		for _, err := range []error{ErrTooLong, ErrReplyTooBig} {
+			if !errs.mapsEverywhere(err) {
+				panic(fmt.Sprintf("core: op table: it has a compound row, and no row of its error table answers %v for every operation and version", err))
+			}
+		}
 	}
 	if !holds {
 		for _, r := range errs.rows {

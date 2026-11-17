@@ -11,6 +11,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // What the package's external tests reach of core's unexported parts. It is
@@ -155,7 +156,7 @@ func (sh *shared) ReserveReply(ctx context.Context, key netip.Addr, bound int) (
 }
 
 func (sh *shared) ReserveStatus(ctx context.Context, key netip.Addr, close func(error)) *resources.Buf {
-	return sh.reserveStatus(ctx, key, close)
+	return sh.reserveStatus(ctx, key, 0, close)
 }
 
 // TestReader is one connection's record cut, reached by the reader's tests.
@@ -235,3 +236,17 @@ func (p *pipeline) Track(rec *resources.Buf) { p.end(p.begin(rec), false, 0, 0, 
 // Sampled is the pipeline's verdict on a request whose trace ID is id, under
 // a SampleRatio of ratio.
 func Sampled(id trace.TraceID, ratio float64) bool { return sampled(id, sampleBound(ratio)) }
+
+// Members walks a compound's members, as the runner does: how many decoded,
+// the index of the first that did not (-1 for the compound refused whole),
+// and the error.
+func Members(row *Op, inv Invocation, rest []byte, v Version) (n, at int, err error) {
+	ms, at, _, err := members(row, inv, rest, v)
+	return len(ms), at, err
+}
+
+// Judge is judge over the members rest holds, decoded as the runner does.
+func Judge(row *Op, inv Invocation, rest []byte, v Version, r *Request) (whole bool, handles []vfs.Handle) {
+	ms, _, _, err := members(row, inv, rest, v)
+	return judge(ms, err == nil, r)
+}

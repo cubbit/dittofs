@@ -53,9 +53,11 @@ type security struct{}
 // check that failed is the seal's, so its answer is signed and not sealed; a
 // message sent clear under a session gets session 0, so its answer is
 // neither. A related member with no session to inherit comes back with no
-// header, which closes the connection.
+// header, which closes the connection. A compound's tag, read from its
+// arguments once they are clear, comes back on a tagged header, for Encode
+// to echo in a refusal's head and ReplyLen to count.
 func (security) Unwrap(h core.Header, rec *resources.Buf, prev core.Header) (core.Header, error) {
-	hd, ok := h.(*header)
+	hd, ok := plain(h)
 	if !ok {
 		return nil, errors.New("testproto: unwrap a header of another protocol")
 	}
@@ -65,7 +67,7 @@ func (security) Unwrap(h core.Header, rec *resources.Buf, prev core.Header) (cor
 	}
 	s := hd.session()
 	if s == inherited {
-		ph, ok := prev.(*header)
+		ph, ok := plain(prev)
 		if !ok || ph == nil || ph.session() == inherited {
 			return nil, errNoPrev
 		}
@@ -85,6 +87,11 @@ func (security) Unwrap(h core.Header, rec *resources.Buf, prev core.Header) (cor
 		xorKey(args, s)
 	}
 	binary.BigEndian.PutUint32(hd[offSession:], s)
+	if args := arguments(rec.B, off, hd); hd.Op() == OpCompound && len(args) >= 8 {
+		if n := binary.BigEndian.Uint32(args[4:]); int64(n) <= int64(len(args)-8) {
+			return &tagged{hd, bytes.Clone(args[8 : 8+n])}, nil
+		}
+	}
 
 	return hd, nil
 }
@@ -131,7 +138,7 @@ func newFlow() *flow { return &flow{balance: 1} }
 
 // Admit charges the header's credits, refusing a message that would overdraw.
 func (f *flow) Admit(_ context.Context, h core.Header) (func(), error) {
-	hd, ok := h.(*header)
+	hd, ok := plain(h)
 	if !ok {
 		return nil, errors.New("testproto: admit a header of another protocol")
 	}
@@ -171,6 +178,8 @@ func asHeader(h core.Header) (*header, bool) {
 	switch h := h.(type) {
 	case *header:
 		return h, true
+	case *tagged:
+		return h.header, true
 	case *final:
 		return &h.header, true
 	}
@@ -203,7 +212,7 @@ func (hold) Key(h core.Header) uint64 {
 // replies grants them, so adding them here would grant them twice. Withdraw
 // it if core answers such a member with no reply of its own.
 func (s hold) Interim(h core.Header, grant bool, after []core.Header, out *resources.Buf) error {
-	hd, ok := h.(*header)
+	hd, ok := plain(h)
 	if !ok {
 		return errors.New("testproto: an interim for a header of another protocol")
 	}
@@ -213,7 +222,7 @@ func (s hold) Interim(h core.Header, grant bool, after []core.Header, out *resou
 	}
 	charged := 0
 	for _, a := range after {
-		if ah, ok := a.(*header); ok {
+		if ah, ok := plain(a); ok {
 			charged += int(ah.credits())
 		}
 	}
@@ -240,7 +249,7 @@ func (s hold) Interim(h core.Header, grant bool, after []core.Header, out *resou
 // with its key as the message ID. If grant, its interim granted one credit of
 // h's, and this grants the rest; otherwise none.
 func (hold) Final(h core.Header, grant bool) core.Header {
-	hd, ok := h.(*header)
+	hd, ok := plain(h)
 	if !ok {
 		return h
 	}
@@ -257,7 +266,7 @@ func (hold) Final(h core.Header, grant bool) core.Header {
 
 // Cancels names the request a Cancel carries the message ID of.
 func (hold) Cancels(h core.Header) (uint64, bool) {
-	hd, ok := h.(*header)
+	hd, ok := plain(h)
 	if !ok || hd.Op() != OpCancel {
 		return 0, false
 	}
@@ -302,7 +311,7 @@ type replay struct {
 // handed no client address, so a client replaying many requests takes no turn
 // behind the others. Key it by the client once core hands the stage one.
 func (r *replay) Lookup(ctx context.Context, h core.Header) (*resources.Buf, error) {
-	hd, ok := h.(*header)
+	hd, ok := plain(h)
 	if !ok {
 		return nil, errors.New("testproto: a replay lookup for a header of another protocol")
 	}

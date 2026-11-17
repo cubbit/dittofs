@@ -325,6 +325,9 @@ type seam struct {
 	closed  chan error
 	f       core.Framer
 	stop    func(error)
+	// sent, when a test sets it before serving, sees each message as it is
+	// handed to out: a pass-through, where what is sent is what is checked.
+	sent func(msg *resources.Buf)
 }
 
 // newSeam builds a seam for proto's stages, its reply budget of reply bytes.
@@ -357,7 +360,13 @@ func newSeamSet(t *testing.T, proto core.Protocol, reply int64, d adapter.Deps, 
 	}
 	out, stop, conn, _ := newRecorder(s.f)
 	s.stop, s.client = stop, testproto.NewClient(conn)
-	s.p = core.NewPipeline(core.NewShared(d, s.reply), st, context.Background(), peer, set, out, func(err error) {
+	sent := func(msg *resources.Buf, key, before uint64) error {
+		if s.sent != nil {
+			s.sent(msg)
+		}
+		return out(msg, key, before)
+	}
+	s.p = core.NewPipeline(core.NewShared(d, s.reply), st, context.Background(), peer, set, sent, func(err error) {
 		select {
 		case s.closed <- err:
 		default:
