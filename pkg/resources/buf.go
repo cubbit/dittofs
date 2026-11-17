@@ -254,9 +254,6 @@ func (b *Buf) borrow(delta int32, released string) (was int32) {
 // each member's reservation until its release, if chains are seen taking
 // resident memory past the ceiling.
 func Join(n int, bufs ...*Buf) *Buf {
-	if len(bufs) == 1 {
-		return bufs[0]
-	}
 	var res Reservation
 	for i, b := range bufs {
 		if i > 0 && (b.res.b != res.b || b.res.w != res.w || b.res.key != res.key) {
@@ -266,6 +263,9 @@ func Join(n int, bufs ...*Buf) *Buf {
 	}
 	if int64(n) > res.n {
 		panic(fmt.Sprintf("resources: Join of room for %d bytes past its members' charges of %d", n, res.n))
+	}
+	if len(bufs) == 1 {
+		return bufs[0]
 	}
 	var pool *BufPool
 	for _, b := range bufs {

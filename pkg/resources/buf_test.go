@@ -562,8 +562,9 @@ func TestJoinTakesOverItsMembersCharges(t *testing.T) {
 	full.Release()
 }
 
-// A Join of one buffer returns it unchanged; one past its members' charges,
-// or over two budgets or two keys, panics.
+// A Join of one buffer returns it unchanged, and one with room equal to its
+// members' charges is taken; one past its members' charges, one buffer's
+// included, or over two budgets or two keys, panics.
 func TestJoinOfOneAndItsRefusals(t *testing.T) {
 	p := NewBufPool(NewWaitBudget("reply", 1<<30))
 	q := NewBufPool(NewWaitBudget("other", 1<<30))
@@ -573,12 +574,18 @@ func TestJoinOfOneAndItsRefusals(t *testing.T) {
 		t.Error("a Join of one buffer changed it")
 	}
 	one.Release()
+	x, _ := p.TryGet(a, 0)
+	y, _ := p.TryGet(a, 0)
+	Join(int(2*p.Charge(0)), x, y).Release()
+	x.Release()
+	y.Release()
 	for _, c := range []struct {
 		name string
 		n    int
 		bufs func() []*Buf
 	}{
 		{"room past the charges", int(2*p.Charge(0)) + 1, func() []*Buf { x, _ := p.TryGet(a, 0); y, _ := p.TryGet(a, 0); return []*Buf{x, y} }},
+		{"room past one buffer's charge", int(p.Charge(0)) + 1, func() []*Buf { x, _ := p.TryGet(a, 0); return []*Buf{x} }},
 		{"two budgets", 1, func() []*Buf { x, _ := p.TryGet(a, 0); y, _ := q.TryGet(a, 0); return []*Buf{x, y} }},
 		{"two keys", 1, func() []*Buf { x, _ := p.TryGet(a, 0); y, _ := p.TryGet(b, 0); return []*Buf{x, y} }},
 	} {
