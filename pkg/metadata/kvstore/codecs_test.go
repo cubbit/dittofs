@@ -69,7 +69,7 @@ func codecCases() []codecCase {
 		Version:   4,
 	}
 	ng := entity.Netgroup{Name: "lab", Members: []string{"a.example", "10.1.0.0/16"}, Version: 2}
-	in := entity.Installation{ID: [16]byte{15: 1}, Instance: [16]byte{15: 2}, Generation: []byte{5}, SigningKey: entity.SecretRef{15: 8}}
+	in := entity.Installation{ID: [16]byte{15: 1}, Instance: [16]byte{15: 2}, Generation: []byte{5}, MachinePassword: entity.SecretRef{15: 9}, SigningKey: entity.SecretRef{15: 8}}
 	in.NTLMOff.Off, in.NTLMOff.Deleted = 6, entity.OperationID{15: 7}
 	in.Join = entity.MachineJoin{Joined: true, Account: "H$", Owner: []byte{1}, Delegation: []byte{2}, Names: []string{"a"}}
 	in.Join.LastRotation.At, in.Join.LastRotation.Failed = time.Unix(2, 3).UTC(), true
@@ -131,7 +131,8 @@ func codecCases() []codecCase {
 			func(b []byte) (any, error) { return decodeNetgroup("lab", b) }},
 		{"installation", in, encodeInstallation(in),
 			"01" + "00000000000000000000000000000001" + "00000000000000000000000000000002" + "0105" +
-				"0000000000000006" + "00000000000000000000000000000007" + "00000000000000000000000000000008" +
+				"0000000000000006" + "00000000000000000000000000000007" + "00000000000000000000000000000009" +
+				"00000000000000000000000000000008" +
 				"01" + "024824" + "0101" + "0102" + "01" + "0161" +
 				"0000000000000002" + "00000003" + "01" + "00000004" + "00000005" + "0000000000000006" +
 				"0000000000000007" + "00000000",

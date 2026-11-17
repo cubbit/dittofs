@@ -232,4 +232,8 @@ func (c controlTx) SetMachineJoin(j entity.MachineJoin) error {
 	return c.setInstallation(func(in *entity.Installation) { in.Join = j })
 }
 
+func (c controlTx) SetMachinePassword(ref entity.SecretRef) error {
+	return c.setInstallation(func(in *entity.Installation) { in.MachinePassword = ref })
+}
+
 func (c controlTx) Now() time.Time { return c.tx.Now() }
