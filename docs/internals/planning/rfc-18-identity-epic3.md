@@ -10,7 +10,7 @@ cache); [RFC 16](../rfcs/rfc-16-metadata-store.md) §3 (`Principals.Grant`,
 `SharePolicy`) and §4.2's `S‖id‖gv`; [RFC 23](../rfcs/rfc-23-control-plane.md)
 §3.2, for one scenario.
 **Track:** A.
-**Epic 3 estimate: 10 subtasks, 15.75 man-days.**
+**Epic 3 estimate: 10 subtasks, 16 man-days.**
 **Depends on:** **S1**: E1's `pkg/identity` (`Identity`, `Evidence`, `Caller`,
 `ReadOnlyCause`, `Resolver`, `Identities`, `FindOpts`), `entity.SharePolicy`, `internal/identity`'s
 `Server` with `Apply` and a stubbed `Resolve`, and `vfs.Deps`' `Identity` and `Names`. **E2,
@@ -225,8 +225,10 @@ row; R12 and R13 its "group cap"; R23 its "steady raises"; R34 its "in-flight di
   when the applied `State` differs from the current one, and keeps it for an equal one, so a
   once-a-second reconcile empties nothing. The principals generation alone would not do:
   `identity.ntlm` turned off changes no principal, and RFC 18 §3.5 has it reach cached
-  callers. The serial is the server's, raised by `Apply`: `State` gains no field for it, and
-  `State.Generation` stays the principals generation RFC 18 §2.6 declares and E1's T1.4 adds.
+  callers. The serial is `State.Serial` (RFC 18 §2.6), set by `Apply`, not the node, under one
+  lock across its load of the current `State`, the compare, the serial and the store, so two
+  concurrent `Apply`s, the reconcile's and a writer's, never give two differing `State`s one
+  serial: serials strictly increase. `State.Generation` stays the principals generation RFC 18 §2.6 declares and E1's T1.4 adds.
   A `decision:` marker at `Apply`. Prior art (from memory): etcd's revision, raised per change
   and not per read.
 - **D3, admission reads the current serial through `Resolver.Current()`, decided (§9).**
@@ -379,20 +381,27 @@ pkg/metadata/kvstore/
 
 ### T3.3 The `State`'s serial and a stale resolution
 
-**Subtask T3.3 estimate: 1 man-days.**
+**Subtask T3.3 estimate: 1.25 man-days.**
 
 - **Track:** A. **Depends on:** T3.1.
 - **Covers:** R22, R23, R24, R28.
-- **Deliverables:** `Apply` raising a serial when the `State` differs, D2's marker;
-  `Resolver.Current() uint64` in `pkg/identity` and on `*Server` (D3); `Resolve` loading the
-  `State` once before its first read, stamping `Built`, and, when the current serial moved
+- **Deliverables:** `Apply` raising a serial when the `State` differs, under one lock across
+  its load, compare, serial and store (D2), D2's marker; `Resolver.Current() uint64` in
+  `pkg/identity` and on `*Server`, one load of the current `State`'s serial (D3); `Resolve`
+  loading the `State` once before its first read, stamping `Built` with that `State`'s serial,
+  never a second load, and, when the current serial moved
   during the call, resolving once more and answering the second caller. Consumed by T3.8, T3.10
   and E8.
 - **Acceptance criteria:**
   - `Apply` of an equal `State` keeps `Current()`; any change raises it.
+  - Two concurrent `Apply`s of differing `State`s store distinct serials, the later the greater.
   - A `Resolve` overtaken by an `Apply` answers a caller stamped with the newer serial.
 - **Tests:** at `Resolve`: an `Apply` of an equal `State` leaves `Current()` unchanged, one
-  with a raised generation raises it (catches a serial raised per `Apply` or never, R28); a
+  with a raised generation raises it (catches a serial raised per `Apply` or never, R28); §10's
+  "one serial per `State`", its `Apply` half: two differing `State`s applied concurrently, many
+  times over under `-race`, the two stored `State`s carrying distinct serials, the later the
+  greater (catches the load, compare and store outside one lock, which gives two `State`s one
+  serial, R28); a
   `State` differing only in a setting needs E2's `State.Settings`, so T3.10's test holds that
   case (R24); bob's user read run by a fault wrapper (kind 3) on the `view` itself, outside any
   transaction so no retry re-reads it, which runs the real read, returning bob enabled, and
@@ -543,9 +552,11 @@ pkg/metadata/kvstore/
   D1's marker; the cache: a map with a `container/list` LRU, bounded at 262 144 entries and
   2²⁴ group references (the bounds passed to its constructor, each eviction counted), misses
   through `x/sync/singleflight`'s `DoChan` on a context detached from the first caller's and
-  bounded at RFC 18 §5.1's 20 seconds, each waiter keeping its own deadline; an entry stored
-  only when its `Built` equals `Current()` and its `Fresh` is non-zero (D6), served only while
-  `Built` equals `Current()` and before `Fresh`; D6's `ponytail:` at the store;
+  bounded at RFC 18 §5.1's 20 seconds, each waiter keeping its own deadline, single-flighted
+  on the key without the serial; looked up under `Current()`; an entry stored under its own
+  `Built`, never a serial read before resolving, and only when that `Built` equals `Current()`
+  and its `Fresh` is non-zero (D6), served only while `Built` equals `Current()` and before
+  `Fresh`; D6's `ponytail:` at the store;
   errors never stored; §7.2's `ponytail:` at the cache and the fixed-count `ponytail:`
   naming RFC 24's pool. The `ponytail:` in `admission.go` that asks for this cache goes.
   Consumed by S2 and E6 (which lowers `Fresh`).
@@ -569,7 +580,11 @@ pkg/metadata/kvstore/
   the old grants under the new version and serve them, R37); §10's "in-flight disable", bob's
   user read run by the fault wrapper on the `view`, which runs the real read, returning bob
   enabled, and holds that answer until released; meanwhile the disable is written and its
-  `State` applied; released: nothing stored, and bob's next call refused (R34); §10's "steady raises" on the injected clock, the serial
+  `State` applied; released: nothing stored, and bob's next call refused (R34); §10's "one
+  serial per `State`", its cache half: a warm `Ticket` caller's resolution held by the same
+  wrapper after its `State` load while a differing `State` is applied; released: nothing
+  stored, and the next call misses (catches a caller stored under `Current()` without its
+  `Built` compared, R28); the row's pass-through NTLM caller is E7's; §10's "steady raises" on the injected clock, the serial
   raised during every resolution: each call served after at most two, the second stored only
   when no raise came during it (R23); 32 calls of one key with the first resolution's `view`
   held until an `export_test.go` hook has reported all 32 waiting: one span, and a first
@@ -650,7 +665,7 @@ is reached once T3.2 and T3.6 have landed; the cache follows without changing wh
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T3.1, T3.2, T3.3 | 4 | — | the resolver in identity with its `State`, and `vfs`'s naming calls routed |
+| 1 | T3.1, T3.2, T3.3 | 4.25 | — | the resolver in identity with its `State`, and `vfs`'s naming calls routed |
 | 2 | T3.4, T3.5, T3.6 | 6.25 | PR 1, E8's T8.1 | the rest of resolution and admission calling it: one review of what a caller acts as |
 | 3 | T3.7, T3.8, T3.9 | 4.5 | PR 2 | the key, the cache built on it and its measurement |
 | 4 | T3.10 | 1 | PR 3, E2's T2.1 and T2.4 | what E2's principals and setting bring to resolution |
@@ -740,7 +755,7 @@ and has no `Principals.SharePolicy`.
   writes it alone); T3.6 reads it. RFC 23's epic 2's D20 and its T2.3 test reading a principal's
   access through its groups on `Grant` changed with #4336; that test is among those T3.5
   rewrites.
-- The estimate is 10 subtasks, 15.75 man-days, against the plan's 7 subtasks, 12.5 man-days:
-  3.25 man-days more for the grant read (T3.5) that `feat/storage-v2` lacks, with the
+- The estimate is 10 subtasks, 16 man-days, against the plan's 7 subtasks, 12.5 man-days:
+  3.5 man-days more for the grant read (T3.5) that `feat/storage-v2` lacks, with the
   `Grant` tests that assert effective access rewritten, the in-memory service's identity server (T3.6), moving `vfs`'s claimed-identity tests
   (D7), the serial (D2) and the benchmark as its own subtask. T3.8 is the least certain.
