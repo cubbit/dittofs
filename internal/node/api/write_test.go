@@ -354,10 +354,7 @@ func TestTwoWritesOneTag(t *testing.T) {
 	}
 	g := newGate(id)
 	disk.fault.SetFault(g)
-	first := make(chan reply, 1)
-	go func() {
-		first <- s.do(t, http.MethodPut, knobAt(id), `{"spec":{"value":"first"}}`, "If-Match", `"1"`)
-	}()
+	first := s.async(t, http.MethodPut, knobAt(id), `{"spec":{"value":"first"}}`, "If-Match", `"1"`)
 	await(t, g.reached, "the first write's record")
 	second := s.do(t, http.MethodPut, knobAt(id), `{"spec":{"value":"second"}}`, "If-Match", `"1"`)
 	close(g.release)
@@ -541,10 +538,7 @@ func TestPrepare(t *testing.T) {
 	id := uuid.NewString()
 	g := newGate(id)
 	disk.fault.SetFault(g)
-	held := make(chan reply, 1)
-	go func() {
-		held <- s.do(t, http.MethodPut, "/api/v1/vaults/"+id, `{"spec":{"password":"p"}}`, "If-None-Match", "*")
-	}()
+	held := s.async(t, http.MethodPut, "/api/v1/vaults/"+id, `{"spec":{"password":"p"}}`, "If-None-Match", "*")
 	await(t, g.reached, "the vault's record")
 	if r := s.do(t, http.MethodPut, knobAt(uuid.NewString()), `{"spec":{"value":"a"}}`, "If-None-Match", "*"); r.status != http.StatusOK {
 		t.Errorf("knob written while the vault's write is held: answered %d %s, want 200", r.status, r.body)
@@ -609,8 +603,7 @@ func TestWriterWaits(t *testing.T) {
 	put := func() reply {
 		return s.do(t, http.MethodPut, knobAt(id), `{"spec":{"value":"a"}}`, "If-None-Match", "*", "Idempotency-Key", "w1")
 	}
-	answered := make(chan reply, 1)
-	go func() { answered <- put() }()
+	answered := s.async(t, http.MethodPut, knobAt(id), `{"spec":{"value":"a"}}`, "If-None-Match", "*", "Idempotency-Key", "w1")
 	await(t, hold.Reached, "the node's Applied")
 	if got := s.knob(t, id); got.Generation != 1 {
 		t.Errorf("knob when Applied is reached: %+v, want it committed at 1", got)

@@ -122,25 +122,46 @@ type reply struct {
 
 // do sends method on path with body and the headers hdr names in pairs, a
 // name and its value.
-func (s *served) do(t *testing.T, method, path, body string, hdr ...string) reply {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), method, s.url+path, strings.NewReader(body))
+func (s *served) send(ctx context.Context, method, path, body string, hdr ...string) (reply, error) {
+	req, err := http.NewRequestWithContext(ctx, method, s.url+path, strings.NewReader(body))
 	if err != nil {
-		t.Fatal(err)
+		return reply{}, err
 	}
 	for i := 0; i+1 < len(hdr); i += 2 {
 		req.Header.Add(hdr[i], hdr[i+1])
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
+		return reply{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
+	return reply{method + " " + path, resp.StatusCode, resp.Header, b}, err
+}
+
+// do is send under the test's context, failing on an error.
+func (s *served) do(t *testing.T, method, path, body string, hdr ...string) reply {
+	t.Helper()
+	r, err := s.send(t.Context(), method, path, body, hdr...)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("%s %s: %v", method, path, err)
 	}
-	return reply{method + " " + path, resp.StatusCode, resp.Header, b}
+	return r
+}
+
+// async sends from a goroutine of its own, safe off the test's goroutine, and
+// delivers the reply; an error is delivered as status 0 with the error as
+// its body, so the test's assertion on the status names it.
+func (s *served) async(t *testing.T, method, path, body string, hdr ...string) <-chan reply {
+	ch := make(chan reply, 1)
+	go func() {
+		r, err := s.send(t.Context(), method, path, body, hdr...)
+		if err != nil {
+			r = reply{req: method + " " + path, body: []byte(err.Error())}
+		}
+		ch <- r
+	}()
+	return ch
 }
 
 // problem decodes r as a problem body, failing, naming r's request, unless
