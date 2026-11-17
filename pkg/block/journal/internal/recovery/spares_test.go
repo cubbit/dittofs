@@ -20,8 +20,11 @@ import (
 )
 
 // testCap is the segment cap every fixture plants at: a spare is a whole
-// cap-sized file, and every segment file here is exactly that long.
-const testCap = 8 << 10
+// cap-sized file, and every segment file here is exactly that long. It is
+// testSegCap, the scale the whole recovery suite accounts at, so the rig's
+// own runs, the hand-composed deps and the assembly's seeds all read one
+// figure.
+const testCap = testSegCap
 
 // plantTake plants segment id's record-less take at the cap: a header naming
 // pred and nothing after it, the whole-cap file a take on a spare leaves —
