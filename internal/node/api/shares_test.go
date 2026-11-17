@@ -205,7 +205,7 @@ func TestShareCreateDefaults(t *testing.T) {
 }
 
 // A create naming no namespace ID, a case sensitivity that is not one, no
-// flavour, no client rules, a value no field takes, a client rule that is
+// flavour or one twice, no client rules, a value no field takes, a client rule that is
 // not one or minimums that cannot be met together is refused naming the
 // field, and nothing is committed.
 func TestShareCreateRefuses(t *testing.T) {
@@ -222,6 +222,7 @@ func TestShareCreateRefuses(t *testing.T) {
 		{func(b *apiv1.NewShare) { b.Spec.CaseSensitivity = "maybe" }, "spec.case_sensitivity"},
 		{func(b *apiv1.NewShare) { b.ExportPolicy.Flavors = nil }, "export_policy.flavors"},
 		{func(b *apiv1.NewShare) { b.ExportPolicy.Flavors = []string{"ntlm"} }, "export_policy.flavors"},
+		{func(b *apiv1.NewShare) { b.ExportPolicy.Flavors = []string{"sys", "kerberos", "sys"} }, "export_policy.flavors"},
 		{func(b *apiv1.NewShare) { b.ExportPolicy.MinProtection = "sealed" }, "export_policy.min_protection"},
 		{func(b *apiv1.NewShare) { b.ExportPolicy.MinProtection = "privacy" }, "export_policy.min_protection"},
 		{func(b *apiv1.NewShare) { b.ExportPolicy.Clients = nil }, "export_policy.clients"},

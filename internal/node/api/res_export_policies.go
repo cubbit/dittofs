@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/netip"
+	"slices"
 	"strconv"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -41,7 +42,7 @@ func policyOf(p entity.ExportPolicy) apiv1.ExportPolicySpec {
 
 // policyFrom is spec as the store holds share's export policy, a value that
 // does not parse refused naming its field below at. At least one flavour is
-// required, and none is defaulted; an empty minimum is none, and an empty
+// required, none is defaulted, and none may be named twice; an empty minimum is none, and an empty
 // squash root. The client rules must be stated, an empty list admitting every
 // client. A rule naming other than exactly one match, and minimums that
 // cannot be met together, are refused naming their field here, ahead of the
@@ -59,6 +60,9 @@ func policyFrom(share entity.ShareID, spec apiv1.ExportPolicySpec, at string) (e
 	for i, f := range spec.Flavors {
 		if p.Flavors[i].UnmarshalText([]byte(f)) != nil {
 			return p, &fieldError{field: at + "flavors", detail: "not a flavour: none, sys or kerberos"}
+		}
+		if slices.Contains(p.Flavors[:i], p.Flavors[i]) {
+			return p, &fieldError{field: at + "flavors", detail: "names " + f + " twice"}
 		}
 	}
 	for _, e := range []struct {
