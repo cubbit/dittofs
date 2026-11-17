@@ -1402,7 +1402,8 @@ type ControlPlane interface {
 	// record's After and Outcome, the idempotency record's Answer — since
 	// Write records them after fn returns. Before fn, Write reads
 	// that key's record with conflict tracking: one with the same digest returns
-	// ErrIdempotentReplay carrying the recorded answer, and fn does not run; one
+	// an *IdempotentReplay error whose Answer is the recorded answer, and fn
+	// does not run; one
 	// with another digest returns ErrIdempotencyMismatch. Two requests that both
 	// miss the record conflict on its key, so the one that retries finds it. A
 	// transaction conflict retries the whole transaction, the key's read
