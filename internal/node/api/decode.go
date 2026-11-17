@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
@@ -39,30 +40,70 @@ func decode(r io.Reader, v any) error {
 	var te *json.UnmarshalTypeError
 	switch err := json.Unmarshal(b, v); {
 	case errors.As(err, &te):
-		return &fieldError{field: te.Field, detail: "want " + te.Type.String() + ", got " + te.Value}
+		return &fieldError{field: te.Field, detail: "want " + jsonKind(te.Type) + ", got " + strings.Replace(te.Value, "bool", "boolean", 1)}
 	case err != nil:
 		return &fieldError{detail: err.Error()}
 	}
 	return nil
 }
 
+// jsonKind is what a value of Go type t is written as in JSON, in the
+// client's terms rather than Go's.
+func jsonKind(t reflect.Type) string {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if reflect.PointerTo(t).Implements(textUnmarshaler) {
+		return "string"
+	}
+	switch t.Kind() {
+	case reflect.Bool:
+		return "boolean"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return "integer"
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return "non-negative integer"
+	case reflect.Float32, reflect.Float64:
+		return "number"
+	case reflect.String:
+		return "string"
+	case reflect.Slice, reflect.Array:
+		if t.Elem().Kind() == reflect.Uint8 {
+			return "string"
+		}
+		return "array"
+	}
+	return "object"
+}
+
+// maxDepth bounds how deeply a request body's objects and arrays nest.
+// checkKeys reads a body before encoding/json does, so encoding/json's own
+// bound never applies to it.
+const maxDepth = 64
+
 // checkKeys refuses the first JSON value b holds unless no key repeats in
-// any of its objects and, under a t that is not nil, every key of an object
-// read into a struct is exactly the JSON name of one of its fields. What
-// follows the value is its callers' to refuse.
+// any of its objects, its objects and arrays nest at most maxDepth deep and,
+// under a t that is not nil, every key of an object read into a struct is
+// exactly the JSON name of one of its fields. What follows the value is its
+// callers' to refuse.
 func checkKeys(b []byte, t reflect.Type) error {
-	return walk(json.NewDecoder(bytes.NewReader(b)), t, "")
+	return walk(json.NewDecoder(bytes.NewReader(b)), t, nil, 0)
 }
 
 var unmarshaler = reflect.TypeFor[json.Unmarshaler]()
 var textUnmarshaler = reflect.TypeFor[encoding.TextUnmarshaler]()
 
-// walk reads the next value from dec as checkKeys checks it, at the field
-// path. A type that decodes itself is checked for repeated keys only.
-func walk(dec *json.Decoder, t reflect.Type, path string) error {
+// walk reads the next value from dec as checkKeys checks it, depth objects
+// and arrays down, at the field path, one key per element and joined only to
+// name a refused field. A type that decodes itself is checked for repeated
+// keys only.
+func walk(dec *json.Decoder, t reflect.Type, path []string, depth int) error {
 	tok, err := dec.Token()
 	if err != nil {
 		return &fieldError{detail: err.Error()}
+	}
+	if (tok == json.Delim('{') || tok == json.Delim('[')) && depth == maxDepth {
+		return &fieldError{field: strings.Join(path, "."), detail: "nested more than " + strconv.Itoa(maxDepth) + " deep"}
 	}
 	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
@@ -83,12 +124,9 @@ func walk(dec *json.Decoder, t reflect.Type, path string) error {
 				return &fieldError{detail: err.Error()}
 			}
 			k := kt.(string)
-			name := k
-			if path != "" {
-				name = path + "." + k
-			}
+			at := append(path, k)
 			if seen[k] {
-				return &fieldError{field: name, detail: "repeated key"}
+				return &fieldError{field: strings.Join(at, "."), detail: "repeated key"}
 			}
 			seen[k] = true
 			var et reflect.Type
@@ -96,13 +134,13 @@ func walk(dec *json.Decoder, t reflect.Type, path string) error {
 			case fields != nil:
 				f, ok := fields[k]
 				if !ok {
-					return &fieldError{field: name, detail: "unknown field"}
+					return &fieldError{field: strings.Join(at, "."), detail: "unknown field"}
 				}
 				et = f
 			case t != nil && t.Kind() == reflect.Map:
 				et = t.Elem()
 			}
-			if err := walk(dec, et, name); err != nil {
+			if err := walk(dec, et, at, depth+1); err != nil {
 				return err
 			}
 		}
@@ -112,7 +150,7 @@ func walk(dec *json.Decoder, t reflect.Type, path string) error {
 			et = t.Elem()
 		}
 		for dec.More() {
-			if err := walk(dec, et, path); err != nil {
+			if err := walk(dec, et, path, depth+1); err != nil {
 				return err
 			}
 		}

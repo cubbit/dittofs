@@ -340,6 +340,24 @@ func TestBodyOverTheBound(t *testing.T) {
 	}
 }
 
+// A body nesting arrays or objects deeper than the bound, up to the size
+// bound, is refused 400 invalid and writes nothing.
+func TestDeepBodyRefused(t *testing.T) {
+	put := "/api/v1/netgroups/" + api.TestID
+	s := serve(t, as(entity.RoleOperator, false))
+	for _, body := range []string{
+		`{"members":` + strings.Repeat("[", 1<<20-20),
+		strings.Repeat(`{"a":`, (1<<20)/5-1),
+	} {
+		if r := s.do(t, http.MethodPut, put, body); r.status != http.StatusBadRequest || r.problem(t).Code != "invalid" {
+			t.Errorf("PUT of %d bytes starting %.12s: answered %d %.200s, want 400 invalid", len(body), body, r.status, r.body)
+		}
+	}
+	if got := netgroups(t, s); len(got) != 0 {
+		t.Errorf("netgroups held after the refused PUTs: %+v, want none", got)
+	}
+}
+
 // An Authenticate that fails answers its error's problem and runs no row.
 func TestAuthenticateFails(t *testing.T) {
 	failing := serve(t, func(*http.Request) (auth.Caller, error) { return auth.Caller{}, vfserr.ErrAccess })
