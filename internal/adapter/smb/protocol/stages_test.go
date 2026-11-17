@@ -179,6 +179,7 @@ func TestEncodeAnswersAFailureWithTheErrorBody(t *testing.T) {
 		want []byte
 	}{
 		{"STATUS_NOT_SUPPORTED", wire.StatusNotSupported, append(reply([]byte{0xbb, 0, 0, 0xc0}), errorBody...)},
+		{"STATUS_NO_MORE_FILES, a warning", core.Status(0x80000006), append(reply([]byte{0x06, 0, 0, 0x80}), errorBody...)},
 		{"STATUS_SUCCESS", 0, reply([]byte{0, 0, 0, 0})},
 	} {
 		out := &resources.Buf{}
@@ -271,6 +272,9 @@ func newRouter() *router {
 func TestRouteGivesTheOneTableAtNoLevel(t *testing.T) {
 	r := newRouter()
 	for cmd := uint16(0); cmd <= 0x0012; cmd++ {
+		if cmd == wire.CommandCancel {
+			continue // answered nothing, in its own test
+		}
 		for _, flags := range []uint32{0, related} {
 			h, err := headerStage{}.Decode(&resources.Buf{B: request(cmd, flags, 0, 1, 8, 0)}, 0)
 			if err != nil {
@@ -366,5 +370,40 @@ func TestHeaderStageAllocs(t *testing.T) {
 	chain := &resources.Buf{B: chainOfThree()}
 	if n := testing.AllocsPerRun(100, func() { _, _ = hs.Decode(chain, 80) }); n != 1 {
 		t.Errorf("a member past the first allocates %v times, want 1", n)
+	}
+}
+
+// A CANCEL is refused with the table and its sentinel, and no request: the
+// stages' table answers it nothing (MS-SMB2 3.3.5.16).
+func TestACancelIsAnsweredNothing(t *testing.T) {
+	req := request(wire.CommandCancel, 0, 0, 42, 36, 0)
+	h, err := headerStage{}.Decode(&resources.Buf{B: req}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRouter()
+	got, rq, err := r.Route(h, nil)
+	if !errors.Is(err, ErrCancel) || rq != nil || got != r.table {
+		t.Errorf("CANCEL routes %p, %v, %v; want the table, no request and ErrCancel", got, rq, err)
+	}
+}
+
+// otherHeader is a header of another protocol, not a double of one: it exists
+// only to reach the stage's type checks.
+type otherHeader struct{}
+
+func (otherHeader) Op() uint32            { return 0 }
+func (otherHeader) Version() core.Version { return 0 }
+func (otherHeader) Next() int             { return 0 }
+func (otherHeader) Related() bool         { return false }
+
+// A header the stage did not decode is refused by Encode and has no arguments.
+func TestAForeignHeader(t *testing.T) {
+	out := &resources.Buf{}
+	if err := (headerStage{}).Encode(otherHeader{}, 0, out); !errors.Is(err, errForeign) {
+		t.Errorf("Encode of a foreign header returns %v", err)
+	}
+	if args := (headerStage{}).Args(&resources.Buf{B: make([]byte, 64)}, otherHeader{}); args != nil {
+		t.Errorf("Args of a foreign header is %v", args)
 	}
 }

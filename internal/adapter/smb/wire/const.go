@@ -24,6 +24,10 @@ const (
 // arrive with the reader that reads them.
 const ProtocolSMB2 = 0x424D53FE
 
+// CommandCancel is CANCEL, which is answered nothing (MS-SMB2 2.2.1.2,
+// 3.3.5.16).
+const CommandCancel = 0x000C
+
 // lastCommand is OPLOCK_BREAK, the highest of the command codes MS-SMB2
 // 2.2.1.2 defines, all those from 0 to it. MS-SMB2 2.2.1.1 adds 0x0013,
 // SERVER_TO_CLIENT_NOTIFICATION, which only a server sends (MS-SMB2 2.2.44).

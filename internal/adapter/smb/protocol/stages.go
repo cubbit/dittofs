@@ -16,7 +16,13 @@ var (
 	_ core.Router      = (*router)(nil)
 )
 
-var errForeign = errors.New("smb: a header this stage did not decode")
+var (
+	errForeign = errors.New("smb: a header this stage did not decode")
+
+	// ErrCancel is a CANCEL, which is answered nothing (MS-SMB2 3.3.5.16): the
+	// router refuses it, and the stages' table maps this to a row with no reply.
+	ErrCancel = errors.New("smb: a CANCEL is answered nothing")
+)
 
 // header is the SMB2 header at offset 0 of its record.
 //
@@ -130,6 +136,12 @@ func (headerStage) Encode(h core.Header, s core.Status, out *resources.Buf) erro
 	return nil
 }
 
+// decision: the ERROR body is written for every status but success, though
+// MS-SMB2 3.3.4.4 counts only the failure severities, since every non-success
+// status any command served here returns is a failure, and RFC 22 section
+// 16.5 leaves the body to the header codec. A command answering a
+// warning-severity status with a body of its own withdraws it.
+
 // Chain pads out to the reply at prev plus a multiple of 8 and points that
 // reply's NextCommand at the one appended after it (MS-SMB2 3.3.4.1.3).
 func (headerStage) Chain(out *resources.Buf, prev int) error {
@@ -173,9 +185,13 @@ type router struct {
 // no state. A request's dialect is the one NEGOTIATE fixes for its
 // connection, and its level is what its session and tree reach; no stage
 // negotiates or keeps a session or a tree yet, so none has either, and a row
-// that needs more than nothing is refused by core's check. Withdrawn once
-// NEGOTIATE fixes a dialect and a request's session and tree are resolved
-// here.
-func (r *router) Route(core.Header, *core.Request) (*core.OpTable, *core.Request, error) {
+// that needs more than nothing meets its check only once the pipeline's row
+// checks land. Withdrawn once NEGOTIATE fixes a dialect and a request's
+// session and tree are resolved here.
+func (r *router) Route(h core.Header, _ *core.Request) (*core.OpTable, *core.Request, error) {
+	// A CANCEL is answered nothing (MS-SMB2 3.3.5.16).
+	if h.Op() == wire.CommandCancel {
+		return r.table, nil, ErrCancel
+	}
 	return r.table, &core.Request{Version: 0, Level: core.NeedsNothing, Conn: r.conn}, nil
 }
