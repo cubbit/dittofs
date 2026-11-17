@@ -148,6 +148,30 @@ func testNodeStatuses(t *testing.T, kvo Opener) {
 	}
 }
 
+// The registered nodes' statuses are one per node record, in node ID
+// order: a node that has reported none reads as the zero status naming it,
+// and a status whose node has no record is left out.
+func testRegisteredStatuses(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	nodes := s.Nodes()
+	ids := []entity.NodeID{entity.NodeID(uuid.New()), entity.NodeID(uuid.New()), entity.NodeID(uuid.New())}
+	slices.SortFunc(ids, func(a, b entity.NodeID) int { return slices.Compare(a[:], b[:]) })
+	reporting, silent, removed := ids[0], ids[1], ids[2]
+	for _, id := range []entity.NodeID{reporting, silent} {
+		_, err := s.RaiseNodeEpoch(ctx, id)
+		must(t, err)
+	}
+	for _, id := range []entity.NodeID{reporting, removed} {
+		must(t, nodes.PutNodeStatus(ctx, entity.NodeStatus{Node: id, Settings: 7, Conditions: []byte("ready")}))
+	}
+	got, err := nodes.RegisteredStatuses(ctx)
+	must(t, err)
+	want := []entity.NodeStatus{{Node: reporting, Settings: 7, Conditions: []byte("ready")}, {Node: silent}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("registered statuses:\n got %+v\nwant %+v", got, want)
+	}
+}
+
 // A node lists every setting, at every scope, and every share, each
 // resumable after any record it read; no other kind is listed.
 func testListReconciledRecords(t *testing.T, kvo Opener) {

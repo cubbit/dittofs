@@ -3,7 +3,11 @@ package api
 import (
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
@@ -39,5 +43,48 @@ func TestApplied(t *testing.T) {
 		if got := (perPage{statuses: tc.statuses}).applied(ref, tc.at, tc.through); got != tc.want {
 			t.Errorf("%s: applied %+v, want %+v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// Of counts the registered nodes, read from the store: a lapsed node, one
+// registered whose status is behind, counts toward of and not as applied,
+// and a status whose node has no record, as a removed node leaves, counts
+// in neither.
+func TestAppliedCountsRegisteredNodes(t *testing.T) {
+	db, err := badgerkv.Open(badgerkv.Options{NodeID: uuid.New()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close the KV: %v", err)
+		}
+	})
+	if err := kvstore.Init(t.Context(), db, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	st, err := kvstore.Open(t.Context(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, lapsed, removed := entity.NodeID(uuid.New()), entity.NodeID(uuid.New()), entity.NodeID(uuid.New())
+	for _, id := range []entity.NodeID{current, lapsed} {
+		if _, err := st.RaiseNodeEpoch(t.Context(), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, through := range map[entity.NodeID]uint64{current: 5, lapsed: 2, removed: 9} {
+		if err := st.Nodes().PutNodeStatus(t.Context(), entity.NodeStatus{Node: id, Settings: through}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statuses, err := st.Nodes().RegisteredStatuses(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := entity.ResourceRef{Kind: entity.ResourceSetting, ID: []byte("knob")}
+	got := perPage{statuses: statuses}.applied(ref, 5, func(st entity.NodeStatus) uint64 { return st.Settings })
+	if want := (apiv1.Applied{Nodes: 1, Of: 2}); got != want {
+		t.Errorf("applied with a current, a lapsed and a removed node: %+v, want %+v", got, want)
 	}
 }

@@ -42,25 +42,24 @@ type listing[E, T any] struct {
 	item    func(E, perPage) T
 }
 
-// nodeStatuses is the store's read of every node's status, in node ID
-// order, resuming after a node; the zero ID starts from the first.
+// nodeStatuses is the store's read of every registered node's status, read
+// with the node records in one view: a node that has reported none has the
+// zero status, and a status whose node has no record is left out.
 type nodeStatuses interface {
-	NodeStatuses(ctx context.Context, after entity.NodeID) iter.Seq2[entity.NodeStatus, error]
+	RegisteredStatuses(ctx context.Context) ([]entity.NodeStatus, error)
 }
 
 // perPage is what a listing reads once per page and hands every item: every
-// node's status.
+// registered node's status.
 type perPage struct{ statuses []entity.NodeStatus }
 
 // applied is on how many nodes the record ref names is applied, of every
-// node that reports a status: those whose position of the record's kind,
-// through returns, has reached at, and that hold the record neither refused
-// nor restart-pending. A kind that carries no position passes a nil
-// through, so its records are applied on every node from their commit.
-//
-// ponytail: every node that has written a status counts toward of, a node
-// removed or lapsed included. Count only registered, unlapsed nodes when
-// one that left the installation makes a record read as not applied.
+// registered node: those whose position of the record's kind, through
+// returns, has reached at, and that hold the record neither refused nor
+// restart-pending. A kind that carries no position passes a nil through,
+// so its records are applied on every node from their commit. A node
+// removed from the installation counts in neither number, and a lapsed one
+// counts toward of until it is removed, so its record reads as not applied.
 func (p perPage) applied(ref entity.ResourceRef, at uint64, through func(entity.NodeStatus) uint64) apiv1.Applied {
 	a := apiv1.Applied{Of: len(p.statuses)}
 	is := func(r entity.ResourceRef) bool { return r.Kind == ref.Kind && bytes.Equal(r.ID, ref.ID) }
@@ -83,7 +82,7 @@ func (p perPage) applied(ref entity.ResourceRef, at uint64, through func(entity.
 // was there when the listing started. A query parameter the listing does not
 // filter on is refused, naming it: a filter the store would answer by a scan
 // is not offered. With several at fault, the 400 names the first in name
-// order. Every node's status is read once for the page, whatever
+// order. Every registered node's status is read once for the page, whatever
 // its size, and handed to each item.
 func list[E, T any](l listing[E, T]) adapter {
 	return func(ctx context.Context, s *Server, r *http.Request, _ [16]byte) (answer, error) {
@@ -115,11 +114,9 @@ func list[E, T any](l listing[E, T]) adapter {
 			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
 		}
 		var pp perPage
-		for st, err := range s.d.Nodes.NodeStatuses(ctx, entity.NodeID{}) {
-			if err != nil {
-				return answer{}, err
-			}
-			pp.statuses = append(pp.statuses, st)
+		var err error
+		if pp.statuses, err = s.d.Nodes.RegisteredStatuses(ctx); err != nil {
+			return answer{}, err
 		}
 		page := apiv1.Page[T]{Items: []T{}}
 		var last []byte

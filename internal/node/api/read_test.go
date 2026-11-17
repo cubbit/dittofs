@@ -571,10 +571,12 @@ func TestCursorOutsideListing(t *testing.T) {
 	}
 }
 
-// A page reads every node's status once, whatever its size, and each item's
-// applied is computed from them: with three statuses more, a page of one
-// item and a page of fifty each scan three rows more, where a read per item
-// would scan three more per item.
+// A page reads every registered node's status once, whatever its size, and
+// each item's applied is computed from them: with three nodes more, each a
+// record and a status, a page of one item and a page of fifty each scan six
+// rows more, where a read per item would scan six more per item. A status
+// whose node has no record, as a removed node leaves, counts in neither
+// number.
 func TestListingReadsNodeStatusesOncePerPage(t *testing.T) {
 	db, err := badgerkv.Open(badgerkv.Options{NodeID: testNode})
 	if err != nil {
@@ -602,11 +604,18 @@ func TestListingReadsNodeStatusesOncePerPage(t *testing.T) {
 	nodes := 0
 	addNodes := func(n int) {
 		for range n {
-			if err := st.Nodes().PutNodeStatus(t.Context(), entity.NodeStatus{Node: entity.NodeID(uuid.New())}); err != nil {
+			id := entity.NodeID(uuid.New())
+			if _, err := st.RaiseNodeEpoch(t.Context(), id); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Nodes().PutNodeStatus(t.Context(), entity.NodeStatus{Node: id}); err != nil {
 				t.Fatal(err)
 			}
 		}
 		nodes += n
+	}
+	if err := st.Nodes().PutNodeStatus(t.Context(), entity.NodeStatus{Node: entity.NodeID(uuid.New())}); err != nil {
+		t.Fatal(err)
 	}
 	scanned := func(q string) int {
 		c.Take()
@@ -626,8 +635,8 @@ func TestListingReadsNodeStatusesOncePerPage(t *testing.T) {
 	for _, q := range []string{"?limit=1", "?limit=50"} {
 		before := scanned(q)
 		addNodes(3)
-		if got := scanned(q) - before; got != 3 {
-			t.Errorf("GET tags%s: three node statuses more scanned %d rows more, want 3, one read of them per page", q, got)
+		if got := scanned(q) - before; got != 6 {
+			t.Errorf("GET tags%s: three nodes more scanned %d rows more, want 6, one read of them per page", q, got)
 		}
 	}
 }

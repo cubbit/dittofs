@@ -165,6 +165,39 @@ func (n Nodes) NodeStatuses(ctx context.Context, after entity.NodeID) iter.Seq2[
 	}
 }
 
+// RegisteredStatuses reads every node that has a node record, in node ID
+// order, with its status, all in one view: a node that has reported no
+// status reads as the zero status naming it, and a status whose node has no
+// record, as one removed from the installation leaves, is left out.
+//
+// ponytail: every call reads every node's rows in one view, O(nodes). Keep
+// a count of registered nodes beside the records when a listing's page
+// shows this read in a profile.
+func (n Nodes) RegisteredStatuses(ctx context.Context) (sts []entity.NodeStatus, err error) {
+	err = n.s.kv.View(ctx, func(r kv.Reader) error {
+		sts = sts[:0]
+		for kvp, err := range r.Scan([]byte{keys.KindN}, nil) {
+			if err != nil {
+				return err
+			}
+			k := kvp.Key
+			switch {
+			case len(k) == 1+keys.IDLen:
+				sts = append(sts, entity.NodeStatus{Node: entity.NodeID(k[1:])})
+			case len(k) == 2+keys.IDLen && k[1+keys.IDLen] == keys.NSt &&
+				len(sts) > 0 && sts[len(sts)-1].Node == entity.NodeID(k[1:1+keys.IDLen]):
+				s, err := decodeNodeStatus(sts[len(sts)-1].Node, kvp.Value)
+				if err != nil {
+					return err
+				}
+				sts[len(sts)-1] = s
+			}
+		}
+		return nil
+	})
+	return sts, err
+}
+
 // Record is one record List yields: its Setting or its Share, as the kind
 // listed says, and After, what List takes to resume after it.
 type Record struct {
