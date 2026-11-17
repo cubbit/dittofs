@@ -333,6 +333,31 @@ that needs it.
 - **A20. `EvidenceDigest`** (RFC 18 §3.1): `Evidence`'s `digest` is typed `EvidenceDigest`, a
   named `[32]byte` declared beside it, so epic 1's no-key check exempts that type alone and still
   rejects any other byte array in a type that must hold no key.
+- **A21. Epic 3's breakdown folded into RFC 18** (RFC 18 §2.6, §3.1, §3.8, §6.1, §6.3, §7.1, §7.2,
+  §9.2 and §10; epic 3's §9 and its D1, D3, D4 and D6):
+  - §6.1's `Resolver` gains `Current() uint64`, the serial of the `State` a resolution starting now
+    reads, so S1's surface gains it; epic 3's T3.3 adds it on `*Server`. The serial is a field of
+    `State` (§2.6), so `Resolve` stamps the serial of the `State` it loaded and `Current()` is one
+    load of the current `State`. `Apply` raises the serial only when the applied `State` differs,
+    under one lock across its load, compare and store, so two concurrent `Apply`s never give two
+    differing `State`s one serial (§10's "one serial per `State`" row), and `Caller.Built` holds
+    it, not the principals generation, so `identity.ntlm` turned off with no principal change still
+    drops cached callers;
+  - the caller cache is admission's, not identity's (§2.6), and holds the whole `Caller`, grants
+    and flags included (§7.1), keyed also on the read-only cause admission handed `Resolve`, so it
+    needs neither the netgroups' nor the share list's version;
+  - a caller with a zero `Fresh`, a local principal's, is never stored (§7.1), so a disable
+    reaches its next call with no `State` applied; §10's "disable takes effect" and "NTLM off"
+    rows follow;
+  - `Evidence` keeps no digest and A20's `EvidenceDigest` goes: `Key()` digests the whole
+    `Identity` on each call (§3.1, §6.1), since an unexported field set at sign-in is lost
+    crossing a node channel;
+  - the groups of the evidence's verified SIDs include each mapped principal's store closure (§6.3);
+  - §3.8's expiry is refused by the adapter, which alone knows which requests release state, and
+    `Resolve` never checks `Expires`, so epic 5 owns only the `Expires` value and epic 8 no longer
+    tests a refusal at `Resolve`;
+  - §9.2 names the caller cache's metrics, `vfs_caller_cache_lookups_total{result}` and
+    `vfs_caller_cache_evictions_total`.
 
 ## 1. Introduction
 
@@ -435,8 +460,9 @@ in `integration/ad-dc` only (D11). The Tier 2 rows run through the SMB adapter, 
 1 rows that need several middle epics land in the integration epic. Two Tier 2 rows need no adapter,
 and the integration epic runs them in-process against identity: "admin needs proof" (its Kerberos
 and PAC halves) and "NTLM without a domain controller"; it also runs "NTLM off"'s password-set half
-in-process, ahead of epic 9, and RFC 18 §3.8's expiry of a Kerberos identity at `Resolve`, whose
-§10 row, "expiry", drives it over NFS and stays deferred.
+in-process, ahead of epic 9. RFC 18 §3.8's expiry is the adapter's refusal, not `Resolve`'s (A21):
+its §10 row, "expiry", drives it over NFS and stays deferred, and RFC 22's "§4.1 expired session"
+row drives it over SMB.
 
 Deferred with the NFS side or OpenID Connect (§6 O2): "one uid, two proofs", "client in the key",
 "root" (its `AUTH_SYS` clauses; its directory clause is epic 6's), "error is not "unknown"",
@@ -1013,7 +1039,10 @@ keeps none.
 
 ```go
 // internal/vfs admission, step 4 (RFC 17 §4.9).
-key := callerKey{id.Key(), share, pol.Version, pol.GrantsVersion, s.identityGen(), clientIfRuled}
+key := callerKey{id.Key(), pol, narrowed, clientIfRuled, 0} // single flight without the serial (A21)
+if c, ok := s.cache.Get(key.at(s.deps.Identity.Current())); ok && s.clock.Now().Before(c.Fresh) {
+	return c, nil // served only under the State it was resolved under
+}
 ch := s.callers.DoChan(key, func() (any, error) { // single flight per key (§7.1)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resolveBound) // not the first caller's ctx
 	defer cancel()
@@ -1025,10 +1054,13 @@ case r := <-ch:
 case <-ctx.Done():
 	return nil, ctx.Err()
 }
+if err == nil && !c.Fresh.IsZero() && c.Built == s.deps.Identity.Current() {
+	s.cache.Add(key.at(c.Built), c) // under its own Built, never the serial read before resolving
+}
 
 func (s *Server) Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, ro ReadOnlyCause) (*Caller, error) {
-	st := s.state.Load() // read before any store read; stamps Built (§7.2)
-	c := &Caller{Built: st.Generation}
+	st := s.state.Load() // read before any store read (§7.2)
+	c := &Caller{Built: st.Serial} // the loaded State's own serial, never a second load (A21)
 	if err := id.consistent(); err != nil { // a forwarded identity inconsistent with itself: ErrInvalid (§2.6), first
 		return nil, err
 	}
@@ -1045,9 +1077,10 @@ func (s *Server) Resolve(ctx context.Context, id Identity, p metadata.SharePolic
 	c.Authenticated, c.Admin, c.Privileged = flags(id, c, p) // 5. (§6.5)
 	return c, nil
 }
-// A cached Caller whose Built is below the current Generation is neither stored
-// nor served, so a PGEN raise reaches every node within a second; a call whose
-// own resolution went stale resolves once more and is served that (§7.2).
+// A cached Caller whose Built is not Current() is neither stored nor served, so
+// a PGEN raise reaches every node within a second, and one with a zero Fresh is
+// never stored; a call whose own resolution went stale resolves once more and
+// is served that (§7.2).
 ```
 
 **Directory and machine account** (RFC 18 §3.5, §5; A3, D8). `Find` reads the directory through its
@@ -1264,8 +1297,8 @@ proof.
 - RFC 18 ID1 (two identities sharing a uid get different proof keys and never share an entry), ID5
   (a store error injected during resolution refuses, never anonymous), ID8, ID10 and ID14 (a `none`
   grant refuses where a group grant would admit) hold at the resolver's layer;
-- RFC 18 §10's rows "in-flight disable", "steady raises" and "group cap" pass, and "forwarded
-  identity"'s unit row;
+- RFC 18 §10's rows "in-flight disable", "one serial per `State`", "steady raises" and "group cap"
+  pass, and "forwarded identity"'s unit row;
 - RFC 18 §7.1's "whole value" rule holds by a reflection test: changing each field of `Identity` and
   `Evidence` in turn, a deny-only SID moved into `SIDs` among them, changes `Key()`, and changing
   each input of `callerKey` changes it, so a field added later fails the test until the key covers
@@ -1332,7 +1365,8 @@ expiry).
 mints machine principals.
 
 **Owns:** RFC 18 §2.4's machine principals, §3.3 (the imported keytab, A4), §3.4, §3.7's sign-in
-half for Kerberos, §3.8's expiry, and §4.2 steps 1, 2 and 4.
+half for Kerberos, §3.8's `Expires` value (the refusal past it is the adapter's, A21), and §4.2
+steps 1, 2 and 4.
 
 **Done when:**
 - RFC 18 §10's rows "PAC", "replay", "clock skew", "service name", "ticket addresses", "keytab
@@ -1373,7 +1407,8 @@ half for Kerberos, §3.8's expiry, and §4.2 steps 1, 2 and 4.
   the directory's realm the SID the directory holds for the name, and the PAC binds to it for a
   record the row selected (RFC 18 §4.2, A17).
 - Machine principals minted on first sign-in (RFC 18 §2.4).
-- Expiry, and the release calls past it (RFC 18 §3.8).
+- `Evidence.Expires` set from the ticket's end time (RFC 18 §3.8); refusing a call past it, and
+  letting the release calls through, is the adapter's (RFC 20 §4.4, A21).
 - `Keys.Session` as RFC 4121 §2's context key, with a test for an AP-REQ whose authenticator holds
   no subkey: the session key is the ticket's.
 
@@ -1532,10 +1567,8 @@ Identity runs inside the node, and the rows that need several middle epics toget
   error", "no local password for a directory user", "NTLM without a domain controller" and "NetBIOS
   name while joined" pass;
 - the secret-free capture test below passes;
-- "NTLM off"'s password-set half passes in-process, its turn-back-on refusal through #4050's
-  settings route (A13), and a Kerberos
-  identity past its `Expires` is
-  refused by `Resolve` (RFC 18 §3.8), as §1.4 says;
+- "NTLM off"'s password-set half passes in-process, and its turn-back-on refusal through #4050's
+  settings route (A13), as §1.4 says;
 - `node.New` builds identity and hands it to `*vfs.Filesystem` and the API, and reconcile hands each
   new `State` to `Apply`;
 - the §1.4 scenario assigned to integration passes.
@@ -1557,7 +1590,7 @@ Identity runs inside the node, and the rows that need several middle epics toget
   body included, finds no idempotency record for a join (#4050 keeps none), and finds in none of them a password, NT hash, key,
   session key, the administrator credential or a user's e-mail address (RFC 18 §2.2, §3.1, §3.5).
 - The Tier 2 halves §1.4 lists as needing no adapter, run in-process: "NTLM off"'s password set
-  held across the change, and its turn-back-on refusal through #4050's settings route, and a Kerberos identity past its `Expires` refused by `Resolve` (RFC 18 §3.8).
+  held across the change, and its turn-back-on refusal through #4050's settings route.
 
 ### Epic 9 — E2E green 🔀
 
@@ -1728,7 +1761,7 @@ What the plan knowingly does not build. Each row cites the section that defers i
 | RFC 18 §3.5 | E2 (NT hashes, NTLM off), E4 (local), E6 (`identity.netbios_name` against the directory's NetBIOS domain), E7 (pass-through, machine account) |
 | RFC 18 §3.6 | E4 |
 | RFC 18 §3.7 | E3 (resolution), E4, E5, E7 (sign-in) |
-| RFC 18 §3.8 | E4, E5 (expiry) |
+| RFC 18 §3.8 | E4, E5 (`Expires`; the refusal is the adapter's, A21) |
 | RFC 18 §4.1 | E1 (interface), E2 |
 | RFC 18 §4.2 | E5 (steps 1, 2, 4), E6 (step 3) |
 | RFC 18 §4.3 | deferred, O2 |
