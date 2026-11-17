@@ -17,14 +17,12 @@ func (c *Client) Shares() Resource[apiv1.ShareSpec, apiv1.ShareStatus] {
 
 // CreateShare creates the share s names, with its export policy.
 func (c *Client) CreateShare(ctx context.Context, s apiv1.NewShare) (Tagged[apiv1.ShareSpec, apiv1.ShareStatus], error) {
-	return create[apiv1.ShareSpec, apiv1.ShareStatus](ctx, c, "/api/v1/shares", s, nil)
+	return tagged[apiv1.ShareSpec, apiv1.ShareStatus](c.write(ctx, http.MethodPost, "/api/v1/shares", s, "", nil))
 }
 
 // ExportPolicies is each share's export policy, named by the share's ID.
-// It serves Get, Put and Patch only: a policy is created with its share and
-// goes with it.
-func (c *Client) ExportPolicies() Resource[apiv1.ExportPolicySpec, struct{}] {
-	return Resource[apiv1.ExportPolicySpec, struct{}]{c: c, path: "/api/v1/shares", sub: "/export-policy"}
+func (c *Client) ExportPolicies() Singleton[apiv1.ExportPolicySpec] {
+	return Singleton[apiv1.ExportPolicySpec]{c: c, path: "/api/v1/shares", sub: "/export-policy"}
 }
 
 // Nodes is the nodes, read only.

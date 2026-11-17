@@ -54,7 +54,12 @@ func admin() func(*http.Request) (auth.Caller, error) {
 
 // serve starts the API on 127.0.0.1:0 over an in-memory harness, with
 // authenticate, nil refusing every caller 401, and a front on 127.0.0.1:0
-// passing every request to it.
+// passing every request to it. The test fails if a fault added to the front
+// never matched a request.
+//
+// ponytail: the client reaches the API through the front's own listeners,
+// plain, TLS and a socket, not the node's. Drive the node's own socket and
+// TLS listener instead once the API serves them.
 func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error)) *served {
 	t.Helper()
 	h := nodetest.New(t, nodetest.InMemory())
@@ -85,6 +90,13 @@ func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error)) 
 	t.Cleanup(f.tr.CloseIdleConnections)
 	hs := httptest.NewServer(f)
 	t.Cleanup(hs.Close)
+	t.Cleanup(func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, ft := range f.faults {
+			t.Errorf("a fault added to the front never matched a request: %+v", ft)
+		}
+	})
 	return &served{store: h.Store().ControlPlane(), nodes: h.Store().Nodes(), clock: h.Clock(), front: f, url: hs.URL}
 }
 
@@ -95,7 +107,7 @@ func (s *served) socket(t *testing.T) string {
 	// whose path can pass the length a socket's path may have.
 	dir, err := os.MkdirTemp("", "apiclient")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("make the socket's directory: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	path := filepath.Join(dir, "api.sock")
@@ -170,20 +182,18 @@ type seen struct {
 }
 
 // fault is what the front does, once, to the first request match admits:
-// answer it with status, header and body without passing it on; or pass it
-// on and then close the connection without answering, the answer lost; or
-// pass it on and answer what edit makes of the answer's body.
+// answer it with status, header and body without passing it on, when status
+// is set; or hold it until hold closes and then pass it on; or pass it on
+// and then close the connection without answering, the answer lost; or pass
+// it on and answer what edit makes of the answer's body, given the request.
 type fault struct {
 	match  func(*http.Request) bool
-	answer *scripted
-	drop   bool
-	edit   func([]byte) []byte
-}
-
-type scripted struct {
 	status int
 	header http.Header
 	body   string
+	hold   chan struct{}
+	drop   bool
+	edit   func(*http.Request, []byte) []byte
 }
 
 func (f *front) add(ft fault) {
@@ -212,11 +222,18 @@ func (f *front) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	f.mu.Unlock()
-	if a := ft.answer; a != nil {
-		maps.Copy(w.Header(), a.header)
-		w.WriteHeader(a.status)
-		_, _ = io.WriteString(w, a.body)
+	if ft.status != 0 {
+		maps.Copy(w.Header(), ft.header)
+		w.WriteHeader(ft.status)
+		_, _ = io.WriteString(w, ft.body)
 		return
+	}
+	if ft.hold != nil {
+		select {
+		case <-ft.hold:
+		case <-r.Context().Done():
+			return
+		}
 	}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, f.backend+r.URL.RequestURI(), bytes.NewReader(body))
 	if err != nil {
@@ -238,7 +255,7 @@ func (f *front) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ft.edit != nil {
-		b = ft.edit(b)
+		b = ft.edit(r, b)
 	}
 	maps.Copy(w.Header(), resp.Header)
 	w.Header().Set("Content-Length", strconv.Itoa(len(b)))

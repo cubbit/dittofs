@@ -3,6 +3,7 @@ package apiclient
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"iter"
 	"net/http"
 	"net/url"
@@ -14,9 +15,15 @@ import (
 type Resource[S, T any] struct {
 	c    *Client
 	path string
-	// sub follows the ID in one resource's path, for a resource that is
-	// part of another, such as a share's export policy.
-	sub string
+}
+
+// Singleton is a resource that is part of another, one per resource of its
+// parent's collection at path, at sub under that resource's own path, such
+// as a share's export policy. It is created and deleted with its parent, so
+// it is read and written only.
+type Singleton[S any] struct {
+	c         *Client
+	path, sub string
 }
 
 // Tagged is a resource as one read or write answered it, with the ETag the
@@ -33,7 +40,9 @@ type Result[S, T any] struct {
 	Resource  *Tagged[S, T]
 }
 
-func (r Resource[S, T]) at(id string) string { return r.path + "/" + url.PathEscape(id) + r.sub }
+func (r Resource[S, T]) at(id string) string { return r.path + "/" + url.PathEscape(id) }
+
+func (r Singleton[S]) at(id string) string { return r.path + "/" + url.PathEscape(id) + r.sub }
 
 // List yields every resource the filter admits, page by page; a filter's
 // limit sets the page's size.
@@ -48,76 +57,86 @@ func (r Resource[S, T]) Get(ctx context.Context, id string) (Tagged[S, T], error
 
 // Create creates a resource of spec.
 func (r Resource[S, T]) Create(ctx context.Context, spec S, opts ...CallOption) (Tagged[S, T], error) {
-	return create[S, T](ctx, r.c, r.path, map[string]any{"spec": spec}, opts)
+	return tagged[S, T](r.c.write(ctx, http.MethodPost, r.path, map[string]any{"spec": spec}, "", opts))
 }
 
 // Put replaces the spec of the resource id names, whose tag is etag; an
 // etag of "*" creates it, and is refused if it exists.
 func (r Resource[S, T]) Put(ctx context.Context, id string, spec S, etag string) (Tagged[S, T], error) {
-	b, err := json.Marshal(map[string]any{"spec": spec})
-	if err != nil {
-		return Tagged[S, T]{}, err
-	}
-	return tagged[S, T](r.c.do(ctx, call{method: http.MethodPut, path: r.at(id), body: b, etag: etag}))
+	return tagged[S, T](r.c.write(ctx, http.MethodPut, r.at(id), map[string]any{"spec": spec}, etag, nil))
 }
 
 // Patch merges patch, a JSON merge patch of the resource's body, into the
 // resource id names, whose tag is etag.
 func (r Resource[S, T]) Patch(ctx context.Context, id string, patch any, etag string) (Tagged[S, T], error) {
-	b, err := json.Marshal(patch)
-	if err != nil {
-		return Tagged[S, T]{}, err
-	}
-	return tagged[S, T](r.c.do(ctx, call{method: http.MethodPatch, path: r.at(id), body: b, etag: etag}))
+	return tagged[S, T](r.c.write(ctx, http.MethodPatch, r.at(id), patch, etag, nil))
 }
 
 // Delete deletes the resource id names, whose tag is etag, returning the
 // operation the deletion started, nil when it finished in the call.
-func (r Resource[S, T]) Delete(ctx context.Context, id, etag string) (*apiv1.Operation, error) {
-	rp, err := r.c.do(ctx, call{method: http.MethodDelete, path: r.at(id), etag: etag})
-	if err != nil || rp.status != http.StatusAccepted {
+func (r Resource[S, T]) Delete(ctx context.Context, id, etag string, opts ...CallOption) (*apiv1.Operation, error) {
+	rp, err := r.c.write(ctx, http.MethodDelete, r.at(id), nil, etag, opts)
+	if err != nil {
 		return nil, err
 	}
-	var op apiv1.Operation
-	return &op, json.Unmarshal(rp.body, &op)
+	return accepted(rp)
 }
 
 // Action runs verb on the resource id names, with body, nil for none, and
 // with If-Match when etag is set, as an action that changes the spec needs.
 func (r Resource[S, T]) Action(ctx context.Context, id, verb string, body any, etag string, opts ...CallOption) (Result[S, T], error) {
-	cl := call{method: http.MethodPost, path: r.at(id) + ":" + verb, etag: etag}
-	if body != nil {
-		var err error
-		if cl.body, err = json.Marshal(body); err != nil {
-			return Result[S, T]{}, err
-		}
-	}
-	for _, o := range opts {
-		o(&cl)
-	}
-	rp, err := r.c.do(ctx, cl)
+	rp, err := r.c.write(ctx, http.MethodPost, r.at(id)+":"+verb, body, etag, opts)
 	if err != nil {
 		return Result[S, T]{}, err
 	}
-	if rp.status == http.StatusAccepted {
-		var op apiv1.Operation
-		return Result[S, T]{Operation: &op}, json.Unmarshal(rp.body, &op)
+	if op, err := accepted(rp); op != nil || err != nil {
+		return Result[S, T]{Operation: op}, err
 	}
 	t, err := tagged[S, T](rp, nil)
 	return Result[S, T]{Resource: &t}, err
 }
 
-// create POSTs body on the collection at path and returns what it created.
-func create[S, T any](ctx context.Context, c *Client, path string, body any, opts []CallOption) (Tagged[S, T], error) {
-	cl := call{method: http.MethodPost, path: path}
-	var err error
-	if cl.body, err = json.Marshal(body); err != nil {
-		return Tagged[S, T]{}, err
+// Get reads the resource of the parent id names.
+func (r Singleton[S]) Get(ctx context.Context, id string) (Tagged[S, struct{}], error) {
+	return tagged[S, struct{}](r.c.do(ctx, call{method: http.MethodGet, path: r.at(id)}))
+}
+
+// Put replaces the spec of the resource of the parent id names, whose tag
+// is etag.
+func (r Singleton[S]) Put(ctx context.Context, id string, spec S, etag string) (Tagged[S, struct{}], error) {
+	return tagged[S, struct{}](r.c.write(ctx, http.MethodPut, r.at(id), map[string]any{"spec": spec}, etag, nil))
+}
+
+// Patch merges patch, a JSON merge patch of the resource's body, into the
+// resource of the parent id names, whose tag is etag.
+func (r Singleton[S]) Patch(ctx context.Context, id string, patch any, etag string) (Tagged[S, struct{}], error) {
+	return tagged[S, struct{}](r.c.write(ctx, http.MethodPatch, r.at(id), patch, etag, nil))
+}
+
+// write sends body, as JSON, nil for none, to path with method under etag,
+// configured by opts.
+func (c *Client) write(ctx context.Context, method, path string, body any, etag string, opts []CallOption) (reply, error) {
+	cl := call{method: method, path: path, etag: etag}
+	if body != nil {
+		var err error
+		if cl.body, err = json.Marshal(body); err != nil {
+			return reply{}, err
+		}
 	}
 	for _, o := range opts {
 		o(&cl)
 	}
-	return tagged[S, T](c.do(ctx, cl))
+	return c.do(ctx, cl)
+}
+
+// accepted is the operation rp carries when it is a 202, and nil for any
+// other answer.
+func accepted(rp reply) (*apiv1.Operation, error) {
+	if rp.status != http.StatusAccepted {
+		return nil, nil
+	}
+	var op apiv1.Operation
+	return &op, json.Unmarshal(rp.body, &op)
 }
 
 // tagged decodes rp as a resource with its ETag, ignoring any field this
@@ -141,9 +160,12 @@ func get[T any](ctx context.Context, c *Client, path string) (T, error) {
 }
 
 // list yields every item of the listing at path the filter admits,
-// following each page's cursor to the next.
+// following each page's cursor to the next. A page whose cursor repeats the
+// one it was read after ends the listing with an error, since following it
+// would read that page again forever.
 func list[T any](ctx context.Context, c *Client, path string, filter url.Values) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
+		var zero T
 		q := url.Values{}
 		for k, v := range filter {
 			q[k] = v
@@ -151,7 +173,6 @@ func list[T any](ctx context.Context, c *Client, path string, filter url.Values)
 		for {
 			page, err := get[apiv1.Page[T]](ctx, c, path+"?"+q.Encode())
 			if err != nil {
-				var zero T
 				yield(zero, err)
 				return
 			}
@@ -161,6 +182,10 @@ func list[T any](ctx context.Context, c *Client, path string, filter url.Values)
 				}
 			}
 			if page.Next == "" {
+				return
+			}
+			if page.Next == q.Get("after") {
+				yield(zero, fmt.Errorf("apiclient: the listing at %s repeated its cursor %q", path, page.Next))
 				return
 			}
 			q.Set("after", page.Next)

@@ -16,9 +16,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -31,8 +31,10 @@ type Client struct {
 	tokens TokenSource
 	clock  Clock
 
-	mu      sync.Mutex
-	checked bool
+	// checking is held while the server's version is checked, and checked
+	// is read and written only while it is held.
+	checking chan struct{}
+	checked  bool
 }
 
 // TokenSource hands the client the access token each call carries, and a
@@ -49,66 +51,73 @@ type Clock interface {
 }
 
 // Option configures a Client.
-type Option func(*options)
-
-type options struct {
-	tls    *tls.Config
-	tokens TokenSource
-	clock  Clock
-}
+type Option func(*Client)
 
 // WithTLS sets the TLS configuration an https server is reached with, such
 // as the pool of CAs its certificate is checked against.
-func WithTLS(cfg *tls.Config) Option { return func(o *options) { o.tls = cfg } }
+func WithTLS(cfg *tls.Config) Option {
+	return func(c *Client) { c.http.Transport.(*http.Transport).TLSClientConfig = cfg }
+}
 
 // WithTokenSource makes every call carry the source's token. A call refused
 // 401 asks the source to refresh once and is sent again, with its body and
 // idempotency key unchanged.
-func WithTokenSource(ts TokenSource) Option { return func(o *options) { o.tokens = ts } }
+func WithTokenSource(ts TokenSource) Option { return func(c *Client) { c.tokens = ts } }
 
 // WithClock sets the clock a retry waits on; without it, the wall clock.
-func WithClock(c Clock) Option { return func(o *options) { o.clock = c } }
+func WithClock(clock Clock) Option { return func(c *Client) { c.clock = clock } }
 
-// New returns a client of server: an https URL, an http URL whose host is
-// loopback, or the path of a node's local socket. It contacts nothing until
-// its first call.
+// New returns a client of server: an https URL, an http URL whose host is a
+// loopback address, either with no path but "/" and no credentials, query
+// or fragment; or the path of a node's local socket, which holds a "/". It
+// contacts nothing until its first call, and follows no redirect: an answer
+// 3xx is a refusal.
 func New(server string, opts ...Option) (*Client, error) {
-	var o options
-	for _, opt := range opts {
-		opt(&o)
-	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.TLSClientConfig = o.tls
-	c := &Client{base: strings.TrimSuffix(server, "/"), http: &http.Client{Transport: tr}, tokens: o.tokens, clock: o.clock}
-	if c.clock == nil {
-		c.clock = wallClock{}
+	// ponytail: every request goes on a connection of its own, since
+	// net/http resends a bodyless GET or a keyed request by itself, at once,
+	// when its answer is lost on a reused connection, outside do's wait and
+	// count. A listing's pages and a wait's polls each pay a handshake; keep
+	// connections alive, folding that resend into do's bound, when they show
+	// in a profile.
+	tr.DisableKeepAlives = true
+	c := &Client{
+		http: &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}},
+		clock:    wallClock{},
+		checking: make(chan struct{}, 1),
 	}
-	scheme, rest, found := strings.Cut(server, "://")
-	host, _, _ := strings.Cut(rest, "/")
-	switch {
-	case !found:
+	for _, opt := range opts {
+		opt(c)
+	}
+	refused := fmt.Errorf("apiclient: %q is neither an https URL, an http URL on a loopback address, nor a socket's path", server)
+	if !strings.Contains(server, "://") {
+		if !strings.Contains(server, "/") {
+			return nil, refused
+		}
 		tr.Proxy = nil
 		tr.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", server)
 		}
 		c.base = "http://socket"
-	case scheme == "https":
-	case scheme == "http" && loopback(host):
-	default:
-		return nil, fmt.Errorf("apiclient: %q is neither an https URL, an http URL on loopback, nor a socket's path", server)
+		return c, nil
 	}
+	u, err := url.Parse(server)
+	if err != nil || u.User != nil || u.Opaque != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" ||
+		u.Path != "" && u.Path != "/" || u.Scheme != "https" && (u.Scheme != "http" || !loopback(u.Hostname())) {
+		return nil, refused
+	}
+	c.base = u.Scheme + "://" + u.Host
 	return c, nil
 }
 
-// loopback reports whether hostport's host is this machine.
-func loopback(hostport string) bool {
-	h := hostport
-	if sh, _, err := net.SplitHostPort(hostport); err == nil {
-		h = sh
-	}
-	ip := net.ParseIP(strings.Trim(h, "[]"))
-	return h == "localhost" || ip != nil && ip.IsLoopback()
+// loopback reports whether host is a loopback address. A name, even
+// localhost, is not one: it resolves to whatever the resolver says.
+func loopback(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // CallOption configures one call.
@@ -121,14 +130,22 @@ type CallOption func(*call)
 // second call.
 func WithoutIdempotencyKey() CallOption { return func(c *call) { c.noKey = true } }
 
-// call is one logical API call: its method, its path with its query, its
-// JSON body, nil for none, the tag it sends in If-Match, "*" sending
-// If-None-Match: * instead, and whether it goes without an idempotency key.
+// WithQuery adds q to the call's query, such as a share deletion's
+// ?snapshots=.
+func WithQuery(q url.Values) CallOption { return func(c *call) { c.query = q } }
+
+// call is one logical API call: its method, its path with its query, the
+// query its options add, its JSON body, nil for none, the tag it sends in
+// If-Match, "*" sending If-None-Match: * instead, whether it goes without an
+// idempotency key, and whether a 401 is returned as it is rather than
+// refreshed.
 type call struct {
 	method, path string
+	query        url.Values
 	body         []byte
 	etag         string
 	noKey        bool
+	noRefresh    bool
 }
 
 // reply is what one sending of a call was answered.
@@ -138,9 +155,9 @@ type reply struct {
 	body   []byte
 }
 
-// Retry bounds: how many times one call is sent at most, and how long it
-// waits before sending again after a lost answer, or after a retryable
-// refusal naming no Retry-After.
+// Retry bounds: how many times one call is sent at most, a refreshed 401
+// counted, and how long it waits before sending again after a lost answer,
+// or after a retryable refusal naming no Retry-After.
 //
 // ponytail: a fixed count and a fixed wait, no backoff or jitter. Grow the
 // wait when many clients retrying in step show as load on a node that is
@@ -150,23 +167,37 @@ const (
 	retryWait = time.Second
 )
 
+// maxBody is the longest answer the client reads; a longer one is an error,
+// and the call is not sent again.
+const maxBody = 16 << 20
+
+var errTooLong = errors.New("apiclient: the answer is longer than 16 MiB")
+
 // do sends c, checking the server's version first, and returns its answer,
-// a 2xx; or the problem it was refused with as a *apiv1.Problem; or the
-// error that left it unanswered. A POST or a DELETE carries one fresh
-// Idempotency-Key, which every sending of the call reuses. A call is sent
-// again, after its wait on the client's clock, when it was refused with a
-// retryable problem, after the Retry-After the problem names; and when its
-// answer was lost, if it is a GET or carries a key, which the server answers
-// from its record. A call refused 401 is sent again once, with the token the
-// source refreshes.
+// a 2xx; or the problem it was refused with, a 3xx included, as a
+// *apiv1.Problem; or the error that left it unanswered. A POST or a DELETE
+// carries one fresh Idempotency-Key, which every sending of the call reuses.
+// A call is sent again, after its wait on the client's clock, when it was
+// refused with a retryable problem, after the Retry-After the problem names;
+// and when its answer was lost, if it is a GET or carries a key, which the
+// server answers from its record. A call refused 401 is sent again once,
+// with the token the source refreshes. No call is sent more than 5 times.
 //
-// decision: a call without a key, a credential call, is still refreshed and
-// sent again after a 401, since a 401 is an answer that applied nothing, so
-// the second sending is not a retry of a call that may have run. Overturned
-// if a server ever applies a credential call it then answers 401.
+// decision: a keyless call (join-domain, :set-password, an API token's
+// creation) is still refreshed and sent again after a 401, since a 401 is an
+// answer that applied nothing. Sign-in, refresh and a password change are
+// not: their 401 is a wrong credential, so they are sent with refresh off.
+// Overturned if a server ever applies a call it then answers 401.
 func (c *Client) do(ctx context.Context, cl call) (reply, error) {
 	if err := c.version(ctx); err != nil {
 		return reply{}, err
+	}
+	if len(cl.query) > 0 {
+		sep := "?"
+		if strings.Contains(cl.path, "?") {
+			sep = "&"
+		}
+		cl.path += sep + cl.query.Encode()
 	}
 	var key string
 	if (cl.method == http.MethodPost || cl.method == http.MethodDelete) && !cl.noKey {
@@ -185,10 +216,10 @@ func (c *Client) do(ctx context.Context, cl call) (reply, error) {
 		wait := retryWait
 		switch {
 		case err != nil:
-			if ctx.Err() != nil || n == attempts || (key == "" && cl.method != http.MethodGet) {
+			if ctx.Err() != nil || errors.Is(err, errTooLong) || n == attempts || (key == "" && cl.method != http.MethodGet) {
 				return reply{}, err
 			}
-		case r.status == http.StatusUnauthorized && c.tokens != nil && !refreshed:
+		case r.status == http.StatusUnauthorized && c.tokens != nil && !refreshed && !cl.noRefresh && n < attempts:
 			refreshed = true
 			fresh, err := c.tokens.Refresh(ctx, token)
 			if err != nil {
@@ -196,7 +227,7 @@ func (c *Client) do(ctx context.Context, cl call) (reply, error) {
 			}
 			token = fresh
 			continue
-		case r.status >= 400:
+		case r.status >= 300:
 			p := problemOf(r)
 			if !p.Retryable || cl.noKey || n == attempts {
 				return reply{}, p
@@ -215,10 +246,12 @@ func (c *Client) do(ctx context.Context, cl call) (reply, error) {
 
 // send sends c once, with key and token when they are set.
 //
-// decision: the request's GetBody is cleared, so net/http never sends a
-// request with a body a second time itself; every second sending is do's,
-// under the one rule do states. Overturned if a transport needs GetBody,
-// such as for a redirect, which the API never answers.
+// decision: net/http never sends a request a second time itself: GetBody is
+// cleared, so a request with a body is never rewound, and no connection is
+// reused, so a lost answer is never resent at once. Every second sending is
+// do's, under the one rule do states. Overturned if a transport needs
+// GetBody, which only a followed redirect would, and the client follows
+// none.
 func (c *Client) send(ctx context.Context, cl call, key, token string) (reply, error) {
 	req, err := http.NewRequestWithContext(ctx, cl.method, c.base+cl.path, bytes.NewReader(cl.body))
 	if err != nil {
@@ -246,16 +279,23 @@ func (c *Client) send(ctx context.Context, cl call, key, token string) (reply, e
 		return reply{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	b, err := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+	if err == nil && len(b) > maxBody {
+		err = errTooLong
+	}
 	return reply{resp.StatusCode, resp.Header, b}, err
 }
 
-// version checks, once per client, that the server serves v1, refusing one
-// that does not with an error naming both. A check that fails to complete
-// runs again on the next call.
+// version checks, once per client, that the server serves v1. A check that
+// fails to complete runs again on the next call; a caller waiting on
+// another's check stops when its context ends.
 func (c *Client) version(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	select {
+	case c.checking <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-c.checking }()
 	if c.checked {
 		return nil
 	}
@@ -266,14 +306,23 @@ func (c *Client) version(ctx context.Context) error {
 	if r.status != http.StatusOK {
 		return problemOf(r)
 	}
+	if err := checkVersion(r.body); err != nil {
+		return err
+	}
+	c.checked = true
+	return nil
+}
+
+// checkVersion refuses a version body that names no v1, with an error
+// naming both, or that is no version, quoting at most its first 64 bytes.
+func checkVersion(body []byte) error {
 	var v apiv1.Version
-	if err := json.Unmarshal(r.body, &v); err != nil {
-		return fmt.Errorf("apiclient: the server's version %s: %w", r.body, err)
+	if err := json.Unmarshal(body, &v); err != nil {
+		return fmt.Errorf("apiclient: the server's version %q: %w", body[:min(len(body), 64)], err)
 	}
 	if !slices.Contains(v.Majors, "v1") {
 		return fmt.Errorf("apiclient: the server serves API versions %q, and this client speaks only v1", v.Majors)
 	}
-	c.checked = true
 	return nil
 }
 
