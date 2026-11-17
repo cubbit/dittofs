@@ -1154,7 +1154,7 @@ func awaitSettledSpare(t *testing.T, f *journaltest.Fixture, roll func()) {
 // run's own timeout. The bounded wait below is the assertion, for the park
 // sits in a goroutine no clock can reach and only the roll releases.
 func TestAwaitSpareWhoseRollReleasesAHeldCreate(t *testing.T) {
-	f := journaltest.NewUnwatched(t)
+	f := journaltest.New(t)
 	held := f.Seam.Hold(t, kit.OpCreate, "*.spare.tmp")
 	writeSynced(t, f, 0, 0, 0, journaltest.FixtureSegmentCap) // the roll parks the refill's create
 

@@ -38,13 +38,6 @@ func TestWithSegmentCapBoundsEverySegmentFile(t *testing.T) {
 			t.Errorf("segment %s is %d bytes, want at most the cap %d", s, size, segCap)
 		}
 	}
-
-	// The idle sealer's threshold scales with the cap - its own sixteenth,
-	// the ratio the journal's own fixture uses - or the default would ask
-	// for more payload than a segment under the cap can hold.
-	if want := segCap / 16; f.settings.IdleSealBytes != want {
-		t.Errorf("IdleSealBytes = %d, want the cap's sixteenth %d so idle sealing still fires under it", f.settings.IdleSealBytes, want)
-	}
 }
 
 // TestWithSegmentCapTheIdleSealerStillFires pins the scaling's point: a
