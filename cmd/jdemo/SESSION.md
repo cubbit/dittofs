@@ -3,8 +3,10 @@
 One binary, one journal, one story at a time:
 
 ```sh
-go run ./cmd/jdemo                       # a fresh journal under $TMPDIR, the basic story
-go run ./cmd/jdemo --dir talk-journal    # name the directory (a used one opens or says why it cannot)
+go run ./cmd/jdemo                            # a fresh journal under $TMPDIR, the basic story
+go run ./cmd/jdemo --story crash             # the durability story: retention, the mark, the restart refused
+go run ./cmd/jdemo --story limits            # the space story: the share budget, the reserve-first escape
+go run ./cmd/jdemo --dir talk-journal        # name the directory (a used one opens or says why it cannot)
 ```
 
 ## Driving
@@ -46,6 +48,17 @@ go run ./cmd/jdemo --dir talk-journal    # name the directory (a used one opens 
 11. **a reserved write** — bytes held up front, no limit refuses it
 12. **offload** — the remote tier's beat
 13. **verify** — the index checked, reported, never repaired
+
+## The other stories
+
+- **crash** (6 beats) — durability's half: a write with its sync mark, an
+  overwrite whose retained range the index look shows, a truncate durable
+  on return, the Since feed a recovery replays, and the closed journal's
+  own refusal to be reopened by a pass that has not landed.
+- **limits** (7 beats) — space's half: a 2 GiB world and a 512 MiB share
+  budget, a reservation taken before the burst, a filler that walks 40 MB
+  writes until the share's own refusal, the reserved write served through
+  it, the headroom math, and truncate's unchanged `used`.
 
 ## What answers "not implemented" today, and why
 
