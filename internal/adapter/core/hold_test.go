@@ -10,6 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -491,15 +492,17 @@ func TestWithTheHoldPoolFull(t *testing.T) {
 
 // close ends a held request at once, between attempts and while a re-drive
 // is in the service: close returns without waiting for it, wait returns once
-// it has ended, no timer is left, nothing more is sent, and every budget is
-// back at zero (§4.6, §6.5).
+// it has ended, no timer is left, nothing more is sent, its request span
+// ends unsent, and every budget is back at zero (§4.6, §6.5).
 func TestCloseEndsAHold(t *testing.T) {
 	for _, inCall := range []bool{false, true} {
 		t.Run("in a re-drive's call "+strconv.FormatBool(inCall), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				clk := newManualClock()
 				m := metrics.New("v", "c")
-				s := newHeld(t, 1<<20, adapter.Deps{Metrics: m}, clk)
+				spans := tracetest.NewSpanRecorder()
+				tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
+				s := newHeld(t, 1<<20, adapter.Deps{Metrics: m, Tracer: tracer, SampleRatio: 1}, clk)
 				s.faults.Fail(vfs.OpCreate, vfs.ErrDelay)
 				hold := s.faults.Hold(vfs.OpCreate)
 				defer hold.Release()
@@ -528,6 +531,9 @@ func TestCloseEndsAHold(t *testing.T) {
 				}
 				if got := gauges(t, m); got != [4]float64{} {
 					t.Errorf("held, their bytes, the pool's and the refusals read %v, want zero", got)
+				}
+				if sd := requestSpan(t, spans, "Create"); slices.ContainsFunc(sd.Attributes(), func(kv attribute.KeyValue) bool { return kv.Key == "reply_bytes" }) {
+					t.Errorf("the closed hold's span ended as sent: %v", sd.Attributes())
 				}
 				if !s.sentNothing() {
 					t.Error("the closed hold was answered")
@@ -568,6 +574,19 @@ func TestEightHeldRequestsHaveNoGoroutine(t *testing.T) {
 	})
 }
 
+// requestSpan is the ended request span of op's request, the one with no
+// parent.
+func requestSpan(t *testing.T, spans *tracetest.SpanRecorder, op string) sdktrace.ReadOnlySpan {
+	t.Helper()
+	for _, sd := range spans.Ended() {
+		if sd.Name() == "adapter."+testproto.Name+"."+op && !sd.Parent().IsValid() {
+			return sd
+		}
+	}
+	t.Fatalf("no request span ended for the %s", op)
+	return nil
+}
+
 // A held request keeps its request span across its re-drives, with one
 // child per attempt (§10.2).
 func TestEachAttemptOfAHeldRequestHasAChildSpan(t *testing.T) {
@@ -584,17 +603,8 @@ func TestEachAttemptOfAHeldRequestHasAChildSpan(t *testing.T) {
 		clk.Advance(20 * time.Millisecond)
 		s.finalOf(2)
 		synctest.Wait()
-		name := "adapter." + testproto.Name + ".Create"
-		var request sdktrace.ReadOnlySpan
+		request := requestSpan(t, spans, "Create")
 		children := 0
-		for _, sd := range spans.Ended() {
-			if sd.Name() == name && !sd.Parent().IsValid() {
-				request = sd
-			}
-		}
-		if request == nil {
-			t.Fatal("no request span for the Create")
-		}
 		for _, sd := range spans.Ended() {
 			if sd.Parent().SpanID() == request.SpanContext().SpanID() {
 				children++

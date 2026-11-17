@@ -1912,67 +1912,14 @@ func TestARowPastItsLastVersionIsRefused(t *testing.T) {
 	}
 }
 
-// attempts is a pass-through the test reads: each call's deadline, and its
-// context's error as the call returns, in the order the calls return; and
-// how many replies the rows encoded.
-type attempts struct {
-	mu      sync.Mutex
-	calls   []attempt
-	encoded int
-}
-
-type attempt struct {
-	deadline time.Time // zero: none
-	err      error
-}
-
-// edit has the connection's rows hand their invocations to wrap.
-func (a *attempts) edit(st *core.Stages) { st.Router = &wrapped{Router: st.Router, wrap: a.wrap} }
-
-func (a *attempts) wrap(inv core.Invocation) core.Invocation {
-	call, enc := inv.Call, inv.Encode
-	inv.Call = func(ctx context.Context, r *core.Request) error {
-		err := call(ctx, r)
-		at, _ := ctx.Deadline()
-		a.mu.Lock()
-		a.calls = append(a.calls, attempt{at, ctx.Err()})
-		a.mu.Unlock()
-		return err
-	}
-	if enc != nil {
-		inv.Encode = func(b *resources.Buf, v core.Version) error {
-			a.mu.Lock()
-			a.encoded++
-			a.mu.Unlock()
-			return enc(b, v)
-		}
-	}
-	return inv
-}
-
-// read is what a has seen since its reset.
-func (a *attempts) read() ([]attempt, int) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return slices.Clone(a.calls), a.encoded
-}
-
-func (a *attempts) reset() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.calls, a.encoded = nil, 0
-}
-
-// newTimed is a served seam whose server reads clk from here on, its calls
-// seen by the attempts it returns, and its stages changed by edit.
-func newTimed(t *testing.T, reply int64, d adapter.Deps, clk core.Clock, edit ...func(*core.Stages)) (*served, *attempts) {
+// newTimed is a served seam whose server reads clk from here on, its stages
+// changed by edit.
+func newTimed(t *testing.T, reply int64, d adapter.Deps, clk core.Clock, edit ...func(*core.Stages)) *served {
 	t.Helper()
-	a := &attempts{}
-	s := newServed(t, reply, d, append(edit, a.edit)...)
+	s := newServed(t, reply, d, edit...)
 	synctest.Wait() // the last reply's buffer is given back after its send
 	core.SetClock(s.sh, clk)
-	a.reset()
-	return s, a
+	return s
 }
 
 // fhThenCreate is a version 1 chain under session 7 and tree 1: a PutFH of
@@ -2000,79 +1947,89 @@ func (s *served) statuses() []core.Status {
 
 // A chain of a PutFH and a Create, with the reply budget room for one
 // buffer: the Create's reservation waits on the PutFH's reply, which the
-// client reads at 10 s or at 40 s on the clock. Its deadline is 30 s from
-// its start, the record's arrival, though it waited: room at 10 s, it calls
-// with that deadline; room at 40 s, its wait ends at 30 s and it makes no
-// call, answered the delay status once room frees (§6.4; RFC 24 §3.3).
+// client reads at 10 s on the clock. Its call, held in the service, is
+// answered 30 s from its start, the record's arrival, though it waited, and
+// not before (§6.4; RFC 24 §3.3).
 func TestAReplyReservationWaitsUnderTheAttemptsDeadline(t *testing.T) {
-	for _, c := range []struct {
-		name    string
-		steps   []time.Duration // the clock's, before the client reads the PutFH's reply
-		status  core.Status     // the Create's
-		creates int
-		calls   []time.Duration // each call's deadline, after t0
-	}{
-		{"room at 10 s", []time.Duration{10 * time.Second}, testproto.StatusOK, 1, []time.Duration{30 * time.Second, 30 * time.Second}},
-		{"room at 40 s", []time.Duration{30 * time.Second, 10 * time.Second}, testproto.StatusDelay, 0, []time.Duration{30 * time.Second}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				clk := newManualClock()
-				s, seen := newTimed(t, smallCharge, adapter.Deps{}, clk)
-				s.serve(s.fhThenCreate(1, "f")...)
-				for _, d := range c.steps {
-					synctest.Wait()
-					if n := s.creates(); n != 0 {
-						t.Fatalf("%d files made before room freed, want none", n)
-					}
-					clk.Advance(d)
-				}
-				if st := s.statuses(); !slices.Equal(st, []core.Status{testproto.StatusOK}) {
-					t.Errorf("the PutFH's record is answered %v, want it alone, ok", st)
-				}
-				if st := s.statuses(); !slices.Equal(st, []core.Status{c.status}) {
-					t.Errorf("the Create's record is answered %v, want [%d]", st, c.status)
-				}
-				if n := s.creates(); n != c.creates {
-					t.Errorf("%d files made, want %d", n, c.creates)
-				}
-				calls, _ := seen.read()
-				var got []time.Duration
-				for _, a := range calls {
-					got = append(got, a.deadline.Sub(t0))
-				}
-				if !slices.Equal(got, c.calls) {
-					t.Errorf("the calls' deadlines are %v after t0, want %v", got, c.calls)
-				}
-			})
-		})
-	}
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newTimed(t, smallCharge, adapter.Deps{}, clk)
+		hold := s.faults.Hold(vfs.OpCreate)
+		defer hold.Release()
+		s.serve(s.fhThenCreate(1, "f")...)
+		synctest.Wait()
+		clk.Advance(10 * time.Second)
+		if st := s.statuses(); !slices.Equal(st, []core.Status{testproto.StatusOK}) {
+			t.Fatalf("the PutFH's record is answered %v, want it alone, ok", st)
+		}
+		<-hold.Reached()
+		next := s.recvLater()
+		clk.Advance(20*time.Second - time.Nanosecond)
+		if next.arrived() {
+			t.Fatalf("the Create was answered %+v before its deadline", next.rs)
+		}
+		clk.Advance(time.Nanosecond)
+		if !next.arrived() {
+			t.Fatal("the Create is not answered at its deadline, 30 s from its start")
+		}
+		if next.err != nil || len(next.rs) != 1 || next.rs[0].Status != testproto.StatusOK {
+			t.Errorf("at its deadline the Create is answered %+v (%v), want the service's success", next.rs, next.err)
+		}
+	})
 }
 
-// With the connection's one place held by a chain until 10 s on the clock,
-// the request after it waits in Admit: its first call's deadline is 30 s from
-// its arrival, as serve took its record, and a chain's later member's 30 s
-// from its own admission (§6.4).
-func TestAnAttemptStartsAtArrivalOrAtItsMembersAdmission(t *testing.T) {
+// The same chain, the PutFH's reply read only at 40 s on the clock: the
+// Create's reservation ends at its deadline, 30 s from its start, so it makes
+// no call, and is answered the delay status once room frees (§6.4; RFC 24
+// §3.3).
+func TestAReplyReservationPastItsDeadlineMakesNoCall(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clk := newManualClock()
+		s := newTimed(t, smallCharge, adapter.Deps{}, clk)
+		s.serve(s.fhThenCreate(1, "f")...)
+		synctest.Wait()
+		clk.Advance(30 * time.Second)
+		synctest.Wait()
+		clk.Advance(10 * time.Second)
+		if st := s.statuses(); !slices.Equal(st, []core.Status{testproto.StatusOK}) {
+			t.Errorf("the PutFH's record is answered %v, want it alone, ok", st)
+		}
+		if st := s.statuses(); !slices.Equal(st, []core.Status{testproto.StatusDelay}) {
+			t.Errorf("the Create's record is answered %v, want the delay status", st)
+		}
+		if n := s.creates(); n != 0 {
+			t.Errorf("%d files made, want none", n)
+		}
+	})
+}
+
+// With the connection's one place held until 10 s on the clock by a chain
+// whose Create is in the service, the request after it waits in Admit, then
+// for a reply buffer, which the chain's unread reply holds. Its first attempt
+// starts at its arrival, as serve takes its record, so the wait ends at
+// 30 s on the clock, not 30 s from its admission, and it is answered the
+// delay status once room frees (§6.4).
+func TestAFirstAttemptStartsAtArrival(t *testing.T) {
 	for _, c := range []struct {
-		name  string
-		msgs  func(*served) []testproto.Msg
-		calls []time.Duration // its calls' deadlines, after t0
+		name string
+		msgs func(*served) []testproto.Msg
 	}{
 		{"a request alone", func(*served) []testproto.Msg {
 			return []testproto.Msg{{Op: testproto.OpEcho, Version: 1, ID: 9, Payload: []byte("x")}}
-		}, []time.Duration{30 * time.Second}},
-		{"a chain", func(s *served) []testproto.Msg { return s.fhThenCreate(9, "b") }, []time.Duration{30 * time.Second, 40 * time.Second}},
+		}},
+		{"a chain", func(s *served) []testproto.Msg { return s.fhThenCreate(9, "b") }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				clk := newManualClock()
-				s, seen := newTimed(t, 1<<20, adapter.Deps{}, clk, func(st *core.Stages) { st.Flow = core.NewCappedN(1) })
+				s := newTimed(t, smallCharge, adapter.Deps{}, clk, func(st *core.Stages) { st.Flow = core.NewCappedN(1) })
 				hold := s.faults.Hold(vfs.OpCreate)
 				defer hold.Release()
 				s.serve(s.fhThenCreate(1, "a")...)
+				s.statuses() // the PutFH's, read so that the Create can reserve
 				<-hold.Reached()
-				next := start(func() { s.serve(c.msgs(s)...) })
+				msgs := c.msgs(s)
+				next := start(func() { s.serve(msgs...) })
 				synctest.Wait()
 				if next.returned() {
 					t.Fatal("the next request was admitted while the chain held the one place")
@@ -2080,18 +2037,17 @@ func TestAnAttemptStartsAtArrivalOrAtItsMembersAdmission(t *testing.T) {
 				clk.Advance(10 * time.Second)
 				hold.Release()
 				<-next.done
-				s.statuses()
-				s.statuses()
-				calls, _ := seen.read()
-				if len(calls) != 2+len(c.calls) {
-					t.Fatalf("%d calls, want the held chain's two and %d", len(calls), len(c.calls))
+				synctest.Wait()
+				clk.Advance(20 * time.Second)
+				if st := s.statuses(); !slices.Equal(st, []core.Status{testproto.StatusOK}) {
+					t.Fatalf("the first chain's Create is answered %v, want ok", st)
 				}
-				var got []time.Duration
-				for _, a := range calls[2:] {
-					got = append(got, a.deadline.Sub(t0))
+				var got []core.Status
+				for len(got) < len(msgs) {
+					got = append(got, s.statuses()...)
 				}
-				if !slices.Equal(got, c.calls) {
-					t.Errorf("its calls' deadlines are %v after t0, want %v", got, c.calls)
+				if want := slices.Repeat([]core.Status{testproto.StatusDelay}, len(msgs)); !slices.Equal(got, want) {
+					t.Errorf("the request after it is answered %v, want %v", got, want)
 				}
 			})
 		})
@@ -2104,28 +2060,20 @@ func TestAnAttemptStartsAtArrivalOrAtItsMembersAdmission(t *testing.T) {
 func TestAHeldCallIsAnsweredAtItsDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		clk := newManualClock()
-		s, seen := newTimed(t, 1<<20, adapter.Deps{}, clk)
+		s := newTimed(t, 1<<20, adapter.Deps{}, clk)
 		hold := s.faults.Hold(vfs.OpCreate)
 		defer hold.Release()
 		s.serve(s.fhThenCreate(1, "f")...)
 		<-hold.Reached()
+		next := s.recvLater()
 		clk.Advance(30*time.Second - time.Nanosecond)
-		var (
-			rs  []testproto.Reply
-			err error
-		)
-		read := start(func() { rs, err = s.client.Recv() })
-		synctest.Wait()
-		if read.returned() {
-			t.Fatalf("the held Create was answered %+v (%v) before its deadline", rs, err)
+		if next.arrived() {
+			t.Fatalf("the held Create was answered %+v (%v) before its deadline", next.rs, next.err)
 		}
 		clk.Advance(time.Nanosecond)
-		<-read.done
-		if err != nil || len(rs) != 2 || rs[0].Status != testproto.StatusOK || rs[1].Status != testproto.StatusOK {
-			t.Errorf("past its deadline the chain is answered %+v (%v), want the PutFH's and the Create's ok", rs, err)
-		}
-		if calls, _ := seen.read(); len(calls) != 2 || !errors.Is(calls[1].err, context.DeadlineExceeded) {
-			t.Errorf("the calls returned under %+v, want the Create's past its deadline", calls)
+		<-next.done
+		if next.err != nil || len(next.rs) != 2 || next.rs[0].Status != testproto.StatusOK || next.rs[1].Status != testproto.StatusOK {
+			t.Errorf("past its deadline the chain is answered %+v (%v), want the PutFH's and the Create's ok", next.rs, next.err)
 		}
 	})
 }
@@ -2144,16 +2092,16 @@ func TestADeadlineErrorIsMappedByTheTable(t *testing.T) {
 }
 
 // A Create held in the service when its connection closes sees its context
-// cancelled, and the chain is dropped: no reply encoded for the Create,
-// neither member's span ended as sent, and every budget back at zero
-// (§3.1, §6.5).
+// cancelled, which ends the hold, and the chain is dropped: the client reads
+// nothing, neither member's span ended as sent, and every budget back at
+// zero (§3.1, §6.5).
 func TestARequestTheCloseCancelsIsDropped(t *testing.T) {
 	budgets := &resources.Budgets{Receive: resources.NewWaitBudget("receive", 64<<20), Reply: resources.NewWaitBudget("reply", 1<<20)}
 	adaptertest.CheckLeaks(t, budgets)
 	synctest.Test(t, func(t *testing.T) {
 		spans := tracetest.NewSpanRecorder()
 		tracer := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test")
-		s, seen := newTimed(t, 0, adapter.Deps{Budgets: budgets, Tracer: tracer, SampleRatio: 1}, newManualClock())
+		s := newTimed(t, 0, adapter.Deps{Budgets: budgets, Tracer: tracer, SampleRatio: 1}, newManualClock())
 		hold := s.faults.Hold(vfs.OpCreate)
 		defer hold.Release()
 		s.serve(s.fhThenCreate(1, "f")...)
@@ -2163,13 +2111,6 @@ func TestARequestTheCloseCancelsIsDropped(t *testing.T) {
 		defer cancel()
 		if err := s.p.Wait(wait); err != nil {
 			t.Fatalf("the request outlived its connection: %v", err)
-		}
-		calls, encoded := seen.read()
-		if len(calls) != 2 || !errors.Is(calls[1].err, context.Canceled) {
-			t.Errorf("the calls returned under %+v, want the Create's cancelled", calls)
-		}
-		if encoded != 1 {
-			t.Errorf("%d replies encoded, want the PutFH's alone", encoded)
 		}
 		ended := map[string]bool{}
 		for _, sd := range spans.Ended() {
@@ -2186,6 +2127,9 @@ func TestARequestTheCloseCancelsIsDropped(t *testing.T) {
 		}
 		if !ended["PutFH"] || !ended["Create"] {
 			t.Errorf("the spans ended: %v, want the PutFH's and the Create's", ended)
+		}
+		if !s.sentNothing() {
+			t.Error("the closed chain was answered")
 		}
 	})
 }
@@ -2214,15 +2158,16 @@ func TestACompoundTheCloseCancelsRunsNoMoreMembers(t *testing.T) {
 // A chain's third member that waits in Admit, behind a compound that took
 // the connection's one place as the member before it gave it back, starts
 // its attempt at its own admission, 10 s on the clock, not when the chain
-// reached it: its deadline is 40 s after t0, the members' before it 30 s
+// reached it: held in the service, it is answered at 40 s, and not before
 // (§6.4).
 func TestALaterMemberStartsAtItsOwnAdmission(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		clk := newManualClock()
-		s, seen := newTimed(t, 1<<20, adapter.Deps{}, clk, func(st *core.Stages) { st.Flow = core.NewCappedN(1) })
-		first, second := s.faults.Hold(vfs.OpCreate), s.faults.Hold(vfs.OpCreate)
+		s := newTimed(t, 1<<20, adapter.Deps{}, clk, func(st *core.Stages) { st.Flow = core.NewCappedN(1) })
+		first, second, third := s.faults.Hold(vfs.OpCreate), s.faults.Hold(vfs.OpCreate), s.faults.Hold(vfs.OpCreate)
 		defer first.Release()
 		defer second.Release()
+		defer third.Release()
 		s.serve(append(s.fhThenCreate(1, "x"), testproto.Msg{Op: testproto.OpCreate, Version: 1, ID: 3, Session: inherited, Tree: 1, Name: "y", Related: true})...)
 		<-first.Reached()
 		compound := start(func() {
@@ -2235,16 +2180,17 @@ func TestALaterMemberStartsAtItsOwnAdmission(t *testing.T) {
 		synctest.Wait()
 		clk.Advance(10 * time.Second)
 		second.Release()
-		for range 3 {
-			s.statuses()
+		<-third.Reached()
+		s.statuses() // the PutFH's and the first Create's
+		s.statuses() // the compound's
+		next := s.recvLater()
+		clk.Advance(30*time.Second - time.Nanosecond)
+		if next.arrived() {
+			t.Fatalf("the chain's third member was answered %+v before its deadline", next.rs)
 		}
-		calls, _ := seen.read()
-		var got []time.Duration
-		for _, a := range calls {
-			got = append(got, a.deadline.Sub(t0))
-		}
-		if want := []time.Duration{30 * time.Second, 30 * time.Second, 40 * time.Second}; !slices.Equal(got, want) {
-			t.Errorf("the chain's calls' deadlines are %v after t0, want %v", got, want)
+		clk.Advance(time.Nanosecond)
+		if !next.arrived() {
+			t.Fatal("the chain's third member is not answered at its deadline, 30 s from its admission")
 		}
 	})
 }
