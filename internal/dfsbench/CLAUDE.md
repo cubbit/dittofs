@@ -118,6 +118,5 @@ smoke 3s), `--results` (`./bench-results`). One JSON per cell, slug-named.
   design from the native-S3 handicap.
 - **Cold-read barrier runs before EACH read cell** (`managed.go` `coldBarrier`),
   not once — a single evict warms later cells and inflates cold rand-read.
-- Superseded: `bench/results/*.json` + `bench/orchestrator/` are the **old**
-  harness (March 2026, dittofs 47 ops/s). Ignore them; current truth is
-  `internal/dfsbench` + `docs/internals/dfsbench-results.md`.
+- Current truth is `internal/dfsbench` + `docs/internals/dfsbench-results.md`;
+  the March 2026 harness and its results are gone.
