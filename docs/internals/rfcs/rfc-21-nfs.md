@@ -301,7 +301,10 @@ table, all of it by default
 only 4.x serves no MOUNT, NLM or NSM.
 
 - A `COMPOUND` whose minor version is above 2 **MUST** be answered
-  `NFS4ERR_MINOR_VERS_MISMATCH` with no operation run.
+  `NFS4ERR_MINOR_VERS_MISMATCH` with no operation run: its tag echoed and no
+  results (RFC 8881 §16.2.3, §15.1.3.2), written by the header codec, which
+  reads the tag and the minor version with the RPC header, so the router
+  refuses it before any member decodes (§11.5).
 - The minor version is the client's choice per `COMPOUND`; the server
   **MUST NOT** remember one per client, so a client that falls back from 4.2
   to 4.1 needs no new client ID.
@@ -2106,11 +2109,14 @@ bytes. What the tags must carry beyond fixed fields:
   segment of the reply
   ([RFC 20 §5.3](rfc-20-adapters.md#5.3%20No%20copies%20on%20the%20data%20path)).
 
-A `COMPOUND`'s own arguments are decoded by the same codec, and its members one
-by one, each by its own row's decoder through the compound row's `Op.Members`
+A `COMPOUND`'s tag and minor version are read by the header codec, with the
+RPC header (§11.5), and again, with its count, by the compound row's own
+`Decode`, which `Args` hands the arguments from the tag, so its `EncodeHead`
+echoes the tag; its members are decoded one by one, each by its own row's decoder through the compound row's `Op.Members`
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
 A member that does not decode is `NFS4ERR_BADXDR`; a `COMPOUND` whose own
-arguments do not, and a procedure of any other program, `GARBAGE_ARGS`. The credential is decoded with the RPC header, and
+arguments do not, and a procedure of any other program, `GARBAGE_ARGS` (§11.5). The credential is decoded with the RPC header,
+which means its `opaque_auth` envelope, and
 the `Identity` and `r.Call` of §11.1 are built by the pipeline once per
 member, never by a handler, NFSv4's included.
 
@@ -2568,9 +2574,13 @@ an NFSv4.1 code such as `SEQUENCE` sent under NFSv4.0 included, is routed to
 the `ILLEGAL` row, which answers `NFS4ERR_OP_ILLEGAL`, as develop does; `ErrVersion` to
 `PROG_MISMATCH` for an RPC version, and for an NFSv4 minor version not served
 to `NFS4ERR_MINOR_VERS_MISMATCH`, answered once for the compound before any
-operation runs, with its tag and no results; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrDecode` to
-`GARBAGE_ARGS`, the RPC accept state, in a row naming no operation or version,
-which RFC 20 §4.7's `NewErrorTable` demands of every table; `ErrTooLong` to
+operation runs, with its tag and no results; `ErrNoFH` to `NFS4ERR_NOFILEHANDLE`; `ErrDecode`, in the row naming no
+operation or version that RFC 20 §4.7's `NewErrorTable` demands of every
+table, to `GARBAGE_ARGS`, the RPC accept state, in every table but the NFSv4
+members' table, the stages' table and the one holding `COMPOUND` included, and
+to `NFS4ERR_BADXDR` in the members' table, the compound row's `Members`, so a
+member that does not decode is `NFS4ERR_BADXDR` and a `COMPOUND` whose own
+arguments do not is `GARBAGE_ARGS`; `ErrTooLong` to
 `NFS4ERR_TOO_MANY_OPS` in a row naming no version, which RFC 20 §4.7's
 `NewOpTable` demands of a table with a compound row, and to `NFS4ERR_RESOURCE`
 for NFSv4.0, which has no such status, in a row naming it that wins there; `ErrReplyTooBig`, a
@@ -2590,8 +2600,19 @@ reply.
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
 `HeaderCodec.Encode`): the RPC reply header, with `mismatch_info`'s lowest and
 highest versions for `PROG_MISMATCH`, those the connection serves, and for
-`RPC_MISMATCH`, 2 and 2 (RFC 5531 §9). A procedure's encoder handed no reply
-writes only what its result carries beside the status.
+`RPC_MISMATCH`, 2 and 2 (RFC 5531 §9), and for an NFSv4 `COMPOUND` its status,
+its tag and an empty results array. A procedure's encoder handed no reply writes
+only what its result carries beside the status.
+
+**The `COMPOUND` tag** has no cap of its own: it is a `utf8str_cs`, an
+`opaque<>` (RFC 8881 §3.2, RFC 7530 §2.1), whose definition RFC 8881 §16.2.3
+and RFC 7530 §15.2.4 leave to the implementor, asking only that the reply's tag
+SHOULD be the request's. It is bounded by the
+record alone ([§2.3](#2.3%20Transfer%20sizes)) and echoed whole, in every reply
+the compound gets, a refusal's included. The header codec reads it with the
+RPC header, so `HeaderCodec.ReplyLen` counts its bytes in the reply head, and
+the reply's reservation, or a status alone's buffer, is sized with them before
+it is taken: no reservation grows with the tag, and NFS parks nothing.
 
 **Malformed calls.** A record too short to hold its transaction ID and message
 type closes the connection. A call's RPC version, the first field of its body
