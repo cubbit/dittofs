@@ -677,7 +677,7 @@ card. A client asks for the server's addresses
   a client never discovers another node's.
 - A bind (`SESSION_SETUP` with `SMB2_SESSION_FLAG_BINDING`) for a session this
   node does not hold is answered `STATUS_USER_SESSION_DELETED` (MS-SMB2
-  3.3.5.5.2); the client keeps the channels it has.
+  3.3.5.5); the client keeps the channels it has.
 
 > decision: no multichannel across nodes. A session's keys, credits, open table
 > and replay state live on the node that set it up
@@ -2685,17 +2685,30 @@ above, but the named-pipe `READ`, which never arises
 A `SESSION_SETUP` answered `STATUS_MORE_PROCESSING_REQUIRED` is no failure, so
 a related member after it reaches `Unwrap`, which looks its inherited session
 up before it checks any signature (RFC 20 §5.5). A new session still in setup
-is `InProgress` (MS-SMB2 3.3.5.5.1), and MS-SMB2 3.3.5.2.9 refuses every
-command on it but `LOGOFF`, `CLOSE` and `LOCK`: `Unwrap` lets those three
-through, where a `CLOSE` or `LOCK` then names no open of the new session and
-fails on its own and a `LOGOFF` ends the setup, and refuses any other with
-`ErrNoSession`, `STATUS_USER_SESSION_DELETED`, which splits the chain
+is `InProgress` (MS-SMB2 3.3.5.5.1), and on such a session MS-SMB2 3.3.5.2.9
+has the server "continue to process the SMB2 LOGOFF, SMB2 CLOSE, and SMB2 LOCK
+commands" and fail any other: `Unwrap` lets those three through, and refuses
+any other with `ErrNoSession`, `STATUS_USER_SESSION_DELETED`, which splits the
+chain
 ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)).
-A session being re-authenticated keeps its state until a leg succeeds
-(re-authentication in place, §4.1): a valid one stays valid, its keys and
-identity unchanged, so a related member after its leg runs as the identity the
-session already holds, which gains it nothing; an expired one keeps §4.1's
-rule for an expired session.
+A related `CLOSE` or `LOCK` inherits neither a tree nor a `FileId` from the
+`SESSION_SETUP` before it (MS-SMB2 3.3.5.2.7.2), so it is refused at RFC 20's
+`check`, which runs before `Resolve`
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)'s
+pipeline), before any open is looked up; a `LOGOFF` ends the setup. A session
+being re-authenticated keeps its state until a leg succeeds
+(re-authentication in place, §4.1): a valid one stays valid, as MS-SMB2
+3.3.5.5.2 leaves it, its keys and identity unchanged, so a related member
+after its leg runs as the identity the session already holds, which gains it
+nothing; an expired one keeps §4.1's rule for an expired session, though
+3.3.5.5.2 sets it `InProgress`, so a client can go on releasing what it holds
+while it renews. A binding
+leg (`SMB2_SESSION_FLAG_BINDING`, §4.2) is no re-authentication: a bind adds
+the session to its connection's session table, and the connection to the
+session's channels, only once it succeeds (MS-SMB2 3.3.5.5.3). Until then
+`Unwrap` refuses every related member after it, `LOGOFF`, `CLOSE` and `LOCK`
+included, with `ErrNoSession`, `STATUS_USER_SESSION_DELETED`, the status
+3.3.5.2.9 gives a session the connection does not hold.
 
 > decision: a member on a session in setup is answered
 > `STATUS_USER_SESSION_DELETED`, the status 3.3.5.2.9 gives a session it does
@@ -2789,7 +2802,7 @@ service, before any wire suite runs:
 | §16.5 a non-failure in a chain | On a file whose name is longer than 2 characters, send `CREATE`, then a related `QUERY_INFO` for `FileAllInformation` with a 104-byte output buffer, MS-FSA's minimum for that class, which holds the fixed part but not the whole name, then a related `CLOSE`: the `QUERY_INFO` answers `STATUS_BUFFER_OVERFLOW` with the name cut to the buffer, the `CLOSE` answers `STATUS_SUCCESS`, and the open is gone (a `READ` on its `FileId` answers `STATUS_FILE_CLOSED`). A fixed-size class, or a buffer below the minimum, would answer `STATUS_INFO_LENGTH_MISMATCH`, a failure, so the row names this class and size. | a related member after a status MS-SMB2 3.3.4.4 counts as no failure refused as after a failure, which leaves the open behind |
 | §16.5 a failure an `IOCTL` shares | Mark a file sparse (`FSCTL_SET_SPARSE`) and write two data ranges with a hole between of at least 64 KiB, aligned to 64 KiB, as a Windows reference needs to report a hole. Send `CREATE`, then a related `IOCTL` `FSCTL_QUERY_ALLOCATED_RANGES` over the file with a 16-byte output buffer, then a related `CLOSE`: the `CLOSE` answers the `IOCTL`'s status with no call, and the open stays (a `READ` on its `FileId` succeeds). The file is marked sparse so the row holds against a server that reports a file not marked so as one range, which would fit. | a `NotFailure` row keyed by a sentinel other FSCTLs share, which runs the related members after a failure |
 | §16.5 a copychunk failure in a chain | Open a file and take its resume key (`FSCTL_SRV_REQUEST_RESUME_KEY`). Send `FSCTL_SRV_COPYCHUNK` on that open with a `MaxOutputResponse` of 8 bytes, below the 12-byte `SRV_COPYCHUNK_RESPONSE`, then a related `CLOSE`: the `IOCTL` is a plain `STATUS_INVALID_PARAMETER` failure (MS-SMB2 3.3.5.15.6), the status of copychunk's `NotFailure` pair, and the `CLOSE` answers it with no call, and the open stays. | a `NotFailure` row for copychunk keyed on its status or a shared error rather than its own value, which would run the related members after a plain failure |
-| §16.5 a session in setup | Send a `SESSION_SETUP` for a new session that the server answers `STATUS_MORE_PROCESSING_REQUIRED`, then a related `TREE_CONNECT`: it is refused at `Unwrap` with `STATUS_USER_SESSION_DELETED`, in a record of its own, its response's `SessionId` the new session's, and no tree is connected. Then re-authenticate a valid session with a leg answered `STATUS_MORE_PROCESSING_REQUIRED`, followed by a related `TREE_CONNECT`: it runs as the identity the session already holds. | a related member run on a new session that has not finished its setup, or one refused on a valid session mid re-authentication |
+| §16.5 a session in setup | Send a `SESSION_SETUP` for a new session that the server answers `STATUS_MORE_PROCESSING_REQUIRED`, then a related `TREE_CONNECT`: it is refused at `Unwrap` with `STATUS_USER_SESSION_DELETED`, in a record of its own, its response's `SessionId` the new session's, and no tree is connected; a related `CLOSE` in its place is refused, and no open is closed. Then re-authenticate a valid session with a leg answered `STATUS_MORE_PROCESSING_REQUIRED`, followed by a related `TREE_CONNECT`: it runs as the identity the session already holds. Repeat on an expired session: the `TREE_CONNECT` is refused `STATUS_NETWORK_SESSION_EXPIRED`, §4.1's rule. Bind a second connection to a valid session with a leg answered `STATUS_MORE_PROCESSING_REQUIRED`, followed by a related `LOGOFF`: it is refused with `STATUS_USER_SESSION_DELETED`, and the session still serves its first connection. | a related member run on a new session that has not finished its setup, or on a connection not yet bound to its session, or one refused on a valid session mid re-authentication |
 | §16.4 end to end | smbtorture and the Windows Protocol Test Suites run through `dt` ([RFC 29](rfc-29-test-harness.md)) as the end-to-end layer above the vectors and fuzz targets. | a translation correct in vectors but wrong against a real client |
 
 ### 16.7 Monitoring

@@ -1490,7 +1490,7 @@ runs, so that no handler repeats them:
 | needs | one ordered precondition — nothing, negotiated, authenticated session, tree — plus whether a current filehandle is needed; refused with the protocol's status when not met | `NEGOTIATE` needs nothing; `SESSION_SETUP` negotiated; SMB `READ` a tree; NFSv4 `PUTROOTFH` no filehandle |
 | versions | the first and last version or dialect that serve it | NFSv4.2 `SEEK` from minor version 2 |
 | cacheable | whether its reply goes in the replay cache | NFSv4.1 `CREATE`, `REMOVE`, `RENAME` |
-| reply bound | the largest reply it can produce for its arguments, before running it, after clamping a count the protocol lets the server shorten | `READ`: the count asked, clamped to the transfer size and the budget left (§4.3), plus its header |
+| reply bound | the largest reply it can produce for its arguments, before running it, after clamping a count the protocol lets the server shorten | `READ`: the count asked, clamped to the transfer size, and for NFS to the room `core` hands its row's `Bound` hook (§4.3, §4.7), never lowered below one byte, plus its header |
 
 Cross-cutting work — tracing, metrics, deadlines, panic recovery — wraps every
 handler the same way, in the pipeline, as the middleware chain of §4.7. A
@@ -1504,9 +1504,10 @@ take down the connection's other requests. Its line, at error with the
 operation and the stack, is a noisy subject's: written at most once a minute
 per table operation and the frame that panicked, so one FSCTL's panic does not
 hide another's, the next one carrying the count held back
-([RFC 25 §5.2](rfc-25-observability.md#5.2%20Volume%20is%20bounded%20per%20incident%2C%20not%20per%20request)),
-and the stack captured only for a line that is written, so a client that can
-trigger a panic gets no stack line per request.
+([RFC 25 §5.2](rfc-25-observability.md#5.2%20Volume%20is%20bounded%20per%20incident%2C%20not%20per%20request)).
+The frame is read with a bounded `runtime.Callers`, a few frames past the
+panic, and the full stack is captured only for a line that is written, so a
+client that can trigger a panic gets no stack line per request.
 
 ### 4.3 A handler makes at most one mutating call
 
@@ -1614,9 +1615,12 @@ service calls, admitted separately
   its operations runs; the cap is the protocol RFC's, set on the compound row as
   `Op.MaxMembers` (§4.7).
 - **The reply budget is checked before each operation, not after.** In an
-  NFSv4.1 compound the runner compares the operation's reply bound (§4.2) with
-  what is left of the session's `ca_maxresponsesize`, and refuses an operation
-  that would not fit before it runs (`NFS4ERR_REP_TOO_BIG`). When the
+  NFSv4.1 compound each operation's reply bound (§4.2) is compared with what
+  is left of the session's `ca_maxresponsesize`, which the compound's own
+  `SEQUENCE` resolved ([RFC 21 §3.1](rfc-21-nfs.md#3.1%20Slot%20tables)), and
+  an operation that would not fit is refused before it runs
+  (`NFS4ERR_REP_TOO_BIG`); a `READ` or `READ_PLUS` is clamped to it instead
+  (below). When the
   `SEQUENCE` set `sa_cachethis`, it checks the same bound against
   `ca_maxresponsesize_cached` too, and refuses with
   `NFS4ERR_REP_TOO_BIG_TO_CACHE`
@@ -1628,36 +1632,51 @@ service calls, admitted separately
   of its members' summed bounds and `HeaderCodec.ReplyLen` of its header
   before the first runs, and refuses one whose reservation would pass a quarter of the reply
   pool's ceiling with `ErrReplyTooBig` before any member runs, as a count past
-  the cap is (§4.7). Its reply also stays within a cap, in every minor
-  version: the protocol's record cap, `Framer.MaxRecord`'s bytes, and in an
-  NFSv4.1 session the smaller of that and what is left of `ca_maxresponsesize`
-  (the budget above), so an operation after a `READ` is not refused
-  `NFS4ERR_REP_TOO_BIG`. Where its reply bytes, its members' bounds and
-  `ReplyLen` of its header, not the pool's charge, would pass that cap, the
-  runner, before the first member runs and before it reserves, shortens the
-  compound's `READ`s, the last first, each through its `Invocation.Shorten`,
-  until the reply fits, but never to no data. The `READ`'s handler reads the
-  shortened count from its own decoded request and answers a short read, `eof`
-  false where the file goes on, which the client continues (RFC 8881 §18.22;
-  RFC 7530 §16.23.5 for NFSv4.0). A compound the cap would leave a `READ` no
-  data for, or that passes it with no `READ` to shorten, is refused with
-  `ErrReplyTooBig` before any member runs. On a large node a compound past
-  the transfer class draws the 8 MiB class, and two 1 MiB NFSv4.0 `READ`s, which
-  no `ca_maxresponsesize` bounds, would make a reply of about 2 MiB, past an RPC
-  reply record's 1 MiB and 4 KiB
-  ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)): its second `READ` is
-  answered short.
+  the cap is (§4.7). Its reply also stays within the protocol's record cap,
+  `Framer.MaxRecord`'s bytes, in every minor version. Each member's bound is
+  first taken for `Framer.MaxRecord`'s bytes less `ReplyLen` of the compound's
+  header, as every request's is (§4.7's `Invocation.Bound`). Before a `READ` or
+  `READ_PLUS` runs, its row's `Bound` hook is handed its room, what is left of
+  that cap after `ReplyLen`, the replies before it and the bounds of the
+  members that follow it, and lowers its count to fit; every other hook
+  ignores the room. A room below one byte refuses the compound with
+  `ErrReplyTooBig`, so no `READ` gets a byte it has no room for, and a member
+  whose own bound leaves a `READ` no byte, such as a `GETATTR` after it whose
+  bound nears the cap, refuses the compound too. The runner makes that check
+  before any member runs, against `Framer.MaxRecord` alone, the replies before
+  each `READ` counted at their bounds, so such a compound is refused whole, and
+  reserves what the clamps leave; one with no `READ` whose bounds pass the cap
+  is refused then too. In an NFSv4.1 session each `READ`'s clamp runs after the
+  compound's `SEQUENCE`, so the NFS row's hook also caps its count at what is
+  left of the session's `ca_maxresponsesize`, which that `SEQUENCE` resolved
+  ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)), and an operation
+  after a `READ` is not refused `NFS4ERR_REP_TOO_BIG`; a `READ` that budget
+  leaves no byte is refused there, after the members before it ran, as RFC
+  8881 §2.10.6.4 allows. `core` reads neither that budget nor a count: the
+  handler reads the clamped count from its own decoded request and answers a
+  short read, `eof` false where the file goes on, which the client continues
+  (RFC 8881 §18.22; RFC 7530 §16.23.5 for NFSv4.0; RFC 7862 §15.10.3 for
+  `READ_PLUS`). A `READDIR` is not clamped
+  ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)). On a large node a
+  compound past the transfer class draws the 8 MiB class, and two 1 MiB
+  NFSv4.0 `READ`s, which no `ca_maxresponsesize` bounds, would make a reply of
+  about 2 MiB, past an RPC reply record's 1 MiB and 4 KiB
+  ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)): its first `READ` is
+  answered short, and its second whole.
 
-  > decision: a compound past its cap has its `READ`s shortened, never to no
-  > data, rather than the compound refused. Refusing on the summed bounds
-  > refused an ordinary `PUTFH, READ(1 MiB), GETATTR` once the `GETATTR`'s
-  > bound, its owner strings and ACL, passed the 4 KiB of header room, so every
-  > full-size read with a `GETATTR` would have failed; this replaces the
-  > earlier rule that refused every compound past the cap. A `READ` is never
-  > left no data, since Linux turns a `READ` of no data with `eof` false into
-  > `EIO`. The ceiling: a compound the cap would leave a `READ` no data for is
-  > still refused. Withdraw it if a client is seen to treat a short read
-  > inside a compound as an error.
+  > decision: a compound past its cap has each `READ` and `READ_PLUS`
+  > shortened, never lowered below one byte, rather than the compound refused.
+  > Refusing on the summed bounds refused an ordinary `PUTFH, READ(1 MiB),
+  > GETATTR` once the `GETATTR`'s bound passed the 4 KiB of header room, so
+  > every full-size read beside such a `GETATTR` would have failed; this
+  > replaces the earlier rule that refused every compound past the cap. A
+  > `READ` is never left no data, since Linux turns a `READ` of no data with
+  > `eof` false into `EIO`. The clamp is the row's `Bound` hook's, so `core`
+  > never reads a count, and each `READ` is judged on its own room, one local
+  > check. The ceiling: a compound that would leave a `READ` less than one
+  > byte is refused, `PUTFH` and three 1 MiB `READ`s over NFSv4.0 among them,
+  > though clients send one `READ` per compound. Withdraw it if a client is
+  > seen to treat a short read inside a compound as an error.
 
   A chain sends the replies it holds before a member whose
   reservation would take them past that quarter (§4.7). The two quarter checks measure a
@@ -2136,7 +2155,7 @@ type HeaderCodec interface {
 	Args(rec *Buf, h Header) []byte
 	// ReplyLen is the most Encode writes for h, a status-alone body included,
 	// with Chain's padding to 8 and the transform Wrap adds in place: the
-	// pipeline reserves Bound() + ReplyLen(h), and ReplyLen(h) alone for a
+	// pipeline reserves Bound(room) + ReplyLen(h), and ReplyLen(h) alone for a
 	// reply carrying a status alone (RFC 24 §3.3). For a compound row's message it
 	// also covers the compound's head and one result's head, which a reply that
 	// fails before or at a member writes beside the members' bounds.
@@ -2283,13 +2302,18 @@ type Op struct {
 // compound row, whose Decode the protocol writes and which builds its
 // Invocation directly, setting Count from the arguments it decoded.
 type Invocation struct {
-	Bound   func() int                                 // the reply bound (§4.2): the operation's own reply, without ReplyLen(h)
-	// Shorten lowers an NFSv4 READ's count so Bound() is at most room, and
-	// reports false where that would lower it to no data, which the runner
-	// then refuses (§4.3); the handler reads the lowered count from its
-	// decoded request. Bind sets it where *Req implements Shortener; nil:
-	// nothing to shorten.
-	Shorten func(room int) bool
+	// Bound is the reply bound (§4.2) for room: the operation's own reply,
+	// without ReplyLen(h). An NFS READ's or READ_PLUS's row clamps its count
+	// in its hook so the bound fits room, never lowered below one byte, and
+	// reports ok false where room cannot hold one byte, which refuses the
+	// compound (§4.3); in an NFSv4.1 session the hook also caps the count at
+	// what is left of the session's ca_maxresponsesize, read from r.State
+	// (RFC 21 §2.3). Its handler reads the clamped count from its decoded
+	// request: core never reads it. Every other row ignores room and reports
+	// ok. core first calls it with Framer.MaxRecord's bytes less ReplyLen(h),
+	// and a compound's runner again with each member's room (§4.3), so a
+	// count is only ever lowered.
+	Bound   func(r *Request, room int) (n int, ok bool)
 	Resolve func(r *Request) error                     // wire IDs to service values
 	Call    func(ctx context.Context, r *Request) error // the handler
 	// Encode runs on every request that gets a final reply, so its reply may
@@ -2346,20 +2370,13 @@ const (
 // and returns the row's Decode.
 func Bind[Req, Rep any](
 	dec func(b []byte, v Version, req *Req) (n int, err error), // n: the bytes of b it consumed, which Decode returns
-	bound func(req *Req) int,
+	bound func(r *Request, req *Req, room int) (n int, ok bool), // Invocation.Bound: an NFS READ's or READ_PLUS's clamps its count in req to room, never lowered below one byte, ok false where room cannot hold one; any other ignores room
 	resolve func(r *Request, req *Req) error, // nil: the operation names no wire ID
 	role func(r *Request, req *Req) Role,     // nil: Op.Role decides alone
 	handle func(req *Req) (vfs.Handle, bool), // nil: the arguments name no filehandle
 	h Handler[Req, Rep],
 	enc func(rep *Rep, v Version, out *Buf) error,
 ) func([]byte, Version) (Invocation, int, error)
-
-// Shortener is a decoded NFSv4 READ request: Shorten lowers its count so the
-// operation's reply bound is at most room, and returns false where that would
-// lower it to no data. Bind gives a row whose *Req implements it an
-// Invocation.Shorten (§4.3). Only READ implements it: READDIR and READ_PLUS
-// are not shortened.
-type Shortener interface{ Shorten(room int) bool }
 
 // NewOpTable builds a table and checks it: codes unique, ranges well formed,
 // no ErrorRow.Hold unless holds, and, where it holds, a row answering
@@ -2404,7 +2421,8 @@ type Status uint32
 // ErrorTable maps a service error to a Status (§4.5). Map takes the most
 // specific row that matches, in a total order: a row whose Err is a typed
 // value before one whose Err is a sentinel; then, among those, a row naming
-// Ops and Versions, Ops alone, Versions alone, neither. NewErrorTable refuses
+// Ops and Versions, Ops alone, Versions alone, neither. A NotFailure row is
+// taken only where no other row matches (Map). NewErrorTable refuses
 // two rows equal in that order that can match the same error, operation and
 // version, and a table with no row answering ErrDecode for every operation
 // and version (one naming neither Ops nor Versions that replies at once with
@@ -2449,7 +2467,10 @@ type ErrorRow struct {
 func NewErrorTable(fault Status, rows ...ErrorRow) *ErrorTable
 // Map is err's status for op at v. reply false is a NoReply row; notFailure
 // true is a NotFailure row's status, after which the compound runner runs the
-// next member and a chain's related ones (§4.3).
+// next member and a chain's related ones (§4.3); an err that also matches a
+// row not marked NotFailure maps to that row instead, as an
+// errors.Join(pairErr, err) or a pair's error wrapping a service one does, so
+// a failure is never answered as none.
 func (t *ErrorTable) Map(err error, op *Op, v Version) (s Status, reply, notFailure bool)
 ```
 
@@ -2478,7 +2499,8 @@ tbl, r, err := stages.Router.Route(h, prev) // prev: the member before a related
 op := tbl.Ops[h.Op()]               // absent: not supported
 err = check(op, h, r)               // Versions, Needs (§4.2)
 inv, _, err := op.Decode(stages.Header.Args(rec, h), h.Version()) // err is the codec's own, which the pipeline wraps in ErrDecode; the bytes consumed matter to the compound runner only (below)
-err = reserveReply(ctx, inv.Bound()+stages.Header.ReplyLen(h)) // RFC 24 §3.3
+n, _ := inv.Bound(r, maxRecord-stages.Header.ReplyLen(h)) // a compound's members are handed their own room (§4.3)
+err = reserveReply(ctx, n+stages.Header.ReplyLen(h)) // RFC 24 §3.3
 err = inv.Resolve(r)
 role := op.Role
 if draining || expired(r) { role = roleOf(op, inv, r) } // inv.Role(r), or op.Role where nil; not asked otherwise
@@ -2560,8 +2582,8 @@ tried without waiting (`BufPool.TryGet`,
 [RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)). When it does not
 fit at once while the chain holds reply reservations, when its reservation
 would take the chain's held reservations past a quarter of the reply pool's
-ceiling (§4.3), or when the replies it holds, as encoded, and its reservation's
-bytes would pass the protocol's record cap, `Framer.MaxRecord`'s bytes, the
+ceiling (§4.3), or when the record its reservation would join, as `Frame`
+states it (below), would pass the protocol's record cap, `Framer.MaxRecord`'s bytes, the
 replies before it go out as a record of their own, wrapped
 once, and only then does the member reserve under its deadline: a chain never
 waits on the reply pool while holding it
@@ -2571,7 +2593,11 @@ A member answered with a status alone takes its status's buffer the same way:
 counted as `reply_pool`; the status then waits for its buffer
 ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)),
 holding no reply reservation and holding the connection's one status wait, as a
-refusal alone does: the reader takes it for a first member it refuses, so the
+refusal alone does. It takes that wait only once those replies have gone out,
+so it never waits at
+[RFC 24 §2.6](rfc-24-resources.md#2.6%20Reservations%20are%20taken%20in%20one%20order)'s
+step 4 holding a reply reservation (step 5). The reader takes it for a first
+member it refuses, so the
 next such record waits on the reader, and the chain's goroutine takes it for a
 later member, waiting for it in the place the chain holds, its member's own or
 the kept one. A member refused while its chain holds no place, because it gave
@@ -2583,7 +2609,8 @@ every other chain waiting for it holds one place, so those stay within the
 connection's flow-control bound. A status waits for the one status wait and
 then for its buffer within one 30 s, counted from when it starts waiting;
 past it the connection closes, as for a status that finds no buffer (§6.4,
-`reply_wait`), so no queue behind the one status wait outlasts 30 s.
+`status_wait` or `reply_wait`), so no queue behind the one status wait
+outlasts 30 s.
 A member's replay hit keeps the same rule. `Lookup` is first asked under an
 ended context, which tries its copy's reservation once; on its `ErrDelay` of
 `DelayResources` the replies before it go out first, and it is asked again
@@ -2596,15 +2623,25 @@ cache's copy. These splits count as `reply_pool`.
 The record cap keeps a joined record within what one `Frame` header can state:
 SMB's Direct TCP length is 3 bytes, and a quarter of a large node's reply pool
 can pass it ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)). It is
-measured as `Frame` states the record, after `Wrap`: the replies held as
-encoded, what `Wrap` adds, and the member's reservation, whose `ReplyLen`
-already counts what `Wrap` adds. A single operation's reply never passes the cap on its own: it is bounded by
+measured as `Frame` states the joined record, after `Wrap`: the replies held,
+as encoded, `Chain`'s padding between them, and `ReplyLen` of the first
+member's header, which bounds what `Wrap` adds to the record, with the next
+member's reservation on top.
+
+> decision: `core` counts the record as `Frame` will state it, padding and
+> `Wrap`'s growth included, so no protocol needs a margin under its frame
+> limit. The ceiling: `ReplyLen` of the first header is a bound, not the
+> transform's exact size, so a chain can split a little short of the cap.
+> Count the transform exactly if such splits are seen to cost a record.
+
+A single operation's reply never passes the cap on its own: it is bounded by
 its class, and the cap is that class's capacity, 8 MiB and 4 KiB for SMB and
 1 MiB and 4 KiB for an RPC record
 ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)). A single-reply
 compound can draw a larger class, and one whose reply bytes would pass the cap
-has its `READ`s shortened before any member runs, never to no data, or is
-refused where they cannot make room (§4.3), so only a joined record can pass it. A member `Unwrap`
+has each `READ` and `READ_PLUS` clamped by its row's `Bound` hook, or is
+refused where one would be left less than one byte (§4.3), so only a joined
+record can pass it. A member `Unwrap`
 refuses splits the chain: the replies before it go out first, joined and
 wrapped once; its refusal goes out next in a record of its own, wrapped once
 under its own header as §5.5 says, with the replies of the related members
@@ -2862,7 +2899,7 @@ var (
 	ErrNoTree         = errors.New("core: no tree")                       // Needs: tree
 	ErrNoFH           = errors.New("core: no current filehandle")         // Needs: NeedsFH
 	ErrTooLong        = errors.New("core: compound past its cap")         // the compound cap (§4.3)
-	ErrReplyTooBig    = errors.New("core: reply past a quarter of the reply pool") // §4.3: or a single-reply compound past its cap with every READ shortened as far as it can go
+	ErrReplyTooBig    = errors.New("core: reply past a quarter of the reply pool") // §4.3: or a single-reply compound past its cap that would leave a READ or READ_PLUS less than one byte
 	ErrExpired        = errors.New("core: credential expired")            // §4.4
 	ErrNotLast        = errors.New("core: not the last member of a chain") // Park
 	ErrTooManyPending = errors.New("core: too many pending requests")     // Stages.MaxPending
@@ -3515,9 +3552,9 @@ the statuses are the protocol RFCs' ([RFC 21 §11.5](rfc-21-nfs.md#11.5%20Errors
 | write timeout, `write_timeout` | each gathered write of the writer (§6.6), from its start | connection closed |
 | handshake timeout, `handshake_timeout` | negotiate and authenticate | connection closed |
 | connection limit | per node, `connection_limit`, and a quarter of it per address ([RFC 24 §4.4](rfc-24-resources.md#4.4%20Connections)) | new connections closed at accept, never left in the listen backlog |
-| accept failure | every `Accept` error but the listener's own close (`net.ErrClosed`), which ends its accept loop, and the accept deadline's own wake (`os.ErrDeadlineExceeded`, §3.4's `Deps.Watch`), which reports idle, re-arms the deadline and is no failure, so it neither backs off nor counts toward `adapter_listener_lost` | retried after a backoff from 10 ms doubling to 1 s; `adapter_listener_lost` (§3.7) holds while `Accept` keeps failing, its last failure within 2 s, twice the backoff's cap, and the run's first failure 60 s back, and clears at the next accepted connection or once the failures stop |
+| accept failure | every `Accept` error but the listener's own close (`net.ErrClosed`), which ends its accept loop, and the accept deadline's own wake (`os.ErrDeadlineExceeded`, §3.4's `Deps.Watch`), which reports idle, re-arms the deadline counted from now, never from the one that passed, so a deadline already past cannot spin the loop, and is no failure, so it neither backs off nor counts toward `adapter_listener_lost` | retried after a backoff from 10 ms doubling to 1 s; `adapter_listener_lost` (§3.7) holds while `Accept` keeps failing, its last failure within 2 s, twice the backoff's cap, and the run's first failure 60 s back, and clears at the next accepted connection or once the failures stop |
 | drain timeout, `drain_timeout` | draining (§3.1) | remaining requests abandoned |
-| status buffer wait | a reply carrying a status alone that holds no reply reservation, keeping its record's receive charge meanwhile ([RFC 24 §6.1](rfc-24-resources.md#6.1%20Goroutines)): 30 s from when it starts waiting, for the connection's one status wait (§4.7) and then for its buffer ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)) | connection closed, counted under `reply_wait` (§10.1) |
+| status buffer wait | a reply carrying a status alone that holds no reply reservation, keeping its record's receive charge meanwhile ([RFC 24 §6.1](rfc-24-resources.md#6.1%20Goroutines)): 30 s from when it starts waiting, for the connection's one status wait (§4.7) and then for its buffer ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits)) | connection closed, counted under `status_wait` while still waiting for the one status wait, else `reply_wait` (§10.1) |
 
 The reader checks the connection's context after every write of its read
 deadline: the arming at a record's first byte, the restart once a receive
@@ -4123,6 +4160,7 @@ measures only what happens before and after the service call.
 | How often are connections refused or closed, and why? | `adapter_connection_closes_total{protocol, reason}` | counter |
 | How much is in flight per protocol? | `adapter_requests_in_flight{protocol}` | gauge |
 | How often is a request refused before the service? | `adapter_refusals_total{protocol, stage}`, `stage` where it was refused, `reply_too_big` for §4.3's compound | counter |
+| How often is a compound's `READ` or `READ_PLUS` shortened to its cap (§4.3)? | `adapter_reads_shortened_total{protocol}` | counter |
 | How often are replays answered from the cache? | `adapter_replay_hits_total{protocol}` | counter |
 | How often does a chain's reply go out in more than one record, and why (§4.7)? | `adapter_chain_splits_total{protocol, reason}`, `reason` = `unwrap`, `decode`, `flow`, `reply_pool`, `quarter`, `record` | counter |
 | How long are requests on the wire around the service call? | `adapter_wire_seconds{protocol, stage}` | histogram |
@@ -4147,9 +4185,9 @@ close:
   failed, as when keepalive or `TCP_USER_TIMEOUT` ends a peer that vanished
   (§6.7);
 - at a deadline (§6.4): `handshake`, `read_timeout`, `idle`, `write_timeout`,
-  and `reply_wait`, a reply carrying a status alone that had not, within 30 s
-  of starting to wait, both the connection's one status wait and a reply
-  buffer
+  `status_wait`, a reply carrying a status alone that had not taken the
+  connection's one status wait within 30 s of starting to wait, and
+  `reply_wait`, one that held it and had no reply buffer by then
   ([RFC 24 §3.3](rfc-24-resources.md#3.3%20Reply%3A%20charged%20before%20the%20call%2C%20and%20the%20call%20waits));
 - by `core`: `write`, a failed write; `frame`, a framing error; `decode`, a
   header that did not decode far enough to address a reply; `unwrap`, an
@@ -4174,7 +4212,9 @@ increase is an alert, and raises `adapter_record_unreadable` (§3.7).
 a healthy node; any increase is a bug, and alerts as one.
 
 **How they are recorded.** The reader and writer count connections and bytes;
-the pipeline counts refusals by stage and replay hits; the metrics middleware
+the pipeline counts refusals by stage and replay hits; the compound runner
+counts, as a shortened read, each member whose `Bound` its room lowered (§4.3),
+which only a `READ`'s or `READ_PLUS`'s hook does; the metrics middleware
 (§4.7) times the stages around the call. Every series a request can touch is
 resolved once per server: a table's per-protocol, per-operation and per-error
 series at the first `Route` that returns it, under its `OpTable.Protocol`, and
