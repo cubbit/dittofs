@@ -333,7 +333,10 @@ func TestWaitBounds(t *testing.T) {
 	}
 }
 
-// A node parks at most 256 polls and refuses the next 503 unavailable.
+// A node parks at most 256 polls and refuses the next 503 unavailable. A
+// parked poll holds no call slot, so the 256 park past the bound of 64
+// calls. They are parked one at a time, since 256 first reads at once would
+// meet that bound.
 func TestParkedPollsAreBounded(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	id := uuid.NewString()
@@ -400,7 +403,7 @@ func TestReadOnAnotherNode(t *testing.T) {
 	first := serve(t, caller, disk.use)
 	// The second node is the API alone, since a test watches one harness.
 	srv := api.NewWithTestRows(api.Deps{Addr: "127.0.0.1:0", MetricsAddr: "127.0.0.1:0", Metrics: metrics.New("test", "test"),
-		Logger: slog.New(slog.NewTextHandler(t.Output(), nil)), Authenticate: caller, Live: func() bool { return true },
+		Logger: slog.New(slog.NewTextHandler(t.Output(), nil)), Authenticate: caller, Live: func() bool { return true }, Ready: func() string { return "ready" },
 		Store: second.ControlPlane(), Clock: first.clock, Node: testNode})
 	addr, _, err := srv.Start()
 	if err != nil {

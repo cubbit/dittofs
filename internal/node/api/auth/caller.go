@@ -34,3 +34,18 @@ func CallerFrom(ctx context.Context) (Caller, bool) {
 	c, ok := ctx.Value(callerKey{}).(Caller)
 	return c, ok
 }
+
+type localKey struct{}
+
+// WithLocal returns ctx marked as a request that arrived on the node's local
+// socket. The API's socket listener is its one caller.
+func WithLocal(ctx context.Context) context.Context {
+	return context.WithValue(ctx, localKey{}, true)
+}
+
+// Local reports whether ctx's request arrived on the node's local socket,
+// whose caller is a process on the host holding the server's user's rights.
+func Local(ctx context.Context) bool {
+	local, _ := ctx.Value(localKey{}).(bool)
+	return local
+}
