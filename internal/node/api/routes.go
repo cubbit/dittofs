@@ -48,7 +48,7 @@ func (rt *route) op() string {
 // listing's filter. Overturned only if a resource ever lacks a stable ID,
 // which no record of the metadata store does.
 var routes = []route{
-	{method: http.MethodGet, pattern: "/api/version", right: auth.Public, serve: read(version)},
+	{method: http.MethodGet, pattern: "/api/version", right: auth.Public, beforeReady: true, serve: read(version)},
 	{method: http.MethodGet, pattern: "/api/v1/health", kind: entity.ResourceNode, right: auth.View, beforeReady: true, serve: read(healthOf)},
 	{method: http.MethodGet, pattern: "/api/v1/operations", kind: entity.ResourceOperation, right: auth.View, serve: list(operations)},
 	{method: http.MethodGet, pattern: "/api/v1/operations/{id}", kind: entity.ResourceOperation, right: auth.View, serve: watch(operation)},

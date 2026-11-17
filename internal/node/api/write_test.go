@@ -112,8 +112,8 @@ func TestWriteCommitsWholeOrNothing(t *testing.T) {
 	put := func() reply {
 		return s.do(t, http.MethodPut, knobAt(id)+"?trace=1", `{"spec":{"value":"on"}}`, "If-None-Match", "*", "Idempotency-Key", "k1")
 	}
-	if r := put(); r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
-		t.Fatalf("PUT with its idempotency record faulted: answered %d %s, want 503 unavailable", r.status, r.body)
+	if r := put(); r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable || r.header.Get("Retry-After") != "1" {
+		t.Fatalf("PUT with its idempotency record faulted: answered %d %s Retry-After %q, want 503 unavailable with Retry-After 1", r.status, r.body, r.header.Get("Retry-After"))
 	}
 	if got := s.knob(t, id); got.Generation != 0 {
 		t.Errorf("knob after the faulted commit: %+v, want none", got)

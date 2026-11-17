@@ -371,23 +371,27 @@ func TestParkedPollsAreBounded(t *testing.T) {
 	}
 }
 
-// A parked poll outlives the write timeout that bounds every other call.
-func TestParkedPollOutlivesWriteTimeout(t *testing.T) {
+// A parked poll outlives the read and write timeouts that bound every other
+// call.
+func TestParkedPollOutlivesTimeouts(t *testing.T) {
 	const timeout = 200 * time.Millisecond
-	s := serveWith(t, as(entity.RoleViewer, false), func(srv *api.Server) { srv.SetWriteTimeout(timeout) })
+	s := serveWith(t, as(entity.RoleViewer, false), func(srv *api.Server) {
+		srv.SetWriteTimeout(timeout)
+		srv.ShortenReadTimeout(timeout)
+	})
 	id := uuid.NewString()
 	s.putKnob(t, id, "a", 0)
 	base := s.clock.Pending()
 	ch := s.poll(t.Context(), knobAt(id)+"?wait=30s")
 	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
-	// The write timeout is the HTTP server's, on the wall clock, which no
-	// test clock moves: this bounded wait is the assertion that the parked
-	// poll is still held past it.
+	// The timeouts are the HTTP server's, on the wall clock, which no test
+	// clock moves: this bounded wait is the assertion that the parked poll
+	// is still held past them.
 	<-time.After(3 * timeout)
 	s.putKnob(t, id, "b", 1)
 	s.clock.Advance(time.Second)
-	if p := answered(t, "poll past the write timeout", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":2,"spec":{"value":"b"}}` {
-		t.Errorf("poll parked past the write timeout: answered %d %s err %v, want 200 at generation 2", p.status, p.body, p.err)
+	if p := answered(t, "poll past the timeouts", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != `{"generation":2,"spec":{"value":"b"}}` {
+		t.Errorf("poll parked past the timeouts: answered %d %s err %v, want 200 at generation 2", p.status, p.body, p.err)
 	}
 }
 
