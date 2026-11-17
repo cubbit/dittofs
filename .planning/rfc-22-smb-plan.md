@@ -1,6 +1,6 @@
 # RFC 22 - SMB adapter v2: implementation plan
 
-**Scope:** [RFC 22, SMB](../rfcs/rfc-22-smb.md), the whole RFC (`status: draft`, not deferred) but
+**Scope:** [RFC 22, SMB](../docs/internals/rfcs/rfc-22-smb.md), the whole RFC (`status: draft`, not deferred) but
 Witness, which amendment A1 marks (cluster) and which waits for the cluster stage (§6.2, point 13):
 what the SMB adapter serves on RFC 20's `core`, from `NEGOTIATE` to Previous Versions, with its
 translations, its tests and its benchmarks. It builds on [RFC 20's plan](rfc-20-adapters-plan.md):
@@ -8,30 +8,30 @@ that plan's epic 1 deletes v1 and fixes `core`'s surface, and its epic 6 builds 
 (`smb/wire`'s framer and header codec, `smb/protocol`'s router, `New`), which this plan extends and
 does not plan again. This plan deletes nothing. Related RFCs, with how far each is in scope:
 
-- [RFC 20](../rfcs/rfc-20-adapters.md), the adapter core: **constraints**, except every row of
+- [RFC 20](../docs/internals/rfcs/rfc-20-adapters.md), the adapter core: **constraints**, except every row of
   RFC 20's plan's deferral ledger (its §6.2) owned by the RFC 21/22 plans or naming RFC 22, for SMB:
   SMB's `Security` stage and `HoldCodec`; `gss` as SMB drives it; `translate`; the error-table rows
   and the totality test; handler tests on `memory.New` and `vfstest.Faults`; operation codecs
   with golden vectors and 0-allocation gates; the import test's call sites and file sizes; the
   scripted client; the cross-protocol and end-to-end rows; the wire tests against Samba; the
   benchmarks; the `required-tests.json` pins. §6.4 maps each row to its epic.
-- [RFC 18](../rfcs/rfc-18-identity.md), identity, and [RFC 19](../rfcs/rfc-19-authorization.md),
+- [RFC 18](../docs/internals/rfcs/rfc-18-identity.md), identity, and [RFC 19](../docs/internals/rfcs/rfc-19-authorization.md),
   authorization: **SMB's parts only**: NTLM and Kerberos session setup, SMB's SID and identity
   translation, and the share and ACL checks SMB calls. The shared pieces, the authenticator behind
   `SignIn` and the resolution behind `Spell` and `Find`, are **constraints**, owned by RFC 18's
   plan (#4058) (§6.2, point 1). `gss`, which NFS will share, is built here only as far as SMB's
   session setup drives it, because RFC 20's plan's ledger gives it to this plan until it has an RFC
   of its own; it is one epic, so it can move whole, and its owner is an open point too (§6.2).
-- [RFC 14](../rfcs/rfc-14-open-state.md), open state: **SMB's wire side only**: lease and oplock
+- [RFC 14](../docs/internals/rfcs/rfc-14-open-state.md), open state: **SMB's wire side only**: lease and oplock
   breaks, durable and persistent reconnect, and replay, against the RFC 14 state the service holds.
   RFC 14 itself is constraints.
-- [RFC 17](../rfcs/rfc-17-vfs.md), [RFC 24](../rfcs/rfc-24-resources.md),
-  [RFC 13](../rfcs/rfc-13-configuration.md), [RFC 25](../rfcs/rfc-25-observability.md) and
-  [RFC 29](../rfcs/rfc-29-test-harness.md): as RFC 20's plan treats them: constraints, or the rules
+- [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md), [RFC 24](../docs/internals/rfcs/rfc-24-resources.md),
+  [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md), [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) and
+  [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md): as RFC 20's plan treats them: constraints, or the rules
   every epic follows (§1.5 rules 3 to 5). `pkg/vfs`, `vfstest.Null`, `vfstest.Faults` and
   `memory.New` (RFC 17 §8) exist on `feat/storage-v2`.
-- [RFC 21](../rfcs/rfc-21-nfs.md), NFS: **out**. [RFC 15](../rfcs/rfc-15-topology.md) and
-  [RFC 27](../rfcs/rfc-27-namespace-migration.md): **out** beyond what RFC 20's plan covers.
+- [RFC 21](../docs/internals/rfcs/rfc-21-nfs.md), NFS: **out**. [RFC 15](../docs/internals/rfcs/rfc-15-topology.md) and
+  [RFC 27](../docs/internals/rfcs/rfc-27-namespace-migration.md): **out** beyond what RFC 20's plan covers.
 - RFC 0, 1, 5, 6, 7, 8, 12 and 16: **constraints only**, reached through the service.
 
 **Tracks:** A, B and C (§3.4).

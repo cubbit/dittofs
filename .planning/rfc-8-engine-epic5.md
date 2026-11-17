@@ -1,14 +1,14 @@
 # Epic 5: engine v2 removals
 
-**Sources:** [RFC 8](../rfcs/rfc-8-engine.md) §8 (a release is the journal's `Delete`, never
+**Sources:** [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §8 (a release is the journal's `Delete`, never
 its `Release`), §8.1, §8.2, §2.5 step 3 (the abort a release reports), §6.4 (the guard, as
 far as a removal holds it), §12.1 (`Truncate`, `Deallocate`, `Delete`), §13 (E6, E17, E40),
 §14 (this epic's series, its span and `removal_stalled`) and §15's rows for those sections;
-[RFC 1](../rfcs/rfc-1-journal.md) §3.6 and §3.10, for the journal's removals, `Settle` and
-the marker; [RFC 6](../rfcs/rfc-6-block-metadata.md) §3.5 and §6.2, for phase 1, the masks
-and phase 2; [RFC 7](../rfcs/rfc-7-namespace-metadata.md) §4.5 and
-[RFC 14](../rfcs/rfc-14-open-state.md) §9.1, for the holder re-check and `Releasing`;
-[RFC 17](../rfcs/rfc-17-vfs.md) §5.3, for the release's retry channel as the service waits
+[RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §3.6 and §3.10, for the journal's removals, `Settle` and
+the marker; [RFC 6](../docs/internals/rfcs/rfc-6-block-metadata.md) §3.5 and §6.2, for phase 1, the masks
+and phase 2; [RFC 7](../docs/internals/rfcs/rfc-7-namespace-metadata.md) §4.5 and
+[RFC 14](../docs/internals/rfcs/rfc-14-open-state.md) §9.1, for the holder re-check and `Releasing`;
+[RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §5.3, for the release's retry channel as the service waits
 on it.
 **Track:** B.
 **Package paths:** `feat/storage-v2`'s, after #3645 renamed `enginev2` to `engine` and
@@ -95,7 +95,7 @@ retry channel with `vfserr.ErrFileOpen`, landed from `feat/enginev2-delete-retry
    that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
    kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,

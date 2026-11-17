@@ -1,11 +1,11 @@
 # Epic 2: journal v2 red end-to-end suite and test foundations
 
-**Sources:** [RFC 1](../rfcs/rfc-1-journal.md) §1.3 and §9;
-[RFC 28](../rfcs/rfc-28-journal-format.md) §2, §4.1, §4.2 and §4.4;
-[RFC 8 §2.1](../rfcs/rfc-8-engine.md) for the clock and the fault interface, and RFC 8 §15's
-"one clock" row; [RFC 0 §1.4](../rfcs/rfc-0-data-lifecycle.md) for the clock bound;
-[RFC 29](../rfcs/rfc-29-test-harness.md) §4.1, §4.3, §4.6 and §4.7 for registration and
-grading; [the RFC index](../rfcs/rfc-index.md), "Test tiers" and "Test harness".
+**Sources:** [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §1.3 and §9;
+[RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md) §2, §4.1, §4.2 and §4.4;
+[RFC 8 §2.1](../docs/internals/rfcs/rfc-8-engine.md) for the clock and the fault interface, and RFC 8 §15's
+"one clock" row; [RFC 0 §1.4](../docs/internals/rfcs/rfc-0-data-lifecycle.md) for the clock bound;
+[RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.1, §4.3, §4.6 and §4.7 for registration and
+grading; [the RFC index](../docs/internals/rfcs/rfc-index.md), "Test tiers" and "Test harness".
 **Owners:** track A, storage (@viquitorreis), and track B, model and operations
 (@didimelli), with the split given per subtask; @simonebaracchi coordinates and runs the
 review at the end.
@@ -81,7 +81,7 @@ is named with the reason.
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
    to fake (rule 12). Every double is one of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
+   [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference
@@ -682,7 +682,7 @@ Every conformance subtask also:
 - **Rules:**
   - 5: the checks observe the disk only through the seam's call counts and images, never
     through internal packages. The counts are the record
-    [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles) allows: the seam
+    [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles) allows: the seam
     records what reached storage and passes it through, and that record is the output.
   - 8: every "crash and reopen" is the seam's.
 

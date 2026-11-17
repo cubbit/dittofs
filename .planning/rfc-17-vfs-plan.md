@@ -1,9 +1,9 @@
 # RFC 17 filesystem service: implementation plan (stage 2 of #3119)
 
 Stage 2 of wiring the RFC 16 store into the server (#3119, route B): the filesystem service of
-[RFC 17](../rfcs/rfc-17-vfs.md), `*vfs.Filesystem`, the one component that orders every call across
-the metadata store, open state ([RFC 14](../rfcs/rfc-14-open-state.md), stage 1) and the engine
-([RFC 8](../rfcs/rfc-8-engine.md), stage 3). Adapters call it through `vfs.Service`; they move onto
+[RFC 17](../docs/internals/rfcs/rfc-17-vfs.md), `*vfs.Filesystem`, the one component that orders every call across
+the metadata store, open state ([RFC 14](../docs/internals/rfcs/rfc-14-open-state.md), stage 1) and the engine
+([RFC 8](../docs/internals/rfcs/rfc-8-engine.md), stage 3). Adapters call it through `vfs.Service`; they move onto
 it in stage 5.
 
 **Status:** draft for review. Pieces 1 to 7 have merged into `feat/storage-v2`: pieces 1 and
@@ -48,7 +48,7 @@ moving the adapters onto `vfs.Service` (stage 5) and RFC 20's shared pipeline, p
 in-memory `Content` that passes it; the real `*engine.Engine` satisfies the interface unchanged
 at stage 3. The in-memory `Content` stays: it stands in for the engine in the unit tiers and in
 `memory.New`, and the engine passing the same suite is what keeps the two together
-([RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)). The method list (plan §4)
+([RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)). The method list (plan §4)
 is the contract to agree with the journal v2 team before either side builds against it.
 
 **D4. Identity through a minimal real resolver in `internal/vfs/admit` (settled on #3526).**
@@ -275,11 +275,11 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
    the sink never blocks and alone counts its drops (`events_dropped_total`, RFC 25);
    the four states (built, serving, draining, stopped) and
    the `Start`, `Drain` and `Stop` transitions; the filesystem's RFC 14
-   [`Sink`](../rfcs/rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring), every
+   [`Sink`](../docs/internals/rfcs/rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring), every
    method stubbed, which the node hands to `Table.Start` with the filesystem's admission lock, since
    `Table.Start` refuses a nil one; the `lockorder` sorter that takes open-state steps, then
-   [fold admission](../rfcs/rfc-7-namespace-metadata.md#9.2%20Timestamps), then accept locks
-   ([§5.0](../rfcs/rfc-17-vfs.md#5.0%20One%20lock%20order)), in one order; `Content` (D3, its
+   [fold admission](../docs/internals/rfcs/rfc-7-namespace-metadata.md#9.2%20Timestamps), then accept locks
+   ([§5.0](../docs/internals/rfcs/rfc-17-vfs.md#5.0%20One%20lock%20order)), in one order; `Content` (D3, its
    suite and in-memory `Content` piece 12's); the architecture test (imports and call sites).
    Done when: V29 (→11), V32, V33 (→7), V34 (→10) pass.
 3. **Shares, admission and principals:** `Root`, `SecInfo`, `ListShares`, `StatFS` and `Quota`;
@@ -306,7 +306,7 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
      attributes derived from the path and the share list's version, not counters; today's copy
      stays under today's server.
    - `Snapshots` and the `Principals` area (`SignIn`,
-     [`Spell`](../rfcs/rfc-17-vfs.md#3.1%20Operations), `Find`) are stubs, since nothing calls
+     [`Spell`](../docs/internals/rfcs/rfc-17-vfs.md#3.1%20Operations), `Find`) are stubs, since nothing calls
      them before stage 5 and nothing is under them yet: `Snapshots` answers an empty list
      until RFC 12's store view exists, and the three `Principals` calls answer `ErrAccess` until
      RFC 18 lands, with `Deps.Auth` and `Deps.Names` (RFC 18's plan, #4058, S2).
@@ -399,7 +399,7 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
     case (the WCC read in two holds) is a §6.1 ledger row.
 12. **Test doubles (open, a stage-2 follow-up):** pieces 1 and 2 merged with `vfstest.Record`,
     `vfstest.RecordingCallbacks` and `internal/vfs/content_test.go`'s `fakeContent`, whose
-    `truncErr` is a canned answer [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)
+    `truncErr` is a canned answer [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)
     does not allow. This piece builds what §8 names instead: `internal/vfs/contenttest`, the
     `Content` suite written first and the in-memory `Content` that passes it (D3); `vfstest.Faults`,
     every `Service` method wrapped explicitly; `vfstest.Callbacks` in place of

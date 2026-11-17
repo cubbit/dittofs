@@ -1,13 +1,13 @@
 # Epic 10: engine v2 end to end green, the burn-down, the soak and the benchmarks
 
-**Sources:** [RFC 8](../rfcs/rfc-8-engine.md) §15.1 to §15.3 (the conformance rows this part
+**Sources:** [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §15.1 to §15.3 (the conformance rows this part
 of the engine passes, and the sentence that bars a sink that always succeeds), §15.4 (B5, B7
 and B9 and the decision on their targets), §5.1 and §5.2 (the counts B5 and B7 assert), §7.1
-(**Lost** and the join), §10.2 and §10.3 (the capacity rows); [RFC 29](../rfcs/rfc-29-test-harness.md)
+(**Lost** and the join), §10.2 and §10.3 (the capacity rows); [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md)
 §4.3 (tiers), §4.7 (known failures and the unexpected pass), §4.10 (benchmarks and long runs);
-[RFC 17](../rfcs/rfc-17-vfs.md) §6 (V19, V20, V22, V25 and V26, the rows epic 9 registers) and §8 (the integration
+[RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §6 (V19, V20, V22, V25 and V26, the rows epic 9 registers) and §8 (the integration
 tier runs in `unit`, and the `Content` suite over the journal); the
-[RFC index](../rfcs/rfc-index.md)'s "Test tiers" (what must not stand in for a check).
+[RFC index](../docs/internals/rfcs/rfc-index.md)'s "Test tiers" (what must not stand in for a check).
 **Track:** the team.
 **Epic 10 estimate: 5 subtasks, 19.75 man-days.**
 **Depends on:** S3, through which epics 3 to 8 give the engine every content method and epic 9
@@ -109,7 +109,7 @@ comparison.
    that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
    kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,

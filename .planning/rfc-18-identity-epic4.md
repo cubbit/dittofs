@@ -1,15 +1,15 @@
 # Epic 4: identity v2 local NTLMv2 sign-in
 
-**Sources:** [RFC 18](../rfcs/rfc-18-identity.md) §3.1 (the authenticator's contract, the
+**Sources:** [RFC 18](../docs/internals/rfcs/rfc-18-identity.md) §3.1 (the authenticator's contract, the
 throttle, the logon event), §3.5's local half and its MIC and key rules, §3.6's refusal half,
 §3.7's sign-in half, §3.8 at sign-in, §7.3's logon-throttle row, §8.1's rule that an API sign-in
 emits no logon event, §9.1's ID5 (its sign-in half) and ID12 (at identity's layer), §9.2's
 sign-in series and `identity.authenticate` span, and §10's rows "NTLM MIC" (its local half),
 "NTLM domain" (its local and refusal halves), "logon throttle" (its local half), "no local
 password for a directory user" (its sign-in half) and "pass-through" (its 24-byte clause), as
-pull request #4058 merged them (83232b441); [RFC 17](../rfcs/rfc-17-vfs.md) §2.3 and §3.1
-(`SignIn` passed straight through); [RFC 20](../rfcs/rfc-20-adapters.md) §4.4 (the NTLM wire
-code and the null and guest sessions are `gss`'s); [RFC 25](../rfcs/rfc-25-observability.md)
+pull request #4058 merged them (83232b441); [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §2.3 and §3.1
+(`SignIn` passed straight through); [RFC 20](../docs/internals/rfcs/rfc-20-adapters.md) §4.4 (the NTLM wire
+code and the null and guest sessions are `gss`'s); [RFC 25](../docs/internals/rfcs/rfc-25-observability.md)
 §4.2's logon fields and §5.4; MS-NLMP 2.2.2.7, 3.1.5.1.2, 3.2.5.1.2, 3.3.2 and §4.2.4's
 published NTLMv2 vectors.
 **Track:** B.
@@ -117,15 +117,15 @@ number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | NTLM messages from MS-NLMP §4.2.4's vectors and from `develop`'s client-side test builders, never stubbed; the memory KV store; #4059's real secret provider over `keyprovider`'s local provider with key files in `t.TempDir()`; users seeded through E2's `NewHashes`; doubles only the injected clock, `kvtest`'s fault wrapper, one `export_test.go` hook and a recording logon sink, a sink of outputs |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | NTLM messages from MS-NLMP §4.2.4's vectors and from `develop`'s client-side test builders, never stubbed; the memory KV store; #4059's real secret provider over `keyprovider`'s local provider with key files in `t.TempDir()`; users seeded through E2's `NewHashes`; doubles only the injected clock, `kvtest`'s fault wrapper, one `export_test.go` hook and a recording logon sink, a sink of outputs |
 | rule 2, fuzz every decoder of untrusted bytes | T4.1 | `FuzzNTLMv2Response` over the NTLMv2 response decoder; the AUTHENTICATE's own decoder is `gss`'s |
 | rule 3, observability follows RFC 25 | T4.5 | `identity_authentications_total` and `identity_authentication_seconds`, the `identity.authenticate` span; no label or attribute carries a name, an address or a credential |
 | rule 4, profiling | all | every test runs under the leak check |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T4.2, T4.3, T4.4 | the NT hash is proven by a sign-in against a user seeded through `NewHashes`, its consumer; the key-exchange and MIC refusals at `SignIn`, not only at the functions; the throttle by a correct password refused; routing by `vfs.Service`'s `SignIn` |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T4.2, T4.3, T4.4 | the NT hash is proven by a sign-in against a user seeded through `NewHashes`, its consumer; the key-exchange and MIC refusals at `SignIn`, not only at the functions; the throttle by a correct password refused; routing by `vfs.Service`'s `SignIn` |
 | rule 6, known failures shrink | none | no suite this epic touches keeps a `known.yaml`; nothing lands red |
 | rule 7, v2 ignores v1 | T4.1, T4.2 | the cryptography is lifted from `develop`'s `internal/adapter/smb/auth/ntlm.go` with its tests, its key exchange's fallback to the base key fixed (T4.1); `session_setup.go`'s advisory MIC check and retry across five domains are not carried over (T4.2) |
 | rule 8, real dependencies for properties of those dependencies | none | no external system: NTLM is checked against published vectors |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T4.1, T4.2, T4.4, T4.5 | RFC 18's `decision:` notes of §3.5 (an alternate UPN suffix) at the domain table and §3.6 (no map to guest) at `SignIn`'s error path; its `ponytail:` notes of §3.1 and §7.3 at the throttle; this document's `decision:` markers for D1 and D2 (T4.1), D3, D4 and D10 (T4.2), D5 (T4.4), and D7's `ponytail:` (T4.5); epic 1's stub marker on `SignIn` narrowed to the Kerberos branch |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.2, T4.4, T4.5 | RFC 18's `decision:` notes of §3.5 (an alternate UPN suffix) at the domain table and §3.6 (no map to guest) at `SignIn`'s error path; its `ponytail:` notes of §3.1 and §7.3 at the throttle; this document's `decision:` markers for D1 and D2 (T4.1), D3, D4 and D10 (T4.2), D5 (T4.4), and D7's `ponytail:` (T4.5); epic 1's stub marker on `SignIn` narrowed to the Kerberos branch |
 | rule 10, a test must be able to fail | all | each R row's test is named with the bug it catches; R10's constant-time compare is held by `hmac.Equal` and R24 by the event's one emit site, each named as such |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T4.5 | `LogonSink`, `LogonEvent` and `LogLines`, which `internal/node` calls to fill `Deps.Logons`; the throttle imports E2's `entity.FoldPrincipalName`, so this epic exports no fold; the cryptography stays unexported |
 | rule 12, each subtask creates only what it declares | all | `Deps.Logons` lands with T4.5, its first reader; the pass-through row with E7; no `State` field is added |

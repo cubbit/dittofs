@@ -1,6 +1,6 @@
 # Epic 1: control plane v2 — delete v1, declare the surface
 
-**Sources:** [RFC 23](../rfcs/rfc-23-control-plane.md) §2 and §2.1 ("The node's surface"),
+**Sources:** [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §2 and §2.1 ("The node's surface"),
 §4.1, §4.2, §4.6, §4.7, §7, §9, §10's CP14 and CP16, and §12's architecture check, as declarations
 and architecture tests; RFC 23 Appendix B, whose code this epic removes.
 **Track:** the team.
@@ -101,15 +101,15 @@ and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T1.4, T1.5, T1.6 | the wire types' tests encode real values; the reference test generates into `t.TempDir()`; the architecture rules run over the repository and over `testdata` trees. No test double of any kind |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T1.4, T1.5, T1.6 | the wire types' tests encode real values; the reference test generates into `t.TempDir()`; the architecture rules run over the repository and over `testdata` trees. No test double of any kind |
 | rule 2, fuzz every decoder of untrusted bytes | none | this epic adds no decoder: `pkg/node/apiv1` decodes through `encoding/json` in E4's handlers and the client, which fuzz request bodies and the cursor; the records' codecs are E2's |
 | rule 3, observability follows RFC 25 | none | no series: the stubs serve nothing. Each series is its owning epic's |
 | rule 4, profiling | none | no node or API test runs here; the leak check joins with the harness (E3) |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T1.5, T1.6 | the wire tests assert the JSON a client reads, not the Go fields; the architecture rules assert imports and exports, the layer CP14 and CP16 constrain |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T1.5, T1.6 | the wire tests assert the JSON a client reads, not the Go fields; the architecture rules assert imports and exports, the layer CP14 and CP16 constrain |
 | rule 6, known failures shrink | T1.4 | no test lands red and no `known.yaml` entry changes; T1.4 edits `test/posix/setup-posix.sh`, which the `pjdfstest` suite runs and whose `test/posix/known.yaml` it leaves as it is, since that cell is filtered on `feat/storage-v2` |
 | rule 7, v2 ignores v1 | T1.1–T1.3, T1.6 | v1 is deleted before any v2 code lands; T1.6's rule fails on an import of a v1 path that never returns; the kept pieces are R2's list, kept in place |
 | rule 8, real dependencies for properties of those dependencies | none | no property of a store, a listener or a kernel client is tested here |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T1.2, T1.6 | D11's `decision:` marker at `dfsctl`'s refusal; the import rule's exemption of the harness says why at its site. RFC 23's own notes go with the code that implements them, in later epics |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T1.2, T1.6 | D11's `decision:` marker at `dfsctl`'s refusal; the import rule's exemption of the harness says why at its site. RFC 23's own notes go with the code that implements them, in later epics |
 | rule 10, a test must be able to fail | T1.4, T1.5, T1.6 | every architecture rule runs over a planted violation on every run; the closed-set test compares to RFC 23's literal lists; the reference test fails on a stale `cli.md`. The stubs are not tested: "stub bodies are never called by production" stays a review rule |
 | rule 11, a symbol is exported only if RFC 23's interface uses it | T1.3, T1.5, T1.6 | the surface frozen here is R9 and R11–R18; the view's methods freeze with E2, the client with E4, each resource's types with the epic that serves it; T1.6 pins `internal/node`'s exports; the closed lists stay unexported (D5) |
 | rule 12, each subtask creates only what it declares | all | no `internal/node/api`, `auth` or `nodetest` package yet (D7), and no `pkg/apiclient` between its v1 body's deletion and E4 (D6); each new package lands with the subtask that fills its surface |

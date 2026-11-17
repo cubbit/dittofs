@@ -1,9 +1,9 @@
 # Epic 8: journal v2 data path and capacity
 
-**Sources:** [RFC 1](../rfcs/rfc-1-journal.md) §2, §3 (the shares and handles, and "a file is its
+**Sources:** [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §2, §3 (the shares and handles, and "a file is its
 share's"), §3.1, §3.2, §3.4, §3.6, §3.7, §3.9 (the counters this epic increments), §3.10, §4.3
 (`Draw`, `SetVersionLimit`, the version a share's floor raises), §6, §8, and the checks of §9.2,
-§9.3, §9.4 and §9.7 that name this area; [RFC 28](../rfcs/rfc-28-journal-format.md) §2.1 and §3.4 (the
+§9.3, §9.4 and §9.7 that name this area; [RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md) §2.1 and §3.4 (the
 `format` file and `Open` with `expect` zero refused, which T8.15 implements), §2.2–§2.4 (the
 parts the write and read paths touch: serialised appends, the record's fields, the whole-payload
 check, the header checked against its catalog entry).
@@ -142,7 +142,7 @@ format, no recovery and no reclamation.
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
    to fake (rule 12). Every double is one of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
+   [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference

@@ -1,12 +1,12 @@
 # Epic 5: control plane v2 — accounts and sign-in
 
-**Sources:** [RFC 23](../rfcs/rfc-23-control-plane.md) §5.1 to §5.4, §4.5's credential calls, §6's
+**Sources:** [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §5.1 to §5.4, §4.5's credential calls, §6's
 refusals and sign-ins, §10's CP9, CP10 and CP11, §11's `api_auth_failures_total` and
 `api_sign_ins_total`, and §12's rows "§5.2 roles", "§5.3 revocation", "§5.3 throttling" and "§5.4
-first password" at the API's authentication layer; [RFC 16](../rfcs/rfc-16-metadata-store.md) §3.2's
+first password" at the API's authentication layer; [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §3.2's
 `Init` and `RecordJournal` as the initialisation step calls them, and §2.3's `Installation`,
 `Secret`, `SecretOwner`, `Session`, `APIToken` and `SignInFailures`;
-[RFC 18](../rfcs/rfc-18-identity.md) §8.1, as a consumer; [RFC 13](../rfcs/rfc-13-configuration.md)
+[RFC 18](../docs/internals/rfcs/rfc-18-identity.md) §8.1, as a consumer; [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md)
 §2.2's node-identity row and §7, as a consumer.
 **Track:** C.
 **Epic 5 estimate: 10 subtasks, 25.5 man-days.**
@@ -102,16 +102,16 @@ and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | the throttle's decision is a function of what it read, tested by table (D2); everything that writes runs over E2's store on Badger, in memory or under `t.TempDir()`, through E3's harness, whose installation `internal/install` makes (D6); identity is the RFC 18 plan's real one (D5). No test double but `kvtest`'s fault wrapper and `kv.Counting` |
-| rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T5.1 | the sign-in, refresh, password-change and token-creation bodies go through E4's strict decoder; T5.1 adds them to its fuzz target's seeds. The access token is `golang-jwt`'s to parse (rule 2) |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the throttle's decision is a function of what it read, tested by table (D2); everything that writes runs over E2's store on Badger, in memory or under `t.TempDir()`, through E3's harness, whose installation `internal/install` makes (D6); identity is the RFC 18 plan's real one (D5). No test double but `kvtest`'s fault wrapper and `kv.Counting` |
+| rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T5.1 | the sign-in, refresh, password-change and token-creation bodies go through E4's strict decoder; T5.1 adds them to its fuzz target's seeds. The access token is `golang-jwt`'s to parse (rule 2) |
 | rule 3, observability follows RFC 25 | T5.5, T5.6 | `api_sign_ins_total{method, result}` and `api_auth_failures_total{reason}`, read back from the registry |
 | rule 4, profiling | T5.2–T5.10 | every harness test runs under its leak check; no allocation budget |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T5.5–T5.8 | a `NotBefore` is proven by a refused call, a revoked session by a refused refresh, a right by the route's answer, never by a field read back |
-| rule 6, known failures shrink ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | none | no suite this epic adds to keeps a `known.yaml`; no test lands red |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T5.5–T5.8 | a `NotBefore` is proven by a refused call, a revoked session by a refused refresh, a right by the route's answer, never by a field read back |
+| rule 6, known failures shrink ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | none | no suite this epic adds to keeps a `known.yaml`; no test lands red |
 | rule 7, v2 ignores v1 | all | nothing of v1's accounts, JWT code or bootstrap password is read or copied |
-| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T5.2, T5.4, T5.10 | a count's commit faulted through `kvtest` on Badger; the initialisation step's resumption over journal directories under `t.TempDir()`; `reset-admin` refused by Badger's own directory lock under a running node |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T5.2, T5.3, T5.4, T5.5, T5.9, T5.10 | RFC 23 §5.3's two `decision:` notes at the throttle, §4.5's at the credential routes, §5.4's at `reset-admin`; D3's, D8's and D9's `ponytail:` notes; D7's `decision:` at the finished check and D10's at `reset-admin`'s account |
-| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | each test names the bug it catches; a concurrency test forces its interleaving with a fault that blocks on a channel the test closes, never a timed delay |
+| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T5.2, T5.4, T5.10 | a count's commit faulted through `kvtest` on Badger; the initialisation step's resumption over journal directories under `t.TempDir()`; `reset-admin` refused by Badger's own directory lock under a running node |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T5.2, T5.3, T5.4, T5.5, T5.9, T5.10 | RFC 23 §5.3's two `decision:` notes at the throttle, §4.5's at the credential routes, §5.4's at `reset-admin`; D3's, D8's and D9's `ponytail:` notes; D7's `decision:` at the finished check and D10's at `reset-admin`'s account |
+| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the bug it catches; a concurrency test forces its interleaving with a fault that blocks on a channel the test closes, never a timed delay |
 | rule 11, a symbol is exported only if RFC 23's interface uses it | T5.1 | `pkg/node/apiv1` gains the wire types this epic's routes speak; `auth` and `apisettings` export internally, not frozen (rule 11) |
 | rule 12, each subtask creates only what it declares | all | `apisettings` lands in T5.1 with its test, `internal/install` in T5.4 with its; each later file with the subtask that fills it |
 

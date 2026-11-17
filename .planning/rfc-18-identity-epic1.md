@@ -1,10 +1,10 @@
 # Epic 1: identity v2 contract and the server's surface
 
-**Sources:** [RFC 18](../rfcs/rfc-18-identity.md) §2.6 and §2.7 as declarations, the interfaces
+**Sources:** [RFC 18](../docs/internals/rfcs/rfc-18-identity.md) §2.6 and §2.7 as declarations, the interfaces
 of §3.1, §4.1, §6.1 and §8.1 (without `TokenVerifier`), and §9.1's ID11, as pull request
-#4058 merged them (83232b441); [RFC 17](../rfcs/rfc-17-vfs.md) §2.3 (`vfs.Deps`), §3.0 (aliases) and §4.3 (errors);
-[RFC 20](../rfcs/rfc-20-adapters.md) §2.3, §7.1 (the import test) and §7.3 (error-table
-totality); [RFC 16](../rfcs/rfc-16-metadata-store.md) §3, for `SharePolicy` only.
+#4058 merged them (83232b441); [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §2.3 (`vfs.Deps`), §3.0 (aliases) and §4.3 (errors);
+[RFC 20](../docs/internals/rfcs/rfc-20-adapters.md) §2.3, §7.1 (the import test) and §7.3 (error-table
+totality); [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §3, for `SharePolicy` only.
 **Track:** the team.
 **Epic 1 estimate: 6 subtasks, 5.25 man-days.**
 **Depends on:** **S0**: RFC 23's plan's epic 1 has deleted v1's `pkg/identity`, whose path
@@ -93,15 +93,15 @@ number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T1.1, T1.2, T1.4, T1.5 | no test double: the lifecycle tests use the memory KV store and the leak check, `prof.Watch` (`internal/prof`); the import checks walk the repository's own files |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T1.1, T1.2, T1.4, T1.5 | no test double: the lifecycle tests use the memory KV store and the leak check, `prof.Watch` (`internal/prof`); the import checks walk the repository's own files |
 | rule 2, fuzz every decoder of untrusted bytes | none | epic 1 decodes nothing |
 | rule 3, observability follows RFC 25 | T1.4 | `Deps` takes the metrics registry and the logger; epic 1 owns none of RFC 18 §9.2's series and opens no span, since its methods are stubs, so `Deps.Tracer` arrives with E3's `identity.resolve` span, the first that reads it (D4) |
 | rule 4, profiling | T1.4 | the lifecycle tests run under `prof.Watch` (`internal/prof`), which is how R11 and R14 are proven |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T1.4, T1.5 | R10 is held by the type: the `Store` interface identity declares has no `Close` (D5), so the server cannot close what it was handed; each import rule by the check that reports its seeded violation |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T1.4, T1.5 | R10 is held by the type: the `Store` interface identity declares has no `Close` (D5), so the server cannot close what it was handed; each import rule by the check that reports its seeded violation |
 | rule 6, known failures shrink | none | no suite RFC 18 names keeps a `known.yaml`; nothing lands red |
 | rule 7, v2 ignores v1 | T1.1, T1.6 | the types move from `pkg/vfs`, which is v2; nothing of v1's `pkg/identity` is read or kept, its path reused only after S0 |
 | rule 8, real dependencies for properties of those dependencies | none | no external system is reached |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T1.2, T1.4, T1.6 | RFC 18 §2.6's `decision:` (identity is one component, not part of `vfs`) at `Server`; D2, D4 and D7's markers at their sites |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T1.2, T1.4, T1.6 | RFC 18 §2.6's `decision:` (identity is one component, not part of `vfs`) at `Server`; D2, D4 and D7's markers at their sites |
 | rule 10, a test must be able to fail | all | R7, R15 and R16 are held by the compiler, R10 by identity's `Store` interface having no `Close` (D5), R3 and R4 by RFC 20's existing import test, each named as such; every other row by a test that fails on its assertion |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T1.1, T1.3, T1.4 | `Key`, `Stored` and `TokenVerifier` are left out (D3, §1.2); `internal/identity` exports only what `internal/node` and the API call; `Deps` and `State` gain fields after S1, as the rule and RFC 18 §2.6 allow (D4) |
 | rule 12, each subtask creates only what it declares | all | no empty package; the stub bodies behind final signatures are the one exception the Design principles allow, and the `vfs.Deps` fields are the seam S1 freezes (D7) |

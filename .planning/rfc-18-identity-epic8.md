@@ -1,14 +1,14 @@
 # Epic 8: identity v2 integration
 
-**Sources:** [RFC 18](../rfcs/rfc-18-identity.md) §2.6's composition, start, stop and
+**Sources:** [RFC 18](../docs/internals/rfcs/rfc-18-identity.md) §2.6's composition, start, stop and
 reconfiguration, §3.4's and §3.7's enabled state of a directory account at sign-in, §5.1's
 20-second bound for a pass-through sign-in, §5.5's NTLM and API rows, §9.1's ID6 and ID8, §9.2 as a
 whole (series, conditions, spans), and §10's rows named in §3 below, as pull request #4058 merged
-them (83232b441); [RFC 23](../rfcs/rfc-23-control-plane.md) §2.1 (identity at row 7 of `node.New`),
+them (83232b441); [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §2.1 (identity at row 7 of `node.New`),
 §2.2 (start steps 4 and 5, stop step 7), §2.3 (the principal and `Secret` rows), §2.4 (what a node
 reports), §3.5 (the domain's actions) and §4.1 (the rule for turning `identity.ntlm` back on);
-[RFC 13](../rfcs/rfc-13-configuration.md) §6, §7 (a new secret version resolved again and reported)
-and Appendix B's `identity.*` rows; [RFC 25](../rfcs/rfc-25-observability.md) §3.9, §5.4 and §7.
+[RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §6, §7 (a new secret version resolved again and reported)
+and Appendix B's `identity.*` rows; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §3.9, §5.4 and §7.
 **Track:** the team.
 **Epic 8 estimate: 11 subtasks, 14.75 man-days.**
 **Depends on:** **E2**: T2.4's `Settings`, `State.Settings` and `Deps.Secrets` and T2.6's
@@ -140,15 +140,15 @@ number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | Tier 1 rows run in `internal/identity`'s tests over the memory KV store, `identitytest`'s in-memory directory and domain controller (kind 2, each held by its suite), E5's test realm (real tickets), `kvtest`'s fault wrapper (kind 3) and the injected clock (kind 1); node rows run in `internal/node`'s `node_test` through `nodetest`, over Badger in memory, with the same doubles handed to the node by `export_test.go`'s constructor (D4) |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Tier 1 rows run in `internal/identity`'s tests over the memory KV store, `identitytest`'s in-memory directory and domain controller (kind 2, each held by its suite), E5's test realm (real tickets), `kvtest`'s fault wrapper (kind 3) and the injected clock (kind 1); node rows run in `internal/node`'s `node_test` through `nodetest`, over Badger in memory, with the same doubles handed to the node by `export_test.go`'s constructor (D4) |
 | rule 2, fuzz every decoder of untrusted bytes | none | E8 adds no decoder |
 | rule 3, observability follows RFC 25 | T8.2, T8.6 | identity's series in the node's registry (R12), its three conditions in node status (R13), their alert rows RFC 25 §3.9's (R14); no label or attribute carries a name, SID, address or credential |
 | rule 4, profiling | all | node tests are watched by `nodetest.Watch()`, identity tests by the leak check; no allocation budget |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | all | each row is asserted where its value is consumed: a disable by the next call refused, a setting by the next sign-in, a condition by the node-status record, a series by the metrics listener's answer, a secret by a search of what the node wrote |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each row is asserted where its value is consumed: a disable by the next call refused, a setting by the next sign-in, a condition by the node-status record, a series by the metrics listener's answer, a secret by a search of what the node wrote |
 | rule 6, known failures shrink | none | no suite RFC 18 names keeps a `known.yaml`; nothing lands red |
 | rule 7, v2 ignores v1 | T8.4 | the live sign-in replaces `develop`'s `TestADGroupSIDsFromPAC`, which drives v1's Kerberos code, on the reworked fixture |
 | rule 8, real dependencies for properties of those dependencies | T8.4 | the Samba domain controller issues alice's ticket and serves the directory over verified TLS, on its own Docker network |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T8.2, T8.5 | RFC 18 §2.6's `decision:` already sits at `Server` (E1); D2's and D6's markers at their sites; the writer's wait carries none (D3) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T8.2, T8.5 | RFC 18 §2.6's `decision:` already sits at `Server` (E1); D2's and D6's markers at their sites; the writer's wait carries none (D3) |
 | rule 10, a test must be able to fail | all | every row is held by a test named in its subtask, with the bug it catches, or by another epic's test named in the row; a clause another epic already tests is not run again |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T8.1, T8.2, T8.6 | `internal/identity` gains no export; `internal/node` keeps RFC 23's five and `Config`'s five fields, which its export pin holds; the dialer constructor and the test accessors are `export_test.go`'s (D4, D5) |
 | rule 12, each subtask creates only what it declares | all | each runner step and API field is filled by the subtask that first runs it (D10); the directory's seam lands with T8.2 and the domain controller's with T8.6, their first users |

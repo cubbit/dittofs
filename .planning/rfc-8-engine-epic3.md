@@ -1,12 +1,12 @@
 # Epic 3: engine v2 write, read and overlay
 
-**Sources:** [RFC 8](../rfcs/rfc-8-engine.md) §1.1 (the request path), §2.3 (per-file
+**Sources:** [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §1.1 (the request path), §2.3 (per-file
 state), §4.1 (the write and `Draw`), §7.1, §7.2 (a failing read's count only), §7.5, §7.6,
 §12.1 (`Draw`, `Overlay`, `Allocation` and the errors), §13 (E9, E15, E32, E37), §14 (this
 epic's series and the loss log line) and §15's rows for those sections;
-[RFC 1](../rfcs/rfc-1-journal.md) §3.1, §3.2 and §4.3 and
-[RFC 28](../rfcs/rfc-28-journal-format.md) §2.3, for the journal calls and the `mtime` a
-write records; [RFC 17](../rfcs/rfc-17-vfs.md) §2.3 and §5.7, for `Content` and the join
+[RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §3.1, §3.2 and §4.3 and
+[RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md) §2.3, for the journal calls and the `mtime` a
+write records; [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §2.3 and §5.7, for `Content` and the join
 `Overlay` feeds.
 **Track:** A.
 **Epic 3 estimate: 6 subtasks, 13 man-days.**
@@ -94,7 +94,7 @@ boundary; the series `engine_reads_total{class}`, `engine_read_seconds` and
    that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
    kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,

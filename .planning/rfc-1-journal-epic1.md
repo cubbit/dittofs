@@ -1,9 +1,9 @@
 # Epic 1: journal v2 interfaces
 
 **Parent plan:** [rfc-1-journal-plan.md](rfc-1-journal-plan.md), epic 1.
-**Sources:** [RFC 1](../rfcs/rfc-1-journal.md) §1, §3, §4, §6 and §7.2;
-[RFC 8 §2.1](../rfcs/rfc-8-engine.md) for the shared clock;
-[RFC 29](../rfcs/rfc-29-test-harness.md) for the test harness the guard tests feed.
+**Sources:** [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §1, §3, §4, §6 and §7.2;
+[RFC 8 §2.1](../docs/internals/rfcs/rfc-8-engine.md) for the shared clock;
+[RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) for the test harness the guard tests feed.
 **Owners:** track A (@viquitorreis) and track B (@didimelli), with the split given per
 subtask; @simonebaracchi coordinates (plan §3.4).
 **Estimate:** 9 subtasks.
@@ -65,7 +65,7 @@ is named with the reason.
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
    to fake (rule 12). Every double is one of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
+   [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference

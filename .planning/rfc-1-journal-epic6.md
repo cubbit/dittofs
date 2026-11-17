@@ -1,8 +1,8 @@
 # Epic 6: journal v2 durability and loss
 
-**Sources:** [RFC 1](../rfcs/rfc-1-journal.md) §5.1–§5.4, §3.8, §3.1 (`Sync`), §3 (the context rules), §3.7 and §3.9
+**Sources:** [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §5.1–§5.4, §3.8, §3.1 (`Sync`), §3 (the context rules), §3.7 and §3.9
 (the fields and counters of this area), §9.4 and §9.7 (the rows on sync, loss, failed windows,
-read-only and mixed durability); [RFC 28](../rfcs/rfc-28-journal-format.md) §2.2 (a failed
+read-only and mixed durability); [RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md) §2.2 (a failed
 append, a failed segment, the spare's directory entry) and §3.3 (the read-time half: "The response
 is to stop holding the extent" and "Scope of the refusal").
 **Track:** A.
@@ -146,7 +146,7 @@ sync and to end a segment, and epic 4's index to drop and re-hold extents.
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
    to fake (rule 12). Every double is one of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
+   [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference

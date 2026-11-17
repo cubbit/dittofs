@@ -1,13 +1,13 @@
 # Epic 3: control plane v2 — the node
 
-**Sources:** [RFC 23](../rfcs/rfc-23-control-plane.md) §2 (the start command), §2.1 to §2.5 on one
+**Sources:** [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §2 (the start command), §2.1 to §2.5 on one
 node, §3.2's delete and §3.5's user and group deletion driven past the mark, §4.6's operation
 runner on one node, §8.1's rows not marked cluster, §10's CP1, CP3, CP4, CP12, CP13 and CP16, and
-§11's `node_` series; [RFC 16](../rfcs/rfc-16-metadata-store.md) §2.3.2 (a share's removal, its
-coordinator) and §3 (the views the node reads); [RFC 8](../rfcs/rfc-8-engine.md) §2.1 and §2.6, the
-root's duties; [RFC 25](../rfcs/rfc-25-observability.md) §3.5 and §3.6, the parts the node's
-loops and readiness need; [RFC 13](../rfcs/rfc-13-configuration.md) §2.2 and
-[RFC 28](../rfcs/rfc-28-journal-format.md) §2.1 as a consumer of the node identity.
+§11's `node_` series; [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §2.3.2 (a share's removal, its
+coordinator) and §3 (the views the node reads); [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §2.1 and §2.6, the
+root's duties; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §3.5 and §3.6, the parts the node's
+loops and readiness need; [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §2.2 and
+[RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md) §2.1 as a consumer of the node identity.
 **Track:** A.
 **Epic 3 estimate: 11 subtasks, 30 man-days.**
 **Depends on:** S1 (E1 merged): the node's surface (`New`, `Node`, `Config`, `Start`, `Stop`) and
@@ -110,15 +110,15 @@ and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | node tests are package `node_test` and build the node through `internal/node/nodetest` over Badger, in memory or under `t.TempDir()` (the KV RFC 16's suite holds), with `sim.TestClock` (kind 1) and `kvtest.FaultKV` (kind 3); records are written and read back through kvstore's views. The runner is tested in package `node` through `newRunner` over real Badger and a real step. No recording or counting fake (D11) |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | node tests are package `node_test` and build the node through `internal/node/nodetest` over Badger, in memory or under `t.TempDir()` (the KV RFC 16's suite holds), with `sim.TestClock` (kind 1) and `kvtest.FaultKV` (kind 3); records are written and read back through kvstore's views. The runner is tested in package `node` through `newRunner` over real Badger and a real step. No recording or counting fake (D11) |
 | rule 2, fuzz every decoder of untrusted bytes | none | the node decodes nothing: records come through kvstore's codecs (E2), the health endpoints read no body |
 | rule 3, observability follows RFC 25 | T3.2, T3.7, T3.8 | the engine's `Stats` as series through a collector read at scrape; the `node_` series, `config_generation_lag_seconds` and `config_generation_behind` from the positions; the sweep's idempotency deletions as `api_idempotency_records_deleted_total` |
 | rule 4, profiling | all | `nodetest.Watch()` registers `prof.Watch` for a top-level test, so every node test fails on a goroutine, descriptor or heap growth left behind; subtests are never watched on their own. No allocation budget |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | all | tests drive the node through `New`, `Start`, `Stop` and records, and assert at the consumer: the engine's series in `Config.Metrics`, a record read back, an answer on the listener (D11) |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | tests drive the node through `New`, `Start`, `Stop` and records, and assert at the consumer: the engine's series in `Config.Metrics`, a record read back, an answer on the listener (D11) |
 | rule 6, known failures shrink | none | no test lands red and no suite here keeps a `known.yaml` |
 | rule 7, v2 ignores v1 | T3.9 | nothing of v1 is read; the one touch is refusing its database file before the store opens |
-| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T3.3, T3.4, T3.6, T3.9 | a resumed deletion and a resumed operation restart a node over the same Badger and journal directories; listeners are real, on `127.0.0.1:0`; `dfs start` runs as a child process |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T3.1–T3.6 | RFC 23's notes at their sites: §2.1's two `decision:` notes at `New` and `Start`, and T3.1's two at `New` (another installation's KV, one build per metrics registry), §2.5's at the metrics listener, §2.1's and §2.4's `ponytail:` notes at `New` and the status writer; RFC 23's plan's §4.3 `ponytail:` notes (every namespace held, the runner's missing claim, the health registry's reach); D5's, D6's, D7's and D8's markers |
+| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T3.3, T3.4, T3.6, T3.9 | a resumed deletion and a resumed operation restart a node over the same Badger and journal directories; listeners are real, on `127.0.0.1:0`; `dfs start` runs as a child process |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T3.1–T3.6 | RFC 23's notes at their sites: §2.1's two `decision:` notes at `New` and `Start`, and T3.1's two at `New` (another installation's KV, one build per metrics registry), §2.5's at the metrics listener, §2.1's and §2.4's `ponytail:` notes at `New` and the status writer; RFC 23's plan's §4.3 `ponytail:` notes (every namespace held, the runner's missing claim, the health registry's reach); D5's, D6's, D7's and D8's markers |
 | rule 10, a test must be able to fail | all | each test names the requirement it catches; where the code holds a requirement by construction, or another epic's test holds it, the row names that |
 | rule 11, a symbol is exported only if RFC 23's interface uses it | all | `internal/node` keeps E1's five exports, which its pin holds; `internal/node/api` exports `New`, `Deps`, whose fields E4 adds to, and `Server` with `Start` and `Stop`, pinned by an export test; `nodetest` is the harness RFC 23 names; `pkg/health` gains RFC 25 §8.2's `Source` and evaluator and the watchdog the node and the API share; `internal/node/step` exports the three step types outside steps need (D7); `pkg/openstate` gains the engine's `CloneHold` adapter (D12) and `pkg/block/engine` `JournalOf` (D17) |
 | rule 12, each subtask creates only what it declares | all | each package lands with its first `_test.go`, which `lint-repo`'s new-package check requires; no remote client, factory or settings package is built for a consumer outside this epic (D5, D9) |

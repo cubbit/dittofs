@@ -1,6 +1,6 @@
 # Epic 6: control plane v2 — the CLI
 
-**Sources:** [RFC 23](../rfcs/rfc-23-control-plane.md) §7 (without `login --oidc`), §9's client
+**Sources:** [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §7 (without `login --oidc`), §9's client
 rules, §2.5's `GET /api/v1/health`, §5.3's local socket and refresh, §5.4's password change, §3.5's
 e-mail and directory grants, §4.4–§4.6 as the CLI applies them, §10's CP14, and §12's "§7 CLI" row in
 the part a unit test can check.
@@ -88,16 +88,16 @@ and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | every command runs against a real node built by E3's harness and signed in through E5's real sign-in; the injected clock is kind 1; the RFC 18 plan's in-memory directory is kind 2, held to its suite; a pause hook set per instance through `export_test.go` (T6.3) is what CLAUDE.md allows for forcing an interleaving. No other double |
-| rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | none | the CLI decodes the server's answers through E4's client, fuzzed there, and its own credentials file, which only it writes |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | every command runs against a real node built by E3's harness and signed in through E5's real sign-in; the injected clock is kind 1; the RFC 18 plan's in-memory directory is kind 2, held to its suite; a pause hook set per instance through `export_test.go` (T6.3) is what CLAUDE.md allows for forcing an interleaving. No other double |
+| rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | none | the CLI decodes the server's answers through E4's client, fuzzed there, and its own credentials file, which only it writes |
 | rule 3, observability follows RFC 25 | none | the CLI exports no series; RFC 23 §11 names none for it |
 | rule 4, profiling | all | the harness's leak check covers the node under every test; no allocation budget |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | all | tests assert what a user reads (output, exit status) and what the server holds afterwards, read back through the API |
-| rule 6, known failures shrink ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | none | no suite this epic touches keeps a `known.yaml` |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | tests assert what a user reads (output, exit status) and what the server holds afterwards, read back through the API |
+| rule 6, known failures shrink ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | none | no suite this epic touches keeps a `known.yaml` |
 | rule 7, v2 ignores v1 | T6.1 | the kept pieces stay in place (the root, the context commands, `internal/cli`'s output, prompt and credentials); every v1 body is replaced, none copied |
-| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T6.2 | the lock file is tested with two real `dfsctl` processes on one credentials file; `--cacert` on a real TLS listener |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T6.2, T6.4 | D4's lock and D11's mount exception carry a `decision:` marker each; D12's grant wait one too |
-| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | the lock test fails with the lock removed; the package-state test fails on a new package variable; the removed commands are checked absent, not merely refused |
+| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T6.2 | the lock file is tested with two real `dfsctl` processes on one credentials file; `--cacert` on a real TLS listener |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T6.2, T6.4 | D4's lock and D11's mount exception carry a `decision:` marker each; D12's grant wait one too |
+| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the lock test fails with the lock removed; the package-state test fails on a new package variable; the removed commands are checked absent, not merely refused |
 | rule 11, a symbol is exported only if RFC 23's interface uses it | T6.1, T6.2 | `NewRoot`, `cmdutil.Env` and each noun's `New` are exported only across packages under `cmd/dfsctl`, which nothing outside imports but `cmd/gendocs` (D1); `credentials.NewStoreAt` for the same reason; the client edits are E4's |
 | rule 12, each subtask creates only what it declares | all | a noun package moves to `New(env)` in the subtask that rebuilds it; `clisuite` lands with its first rows |
 

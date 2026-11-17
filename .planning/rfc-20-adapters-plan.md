@@ -1,6 +1,6 @@
 # RFC 20 — adapter model v2: implementation plan
 
-**Scope:** [RFC 20, the adapter model](../rfcs/rfc-20-adapters.md), as far as it is the shape every
+**Scope:** [RFC 20, the adapter model](../docs/internals/rfcs/rfc-20-adapters.md), as far as it is the shape every
 adapter shares: the public surface in `pkg/adapter`, the shared `core` (lifecycle, connections,
 dispatch, held requests, middleware, error tables, observability), RFC 24's pooled buffers and
 budgets, the generic sidecar runner, the import test, and a thin NFS and SMB scaffold on `core`.
@@ -9,26 +9,26 @@ No operation handler is built. The decisions this plan starts from are recorded 
 develop serves that `feat/storage-v2` stops serving, is in the deferral ledger (§6.2). Related
 RFCs, with how far each is in scope:
 
-- [RFC 17](../rfcs/rfc-17-vfs.md), the filesystem service: **constraints only**, except
+- [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md), the filesystem service: **constraints only**, except
   `vfs.WithHold` (RFC 17 §5.9), which `pkg/vfs` lacks and epic 5 adds; `vfs.WithRequestID`
   (RFC 17 §4.7) is a ledger row (§6.2). `pkg/vfs` and
   `vfstest.Null` exist on `feat/storage-v2`; tests here use the in-memory service,
   `vfstest.Memory`, held to RFC 17 §8's suite, and its fault wrapper, `vfstest.Faults`, which
   RFC 17's plan delivers (ledger, §6.2); `Null` serves the allocation gate and the pipeline
   benchmark only.
-- [RFC 24](../rfcs/rfc-24-resources.md), resources: **only the parts this RFC cannot work
+- [RFC 24](../docs/internals/rfcs/rfc-24-resources.md), resources: **only the parts this RFC cannot work
   without**: `Budget`, `WaitBudget`, `Reservation`, `Budgets`, `Buf` and `BufPool` in `pkg/resources` (epic 3).
-- [RFC 13](../rfcs/rfc-13-configuration.md), configuration: **only the parts this RFC cannot work
+- [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md), configuration: **only the parts this RFC cannot work
   without**: the adapters' settings shapes, their keys and their defaults.
-- [RFC 25](../rfcs/rfc-25-observability.md) and [RFC 29](../rfcs/rfc-29-test-harness.md): the
+- [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) and [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md): the
   rules every epic follows (§1.5 rules 3 and 4), and RFC 20 §10's series.
-- [RFC 23](../rfcs/rfc-23-control-plane.md), the node: **constraints only**. `internal/node` does
+- [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md), the node: **constraints only**. `internal/node` does
   not exist; RFC 23's plan (#4050) builds it, and the node's wiring of adapters is epic 7, planned
   after S4.
-- [RFC 14](../rfcs/rfc-14-open-state.md), [RFC 18](../rfcs/rfc-18-identity.md),
-  [RFC 19](../rfcs/rfc-19-authorization.md), [RFC 21](../rfcs/rfc-21-nfs.md) and
-  [RFC 22](../rfcs/rfc-22-smb.md): **constraints only**. Their parts of RFC 20 are ledger rows.
-- [RFC 15](../rfcs/rfc-15-topology.md) and [RFC 27](../rfcs/rfc-27-namespace-migration.md): **out**,
+- [RFC 14](../docs/internals/rfcs/rfc-14-open-state.md), [RFC 18](../docs/internals/rfcs/rfc-18-identity.md),
+  [RFC 19](../docs/internals/rfcs/rfc-19-authorization.md), [RFC 21](../docs/internals/rfcs/rfc-21-nfs.md) and
+  [RFC 22](../docs/internals/rfcs/rfc-22-smb.md): **constraints only**. Their parts of RFC 20 are ledger rows.
+- [RFC 15](../docs/internals/rfcs/rfc-15-topology.md) and [RFC 27](../docs/internals/rfcs/rfc-27-namespace-migration.md): **out**,
   beyond the `Reconfigure` listener removal they call.
 
 **Tracks:** A, B and C (§3.4).
@@ -247,7 +247,7 @@ and 5.
 1. **Independent unit tests, under `-race`.** Each epic carries its own unit tests. It may use
    another epic's implementation once that has landed, `vfstest.Memory` and `vfstest.Faults`, and
    E2's `testproto` and leak checks. Every double is one of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds. `core` is tested from `package core_test` on `testproto` and
+   [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds. `core` is tested from `package core_test` on `testproto` and
    never through NFS or SMB; no `core` test imports a protocol package. Connections are real TCP
    over loopback, with real deadlines and socket options read back from the socket. Test at the
    layer that consumes a value (`CLAUDE.md`, "Verifying a change"): a setting is asserted on a

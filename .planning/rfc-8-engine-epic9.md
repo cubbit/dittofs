@@ -1,13 +1,13 @@
 # Epic 9: engine v2 integration, the filesystem service over the engine
 
-**Sources:** [RFC 17](../rfcs/rfc-17-vfs.md) §8 (the integration tier, the engine's side, and
+**Sources:** [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §8 (the integration tier, the engine's side, and
 the `Content` conformance suite as [#3939](https://github.com/cubbit/dittofs/pull/3939) words
 it), §2.3 (`Deps.Engine`), §2.5 (start and stop order), §5.5 (an owner or group change commits
 pending existence first), §5.7 (`GetAttr` over `Overlay`), §6's V19, V20, V22, V25 and V26,
-and §7 (the service's span parents the engine's); [RFC 8](../rfcs/rfc-8-engine.md) §12.1 (the
+and §7 (the service's span parents the engine's); [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §12.1 (the
 filesystem service as the content methods' one caller, `WriteOpts` and `Overlay`), §5.1 (lazy
 existence and its exceptions), §11.1 and §14 (conditions and spans, read through the
-composition); [RFC 29](../rfcs/rfc-29-test-harness.md) §4.11 (test doubles), for every test
+composition); [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.11 (test doubles), for every test
 row. RFC 17 §5.9's range refusal and V26's text are as
 [#3979](https://github.com/cubbit/dittofs/pull/3979) words them.
 **Track:** A.
@@ -107,7 +107,7 @@ fixture's hook that composes the filesystem (D4) and its span record (D5); the t
    that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
    kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,

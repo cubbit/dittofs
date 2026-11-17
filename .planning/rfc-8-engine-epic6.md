@@ -1,15 +1,15 @@
 # Epic 6: engine v2 start, bindings and recovery
 
-**Sources:** [RFC 8](../rfcs/rfc-8-engine.md) §1.1 (the share table's `decision:`), §2.1
+**Sources:** [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §1.1 (the share table's `decision:`), §2.1
 (the `Lifecycle` row), §2.3 (bindings, `Bind`, `Unbind`, `Drop`), §2.4 (a binding's
 settings), §2.5 (start steps 1 to 5 and 8, the retried open of a journal refused as
 unsuitable, `Bind`'s attach, stop steps 1 to 5), §2.7, §12.1 (`Start`, `Close`, `Bind`,
 `Unbind`, `Drop`, and a content call naming an unbound or removed share),
-§13 (E13, E15, E19, E29, E40) and §15's rows for those sections; [RFC 16](../rfcs/rfc-16-metadata-store.md) §3
+§13 (E13, E15, E19, E29, E40) and §15's rows for those sections; [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §3
 (`Lifecycle`), §2.3.2 (the removal's steps 3 and 4) and §4.2 (`J‖journal`, `S‖id‖vl`,
-`S‖id‖rr`); [RFC 1](../rfcs/rfc-1-journal.md) §3 (`Open`, `Share`, `Forget`, `Strand`,
-`Stats`), §3.7, §3.10 and §4.3, for the journal calls; [RFC 28](../rfcs/rfc-28-journal-format.md)
-§3.1 and §3.4, for the floor and `expect`; [RFC 14](../rfcs/rfc-14-open-state.md) §4.4, for
+`S‖id‖rr`); [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §3 (`Open`, `Share`, `Forget`, `Strand`,
+`Stats`), §3.7, §3.10 and §4.3, for the journal calls; [RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md)
+§3.1 and §3.4, for the floor and `expect`; [RFC 14](../docs/internals/rfcs/rfc-14-open-state.md) §4.4, for
 what a raised incarnation does to the grace instance.
 **Track:** C.
 **Epic 6 estimate: 12 subtasks, 40.25 man-days.**
@@ -130,7 +130,7 @@ rows of RFC 8 §15 for §2.3, §2.5 and §2.7 that this part can pass.
    that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
    kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,

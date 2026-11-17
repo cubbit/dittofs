@@ -1,16 +1,16 @@
 # Epic 2: identity v2 principals and accounts
 
-**Sources:** [RFC 18](../rfcs/rfc-18-identity.md) §2.1 to §2.3, §2.4's API-only accounts and machine
+**Sources:** [RFC 18](../docs/internals/rfcs/rfc-18-identity.md) §2.1 to §2.3, §2.4's API-only accounts and machine
 record, §2.5's group records, §2.6's settings, `Apply` and `Deps.Secrets`, §3.5's NT-hash rules and
 NTLM-off deletion, §3.7's marked-deleted account, §4.1 (but its mint, §1.2), §4.4, §4.6, §8 and
 §8.1, §9.1's ID2, ID3, ID4 and ID5, §9.2's `identity_unmapped_total`, §10's "name case", "no local
 password for a directory user" (its `NewHashes` half), its Fuzz and Unit paragraphs, and §12 item 1,
-as pull request #4058 merged them (83232b441); [RFC 16](../rfcs/rfc-16-metadata-store.md) §2.2
+as pull request #4058 merged them (83232b441); [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §2.2
 (root's fixed ID, uid and gid 0 and 65534), §2.3 (`User`'s `Password` and `NTHash`, the machine
 record), §3 (`Minter.Create`, `Alloc`, `MintBatch`, `ControlPlane.PutUser`
 and `PutGroup`, and `DeleteUser`'s secret deletion) and §4.2's `NX‖kind‖name`, `PGEN`, `CFGGEN`,
-`IN` and `IDS‖kind` rows; [RFC 13](../rfcs/rfc-13-configuration.md) §7's "a user's secrets go with
-the user"; [RFC 23](../rfcs/rfc-23-control-plane.md) §4.1 and §4.6, for the
+`IN` and `IDS‖kind` rows; [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §7's "a user's secrets go with
+the user"; [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §4.1 and §4.6, for the
 `identity.nt-hash-delete` operation; RFC 13 Appendix B's `identity.id_range`, `identity.ntlm` and
 `identity.netbios_name` rows; RFC 23's epic 2 document (pull request #4326), D2, T2.3 and T2.4,
 which declare `entity.Alloc` on `PutUser` and `PutGroup` and refuse an ID until this epic's
@@ -141,15 +141,15 @@ number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | every test runs on the memory KV store and, for kvstore's rows, on Badger under `t.TempDir()`; secrets through #4059's real `pkg/secrets` provider over `keyprovider`'s local provider with key files in `t.TempDir()`; the only doubles are the injected clock, `pkg/metadata/kv/kvtest`'s fault wrapper and pause hooks set from `export_test.go` |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | every test runs on the memory KV store and, for kvstore's rows, on Badger under `t.TempDir()`; secrets through #4059's real `pkg/secrets` provider over `keyprovider`'s local provider with key files in `t.TempDir()`; the only doubles are the injected clock, `pkg/metadata/kv/kvtest`'s fault wrapper and pause hooks set from `export_test.go` |
 | rule 2, fuzz every decoder of untrusted bytes | T2.5 | `FuzzSID` over `sid.DecodeSID`, which reads SIDs off the wire; nothing else this epic decodes comes from a client |
 | rule 3, observability follows RFC 25 | T2.5 | `identity_unmapped_total{scheme}` at `Find`, its label from a closed set; `identity_mints_total` goes with the mint path (§1.2) |
 | rule 4, profiling | all | every identity and kvstore test runs under the leak check; T2.6's bounded hashing is checked to leave no waiter behind |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T2.2, T2.3, T2.6, T2.7, T2.8 | ID rules are proven by the second write refused or the record read back, not by a counter's value; `VerifyPassword` by the answer the API would get; both deletions by no NT-hash `Secret` left in the store |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T2.2, T2.3, T2.6, T2.7, T2.8 | ID rules are proven by the second write refused or the record read back, not by a counter's value; `VerifyPassword` by the answer the API would get; both deletions by no NT-hash `Secret` left in the store |
 | rule 6, known failures shrink | none | no suite this epic touches keeps a `known.yaml`; nothing lands red |
 | rule 7, v2 ignores v1 | T2.2, T2.6 | the domain SID's three lines are lifted from `pkg/auth/sid/mapper.go`'s history, which S0 deletes; the NT hash is computed with `golang.org/x/crypto/md4` as RFC 18 §3.5 states it |
 | rule 8, real dependencies for properties of those dependencies | none | no external system is reached |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T2.1, T2.2, T2.4, T2.5, T2.6, T2.7 | RFC 18's `decision:` notes of §2.1 (root) at root's ID, §2.3 (a missing uid is allocated) at `Alloc`, §3.5 (NTLM on by default) at the setting's default, §4.4 (a deleted principal is the null SID) at `Spell`, §8 (one `User` record) at `Account`; D1's, D3's and D8's `decision:` markers, D2's and D4's `ponytail:` markers, and the NT-hash cost marker at `NewHashes`; epic 1's stub `ponytail:` markers removed from each body this epic fills |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.1, T2.2, T2.4, T2.5, T2.6, T2.7 | RFC 18's `decision:` notes of §2.1 (root) at root's ID, §2.3 (a missing uid is allocated) at `Alloc`, §3.5 (NTLM on by default) at the setting's default, §4.4 (a deleted principal is the null SID) at `Spell`, §8 (one `User` record) at `Account`; D1's, D3's and D8's `decision:` markers, D2's and D4's `ponytail:` markers, and the NT-hash cost marker at `NewHashes`; epic 1's stub `ponytail:` markers removed from each body this epic fills |
 | rule 10, a test must be able to fail | all | each R-row's test is named in its subtask with the bug it catches; R24's purity, R27's constant-time compare and R33's single writer are held by the code's shape, each named as such |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T2.1, T2.2, T2.4, T2.5 | the exports are `entity`'s and kvstore's fields and methods RFC 16 declares, `Scheme.Stored()` (RFC 18 §2.2), `entity.FoldPrincipalName` (D2), identity's settings struct, `Deps.Secrets`, and the deletion's step and progress, typed by `internal/node/step` |
 | rule 12, each subtask creates only what it declares | all | each deliverable names its consumer; `SchemeDir` lands with `Stored()` and `NewHashes`, `Rename` and `SetEmail` with E6, the mint path with E6's T6.2 |

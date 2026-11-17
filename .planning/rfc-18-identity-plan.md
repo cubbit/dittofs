@@ -1,6 +1,6 @@
 # RFC 18 — identity v2: implementation plan
 
-**Scope.** [RFC 18, identity and authentication](../rfcs/rfc-18-identity.md), for SMB on one node:
+**Scope.** [RFC 18, identity and authentication](../docs/internals/rfcs/rfc-18-identity.md), for SMB on one node:
 - local NTLMv2;
 - Kerberos with the PAC;
 - an Active Directory directory, NETLOGON pass-through and the machine account;
@@ -12,25 +12,25 @@ Kerberos and Active Directory are required for v1 (#4053). Related RFCs, with ho
 scope:
 
 - **Only the parts RFC 18 cannot work without:**
-  - [RFC 16](../rfcs/rfc-16-metadata-store.md): the `Minter` with uid, gid and RID allocation, the
+  - [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md): the `Minter` with uid, gid and RID allocation, the
     well-known principals' fixed IDs (§2.2, §3), and a user's two secret references (A5);
-  - [RFC 17](../rfcs/rfc-17-vfs.md) §4.9: admission's caller cache, keyed as RFC 18 §7.1 says, and
+  - [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §4.9: admission's caller cache, keyed as RFC 18 §7.1 says, and
     `vfs.Deps`' `Identity`, `Auth` and `Names` (§2.3).
 - **Constraints only:**
-  - [RFC 13](../rfcs/rfc-13-configuration.md): secrets are sealed, versioned and rotated, and
+  - [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md): secrets are sealed, versioned and rotated, and
     settings loaded and checked, by RFC 13's configuration-lifecycle plan (#4059, its S1 and S2, §3.2); the
     `identity.*` settings themselves, their struct, defaults and validators, are this plan's,
     each declared through #4059's `pkg/settings` by the first epic that reads it, and listed in
     the node's settings table in epic 8;
-  - [RFC 23](../rfcs/rfc-23-control-plane.md): the node composes identity and hands it its `State`,
+  - [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md): the node composes identity and hands it its `State`,
     the principals generation and positions come from its store epic, and the runner drives this
     plan's operations (RFC 23's plan, #4050);
-  - [RFC 22](../rfcs/rfc-22-smb.md) and its plan (#3911): `gss` answers NEGOTIATE and CHALLENGE and
+  - [RFC 22](../docs/internals/rfcs/rfc-22-smb.md) and its plan (#3911): `gss` answers NEGOTIATE and CHALLENGE and
     hands RFC 18 an `NTLMAuthenticate` or an AP-REQ (RFC 18 §3.1);
-  - [RFC 19](../rfcs/rfc-19-authorization.md): what a resolved caller may do to a file;
-  - [RFC 25](../rfcs/rfc-25-observability.md): RFC 18 §9.2's series and conditions;
-  - [RFC 29](../rfcs/rfc-29-test-harness.md): the rules every epic follows.
-- **Out:** [RFC 21](../rfcs/rfc-21-nfs.md), NFS, is v1.1.
+  - [RFC 19](../docs/internals/rfcs/rfc-19-authorization.md): what a resolved caller may do to a file;
+  - [RFC 25](../docs/internals/rfcs/rfc-25-observability.md): RFC 18 §9.2's series and conditions;
+  - [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md): the rules every epic follows.
+- **Out:** [RFC 21](../docs/internals/rfcs/rfc-21-nfs.md), NFS, is v1.1.
 
 **Not built by this plan.** The user decided to defer the following, each in §6 O2:
 - the NFS side of identity: `AUTH_SYS` and `AUTH_NONE` (RFC 18 §3.2), uid and gid mapping and the

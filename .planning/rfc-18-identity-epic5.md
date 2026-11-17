@@ -1,15 +1,15 @@
 # Epic 5: identity v2 Kerberos and the PAC
 
-**Sources:** [RFC 18](../rfcs/rfc-18-identity.md) §2.4's machine principals, §2.6's
+**Sources:** [RFC 18](../docs/internals/rfcs/rfc-18-identity.md) §2.4's machine principals, §2.6's
 `State.Keytab` and its `Apply` row, §3.1 for a Kerberos sign-in (its errors, its binding, its
 `Keys`, its logon event), §3.3 for the imported keytab and the ticket's checks, §3.4, §3.7's
 sign-in half and §3.8's expiry for Kerberos, §4.2 steps 1, 2 and 4 with its realm rule and the
 `krb` row's linked SID, §7.3's replay-cache row, §9.2's Kerberos outcomes,
 `identity_pac_sids_dropped_total` and `identity_mints_total{kind="machine"}`, and §10's rows
 named in §3 below with its Fuzz paragraph, as pull request #4058 merged them (83232b441);
-[RFC 16](../rfcs/rfc-16-metadata-store.md) §2.3's machine record, §3's `MintBatch` and §4.2's
-`PX‖scheme‖id` row for the `krb` row's SID; [RFC 13](../rfcs/rfc-13-configuration.md) §7's
-rollover, and Appendix B's `identity.directory` row; [RFC 22](../rfcs/rfc-22-smb.md) §4.1's
+[RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §2.3's machine record, §3's `MintBatch` and §4.2's
+`PX‖scheme‖id` row for the `krb` row's SID; [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §7's
+rollover, and Appendix B's `identity.directory` row; [RFC 22](../docs/internals/rfcs/rfc-22-smb.md) §4.1's
 ticket addresses and §16.3's well-known SIDs a PAC may carry.
 **Track:** B.
 **Epic 5 estimate: 11 subtasks, 19.25 man-days.**
@@ -135,15 +135,15 @@ number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T5.2 to T5.11 | tickets and PACs are made by T5.3's test realm with test keys, as a KDC makes them, and checked against PACs and an AP-REQ the Samba fixture issued (T5.6, T5.11); the store is the memory KV with `pkg/metadata/kv/kvtest`'s fault wrapper failing a call; the clock is injected; logon events land in E4's recording `LogonSink`, a sink of outputs; no other double |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T5.2 to T5.11 | tickets and PACs are made by T5.3's test realm with test keys, as a KDC makes them, and checked against PACs and an AP-REQ the Samba fixture issued (T5.6, T5.11); the store is the memory KV with `pkg/metadata/kv/kvtest`'s fault wrapper failing a call; the clock is injected; logon events land in E4's recording `LogonSink`, a sink of outputs; no other double |
 | rule 2, fuzz every decoder of untrusted bytes | T5.3, T5.6 | `FuzzAPReq` over the AP-REQ decode (T5.3), `FuzzPAC` over the PAC's buffer walk and its buffers' decoders (T5.6), each with the property `CLAUDE.md` states and the PACs RFC 18 §10's Fuzz paragraph names |
 | rule 3, observability follows RFC 25 | T5.5, T5.7, T5.9 | `identity_authentications_total`'s Kerberos outcomes (T5.5, `no_pac` in T5.8b), `identity_pac_sids_dropped_total{reason}` (T5.7), `identity_mints_total{kind="machine"}` (T5.9); no label or attribute carries a name, SID, ticket or address |
 | rule 4, profiling | all but T5.1 | every test runs under the leak check; the replay cache's sweep (T5.4) leaves no goroutine, since it runs inside the call that inserts |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T5.5, T5.7, T5.8b, T5.11 | each check is proven at `SignIn`'s answer, a dropped SID by the grant it no longer gives at `Resolve`, a deny-only SID by the share grant it does not admit through, the integration ticket by the caller's groups |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T5.5, T5.7, T5.8b, T5.11 | each check is proven at `SignIn`'s answer, a dropped SID by the grant it no longer gives at `Resolve`, a deny-only SID by the share grant it does not admit through, the integration ticket by the caller's groups |
 | rule 6, known failures shrink | none | no suite RFC 18 names keeps a `known.yaml`; every test lands green |
 | rule 7, v2 ignores v1 | T5.3, T5.4 | `develop`'s `internal/auth/kerberos` is lifted from history and rewritten: the AP-REP builder and the address rule kept; `VerifyAPREQ`, the best-effort PAC decode RFC 18 Appendix B names as fail-open, and the replay cache's `time.Now` and unbounded map replaced (D1, D5) |
 | rule 8, real dependencies for properties of those dependencies | T5.1, T5.6, T5.11 | the fixture's Samba domain controller, in `integration/ad-dc`, issues the captured PACs (T5.1, T5.6) and the AP-REQ alice signs in with (T5.11), which `unit` then replays on the injected clock |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T5.2 to T5.9 | RFC 18's `decision:` notes of §2.4 (machines minted on sight, T5.9), §3.3 (AES only, T5.2; an unknown user refused, T5.5) and §3.4 (only the server signature, T5.6); its `ponytail:` notes of §3.3 (the replay cache in memory, T5.4; the skew constant, T5.3); the replay cache's fixed-count `ponytail:` (T5.4); this document's D1 to D12 and D14 to D16 markers at their sites |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T5.2 to T5.9 | RFC 18's `decision:` notes of §2.4 (machines minted on sight, T5.9), §3.3 (AES only, T5.2; an unknown user refused, T5.5) and §3.4 (only the server signature, T5.6); its `ponytail:` notes of §3.3 (the replay cache in memory, T5.4; the skew constant, T5.3); the replay cache's fixed-count `ponytail:` (T5.4); this document's D1 to D12 and D14 to D16 markers at their sites |
 | rule 10, a test must be able to fail | all | every R row is held by a test named in its subtask, each with the bug it catches, or by what is named in its place |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T5.2, T5.3 | `internal/identity` exports `State.Keytab`, which `internal/node` fills (E8's T8.2); nothing outside `internal/node` and identity's tests imports it; `CheckKeytab` in `pkg/identity` is pending an RFC 18 §2.7 amendment (D3); the test realm is `identitytest`'s, the package RFC 18 §2.7 gives test helpers, and imports no `internal/identity` |
 | rule 12, each subtask creates only what it declares | all | `State.Keytab` with T5.2, its first reader; `entity.ProtocolID`'s linked SID with T5.8a; the record's `require_pac` with T5.8b; the test realm with T5.3, its first consumer |

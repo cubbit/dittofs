@@ -1,20 +1,20 @@
 # Epic 7: engine v2 capacity, self-fence and health
 
-**Sources:** [RFC 8](../rfcs/rfc-8-engine.md) §10 (the two measures, as far as repack goes),
+**Sources:** [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §10 (the two measures, as far as repack goes),
 §10.2 (the refusal table and its last step), §10.3 (scoped repack and its reserve), §11.1
 (the engine's conditions, `Stats` as a health source), §11.2 (the self-fence and the rows
 this part reaches), §3.1 (`admit` among the policy functions) and §2.8 (the refusal table
 in `capacity.go`), §2.7 (the headroom's `decision:` and the burst's `ponytail:`), §14
 (refusals and self-fences) and §15's rows for those sections;
-[RFC 1](../rfcs/rfc-1-journal.md) §3.1 (`Sync`), §3.7 (`Stats` and its per-share figures,
+[RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §3.1 (`Sync`), §3.7 (`Stats` and its per-share figures,
 `Files`), §3.9 (`freed_bytes`, for `journal_full`'s clear), §4.2 (the index bound), §6 (the
 refusal and its named limits, the headroom), §7.2 (`Repack` and its scope) and §10
 questions 5 and 6, for the journal calls, and §3.8, §5.3 and §5.4 (loss events, a failed
 sync and a read-only journal), for `journal_sync_failed`;
-[RFC 28](../rfcs/rfc-28-journal-format.md) §2.2 (the spare pool, the seal for capacity);
-[RFC 0](../rfcs/rfc-0-data-lifecycle.md) §1.4 and §10.3, for the single node's fence, the
-version limit's headroom and the deadline rule; [RFC 17](../rfcs/rfc-17-vfs.md) §4.3, for the
-delay causes; [RFC 25](../rfcs/rfc-25-observability.md) §3.9 and §8.2, for the condition
+[RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md) §2.2 (the spare pool, the seal for capacity);
+[RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.4 and §10.3, for the single node's fence, the
+version limit's headroom and the deadline rule; [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §4.3, for the
+delay causes; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §3.9 and §8.2, for the condition
 registry and the health source.
 **Track:** C, with T7.1a and T7.1b on track A.
 **Epic 7 estimate: 5 subtasks, 18.5 man-days.**
@@ -128,7 +128,7 @@ part can pass, and §15.2's §11.1 rows for `journal_full` and `journal_sync_fai
    that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
    kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,

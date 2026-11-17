@@ -1,23 +1,23 @@
 # RFC 8 — engine v2, the journal-only part: implementation plan
 
-**Scope:** the part of [RFC 8, the engine](../rfcs/rfc-8-engine.md), that runs on journal v2
+**Scope:** the part of [RFC 8, the engine](../docs/internals/rfcs/rfc-8-engine.md), that runs on journal v2
 and the RFC 16 store alone: write, draw, overlay, read, allocation, commit, removals, clone
 and copy of journal-held content, start, stop, bindings, recovery, the version limit,
 capacity and the self-fence. Every byte stays in the journal and nothing is offloaded: no
 carver, syncer, remote block store, work scheduler, eviction, fill, speculator, snapshot
 cut or GC. That is RFC 8's second part, planned separately once this one is under way,
 and built on top of this part, not beside it. Related RFCs, with how far each is in scope:
-- [RFC 1](../rfcs/rfc-1-journal.md) and [RFC 28](../rfcs/rfc-28-journal-format.md), the
+- [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) and [RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md), the
   journal: **constraints only**. The engine calls RFC 1 §3's surface; the journal plan
   ([`rfc-1-journal-plan.md`](rfc-1-journal-plan.md)) builds it.
-- [RFC 6](../rfcs/rfc-6-block-metadata.md) and [RFC 16](../rfcs/rfc-16-metadata-store.md),
+- [RFC 6](../docs/internals/rfcs/rfc-6-block-metadata.md) and [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md),
   block metadata and the store: **only the parts this RFC cannot work without**, the
   `Lifecycle` view RFC 8 §2.1 names (epic 6). The rest is built (`pkg/metadata/kvstore`).
-- [RFC 17](../rfcs/rfc-17-vfs.md), the filesystem service: **constraints only**, its
+- [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md), the filesystem service: **constraints only**, its
   `Content` interface and its integration tier (epic 9).
-- [RFC 14](../rfcs/rfc-14-open-state.md), open state: **constraints only**, the clone-kind
+- [RFC 14](../docs/internals/rfcs/rfc-14-open-state.md), open state: **constraints only**, the clone-kind
   open and a release's mark (epics 5 and 8).
-- [RFC 25](../rfcs/rfc-25-observability.md) and [RFC 29](../rfcs/rfc-29-test-harness.md):
+- [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) and [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md):
   the rules every epic follows (§1.5 rules 3 and 6).
 - RFC 2, 3, 4, 5 and 9 (carver, syncer, remote tier, transforms, GC), and RFC 10, 11, 12,
   15 §4.3, 26 and 27 (replication, ownership, snapshots, the route envelope, backups,
@@ -318,7 +318,7 @@ harness (`journaltest/prof`) wired to the fixture.
    that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
    kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
@@ -1158,7 +1158,7 @@ follows the journal's, not this part's (§6 point 7).
    (point 13).
 10. **The `Content` check** is RFC 17 plan piece 12's `contenttest.Run`, over that piece's
     in-memory `Content`; T9.2 runs it over the engine too, and nothing moves.
-    Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
+    Every double is one of [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s
     three kinds.
 11. **Open state's `Releasing`**, the stage 1 follow-up, gates T5.4's tests and T8.3's
     unlink during `Resume`. The same

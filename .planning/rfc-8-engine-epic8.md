@@ -1,15 +1,15 @@
 # Epic 8: engine v2 clone and copy, journal-held
 
-**Sources:** [RFC 8](../rfcs/rfc-8-engine.md) §9.1 (all but the adoption of carved refs, the
+**Sources:** [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §9.1 (all but the adoption of carved refs, the
 fill and the snapshot cases), §2.3 (`Unbind`'s join of clones), §2.5 (start steps 3 and 4
 for a clone, and stop step 2), §2.6 (`Deps.Holds`, a `CloneHold`), §8.1 (a release held
 behind a clone, its retry channel), §12.1 (`Clone`, `Copy` and their errors), §13 (E6, E28,
-E34, E40) and §15.1's §9.1 and §2.5 rows; [RFC 14](../rfcs/rfc-14-open-state.md) §2.2 (the
+E34, E40) and §15.1's §9.1 and §2.5 rows; [RFC 14](../docs/internals/rfcs/rfc-14-open-state.md) §2.2 (the
 clone-kind open), §9.2 (`CloneOpen`, `CloneClose`) and §11.3 (`Recovery.Served`), for the
-hold on the source; [RFC 17](../rfcs/rfc-17-vfs.md) §5.9, for what the filesystem service
+hold on the source; [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §5.9, for what the filesystem service
 admits before the call and how it holds a call behind a clone;
-[RFC 1](../rfcs/rfc-1-journal.md) §3.6 (`CloneTarget`, `CloneSpec`, the clone marker) and §6
-(`Reserve`), for the journal calls; [RFC 6](../rfcs/rfc-6-block-metadata.md) §2.4 and §6.6, for
+[RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §3.6 (`CloneTarget`, `CloneSpec`, the clone marker) and §6
+(`Reserve`), for the journal calls; [RFC 6](../docs/internals/rfcs/rfc-6-block-metadata.md) §2.4 and §6.6, for
 the clone `Removal` record and the two phases `kvstore`'s `Existence.Clone` and
 `Content.Resume` already implement.
 **Track:** A.
@@ -89,7 +89,7 @@ clone marker.
    that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
    kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
@@ -490,7 +490,7 @@ listed test fails on the regression it names (after "catches").
   writes outside its extent (the stall before phase 1), §9.1 clone never waits.
 - **Tests:** the done signal is T8.3's, and no hook answers in its place: a test that needs
   the registrations dropped waits for T8.3's real signal and lands with it. Hooks here are
-  [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s: set per instance
+  [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s: set per instance
   from `export_test.go`, never through a package variable. The stall between two batches is T8.4's, the power cut
   after the answer T8.6's. A reservation refused by the in-memory journal: the clone fails with the mapped
   error, both registrations are gone, the destination reads its prior content, and the

@@ -1,21 +1,21 @@
 # RFC 23 — control plane v2: implementation plan
 
-**Scope.** [RFC 23, the control plane](../rfcs/rfc-23-control-plane.md), single-node. The related RFCs
+**Scope.** [RFC 23, the control plane](../docs/internals/rfcs/rfc-23-control-plane.md), single-node. The related RFCs
 are in scope as follows:
 
 - **Only the parts RFC 23 cannot work without:**
-  - [RFC 13](../rfcs/rfc-13-configuration.md): Appendix B's rows for RFC 23's own section, which
+  - [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md): Appendix B's rows for RFC 23's own section, which
     epic 3 validates. The bootstrap (§2.2), validation (§6), the settings library and sealed
     secrets (§7) are the RFC 13 configuration-lifecycle plan's, which this plan consumes (O11).
-  - [RFC 8](../rfcs/rfc-8-engine.md) §2.1 and §2.6: the root's duties, which the journal-only
+  - [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §2.1 and §2.6: the root's duties, which the journal-only
     engine plan hands this node (epic 3).
-  - [RFC 16](../rfcs/rfc-16-metadata-store.md): the records RFC 23 adds and the fields it needs (§3,
+  - [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md): the records RFC 23 adds and the fields it needs (§3,
     §4.2), and a share's removal steps (§2.3.2), which the store today stops after the mark.
-  - [RFC 18 §8.1](../rfcs/rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface): the API's
+  - [RFC 18 §8.1](../docs/internals/rfcs/rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface): the API's
     sign-in interface, which the RFC 18 plan builds and epic 5 consumes (O11).
-  - [RFC 25](../rfcs/rfc-25-observability.md): the health registry and watchdog (§3, §8.1) and the
+  - [RFC 25](../docs/internals/rfcs/rfc-25-observability.md): the health registry and watchdog (§3, §8.1) and the
     `api_`, `node_` and `audit_` series (§2.1).
-  - [RFC 28](../rfcs/rfc-28-journal-format.md) §2.1: the `node-id` layout, which epic 3's attach
+  - [RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md) §2.1: the `node-id` layout, which epic 3's attach
     learns.
 - **Constraints only:** RFCs 0, 9, 11, 12, 14, 15, 17, 20, 24, 26, 27 and 30.
 

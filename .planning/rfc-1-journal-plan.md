@@ -1,9 +1,9 @@
 # RFC 1 — journal v2: implementation plan
 
-**Scope:** [RFC 1 — the journal](../rfcs/rfc-1-journal.md), together with the parts of
-[RFC 28 — journal format](../rfcs/rfc-28-journal-format.md) it cannot work without, and the
-release-1 parts of [RFC 15 — topology](../rfcs/rfc-15-topology.md). The test foundations
-follow [RFC 29 — test harness](../rfcs/rfc-29-test-harness.md).
+**Scope:** [RFC 1 — the journal](../docs/internals/rfcs/rfc-1-journal.md), together with the parts of
+[RFC 28 — journal format](../docs/internals/rfcs/rfc-28-journal-format.md) it cannot work without, and the
+release-1 parts of [RFC 15 — topology](../docs/internals/rfcs/rfc-15-topology.md). The test foundations
+follow [RFC 29 — test harness](../docs/internals/rfcs/rfc-29-test-harness.md).
 **Team:** three people. **Track A** (storage) is @viquitorreis, **track B** (model and
 operations) is @didimelli, and @simonebaracchi coordinates (§3.4).
 **Naming:** **v1** was the journal before this plan (`pkg/block/journal` until #3645 deleted it on `feat/storage-v2`, one journal per
@@ -22,7 +22,7 @@ differ at the root:
 | | v1 (`pkg/block/journal` until #3645 deleted it) | v2 (this plan) |
 | --- | --- | --- |
 | Granularity | one journal per **share** (`<journal.path>/shares/<name>/journal`) | one journal per **device**, shared by every share on it, each share working through its own `Handle` and `ShareTag` |
-| What it knows | carving, chunk sizes, eviction, cold seeding (`Hydrate`, `Commit`, `SeedCold`, …) | extents of files only. No chunks, no blocks, no remote tier ([RFC 1 §1.1](../rfcs/rfc-1-journal.md)) |
+| What it knows | carving, chunk sizes, eviction, cold seeding (`Hydrate`, `Commit`, `SeedCold`, …) | extents of files only. No chunks, no blocks, no remote tier ([RFC 1 §1.1](../docs/internals/rfcs/rfc-1-journal.md)) |
 | Read of absent data | depends on the path | always an exact `missing` list, caller's buffer untouched |
 | Eviction | journal-driven | engine-driven: `Offload` → `report` → `Release` → `Repack` |
 | On-disk format | v1 segments | RFC 28: `format` file, 48-byte segment header, 96-byte record header, 16 record kinds, catalog and trailer, CRC32C |
@@ -102,12 +102,12 @@ Epic 1 is **interfaces only**. Its output is code that compiles and does nothing
 ### 1.4 What epic 2 must deliver
 
 Epic 2 makes "done" measurable before any implementation exists, following
-[RFC 29](../rfcs/rfc-29-test-harness.md). It has three outputs.
+[RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md). It has three outputs.
 
 **1. Shared test components that block everything else:**
 
 - **Clock and fault implementations.** The set has one clock interface
-  ([RFC index, test harness item 1](../rfcs/rfc-index.md)), which RFC 8 §2.1 declares in
+  ([RFC index, test harness item 1](../docs/internals/rfcs/rfc-index.md)), which RFC 8 §2.1 declares in
   standard-library types (`Now`, `Elapsed`, `After`). The journal declares the subset it
   uses, so the production clock and the test clock satisfy it as they are, with no
   adapter (epic 1, D3). Epic 2 implements `TestClock` in `pkg/sim`, and the seeded fault
@@ -130,7 +130,7 @@ Epic 2 makes "done" measurable before any implementation exists, following
 - **Known failures, graded by `dt`.** RFC 29 §4.7's `known.yaml`, which `dt` already
   reads and grades, so epic 2 writes no reader of its own (epic 2, D1). A listed test that
   fails is graded as expected. **A listed test that passes fails the run**
-  ([RFC index, harness requirement 6](../rfcs/rfc-index.md)), so a test that turns green
+  ([RFC index, harness requirement 6](../docs/internals/rfcs/rfc-index.md)), so a test that turns green
   forces its entry out of the list. An entry also names the failure it expects, once
   `dt` can match one ([#3391](https://github.com/cubbit/dittofs/issues/3391), an
   optional `message:` in RFC 29 §4.7), so a test failing for a new reason is graded new
@@ -175,7 +175,7 @@ the test that implements it, and every other suite test (edge cases, model, coun
 damage and clock checks) to its row of RFC 1 §9.1, §9.2 and §9.7, RFC 28 §4.1 and §4.4,
 RFC 0 §1.4 or RFC 8 §15 (epic 2, D3). A Go test fails CI when a row has no test, or a test
 no row; `dt` fails it when a test was expected to run and did not. A check that did not
-run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
+run is a failure ([RFC index, test tiers](../docs/internals/rfcs/rfc-index.md)).
 
 **Exit criteria:**
 
@@ -199,7 +199,7 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
    to fake (rule 12). Every double is one of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
+   [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference
@@ -724,7 +724,7 @@ each tier's dependencies are in the epic's file, §7:
   - a failed sync changes the NFS write verifier, so the client resends.
 - **Cold reads**: evict, restart, read. Bytes come back from the remote tier and are never
   zeros. A read of a truly lost extent fails, never returning zeros (RFC 0 I1).
-- **Reference workloads** ([RFC index](../rfcs/rfc-index.md)):
+- **Reference workloads** ([RFC index](../docs/internals/rfcs/rfc-index.md)):
   - an FSLogix-style 30 GB container, with random overwrites behind one long-lived SMB
     handle;
   - a sign-in storm of concurrent cold opens;

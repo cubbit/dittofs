@@ -1,6 +1,6 @@
 # Epic 6: identity v2 the directory
 
-**Sources:** [RFC 18](../rfcs/rfc-18-identity.md) §2.3 item 3's directory clause, §2.6's
+**Sources:** [RFC 18](../docs/internals/rfcs/rfc-18-identity.md) §2.3 item 3's directory clause, §2.6's
 directory client, its record change and lazy dial, §3.4's last bullet (the enabled state read
 through the directory cache), §3.5's rule that `identity.netbios_name` and the directory's NetBIOS
 domain differ, §4.1's mint path and its held-name rule, §4.2 step 3, §4.3's last bullet (a
@@ -9,11 +9,11 @@ directory principal, §5.1 to §5.4, §5.5's SMB rows and its `ponytail:`, §6.3
 §7.1's freshness bound, §7.3's directory-cache row, §9.1's ID4 and ID9, §9.2's directory series,
 mint counters, `directory_unavailable` refusal and `directory_unreachable` condition, and §10's
 rows named in §3 below with its paragraphs "Where the in-memory ones stand in" and "Suites", as
-pull request #4058 merged them (83232b441); [RFC 13](../rfcs/rfc-13-configuration.md) §6 (a rule
+pull request #4058 merged them (83232b441); [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §6 (a rule
 across settings) and Appendix B's `identity.directory`, `identity.directory_stale_grace` and
-`identity.netbios_name` rows; [RFC 16](../rfcs/rfc-16-metadata-store.md) §3 (`Minter`'s `Rename`
-and `SetEmail`, `MintBatch`, `Alloc`); [RFC 23](../rfcs/rfc-23-control-plane.md) §3.5, for
-`test-directory`; [RFC 25](../rfcs/rfc-25-observability.md) §3.9's `directory_unreachable` row
+`identity.netbios_name` rows; [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §3 (`Minter`'s `Rename`
+and `SetEmail`, `MintBatch`, `Alloc`); [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §3.5, for
+`test-directory`; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §3.9's `directory_unreachable` row
 and §8.2's `Source`.
 **Track:** C.
 **Epic 6 estimate: 13 subtasks, 27 man-days.**
@@ -142,16 +142,16 @@ number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | identity's tests run over the memory KV store and `identitytest`'s in-memory directory, which passes the directory's conformance suite (kind 2); outages, delays and timeouts come from `identitytest`'s fault wrapper around it (kind 3) and store errors from `kvtest`'s; the clock is injected (kind 1), `pkg/sim`'s test clock; the TLS rows dial real listeners on `127.0.0.1:0` |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | identity's tests run over the memory KV store and `identitytest`'s in-memory directory, which passes the directory's conformance suite (kind 2); outages, delays and timeouts come from `identitytest`'s fault wrapper around it (kind 3) and store errors from `kvtest`'s; the clock is injected (kind 1), `pkg/sim`'s test clock; the TLS rows dial real listeners on `127.0.0.1:0` |
 | rule 2, fuzz every decoder of untrusted bytes | T6.6 | `go-ldap` decodes BER and SIDs go through `sid.DecodeSID` (E2's `FuzzSID`); the one decoder the client owns, T6.6's range-attribute parser, gets `FuzzRangeAttr`: no panic, a parsed range has `lo ≤ hi` or `hi` = `*`, and it re-formats to text that parses to the same bounds; the client refuses a range whose next `lo` does not advance; the in-memory directory's filter parser reads only what the client builds, and the suite holds it to Samba |
 | rule 3, observability follows RFC 25 | T6.2, T6.7, T6.8, T6.9, T6.10, T6.11 | `identity_mints_total` and `identity_mints_unnamed_total` (T6.2), `identity_mints_remapped_total` (T6.9), `identity_directory_lookups_total` and `identity_directory_seconds` and a span per query (T6.7), `directory_unreachable` (T6.8), `identity_renames_unnamed_total` (T6.10), the `directory_unavailable` refusal (T6.11); no label or attribute carries a name, SID, entry ID or address |
 | rule 4, profiling | all | every test runs under the leak check; T6.7's single flight and T6.8's outage leave no waiter behind |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T6.7, T6.10, T6.11 | a stale entry is proven by a sign-in admitted or refused at `Resolve`, a rename by `Find` of each name, a gone entry by the next call refused, not by the cache's contents |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T6.7, T6.10, T6.11 | a stale entry is proven by a sign-in admitted or refused at `Resolve`, a rename by `Find` of each name, a gone entry by the next call refused, not by the cache's contents |
 | rule 6, known failures shrink | none | no suite this epic touches keeps a `known.yaml`; every test lands green |
 | rule 7, v2 ignores v1 | T6.4, T6.5, T6.6 | v1's `pkg/identity/ldap` is lifted from history into `internal/identity/directory` and rewritten on RFC 18: `InsecureSkipVerify` and `AllowPlaintext` dropped, an ambiguous answer refused where v1 took the first, its idmap `rid` mode and `idmap` settings dropped |
 | rule 8, real dependencies for properties of those dependencies | T6.1, T6.4, T6.6 | the directory's suite runs against the Samba domain controller in `integration/ad-dc`, reached by its host name with its certificate verified against the fixture's CA; a test that needs real AD's nesting or paging runs there, never on the in-memory one alone |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T6.4, T6.5, T6.7, T6.8, T6.9 | RFC 18's notes at their sites: §5.1's `ponytail:` (one directory) at the client, §5.2's two `ponytail:` notes (constant TTLs, one cache per node) at the cache, §5.3's `decision:` (stale then closed) and `ponytail:` (recovery burst) at the cache's grace, §5.5's `ponytail:` (no NT hash read) at the client's attribute list, §4.4's `decision:` (no mint for an unauthenticated lookup) at `Find`; this document's D1 to D13 markers at theirs |
-| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | each R row's test is named in its subtask with the bug it catches; R6's write role is held by #4059's write check, run on this section (T6.13) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T6.4, T6.5, T6.7, T6.8, T6.9 | RFC 18's notes at their sites: §5.1's `ponytail:` (one directory) at the client, §5.2's two `ponytail:` notes (constant TTLs, one cache per node) at the cache, §5.3's `decision:` (stale then closed) and `ponytail:` (recovery burst) at the cache's grace, §5.5's `ponytail:` (no NT hash read) at the client's attribute list, §4.4's `decision:` (no mint for an unauthenticated lookup) at `Find`; this document's D1 to D13 markers at theirs |
+| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each R row's test is named in its subtask with the bug it catches; R6's write role is held by #4059's write check, run on this section (T6.13) |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T6.3, T6.4, T6.5, T6.8, T6.9 | the exports are `internal/identity/directory`'s `Record`, `Conn`, `Request`, `Entry`, `Dialer` and `DialTLS`, which `internal/node` and `identitytest` call, its `Client`, `NewClient` and question methods, which `internal/identity` calls, `State.Directory` and `Deps.Directory`, `Server.Conditions` for the node's health evaluator, `Server.KerberosLinkSID` for the API's link write, and `identitytest`'s directory, fault wrapper and suite; the cache and the mint path stay unexported; E7's T7.6 and T7.7 add the computer account's functions to the package, outside `Conn` |
 | rule 12, each subtask creates only what it declares | all | each deliverable names its consumer; `Deps.Directory` lands with the client (T6.5), `State.Directory` with `Apply`'s check (T6.3), `Settings.DirectoryStaleGrace` with the cache (T6.7), the fault wrapper with the in-memory directory it wraps (T6.4), first used in T6.6; `Clock.After` is E2's T2.6's (D7) and the record's `RequirePAC` E5's T5.8's |
 

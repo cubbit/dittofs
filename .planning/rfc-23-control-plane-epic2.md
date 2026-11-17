@@ -1,9 +1,9 @@
 # Epic 2: control plane v2 — store records
 
-**Sources:** [RFC 16](../rfcs/rfc-16-metadata-store.md) §2.3 (the records for RFC 23 and their
+**Sources:** [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §2.3 (the records for RFC 23 and their
 fields), §2.3.2 (a share's removal, the store's side), §3 (`ControlPlane` with `expect`, `Write`,
 `WriteMeta` and `ControlPlaneTx`), §4.2 (their keys), §4.6 and §6.3 (format and codecs);
-[RFC 23](../rfcs/rfc-23-control-plane.md) §2.4 (positions, node status), §3.1's last paragraph,
+[RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §2.4 (positions, node status), §3.1's last paragraph,
 §4.4 (the entity tag), §4.5 (the idempotency record and its expiry), §4.6 (the operation record and
 its retention), §5.2 (the last admin, the store's side), §5.3 (the sign-in counts' expiry), §6
 (append-only, retention), and §10's CP5, CP6, CP11 and CP12 on the store's side.
@@ -97,15 +97,15 @@ and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | every behaviour is a case of kvstore's conformance suite (`kvstoretest`), run over Badger in memory and on disk and over FoundationDB; faults come from `kv/kvtest`'s `FaultKV` (kind 3), store time from the backends' `Options.Clock` (kind 1). No other double |
-| rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T2.2, T2.4, T2.5, T2.7–T2.9 | one target, `FuzzControlPlaneValues`, over a table of every new or changed decoder, as `FuzzLifecycleValues` covers three (D11): a value either decodes and re-encodes to bytes that decode to the same value, or fails with a named error |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | every behaviour is a case of kvstore's conformance suite (`kvstoretest`), run over Badger in memory and on disk and over FoundationDB; faults come from `kv/kvtest`'s `FaultKV` (kind 3), store time from the backends' `Options.Clock` (kind 1). No other double |
+| rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T2.2, T2.4, T2.5, T2.7–T2.9 | one target, `FuzzControlPlaneValues`, over a table of every new or changed decoder, as `FuzzLifecycleValues` covers three (D11): a value either decodes and re-encodes to bytes that decode to the same value, or fails with a named error |
 | rule 3, observability follows RFC 25 | none | kvstore exports no series (D5): the API counts `audit_records_total` after `Write` returns, and the sweep returns its counts for the node to export |
 | rule 4, profiling | none | no node or API test runs here; the leak check joins with E3's harness |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | all | the suite reaches the store through the view only, never a key, as RFC 16 §6.1 says; layout is held by golden vectors (RFC 16 §6.3) |
-| rule 6, known failures shrink ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | none | no test lands red and no suite here keeps a `known.yaml` |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | the suite reaches the store through the view only, never a key, as RFC 16 §6.1 says; layout is held by golden vectors (RFC 16 §6.3) |
+| rule 6, known failures shrink ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | none | no test lands red and no suite here keeps a `known.yaml` |
 | rule 7, v2 ignores v1 | none | v1 is gone at S1; nothing here reads it |
-| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T2.1, T2.4, T2.11, T2.12 | the all-or-nothing commit runs on Badger on disk with the commit faulted; a resumed removal reopens the store over the same data (T2.1) |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T2.2, T2.10–T2.12 | D1's `decision:` at the store format, D8's at the secrets a deleted user names, D6's and D9's `ponytail:` at the sweep and at the removal's steps 2 and 7 |
+| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T2.1, T2.4, T2.11, T2.12 | the all-or-nothing commit runs on Badger on disk with the commit faulted; a resumed removal reopens the store over the same data (T2.1) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.2, T2.10–T2.12 | D1's `decision:` at the store format, D8's at the secrets a deleted user names, D6's and D9's `ponytail:` at the sweep and at the removal's steps 2 and 7 |
 | rule 10, a test must be able to fail | all | each test names the requirement it breaks on; where the code holds a requirement by construction, the row names that instead of a test that cannot fail |
 | rule 11, a symbol is exported only if RFC 23's interface uses it | all | the exported additions are RFC 16 §3's view methods, `Write`, `WriteMeta`, `ControlPlaneTx`, the records' fields, the errors they return, and the node view's calls E3 and the RFC 13 plan make |
 | rule 12, each subtask creates only what it declares | all | each method lands with its conformance case; a read whose consumer is E3, E4 or E5 is named with that consumer in its Deliverables |

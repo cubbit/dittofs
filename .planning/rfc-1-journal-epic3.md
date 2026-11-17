@@ -1,7 +1,7 @@
 # Epic 3: journal v2 on-disk format and platform layer
 
-**Sources:** [RFC 28](../rfcs/rfc-28-journal-format.md) §2 and Appendix A, with the parts of
-§3.1, §3.3, §3.4 and §4 they feed; [RFC 1](../rfcs/rfc-1-journal.md) §1.1, §1.3, §3.9,
+**Sources:** [RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md) §2 and Appendix A, with the parts of
+§3.1, §3.3, §3.4 and §4 they feed; [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §1.1, §1.3, §3.9,
 §4.3, §5.2, §6, §7.4, §9.1, §9.3 and §9.5; [the plan](rfc-1-journal-plan.md) §1.5 and §5,
 epic 3; the [epic 1](rfc-1-journal-epic1.md) and [epic 2](rfc-1-journal-epic2.md) plans.
 **Owner:** track A, storage (@viquitorreis). Subtasks 3.9 and 3.10 may move to track B if
@@ -179,7 +179,7 @@ Copied verbatim from [the plan](rfc-1-journal-plan.md) §1.5, as its instruction
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
    to fake (rule 12). Every double is one of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
+   [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference

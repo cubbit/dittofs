@@ -1,6 +1,6 @@
 # RFC 20 adapter model: design brief for the epic plan
 
-The decisions the epic plan for [RFC 20](../rfcs/rfc-20-adapters.md) is built from. They were
+The decisions the epic plan for [RFC 20](../docs/internals/rfcs/rfc-20-adapters.md) is built from. They were
 settled before planning; the plan (`rfc-20-adapters-plan.md`, written by the `rfc-to-epic-plan`
 skill) takes them as given. Where a line says **(builder's call)** it was not decided with the
 owner and the plan may change it.

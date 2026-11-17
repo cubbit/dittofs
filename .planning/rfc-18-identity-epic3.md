@@ -1,13 +1,13 @@
 # Epic 3: identity v2 resolution
 
-**Sources:** [RFC 18](../rfcs/rfc-18-identity.md) §2.5's closure and cap, §2.6's forwarded
+**Sources:** [RFC 18](../docs/internals/rfcs/rfc-18-identity.md) §2.5's closure and cap, §2.6's forwarded
 `Identity` and `State`, §3.1's binding and §3.7 at resolution, §3.5's NTLM-off refusal at
 resolution, §6.1 to §6.5, §7.1, §7.2 and §7.3's caller-cache row, §9.1's ID1, ID5, ID8, ID10
 and ID14 and the resolver's halves of ID6, ID7 and ID13, §9.2's resolution refusals and
 `identity.resolve` span, and §10's rows named in §3 below, as pull request #4058 merged them
-(83232b441) and #4455 amended them (57682e9e7); [RFC 17](../rfcs/rfc-17-vfs.md) §2.3 and §4.9 (admission and its caller
-cache); [RFC 16](../rfcs/rfc-16-metadata-store.md) §3 (`Principals.Grant`,
-`SharePolicy`) and §4.2's `S‖id‖gv`; [RFC 23](../rfcs/rfc-23-control-plane.md)
+(83232b441) and #4455 amended them (57682e9e7); [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §2.3 and §4.9 (admission and its caller
+cache); [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §3 (`Principals.Grant`,
+`SharePolicy`) and §4.2's `S‖id‖gv`; [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md)
 §3.2, for one scenario.
 **Track:** A.
 **Epic 3 estimate: 10 subtasks, 16 man-days.**
@@ -116,15 +116,15 @@ number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | identity's tests drive `Resolve` over the memory KV store, the store's errors and delays from `pkg/metadata/kv/kvtest`'s fault wrapper, the clock injected; `vfs`'s use the real identity server (RFC 18 §10, "Who stands in for what"); T3.1's and T3.2's recording wrappers pass every call through to the real store or server, as `CLAUDE.md` allows when the call reaching a dependency is the requirement |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | identity's tests drive `Resolve` over the memory KV store, the store's errors and delays from `pkg/metadata/kv/kvtest`'s fault wrapper, the clock injected; `vfs`'s use the real identity server (RFC 18 §10, "Who stands in for what"); T3.1's and T3.2's recording wrappers pass every call through to the real store or server, as `CLAUDE.md` allows when the call reaching a dependency is the requirement |
 | rule 2, fuzz every decoder of untrusted bytes | none | resolution decodes nothing; `Key()` encodes, and T3.7 tests its encoding against collisions |
 | rule 3, observability follows RFC 25 | T3.1, T3.4, T3.10 | `identity_resolution_refusals_total` with `disabled`, `store_unavailable` (T3.1), `group_cap`, `anonymous_missing` (T3.4) and `ntlm_off` (T3.10); the `identity.resolve` span on a miss (T3.1); no label or attribute carries a name or SID |
 | rule 4, profiling | T3.8 | the cache's tests, single flight included, run under the leak check; RFC 18 names no allocation budget |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T3.4, T3.5, T3.6, T3.8 | a squash proven by a refused file read, a `none` grant by a refused call, a disable by the next call refused, `identity.ntlm` off by an NTLM caller's next call refused; the key's completeness at the cache, its consumer |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T3.4, T3.5, T3.6, T3.8 | a squash proven by a refused file read, a `none` grant by a refused call, a disable by the next call refused, `identity.ntlm` off by an NTLM caller's next call refused; the key's completeness at the cache, its consumer |
 | rule 6, known failures shrink | none | no suite RFC 18 names keeps a `known.yaml`; every test lands green |
 | rule 7, v2 ignores v1 | T3.1, T3.6 | `internal/vfs/admit/resolve.go`, which is v2, is copied into `internal/identity` by T3.1 and rewritten on RFC 18's types, and T3.6 deletes the original once admission calls `Deps.Identity`; nothing of v1's `pkg/identity` is read |
 | rule 8, real dependencies for properties of those dependencies | none | no external system: the store is the memory KV that RFC 16's suite holds, and T3.5's grant read gains rows in that suite |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T3.1, T3.3, T3.4, T3.5, T3.6, T3.7, T3.8 | RFC 18's notes at their sites: §2.5's `decision:` and `ponytail:` (T3.4), §6.2's two `decision:` notes (T3.4, T3.5), §6.4's `decision:` and `ponytail:` (T3.5), §7.2's `ponytail:` (T3.8); this document's D1 to D10 markers at theirs |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T3.1, T3.3, T3.4, T3.5, T3.6, T3.7, T3.8 | RFC 18's notes at their sites: §2.5's `decision:` and `ponytail:` (T3.4), §6.2's two `decision:` notes (T3.4, T3.5), §6.4's `decision:` and `ponytail:` (T3.5), §7.2's `ponytail:` (T3.8); this document's D1 to D10 markers at theirs |
 | rule 10, a test must be able to fail | all | every R row is held by a test named in its subtask that fails on its assertion, or by the compiler where named |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T3.3, T3.7 | `ProofKey` and `Identity.Key()` are RFC 18 §6.1's; `Resolver.Current` is the one addition, decided (D3), with RFC 18 §6.1's amendment owed (§9); the cache and its key stay unexported in `internal/vfs` |
 | rule 12, each subtask creates only what it declares | all | T3.6 consumes the `GrantVersion` RFC 23's plan's epic 2's T2.3 returns (#4477); `Grant`'s shape with T3.5; `Deps.Tracer` with T3.1's span |

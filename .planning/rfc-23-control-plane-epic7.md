@@ -1,6 +1,6 @@
 # Epic 7: control plane v2 — integration
 
-**Sources:** [RFC 23](../rfcs/rfc-23-control-plane.md) §12 (Conformance), its single-node rows
+**Sources:** [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §12 (Conformance), its single-node rows
 that need no mount and need more than one middle epic together; §8.1, the rows E3 builds, run
 here through the API; §3.3's bound fields; §10's CP7; Appendix B's rows for §2.1 and §2.3; RFC
 23's plan §1.4 (the scenario assigned to epic 7), §1.5 rule 3, D13 and §5 epic 7.
@@ -90,16 +90,16 @@ and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T7.2–T7.6 | every row builds the node through `nodetest` over the in-memory KV or Badger under `t.TempDir()`, signed in through E5's callers; the doubles are `sim.TestClock` (kind 1), `kvtest.FaultKV` with a fault the test implements (kind 3), and, for T7.6, the RFC 18 plan's `pkg/identity/identitytest` directory and domain controller, held to their suites (kind 2) |
-| rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | none | this epic adds no decoder; E2 and E4 fuzz the bodies, the cursor and the codecs |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T7.2–T7.6 | every row builds the node through `nodetest` over the in-memory KV or Badger under `t.TempDir()`, signed in through E5's callers; the doubles are `sim.TestClock` (kind 1), `kvtest.FaultKV` with a fault the test implements (kind 3), and, for T7.6, the RFC 18 plan's `pkg/identity/identitytest` directory and domain controller, held to their suites (kind 2) |
+| rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | none | this epic adds no decoder; E2 and E4 fuzz the bodies, the cursor and the codecs |
 | rule 3, observability follows RFC 25 | T7.3 | no new series; `config_generation_behind` is read through `/api/v1/health`, and `api_unmapped_errors_total` stays 0 after the error table's run |
 | rule 4, profiling | T7.2–T7.6 | every in-process row runs under `nodetest`'s `Watch()`, which registers `internal/prof`'s `prof.Watch`, at its top level; a child-process row checks the child exited |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | all | each row asserts at the API, and runs only what no single middle epic can (§1.2) |
-| rule 6, known failures shrink ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | none | no suite this epic adds to keeps a `known.yaml` |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each row asserts at the API, and runs only what no single middle epic can (§1.2) |
+| rule 6, known failures shrink ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | none | no suite this epic adds to keeps a `known.yaml` |
 | rule 7, v2 ignores v1 | T7.1, T7.7 | the fixture reuses only what E1 kept beside v1; the pages are rewritten against RFC 23, not ported |
-| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T7.2, T7.3 | a crash is a process killed with `SIGKILL` over Badger on disk (D1); the audit's all-or-nothing runs on Badger with its commit faulted |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T7.1, T7.3 | E1's `decision:` markers on the kept `Server` and on `ErrNoServer` go with what they guarded; T7.1's store seeding until X3 and T7.3's error-table exceptions each carry a `decision:` |
-| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | each row is broken once on purpose before it lands and fails on its assertion |
+| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T7.2, T7.3 | a crash is a process killed with `SIGKILL` over Badger on disk (D1); the audit's all-or-nothing runs on Badger with its commit faulted |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T7.1, T7.3 | E1's `decision:` markers on the kept `Server` and on `ErrNoServer` go with what they guarded; T7.1's store seeding until X3 and T7.3's error-table exceptions each carry a `decision:` |
+| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each row is broken once on purpose before it lands and fails on its assertion |
 | rule 11, a symbol is exported only if RFC 23's interface uses it | T7.1 | the fixture's exports are the harness's own surface; nothing under `internal/node` gains one |
 | rule 12, each subtask creates only what it declares | all | no new package |
 

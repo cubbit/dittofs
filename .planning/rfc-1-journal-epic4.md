@@ -1,7 +1,7 @@
 # Epic 4: journal v2 placement index and versions
 
-**Sources:** [RFC 1](../rfcs/rfc-1-journal.md) §2, §3.2–§3.6, §3.10, §3.11, §4, §7.2, §7.3,
-§8.2, §9.2, §9.4 and §9.7; [RFC 28](../rfcs/rfc-28-journal-format.md) §3.1 for rebuild
+**Sources:** [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §2, §3.2–§3.6, §3.10, §3.11, §4, §7.2, §7.3,
+§8.2, §9.2, §9.4 and §9.7; [RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md) §3.1 for rebuild
 semantics only; [the plan](rfc-1-journal-plan.md) §1.5 and §5.
 **Owner:** track B, model and operations (@didimelli).
 **Estimate:** 12 subtasks.

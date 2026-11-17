@@ -1,10 +1,10 @@
 # RFC 14 open state: implementation plan (stage 1 of #3119)
 
 Stage 1 of wiring the RFC 16 store into the server (#3119, route B): the open-state service of
-[RFC 14](../rfcs/rfc-14-open-state.md), the one table per file, held at the file's primary, of
+[RFC 14](../docs/internals/rfcs/rfc-14-open-state.md), the one table per file, held at the file's primary, of
 who has the file open, who locked which bytes, what each client may cache, and what happens to
 all of it when a client, a server or a node goes away. Its only caller is the filesystem service
-of [RFC 17](../rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through that service.
+of [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) (stage 2); adapters reach it only through that service.
 
 **Status:** draft for review. Pieces 1 to 8 have merged into `feat/storage-v2`. Piece 1
 (#3256), the store's first PR (#3329), piece 2 (#3330) and the store's side (#3335, #3362 and
@@ -412,7 +412,7 @@ stage 2 (§13.1), and L9 is the engine's, in stage 3.
 in-memory store, with a virtual clock the cases advance and a sink (D5) that keeps what it was
 delivered and answers, under a fault wrapper that refuses or stays silent, to drive recalls to
 their deadlines
-([RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)). A case asserts on what was
+([RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)). A case asserts on what was
 delivered and on the table's state, never on which calls were made. Pieces 1–7 build the table with
 `rand.Reader`; piece 8 adds the rest of the fixture:
 - a seeded `Deps.Rand`;

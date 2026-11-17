@@ -1,6 +1,6 @@
 # Epic 7: identity v2 NETLOGON and the machine account
 
-**Sources:** [RFC 18](../rfcs/rfc-18-identity.md) §3.5's pass-through half, its machine account,
+**Sources:** [RFC 18](../docs/internals/rfcs/rfc-18-identity.md) §3.5's pass-through half, its machine account,
 online and offline joins, rotation and stored join state; §3.3's derived keytab (the computer
 account's names, the salt, the key version number, `sPNMappings`, the fallback across held derived
 keys, the `HandedOver` exception, the refused imported key); §3.4's decision on the offline join's
@@ -11,12 +11,12 @@ explicit domain controller as pass-through reads them; §9.2's machine-account s
 (the domain controller's count), "derived keytab", "online join", "offline join", "machine account
 health", "rogue domain controller" and "NETLOGON wire", and "Where the in-memory ones stand in" for
 the domain controller, as pull request #4058 merged them (83232b441);
-[RFC 23](../rfcs/rfc-23-control-plane.md) §3.5 (the domain join, its crash between the API's two
+[RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §3.5 (the domain join, its crash between the API's two
 writes, `resolve-principal`, `test-directory`) and §4.6 (operations);
-[RFC 16](../rfcs/rfc-16-metadata-store.md) §2.3 (`Installation`'s `MachinePassword` and `Join`,
-`Secret`'s `KeyVersion` and `HandedOver`, `Operation.Params`); [RFC 13](../rfcs/rfc-13-configuration.md)
+[RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §2.3 (`Installation`'s `MachinePassword` and `Join`,
+`Secret`'s `KeyVersion` and `HandedOver`, `Operation.Params`); [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md)
 §7 (the rotation's order, `Meta`, `Prune`, the revocation report) and Appendix B's
-`identity.netbios_name`; [RFC 25](../rfcs/rfc-25-observability.md) §3.9's two condition rows; MS-NRPC
+`identity.netbios_name`; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §3.9's two condition rows; MS-NRPC
 2.2.1.4.11, 3.1.4.1 and 3.4.5.2.6, and MS-APDS 3.1.5.2.1.
 **Track:** A.
 **Epic 7 estimate: 17 subtasks, 36.75 man-days.**
@@ -152,15 +152,15 @@ and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T7.3 to T7.7, T7.9 to T7.15 | Tier 1 rows run in `internal/identity` over the memory KV store, `identitytest`'s in-memory domain controller (kind 2, held by T7.3's suite) and directory (E6's), E5's test realm for tickets, and the injected clock (kind 1); faults come from T7.3's `FaultyDomainController` and `kvtest`'s wrapper (kind 3); NTLM messages from MS-NLMP's vectors through E4's helpers. T7.1, T7.2, T7.8 and T7.16 run in `integration/ad-dc` only; T7.17 is documentation |
-| rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T7.6 | `FuzzSamInfo4`, the NETLOGON reply decoder |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T7.3 to T7.7, T7.9 to T7.15 | Tier 1 rows run in `internal/identity` over the memory KV store, `identitytest`'s in-memory domain controller (kind 2, held by T7.3's suite) and directory (E6's), E5's test realm for tickets, and the injected clock (kind 1); faults come from T7.3's `FaultyDomainController` and `kvtest`'s wrapper (kind 3); NTLM messages from MS-NLMP's vectors through E4's helpers. T7.1, T7.2, T7.8 and T7.16 run in `integration/ad-dc` only; T7.17 is documentation |
+| rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T7.6 | `FuzzSamInfo4`, the NETLOGON reply decoder |
 | rule 3, observability follows RFC 25 | T7.10, T7.11, T7.12 | `identity_machine_key_version_mismatches_total`, `machine_account_unhealthy` and `machine_password_rotation_failed`; a pass-through's outcome through E4's logon event and series, its dropped SIDs through E5's counter; no label carries a name, a SID, an address or the controller's name |
 | rule 4, profiling | all with tests | every test under the leak check; the channel's goroutines and connections closed by `Stop` (T7.10); no allocation budget |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | all | each row asserted where its value is consumed: a derived key by a ticket verified through `SignIn`, a rotation by the channel set up and the ticket verified after it, a join by a pass-through signed in, a condition by `Conditions`, a prune by the version no longer resolvable |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each row asserted where its value is consumed: a derived key by a ticket verified through `SignIn`, a rotation by the channel set up and the ticket verified after it, a join by a pass-through signed in, a condition by `Conditions`, a prune by the version no longer resolvable |
 | rule 6, known failures shrink | none | no suite RFC 18 names keeps a `known.yaml`; nothing lands red |
 | rule 7, v2 ignores v1 | T7.6 | `internal/auth/netlogon` moved with `git mv` and rewritten: its Kerberos-signed named pipe, re-send after a mid-call error, missing-`LogonDomainID` acceptance, workstation-trust flag, `SecretStore`, providers, `RotationManager`, `Controller` and the three v1 tests in `integration/ad-dc` dropped; its LDAP join code moved into `internal/identity/directory` in the same change |
 | rule 8, real dependencies for properties of those dependencies | T7.7, T7.8, T7.16 | the suite against Samba, the wire rows through the fault wrapper only there, both joins and a rotation against Samba |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T7.5, T7.6, T7.9, T7.10, T7.11, T7.12, T7.13, T7.14, T7.15 | RFC 18's §3.3 decision (derived names) at the ring, §3.3's `ponytail:` (the hour) at the probe, §3.4's decision (the join's ceilings) at the offline join, §3.5's decision (alternate UPN suffix) at the pass-through row and its `ponytail:` (one domain) at the channel; this document's markers at their sites (§4) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T7.5, T7.6, T7.9, T7.10, T7.11, T7.12, T7.13, T7.14, T7.15 | RFC 18's §3.3 decision (derived names) at the ring, §3.3's `ponytail:` (the hour) at the probe, §3.4's decision (the join's ceilings) at the offline join, §3.5's decision (alternate UPN suffix) at the pass-through row and its `ponytail:` (one domain) at the channel; this document's markers at their sites (§4) |
 | rule 10, a test must be able to fail | all | each R row names a test that fails on its assertion when broken, or the test of another epic that holds it; R61 alone is held by review (§9) |
 | rule 11, a symbol is exported only if RFC 18's interfaces use it | T7.3, T7.4, T7.5, T7.9, T7.10, T7.12, T7.14 | `internal/identity` adds `Deps.DomainController`, `State.Machine`, `State.Join`, `HoldJoinCredential` and the step methods `internal/node` registers, typed by `internal/node/step` (D4); `pkg/identity` adds `JoinCredential`, which RFC 23's API names (D12); `internal/identity/netlogon` exports the seam `identitytest` implements and `NewDialer`, which E8 calls; `internal/identity/directory` the account functions `netlogon` calls; test accessors in `export_test.go` |
 | rule 12, each subtask creates only what it declares | all | `State.Machine` and `State.Join` with T7.9, `Deps.DomainController` with T7.10, their first readers; `JoinCredential` with T7.3's seam, its first user; each kind with its subtask; the wire fault wrapper with T7.8, its first user |

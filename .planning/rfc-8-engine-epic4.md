@@ -1,11 +1,11 @@
 # Epic 4: engine v2 commit, group commit and losses
 
-**Sources:** [RFC 8](../rfcs/rfc-8-engine.md) §4.1 (the write verifier), §5.1, §5.2, §11.3,
+**Sources:** [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §4.1 (the write verifier), §5.1, §5.2, §11.3,
 §12.1 (`Commit`, `LossSeq`, `WriteOpts.Done`), §13 (E15, E19, E24, E27, E31, E35, E40), §14
 (this epic's series and spans) and §15's rows for those sections;
-[RFC 1](../rfcs/rfc-1-journal.md) §3.8, §5.2 and §5.3, for the journal's sync, loss events
-and failed windows; [RFC 6](../rfcs/rfc-6-block-metadata.md) §3.3, §5.2 and §10.1, for
-overwrite records, the key budget `K` and `Existence`; [RFC 17](../rfcs/rfc-17-vfs.md) §5.6
+[RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §3.8, §5.2 and §5.3, for the journal's sync, loss events
+and failed windows; [RFC 6](../docs/internals/rfcs/rfc-6-block-metadata.md) §3.3, §5.2 and §10.1, for
+overwrite records, the key budget `K` and `Existence`; [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §5.6
 and §5.8, for `Done` and the verifier the service hands its clients.
 **Track:** B.
 **Package paths:** `feat/storage-v2`'s, after #3645 renamed `enginev2` to `engine` and
@@ -90,7 +90,7 @@ and `Durable`, the fixture's `FailNextSync` and `Stall`, and `newUnitOver`).
    that has landed, and E2's test components: above all the in-memory journal, which stands in
    for the journal wherever the logic under test is the engine's (the resolution table, the
    group commit's split, the refusal mapping). E1 declares no internal interface for it to
-   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
+   stand in for (rule 12). Every double is one of [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three
    kinds.
 2. **Fuzz tests: none.** The engine parses no bytes of its own: it reads the journal's
    answers and the store's records through typed calls. RFC 8 §15 checks its pure parts,
@@ -686,7 +686,7 @@ RFC gaps go to the RFC, not here; each is listed until its RFC change merges.
    It needs a `kvstore` call and an RFC 6 line; #3734 decides whether a **Lost** extent counts
    in `Charged`.
 6. **Planning gap: the metadata reconcile's raise of the loss sequence has no subtask.**
-   [RFC 8 §5.1](../rfcs/rfc-8-engine.md) raises a file's sequence "each time the metadata
+   [RFC 8 §5.1](../docs/internals/rfcs/rfc-8-engine.md) raises a file's sequence "each time the metadata
    reconcile finds content of the file superseded where only an overwrite record knew the
    newer bytes, whether `DropOlder` drops it or a snapshot hold keeps it retained". R27
    leaves that raise to epic 6, whose reconcile it belongs to. The journal-only engine plan

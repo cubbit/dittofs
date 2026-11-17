@@ -1,6 +1,6 @@
 # Epic 9a: journal v2 reclamation and tags
 
-**Sources:** [RFC 1](../rfcs/rfc-1-journal.md) §7.1 and §7.2 (whole), §7.3 (the copy's
+**Sources:** [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §7.1 and §7.2 (whole), §7.3 (the copy's
 accounting and the double retire, as far as this epic's two retirement paths meet), §3 (`Forget`,
 `Strand`, the context rules for both, and a file's tag released by a forget), §3.7 and §3.9 (the
 fields and counters of this area), §4.4 (the per-segment accounting), §5.1 (the rules on
@@ -9,7 +9,7 @@ what a capacity refusal is owed), §8.1 and §8.3–§8.7 (the parts on repack, 
 `Forget`), §9.2 and §9.4 (the rows on repack, retirement and forget), §3.1 (an ended segment held
 until its copies are proven), §6 (a deferred loss, written by the copy that retires its segment),
 and §10 questions 5 and 6 (the two rules `Repack` owes a capacity refusal);
-[RFC 28](../rfcs/rfc-28-journal-format.md) §2.2 (a failed segment's retirement, an unlink durable
+[RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md) §2.2 (a failed segment's retirement, an unlink durable
 before a removal record is dropped), §2.3 (no copy of a record that does not verify; the record
 kinds a copy keeps), §3.2 (which records decide an offloaded bit after recovery) and §3.3 (a
 segment holding unreadable records, copies with equal numbers, and "A read that fails is not a

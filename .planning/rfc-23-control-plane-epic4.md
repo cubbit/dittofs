@@ -1,12 +1,12 @@
 # Epic 4: control plane v2 — the management API
 
-**Sources:** [RFC 23](../rfcs/rfc-23-control-plane.md) §3.1 (the resources, the write-only secret
+**Sources:** [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §3.1 (the resources, the write-only secret
 among them), §3.2 (a share), §3.3 (stores and namespaces, without the deferred actions), §3.4
 (adapters, with amendment A1), §3.5 (users, groups, grants, netgroups and the domain's actions),
 §4.1–§4.4, §4.5 (the server side), §4.6 (reading and cancel), §4.7, §5.2 (the role table's shape),
 §5.3 (Transport), §6 (the write and the read), §7 (the client's transport and core), §9 (discovery
 and the client rules), §11 (the `api_` series), and §10's CP2, CP5, CP6, CP8, CP11, CP12 and CP16
-on the API's side; [RFC 13](../rfcs/rfc-13-configuration.md) §6 and §7 as a caller;
+on the API's side; [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §6 and §7 as a caller;
 [RFC 23's plan](rfc-23-control-plane-plan.md) D2, D5 and D14, and its amendment A8 to RFC 23 §2.3
 (the writing node's wait).
 **Track:** B.
@@ -119,15 +119,15 @@ and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | handler tests serve the production route table through `api.New` on a real listener on `127.0.0.1:0`, built by `internal/node/nodetest` over the in-memory KV, with `Deps.Authenticate` a function the test passes that returns a fixed caller, an input and not a double; the clock is `sim.TestClock`; the domain's success paths use the RFC 18 plan's in-memory directory and domain controller, held to their suites |
-| rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T4.1 | one target each for the strict request decoder, JSON merge patch and the listing cursor, the cursor's asserting the key it yields lies within its listing's range |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | handler tests serve the production route table through `api.New` on a real listener on `127.0.0.1:0`, built by `internal/node/nodetest` over the in-memory KV, with `Deps.Authenticate` a function the test passes that returns a fixed caller, an input and not a double; the clock is `sim.TestClock`; the domain's success paths use the RFC 18 plan's in-memory directory and domain controller, held to their suites |
+| rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T4.1 | one target each for the strict request decoder, JSON merge patch and the listing cursor, the cursor's asserting the key it yields lies within its listing's range |
 | rule 3, observability follows RFC 25 | T4.2, T4.4, T4.6 | RFC 23 §11's `api_` series but the two authentication ones, `audit_records_total` counted after `Write` returns, one span per call |
 | rule 4, profiling | all | `internal/node/api`'s `TestMain` runs the leak check over the package's tests, and every test that builds a node does so through the harness, which registers it too; no allocation budget |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | all | tests assert the answer a client reads and the records the store holds after it, never a handler's return value |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | tests assert the answer a client reads and the records the store holds after it, never a handler's return value |
 | rule 6, known failures shrink | none | no test lands red and no suite here keeps a `known.yaml` |
 | rule 7, v2 ignores v1 | none | v1's API was deleted at S1; nothing here reads it |
-| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T4.3, T4.4 | TLS on a real listener with a generated certificate; the all-or-nothing commit on Badger on disk with the commit faulted through `kvtest`'s `FaultKV` |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T4.2–T4.4, T4.6, T4.7, T4.9 | RFC 23's notes at their sites: §4.3's `ponytail:` at the call bound and its pre-write `decision:` at the step, §4.1's and §4.4's `decision:` at the route table and the precondition check, §3.2's at share create; D6's `decision:` at the cursor, D7's `ponytail:` at the parked polls, D11's `decision:` at a remote store's location, D22's at the writer's wait |
+| rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T4.3, T4.4 | TLS on a real listener with a generated certificate; the all-or-nothing commit on Badger on disk with the commit faulted through `kvtest`'s `FaultKV` |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.2–T4.4, T4.6, T4.7, T4.9 | RFC 23's notes at their sites: §4.3's `ponytail:` at the call bound and its pre-write `decision:` at the step, §4.1's and §4.4's `decision:` at the route table and the precondition check, §3.2's at share create; D6's `decision:` at the cursor, D7's `ponytail:` at the parked polls, D11's `decision:` at a remote store's location, D22's at the writer's wait |
 | rule 10, a test must be able to fail | all | each test names the requirement it breaks on; a row held by construction or by an E2 or E3 test names it |
 | rule 11, a symbol is exported only if RFC 23's interface uses it | all | `internal/node/api` exports `New` and `Deps` only; `internal/node/api/auth` gains `Caller` and `CallerFrom`, internal by rule 11; exported additions are `apiv1.Role`, each resource's wire types and `pkg/apiclient`'s client |
 | rule 12, each subtask creates only what it declares | all | each wire type lands with the route that serves it; `auth` lands with its first consumer, the adapters; the client with its first consumer, T4.8's tests |

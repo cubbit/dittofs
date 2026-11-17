@@ -1,6 +1,6 @@
 # RFC 13 — configuration v2: implementation plan
 
-**Scope.** [RFC 13, configuration](../rfcs/rfc-13-configuration.md), its lifecycle on one node:
+**Scope.** [RFC 13, configuration](../docs/internals/rfcs/rfc-13-configuration.md), its lifecycle on one node:
 - the host's bootstrap, its loading and the node's identity;
 - settings records, their scopes and the effective value across an override;
 - validation, done twice by one rule set, and the bound-setting refusal;
@@ -14,18 +14,18 @@ What each setting means, its default and its validator stay with the component t
 RFC 23's and RFC 18's plans consume it. Related RFCs, with how far each is in scope:
 
 - **Only the parts RFC 13 cannot work without:**
-  - [RFC 16](../rfcs/rfc-16-metadata-store.md): the `Setting` and `Secret` records, the settings
+  - [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md): the `Setting` and `Secret` records, the settings
     generation, the installation's active versions and a node's ranges (§2.3, §3,
     §4.6).
 - **Constraints only:**
-  - [RFC 23](../rfcs/rfc-23-control-plane.md) and its plan (#4050): the node, its reconcile, its
+  - [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) and its plan (#4050): the node, its reconcile, its
     node-status records, the API's settings routes and `dfs init` are that plan's, and call this
     one;
-  - [RFC 18](../rfcs/rfc-18-identity.md) and its plan: identity reads sealed NT hashes, keytabs and
+  - [RFC 18](../docs/internals/rfcs/rfc-18-identity.md) and its plan: identity reads sealed NT hashes, keytabs and
     the machine password, and declares the `identity.*` section;
-  - [RFC 20](../rfcs/rfc-20-adapters.md): `pkg/adapter/settings` is the template every section
+  - [RFC 20](../docs/internals/rfcs/rfc-20-adapters.md): `pkg/adapter/settings` is the template every section
     follows;
-  - [RFC 25](../rfcs/rfc-25-observability.md): RFC 13 §8's series.
+  - [RFC 25](../docs/internals/rfcs/rfc-25-observability.md): RFC 13 §8's series.
 - **Out:**
   - the provisioning file (RFC 13 §2.4) and the backup location's record (RFC 13 §2.5, with
     RFC 26);

@@ -1,13 +1,13 @@
 # Epic 7a: journal v2 recovery and identity, reopening a journal
 
-**Sources:** [RFC 28](../rfcs/rfc-28-journal-format.md) §2.1 (what open reads of the `format`
+**Sources:** [RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md) §2.1 (what open reads of the `format`
 file and the directory), §2.2 (the `.spare.tmp` an open unlinks, the fresh id above every id the
 directory names, a recycled segment's old life and a failed append's slot as an open finds them),
 §2.3 (the kinds and coverage rules a rebuild reads), §2.4 and §2.5 (reading a catalog), §3.1,
 §3.3 (torn and corrupt records, the seal marker proven on the device, the scope of the refusal,
 the sync marks, which ranges name no record, and a read that fails, as far as an open meets
 them), §3.4 (the open's half), §4.2 and §4.4 (the rows that reopen a journal);
-[RFC 1](../rfcs/rfc-1-journal.md) §3 (`Open`, its `floor`, `expect` and `marks`, `SyncMark`,
+[RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §3 (`Open`, its `floor`, `expect` and `marks`, `SyncMark`,
 `*UnreadableRangesError`, the context rule for `Open`, a file's tag rebuilt from its records,
 forget records applied at recovery), §3.7 (`Recovery`, `RejectedSegments`, `DamagedSegments`,
 `SyncMarks`, `TagConflicts`, `Shares`, `Files` and `DirtyFiles` rebuilt), §3.8 (loss records at

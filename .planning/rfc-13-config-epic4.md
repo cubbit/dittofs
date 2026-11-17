@@ -1,11 +1,11 @@
 # Epic 4: configuration v2, secrets
 
-**Sources:** [RFC 13](../rfcs/rfc-13-configuration.md) §7 ("Secrets", but its material bullets,
+**Sources:** [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §7 ("Secrets", but its material bullets,
 which are RFC 5's, and the wrapping key's reseal pass), §2.2's wrapping-key row, §5's settings
 generation as a `Secret` write raises it, and §9's rows "§7 role keys" and "§7 user secrets";
-[RFC 16](../rfcs/rfc-16-metadata-store.md) §2.3's `Secret` and `SecretOwner`, §3's `Secret`,
+[RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §2.3's `Secret` and `SecretOwner`, §3's `Secret`,
 `PutSecret` and `PruneSecret`, `DeleteUser`'s last transaction, and §4.2's `SEC‖id‖version` and
-`CFGGEN` rows; [RFC 23](../rfcs/rfc-23-control-plane.md) §2.4's secret versions in a node's status
+`CFGGEN` rows; [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §2.4's secret versions in a node's status
 and §5.2's "a secret is written as its owner is", for the owner a seal records.
 **Track:** C.
 **Epic 4 estimate: 8 subtasks, 12 man-days.**
@@ -99,15 +99,15 @@ title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | all | on RFC 16's in-memory KV suite and on Badger under `t.TempDir()`, `keyprovider`'s local provider over two real key files, one per role, and `kvtest`'s `FaultKV`. No test double of `pkg/secrets` or of the view |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | on RFC 16's in-memory KV suite and on Badger under `t.TempDir()`, `keyprovider`'s local provider over two real key files, one per role, and `kvtest`'s `FaultKV`. No test double of `pkg/secrets` or of the view |
 | rule 2, fuzz every decoder of untrusted bytes | T4.1, T4.2 | the `Secret` record's codec (T4.1) and the envelope's parser (T4.2), each round-tripping what it accepts and never panicking on what it refuses |
 | rule 3, observability follows RFC 25 | none | `config_secrets_behind` counts versions a node holds, which only E5's reconcile knows (D6). No label would carry a secret: no series here |
 | rule 4, profiling | all | every test under `internal/prof`'s leak check; the benchmark of T4.8 reports allocations |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T4.3 to T4.6 | a seal is proven by opening it, and failing under the other role's key; a prune by `Secret` returning `ErrNotFound`; a user's deletion by reading the store's raw keys |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T4.3 to T4.6 | a seal is proven by opening it, and failing under the other role's key; a prune by `Secret` returning `ErrNotFound`; a user's deletion by reading the store's raw keys |
 | rule 6, known failures shrink | none | no suite with a `known.yaml` is touched |
 | rule 7, v2 ignores v1 | none | v1 holds no `Secret`; `keyprovider` is used as E1 moved it |
 | rule 8, real dependencies for properties of those dependencies | T4.3, T4.4, T4.6 | sealing on real key files; the commit that fails after a seal, and the user deletion's restart, on Badger under `t.TempDir()` |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T4.3 to T4.5, T4.7 | RFC 13's plan's D9 `decision:` note at `Seal`'s refusal; D5's at `PruneSecret`; `ponytail:` markers for `Resolve`'s missing cache, the missing reseal pass and the one passphrase variable (at `Resolve`, at `Provider` and at `New`), and for `Prune` on one node (at its floor) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.3 to T4.5, T4.7 | RFC 13's plan's D9 `decision:` note at `Seal`'s refusal; D5's at `PruneSecret`; `ponytail:` markers for `Resolve`'s missing cache, the missing reseal pass and the one passphrase variable (at `Resolve`, at `Provider` and at `New`), and for `Prune` on one node (at its floor) |
 | rule 10, a test must be able to fail | all | each test names the bug it catches in §6 |
 | rule 11, a symbol is exported only if RFC 13's interfaces use it | T4.5 | nothing in `pkg/secrets` is added to E1's frozen set. kvstore's `ControlPlane` gains `NodeStatuses` (D4), the one read `Prune` needs |
 | rule 12, each subtask creates only what it declares | all | the envelope lands with `Seal`'s first caller in the next subtask, and no helper lands before its test |

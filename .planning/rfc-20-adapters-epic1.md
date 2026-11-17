@@ -1,11 +1,11 @@
 # Epic 1: adapters v2 delete v1, fix the surface
 
-**Sources:** [RFC 20](../rfcs/rfc-20-adapters.md) §2.3 and §2.5 (layout, `pkg/` and
+**Sources:** [RFC 20](../docs/internals/rfcs/rfc-20-adapters.md) §2.3 and §2.5 (layout, `pkg/` and
 `internal/`), §3.4, §3.5's `Sidecar` and `Serving`, §3.6's settings, §3.7's `Deps.Watch`,
 §4.2's and §4.3's type rows, §4.7's types, §6.8's `Buf` surface, Appendix B (what is deleted);
-[RFC 24](../rfcs/rfc-24-resources.md) §2.5, §2.7, §2.8 and §3.1's surface;
-[RFC 13](../rfcs/rfc-13-configuration.md) §4.2, §6 and Appendix B's adapter rows;
-[RFC 17](../rfcs/rfc-17-vfs.md) §9's decision to delete rather than migrate.
+[RFC 24](../docs/internals/rfcs/rfc-24-resources.md) §2.5, §2.7, §2.8 and §3.1's surface;
+[RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §4.2, §6 and Appendix B's adapter rows;
+[RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §9's decision to delete rather than migrate.
 **Track:** the team.
 **Epic 1 estimate: 9 subtasks, 15.5 man-days.**
 **Depends on:** nothing in this programme: `pkg/vfs` and `vfstest.Null` exist on
@@ -90,7 +90,7 @@ two `New`); `pkg/resources`' signatures; `core`'s §4.7 surface with stub bodies
 1. **Independent unit tests, under `-race`.** Each epic carries its own unit tests. It may use
    another epic's implementation once that has landed, `vfstest.Memory` and `vfstest.Faults`, and
    E2's `testproto` and leak checks. Every double is one of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds. `core` is tested from `package core_test` on `testproto` and
+   [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds. `core` is tested from `package core_test` on `testproto` and
    never through NFS or SMB; no `core` test imports a protocol package. Connections are real TCP
    over loopback, with real deadlines and socket options read back from the socket. Test at the
    layer that consumes a value (`CLAUDE.md`, "Verifying a change"): a setting is asserted on a

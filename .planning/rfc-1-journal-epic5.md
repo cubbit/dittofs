@@ -1,9 +1,9 @@
 # Epic 5: journal v2 segments, streams and accounting
 
-**Sources:** [RFC 28](../rfcs/rfc-28-journal-format.md) §2.2, §2.3 (the header's synced-through field), §2.4 and §2.5
-(the writing side), §3.1 (idle seal) and Appendix A (allocation); [RFC 1](../rfcs/rfc-1-journal.md) §3.7, §3.9, §5.1,
+**Sources:** [RFC 28](../docs/internals/rfcs/rfc-28-journal-format.md) §2.2, §2.3 (the header's synced-through field), §2.4 and §2.5
+(the writing side), §3.1 (idle seal) and Appendix A (allocation); [RFC 1](../docs/internals/rfcs/rfc-1-journal.md) §3.7, §3.9, §5.1,
 §5.3, §6 (allocation, spares, refusals), §7.1, §7.3, §7.4 and §8.2–§8.7; the descriptor and
-stream settings of [RFC 13](../rfcs/rfc-13-configuration.md) Appendix B.
+stream settings of [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) Appendix B.
 **Track:** A.
 **Epic 5 estimate: 11 subtasks, 34.75 man-days.**
 **Depends on:** sync point **S2, red suite in CI**; epic 1's `core` types and settings, and its
@@ -109,7 +109,7 @@ durability policy (epic 6), no recovery (epic 7) and no index (epic 4).
    epic's pure in-memory implementation (E4's index, E3's codecs), the implementation of
    an epic it depends on once that has landed (E8 on E5's segments and E6's `Sync`), and the test components from epic 2. Epic 1 declares no internal interface
    to fake (rule 12). Every double is one of
-   [RFC 29 §4.11](../rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
+   [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)'s three kinds.
 2. **Fuzz tests where relevant.** Use Go native fuzzing (`testing.F`) on every parser of
    bytes the journal did not just write: records, segment headers, seal markers, catalogs,
    trailers, the `format` file. Also fuzz-drive operation sequences against the reference

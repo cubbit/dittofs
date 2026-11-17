@@ -1,9 +1,9 @@
 # Epic 1: configuration v2, the configuration surface
 
-**Sources:** [RFC 13](../rfcs/rfc-13-configuration.md) §2.2 ("A host holds only its bootstrap",
+**Sources:** [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §2.2 ("A host holds only its bootstrap",
 but its scratch paths), §5's classes, §6's refusal as a user reads it, §7's provider and Appendix
 B's value conventions, as declarations and as the user surface; [RFC
-16](../rfcs/rfc-16-metadata-store.md) §2.3's `Setting`, `Secret` and `SecretOwner` and §3's settings
+16](../docs/internals/rfcs/rfc-16-metadata-store.md) §2.3's `Setting`, `Secret` and `SecretOwner` and §3's settings
 and secrets methods, as signatures.
 **Track:** the team.
 **Epic 1 estimate: 7 subtasks, 8.75 man-days.**
@@ -92,15 +92,15 @@ title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../../../CLAUDE.md#writing-tests)) | T1.2 to T1.7 | each test runs on real values: the RFC's own appendices parsed from `docs/internals/rfcs/`, real `slog` and `fmt` output, the package's exported set read by `go/types`. No test double, and no internal interface for one to stand in for |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T1.2 to T1.7 | each test runs on real values: the RFC's own appendices parsed from `docs/internals/rfcs/`, real `slog` and `fmt` output, the package's exported set read by `go/types`. No test double, and no internal interface for one to stand in for |
 | rule 2, fuzz every decoder of untrusted bytes | none | this epic adds no decoder: the bootstrap file's, the `node-id` file's and a setting value's fuzz targets are E2's and E3's, the `Secret` codec's and the envelope's E4's |
 | rule 3, observability follows RFC 25 | none | no series: the stubs serve nothing. Each of RFC 13 §8's series is its owning epic's |
 | rule 4, profiling | none | no test here starts a goroutine or opens a store, so the leak check has nothing to find |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T1.3, T1.4, T1.7 | the bootstrap key test reads the keys a user writes, not the Go fields; the redaction test reads what a log line and `%v` print; the export pins read the packages as an importer sees them |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T1.3, T1.4, T1.7 | the bootstrap key test reads the keys a user writes, not the Go fields; the redaction test reads what a log line and `%v` print; the export pins read the packages as an importer sees them |
 | rule 6, known failures shrink | none | no test lands red, and no suite with a `known.yaml` is touched |
 | rule 7, v2 ignores v1 | T1.2, T1.3 | `pkg/config`'s loader and path search are kept and renamed; the only lines `Load`'s body changes are the wiring of a decode hook for `node.id` and the `DITTOFS_JOURNALS` form into its `Unmarshal`, composed with hooks equal to viper's own (today `Load` has no decode hook; E2 replaces the whole decoder with one strict value codec), and `Load`'s `environ` argument, whose body ignores it until E2; `keyprovider` moves unchanged (D3) |
 | rule 8, real dependencies for properties of those dependencies | none | no property of a store, a key file or a journal directory is tested here; E2 and E4 test them on real ones |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T1.4, T1.6 | RFC 13 §7's `decision:` note (two wrapping keys) at `secrets.Role`, the site that declares the two roles; RFC 13's plan's D9 `decision:` note at `secrets.ErrUnproven` and `settings.ErrUnproven`; RFC 13's plan's D11 note is E3's, at `Check`'s body, and T1.6's own note on a secret's rotation sits at `Check`'s declaration |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T1.4, T1.6 | RFC 13 §7's `decision:` note (two wrapping keys) at `secrets.Role`, the site that declares the two roles; RFC 13's plan's D9 `decision:` note at `secrets.ErrUnproven` and `settings.ErrUnproven`; RFC 13's plan's D11 note is E3's, at `Check`'s body, and T1.6's own note on a secret's rotation sits at `Check`'s declaration |
 | rule 10, a test must be able to fail | T1.2 to T1.7 | each test fails on a planted break: a bootstrap key missing from RFC 13's table, a role swapped in the kind table, a `Value` printed by `%v`, an extra export, a symbol with no caller listed |
 | rule 11, a symbol is exported only if RFC 13's interfaces use it, or a component declares through it | T1.3 to T1.7 | the surface frozen here is R5 to R18; T1.7 pins each package's exports and lists each symbol's first caller, `ObserveLag` (E3's D5, first caller E5's reconcile) the one export added after the freeze |
 | rule 12, each subtask creates only what it declares | all | each package lands with the subtask that declares its whole surface; a stub is declared only where T1.7 names its caller in a later epic or plan (D4); no test helper lands without the test that uses it |
