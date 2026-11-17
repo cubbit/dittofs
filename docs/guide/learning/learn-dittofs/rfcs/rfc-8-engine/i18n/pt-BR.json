@@ -1,0 +1,563 @@
+{
+  "title": "RFC 8 — o engine",
+  "cover": {
+    "kicker": "Aprenda DittoFS · RFC 8",
+    "title": "O [[engine|engine]]",
+    "lead": "O engine é um coordenador que não guarda bytes próprios. Para cada share de um nó, ele decide quando o conteúdo novo é confirmado, quando é enviado, quando a cópia local é removida e quando ele é baixado de volta.",
+    "built": "Baseado no RFC 8, commit {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-8-engine.md, commit {commit}. O RFC especifica um comportamento, não o código atual: o engine que ela descreve é construído do zero, ao lado do de hoje, que ele substitui em vez de corrigir. Uma escolha marcada como proposal não está decidida: ela nomeia a medição que a derrubaria. As linhas marcadas (cluster) não estão na primeira versão e ficam de fora aqui. Teclas: → avançar, S notas do apresentador. Clique em qualquer termo sublinhado para ver a definição."
+  },
+  "intro": {
+    "twoTitle": "O RFC 8 em duas frases",
+    "two": "O [[engine]] coordena o conteúdo dos arquivos em um [[node|nó]]. Ele não guarda bytes nem registra fatos próprios, mas chama o [[journal]], o [[carver]], o [[syncer]] e o [[metadata-store]] na ordem certa: confirma uma escrita assim que o journal a guarda, envia o conteúdo depois, faz o [[evict]] só do que já foi enviado com segurança e, numa leitura, consulta o journal antes do metadata store. Um único engine atende todas as [[share|shares]] do nó e, depois de um crash, reconstrói a sua lista de tarefas a partir do journal e do metadata store: perde tempo, mas não conteúdo.",
+    "twoNotes": "De 'Start here · In plain words', 'What this is' e 'In short'. A §1 resume tudo em uma pergunta que nenhum componente responde sozinho: dado o que os dois oráculos dizem, o que acontece agora?",
+    "knownLead": "Do glossário do RFC 0 e dos RFCs em que este se apoia (1, 2, 3, 4, 6, 16). Clique em um para ver a definição.",
+    "knownNotes": "Cada definição reformula a linha do glossário do RFC 0, que é a definição oficial.",
+    "newNotes": "De 'Start here · The words you need' (stability point, residency, policy component, storage binding) e das seções que especificam o resto: group commit §5.2, work queue §6.1, offload pipeline §6.3, offload guard §6.4, put intent e block name §6.6, speculator §7.4, pacing §10.2.1, self-fence §11.2. Existence, residency, stability point, put intent e block name são linhas do glossário do RFC 0; o RFC 8 é onde eles são postos em prática. O glossário final acrescenta a loss generation.",
+    "clashNotes": "Release: RFC 8 §8 (o release de um arquivo é o Delete do engine, nunca o Release do journal). Stability point: o Commit do engine, contra 'commit' no sentido de transação de metadados (§5.1, §6.3). Offload guard: a linha 'guard' do glossário do RFC 0 (RFC 16 §4.1). Namespace: a linha do RFC 0, contra o RFC 7. Offload e sync: a tabela de verbos e o glossário do RFC 0."
+  },
+  "chef": {
+    "title": "Um chef que não cozinha nada",
+    "analogyTitle": "Analogia",
+    "analogy": "Como um chef de cozinha, o [[engine]] não cozinha nada pessoalmente: ele passa cada pedido para a estação certa, na ordem certa. As estações são o [[journal]], que guarda as escritas recentes, o bucket, que guarda o que foi enviado, e o [[metadata-store]], que registra qual conteúdo está onde.",
+    "stopsTitle": "Onde a analogia para de valer",
+    "stops": "Um chef que esquecesse todos os pedidos estragaria a noite; já a memória do engine pode se perder sem dano. Depois de um crash, ele reconstrói toda a lista de tarefas a partir do journal e do metadata store. Isso custa tempo, nunca conteúdo, porque ele não guardava nada de seu.",
+    "oracles": "Existem duas fontes de verdade, e nenhuma sabe responder à pergunta da outra. O journal sabe qual conteúdo este nó guarda no próprio disco. O metadata store sabe qual conteúdo existe e onde ele está. O engine é o único lugar onde as duas respostas são juntadas.",
+    "notes": "A analogia e o seu limite são do próprio RFC ('Start here · In plain words'). Os dois oráculos: §1, a partir do RFC 0 §4.1. 'Uma leitura tem duas respostas para juntar. Um offload tem um carver, um assembler, um syncer e um commit de metadados para pôr em sequência. Um journal cheio precisa ouvir o que remover. Uma escrita tem passos de três componentes diferentes.'"
+  },
+  "example": {
+    "kicker": "O exemplo condutor"
+  },
+  "journey": {
+    "title": "Os 64 KiB do alice-pc, da escrita à leitura",
+    "notes": "'Start here · The problem, with one example', passos 1–5: instalação de nó único N1, journal em NVMe, bucket dfs-data, share profiles, arquivo profiles/alice/ODFC_alice.vhdx via SMB. Passo 2: a sobrescrita espera o próximo commit de existência, uma transação compartilhada com todos os outros arquivos daquele journal; o flush de um arquivo ainda sem conteúdo commitado, só com appends e preenchimentos de buracos, é respondido depois do sync; aquele cujo extent cobre conteúdo commitado também espera que os seus sync marks sejam registrados (§5.1). B1 é o rótulo do deck para o bloco. Conteúdo commitado: abaixo do tamanho commitado e fora dos buracos commitados (§5.1)."
+  },
+  "promises": {
+    "items": [
+      "Uma escrita é confirmada quando o [[journal]] a guarda, e um flush quando o journal faz o [[sync]]. O flush de uma sobrescrita também espera o commit da sua [[existence|existência]]. Nada espera o S3.",
+      "Um extent só pode ser removido depois que o commit que nomeia o seu [[block|bloco]] se completa. Se o upload falha, o extent continua [[dirty]] e o upload é tentado de novo.",
+      "Uma leitura só devolve zeros para um [[hole|buraco]] de verdade. Conteúdo que deveria existir mas não é encontrado faz a leitura falhar como [[lost]], e um S3 inacessível a faz falhar com outro erro, transitório.",
+      "O [[engine]] não grava nada de forma durável. Depois de um crash, reconstrói a fila a partir do journal e do metadata store e reoferece o que ainda não estava offloaded.",
+      "Uma [[share]] não consegue travar outra. O trabalho em segundo plano é dividido de forma justa por journal, e uma requisição a um arquivo nunca espera um lock que outro arquivo segura durante um I/O lento."
+    ],
+    "footer": "E nenhum byte de um [[chunk]] chega ao cliente antes que o chunk inteiro tenha sido conferido com o seu hash.",
+    "notes": "'Start here · What this RFC promises', que cita §4.1, §5.1, §6.8, §7.1, §7.2, §7.5, §2.5, §3.3 e §1.1. Um upload que falha é tentado de novo enquanto este nó servir o shard (§6, O2). Os quatro pontos compartilhados vêm dois slides adiante (§1.1). O último item é o resultado da regra da §1.1: o engine MUST NOT segurar um lock ou uma fila compartilhados por mais de um arquivo durante um I/O ou uma espera no caminho das requisições; as exceções limitadas estão no slide da biblioteca."
+  },
+  "order": {
+    "title": "Perguntar primeiro ao [[journal|journal]]",
+    "notes": "§7.1 'Why the journal first' e o seu exemplo; 'Start here', o parágrafo depois do passo 5. Quem decide é a terceira razão: o journal libera um extent só depois que o seu offloaded bit está marcado, e o bit só depois do commit do offload (§10.1, §6.8). Então, se no passo 1 o journal não tem um extent, o que o tornou offloaded já tinha sido commitado, e o passo 2 enxerga isso. As duas primeiras razões: o journal tem os bytes mais novos, e a maioria das leituras termina nele."
+  },
+  "design": {
+    "kicker": "O projeto"
+  },
+  "library": {
+    "title": "Nenhum ponto único de falha, nenhum gargalo",
+    "items": [
+      "**Uma biblioteca, não um serviço.** Cada nó roda o próprio [[engine]] no seu processo e o chama como uma função, então não existe servidor de engine que possa cair.",
+      "**Nenhuma cópia dos bytes.** Os bytes vão do [[journal]] ao [[carver]] e dele ao [[syncer]]. O engine põe essas chamadas em ordem, sem guardar cópia do que passa por elas.",
+      "**Só quatro pontos compartilhados, todos limitados.** Requisições de arquivos diferentes só se encontram no fluxo de append do journal e no seu [[sync]], no seu [[group-commit|group commit]], que só o flush de uma sobrescrita espera, e em contadores sem lock: um reserva espaço no journal para cada escrita, os outros dizem quando aumentar o [[version-limit|version limit]].",
+      "**O [[takeover|takeover]] não é tarefa dele.** O engine mantém o estado em memória, de propósito. Quando um nó morre, outro nó assume os [[shard|shards]] dele, e o engine desse nó começa correto do zero."
+    ],
+    "footer": "O engine guarda as shares que atende numa única tabela, que copia inteira, até 10⁴ entradas, cada vez que uma share é adicionada ou removida. Em troca, toda requisição pode lê-la sem pegar lock.",
+    "notes": "As quatro regras da §1.1. Regra 3: o engine MUST NOT manter um lock, uma fila ou outro ponto de serialização compartilhado por mais de um arquivo, ou de uma share, durante I/O ou uma espera no caminho de uma escrita, leitura ou commit. As quatro exceções: o append stream do journal e o seu sync (RFC 1 §5); o commit de existência em grupo, limitado a G arquivos e dividido em conflitos (§5.1, §5.2); a reserva de capacidade, um contador atômico sem lock (RFC 1 §6); e os contadores por journal do gatilho do version limit, atômicos sem lock (§2.7). E37. Failover é do RFC 10 e do RFC 11 (cluster). A tabela de shares é copy-on-write (decisão em §1.1, revista se as mudanças de shares chegarem a várias por segundo). O slide diz takeover e não failover, que não é termo do RFC: um nó assumir os shards de um nó morto é assunto dos RFC 10 e RFC 11 (cluster). A tabela de shares é a tabela de storage bindings do engine (§2.3), copy-on-write (§1.1). Fluxo de append e sync: RFC 1 §5; o contador de capacidade: a reserva de capacidade, um contador atômico pego sem lock (RFC 1 §6)."
+  },
+  "binding": {
+    "title": "Um engine por nó, um [[storage-binding|binding]] por share",
+    "localTitle": "Lado local",
+    "local": "Uma share não tem [[journal]] próprio: o journal de cada dispositivo guarda os registros de todas as shares que o usam. O binding mantém o handle da share em cada journal, e o handle carimba o [[share-tag|tag]] da share em todo registro que grava.",
+    "remoteTitle": "Lado remoto",
+    "remote": "O binding guarda o caminho da share pelo [[syncer]] até o seu [[remote-block-store]], e o [[namespace]] sob o qual os blocos que ela envia recebem nome.",
+    "rulesTitle": "As regras",
+    "rules": "O binding também mantém as configurações da share, o estado de política, a saúde para uploads e downloads, e os orçamentos, a fatia dela de espaço no journal, de transferências e de pacing. Ele registra também o estado da share, como em serviço ou sendo removida.",
+    "items": [
+      "O trabalho em segundo plano roda por journal, não por share. Um nó que atende 10⁴ shares roda um único conjunto de loops em segundo plano por dispositivo, não 10⁴.",
+      "As shares ficam isoladas pelos orçamentos e por um escalonamento justo, não por engines separados. Adicionar ou remover uma share muda um binding e nunca reinicia o engine.",
+      "Toda [[share]] tem um remote block store: um nó se recusa a adicionar uma share cuja configuração não indica nenhum. Não existe share só local, nem caminho no código para ela."
+    ],
+    "notes": "§2.3 One engine per node; a share is a storage binding (o binding é copiado do registro da share no Bind, nunca gravado, e reconstruído pelo Start; é necessário mesmo em um nó único com uma só share — não é um mecanismo de escala). §2.1: a raiz MUST recusar adicionar uma share cuja configuração não nomeia nenhum remote block store, com um erro que nomeia a share (E5). A marca decision da §2.3: um record do journal leva só a tag da share, nunca o store, o namespace ou a credencial dela. Orçamentos: 'its share of journal capacity, transfers and pacing' (§2.3). O slide nomeia dois estados; a lista completa é adding, serving, quiesced, closing ou removing (RFC 16 §2.3.2), ou fenced, um estado só do binding para um namespace cujo claim diz que o nó partiu de uma imagem copiada: só leituras, escritas ErrNoSpace (§11.2, ShareState da §12.1)."
+  },
+  "policy": {
+    "title": "A política decide, os mecanismos executam",
+    "table": [
+      [
+        "Decisão",
+        "Quem decide",
+        "Quem executa"
+      ],
+      [
+        "Quando fazer offload de um arquivo",
+        "`offloadDue`",
+        "o [[offload-pipeline|offload pipeline]], via `Offload` do journal"
+      ],
+      [
+        "O que remover, e quando",
+        "`evict`",
+        "`Release` do [[journal]]"
+      ],
+      [
+        "Quando fazer repack",
+        "`repackDue`",
+        "`Repack` do journal"
+      ],
+      [
+        "Se fazer fill após uma leitura",
+        "`fill`",
+        "`Fill` do journal"
+      ],
+      [
+        "Se continuar aceitando escritas",
+        "`admit`",
+        "o [[journal]], que reserva espaço para a escrita ou a recusa"
+      ],
+      [
+        "Como responder a uma recusa",
+        "a tabela de recusas, em `capacity.go`",
+        "`Repack`, `Release` e `Sync` do journal"
+      ],
+      [
+        "O que ler antes ou fazer pre-warm",
+        "o [[speculator]]",
+        "o fetcher do [[syncer]]"
+      ]
+    ],
+    "footer": "As cinco [[policy-component|funções de política]], nas cinco primeiras linhas, são puras: não fazem I/O nem guardam referência a componentes, e cada uma é testada sozinha. Nunca são fundidas num único avaliador, e nenhuma chama outra.",
+    "notes": "A tabela da §3.1, resumida: ela também lista o block assembler (um fold, não uma política), o uploader (sem decisão) e a saúde. Os três módulos — work queue, offload pipeline, speculator — MAY manter estado em memória e chamar mecanismos, MUST NOT gravar nada, e MUST ser testáveis com cada componente trocado por uma implementação em memória verificada da interface inteira (RFC 29 §4.11). 'Um limiar que mora na configuração de um componente é política do engine absorvida por esse componente.' As cinco funções de política são offloadDue, evict, repackDue, fill e admit da §3.1; o speculator é um dos três módulos da §3.1 ('Policy decides; modules act'). admit é executada pela capacidade do journal: WriteAt reserva os bytes do registro antes de aceitá-los, ou é recusada (RFC 1 §6). A linha de recusas é da §3.1: o caminho de recusa em capacity.go responde a uma recusa que o journal devolveu, via Repack, Release e Sync do journal (§10.2). admit age só antes da chamada ao journal e nunca recebe uma recusa (§3.1, §10.2), e a tabela de recusas não é uma das cinco funções. Cada função de política é testada sozinha contra uma tabela de casos (§3.1)."
+  },
+  "safe": {
+    "title": "A política nunca torna uma ação segura",
+    "mechTitle": "Seguros por si mesmos",
+    "mech": [
+      "`Release` recusa um extent cujo [[offloaded-bit]] não está ligado.",
+      "`Fill` se recusa a escrever por cima de bytes que o journal já guarda.",
+      "Um offloaded bit só é ligado quando os bytes estão no bucket: por um [[report]] do offload depois do commit, por um [[fill]] ou por `MarkOffloaded` depois de um reinício."
+    ],
+    "testTitle": "O teste",
+    "test": "Desligue todos os controles de política: eviction o mais agressiva possível, fill de tudo, offload o tempo todo. Todos os testes de conteúdo perdido ou errado continuam passando.",
+    "memory": "O estado da política — padrões de acesso, idade dos dados dirty, backoff, fronteiras de read-ahead, a fila, a saúde — fica só em memória. Um reinício pode perder tudo isso, e o [[engine]] funciona corretamente mesmo partindo do zero.",
+    "capabilities": "Cada capability de que o engine precisa de outro componente, como enviar ao bucket ou procurar um chunk nos metadados, é passada quando o engine é construído. Ela nunca é deduzida em tempo de execução pelo que um componente por acaso suporta. Se faltar uma, o build ou a construção falha e diz qual é, em vez de produzir uma share que funciona errado sem avisar.",
+    "notes": "§3.2 (as verificações do grupo A, primeira linha da §15.1; E3), §3.3, §2.2 e §2.1 (uma capacidade ausente MUST fazer o build ou a construção falhar com um erro que a nomeia; E2). Os exemplos da §2.2: uma assertion que falha no remote tier desligaria o offload, em uma cadeia de transformações enviaria em texto claro, em um lookup tornaria linear toda leitura fria — cada um com uma share funcionando e nenhum erro. Os exemplos de capability no slide são os da §2.2: uma assertion que falha no remote tier ou num lookup. A §3.2 diz que o bit só é ligado por um report de offload; o glossário do RFC 0 e o RFC 1 §2 acrescentam o fill, e o reseed do passo 7 da §2.5 o liga com MarkOffloaded (RFC 28 §3.2) em todo extent guardado que um ref commitado cobre. O slide segue esses. §3.3: o estado da política MUST ficar em memória, e um reinício MAY perder tudo isso."
+  },
+  "write": {
+    "kicker": "Escrita e flush",
+    "title": "Uma escrita vai para stage e é confirmada, e só",
+    "steps": [
+      "**Amostrar.** O engine lê as entradas do [[write-verifier|write verifier]] antes de gravar qualquer coisa.",
+      "**Admitir.** A política `admit` aceita a escrita, atrasa-a para frear quem escreve, ou a recusa.",
+      "**Gravar.** O [[journal]] guarda os bytes e dá à escrita a sua [[content-version|versão]], um número que ordena as mudanças do arquivo, maior para a mais recente.",
+      "**Publicar.** O engine publica um evento `Dirty` na [[work-queue|work queue]] do journal, para que o arquivo passe por offload depois. Publicar nunca bloqueia.",
+      "**Confirmar.** O engine responde à escrita e devolve o verifier."
+    ],
+    "exampleTitle": "Exemplo",
+    "example": "O arquivo `f` está vazio. Um cliente escreve 4 KiB no offset 1 MiB, e o journal grava a escrita como versão 7. Um `GETATTR` logo em seguida já informa um tamanho de 1 MiB + 4 KiB, porque as mudanças pendentes no journal são aplicadas sobre o registro do arquivo. No metadata store, nada mudou ainda.",
+    "rule": "Uma escrita nunca espera uma transação de metadados, um [[offload]] ou o [[remote-tier]]. Ela só espera a admissão e o journal.",
+    "notes": "§4.1: regras, passos e exemplo. Só o filesystem service chama Write, depois de autorizá-la e checar open state e cota (RFC 17 §5.1); um adapter MUST NOT executar os passos dela. Até o próximo stability point, a autoridade sobre a escrita é o journal: Read e Allocation aplicam as operações não commitadas dele, Overlay devolve só elas (§12.1). Mudanças guardadas fora do journal (chmod, rename…) pegam a versão de Draw. Uma escrita estável é um Write seguido de um Commit sobre o seu extent. A versão é a content version do journal, que ordena escritas e remoções de um arquivo (RFC 1 §4.3)."
+  },
+  "verifier": {
+    "title": "O [[write-verifier|write verifier]]",
+    "lead": "Um cliente NFS reenvia as suas escritas unstable sempre que o write verifier muda. O engine calcula o verifier a partir destas entradas:",
+    "items": [
+      "o nó do [[primary]] e a sua [[node-epoch|node epoch]], um número que sobe a cada início desse nó, mas não a [[epoch]] do shard, que pode subir enquanto o mesmo nó continua primary;",
+      "um ID de instância do processo, sorteado a cada vez que o processo inicia;",
+      "a [[shard-incarnation|incarnation do shard]], um número que sobe cada vez que um nó ou um journal começa a atender o shard como primary;",
+      "a [[loss-generation|loss generation]] do journal, um número que o journal só aumenta num [[loss-event|evento de perda]], quando deixa de guardar conteúdo que ninguém pediu para descartar."
+    ],
+    "rule": "O verifier muda **exatamente** quando uma escrita unstable já confirmada pode ter se perdido, como depois de um reinício, de um [[takeover|takeover]] ou [[handover|handover]] do shard ou de uma perda no journal, e em nenhum outro momento.",
+    "footer": "Assim, uma perda depois que uma `Write` foi gravada muda o verifier de uma chamada posterior, e uma perda antes de um `Commit` terminar faz o verifier dele diferir do que as suas escritas devolveram.",
+    "notes": "§4.1 'The write verifier' (cinco entradas: o nó e a sua node epoch contam como duas) e E27; RFC 17 §5.8. A loss generation vive em memória e é monotônica durante toda a vida do processo, mesmo entre reaberturas do journal; um reinício muda o ID de instância. Ele MUST NOT ser derivado só do relógio. A perda de conteúdo que o remote tier já tem não faz nenhum cliente reenviar. A node epoch sobe a cada início do nó (§2.5, RFC 11 §7). Uma subida da shard epoch que não muda o shard de lugar não faz cliente nenhum reenviar (§4.1; o teste do verifier na §15.1). 'Troca de primary' é o 'the shard moving to another node or coming back to this one' da §4.1. Loss events: RFC 1 §3.8. Takeover e handover: os dois jeitos de um shard ganhar um novo primary (RFC 11)."
+  },
+  "stability": {
+    "title": "Quem responde um flush é o [[journal|journal]]",
+    "table": [
+      [
+        "O flush cobre…",
+        "Ele espera"
+      ],
+      [
+        "nenhum conteúdo commitado, só bytes além do fim registrado do arquivo ou dentro de [[hole|buracos]] registrados",
+        "só o [[sync]] do journal; o novo tamanho e as datas chegam ao metadata store logo depois"
+      ],
+      [
+        "qualquer conteúdo commitado",
+        "também um [[sync-mark|sync mark]] que cubra este sync, registrado no metadata store"
+      ],
+      [
+        "uma escrita sobre conteúdo commitado",
+        "também o commit da [[existence|existência]] dessa escrita, pelo próximo [[group-commit|group commit]]"
+      ],
+      [
+        "qualquer coisa",
+        "nunca um [[offload]], e nunca o bucket"
+      ]
+    ],
+    "why": "Uma sobrescrita precisa esperar porque, até o seu registro ser commitado, o metadata store ainda tem o [[ref]] antigo cobrindo aquele extent. Se o journal perdesse então os bytes novos, as leituras serviriam em silêncio o [[chunk]] antigo como se fosse o atual.",
+    "price": "Não esperar pelos appends tem um preço. Se o dispositivo inteiro do journal se perder no curto intervalo entre um sync e o commit de existência seguinte, o tamanho e as datas dessas escritas se perdem junto, e a perda é reportada como perda do journal, não arquivo por arquivo.",
+    "notes": "§5.1: regras, passos, 'Why an overwrite waits and an append does not' e a marca decision sobre a existência preguiçosa; E31. Um stability point MUST NOT esperar um offload e não agenda nenhum. 'This is the only acknowledgement policy': um commit confirmado pelo remoto amarraria todo fsync a um put e transformaria uma queda do remoto em erros de escrita nos clientes. Um append sincronizado e perdido é commitado a partir do seu loss record e é lido como Lost, nunca como conteúdo mais antigo. Com um store travado, o flush de uma sobrescrita responde ErrDelay no prazo, nunca sucesso (§11.2). A linha 3 é a espera dos marks da §5.1: quando o extent cobre conteúdo commitado, o flush também espera que um sync mark registrado cubra o mark que o Sync devolveu. O Sync do journal prova os registros no processo, e o mark registrado leva essa prova para o disco; no início o journal é aberto com os marks (§2.5 passo 1). Conteúdo commitado: um offset abaixo do tamanho commitado e fora dos buracos commitados (§5.1). O Commit cobre o extent que o chamador indica, o arquivo inteiro se não indicar nenhum (§5.1). A linha 2 é a espera dos marks; a linha 3, o commit de existência das escritas pendentes que sobrescrevem conteúdo commitado.",
+    "committed": "**Conteúdo commitado** é a parte de um arquivo cuja [[existence|existência]] o metadata store já registrou, enviada ao bucket ou não. Um flush é julgado pelo intervalo que indica, e um que não indica nenhum cobre o arquivo inteiro. Assim, o flush de um append sozinho só espera o sync, mas o flush do arquivo inteiro cobre também os bytes mais antigos e espera o mark."
+  },
+  "flushwhy": {
+    "title": "Por que alguns flushes esperam os metadados",
+    "mark": "O sync mark existe por outro motivo. Depois de um crash, o journal não consegue distinguir um registro que o dispositivo perdeu depois do sync de um que o crash cortou, que ele trata como nunca escrito. Um mark registrado no metadata store resolve isso, e uma escrita perdida sobre conteúdo commitado é reportada como perda. Além do fim antigo ou num buraco, uma escrita perdida não pode se passar por bytes mais antigos, então o mark não é necessário.",
+    "notes": "§5.1 'Why an overwrite waits and an append does not', a espera dos marks ('The journal's Sync proves the records in-process, and the recorded mark carries that proof to disk. An extent that covers no committed content needs no mark') e o decision marker sobre a existência lazy (um dispositivo perdido inteiro deixa as escritas lidas como os buracos que eram dentro do tamanho antigo, como fim de arquivo além dele). E31. Um append sincronizado e perdido é commitado a partir do seu loss record e lê Lost, nunca conteúdo mais antigo."
+  },
+  "groupcommit": {
+    "title": "[[group-commit|Group commit]]: um conflito atrasa um arquivo",
+    "notes": "§5.2: regras e exemplo: no máximo log₂ 64 = 6 transações a mais. Um lote MUST ser limitado: no máximo G arquivos (group_commit.max_files, proposta 256) e o orçamento de chaves K (RFC 6 §5.2). Um store que nomeia a chave em conflito custa duas transações. Um arquivo que ainda falha sozinho recebe backoff sozinho e levanta existence_commit_failing; enquanto isso, os stability points dele respondem ErrDelay, e nenhum outro arquivo o espera (E24). Uma falha do store inteiro — travado ou fechado — não divide. Por quê: um commit de existência reescreve o registro do arquivo, que um chmod, o ctime de um rename ou um unlink também gravam."
+  },
+  "quizFlush": {
+    "question": "O alice-pc sobrescreve 64 KiB de conteúdo já commitado e depois faz um flush. Por que esse flush também espera o commit da [[existence|existência]]?",
+    "options": [
+      "Os bytes novos precisam chegar ao bucket antes que um flush possa ser respondido.",
+      "Até lá, os metadados apontam para o chunk antigo, servido em caso de perda.",
+      "Até lá, se o journal perdesse os bytes novos, o intervalo seria lido como zeros."
+    ],
+    "why": [
+      "Um flush nunca espera um [[offload]] nem o bucket. O upload acontece depois, numa passada em segundo plano, não importa o que o flush cubra.",
+      "Até o commit registrar a sobrescrita, o [[ref]] do metadata store ainda aponta para o [[chunk]] antigo. Se o journal perdesse os bytes novos, as leituras serviriam em silêncio esse chunk como atual.",
+      "Zeros só vêm de um [[hole|buraco]] de verdade, e aqui há conteúdo commitado. O [[ref]] antigo ainda cobre o intervalo, então uma perda serviria em silêncio os bytes antigos."
+    ],
+    "notes": "§5.1 'Why an overwrite waits and an append does not'; um stability point MUST NOT esperar um offload e não agenda nenhum (§5.1, E31). Zeros só para um buraco ou um ref zero (§7.1)."
+  },
+  "offload": {
+    "kicker": "Offload",
+    "title": "O [[offload|offload]] nunca pode travar",
+    "lead": "Se um offload falha em qualquer etapa, os seus bytes não ficam nem offloaded nem removíveis. Um journal que não consegue remover nada enche e começa a recusar escritas. Por isso valem três regras:",
+    "items": [
+      "todo extent [[dirty]] é oferecido de novo pelo [[primary]] até ser reportado offloaded;",
+      "toda falha termina com o extent reportado offloaded, ou ainda Dirty com o arquivo de volta na fila;",
+      "toda espera tem prazo, e um arquivo que não consegue passar por offload é reportado pelo nome."
+    ],
+    "whenTitle": "Quando um arquivo é oferecido",
+    "when": "Um arquivo é oferecido quando os seus bytes dirty chegam ao block target, quando o seu byte dirty mais antigo chega à idade máxima definida por `offload.max_age`, ou quando o journal está sob pressão de capacidade. O flush de um cliente **não** dispara um offload.",
+    "queueTitle": "A [[work-queue|work queue]]",
+    "queue": "Cada journal tem uma única work queue, dividida de forma justa entre as suas shares. Enfileirar nunca bloqueia, e o mesmo trabalho nunca roda duas vezes ao mesmo tempo. A fila não grava nada: depois de um reinício, ela é reconstruída a partir do estado durável.",
+    "notes": "Introdução da §6 (os quatro MUST); §6.2 (proposta: um limiar de um block target, offload.max_age do RFC 13; uma passada oferece no máximo upload_workers block targets de bytes dirty); regras da §6.1: uma fila por journal, postar nunca bloqueia nem cresce com os bytes, uma chave em no máximo uma execução (E41), só os shards dos quais o nó é primary postam, não é durável — é reconstruída sempre que o nó assume um shard (E23). Eventos: Dirty, AgeTick a cada quarto de offload.max_age, Pressure on e off, RemovalPending. As três regras são os quatro MUSTs da §6, com os dois últimos juntos."
+  },
+  "pipeline": {
+    "title": "O [[offload-pipeline|offload pipeline]]",
+    "notes": "A tabela de estados da §6.3. Capture passa o Through de cada arquivo, para o journal não oferecer nada cuja existência ele não commitou. Assemble não pode falhar; fecha um bloco antes quando as chaves do seu commit, no pior caso, passariam de K. Intent recusa um plano cujo namespace capturado não é mais o namespace de escrita da share. Commit: um conflito é tentado de novo; um intent sumido é abandonado e oferecido de novo; uma epoch velha para o pipeline do shard. §6.8 e E4: reportar exatamente os extents cujos commits deram certo, bloco a bloco, em qualquer ordem. N1 e N2 são rótulos do deck. Passo 3: um nome é cunhado uma vez por tentativa de put, e as repetições do syncer dentro da tentativa o reutilizam (§6.6, O3)."
+  },
+  "retries": {
+    "title": "As regras que mantêm o pipeline andando",
+    "items": [
+      "Todo passo tem prazo. Um passo travado para sempre é a pior falha, porque segura a sua offer sem guardar nada durável.",
+      "Enquanto este nó for o [[primary]] do shard, as tentativas nunca param. Cada arquivo faz backoff por conta própria, com jitter, de 1 s até 60 s, ou até 5 s sob pressão com o store saudável.",
+      "Uma nova tentativa dentro do mesmo attempt reutiliza nome, plano e bytes. Essa repetição é do [[syncer]], e o [[engine]] não acrescenta outra camada de retry em volta do `Upload`.",
+      "Um arquivo não afunda outro. Um arquivo que falha recebe backoff sozinho e, depois de cinco passadas de offload seguidas com falha, uma condição de saúde aponta o nome dele.",
+      "Se um commit é recusado porque a [[epoch]] do shard subiu, o shard tem um novo primary depois de um [[takeover|takeover]] ou [[handover|handover]]. A passada para em vez de tentar de novo, e o novo primary oferece o conteúdo outra vez."
+    ],
+    "footer": "Enquanto um store recusa uploads, as passadas de offload dos seus shards ficam em pausa. A pausa não conta como falha de nenhum arquivo, e termina quando as sondas do próprio syncer veem o store respondendo de novo.",
+    "notes": "Regras O1–O8 da §6.3 (O4: o pipeline SHOULD abandonar na hora os próprios intents; O5: o report de um bloco nunca espera outro bloco; O8: não guarda bytes e não grava nada), as propostas de O2 (offload.retry_min, offload.retry_max, offload.retry_max_pressure, RFC 13), a marca decision de O6 (cinco é fixo, não uma configuração), 'A put-unhealthy store pauses its shards' offload'. E22. Os valores 1 s, 60 s e 5 s do slide são propostas. Os itens são, em ordem, O1, O2, O3, O6 e O7. O7: um commit ou intent recusado pela primary epoch quer dizer que o shard mudou de lugar, e as passadas do shard terminam sem report (§6.3)."
+  },
+  "names": {
+    "title": "O nó N1 cai depois de um upload, antes do commit",
+    "steps": [
+      "Uma passada de offload cunha o [[block-name|block name]] **B1**, grava de forma durável um [[put-intent|put intent]], uma nota dizendo que vai enviar B1, e envia B1.",
+      "O N1 morre antes do commit de metadados. Os extents da alice nunca receberam a marca de offloaded, então continuam [[dirty]] no journal.",
+      "No reinício, o [[engine]] primeiro reaplica a partir do [[journal]] os tamanhos e as datas que o metadata store não tinha registrado. Depois reconstrói a fila e oferece esses extents de novo.",
+      "A nova oferta cunha um nome novo, **B2**, e o nome B1 nunca mais é usado. O N1 abandona o intent de B1, e mais tarde o [[gc|GC]], o coletor de lixo, apaga o objeto órfão B1."
+    ],
+    "whyTitle": "Por que um nome novo a cada tentativa",
+    "why": "Nenhum outro escritor jamais consegue enviar algo com um nome recém-cunhado, então o nome não precisa de defesa: nem contra um segundo escritor, nem contra um delete atrasado, nem contra um store sem puts condicionais. O preço é que duas passadas com os mesmos chunks enviam dois objetos distintos.",
+    "outcome": "O crash desperdiça espaço no bucket por um tempo, até o [[gc|GC]] apagar B1, mas não perde conteúdo.",
+    "notes": "'Start here · Scenarios', N1 crashes after an upload, before its metadata commit; §6.6, regras e exemplo (o nome é o hash do domínio, do namespace, de um nonce novo de 16 bytes, do chain ID e dos hashes dos chunks em ordem; E8); §2.5 'Restart re-offers everything without an offloaded bit'; RFC 9 §5. Um segundo commit dos mesmos chunks encontra todos os registros e nasce morto, aposentado no próprio commit. A deduplicação entre arquivos não está na primeira versão (§6.5, V1). O GC é o do RFC 9."
+  },
+  "truncate": {
+    "title": "alice-pc trunca um arquivo durante um upload",
+    "steps": [
+      "A passada de offload capturou os bytes [[dirty]] da alice sob o [[offload-guard|guard]] do arquivo, um lock curto por arquivo, e depois começou o upload.",
+      "O truncate pega o guard logo em seguida, então o [[journal]] lhe dá uma [[content-version|versão]] maior que tudo o que a passada ofereceu.",
+      "O truncate nem espera o upload nem o cancela.",
+      "Se a passada commitar primeiro, os refs dela entram e são reportados. A primeira transação de metadados do truncate registra então a remoção, que esconde esses [[ref|refs]] das leituras na hora, e um lote posterior os apaga. Senão, é o commit da passada que descarta todo ref que se sobrepõe ao intervalo removido.",
+      "Nesse segundo caso, um ref que atravessa o novo fim do arquivo é descartado inteiro. A parte dele que continua dentro do arquivo não é reportada, então fica dirty e é enviada de novo."
+    ],
+    "outcome": "Seja quem for que commite primeiro, se o arquivo for estendido depois, a leitura além do ponto de truncamento dá zeros. O custo é no máximo um [[chunk]] reenviado, no novo fim do arquivo.",
+    "notes": "'Start here · Scenarios', alice-pc truncates the file while its offload pass is uploading; regra e argumento da §8.3: F1 os refs da passada são mais antigos que a remoção, F2 o commit e a primeira transação da remoção conflitam no fence F_o, F3 a remoção continua visível enquanto uma passada puder commitar, F4 os bytes da offer não se movem. §6.4: o guard é uma otimização, não uma cerca; quem ordena os commits são os conflitos do metadata store (E16, E17). O passo 4 é o caso 1 da §8.3 (a fase 1 mascara os refs na hora, a fase 2 os descarta); o passo 5 é o ref atravessado do caso 2. A §8.3 conta um reenvio por borda de uma remoção; um truncate remove tudo além do novo fim, então tem uma só borda (um deallocate tem duas). A §8.3 não diz o que acontece com a parte interna de um ref atravessado no caso 1, então o slide também não."
+  },
+  "quizCrash": {
+    "question": "O nó N1 envia o bloco B1 e cai antes do commit de metadados. O que acontece com os extents da alice depois do reinício?",
+    "options": [
+      "Estão perdidos, porque o journal os liberou assim que B1 foi enviado.",
+      "O engine encontra B1 no bucket e commita os refs dele, reaproveitando o nome.",
+      "Continuam dirty, então são oferecidos de novo e enviados com um nome novo."
+    ],
+    "why": [
+      "O journal só libera um extent depois que o seu [[offloaded-bit]] é marcado, ou seja, depois do commit. Sem commit, os extents continuaram [[dirty]] no [[journal]].",
+      "Um [[block-name|block name]] vale para uma única tentativa de upload, e B1 nunca mais é usado. O [[put-intent|put intent]] dele é abandonado, e o [[gc|GC]] apaga o objeto órfão.",
+      "Sem commit, os extents continuaram [[dirty]] no journal. No reinício, o [[engine]] os oferece de novo com um nome novo, B2, e o crash custa espaço no bucket, nunca conteúdo."
+    ],
+    "notes": "'Start here · Scenarios', N1 crashes after an upload, before its metadata commit; §2.5 'Restart re-offers everything without an offloaded bit'; §6.6 (um nome é cunhado uma vez por tentativa de put); §3.2 e §10 (Release recusa um extent sem o offloaded bit; o bit vem depois do commit, §6.8); RFC 9 §5."
+  },
+  "read": {
+    "kicker": "Leitura",
+    "title": "Como uma leitura resolve cada parte",
+    "lead": "O engine consulta primeiro o [[journal]]. O journal devolve os bytes que tem, os extents exatos que não tem, ou seja, os [[missing]], e a [[content-version|versão]] em que respondeu. Depois o engine pergunta ao metadata store só sobre esses extents que faltam.",
+    "table": [
+      [
+        "Os metadados dizem",
+        "[[residency|Residency]]",
+        "O engine"
+      ],
+      [
+        "[[hole|buraco]], ou um ref de zeros, que representa um chunk só de zeros",
+        "Absent",
+        "devolve zeros"
+      ],
+      [
+        "[[carved|uncarved]], com a [[existence|existência]] commitada depois da resposta do journal",
+        "—",
+        "pede esse extent ao journal de novo, que agora pode ter bytes escritos depois da resposta"
+      ],
+      [
+        "uncarved, com uma existência pela qual o journal já tinha respondido",
+        "[[lost|Lost]]",
+        "falha a leitura e reporta perda de dados"
+      ],
+      [
+        "[[carved|carved]]",
+        "Remote, só no bucket",
+        "baixa o chunk e o verifica"
+      ],
+      [
+        "depois do fim do arquivo",
+        "—",
+        "devolve uma leitura curta"
+      ]
+    ],
+    "notes": "§7.1: regras, passos e tabela: o engine MUST perguntar primeiro ao journal, MUST NOT guardar a resolução, MUST NOT devolver zeros a não ser para um buraco ou um ref de zeros, e faz um fetch por extent faltante. Linha 3: o applied do lookup, ou a versão de sobrescrita do run, acima do asOf da leitura (E32); um ref velho sob uma sobrescrita commitada nunca é baixado. §7.5; §7.7 e o seu exemplo (o GC move o chunk X de B1 para B2); uma leitura parcial que falha na verificação está corrompida e não refaz a resolução (E14). §7.6: SEEK_DATA e SEEK_HOLE vêm do conjunto de buracos dos metadados, nunca do que o journal tem. As linhas 3 e 4 são o 'Existence committed after asOf sends the read back to the journal' da §7.1: o covering lookup devolve a versão applied do arquivo (RFC 6 §8.1); só é Lost um run uncarved cujo applied e cuja versão de sobrescrita estão ambos em asOf ou abaixo. Um ref de zeros é o que vira um chunk só de zeros (§6.5, V1). §7.7: o GC move chunks de blocos quase vazios para blocos novos. O rodapé: o covering lookup devolve o applied do arquivo com a resposta (RFC 6 §8.1), e um run uncarved traz a sua versão de sobrescrita (§7.1).",
+    "footer": "A resposta do metadata store traz a [[content-version|versão]] até a qual a existência do arquivo está registrada, e cada intervalo sobrescrito traz a sua. O engine as compara com a versão em que o journal respondeu."
+  },
+  "absent": {
+    "title": "Quando o bucket diz que um objeto sumiu",
+    "lead": "Se o bucket está inacessível, a leitura falha com um erro transitório, que dá para distinguir de Lost. Mas se o bucket responde que o objeto não existe, o chunk pode só ter mudado de lugar, porque o [[gc|GC]] copia chunks de blocos quase vazios para blocos novos e depois apaga o bloco antigo.",
+    "exampleTitle": "Exemplo",
+    "example": "Uma leitura encontra o chunk X no bloco B1. Depois o GC move X para o bloco B2 e apaga B1, então o fetch de B1 não acha nada. O engine pergunta de novo ao metadata store, descobre que X agora está em B2 e o baixa de lá.",
+    "rule": "O engine continua perguntando enquanto cada resposta indicar uma posição nova. Ele só falha a leitura como [[lost|Lost]] quando uma resposta indica uma posição que já falhou, ou o chunk não tem registro nenhum.",
+    "notes": "§7.5 (um remoto inacessível falha de forma distinguível, E9); as regras da §7.7, 'Why a chunk moves under a reader' e o exemplo dela (o GC move o chunk X de B1 para B2; RFC 9 §4.3). As novas consultas são limitadas pelo prazo da leitura. Uma leitura parcial que falha na verificação é corrompida, não desatualizada, e não dispara nova resolução, nem um erro de transporte ou um timeout (E14)."
+  },
+  "fill": {
+    "title": "Primeiro a resposta, depois talvez um [[fill|fill]]",
+    "replyTitle": "A resposta",
+    "reply": [
+      "A resposta só contém bytes verificados, na ordem do arquivo. Nenhum byte de um [[chunk]] entra nela antes que o chunk inteiro tenha sido verificado.",
+      "Todos os chunks são baixados ao mesmo tempo. Uma leitura a frio de 8 MiB, ou seja, 32 chunks, espera o chunk mais lento, não a soma dos 32.",
+      "Para responder, o engine nunca relê o [[journal]] depois de um fill, então um fill nunca atrasa nem faz falhar uma leitura."
+    ],
+    "decideTitle": "O fill é uma decisão",
+    "decide": "O engine faz o fill de um extent que uma leitura pediu, a não ser que o espaço livre do journal esteja abaixo de uma marca mínima reservada às escritas, que a leitura faça parte de uma varredura sequencial longa, ou que o download atendesse um pre-warm a que se pediu para dar lugar às escritas.",
+    "examples": "Uma planilha de 20 MiB removida na semana passada volta para o journal quando é lida, e a próxima abertura é local. Um backup que lê uma vez uma imagem de disco de 2 TB não volta. Se um cliente escreve o mesmo extent enquanto o download está em andamento, o journal recusa o fill e os bytes escritos ficam.",
+    "notes": "§7.2: regras e exemplo; proposta e exemplos da §7.3 (com 92 % de ocupação, a regra 1 recusa todo fill até o repack liberar espaço); RFC 1 §3.4 (o fill é checado contra a versão em que o passo 1 respondeu). Um fill recusado não é um erro. E10. Questão aberta 1 (§16): a marca mínima e o limiar da varredura não foram medidos. A regra de fill do slide é a proposta da §7.3, revista por uma medição de taxa de acerto e de escritas recusadas. Proposta da §7.4: o pre-warm pausa na marca mínima das escritas e cancela os fetches na fila quando uma escrita encontra pressão de capacidade."
+  },
+  "speculator": {
+    "title": "O [[speculator|speculator]]: buscar adiantado, sem estrago",
+    "rules": [
+      "Nunca atrasa uma leitura que um cliente pediu: os seus downloads são escalonados depois das leituras pedidas e do trabalho em segundo plano.",
+      "Nunca faz uma escrita ser recusada: ele para de fazer fill quando o espaço livre cai até a marca mínima reservada às escritas.",
+      "Nunca tem em voo mais bytes especulativos do que o orçamento da share permite, e guarda o estado só em memória.",
+      "Nunca baixa um [[block|bloco]] cujos bytes o [[journal]] já guarda todos."
+    ],
+    "lead": "Pre-warm: um operador pede o pre-warm de `/datasets/train`, com 10⁴ arquivos de 64 KiB. Uma passada de offload junta muitos arquivos pequenos e empacota os chunks deles em blocos compartilhados, então, com um block target de 4 MiB, bastam uns 160 downloads de blocos inteiros.",
+    "footer": "O read-ahead, mostrado à esquerda, abre uma janela quando uma leitura continua onde a anterior terminou, e a dobra a cada leitura seguinte, até 8 blocos ou 64 MiB, o que for menor. Uma leitura que salta para outro ponto zera a janela e cancela os downloads na fila.",
+    "notes": "§7.4: S1–S5, o exemplo de detecção sequencial (o quadro de código é o do RFC), o exemplo de pre-warm, a proposta; E25. §7.8: uma leitura fria pede só os seus chunks quando os bytes faltantes são no máximo um quarto do bloco e ela não é sequencial, e senão o bloco inteiro (uma decisão: o quarto é fixo e vem da prática anterior). Questão aberta 2. O teto do read-ahead, 8 blocos ou 64 MiB, é uma proposta (readahead.max_blocks, readahead.max_bytes). Arquivos pequenos são juntados numa só passada e os chunks deles empacotados em blocos compartilhados (§6.2, RFC 2 §5). A regra do orçamento é a S3 (§7.4)."
+  },
+  "space": {
+    "kicker": "Espaço local",
+    "title": "Os quatro estados de um extent no journal",
+    "table": [
+      [
+        "Estado",
+        "Significa",
+        "Removível?"
+      ],
+      [
+        "[[dirty|Dirty]]",
+        "escrito, e guardado só neste journal",
+        "nunca"
+      ],
+      [
+        "Offered",
+        "congelado na [[offer]] de uma passada de offload, e ainda contado como Dirty pela eviction",
+        "não"
+      ],
+      [
+        "Offloaded",
+        "o commit do seu bloco se completou e o seu [[offloaded-bit]] está ligado",
+        "sim"
+      ],
+      [
+        "Released",
+        "[[evict|removido]], então uma leitura agora o encontra só no bucket, como [[residency|Remote]]",
+        "—"
+      ]
+    ],
+    "measures": "A **eviction** começa quando o espaço alocado pelo journal cresce demais, contando os bytes limpos em cache. As **escritas são freadas** com base nos bytes dirty mais os [[unreclaimed-bytes|não recuperados]], porque só o offload ou o [[repack]] conseguem liberá-los.",
+    "footer": "Um [[fill]] traz de volta ao journal um extent liberado, já offloaded. Uma escrita sobre um extent em qualquer estado grava ao lado dele uma nova versão Dirty. O espaço em disco só volta a ficar livre com um repack.",
+    "notes": "§10: os quatro estados, as duas medidas, 'space returns only through repack'. §10.1: proposta, remover por segment — primeiro os bytes mantidos mais velhos e mais escassos — porque se copiam cerca de u/(1−u) bytes por byte liberado com uma fração viva u (5,7 a 85 %). §10.3: repack quando UnreclaimedBytes passa de eviction.repack_threshold (proposta 10 %), usando uma reserva fora do limite de toda share. §10.4: locks, opens, delegations e snapshots MUST NOT tornar um extent não removível. E11, E33. Remote é a classe de residency do RFC 0 §4.2: guardado só no remote tier."
+  },
+  "pacing": {
+    "title": "Frear antes do muro, não no muro",
+    "items": [
+      "M são os bytes dirty mais os não recuperados do journal ou da share, o que estiver mais perto do seu limite L.",
+      "S é metade de L. Abaixo de S nenhuma escrita é atrasada. Acima, todo arquivo com bytes [[dirty]] pode ir para offload na hora.",
+      "r é a velocidade com que M caiu nos últimos 10 s, nunca menos de 1 MiB/s. n é o tamanho da escrita.",
+      "Se o atraso passasse do prazo do cliente, o engine responde [[retry-later]] na hora, em vez de esperar."
+    ],
+    "footer": "Quando o journal enche mais rápido do que o bucket consegue esvaziá-lo, o alice-pc desacelera aos poucos em vez de bater num muro, e nenhuma escrita confirmada é descartada para abrir espaço.",
+    "notes": "§10.2.1: a fórmula; S, a janela de 10 s e r₀ são fixos em vez de configurações, e são propostas (marca decision: revisto por uma curva que mantenha o p99 do B3 mais baixo com a mesma vazão). 'Start here · Scenarios', the journal fills faster than the bucket drains, passos 1–6. §6.1: a pressão liga acima de S e desliga abaixo de 0,9 S."
+  },
+  "refusal": {
+    "title": "Cheio: tente mais tarde, ou sem espaço?",
+    "lead": "Quando o [[journal]] recusa uma escrita por falta de espaço, o [[engine]] primeiro tenta liberar algum: roda um [[repack]], faz o [[evict]], empurra os arquivos dirty para [[offload]], depois faz o [[sync]] e um novo repack. Se a escrita continuar recusada, **uma única tabela** decide a resposta:",
+    "delayTitle": "Tente mais tarde (`ErrDelay`)",
+    "delay": "É a resposta enquanto algo ainda pode liberar espaço sozinho: bytes não recuperados, bytes dirty com o store saudável, ou uma interrupção que vai acabar. Continua sendo retry-later mesmo depois do prazo do cliente.",
+    "noSpaceTitle": "Sem espaço (`ErrNoSpace`), na hora",
+    "noSpace": "É a resposta quando só um operador pode resolver a causa, por exemplo se a cota do bucket está cheia, a credencial é recusada, uma configuração do store, lida de volta, não é mais a configurada, uma retention pin do operador tira os bytes de uma share da eviction, ou o próprio dispositivo está cheio.",
+    "footer": "Um journal que enche durante uma interrupção do remoto responde, portanto, retry-later. Transformar isso em “sem espaço” no fim do prazo faria de uma interrupção de dois minutos um erro de escrita que os clientes tratam como fatal.",
+    "notes": "§10.2: passos 1–4 e a tabela de recusas, que todas as outras RFCs citam; a marca decision dela (o único critério: se o sistema elimina a causa sozinho); 'the deadline ends the wait, never the cause's class'. Outras linhas: o limite de versão (ErrDelay até o aumento ser commitado, ou, para um limite que o journal recusou, até ele ser aberto de novo), o limite do índice, um roll sem spare pronto (ErrDelay), uma cota lógica (ErrQuota, do filesystem service antes do engine). Bytes suspeitos e não lidos só contam como permanentes depois de uma nova tentativa limitada que falhou. E33. 'Uma configuração do store, lida de volta, não é mais a configurada' é ErrDrift (RFC 3 §1.3); 'um operador travou os bytes' é a retention pin de um operador (tabela da §10.2). §10.4: uma retention pin do operador MAY tirar uma share da eviction. Quem decide é a tabela de recusas, em capacity.go; admit age só antes da chamada ao journal e nunca recebe uma recusa (§10.2)."
+  },
+  "outage": {
+    "title": "O bucket para de responder por uma hora",
+    "steps": [
+      "O alice-pc continua escrevendo. Cada escrita é gravada no [[journal]] e confirmada como sempre.",
+      "Enquanto o bucket recusa uploads, as passadas de offload da share ficam em pausa. A pausa não conta como falha de nenhum arquivo.",
+      "A share reporta uma condição de saúde de offload falhando, separada da condição de bucket inacessível.",
+      "Uma leitura de conteúdo guardado só no bucket falha com um erro transitório, nunca com “lost”.",
+      "Se o journal encher, as escritas recebem [[retry-later]], nunca “sem espaço”, porque uma interrupção se resolve sozinha."
+    ],
+    "outcome": "Assim que o bucket volta a responder, o offload recomeça dentro de um ciclo do seu timer e esvazia o acúmulo, sem nenhuma ação de um operador.",
+    "notes": "'Start here · Scenarios', the bucket stops answering for an hour, que cita §11.2, §6.3, §11.1, §7.5 e §10.2. A saúde é por direção (§11.1): o engine condiciona o offload só a Healthy(Put), e um store put-unhealthy nunca recusa uma leitura (E21). O engine MUST NOT sondar o store por conta própria: se um store é utilizável quem diz é o syncer. Um arquivo cuja passada falha recebe backoff de 1 s até no máximo 60 s (valores propostos)."
+  },
+  "fence": {
+    "title": "Quando os metadados param de commitar",
+    "beforeTitle": "Enquanto isso",
+    "before": "As escritas continuam sendo gravadas no journal e confirmadas. O flush de uma sobrescrita espera o commit da sua [[existence|existência]] até o prazo do cliente acabar, e então responde [[retry-later]], nunca sucesso.",
+    "fenceTitle": "Depois de 30 s: o [[self-fence|self-fence]]",
+    "fence": "Quando uma transação de escrita de metadados fica pendente ou falhando por 30 s sem que nenhuma seja commitada, o nó se isola. Escritas e flushes respondem retry-later, as leituras continuam, e uma condição de saúde aponta o store. O primeiro commit que der certo desfaz o isolamento, e também o momento em que nenhuma transação de escrita está mais pendente ou falhando.",
+    "watch": "Um operador pode acompanhar, por share, os bytes dirty, a taxa de escoamento e o tempo para escoar. O engine também informa a idade do extent mais antigo ainda sem offload, alerta quando ela passa de um limite, e levanta condições como `offload_stalled`, `file_offload_failing` e `journal_full`.",
+    "notes": "§11.2 'Metadata unwritable, or stalled' e a linha do self-fence (30 s é o prazo padrão de uma requisição, RFC 17 §4.3), E38. §11.3: um conflito de metadados nunca chega a um cliente como erro de I/O; sem solução no prazo é ErrDelay com DelayConflict. §11.4: bytes dirty, velocidade de escoamento, WaitOffloaded; a idade do mais antigo sem offload pega um único arquivo travado que as somas escondem. A lista de condições da §11.1; as métricas da §14. E38: o isolamento termina no próximo commit, ou quando nenhuma transação de escrita está mais pendente ou falhando."
+  },
+  "quizOutage": {
+    "question": "O bucket está fora do ar há uma hora, e o journal está cheio de bytes ainda não enviados. O que recebe a próxima escrita do alice-pc?",
+    "options": [
+      "Retry-later, porque a interrupção vai acabar e aí o offload vai liberar espaço.",
+      "Sem espaço, quando o prazo do cliente acaba sem que nada tenha sido liberado.",
+      "Sucesso, depois que o engine remove os extents dirty mais frios para abrir espaço."
+    ],
+    "why": [
+      "Uma interrupção se resolve sozinha, então a resposta é [[retry-later]]. Quando o bucket volta a responder, o offload recomeça e esvazia o journal sem nenhuma ação de um operador.",
+      "O prazo do cliente encerra só a espera, e depois dele a resposta continua retry-later. Sem espaço vale só para causas que um operador precisa resolver, como a cota do bucket cheia.",
+      "Um extent [[dirty]] nunca pode ser removido, porque o journal tem a única cópia dele. O engine só pode fazer o [[evict]] de extents já offloaded, e aqui não há nenhum."
+    ],
+    "notes": "§10.2: a tabela de recusas e a marca decision dela; 'the deadline ends the wait, never the cause's class'. §10: um extent Dirty nunca é removível. 'Start here · Scenarios', the bucket stops answering for an hour, e o desfecho dele (§6.3)."
+  },
+  "whom": {
+    "title": "Quem precisa saber o quê",
+    "fsTitle": "O [[filesystem-service|filesystem service]]",
+    "fs": "É o único chamador dos métodos de conteúdo do engine, como `Write`, `Commit`, `Read`, `Truncate`, `Clone`, que copia parte de um arquivo, e `Overlay`, que devolve o tamanho e as datas do arquivo com as escritas pendentes aplicadas. Primeiro confere as permissões. Os adapters nunca chegam ao [[engine]].",
+    "ops": "Toda share precisa de um remote block store. Um journal cheio faz os clientes tentarem de novo, não falharem, enquanto ainda for possível liberar espaço. Acompanhe a idade do extent mais antigo ainda sem offload e as condições que apontam um store ou um arquivo.",
+    "devTitle": "Quem escreve componentes",
+    "dev": "Para cada componente que chama, o engine declara uma interface com exatamente os métodos que usa. Chamar qualquer outro método desse componente quebra o build.",
+    "notes": "Enquadramento do deck, a partir da §12.1 (a tabela da interface; Overlay é o único caminho de leitura para tamanho, horários e versão), §2.1 (interfaces declaradas pelo consumidor), §10.2 e §11.4. Clone: §9.1 e §12.1; Overlay: §12.1 (tamanho, datas e versão das operações não commitadas do journal)."
+  },
+  "rules": {
+    "items": [
+      "Uma leitura consulta o [[journal]] antes do metadata store, e só devolve zeros para um [[hole|buraco]] ou um ref zerado, que representa um chunk só de zeros.",
+      "Uma passada de offload faz o [[report]] ao journal de exatamente os extents cujos commits deram certo, e de nenhum outro.",
+      "Uma escrita nunca espera os metadados, um [[offload]] ou o remote tier, e um flush nunca espera um offload.",
+      "Um controle de política nunca é a única coisa entre o sistema e uma perda de dados.",
+      "Locks, deny modes, delegations, opens e snapshots nunca tornam um extent impossível de remover. Só uma retention pin do operador pode tirar uma share da eviction."
+    ],
+    "footer": "E na montagem de um nó, toda [[share]] tem um remote block store, e toda capability que o engine usa de outro componente é fornecida na construção do engine. Se faltar uma, há um erro que a nomeia, nunca uma share que funciona errado em silêncio.",
+    "notes": "§7.1, §6.8, §4.1, §5.1, §3.2, §10.4, §2.1; os invariantes E1–E42 são a tabela da §13. O report da passada de offload é o offload callback da §6.8, que roda dentro do Offload do journal e reporta por report. §10.4 para a retention pin. Cada item reformula uma regra que o RFC escreve como MUST, MUST NOT ou MAY; o rodapé são os dois MUSTs da §2.1 (E2, E5)."
+  },
+  "nongoals": {
+    "title": "O que o [[engine|engine]] nunca faz",
+    "items": [
+      "Definir um formato, uma codificação ou um algoritmo, inclusive o modo como os [[chunk|chunks]] são empacotados em [[block|blocos]].",
+      "Mover ele mesmo bytes de ou para o [[remote-tier]]. Isso é tarefa do [[syncer]].",
+      "Guardar a resposta de uma fonte de verdade além da requisição que a pediu. Não existe cache de residency.",
+      "Gravar qualquer coisa de forma durável. Todo fato durável pertence ao componente que é dono dele.",
+      "Decidir quando um arquivo deixa de existir, ou agendar o [[gc|GC]]."
+    ],
+    "footer": "A deduplicação entre arquivos não está na primeira versão, então o offload envia todo chunk que corta, exceto um chunk só de zeros, que vira um ref zerado. Trazê-la de volta fica para um RFC futuro.",
+    "notes": "§1.2 Non-goals (MUST NOT); §10.5 (o GC é um serviço por namespace remoto e se agenda sozinho); §6.5 V1 e E7 (um chunk todo de zeros vira um ref de zeros); §12.3 (o engine não grava residency)."
+  },
+  "openQuestions": {
+    "questions": [
+      "Os parâmetros do [[fill]], ou seja, a marca mínima e o limite de varredura, ainda não foram medidos.",
+      "O jeito como o pre-warm cede a vez e o teto do read-ahead ainda não foram medidos.",
+      "O block assembler põe os chunks nos blocos em ordem aleatória. Ninguém mediu ainda quanto quem observa o bucket ainda consegue saber do conteúdo pelos tamanhos dos objetos.",
+      "Os limites de offload vêm de padrões históricos, e os tetos de backoff não foram medidos.",
+      "O limite `G` do [[group-commit|group commit]], ou seja, quantos arquivos um lote leva no máximo, não foi medido.",
+      "Duas políticas não estão especificadas: atrasar o upload de dados que logo serão sobrescritos, e um sync manual.",
+      "Um [[snapshot]] é tirado atrás de um gate breve, pelo qual passa todo commit de [[existence|existência]] do shard. Nenhum RFC diz ainda qual componente controla esse gate."
+    ],
+    "notes": "§16 Open questions 1–7. A pergunta 3 é a montagem aleatória (RFC 2 §5); a 7 é o gate do corte, Deps.Gate (§2.6, RFC 12 §2.3)."
+  },
+  "scenes": {
+    "cast": {
+      "client": "cliente SMB",
+      "engine": "engine",
+      "journal": "journal",
+      "meta": "metadata store",
+      "bucket": "bucket S3"
+    },
+    "journey": {
+      "dirty": "64 KiB · dirty",
+      "existence": "existência",
+      "offloaded": "offloaded",
+      "released": "liberado",
+      "notHeld": "não guardado",
+      "ref": "ref → B1",
+      "verified": "chunk verificado",
+      "steps": [
+        "**Escrita.** O alice-pc escreve 64 KiB no offset 2 GiB de um arquivo. O [[journal]] no NVMe do N1 guarda esses bytes, e o engine confirma a escrita na hora, sem transação de metadados e sem nenhuma requisição ao S3.",
+        "**Flush.** O Windows pede um flush, e o journal faz o [[sync]] do arquivo no disco. Esses 64 KiB sobrescrevem conteúdo commitado, bytes cuja [[existence|existência]] o metadata store já tinha registrado, então o flush também espera o próximo [[group-commit|group commit]], a transação compartilhada que registra a sobrescrita.",
+        "**[[offload|Offload]]**, segundos depois. Uma passada em segundo plano corta os bytes dirty em [[chunk|chunks]], empacota-os num [[block|bloco]] chamado B1, envia-o ao bucket `dfs-data` e commita os [[ref|refs]] que apontam para ele. Só então ela informa ao journal, com um [[report]], que os 64 KiB estão offloaded.",
+        "**[[evict|Evict]]**, dias depois. O journal enche, e a política de eviction escolhe os extents offloaded mais frios, inclusive os da alice. O journal faz o [[release]] deles, e um [[repack]] depois transforma o espaço que ocupavam em espaço livre.",
+        "**Leitura.** O alice-pc lê de novo o offset 2 GiB. O engine consulta primeiro o journal, que já não tem esses bytes, e depois o metadata store, que responde com um ref para o bloco `B1`. O engine baixa o chunk, confere-o com o hash e só então o envia ao alice-pc."
+      ]
+    },
+    "order": {
+      "uncarved": "uncarved",
+      "released": "liberado",
+      "falseLost": "Lost ✗",
+      "carved": "carved → B",
+      "remote": "Remote ✓",
+      "steps": [
+        "Imagine uma leitura que consultasse primeiro o metadata store. Ela ouviria que `[0, 4 MiB)` do arquivo `f` está [[carved|uncarved]]: escrito, mas ainda não enviado, portanto guardado só no [[journal]].",
+        "Antes de a leitura chegar ao journal, um [[offload]] envia esse intervalo como bloco `B` e o commita, e a eviction faz o [[release]] da cópia local.",
+        "Agora o journal responde que não tem o intervalo. A leitura falha como [[lost|Lost]], embora o conteúdo esteja seguro no bloco `B`, no bucket.",
+        "Consultando o journal primeiro, a mesma corrida fica inofensiva. Ou o journal ainda tem os bytes, ou já os liberou, e nesse caso o metadata store, consultado em seguida, já enxerga o commit de `B`."
+      ]
+    },
+    "pipeline": {
+      "reoffered": "oferecido de novo",
+      "guard": "guard · offer",
+      "chunks": "chunks",
+      "plan": "plano do bloco",
+      "sameName": "retry: mesmo nome",
+      "perBlock": "1 commit por bloco",
+      "evictable": "removível",
+      "abandoned": "tentativa abandonada",
+      "steps": [
+        "**Capture.** Sob o [[offload-guard|guard]] do arquivo, um lock curto por arquivo, a passada faz o sync do arquivo, commita a sua [[existence|existência]] e abre uma [[offer]] dos seus bytes dirty.",
+        "**Carve** e **assemble.** O carver corta os bytes oferecidos em [[chunk|chunks]], e o block assembler os agrupa em planos de bloco. Um plano lista hashes e posições, não bytes.",
+        "**Intent** e **put.** A tentativa cunha um [[block-name|block name]] novo e grava de forma durável um [[put-intent|put intent]] antes de enviar. Se o [[syncer]] repetir o upload dentro desta tentativa, a repetição mantém o mesmo nome.",
+        "**Commit** e **mark.** Uma transação de metadados por bloco commita os refs dele. Depois a passada marca como offloaded exatamente os extents que esses commits cobriram.",
+        "Se um put ainda falha depois das retentativas do próprio [[syncer]], a tentativa é abandonada. Os seus extents continuam [[dirty|Dirty]] e são oferecidos de novo mais tarde, com um nome novo."
+      ]
+    },
+    "split": {
+      "files": "arquivos",
+      "conflict": "conflito",
+      "commits": "commita",
+      "alone": "tenta de novo sozinho",
+      "steps": [
+        "64 processos chamam `fsync` cada um, e um único group commit leva os 64 arquivos deles. Enquanto isso, um `chmod` no arquivo 17 é commitado, e o store reporta um conflito sem dizer qual arquivo o causou.",
+        "O [[engine]] divide o lote em duas metades de 32 arquivos. A metade sem o arquivo 17 é commitada.",
+        "O engine divide a outra metade de novo e de novo, em grupos de 16, 8, 4 e 2 arquivos. A cada vez, a metade sem o arquivo 17 é commitada.",
+        "No fim, o arquivo 17 fica sozinho e tenta mais uma vez. Os outros 63 arquivos esperaram no máximo 6 transações a mais."
+      ]
+    }
+  }
+}

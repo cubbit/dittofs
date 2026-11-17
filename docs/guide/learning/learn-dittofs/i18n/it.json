@@ -1,0 +1,104 @@
+{
+  "glossary": {
+    "source": "Fonte",
+    "codeToday": "Codice oggi",
+    "open": "Apri nel glossario",
+    "noText": "Ancora nessuna definizione."
+  },
+  "catalogue": {
+    "title": "Impara DittoFS",
+    "lead": "Come funziona DittoFS, una parte alla volta, in linguaggio semplice. Scegli una sezione; clicca un termine sottolineato per la sua definizione e cambia lingua nell'angolo in alto a destra.",
+    "from": "Dall'RFC {n}"
+  },
+  "chrome": {
+    "start": "Torna alla prima slide",
+    "home": "Tutte le sezioni",
+    "motion": "Animazioni",
+    "motionModes": {
+      "loop": "in loop",
+      "once": "una volta",
+      "off": "spente"
+    }
+  },
+  "quiz": {
+    "kicker": "Mettiti alla prova",
+    "hint": "Scegli una risposta per vedere quella giusta e il perché, oppure premi → per andare avanti.",
+    "right": "Giusto. Sotto ogni risposta trovi perché è giusta o sbagliata.",
+    "wrong": "Non è questa: la risposta giusta è la {answer}. Sotto ogni risposta trovi perché è giusta o sbagliata."
+  },
+  "sections": {
+    "introduction": {
+      "name": "Introduzione",
+      "blurb": "Chi usa DittoFS e cosa vede, le parti dentro un nodo, una scrittura dal client al bucket e ritorno — e una mappa di tutte le sezioni che seguono.",
+      "from": "Dall'RFC 0 e dall'architettura di oggi"
+    },
+    "filesystem-service": {
+      "name": "Il filesystem service",
+      "blurb": "L'unico posto in cui ogni chiamata NFS e SMB viene controllata — share, permessi, file aperti, quota — sempre nello stesso ordine, qualunque sia il protocollo."
+    },
+    "adapters": {
+      "name": "Gli adapter",
+      "blurb": "Come NFS e SMB parlano con il filesystem: un solo percorso per ogni richiesta e le stesse regole per ogni protocollo — poi ciò che è proprio di SMB, e cosa vede un client Windows quando un nodo sparisce.",
+      "parts": [
+        "Il modello",
+        "SMB"
+      ]
+    },
+    "open-state": {
+      "name": "Open state e lock",
+      "blurb": "Chi tiene un file aperto, bloccato o in cache, come NFS e SMB condividono queste promesse, e che fine fanno quando un client o il server se ne va."
+    },
+    "metadata-store": {
+      "name": "Il metadata store",
+      "blurb": "Dove DittoFS ricorda tutto tranne i byte dei file: un solo database transazionale, una view ristretta per ogni componente, e perché le cartelle affollate non si contendono mai una chiave."
+    },
+    "engine": {
+      "name": "L'engine",
+      "blurb": "Il coordinatore che non tiene byte: decide quando ogni scrittura viene confermata, caricata, rimossa e riscaricata, e in che ordine."
+    },
+    "journal": {
+      "name": "Il journal",
+      "blurb": "Dove finisce prima una scrittura: il log locale che tiene al sicuro ogni byte finché non arriva nel bucket, e poi restituisce lo spazio."
+    },
+    "test-harness": {
+      "name": "L'harness di test",
+      "blurb": "Un solo comando che esegue ogni suite di test allo stesso modo, sul portatile o in CI, e non conta mai come superato un test che non è girato."
+    }
+  },
+  "deck": {
+    "glossaryKicker": "Glossario",
+    "glossaryTitle": "Tutti i termini del deck",
+    "intro": {
+      "kicker": "Prima di iniziare",
+      "knownTitle": "Termini che conosci già",
+      "newTitle": "Termini nuovi",
+      "clashTitle": "Termini in conflitto"
+    },
+    "problem": {
+      "kicker": "Il problema"
+    },
+    "numbers": {
+      "kicker": "Numeri concreti",
+      "title": "I numeri"
+    },
+    "fail": {
+      "kicker": "Quando qualcosa si rompe"
+    },
+    "whom": {
+      "kicker": "Cosa cambia per chi",
+      "title": "Cosa cambia per chi",
+      "opsTitle": "Operatori"
+    },
+    "rules": {
+      "kicker": "Regole e non-obiettivi",
+      "title": "Le regole, in parole semplici"
+    },
+    "promises": {
+      "title": "Cosa promette l'RFC"
+    },
+    "openQuestions": {
+      "kicker": "Ancora aperto",
+      "title": "Domande aperte"
+    }
+  }
+}
