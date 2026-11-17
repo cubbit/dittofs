@@ -555,18 +555,24 @@ func TestAConnectionsIdleDeadlineRunsFromItsLastReply(t *testing.T) {
 	}
 
 	clk.Advance(idle - time.Millisecond)
-	select {
-	case <-core.ConnDone(conn):
-		t.Fatal("a connection 1 ms short of its idle deadline closed")
-	default:
+	// The anti-check is a roundtrip: the deadline armed at the reply is 1 ms
+	// away and the answer beats it, while one armed at the session, a second
+	// earlier, would already have closed the connection and the send fail.
+	if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 4, Session: 7, Payload: []byte("ho")}); err != nil {
+		t.Fatalf("a connection 1 ms short of its idle deadline closed: %v", err)
 	}
-	clk.Advance(2 * time.Millisecond)
+	if rs, err := c.Recv(); err != nil || len(rs) != 1 || rs[0].ID != 4 {
+		t.Fatalf("1 ms short of its idle deadline, a connection answers %+v (%v)", rs, err)
+	}
+	// The client goes, the reader at its end: the teardown runs with the
+	// reply-re-armed idle timer still in the clock, and stops it, so nothing
+	// is left armed.
+	_ = client.Close()
 	select {
 	case <-core.ConnDone(conn):
 	case <-time.After(2 * time.Second):
-		t.Fatal("a connection past its idle deadline stayed open")
+		t.Fatal("the reader did not end at the client's close")
 	}
-	// The teardown stopped the connection's other deadline: nothing is armed.
 	if open := clk.pending(); open != 0 {
 		t.Errorf("a torn-down connection leaves %d timers armed", open)
 	}
