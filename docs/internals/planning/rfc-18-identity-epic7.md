@@ -362,14 +362,14 @@ epic's test holds it.
   schedule" and reports a rotation that cannot start by it failed, and no RFC says who starts the
   scheduled operation. Settled in review: identity, from a loop started by `Start` on the injected
   clock, creates a `rotate-machine-password` operation when the installation is joined, no join or
-  rotation runs (a tracked read of the running index) and `LastRotation.Confirmed` is 7 days old, or, after a failed rotation, one hour has passed since that failure. The schedule reads `Confirmed`, not `At`, which a failure moves: read from `At`, a few failures in a row could outlast the domain's maximum machine-password age (RFC 18 §3.5). The loop
+  rotation runs (a tracked read of the running index) and `LastRotation.Confirmed` is 7 days old, or, after a failed rotation, one hour has passed since that failure. The 7-day period reads `Confirmed`; the retry after a failure reads `At`, which the failing rotation writes with `Failed`, so a restart within the hour still waits it out. The 7-day period does not read `At`, which a failure moves: read from `At`, a few failures in a row could outlast the domain's maximum machine-password age (RFC 18 §3.5). The loop
   writes the operation, through `ControlPlaneTx.PutOperation` (RFC 23's plan's epic 2's T2.7), and
   its `AuditRecord` in one control-plane `Write`, both with the zero `Principal` as the schedule's:
   the operation's `Account` and the record's `Actor`, `ActorName` and `Credential` empty (RFC 23
   §4.6 and §6 and RFC 16 §2.3 as #4485 amends them; `entity.AuditRecord` on `feat/storage-v2` from
   #4494, whose `testAuditReads` finds such a record by `AuditFilter{Actor: &entity.Principal{}}`).
   It writes nothing else: a rotation that cannot start because
-  this node lags fails itself at its wait once the next one is due (R48). 7 days is Samba's
+  this node lags fails itself at its wait once one hour has passed since the wait started (R48), and the schedule starts the next an hour after that failure. 7 days is Samba's
   `machine password timeout` default (from memory), inside Windows' 30-day member default. A
   `ponytail:` names the constant. Written in place in T7.13. The operation
   is started by no call, so it carries the zero `Account`, read as the schedule, and its audit
@@ -828,20 +828,20 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   T2.4), which `*secrets.Provider` implements, `Prune` taking the caller's `ControlPlaneTx` so D14's
   prune commits inside an audited `Write`; `RotateStep`, a `step.Step`, and `RotateProgress`, a
   `step.Progress` (D4), the cursor `Next`
-  recording the pinned controller, the tag, the sealed version, whether a set was attempted, and the first unanswered
-  time; in RFC 18 §3.5's order: at the first turn, a `join-domain` running on the installation,
+  recording the pinned controller, the tag, the sealed version, whether a set was attempted, the first unanswered
+  time, and when the wait for the previous version started; in RFC 18 §3.5's order: at the first turn, a `join-domain` running on the installation,
   read tracked from the running index, failing the rotation as a problem naming it before anything
   is written, `LastRotation` and the condition untouched (R63), then the prune of D14; pin a
   controller; wait until
-  this node's `State.Machine` holds the previous version (D9), failing as a problem once the next
-  scheduled rotation is due, with `LastRotation.Failed` written first (R48, R56); seal through
+  this node's `State.Machine` holds the previous version (D9), failing as a problem once one hour
+  has passed since the wait started, with `LastRotation.Failed` and `LastRotation.At` written first (R48, R56); seal through
   `secrets.Seal` with `secrets.Meta{KeyVersion: number+1}` and `Installation.MachinePassword` in one
   write (D5), or take an unconfirmed, non-`HandedOver` version already tagged with that number, or
   the failed rotation's sealed version; wait until this node holds it; probe, record the attempt
   (D5), set only if not accepted; confirm: probe, then read the number, a mismatch logged and
   counted in `identity_machine_key_version_mismatches_total`; at the confirm, `Join.LastRotation`
   (with D6's `Version`) and `Join.Names` written; a pinned controller unanswered for an hour failing
-  as a problem naming it, with `LastRotation.Failed` written first; the parts written so T7.15 calls
+  as a problem naming it, with `LastRotation.Failed` and `LastRotation.At` written first; the parts written so T7.15 calls
   them for the closing rotations; `machine_password_rotation_failed` in `Conditions`, derived from
   `State.Join.LastRotation.Failed`; D9's and D14's `ponytail:`; RFC 18 §3.3's `ponytail:` on the
   hour. Consumed by T7.13, T7.15 and E8's T8.6.
@@ -860,8 +860,9 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   second set, the number up once (R52); a confirm reading 8 against tag 7: completed, counted once,
   the tag still 7, a ticket under 8 accepted (R50, R55); a confirm at a controller that no longer
   accepts the version: failed naming it (R55); `LastRotation`'s time, tag and number read back after
-  a fresh server (R46); this node not yet holding the previous version: nothing sealed, failed once
-  the next rotation is due, the condition raised and still raised after a fresh server over the
+  a fresh server (R46); this node not yet holding the previous version: nothing sealed, still waiting at
+  59 minutes after the wait started and failed at one hour (catches a wait ending at a schedule time
+  already past, R48), `LastRotation.At` the failure's time, the condition raised and still raised after a fresh server over the
   same store (R51, R48, R56); this node holding the sealed version only after the
   clock passes the wait: the set waits for it (R49); a `HandedOver` version current from R47's
   crash: the rotation seals a new version and never takes or sets it (R47, R54); the condition
@@ -892,7 +893,7 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 - **Covers:** R48.
 - **Deliverables:** D11's loop: started by `Start`, stopped by `Stop`, on
   the injected clock, creating a `rotate-machine-password` operation once `LastRotation.Confirmed`
-  is 7 days old, or one hour after a failed rotation, the installation joined and no join or rotation running: the loop writes the operation
+  is 7 days old, or one hour after `LastRotation.At` when `LastRotation.Failed`, the installation joined and no join or rotation running: the loop writes the operation
   and its `AuditRecord`, the zero `Principal` as the operation's `Account` and the record's `Actor`,
   in one control-plane `Write`, with the read of the running index tracked, and nothing else;
   D11's `ponytail:`. Consumed by E8's T8.6.
@@ -905,7 +906,9 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   none (catches a second rotation, R48); not
   joined, none; rotations failing in a row on the clock, each due again one hour after the last,
   with the time since `Confirmed` kept under the domain's maximum machine-password age (catches a
-  schedule read from `At`, R48). Doubles: the clock (kind 1).
+  schedule read from `At`, R48); a fresh server built half an hour after a failure: no rotation at
+  its first tick, one exactly one hour after `LastRotation.At` (catches a failure time held only in
+  memory, which a restart loses and so retries at the first tick, R48). Doubles: the clock (kind 1).
 - **Rules:** rule 9 (D11's `ponytail:`).
 
 ### T7.14 The online join
