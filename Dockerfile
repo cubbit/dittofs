@@ -80,10 +80,11 @@ EXPOSE 12049/tcp 12445/tcp 8080/tcp 9090/tcp 5353/udp 3702/udp 5357/tcp
 # - /config: Configuration file location
 VOLUME ["/data/metadata", "/data/blocks", "/data/cache", "/data/state", "/config"]
 
-# Health check using the REST API health endpoint
-# Checks liveness every 30s, allows 10s startup grace period
+# Health check on the API's liveness probe, every 30s after a 10s grace period.
+# The API is served over TLS on every address but loopback, and the
+# certificate names the host rather than localhost, so it is not verified.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider --no-check-certificate https://localhost:8080/health/live || exit 1
 
 ENTRYPOINT ["/app/dfs"]
 CMD ["start", "--config", "/config/config.yaml"]
