@@ -26,15 +26,19 @@ type opRead struct {
 }
 
 // opOf is op on the wire, its progress unknown. An error that does not
-// read as a problem reads as a 500 saying so, so one bad record fails
-// neither the read of it nor a listing holding it.
+// read as a problem reads as a 500 saying so, and a result that is not JSON
+// reads as none, so one bad record fails neither the read of it nor a
+// listing holding it.
 func opOf(op entity.Operation) opRead {
 	v := apiv1.Operation{ID: idString(op.ID), Kind: apiv1.OpKind(op.Kind), Target: refOf(op.Target),
 		Account: principalOf(op.Account), State: apiv1.OpState(op.State.String()), Progress: apiv1.Progress{Total: -1},
-		Started: op.Started, Updated: op.Updated, Result: json.RawMessage(op.Result)}
+		Started: op.Started, Updated: op.Updated}
+	if json.Valid(op.Result) {
+		v.Result = json.RawMessage(op.Result)
+	}
 	if op.Error != nil {
 		v.Error = new(apiv1.Problem)
-		if json.Unmarshal(op.Error, v.Error) != nil {
+		if json.Unmarshal(op.Error, v.Error) != nil || v.Error.Status == 0 {
 			*v.Error = apiv1.Problem{Status: http.StatusInternalServerError, Title: http.StatusText(http.StatusInternalServerError),
 				Detail: "the operation's error is unreadable"}
 		}
