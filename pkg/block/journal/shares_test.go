@@ -60,19 +60,27 @@ func withLimit(t *testing.T, j *Journal) {
 	}
 }
 
-// writeReady writes through h, waiting out a refusal for want of a spare
-// segment on the pool's own settle event, which clears once the pool has
-// readied its spares. The wait parks on the refill's settle alone, so the
-// helper answers a first fill slower than any fixed window would have been;
-// it reports the pool's own answers — a stop, or the idle short a failed
-// make leaves — never its own. The minute below is a backstop, not the
-// wait: a settle is the only other end it has.
+// writeReady writes p at offset 0 through h, as writeAtReady does.
 func writeReady(t *testing.T, h *Handle, id FileID, p string) Version {
+	t.Helper()
+	return writeAtReady(t, h, id, 0, []byte(p))
+}
+
+// writeAtReady writes p at off through h, waiting out a refusal for want of a
+// spare segment on the pool's own settle event, which clears once the pool
+// has readied its spares. Any write can meet that refusal, a roll as much as
+// a first write: the pool refills off the write path, so a roll that comes
+// before the refill lands finds no spare. The wait parks on the refill's
+// settle alone, so the helper answers a fill slower than any fixed window
+// would have been; it reports the pool's own answers — a stop, or the idle
+// short a failed make leaves — never its own. The minute below is a
+// backstop, not the wait: a settle is the only other end it has.
+func writeAtReady(t *testing.T, h *Handle, id FileID, off int64, p []byte) Version {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute) // backstop only; the wait is the settle
 	defer cancel()
 	for {
-		v, err := h.WriteAt(ctx, id, 0, []byte(p), 1)
+		v, err := h.WriteAt(ctx, id, off, p, 1)
 		var ns *NoSpaceError
 		if errors.As(err, &ns) && ns.Limit == LimitSpare {
 			if werr := h.j.core.WaitSpares(ctx); werr != nil {
