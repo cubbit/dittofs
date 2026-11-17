@@ -275,7 +275,7 @@ func TestUnchangedTurnCommitsNothing(t *testing.T) {
 	counting := new(kv.Counting)
 	b := newBench(t, "", func(db kv.KV) kv.KV { counting.KV = db; return counting })
 	next := []byte("a")
-	steps := map[string]stepRow{"k": {run: func(context.Context, entity.Operation) (step.StepResult, error) {
+	steps := map[string]stepRow{"k": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
 		return step.StepResult{Next: next}, nil
 	}}}
 	op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpPending})
@@ -296,6 +296,48 @@ func TestUnchangedTurnCommitsNothing(t *testing.T) {
 	}
 }
 
+// noPhase is the progress of a step whose phase never moves.
+func noPhase(context.Context, entity.Operation) apiv1.Progress { return apiv1.Progress{} }
+
+// A turn whose step moves the phase its progress reads, with its cursor
+// unchanged, commits once with an audit record naming both phases; a turn
+// whose phase stays commits nothing.
+func TestPhaseChangeCommitsWithItsAudit(t *testing.T) {
+	counting := new(kv.Counting)
+	b := newBench(t, "", func(db kv.KV) kv.KV { counting.KV = db; return counting })
+	phase, moveTo := "", ""
+	steps := map[string]stepRow{"k": {
+		run: func(context.Context, entity.Operation) (step.StepResult, error) {
+			phase = moveTo
+			return step.StepResult{Next: []byte("a")}, nil
+		},
+		progress: func(context.Context, entity.Operation) apiv1.Progress { return apiv1.Progress{Phase: phase} },
+	}}
+	op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpPending})
+	r := b.runner(steps)
+	b.at(r, 0)
+	for i, c := range []struct {
+		to      string
+		commits int
+		change  string
+	}{{"scan", 1, `{"phase":{"old":"","new":"scan"}}`}, {"scan", 0, ""}, {"copy", 1, `{"phase":{"old":"scan","new":"copy"}}`}} {
+		moveTo = c.to
+		audits := len(b.opAudits(op.ID))
+		counting.TakeUpdates()
+		b.at(r, time.Duration(i+1)*time.Second)
+		if got := counting.TakeUpdates().Updates; got != c.commits {
+			t.Errorf("turn moving the phase to %q: got %d commits, want %d", c.to, got, c.commits)
+		}
+		got := b.opAudits(op.ID)[audits:]
+		switch {
+		case c.change == "" && len(got) != 0:
+			t.Errorf("turn keeping phase %q: got audit records %v, want none", c.to, got)
+		case c.change != "" && (len(got) != 1 || string(got[0].Change) != c.change):
+			t.Errorf("turn moving the phase to %q: got audit records %v, want one with change %s", c.to, got, c.change)
+		}
+	}
+}
+
 // A state change whose audit record fails to commit leaves out the change,
 // its audit record and its End's writes, and is retried after a wait; the
 // retry commits all three, audited as the account that started the
@@ -307,7 +349,7 @@ func TestStateChangeCommitsWithItsAudit(t *testing.T) {
 	op := b.deleteUser(alice, gen)
 	setting := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation}, Key: "ended", Value: []byte("yes")}
 	deletion := operationSteps(b.store.Nodes())[string(apiv1.OpUserDelete)]
-	r := b.runner(map[string]stepRow{string(apiv1.OpUserDelete): {run: func(ctx context.Context, op entity.Operation) (step.StepResult, error) {
+	r := b.runner(map[string]stepRow{string(apiv1.OpUserDelete): {progress: noPhase, run: func(ctx context.Context, op entity.Operation) (step.StepResult, error) {
 		res, err := deletion.run(ctx, op)
 		res.End = func(tx entity.ControlPlaneTx) error {
 			_, err := tx.PutSetting(setting, 0)
@@ -389,7 +431,7 @@ func TestStepAnswerRecorded(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			b := newBench(t, "", nil)
 			op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning, Step: []byte("s1")})
-			b.at(b.runner(map[string]stepRow{"k": {run: func(context.Context, entity.Operation) (step.StepResult, error) {
+			b.at(b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
 				if c.panics != nil {
 					panic(c.panics)
 				}
@@ -409,7 +451,7 @@ func TestInterruptedStepCommitsNothing(t *testing.T) {
 	b := newBench(t, "", nil)
 	op := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpRunning, Step: []byte("s1")})
 	ctx, cancel := context.WithCancel(t.Context())
-	r := b.runner(map[string]stepRow{"k": {run: func(context.Context, entity.Operation) (step.StepResult, error) {
+	r := b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
 		cancel()
 		return step.StepResult{}, step.ErrStepFailed
 	}}})
@@ -502,7 +544,7 @@ func TestDeletionProgress(t *testing.T) {
 	steps := operationSteps(kvstore.Nodes{})
 	want := apiv1.Progress{Phase: "batches", Total: -1, Unit: "batches"}
 	for _, kind := range []apiv1.OpKind{apiv1.OpUserDelete, apiv1.OpGroupDelete} {
-		if got := steps[string(kind)].progress(nil); got != want {
+		if got := steps[string(kind)].progress(t.Context(), entity.Operation{}); got != want {
 			t.Errorf("progress of %s: got %+v, want %+v", kind, got, want)
 		}
 	}
@@ -536,7 +578,7 @@ func TestRetriedStepBacksOff(t *testing.T) {
 func TestBackoffRestartsAfterASuccess(t *testing.T) {
 	b := newBench(t, "", nil)
 	answers := []error{errors.New("first failure"), nil, errors.New("second failure"), nil}
-	r := b.runner(map[string]stepRow{"k": {run: func(_ context.Context, op entity.Operation) (step.StepResult, error) {
+	r := b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(_ context.Context, op entity.Operation) (step.StepResult, error) {
 		err := answers[0]
 		answers = answers[1:]
 		return step.StepResult{Next: op.Step, Done: len(answers) == 0}, err
@@ -582,7 +624,7 @@ func TestEndedOperationIsNotDriven(t *testing.T) {
 	ended := b.operation(entity.Operation{Kind: "k", Target: aShare, State: entity.OpFailed, Error: []byte(`{}`)})
 	running := b.operation(entity.Operation{Kind: "k", Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{2}}, State: entity.OpRunning})
 	var driven []entity.OperationID
-	b.at(b.runner(map[string]stepRow{"k": {run: func(_ context.Context, op entity.Operation) (step.StepResult, error) {
+	b.at(b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(_ context.Context, op entity.Operation) (step.StepResult, error) {
 		driven = append(driven, op.ID)
 		return step.StepResult{Done: true}, nil
 	}}}), 0)
@@ -601,7 +643,7 @@ func TestRunTurnsOnTheClock(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	b := newBench(t, "", nil)
 	ctx, cancel := context.WithCancel(t.Context())
-	r := b.runner(map[string]stepRow{"k": {run: func(context.Context, entity.Operation) (step.StepResult, error) {
+	r := b.runner(map[string]stepRow{"k": {progress: noPhase, run: func(context.Context, entity.Operation) (step.StepResult, error) {
 		return step.StepResult{Done: true}, nil
 	}}})
 	done := make(chan struct{})

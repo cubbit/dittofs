@@ -103,8 +103,9 @@ func (r *runner) turn(ctx context.Context) {
 	maps.DeleteFunc(r.retries, func(id entity.OperationID, _ retry) bool { return !listed[id] })
 }
 
-// drive runs one step of op and commits its answer when the step's cursor
-// or the operation's state changed: a step's error that failed names, or its
+// drive runs one step of op and commits its answer when the step's cursor,
+// the operation's state or the phase its progress reads changed, audited
+// when the state or the phase did: a step's error that failed names, or its
 // panic, fails the operation, any other is retried with the same cursor
 // after a wait, and a done step ends it with its Result and its End's
 // writes. A step ctx interrupted commits nothing, whatever it answered.
@@ -131,6 +132,7 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 	if w, waiting := r.retries[op.ID]; waiting && now < w.at {
 		return
 	}
+	before := row.progress(ctx, op).Phase
 	res, err := runStep(ctx, row.run, op)
 	if ctx.Err() != nil {
 		return
@@ -148,13 +150,14 @@ func (r *runner) drive(ctx context.Context, op entity.Operation) {
 	default:
 		next.State, next.Step = entity.OpRunning, res.Next
 	}
-	if next.State == op.State && bytes.Equal(next.Step, op.Step) {
+	after := row.progress(ctx, next).Phase
+	if next.State == op.State && bytes.Equal(next.Step, op.Step) && after == before {
 		delete(r.retries, op.ID)
 		return
 	}
 	var meta entity.WriteMeta
-	if next.State != op.State {
-		meta.Audit = r.audit(op, next.State)
+	if next.State != op.State || after != before {
+		meta.Audit = r.audit(op, next.State, before, after)
 	}
 	err = r.cp.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
 		if next.State == entity.OpSucceeded && res.End != nil {
@@ -218,19 +221,32 @@ func (r *runner) retry(ctx context.Context, op entity.Operation, now time.Durati
 	}
 }
 
-// audit is the record of op's state changing to to.
+// audit is the record of op's state changing to to and its phase from
+// before to after, naming only what changed.
 //
 // decision: the runner's state changes are audited as the account that
 // started the operation, on this node, and as the schedule, the zero actor,
 // only for an operation no call started, whose Account is zero.
-func (r *runner) audit(op entity.Operation, to entity.OpState) *entity.AuditRecord {
+func (r *runner) audit(op entity.Operation, to entity.OpState, before, after string) *entity.AuditRecord {
+	type change struct {
+		Old string `json:"old"`
+		New string `json:"new"`
+	}
+	c := map[string]change{}
+	if to != op.State {
+		c["state"] = change{op.State.String(), to.String()}
+	}
+	if after != before {
+		c["phase"] = change{before, after}
+	}
+	b, _ := json.Marshal(c) // strings always marshal
 	return &entity.AuditRecord{
 		Actor:   op.Account,
 		Node:    r.node,
 		Target:  entity.ResourceRef{Kind: entity.ResourceOperation, ID: op.ID[:]},
 		Before:  op.Generation,
 		After:   op.Generation + 1,
-		Change:  fmt.Appendf(nil, `{"state":{"old":%q,"new":%q}}`, op.State, to),
+		Change:  b,
 		Outcome: []byte("applied"),
 	}
 }

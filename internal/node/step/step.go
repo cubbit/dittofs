@@ -36,5 +36,6 @@ type StepResult struct {
 // a turn whose answer was not committed runs again.
 type Step func(ctx context.Context, op entity.Operation) (StepResult, error)
 
-// Progress reads an operation's progress from its cursor.
-type Progress func(next []byte) apiv1.Progress
+// Progress reads an operation's progress: a runner-driven kind from op.Step,
+// a kind whose owner keeps its cursor from the owner's records.
+type Progress func(ctx context.Context, op entity.Operation) apiv1.Progress

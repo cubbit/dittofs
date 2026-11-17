@@ -54,6 +54,6 @@ func principalDeletion(nodes kvstore.Nodes, kind entity.PrincipalKind) step.Step
 
 // deletionProgress is a principal deletion's progress: batches, as many as
 // its rows need, which no cursor counts.
-func deletionProgress([]byte) apiv1.Progress {
+func deletionProgress(context.Context, entity.Operation) apiv1.Progress {
 	return apiv1.Progress{Phase: "batches", Total: -1, Unit: "batches"}
 }
