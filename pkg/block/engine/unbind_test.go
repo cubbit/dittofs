@@ -142,7 +142,7 @@ func TestUnbindKeepsTheLifecycleMutexFreeWhileItJoins(t *testing.T) {
 		t.Error("the lifecycle mutex is held while Unbind joins")
 	}
 
-	other := u.bindShare(t, "other", entity.NamespaceID{})
+	other := u.bindShare(t, "other", u.share.Namespace)
 
 	if _, err := u.e.Draw(t.Context(), other, entity.NewFileID()); err != nil {
 		t.Errorf("a call on another share while Unbind joins = %v, want nil", err)

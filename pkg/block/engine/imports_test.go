@@ -20,11 +20,8 @@ const module = "github.com/cubbit/dittofs/"
 // the previous engine, journal, syncer, carver, remote tier or metadata
 // service is on it, and neither is the filesystem's package: the engine takes
 // only its errors, from pkg/vfs/vfserr. Open state is enginewire's, which
-// builds the table, adapts it to the engine's CloneHold, and starts and stops
-// it with the engine, for the node and the fixture alike; its test's, which
-// reads whether the table runs; the fixture's, which also stops that table
-// after a failed close; and the unit tests', which run a clone's hold over
-// the real table.
+// builds, starts and stops it with the engine, and its test's, the
+// fixture's and the unit tests', which run it for real.
 var allowed = map[string][]string{
 	module + "pkg/block/journal":    {"*"},
 	module + "pkg/health":           {"*"},
@@ -36,9 +33,8 @@ var allowed = map[string][]string{
 	// profiler, the real store on an in-memory kv.KV, and a test clock. The
 	// unit tests' start failure tests, and the fixture's rows of the self-fence,
 	// put the fault-injecting kv.KV under that store. enginewire's test runs
-	// Compose, Start and Stop over the real store on an in-memory kv.KV, a
-	// journal initialised on a mount taken as suitable, and a test clock,
-	// under the profiler.
+	// its calls over the same real store, journal and clock, under the
+	// profiler.
 	module + "pkg/block/journal/journaltest":     {"enginetest", wireTests},
 	module + "pkg/block/journal/journaltest/kit": {"enginetest"},
 	module + "internal/prof":                     {"enginetest", unitTests, wireTests},

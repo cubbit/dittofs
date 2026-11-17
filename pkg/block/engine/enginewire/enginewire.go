@@ -94,11 +94,28 @@ func Start(ctx context.Context, open *openstate.Table, e *engine.Engine, sink op
 
 // Stop closes the engine, then stops open state. An engine whose close
 // fails, a join of its clone batches unfinished among the causes, leaves
-// open state running, since those batches still send it their CloneClose.
-func Stop(ctx context.Context, open *openstate.Table, e *engine.Engine) error {
+// open state running, since those batches still send it their CloneClose;
+// a later Stop closes the engine again.
+func Stop(ctx context.Context, open *openstate.Table, e interface{ Close(context.Context) error }) error {
 	if err := e.Close(ctx); err != nil {
 		return fmt.Errorf("engine: %w", err)
 	}
 	open.Stop()
 	return nil
+}
+
+// Binding is share s as the engine binds it, with journal limit limit: its
+// namespace the one its write generation names, serving or quiesced as its
+// record says.
+func Binding(s entity.Share, limit int64) engine.Share {
+	b := engine.Share{ID: s.ID, Tag: journal.ShareTag(s.Tag), Shard: s.Shard, Limit: limit, State: engine.Serving}
+	for _, ns := range s.Namespaces {
+		if ns.Generation == s.Write {
+			b.Namespace = ns.Namespace
+		}
+	}
+	if s.State == entity.ShareQuiesced {
+		b.State = engine.Quiesced
+	}
+	return b
 }

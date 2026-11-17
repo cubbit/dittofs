@@ -47,7 +47,7 @@ func TestCloneAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, g := entity.NewFileID(), entity.NewFileID()
-	same := u.bindShare(t, "same", entity.NamespaceID{})
+	same := u.bindShare(t, "same", u.share.Namespace)
 	other := u.bindShare(t, "other", entity.NewNamespaceID())
 	u.e.SetAfterRegister(func() error { return engine.ErrStopped })
 	counts.Take()
