@@ -288,3 +288,13 @@ func ConnDone(c *Conn) <-chan struct{} { return c.done }
 
 // ConnPipeline is a connection's pipeline, for a test that reads what runs.
 func ConnPipeline(c *Conn) *Pipeline { return c.p }
+
+// SetServerClock replaces the server's shared clock with a test's.
+func SetServerClock(s *Server, c Clock) { s.sh.clock = c }
+
+// Runs is how many requests or status waits the pipeline has running.
+func Runs(p *Pipeline) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.runs
+}
