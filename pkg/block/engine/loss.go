@@ -409,8 +409,13 @@ func (fe *fileEntry) dropCovered() (dones []func()) {
 
 // LossSeq is the file's loss sequence now, with no sync; 0 for a share with
 // no binding.
+//
+// decision: a quiesced share still answers its real sequence, as LossSeq
+// admits nothing and has no error to refuse with: a 0 would make an open
+// recorded at it see every earlier loss as new. Overturned if LossSeq ever
+// changes state.
 func (e *Engine) LossSeq(s entity.ShareID, f entity.FileID) uint64 {
-	b, err := e.bindingOf(s)
+	b, err := e.boundOf(s)
 	if err != nil {
 		return 0
 	}
