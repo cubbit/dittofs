@@ -21,6 +21,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 	"github.com/google/uuid"
 )
 
@@ -488,6 +490,43 @@ func TestWaitWithNoClock(t *testing.T) {
 	p := answered(t, "GET knob?wait=5s with no clock", s.poll(t.Context(), knobAt(uuid.NewString())+"?wait=5s"))
 	if p.err != nil || p.status != http.StatusServiceUnavailable || p.problem(t).Code != apiv1.CodeUnavailable {
 		t.Errorf("GET knob?wait=5s with no clock: answered %d %s err %v, want 503 unavailable", p.status, p.body, p.err)
+	}
+}
+
+// A first read that fails under ?wait= answers its error at once, never
+// parking.
+func TestWaitFirstReadFails(t *testing.T) {
+	disk := newOnDisk(t)
+	s := serve(t, as(entity.RoleViewer, false), disk.use)
+	sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: "*", Key: "*", Action: sim.FaultAction{Err: vfserr.ErrUnavailable}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk.fault.SetFault(sched)
+	base := s.clock.Pending()
+	p := s.settle(t, "GET knob?wait=30s with the store faulted", s.poll(t.Context(), knobAt(uuid.NewString())+"?wait=30s"), base)
+	if p.err != nil || p.status != http.StatusServiceUnavailable || p.problem(t).Code != apiv1.CodeUnavailable || s.clock.Pending() != base {
+		t.Errorf("GET knob?wait=30s with the store faulted: answered %d %s err %v, %d waits on the clock; want 503 unavailable and %d waits", p.status, p.body, p.err, s.clock.Pending(), base)
+	}
+}
+
+// A node with no store answers a read and a listing 503 unavailable, and
+// one with no node statuses a listing.
+func TestReadsWithNoStore(t *testing.T) {
+	for _, tc := range []struct {
+		name, path string
+		edit       func(*api.Deps)
+	}{
+		{"a read with no store", knobAt(uuid.NewString()), func(d *api.Deps) { d.Store = nil }},
+		{"a listing with no store", "/api/v1/tags", func(d *api.Deps) { d.Store = nil }},
+		{"a listing with no node statuses", "/api/v1/tags", func(d *api.Deps) { d.Nodes = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := serve(t, as(entity.RoleViewer, false), tc.edit)
+			if r, err := s.send(t.Context(), http.MethodGet, tc.path, ""); err != nil || r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
+				t.Errorf("%s: answered %d %s err %v, want 503 unavailable", tc.name, r.status, r.body, err)
+			}
+		})
 	}
 }
 
