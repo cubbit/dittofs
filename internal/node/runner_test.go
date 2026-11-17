@@ -416,9 +416,9 @@ func TestEndPanicFailsOperation(t *testing.T) {
 		error string
 	}{
 		{"a panic", func() error { panic("boom") },
-			`{"status":500,"code":"","title":"the operation failed","detail":"step failed: operation end: panic: boom","retryable":false,"request_id":""}`},
+			`{"status":500,"title":"the operation failed","detail":"step failed: operation end: panic: boom","retryable":false,"request_id":""}`},
 		{"a step failure", func() error { return fmt.Errorf("%w: x", step.ErrStepFailed) },
-			`{"status":500,"code":"","title":"the operation failed","detail":"step failed: x","retryable":false,"request_id":""}`},
+			`{"status":500,"title":"the operation failed","detail":"step failed: x","retryable":false,"request_id":""}`},
 		{"a problem", func() error { return gone }, string(goneBody)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -470,11 +470,11 @@ func TestStepAnswerRecorded(t *testing.T) {
 		result string
 	}{
 		{"a step failure", step.StepResult{Next: []byte("s2")}, step.ErrStepFailed, nil, entity.OpFailed, "s1",
-			`{"status":500,"code":"","title":"the operation failed","detail":"step failed","retryable":false,"request_id":""}`, ""},
+			`{"status":500,"title":"the operation failed","detail":"step failed","retryable":false,"request_id":""}`, ""},
 		{"a problem", step.StepResult{}, gone, nil, entity.OpFailed, "s1", string(goneBody), ""},
 		{"a wrapped problem", step.StepResult{}, fmt.Errorf("batch: %w", gone), nil, entity.OpFailed, "s1", string(goneBody), ""},
 		{"a panic", step.StepResult{}, nil, "boom", entity.OpFailed, "s1",
-			`{"status":500,"code":"","title":"the operation failed","detail":"step failed: panic: boom","retryable":false,"request_id":""}`, ""},
+			`{"status":500,"title":"the operation failed","detail":"step failed: panic: boom","retryable":false,"request_id":""}`, ""},
 		{"a cancelled context", step.StepResult{Next: []byte("s2")}, context.Canceled, nil, entity.OpRunning, "s1", "", ""},
 		{"done", step.StepResult{Next: []byte("s2"), Done: true, Result: json.RawMessage(`{"id":7}`)}, nil, nil, entity.OpSucceeded, "s2", "", `{"id":7}`},
 	} {
