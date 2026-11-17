@@ -622,3 +622,19 @@ func TestTakeBackRaiseLeavesOtherCounts(t *testing.T) {
 		}
 	})
 }
+
+// The write decides at store time: with the node clock an hour ahead, the
+// untracked check passes the sixth attempt and the write still refuses it.
+func TestWriteDecidesAtStoreTime(t *testing.T) {
+	stores(t, func(t *testing.T, f *fix) {
+		a := attempt{account: f.user(), source: src("192.0.2.1")}
+		for range 5 {
+			f.fail(a)
+		}
+		_, err := reserve(t.Context(), f.cp, sim.NewTestClock(f.clk.Now().Add(time.Hour)), a)
+		var th *throttled
+		if !errors.As(err, &th) {
+			t.Errorf("sixth attempt with the node clock an hour ahead: %v, want throttled by store time", err)
+		}
+	})
+}
