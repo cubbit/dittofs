@@ -176,9 +176,9 @@ func signedCount(delta int64) string {
 
 func signedBytes(delta int64) string {
 	if delta > 0 {
-		return "+" + humanSize(delta)
+		return "+" + HumanSize(delta)
 	}
-	return "-" + humanSize(-delta)
+	return "-" + HumanSize(-delta)
 }
 
 // story is one registered scenario: its beats and the journal settings

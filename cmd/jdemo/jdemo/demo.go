@@ -63,6 +63,12 @@ type Demo struct {
 	quit    bool
 	Stashed journal.Version // the last mutating beat's issued version
 
+	// LimitsReservation holds the limits story's reserve-first beat's
+	// reservation for the escape beat that spends it; LimitsRefused
+	// records that the filler met the share's refusal.
+	LimitsReservation *journal.Reservation
+	LimitsRefused     bool
+
 	// lastView holds each view's last-shown rows: the diff layer's
 	// snapshots. They survive beats on purpose — a look after a mutating
 	// beat is where the diff is the point.
@@ -386,3 +392,32 @@ func (d *Demo) Yellowf(format string, args ...any) {
 
 // colours is the demo's palette, computed per render from the writer.
 func (d *Demo) colours() colour { return coloursFor(d.out) }
+
+// AwaitSpare reruns op while it answers the spare pool's own retryable
+// refusal — the pool refills asynchronously, and the journal documents the
+// retry as the caller's. Exported because the limits story's filler meets
+// the same race between its own rolls and the maker.
+func AwaitSpare(ctx context.Context, op func() error) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := op()
+		if err == nil || !IsLimitSpare(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// IsLimitSpare answers whether err is a NoSpaceError naming the spare
+// limit — the one refusal that clears on its own.
+func IsLimitSpare(err error) bool {
+	var ns *journal.NoSpaceError
+	return errors.As(err, &ns) && ns.Limit == journal.LimitSpare
+}
