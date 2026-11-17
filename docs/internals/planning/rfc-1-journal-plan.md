@@ -43,9 +43,12 @@ There are 12 epics:
 - **Epic 10** is the journal's share of starting and initialising an installation: the
   start check, journal init inside the initialisation step, and the wipe of devices left
   by an interrupted step.
-- **Epic 11** is stage 3 of [#3119](https://github.com/cubbit/dittofs/issues/3119): the
-  engine (journal, carver, syncer, remote) rebuilt on the RFC 16 store, behind the
-  filesystem-service engine interface. It is planned once that interface is agreed (S4a).
+- **Epic 11** was stage 3 of [#3119](https://github.com/cubbit/dittofs/issues/3119), and is
+  superseded. Stage 3's first part is the journal-only engine, built by rif's team under
+  [the RFC 8 part-1 plan](rfc-8-journal-only-engine-plan.md); the S4a gate below never
+  happened as written — the engine interface exists as `engine.Deps` on `feat/storage-v2`.
+  What epic 11 named that part 1 leaves out (the offload, fill and eviction wiring, salvage,
+  exporters, API and CLI stats, the system e2e) moves to RFC 8's second part (§5, epic 11).
 - **Epic 12** turns the e2e suite green.
 
 Each epic is sized at about 10 subtasks. The detailed subtask breakdown of an epic is
@@ -263,8 +266,8 @@ run is a failure ([RFC index, test tiers](../rfcs/rfc-index.md)).
 | 8 | **Data path and capacity** ⛔ | a minimal `Init` and `Open` for S3, `Journal`, `Share`, `Handle`, `Close`, `WriteAt`, `ReadAt`, `Fill`, removals, `Since` and `Settle`, `Draw`, `Reserve`, limits, headroom, named refusals, lock domains, `Stats` | 15 | B | 9a, 9b, 11 |
 | 9a | **Reclamation and tags** | Liveness of records and segments, auto-retire, the journal's unread set, `Repack` (also scoped to a share), `Inspector.Segments`, `Forget`, `Strand` | 12 | B | 7a (T9.1), 11 |
 | 9b | **Offload, release and holds** | `Offload`, `OffloadMany`, pins, `report`, `MarkOffloaded`, `Unmark` and the stale rule, `Release`, snapshot holds | not broken down | B | 11 |
-| 10 | **Start and initialisation** | Start check and its two refusals, `journal.Init` in the initialisation step and the `J‖journal` writes, wipe of devices left by an interrupted step, device config keys | 5 | A | 11 |
-| 11 | **Engine on the RFC 16 store** 🔀 | Stage 3 of #3119, planned after S4a: engine wiring (`Fill`, `report`, `Release`), per-device registry, version floor and limit, store contracts, error mapping, salvage, exporters and alert rules, API and CLI, system e2e tests | planned after S4a | team | 12 |
+| 10 | **Start and initialisation** | The initialisation step (`journal.Init`, the `J‖journal` record writes, the interrupted-step wipe) and the start-check refusal rows; device config keys and the start check's identity half have landed (§5, epic 10) | 5 | A | 11 |
+| 11 | **Engine on the RFC 16 store** 🔀 | Superseded by the RFC 8 split: the journal-only engine ([part 1](rfc-8-journal-only-engine-plan.md), rif's team) is under way on `feat/storage-v2`; what epic 11 named and part 1 leaves out — offload/fill/eviction wiring, salvage, exporters and alert rules, API/CLI journal stats, the system e2e — is RFC 8's second part, owned by no plan yet | superseded (2026-11-17) | part 1: rif's team; the rest unowned | 12 |
 | 12 | **E2E green** 🔀 | Burn down the known-failure list, soak, benchmarks J1–J5 and J8, CI tier registration, profiling baselines | 8 | team | release |
 | | | | **~123 + E7b + E9b + E11** | | |
 
@@ -341,25 +344,26 @@ everything before it.
 - **S4. Core complete** (E3–E6, E7a, E8 and E9a done). All component conformance tests are
   green except the rows epics 7b and 9b own, which stay listed against those epics. Only
   those and the system e2e tests remain on the known-failure list. E11 cannot finish before this point.
-- **S4a. Engine interface agreed** (with rif, stage 2 of #3119). The filesystem service's
-  engine interface is rif's; both sides agree on it before stage 3 starts. E11 is planned
-  only once it exists, and its engine wiring, version-limit raise and store contracts
-  cannot start before it. S4a is independent of S1–S4 and can be reached at any time
-  before E11. It also settles who writes the system scenarios that run at the
-  filesystem service's integration tier, and the shape of the `Content` conformance
-  check that both the in-memory `Content` and the engine pass. The check is written first,
-  with the in-memory `Content` it holds, and the engine passing it is E11's deliverable (epic
-  2, §7).
-- **S5. Wired** (end of E11). The engine runs on v2 and the RFC 16 store, and the system
-  e2e suite, written in E10 and E11, runs against it. **S5 has an external dependency:**
-  the RFC 16 metadata store of [#3120](https://github.com/cubbit/dittofs/pull/3120) must
-  be on `feat/storage-v2`, because E10's initialisation and E11's engine work both rely
-  on it. **The protocol rows have a second one:** a `dfs` serving NFS or SMB on v2 needs
-  the filesystem service, `vfs.Filesystem` (#3119 stage 2, RFC 17), and the adapters moved onto
-  it, not only E11. The write-verifier row is `vfs.Filesystem` behaviour (RFC 17 §5.8). The
-  rows that need no kernel client (several shares per journal, capacity, cold reads,
-  lifecycle) run at the filesystem service's integration tier once E11 and stage 2's
-  `vfs.New` exist (epic 2, §7). E12 then burns down the known-failure list.
+- **S4a. Engine interface agreed** (with rif, stage 2 of #3119). **Closed, not as
+  written.** No interface negotiation happened: the engine interface exists as
+  `engine.Deps` on `feat/storage-v2` (`pkg/block/engine`, composed by
+  `pkg/block/engine/enginewire`), and stage 3's first part is planned and under way as the
+  [RFC 8 part-1 plan](rfc-8-journal-only-engine-plan.md), built by rif's team. The engine
+  wiring, version-limit raise and store contracts this gate was to unblock are that plan's.
+  What it never settled — who writes the system scenarios at the filesystem service's
+  integration tier, and the shape of the `Content` conformance check — is still open, and
+  moves with the rest of epic 11's leftovers to RFC 8's second part (§5, epic 11).
+- **S5. Wired** (end of E11, as corrected in §5). The engine runs on v2 and the RFC 16
+  store: as of 2026-11-17 the journal-only half of it does run on `feat/storage-v2`
+  (RFC 8 part 1), and [#3120](https://github.com/cubbit/dittofs/pull/3120)'s store has
+  landed, so that external dependency is gone. The offload half of the engine and the
+  system e2e rows wait on the RFC 8 part-2 plan, which no document owns yet. **The
+  protocol rows keep their external dependency:** a `dfs` serving NFS or SMB on v2 needs
+  the filesystem service, `vfs.Filesystem` (#3119 stage 2, RFC 17), and the adapters moved
+  onto it. The write-verifier row is `vfs.Filesystem` behaviour (RFC 17 §5.8). The rows
+  that need no kernel client (several shares per journal, capacity, cold reads,
+  lifecycle) run at the filesystem service's integration tier once the part-2 engine and
+  stage 2's `vfs.New` exist (epic 2, §7). E12 then burns down the known-failure list.
 
 ### 3.3 Blockers
 
@@ -392,14 +396,17 @@ everything before it.
   breakdown is next revised.
 - **E9a** blocks E9b: offers, marks and `Release` run on its liveness tracker.
 - **E7b** blocks E9b's snapshot holds: an E7a open refuses a journal holding a hold record.
-- **E10** blocks E11's start order.
-- **S4a (with rif)** blocks E11: its engine wiring, version-limit raise and store
-  contracts cannot start before it.
-- **E11** blocks E12's system tests.
+- **E10** blocks the engine's start order: RFC 8's journal-only engine is already composed
+  over journals, and its start waits on the initialisation step this epic builds.
+- **S4a is closed, and E11 is superseded** (§5, epic 11): the engine wiring, version-limit
+  raise and store contracts belong to the RFC 8 part-1 plan, already under way; the offload
+  half, the exporters and the system rows belong to its second part, which no plan owns yet.
+- **E12's system tests** block on that second part and on #3119 stage 2, not on an epic of
+  this plan.
 - **#3119 stage 2 (external)**, the filesystem service, blocks the integration-tier system
   scenarios; it and the adapters moved onto it block the protocol scenarios.
-- **#3120 (external)**, the RFC 16 metadata store, blocks E10's initialisation step, and
-  E11's version-limit raise and store contracts.
+- **#3120 has landed**: the RFC 16 store is on `feat/storage-v2`, so E10's initialisation
+  and the engine's store work no longer wait on it.
 - **The init command (RFC 16, external)** blocks E10's initialisation step.
 
 ### 3.4 Splitting the work
@@ -458,6 +465,9 @@ pkg/block/journal/                package journal — public API (RFC 1 §3)
   journaltest/                    crash seam, reference model, profiler, fixtures (E2)
 pkg/sim/                          TestClock, Fault, Schedule; node-wide (RFC 8 §2.1) (E2)
 pkg/clock/                        Clock + System, with its first caller (stage-3 composition root, E11)
+                                  (not created: on feat/storage-v2 the clock the
+                                  composition passes serves engine and journal both,
+                                  both taking it as an argument)
 test/journal/known.yaml           known failures, graded by dt (RFC 29 §4.7)     (E2)
 test/journal/trace.yaml           RFC row → test or owner, checked by trace_test.go (E2)
 test/e2e/journal_*_test.go        system e2e with kernel clients        (E10 and E11 tests)
@@ -472,8 +482,11 @@ label is needed either (epic 1, D1).
 This sketch is illustrative: signatures come from RFC 1 §3 or from `pkg/block/journal` on
 `feat/storage-v2`, and the epic documents decide the final names.
 
-Epic 11's composition root opens one journal per device at start, then attaches a handle
-per share. `pkg/clock` and the `marks` argument are planned (epic 11, epic 7a T7.1).
+Epic 11's composition root — on `feat/storage-v2` it is `pkg/block/engine/enginewire`,
+which the node and the engine's test fixture both call — opens one journal per device at
+start, then attaches a handle per share. `pkg/clock` never landed (the sketch's clock
+argument is served by the clock the composition takes); the `marks` argument is still
+planned (epic 7a T7.1).
 
 ```go
 func openDevice(ctx context.Context, dev Device, shares []ShareRecord) (*journal.Journal, map[ShareID]*journal.Handle, error) {
@@ -1143,6 +1156,29 @@ else. Everything that needs the engine interface is epic 11's. v1's callers are 
 RFC 23's plan's epic 1 deletes them with v1's `cmd/dfs`, and moves every caller of the commands
 it removes (`rfc-23-control-plane-plan.md`, D13).
 
+> **Correction (2026-11-17, checked against `feat/storage-v2`).** The epic stays open, but
+> part of it landed in a different shape, and its metadata dependency is gone
+> ([#3120](https://github.com/cubbit/dittofs/pull/3120) merged):
+>
+> - the device list is the node configuration's `Devices`, "one journal directory per
+>   device, which the engine opens its journals in" (`pkg/config`);
+> - the start check's identity half landed: the node, before anything is opened for
+>   writing, opens every device's journal expecting no identity and refuses one that
+>   belongs to another installation (`internal/node`'s refuse, and the diagnostics of
+>   an unreadable journal). Its two refusal rows from the table below — v1 state and the
+>   missing `Installation` naming the init command — are not implemented: a missing
+>   record surfaces as an error reading the installation, not as a message naming `dfs
+>   init`;
+> - the quick refusal of "start with `storage` but no journal device" was replaced: a
+>   device holding no journal is left to the engine, which refuses it at its own start
+>   (the `decision:` at the check site);
+> - the `J‖journal` key kind exists in the store (sync marks, the open generation); the
+>   node-and-device record the initialisation step writes does not, and nothing named
+>   `RecordJournal` exists;
+> - `dfs init` (`cmd/dfs/commands`) is a stub returning `ErrUnsupported`, so the whole
+>   initialisation step — `journal.Init` on every device, the record writes, the
+>   interrupted-step wipe — is still to build, and this epic's system e2e rows with it.
+
 - **Device configuration keys:**
   - a list of journal devices (path, maximum);
   - start refused when `storage` has no device.
@@ -1155,8 +1191,8 @@ it removes (`rfc-23-control-plane-plan.md`, D13).
   of its own:
   - `entity.Installation`, the installation ID;
   - the `J‖journal` record, keyed by journal identity, naming the node and device a
-    journal lives on (RFC 16 §4.2). #3120 declares its key kind; whether it writes the
-    record is confirmed when E10 starts.
+    journal lives on (RFC 16 §4.2). #3120 has landed; it declares the key kind but writes
+    no such record — the initialisation step E10 builds writes it.
 - **System e2e tests:** the start-check refusals, which need no engine. They are written
   here and listed as known failures.
 
@@ -1214,13 +1250,50 @@ since they have accepted no data.
 The init command and the order of its store-side steps belong to RFC 16. E10 depends on
 them as it depends on #3120.
 
-### Epic 11 — Engine on the RFC 16 store 🔀 (planned after S4a, team)
+### Epic 11 — Engine on the RFC 16 store 🔀 (superseded by the RFC 8 split; correction checked 2026-11-17)
 
-Stage 3 of [#3119](https://github.com/cubbit/dittofs/issues/3119) is ours. The engine
-(journal, carver, syncer, remote) is rebuilt on the RFC 16 store behind the
-filesystem-service engine interface. There is no bridge into the v1 engine. Epic 11 is
-broken down into subtasks and estimated only once that interface is agreed with rif
-(S4a). The scope below is what it must cover; how it splits follows the interface.
+Epic 11 was never broken down, and its premise did not hold: stage 3's first part was
+neither built nor planned as this epic, and not by the journal team. The
+[RFC 8 part-1 plan](rfc-8-journal-only-engine-plan.md) — the journal-only engine, built
+by rif's team — owns it, and says so itself: "#3119's stage list and the journal plan's
+epic 11 still give all of stage 3 to the journal v2 team". The engine interface the S4a
+gate waited on exists as `engine.Deps` on `feat/storage-v2` (`pkg/block/engine`, composed
+by `pkg/block/engine/enginewire`, which the node and the engine's test fixture both call),
+and part 1 is under way: write, draw, overlay, read, commit, removals, clone and copy of
+journal-held content, start replay and resumed removals, the version fence (floor and
+limit over the RFC 16 store), capacity, bindings and recovery, with error mapping. There
+is no bridge into the v1 engine. What part 1 builds therefore replaces the first four
+bullets below (engine wiring of the stable half, per-device registry, version floor and
+limit, store contracts, error mapping) and "the remaining configuration" in so far as the
+journal-only half consumes it.
+
+What part 1 deliberately leaves out — by its own §1.1, its journal interface "holds none
+of `Offload`, `OffloadMany`, `Fill`, `Release`, `MarkOffloaded`, `Unmark`, `Hold`,
+`Stamp` or `DirtyFiles`" — remains to be built, and no document owns it yet. It belongs to
+RFC 8's second part, planned "separately once this one is under way"; every bullet below
+that survives only through it is repeated in the deferral ledger (§6.1) until that plan
+exists. Checked against `feat/storage-v2` on 2026-11-17:
+
+- **Engine wiring of the offload, fill and eviction half:** offload pass → carver and
+  syncer → `report`; cold read → `Fill`; eviction → `Release` + `Repack`. **Not built.**
+- **Salvage of stranded tags:** nothing on the branch but a planning-doc mention. **Not
+  built.**
+- **Exporters and alert rules:** the node's metrics listener serves `dittofs_engine_*`
+  series built from `engine.Stats` (self fences, stability points, write refusals, reads,
+  removal runs, and the like), and nothing labelled `journal`: journal `Stats` (RFC 1
+  §3.7, §3.9) has no Prometheus collector. The journal's `Tracer` is not adapted to
+  OpenTelemetry — the composition passes "a Tracer that starts no span", and the otel
+  dependency the node carries is used for API spans only. The three alert rules (any
+  `data_loss`, a growing `OldestDirty`, `RemovalMarkers` growing) are not written.
+  **Not built.**
+- **API and CLI stats:** the engine reports each journal's figures with a per-share
+  breakdown (`engine.JournalStats`), and they leave the node only as health conditions.
+  The API serves version, health, operations, nodes, audit and shares — no journal-stats
+  surface — and `dfsctl` has no stats command. **Not built.**
+- **System e2e tests** and **the `Content` conformance check** the engine passes: same
+  tier dependencies as before (§3.2, S4a and S5). **Not built.**
+
+The original scope, for reference:
 
 - **Engine wiring.** v2 exposes none of v1's `Hydrate`, `Commit` or carving, so the
   engine drives the journal through RFC 1's surface:
@@ -1290,7 +1363,12 @@ broken down into subtasks and estimated only once that interface is agreed with 
 
 ### Epic 12 — E2E green 🔀 (≈8 subtasks, team)
 
-Epic 12 takes the suite from "listed" to "passing". The work:
+Epic 12 takes the suite from "listed" to "passing". **State (2026-11-17):** the burn-down
+has not started — `test/journal/known.yaml` holds 261 entries (258 `fix: planned`,
+3 `fix: wontfix`). The epic itself stays as it is; only its dependencies follow the
+corrections above: the rows that the initialisation step turns green wait on epic 10, and
+the system-scenario rows wait on the RFC 8 part-2 plan and on #3119 stage 2, not on an
+epic of this plan. The work:
 
 - triage every remaining known failure into "fix" or "the test is wrong" (the latter
   decided by the team and recorded);
@@ -1312,18 +1390,20 @@ that epic, and epic 12 does not wait for it.
 
 ## 6. Risks and open points
 
-- **Stage 3 of #3119 is ours.** The engine (journal, carver, syncer, remote) is rebuilt on
-  the RFC 16 store behind the filesystem-service engine interface (E11). There is no
-  bridge into the v1 engine.
-- **E11 waits on S4a.** It is not estimated, and is planned only once the engine interface
-  is agreed with rif (stage 2 of #3119).
-- **The system scenarios wait on stage 2 too.** Under route B, NFS and SMB reach v2 only
-  through `vfs.Filesystem` and the adapters moved onto it, so E11 alone turns no protocol
-  scenario green (S5).
-- **E10 and E11 depend on #3120.** The metadata RFC 1 assumes (installation ID, share tags,
-  the durable version limit, the derived version floor, `Applied`) comes from RFC 16's
-  store, which [#3120](https://github.com/cubbit/dittofs/pull/3120) implements. Neither
-  can finish before it lands on `feat/storage-v2` (S5).
+- **Stage 3 of #3119 split (E11 superseded).** The engine is rebuilt on the RFC 16 store
+  behind `engine.Deps` — there is no bridge into the v1 engine — but stage 3's first part,
+  the journal-only engine, is the [RFC 8 part-1 plan](rfc-8-journal-only-engine-plan.md)'s,
+  built by rif's team, and not this plan's epic 11. The offload half of the old E11 is
+  RFC 8's second part, not yet planned; until it is, no epic of this plan owns it (§5,
+  epic 11; §6.1).
+- **The system scenarios wait on the part-2 plan and on stage 2.** Under route B, NFS and
+  SMB reach v2 only through `vfs.Filesystem` and the adapters moved onto it, and the rows
+  about offload (cold reads, eviction under pressure) also need the part-2 engine, so
+  nothing turns a protocol scenario green before both exist (S5).
+- **E10 and the engine depended on #3120.** The metadata RFC 1 assumes (installation ID,
+  share tags, the durable version limit, the derived version floor, `Applied`) comes from
+  RFC 16's store, which [#3120](https://github.com/cubbit/dittofs/pull/3120) implements.
+  It has landed on `feat/storage-v2`, so nothing waits on it any more (§3.3).
 - **There is no upgrade from v1.** Storage v2 serves new installations only. A migration
   tool, if demand calls for one, needs its own RFC (E10, "No upgrade from v1").
 - **Scenarios that need a host we don't have.** `errors=remount-ro` on ext4, XFS
@@ -1359,3 +1439,4 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | Cluster-only items: RFC 10 replication, a non-zero epoch, the `generation` field, extension kinds 128+ (§6) | out of scope; the format reserves them and the tests assert they are refused | RFC 10 | the cluster stage |
 | The open's emptying of a segment the open leaves unsealed or failed that holds failed-list records past the open reserve (RFC 1 §6, the open reserve) | the emptying takes sealed segments only; an unsealed one stays whole with its failed records, which needs the open to seal it before it copies | unowned | a read-only reopen past the reserve whose failed records sit in a segment the open does not seal |
 | Salvage's sealing and recovery import (E11; §6) | RFC 5's master key and RFC 26's recovery import may not exist; E11 builds the export path and its failure condition and records what is stubbed | RFC 5, RFC 26 | when each lands |
+| The old E11's offload half: the engine wiring of `Offload`/`report`, `Fill` and `Release`+`Repack`, salvage, the Prometheus/OTel exporters and the three alert rules, the API/CLI journal-stats surface, the system e2e rows and the engine's `Content` conformance run (§5, epic 11) | stage 3's first part took only the journal-only engine, and RFC 8 part 1 leaves all of these out by design | RFC 8, its second part (no plan yet) | that plan is written, once part 1 is under way |
