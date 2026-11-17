@@ -1300,8 +1300,9 @@ expiry).
 **Done when:**
 - RFC 18 ID12 holds at identity's layer: a `SignIn` with `step.Context` set replaces the context's
   evidence, a failed one ends it; §10's "re-authentication" row is epic 9's, over SMB;
-- RFC 18 §10's rows "NTLM MIC" (its local half), "NTLM domain" (its local and refusal halves) and
-  "logon throttle" (for a local user, its spelling variants included) pass, the cryptography
+- RFC 18 §10's rows "NTLM MIC" (its local half), "NTLM domain" (its local and refusal halves),
+  "logon throttle" (for a local user, its spelling variants included) and "disabled and deleted
+  local sign-in" pass, the cryptography
   checked against MS-NLMP §4.2.4's published vectors;
 - `vfs.Service`'s `SignIn` answers an NTLM step.
 

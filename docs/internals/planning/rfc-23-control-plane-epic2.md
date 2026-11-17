@@ -778,8 +778,7 @@ pkg/metadata/kv/fdbkv/fdbkvtest/  T2.1  a reopen over the same key prefix
   its sessions through `SSA`, each with its `SSH` rows, and its account's `SF` count; the last batch deleting the record and, for a user, the `SEC` rows of
   the references it holds, raising `CFGGEN` (D8, its `decision:` marker); an absent record answers
   `done` (D14). The mark deletes the user's name index, so identity's sign-in outcome for a marked
-  user is `logon_failure`, not RFC 18 §3.7's `disabled`; a `decision:` at the mark names that
-  narrowing. The `SEC` rows of the references a user holds are its `Password` and, once the RFC 18
+  user is `logon_failure`, an unknown name's, as RFC 18 §3.7 requires of a deleted principal. The `SEC` rows of the references a user holds are its `Password` and, once the RFC 18
   plan's T2.1 lands, its `NTHash`, every version of each. The principals view treats a marked user as absent, a marked group's memberships as
   none, and a `Primary` naming one as zero. Consumed by E3, which drives the batches and resumes
   them at start.
