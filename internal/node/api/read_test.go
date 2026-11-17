@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -336,19 +337,15 @@ func TestWaitBounds(t *testing.T) {
 // A node parks at most 256 polls and refuses the next 503 unavailable. A
 // parked poll holds no call slot, so the 256 park past the bound of 64
 // calls. They are parked one at a time, since 256 first reads at once would
-// meet that bound.
+// meet that bound, and no dial then outruns the listener's accept backlog.
 func TestParkedPollsAreBounded(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	id := uuid.NewString()
 	base := s.clock.Pending()
 	var parked []<-chan polled
-	// Dialled in batches that each park before the next, so no dial
-	// outruns the listener's accept backlog.
 	for i := range 256 {
 		parked = append(parked, s.poll(t.Context(), knobAt(id)+"?wait=30s"))
-		if (i+1)%64 == 0 {
-			eventually(t, "a batch of polls parks", func() bool { return s.clock.Pending() == base+i+1 })
-		}
+		eventually(t, "poll "+strconv.Itoa(i+1)+" parks", func() bool { return s.clock.Pending() == base+i+1 })
 	}
 	next := s.poll(t.Context(), knobAt(id)+"?wait=30s")
 	refused := s.settle(t, "the 257th poll", next, base+256)
