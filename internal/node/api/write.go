@@ -29,12 +29,10 @@ const maxKey = 255
 // there is none; whether its commit raises the principals or settings
 // generation; whether the row is a POST action that changes the spec, and so
 // carries If-Match as a PUT does; secret, which names the fields of the
-// body whose values its audit record holds only as "set", nil for none; and
-// op, the kind of operation the write starts on the record it wrote, empty
-// for a write that starts none.
+// body whose values its audit record holds only as "set", nil for none.
+// The operation a write starts, if any, is its row's.
 type writing[B any] struct {
 	kind        entity.ResourceKind
-	op          apiv1.OpKind
 	read        func(tx entity.ControlPlaneTx, id [16]byte) (doc B, tag uint64, ok bool, err error)
 	raises      bool
 	changesSpec bool
@@ -75,7 +73,7 @@ type writing[B any] struct {
 // transaction of its own. After a commit that raises the principals or
 // settings generation, the answer waits for the node to apply it.
 func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) (I, error), h func(context.Context, request[B], I, entity.ControlPlaneTx) (R, [16]byte, error)) adapter {
-	return func(ctx context.Context, s *Server, r *http.Request, id [16]byte) (a answer, err error) {
+	return func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (a answer, err error) {
 		if s.d.Store == nil {
 			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
 		}
@@ -187,8 +185,8 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			if created {
 				status, location = http.StatusCreated, r.URL.Path+"/"+idString(wrote)
 			}
-			if w.op != "" {
-				op, err := s.start(ctx, tx, w.op, entity.ResourceRef{Kind: w.kind, ID: wrote[:]})
+			if rt.starts != "" {
+				op, err := s.start(ctx, tx, rt.starts, entity.ResourceRef{Kind: w.kind, ID: wrote[:]})
 				if err != nil {
 					return err
 				}
@@ -248,7 +246,8 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 
 // start writes, in tx, an operation of kind on target, started by the
 // caller ctx carries and driven by no one yet, and returns it as its read
-// answers it. A second one of kind on target while one runs is refused 409
+// answers it, its progress unknown, as it is before any step records one. A
+// second one of kind on target while one runs is refused 409
 // operation_running naming it.
 func (s *Server) start(ctx context.Context, tx entity.ControlPlaneTx, kind apiv1.OpKind, target entity.ResourceRef) (apiv1.Operation, error) {
 	c, _ := auth.CallerFrom(ctx)
@@ -258,8 +257,7 @@ func (s *Server) start(ctx context.Context, tx entity.ControlPlaneTx, kind apiv1
 		return apiv1.Operation{}, err
 	}
 	op.Generation, op.Started, op.Updated = gen, tx.Now(), tx.Now()
-	v, err := viewOp(ctx, s.d, op)
-	return v.Operation, err
+	return opOf(op).Operation, nil
 }
 
 // replayed is the answer err recorded when it is a replay of a request

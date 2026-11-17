@@ -53,7 +53,9 @@ type Deps struct {
 	Nodes nodeReads
 	// Progress is an operation's progress, read from what its owner
 	// records, by the operation's kind; nil, every operation's progress is
-	// unknown.
+	// unknown. It runs on every read of an operation, each re-read of a
+	// parked poll included, and never inside a write's transaction; it
+	// must not write.
 	Progress func(context.Context, entity.Operation) apiv1.Progress
 	// Health is the node's health conditions, its own and the
 	// installation's; nil, it holds none.
@@ -88,6 +90,9 @@ type Server struct {
 	serving  sync.WaitGroup
 	stopped  atomic.Bool
 	parked   chan struct{}
+	// startRights is the right that may start each kind of operation, which
+	// a cancel of one asks.
+	startRights map[apiv1.OpKind]auth.Right
 	// quit closes once the API listener shuts down, so a parked poll
 	// answers rather than holding Stop until its wait has passed.
 	quit chan struct{}
@@ -111,10 +116,11 @@ var requestBuckets = []float64{100e-6, 250e-6, 500e-6, 1e-3, 2.5e-3, 5e-3, 10e-3
 // newServer is New over the route table rows.
 func newServer(d Deps, rows []route) *Server {
 	s := &Server{
-		d:      d,
-		parked: make(chan struct{}, maxParked),
-		quit:   make(chan struct{}),
-		tracer: d.Tracer,
+		d:           d,
+		parked:      make(chan struct{}, maxParked),
+		startRights: startRights(rows),
+		quit:        make(chan struct{}),
+		tracer:      d.Tracer,
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "dittofs_api_requests_total",
 			Help: "API calls, by op and outcome: ok or the problem's code."}, []string{"op", "outcome"}),
 		seconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "dittofs_api_request_seconds",

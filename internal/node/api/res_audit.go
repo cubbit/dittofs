@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"iter"
 	"strings"
@@ -77,22 +78,29 @@ func auditFilter(q map[string]string) (f entity.AuditFilter, err error) {
 	}
 	if v, ok := q["target"]; ok {
 		kind, id, _ := strings.Cut(v, ":")
-		k := kindNamed(kind)
-		sid, err := entity.ParseShareID(id)
-		if k == 0 || err != nil {
+		var k entity.ResourceKind
+		ref, ok := parseID(id)
+		if k.UnmarshalText([]byte(kind)) != nil || !ok {
 			return f, &fieldError{field: "target", detail: "not kind:id"}
 		}
-		f.Target = &entity.ResourceRef{Kind: k, ID: sid[:]}
+		f.Target = &entity.ResourceRef{Kind: k, ID: ref}
 	}
 	return f, nil
 }
 
-// kindNamed is the resource kind name names, zero for none.
-func kindNamed(name string) entity.ResourceKind {
-	for k := entity.ResourceKind(1); k.String() != ""; k++ {
-		if k.String() == name {
-			return k
-		}
+// parseID is the ID refOf prints as s: a UUID in its canonical form for 16
+// bytes, and base64url for any other length, so base64url decoding to 16
+// bytes is none.
+//
+// decision: text spelling a canonical UUID reads as a 16-byte ID, though a
+// 27-byte ID's base64url could spell the same text, and the filter then
+// misses that ID's records: it takes 27 bytes whose encoding is hex digits
+// and four hyphens just where a UUID has them. Overturned once refOf prints
+// each kind's ID in its own form.
+func parseID(s string) ([]byte, bool) {
+	if id, err := entity.ParseShareID(s); err == nil && id.String() == s {
+		return id[:], true
 	}
-	return 0
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	return b, err == nil && len(b) != 16 && len(b) > 0
 }

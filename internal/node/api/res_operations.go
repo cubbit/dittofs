@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"iter"
+	"maps"
 	"net/http"
 	"slices"
 	"time"
@@ -24,23 +25,31 @@ type opRead struct {
 	gen uint64
 }
 
-// viewOp is op on the wire, its progress read by d.Progress, unknown when
-// the node has none.
-func viewOp(ctx context.Context, d Deps, op entity.Operation) (opRead, error) {
+// opOf is op on the wire, its progress unknown. An error that does not
+// read as a problem reads as a 500 saying so, so one bad record fails
+// neither the read of it nor a listing holding it.
+func opOf(op entity.Operation) opRead {
 	v := apiv1.Operation{ID: idString(op.ID), Kind: apiv1.OpKind(op.Kind), Target: refOf(op.Target),
-		State: apiv1.OpState(op.State.String()), Progress: apiv1.Progress{Total: -1},
+		Account: principalOf(op.Account), State: apiv1.OpState(op.State.String()), Progress: apiv1.Progress{Total: -1},
 		Started: op.Started, Updated: op.Updated, Result: json.RawMessage(op.Result)}
-	v.Account = principalOf(op.Account)
+	if op.Error != nil {
+		v.Error = new(apiv1.Problem)
+		if json.Unmarshal(op.Error, v.Error) != nil {
+			*v.Error = apiv1.Problem{Status: http.StatusInternalServerError, Title: http.StatusText(http.StatusInternalServerError),
+				Detail: "the operation's error is unreadable"}
+		}
+	}
+	return opRead{v, op.ID, op.Generation}
+}
+
+// viewOp is opOf with its progress read by d.Progress, unknown when the
+// node has none.
+func viewOp(ctx context.Context, d Deps, op entity.Operation) opRead {
+	v := opOf(op)
 	if d.Progress != nil {
 		v.Progress = d.Progress(ctx, op)
 	}
-	if op.Error != nil {
-		v.Error = new(apiv1.Problem)
-		if err := json.Unmarshal(op.Error, v.Error); err != nil {
-			return opRead{}, err
-		}
-	}
-	return opRead{v, op.ID, op.Generation}, nil
+	return v
 }
 
 // principalOf is p on the wire.
@@ -85,7 +94,7 @@ func readOp(ctx context.Context, d Deps, rq request[none]) (opRead, error) {
 	if !found {
 		return opRead{}, errNotFound
 	}
-	return viewOp(ctx, d, op)
+	return viewOp(ctx, d, op), nil
 }
 
 // operation is GET /operations/{id}: ?wait= returns once the operation's
@@ -97,16 +106,6 @@ var operation = watching[opRead]{
 		return first.State != now.State || first.Progress.Phase != now.Progress.Phase
 	}),
 }
-
-// runningStates are the states an operation that has not ended holds, which
-// the running index covers, by name.
-var runningStates = func() map[string]entity.OpState {
-	m := map[string]entity.OpState{}
-	for _, s := range []entity.OpState{entity.OpPending, entity.OpRunning, entity.OpCancelling} {
-		m[s.String()] = s
-	}
-	return m
-}()
 
 // operations is GET /operations, in ID order, filtered by state.
 //
@@ -125,8 +124,8 @@ var operations = listing[opRead, apiv1.Operation]{
 		copy(from[:], after)
 		ops := d.Store.Operations(ctx, from)
 		if name, ok := f["state"]; ok {
-			state, ok := runningStates[name]
-			if !ok {
+			var state entity.OpState
+			if state.UnmarshalText([]byte(name)) != nil || state.Ended() {
 				return func(yield func(opRead, error) bool) {
 					yield(opRead{}, &fieldError{field: "state", detail: "not the state of an operation that has not ended: pending, running or cancelling"})
 				}
@@ -135,11 +134,11 @@ var operations = listing[opRead, apiv1.Operation]{
 		}
 		return func(yield func(opRead, error) bool) {
 			for op, err := range ops {
-				var v opRead
-				if err == nil {
-					v, err = viewOp(ctx, d, op)
+				if err != nil {
+					yield(opRead{}, err)
+					return
 				}
-				if !yield(v, err) || err != nil {
+				if !yield(viewOp(ctx, d, op), nil) {
 					return
 				}
 			}
@@ -172,37 +171,44 @@ func running(ctx context.Context, d Deps, state entity.OpState, after []byte) it
 	}
 }
 
-// startRight is the right that may start each kind of operation, which a
-// cancel of one asks of its caller; a kind not named asks for Installation.
-var startRight = map[apiv1.OpKind]auth.Right{
-	apiv1.OpRotateSigningKey:      auth.Installation,
-	apiv1.OpResolvePrincipal:      auth.Principals,
-	apiv1.OpTestDirectory:         auth.Installation,
-	apiv1.OpJoinDomain:            auth.Installation,
-	apiv1.OpRotateMachinePassword: auth.Installation,
-	apiv1.OpShareDelete:           auth.Shares,
-	apiv1.OpUserDelete:            auth.Principals,
-	apiv1.OpGroupDelete:           auth.Principals,
-	apiv1.OpNTHashDelete:          auth.Stores,
+// unrowedStarts is the right that may start each kind of operation no row
+// starts, which a cancel of one asks of its caller. A kind a row starts asks
+// its row's right; any other, Installation.
+var unrowedStarts = map[apiv1.OpKind]auth.Right{apiv1.OpNTHashDelete: auth.Stores}
+
+// startRights is the right that may start each kind of operation: each
+// row's that starts one, and unrowedStarts for the rest.
+func startRights(rows []route) map[apiv1.OpKind]auth.Right {
+	m := maps.Clone(unrowedStarts)
+	for _, rt := range rows {
+		if rt.starts != "" {
+			m[rt.starts] = rt.right
+		}
+	}
+	return m
 }
 
-// cancel is POST /operations/{id}:cancel: 404 for an operation that does
-// not exist, 403 for a caller that may not start its kind, and otherwise 409
-// not_cancellable naming it, every refusal audited.
+// cancel is POST /operations/{id}:cancel: 428 without an Idempotency-Key,
+// 404 for an operation that does not exist, 403 for a caller that may not
+// start its kind, and otherwise 409 not_cancellable naming it, every refusal
+// audited.
 //
-// decision: no kind in scope has a cancel, so every cancel is refused and
-// changes nothing; it takes no Idempotency-Key and runs no write, and the
-// right it asks is read from the operation's kind once the operation is
-// read. Overturned when a kind gains a cancel, which then writes the
-// operation through the write adapter.
+// decision: no operation kind defines a cancel, so every cancel is refused
+// and changes nothing; it asks for an Idempotency-Key as every POST does,
+// but records none and runs no write, and the right it asks is read from
+// the operation's kind once the operation is read. Overturned when a kind
+// gains a cancel, which then writes the operation through the write adapter.
 //
-// ponytail: a user's deletion asks for Principals, though deleting an
+// ponytail: a user's deletion asks for its row's right, though deleting an
 // account with a role asks for Accounts. Read the target's role when a
 // cancel of a user's deletion exists.
-func cancel(ctx context.Context, s *Server, r *http.Request, id [16]byte) (_ answer, err error) {
+func cancel(ctx context.Context, s *Server, r *http.Request, _ *route, id [16]byte) (_ answer, err error) {
 	rec := s.auditOf(ctx, r)
 	rec.Target = entity.ResourceRef{Kind: entity.ResourceOperation, ID: id[:]}
 	defer func() { s.refuse(ctx, rec, err) }()
+	if r.Header.Get("Idempotency-Key") == "" {
+		return answer{}, &refusal{code: apiv1.CodePreconditionRequired, detail: "a POST carries an Idempotency-Key"}
+	}
 	if s.d.Store == nil {
 		return answer{}, errNoStore
 	}
@@ -213,19 +219,15 @@ func cancel(ctx context.Context, s *Server, r *http.Request, id [16]byte) (_ ans
 	if !found {
 		return answer{}, errNotFound
 	}
-	right, ok := startRight[apiv1.OpKind(op.Kind)]
+	right, ok := s.startRights[apiv1.OpKind(op.Kind)]
 	if !ok {
 		right = auth.Installation
 	}
-	if c, _ := auth.CallerFrom(ctx); !holds(c, right) {
+	c, _ := auth.CallerFrom(ctx)
+	if _, hold := auth.Allowed(c, right); !hold {
 		return answer{}, &refusal{code: apiv1.CodeForbidden, detail: "the caller's role may not start an operation of this kind"}
 	}
 	return answer{}, &refusal{code: apiv1.CodeNotCancellable, detail: "an operation of kind " + op.Kind + " has no cancel", names: []string{idString(op.ID)}}
-}
-
-func holds(c auth.Caller, r auth.Right) bool {
-	_, hold := auth.Allowed(c, r)
-	return hold
 }
 
 // opsCollector exports api_operations and api_operation_oldest_seconds,
@@ -244,15 +246,21 @@ func newOpsCollector(s *Server) opsCollector {
 
 func (c opsCollector) Describe(ch chan<- *prometheus.Desc) { ch <- c.count; ch <- c.oldest }
 
-// Collect reads the running index once, with the API's clock as now, the
-// wall clock's when the API has none.
+// scrapeRead bounds a scrape's read of the running index.
+const scrapeRead = 5 * time.Second
+
+// Collect reads the running index once, within scrapeRead, with the API's
+// clock as now, the wall clock's when the API has none. A read that fails
+// or runs out of time exports an invalid metric, which fails the scrape.
 func (c opsCollector) Collect(ch chan<- prometheus.Metric) {
 	if c.s.d.Store == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), scrapeRead)
+	defer cancel()
 	type kindState struct{ kind, state string }
 	counts, first := map[kindState]int{}, map[string]time.Time{}
-	for op, err := range c.s.d.Store.RunningOperations(context.Background(), entity.Operation{}) {
+	for op, err := range c.s.d.Store.RunningOperations(ctx, entity.Operation{}) {
 		if err != nil {
 			ch <- prometheus.NewInvalidMetric(c.count, err)
 			return

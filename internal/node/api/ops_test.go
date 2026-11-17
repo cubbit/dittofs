@@ -101,82 +101,107 @@ func jsonEqual(a, b any) bool {
 	return string(x) == string(y)
 }
 
-// ?wait= on an operation answers once its runner changes its state, on the
-// clock's next second, and otherwise at the wait's end, 60 s on the clock.
+// ?wait= on an operation answers once its runner changes its state, or only
+// its phase, on the clock's next second; and with neither changed, not at
+// 59 s but at the wait's end, 60 s on the clock.
 func TestOperationWait(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false), stepProgress)
 	op := s.putOp(t, newOp(apiv1.OpShareDelete, entity.Principal{}), 0)
 	base := s.clock.Pending()
-	ch := s.poll(t.Context(), opPath(op.ID)+"?wait=30s")
-	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
-	op.State = entity.OpRunning
-	op = s.putOp(t, op, op.Generation)
-	select {
-	case p := <-ch:
-		t.Fatalf("poll answered %d %s before the clock moved, want it parked", p.status, p.body)
-	default:
-	}
-	s.clock.Advance(time.Second)
-	if p := answered(t, "poll after the runner's change", ch); p.err != nil || p.status != http.StatusOK || decodeOp(t, "poll", p.body).State != apiv1.OpRunning {
-		t.Errorf("poll after the runner set running: answered %d %s err %v, want 200 running", p.status, p.body, p.err)
+	for _, tc := range []struct {
+		what   string
+		change func(*entity.Operation)
+		want   func(apiv1.Operation) bool
+	}{
+		{"the runner set running", func(o *entity.Operation) { o.State = entity.OpRunning },
+			func(o apiv1.Operation) bool { return o.State == apiv1.OpRunning }},
+		{"the runner moved to the next step", func(o *entity.Operation) { o.Step = []byte("copy") },
+			func(o apiv1.Operation) bool { return o.Progress.Phase == "copy" }},
+	} {
+		ch := s.poll(t.Context(), opPath(op.ID)+"?wait=30s")
+		eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
+		tc.change(&op)
+		op = s.putOp(t, op, op.Generation)
+		s.clock.Advance(time.Second)
+		p := s.settle(t, "poll after "+tc.what, ch, base)
+		if p.err != nil || p.status != http.StatusOK || !tc.want(decodeOp(t, "poll", p.body)) {
+			t.Errorf("poll a second after %s: answered %d %s err %v, want 200 with the change", tc.what, p.status, p.body, p.err)
+		}
 	}
 
-	ch = s.poll(t.Context(), opPath(op.ID)+"?wait=60s")
-	eventually(t, "the second poll parks", func() bool { return s.clock.Pending() == base+1 })
+	ch := s.poll(t.Context(), opPath(op.ID)+"?wait=60s")
+	eventually(t, "the unchanged poll parks", func() bool { return s.clock.Pending() == base+1 })
 	s.clock.Advance(59 * time.Second)
-	select {
-	case p := <-ch:
-		t.Fatalf("poll answered %d %s at 59 s, want it parked until 60 s", p.status, p.body)
-	default:
+	if p := s.settle(t, "poll at 59 s", ch, base); p.status != 0 || p.err != nil {
+		t.Fatalf("poll of an unchanged operation answered %d %s err %v at 59 s, want it parked until 60 s", p.status, p.body, p.err)
 	}
 	s.clock.Advance(time.Second)
-	if p := answered(t, "poll at 60 s", ch); p.err != nil || p.status != http.StatusOK || decodeOp(t, "poll", p.body).State != apiv1.OpRunning {
-		t.Errorf("poll at 60 s: answered %d %s err %v, want 200 still running", p.status, p.body, p.err)
-	}
-	if r := s.do(t, http.MethodGet, opPath(op.ID)+"?wait=61s", ""); r.status != http.StatusBadRequest {
-		t.Errorf("GET ?wait=61s: answered %d, want 400", r.status)
+	if p := answered(t, "poll at 60 s", ch); p.err != nil || p.status != http.StatusOK || decodeOp(t, "poll", p.body).Progress.Phase != "copy" {
+		t.Errorf("poll at 60 s: answered %d %s err %v, want 200 with the operation unchanged", p.status, p.body, p.err)
 	}
 }
 
 // :cancel answers 409 not_cancellable, naming the operation, for every kind
-// of the closed set; 403 for a caller that may not start its kind; 404 for
-// an operation that does not exist; each refusal audited.
+// of the closed set; 403 for a caller that may not start its kind, the right
+// of the row that starts it; 404 for an operation that does not exist; 428
+// without an Idempotency-Key, before the operation is read; each refusal
+// audited.
 func TestCancel(t *testing.T) {
 	var role atomic.Uint32
 	role.Store(uint32(entity.RoleAdmin))
 	s := serve(t, func(r *http.Request) (auth.Caller, error) { return as(entity.APIRole(role.Load()), false)(r) })
+	cancel := func(id entity.OperationID) reply {
+		return s.do(t, http.MethodPost, opPath(id)+":cancel", "", "Idempotency-Key", uuid.NewString())
+	}
 	kinds := []apiv1.OpKind{apiv1.OpRotateSigningKey, apiv1.OpResolvePrincipal, apiv1.OpTestDirectory,
 		apiv1.OpJoinDomain, apiv1.OpRotateMachinePassword, apiv1.OpShareDelete, apiv1.OpUserDelete,
 		apiv1.OpGroupDelete, apiv1.OpNTHashDelete}
-	var shareDelete entity.OperationID
+	ids := map[apiv1.OpKind]entity.OperationID{}
 	for _, k := range kinds {
 		op := s.putOp(t, newOp(k, entity.Principal{}), 0)
-		if k == apiv1.OpShareDelete {
-			shareDelete = op.ID
-		}
-		r := s.do(t, http.MethodPost, opPath(op.ID)+":cancel", "")
+		ids[k] = op.ID
+		r := cancel(op.ID)
 		id := uuid.UUID(op.ID).String()
 		if p := r.problem(t); r.status != http.StatusConflict || p.Code != apiv1.CodeNotCancellable || !slices.Equal(p.Names, []string{id}) {
 			t.Errorf("cancel %s: answered %d %q naming %q, want 409 not_cancellable naming %s", k, r.status, p.Code, p.Names, id)
 		}
 	}
+	role.Store(uint32(entity.RoleOperator))
+	// The test row :sweep starts share.delete for operator; no row starts a
+	// signing key's rotation, which asks for admin.
+	for _, tc := range []struct {
+		kind apiv1.OpKind
+		want int
+	}{{apiv1.OpShareDelete, http.StatusConflict}, {apiv1.OpRotateSigningKey, http.StatusForbidden}} {
+		if r := cancel(ids[tc.kind]); r.status != tc.want {
+			t.Errorf("operator cancelling %s: answered %d %s, want %d", tc.kind, r.status, r.body, tc.want)
+		}
+	}
 	role.Store(uint32(entity.RoleViewer))
-	if r := s.do(t, http.MethodPost, opPath(shareDelete)+":cancel", ""); r.status != http.StatusForbidden || r.problem(t).Code != apiv1.CodeForbidden {
+	if r := cancel(ids[apiv1.OpShareDelete]); r.status != http.StatusForbidden || r.problem(t).Code != apiv1.CodeForbidden {
 		t.Errorf("viewer cancelling share.delete: answered %d %s, want 403 forbidden", r.status, r.body)
 	}
 	role.Store(uint32(entity.RoleAdmin))
-	if r := s.do(t, http.MethodPost, opPath(entity.OperationID(entity.NewShareID()))+":cancel", ""); r.status != http.StatusNotFound {
+	none := entity.OperationID(entity.NewShareID())
+	if r := cancel(none); r.status != http.StatusNotFound {
 		t.Errorf("cancel of no operation: answered %d %s, want 404", r.status, r.body)
 	}
-	want := len(kinds) + 2
-	if as := s.audits(t); len(as) != want || !strings.HasPrefix(string(as[0].Outcome), "refused: not_cancellable") || as[0].Target.Kind != entity.ResourceOperation {
-		t.Errorf("cancels audited: %d records, first %q on %v, want %d, the first refused: not_cancellable on an operation", len(as), outcomes(as)[:min(1, len(as))], as[0].Target.Kind, want)
+	if r := s.do(t, http.MethodPost, opPath(none)+":cancel", ""); r.status != http.StatusPreconditionRequired || r.problem(t).Code != apiv1.CodePreconditionRequired {
+		t.Errorf("cancel of no operation without an Idempotency-Key: answered %d %s, want 428 precondition_required", r.status, r.body)
+	}
+	recs := s.audits(t)
+	if want := len(kinds) + 5; len(recs) != want {
+		t.Fatalf("cancels audited: %d records %q, want %d", len(recs), outcomes(recs), want)
+	}
+	if !strings.HasPrefix(string(recs[0].Outcome), "refused: not_cancellable") || recs[0].Target.Kind != entity.ResourceOperation {
+		t.Errorf("first cancel audited as %q on %v, want refused: not_cancellable on an operation", recs[0].Outcome, recs[0].Target.Kind)
 	}
 }
 
 // An operation the schedule started, written with the zero Account as
 // identity's loop writes it, reads through both routes as the zero
-// Principal, never as an account's.
+// Principal, never as an account's; and, on a node with no Progress, with
+// its progress unknown.
 func TestScheduledOperationReadsAsTheSchedule(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	op := s.putOp(t, newOp(apiv1.OpRotateMachinePassword, entity.Principal{}), 0)
@@ -184,10 +209,32 @@ func TestScheduledOperationReadsAsTheSchedule(t *testing.T) {
 	if got := decodeOp(t, "GET operation", r.body).Account; r.status != http.StatusOK || got != (apiv1.Principal{}) {
 		t.Errorf("GET %s: answered %d account %+v, want 200 the zero principal", opPath(op.ID), r.status, got)
 	}
+	if got := decodeOp(t, "GET operation", r.body).Progress; got != (apiv1.Progress{Total: -1}) {
+		t.Errorf("GET %s with no Progress: progress %+v, want total -1, unknown", opPath(op.ID), got)
+	}
 	r = s.do(t, http.MethodGet, "/api/v1/operations", "")
 	var page apiv1.Page[apiv1.Operation]
 	if err := json.Unmarshal(r.body, &page); err != nil || r.status != http.StatusOK || len(page.Items) != 1 || page.Items[0].Account != (apiv1.Principal{}) {
 		t.Errorf("GET /api/v1/operations: answered %d %s, want 200 one operation with the zero principal", r.status, r.body)
+	}
+}
+
+// An operation whose recorded error does not read as a problem reads, alone
+// and in a listing, with a 500 problem saying so, and fails neither read.
+func TestUnreadableOperationError(t *testing.T) {
+	s := serve(t, as(entity.RoleViewer, false))
+	op := newOp(apiv1.OpShareDelete, entity.Principal{})
+	op.State, op.Error = entity.OpFailed, []byte("not json")
+	op = s.putOp(t, op, 0)
+	want := apiv1.Problem{Status: http.StatusInternalServerError, Title: "Internal Server Error", Detail: "the operation's error is unreadable"}
+	r := s.do(t, http.MethodGet, opPath(op.ID), "")
+	if got := decodeOp(t, "GET operation", r.body).Error; r.status != http.StatusOK || !jsonEqual(got, &want) {
+		t.Errorf("GET %s: answered %d %s, want 200 with error %+v", opPath(op.ID), r.status, r.body, want)
+	}
+	r = s.do(t, http.MethodGet, "/api/v1/operations", "")
+	var page apiv1.Page[apiv1.Operation]
+	if err := json.Unmarshal(r.body, &page); err != nil || r.status != http.StatusOK || len(page.Items) != 1 || !jsonEqual(page.Items[0].Error, &want) {
+		t.Errorf("GET /api/v1/operations: answered %d %s, want 200 one operation with error %+v", r.status, r.body, want)
 	}
 }
 
@@ -228,51 +275,71 @@ func TestOperationsByState(t *testing.T) {
 	}
 }
 
-// The audit reads for admin only, in store-time order, by time range and by
-// actor, each record as its write left it.
+// The audit reads for admin only, in store-time order, by time range, by
+// actor and by target, a target named by the ID the read prints for it,
+// each record as its write left it.
 func TestAuditRead(t *testing.T) {
 	var caller atomic.Pointer[auth.Caller]
 	s := serve(t, func(*http.Request) (auth.Caller, error) { return *caller.Load(), nil })
 	alice := auth.Caller{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: entity.NewPrincipalID()}, Name: "alice", Role: entity.RoleAdmin}
 	bob := auth.Caller{Principal: entity.Principal{Kind: entity.PrincipalUser, ID: entity.NewPrincipalID()}, Name: "bob", Role: entity.RoleAdmin}
 	var times []time.Time
+	var knobs []string
 	for _, c := range []auth.Caller{alice, bob, alice} {
 		caller.Store(&c)
 		times = append(times, s.clock.Now())
-		if r := s.do(t, http.MethodPut, knobAt(uuid.NewString()), `{"spec":{"value":"x"}}`, "If-None-Match", "*"); r.status != http.StatusOK {
+		knobs = append(knobs, uuid.NewString())
+		if r := s.do(t, http.MethodPut, knobAt(knobs[len(knobs)-1]), `{"spec":{"value":"x"}}`, "If-None-Match", "*"); r.status != http.StatusOK {
 			t.Fatalf("PUT knob as %s: answered %d %s", c.Name, r.status, r.body)
 		}
-		// Under the store clock's ceiling, so each record's store time is
-		// the clock's.
+		// Under the store clock's ceiling, at most 2 s ahead of its last
+		// raise, so each record's store time is the clock's.
 		s.clock.Advance(500 * time.Millisecond)
 	}
+	// A change the schedule made, with no actor, to a setting, whose
+	// reference is its scope and its key, no UUID.
+	carol := entity.AuditRecord{ActorName: "carol", Target: entity.SettingRef(entity.SettingScope{Kind: entity.ScopeInstallation}, "realm"), Outcome: []byte("applied")}
+	if err := s.store.Write(t.Context(), entity.WriteMeta{Audit: &carol}, func(entity.ControlPlaneTx) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
 	caller.Store(&alice)
-	read := func(q string) (names []string) {
+	page := func(q string) (p apiv1.Page[apiv1.AuditRecord]) {
 		r := s.do(t, http.MethodGet, "/api/v1/audit"+q, "")
-		var page apiv1.Page[apiv1.AuditRecord]
-		if err := json.Unmarshal(r.body, &page); err != nil || r.status != http.StatusOK {
+		if err := json.Unmarshal(r.body, &p); err != nil || r.status != http.StatusOK {
 			t.Fatalf("GET /api/v1/audit%s: answered %d %s", q, r.status, r.body)
 		}
-		for _, a := range page.Items {
+		return p
+	}
+	read := func(q string) (names []string) {
+		for _, a := range page(q).Items {
 			names = append(names, a.ActorName)
 		}
 		return names
+	}
+	all := page("").Items
+	if len(all) != 4 {
+		t.Fatalf("GET /api/v1/audit: %d records, want 4", len(all))
 	}
 	for _, tc := range []struct {
 		q    string
 		want []string
 	}{
-		{"", []string{"alice", "bob", "alice"}},
+		{"", []string{"alice", "bob", "alice", "carol"}},
+		{"?target=" + url.QueryEscape("setting:"+knobs[1]), []string{"bob"}},
+		{"?target=" + url.QueryEscape(all[3].Target.Kind+":"+all[3].Target.ID), []string{"carol"}},
 		{"?actor=" + url.QueryEscape(alice.Principal.String()), []string{"alice", "alice"}},
 		{"?from=" + url.QueryEscape(times[1].Format(time.RFC3339Nano)) + "&to=" + url.QueryEscape(times[2].Format(time.RFC3339Nano)), []string{"bob"}},
-		{"?actor=schedule", nil},
+		{"?actor=schedule", []string{"carol"}},
 	} {
 		if got := read(tc.q); !slices.Equal(got, tc.want) {
 			t.Errorf("GET /api/v1/audit%s: actors %q, want %q", tc.q, got, tc.want)
 		}
 	}
-	if r := s.do(t, http.MethodGet, "/api/v1/audit?actor=alice", ""); r.status != http.StatusBadRequest || r.problem(t).Field != "actor" {
-		t.Errorf("?actor=alice: answered %d %s, want 400 naming actor", r.status, r.body)
+	for _, q := range []string{"actor=alice", "target=bad"} {
+		field, _, _ := strings.Cut(q, "=")
+		if r := s.do(t, http.MethodGet, "/api/v1/audit?"+q, ""); r.status != http.StatusBadRequest || r.problem(t).Field != field {
+			t.Errorf("?%s: answered %d %s, want 400 naming %s", q, r.status, r.body, field)
+		}
 	}
 	op := auth.Caller{Principal: alice.Principal, Role: entity.RoleOperator}
 	caller.Store(&op)
@@ -281,55 +348,79 @@ func TestAuditRead(t *testing.T) {
 	}
 }
 
-// A node's record reads with its binary version, through the listing and
-// by its ID; a node that never registered is 404.
+// A node reads as a resource, through the listing and by its ID: its epoch
+// as its generation, its binary version and registration as its status, and
+// the positions its status reports once it reports any; a node that never
+// registered is 404.
 func TestNodeBinaryVersion(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	id := entity.NodeID(uuid.New())
+	if _, err := s.db.RaiseNodeEpoch(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.RaiseNodeEpoch(t.Context(), id); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.nodes.RegisterNode(t.Context(), entity.Node{ID: id, Address: "10.0.0.1:12049", Roles: entity.NodeRoleProtocol | entity.NodeRoleStorage, Binary: "v0.20.0"}); err != nil {
 		t.Fatal(err)
 	}
-	want := apiv1.Node{ID: uuid.UUID(id).String(), Address: "10.0.0.1:12049", Binary: "v0.20.0"}
-	r := s.do(t, http.MethodGet, "/api/v1/nodes/"+want.ID, "")
-	var got apiv1.Node
-	if err := json.Unmarshal(r.body, &got); err != nil || r.status != http.StatusOK || got != want {
-		t.Errorf("GET node: answered %d %s, want 200 %+v", r.status, r.body, want)
+	want := apiv1.Node{ID: uuid.UUID(id).String(), Generation: 2, Status: apiv1.NodeStatus{Address: "10.0.0.1:12049", Binary: "v0.20.0"}}
+	read := func(what string) {
+		t.Helper()
+		w, _ := json.Marshal(want)
+		r := s.do(t, http.MethodGet, "/api/v1/nodes/"+want.ID, "")
+		var got apiv1.Node
+		if err := json.Unmarshal(r.body, &got); err != nil || r.status != http.StatusOK || !jsonEqual(got, want) {
+			t.Errorf("GET node %s: answered %d %s, want 200 %s", what, r.status, r.body, w)
+		}
+		r = s.do(t, http.MethodGet, "/api/v1/nodes", "")
+		var page apiv1.Page[apiv1.Node]
+		if err := json.Unmarshal(r.body, &page); err != nil || r.status != http.StatusOK || !slices.ContainsFunc(page.Items, func(n apiv1.Node) bool { return jsonEqual(n, want) }) {
+			t.Errorf("GET nodes %s: answered %d %s, want 200 listing %s", what, r.status, r.body, w)
+		}
 	}
-	r = s.do(t, http.MethodGet, "/api/v1/nodes", "")
-	var page apiv1.Page[apiv1.Node]
-	if err := json.Unmarshal(r.body, &page); err != nil || r.status != http.StatusOK || !slices.Contains(page.Items, want) {
-		t.Errorf("GET nodes: answered %d %s, want 200 listing %+v", r.status, r.body, want)
+	read("before it reports a status")
+	if err := s.nodes.PutNodeStatus(t.Context(), entity.NodeStatus{Node: id, Settings: 7, ShareList: 3, Principals: 2}); err != nil {
+		t.Fatal(err)
 	}
+	want.Status.Reconciled = &apiv1.Reconciled{Settings: 7, ShareList: 3, Principals: 2}
+	read("once it reports a status")
 	if r := s.do(t, http.MethodGet, "/api/v1/nodes/"+uuid.NewString(), ""); r.status != http.StatusNotFound {
 		t.Errorf("GET a node never registered: answered %d, want 404", r.status)
 	}
 }
 
-// api_operations counts an operation while it has not ended and not once
-// it has; api_operation_oldest_seconds is its age on the API's clock.
+// api_operations counts the operations that have not ended and not one
+// once it has; api_operation_oldest_seconds is the age of the oldest of a
+// kind on the API's clock.
 func TestOperationsGauge(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
-	op := newOp(apiv1.OpShareDelete, entity.Principal{})
-	op.State = entity.OpRunning
-	op = s.putOp(t, op, 0)
-	s.clock.Advance(time.Second)
-	started, _, err := s.store.Operation(t.Context(), op.ID)
+	var ops []entity.Operation
+	for range 2 {
+		op := newOp(apiv1.OpShareDelete, entity.Principal{})
+		op.State = entity.OpRunning
+		ops = append(ops, s.putOp(t, op, 0))
+		s.clock.Advance(time.Second)
+	}
+	first, _, err := s.store.Operation(t.Context(), ops[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	labels := map[string]string{"kind": string(apiv1.OpShareDelete), "state": "running"}
-	if got := sample(t, s.reg, "dittofs_api_operations", labels); got != 1 {
-		t.Errorf("api_operations while running: got %v, want 1", got)
+	if got := sample(t, s.reg, "dittofs_api_operations", labels); got != 2 {
+		t.Errorf("api_operations with two running: got %v, want 2", got)
 	}
-	age := s.clock.Now().Sub(started.Started).Seconds()
-	if got := sample(t, s.reg, "dittofs_api_operation_oldest_seconds", map[string]string{"kind": string(apiv1.OpShareDelete)}); got != age || age < 0.9 {
-		t.Errorf("api_operation_oldest_seconds a second after the start: got %v, want %v, the clock past its store start time", got, age)
+	age := s.clock.Now().Sub(first.Started).Seconds()
+	if got := sample(t, s.reg, "dittofs_api_operation_oldest_seconds", map[string]string{"kind": string(apiv1.OpShareDelete)}); got != age || age < 1.9 {
+		t.Errorf("api_operation_oldest_seconds two seconds after the first start: got %v, want %v, the first operation's age", got, age)
 	}
-	op.State = entity.OpSucceeded
-	s.putOp(t, op, op.Generation)
+	for _, op := range ops {
+		op.State = entity.OpSucceeded
+		s.putOp(t, op, op.Generation)
+	}
 	for _, name := range []string{"dittofs_api_operations", "dittofs_api_operation_oldest_seconds"} {
 		if got := sample(t, s.reg, name, nil); got != 0 {
-			t.Errorf("%s once the operation ended: got %v, want no series", name, got)
+			t.Errorf("%s once both ended: got %v, want no series", name, got)
 		}
 	}
 }
