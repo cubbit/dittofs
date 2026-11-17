@@ -123,28 +123,28 @@ func createShare(_ context.Context, rq request[apiv1.NewShare], _ struct{}, tx e
 }
 
 // patchShare is PATCH /shares/{id}: a rename or a re-path, which changes
-// only the share's index rows and raises ShareList. A share being removed or
-// retired is refused stale before anything else, as the store's put would
-// refuse it; a patch naming another namespace is refused, since only a
-// re-home moves a share's content, and one naming another case sensitivity,
-// bound at the share's creation.
+// only the share's index rows and raises ShareList. The put runs first, so a
+// share being removed or retired is refused stale by the store's check alone,
+// ahead of the checks below; a refusal after it rolls the put back. A patch
+// naming another namespace is refused, since only a re-home moves a share's
+// content, and one naming another case sensitivity, bound at the share's
+// creation.
 func patchShare(_ context.Context, rq request[shareDoc], _ struct{}, tx entity.ControlPlaneTx) (apiv1.Share, [16]byte, error) {
 	sh, _, err := tx.Share(entity.ShareID(rq.ID))
-	switch {
-	case err != nil:
+	if err != nil {
 		return apiv1.Share{}, rq.ID, err
-	case sh.State == entity.ShareRemoving || sh.State == entity.ShareRetired:
-		return apiv1.Share{}, rq.ID, entity.ErrStale
 	}
-	if ns, err := entity.ParseShareID(rq.Body.Spec.Namespace); err != nil || idString(ns) != namespaceOf(sh) {
+	sh.Name, sh.Path = rq.Body.Spec.Name, rq.Body.Spec.Path
+	if sh.Generation, err = tx.PutShare(sh, rq.Expect); err != nil {
+		return apiv1.Share{}, rq.ID, err
+	}
+	if id, err := entity.ParseShareID(rq.Body.Spec.Namespace); err != nil || idString(id) != namespaceOf(sh) {
 		return apiv1.Share{}, rq.ID, &fieldError{field: "spec.namespace", detail: "a share's namespace changes only by :rehome"}
 	}
 	if rq.Body.Spec.CaseSensitivity != caseOf(sh.Fold) {
 		return apiv1.Share{}, rq.ID, &fieldError{field: "spec.case_sensitivity", detail: "bound when the share is created"}
 	}
-	sh.Name, sh.Path = rq.Body.Spec.Name, rq.Body.Spec.Path
-	sh.Generation, err = tx.PutShare(sh, rq.Expect)
-	return shareOf(sh), rq.ID, err
+	return shareOf(sh), rq.ID, nil
 }
 
 // setState is :quiesce or :resume: one SetShareState from from to to, whose
