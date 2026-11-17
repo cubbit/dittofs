@@ -107,7 +107,7 @@ What replaces what:
 | `pkg/config/renamed_keys.go` (renamed keys refused; other unknown keys only warned) | the refused v1 keys, each naming its replacement: `database.*`, `controlplane.*` (its `port` and `tls` naming the bootstrap's API listen address and TLS, RFC 13 §2.2), `admin.*`, `kerberos.*`, `ldap.*`, `identity.machine_sid`, `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*`, `blockstore.*` but the journal path, `metrics.*` (the bootstrap's metrics listen address), `shutdown_timeout` (`adapters.<protocol>.drain_timeout`), and their `DITTOFS_*` forms | reworked in epic 2 |
 | `pkg/metadata/kvstore/settings.go` (`Settings`, `PutSetting`, `CFGGEN`, `Setting.Schema`) | the same, with a delete, a read across every scope in one scan, and a newer schema refused; `expect` is RFC 23's plan's (its epics 1 and 2) | extended in epic 3 |
 | `KindSEC` reserved, no code | `Secret` records with versions and sealing | built in epic 4 |
-| `pkg/block/middleware/encryption/keyprovider` | `pkg/keyprovider`, unchanged | moved in epic 4 (D5) |
+| `pkg/block/middleware/encryption/keyprovider` | `pkg/keyprovider`, unchanged but for `mapstructure` tags | moved in epic 1 (D5) |
 
 **Dependency limits.** Sealing uses `keyprovider` (AES-256-GCM, key IDs, retired keys, a local key
 file or KMIP) unchanged. A component's settings struct and validator live in that component's own
@@ -266,7 +266,7 @@ Out of scope, each named in O1:
    - `renamed_keys.go`'s `checkRenamedKeys` and its table, extended with the refused keys. It sees
      only the file's keys, so refusing their `DITTOFS_*` forms is new code: a scan of the
      environment;
-   - `keyprovider`, moved unchanged.
+   - `keyprovider`, moved unchanged but for its `mapstructure` tags.
 8. **Real dependencies for properties of those dependencies**, as `CLAUDE.md`'s "Writing tests"
    says. For this RFC:
    - sealing runs on real key files, one per role;
@@ -292,7 +292,7 @@ Out of scope, each named in O1:
 | E1 ⛔ | The configuration surface | `pkg/config` renamed to `pkg/bootstrap`, `Bootstrap` and the node identity's signatures, `pkg/settings`' types, `pkg/secrets`' provider, the kvstore views' signatures | 4 | 6 | team | every epic |
 | E2 | Bootstrap, node identity and versions | the loader, `--config` and `DITTOFS_CONFIG`, refused v1 keys and environment names, the launchers off refused names, `dfs config` on the bootstrap, the roles flag, the node identity, the single-node version gate, `dfsbench` on `dfs init` | 8 | 14.5 | A | E5; partly E3; RFC 23's epics 3 and 5 (its X1) |
 | E3 | Settings | a delete and a cross-scope read, sections and the table, required keys, write roles and secret references, the effective value per scope form, the write check for puts and deletes, the bound, D9, secret-reference and format-version refusals, classes and the diff, the series and the reconcile benchmark | 9 | 19.5 | B | E5; partly RFC 18's plan's epic 6 |
-| E4 | Secrets | `keyprovider` moved, `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
+| E4 | Secrets | `Secret` records with their kind and owner, envelope sealing, `Resolve` against the expected kind, versions, rotation, D9 on the stored kind, pruning against node status, `Delete`'s signature | 8 | 12 | C | E5; partly E3; RFC 18's plan (S2); RFC 23's epic 5 (its X1) |
 | E5 | Integration | the node's table, reconcile per section and the API's settings routes on this library, secrets re-resolved, "§7 rotation", Appendix B's check, RFC 13 §6's port rule, the full reconcile benchmark | 4 | 12.5 | team | E6; RFC 23's integration epic (its X3) |
 | E6 | E2E green | initialise-if-empty, off by default; the launchers on `dfs init` and the images' `init` as an explicit step, with the first run's certificate and key; RFC 13 §9's single-node rows through the API | 5 | 10 | team | — |
 | | **Total** | | **38** | **74.5** | | |
@@ -410,7 +410,7 @@ pkg/bootstrap/              renamed from pkg/config: Bootstrap, Load, refused ke
                             node identity, initialise-if-empty (E6)
 pkg/settings/               sections, table, snapshot, Get, Check, Diff, versions, metrics   E1, E3, E2 (versions)
 pkg/secrets/                Provider: Seal, Resolve, Prune, Delete; envelope                 E1, E4
-pkg/keyprovider/            moved from pkg/block/middleware/encryption/keyprovider           E4
+pkg/keyprovider/            moved from pkg/block/middleware/encryption/keyprovider           E1
 pkg/metadata/entity/        + Secret; Installation's active versions; ranges on RFC 23's Node E2, E4
 pkg/metadata/kvstore/       settings: delete, cross-scope read, newer schema refused;        E3, E4
                             secrets (SEC)
@@ -454,7 +454,7 @@ and never changed (the RFC 18 plan's A10). This is the user's decision.
 - **Prior art (from memory).** Vault's barrier binds each entry to its path the same way.
 - **Applied by** epic 4.
 
-**D5. `keyprovider` moves to `pkg/keyprovider`**, unchanged but for the move, so secrets and the
+**D5. `keyprovider` moves to `pkg/keyprovider`** in epic 1, unchanged but for the move and a `mapstructure` tag on each field, so secrets and the
 transform chain share it without one importing the other's middleware tree. Its importers on
 `feat/storage-v2` move with it:
 - `pkg/block/middleware/encryption/decorator.go`, `decorator_test.go` and `policy.go`;
@@ -1147,7 +1147,7 @@ section prefix on a dot boundary choosing `identity.oidc` over `identity.*`.
   `Validate` (D2); its required keys, the ones with no default (RFC 13 §4.2), since a strict decode
   over a full `def T` cannot tell an omitted field from its zero value; its write role, `admin`
   for the sections RFC 13 Appendix B writes by `admin` only (`identity.oidc`, `api.oidc_role_map`,
-  `identity.directory`, A1, and the others RFC 23 §5.2 lists), compared by an explicit rank, since `UserRole` is a string; its `Per` thing for Appendix B's
+  `identity.directory`, A1, and the others RFC 23 §5.2 lists), compared by `entity.APIRole`'s order; its `Per` thing for Appendix B's
   "per journal" rows; its `SecretRef` fields with their kinds (D10); and `Of` refusing a class,
   `Required` or `SecretRef` name that is not a field of `T`.
 - The snapshot, `Read` and `Get`: `Read` decodes each section on its own, takes the installation
@@ -1201,7 +1201,6 @@ reference, version, role, kind or owner, or with its `HandedOver` flipped, faili
 (D4); and `Versions` returning every held version with its `Meta`.
 
 **Expected content:**
-- `keyprovider` moved to `pkg/keyprovider`, with its importers (D5).
 - The `Secret` record, its codec and its fuzz target, and the sealed envelope's parser and its fuzz
   target.
 - `Seal` given the secret's kind, role and owner, which it records on the `Secret` and binds into
