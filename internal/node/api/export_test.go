@@ -50,7 +50,7 @@ func Rows() []Row {
 // accounts for admin, a call a caller that must change its password may
 // make, and a read failing with an error no row of the problem table names.
 var testRows = []route{
-	{method: http.MethodGet, pattern: "/api/v1/things/{id}", right: auth.View, serve: read(func(ctx context.Context, rq request[none]) (map[string]string, error) {
+	{method: http.MethodGet, pattern: "/api/v1/things/{id}", kind: entity.ResourceShare, right: auth.View, serve: read(func(ctx context.Context, rq request[none]) (map[string]string, error) {
 		c, _ := auth.CallerFrom(ctx)
 		return map[string]string{"id": entity.ShareID(rq.ID).String(), "role": c.Role.String()}, nil
 	})},
@@ -78,11 +78,11 @@ var testRows = []route{
 		_, err := tx.PutSetting(entity.Setting{Scope: nodeScope(rq.ID), Key: "vault", Value: []byte(sealed)}, rq.Expect)
 		return vault{Spec: vaultSpec{Password: sealed}}, rq.ID, err
 	})},
-	{method: http.MethodGet, pattern: "/api/v1/accounts/{id}", right: auth.Accounts, serve: read(func(context.Context, request[none]) (none, error) {
+	{method: http.MethodGet, pattern: "/api/v1/accounts/{id}", kind: entity.ResourceUser, right: auth.Accounts, serve: read(func(context.Context, request[none]) (none, error) {
 		return none{}, nil
 	})},
 	{method: http.MethodPost, pattern: "/api/v1/password", kind: entity.ResourceUser, right: auth.Self, mustChange: true, serve: call(verb("password"))},
-	{method: http.MethodGet, pattern: "/api/v1/fail", right: auth.View, serve: read(func(context.Context, request[none]) (none, error) {
+	{method: http.MethodGet, pattern: "/api/v1/fail", kind: entity.ResourceInstallation, right: auth.View, serve: read(func(context.Context, request[none]) (none, error) {
 		return none{}, errors.New(UnnamedError)
 	})},
 }

@@ -705,8 +705,8 @@ func TestWriterWaits(t *testing.T) {
 // path's ID when it parses, and naming the caller by principal, name and
 // credential: a role that may not call the row, an ID that does not parse, a
 // caller that must change its password; a write's own refusal is audited
-// once, by the adapter. A refused GET or HEAD and a path no row names are not
-// audited, nor tried and failed.
+// once, by the adapter. A refused GET or HEAD is audited as every other
+// refusal is; a path no row names is not audited, nor tried and failed.
 func TestRefusalsAudited(t *testing.T) {
 	var role atomic.Uint32
 	var mustChange atomic.Bool
@@ -728,8 +728,9 @@ func TestRefusalsAudited(t *testing.T) {
 		{"ID", entity.RoleOperator, false, http.MethodPost, "/api/v1/things/payroll:poke", 404, "refused: not_found", entity.ResourceShare, false},
 		{"password", entity.RoleAdmin, true, http.MethodPut, knobPath, 403, "refused: password_change_required", entity.ResourceSetting, true},
 		{"write", entity.RoleOperator, false, http.MethodPut, knobPath, 428, "refused: precondition_required", entity.ResourceSetting, true},
-		{"GET", entity.RoleViewer, false, http.MethodGet, "/api/v1/accounts/" + api.TestID, 404, "", 0, false},
-		{"HEAD", entity.RoleViewer, false, http.MethodHead, "/api/v1/accounts/" + api.TestID, 404, "", 0, false},
+		{"GET", entity.RoleViewer, false, http.MethodGet, "/api/v1/accounts/" + api.TestID, 404, "refused: not_found", entity.ResourceUser, true},
+		{"HEAD", entity.RoleViewer, false, http.MethodHead, "/api/v1/accounts/" + api.TestID, 404, "refused: not_found", entity.ResourceUser, true},
+		{"GET password", entity.RoleViewer, true, http.MethodGet, thing, 403, "refused: password_change_required", entity.ResourceShare, true},
 		{"no row", entity.RoleOperator, false, http.MethodPost, "/api/v1/no-such", 404, "", 0, false},
 	} {
 		role.Store(uint32(tc.role))

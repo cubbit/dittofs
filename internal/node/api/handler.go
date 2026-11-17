@@ -153,22 +153,13 @@ func pick(rows []route, r *http.Request) (*route, string) {
 // does not admit, parses the path's ID and runs the row's adapter. With no
 // Authenticate, every caller is refused 401. A refusal of an authenticated
 // caller here, before the adapter, is audited against the row's kind and
-// the path's ID when it parses, unless r is a GET or a HEAD; the write
-// adapter audits its own.
+// the path's ID when it parses; the write adapter audits its own.
 //
 // decision: a path no row names is refused unaudited. It names no resource,
 // and the store refuses an audit record whose target has no kind, so its
 // record would fail to write; the refusal is still counted by op, as
 // unmatched. Overturned if the store admits an audit record targeting no
 // resource.
-//
-// decision: a GET or a HEAD refused after authentication is not audited,
-// narrower than auditing every request refused after authentication. A read
-// changes nothing, and auditing each refused read would let any
-// authenticated caller fill the audit with records at the rate it can send;
-// the refusal is still counted by op and outcome. Overturned if a refused
-// read must be attributable to its caller, such as a probe of resources the
-// role cannot see, which then needs a rate-limited or sampled audit.
 func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID string) (answer, error) {
 	if rt == nil || rt.right != auth.Public {
 		if s.d.Authenticate == nil {
@@ -182,7 +173,7 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 	}
 	id, err := admit(ctx, rt, rawID)
 	if err != nil {
-		if _, authed := auth.CallerFrom(ctx); authed && rt != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
+		if _, authed := auth.CallerFrom(ctx); authed && rt != nil {
 			rec := s.auditOf(ctx, r)
 			rec.Target.Kind = rt.kind
 			if sid, perr := entity.ParseShareID(rawID); perr == nil && strings.Contains(rt.pattern, "{id}") {
