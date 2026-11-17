@@ -290,26 +290,34 @@ func (c controlTx) DeleteSession(id [16]byte) error {
 	if err != nil || !found {
 		return err
 	}
-	rows, err := sessionHashRows(c.tx, id)
+	rows, err := sessionHashRows(c.tx, id, math.MaxInt)
 	if err != nil {
 		return err
 	}
 	return deleteRows(c.tx, append(rows, sessionKey(id), accountSessionKey(s.Account, id), sessionExpiryKey(s)))
 }
 
-// sessionHashRows lists the rows of every refresh hash session id has had,
-// each followed by its SSH mirror.
-func sessionHashRows(r kv.Reader, id [16]byte) ([][]byte, error) {
+// sessionHashRows lists the rows of the refresh hashes session id has had,
+// each followed by its SSH mirror, stopping once it holds n rows or more.
+func sessionHashRows(r kv.Reader, id [16]byte, n int) ([][]byte, error) {
 	prefix := sessionHashesPrefix(id)
 	var rows [][]byte
 	for kvp, err := range r.Scan(prefix, nil) {
 		if err != nil {
 			return nil, err
 		}
+		if len(rows) >= n {
+			break
+		}
 		rows = append(rows, bytes.Clone(kvp.Key), refreshKey([32]byte(kvp.Key[len(prefix):])))
 	}
 	return rows, nil
 }
+
+// trimRows is how many hash rows to read of a session a batch with left keys
+// may trim: one hash more than it can delete, so a session past the batch
+// still reads as past it.
+func trimRows(left int) int { return 2 * (max(1, left/2) + 1) }
 
 func deleteRows(tx kv.Txn, rows [][]byte) error {
 	for _, k := range rows {

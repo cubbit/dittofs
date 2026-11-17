@@ -223,7 +223,7 @@ func (b *batch) dropSessions(p entity.Principal) error {
 	}
 	for _, k := range rows {
 		id := [16]byte(k[len(prefix):])
-		hashes, err := sessionHashRows(b.tx, id)
+		hashes, err := sessionHashRows(b.tx, id, trimRows(b.left))
 		if err != nil {
 			return err
 		}
