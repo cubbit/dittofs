@@ -88,9 +88,9 @@ type kindResults struct {
 	// Withheld's failed-list, whole-loss and forget axes withheld — by their
 	// numbers, wherever they sit — one entry per placement the feed served
 	// nothing of. The confined copies stay out: the classing already carries
-	// them as corrupt drops on their own scans. The tail's proof and its
-	// repair read this set so a record the feed withheld whole is proven,
-	// handed over and re-placed nowhere.
+	// them as corrupt drops on their own scans. The tail's proof reads this
+	// set so a record the feed withheld whole is proven, handed over and
+	// re-placed nowhere.
 	WithheldAt map[index.RecordAt]bool
 
 	// Records holds one Rec per header-only record the scans attached — a
@@ -630,47 +630,23 @@ func (ks *kindState) verifyRemainders(rd *reader, identity core.JournalID, scs [
 }
 
 // applyCuts is each synced loss record's release into the index the rebuild
-// finished: the losses' whole pass, through applyCutsIn over every file.
+// finished: the losses' whole pass over every file, where each cut lands
+// over the index Finish built. The extent and the version come from the
+// loss record's own header — the version of the record the journal dropped
+// — and a superseded one cuts with no marker, as its own rule decides,
+// while every other reason leaves one, unsettled until the caller settles
+// at or above its version. The cuts apply in the decode's read order, and
+// markers insert by version, so the order the cuts apply in decides
+// nothing the rebuilt state shows.
 //
 // decision: an unsynced loss record applies no cut — the record it names was
 // never proven whole, and a cut would drop, as lost, content the journal
 // that crashed before the sync may still write again over the same extent.
 // Overturned by a rule that makes the sync's proof depend on nothing later.
 func (ks *kindState) applyCuts(ix *index.Index) error {
-	return ks.applyCutsIn(ix, core.FileID{}, core.Extent{})
-}
-
-// applyCutsIn applies the synced loss cuts, whole-file over every loss when
-// the window spans no byte — the rebuild's own pass, where each cut lands
-// over the index Finish built — and over the window a torn record's repair
-// just re-placed on the one file otherwise. The repair's call takes each
-// loss of that file with its own whole extent: the cut is idempotent — a
-// piece a cut dropped is held no more, so re-taking a loss's extent cuts
-// exactly the pieces the repair's fold put back, which reach no byte the
-// window does not, and nothing outside it. The extent and the version come
-// from the loss record's own header — the version of the record the journal
-// dropped — and a superseded one cuts with no marker, as its own rule
-// decides, while every other reason leaves one, unsettled until the caller
-// settles at or above its version; the repair's re-application reaches the
-// same identical marker its first pass left standing on the file, which
-// remove stores no second copy of, so Since still reports the cut once. The
-// cuts apply in the decode's read order, and markers insert by version, so
-// the order the cuts apply in decides nothing the rebuilt state shows.
-//
-// decision: the repair's pass answers a loss whose extent meets none of the
-// file's records nothing, the whole-file pass's own answer — but the pass is
-// bounded to the losses of the repair's one file, never filtered by window:
-// no clipped cut is taken, for a clipped marker would report a change an
-// unsettled whole marker already reports, and the open's cut answers the
-// fold's whole re-placement anyway. Overturned by a repair whose fold
-// reaches content outside the window its repair names.
-func (ks *kindResults) applyCutsIn(ix *index.Index, file core.FileID, window core.Extent) error {
 	for _, lo := range ks.Losses {
 		if !lo.Ev.Synced {
 			continue
-		}
-		if window.Len > 0 && lo.Ev.File != file {
-			continue // the repair reaches one file's window alone
 		}
 		// The segments the cuts lower are discarded: the open has no
 		// worker that retires a segment over them, so the ids would name
@@ -686,29 +662,6 @@ func (ks *kindResults) applyCutsIn(ix *index.Index, file core.FileID, window cor
 		}
 	}
 	return nil
-}
-
-// Accepts is the feed's whole-withhold rule for one record, as one predicate
-// the torn record's repair folds its survivors by: the failed list, a whole
-// loss name or a forget of the record's tag above its seq withholds the
-// record wherever it sits, and the map the feed filled as it judged each
-// record holds one location per placement those rules dropped — so the
-// answer is read from where the record sits, and exactly the placements the
-// feed served nothing of answer false.
-//
-// decision: the confined copies are the one feed rule this predicate does
-// not name. The feed drops a confined copy from its own map; the repair
-// never meets one at all — a walk keeps its own confined copy out of its
-// Records, and the judged segmentRecords pass drops every copy the
-// rebuild's own scan confined, whichever source a fresh read took — so the
-// two cannot disagree on a copy the open found rotten. The memo is also the
-// repair's alone: the feed itself judges a live record from the maps before
-// it records the placement (a record's own rule may name itself), so the
-// whole-withhold rule itself lives once, in the feed's withheldWhole, and
-// every placement it refused lands here. Overturned when a confinement rule
-// arises that leaves the record in a scan's Records.
-func (ks *kindResults) Accepts(rec index.Record) bool {
-	return !ks.WithheldAt[index.RecordAt{Segment: rec.Segment, Offset: rec.At}]
 }
 
 // keptHome is the open's home policy as one predicate: whether the record
@@ -1104,7 +1057,9 @@ func (f *feedFilter) charge(seg core.SegmentID, tag core.ShareTag, size, payload
 // and tag its own header names — the whole size of its slot, no payload —
 // beside the content records the feed charges: the append charged each of
 // them too, so a segment holding nothing but asides still answers the
-// figures the running journal left on it.
+// figures the running journal left on it. skip keeps out an aside placement
+// the tail proof judged torn, which charges like any other record the
+// journal never wrote.
 //
 // decision: a record the walk confined as a corrupt drop — a clone target
 // whose body did not verify, an aside body that failed — charges nothing,
@@ -1113,8 +1068,11 @@ func (f *feedFilter) charge(seg core.SegmentID, tag core.ShareTag, size, payload
 // figures of a reopened journal therefore miss only bytes that are on their
 // way out; overturned by a tail phase that ever leaves a confined record's
 // bytes on the segment it keeps.
-func (f *feedFilter) chargeAsides(sc *segmentScan) {
+func (f *feedFilter) chargeAsides(sc *segmentScan, skip map[index.RecordAt]bool) {
 	for _, a := range sc.Aside {
+		if skip[index.RecordAt{Segment: a.Header.Segment, Offset: uint32(a.Header.Offset)}] {
+			continue
+		}
 		f.charge(a.Header.Segment, a.Header.Tag, a.Header.Size(), 0)
 	}
 }

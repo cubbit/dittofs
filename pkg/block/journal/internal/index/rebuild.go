@@ -420,11 +420,10 @@ func (b *rebuilder) replayShard(s *rebuildShard) error {
 	return nil
 }
 
-// reachOf answers the span of the file a record's replay reached, before
-// any clip: the extent its kind names, or the removal to the end a
-// truncate's and a delete's reach amounts to. It is the one per-kind rule:
-// the note pass, every fold and a repair's window all ask it, so none can
-// silently narrow the others.
+// reachOf answers the span of the file a record's replay reached: the
+// extent its kind names, or the removal to the end a truncate's and a
+// delete's reach amounts to. It is the one per-kind rule: the note pass and
+// every fold ask it, so neither can silently narrow the other.
 func reachOf(kind RecordKind, off, n int64) core.Extent {
 	switch kind {
 	case RecTruncate:
@@ -435,12 +434,6 @@ func reachOf(kind RecordKind, off, n int64) core.Extent {
 		return core.Extent{Off: off, Len: n}
 	}
 }
-
-// Reach returns the span of the file a record's replay reached: the extent
-// its kind names, or the removal to the end a truncate's and a delete's
-// reach amounts to — the span its drop ranges are noted over, its markers
-// cover and a torn record's repair re-places inside.
-func (r Record) Reach() core.Extent { return reachOf(r.Kind, r.Off, r.Len) }
 
 // replayFile rebuilds one file from its buffered records, under its lock.
 func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained []Retained) error {
@@ -500,33 +493,18 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 		f.retained.add(r)
 	}
 
-	// B, C and D: one fold, in precedence order. The same code a torn
-	// record's repair re-places by, so the two cannot drift; a zero window
-	// tells the fold it is the rebuild's whole-file pass.
-	_, err := f.fold(recs, core.Extent{})
+	// B, C and D: one fold, in precedence order.
+	_, err := f.fold(recs)
 	return err
 }
 
 // fold applies recs to f, in place, and answers the records it kept after
 // the equal-numbers collapse, with the first error a removal raised: one
 // pass of placings, cuts and removals in precedence order, then one pass of
-// marks in sequence order.
-//
-// window names which fold it is. A zero window is the rebuild's, over the
-// whole file: a write replays as the client write it is, its supersede runs
-// noted and its write time taken; a removal leaves its marker, stops
-// holding only content below its version and raises the file's change
-// version, as the journal's own calls do. A non-zero window is the
-// repair's: every record's reach clips to the window, and a record whose
-// reach meets no byte of it answers nothing — the records above a cut
-// re-place theirs, and the two folds agree on the answer because each
-// applies records ascending. The repair re-places content alone, for
-// nothing a record noted on its first pass is re-noted: a write puts
-// without its supersede runs or its write time, a removal cuts the pieces
-// its reach covers below its own version — the rebuilt removal's own rule,
-// so a survivor sharing the removal's version stays — and raises nothing,
-// and the marker it left the first time stays, for it names the removal,
-// not the placement the repair is rebuilding around.
+// marks in sequence order, over the whole file: a write replays as the
+// client write it is, its supersede runs noted and its write time taken; a
+// removal leaves its marker, stops holding only content below its version
+// and raises the file's change version, as the journal's own calls do.
 //
 // decision: records with equal numbers are one record, whatever its copy
 // count — a header-only record carried forward by repack, a record
@@ -534,13 +512,12 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 // journal never reissues a pair of numbers, so two records whose kind or
 // extent differs can only be damage or another writer, and they collapse
 // too, into the greater (segment, offset); every copy passes the note pass'
-// ranges in the rebuild, and the survivors' exclusion is the repair
-// caller's, so the drop ranges lose nothing here. The greater placement is
-// kept because both copies carry the record's numbers, so they decide
-// every read the same way, and the key only makes the fold deterministic.
-// It is not always the newer home: a re-append at open into an older
-// repack-reserve spare can be the lower one. Overturned if a read or a
-// repack ever treats the two copies differently, such as a copy in a
+// ranges in the rebuild, so the drop ranges lose nothing here. The greater
+// placement is kept because both copies carry the record's numbers, so they
+// decide every read the same way, and the key only makes the fold
+// deterministic. It is not always the newer home: a re-append at open into
+// an older repack-reserve spare can be the lower one. Overturned if a read
+// or a repack ever treats the two copies differently, such as a copy in a
 // segment marked untrusted on disk.
 //
 // decision: the marks reach the held set only, never retained pieces.
@@ -556,24 +533,7 @@ func (b *rebuilder) replayFile(f *file, id core.FileID, recs []bufRec, retained 
 // Overturned by a journal rule that reports an offload commit for a
 // superseded version directly, which would reach retained pieces by
 // its own window and make the rebuild apply it here.
-func (f *file) fold(recs []bufRec, window core.Extent) ([]bufRec, error) {
-	repair := window.Len > 0
-	lo, hi := window.Off, window.Off+window.Len
-	// clipped answers the part of e the fold applies: a repair's reach
-	// clipped to the window, or nothing where the two meet at no byte; the
-	// rebuild's extent, whole. The empty extent never reaches the passes
-	// below, for nothing is applied or marked inside it.
-	clipped := func(e core.Extent) core.Extent {
-		if !repair {
-			return e
-		}
-		l, h := max(e.Off, lo), min(e.Off+e.Len, hi)
-		if l >= h {
-			return core.Extent{}
-		}
-		return core.Extent{Off: l, Len: h - l}
-	}
-
+func (f *file) fold(recs []bufRec) ([]bufRec, error) {
 	// B. Precedence order, a total order, so the replay below never
 	// depends on the feed order.
 	slices.SortFunc(recs, compareBufRec)
@@ -596,39 +556,16 @@ func (f *file) fold(recs []bufRec, window core.Extent) ([]bufRec, error) {
 	// last applied wins is exactly precedence.
 	marks := make([]bufRec, 0, len(recs))
 	for _, r := range recs {
-		e := clipped(reachOf(r.kind, r.off, r.n))
-		if repair && e.Len == 0 {
-			continue
-		}
+		e := reachOf(r.kind, r.off, r.n)
 		at := RecordAt{Segment: r.seg, Offset: r.at}
 		switch r.kind {
 		case RecWrite:
-			if repair {
-				// The payload starts at the extent's first byte, so a
-				// clipped piece's skip is the clip's own head; the rebuild
-				// places the unclipped piece with skip 0, and this names
-				// the same bytes.
-				//
-				// The note is the one the rebuild's own write takes: a
-				// surviving write re-places its supersede over what it
-				// overwrote inside the window, exactly as the rebuild's
-				// insert notes it — save that a re-placed note leaves a
-				// run the first replay already noted whole, the dedup the
-				// once shape alone carries — so the runs come out a
-				// rebuild's that was never fed the torn record. It reaches
-				// the write alone: a fill and a release supersede nothing —
-				// the rebuild puts and cuts them with no note either — and
-				// the removals cut.
-				f.held.noteOverOnce(e, r.numbers.Version)
-				f.held.put(Piece{Extent: e, Record: at, Skip: uint32(e.Off - r.off), Version: r.numbers.Version, Seq: r.numbers.Seq})
-			} else {
-				// decision: a rebuilt write carries no write time, so its
-				// dirty bytes report the zero time until recovery fills
-				// the times in from the records. Overturned by a reader of
-				// the oldest dirty time that runs before recovery has done
-				// so.
-				f.write(Placed{Extent: e, Record: at, Version: r.numbers.Version, Seq: r.numbers.Seq})
-			}
+			// decision: a rebuilt write carries no write time, so its
+			// dirty bytes report the zero time until recovery fills
+			// the times in from the records. Overturned by a reader of
+			// the oldest dirty time that runs before recovery has done
+			// so.
+			f.write(Placed{Extent: e, Record: at, Version: r.numbers.Version, Seq: r.numbers.Seq})
 		case RecFill:
 			// decision: a fill replays as a plain put. A fill record
 			// covers exactly the extents that were absent when its journal
@@ -657,20 +594,6 @@ func (f *file) fold(recs []bufRec, window core.Extent) ([]bufRec, error) {
 			// release outranks, which the cut would wrongly drop.
 			f.held.cut(e)
 		case RecTruncate, RecDeallocate, RecDelete, RecCloneTarget:
-			if repair {
-				// A removal cut the pieces its reach covered at its place in
-				// the precedence: everything already applied below it, and
-				// nothing above — the records above re-place theirs — by
-				// the removal's own rule (read remove in markers.go), which
-				// holds content at or above the removal's version: a
-				// deallocate sharing a survivor's version never drops it,
-				// whatever order the fold reaches the two records in. The
-				// marker it left the first time stays: it names the removal,
-				// not one placement. The torn record's own goes with the
-				// tear, beside the fold its repair runs.
-				f.held.cutBelow(e, r.numbers.Version)
-				continue
-			}
 			switch r.kind {
 			case RecTruncate:
 				f.truncate(e.Off, r.numbers.Version)
@@ -708,10 +631,7 @@ func (f *file) fold(recs []bufRec, window core.Extent) ([]bufRec, error) {
 		)
 	})
 	for _, r := range marks {
-		e := clipped(core.Extent{Off: r.off, Len: r.n})
-		if e.Len == 0 {
-			continue // a reach the window clips away marks nothing
-		}
+		e := core.Extent{Off: r.off, Len: r.n}
 		v := r.numbers.Version
 		if r.kind == RecUnmark {
 			f.held.unmark(e, v)

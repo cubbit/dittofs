@@ -224,8 +224,8 @@ func scanSegment(rd *reader, identity core.JournalID, info SegmentInfo) (segment
 	return sc, nil
 }
 
-// readSegment reads one attached segment the way the rebuild and a torn
-// record's repair both do, so the two can never disagree on a segment's
+// readSegment reads one attached segment the way the rebuild and the torn
+// tail's second pass both do, so the two can never disagree on a segment's
 // source: a named segment with a verified header takes the catalogue its
 // trailer names — the source the rebuild indexed it by — and falls back to
 // the walk where the trailer holds nothing it verifies with or an entry its
@@ -417,48 +417,6 @@ func segSize(rd *reader, id core.SegmentID) (int64, error) {
 	return 0, err
 }
 
-// segmentRecords answers the records of one segment's scan the repair
-// folds: its converted records minus the placements judged. The judged set
-// is the REBUILD's own scan's — not the fresh scan's, whose source keeps its
-// confined records out of its Records itself — so repairTornPlacement, which
-// re-reads each attached segment, hands the fresh scan here with the
-// placements the rebuild's scan of the segment dropped: no record the
-// rebuild never fed comes back through a repair. The rebuild's own feed
-// needs none of this: its scan's records exclude every entry it judged
-// before they were buffered, so rebuildIndex feeds its Records straight.
-//
-// The judged offset is the entry's where a catalogue drop named one — a
-// confined record's header is zero where none verified — and the scanned
-// header's otherwise; both spell the placement the fold would re-apply.
-func segmentRecords(sc segmentScan, judged []droppedRecord) []index.Record {
-	if len(judged) == 0 {
-		return sc.Records
-	}
-	at := make(map[int64]bool, len(judged))
-	for _, d := range judged {
-		if d.Entry.RecordOffset != 0 {
-			at[d.Entry.RecordOffset] = true
-		}
-		at[d.Header.Offset] = true
-	}
-	return slices.DeleteFunc(slices.Clone(sc.Records), func(r index.Record) bool {
-		return at[int64(r.At)]
-	})
-}
-
-// rebuildDrops answers the placements the rebuild's own scan of segment id
-// set aside: the drops its catalogue confined and its clone targets whose
-// bodies failed. A segment the rebuild attached holds no scan and answered
-// nothing of it, so a repair reading it fresh judges by none.
-func rebuildDrops(st *State, id core.SegmentID) []droppedRecord {
-	for i := range st.Rebuilt.Scans {
-		if st.Rebuilt.Scans[i].ID == id {
-			return st.Rebuilt.Scans[i].Dropped
-		}
-	}
-	return nil
-}
-
 // rebuilt is the rebuild phase's answer: the index the records on disk
 // rebuilt into with the counters they raised, the scan of every own
 // segment — aside kinds carried for the phases that apply their rules, the
@@ -527,12 +485,23 @@ type rebuilt struct {
 // Nothing is written: the phase reads, feeds and finishes; the phases after
 // it own every change the open makes.
 //
+// skip holds placements the tail proof judged torn — a record treated as
+// never written, so it is never noted, never charged, never fed and raises
+// no copy, exactly a record the rebuild never saw; it is the one input the
+// proof's second pass hands the rebuild, and nil is the rebuild phase's
+// own call, where every scanned record feeds. settled, where not nil, is
+// the tail classing the second pass settled its fates in: the classing of
+// the fresh scans answers the verdicts the pre-proof disk earned, while
+// the fates the proof settled are the homes the open keeps, and the
+// repoint's placement rules must read the settled ones — so no classing
+// runs for a caller that owns one.
+//
 // ponytail: one goroutine per segment, so a lone huge segment is walked by
 // one reader while the others idle behind the bound. Split a scan at
 // catalogued offsets — walking the two halves of one segment on two
 // readers, merging the scans — when a start-up profile of a journal with
 // huge segments shows the rebuild bound by one.
-func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, named map[core.SegmentID]bool, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool, failed []core.Seq, att Attached) (rebuilt, kindResults, tails, error) {
+func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own []SegmentInfo, named map[core.SegmentID]bool, floor core.Version, extentLimit int64, readers int, order func([]SegmentInfo), onScanStart func(core.SegmentID), forceScan bool, failed []core.Seq, att Attached, skip map[index.RecordAt]bool, settled *tails) (rebuilt, kindResults, tails, error) {
 	ix := index.New(extentLimit)
 	ctr := &index.Counters{}
 	b := ix.Rebuilder(ctr)
@@ -550,8 +519,8 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	// same one the tail's classing reads. The catalogue a named segment's
 	// trailer may hold is the only thing this buys — a segment nobody names
 	// takes the walk, its trailer never read — and the dispatch naming that
-	// is readSegment's, the same function a torn record's repair reads its
-	// survivors by, so the rebuild and the repair can never read one
+	// is readSegment's, the same function the tail proof's second pass
+	// reads every segment by, so the two rebuilds can never read one
 	// segment two ways.
 	//
 	// decision: only a verified own header's claim counts. The attach pass
@@ -658,15 +627,26 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	}
 	// The classing reads the scans only after the kinds pass has confined
 	// every unread aside body onto them, so a lost loss record reaches the
-	// classing as the corrupt drop it is.
-	tl, terr := classifyTails(rd, identity, named, unverifiedSet(att), scans)
-	if terr != nil {
-		return rebuilt{}, kindResults{}, tails{}, terr
+	// classing as the corrupt drop it is. A caller handing settled fates
+	// owns its classing's verdicts — the tail proof's second pass, whose
+	// fresh scans' classing would answer the pre-proof disk the first
+	// classing already judged — and skips both the classing and the
+	// subtraction over it.
+	var tl tails
+	if settled != nil {
+		tl = *settled
+	} else {
+		var terr error
+		tl, terr = classifyTails(rd, identity, named, unverifiedSet(att), scans)
+		if terr != nil {
+			return rebuilt{}, kindResults{}, tails{}, terr
+		}
+		// The subtraction reads the classing's answer over the scans, before
+		// a record feeds: the drops it leaves are the ones the tail's append
+		// phase will report, and every one of them named a copy that never
+		// feeds.
+		tl.Corrupt = ks.subtractCopies(scans, tl)
 	}
-	// The subtraction reads the classing's answer over the scans, before a
-	// record feeds: the drops it leaves are the ones the tail's append phase
-	// will report, and every one of them named a copy that never feeds.
-	tl.Corrupt = ks.subtractCopies(scans, tl)
 
 	// The workers did not feed — the scans hold every converted record —
 	// because the feed must wait for the kinds pass and the classing over
@@ -695,6 +675,13 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 	for _, i := range byID {
 		sc := &scans[i]
 		for _, rec := range sc.Records {
+			// A placement the proof judged torn is never part of any answer
+			// the state keeps: no note, no charge, no copy, no feed — the
+			// record was never written, and a rebuild that never saw it
+			// raises nothing of it anywhere.
+			if skip[index.RecordAt{Segment: rec.Segment, Offset: rec.At}] {
+				continue
+			}
 			if ferr := filter.feed(rec, b.Feed); ferr != nil {
 				// The refused record's error answers as the phase's other
 				// refusals do: as the unreadable ranges when any range was
@@ -708,7 +695,7 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 		// The aside headers charge their own slots beside the records the
 		// feed charged, before the scan keeps only what the later phases
 		// read — the header of an aside is the one placement its bytes have.
-		filter.chargeAsides(sc)
+		filter.chargeAsides(sc, skip)
 		// The index buffer holds what the record said; the scan keeps only
 		// what the later phases read, so a journal of millions of records
 		// does not hold every converted record twice.

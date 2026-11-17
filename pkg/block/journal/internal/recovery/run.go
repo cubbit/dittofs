@@ -11,6 +11,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
@@ -77,9 +78,11 @@ type Deps struct {
 // State is what recovery rebuilt of the journal's state: the attach pass's
 // answer, Attached — the id high-water mark and the rejected count included
 // there — and the rebuild phase's, Rebuilt, the index the records on disk
-// rebuilt into with its counters and scans. Every field a later phase would
-// fill is its own phase's to grow with, and nothing outside reads a copy of
-// a field attached already holds.
+// rebuilt into with its counters and scans — replaced whole, index, counters
+// and kinds alike, by the tail proof's second pass where that pass found a
+// torn record to exclude. Every field a later phase would fill is its own
+// phase's to grow with, and nothing outside reads a copy of a field attached
+// already holds.
 type State struct {
 	// Attached is what the attach pass found in the directory.
 	Attached Attached
@@ -129,7 +132,13 @@ func (p phase) String() string { return string(p.span) }
 // The marks phase runs twice with two jobs — raising and withholding first,
 // the lost-tail check after the tail's proof — each run its own span and
 // its own context check, which the list keys on the phase itself rather
-// than the span, so two phases may share one.
+// than the span, so two phases may share one. The tail proof's second
+// rebuild pass replaces the rebuilt index and counters before any later
+// phase reads them — the spares and assembly phases and every phase after.
+// The marks-raise phase is the exception its slot pays: it runs between
+// the rebuild and the proof, so when it gains its run it must re-derive
+// whatever it raised or withheld after the second pass a torn tail made,
+// or fold itself into that pass's replays.
 var phases = [...]phase{
 	{span: core.SpanOpenAttach, run: runAttach},
 	{span: core.SpanOpenRebuild, run: runRebuild},
@@ -160,6 +169,25 @@ func runAttach(ctx context.Context, deps Deps, rd *reader, st *State, expect cor
 // it is unset; the builder never consults the bound while rebuilding, so a
 // directory past it still opens.
 func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, _ []core.SyncMark) error {
+	out, kinds, tl, err := rebuildOver(ctx, deps, rd, st.Attached, expect, floor, nil, nil)
+	if err != nil {
+		return err
+	}
+	st.Rebuilt = out
+	st.Kinds = kinds
+	st.Tails = tl
+	return nil
+}
+
+// rebuildOver dispatches the rebuild over the segments the attach pass
+// answer names, the whole of what runRebuild and the tail proof's second
+// pass read, so the two can never scan one segment two ways: skip holds the
+// placements the second pass excludes from the feed — a record the proof
+// judged torn, treated as never written — and settled, where not nil, is
+// the tail classing whose fates the repoint reads in the second pass's
+// place: the fresh scans' classing answers the pre-proof verdicts, while
+// the fates the proof settled are the homes the open really keeps.
+func rebuildOver(ctx context.Context, deps Deps, rd *reader, att Attached, expect core.JournalID, floor core.Version, skip map[index.RecordAt]bool, settled *tails) (rebuilt, kindResults, tails, error) {
 	limit := deps.ExtentLimit
 	if limit < 1 {
 		limit = math.MaxInt64
@@ -173,19 +201,12 @@ func runRebuild(ctx context.Context, deps Deps, rd *reader, st *State, expect co
 	// forward search, up to the whole pool's size at every open; that is
 	// accepted, the search bounded by the largest in-flight reservation
 	// being the upgrade that would withdraw it.
-	named := successorSet(st.Attached.Own)
-	segs := slices.Clone(st.Attached.Own)
-	for _, id := range slices.Concat(st.Attached.Unverified, st.Attached.ZeroHeader) {
+	named := successorSet(att.Own)
+	segs := slices.Clone(att.Own)
+	for _, id := range slices.Concat(att.Unverified, att.ZeroHeader) {
 		segs = append(segs, SegmentInfo{ID: id, Unverified: true})
 	}
-	out, kinds, tl, err := rebuildIndex(ctx, rd, expect, segs, named, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan, deps.Failed, st.Attached)
-	if err != nil {
-		return err
-	}
-	st.Rebuilt = out
-	st.Kinds = kinds
-	st.Tails = tl
-	return nil
+	return rebuildIndex(ctx, rd, expect, segs, named, floor, limit, rebuildReaders(deps), deps.rebuildOrder, nil, deps.rebuildForceScan, deps.Failed, att, skip, settled)
 }
 
 // rebuildReaders is the reader bound the rebuild runs under.

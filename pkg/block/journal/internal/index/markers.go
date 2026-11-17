@@ -188,13 +188,13 @@ func (f *file) cloneTarget(spec core.CloneSpec, v core.Version) error {
 func (f *file) remove(m marker) {
 	f.held.cutBelow(m.extent, m.version)
 	// decision: a removal whose identical marker already stands is not
-	// inserted twice. A torn record's repair re-applies the synced loss cuts
-	// over the window its fold re-placed — the same removal, applied again
-	// inside one open — and a second copy of the marker would tell Since of
-	// one change twice while the two are settled together anyway. The
-	// identically-shaped copy is what is refused: a different removal at
-	// the same version still reports. Overturned by a caller ruled to read
-	// a marker's copy count.
+	// inserted twice. Two synced loss records can leave the same removal
+	// in one open — two losses of the same file, extent and version naming
+	// different sequence numbers — and a second copy of the marker would
+	// tell Since of one change twice while the two are settled together
+	// anyway. The identically-shaped copy is what is refused: a different
+	// removal at the same version still reports. Overturned by a caller
+	// ruled to read a marker's copy count.
 	if !markerStands(f.markers, m) {
 		f.markers = slices.Insert(f.markers, f.firstAbove(m.version), m)
 	}
