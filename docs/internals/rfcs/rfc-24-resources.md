@@ -381,7 +381,8 @@ It may then exceed *L*.
 
 A pool is a counter, not an allocator. Each consumer of a counted pool **MUST**
 reserve the bytes it is about to hold from its pool **before** it holds them,
-and release them when it frees them. A counted pool is a `Budget` or a
+and release them when it frees them; a chain's members in `Join` are the one
+exception (below). A counted pool is a `Budget` or a
 `WaitBudget` in code, as its row says it refuses or waits:
 
 ```go
@@ -399,9 +400,15 @@ func (b *Budget) Reserved() int64 // for gauges and the leak check (§2.7)
 type WaitBudget struct{ /* name, ceiling, reserved, per-key DRR queues */ }
 func NewWaitBudget(name string, ceiling int64) *WaitBudget
 // Reserve charges n bytes for key, waiting within ctx. Under a ctx already past
-// its deadline it tries once and refuses at once, as Park needs.
+// its deadline or cancelled it tries once: it takes the charge when it fits and
+// no waiter is ahead of it, and otherwise refuses at once.
 func (b *WaitBudget) Reserve(ctx context.Context, key netip.Addr, n int64) (Reservation, error)
 func (b *WaitBudget) Reserved() int64
+
+// ErrTooLarge is what a WaitBudget's Reserve, and so a BufPool's Get, wraps
+// when it refuses at once, under any ctx, a charge past the ceiling; it matches
+// no context error, so a caller tells it from a wait's end (RFC 20 §4.3).
+var ErrTooLarge = errors.New("resources: charge past the ceiling")
 
 // Reservation is a value from either, so taking one allocates nothing; it is moved,
 // never copied. Release returns its bytes to its budget, and to its key's count on a
@@ -409,13 +416,42 @@ func (b *WaitBudget) Reserved() int64
 type Reservation struct{ /* unexported: the budget it came from, the key, the bytes */ }
 func (r *Reservation) Release()
 
-// Budgets is what an adapter is handed (RFC 20 §3.4): the four budgets on the request path.
+// Budgets is what an adapter is handed (RFC 20 §3.4): the four budgets on the
+// request path, and the node's connection count.
 type Budgets struct {
 	Receive, Reply   *WaitBudget
 	Connection, Hold *Budget
+	Conns            *ConnLimit // §4.4: one per node, shared by every adapter
 }
 
+// ConnLimit counts a node's open connections against connection_limit and
+// each address's quarter of it (§4.4), across every adapter. It counts
+// connections, not bytes: their memory is the connection-state budget's.
+type ConnLimit struct{ /* limit, open connections, open per address */ }
+func NewConnLimit(limit int) *ConnLimit
+// Take counts one connection from addr at accept, or refuses at once:
+// ErrConnLimit at the limit, ErrConnQuarter at addr's quarter.
+func (l *ConnLimit) Take(addr netip.Addr) error
+func (l *ConnLimit) Release(addr netip.Addr) // at the connection's teardown
+// SetLimit applies a changed connection_limit to connections accepted
+// afterwards; those open stay. An address's quarter is limit / 4, at least 1.
+func (l *ConnLimit) SetLimit(limit int)
+
+var (
+	ErrConnLimit   = errors.New("resources: at the connection limit")
+	ErrConnQuarter = errors.New("resources: address at its quarter of the connection limit")
+)
+
 func NewBufPool(b *WaitBudget) *BufPool // RFC 20 §6.8's buffers in §3.1's classes, each reserved from b, its Get keyed as Reserve is
+// TryGet is Get's one try with no context: it takes Get's charge for key, n's
+// class plus the per-request overhead, only when it fits and no waiter is
+// ahead of it, and otherwise returns at once, allocating nothing. The try is
+// on the pool, not the budget, because every caller needs a *Buf, which a
+// Reservation cannot become.
+func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)
+func (p *BufPool) Ceiling() int64 // its budget's ceiling, what one charge is bounded by (RFC 20 §4.3)
+func (p *BufPool) Charge(n int) int64 // the charge Get would take for n bytes: n's class plus the per-request overhead, what a compound's quarter compares (RFC 20 §4.3)
+func Join(n int, bufs ...*Buf) *Buf // a chain's record (RFC 20 §4.7): an empty buffer with room for n bytes that takes over bufs' reservations, with no new charge and no wait
 ```
 
 - Whether a pool waits or refuses is fixed by its row (§2.3), so it is a type:
@@ -428,6 +464,30 @@ func NewBufPool(b *WaitBudget) *BufPool // RFC 20 §6.8's buffers in §3.1's cla
   at the ceiling and so also while restored state holds the pool above it.
 - A reservation is in bytes of memory held, rounded up to the buffer class
   (§3.1) where a pooled buffer backs it.
+- **A chain's replies become one record without a new charge.** `Join` moves
+  every reservation of `bufs` onto an empty buffer with room for `n` bytes,
+  which carries them to its last `Release`; it neither reserves nor waits, so
+  a chain holding reply reservations takes no wait for its record (§2.6). The
+  caller appends each member's bytes, with what goes between them (RFC 20
+  §4.7's `HeaderCodec.Chain`), and releases the member, which then returns
+  bytes only. `n` is at most the members' charges summed, and the members share
+  one budget and one key; `Join` panics otherwise. The record's bytes are in no
+  class (§3.1): allocated at `n`, charged its members' charges, and dropped at
+  its last `Release`. A `Join` of one buffer returns it unchanged. It is a
+  function, not a `BufPool` method: its bytes come from no pool, and the
+  reservations name their own budget.
+- **`Join`'s members are held past their charge for one copy.** From `Join`
+  until the caller releases them, they hold their bytes with no reservation,
+  their record having taken it: resident memory passes what the reply pool
+  counts by at most the record's length. This is the one exception to
+  reserving before holding.
+
+  > decision: the record takes over its members' reservations rather than
+  > reserving its own, which would wait on the reply pool while the chain holds
+  > reply reservations (§2.6), or, tried once, could be refused with the
+  > replies already encoded. Reserve the record with `TryGet`, keeping each
+  > member's reservation until its release, if chains are seen taking resident
+  > memory past *L*.
 - **Charged, not measured.** No pool reads the heap to decide. A charge is
   exact for buffers, and a fixed per-kind cost for state (§4.4, §4.6), which
   §8 measures.
@@ -461,10 +521,20 @@ pool, the reply pool and the engine's waits (step 7). Every other pool refuses
 at once, so it adds no edge to a wait graph, and **MAY** be charged at any
 point: connection state at a session, the hold pool, the share cap and open
 state. A wait **MUST NOT** be entered while holding a reservation later in this
-order. Each wait ends:
+order, nor flow control's or the reply pool's while the same request holds a
+reply reservation: a chain whose earlier members hold theirs sends their
+replies first. One exemption: a request waits at flow control while it holds
+its own record's receive charge, the reader once it has framed the record and
+a chain's later member, since an admitted request never waits on the receive
+pool, so no cycle runs through that wait
+([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)). Each wait
+ends:
 
 - flow control and receive when calls return or a held call's hold bound ends;
-- reply when the writer sends or the write deadline closes the connection;
+- reply when the writer sends, the write deadline closes the connection or the
+  call's deadline passes, and a reply that carries a status alone after at most
+  30 s, closing its connection, since parked requests' reservations can leave
+  no send to wait for (§3.3);
 - the engine's waits at the call's deadline.
 
 So no wait is unbounded and none forms a cycle.
@@ -494,6 +564,7 @@ budgets := &resources.Budgets{
 	Reply:      resources.NewWaitBudget("reply", sp.Reply),
 	Connection: resources.NewBudget("connection", sp.Conn),
 	Hold:       resources.NewBudget("hold", sp.Hold),
+	Conns:      resources.NewConnLimit(settings.ConnectionLimit), // §4.4: checked above; a change set live with SetLimit
 }
 ost := openstate.New(openstate.Deps{Budget: resources.NewBudget("open", sp.Open) /* … */})
 svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(budgets.Receive, budgets.Reply) /* … */})
@@ -506,7 +577,7 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(budgets.Receive, budget
 | --- | --- | --- | --- |
 | `Limit` | the root, first | the root | read once; never changes |
 | `Split` | the root, from `Limit` | the root, a value | recomputed only at the next start |
-| `Budgets`: receive, reply, connection state, hold | the root | shared by every adapter's `core` | none; checked at zero after the adapters stop |
+| `Budgets`: receive, reply, connection state, hold, and the `ConnLimit` count | the root | shared by every adapter's `core` | none; checked at zero after the adapters stop |
 | open-state `Budget` | the root | the open-state table; **(cluster)** also the dedup table | as above |
 | `ShareCap` | the root, over receive and reply | the service's admission, in `*vfs.Filesystem` | entries dropped at zero |
 | CPU tokens | the root, from `Split` | shared by background workers | none |
@@ -543,7 +614,7 @@ svc, _ := vfs.New(vfs.Deps{Shares: resources.NewShareCap(budgets.Receive, budget
 pkg/resources/
   limit.go        Limit, Detect: the runtime limit, the control group, the host (§2.1)
   split.go        Split, SplitFor, Check: fractions, floors, the ceilings' sum, settings (§2.3, §2.4, §7)
-  budget.go       Budget, WaitBudget, Reservation, Budgets: counted pools and their turns (§2.5, §4.1)
+  budget.go       Budget, WaitBudget, Reservation, Budgets, ConnLimit: counted pools and their turns, and the connection count (§2.5, §4.1, §4.4)
   buf.go          Buf, BufPool, NewBufPool: §3.1's classes, a sync.Pool per class, reference counted, reserved before taken (RFC 20 §6.8)
   sharecap.go     ShareCap, WithCharge, ChargeOf (§4.2)
   fd.go           the open-file split and fd_limit_low (§6.3)
@@ -560,7 +631,9 @@ pkg/resources/
 
 Receive and reply buffers come in a few classes, as
 [RFC 20 §6.6](rfc-20-adapters.md#6.6%20Throughput%20and%20latency) has them, each
-its size plus the protocol's headers:
+its size plus the protocol's headers: 4 KiB of header room on the directory,
+transfer and large classes, which carry a payload, and none on the small
+class, which carries headers only. That is a class's capacity:
 
 | Class | Size | Drawn for |
 | --- | --- | --- |
@@ -569,10 +642,17 @@ its size plus the protocol's headers:
 | transfer | 1 MiB | `READ` and `WRITE` up to 1 MiB: NFS's largest ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)), and the size SMB clients commonly use |
 | large | 8 MiB | SMB `READ` and `WRITE` past 1 MiB, up to SMB's largest ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)) |
 
-A request draws the smallest class that holds it. A buffer larger than the
-largest class its protocol uses is not pooled, and is charged its exact size.
+A request draws the smallest class whose capacity holds it. A buffer larger
+than the largest class's capacity is not pooled, and is charged its exact
+size.
 
-Each request is charged its buffer's class size plus a fixed **per-request
+> ponytail: the header room is 4 KiB, fixed, the same for every protocol, and
+> charged. It is a cost figure, not a limit: a record past its class's size
+> plus the room draws the next class and costs more. Make it the protocol's
+> own figure when a protocol's records are shown to pass it often enough to
+> matter.
+
+Each request is charged its buffer's capacity plus a fixed **per-request
 overhead** for what the request holds besides its buffer — its goroutine's
 stack, its decoded arguments, its context. The overhead is proposed at 8 KiB,
 and settled by §8's M1. So a node's requests in flight are bounded by the
@@ -627,6 +707,12 @@ at its hold bound
 ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)),
 so the wait is bounded by the longest deadline or hold bound in flight, though
 no deadline of its own runs: the request it would read has not started.
+The frame deadline, RFC 20 §6.4's `read_timeout`, runs only while the reader
+cuts a record: from its first byte, one already read included, stopped while
+the reader waits for receive room and a full `read_timeout` again once the
+reservation is granted, and disarmed between records, so no connection is
+closed for the node's want of memory or while the reader is paused outside a
+record.
 
 > decision: memory at the receive ceiling is backpressure, not an error. An
 > answer the client must retry costs a read of the whole request it then
@@ -638,9 +724,9 @@ no deadline of its own runs: the request it would read has not started.
 > deadline.
 
 A request's receive reservation is released with its buffer's last reference
-([RFC 20 §6.8](rfc-20-adapters.md#6.8%20Buffer%20pools%2C%20in%20code)) — the
-request, the service it was lent to, and the writer of a small reply it carries
-each hold one — except a held request's, which follows §4.3.
+([RFC 20 §6.8](rfc-20-adapters.md#6.8%20Buffer%20pools%2C%20in%20code)): the
+request and the service it was lent to each hold one. A held request's follows
+§4.3.
 
 ### 3.3 Reply: charged before the call, and the call waits
 
@@ -653,12 +739,22 @@ reply bound from the reply pool before the service is called. The service and
 the engine fill that buffer and add no copy of their own
 ([RFC 17 §4.5](rfc-17-vfs.md#4.5%20No%20copies%20on%20the%20data%20path)).
 
-A reply that fits the small class needs no wait: it is charged with the receive
-reservation, as part of the request's overhead, and that reservation is then
-held until the writer has sent or discarded the reply (§3.2), so a small reply
-queued to a client that does not read stays charged. A larger reply waits for its
-reservation, in the same turns as receive (§4.1), and the wait ends at the
-call's deadline with `ErrDelay` naming `DelayResources`.
+Every reply is reserved from the reply pool, the small class included: the
+receive reservation's overhead covers the request's own buffers, not its reply.
+A reply waits for its reservation in the same turns as receive (§4.1), and the
+wait ends at the call's deadline with `ErrDelay` naming `DelayResources`. A reply
+that carries a status alone and holds no reservation yet (a refusal before the
+reply was reserved, or that `ErrDelay`) may have passed its call's deadline: it
+waits for
+its buffer at most 30 s from when it starts waiting, and a status that gets none
+by then closes its connection, since it can go out no other way
+([RFC 20 §10.1](rfc-20-adapters.md#10.1%20Metrics)'s `reply_wait`). Such a wait
+keeps its request's record, and so its receive charge, until the status goes
+out, so the receive pool bounds how many wait at once (§6.1), however the
+wait is run. Its buffer is `HeaderCodec.ReplyLen(h)` bytes once a header has
+decoded, which counts what the status alone carries ([RFC 20 §4.7](rfc-20-adapters.md#4.7%20Wiring%3A%20what%20a%20protocol%20plugs%20into%20%60core%60)),
+and the small class for a refusal with no header. Either way the request holds
+no reply reservation while it waits, so the wait keeps §2.6's order.
 
 The reservation is released when the writer has sent the reply, or discarded it
 with its connection
@@ -669,12 +765,15 @@ deadline closes the connection
 the slowest way a reply is freed, and it needs no other reservation. A parked
 request — a waiting lock, a change notification — keeps a reply reservation
 of the small class while it waits, and no more, so its reply is never encoded
-outside the budget. `Park` takes it from the reply pool as it releases the
-receive reservation, which a small reply was charged to until then. A
+outside the budget. `Park` keeps the request's own reply reservation when it is
+of the small class, and otherwise takes one from the reply pool without waiting
+(`BufPool.TryGet`, §2.5) before it releases the request's; it releases the
+receive reservation. A
 connection's parks therefore hold at most its pending ceiling of small-class
 reply reservations, each with its overhead: for SMB, 511 of them. Where the
 reply pool cannot take one, `Park` refuses the request with `ErrDelay` of
-`DelayResources`, answered at once, and the handler withdraws its waiter. A
+`DelayResources`, answered at once in the reply reservation the request still
+holds, and the handler withdraws its waiter. A
 replayed reply's copy, which a reply cache hands out, is charged to the reply
 pool as any reply is. The adapter
 caps how many a connection has pending
@@ -710,8 +809,8 @@ are what bound how many large requests a node runs:
 | NFS `WRITE` of 1 MiB | receive: transfer class and overhead, about 1 MiB | about 500 node-wide |
 | NFS `READ` of 1 MiB | reply: transfer class; receive: small | about 500 node-wide |
 | SMB `WRITE` of 8 MiB | receive: large class, about 8 MiB | about 64 node-wide |
-| SMB `WRITE` of 64 KiB, one credit | receive: directory class and overhead, about 72 KiB | about 7,000 node-wide |
-| `GETATTR`, `QUERY_INFO` | small class and overhead, about 12 KiB | about 43,000 node-wide |
+| SMB `WRITE` of 64 KiB, one credit | receive: directory class and overhead, 76 KiB | about 7,000 node-wide |
+| `GETATTR`, `QUERY_INFO` | receive and reply: small class and overhead, about 12 KiB in each | about 43,000 node-wide |
 
 Raising a transfer size raises every large request's charge with it, so fewer
 fit. That is the cost [RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)'s
@@ -839,7 +938,8 @@ admitted past the cap, and its bytes still counted with its share. Steps 1–4 o
 share's state, its flavour and client rules, resolution — and authorisation
 apply to it unchanged; only the memory check is skipped. A compound that also
 carries any other operation is admitted against the cap as a whole. Such a call
-needs only a small reply (§3.3), so no reply wait can refuse it either.
+needs only a small reply (§3.3), which waits in the reply pool as any reply
+does: only a full reply pool delays it, never the share cap.
 
 > decision: release and reclaim are exempt from the share cap because refusing
 > them keeps the very state the share is short of memory for, and a reclaim
@@ -880,7 +980,20 @@ counts nothing about holds. This RFC fixes which pool holds the bytes:
 - **Past the floor**, the adapter reserves the call's whole receive charge —
   buffer class and per-request overhead, as charged at frame — from the hold
   pool and, only once that succeeds, releases the receive reservation, so the
-  charge is never absent. Failing, it refuses the call, and the receive
+  charge is never absent. It does so with `Recharge` on the call's record
+  `Buf`, whose last `Release` then returns the charge to the hold pool:
+
+  ```go
+  // Recharge moves b's whole charge to a reservation from to: it reserves the
+  // charge from to, and only then releases b's old reservation and keeps the
+  // new one. Refused, it returns the error and nothing changes.
+  func (b *Buf) Recharge(to *Budget) error
+  // Charge is b's whole charge, its class's capacity and the per-request
+  // overhead, which the floor counts.
+  func (b *Buf) Charge() int64
+  ```
+
+  If `Recharge` fails, the adapter refuses the call, and the receive
   reservation is released with it — except a call the interim timer finds
   still in the service, which is not refused and keeps its receive
   reservation, since it may still apply
@@ -888,9 +1001,11 @@ counts nothing about holds. This RFC fixes which pool holds the bytes:
   never shrinks: the buffer it
   backs is not shrunk by being held, so a 100 KiB write in a transfer-class
   buffer charges the hold pool about 1 MiB.
-- The adapter's per-connection floors in requests and bytes count the write's
-  bytes, at least 64 KiB; that is a logical count of what a connection may have
-  held, and it is kept apart from the hold pool, which counts memory. Past
+- The adapter's per-connection floors in requests and bytes count each held
+  request's receive charge, its buffer's class and the per-request overhead
+  (`Buf.Charge`), so the bytes a connection holds under its floor are the
+  memory it keeps in the receive pool; past them the charge moves to the hold
+  pool, which counts it there. Past
   both, a request whose hold starts on an `ErrDelay` the service returned is
   refused at once and nothing is held for it; a call still in the service is
   not refused, as above.
@@ -919,15 +1034,23 @@ cannot be charged is closed at accept, before any byte is read
   sessions and their reply caches;
 - half the process's open-file limit (§6.3).
 
-A value set above either is refused at start, naming the bound it passes.
+A value set above either is refused at start, and when the node applies a
+change (§2.7), naming the bound it passes.
 
 > ponytail: half the pool for connections is a guess. Settle the split when
 > §8's M2 measures heap per connection and per session on the reference
 > workloads, or sessions are seen refused below the connection limit.
 
-**No address holds more than a quarter of the connection limit.** A connection
-from an address already holding a quarter is closed at accept, counted under its
-own reason (§10).
+**One count spans every adapter.** The limit is `Budgets.Conns` (§2.5), one
+per node: each adapter's accept takes from it and the connection's teardown
+gives back, so NFS's and SMB's connections share the limit and each address's
+quarter. `connection_limit` is live: once §2.7's check passes, the node sets a
+change with `SetLimit` for connections accepted afterwards, and connections
+already open stay.
+
+**No address holds more than a quarter of the connection limit**, rounded
+down and at least one. A connection from an address already holding a quarter
+is closed at accept, counted under its own reason (§10).
 
 > decision: a quarter per address. A multi-session desktop host or a build
 > farm's NAT legitimately opens many connections, but no one address needs more
@@ -1030,7 +1153,7 @@ from here. The inventory, from the socket down:
 | requests read on one connection | its flow control: slots, credits, 64 | [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own), [§3.4](#3.4%20The%20per-connection%20cap%20for%20protocols%20without%20flow%20control) | not read |
 | readers waiting for receive bytes | one per connection | §3.2, §4.1 | turns |
 | requests waiting for reply bytes | the requests admitted | §3.3 | the call's deadline, then `DelayResources` |
-| the writer's queue | the connection's flow-control bound | [RFC 20 §6.2](rfc-20-adapters.md#6.2%20The%20writer) | the reader stops; the write deadline closes |
+| the writer's queue | 64 messages for every protocol, [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own)'s default cap, where the reader stops; past it only the replies of requests already admitted or pending and callbacks, its bytes by the reply pool, from which they were reserved | [RFC 20 §6.2](rfc-20-adapters.md#6.2%20The%20writer) | the reader stops; queuing never blocks a worker; the write deadline closes |
 | datagram listeners (the port mapper, NLM and NSM over UDP) | a fixed queue | [RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states) | dropped; the client retries |
 | held SMB requests | the floor per connection, the hold pool | [RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests), [§4.3](#4.3%20Held%20requests%3A%20where%20their%20bytes%20go) | `STATUS_INSUFFICIENT_RESOURCES`, from the adapter, for a hold that starts on a returned `ErrDelay`; a call still in the service is never refused |
 | blocked lock waiters | 1,024 per client per primary, charged to the open-state pool | [RFC 14 §5.5](rfc-14-open-state.md#5.5%20A%20client%27s%20grants%20are%20bounded), [§4.6](#4.6%20Open%20state) | `DelayResources` |
@@ -1049,6 +1172,14 @@ from here. The inventory, from the socket down:
 A queue whose entries hold a reference rather than bytes — a transfer waiting
 for a worker, a work item — is bounded by count, and its memory is in the
 unpooled quarter. A queue whose entries hold bytes is bounded by a pool.
+
+> ponytail: the reader stops at a fixed 64 queued messages, where an SMB
+> connection's credits or an NFSv4.1 session's slots may let more replies be
+> ready at once, so a client slow to read is paused before its credits or slots
+> run out. Stop it at the connection's flow-control bound, which
+> `FlowControl` would then expose, when an SMB or NFSv4.1 benchmark on the
+> reference box shows readers paused at the writer's bound while the client
+> still reads.
 
 ### 5.2 The chain from the socket to the remote
 
@@ -1089,7 +1220,7 @@ Every goroutine the process runs is one of these, and no other:
 | Goroutine | Count bound |
 | --- | --- |
 | a connection's reader and writer | two per connection: `connection_limit` × 2 |
-| an admitted request | the receive pool over the smallest charge (§3.1) |
+| an admitted request, or a refused one waiting for its status's buffer (§3.3) | the receive pool over the smallest charge (§3.1): each keeps its record's receive charge until it is answered |
 | a pool worker — syncer halves, the work scheduler's runs, GC's | the pools' sizes ([RFC 3](rfc-3-syncer.md), [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)) |
 | a fixed loop — listeners, a journal's sync and seal loops, timers, health, each sidecar's loop ([RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars)) | a constant per component, or per journal |
 | an outbound NLM callback connection's reader and writer | two per host with a grant or reply to send ([RFC 20 §3.3](rfc-20-adapters.md#3.3%20Callbacks%20are%20the%20adapter%27s%20to%20deliver)), closed after; counted in `connection_limit` |
@@ -1276,7 +1407,7 @@ once cannot fill a pool.
 | R1 | The process memory limit is learned once at start, the lowest of the runtime's soft limit, the container's and the host's memory, and the runtime is told fifteen sixteenths of it. | Start in a container limited to 512 MiB with no runtime limit set: assert *L* is 512 MiB, source `container`, and the runtime's soft limit reads 480 MiB, fifteen sixteenths of it. Set the runtime limit to 256 MiB: assert it wins, source `runtime`, and the runtime's soft limit reads 240 MiB. Set the runtime limit to 1 GiB in a 512 MiB container: assert *L* is 512 MiB, source `container`. |
 | R2 | The pools' ceilings — each pool's larger of its fraction of *L* and its floor — sum to at most three quarters of *L*, and during grace one sixteenth more (§4.6); where they sum to more, the node raises a health condition naming that sum. | *Daily.* In a 2 GiB container, for an hour: 200 NFS clients writing 1 MiB, the `builds` remote stalled, an SMB share frozen every five minutes, 10⁵ opens, a metadata walk of 10⁷ entries. Assert the process is never killed, resident memory stays under *L*, every pool stays within its ceiling, every request is answered or retried, and the goroutine count stays within §6.1's bounds. Revert the receive pool's reservation to a no-op — 200 clients at 64 requests of 1 MiB is 12.5 GiB against a 2 GiB *L* — and assert the run fails on resident memory. |
 | R3 | Memory held on behalf of a request, a connection, a session, open state or a held call is reserved from its pool before it is held, and released on every path; a size-bounded owner stays within the figure it was handed (§7). | Every pipeline test ends asserting every budget's reserved bytes are zero ([RFC 20 §6.8](rfc-20-adapters.md#6.8%20Buffer%20pools%2C%20in%20code)); a fuzz of the frame stage with random cancellations and panics asserts the same. |
-| R4 | No wait is entered while holding a reservation later in §2.6's order; a refusing pool may be charged anywhere. | Fill the reply pool with replies to a client that stops reading, and the receive pool with writes waiting on a stalled journal: assert both drain once the write deadline closes the stalled client, and no reservation waits past its deadline. |
+| R4 | No wait is entered while holding a reservation later in §2.6's order, nor a reply wait while the request holds a reply reservation; a refusing pool may be charged anywhere. | Fill the reply pool with replies to a client that stops reading, and the receive pool with writes waiting on a stalled journal: assert both drain once the write deadline closes the stalled client, and no reservation waits past its deadline. |
 | R5 | No queue, wait list or table that grows with load is unbounded; each has a row in §5.1 or in the RFC it cites. | Under constant write load, stop the remote for ten minutes: assert every pool's reserved bytes and every counted queue's length stay within their bound at every sample. Insert an unbounded queue at offload's posting in a test build: assert it is caught by its own length gauge, not by a heap slope. Remove 10⁶ files with the remote stopped: assert the engine's scheduler holds at most its total, `engine_work_items_dropped_total` rises, and every removal completes once the remote returns. |
 | R6 | At the receive ceiling the socket is not read; no request is read that cannot be reserved, and a record in several fragments is reserved at its protocol's largest class before its first fragment is read. | An RPC record in three fragments whose first is 1 KiB: assert the receive pool is charged the transfer class before the first fragment is read, and a fragment past the cap closes the connection with the reservation released. A fuzz over record marks and fragment sequences asserts no reservation leaks and the cap holds. |
 | R7 | No client key is granted bytes of the receive or reply pool that take it past three quarters while another key waits; waiting keys are granted in turns. | A unit property test of `Budget`: for random waiters of random classes over N keys, with random releases, a visit grants a key no more bytes than its deficit holds; a waiting key below the cap whose head fits the free bytes is granted before any other key is visited twice; and no key past three quarters is granted while another waits. As a smoke test, one address with 16 connections at their caps of 1 MiB writes and 20 other addresses sending `GETATTR`: assert each other address is served, and the busy address is granted nothing further while above three quarters of the receive pool. |
