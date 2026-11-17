@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -370,6 +371,122 @@ func TestOnClosesContextEndsAfterTheGrace(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the teardown did not end")
 	}
+}
+
+// The wait and OnClose share one grace counted from the close: a request that
+// runs past the wait ends the teardown at the grace, and OnClose's context has
+// already ended when it starts (RFC 20 section 4.7).
+func TestOnClosesDeadlineIsTheWaits(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := budgets()
+		adaptertest.CheckLeaks(t, b)
+		reached := make(chan struct{})
+		release := make(chan struct{})
+		started := make(chan error, 1)
+		l := core.Listener{Services: []string{"test"}, Network: "tcp"}
+		l.Protocol = withOnClose{
+			withRouter{testproto.New(adapter.Deps{}).Bare(), func(rt core.Router) core.Router {
+				return &stubborn{Router: rt, reached: reached, release: release}
+			}},
+			func(ctx context.Context) {
+				started <- ctx.Err()
+				<-ctx.Done()
+			},
+		}
+		srv, err := core.NewServer(adapter.Deps{Budgets: b}, settings.DefaultNFS(), l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		core.Serving(srv)
+		conn, client := servedConn(t, srv, &l)
+		c := testproto.NewClient(client)
+		if err := c.Send(testproto.Msg{Op: testproto.OpEcho, Version: 1, ID: 1, Payload: []byte("hi")}); err != nil {
+			t.Fatal(err)
+		}
+		<-reached
+		// The client goes while the request still runs: the handler ignores its
+		// context, so only the wait's grace ends it.
+		_ = client.Close()
+		synctest.Wait()
+		time.Sleep(29 * time.Second)
+		synctest.Wait()
+		select {
+		case err := <-started:
+			t.Fatalf("OnClose ran at 29s: %v", err)
+		default:
+		}
+		time.Sleep(time.Second)
+		synctest.Wait()
+		select {
+		case err := <-started:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("OnClose's context is %v when the wait's grace ends, want the deadline", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("OnClose did not run when the wait's grace ended")
+		}
+		select {
+		case <-core.ConnDone(conn):
+		case <-time.After(2 * time.Second):
+			t.Fatal("the teardown did not end when the wait's grace ended")
+		}
+		close(release)
+		synctest.Wait()
+	})
+}
+
+// withRouter is a protocol whose connection's Router the test wraps.
+type withRouter struct {
+	core.Protocol
+	wrap func(core.Router) core.Router
+}
+
+func (p withRouter) NewConn(c *core.Conn) core.Stages {
+	st := p.Protocol.NewConn(c)
+	st.Router = p.wrap(st.Router)
+	return st
+}
+
+// stubborn is a router whose Echo runs past its context: the handler holds
+// until the test releases it, so the request outlives the wait's grace.
+type stubborn struct {
+	core.Router
+	reached chan struct{}
+	release chan struct{}
+	once    sync.Once
+	table   *core.OpTable
+}
+
+func (r *stubborn) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	tb, req, err := r.Router.Route(h, prev)
+	if tb == nil || err != nil {
+		return tb, req, err
+	}
+	// One copy of the table, labelled as its own: a table per route would open
+	// a series per request.
+	r.once.Do(func() {
+		ops := make(map[uint32]*core.Op, len(tb.Ops))
+		for code, op := range tb.Ops {
+			op := *op
+			decode := op.Decode
+			op.Decode = func(body []byte, v core.Version) (core.Invocation, int, error) {
+				inv, n, err := decode(body, v)
+				if err == nil && code == testproto.OpEcho {
+					inv.Call = func(context.Context, *core.Request) error {
+						close(r.reached)
+						<-r.release
+						return nil
+					}
+				}
+				return inv, n, err
+			}
+			ops[code] = &op
+		}
+		t := *tb
+		t.Ops = ops
+		r.table = &t
+	})
+	return r.table, req, nil
 }
 
 // A client that reads nothing is not read past the writer's bound: its next
