@@ -70,10 +70,3 @@ func TestDemoRefusesUsedDir(t *testing.T) {
 		t.Errorf("refused run touched the journal dir: %d entries before, %d after", len(before), len(after))
 	}
 }
-
-func tailOf(s string, n int) string {
-	if len(s) > n {
-		return s[len(s)-n:]
-	}
-	return s
-}
