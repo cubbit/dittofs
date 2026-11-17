@@ -90,7 +90,7 @@ func TestARelatedChainRunsUnderItsFirstMembersHandle(t *testing.T) {
 }
 
 // With the PutFH refused, the related Create is answered the PutFH's status
-// with no call, in the same record, and makes no file (R42's rule).
+// with no call, in the same record, and makes no file.
 func TestARelatedMemberAfterAFailureIsAnsweredItsStatus(t *testing.T) {
 	s := newChained(t, 1<<20, adapter.Deps{})
 	s.serve(
@@ -193,7 +193,7 @@ func TestARelatedMemberAfterAnUnwrapRefusalSharesItsRecord(t *testing.T) {
 
 // A chain whose second member's next points behind it sends two records,
 // counted decode: the first member's reply alone, sealed, and the second's
-// refusal, its checksum 0; the connection then closes (R93).
+// refusal, its checksum 0; the connection then closes.
 func TestABadStepEndsTheChainAfterWhatItHolds(t *testing.T) {
 	m := metrics.New("v", "c")
 	s := newChained(t, 1<<20, adapter.Deps{Metrics: m})

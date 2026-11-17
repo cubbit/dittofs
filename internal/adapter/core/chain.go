@@ -114,7 +114,7 @@ func (p *pipeline) serveChain(tr *track, rec *resources.Buf, h Header, derr erro
 // before, and sends what the chain holds once the last has run. A step that
 // does not lead forward to a header inside the record ends the chain: what it
 // holds goes out, and the connection closes, since the members past it can
-// be neither read nor answered (R93).
+// be neither read nor answered (§4.7).
 func (c *chain) run(e entry) {
 	p := c.p
 	defer p.done()
@@ -285,7 +285,7 @@ func (c *chain) refusal(e *entry, h Header) {
 }
 
 // answerFailed answers a related member after a failed one the failed
-// member's status, with no call (R42).
+// member's status, with no call (§4.3).
 func (c *chain) answerFailed(e *entry) {
 	if e.release != nil {
 		e.release()
@@ -317,6 +317,10 @@ func (c *chain) status1(e *entry, h Header, s Status, cause error) {
 func (c *chain) reserve(ctx context.Context, n int) (*resources.Buf, error) {
 	p := c.p
 	c.quarter(n)
+	// ponytail: §4.7's record cap is not split on yet: a member whose
+	// joined record, as encoded, would pass Framer.MaxRecord sends the
+	// replies before it first, counted record, here beside the quarter's
+	// check. Add it once the framer states its cap.
 	// decision: a member that does not fit at once is not refused: the
 	// replies before it go out, and it waits under its deadline, since a
 	// refusal's status would itself need a buffer from the pool its chain
@@ -492,6 +496,11 @@ func (c *chain) flush(why split, tr *track) {
 		c.close(err)
 		return
 	}
+	// ponytail: the record is queued under its last member's key, so a
+	// message that must go before a middle member's reply, sent once the
+	// record is queued, finds none to go before. Queue it under every
+	// member's key once held requests send interims that can race their
+	// final replies.
 	p.out(rec, c.held[len(c.held)-1].key)
 	for _, m := range c.held {
 		p.end(m.tr, m.final, m.s, m.n, m.err)
