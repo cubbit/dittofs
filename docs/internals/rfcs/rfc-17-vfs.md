@@ -1619,17 +1619,27 @@ decide. Admission is a property of the share a call
 reaches, not of how it reached it, so an NFSv4 compound that `PUTFH`s a handle
 and one that walks the pseudo-filesystem into the share meet the same five
 checks. A compound crossing from one share into another is re-admitted, and
-re-resolved, at the crossing. The result of steps 1–4 may be cached per
-(share, identity) only with `ExportPolicy.Version`, the netgroups' versions,
-`ShareList.Version`, the share's grant-list version
+re-resolved, at the crossing. Steps 1 to 3 run on every call. Only step 4's
+result, the caller, may be cached, per share, with the key
+[RFC 18 §7.1](rfc-18-identity.md#7.1%20Every%20key%20carries%20the%20whole%20proof)
+lists: the proof key; the share with its `ExportPolicy.Version` and its
+grant-list version
 ([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)'s
-`S‖id‖gv`) and the principals generation in the key, beside everything RFC 18 §7.1 lists; a cache of a result step 3 decided — a client rule or a netgroup match — also keys on the `Identity`'s `Client` address, since `Identity.Key()` leaves it out ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)) and two clients of one principal can be ruled differently: the principals generation is what
-drops a cached resolution when a principal, a group or a mapping changes
+`S‖id‖gv`); the serial of the identity `State` it was resolved under, its
+`Caller.Built`, never a serial read before resolution began; the
+read-only cause step 3 handed resolution; and, where a client rule or a
+netgroup decided, the `Identity`'s `Client` address, since `Identity.Key()`
+leaves it out ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller))
+and two clients of one principal can be ruled differently. Since step 3 is
+never cached, the key needs neither the netgroups' versions nor
+`ShareList.Version`: a client removed from a netgroup is refused by step 3 of
+its next call. The `State`'s serial is what drops a cached caller when a
+principal, a group or a mapping changes
 ([RFC 18 §7.2](rfc-18-identity.md#7.2%20Local%20changes%20take%20effect%20within%20a%20second)),
 so a disabled user's next call resolves afresh. Step 5 reads the pools as they
 are and is never cached.
 
-![Admission on every call: a PUTFH of a held handle, a walk of the pseudo-filesystem from PUTROOTFH, and a call naming only an open all reach the share of the handle or open they name and meet the same five steps — share state (ErrDelay while quiesced, ErrStale once being removed or retired), the MinProof and MinProtection minimums (ErrWrongSecurity), client rules (ErrAccess or a narrowing to read-only), resolution (map, squash, grants; refuses nothing) and the share cap on request buffers (ErrDelay at once, except for release or reclaim) — then Authorize; a compound crossing shares is re-admitted and re-resolved, and a cached result of steps 1–4 is keyed with the policy, netgroup, share-list and grant-list versions and the principals generation, plus the client address when a client rule decided](img/rfc17-admission.svg)
+![Admission on every call: a PUTFH of a held handle, a walk of the pseudo-filesystem from PUTROOTFH, and a call naming only an open all reach the share of the handle or open they name and meet the same five steps — share state (ErrDelay while quiesced, ErrStale once being removed or retired), the MinProof and MinProtection minimums (ErrWrongSecurity), client rules (ErrAccess or a narrowing to read-only), resolution (map, squash, grants; refuses nothing) and the share cap on request buffers (ErrDelay at once, except for release or reclaim) — then Authorize; a compound crossing shares is re-admitted and re-resolved, and only resolution's caller may be cached, keyed with the proof key, the policy and grant-list versions, the identity State's serial and the read-only cause, plus the client address when a client rule decided](img/rfc17-admission.svg)
 
 **A share's removal joins the calls admitted before it.** Admission counts
 the call against its share *before* it reads the share's state, and uncounts it
