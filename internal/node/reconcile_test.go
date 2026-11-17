@@ -175,15 +175,15 @@ func TestReconcileBindsEveryPage(t *testing.T) {
 	}
 }
 
-// A share whose namespace's remote store is not configured is not bound and
-// is refused, naming it, beside a share that is bound; once its store is
-// configured it is bound and no longer refused.
+// A share whose namespace's remote store is not configured is not bound at
+// Start nor by reconcile, and is refused, naming it, beside a share that is
+// bound; once its store is configured it is bound and no longer refused.
 func TestReconcileRefusesAShareWithNoRemoteStore(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
-	started(t, h)
 	configure(t, h, storeA)
 	a := createShare(t, h, "a", storeA)
 	b := createShare(t, h, "nowhere", storeB)
+	started(t, h)
 	caughtUp(t, h)
 	if !inEngine(h, a.ID) {
 		t.Errorf("share on a configured store: not bound, want bound")
@@ -321,9 +321,17 @@ func TestReconcileBoundsAStoreCall(t *testing.T) {
 func TestAppliedWaitsForAPassAfterTheWrite(t *testing.T) {
 	reads := make(chan kvstore.Counters)
 	release := make(chan struct{})
+	done := make(chan struct{}) // closed as the test ends, so a failed test's Stop finds no pass held
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewPausing(func(_ *node.Node, c kvstore.Counters) {
-		reads <- c
-		<-release
+		select {
+		case reads <- c:
+		case <-done:
+			return
+		}
+		select {
+		case <-release:
+		case <-done:
+		}
 	})))
 	pass := func(what string) kvstore.Counters {
 		t.Helper()
@@ -370,6 +378,7 @@ func TestAppliedWaitsForAPassAfterTheWrite(t *testing.T) {
 			t.Errorf("Stop: %v", err)
 		}
 	}()
+	defer close(done)
 
 	first := applied(t.Context())
 	pass("the pass the first Applied woke")
