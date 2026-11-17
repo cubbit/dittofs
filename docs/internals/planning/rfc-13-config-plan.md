@@ -107,7 +107,7 @@ What replaces what:
 | `pkg/config/renamed_keys.go` (renamed keys refused; other unknown keys only warned) | the refused v1 keys, each naming its replacement: `database.*`, `controlplane.*` (its `port` and `tls` naming the bootstrap's API listen address and TLS, RFC 13 §2.2), `admin.*`, `kerberos.*`, `ldap.*`, `identity.machine_sid`, `gc.*`, `snapshot.*`, `integrity.*`, `metadata.*`, `blockstore.*` but the journal path, `metrics.*` (the bootstrap's metrics listen address), `shutdown_timeout` (`adapters.<protocol>.drain_timeout`), and their `DITTOFS_*` forms | reworked in epic 2 |
 | `pkg/metadata/kvstore/settings.go` (`Settings`, `PutSetting`, `CFGGEN`, `Setting.Schema`) | the same, with a delete, a read across every scope in one scan, and a newer schema refused; `expect` is RFC 23's plan's (its epics 1 and 2) | extended in epic 3 |
 | `KindSEC` reserved, no code | `Secret` records with versions and sealing | built in epic 4 |
-| `pkg/block/middleware/encryption/keyprovider` | `pkg/keyprovider`, unchanged but for `mapstructure` tags | moved in epic 1 (D5) |
+| `pkg/block/middleware/encryption/keyprovider` | `pkg/keyprovider`, unchanged but for `mapstructure` tags and KMIP's `timeout_ms` renamed `timeout`, a duration | moved in epic 1 (D5) |
 
 **Dependency limits.** Sealing uses `keyprovider` (AES-256-GCM, key IDs, retired keys, a local key
 file or KMIP) unchanged. A component's settings struct and validator live in that component's own
@@ -266,7 +266,7 @@ Out of scope, each named in O1:
    - `renamed_keys.go`'s `checkRenamedKeys` and its table, extended with the refused keys. It sees
      only the file's keys, so refusing their `DITTOFS_*` forms is new code: a scan of the
      environment;
-   - `keyprovider`, moved unchanged but for its `mapstructure` tags.
+   - `keyprovider`, moved unchanged but for its `mapstructure` tags and KMIP's `timeout`.
 8. **Real dependencies for properties of those dependencies**, as `CLAUDE.md`'s "Writing tests"
    says. For this RFC:
    - sealing runs on real key files, one per role;
@@ -454,7 +454,7 @@ and never changed (the RFC 18 plan's A10). This is the user's decision.
 - **Prior art (from memory).** Vault's barrier binds each entry to its path the same way.
 - **Applied by** epic 4.
 
-**D5. `keyprovider` moves to `pkg/keyprovider`** in epic 1, unchanged but for the move and a `mapstructure` tag on each field, so secrets and the
+**D5. `keyprovider` moves to `pkg/keyprovider`** in epic 1, unchanged but for the move, a `mapstructure` tag on each field and KMIP's `timeout_ms` renamed `timeout`, a duration (RFC 13 Appendix C), so secrets and the
 transform chain share it without one importing the other's middleware tree. Its importers on
 `feat/storage-v2` move with it:
 - `pkg/block/middleware/encryption/decorator.go`, `decorator_test.go` and `policy.go`;
@@ -466,7 +466,7 @@ transform chain share it without one importing the other's middleware tree. Its 
 
 The v1 runtime's importers go with RFC 23's plan's epic 1.
 - **Prior art.** None found.
-- **Applied by** epic 4.
+- **Applied by** epic 1.
 
 **D6. Secrets are their own package, `pkg/secrets`,** beside `pkg/settings`. A component that holds
 a secret reference imports only it. Neither package imports the other: `pkg/secrets` has its own
@@ -739,7 +739,7 @@ The start: the host file, the node's identity, then the node RFC 23's plan build
 
 ```go
 func start(ctx context.Context, configFlag string) error {
-	b, err := bootstrap.Load(configFlag) // "" is ~/.config/dittofs/config.yaml (D7)
+	b, err := bootstrap.Load(configFlag, os.Environ()) // "" is ~/.config/dittofs/config.yaml (D7)
 	if err != nil {
 		return err
 	}
@@ -762,7 +762,7 @@ func start(ctx context.Context, configFlag string) error {
 }
 
 // pkg/bootstrap, the renamed pkg/config.Load (epic 2).
-func Load(path string) (*Bootstrap, error) {
+func Load(path string, environ []string) (*Bootstrap, error) {
 	v := viper.New()
 	setupViper(v, path)
 	if _, err := readConfigFile(v); err != nil {
@@ -919,10 +919,10 @@ func (n *Node) reconcileSettings(ctx context.Context) error {
 	return n.reportGeneration(ctx, cur.Generation) // NodeStatus.Settings (RFC 16 §2.4)
 }
 
-func (n *Node) reconfigure(section string, cur settings.Snapshot) error {
+func (n *Node) reconfigure(section string, cur *settings.Snapshot) error {
 	switch section {
 	case "adapters.smb":
-		smb, err := settings.Get[adaptersettings.SMB](cur, section, n.id) // a lookup: Read merged the override and validated it
+		smb, err := settings.Get[adaptersettings.SMB](cur, section, n.id) // a lookup: Read merged the override and validated it; an error for a held section
 		if err != nil {
 			return err
 		}

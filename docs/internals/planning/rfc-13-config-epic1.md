@@ -183,7 +183,12 @@ bullets describe RFC 26's and RFC 5's records.
   middleware tree, which is why it moves at all. The move is unchanged but for one thing: each
   field gains a `mapstructure` tag equal to its `json` tag, since viper decodes by the
   `mapstructure` tag and would not match `retired_files` to `RetiredFiles`. The importers that move
-  with it are RFC 13's plan's D5 list. No marker.
+  with it, RFC 13's plan's D5 list: `pkg/block/middleware/encryption/decorator.go`,
+  `decorator_test.go`, `policy.go` and `README.md` (its relative `keyprovider/` link),
+  `pkg/block/middleware/ordering_test.go`, `docs/guide/encryption.md`,
+  `docs/internals/encryption-design.md`, `test/scenarios/12-smb-encryption-roundtrip-s.sh`, and
+  `test/harness/run/gojson_test.go`, which holds the path as a string, so no compiler catches it.
+  No marker.
 - **D4, a stub fails loudly and names its epic.** A stub that returns an error returns one wrapping
   `errors.ErrUnsupported` and naming the epic that fills it, as RFC 23's epic 1 did; one that
   returns no error (`Of`, `Diff`, `Keep`) panics with the same text. A zero value would read as
@@ -221,24 +226,24 @@ bullets describe RFC 26's and RFC 5's records.
   beside the struct, as RFC 13's plan sketched: the map repeats every field name as a string, which
   only a panic at start ties back to the struct. T1.1's review may revise this decision through a
   pull request before T1.6 freezes it. No marker.
-- **D10, a duration is a string in every text an operator writes; existing types change at their
-  decode, not their storage, unless T1.1 says otherwise.** Two types on `feat/storage-v2` hold a
-  duration another way: `pkg/adapter/settings` declares `time.Duration` fields with plain `json`
-  tags, which `encoding/json` writes as integer nanoseconds (`30000000000`), and `keyprovider.Config`
-  holds `TimeoutMS int` (`timeout_ms`). T1.1 names, for each, which of two it takes: a string codec
-  (`"30s"`) that E3 puts on the adapters' settings structs, with a `Schema` raise by RFC 13's plan's
-  D11, and for `TimeoutMS` a rename to a duration string with a `renamed_keys.go` entry, which D3's
-  "unchanged" then excepts; or an exemption written in Appendix B. T1.6's example test, on the
-  adapters' section, checks the choice. Proposed here: the string codec and the rename, so that one
-  convention holds. No marker.
-- **D11, today's bootstrap keys each get a decision in T1.1.** `Bootstrap.Node` and `Devices`
-  (`mapstructure:"-"`, with a `ponytail:` marker, `pkg/config/config.go`) are retagged to
-  Appendix C's keys and the marker goes. `blockstore.journal.path` and
-  `DITTOFS_BLOCKSTORE_JOURNAL_PATH`, documented in `docs/guide/configuration.md`, are not a §2.2
-  fact: it is the per-share state root, and T1.1 renames it to the journal devices' key with a
-  `renamed_keys.go` entry or drops it. `logging.format` and `logging.rotation.*` are not in §2.2's
-  "log destination and level": T1.1 keeps them as part of the log destination, or drops them with a
-  refusal that names what replaced them. Nothing is left undecided when T1.3 builds. No marker.
+- **D10, a duration is a string with a unit everywhere an operator writes one, as T1.1 settles
+  it (#4486).** RFC 13 Appendix B, as #4486 writes it: "a duration is a number and a unit, `ms`,
+  `s`, `m` or `h`", and "a bare number is refused". Two types on `feat/storage-v2` hold a duration
+  another way. `pkg/adapter/settings` declares `time.Duration` fields with plain `json` tags, which
+  `encoding/json` writes as integer nanoseconds (`30000000000`): E3 gives those structs a string
+  codec (`"30s"`), with a `Schema` raise by RFC 13's plan's D11. `keyprovider.Config` holds
+  `TimeoutMS int` (`timeout_ms`): #4486's Appendix C renames it to `timeout`, a duration, and T1.3
+  makes that change when it moves the package (D3's "unchanged" excepts it), with the refusal of
+  `timeout_ms` naming `timeout`. T1.6's example test, on the adapters' section, checks the string
+  form. No marker.
+- **D11, today's bootstrap keys each have a decision, in #4486's Appendix C.** `Bootstrap.Node`
+  and `Devices` (`mapstructure:"-"`, with a `ponytail:` marker, `pkg/config/config.go`) are
+  retagged to `node.id` and `journals`, and the marker goes. `blockstore.journal.path` becomes
+  `journals`, one entry per device. `logging.format` and `logging.rotation.*` stay, the rotation
+  size as a size with its unit and the age as a duration. `database.*`, `controlplane.*`,
+  `metrics.enabled`, `.host` and `.port`, and `shutdown_timeout` are renamed as Appendix C's table
+  "From the files of today" says, and the keys that became records or settings are refused. T1.3
+  builds `renamed_keys.go` from that table, so nothing is left undecided. No marker.
 
 ## 5. Target tree
 
@@ -279,9 +284,9 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     list is written in the environment (the journal devices); which facts are paths, and whether a
     relative path is read against the file's directory; which facts are secrets or point at one
     (the store's credential, the wrapping keys), and how they are given without the secret in the
-    file (a path to read, or a value, which T1.3 types so that it redacts itself); how a role names its current and next wrapping key.
+    file (a path to read, or a value, which T1.3 types so that it redacts itself; #4486 gives files); how a role names its current and next wrapping key.
   - **Today's keys (D11).** For each key `pkg/config` has today, and `Node` and `Devices`: kept,
-    renamed (with a `renamed_keys.go` entry) or dropped, in Appendix C.
+    renamed (with a `renamed_keys.go` entry) or dropped, in Appendix C (#4486).
   - **§6, the refusal's shape.** One shape for every refusal of configuration, the file's, the
     environment's and a record's: what was refused (the key, the variable, or the record and its
     scope), the rule, and, for a v1 key, what replaced it; never the value. Two or more refusals in
@@ -289,8 +294,8 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     unknown key, a value out of range and a bound setting refused while content exists.
   - **Appendix B's value conventions.** A key is lower case with dots and underscores, no two
     keys share an environment name, and an unknown `DITTOFS_*` variable or a mixed-case key is
-    stated as refused or ignored (today an unknown file key only warns); D10 settles the duration; a duration
-    is a string with a unit (`"30s"`), and a bare number refused; a size is a string or an integer
+    stated as refused or ignored (today an unknown file key only warns); a duration
+    is a string with a unit (`"30s"`, D10), and a bare number refused; a size is a string or an integer
     of bytes, with `internal/bytesize`'s grammar; a list and a map are JSON's.
   - **`dfs config`'s three commands on the bootstrap.** What `show` prints (the effective
     bootstrap, each value's source, secrets as references only), what `validate` refuses (what a
@@ -343,7 +348,8 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     the log destination and level (kept), the roles, and each role's wrapping key as a
     `keyprovider.Config` (D3). No field for the memory limit (D5), the scratch paths or
     initialise-if-empty.
-  - If T1.1 gives the store's credential as a value, a type for it whose `String`, `Format`,
+  - #4486 gives the store's credential as files (`metadata.foundationdb.tls.*`), so `Bootstrap`
+    holds their paths only. If its review turns the credential into a value, a type for it whose `String`, `Format`,
     `LogValue`, `MarshalYAML` and `MarshalJSON` redact. Today `pkg/config` has no redaction hook,
     and `dfs config show` prints `yaml.Marshal(cfg)`, so without the type `show` would print the
     credential in clear from PR 3 until E2.
@@ -443,7 +449,14 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
   - `Scope` and its three constructors, `At`, `PerThing` and `Override`;
   - `Section`, `Of` and its options `WriteRole`, `Required` and `SecretRef(field, kind)`;
   - `Table`, `Snapshot`, `Read(ctx, cp, table, node)` returning the snapshot and the sections it
-    refused, `Get[T](snap, section, id)`, `Change`, `Diff(prev, cur)` and `Keep`;
+    refused, `Change`, and
+    `Get[T any](snap *Snapshot, section string, node entity.NodeID) (T, error)` (an error for a
+    section the snapshot holds no value of, such as one held at start),
+    `Diff(prev, cur *Snapshot) []Change` (a nil `prev` makes every key a change) and
+    `(*Snapshot).Keep(section string, prev *Snapshot) *Snapshot` (the section's values from `prev`,
+    the rest from the receiver);
+  - a `Table` built from two sections that declare one key panics and names both sections, so
+    keys stay unique across sections and the table's first test fails on a clash;
   - `Write`, `Put(s)`, `Delete(scope, key)`, `HoldsContent` (`func(scope entity.SettingScope) (bool, error)`, so that a write that is not
     bound never probes), and
     `Check(tx entity.ControlPlaneTx, caller entity.APIRole, w Write, holds HoldsContent) error`;
@@ -459,7 +472,8 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
 - **Decision note:** a secret's rotation never reaches `Check`, since a reference names the
   secret, not a version: the `decision:` note goes at `Check`'s declaration.
 - **Tests:** an example test declares the adapters' section with D9's tags (it fails to compile if
-  `Of`'s signature or an option changes, which is the freeze's point). The bodies are E3's.
+  `Of`'s signature or an option changes, which is the freeze's point). The bodies are E3's, and
+  E3's first `Table` test builds two sections sharing a key and asserts the panic.
 
 ### T1.7 The freeze review and the export pins
 
@@ -473,10 +487,11 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     frozen struct, or a changed signature fails it.
   - The caller list, in the pull request's description: each frozen symbol with its first caller
     (an E2 to E5 subtask, RFC 23's T3.10, T5.3 or T5.4, or the RFC 18 plan's epic 2), and each
-    S1 symbol of RFC 13's plan checked present. `Delete`, pinned here without a transaction, is
+    symbol of T1.3 to T1.6's deliverables checked present. `Delete`, pinned here without a transaction, is
     listed as gaining one when E4 fills it.
 - **Acceptance criteria:**
-  - Every symbol RFC 13's plan's S1 lists is exported, and nothing else is but D7's `New`.
+  - Every symbol T1.3 to T1.6 deliver is exported (they are RFC 13's plan's S1 list), and nothing
+    else is but D7's `New`.
   - No `Bootstrap` key names a setting of RFC 13's Appendix B.
 - **Tests:** each pin runs over a planted extra export in `testdata` and fails on it (catches a pin
   that compares nothing). A case parses Appendix B's setting keys and fails if one is a
