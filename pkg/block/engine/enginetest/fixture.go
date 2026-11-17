@@ -148,6 +148,8 @@ type Fixture struct {
 type batchHold struct {
 	release chan struct{}
 	once    sync.Once
+	held    chan struct{} // closed once a batch reached the hold
+	heldOne sync.Once
 }
 
 // Stall makes the store commit no existence from now on: each commit waits
@@ -276,7 +278,19 @@ func (f *Fixture) HoldFirstRepack() (reached <-chan struct{}, release func()) {
 // engines started after it, starts at its span, until ReleaseBatches. Call it
 // before the Crash or Restart whose start posts the removals.
 func (f *Fixture) HoldBatches() {
-	f.batches.Store(&batchHold{release: make(chan struct{})})
+	f.batches.Store(&batchHold{release: make(chan struct{}), held: make(chan struct{})})
+}
+
+// WaitHeldBatch returns once a removal batch is held at its span by the hold
+// HoldBatches set: the loop is running it, rather than having it queued.
+func (f *Fixture) WaitHeldBatch() {
+	f.t.Helper()
+
+	select {
+	case <-f.batches.Load().held:
+	case <-f.t.Context().Done():
+		f.t.Fatal("fixture: no removal batch reached the hold")
+	}
 }
 
 // ReleaseBatches lets the held removal batches run, and every later one.
@@ -374,6 +388,7 @@ func (f *Fixture) Trace(
 	sp := &Span{Name: name, Attrs: attrs, Parent: parent}
 	batch := name == "engine.removal_batch"
 	if h := f.batches.Load(); batch && h != nil {
+		h.heldOne.Do(func() { close(h.held) })
 		select {
 		case <-h.release:
 		case <-ctx.Done():

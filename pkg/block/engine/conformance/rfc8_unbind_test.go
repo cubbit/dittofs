@@ -52,6 +52,10 @@ func TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag(t *testing.T) {
 		t.Fatalf("Truncate: %v", err)
 	}
 
+	// The Truncate only queues its batch: one still queued when Unbind shuts
+	// the share is never run, so Unbind has nothing to wait for.
+	f.WaitHeldBatch()
+
 	opts, answered := res.Opts()
 	_, err := f.E.Write(ctx, f.Share.ID, pending, 0, []byte("pending"), opts)
 
