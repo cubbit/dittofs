@@ -61,10 +61,26 @@ func HumanSize(n int64) string {
 	}
 }
 
+// journalClosed answers plainly when a view runs with no live journal:
+// a story that closes mid-run still offers the chooser, and the view names
+// the closure rather than dereferencing what it would read. The journal
+// itself answers "journal: closed" on a closed handle; nil is the demo's
+// own state, and the message stays in the same voice.
+func (d *Demo) journalClosed() bool {
+	if d.J == nil {
+		d.Printf("the journal is closed — this view lives while a journal does\n")
+		return true
+	}
+	return false
+}
+
 // viewStats shows the journal's totals and the per-share breakdown as
 // diffable rows — the measured view, honest even where the read-outs
 // behind other views are still stubs.
 func (d *Demo) viewStats() {
+	if d.journalClosed() {
+		return
+	}
 	st := d.J.Stats()
 	rows := []viewRow{
 		{key: "max bytes", text: fmt.Sprintf("max bytes          %12d", st.MaxBytes)},
@@ -102,6 +118,9 @@ func (d *Demo) viewStats() {
 // own answer prints verbatim, today's refusal included, and the view never
 // invents rows.
 func (d *Demo) viewIndex() {
+	if d.journalClosed() {
+		return
+	}
 	es, err := d.J.Inspect().File(StoryFile)
 	if err != nil {
 		d.Printf("index: %v\n", err)
@@ -123,6 +142,9 @@ func (d *Demo) viewIndex() {
 
 // viewSegments is the (s) view: per-segment accounting.
 func (d *Demo) viewSegments() {
+	if d.journalClosed() {
+		return
+	}
 	segs := d.J.Inspect().Segments()
 	if len(segs) == 0 {
 		d.Printf("(no per-segment accounting yet — it lands with epic 9a; stats carries the totals today)\n")

@@ -92,3 +92,36 @@ func TestIndexViewAnswersRealRows(t *testing.T) {
 		}
 	}
 }
+
+func TestViewsSurviveAClosedJournal(t *testing.T) {
+	// A story that closes its journal mid-run (crash's close beat) still
+	// offers the chooser; every view must name the closure plainly, not
+	// deref the dead journal — this test reproduces the talk-night panic.
+	base := t.TempDir()
+	d, out := newTestDemo(t, filepath.Join(base, "journal"), "\n")
+	if err := d.open(context.Background()); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	h, err := d.J.Share(1, 0, journal.Version{})
+	if err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	d.H[1] = h
+	d.viewIndex() // alive: no panic is the floor
+	if err := d.J.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("a view through a closed journal panicked: %v", r)
+		}
+	}()
+	for _, v := range []func(*Demo){(*Demo).viewIndex, (*Demo).viewSegments,
+		(*Demo).viewFS, (*Demo).viewStats} {
+		v(d)
+	}
+	screen := out.String()
+	if !strings.Contains(screen, "closed") {
+		t.Errorf("views through a closed journal do not name the closure:\n%s", screen)
+	}
+}
