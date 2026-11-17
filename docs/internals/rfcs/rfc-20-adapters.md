@@ -3458,7 +3458,10 @@ each buys:
 4. **Coalesced sends.** When several replies are queued, the writer sends them
    in one gathered write, so a burst of small replies costs one system call. This
    is why Nagle's algorithm is off (§6.7): batching is the writer's, where it
-   adds no delay.
+   adds no delay. A gathered write takes the first reply queued and those behind
+   it while their bodies stay within the protocol's record cap, so
+   `write_timeout` (§6.4) bounds no more bytes than the largest single record's,
+   and a client that reads slowly but steadily is not closed as stalled.
 5. **No shared lock on the request path.** ID tables are per connection or per
    session, so two connections never contend on one. Node-wide tables — the
    session table, the connection registry — are read without a lock held across

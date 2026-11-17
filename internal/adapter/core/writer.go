@@ -27,18 +27,20 @@ type queued struct {
 	key uint64
 }
 
-// writer sends a connection's messages: a bounded queue, one net.Buffers write
-// per wake with each record framed, a write deadline per gathered write, and a
-// failed or late write that closes the connection (RFC 20 sections 6.2 and
-// 6.4).
+// writer sends a connection's messages: a bounded queue, net.Buffers writes
+// that each gather up to a record cap of bodies with each record framed, a
+// write deadline per gathered write, and a failed or late write that closes
+// the connection (RFC 20 sections 6.2, 6.4 and 6.6).
 type writer struct {
-	nc      net.Conn
-	framer  Framer
-	timeout time.Duration
-	close   func(error) // Conn.Close: it runs on the writer's goroutine too, in fail, so it must never wait for the writer's own stop or the stop deadlocks on it
-	onBatch func(n int) // a test's view of what one write gathered; nil otherwise
+	nc       net.Conn
+	framer   Framer
+	capBytes int // the bodies one gathered write carries past its first: the protocol's record cap
+	timeout  time.Duration
+	close    func(error) // Conn.Close: a failed write calls it on the writer's goroutine once run has ended, so it may stop the writer
+	onBatch  func(n int) // a test's view of what one write gathered; nil otherwise
 
 	mu       sync.Mutex
+	batch    []queued    // the messages of the write in flight, reused across batches; run only
 	bufs     net.Buffers // each batch's gathered write, reused across batches; run only
 	hdrs     []byte      // their framed headers, appended into one; run only
 	queue    []queued
@@ -54,15 +56,17 @@ type writer struct {
 // newWriter starts a writer over nc, framing with f and bounding each gathered
 // write by timeout, where it is not zero; closeConn is the connection's close.
 func newWriter(nc net.Conn, f Framer, timeout time.Duration, closeConn func(error)) *writer {
+	capBytes, _ := f.MaxRecord()
 	w := &writer{
-		nc:      nc,
-		framer:  f,
-		timeout: timeout,
-		close:   closeConn,
-		wake:    make(chan struct{}, 1),
-		room:    make(chan struct{}),
-		stopped: make(chan struct{}),
-		done:    make(chan struct{}),
+		nc:       nc,
+		framer:   f,
+		capBytes: capBytes,
+		timeout:  timeout,
+		close:    closeConn,
+		wake:     make(chan struct{}, 1),
+		room:     make(chan struct{}),
+		stopped:  make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 	close(w.room) // nothing is queued
 	go w.run()
@@ -141,9 +145,16 @@ func (w *writer) stop() {
 }
 
 // run writes each wake's messages in gathered writes, until the queue is
-// empty.
+// empty. A failed write ends it, and the connection's close runs once done is
+// closed, so a close that stops the writer does not wait on itself.
 func (w *writer) run() {
-	defer close(w.done)
+	var failed error
+	defer func() {
+		close(w.done)
+		if failed != nil {
+			w.close(failed)
+		}
+	}()
 	for {
 		select {
 		case <-w.wake:
@@ -152,7 +163,9 @@ func (w *writer) run() {
 		}
 		for w.queued() {
 			if err := w.flush(); err != nil {
-				w.fail(err)
+				if w.fail() {
+					failed = err
+				}
 				return
 			}
 		}
@@ -166,21 +179,30 @@ func (w *writer) queued() bool {
 	return len(w.queue) > 0
 }
 
-// take removes every queued message and arms the write deadline for them, all
-// under the mutex: a stop that set a deadline in the past is never overwritten,
-// because a closed writer takes nothing.
+// take moves one gathered write's messages into w.batch, the first queued and
+// those behind it while their bodies stay within the record cap, so
+// write_timeout bounds no more bytes than the largest single record's. It arms
+// the write deadline for them under the mutex: a stop that set a deadline in
+// the past is never overwritten, because a closed writer takes nothing.
 func (w *writer) take() []queued {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	q := w.queue
-	w.queue = nil
-	if len(q) == 0 {
+	if len(w.queue) == 0 {
 		return nil
 	}
+	n, size := 1, len(w.queue[0].msg.B)
+	for n < len(w.queue) && size+len(w.queue[n].msg.B) <= w.capBytes {
+		size += len(w.queue[n].msg.B)
+		n++
+	}
+	w.batch = append(w.batch[:0], w.queue[:n]...)
+	k := copy(w.queue, w.queue[n:])
+	clear(w.queue[k:])
+	w.queue = w.queue[:k]
 	if !w.closed && w.timeout > 0 {
 		_ = w.nc.SetWriteDeadline(time.Now().Add(w.timeout))
 	}
-	return q
+	return w.batch
 }
 
 // written accounts for n messages once their write returned: they leave the
@@ -204,11 +226,7 @@ func (w *writer) flush() error {
 	if w.onBatch != nil {
 		w.onBatch(len(q))
 	}
-	if n := w.framer.HeaderLen() * len(q); n > 0 {
-		w.hdrs = slices.Grow(w.hdrs[:0], n)
-	} else {
-		w.hdrs = w.hdrs[:0]
-	}
+	w.hdrs = slices.Grow(w.hdrs[:0], w.framer.HeaderLen()*len(q))
 	w.bufs = w.bufs[:0]
 	for _, m := range q {
 		at := len(w.hdrs)
@@ -222,12 +240,14 @@ func (w *writer) flush() error {
 	for _, m := range q {
 		m.msg.Release()
 	}
+	clear(q)
 	return err
 }
 
-// fail closes the connection on a failed or late write and releases what is
-// queued.
-func (w *writer) fail(err error) {
+// fail ends the writer on a failed or late write: it releases what is queued
+// and reports whether the connection's close is owed, which it is unless a
+// stop came first.
+func (w *writer) fail() bool {
 	w.mu.Lock()
 	q := w.queue
 	w.queue = nil
@@ -241,9 +261,7 @@ func (w *writer) fail(err error) {
 	for _, m := range q {
 		m.msg.Release()
 	}
-	if !closed {
-		w.close(err)
-	}
+	return !closed
 }
 
 // isClosed reports whether ch is closed.

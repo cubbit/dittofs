@@ -198,6 +198,9 @@ func (p *pipeline) Runs() int {
 	return p.runs
 }
 
+// WriteBound is the writer's queue's bound, by messages.
+const WriteBound = writeBound
+
 // TestWriter is a connection's writer, reached by its tests.
 type TestWriter struct{ w *writer }
 

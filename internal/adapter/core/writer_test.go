@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -44,7 +45,7 @@ func buildWriter(t *testing.T) newOut {
 		}
 		// Every subtest of the suite closes the writer inside its own bubble;
 		// a cleanup here would close a bubble's channel after it ends.
-		return w.Out, closeOut, peer, bound{msgs: 64}
+		return w.Out, closeOut, peer, bound{msgs: core.WriteBound}
 	}
 }
 
@@ -373,7 +374,7 @@ func TestTheBoundReleasesTheReader(t *testing.T) {
 		pool := resources.NewBufPool(budget)
 		w := core.NewTestWriter(conn, f, 0, func(error) {})
 		defer w.Stop()
-		for i := range 64 {
+		for i := range core.WriteBound {
 			b, err := pool.Get(context.Background(), netip.Addr{}, 1)
 			if err != nil {
 				t.Fatal(err)
@@ -386,7 +387,7 @@ func TestTheBoundReleasesTheReader(t *testing.T) {
 		synctest.Wait()
 		room, at := core.Pause(w)
 		if !at || room == nil {
-			t.Fatalf("64 messages held, pause says %v", at)
+			t.Fatalf("%d messages held, pause says %v", core.WriteBound, at)
 		}
 		select {
 		case <-room:
@@ -395,7 +396,7 @@ func TestTheBoundReleasesTheReader(t *testing.T) {
 		}
 		read := make(chan error, 1)
 		go func() {
-			for range 64 {
+			for range core.WriteBound {
 				if err := readRecord(peer, f); err != nil {
 					read <- err
 					return
@@ -411,6 +412,116 @@ func TestTheBoundReleasesTheReader(t *testing.T) {
 		}
 		if err := <-read; err != nil {
 			t.Fatalf("reading the records: %v", err)
+		}
+	})
+}
+
+// A failed write calls the connection's close once the writer has ended, so a
+// close that stops the writer, as the connection's teardown does, returns and
+// every queued message is released.
+func TestACloseThatStopsTheWriterReturns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := framer()
+		conn, peer := net.Pipe()
+		defer func() { _ = conn.Close() }()
+		budget := resources.NewWaitBudget("reply", 1<<30)
+		adaptertest.CheckLeaks(t, &resources.Budgets{Reply: budget})
+		pool := resources.NewBufPool(budget)
+		var w *core.TestWriter
+		stopped := make(chan error, 1)
+		w = core.NewTestWriter(conn, f, 0, func(err error) {
+			w.Stop()
+			stopped <- err
+		})
+		_ = peer.Close()
+		for _, body := range []string{"gone", "behind"} {
+			b, err := pool.Get(context.Background(), netip.Addr{}, len(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			b.B = append(b.B[:0], body...)
+			if err := w.Out(b, 0, 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		synctest.Wait()
+		select {
+		case err := <-stopped:
+			if !errors.Is(err, io.ErrClosedPipe) {
+				t.Errorf("the connection closed with %v, want the write's error", err)
+			}
+		default:
+			t.Fatal("a close that stops the writer never returned")
+		}
+		if r := budget.Reserved(); r != 0 {
+			t.Errorf("%d bytes are still reserved after the close", r)
+		}
+	})
+}
+
+// A gathered write carries bodies up to the protocol's record cap, so a peer
+// that reads slowly but steadily gets a write_timeout per batch, not one over
+// everything queued, and is not closed.
+func TestABatchStopsAtTheRecordCap(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := framer()
+		conn, peer := net.Pipe()
+		defer func() { _ = peer.Close() }()
+		budget := resources.NewWaitBudget("reply", 1<<30)
+		adaptertest.CheckLeaks(t, &resources.Budgets{Reply: budget})
+		pool := resources.NewBufPool(budget)
+		closed := make(chan error, 1)
+		w := core.NewTestWriter(conn, f, time.Second, func(err error) { closed <- err })
+		defer w.Stop()
+		var mu sync.Mutex
+		var batches []int
+		core.OnBatch(w, func(n int) {
+			mu.Lock()
+			batches = append(batches, n)
+			mu.Unlock()
+		})
+		msg := func(n int) *resources.Buf {
+			b, err := pool.Get(context.Background(), netip.Addr{}, n)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b.B = append(b.B[:0], make([]byte, n)...)
+			return b
+		}
+		if err := w.Out(msg(1), 0, 0); err != nil { // holds the writer while the rest queues
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		capBytes, _ := f.MaxRecord()
+		for range 4 {
+			if err := w.Out(msg(capBytes/2), 0, 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// One record each 400 ms: 1.6 s for the four, past write_timeout, but
+		// 0.8 s for each batch of two. The read deadline is a backstop, so a
+		// write cut at write_timeout fails here rather than hanging the test.
+		_ = peer.SetReadDeadline(time.Now().Add(10 * time.Second))
+		for range 5 {
+			if err := readRecord(peer, f); err != nil {
+				select {
+				case cerr := <-closed:
+					t.Fatalf("a peer reading steadily was closed: %v", cerr)
+				default:
+					t.Fatal(err)
+				}
+			}
+			time.Sleep(400 * time.Millisecond)
+		}
+		select {
+		case err := <-closed:
+			t.Fatalf("a peer reading steadily was closed: %v", err)
+		default:
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if want := []int{1, 2, 2}; !slices.Equal(batches, want) {
+			t.Errorf("the gathered writes took %v messages, want %v", batches, want)
 		}
 	})
 }
