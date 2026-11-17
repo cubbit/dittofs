@@ -1968,9 +1968,19 @@ func TestRFC1A_FailedWindowReportedOnce(t *testing.T) {
 		write(t, gh, gID, 0, g)
 		syncFile(t, gh, gID)
 
+		// The worker arms the bound's timer for F's write only once it
+		// observes the write, not when the write answers, and the bound runs
+		// from that observation: an advance landing first fires nothing, and
+		// the timer armed then is due a whole bound past the advanced clock,
+		// which the one advance below never reaches. F's stream holds no timer
+		// before the write, since its last one fired at the previous advance or
+		// was never armed on a fresh fixture, so the write's own timer is the
+		// one the count gains over what the clock held once G's sync answered.
+		armed := f.Pending()
 		h, id := f.Share(k), journaltest.File(k)
 		write(t, h, id, 0, distinct(k, 64<<10))
 		seg := segmentOf(t, f, id, 0)
+		eventually(t, fmt.Sprintf("share %d: the sync bound's timer of the write is armed", k), func() bool { return f.Pending() > armed })
 
 		// The timer's sync fails or is re-appended from a kept copy, with no
 		// Sync of the file waiting: its next Sync is the first one to see
