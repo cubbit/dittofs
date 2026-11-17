@@ -239,8 +239,8 @@ func TestRoles(t *testing.T) {
 		{entity.RoleViewer, http.MethodPost, thing + ":poke", http.StatusForbidden},
 		{entity.RoleViewer, http.MethodGet, "/api/v1/accounts/" + api.TestID, http.StatusNotFound},
 		{entity.RoleOperator, http.MethodPost, thing + ":poke", http.StatusOK},
-		{entity.RoleViewer, http.MethodPut, "/api/v1/netgroups/" + api.TestID, http.StatusForbidden},
-		{entity.RoleViewer, http.MethodPut, "/api/v1/pairs/" + api.TestID, http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/knobs/" + api.TestID, http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/vaults/" + api.TestID, http.StatusForbidden},
 	} {
 		role.Store(uint32(tc.role))
 		r := s.do(t, tc.method, tc.path, "")
@@ -376,18 +376,17 @@ func TestBodyOverTheBound(t *testing.T) {
 // A body nesting arrays or objects deeper than the bound, up to the size
 // bound, is refused 400 invalid and writes nothing.
 func TestDeepBodyRefused(t *testing.T) {
-	put := "/api/v1/netgroups/" + api.TestID
 	s := serve(t, as(entity.RoleOperator, false))
 	for _, body := range []string{
-		`{"members":` + strings.Repeat("[", 1<<20-20),
+		`{"spec":{"value":` + strings.Repeat("[", 1<<20-20),
 		strings.Repeat(`{"a":`, (1<<20)/5-1),
 	} {
-		if r := s.do(t, http.MethodPut, put, body); r.status != http.StatusBadRequest || r.problem(t).Code != "invalid" {
+		if r := s.do(t, http.MethodPut, knobPath, body, "If-None-Match", "*"); r.status != http.StatusBadRequest || r.problem(t).Code != "invalid" {
 			t.Errorf("PUT of %d bytes starting %.12s: answered %d %.200s, want 400 invalid", len(body), body, r.status, r.body)
 		}
 	}
-	if got := netgroups(t, s); len(got) != 0 {
-		t.Errorf("netgroups held after the refused PUTs: %+v, want none", got)
+	if got := s.knob(t, api.TestID); got.Generation != 0 {
+		t.Errorf("knob held after the refused PUTs: %+v, want none", got)
 	}
 }
 
