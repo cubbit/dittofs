@@ -546,7 +546,7 @@ so an operator's own next call sees it.
 | a machine password `Secret` version | its derived keys are added, unless it is marked `HandedOver`, which derives none, and the secure channel signs in with it once the domain controller takes it; the previous version is kept as a keytab's is (§3.3, §3.5); no restart |
 | the directory record | a new client and an empty directory cache; lookups in flight finish on the old client |
 | `identity.ntlm` turned off | as §3.5 says |
-| `identity.id_range` | applies to the next allocation; no existing ID moves |
+| `identity.id_range` | applies to the next allocation, the higher of the range's low end and one past the counter, and `ErrNoSpace` past its high end; no existing ID moves. Since the counters never rewind (§2.3), a write whose `Hi` is at or below the uid or gid counter's high-water mark could never allocate again, so it is refused `ErrInvalid` before it commits, the counters read tracked in its transaction ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)); only a write of `identity.id_range` is checked, so a range used up refuses no other `identity.*` write |
 
 **Restart.** Every table is in memory and is lost: evidence (clients sign in
 again), the replay cache (§3.3), the logon throttle (§3.1) and the caches, which
@@ -925,7 +925,7 @@ never forwards one to a domain controller that would accept it.
 
 | The message's domain, compared with ASCII letters folded, since realms and NetBIOS names are ASCII (a simple case fold would match the Kelvin sign U+212A to `k`) | Source | How |
 | --- | --- | --- |
-| empty with a user name that holds no `@`, or the installation's own NetBIOS name, which the CHALLENGE advertises when no pass-through is configured | **local** | the user is found by name; its NT hash, a `Secret` of kind nt-hash, verifies the NTLMv2 response computed with the user and domain as the message names them (MS-NLMP 3.3.2). A directory principal is refused: it has no local NT hash |
+| empty with a user name that holds neither `@` nor `\`, or the installation's own NetBIOS name, which the CHALLENGE advertises when no pass-through is configured | **local** | the user is found by name; its NT hash, a `Secret` of kind nt-hash, verifies the NTLMv2 response computed with the user and domain as the message names them (MS-NLMP 3.3.2). A directory principal is refused: it has no local NT hash |
 | the directory's NetBIOS domain or its realm, or empty with a user name ending `@` and the directory's realm (a UPN sign-in), with pass-through configured | **pass-through** | the response is sent once to a domain controller over the secure channel of the installation's machine account (MS-NRPC `NetrLogonSamLogonEx`), sealed and signed with AES; the reply carries the user's SID and group SIDs with their attributes, used as a PAC's are (§3.4), and the evidence maps by that user SID. The reply's `UserSessionKey` (MS-NRPC 2.2.1.4.11) is the session base key the domain controller computed (MS-APDS 3.1.5.2.1), used as a local sign-in's computed one is (below); a reply whose key is missing, short or all zero fails `ErrLogonFailure`, and so does a guest logon, a reply whose `UserFlags` holds `LOGON_GUEST` or whose user RID is 501, the domain's Guest (§3.6). The reply's `LogonDomainID` **MUST** be the directory's domain SID (§5.1); with none read, pass-through fails `ErrUnavailable` |
 | anything else | — | `ErrLogonFailure`, counted with outcome `unknown_domain` so it is told apart from a wrong password |
 
@@ -934,8 +934,8 @@ the domain controller's server credential (MS-NRPC 3.1.4.1); one that fails
 refuses the channel, so no NTLM response reaches a peer that does not hold the
 machine password.
 
-A local user or group name never holds `@` (§4.6), so a name with one is never
-local. `identity.netbios_name` **MUST NOT** equal the directory record's NetBIOS
+A local user or group name never holds `@` or `\` (§4.6), so a name with
+either is never local. `identity.netbios_name` **MUST NOT** equal the directory record's NetBIOS
 domain, or a domain would route to both sources: a settings change naming the
 record's domain, and a directory record naming the installation's own name as
 its domain, later records included, are each refused at validation, naming the
@@ -1459,9 +1459,11 @@ and RFC 21 carries it on the wire.
   a UPN's realm suffix (§3.5), a ticket's service name (§3.3), and
   `identity.netbios_name` against the directory's NetBIOS domain. A simple case
   fold would match the Kelvin sign U+212A to `k`.
-- A local user or group name **MUST NOT** hold `@`; a creation or rename naming
-  one is refused `ErrInvalid`, so an NTLM user name with `@` always names a
-  directory user (§3.5).
+- A local user or group name **MUST NOT** hold `@` or `\`; a creation or rename
+  naming one is refused `ErrInvalid`, so an NTLM user name with `@` always names
+  a directory user (§3.5), and no local name is ambiguous with the
+  `<NetBIOS name>\<name>` spelling below, whose domain `APISignIn.Lookup` strips
+  (§8.1): a local `CORP\alice` would be one string naming two principals.
 - A user and a group may share a name
   ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)); a
   name lookup always says which kind it wants.

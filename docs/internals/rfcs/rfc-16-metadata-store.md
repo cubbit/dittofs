@@ -1287,8 +1287,18 @@ type Minter interface {
 // Alloc names the IDs the store draws from its uid, gid and RID counters in the
 // write's own transaction (RFC 18 §2.3). An ID not named here is written as the
 // record holds it, and a zero one is refused ErrInvalid: zero never means
-// "allocate".
-type Alloc struct{ UID, GID, RID bool }
+// "allocate". Range is identity.id_range as the caller read it (RFC 13
+// Appendix B), since the store decodes no setting: a uid or gid is the higher of
+// Range.Lo and one past its counter, skipping one a principal holds, and past
+// Range.Hi the write fails ErrNoSpace. A zero Range with UID or GID set is
+// refused ErrInvalid.
+type Alloc struct {
+	UID, GID, RID bool
+	Range         IDRange
+}
+
+// IDRange is an inclusive range of uids and gids.
+type IDRange struct{ Lo, Hi uint32 }
 
 // MintBatch is one Create: each record with the IDs to allocate for it.
 type MintBatch struct {
