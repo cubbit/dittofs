@@ -67,11 +67,62 @@ func TestDecodeIsStrict(t *testing.T) {
 	}
 }
 
+// A body nesting maxDepth objects or arrays is read, and one nesting deeper
+// is refused, naming the field it got to, before encoding/json reads it.
+func TestDecodeDepthBound(t *testing.T) {
+	nest := func(open, close string, n int) []byte {
+		return []byte(strings.Repeat(open, n) + "1" + strings.Repeat(close, n))
+	}
+	for _, tc := range []struct {
+		name  string
+		body  []byte
+		field string
+		ok    bool
+	}{
+		{"arrays at the bound", nest("[", "]", maxDepth), "", true},
+		{"arrays past it", nest("[", "]", maxDepth+1), "", false},
+		{"objects at the bound", nest(`{"a":`, "}", maxDepth), "", true},
+		{"objects past it", nest(`{"a":`, "}", maxDepth+1), strings.Repeat("a.", maxDepth-1) + "a", false},
+	} {
+		err := checkKeys(tc.body, nil)
+		if tc.ok {
+			if err != nil {
+				t.Errorf("%s: refused %v, want accepted", tc.name, err)
+			}
+			continue
+		}
+		var f *fieldError
+		if !errors.As(err, &f) || !errors.Is(err, vfserr.ErrInvalid) || f.field != tc.field {
+			t.Errorf("%s: got %v, want a *fieldError that is ErrInvalid naming %q", tc.name, err, tc.field)
+		}
+	}
+}
+
+// A value of the wrong type is refused in JSON's terms, never a Go type's
+// name.
+func TestDecodeWrongTypeInJSONTerms(t *testing.T) {
+	for _, tc := range []struct{ body, detail string }{
+		{`{"size":"big"}`, "want non-negative integer, got string"},
+		{`{"tags":{}}`, "want array, got object"},
+		{`{"name":true}`, "want string, got boolean"},
+		{`{"sub":{"on":1}}`, "want boolean, got number"},
+		{`{"sub":[]}`, "want object, got array"},
+	} {
+		var s sample
+		var f *fieldError
+		if err := decode(strings.NewReader(tc.body), &s); !errors.As(err, &f) || f.detail != tc.detail {
+			t.Errorf("%s: got %v, want detail %q", tc.body, err, tc.detail)
+		}
+	}
+}
+
 // What decode accepts, encoding/json's own lenient decoding reads alike, and
 // re-encoded it decodes strictly to the same value; what it refuses is a
 // *fieldError, never a panic.
 func FuzzDecode(f *testing.F) {
-	for _, s := range []string{`{"name":"a","size":18446744073709551615,"tags":["x"],"sub":{"on":true}}`, `{"x":1}`, `{}`, ``, `{"size":-1}`, `null`} {
+	for _, s := range []string{`{"name":"a","size":18446744073709551615,"tags":["x"],"sub":{"on":true}}`, `{"x":1}`, `{}`, ``, `{"size":-1}`, `null`,
+		strings.Repeat("[", maxDepth+1) + strings.Repeat("]", maxDepth+1),
+		strings.Repeat(`{"sub":`, maxDepth+1) + "null" + strings.Repeat("}", maxDepth+1)} {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
@@ -185,6 +236,7 @@ func TestMergePatchNullResetsToDefault(t *testing.T) {
 func FuzzMergePatch(f *testing.F) {
 	f.Add([]byte(`{"a":{"b":"c"},"n":1}`), []byte(`{"a":{"b":null,"c":2},"n":null}`))
 	f.Add([]byte(`[1]`), []byte(`{"x":null}`))
+	f.Add([]byte(`{}`), []byte(strings.Repeat(`{"x":`, maxDepth+1)+"1"+strings.Repeat("}", maxDepth+1)))
 	f.Fuzz(func(t *testing.T, doc, patch []byte) {
 		out, err := mergePatch(doc, patch)
 		if err != nil {
