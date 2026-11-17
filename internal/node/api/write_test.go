@@ -640,6 +640,31 @@ func TestPrepareOnlyForAWrite(t *testing.T) {
 	}
 }
 
+// The writer's wait ends after a second on the API's clock, and the write
+// is answered at its commit while the node has not yet applied it.
+func TestWriterWaitsASecondOnTheClock(t *testing.T) {
+	caller, _ := one(entity.RoleOperator)
+	hold := api.NewHold(nil)
+	s := serve(t, caller, func(d *api.Deps) { d.Applied = hold.Applied })
+	base := s.clock.Pending()
+	answered := make(chan polled, 1)
+	go func() {
+		r, err := s.send(t.Context(), http.MethodPut, knobAt(uuid.NewString()), `{"spec":{"value":"a"}}`, "If-None-Match", "*")
+		answered <- polled{r, err}
+	}()
+	await(t, hold.Reached, "the node's Applied")
+	eventually(t, "the writer's wait is on the API's clock", func() bool { return s.clock.Pending() == base+1 })
+	s.clock.Advance(time.Second)
+	select {
+	case r := <-answered:
+		if r.err != nil || r.status != http.StatusOK || r.header.Get("ETag") != `"1"` {
+			t.Errorf("PUT knob once a second passed: answered %d %s ETag %q err %v, want the commit's 200 with ETag \"1\"", r.status, r.body, r.header.Get("ETag"), r.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("PUT knob: no answer in 10s once a second passed on the API's clock")
+	}
+}
+
 // A write raising the settings generation waits for the node to apply it,
 // after its commit, and its answer is held until the node has; the answer
 // is the commit's own though the wait fails. A replay, a refused write and a

@@ -207,7 +207,8 @@ func Seals(id string) int {
 }
 
 // Hold is a node's Applied that a test holds: each call is delivered on
-// Reached, and returns Err once Release is closed, whatever its context.
+// Reached, and returns Err once Release is closed, or its context's error
+// once that ends.
 type Hold struct {
 	Reached, Release chan struct{}
 	Err              error
@@ -219,10 +220,14 @@ func NewHold(err error) *Hold {
 	return &Hold{Reached: make(chan struct{}, 8), Release: make(chan struct{}), Err: err}
 }
 
-func (h *Hold) Applied(context.Context) error {
+func (h *Hold) Applied(ctx context.Context) error {
 	h.Reached <- struct{}{}
-	<-h.Release
-	return h.Err
+	select {
+	case <-h.Release:
+		return h.Err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // knobRead is a knob as GET reads it: its tag and its spec, generation 0

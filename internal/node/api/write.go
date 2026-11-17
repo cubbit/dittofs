@@ -210,13 +210,20 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			// answers the commit's own result whatever the wait
 			// returns: the write is durable, and status.applied says
 			// where it is applied. Overturned if a pass on a healthy
-			// node regularly outlasts the second.
-			//
-			// ponytail: the second is the wall clock's, and no test pins
-			// it: a test holding Applied past it would race the clock.
-			// Move it to the API's injected clock, and test it there,
-			// when the API is handed one.
+			// node regularly outlasts the second. The second is on the
+			// API's clock, and on the wall clock's with none.
 			wctx, cancel := context.WithTimeout(ctx, time.Second)
+			if s.d.Clock != nil {
+				cancel()
+				wctx, cancel = context.WithCancel(ctx)
+				go func() {
+					select {
+					case <-s.d.Clock.After(time.Second):
+						cancel()
+					case <-wctx.Done():
+					}
+				}()
+			}
 			if werr := s.d.Applied(wctx); werr != nil {
 				s.d.Logger.Debug("node api: a committed write is not yet applied on this node", "request_id", requestID(ctx), "err", werr)
 			}
