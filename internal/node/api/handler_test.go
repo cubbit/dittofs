@@ -56,6 +56,9 @@ func (l *lockedBuffer) String() string {
 	return l.b.String()
 }
 
+// testNode is the node every served API names in its audit records.
+var testNode = entity.NodeID{'a', 'p', 'i'}
+
 // serve starts the API over d's defaults, each of edit then changing them.
 func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), edit ...func(*api.Deps)) *served {
 	t.Helper()
@@ -70,10 +73,15 @@ func serve(t *testing.T, authenticate func(*http.Request) (auth.Caller, error), 
 		Logger:       slog.New(slog.NewJSONHandler(io.MultiWriter(t.Output(), s.log), nil)),
 		Authenticate: authenticate,
 		Store:        s.store,
+		SigningKey:   signingKey("installation-a"),
+		Node:         testNode,
 		Tracer:       sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(s.spans)).Tracer("api"),
 	}
 	for _, e := range edit {
 		e(&d)
+	}
+	if cp, ok := d.Store.(kvstore.ControlPlane); ok {
+		s.store = cp
 	}
 	srv := api.NewWithTestRows(d)
 	addr, _, err := srv.Start()
@@ -105,42 +113,71 @@ func as(role entity.APIRole, mustChange bool) func(*http.Request) (auth.Caller, 
 	}
 }
 
+// reply is what a request, method and path, was answered.
 type reply struct {
+	req    string
 	status int
 	header http.Header
 	body   []byte
 }
 
-func (s *served) do(t *testing.T, method, path, body string) reply {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), method, s.url+path, strings.NewReader(body))
+// do sends method on path with body and the headers hdr names in pairs, a
+// name and its value.
+func (s *served) send(ctx context.Context, method, path, body string, hdr ...string) (reply, error) {
+	req, err := http.NewRequestWithContext(ctx, method, s.url+path, strings.NewReader(body))
 	if err != nil {
-		t.Fatal(err)
+		return reply{}, err
+	}
+	for i := 0; i+1 < len(hdr); i += 2 {
+		req.Header.Add(hdr[i], hdr[i+1])
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
+		return reply{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return reply{resp.StatusCode, resp.Header, b}
+	return reply{method + " " + path, resp.StatusCode, resp.Header, b}, err
 }
 
-// problem decodes r as a problem body, failing unless it is one.
+// do is send under the test's context, failing on an error.
+func (s *served) do(t *testing.T, method, path, body string, hdr ...string) reply {
+	t.Helper()
+	r, err := s.send(t.Context(), method, path, body, hdr...)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	return r
+}
+
+// async sends from a goroutine of its own, safe off the test's goroutine, and
+// delivers the reply; an error is delivered as status 0 with the error as
+// its body, so the test's assertion on the status names it.
+func (s *served) async(t *testing.T, method, path, body string, hdr ...string) <-chan reply {
+	ch := make(chan reply, 1)
+	go func() {
+		r, err := s.send(t.Context(), method, path, body, hdr...)
+		if err != nil {
+			r = reply{req: method + " " + path, body: []byte(err.Error())}
+		}
+		ch <- r
+	}()
+	return ch
+}
+
+// problem decodes r as a problem body, failing, naming r's request, unless
+// it is one.
 func (r reply) problem(t *testing.T) apiv1.Problem {
 	t.Helper()
 	if ct := r.header.Get("Content-Type"); ct != apiv1.MediaTypeProblem {
-		t.Fatalf("answer %d %s: content type %q, want %s", r.status, r.body, ct, apiv1.MediaTypeProblem)
+		t.Fatalf("%s: answered %d %s with content type %q, want %s", r.req, r.status, r.body, ct, apiv1.MediaTypeProblem)
 	}
 	var p apiv1.Problem
 	if err := json.Unmarshal(r.body, &p); err != nil {
-		t.Fatalf("problem %s: %v", r.body, err)
+		t.Fatalf("%s: problem %s: %v", r.req, r.body, err)
 	}
 	if p.Status != r.status {
-		t.Fatalf("problem %s: status %d, answered %d", r.body, p.Status, r.status)
+		t.Fatalf("%s: problem %s has status %d, answered %d", r.req, r.body, p.Status, r.status)
 	}
 	return p
 }
@@ -224,8 +261,8 @@ func TestRoles(t *testing.T) {
 		{entity.RoleViewer, http.MethodPost, thing + ":poke", http.StatusForbidden},
 		{entity.RoleViewer, http.MethodGet, "/api/v1/accounts/" + api.TestID, http.StatusNotFound},
 		{entity.RoleOperator, http.MethodPost, thing + ":poke", http.StatusOK},
-		{entity.RoleViewer, http.MethodPut, "/api/v1/netgroups/" + api.TestID, http.StatusForbidden},
-		{entity.RoleViewer, http.MethodPut, "/api/v1/pairs/" + api.TestID, http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/knobs/" + api.TestID, http.StatusForbidden},
+		{entity.RoleViewer, http.MethodPut, "/api/v1/vaults/" + api.TestID, http.StatusForbidden},
 	} {
 		role.Store(uint32(tc.role))
 		r := s.do(t, tc.method, tc.path, "")
@@ -264,21 +301,20 @@ func TestMustChangeMapsNoRoute(t *testing.T) {
 	}
 }
 
-// A write answers what its transaction committed, which the store then
-// holds; a body naming a field the request does not declare is refused 400
-// invalid naming it, in a problem body with every key, and writes nothing.
+// A write answers what its transaction committed, with its tag, which the
+// store then holds; a body naming a field the request does not declare is
+// refused 400 invalid naming it, in a problem body with every key, and writes
+// nothing.
 func TestWrite(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
-	r := s.do(t, http.MethodPut, "/api/v1/netgroups/"+api.TestID, `{"members":["10.0.0.0/8"]}`)
-	var put struct{ Version uint64 }
-	if err := json.Unmarshal(r.body, &put); r.status != http.StatusOK || err != nil || put.Version == 0 {
-		t.Fatalf("PUT netgroup: answered %d %s (%v), want 200 with its version", r.status, r.body, err)
+	r := s.do(t, http.MethodPut, knobPath, `{"spec":{"value":"on"}}`, "If-None-Match", "*")
+	if r.status != http.StatusOK || string(r.body) != `{"spec":{"value":"on"}}` || r.header.Get("ETag") != `"1"` {
+		t.Fatalf("PUT knob: answered %d %s ETag %q, want 200 with its spec and ETag \"1\"", r.status, r.body, r.header.Get("ETag"))
 	}
-	other := "1d6f3c2a-4b5e-4f7a-8c9d-0e1f2a3b4c5d"
-	r = s.do(t, http.MethodPut, "/api/v1/netgroups/"+other, `{"members":["x"],"colour":"red"}`)
+	r = s.do(t, http.MethodPut, "/api/v1/knobs/"+otherID, `{"spec":{"value":"x","colour":"red"}}`, "If-None-Match", "*")
 	p := r.problem(t)
-	if r.status != http.StatusBadRequest || p.Code != "invalid" || p.Field != "colour" {
-		t.Errorf("unknown field: answered %d %q field %q, want 400 invalid naming colour", r.status, p.Code, p.Field)
+	if r.status != http.StatusBadRequest || p.Code != "invalid" || p.Field != "spec.colour" {
+		t.Errorf("unknown field: answered %d %q field %q, want 400 invalid naming spec.colour", r.status, p.Code, p.Field)
 	}
 	var keys map[string]any
 	if err := json.Unmarshal(r.body, &keys); err != nil {
@@ -289,74 +325,99 @@ func TestWrite(t *testing.T) {
 			t.Errorf("problem %s: no key %q", r.body, k)
 		}
 	}
-	got := netgroups(t, s)
-	if len(got) != 1 || got[0].Name != api.TestID || !slices.Equal(got[0].Members, []string{"10.0.0.0/8"}) || got[0].Version != put.Version {
-		t.Errorf("netgroups held: %+v, want only %s with 10.0.0.0/8 at the answered version %d", got, api.TestID, put.Version)
+	if got := s.knob(t, api.TestID); string(got.Value) != `{"value":"on"}` || got.Generation != 1 {
+		t.Errorf("knob held: %q at %d, want {\"value\":\"on\"} at 1", got.Value, got.Generation)
+	}
+	if got := s.knob(t, otherID); got.Generation != 0 {
+		t.Errorf("knob held after the refused PUT: %+v, want none", got)
 	}
 }
 
-// netgroups is every netgroup the store holds.
-func netgroups(t *testing.T, s *served) []entity.Netgroup {
+const (
+	knobPath = "/api/v1/knobs/" + api.TestID
+	otherID  = "1d6f3c2a-4b5e-4f7a-8c9d-0e1f2a3b4c5d"
+)
+
+// knob is the setting the knob id names holds, its zero value when it holds
+// none.
+func (s *served) knob(t *testing.T, id string) entity.Setting {
 	t.Helper()
-	var got []entity.Netgroup
-	for n, err := range s.store.Netgroups(t.Context(), "") {
+	return s.setting(t, id, "knob")
+}
+
+func (s *served) setting(t *testing.T, id, key string) entity.Setting {
+	t.Helper()
+	sid, err := entity.ParseShareID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for st, err := range s.store.Settings(t.Context(), entity.SettingScope{Kind: entity.ScopeNode, ID: sid}) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got = append(got, n)
+		if st.Key == key {
+			return st
+		}
 	}
-	return got
+	return entity.Setting{}
 }
 
 // A write whose transaction fails answers the failure's problem and stores
 // nothing of it, the record it wrote before failing included.
 func TestWriteThatFailsStoresNothing(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
-	r := s.do(t, http.MethodPut, "/api/v1/pairs/"+api.TestID, "")
+	r := s.do(t, http.MethodPut, knobPath, `{"spec":{"value":"`+api.KnobBreaks+`"}}`, "If-None-Match", "*")
 	if p := r.problem(t); r.status != http.StatusBadRequest || p.Code != "invalid_argument" {
-		t.Errorf("PUT pair: answered %d %q, want 400 invalid_argument", r.status, p.Code)
+		t.Errorf("PUT knob that breaks: answered %d %q, want 400 invalid_argument", r.status, p.Code)
 	}
-	if got := netgroups(t, s); len(got) != 0 {
-		t.Errorf("netgroups held after the failed write: %+v, want none", got)
+	if got := s.knob(t, api.TestID); got.Generation != 0 {
+		t.Errorf("knob held after the failed write: %+v, want none", got)
 	}
 }
 
 // With no store, a write answers 503 unavailable.
 func TestWriteWithNoStore(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) { d.Store = nil })
-	if r := s.do(t, http.MethodPut, "/api/v1/netgroups/"+api.TestID, `{"members":[]}`); r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
+	if r := s.do(t, http.MethodPut, knobPath, `{"spec":{}}`, "If-None-Match", "*"); r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
 		t.Errorf("PUT with no store: answered %d %s, want 503 unavailable", r.status, r.body)
+	}
+}
+
+// With no signing key, a write carrying an Idempotency-Key answers 503
+// unavailable, since its digest cannot be keyed.
+func TestWriteWithNoSigningKey(t *testing.T) {
+	s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) { d.SigningKey = nil })
+	if r := s.do(t, http.MethodPut, knobPath, `{"spec":{}}`, "If-None-Match", "*", "Idempotency-Key", "k1"); r.status != http.StatusServiceUnavailable || r.problem(t).Code != apiv1.CodeUnavailable {
+		t.Errorf("keyed PUT with no signing key: answered %d %s, want 503 unavailable", r.status, r.body)
 	}
 }
 
 // A body over the bound is refused 400 invalid and writes nothing.
 func TestBodyOverTheBound(t *testing.T) {
-	put := "/api/v1/netgroups/" + api.TestID
 	s := serve(t, as(entity.RoleOperator, false))
-	big := `{"members":["` + strings.Repeat("a", 1<<20) + `"]}`
-	if r := s.do(t, http.MethodPut, put, big); r.status != http.StatusBadRequest || r.problem(t).Code != "invalid" {
+	big := `{"spec":{"value":"` + strings.Repeat("a", 1<<20) + `"}}`
+	if r := s.do(t, http.MethodPut, knobPath, big, "If-None-Match", "*"); r.status != http.StatusBadRequest || r.problem(t).Code != "invalid" {
 		t.Errorf("PUT of %d bytes: answered %d %.200s, want 400 invalid", len(big), r.status, r.body)
 	}
-	if got := netgroups(t, s); len(got) != 0 {
-		t.Errorf("netgroups held after the refused PUT: %+v, want none", got)
+	if got := s.knob(t, api.TestID); got.Generation != 0 {
+		t.Errorf("knob held after the refused PUT: %+v, want none", got)
 	}
 }
 
 // A body nesting arrays or objects deeper than the bound, up to the size
 // bound, is refused 400 invalid and writes nothing.
 func TestDeepBodyRefused(t *testing.T) {
-	put := "/api/v1/netgroups/" + api.TestID
 	s := serve(t, as(entity.RoleOperator, false))
 	for _, body := range []string{
-		`{"members":` + strings.Repeat("[", 1<<20-20),
+		`{"spec":{"value":` + strings.Repeat("[", 1<<20-20),
 		strings.Repeat(`{"a":`, (1<<20)/5-1),
 	} {
-		if r := s.do(t, http.MethodPut, put, body); r.status != http.StatusBadRequest || r.problem(t).Code != "invalid" {
+		if r := s.do(t, http.MethodPut, knobPath, body, "If-None-Match", "*"); r.status != http.StatusBadRequest || r.problem(t).Code != "invalid" {
 			t.Errorf("PUT of %d bytes starting %.12s: answered %d %.200s, want 400 invalid", len(body), body, r.status, r.body)
 		}
 	}
-	if got := netgroups(t, s); len(got) != 0 {
-		t.Errorf("netgroups held after the refused PUTs: %+v, want none", got)
+	if got := s.knob(t, api.TestID); got.Generation != 0 {
+		t.Errorf("knob held after the refused PUTs: %+v, want none", got)
 	}
 }
 
@@ -428,9 +489,9 @@ func TestSpanAttributes(t *testing.T) {
 func TestSeriesAndSpans(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	const marker = "body-field-7f3a"
-	put := "PUT /api/v1/netgroups/{id}"
-	s.do(t, http.MethodPut, "/api/v1/netgroups/"+api.TestID, `{"members":["`+marker+`"]}`)
-	s.do(t, http.MethodPut, "/api/v1/netgroups/"+api.TestID, `{"members":["`+marker+`"],"colour":1}`)
+	put := "PUT /api/v1/knobs/{id}"
+	s.do(t, http.MethodPut, knobPath, `{"spec":{"value":"`+marker+`"}}`, "If-None-Match", "*")
+	s.do(t, http.MethodPut, knobPath, `{"spec":{"value":"`+marker+`"},"colour":1}`, "If-Match", `"1"`)
 	if r := s.do(t, http.MethodGet, "/api/v1/fail", ""); r.status != http.StatusInternalServerError {
 		t.Errorf("GET /api/v1/fail: answered %d %s, want 500", r.status, r.body)
 	}

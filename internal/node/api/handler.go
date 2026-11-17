@@ -24,11 +24,14 @@ const maxBody = 1 << 20
 // the caller may not know exists.
 var errNotFound = fmt.Errorf("api: no such resource: %w", vfserr.ErrNotFound)
 
-// request is a handler's decoded request: the ID its path names and its
-// body, decoded strictly.
+// request is a handler's decoded request: the ID its path names, its body,
+// decoded strictly, and, for a write, the tag its record must have, which the
+// handler passes to the store's write as its expect: the one If-Match names,
+// or zero under If-None-Match: *.
 type request[B any] struct {
-	ID   [16]byte
-	Body B
+	ID     [16]byte
+	Body   B
+	Expect uint64
 }
 
 // none is the body of a request that carries none.
@@ -45,11 +48,11 @@ type answer struct {
 // returns what to send. No handler is handed the http.ResponseWriter, so none
 // answers before its adapter has the whole answer: a write's is made inside
 // its transaction and sent only once that has committed.
-type adapter func(ctx context.Context, d *Deps, r *http.Request, id [16]byte) (answer, error)
+type adapter func(ctx context.Context, s *Server, r *http.Request, id [16]byte) (answer, error)
 
 // read adapts a read: its answer is 200 with what h returns.
 func read[R any](h func(context.Context, request[none]) (R, error)) adapter {
-	return func(ctx context.Context, _ *Deps, _ *http.Request, id [16]byte) (answer, error) {
+	return func(ctx context.Context, _ *Server, _ *http.Request, id [16]byte) (answer, error) {
 		resp, err := h(ctx, request[none]{ID: id})
 		if err != nil {
 			return answer{}, err
@@ -58,35 +61,11 @@ func read[R any](h func(context.Context, request[none]) (R, error)) adapter {
 	}
 }
 
-// write adapts a write: h runs inside one transaction of the store's Write,
-// and the answer, 200 with what h returns, is made inside it, so a write
-// answers only what committed.
-func write[B, R any](h func(context.Context, request[B], entity.ControlPlaneTx) (R, error)) adapter {
-	return func(ctx context.Context, d *Deps, r *http.Request, id [16]byte) (answer, error) {
-		rq, err := decodeRequest[B](r, id)
-		if err != nil {
-			return answer{}, err
-		}
-		if d.Store == nil {
-			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no control-plane store"}
-		}
-		var a answer
-		err = d.Store.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-			resp, err := h(ctx, rq, tx)
-			if err != nil {
-				return err
-			}
-			a, err = jsonAnswer(http.StatusOK, resp)
-			return err
-		})
-		return a, err
-	}
-}
-
 // call adapts a call that is no write of the adapter's: h makes the whole
-// answer, and writes through its own Write if it writes.
+// answer. If it writes, it does so through a function of package auth, the
+// one place besides the write adapter that calls the store's Write.
 func call[B any](h func(context.Context, request[B]) (answer, error)) adapter {
-	return func(ctx context.Context, _ *Deps, r *http.Request, id [16]byte) (answer, error) {
+	return func(ctx context.Context, _ *Server, r *http.Request, id [16]byte) (answer, error) {
 		rq, err := decodeRequest[B](r, id)
 		if err != nil {
 			return answer{}, err
@@ -172,9 +151,15 @@ func pick(rows []route, r *http.Request) (*route, string) {
 
 // run authenticates r unless its row is public, refuses a caller the row
 // does not admit, parses the path's ID and runs the row's adapter. With no
-// Authenticate, every caller is refused 401. A caller's rights are checked
-// before whether it must change its password, so that refusal reveals no row
-// the caller may not read.
+// Authenticate, every caller is refused 401. A refusal of an authenticated
+// caller here, before the adapter, is audited against the row's kind and
+// the path's ID when it parses; the write adapter audits its own.
+//
+// decision: a path no row names is refused unaudited. It names no resource,
+// and the store refuses an audit record whose target has no kind, so its
+// record would fail to write; the refusal is still counted by op, as
+// unmatched. Overturned if the store admits an audit record targeting no
+// resource.
 func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID string) (answer, error) {
 	if rt == nil || rt.right != auth.Public {
 		if s.d.Authenticate == nil {
@@ -185,29 +170,50 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 			return answer{}, err
 		}
 		ctx = auth.With(ctx, c)
-		if rt == nil {
-			return answer{}, errNotFound
+	}
+	id, err := admit(ctx, rt, rawID)
+	if err != nil {
+		if _, authed := auth.CallerFrom(ctx); authed && rt != nil {
+			rec := s.auditOf(ctx, r)
+			rec.Target.Kind = rt.kind
+			if sid, perr := entity.ParseShareID(rawID); perr == nil && strings.Contains(rt.pattern, "{id}") {
+				rec.Target.ID = sid[:]
+			}
+			s.refuse(ctx, rec, err)
 		}
+		return answer{}, err
+	}
+	return rt.serve(ctx, s, r, id)
+}
+
+// admit refuses a row the caller ctx carries may not call and an ID that
+// does not parse, and returns the ID the path names. A caller's rights are
+// checked before whether it must change its password, so that refusal
+// reveals no row the caller may not read.
+func admit(ctx context.Context, rt *route, rawID string) (id [16]byte, err error) {
+	if rt == nil {
+		return id, errNotFound
+	}
+	if c, ok := auth.CallerFrom(ctx); ok {
 		read, hold := auth.Allowed(c, rt.right)
 		switch {
 		case !read:
-			return answer{}, errNotFound
+			return id, errNotFound
 		case !hold:
-			return answer{}, &refusal{code: apiv1.CodeForbidden, detail: "the caller's role does not permit this call"}
+			return id, &refusal{code: apiv1.CodeForbidden, detail: "the caller's role does not permit this call"}
 		case c.MustChange && !rt.mustChange:
-			return answer{}, &refusal{code: apiv1.CodePasswordChangeRequired, detail: "change the account's password first"}
+			return id, &refusal{code: apiv1.CodePasswordChangeRequired, detail: "change the account's password first"}
 		}
 	}
-	var id [16]byte
 	if strings.Contains(rt.pattern, "{id}") {
 		// Every ID is a UUID in its canonical form, which ParseShareID
 		// parses for any of them.
 		sid, err := entity.ParseShareID(rawID)
 		if err != nil {
-			return answer{}, errNotFound
+			return id, errNotFound
 		}
 		id = sid
 		trace.SpanFromContext(ctx).SetAttributes(attribute.String("api.id", sid.String()))
 	}
-	return rt.serve(ctx, &s.d, r, id)
+	return id, nil
 }

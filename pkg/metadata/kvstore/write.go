@@ -95,8 +95,8 @@ func (c ControlPlane) updateGen(ctx context.Context, fn func(entity.ControlPlane
 // concurrent write of the key, since the kv contract conflicts blind writes,
 // so the tracked read is redundant today. It decides only on a backend that
 // stops conflicting blind writes.
-func replay(tx kv.Txn, i entity.IdempotencyRecord) error {
-	b, ok, err := get(tx, idempotencyKey(i.Account, i.Key))
+func replay(r kv.Reader, i entity.IdempotencyRecord) error {
+	b, ok, err := get(r, idempotencyKey(i.Account, i.Key))
 	if err != nil || !ok {
 		return err
 	}
@@ -108,6 +108,16 @@ func replay(tx kv.Txn, i entity.IdempotencyRecord) error {
 		return entity.ErrIdempotencyMismatch
 	}
 	return &entity.IdempotentReplay{Answer: rec.Answer}
+}
+
+// Replay is what Write would answer i before running its function, read
+// untracked outside any write: *entity.IdempotentReplay with the recorded
+// answer when i's account recorded the same digest under its key,
+// entity.ErrIdempotencyMismatch when it recorded another, and nil when the key
+// holds no record. A caller checks it before a step it must not repeat; a
+// request that misses here may still meet the record inside Write.
+func (c ControlPlane) Replay(ctx context.Context, i entity.IdempotencyRecord) error {
+	return c.s.kv.View(ctx, func(r kv.Reader) error { return replay(r, i) })
 }
 
 func idempotencyKey(account entity.Principal, key string) []byte {

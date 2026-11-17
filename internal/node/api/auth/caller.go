@@ -8,10 +8,14 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
-// Caller is the account a request authenticated as: its principal, its
-// role, and whether it must change its password before anything else.
+// Caller is the account a request authenticated as: its principal, its name
+// as it is now, the session or API token it presented, its role, and whether
+// it must change its password before anything else. Its audit records name
+// it by all of the first three.
 type Caller struct {
 	Principal  entity.Principal
+	Name       string
+	Credential string
 	Role       entity.APIRole
 	MustChange bool
 }

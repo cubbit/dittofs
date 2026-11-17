@@ -155,10 +155,11 @@ var components = []struct {
 }
 
 // refusal is a refusal in the API's own terms: one of its codes, with text
-// for a person.
+// for a person, and what it names.
 type refusal struct {
 	code   apiv1.Code
 	detail string
+	names  []string
 }
 
 func (r *refusal) Error() string { return string(r.code) + ": " + r.detail }
@@ -180,7 +181,7 @@ func problemOf(err error) (apiv1.Problem, bool) {
 	case !ok:
 		p.Detail = "internal error"
 	case errors.As(err, &r):
-		p.Detail = r.detail
+		p.Detail, p.Names = r.detail, r.names
 	case errors.As(err, &f):
 		p.Field, p.Detail = f.field, f.detail
 	}

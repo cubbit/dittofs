@@ -750,6 +750,7 @@ func TestAPIWritesOnlyThroughWrite(t *testing.T) {
 		{"interface", []string{"(interface).PutShare"}},
 		{"renamed", []string{"(interface).Forget"}},
 		{"func-field", []string{"var Drop"}},
+		{"assert", []string{"(interface).PutUser"}},
 	} {
 		got, err := storeWrites(filepath.Join("testdata/arch/store-write", tc.dir), module+"internal/node/api", writers)
 		if err != nil {
@@ -779,6 +780,159 @@ func TestAPIWritesOnlyThroughWrite(t *testing.T) {
 		}
 		if !slices.Equal(got, tc.want) {
 			t.Errorf("%s: store writers taken as values %q, want %q", tc.dir, got, tc.want)
+		}
+	}
+}
+
+// writeAdapters are the functions of package api that may call the store's
+// Write, each named by its receiver and name: the write adapter and the
+// refusal's audit.
+var writeAdapters = []string{"write", "(*Server).refuse"}
+
+// signInCount is auth's sign-in count, the one function of auth's whose
+// Write sets no audit record: the attempt is audited when it settles, in the
+// settle's own Write, and an attempt that never settles was never checked,
+// so it is counted and not recorded.
+const signInCount = "reserve"
+
+// writeCalls type-checks the package in dir, as import path path, and
+// returns each way it breaks the write rule: a use of the store's Write
+// other than as the function of a call, a method value that could be handed
+// anywhere; a call of it from a function writeAdapters does not name, unless
+// the package is auth, whose every function may call it; and a call whose
+// WriteMeta is not a literal setting Audit to &x or to a call's result, but
+// auth's signInCount. A
+// Write is any method so named whose second parameter is entity.WriteMeta.
+func writeCalls(dir, path string) ([]string, error) {
+	_, files, info, err := typeCheck(dir, path)
+	if err != nil {
+		return nil, err
+	}
+	isAuth := under(path, module+"internal/node/api/auth")
+	calls := map[*ast.Ident]*ast.CallExpr{}
+	var funcs []*ast.FuncDecl
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.CallExpr:
+				if sel, ok := n.Fun.(*ast.SelectorExpr); ok {
+					calls[sel.Sel] = n
+				}
+			case *ast.FuncDecl:
+				funcs = append(funcs, n)
+			}
+			return true
+		})
+	}
+	// in names the function declaring the identifier at pos, by its
+	// receiver and name.
+	in := func(pos token.Pos) string {
+		for _, fd := range funcs {
+			if fd.Pos() <= pos && pos < fd.End() {
+				if fd.Recv == nil {
+					return fd.Name.Name
+				}
+				return "(" + types.ExprString(fd.Recv.List[0].Type) + ")." + fd.Name.Name
+			}
+		}
+		return "package scope"
+	}
+	var bad []string
+	for id, o := range info.Uses {
+		fn, ok := o.(*types.Func)
+		if !ok || fn.Name() != "Write" || fn.Signature().Params().Len() < 2 ||
+			fn.Signature().Params().At(1).Type().String() != module+"pkg/metadata/entity.WriteMeta" {
+			continue
+		}
+		name := in(id.Pos())
+		c := calls[id]
+		switch {
+		case c == nil:
+			bad = append(bad, name+" takes Write as a value")
+			continue
+		case !isAuth && !slices.Contains(writeAdapters, name):
+			bad = append(bad, name+" calls Write outside the write adapter")
+		}
+		if exempt := isAuth && name == signInCount; !exempt && (len(c.Args) < 2 || !setsAudit(c.Args[1])) {
+			bad = append(bad, name+" calls Write with no audit record")
+		}
+	}
+	slices.Sort(bad)
+	return bad, nil
+}
+
+// setsAudit reports whether e is a composite literal whose Audit is set to
+// &x or to a call's result, either of which names a record the call built;
+// a variable, nil or not, does not show that one exists.
+func setsAudit(e ast.Expr) bool {
+	lit, ok := e.(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	for _, el := range lit.Elts {
+		kv, ok := el.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		if k, ok := kv.Key.(*ast.Ident); ok && k.Name == "Audit" {
+			switch v := kv.Value.(type) {
+			case *ast.UnaryExpr:
+				return v.Op == token.AND
+			case *ast.CallExpr:
+				return true
+			}
+			return false
+		}
+	}
+	return false
+}
+
+// Every package under api calls the store's Write only from the write
+// adapter and auth, each call with its audit record set, and takes it as no
+// value; planted packages calling Write from a resource handler or from a
+// method named like the adapter, taking it as a method value, and calling it
+// from auth with no audit record, a nil one or a variable that may be nil
+// are caught; auth's sign-in count, writing none, is not.
+func TestWritesThroughTheAdapter(t *testing.T) {
+	var dirs []string
+	if err := filepath.WalkDir("api", func(path string, d os.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			dirs = append(dirs, path)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range dirs {
+		got, err := writeCalls(dir, module+"internal/node/"+filepath.ToSlash(dir))
+		if err != nil {
+			t.Fatalf("%s: %v", dir, err)
+		}
+		if len(got) > 0 {
+			t.Errorf("%s: violations %q, want none", dir, got)
+		}
+	}
+	for _, tc := range []struct {
+		dir, path string
+		want      []string
+	}{
+		{"testdata/arch/write-calls/handler", "internal/node/api", []string{
+			"(shares).write calls Write outside the write adapter",
+			"hand takes Write as a value",
+			"putShare calls Write outside the write adapter",
+		}},
+		{"testdata/arch/write-calls/auth", "internal/node/api/auth", []string{
+			"drop calls Write with no audit record",
+			"forget calls Write with no audit record",
+			"revoke calls Write with no audit record",
+		}},
+	} {
+		got, err := writeCalls(tc.dir, module+tc.path)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.dir, err)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s: violations %q, want %q", tc.dir, got, tc.want)
 		}
 	}
 }
