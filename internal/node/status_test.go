@@ -328,7 +328,11 @@ func TestStatusListsAnOperationKindWithNoStep(t *testing.T) {
 		t.Fatalf("create the operation: %v", err)
 	}
 	// A runner turn that starts after the write lists the operation.
-	<-ran
+	select {
+	case <-ran:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no runner turn within 10 s")
+	}
 	h.Clock().Advance(time.Second)
 	select {
 	case <-ran:
