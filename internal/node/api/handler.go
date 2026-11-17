@@ -44,7 +44,7 @@ type answer struct {
 	status int
 	header http.Header
 	body   []byte
-	park   func(context.Context) (answer, error)
+	park   func() (answer, error)
 	wait   time.Duration
 }
 
@@ -128,7 +128,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 		// moves past its wait, so the write timeout that bounds every
 		// other call does not cut it off.
 		if err = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(a.wait + s.api.WriteTimeout)); err == nil {
-			a, err = a.park(ctx)
+			a, err = a.park()
 		}
 	}
 	outcome := "ok"

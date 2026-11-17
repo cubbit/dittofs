@@ -15,10 +15,11 @@ const (
 	maxParked = 256
 )
 
-// clock is the API's time: Now, and a channel that closes once d has
-// passed.
+// clock is the API's time: Elapsed, the monotonic time a wait is measured
+// on, which a step of the wall clock does not move, and a channel that
+// closes once d has passed.
 type clock interface {
-	Now() time.Time
+	Elapsed() time.Duration
 	After(d time.Duration) <-chan struct{}
 }
 
@@ -48,8 +49,9 @@ func changes[R any](differ func(first, now R) bool) func(string) (time.Duration,
 // watch adapts a read a client may wait on. Its answer is 200 with the
 // record and its tag as the ETag. Without ?wait= it reads once. With it, a
 // first read that is not already done parks the call, which then re-reads
-// once a second on the API's clock and answers the first read that is done,
-// or the last one once the wait has passed or the API listener shuts down.
+// once a second on the API's clock, under the context the first read had,
+// and answers the first read that is done, or the last one once the wait
+// has passed, on the clock's elapsed time, or the API listener shuts down.
 // No query parameter but wait is accepted. A node parks at most 256 calls,
 // apart from the calls it runs, and refuses the next 503.
 //
@@ -86,16 +88,16 @@ func watch[R any](w watching[R]) adapter {
 		if s.d.Clock == nil {
 			return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds no clock to park a poll on"}
 		}
-		return answer{wait: wait, park: func(ctx context.Context) (answer, error) {
+		return answer{wait: wait, park: func() (answer, error) {
 			select {
 			case s.parked <- struct{}{}:
 				defer func() { <-s.parked }()
 			default:
 				return answer{}, &refusal{code: apiv1.CodeUnavailable, detail: "the node holds as many parked polls as it may"}
 			}
-			last, end := first, s.d.Clock.Now().Add(wait)
+			last, end := first, s.d.Clock.Elapsed()+wait
 			for {
-				left := end.Sub(s.d.Clock.Now())
+				left := end - s.d.Clock.Elapsed()
 				if left <= 0 {
 					return w.answer(last, nil)
 				}

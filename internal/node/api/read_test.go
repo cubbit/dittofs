@@ -254,6 +254,48 @@ func TestParkedPollAnswersOnTheClock(t *testing.T) {
 	}
 }
 
+// A parked poll re-reads under the context its first read had, which
+// carries its caller.
+func TestParkedPollReReadsAsItsCaller(t *testing.T) {
+	s := serve(t, as(entity.RoleViewer, false))
+	id := uuid.NewString()
+	s.putKnob(t, id, "a", 0)
+	base := s.clock.Pending()
+	ch := s.poll(t.Context(), "/api/v1/readers/"+id+"?wait=30s")
+	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
+	s.putKnob(t, id, "b", 1)
+	s.clock.Advance(time.Second)
+	const want = `{"generation":2,"spec":{"value":"b"},"role":"viewer"}`
+	if p := answered(t, "poll after the change", ch); p.err != nil || p.status != http.StatusOK || string(p.body) != want {
+		t.Errorf("poll answered by a re-read: answered %d %s err %v, want 200 %s", p.status, p.body, p.err, want)
+	}
+}
+
+// A parked poll's wait is timed on the clock's elapsed time: a step of the
+// wall clock back does not stretch it, and one forward does not cut it short.
+func TestParkedPollIgnoresWallClockSteps(t *testing.T) {
+	s := serve(t, as(entity.RoleViewer, false))
+	id := uuid.NewString()
+	s.putKnob(t, id, "a", 0)
+	base := s.clock.Pending()
+
+	ch := s.poll(t.Context(), knobAt(id)+"?wait=5s")
+	eventually(t, "the poll parks", func() bool { return s.clock.Pending() == base+1 })
+	s.clock.Jump(-time.Hour)
+	s.clock.Advance(5 * time.Second)
+	if p := answered(t, "a 5s poll after the wall clock stepped back an hour", ch); p.err != nil || p.status != http.StatusOK {
+		t.Errorf("a 5s poll after the wall clock stepped back an hour and 5s passed: answered %d %s err %v, want 200", p.status, p.body, p.err)
+	}
+
+	ch = s.poll(t.Context(), knobAt(id)+"?wait=30s")
+	eventually(t, "the second poll parks", func() bool { return s.clock.Pending() == base+1 })
+	s.clock.Jump(time.Hour)
+	s.clock.Advance(time.Second)
+	if p := s.settle(t, "a 30s poll after the wall clock stepped forward an hour", ch, base); p.status != 0 {
+		t.Errorf("a 30s poll after the wall clock stepped forward an hour and 1s passed: answered %d %s, want it parked", p.status, p.body)
+	}
+}
+
 // ?wait= is a duration above 0 and at most 60 s, given once, and a read
 // takes no other query parameter.
 func TestWaitBounds(t *testing.T) {

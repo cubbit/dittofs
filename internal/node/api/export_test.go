@@ -91,6 +91,7 @@ var testRows = []route{
 	{method: http.MethodPost, pattern: "/api/v1/password", kind: entity.ResourceUser, right: auth.Self, mustChange: true, serve: call(verb("password"))},
 	{method: http.MethodGet, pattern: "/api/v1/knobs/{id}", kind: entity.ResourceSetting, right: auth.View, serve: watch(watching[knobRead]{read: readKnob, tag: func(k knobRead) uint64 { return k.Generation }, until: knobWait})},
 	{method: http.MethodGet, pattern: "/api/v1/vaults/{id}", kind: entity.ResourceSecret, right: auth.View, serve: watch(watching[vaultRead]{read: readVault, tag: func(v vaultRead) uint64 { return v.Generation }, until: changes(func(vaultRead, vaultRead) bool { return false })})},
+	{method: http.MethodGet, pattern: "/api/v1/readers/{id}", kind: entity.ResourceSetting, right: auth.View, serve: watch(watching[reader]{read: readReader, tag: func(r reader) uint64 { return r.Generation }, until: changes(func(first, now reader) bool { return first.Generation != now.Generation })})},
 	{method: http.MethodGet, pattern: "/api/v1/tags", kind: entity.ResourceNetgroup, right: auth.View, serve: list(tags)},
 	{method: http.MethodGet, pattern: "/api/v1/fail", kind: entity.ResourceInstallation, right: auth.View, serve: read(func(context.Context, request[none]) (none, error) {
 		return none{}, errors.New(UnnamedError)
@@ -250,6 +251,19 @@ func knobWait(w string) (time.Duration, func(first, now knobRead) bool, error) {
 		return maxWait, func(_, now knobRead) bool { return now.Spec.Value == KnobOn }, nil
 	}
 	return changes(func(first, now knobRead) bool { return first.Generation != now.Generation })(w)
+}
+
+// reader is a knob as GET /api/v1/readers/{id} reads it, with the role of
+// the caller the context of each read carries.
+type reader struct {
+	knobRead
+	Role string `json:"role"`
+}
+
+func readReader(ctx context.Context, st reads, rq request[none]) (reader, error) {
+	k, err := readKnob(ctx, st, rq)
+	c, _ := auth.CallerFrom(ctx)
+	return reader{k, c.Role.String()}, err
 }
 
 // vaultRead is a vault as GET reads it: the reference its password was
