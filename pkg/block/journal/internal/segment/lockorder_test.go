@@ -367,7 +367,9 @@ func TestStreamsUnderRecorder(t *testing.T) {
 	})
 	armed := make(chan struct{})
 	release := make(chan struct{})
+	readerDone := make(chan struct{})
 	go func() {
+		defer close(readerDone)
 		ref, err := e.cache.Acquire(active)
 		if err != nil {
 			t.Errorf("the reader's hold of the sealed segment %d: %v", active, err)
@@ -385,16 +387,20 @@ func TestStreamsUnderRecorder(t *testing.T) {
 		close(release)
 	}()
 	// The retirement runs on its own goroutine, as production's does, so
-	// its books hold nothing but the retirement's own locks.
+	// its books hold nothing but the retirement's own locks. Each of the
+	// two goroutines checks the recorder before the test goroutine moves
+	// on, because the probes below record violations on purpose into the
+	// same recorder, and a check that ran after them would report those.
 	retired := make(chan error, 1)
 	go func() {
 		_, err := r.Retire(active, segment.NotHeld)
-		retired <- err
 		assertNoViolations(t, e.rec, "the retirer")
+		retired <- err
 	}()
 	if err := awaitRecorded(t, "the retirement", retired); err != nil {
 		t.Fatalf("Retire of the sealed segment %d: %v", active, err)
 	}
+	awaitRecorded(t, "the retirer's reader", readerDone)
 
 	// The streams close before the cache's Shutdown cleanup: each stream
 	// holds its active segment's reference until its close, and a shutdown
