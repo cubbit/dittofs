@@ -601,10 +601,10 @@ func TestExportPolicyDefault(t *testing.T) {
 
 // ?wait=serving on a share returns once every node reporting a status has
 // reconciled the share list through the share, on the clock's next second,
-// or once a node refuses it, counting the refusal in the status; a node refusing a record of another kind with
-// the share's ID leaves it parked.
+// or once a node that has reconciled through it refuses it, counting the
+// refusal in the status; a refusal held from before the share's position,
+// or one of a record of another kind with the share's ID, leaves it parked.
 func TestShareWaitServing(t *testing.T) {
-	s := serve(t, as(entity.RoleOperator, false))
 	for _, tc := range []struct {
 		name, what string
 		then       func(entity.NodeStatus, entity.Share) entity.NodeStatus
@@ -620,42 +620,52 @@ func TestShareWaitServing(t *testing.T) {
 			st.Refused = []entity.RefusedRecord{{Record: entity.ResourceRef{Kind: entity.ResourceShare, ID: sh.ID[:]}}}
 			return st
 		}, &apiv1.Applied{Nodes: 1, Of: 2}, 1},
+		{"d", "the second node still holds a refusal from before it", func(st entity.NodeStatus, sh entity.Share) entity.NodeStatus {
+			st.Refused = []entity.RefusedRecord{{Record: entity.ResourceRef{Kind: entity.ResourceShare, ID: sh.ID[:]}}}
+			return st
+		}, nil, 0},
 		{"c", "the second node refused another kind's record of its ID", func(st entity.NodeStatus, sh entity.Share) entity.NodeStatus {
 			st.Refused = []entity.RefusedRecord{{Record: entity.ResourceRef{Kind: entity.ResourceSetting, ID: sh.ID[:]}}}
 			return st
 		}, nil, 0},
 	} {
-		id, loc := s.createShare(t, tc.name, s.namespace(t))
-		sh, _ := s.share(t, id)
-		one, two := entity.NodeStatus{Node: entity.NodeID{1}, ShareList: sh.Position}, entity.NodeStatus{Node: entity.NodeID{2}, ShareList: sh.Position - 1}
-		s.putStatus(t, one)
-		s.putStatus(t, two)
-		base := s.clock.Pending()
-		ch := s.poll(t.Context(), loc+"?wait=serving")
-		for i, at := range []string{"at once", "a second on"} {
-			if i > 0 {
-				s.clock.Advance(time.Second)
+		t.Run(tc.name, func(t *testing.T) {
+			// Each row has its own server and clock, so a poll a row leaves
+			// parked ends with the row's server.
+			s := serve(t, as(entity.RoleOperator, false))
+			id, loc := s.createShare(t, tc.name, s.namespace(t))
+			sh, _ := s.share(t, id)
+			one, two := entity.NodeStatus{Node: entity.NodeID{1}, ShareList: sh.Position}, entity.NodeStatus{Node: entity.NodeID{2}, ShareList: sh.Position - 1}
+			s.putStatus(t, one)
+			s.putStatus(t, two)
+			base := s.clock.Pending()
+			ch := s.poll(t.Context(), loc+"?wait=serving")
+			for i, at := range []string{"at once", "a second on"} {
+				if i > 0 {
+					s.clock.Advance(time.Second)
+				}
+				if p := s.settle(t, "poll "+at, ch, base); p.status != 0 || p.err != nil {
+					t.Fatalf("poll %s, before %s: answered %d %s err %v, want it parked", at, tc.what, p.status, p.body, p.err)
+				}
 			}
-			if p := s.settle(t, "poll "+at, ch, base); p.status != 0 || p.err != nil {
-				t.Fatalf("poll %s, before %s: answered %d %s err %v, want it parked", at, tc.what, p.status, p.body, p.err)
+			s.putStatus(t, tc.then(two, sh))
+			s.clock.Advance(time.Second)
+			p := s.settle(t, "poll after "+tc.what, ch, base)
+			if tc.want == nil {
+				if p.status != 0 {
+					t.Errorf("poll after %s: answered %d %s, want it parked", tc.what, p.status, p.body)
+				}
+				return
 			}
-		}
-		s.putStatus(t, tc.then(two, sh))
-		s.clock.Advance(time.Second)
-		p := s.settle(t, "poll after "+tc.what, ch, base)
-		if tc.want == nil {
-			if p.status != 0 {
-				t.Errorf("poll after %s: answered %d %s, want it parked", tc.what, p.status, p.body)
+			if p.status == 0 {
+				t.Fatalf("poll after %s: parked again, want answered", tc.what)
 			}
-			continue
-		}
-		if p.status == 0 {
-			t.Fatalf("poll after %s: parked again, want answered", tc.what)
-		}
-		var got apiv1.Share
-		if p.err != nil || p.status != http.StatusOK || json.Unmarshal(p.body, &got) != nil || got.Status.Applied == nil || *got.Status.Applied != *tc.want || got.Status.Refused != tc.refused {
-			t.Errorf("poll after %s: answered %d %s err %v, want 200 applied %+v refused %d", tc.what, p.status, p.body, p.err, *tc.want, tc.refused)
-		}
+			var got apiv1.Share
+			if p.err != nil || p.status != http.StatusOK || json.Unmarshal(p.body, &got) != nil || got.Status.Applied == nil || *got.Status.Applied != *tc.want || got.Status.Refused != tc.refused {
+				t.Errorf("poll after %s: answered %d %s err %v, want 200 applied %+v refused %d", tc.what, p.status, p.body, p.err, *tc.want, tc.refused)
+			}
+
+		})
 	}
 }
 
