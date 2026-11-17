@@ -1,8 +1,8 @@
 # dfsbench Results — 2026-07-09 (fair run)
 
 Benchmark pass from the `dfsbench` harness (`internal/dfsbench/`, issue #1602), after fixing the
-methodology confounds found in the first pass. This supersedes the stale numbers in
-`bench/results/*.json` for the workloads covered here. Read it as a real but
+methodology confounds found in the first pass. This supersedes the earlier, stale numbers
+for the workloads covered here. Read it as a real but
 **partial** data point (dittofs vs one FUSE competitor, one size, single run) — not a full matrix.
 
 ## What this run measured

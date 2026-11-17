@@ -199,8 +199,7 @@ it, in the part this epic owns.
   blocks on a channel for one operation and key and is released after its read. R18 holds the
   binding's commit, as E3's T3.7 does. No marker.
 - **D6, the pages are held by a test.** A case beside `cmd/gendocs`' command-reference tests walks
-  `docs/**`, `CLAUDE.md` and `README.md`, but `docs/internals/rfcs` and `.planning`,
-  which are design history, and fails on a page naming a path E1 deleted. No marker.
+  `docs/**`, `CLAUDE.md` and `README.md`, but `docs/internals/rfcs`, which is design history, and fails on a page naming a path E1 deleted. No marker.
 - **D7, the X3 rows wait in one subtask.** Every row that writes a setting is unreachable before X3,
   so they land together in T7.5. No marker.
 - **D8, the fixture's start is the runner's input.** `run`'s `startFixture` and `fixture`'s
