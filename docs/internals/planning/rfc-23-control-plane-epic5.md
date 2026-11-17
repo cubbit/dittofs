@@ -49,8 +49,8 @@ guesses a source or an account gets.
 
 ### 1.1 In scope
 
-The rights this epic's routes need, added to `auth`'s role table; RFC 23's own settings section in
-`internal/node/api/apisettings`; the wire types of sign-in, tokens, sessions and password changes;
+The rights this epic's routes need, which `auth`'s role table already holds from E4; RFC 23's own settings section in
+`internal/node/api/apisettings`; the wire types of sign-in, tokens and password changes;
 throttling; sessions, access tokens, refresh and sign-out; `Deps.Authenticate`, the per-call
 account check, `last_admin` and the role-raise rule; password changes and `:set-password`; API
 tokens; the signing key and its rotation; the initialisation step, `dfs init` and `dfs`'s
@@ -206,7 +206,7 @@ them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R46 | `pkg/node/apiv1` carries the bodies of sign-in, refresh, sign-out, the password change, `:set-password`, an API token and a session, and imports only the standard library | MUST | RFC 23 plan §5 epic 5, §4.2 D1 | T5.1 |
+| R46 | `pkg/node/apiv1` carries the bodies of sign-in, refresh, the password change, `:set-password` and an API token, and imports only the standard library; sign-out has no body, since it takes its session from the access token, and a session has none until a route answers with one | MUST | RFC 23 plan §5 epic 5, §4.2 D1 | T5.1 |
 
 ## 4. Decisions this epic takes
 
@@ -279,11 +279,11 @@ them.
 ```text
 pkg/node/apiv1/
   auth.go                                  T5.1  SignIn, Tokens, Refresh, PasswordChange, SetPassword,
-                                                 APITokenSpec, APITokenStatus, SessionStatus
+                                                 APITokenSpec, APITokenStatus
 internal/node/api/apisettings/
   settings.go settings_test.go             T5.1  Settings, defaults, Validate (D4)
 internal/node/api/auth/
-  rights.go                                T5.1  this epic's rights added to E4's table
+  rights.go                                T5.1  E4's table, already holding this epic's rights; unchanged
   throttle.go throttle_test.go             T5.2  decide, settle, takeBack, sourceOf; the store side
   tokens.go tokens_test.go                 T5.3  the signing key's versions, issue, verify
   signin.go signin_test.go bench_test.go   T5.5  Service, Authenticate, sign-in, refresh, sign-out
@@ -311,14 +311,18 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 - **Covers:** R4, R20, R46.
 - **Deliverables:** in `pkg/node/apiv1`'s `auth.go`, the bodies R46 names, standard library only,
   their seeds in E4's strict-decoder fuzz target; `internal/node/api/apisettings` (D4) with its
-  test; this epic's rights in `auth`'s table: own password, own tokens and sign-out for every role;
-  accounts with a role, roles, others' service tokens and the signing key's rotation for `admin`;
-  E4's import rule's allow-list gaining `apisettings`, `pkg/identity` and `pkg/secrets` for `auth`,
-  an explicit edit. Consumed by T5.5–T5.9, E6 (the bodies) and E3's sweep (the retention).
+  test; this epic's rights confirmed in `auth`'s table, where E4's `auth.Allowed` already holds
+  them, so T5.1 adds none: `Self` (own password, own tokens and sign-out) for every role,
+  `Accounts` (accounts with a role, roles, others' service tokens) and `Installation` (the signing
+  key's rotation among it) for `admin`;
+  E4's import rule's allow-list gaining `apisettings`, an explicit edit. No `SessionStatus`, since
+  no route answers with one, and no sign-out body, since sign-out takes its session from the access
+  token. `pkg/identity` joins the allow-list for `auth` in T5.5, the first subtask that imports it;
+  `pkg/secrets` needs no edit, since E4's D20 allows it for the whole API. Consumed by T5.5–T5.9, E6 (the bodies) and E3's sweep (the retention).
 - **Acceptance criteria:**
-  - Each right of RFC 23 §5.2 this epic adds answers per role as the table says.
+  - Each right of RFC 23 §5.2 this epic's routes need answers per role as the table says.
   - `go list -deps ./pkg/node/apiv1` names only standard-library packages.
-- **Tests:** a table test of the added rights per role, a role's right removed failing its row
+- **Tests:** a table test of this epic's rights per role in E4's table, a role's right removed failing its row
   (R4); `Validate` at 89 and 90 days, and the defaults (R20); each body's JSON names by key (R46).
 
 ### T5.2 Throttling
@@ -419,7 +423,10 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   refresh through `Session(id)`, reading the account through `APISignIn.Account` as `Authenticate`
   does, an invalidated token revoking the session with `DeleteSession`; `Account`'s `ErrUnavailable`
   answered `503`, not `401`, in refresh and in `Authenticate` alike (R47);
-  sign-out; the two series; RFC 23 §4.5's `decision:` at the credential routes; `bench_test.go`,
+  sign-out; the two series; RFC 23 §4.5's `decision:` at the credential routes; the client's
+  `SignIn`, `Refresh` and `ChangePassword` sent through E4's client core with refresh off (E4's
+  T4.8), so a `401` from any of them is returned as it is, never refreshed and replayed; `pkg/identity`
+  added to E4's import allow-list for `auth` (T5.1); `bench_test.go`,
   checked sign-ins from many sources beside metadata commits, in the manual tier. Consumed by T5.6
   and E6's `login`.
 - **Acceptance criteria:**
@@ -594,6 +601,13 @@ A suggestion only: one pull request per subtask works as well. PR 4 and PR 5 can
 
 ## 9. Open points
 
+- **For the user: should T5.2 count a name that resolves to no account on a pseudo-account?** R25
+  counts such a name against its source only, so an unknown name never reaches the account's bound
+  of 100 checked attempts that a known one does, and the difference in waits can tell a caller
+  which names exist. The alternative keys a count on an HMAC of the name under an installation
+  secret, one pseudo-account per unknown name, so both kinds meet the same waits, at the cost of a
+  count row per name tried. R25 and R27 stay as they are until the user answers.
+
 - **E3's runner (D9):** the rotation step returns its `next` unchanged while it waits; it needs E3's
   runner to commit nothing for such a turn and to call the step again at its next turn. E3's T3.4
   commits each step's `next`; if it keeps doing so for an unchanged one, each turn writes a record
@@ -602,9 +616,9 @@ A suggestion only: one pull request per subtask works as well. PR 4 and PR 5 can
   epic's `auth` calls `Write` for the counts, the sign-in's settlement, refresh and the password
   change (D1, D8). E4's rule needs `auth` named beside the adapter, its calls holding their audit
   records as R40 says.
-- **E4's import rule:** whether `pkg/secrets` counts as a component's implementation under CP16 is
-  E4's rule's call; T5.1 adds it to the allow-list for `auth` explicitly, with `pkg/identity` and
-  `apisettings`.
+- **E4's import rule:** E4's D20 allows `pkg/secrets` for the whole API, `auth` included. T5.1 adds
+  `apisettings` to the allow-list, and T5.5, the first subtask whose `auth` imports `pkg/identity`,
+  adds it.
 - **E3's harness:** `nodetest` initialises through `install.Run` from T5.4 on (D6), replacing its
   own `kvstore.Init` and `journal.Init`; E3's harness tests must keep passing over it.
 - **E2's names:** `Session(id)`, `DeleteSession(id)`, `Sessions(account)`, `ControlPlaneTx.Now()`,
