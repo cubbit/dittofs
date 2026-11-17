@@ -2270,8 +2270,10 @@ What the tags must carry beyond fixed fields:
   segment of the reply
   ([RFC 20 §5.3](rfc-20-adapters.md#5.3%20No%20copies%20on%20the%20data%20path)).
 
-A request that does not decode is `STATUS_INVALID_PARAMETER`, for every
-command alike. A rule between fields — the generic mapping of §6.1, a `LOCK`'s
+A request whose structure does not decode is `STATUS_INVALID_PARAMETER`, for
+every command alike. An information class or control code the codec has no
+struct for decodes as unknown and is refused by its row's rule, as Appendices
+E and F say — most `STATUS_NOT_SUPPORTED`. A rule between fields — the generic mapping of §6.1, a `LOCK`'s
 elements of §7 — is the handler's, checked before its call. The session's
 `Identity` and `r.Call` of §16.1 are built by the pipeline, once per member of
 a chain, never by a handler.

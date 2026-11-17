@@ -1364,10 +1364,16 @@ column of the table, not a check in the handler.
 
 A row is one line, `core.Row(code, name, needs, handler)` (§4.7): the
 operation's request and reply types come from its handler, and their decoder
-and encoder from the protocol's generated codec (§5.1). A request that does not
-decode is answered by the pipeline, the same way for every row — the RPC
-programs' `GARBAGE_ARGS` (NFSv4's `NFS4ERR_BADXDR` for a `COMPOUND` member),
-SMB2's `STATUS_INVALID_PARAMETER` — and never reaches the handler.
+and encoder from the protocol's generated codec (§5.1). A request whose
+structure does not decode is answered by the pipeline, the same way for every
+row — the RPC programs' `GARBAGE_ARGS` (NFSv4's `NFS4ERR_BADXDR` for a
+`COMPOUND` member), SMB2's `STATUS_INVALID_PARAMETER` — and never reaches the
+handler. A selector the codec has no struct for — an NFSv4 `fattr4` bit, an
+SMB2 information class or control code — is not a structural failure: it
+decodes as unknown, and its row's rule refuses it as the protocol RFC says
+(`NFS4ERR_ATTRNOTSUPP`, `STATUS_NOT_SUPPORTED`;
+[RFC 21 §8.2](rfc-21-nfs.md#8.2%20Not%20supported),
+[RFC 22 Appendices E and F](rfc-22-smb.md#Appendix%20E%20%E2%80%94%20information%20classes)).
 
 Each row also carries the preconditions the pipeline checks before the handler
 runs, so that no handler repeats them:
@@ -2049,11 +2055,15 @@ func Bind[Req, Rep any](
 // Row is the row of one ops file's handler, and how every row but a compound
 // row is built. It infers Req and Rep from h, takes their decoder and encoder
 // from the protocol's generated codec (§5.1), and returns the Op whose Decode
-// is Bind's over them, with Code, Name and Needs set. A decode error is
-// answered the table's garbage-arguments or invalid-parameter status, the same
-// for every row (§4.2). h returns its reply by value: an error beside the zero
-// Rep hands Bind no reply, so the status is encoded alone; a reply returned
-// beside an error (NFSv3's WCC) is encoded with it. The columns Row does not
+// is Bind's over them, with Code, Name and Needs set. A structural decode
+// error is answered the table's garbage-arguments or invalid-parameter
+// status, the same for every row (§4.2). A failure reply carries its
+// protocol's fail arm, never the status alone: an XDR fail arm has a body even
+// when the handler filled none (WRITE3resfail's wcc_data, two FALSEs when
+// empty), so the encoder writes the arm whole from the reply the handler
+// returned beside its error, or an empty one; SMB2 answers a failure with its
+// ERROR body, which the header codec writes, not Rep. How a handler's reply
+// form reaches this is §11's question 4. The columns Row does not
 // take — Versions, Cacheable, Role, Expired — are set on the Op it returns
 // where a row needs other than their zero value.
 func Row[Req, Rep any, PReq Decoder[Req], PRep Encoder[Rep]](
@@ -2072,7 +2082,7 @@ type Decoder[T any] interface {
 type Encoder[T any] interface {
 	*T
 	EncodeWire(v Version, out *Buf) error
-	IsZero() bool
+	IsZero() bool // needed only while Rep is returned by value (§11 question 4)
 }
 
 // Hooks are Bind's optional arguments, typed against the row's request; at
@@ -2773,9 +2783,13 @@ The constants — operation codes, status codes, flag bits, structure sizes —
 are taken from the specification once, in one place per protocol, `wire/`,
 and every use names them.
 
-*The per-command codec subtasks of the epic 5 and epic 6 breakdowns of RFC 20's
-plan follow this section: each protocol builds one generator and runtime, and
-each command its tagged structs, not a codec of its own.*
+*The per-command codec subtasks of RFC 20's plan (its epic 5 and epic 6
+breakdowns) and of RFC 22's plan (T3.1, T5.1, T7.1 and the rest, its "one
+file per command" row, its `core.Bind(wire.DecodeCreate, …)` example) follow
+this section: each protocol builds one generator and runtime, and each command
+its tagged structs, not a codec of its own. RFC 20's plan's T6.2 ("the XDR
+they need written by hand") and its risk 6, generated XDR or by hand, are
+decided here: generated.*
 
 ### 5.2 Decoding is bounded
 
@@ -2807,7 +2821,11 @@ session's reply size, since a client may ask for more than it gets.
 
 - a `WRITE`'s data is a slice of the receive buffer, lent to the service for
   each call: the generated decoder decodes a byte field as a sub-slice of the
-  record, never a copy. The request, not the call, owns the buffer: it is released only
+  record, never a copy. A decoded byte field is valid for its request's life
+  only; whatever keeps one past it — `gss`'s exchange state, as NTLM keeps
+  `NEGOTIATE`'s and `CHALLENGE`'s bytes across `SESSION_SETUP` round trips for
+  the MIC ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)), an open's
+  create-context values — copies it; The request, not the call, owns the buffer: it is released only
   when the request has its final answer — a held request (§4.6) keeps it
   across every re-drive — and the service's last borrower has released it.
   Released after the first attempt, the pool could refill it before a re-drive,
@@ -2827,9 +2845,12 @@ Encryption and signing are the exception, §5.5's.
 
 ### 5.4 How codecs are tested
 
-Each protocol's codec has **one** golden-vector suite and **one** fuzz target,
-in its `wire/`, and both cover every command; no command has a codec test of
-its own.
+Each protocol's codec has one golden-vector suite and a fuzz target covering
+every command, in its `wire/`; no command has a codec test of its own. Every
+other decoder of a peer's bytes — the record framers, the RPC and SMB2
+headers, the `AUTH_SYS` and `RPCSEC_GSS` credentials, `gss`'s NTLM, SPNEGO and
+Kerberos tokens, `dcerpc`'s NDR — has its own fuzz target with the same
+properties.
 
 - **Golden vectors.** Each message kind has fixed bytes for fixed fields:
   decoding them gives the fields, encoding the fields gives the bytes. Vectors
@@ -2841,13 +2862,18 @@ its own.
   shows only that the two halves agree with each other; it is a check on the
   codec's consistency, never on its correctness, and never stands in for a
   golden vector.
-- **Fuzzing.** The protocol's fuzz target picks a command from the input and
+- **Fuzzing.** The codec's fuzz target picks a command from the input and
   decodes the rest as its request, seeded with every golden vector and the
   reference captures. It fails on a panic, on a read or an allocation past the
-  buffer or the cap, and on a decode that disagrees with a second decoder of
-  the same bytes, written by hand from the specification and sharing no code
-  with the generator. Agreement between the generated decoder and encoder is
-  not enough: both come from one generator and share its mistakes.
+  buffer or the cap, and on a decoded value that does not re-encode to bytes
+  decoding to the same value. The codec's runtime — primitives, unions,
+  optional data, offset and length pairs, chains — is also checked against a
+  second decoder written by hand from the specification, sharing no code with
+  the generator, since a runtime bug is shared by every command and by both
+  halves of a round trip. Each command's own layout is anchored by its golden
+  vectors, from the specifications and the reference captures, not by a
+  second decoder per command, which would be the hand-written codec this
+  section removes.
 
 ### 5.5 Message transforms
 
@@ -3587,7 +3613,7 @@ end-to-end benchmark.
 | A18 | A pooled buffer returns to its pool, with its reservation, only at its last borrower's release; an idle node's pools hold zero reserved bytes. |
 | A19 | A sidecar reaches no service and holds no client state, runs only while one of its adapters serves, and its failure fails neither an adapter nor readiness. |
 | A20 | A connection reads the adapter's settings once, at accept, and a session at setup; a settings change never alters one already set up. |
-| A21 | Each protocol has one codec, generated from its commands' struct tags; no handler or `ops` file reads or writes a byte, and a request that does not decode is answered by the pipeline, the same way for every row. |
+| A21 | Each protocol has one codec, generated from its commands' struct tags; no handler or `ops` file reads or writes a byte, and a request whose structure does not decode is answered by the pipeline, the same way for every row; a selector the codec has no struct for decodes as unknown and is refused by its row's rule. |
 
 ## 10. Observability
 
@@ -3699,6 +3725,26 @@ connection, not once per request
 3. **NLM and NSM over UDP.** Served today, and needed by clients that send lock
    requests only over UDP; [RFC 21 §2.2](rfc-21-nfs.md#2.2%20TCP%20only) forbids
    it. Parity keeps it until RFC 21 decides which clients lose locking.
+4. **The reply form.** §4.3's handlers return `Rep` by value; the built `Bind`
+   on `feat/storage-v2` takes `*Rep`, whose nil means no reply. Either way a
+   failure reply needs its fail arm's body (§4.7's `Row`): by value, the
+   generator would need an `IsZero` to tell no reply from an empty one. The
+   lean is `*Rep`: it matches the built `Bind` and needs no generated
+   `IsZero`, the encoder writing the fail arm from a nil reply.
+5. **SMB2's answer to a request that does not decode.** §4.2 answers every
+   command `STATUS_INVALID_PARAMETER`. To be confirmed per command against
+   captures of Windows and Samba (§8) before the row is fixed.
+6. **The tag syntax.** §5.1 lists what a tag states; the spelling of each,
+   beyond `offset=`, `len=`, `utf16` and `chain`, is the generator's to fix.
+7. **`Row`'s hooks.** `Row(code, name, needs, handler)` takes `Bound`,
+   `Resolve`, `Role` and `Handle` through an optional `Hooks[Req]`, and the
+   other columns are set on the `*Op` it returns (§4.7). Whether those
+   belong in `Row`'s arguments instead is open.
+8. **Which stage builds the caller.** §4.4 has the `Router` resolve the
+   credential into `r.Call` and the pipeline check `needs`, not the `Security`
+   stage: `Security` is nil for `AUTH_SYS` and runs before a table is chosen,
+   so it cannot see a row's `Needs`. Revisit if `Security` is moved after
+   routing.
 
 ## Appendix A — prior art
 

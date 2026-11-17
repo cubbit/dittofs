@@ -2601,8 +2601,8 @@ service, before any wire suite runs:
   no procedure has a codec test of its own. The targets below are the
   translations'.
 - **Every decoder is fuzzed.** Go native fuzzing (`testing.F`) of the stateid ↔
-  `StateRef` codec, `share_access`/`share_deny` decoding, `LOCK` and NLM
-  lock-request decoding, owner-string parsing and the `Adapter`-bytes decoder,
+  `StateRef` codec, `share_access`/`share_deny` translation, the translation
+  of a decoded `LOCK` or NLM lock request into a `LockReq`, owner-string parsing and the `Adapter`-bytes decoder,
   seeded with truncated, corrupt, older- and newer-version bytes: no panic, and
   either a valid neutral request or a refusal, never a request that decodes to
   other state.
