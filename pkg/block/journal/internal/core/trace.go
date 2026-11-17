@@ -111,7 +111,12 @@ const SpanOpenAssembly SpanOp = "open.assembly"
 const SpanOpenSeal SpanOp = "open.seal"
 
 // SpanOpenEmptying covers the emptying of the segments the open ended:
-// their records re-appended whole, the segment unlinked and the directory
-// synced. It ends with the error of the emptying, nil when every ended
-// segment is emptied. Not built: it ends nil today.
+// every attached segment that is not held is retired first, through the
+// journal's own retirement path, then the ended segments' records are
+// re-appended whole, the segment unlinked and the directory synced. The
+// phase runs past the recovery the other spans cover, over the journal the
+// open assembled and once the open's loss records are durable: the recovery
+// itself opens this span as a no-op at its own end, and the step that runs
+// the work opens it once more over the work. It ends with the error of the
+// emptying, nil when every ended segment is emptied.
 const SpanOpenEmptying SpanOp = "open.emptying"

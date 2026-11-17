@@ -211,9 +211,10 @@ func (f *assembledJournal) tryReopen(t *testing.T, floor Version, set func(*Sett
 	// timeout.
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	// The seam skips the loss pass — its directories hold no loss records
-	// an open owes — and keeps the rest of the public order: the hook
-	// Continue runs before the retirement worker starts settles the pool.
+	// The seam skips the open's loss records and the emptying that gates on
+	// them — its directories hold no loss records an open owes — and keeps
+	// the rest of the public order: the hook Continue runs before the
+	// retirement worker starts settles the pool.
 	c, err := datapath.Continue(deps, state, func(c *datapath.Core) error {
 		return c.WaitSpares(ctx)
 	})

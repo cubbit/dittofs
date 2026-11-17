@@ -12,6 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/index"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/reclaim"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/storage"
 )
@@ -57,6 +58,29 @@ type Deps struct {
 	// pool's own targets, so a re-adopted spare lands in the class the pool
 	// would have made it in.
 	SpareTargets segment.Targets
+
+	// Liveness is the segment liveness tracker the journal the open
+	// assembled registered its rebuilt records with, the one answer the
+	// emptying asks of an attached segment: held or not. The open fills the
+	// field from the journal it built once the loss pass has landed, so the
+	// tracker's answer names the loss records it appended too. Nil is no
+	// emptying: the phase answers the refusal below rather than deciding
+	// liveness on its own, for a caller that hands no tracker answers
+	// nothing this phase may trust.
+	Liveness *reclaim.Tracker
+
+	// Retire is the retirement path the assembled journal runs — recycle or
+	// unlink, decided at the retirement itself, the pool's refill after each
+	// included — the one path a running journal's own reclamation takes,
+	// which the emptying reuses for every segment it retires. Nil is no
+	// emptying, the same refusal as Liveness's.
+	Retire func(id core.SegmentID, reason segment.Reason) (segment.Retirement, error)
+
+	// Dir is the journal's own directory, the one the per-directory
+	// deferred-loss registry is keyed by: the retire step reads it the way
+	// the open reads the failed list, and never retires a segment the
+	// registry answers as holding a deferred loss's dropped record.
+	Dir string
 
 	// rebuildOrder reorders the segments the rebuild dispatches before it
 	// starts a reader; nil keeps the listing's order, the one the open runs
@@ -184,6 +208,12 @@ var phases = [...]phase{
 	{span: core.SpanOpenReappend, run: runReappend},
 	{span: core.SpanOpenAssembly, run: runAssemble},
 	{span: core.SpanOpenSeal, run: runSeal},
+	// The emptying's entry keeps the list's order whole while the phase's
+	// work runs past it: the entry opens this loop's span as the recovery's
+	// own end, and Emptying — called by the open, once the loss records the
+	// work gates on are durable — opens the same op over the work itself,
+	// the retire step first and the emptying step after. Both steps stay in
+	// empty.go, under this one span; the list never gains a second entry.
 	{span: core.SpanOpenEmptying},
 }
 
@@ -265,9 +295,13 @@ func rebuildReaders(deps Deps) int {
 // device lost into a sealed spare of the repack reserve — and the assembly
 // and the cut-and-seal — which truncates, syncs and seals every torn-tail
 // fate the earlier phases answered and truncates every ended one — are
-// built; the emptying after it is a named,
-// span-covered step that changes nothing, checked for
-// the context. A cancelled open answers the context's
+// built; the emptying after it is a named, span-covered step whose work Run
+// cannot run: it gates on the open's loss records, which the loss pass
+// appends and syncs only past the recovery, over the journal the recovery
+// assembled, so the phases entry covers the span alone and Emptying runs
+// the work — the retire step first, the ended segments' emptying after — at
+// the open, once the records are durable. A cancelled open answers the
+// context's
 // error at the boundary it reached, the directory left as it began for a
 // later open — except for the open's writing phases, the spares phase, the
 // re-append and the cut-and-seal:
@@ -300,11 +334,14 @@ func Run(ctx context.Context, deps Deps, floor core.Version, expect core.Journal
 		if ph.run != nil {
 			perr = ph.run(phCtx, deps, rd, &st, expect, floor, marks)
 		}
-		// decision: a phase not yet built changes nothing. Its step is a
-		// named, traced no-op, and the phases around it keep this list,
-		// so each one lands with its contract and its own span and
-		// context check, without reordering anything. State stays zero
-		// where a later phase would fill it.
+		// decision: a phase whose step this loop does not run — the
+		// emptying, whose work gates on the loss records — changes nothing
+		// here. Its step is a named, traced no-op, and the phases around it
+		// keep this list, so the phase lands with its contract, its own span
+		// and context check, without reordering anything: the emptying's
+		// SpanOpenEmptying opens here as the recovery's end and again under
+		// Emptying over the work itself. State stays zero where a phase that
+		// runs outside this loop would fill it.
 		end(perr)
 		if perr != nil {
 			return State{}, perr

@@ -318,7 +318,7 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			return nil, err
 		}
 		started := cfg.Clock.Elapsed()
-		st, err := recovery.Run(ctx, recovery.Deps{
+		recoveryDeps := recovery.Deps{
 			FS:           cfg.Storage,
 			Clock:        cfg.Clock,
 			Tracer:       cfg.Tracer,
@@ -327,7 +327,9 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 			ExtentLimit:  s.ExtentLimit,
 			SegmentCap:   core.SegmentCapOf(s),
 			SpareTargets: buildTargets(s),
-		}, floor, expect, marks)
+			Dir:          dir,
+		}
+		st, err := recovery.Run(ctx, recoveryDeps, floor, expect, marks)
 		if err != nil {
 			return nil, err
 		}
@@ -398,9 +400,24 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 		// next open: every record the pass landed is durable, and every
 		// failure the answer costs is on the directory's failed list.
 		c, err := datapath.Continue(deps, state, func(c *datapath.Core) error {
-			return recovery.OpenLosses(ctx, st, c.Durability(), s.HeadroomRecords, func(n int) error {
+			if err := recovery.OpenLosses(ctx, st, c.Durability(), s.HeadroomRecords, func(n int) error {
 				return c.WaitRecordSpares(ctx, n)
-			})
+			}); err != nil {
+				return err
+			}
+			// The emptying's first half: every attached segment the journal's
+			// liveness tracker answers not held retires here, after the loss
+			// records the pass above made durable — the order the emptying
+			// gates on, for a retiree may hold the only copy of a record the
+			// crash corrupted and the loss record that masks its older copies
+			// must be on disk before the segment's unlink takes it — and
+			// before the retirement worker starts, so the open's own
+			// retirements are under the open's control and never race a
+			// worker's hand-over. Each retirement recycles or unlinks as the
+			// retirement itself decides and refills the pool behind itself.
+			recoveryDeps.Liveness = c.Liveness()
+			recoveryDeps.Retire = c.Retire
+			return recovery.Emptying(ctx, recoveryDeps, &st, expect, floor, marks)
 		})
 		if err != nil {
 			var pastReserve *recovery.LostPastReserveError

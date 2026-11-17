@@ -787,6 +787,19 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 // Index returns the placement index.
 func (c *Core) Index() *index.Index { return c.index }
 
+// Liveness returns the segment liveness tracker the open's registrations
+// filled: the one answer of an attached segment the open's own emptying asks
+// before it retires anything.
+func (c *Core) Liveness() *reclaim.Tracker { return c.liveness }
+
+// Retire runs one retirement through the executor the core runs — the same
+// recycle-or-unlink path, refill included, a reclaim worker's hand-over
+// takes — so an open-time retiree and a running journal's own answer one
+// path.
+func (c *Core) Retire(id core.SegmentID, reason segment.Reason) (segment.Retirement, error) {
+	return c.retirer.Retire(id, reason)
+}
+
 // Durability returns the durability layer.
 func (c *Core) Durability() *durability.Durability { return c.dur }
 
