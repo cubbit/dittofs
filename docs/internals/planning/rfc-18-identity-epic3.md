@@ -5,7 +5,7 @@
 resolution, §6.1 to §6.5, §7.1, §7.2 and §7.3's caller-cache row, §9.1's ID1, ID5, ID8, ID10
 and ID14 and the resolver's halves of ID6, ID7 and ID13, §9.2's resolution refusals and
 `identity.resolve` span, and §10's rows named in §3 below, as pull request #4058 merged them
-(83232b441); [RFC 17](../rfcs/rfc-17-vfs.md) §2.3 and §4.9 (admission and its caller
+(83232b441) and #4455 amended them (57682e9e7); [RFC 17](../rfcs/rfc-17-vfs.md) §2.3 and §4.9 (admission and its caller
 cache); [RFC 16](../rfcs/rfc-16-metadata-store.md) §3 (`Principals.Grant`,
 `SharePolicy`) and §4.2's `S‖id‖gv`; [RFC 23](../rfcs/rfc-23-control-plane.md)
 §3.2, for one scenario.
@@ -16,13 +16,15 @@ cache); [RFC 16](../rfcs/rfc-16-metadata-store.md) §3 (`Principals.Grant`,
 `Server` with `Apply` and a stubbed `Resolve`, and `vfs.Deps`' `Identity` and `Names`. **E2,
 partly**: T3.10 alone waits, for E2's T2.1 (root as a well-known principal; anonymous already exists) and
 T2.4 (`State.Settings`, whose `NTLM` key it reads); T3.2's routing lands before E2's T2.5 fills
-`Spell` and `Find`, and answers what they answer. **RFC 23's plan's epic 2 (#4326), partly**:
-T3.6 waits for its T2.3, which writes `S‖id‖gv` in `SetGrant` and `DeleteGrant` (its T2.11 writes
-it in each deletion batch), so T3.6 reads it and writes none. No subtask reads `PGEN`, and each
-test hands `Apply` its `State`. **E8, partly**: T3.6 waits for its T8.1 (E8's D1), which composes
+`Spell` and `Find`, and answers what they answer. **RFC 23's plan's epic 2 (#4326)**: its T2.3
+landed on `feat/storage-v2` with #4477: `SetGrant`, `DeleteGrant` and a user's or group's
+deletion move `S‖id‖gv`, and `ShareIndex.Share` returns it as `Share.GrantVersion`, so T3.6
+reads it and writes none. No subtask reads `PGEN`, and each test hands `Apply` its `State`. **E8, partly**: T3.6 waits for its T8.1 (E8's D1), which composes
 identity in `node.New` and applies its first `State`, since T3.6 makes `vfs.New` refuse a `Deps`
-without `Identity`. Each later `PGEN` is applied by E8's T8.2 (its R6); until then a node's cached
-local caller outlives a disable until it is evicted, since its `Fresh` is zero (D6).
+without `Identity`. Each later `PGEN` is applied by E8's T8.2 (its R6). Until then a running
+node's `State` does not move on a disable, so a caller with a zero `Fresh`, a local principal's,
+is never cached and resolves on every call (D6); a cached `Ticket` caller outlives a disable
+until its ticket's `Expires`, a ceiling that holds only once E5 signs one in.
 **Blocks:** **S2**, with E4: admission resolves through identity (T3.6) and `Spell` and `Find`
 reach it (T3.2). E5, whose PAC's deny-only SIDs reach T3.4's groups; E6, whose "mint burst" row
 resolves through `Resolve` and whose directory groups and TTL join T3.4 and T3.8; E4's T4.5 and E6's T6.7, whose spans read
@@ -49,14 +51,15 @@ caller was derived from.
 - admission's caller cache serves a caller only under the `State` it was built under, keyed
   on every input of `Resolve`, single-flight, bounded and fresh;
 - a disable, a membership change or `identity.ntlm` turned off reaches every cached caller at
-  the next `Apply`.
+  the next `Apply`, and a caller with no `Expires` is never cached, so a local principal's
+  disable reaches its next call with no `Apply` at all (D6).
 
 ### 1.1 In scope
 
 The resolver moved and completed: map, squash, the group closure with its cap and deny-only
 principals, grants, flags; the `State`'s serial and a stale resolution resolved once more;
 `Identity.Key()`; admission's caller cache; RFC 16 §3's `Grant` read, and the `SharePolicy` built from `ShareIndex.Share`'s read with
-the `GrantVersion` the cache keys on, which RFC 23's plan's epic 2's T2.3 returns; `Spell` and `Find` routed to `Names`; the refusals
+the `GrantVersion` the cache keys on, which RFC 23's plan's epic 2's T2.3 returns (#4477); `Spell` and `Find` routed to `Names`; the refusals
 counter and the `identity.resolve` span; the cache's benchmark.
 
 ### 1.2 Out of scope
@@ -70,7 +73,8 @@ counter and the `identity.resolve` span; the cache's benchmark.
 - Binding a PAC to the record a `krb` row selected, by the SID the row is linked for (RFC 18
   §3.4, §4.2): E5's sign-in. Resolution never reads the `krb` row (D8).
 - A deny-only principal matched by a file's deny entries at the chokepoint (RFC 19 §2.3): no
-  epic of RFC 18's plan; §9 holds the question, and D9 keeps the gap closed meanwhile.
+  epic of RFC 18's plan; #4564 owns it, and D9 keeps the gap closed meanwhile.
+  E5's breakdown pull request does not merge while that issue has no assignee (§9).
 - The API's account check under the generation (RFC 18 §7.2, §8.1): E2's `Account`.
 - Composing identity in the node and applying its first `State`: E8's T8.1, which T3.6 waits
   for. Applying each later `PGEN` the reconcile reads: E8's T8.2 (its R6).
@@ -101,8 +105,8 @@ counter and the `identity.resolve` span; the cache's benchmark.
 - **E9**, E2E green: RFC 18 §10's Tier 2 rows over SMB.
 - **S1**, the identity surface frozen: what E1 delivers.
 - **S2**, NTLM sign-in and resolution in `vfs`: E3 and E4 done.
-- **RFC 23's plan's epic 2**, store records (#4326): its T2.3 writes `S‖id‖gv` in `SetGrant` and
-  `DeleteGrant`, and its T2.11 in each deletion batch that drops a grant.
+- **RFC 23's plan's epic 2**, store records (#4326): its T2.3, landed with #4477, moves
+  `S‖id‖gv` in `SetGrant`, `DeleteGrant` and each principal deletion that drops a grant.
 
 ## 2. How the general rules apply
 
@@ -116,14 +120,14 @@ number and title and not copied.
 | rule 2, fuzz every decoder of untrusted bytes | none | resolution decodes nothing; `Key()` encodes, and T3.7 tests its encoding against collisions |
 | rule 3, observability follows RFC 25 | T3.1, T3.4, T3.10 | `identity_resolution_refusals_total` with `disabled`, `store_unavailable` (T3.1), `group_cap`, `anonymous_missing` (T3.4) and `ntlm_off` (T3.10); the `identity.resolve` span on a miss (T3.1); no label or attribute carries a name or SID |
 | rule 4, profiling | T3.8 | the cache's tests, single flight included, run under the leak check; RFC 18 names no allocation budget |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T3.4, T3.5, T3.6, T3.8 | a squash proven by a refused file read, a `none` grant by a refused call, a disable by the next call refused, `identity.ntlm` off by a cached NTLM caller refused; the key's completeness at the cache, its consumer |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../../../CLAUDE.md#verifying-a-change)) | T3.4, T3.5, T3.6, T3.8 | a squash proven by a refused file read, a `none` grant by a refused call, a disable by the next call refused, `identity.ntlm` off by an NTLM caller's next call refused; the key's completeness at the cache, its consumer |
 | rule 6, known failures shrink | none | no suite RFC 18 names keeps a `known.yaml`; every test lands green |
 | rule 7, v2 ignores v1 | T3.1 | `internal/vfs/admit/resolve.go`, which is v2, moves with `git mv` and is rewritten on RFC 18's types; nothing of v1's `pkg/identity` is read |
 | rule 8, real dependencies for properties of those dependencies | none | no external system: the store is the memory KV that RFC 16's suite holds, and T3.5's grant read gains rows in that suite |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../../../CLAUDE.md#code-comments)) | T3.1, T3.3, T3.4, T3.5, T3.6, T3.7, T3.8 | RFC 18's notes at their sites: §2.5's `decision:` and `ponytail:` (T3.4), §6.2's two `decision:` notes (T3.4, T3.5), §6.4's `decision:` and `ponytail:` (T3.5), §7.2's `ponytail:` (T3.8); this document's D1 to D10 markers at theirs |
 | rule 10, a test must be able to fail | all | every R row is held by a test named in its subtask that fails on its assertion, or by the compiler where named |
-| rule 11, a symbol is exported only if RFC 18's interfaces use it | T3.3, T3.7 | `ProofKey` and `Identity.Key()` are RFC 18 §6.1's; `Resolver.Current` is the one addition, pending the RFC amendment §9 asks for; the cache and its key stay unexported in `internal/vfs` |
-| rule 12, each subtask creates only what it declares | all | T3.6 consumes the `GrantVersion` RFC 23's plan's epic 2's T2.3 returns; `Grant`'s shape with T3.5; `Deps.Tracer` with T3.1's span |
+| rule 11, a symbol is exported only if RFC 18's interfaces use it | T3.3, T3.7 | `ProofKey` and `Identity.Key()` are RFC 18 §6.1's; `Resolver.Current` is the one addition, decided (D3), with RFC 18 §6.1's amendment owed (§9); the cache and its key stay unexported in `internal/vfs` |
+| rule 12, each subtask creates only what it declares | all | T3.6 consumes the `GrantVersion` RFC 23's plan's epic 2's T2.3 returns (#4477); `Grant`'s shape with T3.5; `Deps.Tracer` with T3.1's span |
 
 ## 3. Requirements and invariants
 
@@ -161,7 +165,7 @@ tests can cite them. Sources are RFC 18 unless named.
 | R15 | Share access is the first of: the caller's own principal's grant, `none` included; the widest grant naming one of its groups; the authenticated-users grant for an authenticated caller; the everyone grant; else `none` | invariant | §6.4 | T3.5 |
 | R16 | A grant of `none` is a grant, distinct from no grant: a caller's own `none` refuses where a group grant would admit | MUST | §6.4, §9.1 ID14; RFC 16 §3 (`Grant`) | T3.5 |
 | R17 | A claimed or `None` identity is squashed before its grant is read, for the squashed principal; a proven one's grant is read for `Mapped` with its own groups, before the squash, which then sets `Principal`, `Groups` and the flags to the `Anonymous` principal's and keeps that grant as `Access`, `none` included | invariant | §6.2 | T3.5 |
-| R18 | `Access` is the level found, narrowed to read where admission narrowed the call, and `ReadOnly` records which narrowed it: `NotNarrowed`, `Grant` or `Share` | invariant | §6.1, §6.4 | T3.5 |
+| R18 | `Access` is the level found, narrowed to read where admission narrowed the call, and `ReadOnly` records which narrowed it: `NotNarrowed`, `Grant`, `Share` or `Client` | invariant | §6.1, §6.4 | T3.5 |
 | R19 | `Authenticated`, `Admin` and `Privileged` follow §6.5's table; `Admin` is set only from the grant and only for a proof of `Secret` or above, never by a uid, a group, a SID such as `S-1-5-32-544` or a role | MUST NOT | §6.5, §2.5, §9.1 ID6 | T3.5 |
 | R20 | A deny-only principal never matches a share grant | invariant | §3.4, §9.1 ID13 | T3.5 |
 | R21 | RFC 18 §10's **Unit** row: resolution's five steps as one table-driven test over proof kind, squash, grant and no file spelling, against the in-memory metadata store | test row | §10 | T3.5 |
@@ -209,9 +213,9 @@ row; R12 and R13 its "group cap"; R23 its "steady raises"; R34 its "in-flight di
 
 - **D1, the cache holds resolution's result alone, keyed on every input of `Resolve`.**
   Admission runs its steps 1 to 3 on every call, as it does today, and caches step 4: the
-  key is the proof key, the whole `SharePolicy` value (share, squash, `Anonymous`,
-  `ManageGIDs` and both versions), so no policy edit that forgets a version is missed, the
-  `readOnly` step 3 produced, the client's address
+  key is the proof key, the whole `SharePolicy` value (share, squash, `Anonymous` and both
+  versions), so no policy edit that forgets a version is missed, the narrowing cause step 3
+  produced, the client's address
   when the policy has a client rule, and the `State`'s serial (D2). RFC 17 §4.9 lets a cache
   hold steps 1 to 4 if it keys on the netgroups' and the share list's versions too; caching
   step 4 alone keys on step 3's output instead, so neither version is an input. A `decision:`
@@ -225,12 +229,13 @@ row; R12 and R13 its "group cap"; R23 its "steady raises"; R34 its "in-flight di
   `State.Generation` stays the principals generation RFC 18 §2.6 declares and E1's T1.4 adds.
   A `decision:` marker at `Apply`. Prior art (from memory): etcd's revision, raised per change
   and not per read.
-- **D3, admission reads the current serial through `Resolver.Current()`, pending the user's
-  answer (§9).** RFC 18 §7.2 says a caller stamped with an older `State` is neither stored nor
+- **D3, admission reads the current serial through `Resolver.Current()`, decided (§9).**
+  RFC 18 §7.2 says a caller stamped with an older `State` is neither stored nor
   served, but `Resolver` declares only `Resolve`, so admission has no way to learn the current
   `State`. `Current() uint64` is one atomic load. Changing it once E5 to E7 build on the
-  frozen surface costs every implementer of `Resolver`, `*Server` alone today. A `decision:`
-  marker at `Current()`. Prior art: none found.
+  frozen surface costs every implementer of `Resolver`, `*Server` alone today, so RFC 18 §6.1
+  and S1 are amended now, while it has one consumer (§9). A `decision:` marker at `Current()`.
+  Prior art: none found.
 - **D4, `Key()` digests the whole `Identity` on each call, through an encoding of its own.**
   SHA-256 over a hand-written, length-prefixed encoding of every field but `Client`: each
   fixed-width field written as itself, each string and slice with its length first, and a
@@ -247,9 +252,16 @@ row; R12 and R13 its "group cap"; R23 its "steady raises"; R34 its "in-flight di
   share, runs the map step alone (RFC 18 §6.1) and answers a `Caller` with `Mapped` set; it
   replaces `admit.Mapped` for a client record's owner. A `decision:` marker at the branch.
   Prior art: none found.
-- **D6, a zero `Caller.Fresh` is bounded by the `State` alone.** T3.1 sets `Fresh` to the
+- **D6, a caller with a zero `Caller.Fresh` is never cached.** T3.1 sets `Fresh` to the
   evidence's `Expires` when it has one; E6 lowers it to a directory answer's TTL. A local
-  principal's caller is dropped by the `State` that changes it. Prior art: none found.
+  principal's evidence has no `Expires` (NTLM's is zero, RFC 18 §3.1), so its only clock would
+  be the `State`, and until E8's T8.2 no running node hands `Apply` a new one: a cached local
+  caller would outlive a disable for as long as it stayed in the cache, unbounded on an
+  under-full cache. Such a caller resolves on every call instead, as admission does today, so a
+  disable reaches its next call. A cached `Ticket` caller is bounded by its ticket's `Expires`
+  until T8.2, and by the next `State` after it. A `ponytail:` marker at the store names the
+  upgrade: cache a zero-`Fresh` caller, bounded by the `State`, once T8.2 applies each `PGEN` and
+  T3.9's per-call figure for local callers shows in admission's cost. Prior art: none found.
 - **D7, `Claimed` is refused `ErrAccess`**, never anonymous, until the NFS side lands, with a
   `ponytail:` marker naming RFC 18 §4.3's mapping as the upgrade; an inconsistent forwarded
   identity is still `ErrInvalid` (R1). `vfs`'s tests that admit a claimed identity move to a
@@ -260,10 +272,11 @@ row; R12 and R13 its "group cap"; R23 its "steady raises"; R34 its "in-flight di
   the generation and so the serial (D2). Resolution never reads the row (R2), so the key
   carries no field of its own for it. A `decision:` marker at `Key()`. Prior art: none found.
 - **D9, a caller holding a deny-only principal is refused at admission until the chokepoint
-  matches them, pending the user's answer (§9).** `entity.Identity`, the chokepoint's input,
+  matches them, decided (§9).** `entity.Identity`, the chokepoint's input,
   has no deny-only field, and dropping `Caller.DenyOnly` there would let an ACL's deny entry
   naming the group miss: fail-open. Refusing is fail-closed, and reachable only once E5 sets
-  `Evidence.DenyOnly`. A `decision:` marker at the conversion names the withdrawal. Prior art
+  `Evidence.DenyOnly`. A `decision:` marker at the conversion names the withdrawal: RFC 19
+  §2.3's deny match, owned by #4564. Prior art
   (from memory): Windows' restricted token keeps deny-only groups in the token the access
   check reads.
 
@@ -304,7 +317,7 @@ pkg/vfs/vfstest/memory/memory.go  T3.6  Deps.Identity, Auth and Names from ident
 pkg/identity/arch_test.go         T3.6  only vfstest/memory imports identitymem, with its seed
 pkg/metadata/kvstore/
   principals.go       T3.5  Grant as RFC 16 §3 declares it
-  shares.go           T3.6  consumes ShareIndex.Share's Share.GrantVersion (RFC 23 epic 2's T2.3)
+  shares.go           T3.6  consumes ShareIndex.Share's Share.GrantVersion (RFC 23 epic 2's T2.3, #4477)
   kvstoretest/        T3.5  rows for the grant read
 ```
 
@@ -318,7 +331,8 @@ pkg/metadata/kvstore/
 - **Covers:** R1, R2, R3, R4, R5, R6, R25, R40, R41.
 - **Deliverables:** `internal/vfs/admit/resolve.go` moved with `git mv` into
   `internal/identity`, filling E1's stubbed `(*Server).Resolve(ctx, identity.Identity,
-  entity.SharePolicy, readOnly bool) (*identity.Caller, error)`: the forwarded check first
+  entity.SharePolicy, narrowed identity.ReadOnlyCause) (*identity.Caller, error)`, as #4455 amended
+  RFC 18 §6.1: the forwarded check first
   (R1), then the map step over the store's `Principals` view: evidence's principal for
   `Secret` and `Ticket`, the share's `Anonymous` for `None`, `Claimed` refused (D7); a
   disabled or deleted user refused `ErrAccess`; a zero share stops after the map step (D5);
@@ -433,7 +447,7 @@ pkg/metadata/kvstore/
   then each group, then the defaults (§6.4's `ponytail:`), for `Mapped` before a proven
   caller's squash; `Access` and `ReadOnly`; the flags; §6.4's `decision:`; the moved resolver's `decision:` on a squashed caller's `none` grant brought onto the new `Grant`;
   every test asserting access through groups or defaults on `Grant` (`kvstoretest/auth.go:152`,
-  `controlplane.go:148-164` and `282-292`, `races.go:151`, `principals_test.go`'s
+  `controlplane.go:173-189` and `324-341`, `races.go:185`, `principals_test.go`'s
   `TestGrantResolution`) rewritten, own-grant cases reading `(a, ok)` and effective-access cases
   going through `Files.Authorize`. Consumed by T3.6.
 - **Acceptance criteria:**
@@ -443,8 +457,8 @@ pkg/metadata/kvstore/
 - **Tests:** RFC 18 §10's **Unit** table at `Resolve`, one table over proof kind (`None`,
   `Secret`, `Ticket`) × squash (`none`, `all`) × grant (own, own `none`, two groups granted
   `read` and `read-write`, authenticated, everyone, none, each at `read` and at
-  `read-write`) × `readOnly` × no file spelling, asserting every `Caller` field, `ReadOnly`'s
-  three causes among them, the two groups answering `read-write`, each case with
+  `read-write`) × narrowing cause × no file spelling, asserting every `Caller` field, `ReadOnly`'s
+  four causes among them, the two groups answering `read-write`, each case with
   protection varied to show nothing changes (R7, R15, R17, R18, R19, R21); an own `none`
   under a group's `read-write` (ID14, R16); an evidence SID `S-1-5-32-544` mapping to a
   group that holds no grant leaves `Admin` false, while the same caller's own `admin` grant
@@ -456,16 +470,18 @@ pkg/metadata/kvstore/
 
 **Subtask T3.6 estimate: 1.75 man-days.**
 
-- **Track:** A. **Depends on:** T3.5. RFC 23's plan's epic 2's T2.3 (`S‖id‖gv` written); E8's T8.1 (identity in `node.New`).
+- **Track:** A. **Depends on:** T3.5; E8's T8.1 (identity in `node.New`). RFC 23's plan's epic 2's T2.3, the `S‖id‖gv` writer, landed with #4477.
 - **Covers:** R6, R27, R35, R38; D9's refusal.
 - **Deliverables:** the `SharePolicy` admission hands `Resolve`, built from the share and
   policy `ShareIndex.Share` reads in one view, keyed on the `entity.Share.GrantVersion` that read
-  returns (RFC 23's plan's epic 2's T2.3; `shareIn` reads `S‖id‖gv` in the same view), so no call
+  returns (RFC 23's plan's epic 2's T2.3, #4477; `shareIn` reads `S‖id‖gv` in the same view), so no call
   makes a second read and T3.6 adds no `Principals` method; `S‖id‖gv` as RFC 23's plan's epic 2 writes it (T2.3 for `SetGrant` and
-  `DeleteGrant`, T2.11 in each deletion batch), so T3.6 depends on its T2.3; admission's
+  `DeleteGrant` and in each principal deletion), already on `feat/storage-v2`; admission's
   step 4 calling `vfs.Deps.Identity.Resolve`, `vfs.New` refusing a `Deps` without it;
   `authz.Caller` rebuilt on `identity.Caller`, converted to `entity.Identity` for the
-  chokepoint, D9's refusal and marker at the conversion, and a caller whose `Access` is
+  chokepoint, carrying `Caller.Group` (zero for every caller this epic resolves, since `Claimed`
+  is refused, D7) and the narrowing cause, mapped one to one onto `entity`'s, D9's refusal and
+  marker at the conversion, and a caller whose `Access` is
   `none` refused there too, since the chokepoint reads a zero `Access` as "read the grants"
   and would read the squashed principal's (the moved resolver's `decision:` keeps saying so); `clients.go` through `Resolve` (D5) and `opens.go`'s marker admission through
   `Resolve`; `vfs`'s tests that admit a claimed identity moved to proven ones (D7);
@@ -522,12 +538,13 @@ pkg/metadata/kvstore/
 - **Track:** A. **Depends on:** T3.3, T3.6, T3.7.
 - **Covers:** R23, R25, R27, R28, R29, R30, R31, R32, R33, R34, R37.
 - **Deliverables:** `internal/vfs`'s `callerKey{proof identity.ProofKey; policy
-  entity.SharePolicy; readOnly bool; client netip.Addr; built uint64}` with
+  entity.SharePolicy; narrowed identity.ReadOnlyCause; client netip.Addr; built uint64}` with
   D1's marker; the cache: a map with a `container/list` LRU, bounded at 262 144 entries and
   2²⁴ group references (the bounds passed to its constructor, each eviction counted), misses
   through `x/sync/singleflight`'s `DoChan` on a context detached from the first caller's and
   bounded at RFC 18 §5.1's 20 seconds, each waiter keeping its own deadline; an entry stored
-  only when its `Built` equals `Current()`, served only while it does and before `Fresh`;
+  only when its `Built` equals `Current()` and its `Fresh` is non-zero (D6), served only while
+  `Built` equals `Current()` and before `Fresh`; D6's `ponytail:` at the store;
   errors never stored; §7.2's `ponytail:` at the cache and the fixed-count `ponytail:`
   naming RFC 24's pool. The `ponytail:` in `admission.go` that asks for this cache goes.
   Consumed by S2 and E6 (which lowers `Fresh`).
@@ -535,9 +552,11 @@ pkg/metadata/kvstore/
   - Changing any input of `callerKey` misses.
   - After `Apply` delivers a disable, the disabled user's next call misses and is refused.
   - One resolution serves N concurrent misses of one key.
+  - A caller with a zero `Fresh` is never stored.
 - **Tests:** at admission through `vfs.Service`, over the real identity server and memory
   store, under the leak check and `-race`, a miss read from the span recorder's count of
-  `identity.resolve` spans: after a warm hit, each real input changed in turn misses, a
+  `identity.resolve` spans, every cached caller a `Ticket` one whose `Expires` lies past the
+  test's end on the injected clock (D6): after a warm hit, each real input changed in turn misses, a
   `SetGrant` (grant-list version), a policy edit, a client rule turning the call read-only,
   another client address under a client rule, an `Apply` (serial) and another evidence, so an
   input dropped while the key is built fails (R27, R28, R29, R30); the warm caller's own grant
@@ -555,7 +574,9 @@ pkg/metadata/kvstore/
   held until an `export_test.go` hook has reported all 32 waiting: one span, and a first
   caller cancelled mid-miss leaves the others served (R31); a `Ticket` caller past its
   `Expires` on the injected clock misses (R32); a cache of bound 2 evicts the least recently
-  used and the eviction counter reads 1 (R33). R30's other half is the key holding `Resolve`'s
+  used and the eviction counter reads 1 (R33); a `Secret` caller, whose `Fresh` is zero, called
+  twice: two spans, and with the user disabled between the calls and no `Apply`, the second
+  refused (catches D6's gate removed, which serves the disabled user from the cache). R30's other half is the key holding `Resolve`'s
   arguments whole, built beside its one call, so a field added to `SharePolicy` is keyed with
   no edit. R25's identity half is T3.1's test.
 
@@ -565,10 +586,11 @@ pkg/metadata/kvstore/
 
 - **Track:** A. **Depends on:** T3.8.
 - **Covers:** none of its own; consumes T3.8, the evidence §7.2's `ponytail:` waits on.
-- **Deliverables:** a benchmark in the `manual` tier: 10⁴ warm callers on 25 shares, the
-  serial raised once a second through `Apply`, reporting store reads per second and p99 of
-  admission, with `b.ReportAllocs()`. Consumed by §7.2's `ponytail:`, as the measurement
-  that would overturn it.
+- **Deliverables:** a benchmark in the `manual` tier: 10⁴ warm `Ticket` callers on 25 shares,
+  the serial raised once a second through `Apply`, reporting store reads per second and p99 of
+  admission, with `b.ReportAllocs()`, and the same for 10⁴ `Secret` callers, which D6 resolves
+  per call. Consumed by §7.2's and D6's `ponytail:` markers, as the measurements that would
+  overturn them.
 - **Acceptance criteria:**
   - Runs under `dt` in the `manual` tier, setup outside the timed region.
 - **Tests:** the benchmark is the deliverable; it asserts nothing (`CLAUDE.md`, "By kind",
@@ -588,14 +610,14 @@ pkg/metadata/kvstore/
 - **Acceptance criteria:**
   - A proven caller linked to root is squashed on a `root` share, and privileged on a `none`
     one.
-  - A cached NTLM caller is refused at its next call once `Apply` turns `identity.ntlm` off,
-    with no principal change.
+  - An NTLM caller is refused at its next call once `Apply` turns `identity.ntlm` off, with no
+    principal change.
 - **Tests:** at admission over the real identity server: a `Ticket` caller bound to root on a
   `root` share acts as `Anonymous` and on a `none` share is privileged (R8); a `Secret`
-  caller served from the cache, then `Apply` of a `State` differing only in `identity.ntlm`:
-  its next call refused `ErrAccess` and the `ntlm_off` count 1, while a `Ticket` caller is
-  still served (catches a cached NTLM session outliving the setting, and a serial bound to the
-  generation alone, R24, R40); a squashed
+  caller admitted, then `Apply` of a `State` differing only in `identity.ntlm`: `Current()`
+  raised, its next call refused `ErrAccess` and the `ntlm_off` count 1, while a cached `Ticket`
+  caller is still served, from a fresh resolution (catches an NTLM session outliving the setting,
+  and a serial bound to the generation alone, R24, R40); a squashed
   call on a share whose `Anonymous` is the well-known one is served, the fault wrapper failing
   every user read of it (catches a user read for a principal that has none, R39); a `None`
   caller on a share whose policy names no `Anonymous`: `Principal` is anonymous (0x0C) and its
@@ -611,7 +633,6 @@ flowchart TD
   T3_1 --> T3_4["T3.4 Squash and groups"] --> T3_5["T3.5 Grants and flags"] --> T3_6["T3.6 Admission through identity"]
   S1 --> T3_7["T3.7 Proof key"]
   T3_2 & T3_6 --> S2(["S2 resolution in vfs, with E4"]):::sync
-  X1(["RFC 23 plan epic 2 T2.3: S‖id‖gv written"]):::sync --> T3_6
   X2(["E8 T8.1: identity in node.New"]):::sync --> T3_6
   T3_3 & T3_6 & T3_7 --> T3_8["T3.8 Caller cache"]
   T3_8 --> T3_9["T3.9 Benchmark"]
@@ -629,7 +650,7 @@ is reached once T3.2 and T3.6 have landed; the cache follows without changing wh
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T3.1, T3.2, T3.3 | 4 | — | the resolver in identity with its `State`, and `vfs`'s naming calls routed |
-| 2 | T3.4, T3.5, T3.6 | 6.25 | PR 1, RFC 23's plan's epic 2's T2.3, E8's T8.1 | the rest of resolution and admission calling it: one review of what a caller acts as |
+| 2 | T3.4, T3.5, T3.6 | 6.25 | PR 1, E8's T8.1 | the rest of resolution and admission calling it: one review of what a caller acts as |
 | 3 | T3.7, T3.8, T3.9 | 4.5 | PR 2 | the key, the cache built on it and its measurement |
 | 4 | T3.10 | 1 | PR 3, E2's T2.1 and T2.4 | what E2's principals and setting bring to resolution |
 
@@ -638,23 +659,29 @@ epic and can open beside PR 1.
 
 ## 9. Open points
 
-The sources are RFC 18 as #4058 merged it (83232b441), whose text in the sections cited here is
-the version this document was written against.
+The sources are RFC 18 as #4058 merged it (83232b441) and #4455 amended it (57682e9e7), whose
+text in the sections cited here is the version this document was written against.
 
-**Pending the user's answer:**
+**Decided:**
 
-- **How admission learns the current `State` (D3).** RFC 18 §7.2 requires it and §6.1's
-  `Resolver` gives no way. Options: (a) `Resolver` gains `Current() uint64`, one atomic load
-  (`if e.built != fs.deps.Identity.Current() { miss }`), an amendment to RFC 18 §6.1 and to the
-  surface S1 froze; (b) the cache moves into identity, as §2.6's "resolution and the caller
-  cache (§6, §7)" reads, against §7.1's "admission's" and RFC 18's plan's D2; (c) admission
-  reads `PGEN` from the store per call, which misses `identity.ntlm` (R24) and runs ahead of
-  the `State` a resolution is stamped with. Recommended: (a). Written in place in T3.3.
-- **Deny-only principals at the chokepoint (D9).** `entity.Identity` has no deny-only field,
-  and RFC 19 §2.3's match has no owning epic. Options: (a) refuse such a caller at admission
-  until it has one (D9, written in place); (b) E3 adds the field and the deny match, about
-  1.5 man-days, taking RFC 19 §2.3 into its sources; (c) E5 refuses a PAC carrying deny-only
-  SIDs until then. Recommended: (a), and an owner for RFC 19 §2.3's match before E5 lands.
+- **How admission learns the current `State` (D3): (a), `Resolver.Current() uint64`.** RFC 18
+  §7.2 requires it and §6.1's `Resolver` gives no way. `Current()` is one atomic load (`if
+  e.built != fs.deps.Identity.Current() { miss }`). Rejected: moving the cache into identity,
+  which moves the cache without owning freshness; and admission reading `PGEN` per call, which
+  misses an `identity.ntlm`-only change (R24) and reads ahead of the `State` a resolution is
+  stamped with. RFC 18 §6.1 and the surface S1 froze are amended now, while `Current()` has one
+  consumer, in the RFC 18 fold below. Written in place in T3.3.
+- **Deny-only principals at the chokepoint (D9): (a), refuse such a caller at admission.** A
+  fail-open interim cannot ship. `entity.Identity` has no deny-only field, and RFC 19 §2.3's match
+  had no owning epic: #4564, assigned with this merge, owns it, and E5's breakdown pull
+  request, the first that sets `Evidence.DenyOnly`, does not merge while that issue has no
+  assignee. Rejected: E3 adding the field and the match, about 1.5 man-days outside RFC 18; and
+  E5 refusing a PAC carrying deny-only SIDs, which moves the same refusal to sign-in.
+- **The local-disable ceiling (D6): a caller with a zero `Fresh` is never cached.** Until E8's
+  T8.2, nothing hands `Apply` a new `State` on a running node, so neither D3 nor the serial
+  fences a local disable, and the cache's bound counts entries, not time. A local caller
+  resolves per call, the cost admission pays today, and T3.9 measures it for D6's `ponytail:`.
+  A cached `Ticket` caller keeps the window of its ticket's `Expires` until T8.2.
 
 **Where RFC 18's plan and the RFC disagree:**
 
@@ -672,8 +699,8 @@ the version this document was written against.
   steps 1 to 4. D1 caches step 4 alone and keys on step 3's output instead.
 - The plan has E3 wait on RFC 23's plan's epic 2 for the `State`. Nothing here reads `PGEN`,
   so no subtask waits for its T2.6: T8.1, which T3.6 waits for, applies the first `State` before
-  the cache exists, and E8's T8.2 each later `PGEN` (Depends on). T3.6 waits for its T2.3
-  instead, the `S‖id‖gv` writer.
+  the cache exists, and E8's T8.2 each later `PGEN` (Depends on). Its T2.3, the `S‖id‖gv`
+  writer, has landed (#4477).
 - RFC 18 §3.1 computes `Evidence`'s digest at sign-in; D4 computes it in `Key()` with a
   `ponytail:`, since the sketch's signatures are indicative.
 - The `krb` row bound to its linked SID (RFC 18 §4.2, A17) is E5's sign-in in the plan;
@@ -691,20 +718,26 @@ the version this document was written against.
   one's store closure joins them; T3.4 adds it, so a deny naming a parent group still
   matches. An RFC 18 sentence would settle it.
 
+**The RFC 18 fold, opened with this merge or right after it:** one RFC 18 pull request that
+takes the six RFC 18 points above (§2.6's cache location, §7.1's "steps 1–3", §3.8's expiry
+refusal, the cache-metric names, §6.3's SID-group closure, §3.1's digest timing) and §6.1's
+`Current()` (D3), so E4 to E9 cite RFC text that matches this document. RFC 16 §3 needs no fold:
+#4455 already builds `SharePolicy` from `ShareIndex.Share` and declares `GrantVersion` on
+`Share`.
+
 - Two `ReadOnlyCause` types: `entity` declares one (`NotNarrowed`, `NarrowedByShare`,
-  `NarrowedByClient`, a cause other than the grant), and E1's T1.3 declares `identity.ReadOnlyCause`
-  (`ReadOnlyNotNarrowed`, `ReadOnlyGrant`, `ReadOnlyShare`). It cannot be aliased as `ProofKind`
-  can. The chokepoint reads `entity`'s (`ErrReadOnly` against access denied), and `entity` cannot
-  import identity, so both survive and T3.6's conversion to `entity.Identity` maps one onto the
-  other. `ReadOnlyGrant` maps to `NotNarrowed`, since the store reads a read-only grant itself;
-  `ReadOnlyShare` folds the share's flag and a client rule, which `entity` tells apart, so the
-  conversion loses which one narrowed. Pending: identity's cause gains a client value, amending
-  RFC 18 §6.1, or `entity`'s two values merge.
+  `NarrowedByClient`, a cause other than the grant), and `identity.ReadOnlyCause` has
+  `ReadOnlyNotNarrowed`, `ReadOnlyGrant`, `ReadOnlyShare` and, since #4455, `ReadOnlyClient`. It
+  cannot be aliased as `ProofKind` can, and `entity` cannot import identity, so both survive and
+  T3.6's conversion to `entity.Identity` maps one onto the other: `ReadOnlyGrant` to
+  `NotNarrowed`, since the store reads a read-only grant itself, and the share and client causes
+  one to one. E1's T1.3 declares the fourth value, a follow-up #4455 lists.
 - `Deps.Tracer`: the plan's §1.3 gives it to epic 4. T3.1's `identity.resolve` span is the first
   code that reads it, so T3.1 adds it, as E1's D4 now says, and E4's span reads it.
-- `S‖id‖gv` is not kept on `feat/storage-v2` (`shares.go`'s `ponytail:`); RFC 23's plan's epic 2
-  writes it alone (its T2.3 and T2.11) and T3.6 reads it. RFC 23's epic 2's D20 and its T2.3 test
-  reading a principal's access through its groups on `Grant` change with T3.5 in #4336.
+- `S‖id‖gv` is kept on `feat/storage-v2` since #4477 (RFC 23's plan's epic 2's T2.3, which
+  writes it alone); T3.6 reads it. RFC 23's epic 2's D20 and its T2.3 test reading a principal's
+  access through its groups on `Grant` changed with #4336; that test is among those T3.5
+  rewrites.
 - The estimate is 10 subtasks, 15.75 man-days, against the plan's 7 subtasks, 12.5 man-days:
   3.25 man-days more for the grant read (T3.5) that `feat/storage-v2` lacks, with the
   `Grant` tests that assert effective access rewritten, the in-memory service's identity server (T3.6), moving `vfs`'s claimed-identity tests
