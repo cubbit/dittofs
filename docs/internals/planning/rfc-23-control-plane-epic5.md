@@ -140,7 +140,7 @@ them.
 | R9 | Sign-in is `POST /api/v1/auth/sign-in` with a name and a password, checked by `APISignIn.Lookup` then `VerifyPassword` on that principal, never through `vfs`, and returns an access token and a refresh token | MUST | RFC 23 §5.3; RFC 18 §8.1 | T5.5 |
 | R10 | A disabled or deleted account cannot sign in, and the refusal does not say which | MUST | RFC 23 §5.3 | T5.5 |
 | R47 | A store that cannot answer is not a failed credential: `VerifyPassword` or `Account` answering `ErrUnavailable` is `503` `unavailable`, with no settled failure, no refusal audit and the source's raise taken back; only `ErrLogonFailure` settles a failure | MUST | RFC 23 §5.3, §8.1; RFC 18 §8.1 | T5.5 |
-| R48 | The problem table maps identity's `ErrLogonFailure` to `401` `unauthenticated` and its `ErrUnavailable` to `503` `unavailable`; both are in `vfs.Errors()`, so the table's totality test holds them | MUST | RFC 23 §4.7, §5.3; RFC 17 §4.3; RFC 18 §8.1 | T5.5 |
+| R48 | The problem table maps `vfserr.ErrLogonFailure` to `401` `unauthenticated` and `vfserr.ErrUnavailable` to `503` `unavailable`; both are in `vfs.Errors()`, so the table's totality test holds them | MUST | RFC 23 §4.7, §5.3; RFC 17 §4.3; RFC 18 §8.1 | T5.5 |
 | R11 | The access token is a signed JWT naming the account's principal, the session and an expiry 15 min ahead, and carries no role | MUST | RFC 23 §5.3 | T5.3 |
 | R12 | The access token is HS256, signed with `golang-jwt`, its `kid` naming the signing key's version, so a token signed before a rotation still verifies | MUST | RFC 23 plan §4.2 D3 | T5.3 |
 | R13 | On every call the API refuses a disabled or deleted account, a revoked session, and a token issued before the account's not-before time: an access token by its issue time, a refresh or an API token by its session's or its own creation time | MUST | RFC 23 §5.3, CP10 | T5.5, T5.6, T5.8 |
@@ -426,7 +426,8 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   sign-out; the two series; RFC 23 §4.5's `decision:` at the credential routes; the client's
   `SignIn`, `Refresh` and `ChangePassword` sent through E4's client core with refresh off (E4's
   T4.8), so a `401` from any of them is returned as it is, never refreshed and replayed; `pkg/identity`
-  added to E4's import allow-list for `auth` (T5.1); `bench_test.go`,
+  added to E4's import allow-list for `auth` (T5.1), while `pkg/vfs/vfserr`, where the sign-in
+  errors are declared, needs no edit, since E4's rule admits it for the whole node; `bench_test.go`,
   checked sign-ins from many sources beside metadata commits, in the manual tier. Consumed by T5.6
   and E6's `login`.
 - **Acceptance criteria:**
@@ -618,7 +619,8 @@ A suggestion only: one pull request per subtask works as well. PR 4 and PR 5 can
   records as R40 says.
 - **E4's import rule:** E4's D20 allows `pkg/secrets` for the whole API, `auth` included. T5.1 adds
   `apisettings` to the allow-list, and T5.5, the first subtask whose `auth` imports `pkg/identity`,
-  adds it.
+  adds it. `pkg/vfs/vfserr`, which declares the sign-in errors `auth` matches, needs no edit: E4's
+  rule admits it for every package under `internal/node`.
 - **E3's harness:** `nodetest` initialises through `install.Run` from T5.4 on (D6), replacing its
   own `kvstore.Init` and `journal.Init`; E3's harness tests must keep passing over it.
 - **E2's names:** `Session(id)`, `DeleteSession(id)`, `Sessions(account)`, `ControlPlaneTx.Now()`,

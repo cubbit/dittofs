@@ -621,7 +621,8 @@ type Evidence struct {
 	digest    EvidenceDigest
 }
 
-// EvidenceDigest is a digest of the proof key's evidence part, not key material.
+// EvidenceDigest is the evidence's part of the proof key (§7.1): a hash of the
+// fields sign-in established, derived from identifiers, so it is no key.
 type EvidenceDigest [32]byte
 
 // Keys is what the adapter's mechanism needs for the AP-REP and for signing
