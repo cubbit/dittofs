@@ -55,3 +55,20 @@ func TestOperationExpiryRow(t *testing.T) {
 		t.Errorf("expiry rows of an operation ended at %v: got %x, want only %x", ended.Updated, rows, want)
 	}
 }
+
+// An operation whose kind is as long as an operation's ID is refused as an
+// invalid argument, and one a byte shorter or longer is written.
+func TestOperationKindAsLongAsAnIDRefused(t *testing.T) {
+	cp := openStore(t).ControlPlane()
+	for i, tc := range []struct {
+		kind    string
+		refused bool
+	}{{"sixteen.byte.ops", true}, {"fifteen.byte.op", false}, {"seventeen.byte.op", false}} {
+		op := entity.Operation{ID: entity.OperationID{15: byte(i + 1)}, Kind: tc.kind,
+			Target: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{1}}, State: entity.OpRunning}
+		_, err := cp.PutOperation(context.Background(), op, 0)
+		if got := isInvalid(err); got != tc.refused || !tc.refused && err != nil {
+			t.Errorf("PutOperation of kind %q (%d bytes): got %v, want refused as an invalid argument %v", tc.kind, len(tc.kind), err, tc.refused)
+		}
+	}
+}

@@ -113,3 +113,15 @@ func names(cs []health.Condition) string {
 	}
 	return s
 }
+
+// Each scope reads as RFC 25's name for it, and one it does not define as
+// its number.
+func TestScopeString(t *testing.T) {
+	for s, want := range map[health.Scope]string{health.ScopeStore: "store", health.ScopeNamespace: "namespace",
+		health.ScopeJournal: "journal", health.ScopeShare: "share", health.ScopeNode: "node",
+		health.ScopeInstallation: "installation", 0: "scope(0)", 7: "scope(7)"} {
+		if got := s.String(); got != want {
+			t.Errorf("Scope(%d).String(): got %q, want %q", uint8(s), got, want)
+		}
+	}
+}
