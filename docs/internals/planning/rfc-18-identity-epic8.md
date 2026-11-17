@@ -26,8 +26,8 @@ settled (a)), T7.10's `Deps.DomainController` and `machine_account_unhealthy`, T
 T7.12's `machine_password_rotation_failed` and T7.14's and T7.15's `Installation.Join` (T8.6, T8.7,
 T8.8, T8.11). **RFC 23's plan**: its epic 3's `node.New`, start and stop, reconcile's `apply`
 and its T3.1's `internal/node/nodetest` with `WithNew` and `Harness.Node()`, the current node
-after any `Restart` (D4) (T8.1), and epic 3's T3.5 (D16), `Deps.Applied` with its `export_test.go`
-pause (T8.3); its epic 4's write path, which calls `Deps.Applied` (T8.3), and settings routes (T8.4,
+after any `Restart` (D4) (T8.1), epic 3's T3.5 (D16), `Applied` with its `export_test.go` pause,
+and its T3.3 follow-up, which fills `api.Deps.Applied` in `node.New` (T8.3); its epic 4's write path, which calls `Deps.Applied` (T8.3), and settings routes (T8.4,
 T8.10); its epic 5's accounts (T8.9). **#4059** (the RFC 13 plan): its S1 and S2 (T8.1), its epic
 3's write check with tracked reads (T8.8), its epic 4's version reads (T8.2) and its epic 5's
 settings table and `apply` on `settings.Diff` (T8.1, T8.2, T8.10).
@@ -224,9 +224,9 @@ epic's test holds it.
   A `decision:` marker at the retry. Prior art (from memory): Envoy keeps its last accepted
   configuration on a rejected xDS update; Kubernetes' kubelet keeps a last-known-good config.
 - **D3, the writer's at-once apply is RFC 23's plan's epic 3's D16.** RFC 18 §2.6 wants an
-  operator's own next call to see the change. That epic's T3.5 fills `api.Deps.Applied` in `New`
-  (a wake of reconcile and a wait until the reconciled-through positions cover the counters read
-  after the commit), and its epic 4's write adapter calls it; this epic builds none of it. T8.3
+  operator's own next call to see the change. That epic's T3.5 builds `Applied` (a wake of
+  reconcile and a wait until the reconciled-through positions cover the counters read after the
+  commit), its T3.3 follow-up fills `api.Deps.Applied` with it in `node.New`, and its epic 4's write adapter calls it; this epic builds none of it. T8.3
   holds the result at identity, the consumer. No marker here. Prior art: D16's.
 - **D4, the node's tests hand it the directory's and the domain controller's dialers.** `New` calls
   an unexported `newNode(cfg, seams{})`, `seams` holding E6's `directory.Dialer` and the domain
@@ -272,7 +272,8 @@ epic's test holds it.
   the API's `Deps.Directory` and `Deps.Joins` are filled in `node.New` by this epic, each by the
   subtask that first runs it: `Deps.Directory` (E6's `KerberosLinkSID`) by T8.2, E7's kinds and `Deps.Joins` by T8.6, E2's
   deletion by T8.10. E2's and E7's methods are typed by `internal/node/step` (E7's D4) and
-  go in the table as they are, with no adapter. RFC 23's plan's
+  join the runner's table, `operationSteps`, which `node.New` hands the runner, as they are, with
+  no adapter. RFC 23's plan's
   epic 3 (its D7) and epic 4 (its D13) name this epic as the one that registers the steps and fills
   the fields. Prior art: none found.
 - **D11, Tier 1 rows run in identity's tests, node rows in the node's.** A row RFC 18 §10 marks
@@ -412,7 +413,8 @@ test/integration/ad-dc/
 **Subtask T8.3 estimate: 0.5 man-days.**
 
 - **Track:** the team. **Depends on:** T8.2. E3's T3.6; RFC 23's plan's epic 3's T3.5 (its D16:
-  `Deps.Applied` and its `export_test.go` pause) and its epic 4's write path, which calls it.
+  `Applied` and its `export_test.go` pause), its T3.3 follow-up, which fills `api.Deps.Applied` in
+  `node.New`, and its epic 4's write path, which calls it.
 - **Covers:** R7.
 - **Deliverables:** a test in `internal/node`'s `identity_test.go`; nothing else (D3).
 - **Acceptance criteria:**
@@ -498,8 +500,9 @@ test/integration/ad-dc/
   `Installation.Join` (E7's D6, settled (a)), both rebuilt on a settings move; the machine password's
   versions reported; `JoinStep` and `JoinProgress`, `RotateStep` and `RotateProgress`,
   `ResolvePrincipalStep` and `ResolvePrincipalProgress`, `TestDirectoryStep` and
-  `TestDirectoryProgress` in the runner's table under `installation.join-domain`,
-  `installation.rotate-machine-password`, `installation.resolve-principal` and
+  `TestDirectoryProgress` in the runner's table, `operationSteps` in `node.New`, under
+  `installation.join-domain`, `installation.rotate-machine-password`,
+  `installation.resolve-principal` and
   `installation.test-directory` (`pkg/node/apiv1`'s `OpKind` values) as they are, typed by
   `internal/node/step` (E7's D4, D10 here), with no adapter: the runner fails the operation on a
   step's `*apiv1.Problem` and retries any other error; `api.Deps.Joins` filled from identity (D10).
@@ -600,8 +603,8 @@ test/integration/ad-dc/
   epic 5 (the settings route).
 - **Covers:** R27.
 - **Deliverables:** E2's `NTHashDeleteStep` and `NTHashDeleteProgress`, already typed by
-  `internal/node/step`, in the runner's table under `identity.nt-hash-delete` as they are, with no
-  adapter (D10). Consumed by RFC 23's plan's epic 7's T7.5.
+  `internal/node/step`, in the runner's table, `operationSteps` in `node.New`, under
+  `identity.nt-hash-delete` as they are, with no adapter (D10). Consumed by RFC 23's plan's epic 7's T7.5.
 - **Acceptance criteria:**
   - A turn-off's deletion runs to completion on the node's runner.
 - **Tests:** in `node_test`, through `nodetest`, users with NT hashes sealed: `identity.ntlm` off
@@ -641,7 +644,7 @@ flowchart TD
   T8_1 --> T8_2["T8.2 Kerberos and the directory in the node"]
   X2(["E3 T3.1, T3.6 and T3.10, E4 T4.2 and T4.5, E5 T5.2 and T5.5, E6 T6.3, T6.5, T6.8 and T6.9, #4059 epics 4 and 5, RFC 13 PR adding the identity.keytab row"]):::sync --> T8_2
   T8_2 --> T8_3["T8.3 Applied at once"]
-  X3(["E3 T3.6, RFC 23 plan epic 3 T3.5 (D16), epic 4 write path"]):::sync --> T8_3
+  X3(["E3 T3.6, RFC 23 plan epic 3 T3.5 (D16) and T3.3's follow-up, epic 4 write path"]):::sync --> T8_3
   T8_2 --> T8_4["T8.4 alice's Samba ticket"]
   X4(["E5 T5.1 and T5.11, E6 T6.1, T6.6 and T6.11"]):::sync --> T8_4
   X5(["E5 T5.8b, E6 T6.9 and T6.11"]):::sync --> T8_5["T8.5 Kerberos clauses"]
@@ -751,6 +754,10 @@ T6.6 test only the CLI's arguments and refusal, and the success paths run in its
   `identity` section once E5's key joins it (E5's open point; T8.2 waits on it).
 - `State.NTLM`, the `identity.ntlm` revision in RFC 18 §2.6's sketch, has no reader in E2 to E4
   (E2's D6), so the node fills nothing for it; §2.6 should name its reader or drop it.
+- Reconcile currently skips `apply` when its share pass fails, so a failing share holds every
+  principal and settings change back; RFC 23's #4550 raises it. Should it stay, T8.2's disable
+  refused one second later (RFC 18 §7.2) holds only while the share pass succeeds, and its test
+  depends on that.
 - R8, one snapshot per `Apply`, is the shape of `apply` and no test at a consumer tells one read
   from two inside one pass; it rests on the code and D2's marker.
 - T8.4 needs E6's dialer to resolve the record's address through its DNS server, since the
