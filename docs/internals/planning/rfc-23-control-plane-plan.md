@@ -342,7 +342,7 @@ registers no suite and no group, and changes no `lint-go` tag.
      caller counts what commits (epic 2's D5);
    - the node: `node_reconciled_position`, `node_reconcile_errors_total`, `node_restart_pending`,
      `api_idempotency_records_deleted_total` from the sweep's counts,
-     and the RFC 13 plan's `config_generation_lag_seconds{kind}`, set from the positions it
+     and RFC 13 §8's `config_generation_lag_seconds{kind}`, set from the positions it
      reconciles;
    - the API: the `api_` series but the sweep's, `audit_records_total` once `Write` has committed,
      and one span per call (RFC 23 §11, "Spans");
