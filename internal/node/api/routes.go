@@ -13,14 +13,18 @@ import (
 // net/http.ServeMux, the action a POST on {id}:verb names, the kind of
 // resource it changes, which a refusal before its adapter is audited
 // against and a row that changes nothing leaves zero, the right its caller
-// must hold, whether it answers a caller that must change its password, and
-// its adapter.
+// must hold, whether it answers a caller that must change its password, the
+// kind of operation a write row starts on the record it wrote, empty for one
+// that starts none, whether it answers before the node is ready, and its
+// adapter.
 type route struct {
 	method, pattern string
 	verb            string
 	kind            entity.ResourceKind
 	right           auth.Right
 	mustChange      bool
+	starts          apiv1.OpKind
+	beforeReady     bool
 	serve           adapter
 }
 
@@ -46,7 +50,7 @@ func (rt *route) op() string {
 // which no record of the metadata store does.
 var routes = []route{
 	{method: http.MethodGet, pattern: "/api/version", right: auth.Public, serve: read(version)},
-	{method: http.MethodGet, pattern: "/api/v1/health", right: auth.View, serve: read(healthOf)},
+	{method: http.MethodGet, pattern: "/api/v1/health", right: auth.View, beforeReady: true, serve: read(healthOf)},
 	{method: http.MethodGet, pattern: "/api/v1/operations", right: auth.View, serve: list(operations)},
 	{method: http.MethodGet, pattern: "/api/v1/operations/{id}", right: auth.View, serve: watch(operation)},
 	{method: http.MethodPost, pattern: "/api/v1/operations/{id}", verb: "cancel", kind: entity.ResourceOperation, right: auth.View, serve: cancel},

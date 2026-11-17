@@ -52,12 +52,12 @@ type answer struct {
 // returns what to send. No handler is handed the http.ResponseWriter, so none
 // answers before its adapter has the whole answer: a write's is made inside
 // its transaction and sent only once that has committed.
-type adapter func(ctx context.Context, s *Server, r *http.Request, id [16]byte) (answer, error)
+type adapter func(ctx context.Context, s *Server, r *http.Request, rt *route, id [16]byte) (answer, error)
 
 // read adapts a read: its answer is 200 with what h returns from the
 // server's Deps.
 func read[R any](h func(context.Context, Deps, request[none]) (R, error)) adapter {
-	return func(ctx context.Context, s *Server, _ *http.Request, id [16]byte) (answer, error) {
+	return func(ctx context.Context, s *Server, _ *http.Request, _ *route, id [16]byte) (answer, error) {
 		return jsonOr(h(ctx, s.d, request[none]{ID: id}))
 	}
 }
@@ -66,7 +66,7 @@ func read[R any](h func(context.Context, Deps, request[none]) (R, error)) adapte
 // answer. If it writes, it does so through a function of package auth, the
 // one place besides the write adapter that calls the store's Write.
 func call[B any](h func(context.Context, request[B]) (answer, error)) adapter {
-	return func(ctx context.Context, _ *Server, r *http.Request, id [16]byte) (answer, error) {
+	return func(ctx context.Context, _ *Server, r *http.Request, _ *route, id [16]byte) (answer, error) {
 		rq, err := decodeRequest[B](r, id)
 		if err != nil {
 			return answer{}, err
@@ -207,7 +207,7 @@ func (s *Server) run(ctx context.Context, r *http.Request, rt *route, rawID stri
 		}
 		return answer{}, err
 	}
-	return rt.serve(ctx, s, r, id)
+	return rt.serve(ctx, s, r, rt, id)
 }
 
 // admit refuses a row the caller ctx carries may not call and an ID that
