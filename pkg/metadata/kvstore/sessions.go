@@ -162,7 +162,14 @@ func tokenByHashIn(r kv.Reader, hash [32]byte) (entity.APIToken, bool, error) {
 }
 
 // ofLive is v, found, unless account is deleted or marked deleted: from its
-// account's mark, a session or a token is found by no hash, nor on the view.
+// account's mark, a session or a token is found by no read path. Given a
+// kv.Txn, the liveness read is tracked, so a write that read v conflicts with
+// a mark that lands before it commits; given a view's reader, it is not.
+//
+// decision: a deleted account's row and a marked one's both read as not
+// found, with no error, so a caller cannot tell them apart. That holds only
+// while every Put of a session or a token goes through accountLive; a write
+// path that skips it could recreate what a marked account's reads hide.
 func ofLive[T any](r kv.Reader, v T, account entity.Principal, found bool, err error) (T, bool, error) {
 	if err == nil && found {
 		found, err = live(r, account)
@@ -177,10 +184,10 @@ func ofLive[T any](r kv.Reader, v T, account entity.Principal, found bool, err e
 // ofLiveAccount is seq when account is live as the listing starts, and
 // empty otherwise.
 //
-// ponytail: the account is checked once, not per page, so a mark landing
-// mid-listing still lets the later pages through until the deletion's batch
-// drops the rows. Check it in each page's view if a listing must stop at
-// the mark.
+// ponytail: the account is checked once, in its own view, before the first
+// page, so a mark landing at any point after that check lets every page
+// through until the deletion's batch drops the rows. Check it in each page's
+// view if a listing must stop at the mark.
 func ofLiveAccount[T any](ctx context.Context, db kv.KV, account entity.Principal, seq iter.Seq2[T, error]) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		var ok bool

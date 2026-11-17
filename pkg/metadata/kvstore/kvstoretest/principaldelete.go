@@ -93,9 +93,11 @@ func testMarkedPrincipalReads(t *testing.T, kvo Opener) {
 	}
 	must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
 		for name, err := range map[string]error{
-			"User":     absent(tx.User(u.Principal)),
-			"Session":  absent(tx.Session(sess.ID)),
-			"APIToken": absent(tx.APIToken(tok.ID)),
+			"User":             absent(tx.User(u.Principal)),
+			"Session":          absent(tx.Session(sess.ID)),
+			"APIToken":         absent(tx.APIToken(tok.ID)),
+			"SessionByRefresh": absent(tx.SessionByRefresh(sess.Refresh)),
+			"APITokenByHash":   absent(tx.APITokenByHash(tok.Hash)),
 		} {
 			if err != nil {
 				t.Errorf("%s of a marked user's, read in a write: %v, want absent", name, err)
