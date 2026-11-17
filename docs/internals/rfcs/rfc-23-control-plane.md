@@ -1205,8 +1205,12 @@ for one that cannot answer).
 settings package, one function per record kind it reads. The function takes the
 value and the current values of the settings a cross-setting rule relates it
 to, read tracked in the write's transaction
-([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). It imports nothing that
-runs. The root hands the API a table of them, keyed by setting prefix, so the
+([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)). The one store state
+beyond settings a validator reads is the uid and gid counters, through the
+`ControlPlaneTx` as tracked reads, for identity's refusal of an
+`identity.id_range` no further ID could be drawn from
+([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)).
+It imports nothing that runs. The root hands the API a table of them, keyed by setting prefix, so the
 API imports no component. A prefix with no validator is refused `400`.
 
 **Unknown fields are refused**, in requests as in records

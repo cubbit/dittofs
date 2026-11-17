@@ -546,7 +546,7 @@ so an operator's own next call sees it.
 | a machine password `Secret` version | its derived keys are added, unless it is marked `HandedOver`, which derives none, and the secure channel signs in with it once the domain controller takes it; the previous version is kept as a keytab's is (§3.3, §3.5); no restart |
 | the directory record | a new client and an empty directory cache; lookups in flight finish on the old client |
 | `identity.ntlm` turned off | as §3.5 says |
-| `identity.id_range` | applies to the next allocation; no existing ID moves |
+| `identity.id_range` | applies to the next allocation, the higher of the range's low end and one past the counter, and `ErrNoSpace` past its high end; no existing ID moves. Since the counters never rewind (§2.3), a write whose `Hi` is at or below the uid or gid counter's high-water mark could never allocate again, so it is refused `ErrInvalid` before it commits, the counters read tracked in its transaction ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)); only a write of `identity.id_range` is checked, so a range used up refuses no other `identity.*` write |
 
 **Restart.** Every table is in memory and is lost: evidence (clients sign in
 again), the replay cache (§3.3), the logon throttle (§3.1) and the caches, which

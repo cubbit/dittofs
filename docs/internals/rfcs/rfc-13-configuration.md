@@ -692,6 +692,17 @@ listener's port, which are the host's bootstrap facts, refuses that adapter on
 that node, as a port conflict does (Appendix B), or fails the port mapper alone
 ([RFC 20 §3.5](rfc-20-adapters.md#3.5%20Sidecars)).
 
+**A write check may read store state beyond settings.** A section's check
+**MAY** read a record that is not a setting, as a tracked read in the write's
+transaction, so a concurrent change of that record conflicts with the write.
+One rule does: a write of `identity.id_range` reads the uid and gid counters,
+which only rise, and refuses a range no further ID could be drawn from
+([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle),
+Appendix B). Such a rule is checked at the write only: the component does not
+check it again when it applies the value, since what the rule read is no part
+of the setting, and a second answer would leave two readers of the setting
+holding different values.
+
 **Unknown fields are refused.** A field the schema does not know is most often a
 misspelling of one it does, and ignoring it silently runs the default.
 
@@ -1176,7 +1187,7 @@ supplies one before the setting is built.
 | **(cluster)** quota slack fraction `f`: a quota's slack is `min(S, f × Hard.Bytes)` | [RFC 17 §5.6](rfc-17-vfs.md#5.6%20Quota) | installation | live | proposed: 1 %; settled by: the overshoot of a 1 GiB quota written through two primaries against its write latency, across fractions |
 | audit policy: which operations emit an access event — every decision, denials only, or writes and namespace changes — and whether the file's audit entries are honoured (honour file audit entries) | [RFC 17 §3.3](rfc-17-vfs.md#3.3%20Event%20hooks), RFC 19 §3.7 | share | live | none: no access events, and no audit entry selects anything |
 | ACL list bounds: entries per access or audit list, encoded size per list; a set past either is refused whole | RFC 19 §2.8 | — | fixed | 128 entries; 64 KiB |
-| `identity.id_range`: the range uids and gids are allocated from when a principal has none | RFC 18 §2.3 | installation | live: a change applies to later allocations; an allocated ID never changes | 1 000 000 to 1 999 999 999 |
+| `identity.id_range`: the range uids and gids are allocated from when a principal has none | RFC 18 §2.3 | installation | live: a change applies to later allocations; an allocated ID never changes. A write of `identity.id_range`, a put or a delete that leaves the default, whose `Hi` is at or below the uid or gid counter's high-water mark is refused (§6, RFC 18 §2.6); only writes of `identity.id_range` are checked, so a range used up refuses no other write | 1 000 000 to 1 999 999 999 |
 | `identity.ntlm`: whether NTLMv2 is accepted; off deletes every stored NT hash | RFC 18 §3.5 | installation | live | on: workgroup deployments have no KDC (RFC 18 §3.5's decision) |
 | `identity.netbios_name`: the installation's own NetBIOS name, which an SMB CHALLENGE advertises as its computer name, and which a local NTLMv2 sign-in's domain is compared with, ASCII letters folded (RFC 18 §4.6); on a joined installation it is the computer account's name, which the join writes upper-cased, whatever case the account was created in, and refused change while joined. The DNS computer and domain names the CHALLENGE also carries are the host's name and the directory record's realm, or the host's own domain when not joined | [RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2), [RFC 18 §4.6](rfc-18-identity.md#4.6%20Names), [RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in) | installation | live | `DITTOFS`: one name for the installation, where a host name is per node; the CHALLENGE's DNS computer name tells installations apart. At most 15 bytes of `[A-Z0-9-]`, and not the directory record's NetBIOS domain compared with ASCII letters folded, refused otherwise; the upper-case rule binds the stored value, which a join writes upper-cased |
 | `identity.nfs4_domain`: the domain of NFSv4 owner strings | RFC 18 §4.5 | installation | live | the keytab's first realm in lower case, or `localdomain` with none |
