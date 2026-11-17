@@ -1213,8 +1213,8 @@ supplies one before the setting is built.
 | generated first password | RFC 23 §5.4 | — | fixed | 24 random bytes |
 | `metrics.top_shares`: shares exported with a `share` label per per-share gauge, the worst by it | RFC 25 §2.5 | installation | live | 20 |
 | `events.retention`, `events.max_bytes`: the event spool's age and size bounds, past which the oldest file is deleted | RFC 25 §4.6 | node | live | proposed: 7 days; 4 GiB |
-| `tracing.endpoint`: the trace collector; none turns tracing off | RFC 25 §6.3 | node | live | none: tracing off |
-| `tracing.sample_ratio`: the fraction of requests sampled at the adapter | RFC 25 §6.3 | node | live | proposed: 0.01 |
+| `tracing.endpoint`: the trace collector; none turns tracing off | RFC 25 §6.3, §8.1 | node | restart: the root builds the provider and hands each component its tracer once | none: tracing off |
+| `tracing.sample_ratio`: the fraction of requests sampled at the adapter | RFC 25 §6.3, §8.1 | node | restart, as `tracing.endpoint` | proposed: 0.01 |
 | metric limits: values per entity label per metric per node; series per node and per metric at the reference profile | RFC 25 §2.4, §2.5 | — | fixed | 64; 50 000 and 10 000 |
 | histogram bucket sets | RFC 25 §2.6 | — | fixed | `request`, `background`, `size`, `count`, as RFC 25 §2.6 lists them |
 | event rings: entries per stream, size per entry | RFC 25 §4.3 | — | fixed | 16 384 for `access`, 4 096 each for `quota` and `logon`; 1 KiB |

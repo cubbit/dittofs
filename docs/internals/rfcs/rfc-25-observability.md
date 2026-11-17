@@ -1087,9 +1087,13 @@ them.
 - **A span below a request opens only under a sampled parent.** An unsampled
   request's context carries no span, so a component it calls (the service, the
   metadata store, the engine) opens none: a span opened there would become a
-  root of its own, in no request's trace. Only the roots this section and §6.2
-  name open a span with no parent: the adapter's request span, a background
-  pass, a recall and a lock waiter's grant.
+  root of its own, in no request's trace. Only the roots this section, §6.2 and
+  [RFC 23 §11](rfc-23-control-plane.md#11.%20Observability) name open a span with
+  no parent: the adapter's request span, a background pass, a recall, a lock
+  waiter's grant, a management API call and an operation's work. A component
+  tells a sampled parent by its context's span context (`IsSampled` in the
+  tracing API) before it calls `Start`, and §12's allocation run counts the
+  service's path with the adapter's.
 - Background work — an offload pass, a GC pass, a handover, a snapshot, a backup —
   opens a root span of its own. A pass that serves a request it was waiting on, a
   fetch joined by a read, *links* to that request's span rather than becoming its
@@ -1192,7 +1196,7 @@ steps are [RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop)'s.
 | watchdog | `pkg/health` | the root | clock | `Watchdog *health.Watchdog`; each watched loop takes its own `*health.Loop` from `Watchdog.Loop(name)` and closes it when the loop ends — a listener on unbind, since [RFC 20 §3.1](rfc-20-adapters.md#3.1%20The%20adapter%27s%20states)'s reconfiguration adds and removes listeners at run time; an adapter, which may not import `pkg/health`, gets the same three calls as `Deps.Watch` ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)), which the node adapts to a `Loop` | starts before start step 2, stops after stop step 9; the liveness answer reads it (§3.5) |
 | health evaluator | `pkg/health` | the root; the node reads its `Snapshot` and writes node status (§3.8) | clock, logger, registry, watchdog, §3.9's table as Go, the `Source`s | injected into nothing: each component is a `Source`, added with `Add` and removed with `Remove` by the node, which owns the set of running components ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)) | `Start` before start step 2 takes `Watchdog.Loop("health")` and turns it after each evaluation, every second; `Close` after stop step 9 closes it |
 | event sink | `pkg/events` | the root | clock, logger, registry, `events.path` | `Events *events.Sink`, to the filesystem service and the authenticator only | `New` opens nothing; `Start` after start step 2 and before step 6 opens the spool, writes the `restart` gap record (§4.4) and starts the writers; `Close(ctx)` after stop step 6 drains the rings until `ctx` ends, drops and counts the rest, and syncs the spool |
-| tracer | none: the tracing API | the root builds the provider when `tracing.endpoint` is set (§6.3), a no-op provider otherwise, with an ID generator that takes a request's trace ID from the context where the adapter set it, so the provider samples the ID the adapter sampled and a span carries the trace ID its log lines do ([RFC 20 §10.2](rfc-20-adapters.md#10.2%20Spans)) | settings | `Tracer`, the tracing API's tracer type, in the `Deps` of every component that opens spans (§6.1): the adapters, the service, the metadata store, the engine and each background pass; the adapters' `Deps` also carry `tracing.sample_ratio` as `SampleRatio`, and 0 while `tracing.endpoint` is unset, so with tracing off no request is sampled and none allocates for a span | the provider shuts down after stop step 6, flushing within the drain deadline; spans it cannot flush are counted (§10) |
+| tracer | none: the tracing API | the root builds the provider when `tracing.endpoint` is set (§6.3), a no-op provider otherwise, with an ID generator that takes a request's trace ID from the context where the adapter set it, so the provider samples the ID the adapter sampled and a span carries the trace ID its log lines do ([RFC 20 §10.2](rfc-20-adapters.md#10.2%20Spans)). The ID is for the request span alone: the adapter sets it in the context it opens that span under and hands on the span's context without it, since a root opened later from a context derived from the request asks the generator too; with no ID in the context, the generator draws a random one | settings | `Tracer`, the tracing API's tracer type, in the `Deps` of every component that opens spans (§6.1): the adapters, the service, the metadata store, the engine and each background pass; the adapters' `Deps` also carry `tracing.sample_ratio` as `SampleRatio`, and 0 while `tracing.endpoint` is unset, so with tracing off no request is sampled and none allocates for a span | the provider shuts down after stop step 6, flushing within the drain deadline; spans it cannot flush are counted (§10) |
 
 ### 8.2 The packages
 
