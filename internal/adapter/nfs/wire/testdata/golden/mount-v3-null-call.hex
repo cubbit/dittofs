@@ -1,0 +1,17 @@
+# A NULL call to MOUNT version 3 under AUTH_SYS, written from RFC 5531 sections 9 and 11 and
+# Appendix A: no byte example exists for it. Its machine name is five bytes, so it pads, and
+# its stamp is not zero, so a parse that stores no stamp reads one.
+80000048  # record mark: last fragment, 72 bytes
+11223344  # xid
+00000000  # CALL
+00000002  # RPC version 2
+000186a5  # program MOUNT
+00000003  # version 3
+00000000  # procedure NULL
+00000001 00000020  # credential: AUTH_SYS, 32 bytes
+  55667788  # stamp
+  00000005 686f737431 000000  # machine name "host1", 5 bytes and its padding
+  000003e8  # uid 1000
+  00000064  # gid 100
+  00000001 0000001b  # one auxiliary group, 27
+00000000 00000000  # verifier: AUTH_NULL, no body

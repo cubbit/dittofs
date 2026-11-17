@@ -1,0 +1,2 @@
+# A COMPOUND reply with two results: its status, the five-byte tag echoed, and the count (RFC 20 section 4.7).
+00000000 00000005 6162636465 000000 00000002
