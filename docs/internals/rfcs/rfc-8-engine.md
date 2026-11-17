@@ -4011,7 +4011,7 @@ proposals. An offload pass, a removal batch, a reseed and a pre-warm page open
 root spans of their own; a read that joins a fetch already in flight *links* to
 that fetch's span. Waits on a file's guard, a registration or the cut gate are
 span events. A content call opens its spans only under a sampled parent, so an
-unsampled request's costs no allocation
+unsampled request's content calls allocate nothing for tracing
 ([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans), [§6.3](rfc-25-observability.md#6.3%20Sampling%20and%20cost)).
 
 A **Lost** or corrupt read logs the file and extent at `Error`, once per extent.
