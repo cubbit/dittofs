@@ -237,7 +237,12 @@ func (n *Node) counters(ctx context.Context) (kvstore.Counters, error) {
 // counters it read as the positions reconciled through. A read that fails
 // leaves the running set and the positions as they were, and has the next
 // pass act on every kind. A share pass that fails still has apply run, so a
-// principals or settings change does not wait for the share store.
+// principals or settings change does not wait for the share store, and
+// publishes the principals position it applied through.
+//
+// decision: after a failed share pass only the principals position moves.
+// The settings position stays, because a settings change also configures a
+// share's remote store, which only the share pass acts on.
 //
 // decision: reconcile never unbinds a share: the removal's own driver does,
 // at the step its record names. A share whose removal is marked after the
@@ -272,6 +277,11 @@ func (n *Node) pass(ctx context.Context) error {
 		}
 		r.mu.Lock()
 		r.applied = refusals
+		if sharesErr != nil {
+			r.pos.Principals = c.Principals
+			close(r.moved)
+			r.moved = make(chan struct{})
+		}
 		r.mu.Unlock()
 	}
 	if sharesErr != nil {

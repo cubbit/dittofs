@@ -627,9 +627,10 @@ func TestAppliedWaitsForAPassAfterTheWrite(t *testing.T) {
 }
 
 // A share pass that fails still has apply run in the same pass, so a
-// principals change does not wait for the share store; the pass then fails,
-// publishing no position, and is retried, applying again with no counter
-// moving.
+// principals change does not wait for the share store: the pass publishes
+// the principals position, so Applied returns, and keeps the share list and
+// settings positions; it then fails and is retried, applying again with no
+// counter moving.
 func TestReconcileAppliesWhenTheSharePassFails(t *testing.T) {
 	h, f := faulted(t)
 	applies := make(chan kvstore.Counters, 64)
@@ -640,6 +641,7 @@ func TestReconcileAppliesWhenTheSharePassFails(t *testing.T) {
 		}
 	})
 	started(t, h)
+	before := h.Node().Positions()
 	setFault(t, f, nil, sim.Rule{Op: kvtest.OpScan, Key: nsScan, Action: sim.FaultAction{Err: errInjected}})
 	createShare(t, h, "a", storeA)
 	u := entity.User{Name: "alice"}
@@ -648,28 +650,47 @@ func TestReconcileAppliesWhenTheSharePassFails(t *testing.T) {
 		t.Fatalf("create a user: %v", err)
 	}
 	want := counters(t, h).Principals
-	appliedThrough := func(what string) {
+	appliedThrough := func(what string, reached func(kvstore.Counters) bool) {
 		t.Helper()
 		deadline := time.Now().Add(30 * time.Second)
 		for {
 			select {
 			case c := <-applies:
-				if c.Principals >= want {
+				if reached(c) {
 					return
 				}
 				continue
 			default:
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("%s: no apply of principals generation %d within 30 s of turns while the share pass fails", what, want)
+				t.Fatalf("%s: no apply that far within 30 s of turns while the share pass fails", what)
 			}
 			turn(h)
 		}
 	}
 
-	appliedThrough("the pass that read the principals change")
-	if got := h.Node().Positions().Principals; got >= want {
-		t.Errorf("principals position after a pass whose share pass failed: got %d, want below %d, the pass unpublished", got, want)
+	principals := func(c kvstore.Counters) bool { return c.Principals >= want }
+	appliedThrough("the pass that read the principals change", principals)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second) // a backstop: Applied returns on the position moving
+	defer cancel()
+	if err := h.Node().Applied(ctx); err != nil {
+		t.Fatalf("Applied while the share pass fails: %v, want it to return once principals are applied", err)
 	}
-	appliedThrough("the pass retried after the share pass failed")
+	pos, now := h.Node().Positions(), counters(t, h)
+	if pos.Principals < want {
+		t.Errorf("principals position after a pass whose share pass failed: got %d, want %d, the generation it applied", pos.Principals, want)
+	}
+	if pos.ShareList >= now.ShareList || pos.Settings != before.Settings {
+		t.Errorf("share list and settings positions after a failed share pass: got %d and %d, want below %d and still %d", pos.ShareList, pos.Settings, now.ShareList, before.Settings)
+	}
+	appliedThrough("the pass retried after the share pass failed", principals)
+
+	// A settings change also configures a share's remote store, which only
+	// the share pass acts on, so its position stays while that pass fails.
+	configure(t, h, storeA)
+	settings := counters(t, h).Settings
+	appliedThrough("the pass that read the settings change", func(c kvstore.Counters) bool { return c.Settings >= settings })
+	if got := h.Node().Positions().Settings; got >= settings {
+		t.Errorf("settings position after applying generation %d while the share pass fails: got %d, want below it", settings, got)
+	}
 }
