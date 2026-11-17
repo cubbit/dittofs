@@ -476,7 +476,7 @@ reaches calls forwarded from every node.
 package identity // internal/identity
 
 type Deps struct {
-	Store      *kvstore.Store      // RFC 16 §3.2: its Principals, Records and Minter views, as vfs.Deps.Meta (RFC 17 §2.3); the Minter's are the only writes (§2.4, §5.1)
+	Store      Store               // the node passes its *kvstore.Store unchanged, as vfs.Deps.Meta (RFC 17 §2.3)
 	Secrets    SecretProvider      // RFC 13 §7: keytab, NT hashes, API password hashes, the bind credential, the machine-account password
 	Logons     LogonSink           // RFC 25 §4.1's logon stream
 	Issuers    IssuerKeys          // fetches each OpenID Connect issuer's keys over verified TLS (§8.2)
@@ -484,6 +484,13 @@ type Deps struct {
 	Metrics    *metrics.Registry
 	Tracer     trace.Tracer        // §9.2's identity.authenticate span
 	Logger     *slog.Logger
+}
+
+// Store is the store's calls identity makes, declared here. It has no Close,
+// so the server cannot close what it was handed.
+type Store interface {
+	Principals() kvstore.Principals     // RFC 16 §3's lookups and a user's record
+	ControlPlane() kvstore.ControlPlane // its Write: the control-plane records identity writes, each with its audit record
 }
 
 // New takes no settings and starts nothing. *Server implements Authenticator,
@@ -502,19 +509,24 @@ type State struct {
 	Settings   config.Identity // the identity.* settings and the directory record
 	Keytab     []secrets.Version // the keytab's versions in force, opened, current first (§3.3)
 	Machine    []secrets.Version // the machine password's versions in force, opened, current first, each with its KeyVersion and HandedOver mark (RFC 16 §2.3); empty when not joined (§3.3, §3.5)
-	NTLM       Revision        // the identity.ntlm setting's revision (§3.5)
+	NTLM       uint64          // the identity.ntlm setting's generation (§3.5)
 }
 ```
 
 `Deps` and `State` are the composed shape: an implementation adds each field
 with the first code that reads it, so an early build holds fewer.
-`Principals`, `Records` and `Minter` are RFC 16 §3's views, defined there
-once; identity takes the one store that implements them, a concrete type where
-there is one implementation, as RFC 17 §2.3 does. A `Minter` write
-is one batch of new records (§4.1's mint): it never overwrites a record,
-allocates the IDs it is told to inside its one transaction, raises the
-principals generation once, and fails whole with `ErrExist` when another
-principal holds a row it would write (§2.2).
+`Principals`, `ControlPlane`, `Records` and `Minter` are RFC 16 §3's views,
+defined there once. `Store` gains a view with the first code that calls it, as
+`Deps` gains a field, so `Records` and `Minter` join it with their first
+callers; the node's `*kvstore.Store` implements every view, so it satisfies
+`Store` whatever it holds. identity writes through two of them. A `Minter`
+write is one batch of new principal records (§4.1's mint): it never overwrites
+a record, allocates the IDs it is told to inside its one transaction, raises
+the principals generation once, and fails whole with `ErrExist` when another
+principal holds a row it would write (§2.2). Every other write identity makes
+goes through `ControlPlane.Write`, which commits it with its audit record in
+one transaction: the installation's join and rotation records (§3.3, §3.5),
+and a scheduled operation's record with its audit record.
 
 **Start and stop.** No settings reach `New`. The node reads the records at
 start and hands identity its first `State` through `Apply`, before `Start`. It
@@ -620,13 +632,13 @@ type Keys struct{ Session, Subkey, APRep []byte }
 type Service uint8
 // NTLMAuthenticate is the decoded AUTHENTICATE message the adapter's NTLM
 // mechanism hands over, with the three messages' bytes kept exactly as sent so
-// the MIC can be checked (§3.5).
+// the MIC can be checked (§3.5). It carries no decoded MIC or MsvAvFlags:
+// identity reads the flags from NTResponse, which the proof authenticates, and
+// the MIC from Raw, so the adapter holds no unauthenticated copy to act on.
 type NTLMAuthenticate struct {
 	User, Domain, Workstation       string
 	NTResponse, EncryptedSessionKey []byte
-	MIC                             []byte
-	Flags                           uint32 // NegotiateFlags, and the AV pair MsvAvFlags
-	AVFlags                         uint32
+	Flags                           uint32 // NegotiateFlags
 	Negotiate, Challenge, Raw       []byte // the wire bytes of NEGOTIATE, CHALLENGE and this AUTHENTICATE
 }
 ```
@@ -929,7 +941,9 @@ other ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20th
 > alternate suffix; the directory then reads `uPNSuffixes` from the partitions
 > container at each record change.
 
-- **The MIC.** When the AUTHENTICATE's `MsvAvFlags` marks a MIC present, the MIC
+- **The MIC.** Identity reads `MsvAvFlags` from `NTResponse`, which the proof
+  authenticates, and the MIC from `Raw`; the adapter hands over no decoded copy
+  of either (§3.1). When `MsvAvFlags` marks a MIC present, the MIC
   **MUST** verify over the exact NEGOTIATE, CHALLENGE and AUTHENTICATE bytes on
   the wire (MS-NLMP 3.2.5.1.2), and a flagged MIC that is missing or zero fails,
   local or pass-through. The MIC is keyed by the exported session key: the
@@ -957,8 +971,8 @@ other ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20th
 session from the `Apply` that delivers the setting — within a second of its
 commit (§7.2) — and deletes every stored NT hash, as an operation in bounded
 batches ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)).
-A password set derives its NT hash under the `identity.ntlm` revision it read,
-and the API's write of it is conditional on that revision still being current,
+A password set derives its NT hash under the `identity.ntlm` generation it read,
+and the API's write of it is conditional on that generation still being current,
 so no NT hash is written after the deletion has passed its user. Sealing
 wraps the hash and commits nothing; the sealed version is put in that same
 conditional write ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), so a
@@ -1172,11 +1186,13 @@ no user, or a guest one, naming the guest account.
 
 ### 3.7 Disabled and deleted principals
 
-- A principal whose record is `Disabled`, or marked deleted
-  ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer)),
-  **MUST** fail sign-in with `ErrLogonFailure` (logon outcome `disabled`), and
-  **MUST** be refused at resolution on every call, whatever evidence its
-  connection holds. The second rule is what stops a session or GSS context set
+- A principal whose record is `Disabled` **MUST** fail sign-in with
+  `ErrLogonFailure` (logon outcome `disabled`). One marked deleted
+  ([RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer))
+  has lost its name indexes in the mark's own transaction, so it is found by no
+  name: its sign-in **MUST** fail as an unknown name's does, `ErrLogonFailure`
+  with logon outcome `logon_failure`. Both **MUST** be refused at resolution on
+  every call, whatever evidence their connection holds. The second rule is what stops a session or GSS context set
   up before the change, within §7.2's bound.
 - A directory account is disabled when the directory says so, or when it
   answers "no such entry" for a principal it once minted (§5.1).
@@ -1245,8 +1261,8 @@ func (s Scheme) Stored() bool // true for the schemes with index rows
 type Spelling struct{ Scheme Scheme; Num uint32; SID SID; Text string }
 ```
 
-Sign-in, `Find` and resolution (§4.3) share one internal mint, so every record
-identity writes goes through one path, under one rule: it never overwrites, and
+Sign-in, `Find` and resolution (§4.3) share one internal mint, so every principal
+record identity writes goes through one path, under one rule: it never overwrites, and
 **one sign-in, lookup or resolution mints every principal it needs in one
 batch**: one transaction, which allocates what each record lacks, with one
 principals-generation raise (§7.2), however many groups the batch holds. On
@@ -1708,7 +1724,9 @@ the file. It runs five steps, and each fills part of the `Caller`:
    installation's defaults and never a share's
    ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
 2. **Squash** — does this share want the caller treated as somebody else
-   (§6.2)? Fills `Principal`: the mapped one, or the share's `Anonymous`.
+   (§6.2)? Fills `Principal`: the mapped one, or the share's `Anonymous`. An
+   unsquashed claimed caller also fills `Group`, the principal holding its
+   claimed gid (§4.3); every other caller leaves it zero.
 3. **Collect** — which groups is it in (§6.3)? Fills `Groups` and `DenyOnly`.
 4. **Grant** — what does this share allow it (§6.4)? Fills `Access` and
    `ReadOnly`, read for the squashed principal of a claimed identity and for
@@ -1774,10 +1792,13 @@ type Claims struct {
 func (id Identity) Key() ProofKey
 
 // Resolver is admission's step 4 (RFC 17 §4.9); *vfs.Filesystem is its only caller.
-// p is the share's policy, read in one snapshot (RFC 16 §3's SharePolicy);
-// readOnly says admission's step 3 narrowed the call to read-only.
+// p is the share's policy, built from one ShareIndex.Share read, the share
+// with its GrantVersion and its export policy (RFC 16 §3's SharePolicy);
+// narrowed is why admission held the call to read-only before resolution:
+// ReadOnlyNotNarrowed, ReadOnlyShare or ReadOnlyClient, never ReadOnlyGrant,
+// which step 4 sets itself.
 type Resolver interface {
-	Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, readOnly bool) (*Caller, error)
+	Resolve(ctx context.Context, id Identity, p metadata.SharePolicy, narrowed ReadOnlyCause) (*Caller, error)
 }
 
 // Caller is what one call acts as on one share. Every field any check reads
@@ -1785,21 +1806,32 @@ type Resolver interface {
 type Caller struct {
 	Principal     metadata.Principal   // after squashing: what the permission check and grants read
 	Mapped        metadata.Principal   // before squashing: what state protection and a client record's creator compare (RFC 14); the permission check never reads it
+	Group         metadata.Principal   // the credential's primary group, an unsquashed claimed caller's gid: what a create stamps; zero for any other caller
 	Groups        []metadata.Principal // the closure, sorted
 	DenyOnly      []metadata.Principal // principals the proof marked deny-only (§3.4); empty when squashed
 	Access        metadata.ShareAccess // the grant's level, narrowed to read where admission narrowed it (§6.4)
-	ReadOnly      ReadOnlyCause        // why Access is read: NotNarrowed, Grant (the grant's own level) or Share (a client rule or the policy's ReadOnly flag)
+	ReadOnly      ReadOnlyCause        // why Access is read
 	Authenticated bool                 // §6.5
 	Admin         bool                 // §6.5
 	Privileged    bool                 // §6.5; a protocol may confine it to an open (RFC 19 §3.5)
 	Built         uint64               // the State it was resolved under (§7.2); no check reads it
 	Fresh         time.Time            // no cache serves it after this (§7.1); no check reads it
 }
+
+// ReadOnlyCause is why a Caller's Access is read.
+type ReadOnlyCause uint8
+
+const (
+	ReadOnlyNotNarrowed ReadOnlyCause = iota // Access is not read, or nothing narrowed it
+	ReadOnlyGrant                            // the grant's own level is read
+	ReadOnlyShare                            // the policy's ReadOnly flag
+	ReadOnlyClient                           // a client rule admits the caller's address read-only
+)
 ```
 
-- **The read-only cause** lets a refusal say why: a mutation refused because the
-  share or a client rule is read-only is `ErrReadOnly`, which the adapters answer
-  as a read-only filesystem; one refused by a `read` grant is `ErrAccess`
+- **The read-only cause** lets a refusal say why, and which narrowed it: a
+  mutation refused because the share or a client rule is read-only is
+  `ErrReadOnly`, which the adapters answer as a read-only filesystem; one refused by a `read` grant is `ErrAccess`
   ([RFC 19 §3.1](rfc-19-authorization.md#3.1%20One%20request%2C%20in%20order)).
 - **Proof kind and protection.** A share's policy sets a floor on each part,
   `MinProof` and `MinProtection`
@@ -2140,7 +2172,7 @@ type TokenClaims struct {
 // NewHashes derives what a new password is stored as: the password hash and,
 // only while ntlm is on and u holds file spellings and is not a directory
 // principal, the NT hash (§3.5). It is pure: it reads and writes nothing. The
-// API writes the result with the record, conditional on ntlm.Revision still
+// API writes the result with the record, conditional on ntlm.Generation still
 // being current; for a directory principal it fails ErrInvalid.
 func NewHashes(u metadata.User, password []byte, ntlm NTLMSetting) (PasswordHashes, error)
 
@@ -2149,10 +2181,10 @@ func NewHashes(u metadata.User, password []byte, ntlm NTLMSetting) (PasswordHash
 type PasswordHashes struct{ Password, NTHash []byte }
 
 // NTLMSetting is identity.ntlm as a password set read it: whether it is on,
-// and the revision the write is conditional on (§3.5).
+// and the setting's generation the write is conditional on (§3.5).
 type NTLMSetting struct {
-	On       bool
-	Revision uint64
+	On         bool
+	Generation uint64
 }
 ```
 
@@ -2359,7 +2391,7 @@ RFC 16's conformance suite's, not repeated here.
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
 | `ManageGIDs` | 2 | A user in 20 store groups calls over `AUTH_SYS`: a file whose ACL grants only the 20th group is granted. | groups capped at the credential's 16 |
 | NTLM off | 2 | Make a cache hit on a local NTLM session and on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: its write refused, and no `Secret` of kind nt-hash stored. While the deletion runs, after it fails part way through a fault wrapper around the store, and after it is cancelled, turning `identity.ntlm` on is refused as RFC 23 §4.1 rules; once a deletion has completed, it is accepted. | an NTLM context outliving the setting; a stray hash; hashes a failed deletion never reached made valid again |
-| NTLM MIC | 1 | An AUTHENTICATE with a corrupted MIC, and one with the MIC zeroed while `MsvAvFlags` marks it present: both `ErrLogonFailure`, locally and through pass-through. A pass-through reply whose `UserSessionKey` is all zero, or whose `LogonDomainID` is another domain's: `ErrLogonFailure`; with the directory's domain SID unread: `ErrUnavailable`. | the drop-the-MIC relay |
+| NTLM MIC | 1 | An AUTHENTICATE with a corrupted MIC, and one with the MIC zeroed in `Raw` while the `MsvAvFlags` in `NTResponse` marks it present: both `ErrLogonFailure`, locally and through pass-through. A pass-through reply whose `UserSessionKey` is all zero, or whose `LogonDomainID` is another domain's: `ErrLogonFailure`; with the directory's domain SID unread: `ErrUnavailable`. | the drop-the-MIC relay |
 | NTLM domain | 1 | A standalone installation's CHALLENGE advertises its own NetBIOS name; an AUTHENTICATE naming it in another case: verified locally. With pass-through configured, `alice@corp.example.com` with an empty domain, and `corp.example.com\alice`: both passed through. A domain matching nothing, and an installation name holding `K` sent with the Kelvin sign U+212A in its place: `ErrLogonFailure`, outcome `unknown_domain`. | every standalone login refused; UPN and DNS-domain sign-ins refused as a wrong password |
 | no local password for a directory user | 1 | `NewHashes` for a directory principal: `ErrInvalid`, nothing stored; a local NTLM sign-in naming one: refused. | two passwords for one principal |
 | directory TLS | 1 | A record asking for plain LDAP, or for skipping verification, and one whose realm is `corp.example` rather than `CORP.EXAMPLE`: refused at validation. A directory behind a self-signed certificate, then one whose host name does not match: no bind sent, lookups `ErrUnavailable`, nothing cached. A referral to another host: not followed. | a bind credential handed to whoever answers |
@@ -2440,7 +2472,7 @@ Each slice ships alone, behind the one before it, and deletes what it replaces.
 | --- | --- | --- | --- |
 | 0, now | fixed in today's code: no default uid, the bootstrap admin without uid 0, no guest on a failed or unparsable setup, plain LDAP refused; the PAC failing its signature refused | the 1000 default; `root_to_admin`, `all_to_admin` | — |
 | 1 | the pure packages: the `pkg/identity` value types and `Key()`, the SID codec, owner strings, the closure walk, `NewHashes`, the throttle, each with its unit and fuzz tests | — | — |
-| 2 | the store: `Minter` with allocation inside its transaction, the uid, gid and RID counters, `PGEN`, the well-known IDs including root, `SharePolicy` (RFC 16) | — | slice 1 |
+| 2 | the store: `Minter` with allocation inside its transaction, the uid, gid and RID counters, `PGEN`, the well-known IDs including root, `ShareIndex.Share` with the share's `GrantVersion` (RFC 16) | — | slice 1 |
 | 3 | SIDs: today's uid-derived SIDs written once as stored values, read beside the derived ones in a shadow pass that logs every disagreement, then switched, so no SID changes (ID4) | RID derivation from a uid | slice 2 |
 | 4 | resolution in `*vfs.Filesystem` ([RFC 17 §9](rfc-17-vfs.md#9.%20Migration) slice 2), run in shadow beside today's resolver until their callers agree, then switched: squash `none`/`root`/`all`, stored `none` grants, one caller cache | the NFS share-permission resolver, the NFSv3 auth-context cache, SID share permissions, `default_permission` | slices 2, 3 |
 | 5 | the authenticator behind `SignIn`: Kerberos with the PAC binding, NTLM with the MIC, re-authentication, logon events | the five-domain NTLM retry; the RPCSEC_GSS "unmapped → nobody" path | slice 4 |

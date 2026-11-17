@@ -158,8 +158,10 @@ this epic's part is that every command reaches the API through that client and n
   `cmdutil.Env{In io.Reader; Out, Err io.Writer; ConfigPath string; Interactive bool}`, beside the
   client builder and the lock, in `cmdutil`, because `commands` imports every noun package and a
   noun cannot import it back; each noun package exports `New(env cmdutil.Env)`. No package under
-  `cmd/dfsctl` declares a package-level variable but the build's `Version`, `Commit` and `Date`,
-  which `-ldflags` set; `cmdutil.Flags` goes. `credentials.NewStoreAt(path)` replaces the store's
+  `cmd/dfsctl` declares a package-level variable but the build's version, which `-ldflags` set:
+  lower-case `version`, `commit` and `date` in `cmd/dfsctl` (main), where the linker writes them,
+  and exported `Version`, `Commit` and `Date` in `cmd/dfsctl/commands`, which main copies them
+  into; each set is allowed only in its own directory. `cmdutil.Flags` goes. `credentials.NewStoreAt(path)` replaces the store's
   fixed path, for `ConfigPath`. `internal/cli/prompt` takes its reader from `Env.In` in place of
   `promptui`'s `os.Stdin`; with `Interactive` false a command that would prompt refuses, naming the
   `--…-file` flag to use, which also suits a later MCP subcommand. These exports cross only packages
@@ -282,11 +284,12 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   regenerated. The nouns kept move to `New(env)` in the subtask that rebuilds each. Consumed by
   every later subtask.
 - **Acceptance criteria:**
-  - No package under `cmd/dfsctl` declares a package-level variable but `Version`, `Commit` and
-    `Date`.
+  - No package under `cmd/dfsctl` declares a package-level variable but `version`, `commit` and
+    `date` in `cmd/dfsctl` and `Version`, `Commit` and `Date` in `cmd/dfsctl/commands`.
   - The removed commands appear nowhere in `cli.md`, and `cmd/gendocs`' four tests pass.
-- **Tests:** an AST walk of `cmd/dfsctl`'s files refusing any package-level `var` but the three
-  (a new one fails it, D1); a walk of `NewRoot`'s tree asserting each deleted command absent (R1);
+- **Tests:** an AST walk of `cmd/dfsctl`'s files refusing any package-level `var` but the two
+  version sets, each in its own directory (a new one fails it, and so does a version name in
+  another directory, D1); a walk of `NewRoot`'s tree asserting each deleted command absent (R1);
   E1's reference test and closure rule, unchanged (R3, R19, R2).
 
 ### T6.2 Contexts, `login`, `logout`, the refresh and the password change
@@ -301,8 +304,14 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   save by rename, and the token source over the locked file (D4, D6); contexts holding a URL or the
   local socket's path, the account and `--cacert` (R5); `login` (a password from a prompt or
   `--password-file`, or `--token-file` for an API token) and `password change`, each a credential
-  call with no idempotency key, and `logout`, which sends one (R8, R12); the file `0600` in a `0700` directory (R6).
-  Consumed by every later subtask.
+  call with no idempotency key, and `logout`, which sends one (R8, R12); `login`'s
+  `-p`/`--password` flag deleted (D5): T6.1 deleted only `login`'s `--client-cert`, `--client-key`
+  and `--tls-skip-verify` flags, leaving `-p` to this subtask; the file `0600` in a `0700` directory (R6).
+  `internal/cli/prompt/password.go` is kept for this subtask and takes a writer, but it still runs
+  on promptui: chaining two prompts on one reader (`PasswordWithConfirmation`) loses input to
+  readline's read-ahead, and promptui races under `-race`. `login` and `password change` read the
+  password through one `bufio.Reader` per invocation, or `golang.org/x/term.ReadPassword` on a
+  terminal. Consumed by every later subtask.
 - **Acceptance criteria:**
   - Two commands refreshing one context at once both succeed and the session survives.
   - A command after the access token's expiry succeeds and leaves the file holding the new pair.

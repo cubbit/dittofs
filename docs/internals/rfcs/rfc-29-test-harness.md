@@ -1072,7 +1072,7 @@ dt known import FILE.md KNOWN.yaml             convert a Markdown known-failure 
    [--where AXIS=V,...]                        --where sets where its entries apply
 dt known baseline SUITE/CELL [RUN]             write a cell's results as its baseline file (smbtorture's)
 dt docs [--check]                              write the documentation's suite tables, or check them; check the RFCs' suites paragraphs
-dt completion bash|zsh                         the shell's script that completes dt's arguments and flag values
+dt completion bash|zsh|fish|powershell         cobra's script for the shell, completing dt's arguments and flag values; bash and zsh are tested
 ```
 
 The environment commands stay as they are: `dt services`, `dt stack`, `dt cleanup`, `dt hooks`,
@@ -1164,13 +1164,16 @@ is the run's, and a run whose `summary.json` couldn't be written prints none. A 
 passes both flags on, and `dtc` passes `NO_COLOR` into the container; there, on a terminal, stderr
 joins stdout, so pipe stdout to keep it pure JSON.
 
-**Completion.** `dt completion zsh`, or `bash`, prints the script that completes `dt`'s words in
-that shell, from the registry and the results: `dt run`'s target (a group, a suite, or a suite's
-cells by the first segments of their names, at any tier and with every matrix value), then the
-options of the suite it names, as flags, and its `--tier`, `--in`, `--only` and `--skip`; the
-`--tier` of `dt list` and `dt plan`; `dt report`'s runs and `--format`; `dt history`'s suite;
-`dt known prune`'s, one with a known file; and `dt known baseline`'s cell and run. Since `dt` runs
-as `test/harness/bin/dt`, the shell knows it by an alias: `alias dt="$PWD/test/harness/bin/dt"`
+**Completion.** `dt completion zsh`, `bash`, `fish` or `powershell` prints cobra's script for
+that shell, which completes `dt`'s words in it, from the registry and the results: `dt run`'s
+target (a group, a suite, or a suite's cells by the first segments of their names, at any tier and
+with every matrix value), then the options of the suite it names, as flags, and its `--tier`,
+`--in`, `--only` and `--skip`; the `--tier` of `dt list` and `dt plan`; `dt report`'s runs and
+`--format`; `dt history`'s suite; `dt known prune`'s, one with a known file; and `dt known
+baseline`'s cell and run. A suite's own options come on a bare TAB after its target: a word that
+starts with `-` gets cobra's list of every `dt run` flag, the suite's among them. Bash and zsh are
+the two shells a test covers. Since `dt` runs as `test/harness/bin/dt`, the shell knows it by an
+alias: `alias dt="$PWD/test/harness/bin/dt"`
 from the checkout's root, then `source <(dt completion zsh)`. Bash's script needs the
 bash-completion package.
 

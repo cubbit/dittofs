@@ -467,6 +467,10 @@ type Share struct {
 	// only by a re-home and an import, never by PutShare.
 	Namespaces []NamespaceGen
 	Write      uint32 // as wide as a ref's nsgen, which RFC 6 §2.1 owns
+	// GrantVersion is the share's grant-list version, S‖id‖gv (§4.2), its own
+	// record: moved by every grant set or deleted on the share, never by
+	// PutShare. A cache of the share's grants keys on it.
+	GrantVersion uint64
 }
 
 // ShareGrant is one principal's access to one share; RFC 18 §6.4 reads a
@@ -528,7 +532,9 @@ type ExportPolicy struct {
 	Clients       []ClientRule  // first match decides; no match refuses. Empty admits every client
 	Squash        Squash        // none, root, all; root by default (RFC 18 §6.2)
 	Anonymous     Principal     // what a squashed, AUTH_NONE or anonymous-session caller acts as; by default the well-known anonymous principal (§2.2, 0x0C). A deleted one fails closed: calls it would serve are refused (RFC 18 §6.2)
-	ManageGIDs    bool          // false by default; true replaces an AUTH_SYS caller's gids with its principal's store memberships (RFC 18 §3.2)
+	// ManageGIDs (RFC 18 §3.2: an AUTH_SYS caller's gids replaced by its
+	// principal's store memberships) is deferred with AUTH_SYS to RFC 21's
+	// plan; the record has no such field until that plan adds it.
 	ReadOnly      bool          // false by default; true narrows every caller's share access to read-only at admission, whatever its grant or client rule (RFC 17 §4.9, RFC 7 §7.4)
 	SMB           SMBShareFlags // encrypt, hidden from enumeration, continuously available, access-based enumeration (RFC 19 §3.7), guest access (RFC 22 §5.1); all off by default
 	Version       uint64        // raised by every change; the authorisation cache key carries it
@@ -1102,7 +1108,11 @@ finds the last shard done. One transaction over 10⁵ per-child shards would rea
    finished with its drain check never run. `nsg` is deleted in that same last
    transaction, never in an earlier batch, since step 7's check reads it to know
    which namespaces to drain, and a coordinator resuming between batches needs
-   it. With `detach`, the state becomes
+   it. Without kept snapshots, `st` is not deleted but becomes `retired` in
+   that transaction and stays as a tombstone: `ShareID`s come from the caller,
+   and nothing else remembers which were given, so a `PutShare` naming a
+   removed share's ID is refused, and so is a setting written to its scope.
+   With `detach`, the state becomes
    `retired`, and what RFC 12 §2.8 still reads stays: `st`, `info`, `nsg`, an
    ended `rh`,
    `snap`, `cut`, `use`, the history records (`live`, `hd`, `sc`, `hr`) and the
@@ -1200,9 +1210,9 @@ The views are defined where their semantics are:
 | `Existence`, `Content`, `Blocks` | the write path, the engine's commits and refs, GC | [RFC 6](rfc-6-block-metadata.md) |
 | `OpenRecords` (`metadata.Clients`, `metadata.Opens`, not open state's `openstate.Clients` and `openstate.Opens` views over them) | client records, durable opens and their locks, delete pending, the restart-notice number, and `NextID(kind)`, which issues client, open and lock IDs from `IDS‖kind`; never caching grants or watches, which are never durable | [RFC 14 §11.1](rfc-14-open-state.md#11.1%20Package%2C%20dependencies%20and%20wiring) |
 | `ShareIndex` | the share list as admission and the pseudo-filesystem read it on every call: one share with its export policy, a share by name or path, the list and its version, a netgroup; it writes nothing | this RFC, for [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees) |
-| `Principals`, `Records`, `Minter` | identity's lookups, a user's record and a share's policy, its reads of one group's record, and the only writes it makes | this RFC, for [RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle) |
+| `Principals`, `Records`, `Minter` | identity's lookups and a user's record, its reads of one group's record, and the principal records it mints | this RFC, for [RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle) |
 | `Lifecycle` | a device's journal identity and sync marks, the version limits, the incarnations | this RFC, for [RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition) |
-| `ControlPlane`, `Inspect` | the management API, trusted reads by ID | this RFC |
+| `ControlPlane`, `Inspect` | the management API, and identity's control-plane writes through `ControlPlane.Write` ([RFC 18 §2.6](rfc-18-identity.md#2.6%20Components%2C%20wiring%20and%20lifecycle)); trusted reads by ID | this RFC |
 
 ```go
 // Principals is what authentication and the chokepoint read (RFC 18). Groups
@@ -1222,20 +1232,18 @@ type Principals interface {
 	// RFC 18 §2.1) has no user record: resolution does not call User for it,
 	// so neither is ever refused as disabled or deleted.
 	User(ctx context.Context, p Principal) (User, error)
-	// SharePolicy reads what resolution needs of one share in one snapshot, so a
-	// squash, an anonymous principal and the versions a cache keys on never come
-	// from two different commits.
-	SharePolicy(ctx context.Context, share ShareID) (SharePolicy, error)
 }
 
 // SharePolicy is a share's identity policy as resolution reads it (RFC 18 §6).
+// Resolution builds it from one ShareIndex.Share read, the share and its
+// export policy in one snapshot, so a squash, an anonymous principal and the
+// versions a cache keys on never come from two different commits.
 type SharePolicy struct {
 	Share         ShareID
 	Squash        Squash
 	Anonymous     Principal
-	ManageGIDs    bool
 	PolicyVersion uint64 // ExportPolicy.Version
-	GrantVersion  uint64 // S‖id‖gv
+	GrantVersion  uint64 // Share.GrantVersion, S‖id‖gv
 }
 
 // Records reads one group's record by ID: the spellings and the deleted mark
@@ -1250,8 +1258,9 @@ type Records interface {
 // The installation's identity, which the pseudo-filesystem's handles digest
 // (RFC 7 §6.1), is read through the store's Installation, not a view.
 type ShareIndex interface {
-	// Share is one share with its state and its export policy, read in one
-	// snapshot. A share being removed is still found, in its state.
+	// Share is one share with its state, its grant-list version and its
+	// export policy, read in one snapshot. A share being removed is still
+	// found, in its state.
 	Share(ctx context.Context, id ShareID) (Share, ExportPolicy, error)
 	ByName(ctx context.Context, name string) (ShareID, error) // NX‖share‖name, under §2.3.1's fold: what an SMB client names
 	ByPath(ctx context.Context, path string) (ShareID, error) // NP‖path: what an NFS client mounts
@@ -1260,8 +1269,8 @@ type ShareIndex interface {
 	Netgroup(ctx context.Context, name string) (Netgroup, bool, error) // false: none, which a rule naming it treats as failing closed
 }
 
-// Minter is identity's only write path: the records a first sign-in or lookup
-// mints (RFC 18 §2.4, §4.1, §5.1). It never overwrites. Create writes one
+// Minter is identity's write path for principals: the records a first
+// sign-in or lookup mints (RFC 18 §2.4, §4.1, §5.1). It never overwrites. Create writes one
 // batch, every record one sign-in, lookup or resolution needs, in one
 // transaction: it draws each record's IDs its Alloc names from their counters
 // inside it, raises the principals generation (PGEN, §4.2) once whatever the
@@ -1362,7 +1371,7 @@ type ControlPlane interface {
 	PutNetgroup(ctx context.Context, n Netgroup, expect uint64) error // sets Version to the writing commit's, as SetGrant does
 	DeleteNetgroup(ctx context.Context, name string, expect uint64) error // rules naming it are not rewritten and fail closed (Netgroup)
 	Namespaces(ctx context.Context, after NamespaceID) iter.Seq2[Namespace, error]
-	PutNamespace(ctx context.Context, n Namespace, expect uint64) error // writes NS‖ns‖info and its NSR‖store‖ns key in one transaction; a namespace naming no remote store is ErrInvalid; a bound field changed while content exists is refused (RFC 13 §5.1)
+	PutNamespace(ctx context.Context, n Namespace, expect uint64) (uint64, error) // writes NS‖ns‖info and its NSR‖store‖ns key in one transaction and returns the generation written; a namespace naming no remote store is ErrInvalid; a bound field changed while content exists is refused (RFC 13 §5.1). Known narrowing: the store refuses any change to an existing namespace's store or bound fields, content or not, since nothing in its transaction reads whether content exists; an empty namespace no share names is deleted and created again instead (a decision: marker at the code)
 	DeleteNamespace(ctx context.Context, id NamespaceID, expect uint64) error // refused while a share's Namespaces names it; deletes the record and its NSR key together
 	Snapshots(ctx context.Context, share ShareID) iter.Seq2[Snapshot, error]
 	Settings(ctx context.Context, scope SettingScope) iter.Seq2[Setting, error]
@@ -1429,6 +1438,7 @@ type ControlPlaneTx interface {
 	Setting(scope SettingScope, key string) (Setting, bool, error) // tracked read
 	User(p Principal) (User, bool, error)                           // tracked read
 	Share(id ShareID) (Share, bool, error)                          // tracked read
+	ExportPolicy(share ShareID) (ExportPolicy, error)               // tracked read: the default policy, at version 0, when none is stored
 	SignInFailures(key SignInKey) (SignInFailures, bool, error)     // tracked read: a sign-in's count reads its counts and raises them in one transaction, the source's and, for a name that resolves to an account, the pair's and the account's; one answered 429 raises none and commits nothing; a caller on the local socket has neither a source's nor a pair's (RFC 23 §5.3)
 	EnabledAdmins() (int, error)                                    // tracked: counts UA‖ under GuardRange, so two writes that each remove one of the last enabled admins conflict (RFC 23 §5.2)
 	Namespace(id NamespaceID) (Namespace, bool, error)              // tracked read: a share's create or rebind refuses a namespace that names no remote store (RFC 8 §2.1)
@@ -1436,7 +1446,7 @@ type ControlPlaneTx interface {
 	NamespaceNamed(ns NamespaceID) (bool, error)                   // tracked: NS‖ns‖share‖ under GuardRange
 	Now() time.Time                                                 // the store time of this transaction: KV.Txn's Now, fixed for the transaction's life and, on the embedded backends, taken when it starts; a retried attempt gets a new one. A token's not-before is this, whole seconds, plus one, with the user record read tracked in the same transaction (RFC 23 §5.3)
 	DeleteSession(id [16]byte) error
-	PutNamespace(n Namespace, expect uint64) error
+	PutNamespace(n Namespace, expect uint64) (uint64, error)
 	DeleteNamespace(id NamespaceID, expect uint64) error
 	DeleteUser(p Principal, expect uint64) error                    // the mark
 	DeleteGroup(p Principal, expect uint64) error                   // the mark
@@ -1454,6 +1464,7 @@ type ControlPlaneTx interface {
 	PutSetting(s Setting, expect uint64) error
 	PutOperation(op Operation, expect uint64) error
 	PutSignInFailures(key SignInKey, f SignInFailures) error // its count's row, and its XP row where the count expires
+	SetMachinePassword(ref SecretRef) error                  // Installation.MachinePassword (§2.3), in the Write that seals its version
 	// and the view's other writes, the same way
 }
 ```
@@ -1901,7 +1912,7 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `CR‖ns‖hash‖ShareID‖FileID‖offset‖died` | reverse ref index: one empty-valued key per live (`died` zero), history or parked ref, written in the ref's transaction and deleted by the transaction that drops it or by the parked-ref prune; authoritative for "which refs name this chunk", and the refcount is its cache ([RFC 6 §6.1](rfc-6-block-metadata.md#6.1%20A%20refcount%20is%20exactly%20its%20refs)) |
 | | `I‖ns‖name` | put intent: domain, domain ID, epoch, and for a shard the writer's node ID and node epoch ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)) |
 | | `BR‖ns‖b‖not_before‖name`, `BD‖ns‖name`, `BC‖ns‖b‖bucket‖name`, `b` the block name's first byte | GC index: retired blocks by `not_before`, deleted blocks awaiting prune (value: when the delete succeeded), compaction candidates by dead-ratio bucket. Derived from block records; repairable and rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
-| | `NS‖ns‖info` | Namespace (§2.3): the remote store it is created on and its bound fields, written by `PutNamespace` with its `NSR` reverse key in one transaction; deleted only once no share's `Namespaces` names the namespace and its drain has run ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) |
+| | `NS‖ns‖info` | Namespace (§2.3): the remote store it is created on and its bound fields, written by `PutNamespace` with its `NSR` reverse key in one transaction; deleted only once no share's `Namespaces` names the namespace, after which its drain runs ([RFC 23 §3.3](rfc-23-control-plane.md#3.3%20Stores%20and%20namespaces), [RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)) |
 | | `NS‖ns‖gc‖lease‖partition`, `NS‖ns‖gc‖recheck`, `NS‖ns‖gc‖hold`, `NS‖ns‖gc‖suspect‖hash` | GC lease per GC partition with its epoch, last `Recheck` result, the deleter's hold, audit lowering state ([RFC 9 §7.3](rfc-9-gc.md#7.3%20GC%20is%20one%20service%20per%20namespace%2C%20partitioned%20by%20prefix)) |
 | | `NS‖ns‖gc‖forward` | GC forward-walk marker: the numbers of the last forward pass started and the last completed ([RFC 9 §6.2](rfc-9-gc.md#6.2%20Corrections)) |
 | | `NS‖ns‖claim` | claim nonces: the instance nonce this installation intends to write into the namespace's claim, recorded durably before the claim put, the last one it wrote, one an operator accepted for a copy (`AcceptCopy`), and one a `Recheck` found and did not record (`Mismatch`), all recorded under the instance part current then ([§2.3](#2.3%20Server-wide%20and%20control-plane%20entities)), and a nonce recorded under another counts as not recorded; and `claimed`, set once the namespace's first claim is recorded written. `Claim` and a `Recheck` read the claim and compare it with these. Every claim put on any path — `Recheck`, a namespace's create, import, recovery, re-home, restore — records its intended nonce here first. **Installation-local**: never exported and never imported, so a moved namespace's importer starts with its own nonces and does not fence itself on finding the claim it just took ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period), [RFC 27 §2.1](rfc-27-namespace-migration.md#2.1%20One%20installation%20per%20namespace%2C%20proven%20by%20a%20claim)) |
@@ -1954,14 +1965,14 @@ the bytes §4.2.1 assigns. The layout encodes the boundary
 | | `IDS‖kind` | ID allocator, one per kind (client, open, lock, shard): the next unreserved ID, reserved in ranges by the process that issues them, so an ID is never issued twice and issuing one writes nothing; a range left unused when the process stops is abandoned. A `ClientID` and an `OpenID` are unique across the installation ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)); an `OpenID` is issued only to an SMB, durable or clone source open, never to every NFS open, and below 2⁴⁰: `IDS‖open` refuses to issue past it ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)); a `lockID` need only differ from every other lock under its open and offset, which a server-wide counter more than meets. A shard number is read and raised in the transaction that creates the shard, which writes `S‖id‖shs‖shard` and `SH‖shard` — a share's own at the share's creation ([§2.3.1](#2.3.1%20Share%20names%2C%20paths%20and%20state)), a per-child one at its directory's ([RFC 11 §2.2](rfc-11-ownership.md#2.2%20Automatic%20per-child%20shards)) —, never reserved in ranges and never reused, so a stateid naming a removed shard never resolves against another share's; `IDS‖shard` refuses with `ErrNoSpace` at 2²⁴, the most shards an installation numbers ([RFC 14 §2.11](rfc-14-open-state.md#2.11%20State%20references)). Three more kinds, uid, gid and RID, are the allocation counters of principals' spellings (RFC 18 §2.3): each only rises, and is read and raised in the transaction that creates the `User` or `Group` it numbers, as `S‖id‖pjn` is, never reserved in ranges; a uid or gid is drawn from `identity.id_range` and one any principal holds is skipped, which its `PX‖` row shows, so no allocated uid, gid or RID is given twice, even after its principal is deleted |
 | | `N‖node‖st` | NodeStatus (§2.3): what the node has applied, refused and holds restart-pending, and its conditions; written only by that node (RFC 23 §2.4) |
 | | `OP‖opID` | Operation (§2.3), deleted 7 days after it ends (RFC 23 §4.6) |
-| | `OPR‖kind‖target` | running-operation index: one per target and operation kind → `opID`, written when the operation starts and deleted when it ends, so a second request for the same work finds it in one read and is refused (RFC 23 §4.6); `kind` the operation's kind as a string, `target` tagged |
+| | `OPR‖kind‖target` | running-operation index: one per target and operation kind → `opID`, written when the operation starts and deleted when it ends, so a second request for the same work finds it in one read and is refused (RFC 23 §4.6); `kind` the operation's kind as a string, `target` the target's resource kind as one byte, then its ID |
 | | `IK‖account‖key` | IdempotencyRecord (§2.3), written in the request's own transaction (RFC 23 §4.5) |
 | | `XP‖expiry‖tagged` | expiry index for the management API's records that expire: one empty key per idempotency record (tag 0x01, account and key), finished operation (0x02, `opID`), session (0x03, session ID), source's sign-in failures (0x04, address), API token (0x05, token ID) and an account-and-source pair's sign-in failures (0x06, principal then address), written and deleted with it, so the sweep is one ordered scan |
 | | `SS‖session`, `SSH‖hash`, `SS‖session‖h‖hash`, `SSA‖principal‖session` | Session (§2.3); refresh-token index: a refresh token's hash → session ID, the current one and every one it replaced, until the session expires, so presenting an invalidated token finds the session it must revoke (RFC 23 §5.3); and its reverse, one empty key per hash the session has retained, written with its `SSH` row, so the expiry sweep (`XP`, tag 0x03) deletes the session's `SSH` rows by one range of its own, never a scan of `SSH`; and the per-account index, one empty key per session, for listing an account's sessions and deleting them with it. `DeleteSession` (sign-out, a reused refresh token's revocation, the account's deletion) deletes `SS‖session`, its `SSA` key, and, by the range `SS‖session‖h‖`, every `SSH` row the session ever had, in one transaction, so no refresh hash it issued is found afterwards |
 | | `SF‖tagged` | SignInFailures (§2.3), keyed by the account (tag 0x01, principal; a name that resolves to no account has none), the source address (0x02), or the two together (0x03, principal then address), read and raised in the attempt's own transaction before its password is checked, except an attempt answered `429`, which raises none and commits nothing, and a caller on the API's local socket has no source's or pair's (RFC 23 §5.3, which says how a source address is normalised); a pair's is deleted by the expiry sweep 24 h after its last counted attempt and a source's 15 min after its `Failed`, which only a failure's settle or an attempt that creates the count moves, with its `XP` row (`XP`, tags 0x04 and 0x06); a settle or a takeback does nothing on a source's record that is missing or holds another `Nonce`; an account's and its pair's are deleted by a success; an account's by `:set-password`, the break-glass reset and the account's deletion, which leaves its pairs to the sweep; and every source's by the break-glass reset, in bounded batches |
 | | `AT‖tokenID`, `ATH‖hash`, `ATA‖principal‖tokenID` | APIToken (§2.3); token index: the hash → token ID; per-account index, for listing and for deleting an account's tokens with it; all three deleted by the expiry sweep once the token expires (`XP`, tag 0x05) |
 | | `AU‖time‖auditID` | AuditRecord (§2.3), in store-time order, so a time-range read and the retention sweep are one range; never rewritten (RFC 23 §6) |
-| | `AUX‖tagged‖time‖auditID` | audit index: one empty key per record for each of its actor (tag 0x01, principal), target (0x02, resource kind and ID) and taking node (0x03, `NodeID`), so the reads RFC 23 §6 filters by and the per-node export RFC 25 §4.3 reads are ranges |
+| | `AUX‖tagged‖time‖auditID` | audit index: one empty key per record for each of its actor (tag 0x01, principal), target (0x02, the resource kind as one byte, then its ID) and taking node (0x03, `NodeID`), so the reads RFC 23 §6 filters by and the per-node export RFC 25 §4.3 reads are ranges |
 | | `AUC‖node` | AuditCursor (§2.3): one per node that takes requests, written first by that node's first export and changed only by conditional writes naming the holder it read; it outlives the node's lease, and is deleted with the node's record once its last audit record within `audit.retention` is exported (RFC 25 §4.3) |
 | **Store** | `\x00format` | store format record (§4.6) |
 
