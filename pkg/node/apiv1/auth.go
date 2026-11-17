@@ -9,8 +9,15 @@ import (
 
 // The types below hold passwords and tokens. Each has a LogValue, which slog
 // uses, and a Format, which fmt uses for every verb, and both leave the
-// secret fields out, so neither a structured log nor a %v or %+v prints a
-// secret. encoding/json still writes every field, since it writes the wire.
+// secret fields out, so neither a structured log nor a %v or %+v of the body
+// itself prints a secret. encoding/json still writes every field, since it
+// writes the wire.
+//
+// Neither method is called in two cases. slog's JSON handler marshals a
+// struct that holds one of these bodies with encoding/json, so logging a
+// Resource[APITokenSpec, APITokenStatus] writes status.token. And fmt prints
+// an unexported field without calling its Format. So a type that holds one of
+// these bodies, Resource included, needs its own LogValue before anyone logs it.
 
 // redacted is what a body logs as when every field is a secret: slog drops a
 // group with no attributes, and its key would vanish with it.
