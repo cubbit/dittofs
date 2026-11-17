@@ -143,12 +143,21 @@ func TestRFC8A_CloneResumedAtAFullLimit(t *testing.T) {
 	wait(t, "the clone reaches its phase 1", entered)
 
 	full := false
+	deadline := time.Now().Add(bound)
 
 	for off := int64(0); off < 2<<20 && !full; off += 4096 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the share did not reach its journal limit within %v", bound)
+		}
+
 		var d *vfserr.Delay
 
 		err := putSecond(t, f, filler, off, 4096, 'f')
 		full = errors.As(err, &d) && d.Cause == vfserr.DelayCapacity
+
+		if err != nil && !full {
+			t.Fatalf("filling the share at %d: %v, want only the capacity delay", off, err)
+		}
 	}
 
 	if !full {
@@ -167,6 +176,9 @@ func TestRFC8A_CloneResumedAtAFullLimit(t *testing.T) {
 	}
 
 	used := f.E.Stats().Journals[f.Dir].Shares[f.Second.ID].UsedBytes
+	if used == 0 {
+		t.Fatal("the second share's journal bytes read 0: its stats are missing, so no re-copy could show")
+	}
 
 	f.Crash()
 	release()
@@ -299,6 +311,14 @@ func TestRFC8A_ExistenceAboveAsOf(t *testing.T) {
 			p := bytes.Repeat([]byte{'w'}, 4096)
 			write(t, f, id, c.at, p)
 			settle(t, f, h, func(r entity.File) bool { return r.Applied != before })
+
+			// The read is still held once the commit landed: a held view that is
+			// not the read's would let it answer before the write.
+			select {
+			case r := <-done:
+				t.Fatalf("the read answered %v before the write committed: the held view was not the read's", r.err)
+			default:
+			}
 
 			pause.free()
 
@@ -611,15 +631,17 @@ func TestRFC8B_JournalFullOnAFullDevice(t *testing.T) {
 		t.Fatal("no write was refused on a device with no room")
 	}
 
+	// The device's own refusal is answered ErrNoSpace; a roll with no spare
+	// ready answers ErrDelay and raises nothing (RFC 8 §10.2, §11.1). This
+	// check comes first: which of the two the engine meets first depends on
+	// the scheduler, and both answer a capacity delay today.
+	if !errors.Is(refused, vfserr.ErrNoSpace) {
+		t.Fatalf("the refused roll answered %v, want the device's ErrNoSpace", refused)
+	}
+
 	// A refusal with no fault fired is the plain capacity limit, not the device.
 	if full.fired() == 0 {
 		t.Fatalf("no create or allocation was refused ENOSPC; the write was refused for %v", refused)
-	}
-
-	// The device's own refusal is answered ErrNoSpace; a roll with no spare
-	// ready answers ErrDelay and raises nothing (RFC 8 §10.2, §11.1).
-	if !errors.Is(refused, vfserr.ErrNoSpace) {
-		t.Fatalf("the refused roll answered %v, want the device's ErrNoSpace", refused)
 	}
 
 	if !condition(f, "journal_full") {

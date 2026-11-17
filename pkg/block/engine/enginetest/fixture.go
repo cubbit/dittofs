@@ -196,8 +196,11 @@ func (f *Fixture) holdNext(p *atomic.Pointer[gate]) (entered <-chan struct{}, re
 type gate struct{ entered, release chan struct{} }
 
 // pass takes the gate set at p, if one is, and waits for its release or for
-// ctx to end.
+// ctx to end. A nil p is a fence with no gate: it passes at once.
 func pass(ctx context.Context, p *atomic.Pointer[gate]) error {
+	if p == nil {
+		return nil
+	}
 	g := p.Swap(nil)
 	if g == nil {
 		return nil
