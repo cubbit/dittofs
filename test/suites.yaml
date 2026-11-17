@@ -159,6 +159,15 @@ suites:
       - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$ENGINE_BENCH_COUNT" || n=$ENGINE_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "ENGINE_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -tags=engine_conformance,engine_bench -run ^$ -bench . ./internal/vfs/integration/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
     tier: manual
     timeout: { test: 300m, cell: 310m }
+  # The reconcile pass a live change waits on, at 10⁴ shares cold and under share churn, against
+  # RFC 23 §8's 5 s; run by hand, gating nothing. -count=10 gives benchstat its samples, written
+  # to {out}/bench.txt. A figure over the bound is a finding, not a failure: the cell fails only
+  # when a pass leaves a change unbound. No -race, as for engine-bench.
+  reconcile-bench:
+    cmd:
+      - { sh: 'go test -count=10 -benchtime=1x -run ^$ -bench ^BenchmarkReconcile$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 180m, cell: 190m }
   # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
   # epic that fills its stub, and each failure is a known one.
   adapter-conformance:
