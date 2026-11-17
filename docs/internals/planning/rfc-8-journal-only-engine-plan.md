@@ -709,9 +709,9 @@ owned: RFC 8 §4.1 (the verifier), §5.1, §5.2, §11.3. Counters: `engine_stabi
   whole drops it, never committed as written.
 - T4.6 A failed window reported once per file, to that file's next `Commit`, which
   succeeds with a new verifier. The report is per file and fed by every `Sync` the
-  engine makes, the capacity sync's included (T7.1), so a `SyncError` that a sync
-  other than `Commit`'s takes still reaches that file's next `Commit`, which answers
-  success with the new verifier and the raised loss sequence (epic 4 R34).
+  engine makes, the capacity sync's included (T7.1), so a failure that a sync
+  other than `Commit`'s takes still reaches that file's next `Commit`, as the raised
+  verifier and loss sequence it answers with success (epic 4 R34), not as an error.
 - T4.7 `Done` exactly once for every accepted write, on the four paths this epic builds:
   the group commit that records its usage (T4.3); the engine, with nothing charged, for a
   write a failed window drops and for every uncommitted write of a journal whose device is

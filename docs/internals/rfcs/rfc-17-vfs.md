@@ -2396,8 +2396,10 @@ once for each open that was open across a loss of an acknowledged, unoffloaded
 write of the file ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)).
 A flush whose engine `Commit` fails, a retry (`ErrDelay`) or a cancel
 included, passes nothing to `Flushed` and returns the engine's error: the
-open learns of nothing, and its next flush whose `Commit` succeeds fails with
-`ErrLost`.
+open learns of nothing and `LossSeen` stays as it is. Where the file's loss
+sequence has moved since the open's `LossSeen`, its next flush whose `Commit`
+succeeds fails with `ErrLost`; a `Commit` that failed for another cause (a
+`DelayCommit`, a `DelayConflict`) moved nothing and reports no loss.
 
 ### 5.9 Copy and clone
 
