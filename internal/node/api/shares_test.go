@@ -155,6 +155,7 @@ func decodeShare(t *testing.T, what string, body []byte) apiv1.Share {
 // store, is refused and commits nothing; created in one that does, it is
 // enabled in that namespace, case-sensitive, with the export policy the
 // request stated, no grant, and ShareList raised, and the create answers it.
+// Its GET's status lists that namespace, at the generation the store holds.
 func TestShareCreate(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	list := s.shareList(t)
@@ -177,6 +178,10 @@ func TestShareCreate(t *testing.T) {
 		Spec: apiv1.ShareSpec{Name: "builds", Path: "/builds", Namespace: ns, CaseSensitivity: "sensitive"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("create's answer: %+v, want %+v", got, want)
+	}
+	g := s.do(t, http.MethodGet, "/api/v1/shares/"+id.String(), "")
+	if nss, want := decodeShare(t, "GET", g.body).Status.Namespaces, []apiv1.ShareNamespace{{Namespace: ns, Generation: sh.Namespaces[0].Generation}}; !reflect.DeepEqual(nss, want) {
+		t.Errorf("created share's GET: status namespaces %+v, want %+v", nss, want)
 	}
 	wantPolicy := stored(id)
 	wantPolicy.Version = p.Version
@@ -412,6 +417,7 @@ func TestShareRemovedRefusesWrites(t *testing.T) {
 func TestShareList(t *testing.T) {
 	s := serve(t, as(entity.RoleOperator, false))
 	one, two := s.namespace(t), s.namespace(t)
+	nsOf := map[string][]apiv1.ShareNamespace{}
 	// IDs that sort apart from the names, so a namespace page resuming by
 	// name rather than by ID reads the wrong shares.
 	for _, c := range []struct {
@@ -426,6 +432,8 @@ func TestShareList(t *testing.T) {
 		if _, err := s.store.PutShare(t.Context(), sh, 0); err != nil {
 			t.Fatalf("put share %s: %v", c.name, err)
 		}
+		stored, _ := s.share(t, c.id)
+		nsOf[c.name] = []apiv1.ShareNamespace{{Namespace: c.ns, Generation: stored.Namespaces[0].Generation}}
 	}
 	s.removing(t, entity.ShareID{3})
 	s.putStatus(t, entity.NodeStatus{Node: entity.NodeID{1}, ShareList: s.shareList(t)})
@@ -440,6 +448,9 @@ func TestShareList(t *testing.T) {
 		for _, sh := range p.Items {
 			if sh.Status.Applied == nil || *sh.Status.Applied != (apiv1.Applied{Nodes: 1, Of: 2}) {
 				t.Errorf("GET /shares%s: %s applied %+v, want 1 of 2", query, sh.Spec.Name, sh.Status.Applied)
+			}
+			if want := nsOf[sh.Spec.Name]; !reflect.DeepEqual(sh.Status.Namespaces, want) {
+				t.Errorf("GET /shares%s: %s status namespaces %+v, want %+v", query, sh.Spec.Name, sh.Status.Namespaces, want)
 			}
 		}
 		return p

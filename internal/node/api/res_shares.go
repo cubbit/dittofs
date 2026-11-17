@@ -185,11 +185,16 @@ func deleteShare(_ context.Context, rq request[none], _ struct{}, tx entity.Cont
 
 // statusOf is sh's status as a read answers it: on how many nodes it is
 // applied, those that have reconciled the share list through its position,
-// and how many refused it.
+// how many refused it, and the namespaces the store holds for it, so a
+// re-home's progress reads here while the spec keeps the one new content
+// is counted in.
 func statusOf(pp perPage, sh entity.Share) apiv1.ShareStatus {
 	ref := entity.ResourceRef{Kind: entity.ResourceShare, ID: sh.ID[:]}
 	a := pp.applied(ref, sh.Position, func(st entity.NodeStatus) uint64 { return st.ShareList })
 	v := apiv1.ShareStatus{State: sh.State.String(), Applied: &a}
+	for _, g := range sh.Namespaces {
+		v.Namespaces = append(v.Namespaces, apiv1.ShareNamespace{Namespace: idString(g.Namespace), Generation: g.Generation})
+	}
 	for _, st := range pp.statuses {
 		if slices.ContainsFunc(st.Refused, func(r entity.RefusedRecord) bool {
 			return r.Record.Kind == ref.Kind && bytes.Equal(r.Record.ID, ref.ID)
