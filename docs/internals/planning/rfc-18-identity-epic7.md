@@ -43,6 +43,8 @@ second (D5, D14; T7.12, T7.14).
 **RFC 23's plan's epic 2**: its T2.4's `ControlPlaneTx.SetMachineJoin`, the method that writes
 `Join`, with RFC 16's `MachineJoin` holding `Names`, `LastRotation.Version` and
 `LastRotation.Confirmed` (its R55, as #4485 amended RFC 16 and the epic) (T7.9, T7.12, T7.14), and
+its T2.7's `RunningOperation(ctx, kind, target)` on `ControlPlaneTx` as a tracked read, which R63
+uses and epic 2 does not have yet (it has the view's only; §9) (T7.12, T7.14, T7.15), and
 its T2.4's `Write` with its audit record and T2.7's `PutOperation` on `ControlPlaneTx` (T7.13).
 **RFC 23's plan's epic 4** (#4337): T4.11's routes, which write each operation, pick the online
 join's ID and call `HoldJoinCredential` before the creating `Write`, and seal the offline join's
@@ -216,7 +218,7 @@ can cite them. Sources are RFC 18 unless named.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R29 | A join of either kind is refused while the directory record's schema is `rfc2307` | MUST | §3.5; §5.1 | T7.14 |
-| R30 | An online join takes an organisational unit, a distinguished name under the record's base, by default the domain's `Computers` container, which the domain names (read, not assumed) and which is not checked against the base, and a DNS host name, by default the account's name and the realm in lower case, written as `dNSHostName`; an operator-supplied OU outside the base, or a host name that is not a DNS name, is refused before the join's first step | MUST | §3.5 | T7.3 for the domain's container; T7.14 for the defaults and the first turn's refusal; the refusal before the operation is written is RFC 23's plan's epic 4's T4.11 (#4408) |
+| R30 | An online join takes an organisational unit, a distinguished name under the record's base, by default the domain's `Computers` container, which the domain names (read, not assumed) and which is not checked against the base, and a DNS host name, by default the account's name and the realm in lower case, written as `dNSHostName`; an operator-supplied OU outside the base, or a host name that is not a DNS name, is refused before the join's first step | MUST | §3.5 | T7.3 for the domain's container, its redirected-container row run against Samba in T7.7; T7.14 for the defaults and the first turn's refusal; the refusal before the operation is written is RFC 23's plan's epic 4's T4.11 (#4408) |
 | R31 | The join's first step records one domain controller, and every later step and a resumed join use that one | MUST | §3.5 | T7.14, T7.15 |
 | R32 | An online join seals a new password as a `Secret` version first, then creates the computer object with that password, its `cifs/` and `host/` names for the short and the fully qualified name, and `msDS-SupportedEncryptionTypes` `0x18` | MUST | §3.5; §3.3 | T7.14, T7.16 |
 | R33 | A resumed join creates nothing if its pinned controller already accepts the sealed password | MUST | §3.5 | T7.14 |
@@ -250,7 +252,7 @@ can cite them. Sources are RFC 18 unless named.
 | R55 | A confirm first asks whether the controller accepts the sealed version, and fails the rotation naming it if not; an accepted one completes the rotation whether the number read matches the tag or not, a mismatch reported and counted in `identity_machine_key_version_mismatches_total` with the tag unchanged | MUST | §3.5; §9.2 | T7.12 |
 | R56 | At a rotation's completion the `Installation` record's last rotation is written and `machine_password_rotation_failed` clears; it is raised while the last rotation is recorded failed, and cleared only by a rotation completed, never by a channel set up with the previous password or by a restart | invariant | §3.5; §9.2; RFC 25 §3.9 | T7.12 |
 | R57 | Once the retention passes, the previous version is pruned, which changes none of the above, and the old password is reported revocable at the domain | MUST | §3.5; §3.3; RFC 13 §7 | T7.12 |
-| R63 | A rotation that finds a `join-domain` running on this installation fails as a `*apiv1.Problem` at its first turn, writing nothing, and a join's first turn refuses while a rotation runs, both through a tracked read of the running index, so no two passwords are sealed from one number plus one | MUST NOT | §3.5 (R43, R49, R53); RFC 23 §4.6 refuses only a second request of one kind | T7.12, T7.14 |
+| R63 | A rotation that finds a `join-domain` running on this installation fails as a `*apiv1.Problem` at its first turn, writing nothing, and a join's first turn refuses while a rotation runs, both through a tracked read of the running index (`ControlPlaneTx.RunningOperation`, owed by RFC 23's plan's epic 2, §9), so no two passwords are sealed from one number plus one | MUST NOT | §3.5 (R43, R49, R53); RFC 23 §4.6 refuses only a second request of one kind | T7.12, T7.14, T7.15 |
 
 **Operations, the in-memory domain controller, guides**
 
@@ -502,7 +504,7 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 **Subtask T7.3 estimate: 3.75 man-days.**
 
 - **Track:** A. **Depends on:** none. S1; E6's T6.4 (`identitytest`'s package and `pkg/sim`'s use).
-- **Covers:** R16 (the hold T7.10 and T7.11 use), R23, R34, R60.
+- **Covers:** R16 (the hold T7.10 and T7.11 use), R23, R30, R34, R60.
 - **Deliverables:**
   - `pkg/identity.JoinCredential{User string; Password []byte}` (D12), which the seam names first;
   - in `internal/identity/netlogon`'s `seam.go` (D2), whose declarations import only the standard
@@ -552,8 +554,9 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
     sent to what it wraps and then failed, delayed on the test clock, answered "could not be asked",
     or held until the test releases it, or a dial is refused before anything is sent, on cue;
   - `identitytest.DomainControllerConformance(t, open func(*testing.T) (netlogon.DC, DCSeeder))`,
-    `DCSeeder{AddUser, BadPwdCount, StageComputer, SetComputerPassword, Reset}`, `Reset` putting
-    every staged account's password back and deleting created ones; run in `unit` over the in-memory
+    `DCSeeder{AddUser, BadPwdCount, StageComputer, SetComputerPassword, MoveComputersContainer, Reset}`,
+    `Reset` putting every staged account's password back, deleting created ones and putting the
+    `Computers` container back; run in `unit` over the in-memory
     controller.
 - **Acceptance criteria:**
   - `identitytest` imports `internal/identity/netlogon` and never `internal/identity`.
@@ -562,8 +565,8 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   resetting it; `Create` then `Create` again `ErrExist`, the password unchanged; the created
   account's names, `0x18`, owner and key version number 1 read back by `Account` (catches a create
   that sets the password after the add, which a controller may number 2, D7); a `Create` with no
-  `OU` on a domain whose `Computers` container is `OU=Servers,<base>`: the account created there
-  (catches a default hard-coded as `CN=Computers,<base>`, R30); `Reset` of an existing
+  `OU` after `DCSeeder.MoveComputersContainer` to `OU=Servers,<base>`: the account created there
+  (catches a default hard-coded as `CN=Computers,<base>`, R30, against Samba too in T7.7); `Reset` of an existing
   account accepted by `Channel` with the new password; a set raising the number by one; encryption
   types read as written and 0 when unset; a `host/` name answered with the `cifs/` name
   `sPNMappings` maps to it (R23); the probe's three answers (each row failing on the in-memory one
@@ -638,8 +641,8 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   `NewDialer`, since it builds v1's `NewAuthenticator` and `NewOfflineProvider`, both gone (the
   file is behind `ad_dc`, which lint-go's `go vet -tags=` list builds). Consumed by T7.7 and T7.8.
 - **Acceptance criteria:**
-  - Outside `_test.go` files, only identity's own packages, `identitytest`, `internal/node` and
-    `internal/node/nodetest` import the package, and it imports no Kerberos library and no
+  - Outside `_test.go` files, only identity's own packages, `identitytest` and `internal/node`
+    import the package (`internal/node/nodetest` does not, as E1's T1.5 checks), and it imports no Kerberos library and no
     `go-ldap`.
 - **Tests:** in `unit`: the negotiate flags built with no RC4 bit, and a reply's flags without AES
   refused (R10); the reply mapping as a table, a nil or 15-byte session key kept as it came, empty
@@ -654,7 +657,7 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 **Subtask T7.7 estimate: 2.5 man-days.**
 
 - **Track:** A. **Depends on:** T7.2, T7.3, T7.6. E6's T6.4.
-- **Covers:** R13, R17, R23, R40, R60.
+- **Covers:** R13, R17, R23, R30, R40, R60.
 - **Deliverables:** `internal/identity/directory/computer.go` (D3): create, with `unicodePwd` in
   the LDAP add itself, so the account's first number is the one D7 tags, reset (`unicodePwd`
   over the verified TLS) and read a computer account (the key version number, encryption types,
@@ -663,12 +666,13 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   address; `discovery.go` from v1 as `NewDialer`'s `Lookup`: `_ldap._tcp.dc._msdcs.<realm>`
   through the DNS server it is given, when set; `NewDialer`'s `DC` answering `Account`, `Create`
   and `Reset` through these, replacing T7.6's `errors.ErrUnsupported`; `DCSeeder` over
-  `samba-tool`. Consumed by E8's T8.6 (the production dialer) and T7.16.
+  `samba-tool`, its `MoveComputersContainer` rewriting the domain object's `wellKnownObjects`
+  `Computers` entry as `redircmp` does, and `Reset` putting it back. Consumed by E8's T8.6 (the production dialer) and T7.16.
 - **Acceptance criteria:**
   - `pkg/identity/arch_test.go` passes with the `internal/auth/netlogon` exemption gone (E1's R6),
     and no `errors.ErrUnsupported` is left in `dc.go`.
 - **Tests:** in `integration/ad-dc`, `DCSeeder.Reset` at each test's start: T7.3's suite over the
-  real controller (R60, R23); `BUILD01$`'s right password passed through refused (catches the
+  real controller (R60, R23), its redirected-container row included (R30); `BUILD01$`'s right password passed through refused (catches the
   workstation-trust flag set, R13); `Account` of `offjoinowned$` answering `joiner`'s SID and the
   delegation value; a create over a listener whose certificate names another host refused at the
   handshake (R40, through E6's `DialTLS`). In `unit`: `Lookup` over a DNS server on `127.0.0.1:0`
@@ -817,7 +821,8 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 - **Track:** A. **Depends on:** T7.10. E2's T2.4 (`SecretProvider`); #4059's provider's `Prune` and
   `Versions`; RFC 23's plan's epic 2's T2.4 (`SetMachineJoin`, which writes `Join`, and `Write` with
   its audit record); #4552's `SetMachinePassword`; RFC 23's plan's epic 2's D4 (`tx.PutSecret` and
-  `tx.PruneSecret`, by whichever of its T2.4 and the RFC 13 plan's epic 1 lands second).
+  `tx.PruneSecret`, by whichever of its T2.4 and the RFC 13 plan's epic 1 lands second); its T2.7's
+  tracked `ControlPlaneTx.RunningOperation` (R63, §9).
 - **Covers:** R23, R46, R47, R48, R49, R50, R51, R52, R53, R54, R55, R56, R57, R59, R63.
 - **Deliverables:** `Prune` and `Versions` added to `SecretProvider` (RFC 18 §2.6, declared by E2's
   T2.4), which `*secrets.Provider` implements, `Prune` taking the caller's `ControlPlaneTx` so D14's
@@ -907,7 +912,7 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 
 - **Track:** A. **Depends on:** T7.1, T7.4, T7.12. E6's T6.3; the kinds' parameter types (§9);
   RFC 23's plan's epic 2's T2.4 (`SetMachineJoin`); #4552's `SetMachinePassword`; RFC 23's plan's
-  epic 2's D4 (`tx.PutSecret`).
+  epic 2's D4 (`tx.PutSecret`); its T2.7's tracked `ControlPlaneTx.RunningOperation` (R63, §9).
 - **Covers:** R23, R29, R30, R31, R32, R33, R34, R35, R36, R38, R39, R45, R46, R59, R62, R63.
 - **Deliverables:** `JoinStep`, a `step.Step`, and `JoinProgress`, a `step.Progress` (D4), online:
   at the first turn, the record's
@@ -940,7 +945,10 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   failed join: `Join.Joined` false after a fresh server, `identity.netbios_name` unchanged, the
   attempted version kept (R36); `kvtest`'s wrapper failing `End`'s commit: neither `Joined` nor
   the name written (catches the two written apart); a join started while a rotation runs: refused
-  at its first turn naming it, nothing sealed (R63). Doubles: the in-memory directory and controller
+  at its first turn naming it, nothing sealed (R63); a join and a rotation whose first turns
+  overlap, each `Write` held by `kvtest`'s wrapper until both have read the running index: the
+  second to commit retries and refuses naming the first, one version sealed (catches an untracked
+  read, R63). Doubles: the in-memory directory and controller
   (kind 2), the fault wrappers (kind 3), the clock (kind 1).
 - **Rules:** rule 9 (D7's `decision:`).
 
@@ -949,9 +957,9 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
 **Subtask T7.15 estimate: 2.5 man-days.**
 
 - **Track:** A. **Depends on:** T7.14.
-- **Covers:** R15, R19, R31, R36, R41, R42, R43, R44, R45, R46, R59, R62.
+- **Covers:** R15, R19, R31, R36, R41, R42, R43, R44, R45, R46, R59, R62, R63.
 - **Deliverables:** `JoinStep`'s offline branch: the version `op.Params` names, current and marked
-  `HandedOver`, else failing naming it; R45's and R62's checks at the first turn; pin; read the
+  `HandedOver`, else failing naming it; R45's, R62's and R63's checks at the first turn; pin; read the
   account over the directory's bind credential, an absent or non-AES value failing naming the
   attribute and `0x18`, the names, `sPNMappings` applied, owner and delegation reported in `result`
   and on `Join`; then verify the password by the probe and record the number in the cursor; then
@@ -974,7 +982,9 @@ docs/guide/             T7.17  identity.md, windows-ad-setup.md, smb.md, securit
   channel at the controller; the second closing rotation failed after its set: not joined after a
   fresh server, both versions kept, and an offline join after a reset completes, after which the
   first rotation's prune drops them (R36); a creator's set between the rotations, before the second
-  reads its tag and after: failed naming the number, not joined (R43). Doubles: the in-memory
+  reads its tag and after: failed naming the number, not joined (R43); an offline join started
+  while a rotation runs: refused at its first turn naming it, nothing sealed, `Join.Joined` false
+  (catches the offline branch skipping R63's check). Doubles: the in-memory
   controller (kind 2), its fault wrapper (kind 3), the clock (kind 1).
 - **Rules:** rule 9 (RFC 18 §3.4's decision).
 
@@ -1186,6 +1196,11 @@ before the creating write, R27's at the secret route under D6, and the kinds' pa
 `pkg/node/apiv1`. RFC 23's plan's epic 2 carries, since #4485, `SetMachineJoin` with `MachineJoin`'s
 `Names`, `LastRotation.Version` and `LastRotation.Confirmed` (its T2.4, R55) and the schedule's zero
 `Account` and audit actor (its R4, R8). Still owed elsewhere:
+
+- **RFC 23's plan's epic 2:** T2.7: `RunningOperation(ctx, kind, target)` on `ControlPlaneTx` as
+  a tracked read, which R63 uses. Epic 2 has `RunningOperation` on the view only, and T2.7 adds only
+  `PutOperation` to `ControlPlaneTx`, whose refusal is keyed on one kind and target, so a join and a
+  rotation reading the index outside the transaction would both go ahead.
 
 - **E1 (#4315):** R5 and T1.5 name `pkg/identity/identitytest` among identity's own packages,
   importing `internal/identity/directory` and `internal/identity/netlogon` and never the server;
