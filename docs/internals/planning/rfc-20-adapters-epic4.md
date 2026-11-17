@@ -9,7 +9,8 @@ settings snapshot, `port`), §3.7 (health and liveness), §4.7's `Framer` as the
 holds a buffer, reading, writing), §6.1, §6.2, §6.4, §6.5's close and drain halves, §6.6's
 coalesced sends, §6.7, §6.9's connection and registry rows, §10.1's connection, close and byte
 series, §10.3's close logs, and §9's A10, A11, A14, A19 and A20;
-[RFC 24](../rfcs/rfc-24-resources.md) §2.6 (the order, and the reader's exemption), §3.2
+[RFC 24](../rfcs/rfc-24-resources.md) §2.5's `ConnLimit` and `Budgets.Conns`, §2.6 (the order,
+and the reader's exemption), §3.2
 (receive at frame, records in fragments), §4.4 (connections), §5.1's connection and writer rows,
 §6.1 (goroutines), §9's R3, R6 and R10, §10's closes at accept;
 [RFC 25](../rfcs/rfc-25-observability.md) §3.5 (liveness). Cited, not owned: RFC 20 §4.1 and
@@ -18,7 +19,7 @@ series, §10.3's close logs, and §9's A10, A11, A14, A19 and A20;
 `MoveTarget`, and the epic 5 document's D1 (the seam between a connection and its pipeline),
 D2, D9, D23 and D24.
 **Track:** B.
-**Epic 4 estimate: 14 subtasks, 27 man-days.**
+**Epic 4 estimate: 14 subtasks, 28.25 man-days.**
 **Depends on:** **S2**: E1's surface (`Server`, `Conn`, `Listener` and `NewServer` with stub
 bodies, `pkg/adapter`, `pkg/adapter/settings`), E2's `testproto` with its stateful half,
 `adaptertest.CheckLeaks` and the `adapter-conformance` suite with its end-to-end
@@ -26,8 +27,8 @@ specification. **E3**, the bodies of `pkg/resources`, merged (#4177, #4178). **E
 (the pipeline's functions the epic 5 document's D1 names, the suite of `out`, `Framer.Frame`,
 `Stages.Errors`) and **T5.9** (`Stages.Protocol`, and the registry's `Spec`, `Counter` and
 `Gauge`), for the subtasks that name them; **T5.4** for T4.5b. **The RFC 20 amendment, #4478**,
-for T4.3. **RFC 17's plan**, for `vfs.Shares.MoveTarget` (T4.5b). **The RFC 20 amendment
-#4533**, which settles the gaps of §9, G1 to G12, for the parts of the subtasks that name them.
+merged, for T4.3. **RFC 17's plan**, for `vfs.Shares.MoveTarget` (T4.5b). **The RFC 20
+amendment #4533**, merged, which settled §9's G1 to G12.
 **Blocks:** E5's T5.1c, with which S3 is reached, and T5.10; E6's T6.3b and T6.4b, and through
 them the RFC 22 plan's SMB scaffold point; E7, which starts, reconfigures and stops adapters,
 reads their health and connections and drives the sidecar runner.
@@ -67,7 +68,9 @@ files in `internal/adapter/core`, with their tests; the bodies of `Server`'s met
 `NewServer`, and of `Conn`'s `Settings`, `Established`, `Keep` and `Close`; `Framer.BodyLen`'s
 last-fragment flag and `Framer.MaxRecord`, as the RFC 20 amendment #4478 states them (beside its
 `Framer.Frame(dst []byte, body int) []byte`, which E5's T5.1a adds and this epic's writer calls), in `core`,
-`core.golden` and `testproto`'s framer; `pkg/adapter`'s port sentinel, `ErrPortChanged`, with `adapter.golden` (G9, T4.6); the connection series beside T5.9's in `metrics.go`; the
+`core.golden` and `testproto`'s framer; `pkg/adapter`'s port sentinel, `ErrPortChanged`, with `adapter.golden` (G9, T4.6);
+`pkg/resources`' connection count, `ConnLimit` and `Budgets.Conns`, as RFC 24 §2.5 states them,
+with `resources.golden` (G1, T4.2b); the connection series beside T5.9's in `metrics.go`; the
 three edits to epic 5's `pipeline.go` this document names, each by one subtask: the link's
 `idle` (T4.7a), the drain's call of `MoveTarget` (T4.5b) and the pipeline's own closes made
 tellable (T4.11); `internal/sidecar`; the end-to-end entry's `message` and then its removal in
@@ -93,7 +96,9 @@ epic 5 and epic 2 documents' lines §9 names.
   refuses a TLS mode other than off, so `Reconfigure` loads no file (G7, #4533).
 - What the node does with an adapter (building it, the order of start and stop, reconcile,
   `adapter_refused`, the condition registry, every budget checked at zero after the adapters
-  stop, the retrier behind `Deps.Retry`): E7. The concrete sidecars, mDNS, WS-Discovery, the port mapper and rpcbind
+  stop, the retrier behind `Deps.Retry`, `Budgets.Conns` built from `connection_limit` and its
+  `SetLimit` called when reconcile applies a change RFC 24 §2.7's check passes, the sidecar
+  runner's `Close` after the adapters stop): E7. The concrete sidecars, mDNS, WS-Discovery, the port mapper and rpcbind
   registration: the ledger's row "concrete sidecars"; each sidecar's own idempotent `Sync`
   is its contract (RFC 20 §3.5).
 - The pipeline benchmark and its allocation gate, which run this epic's reader and writer:
@@ -130,8 +135,9 @@ epic 5 and epic 2 documents' lines §9 names.
 - **Pipe test**: a test in `package core_test` that hands a connection one end of a `net.Pipe`
   through `hooks_test.go`, in a `testing/synctest` bubble where time decides, and ends with
   `CheckLeaks`.
-- **G1 to G12**: the RFC gaps of §9, each with its recommendation, which a subtask's
-  **Waits for** names; none is settled here: the RFC 20 amendment #4533 settles each.
+- **G1 to G12**: the RFC gaps of §9, each settled as its recommendation says by the RFC 20
+  amendment #4533, merged; a subtask's **Waits for** names the ones it builds on and the
+  section that now states each. **G13**, found since, is open and blocks nothing.
 
 ## 2. How the general rules apply
 
@@ -149,7 +155,7 @@ cited by number and title, and how it applies here or why it does not.
 | rule 6, nothing deferred is lost | T4.1, T4.6, T4.5b, T4.11 | the ledger rows §1.2 cites; §9 proposes the rows G7 and G8 need, and the close-reasons row leaving the ledger with T4.11 |
 | rule 7, code comment conventions ([`CLAUDE.md`, Code comments](../../../CLAUDE.md#code-comments)) | all | each decision of §4 leaves the marker it names at its code site. Of RFC 20's notes the rule lists, two are this epic's: `Addrs` live, at `Reconfigure` (T4.6), and no self-probe, at `Health` (T4.7b) |
 | rule 8, a test must be able to fail ([`CLAUDE.md`, Writing tests](../../../CLAUDE.md#writing-tests)) | all | each test in §6 names the change that fails it. The end-to-end specification's `message` follows its first failure (T4.1) until T4.2a turns it green and removes its entry |
-| rule 9, a symbol is exported only if RFC 20's interface uses it | T4.3, T4.6 | `core` gains `Framer.BodyLen`'s `last` and `Framer.MaxRecord`, as the amendment #4478 states them, with `core.golden` (T4.3); `pkg/adapter` gains the port sentinel, `ErrPortChanged`, as #4533 names it (G9, T4.6), with `adapter.golden`. Every other symbol is unexported; G1 and G8's recommendations would add surface only through their amendments |
+| rule 9, a symbol is exported only if RFC 20's interface uses it | T4.3, T4.6, T4.2b | `core` gains `Framer.BodyLen`'s `last` and `Framer.MaxRecord`, as the amendment #4478 states them, with `core.golden` (T4.3); `pkg/adapter` gains the port sentinel, `ErrPortChanged`, as #4533 named it (G9, T4.6), with `adapter.golden`; `pkg/resources` gains `ConnLimit`, `NewConnLimit`, `Take`, `Release`, `SetLimit`, `ErrConnLimit`, `ErrConnQuarter` and `Budgets.Conns`, as RFC 24 §2.5 states them since #4533 settled G1 (T4.2b), with `resources.golden`. Every other symbol is unexported but the sidecar runner's, internal to the module (D9); G13's reader would add surface only through its amendment |
 | rule 10, each subtask creates only what it declares | all | each file lands with its first consumer; `internal/sidecar` lands with its tests, as RFC 20 §2.5 places it, and is driven by E7; no hook in `hooks_test.go` lands before the test that reaches through it |
 
 ## 3. Requirements and invariants
@@ -164,7 +170,7 @@ cited by number and title, and how it applies here or why it does not.
 | R2 | While configured no socket is open, `NewServer` opens nothing, and a setting the adapter cannot apply fails there, not at the first request: a listener on a network `core` serves no listener for is refused | MUST | §3.1, §3.4; the deferral ledger's row "`core`'s datagram listener" | T4.1 |
 | R3 | `NewServer` refuses an empty listener set, a listener naming no service, an empty one or one twice, and two listeners naming the same `Socket` or the same network and nonzero port | MUST | §4.7 (`NewServer`) | T4.1 |
 | R4 | `Start` succeeds only once every listener is bound on each of the settings' `Addrs` at its port; a partial bind is a failed start that closes what it opened, and its error names what failed; with an empty `Addrs` it binds nothing and the adapter serves, ready, on no address | MUST | §3.1, §3.4, §4.7 (`NewServer`, `Listener`) | T4.1 |
-| R5 | `Start` after `Stop` is refused; `Stop` is idempotent, a second call returning once the adapter is stopped | MUST | §3.4 | T4.1, T4.5a |
+| R5 | `Start` from any state but configured is refused with an error naming the state; `Stop` moves a configured adapter to stopped; `Stop` is idempotent, a second call returning once the adapter is stopped | MUST | §3.4 | T4.1, T4.5a |
 | R6 | `Addrs` is every address each listener is bound on now, one `Socket` per service it names on its network, each address as the settings name it with the port bound there, a port of 0 resolved and `0.0.0.0` reported as itself; a fresh map the caller owns, slices included; an address `Reconfigure` added present and one it removed gone; empty before `Start` and after `Stop` | MUST | §3.4 (`Addrs`), §4.7 (`Listener`) | T4.1, T4.6 |
 
 **Accept**
@@ -174,8 +180,9 @@ cited by number and title, and how it applies here or why it does not.
 | R7 | Each connection is charged its fixed cost, 64 KiB as RFC 24 proposes, its read buffer included, to the connection-state budget at accept; one that cannot be charged is closed at once, before any byte is read | MUST | §3.2; RFC 24 §4.4 | T4.2a |
 | R8 | A connection past the node's `connection_limit`, or from an address already holding a quarter of it, is closed at accept, before any byte is read, never left in the listen backlog; such an address is named in a log line at warning at most once a minute | MUST | §3.2, §6.4; RFC 24 §4.4, §10 | T4.2b |
 | R9 | One address opening connections in a loop is held at a quarter of the limit, and another address still connects | test row | RFC 24 §9 R10 | T4.2b |
-| R10 | An `Accept` error the listener can recover from is retried after a backoff from 10 ms doubling to 1 s; failing for 60 s raises `adapter_listener_lost`, derived from current evidence and cleared when it no longer holds | MUST | §6.4, §3.7; RFC 25 §3.4 | T4.2a |
-| R11 | Each accept loop reports a turn through `Deps.Watch`, or reports idle through an accept deadline that wakes it at least every 30 s; a nil `Watch` watches nothing; a connection's reader is not watched | MUST | §3.4 (`Deps.Watch`), §3.7; RFC 25 §3.5 | T4.7b |
+| R60 | One count, `Budgets.Conns`, spans every adapter of the node: each accept takes from it for the remote address and the connection's teardown gives back, so NFS's and SMB's connections share the limit and each address's quarter; `SetLimit` applies a changed limit to connections accepted afterwards, and those open stay | MUST | §3.6; RFC 24 §2.5, §4.4 | T4.2b |
+| R10 | Every `Accept` error is retried after a backoff from 10 ms doubling to 1 s, but the listener's own close (`net.ErrClosed`), which ends its loop, and the accept deadline's own wake, which reports idle (R11); `adapter_listener_lost` holds while `Accept` keeps failing, its last failure within 2 s and the run's first 60 s back, and clears at the next accepted connection or 2 s after the last failure | MUST | §6.4 (the deadline's wake as #4583 amends it), §3.7; RFC 25 §3.4 | T4.2a, T4.7b |
+| R11 | Each accept loop reports a turn through `Deps.Watch`, or reports idle through an accept deadline that wakes it at least every 30 s, a wake that is no `Accept` failure (R10); a nil `Watch` watches nothing; a connection's reader is not watched | MUST | §3.4 (`Deps.Watch`), §3.7; RFC 25 §3.5 | T4.7b |
 
 **The connection**
 
@@ -211,7 +218,7 @@ cited by number and title, and how it applies here or why it does not.
 | --- | --- | --- | --- | --- |
 | R30 | The writer sends whole messages, never interleaves two and transforms none; it frames each with `Framer.Frame` and writes the header and the message together; a failed write closes the connection | MUST | §6.2; §4.7 (`Framer.Frame`, as amended) | T4.4 |
 | R31 | A message handed with `before` goes out ahead of the reply of that key still queued; every other message goes out as it completes | MUST | §6.2, §3.3; the epic 5 document's D1 | T4.4 |
-| R32 | The writer's queue is bounded by the connection's flow-control bound, counting every message `out` takes; `out` never blocks its caller, also past the bound, takes the message's reference whatever it returns and fails only once the connection is closed; at the bound the reader stops reading until the queue falls below it | MUST | §6.1, §6.2; RFC 24 §5.1; the epic 5 document's D1 | T4.4, T4.10 |
+| R32 | The writer's queue is bounded at 64 messages for every protocol, counting every message `out` takes; `out` never blocks its caller, also past the bound, takes the message's reference whatever it returns and fails only once the connection is closed; at the bound the reader stops reading until the queue falls below it | MUST | §6.1, §6.2; RFC 24 §5.1; the epic 5 document's D1 | T4.4, T4.10 |
 | R33 | On each wake the writer drains every queued message into one gathered write | invariant | §6.6 (coalesced sends), §6.9 | T4.4 |
 | R34 | A message not written within `write_timeout` closes the connection | MUST | §6.4 | T4.4 |
 | R35 | A buffer holding a reply is never reused before the writer has sent it: the writer holds its reference from queueing until the bytes are on the socket, and releases it once sent or discarded | invariant | §5.3, §6.8 | T4.4 |
@@ -238,8 +245,8 @@ cited by number and title, and how it applies here or why it does not.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R42 | `Reconfigure` refuses the other protocol's shape, any other type, and settings `Validate` refuses; a refusal leaves the adapter as it was | MUST | §3.4 (`Reconfigure`), §3.6 | T4.6 |
-| R43 | `Reconfigure` refuses a changed `port` with a sentinel error, comparing that field alone | MUST | §3.6 | T4.6 |
-| R44 | `Reconfigure` opens the listeners of an added address, all or none, before the snapshot changes, and closes a removed address's listeners and every connection accepted on them after; the other addresses serve on | MUST | §3.1 (`Reconfigure`), §3.6 | T4.6 |
+| R43 | `Reconfigure` refuses a changed `port` with `adapter.ErrPortChanged`, comparing that field alone | MUST | §3.4, §3.6 | T4.6 |
+| R44 | `Reconfigure` opens the listeners of an added address, all or none, before the snapshot changes, and closes a removed address's listeners and every connection accepted on them after, returning once those are torn down; the other addresses serve on. While configured it binds nothing and replaces what `Start` will bind; while draining or stopped it is refused | MUST | §3.1 (`Reconfigure`), §3.4, §3.6 | T4.6 |
 | R45 | `Reconfigure` loads no TLS file: `Validate` refuses a TLS mode other than off until `StartTLS` (G7), and the loading is the ledger's NFS-over-TLS row's | MUST | §3.6, §5.5 | T4.6 |
 | R46 | `core`'s tests show on `testproto` over the in-memory service that an open connection keeps its settings, a new one gets the new ones, a removed address's connections close, and a bind that fails changes nothing | test row | §3.6 | T4.6 |
 
@@ -273,7 +280,7 @@ cited by number and title, and how it applies here or why it does not.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R56 | A sidecar is synced with those of its `Adapters` now serving, each `Serving` built from the adapter's `Addrs`: after the adapter is serving, before a `Reconfigure` that removes an address (that address left out), again after every `Reconfigure` returns whatever it returned, and before the adapter starts draining; with none to stop it; a disabled one with the empty set | MUST | §3.5, §3.6 | T4.9 |
-| R57 | A failing sidecar fails only itself: it raises `sidecar_failed` naming it, and the adapters keep serving and stay ready | MUST | §3.5, §3.7, A19 | T4.9 |
+| R57 | A failing sidecar fails only itself: it raises `sidecar_failed` naming it, and the adapters keep serving and stay ready; its `Sync` is called again with the last set after a backoff from 1 s doubling to 30 s until one succeeds, and it is named until then | MUST | §3.5, §3.7, A19 | T4.9 |
 
 What other epics and plans own of these sections: the pipeline's stages and their refusals,
 the cap of 64, the reply reservation, the status's 30 s wait and `Conn.Send` (E5); `vfs.Callbacks`, the callback deadline and `Deps.DialClient` (the RFC 21 and RFC 22 plans, the program's §6.2); each
@@ -293,10 +300,13 @@ allocator in `Deps`", the compiler, since `Deps` has no such field.
 ## 4. Decisions this epic takes
 
 - **D1, a listener is bound by its address's family, and `Addrs` reports the settings'
-  address.** Each listener is bound on each address of `Addrs` with `tcp4` for an IPv4 address
-  and `tcp6` for an IPv6 one, and `Addrs` reports that address with the port the socket bound.
+  address.** Each listener is bound on each address of `Addrs`, unmapped first as `Validate`
+  counts it, with `tcp4` for an IPv4 address, an IPv4-mapped IPv6 one included, and `tcp6` for
+  every other IPv6 one, and `Addrs` reports the address as the settings name it, mapped or not,
+  with the port the socket bound (RFC 20 §3.6).
   Go binds a wildcard on `tcp` as a dual-stack IPv6 socket, which reports `[::]` and would
-  collide with a second listener on `::` at the same port; on `tcp6` it sets `IPV6_V6ONLY`.
+  collide with a second listener on `::` at the same port; on `tcp6` it sets `IPV6_V6ONLY`, so
+  a mapped address bound there would reach no IPv4 client.
   Checked in Go 1.26's source: `favoriteAddrFamily` in `src/net/ipsock_posix.go` returns
   `AF_INET6`, not V6-only, for a wildcard on `tcp`, and V6-only for a network ending in `6`.
   `decision:` at the bind. Overturned if a deployment needs one dual-stack socket per wildcard.
@@ -313,12 +323,18 @@ allocator in `Deps`", the compiler, since `Deps` has no such field.
   `conn.serve`, the connection's reading goroutine, closes it in a deferred call (checked in
   Go 1.26's `src/net/http/server.go`). `decision:` at `Conn.Close`.
 - **D3, the timers this epic arms run on the server's clock.** The handshake and idle timers,
-  the accept backoff and its 60 s, the accept deadline, the drain deadline and the per-address
-  warning's minute (T4.2b) are armed through the clock in `shared` (the epic 5 document's D24),
+  the accept backoff with its 60 s and its 2 s, the accept deadline, the drain deadline, and the
+  minute that rate-limits a close's line at accept, per reason (T4.11) and per address
+  (T4.2b), are armed through the clock in `shared` (the epic 5 document's D24),
   which a loopback test advances once an event it can wait on has happened. The accept deadline
   wakes `Accept` this way: its timer, firing on that clock, sets the listener's deadline in the
-  past, so `Accept` returns and the loop reports `Idle`; the listener carries no 10 s deadline
-  of its own. A socket's read and write deadlines are the socket's own, and so is a deadline on
+  past, so `Accept` returns an error matching `os.ErrDeadlineExceeded`; the listener carries no
+  10 s deadline of its own. That wake is no `Accept` failure: the loop reports `Idle`, clears
+  the listener's deadline, arms the next 10 s and calls `Accept` again with no backoff, and the
+  run behind `adapter_listener_lost` neither starts nor grows (RFC 20 §6.4, as #4583 amends
+  it). The sidecar runner, which has no `shared`, arms its retry backoff on a clock of its own
+  that a test sets through `export_test.go` (T4.9).
+  A socket's read and write deadlines are the socket's own, and so is a deadline on
   a context, `Stop`'s among them, which runs on the runtime's time: each is tested with short
   real deadlines over loopback, or on a `net.Pipe` in a `synctest` bubble, where both run on the
   bubble's time.
@@ -335,7 +351,7 @@ allocator in `Deps`", the compiler, since `Deps` has no such field.
   message per wake into one `net.Buffers`, `Frame`'s header before each body; a channel closed
   when the queue falls below its bound releases a paused reader. The bound is 64 messages,
   RFC 20 §6.3's cap, which for `testproto`'s credit target is the flow-control bound too, and
-  for every protocol as #4533 settles G4. `ponytail:` at the bound, naming RFC 24 §5.1's
+  for every protocol as #4533 settled G4. `ponytail:` at the bound, naming RFC 24 §5.1's
   upgrade, the connection's flow-control bound. Prior art: E5's recorder in `out_test.go`, held to the same suite.
 - **D6, one accept loop per bound socket, a fixed loop.** It accepts, charges, and builds the
   connection on its own goroutine, then starts the connection's two; its accept deadline is
@@ -361,7 +377,8 @@ allocator in `Deps`", the compiler, since `Deps` has no such field.
   `Start`, `Reconfigure` and `Stop` on a named `adapter.Adapter`, each with its Syncs, and
   `SetEnabled`; `Failed` names the sidecars whose last `Sync` failed, which E7's node raises
   as `sidecar_failed`. Each `Sync` runs under the caller's context; a failure leaves the others
-  synced. v1's `pkg/adapter/sidecar.Group` on develop starts and stops services one by one and
+  synced. A failed `Sync` is called again with its last set on RFC 20 §3.5's backoff, under a
+  context `Close` ends, until one succeeds. v1's `pkg/adapter/sidecar.Group` on develop starts and stops services one by one and
   is not lifted: RFC 20's `Sidecar` is synced with a set. `decision:` at the runner.
 
 ## 5. Target tree
@@ -393,20 +410,28 @@ internal/adapter/adaptertest/testproto/
 internal/adapter/core/out_test.go       E5's; T4.3: its reader of BodyLen's three results
 pkg/adapter/
   adapter.go                            T4.6: the port sentinel, ErrPortChanged (G9)
+  deps.go                               T4.2b: Deps.Budgets' comment names the count
 internal/adapter/core/testdata/surface/adapter.golden   T4.6: the port sentinel
+pkg/resources/
+  budget.go  budget_test.go             T4.2b: ConnLimit, Budgets.Conns (G1, RFC 24 §2.5)
+internal/adapter/core/testdata/surface/resources.golden T4.2b: ConnLimit, Budgets.Conns
 internal/sidecar/
   runner.go  runner_test.go             T4.9
+  export_test.go                        T4.9: the retry's clock
 test/adapter/known.yaml                 T4.1: the end-to-end entry's message; T4.2a: removed
 ```
 
 Symbols this epic adds outside `core`'s unexported code: `Framer.BodyLen(hdr []byte) (n int,
 last bool, err error)` and `Framer.MaxRecord() (bytes, fragments int)`, as the amendment #4478
-states them (T4.3); the port sentinel, `adapter.ErrPortChanged`, as #4533 settles G9 (T4.6); in
+states them (T4.3); the port sentinel, `adapter.ErrPortChanged`, as #4533 settled G9 (T4.6);
+in `pkg/resources`, `ConnLimit`, `NewConnLimit(limit int) *ConnLimit`, `(*ConnLimit).Take(addr
+netip.Addr) error`, `(*ConnLimit).Release(addr netip.Addr)`, `(*ConnLimit).SetLimit(limit int)`,
+`ErrConnLimit`, `ErrConnQuarter` and `Budgets.Conns`, as RFC 24 §2.5 states them (T4.2b); in
 `internal/sidecar`, `Runner`, `New(ss ...adapter.Sidecar) *Runner`, `(*Runner).Start(ctx,
 name string, a adapter.Adapter) error`, `(*Runner).Reconfigure(ctx, name string, a
 adapter.Adapter, next settings.Settings) error`, `(*Runner).Stop(ctx, name string, a
-adapter.Adapter) error`, `(*Runner).SetEnabled(ctx, sidecar string, on bool) error` and
-`(*Runner).Failed() []string` (T4.9, D9), internal to the module. The unexported surface
+adapter.Adapter) error`, `(*Runner).SetEnabled(ctx, sidecar string, on bool) error`,
+`(*Runner).Failed() []string` and `(*Runner).Close()` (T4.9, D9), internal to the module. The unexported surface
 inside `core`: `writer` with `out(msg *resources.Buf, key, before uint64) error`, the record
 cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the registry, and
 `link.idle func()` (D8).
@@ -418,15 +443,18 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 **Subtask T4.1 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** none. S2 holds, so it can start now.
-- **Waits for:** G5 (#4533), for `Stop` on a configured adapter and `Start` on one that is not.
+- **Waits for:** nothing: #4533 settled G5 in RFC 20 §3.1 and §3.4, `Stop` on a configured
+  adapter and `Start` on one that is not.
 - **Covers:** R1 (the states), R2, R3, R4, R5 (with no connection), R6 (but `Reconfigure`'s
   addresses).
 - **Deliverables:** in `server.go`: `Server`'s fields (listeners, state, the settings snapshot
   in an `atomic.Pointer` as RFC 20 §3.6 sketches it, the bound sockets and a mutex; its `Deps`
   field lands with T4.2a, its first reader); `NewServer`'s refusals of R3, and of a listener on another network than TCP with an
   error wrapping `errors.ErrUnsupported` and a `decision:` withdrawn by the ledger's datagram
-  listener (R2); `Start` binding each listener on each address by its family (D1), all or none;
-  `Stop` closing the listeners and moving to stopped, idempotent; `Addrs`; `Health`'s state.
+  listener (R2); `Start` binding each listener on each address by its family, an IPv4-mapped
+  one unmapped (D1), all or none, and refused from any state but configured, naming it; `Stop`
+  closing the listeners and moving to stopped, from configured too, idempotent; `Addrs`;
+  `Health`'s state.
   `TestConformanceEchoEndToEnd`'s `message` in `test/adapter/known.yaml` follows its new first
   failure, the reply's read past its backstop (`i/o timeout`), since nothing accepts yet.
   Consumed by every later subtask; by E6's `New` and E7.
@@ -440,21 +468,27 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
     `Addrs` reports each service of each listener under its `Socket`, each address with a
     nonzero port. One with `0.0.0.0` reports `0.0.0.0:<port>`, and a dial to `::1` at that port
     is refused.
+  - `Start` with `Addrs` `::ffff:127.0.0.1` binds on `tcp4`: a dial to `127.0.0.1` at the port
+    is accepted, and `Addrs` reports `[::ffff:127.0.0.1]:<port>`, as the settings name it.
   - A listener whose port the test holds fails `Start`, naming it and the address; the other
     listener's sockets are closed (a dial is refused) and the state is configured.
   - Mutating the map `Addrs` returned, and a slice in it, leaves the next call's answer as it
     was.
   - `Stop` after `Start` closes every socket, empties `Addrs` and reports stopped; a second
     `Stop` returns nil; `Start` after `Stop` is refused; `Health().Ready()` holds only while
-    serving.
+    serving. `Start` on a serving server is refused, naming `serving`, and `Stop` on a
+    configured one reports stopped with nothing bound.
 - **Tests:** loopback tests in `server_test.go`, no connection served, each ending with
   `CheckLeaks`. The refusals (catch a check left out, which E6's `New` would pass to a server
   that binds one port twice). The two addresses and the wildcard (catch a bind on `tcp`, under
   which the wildcard is reported `[::]` or its port answers IPv6; skipped where `::1` cannot be
-  bound). The empty `Addrs` (catches a `Start` that refuses it or reports the adapter not
+  bound). The mapped address (catches it bound on `tcp6`, V6-only, where no IPv4 client
+  reaches it, or reported unmapped, RFC 20 §3.6). The empty `Addrs` (catches a `Start` that
+  refuses it or reports the adapter not
   ready, R4). The held port (catches a partial bind left open, R4). The mutated map (catches the
-  server's own map handed out). `Stop` twice and `Start` after `Stop` (catch a second `Stop`
-  that errors and a stopped server started again, R5).
+  server's own map handed out). `Stop` twice, `Start` after `Stop` and on a serving server, and
+  `Stop` before `Start` (catch a second `Stop` that errors, a stopped or serving server started
+  again, and a configured one `Stop` leaves configured, R5).
 - **Rules:** rule 7: D1's `decision:`, and the `udp` refusal's; rule 8: the end-to-end entry's
   `message`.
 
@@ -464,8 +498,8 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 
 - **Track:** B. **Depends on:** none. The RFC 20 amendment #4478 merged first, since it states
   `BodyLen`'s `last` and `MaxRecord` (rule 9).
-- **Waits for:** G10 (#4533), for whether the frame deadline runs while the reader waits for
-  receive room.
+- **Waits for:** nothing: #4533 settled G10 in RFC 20 §6.4 and RFC 24 §3.2, the frame deadline
+  stopped while the reader waits for receive room.
 - **Covers:** R23, R24, R25, R26, R27, R28, R29 (its named case).
 - **Deliverables:** in `protocol.go`, `Framer.BodyLen`'s three results and `MaxRecord`, with
   `core.golden`; `testproto`'s framer with D4's flag and `MaxRecord`, its vectors and
@@ -495,7 +529,7 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
     fragment's header; a connection that sends nothing for longer is not timed out, the
     deadline disarmed between records; and a record whose header arrives while the receive
     budget is held full past 100 ms is not timed out, and comes out whole when its body arrives
-    within 100 ms of the grant (RFC 20 §6.4 as #4533 settles G10).
+    within 100 ms of the grant (RFC 20 §6.4 as #4533 settled G10).
 - **Tests:** in `reader_test.go`, through `hooks_test.go`, on a loopback pair the test opens,
   each ending with `CheckLeaks`. The sizes and the burst (catch a cut from the wrong offset, a
   part read lost when the rest is read, and a burst served as one record). The over-cap header
@@ -517,8 +551,8 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 
 - **Track:** B. **Depends on:** T5.1a. Its suite of `out` and `Framer.Frame`, which RFC 20 §4.7
   declares as #4478 amends it.
-- **Waits for:** nothing: G4 (#4533) settles a protocol's own bound and a gathered write's deadline, and
-  neither changes `testproto`'s case.
+- **Waits for:** nothing: #4533 settled G4 in RFC 24 §5.1 and RFC 20 §6.4, 64 messages for
+  every protocol and the deadline per gathered write.
 - **Covers:** R18 (the writer's half), R30, R31, R32 (`out` and the bound), R33, R34, R35.
 - **Deliverables:** `writer.go`: `writer`, built over a `net.Conn`, the protocol's `Framer`,
   `write_timeout` from the connection's snapshot and `Conn.Close`; its `out` with D1's signature
@@ -545,7 +579,8 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 **Subtask T4.10 estimate: 3.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.1, T4.3, T4.4, T5.1a.
-- **Waits for:** G3 (#4533), for the context `OnClose` runs under.
+- **Waits for:** nothing: #4533 settled G3 in RFC 20 §3.2 and §4.7, the context `OnClose` runs
+  under.
 - **Covers:** R12, R13, R14, R15, R16, R17, R18, R19, R20 (the connection's goroutines), R21,
   R22, R29 (the fuzz), R32 (the reader's pause).
 - **Deliverables:** in `server.go`, the receive and reply pools of each `Server` and
@@ -604,14 +639,19 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 **Subtask T4.2a estimate: 1.75 man-days.**
 
 - **Track:** B. **Depends on:** T4.10.
-- **Waits for:** G6 (#4533), for which `Accept` errors are retried.
+- **Waits for:** nothing: #4533 settled G6 in RFC 20 §6.4, every `Accept` error but the
+  listener's own close retried, and the condition's clearing.
 - **Covers:** R1 (`adapter_listener_lost` in `Health`), R7, R10, R20 (the accept loops).
 - **Deliverables:** `accept.go`: one accept loop per bound socket, started by `Start` and ended
   by `Stop` (D6); each accepted socket charged 64 KiB from the connection-state budget, closed
   at once when refused, else handed to `serveConn`, the charge released by the teardown; the
-  backoff lifted from develop's `pkg/adapter/base.go`; a listener failing 60 s marked lost,
-  which `Health` reports as `adapter_listener_lost` until its next accepted connection; the
-  backoff and the 60 s on the server's clock (D3). `TestConformanceEchoEndToEnd` now passes:
+  backoff lifted from develop's `pkg/adapter/base.go`, after every `Accept` error but the
+  listener's own close (`net.ErrClosed`), which ends the loop, and the accept deadline's wake,
+  which T4.7b adds with the deadline and which is no failure (D3); `adapter_listener_lost` in
+  `Health` while `Accept` keeps failing, its last failure within 2 s and the run's first 60 s
+  back, cleared at the next accepted connection or 2 s after the last failure (RFC 20 §6.4,
+  §3.7), since an adapter that is not ready gets no client to clear it; the backoff, the 60 s
+  and the 2 s on the server's clock (D3). `TestConformanceEchoEndToEnd` now passes:
   its entry leaves `test/adapter/known.yaml` once CI shows it passing. Consumed by T4.7a, T4.5a,
   T4.6, T4.7b, T4.8 and T4.2b; E5's T5.1c.
 - **Acceptance criteria:**
@@ -623,11 +663,15 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
     is accepted 10 ms after the fault is released; after 5 s of failures, within 1 s of it.
   - `Health` reports `adapter_listener_lost` after 60 s of failures and not at 59 s, and clears
     it at the next accepted connection.
+  - After 60 s of failures the fault is released and no client dials: `Health` still reports
+    `adapter_listener_lost` 1 s after the last failure, and no longer 2 s after it.
 - **Tests:** loopback tests in `accept_test.go`; the failing listener (kind 3) with the
   server's clock. The budget short by a byte (catches the charge skipped or taken after a read,
   R7). The two connections (catches a charge never released). The release after one failure,
   and after 5 s (catch a fixed 1 s delay and a backoff past its 1 s cap, R10). The 59 s and
-  60 s (catch the condition raised at the first failure, never raised, or latched, R10).
+  60 s (catch the condition raised at the first failure, never raised, or latched, R10). The
+  released fault with no client (catches a condition cleared only by an accepted connection,
+  which leaves the adapter unhealthy after the fault ends, R10).
 - **Rules:** rule 5: the backoff lifted; rule 8: the end-to-end entry removed.
 
 ### T4.7a The handshake and idle deadlines: `Established` and `Keep`
@@ -666,7 +710,8 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 **Subtask T4.5a estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.7a.
-- **Waits for:** G3 (#4533), for the drain deadline and how long `Stop` waits for `OnClose`.
+- **Waits for:** nothing: #4533 settled G3 in RFC 20 §3.1 and §3.4, the drain deadline and how
+  long `Stop` waits for `OnClose`.
 - **Covers:** R5 (with connections), R38, R39, R40.
 - **Deliverables:** in `server.go`, `Stop`: draining, the accept loops ended and the listeners
   closed; `drain` on every connection's pipeline, and on one being built, before its first
@@ -705,14 +750,17 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 **Subtask T4.6 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.2a.
-- **Waits for:** #4533, which settles G7, for the TLS files; G9, for the sentinel's name and package; G5, for
-  `Reconfigure` while configured, draining or stopped.
+- **Waits for:** nothing: #4533 settled G7 in RFC 20 §3.6 and §5.5, no TLS file loaded; G9 in
+  §3.4 and §3.6, `adapter.ErrPortChanged`; G5 in §3.1 and §3.4, `Reconfigure` while configured,
+  draining or stopped.
 - **Covers:** R6 (the added and removed addresses), R12 (across a change), R42, R43, R44, R45,
   R46.
 - **Deliverables:** `reconfigure.go`: the other shape refused; `Validate`; the changed `port`
-  refused with the sentinel (G9) in `pkg/adapter`, with `adapter.golden`; no TLS file loaded,
+  refused with `ErrPortChanged` (G9) in `pkg/adapter`, with `adapter.golden`; no TLS file loaded,
   since `Validate` refuses a mode other than off until `StartTLS` (G7); an added address's listeners bound all or none before the snapshot swap and
-  their accept loops started; a removed address's listeners and their connections closed after;
+  their accept loops started; a removed address's listeners and their connections closed after,
+  and torn down before it returns; while configured, the settings `Start` will bind replaced
+  with nothing bound; while draining or stopped, refused naming the state (G5);
   the `decision:` RFC 20 §3.6 states for `Addrs` being live. Consumed by T4.9; E6's T6.4b (the
   range read from a connection's snapshot); E7.
 - **Acceptance criteria:**
@@ -723,49 +771,65 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
     after negotiates 1.
   - Adding `::1` binds it before `Reconfigure` returns, reported by `Addrs`; a held port on an
     added address fails it with nothing changed.
-  - Removing `127.0.0.2`'s address closes its listener and its connections, while a connection
-    on `127.0.0.1` is answered; `Addrs` no longer reports it.
+  - Removing `127.0.0.2`'s address closes its listener and its connections before `Reconfigure`
+    returns, while a connection on `127.0.0.1` is answered; `Addrs` no longer reports it.
+  - On a configured server, `Reconfigure` adding `::1` binds nothing, and `Start` then binds
+    it; on a stopped one it is refused, naming the state.
 - **Tests:** loopback tests in `reconfigure_test.go`. The refusals (catch a check left out, and
   a snapshot swapped before a refusal, R42, R43). `MaxVersion` (catches a snapshot read live by
   an open connection, R12, R46). The added address and the held port (catch a swap before the
   bind, and a partial bind kept, R44, R46). The removed address (catches its connections left
-  open, or the others closed, R44). Each removal address is skipped where the loopback has no
-  second address to bind.
-- **Rules:** rule 6: the TLS row as G7 settles it; rule 7: `Addrs` live; rule 9: the sentinel.
+  open or torn down after `Reconfigure` returns, or the others closed, R44). The configured and
+  stopped servers (catch a bind before `Start`, and a stopped server reconfigured, R44). Each
+  removal address is skipped where the loopback has no second address to bind.
+- **Rules:** rule 6: the TLS row as G7 settled it; rule 7: `Addrs` live; rule 9: the sentinel.
 
 ### T4.7b Liveness and `Connections`
 
 **Subtask T4.7b estimate: 1.25 man-days.**
 
 - **Track:** B. **Depends on:** T4.2a.
-- **Waits for:** G8 (#4533), for `ConnInfo`'s `Protocol` and `Session`.
-- **Covers:** R11, R51.
+- **Waits for:** nothing: #4533 settled G8 in RFC 20 §3.4, `ConnInfo`'s `Protocol` and
+  `Session`.
+- **Covers:** R10 (the deadline's wake), R11, R51.
 - **Deliverables:** in `accept.go`, each accept loop registered with `Deps.Watch` at bind and
   closed at unbind, reporting `Turn` per accepted connection and `Idle` at its 10 s accept
-  deadline (D6), nothing with a nil `Watch`; in `server.go`, `Connections` from the registry;
+  deadline (D6), whose wake is no failure: it re-arms the deadline and calls `Accept` again with
+  no backoff (D3); nothing with a nil `Watch`; in `server.go`, `Connections` from the registry,
+  `Protocol` the first service of the connection's listener and `Session` empty;
   the `decision:` RFC 20 §3.7 states for no self-probe, at `Health`. Consumed by E7, which
   reports both.
 - **Acceptance criteria:**
   - A `Watch` declared in the test sees one loop per bound socket, a `Turn` per connection,
     an `Idle` at each 10 s of no connection, and each loop closed by `Stop`; a nil `Watch`
     serves as before.
-  - `Connections` lists each open connection with its remote address and accept time, and no
-    longer one that closed.
+  - With no client for 120 s on the server's clock, each loop reports an `Idle` at each 10 s,
+    `Health`, read after each wake, never reports `adapter_listener_lost`, and a dial then is
+    served with the clock not advanced.
+  - `Connections` lists each open connection with its `Protocol`, the first service its
+    listener names, its remote address, an empty `Session` and its accept time, and no longer
+    one that closed.
 - **Tests:** loopback tests in `accept_test.go` and `conn_test.go`. The `Watch` with the clock
   advanced (catches an accept loop that blocks in `Accept` with no deadline, failing liveness
-  while idle, R11). `Connections` (catches a registry entry left after a close).
+  while idle, R11). The 120 s with no client (catches the deadline's wake counted as an
+  `Accept` failure, which backs off the next accept and, past 60 s, can raise the condition at
+  each wake, R10). `Connections`, over a listener naming two services (catches a registry
+  entry left after a close, and `Protocol` read from a service other than the first, R51).
 
 ### T4.9 The sidecar runner
 
-**Subtask T4.9 estimate: 2 man-days.**
+**Subtask T4.9 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.6.
-- **Waits for:** G11 (#4533), for retrying a failed `Sync`.
+- **Waits for:** nothing: #4533 settled G11 in RFC 20 §3.5, a failed `Sync` called again.
 - **Covers:** R56, R57.
 - **Deliverables:** `internal/sidecar/runner.go`, D9's `Runner`: each sidecar synced with
   the `Serving` of those of its adapters now serving, built from their `Addrs`, in R56's order
   around each adapter's `Start`, `Reconfigure` and `Stop`; a disabled sidecar synced with the
-  empty set; `Failed`. Consumed by E7.
+  empty set; a failed `Sync` called again with the sidecar's last set after a backoff from 1 s
+  doubling to 30 s, until one succeeds; `Failed`, naming it until then; `Close`, which ends
+  the retries. The backoff runs on a clock `export_test.go` sets (D3). Consumed by E7, which
+  calls `Close` after its adapters stop.
 - **Acceptance criteria:**
   - Over two `testproto` servers named `nfs` and `smb` and a sidecar declared in the test that
     serves `nfs` alone: after `Start`, it holds `nfs`'s addresses; before a `Reconfigure` that
@@ -775,12 +839,18 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   - Disabled, it holds nothing; enabled again, `nfs`'s addresses.
   - A sidecar whose `Sync` fails on cue is named by `Failed`, the other sidecar is synced, and
     both servers report ready.
+  - A sidecar whose `Sync` fails twice and then succeeds, the clock advanced by the test, is
+    called again 1 s after the first failure and 2 s after the second, holds `nfs`'s
+    addresses, and `Failed` names it until then; after `Close`, a failing one is not called
+    again.
 - **Tests:** in `runner_test.go`, on real `core` servers over loopback, the failing `Sync` given
   by a fault wrapper (kind 3). The order, read from what the sidecar holds at each adapter call
   through a hook the call passes (catches a Sync after the removal, which advertises an address
   no longer served, and none before the drain, R56). The disabled sidecar (catches it synced
   with the serving set). The failing one (catches a failure that stops the others or the
-  adapters, R57).
+  adapters, R57). The recovering one (catches no retry, under which a recovered sidecar stays
+  failed until the serving set next changes, a fixed delay, and a retry with a set other than
+  the last, R57). `Close` (catches a retry left running after the node stops).
 - **Rules:** rule 5: D9, nothing lifted; rule 10: the package lands with its tests, E7 drives it.
 
 ### T4.8 TCP options
@@ -811,51 +881,91 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 **Subtask T4.11 estimate: 1.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.5a, T4.6, T5.9.
-- **Waits for:** G2 (#4533), for the reasons, the `state` values, the label of a connection closed at
-  accept and each reason's log level.
+- **Waits for:** nothing: #4533 settled G2 in RFC 20 §4.7, §10.1 and §10.3, the reasons, the
+  `state` values, the label of a connection closed at accept and each reason's log level.
 - **Covers:** R52, R53 (`pool` and `reply_wait`), R54, R55, R59.
 - **Deliverables:** in `metrics.go`, `adapter_connections`, `adapter_connection_closes_total`
   and `adapter_bytes_total`, through T5.9's registry calls, resolved once per server and label;
   counted at accept, in the reader and writer, and at the teardown with the reason of its
-  error; the pipeline's own closes, at decode, unwrap, the walk and the wiring, given errors
-  the reason can tell apart, in `pipeline.go`; one log line per close. In `server.go`,
-  `NewServer` calls each listener's `Protocol.NewConn(nil)` once, keeps its `Stages.Protocol`
+  error: `client` for a peer that closed or reset and for any other failed read, as keepalive
+  or `TCP_USER_TIMEOUT` ending a vanished peer with `ETIMEDOUT` (RFC 20 §10.1), told from
+  `read_timeout` by `os.ErrDeadlineExceeded`, not by `Timeout()`, which `syscall.Errno` also
+  reports for `ETIMEDOUT` (checked in Go 1.26's `src/syscall/syscall_unix.go`); the pipeline's
+  own closes, at decode, unwrap, the walk and the wiring, given errors the reason can tell
+  apart, in `pipeline.go`; one log line per close at its reason's level, a close at accept at
+  most once a minute per reason and `per_address` per address (T4.2b), the minute on the
+  server's clock (RFC 20 §10.3, D3). In `server.go`, `NewServer` calls each listener's `Protocol.NewConn(nil)` once, keeps its `Stages.Protocol`
   as the label a connection closed at accept is counted under, and refuses a listener whose
   stages `withDefaults` refuses (R59, RFC 20 §4.7 as #4533 amends it). This brings back
   develop's `dittofs_client_connections_active{protocol}`. Consumed by E7's alert rules and
   dashboards.
-- **Acceptance criteria:** for each reason G2 settles, a loopback test causing that close finds
+- **Acceptance criteria:** for each reason RFC 20 §10.1 lists, a loopback test causing that close finds
   the series under that reason moved by one and the others unchanged; the gauge returns to its
   level when connections close; bytes in and out equal what the client sent and read, framing
-  included; no series carries an address. A protocol declared in the test whose stages lack
-  `Errors` is refused by `NewServer`, naming the listener, with nothing bound; a connection
+  included; no series carries an address. A read failing with `ETIMEDOUT` counts under
+  `client`. Two closes at accept for `pool` within a minute log one line, and a third after the
+  test advances the clock past the minute logs a second. A protocol declared in the test whose
+  stages lack `Errors` is refused by `NewServer`, naming the listener, with nothing bound; a connection
   closed at accept, the connection-state budget short, counts under its listener's label.
 - **Tests:** loopback tests in `conn_test.go`, one per reason (catch a close counted under
   another reason or not at all, and a gauge not decremented, R52, R53); the byte counts (catch a
   header left uncounted); a scan of the registry's series for a label holding an address
-  (catches a remote address used as a label, R55). The refused stages, in `server_test.go`
-  (catch `NewConn(nil)` never called, so a wiring fault reaches accept, R59); the close at
+  (catches a remote address used as a label, R55). The failed read, through a hook's socket
+  whose `Read` returns `ETIMEDOUT` (catches a reason chosen by `Timeout()`, which counts a
+  vanished peer under `read_timeout`). The closes at accept (catch a line per close, which a
+  client in a reconnect loop turns into a line per attempt, RFC 20 §10.3). The refused stages,
+  in `server_test.go` (catch `NewConn(nil)` never called, so a wiring fault reaches accept, R59); the close at
   accept (catches its label read from somewhere other than its listener's stages, or left
   empty, R59).
 - **Rules:** rule 3.
 
 ### T4.2b The connection limit
 
-**Subtask T4.2b estimate: 1 man-days.**
+**Subtask T4.2b estimate: 1.75 man-days.**
 
 - **Track:** B. **Depends on:** T4.11.
-- **Waits for:** G1 (#4533), for where the limit comes from and whether it spans both adapters.
-- **Covers:** R8, R9, R53 (`limit`, `per_address`).
-- **Deliverables:** in `accept.go`, the node's limit and the per-address quarter checked at
-  accept as G1 settles them, a connection past either closed before any byte is read and
-  counted, the address named at warning at most once a minute. Consumed by E7.
-- **Acceptance criteria:** with a limit of 8, one address holds two connections and its third
-  is closed; a second address still connects; past 8 in all, every new one is closed; one
-  warning per minute names the address, the minute on the server's clock (D3), which the test
-  advances.
-- **Tests:** loopback tests in `accept_test.go`, clients on `127.0.0.1` and `127.0.0.2`
-  (catch the quarter not applied, applied to the node rather than the address, and a closed
-  connection counted under the wrong reason, R8, R9).
+- **Waits for:** nothing: #4533 settled G1 in RFC 20 §3.6 and RFC 24 §2.5 and §4.4, one count
+  per node, `Budgets.Conns`, which no epic builds: E3 merged before it, and `pkg/resources`
+  on `feat/storage-v2` has no `ConnLimit`.
+- **Covers:** R8, R9, R60, R53 (`limit`, `per_address`).
+- **Deliverables:** in `pkg/resources/budget.go`, RFC 24 §2.5's `ConnLimit`, `NewConnLimit`,
+  `Take`, `Release`, `SetLimit`, `ErrConnLimit`, `ErrConnQuarter` and `Budgets.Conns`, with
+  `resources.golden`: the open connections counted in all and per address under one mutex, an
+  address's entry dropped at zero, the quarter `limit / 4` and at least 1, and a `SetLimit`
+  read by the next `Take` while the connections open stay; `Budgets`' comment, and
+  `Deps.Budgets`' in `pkg/adapter/deps.go`, naming the count (RFC 20 §3.4). In `accept.go`,
+  each accepted socket's `Take` for its remote address before the connection-state charge
+  (R7), a refusal closed before any byte is read and counted under `limit` or `per_address`,
+  and the teardown's `Release` after the charge's; a nil `Conns` counts nothing, so a test
+  about something else builds none, with its `decision:`; the address named at warning at most
+  once a minute. Consumed by E7, which builds `Budgets.Conns` from `connection_limit` and calls
+  `SetLimit` when reconcile applies a change that RFC 24 §2.7's check passes (RFC 24 §4.4,
+  RFC 20 §3.6, RFC 13 Appendix B's `connection_limit`, live for connections accepted
+  afterwards).
+- **Acceptance criteria:**
+  - `NewConnLimit(8)`: one address takes 2 and its third `Take` is refused with
+    `ErrConnQuarter`; eight addresses take 8 in all and a ninth is refused with `ErrConnLimit`;
+    a `Release` lets the next `Take` in. Limits 1 to 3 give each address a quarter of 1.
+  - With 6 open, `SetLimit(4)` refuses every `Take` until fewer than 4 are open, and makes the
+    quarter 1; `SetLimit(8)` then admits again.
+  - 64 goroutines taking and releasing under `-race` never pass the limit, and the full limit
+    can be taken once they end.
+  - Over loopback with a limit of 8: one address holds two connections and its third is
+    closed; a second address still connects; past 8 in all, every new one is closed; one
+    warning per minute names the address, the minute on the server's clock (D3), which the
+    test advances.
+  - Two servers over one `Budgets`: an address holding two connections on one is refused on
+    the other.
+  - Once every connection has closed, 8 connect again.
+- **Tests:** in `pkg/resources/budget_test.go`, the count alone (catch a quarter that rounds to
+  0 under a limit of 3, a `SetLimit` that drops or recounts the connections open, and a count
+  updated outside the mutex, R60). Loopback tests in `accept_test.go`, clients on
+  `127.0.0.1` and `127.0.0.2` (catch the quarter not applied, applied to the node rather than
+  the address, and a closed connection counted under the wrong reason, R8, R9). The two
+  servers (catches a count per server, under which NFS and SMB each get the whole limit, R60).
+  The reconnect after every close (catches a count the teardown never releases, which
+  `CheckLeaks` cannot read, G13).
+- **Rules:** rule 9: `resources.golden`.
 
 ### T4.5b The move target
 
@@ -896,17 +1006,14 @@ flowchart TD
   T4_5a --> T4_11["T4.11 the connection series"]
   T4_6 --> T4_11
   T5_9(["E5 T5.9: the registry's calls"]):::sync --> T4_11
-  T4_11 --> T4_2b["T4.2b the connection limit"]
-  G1(["RFC 20 amendment #4533: G1 to G12"]):::sync --> T4_2b
+  T4_11 --> T4_2b["T4.2b the connection limit and its count"]
   T4_5a --> T4_5b["T4.5b the move target"]
   MT(["MoveTarget in pkg/vfs; E5 T5.4"]):::sync --> T4_5b
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-**What can start now.** T4.1 (S2 holds). T4.3 once the amendment #4478 merges, and on its
-branch before. T4.4 once E5's T5.1a merges (#4487, stacked on #4456, itself on #4444), and on its branch before.
-The parts of T4.1 and T4.3 that wait for a gap (G5, G10) once the RFC 20 amendment #4533,
-which settles G1 to G12, merges, and on its branch before; so does every later subtask's.
+**What can start now.** T4.1 (S2 holds) and T4.3, since the amendments #4478 and #4533 have
+merged. T4.4 once E5's T5.1a merges (#4487, stacked on #4456), and on its branch before.
 Nothing else: every later subtask builds on the connection, T4.10, which needs all three.
 
 **What E5 and E6 wait on.**
@@ -935,20 +1042,21 @@ deadline's interplay with the receive wait (G10).
 | 3 | T4.4 | 2.5 | T5.1a | the writer, held to the suite of `out`; beside PR 1 and PR 2 |
 | 4 | T4.10, T4.2a, T4.7a | 7 | PR 1, PR 2, PR 3 | one connection end to end: the end-to-end specification green, and E4's part of S3 |
 | 5 | T4.5a, T4.6 | 5 | PR 4 | what the node calls while serving and stopping: the drain and `Reconfigure` |
-| 6 | T4.7b, T4.9 | 3.25 | PR 5 | what the node reads and drives: liveness, `Connections`, the sidecar runner |
+| 6 | T4.7b, T4.9 | 3.75 | PR 5 | what the node reads and drives: liveness, `Connections`, the sidecar runner |
 | 7 | T4.8, T4.11 | 2.5 | PR 5, T5.9 | the socket's options and the connection series |
-| 8 | T4.2b | 1 | PR 7, #4533 | the connection limit, once its carrier is settled |
+| 8 | T4.2b | 1.75 | PR 7 | the connection limit and its count, `resources.ConnLimit` |
 | 9 | T4.5b | 0.75 | PR 5, T5.4, `MoveTarget` | the drain's move target, once the service names one |
 
 A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-**RFC gaps.** None is settled here; each subtask that needs one names it under **Waits for**.
-Each recommendation is for Lucian to accept, change or refuse, by an amendment of the RFCs
-named. Lucian accepted each, and the RFC 20 amendment #4533 writes them into RFC 20, RFC 24 and
-RFC 13; for G3 it adds `Deps.Retry`, the node's retrier, to which a `Disconnect` still failing
-at `OnClose`'s end is handed (RFC 20 §3.2).
+**RFC gaps.** G1 to G12 are settled: Lucian accepted each recommendation, and the RFC 20
+amendment #4533, merged, wrote them into RFC 20, RFC 24 and RFC 13; for G3 it adds
+`Deps.Retry`, the node's retrier, to which a `Disconnect` still failing at `OnClose`'s end is
+handed (RFC 20 §3.2). Each subtask that builds on one names it under **Waits for**, with the
+sections that now state it; they are kept below as the record of why. G13, found since, is
+open, for Lucian to accept, change or refuse.
 
 - **G1, the connection limit's carrier and scope.** RFC 20 §3.6 says the node "hands each
   adapter its share" of `connection_limit`, and RFC 24 §4.4 states a node's limit and a quarter
@@ -962,7 +1070,8 @@ at `OnClose`'s end is handed (RFC 20 §3.2).
   `pool`, `limit`, `per_address` and `reply_wait`, and names no other; `state` has no values;
   a connection closed at accept has no stages, so no `Stages.Protocol` to label it; and §10.3
   gives no level per close. **Recommendation:** the reasons `pool`, `limit`, `per_address`,
-  `client` (the peer closed or reset), `read_timeout`, `handshake`, `idle`, `write_timeout`,
+  `client` (the peer closed or reset, or a read failed, as keepalive ending a vanished peer),
+  `read_timeout`, `handshake`, `idle`, `write_timeout`,
   `write` (a failed write), `frame` (a framing error), `decode`, `unwrap`, `walk`, `wiring`,
   `violation` (`Conn.Close` from protocol code), `reply_wait`, `drain` (closed at the drain's
   end), `removed` (its address removed) and `stop`; `state` `handshake` until `Established`,
@@ -1003,6 +1112,8 @@ at `OnClose`'s end is handed (RFC 20 §3.2).
   that is not recoverable. **Recommendation:** every error but the listener's own close is
   retried with the backoff; the 60 s run from the first failure with no accept since; the
   condition clears at the next accepted connection. RFC 20 §6.4 amended. Blocks T4.2a.
+  #4533 also clears it 2 s after the last failure, twice the backoff's cap, and #4583 makes
+  the accept deadline's own wake no failure (D3).
 - **G7, TLS files at `Reconfigure`.** RFC 20 §3.6 has `Reconfigure` load the TLS certificate
   files before the swap, but `core`'s `Reconfigure` reads only `Common()` and knows no
   protocol's shape; and E6 (its D6) has `nfs.New` load the files and refuse a mode it cannot serve
@@ -1043,6 +1154,12 @@ at `OnClose`'s end is handed (RFC 20 §3.2).
   buffer of its class, since `Buf` has no sub-slices; the alternative, sub-slices on `Buf`,
   would change RFC 24 §2.5's ownership rules instead. Blocks nothing: T4.3 reads it as D7
   states, and the `decision:` at the cut is overturned if `Buf` gains sub-slices.
+- **G13, reading the connection count.** RFC 24 §2.7 checks the `ConnLimit` count at zero
+  after the adapters stop, beside the budgets, but §2.5 gives `ConnLimit` no reader, so neither
+  the node nor `CheckLeaks` can check it. **Recommendation:** `(*ConnLimit).Open() int`, the
+  connections counted now, read by `CheckLeaks` and by the node's check at zero; RFC 24 §2.5
+  amended. Blocks nothing: until then T4.2b's tests show every count released by taking the
+  full limit again.
 
 **For the epic 5 document, and its architect's confirmation.** D8 adds `link.idle` to D1's
 seam, owned by T4.7a. T4.11 makes the pipeline's own closes tellable (decode, unwrap, the
@@ -1059,12 +1176,14 @@ for the second buffer, which the writer of T4.4 can take additively. The program
 description puts "cleanup keyed by session before a reconnect of that session is served" in
 T4.5, while RFC 20 §4.7 places that wait in the protocol's session registry (§1.2 here). The
 program's rule 5 names "the sidecar group's reconcile" as kept, which Appendix B does not mark
-keep (D9).
+keep (D9). Epic 1's R38 still has the node hand "each adapter its share" of `connection_limit`,
+where #4533 made it one count every adapter takes from (RFC 24 §4.4).
 
 **Edits proposed to the program's implementation plan**, by its own pull request: epic 4's
-estimate line and §2 row, 14 subtasks and 27 man-days, and the program's total; its
-description, which gains the connection (T4.10), the series (T4.11) and the splits, and loses
-the session cleanup wait; the ledger's row "close reasons for the pipeline's own closes" leaving
+estimate line and §2 row, 14 subtasks and 28.25 man-days, and the program's total; epic 7's
+description, which gains `Budgets.Conns` built from `connection_limit`, its `SetLimit` on a
+change, and the sidecar runner's `Close`; epic 4's description, which gains the connection
+(T4.10), the series (T4.11) and the splits, and loses the session cleanup wait; the ledger's row "close reasons for the pipeline's own closes" leaving
 once T4.11 lands, since what an epic builds is not a row (`CLAUDE.md`, Deferral ledgers); the
 `MoveTarget` row's trigger naming T4.5b. The ledger's TLS row and its `ConnInfo.Session` row are
 made in this pull request, since #4533 settled G7 and G8.
@@ -1075,7 +1194,8 @@ part waits on something the rest does not: T4.2 (the accept loop now; the limit 
 (the drain now; the move target on `MoveTarget`), T4.7 (the deadlines S3 needs; liveness and
 `Connections` after). T4.10 (the connection, about 3.5 man-days) and T4.11 (the series, 1.5)
 are new; T4.3 gains the `Framer` change and `testproto`'s fragments; T4.9 gains the order
-around each adapter call. Cited work moved: the connection-state charge, from T4.2 to T4.2a;
+around each adapter call and, since #4533, the retry of a failed `Sync`; T4.2b gains RFC 24's
+connection count, `resources.ConnLimit`, which #4533 added after E3 had merged. Cited work moved: the connection-state charge, from T4.2 to T4.2a;
 `adapter_listener_lost` in `Health`, from T4.7 to T4.2a; `OnClose` on close, from T4.5 to
 T4.10; the reader's pause at the writer's bound, from T4.4 to T4.10; `Notify`'s order over
 loopback, from T4.4 to E5's T5.1c.
