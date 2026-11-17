@@ -197,8 +197,11 @@ func (f *Fixture) holdNext(p *atomic.Pointer[gate]) (entered <-chan struct{}, re
 type gate struct{ entered, release chan struct{} }
 
 // pass takes the gate set at p, if one is, and waits for its release or for
-// ctx to end.
+// ctx to end. A nil p is a fence with no gate: it passes at once.
 func pass(ctx context.Context, p *atomic.Pointer[gate]) error {
+	if p == nil {
+		return nil
+	}
 	g := p.Swap(nil)
 	if g == nil {
 		return nil
@@ -564,7 +567,7 @@ func (f *Fixture) stopService(clean bool) {
 
 // NewWithSmallBatches is New over a store whose transactions hold at most
 // entries keys, so a removal of several holes takes several batches.
-func NewWithSmallBatches(t *testing.T, entries int) *Fixture {
+func NewWithSmallBatches(t *testing.T, entries int, opts ...Option) *Fixture {
 	t.Helper()
 
 	return newFixture(t, func(db kv.KV) kv.KV {
@@ -572,7 +575,7 @@ func NewWithSmallBatches(t *testing.T, entries int) *Fixture {
 			KV:      db,
 			entries: entries,
 		}
-	})
+	}, opts...)
 }
 
 // failingKV is a kv.KV that lets left Updates through and then fails each
@@ -1073,11 +1076,13 @@ func (x fencedExistence) Remove(ctx context.Context, share entity.ShareID, file 
 }
 
 func (x fencedExistence) Clone(ctx context.Context, op kvstore.CloneOp, pending []kvstore.PendingOp) error {
-	if x.crashed.Load() {
-		return errCrashed
-	}
+	// The crash check follows the gate: a clone held across a crash and then
+	// released must not commit its phase 1 into the restarted process.
 	if err := pass(ctx, x.cloneGate); err != nil {
 		return err
+	}
+	if x.crashed.Load() {
+		return errCrashed
 	}
 	return x.Existence.Clone(ctx, op, pending)
 }

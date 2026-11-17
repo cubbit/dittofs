@@ -99,7 +99,8 @@ func writeLatencies(t *testing.T, f *enginetest.Fixture, name string, n int) ([]
 // writes adds no wait on an engine lock to the other share's writes. The
 // engine_lock_wait_seconds series, file_state its one area so far, records
 // no more contended takes while the other share is loaded than in the
-// unloaded baseline.
+// unloaded baseline. The half left: the cold reads that saturate a share,
+// and the read latency, are the engine's second part's, which fetches.
 //
 // decision: the row asserts the lock-wait half of RFC 8 §15's check and only
 // logs the p99 write latency. Both shares append to one device journal, whose
