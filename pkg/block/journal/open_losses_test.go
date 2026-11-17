@@ -653,6 +653,142 @@ func TestFailedRecordsTakeTheReserveFirst(t *testing.T) {
 	}
 }
 
+// TestASharedPieceIsCountedOnceAcrossTheLegs holds the loss pass's accounting
+// where its two legs share one input: a piece — the failed record's seq over
+// one extent — reaches the failed-list leg's inputs through the whole record
+// the feed found on disk, and the corrupt leg's through a rotted twin of the
+// same seq carrying the same columns. The pass consumes it once: the walk's
+// piece key skips what the failed leg's own count already took, so a reserve
+// the shared piece exhausts answers the corrupt drops past it alone — the
+// refusal names the next drop's own segment, never the shared piece's — while
+// the legs append one record for the shared piece and one for the corrupt
+// drop beside it, never a second for the piece twice named. The second shape
+// rides the same walk: the corrupt drop's extent shares a range with the
+// shared piece's, yet is its own piece by its own seq, so neither leglet
+// dedup swallows it — the walk counts it and a tight serving reserve holds
+// exactly its record.
+func TestASharedPieceIsCountedOnceAcrossTheLegs(t *testing.T) {
+	f := newAssembledJournal(t)
+	j := f.open(t)
+	withLimit(t, j)
+	h := shareOf(t, j, 1)
+	fa := fileOf(1)
+	writeReady(t, h, fa, "the synced record the crash keeps")
+	if _, err := h.Sync(t.Context(), fa); err != nil {
+		t.Fatalf("Sync the record the crash keeps: %v", err)
+	}
+	writeReady(t, h, fa, "the record the read-only journal fails")
+	writingOps := []string{kit.OpOpen, kit.OpWrite, kit.OpSync, kit.OpCreate,
+		kit.OpAllocate, kit.OpRename, kit.OpRemove, kit.OpTruncate, kit.OpSyncDir}
+	rules := make([]kit.Rule, 0, len(writingOps))
+	for _, op := range writingOps {
+		rules = append(rules, kit.Failing(op, "*", 0, syscall.EROFS))
+	}
+	if err := f.seam.Schedule(rules...); err != nil {
+		t.Fatalf("schedule the read-only device: %v", err)
+	}
+	if _, err := h.Sync(t.Context(), fa); !errors.Is(err, ErrJournalReadOnly) {
+		t.Fatalf("the Sync on the read-only device returned %v, want ErrJournalReadOnly", err)
+	}
+	var failed []core.Seq
+	waitFor(t, "the failed list to hold the failed record", 30*time.Second, func() bool {
+		seqs, err := durability.FailedFor(f.dir, f.id)
+		if err != nil {
+			t.Fatalf("read the directory's failed list: %v", err)
+		}
+		failed = seqs
+		return len(failed) == 1
+	})
+	f.seam.SetFault(nil)
+	// The crash rids the directory of the failed record's own bytes — its
+	// window's sync failed, so they never made durability, and the seam drops
+	// them — leaving the planted whole twin below the only record the feed
+	// finds for the failed seq.
+	f.crash(t, j)
+	if len(failed) != 1 {
+		t.Fatalf("the failed list holds %v, want the one failed record's seq", failed)
+	}
+	shared := failed[0]
+
+	// The shared piece's two legs: a whole record of the failed seq the feed
+	// finds, and a rotted twin of the same seq over the same extent, whose
+	// footer entry carries the same columns to the corrupt leg. The
+	// overlapping drop beside them: its own seq over an extent sharing the
+	// range [32,64) with the shared piece's, alone in its own segment.
+	file := fileOf(8)
+	whole := plantRecord(1, ownerTag, file, uint64(shared), uint64(shared), 0, 64)
+	sharedDrop := plantRecord(1, ownerTag, file, uint64(shared), uint64(shared), 0, 64)
+	offs := plantSealedAt(t, f.seam, f.id, 951, whole, sharedDrop)
+	f.rotHeader(t, format.SegmentName(951), int64(offs[1]))
+	over := plantRecord(1, ownerTag, file, uint64(shared)+100, uint64(shared)+100, 32, 64)
+	offsOver := plantSealedAt(t, f.seam, f.id, 952, over)
+	f.rotHeader(t, format.SegmentName(952), int64(offsOver[0]))
+	beforeShared, err := f.seam.Durable(format.SegmentName(951))
+	if err != nil {
+		t.Fatalf("read the shared piece's planted segment: %v", err)
+	}
+	beforeOver, err := f.seam.Durable(format.SegmentName(952))
+	if err != nil {
+		t.Fatalf("read the overlapping drop's planted segment: %v", err)
+	}
+
+	// Two headroom records keep an open reserve of one: the shared piece's
+	// failed leg takes it whole, the corrupt leg skips it as the piece the
+	// failed leg counted, and the overlapping drop alone runs past the
+	// reserve — the refusal names its own segment 952, never the shared
+	// piece's 951, and burns no record the reserve could have held.
+	refuse := func(nth string) {
+		_, err := Open(context.Background(), f.dir, Version{}, f.id, nil, f.opts(func(s *Settings) { s.HeadroomRecords = 2 })...)
+		if !errors.Is(err, ErrNotImplemented) {
+			t.Fatalf("the %s open past the open reserve returned %v, want the ErrNotImplemented refusal", nth, err)
+		}
+		if !strings.Contains(err.Error(), "1 of them, the first against segment 952") {
+			t.Fatalf("the %s refusal %q answers a short count the shared piece burns, want the one overlapping drop against segment 952 alone", nth, err)
+		}
+		if n := len(f.lossRecords(t)); n != 0 {
+			t.Fatalf("%d loss records on disk after the %s refusal, want none", n, nth)
+		}
+		if l, lerr := durability.FailedFor(f.dir, f.id); lerr != nil || len(l) != 1 || l[0] != shared {
+			t.Fatalf("the %s refusal left %v on the directory's failed list (err %v), want the same one failed seq", nth, l, lerr)
+		}
+		for name, before := range map[string][]byte{
+			format.SegmentName(951): beforeShared,
+			format.SegmentName(952): beforeOver,
+		} {
+			if after, aerr := f.seam.Durable(name); aerr != nil || !slices.Equal(before, after) {
+				t.Fatalf("the %s refusing open changed %s: got %x (err %v), want the planted bytes", nth, name, after, aerr)
+			}
+		}
+	}
+	refuse("first")
+	refuse("second")
+
+	// The serving reserve answers the true demand exactly — four headroom
+	// records keep two — so the shared piece's record and the overlapping
+	// drop's fill it: the corrupt leg consumes the piece the failed leg
+	// already Lose'd without drawing the reserve again, the overlapping drop
+	// draws what is left, and no third record exists for a piece twice taken.
+	js := f.publicOpen(t, func(s *Settings) { s.HeadroomRecords = 4 })
+	failedEvents := lossEvents(t, js, core.LossFailedWindow)
+	if len(failedEvents) != 0 {
+		t.Fatalf("the open published %+v, want no failed-window event: the record's failure was reported when the window failed", failedEvents)
+	}
+	corruptEvents := lossEvents(t, js, core.LossCorrupt)
+	if len(corruptEvents) != 1 || corruptEvents[0].Deferred || !corruptEvents[0].Synced ||
+		corruptEvents[0].Extent != (core.Extent{Off: 32, Len: 64}) {
+		t.Fatalf("the corrupt losses = %+v, want the one overlapping drop's loss over [32,96), synced and not deferred", corruptEvents)
+	}
+	records := f.lossRecords(t)
+	if len(records) != 2 {
+		t.Fatalf("%d loss records on disk, want the two: the shared piece's once and the overlapping drop's once", len(records))
+	}
+	for _, want := range []core.Seq{shared, shared + 100} {
+		if !slices.Contains(records, want) {
+			t.Fatalf("the loss records on disk name %v, want the seq %d among them, each piece taken once", records, want)
+		}
+	}
+}
+
 // TestRetiringHoldsUntilTheOpenLossRecordLands pins the order the open
 // starts its retirement worker: only once the loss pass has landed. A
 // segment whose whole content is one corrupt drop holds nothing the
