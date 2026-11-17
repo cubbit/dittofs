@@ -625,3 +625,51 @@ func TestAppliedWaitsForAPassAfterTheWrite(t *testing.T) {
 	}
 	release <- struct{}{}
 }
+
+// A share pass that fails still has apply run in the same pass, so a
+// principals change does not wait for the share store; the pass then fails,
+// publishing no position, and is retried, applying again with no counter
+// moving.
+func TestReconcileAppliesWhenTheSharePassFails(t *testing.T) {
+	h, f := faulted(t)
+	applies := make(chan kvstore.Counters, 64)
+	h.Node().OnApply(func(c kvstore.Counters) {
+		select {
+		case applies <- c:
+		default:
+		}
+	})
+	started(t, h)
+	setFault(t, f, nil, sim.Rule{Op: kvtest.OpScan, Key: nsScan, Action: sim.FaultAction{Err: errInjected}})
+	createShare(t, h, "a", storeA)
+	u := entity.User{Name: "alice"}
+	u.Principal = entity.NewUser()
+	if _, err := h.Store().ControlPlane().PutUser(t.Context(), u, 0, entity.Alloc{}); err != nil {
+		t.Fatalf("create a user: %v", err)
+	}
+	want := counters(t, h).Principals
+	appliedThrough := func(what string) {
+		t.Helper()
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			select {
+			case c := <-applies:
+				if c.Principals >= want {
+					return
+				}
+				continue
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: no apply of principals generation %d within 30 s of turns while the share pass fails", what, want)
+			}
+			turn(h)
+		}
+	}
+
+	appliedThrough("the pass that read the principals change")
+	if got := h.Node().Positions().Principals; got >= want {
+		t.Errorf("principals position after a pass whose share pass failed: got %d, want below %d, the pass unpublished", got, want)
+	}
+	appliedThrough("the pass retried after the share pass failed")
+}

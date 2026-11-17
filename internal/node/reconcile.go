@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -35,9 +36,11 @@ type reconciler struct {
 	wake chan struct{}
 	// paused, when set, is called with the counters each pass read, before
 	// the pass acts on them; binding, when set, with each share before
-	// reconcile binds it.
-	paused  func(kvstore.Counters)
-	binding func(entity.Share)
+	// reconcile binds it; applying, when set, with the counters each apply
+	// acts on.
+	paused   func(kvstore.Counters)
+	binding  func(entity.Share)
+	applying func(kvstore.Counters)
 
 	// Read and written by Start's steps and then by the loop alone.
 	seen  kvstore.Counters // the counters the last pass acted on
@@ -85,7 +88,10 @@ func refused(s entity.Share, retry bool, err error) refusal {
 // says, as no settings record carries the engine's values yet, and refuses
 // nothing. Read the settings and principals generations' records here once
 // those carry what a component reads.
-func (n *Node) apply(_ context.Context, _ kvstore.Counters) ([]refusal, error) {
+func (n *Node) apply(_ context.Context, c kvstore.Counters) ([]refusal, error) {
+	if n.rec.applying != nil {
+		n.rec.applying(c)
+	}
 	return nil, n.engine.Apply(engineDefaults)
 }
 
@@ -230,7 +236,8 @@ func (n *Node) counters(ctx context.Context) (kvstore.Counters, error) {
 // pass reads the counters and acts on each kind due, then publishes the
 // counters it read as the positions reconciled through. A read that fails
 // leaves the running set and the positions as they were, and has the next
-// pass act on every kind.
+// pass act on every kind. A share pass that fails still has apply run, so a
+// principals or settings change does not wait for the share store.
 //
 // decision: reconcile never unbinds a share: the removal's own driver does,
 // at the step its record names. A share whose removal is marked after the
@@ -253,21 +260,23 @@ func (n *Node) pass(ctx context.Context) error {
 		r.paused(c)
 	}
 	shares, apply := due(c, r.seen, r.again)
+	var sharesErr error
 	if shares {
-		if err := n.reconcileShares(ctx); err != nil {
-			r.again = true
-			return err
-		}
+		sharesErr = n.reconcileShares(ctx)
 	}
 	if apply {
 		refusals, err := n.apply(ctx, c)
 		if err != nil {
 			r.again = true
-			return err
+			return errors.Join(sharesErr, err)
 		}
 		r.mu.Lock()
 		r.applied = refusals
 		r.mu.Unlock()
+	}
+	if sharesErr != nil {
+		r.again = true
+		return sharesErr
 	}
 	r.seen = c
 	r.mu.Lock()

@@ -59,6 +59,10 @@ func NewPausing(paused func(read kvstore.Counters)) func(Config) (*Node, error) 
 // it before Start.
 func (n *Node) OnBind(binding func(entity.Share)) { n.rec.binding = binding }
 
+// OnApply has reconcile call applying with the counters each apply acts on.
+// Call it before Start.
+func (n *Node) OnApply(applying func(kvstore.Counters)) { n.rec.applying = applying }
+
 // Applied is the wait a write on this node makes.
 func (n *Node) Applied(ctx context.Context) error { return n.applied(ctx) }
 
