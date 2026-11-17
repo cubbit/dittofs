@@ -81,6 +81,10 @@ span per call; RFC 23 §4.3's amendment for the pre-write step.
 - `GET /nodes/{id}/connections`: its producer, each adapter's `Connections()`, is wired into the
   node by RFC 20's plan's epic 7, so the route lands with it; a row of
   [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger) is proposed (§9).
+- The bootstrap's key names for the API's certificate and key and its local socket's path, which
+  T4.3 takes as `Deps.TLS` and `Deps.Socket`: the RFC 13 plan's `pkg/bootstrap`, a row of
+  [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger); E3's T3.3 follow-up
+  fills both fields from the bootstrap.
 - The CLI's commands, `login` and the generated reference: E6.
 - RFC 23 §12's rows through a signed-in caller, the `identity.ntlm` rule's `202` and `409` through
   the settings route: E7.
@@ -195,7 +199,7 @@ this epic, numbered so that subtasks and tests can cite them.
 | R34 | Quiesce and resume are each one `SetShareState(from, to)` with no `If-Match`; a quiesce of a `quiesced` share answers `200` and changes nothing, one of a share `being removed` `409` with `ErrStale` | MUST | RFC 23 §3.2 | T4.7 |
 | R35 | `DELETE /shares/{id}` runs `DeleteShare` and answers `202` with an operation once the mark has committed; the snapshot disposition is required when the share has snapshots, and RFC 16 §2.3.2's refusals come back `409` with the component's error | MUST | RFC 23 §3.2 | T4.7 |
 | R36 | A rename or re-path changes only index rows and raises `ShareList`; neither changes a binding, and a share's namespace changes only by `:rehome` | MUST | RFC 23 §3.2; RFC 13 §5.1 | T4.7 |
-| R37 | A write naming a share `being removed` or `retired` is refused `409` `ErrStale` by the store's check, and the API adds no check of its own | invariant | RFC 23 §3.2 | T4.7 |
+| R37 | A write naming a share `being removed` or `retired` is refused `409` `ErrStale` by the store's check; the API's one check of its own, a share's `PATCH` reading the share's state first, answers the same `ErrStale`, so a patch that would also be refused `400` answers stale first, and it refuses nothing the store would admit | invariant | RFC 23 §3.2 | T4.7 |
 | R38 | A share's `ExportPolicy` is read, put and merge-patched, its version its `ETag` | MUST | RFC 23 §3.1, §4.4 | T4.7 |
 
 **Stores, namespaces, adapters, settings and secrets**
@@ -279,15 +283,18 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
 - **D2, one route table drives the mux, each row naming a right** (RFC 23's plan, D2). A row is
   method, pattern, right, the `OpKind` it starts if any, whether it keeps an idempotency record,
   whether it is allowed while the caller must change its password, and its adapter. The role column
-  is a right from one table in `auth`, `public` among them; the adapter asks `auth` whether the
+  is a right from one table in `auth`, `public` among them; the adapter asks `auth.Allowed` whether the
   caller holds it, answering `404` where the caller may not read the resource and `403` where it may
   read and not change (R65). `{id}:verb` is registered as `POST …/{id}` and split with
   `strings.Cut`; the route-list check of RFC 23 §12 reads the same table. RFC 23 §4.1's `decision:`
   on IDs in paths sits at the table. E5 adds rows and rights to the same tables. Prior art: Go 1.22's
   mux patterns (from memory).
 - **D3, one authentication path, through `auth`.** This epic creates `internal/node/api/auth` with
-  `Caller` (principal, role, `MustChange`, whether it is on the local socket) and
-  `CallerFrom(ctx) (Caller, bool)`; `apiv1.Role` is the role as a wire field. Every request runs
+  `Caller` (principal, name, credential, role, `MustChange`) and
+  `CallerFrom(ctx) (Caller, bool)`; a request that arrived on the local socket is marked on the
+  request's context (`auth.WithLocal`, read by `auth.Local(ctx)`), not on `Caller`, because
+  `Authenticate` reads the mark before any `Caller` exists; the role is E2's `entity.APIRole`, and `apiv1.Role`, the role
+  as a wire field, waits for the first wire type that carries one. Every request runs
   `Deps.Authenticate func(*http.Request) (auth.Caller, error)`; its wrapper is the only code that
   puts a caller in the context. Nil until E5, every non-public route answers `401`. A test passes an
   `Authenticate` that returns a fixed caller, through `api.New`, so the production table and
@@ -309,9 +316,16 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
   A `decision:` marker names the evidence that overturns it: a listing whose range crosses what the
   caller may read. Prior art: Kubernetes' continue tokens (from memory).
 - **D7, a parked long poll re-reads its record once a second** on the API's clock (RFC 23's plan,
-  §4.3's `ponytail:`), from a parking set of 256 apart from the 64 call slots.
-- **D8, the call bound is a semaphore of 64, fixed,** with RFC 23 §4.3's `ponytail:`. The public
-  routes are outside it, so a full bound never answers a health probe `503`.
+  §4.3's `ponytail:`), from a parking set of 256 apart from the 64 call slots. The park runs in
+  the route's `handle`, outside the handler, so T4.3 releases the call slot there, and a parked call moves only its own write deadline past
+  the server's write timeout. `?wait=` takes a duration, at most 60 s, or a word its row defines,
+  so T4.7 adds `serving` without a second parameter. With no `Deps.Clock`, a read that would park
+  answers `503`.
+- **D8, the call bound is a semaphore of 64, fixed,** with RFC 23 §4.3's `ponytail:`. Every row
+  of the route table takes a slot, the public ones included; only `/health/live` and
+  `/health/ready`, served outside the table, stay outside the bound, so a full bound never answers a
+  health probe `503`. `/api/version` and `GET /api/v1/health` are rows marked `beforeReady`, so they
+  answer while the node is `starting` (D16).
 - **D9, the idempotency digest is SHA-256 over the method, the path with its query, and the body
   bytes**, keyed by the caller's principal and the key. The answer, status, `Location`, `ETag` and
   body, is serialized inside `fn`, so the record holds exactly what is sent. A row keeping no record
@@ -322,7 +336,12 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
 - **D11, a remote store's location is refused after its first value** (the RFC 13 plan's D9), by
   `Check` once X3 is in. Its `decision:` marker is that plan's.
 - **D12, a refusal's audit record is a second `Write` holding only it**, with no idempotency key. A
-  failure to write it is logged at `Error` and does not change the answer. No marker.
+  failure to write it is logged at `Error` and does not change the answer. The write adapter audits
+  its own refusals, as the request arrived; a refusal before the adapter, of a role or of a caller
+  that must change its password, is audited in the route runner `run` against the row's kind. A
+  path no row names is refused unaudited, since its record would name no resource kind and the
+  store refuses one, a `decision:` at `run`. A refused `GET` or `HEAD` is not audited either, which
+  narrows RFC 23 §6's "every request refused after authentication" and carries no marker yet.
 - **D13, the domain's calls into identity are interfaces the API declares, failing closed.**
   `Deps.Directory` (`KerberosLinkSID(ctx, name string) (sid.SID, error)`, this epic's to declare:
   its `ErrUnavailable`, a stale answer included, refuses the write `503`; its `ErrUnknownPrincipal`
@@ -336,14 +355,20 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
 - **D14, the `identity.ntlm` rule is one function of the write's transaction**, called by the
   settings route, writing `Off` and clearing `Deleted` through E2's `ControlPlaneTx.SetNTLMOff(gen)`, its one writer
   (setting `Deleted` is RFC 18's step's, through `SetNTHashDeleted`); a provisioning apply calls the same function once the provisioning file exists (a
-  ledger row). No marker.
+  ledger row). Beside it the route calls the `identity.netbios_name` validator RFC 18's epic 8 declares (its
+  "NetBIOS name while joined" row; T8.8 in that epic's breakdown), also a function of
+  the write's transaction: a put or delete of `identity.netbios_name` is refused while
+  `Installation.Join`, a tracked read, says joined. No marker.
 - **D15, `api_operations` and `api_operation_oldest_seconds` are read at scrape** from E2's running
   index, which holds only running operations, so a scrape reads O(running).
-- **D16, `/api/v1` answers `503` `starting`, with `Retry-After`, until `Deps.Ready()` says
-  `ready`, but `GET /api/v1/health`**, whose row is marked to answer before ready so a stuck start
-  is readable (R66), the function E3 hands in; the route table keeps no state of its own. No marker.
+- **D16, every row answers `503` `starting`, with `Retry-After`, while `Deps.Ready()` says
+  `starting`, but the two marked `beforeReady`:** `GET /api/v1/health`, so a stuck start is
+  readable (R66), and `/api/version`. `Ready` is the function E3 hands in; the route table keeps no state of its own. No marker.
 - **D17, the pre-write step is a field of the write row** (RFC 23 §4.3, as amended here). A row may
   name `prepare(ctx, req) (Input, error)`, run once before `Write` and never on a conflict retry;
+  it runs after the idempotency key is looked up and before the tag is compared, so a write with a
+  stale tag still runs it and is then refused `412`, a `decision:` at `write` naming its overturn,
+  a step costly enough, or with an effect outside the write, to be worth a read first;
   its result is the handler's `in`, and the handler re-reads in the transaction the record the step
   depended on. Used by the Kerberos link (the directory), a remote store's endpoint and credential
   (the proof, refused until it exists, D11), and every secret write (the seal). RFC 23 §4.3's
@@ -368,8 +393,9 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
   core's; E5's routes serve them and E5's tests drive them
   end to end. No marker.
 - **D19, the problem writer reads `Retry-After` from the error.** An error implementing
-  `RetryAfter() time.Duration` sets the header: the call bound, `starting`, a store unreachable, and
-  E5's `429` `throttled`. No marker.
+  `RetryAfter() time.Duration` sets the header, rounded up to whole seconds: the call bound,
+  `starting`, and E5's `429` `throttled`. Every other `503`, a store unreachable among them, asks
+  for 1 s. No marker.
 - **D22, the writer's wait is the write adapter's, after the commit, and never changes the answer**
   (RFC 23 §2.3 as A8 amends it). A write row says whether its commit raises the principals or
   settings generation (a setting, a user, a group, a membership or a spelling); after such a row's
@@ -388,13 +414,13 @@ R9 is withdrawn: the connections route lands with its producer (§1.2).
 ```text
 internal/node/api/
   problems.go, decode.go, patch.go, cursor.go     T4.1  problem table, strict decode, merge patch, cursor
-  routes.go, rights.go, handler.go, version.go    T4.2  the route table, the five adapters
-  auth/caller.go                                  T4.2  Caller, CallerFrom
+  routes.go, handler.go, version.go               T4.2  the route table, the five adapters
+  auth/caller.go, auth/rights.go                  T4.2  Caller, CallerFrom, the role table's rights (Allowed)
   server.go (extended), bound.go                  T4.3  TLS, the local socket, the call bound, starting
   write.go, prepare.go, audit.go                  T4.4  preconditions, idempotency, the write, its audit
   read.go, longpoll.go                            T4.5  envelope, listings, applied, parked polls
   res_operations.go, res_nodes.go, res_audit.go   T4.6
-  res_shares.go, res_exportpolicy.go              T4.7
+  res_shares.go, res_export_policies.go           T4.7
   res_stores.go, res_namespaces.go, res_secrets.go,
   res_adapters.go, res_settings.go                T4.9
   res_users.go, res_groups.go, res_grants.go,
@@ -402,7 +428,6 @@ internal/node/api/
   res_domain.go, ntlm.go                          T4.11
 internal/node/arch_test.go                        T4.2, T4.4, T4.9, T4.11  E3's two rules extended
 pkg/node/apiv1/
-  role.go                                         T4.2
   operation.go (extended), node.go, audit.go,
   health.go                                       T4.6
   share.go, exportpolicy.go                       T4.7
@@ -428,7 +453,9 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 - **Deliverables:** `problems.go`: one table from every error the API returns (the API's own codes
   and `entity`'s errors, and identity's that D13's interfaces return: `ErrUnavailable` `503`,
   `ErrUnknownPrincipal` `400` naming the name; `ErrLogonFailure` is sign-in's, E5's row) to a status
-  and a code, `problemOf(err) apiv1.Problem`, an unnamed error
+  and a code, `problemOf(err) apiv1.Problem`; kvstore's `ErrMoving`, `ErrRehoming` and
+  `ErrTagsExhausted` move to `entity`, kvstore keeping aliases, so the table names them from the
+  package it reads errors from, and `ErrTagsExhausted` answers `409` `tags_exhausted`; an unnamed error
   `500` counted in `api_unmapped_errors_total`; `decode.go`: `json.Decoder` with
   `DisallowUnknownFields`, the field named in the `400`; `patch.go`: RFC 7396 merge (D5);
   `cursor.go`: the cursor (D6). Consumed by T4.2's adapters.
@@ -456,16 +483,17 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   Settings     checker      // D4
   Clock        clock        // Now, After (D18)
   Health       conditions   // E3's health.Evaluator (RFC 25 §8.2's Source set), read whole by GET /api/v1/health (T4.6)
-  Progress     func(apiv1.OpKind, []byte) apiv1.Progress // E3's runner table (T4.6)
-  Applied      func(ctx context.Context) error // declared and filled by E3's D16, in T3.5 (A8); nil answers at commit (D22)
+  Progress     func(context.Context, entity.Operation) apiv1.Progress // E3's runner table, by the operation's kind (T4.6)
+  Applied      func(ctx context.Context) error // declared by E3's D16 (A8), filled by its T3.3 follow-up; nil answers at commit (D22)
   // Directory, Joins and Sealer land with T4.9 and T4.11
   ```
-  `auth/caller.go` (`Caller`, `CallerFrom`); `apiv1.Role`; `rights.go`, the role table's rights
+  `auth/caller.go` (`Caller`, `CallerFrom`); `auth/rights.go`, the role table's rights as
+  `auth.Allowed`, over E2's `entity.APIRole` (`apiv1.Role` deferred, D3)
   (RFC 23 §5.2's rows, `public` among them) and the `404`/`403` choice; `routes.go`, the route table
   (D2) with `/api/version`; `handler.go`, the read, list, write and call adapters (D1), the
   must-change flag; `api_requests_total`, `api_request_seconds`, `api_unmapped_errors_total` and one
-  span per call; E3's import rule extended with `pkg/node/apiv1`, `pkg/metadata/entity` and
-  `internal/node/api/auth`. Consumed by every later subtask and by E5.
+  span per call; E3's import rule extended with `pkg/node/apiv1`, `pkg/metadata/entity`,
+  `pkg/vfs/vfserr` (the sign-in errors epic 5 maps) and `internal/node/api/auth`. Consumed by every later subtask and by E5.
 - **Acceptance criteria:**
   - With `Authenticate` nil, every `/api/v1` route answers `401`; `/api/version` and the health
     rows answer.
@@ -488,19 +516,27 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 - **Covers:** R23, R31, R55, R56, R60.
 - **Deliverables:** E3's listener extended: TLS through `internal/tlsconfig` on every address but
   loopback, a start refusing a non-loopback address without the bootstrap's certificate and key; the
-  local socket at the bootstrap's path, created `0600`, its callers marked local for E5; the call
+  metrics listener under the same TLS rule as the API's; a TLS configuration naming a client CA
+  refused at start, for both listeners, a `decision:` at `Start` naming its overturn, the API
+  reached by client certificate; the
+  local socket at the bootstrap's path, created `0600`, its requests marked local on the context
+  for E5 (`auth.Local`, D3); the call
   bound (D8) with `api_calls_in_flight` and its limit; `503` `starting` until `Deps.Ready()` says
   ready (D16); a store read failing `503` `unavailable`; `Retry-After` from the error (D19); the
-  `Dockerfile`'s `HEALTHCHECK` on `https`, unverified. Consumed by E5 and E6.
+  `Dockerfile`'s `HEALTHCHECK` on `https://localhost:8080/health/live` and `docker-compose.yml`'s on
+  `https://localhost:8080/health/ready`, neither verifying the certificate. Consumed by E5 and E6.
 - **Acceptance criteria:**
   - A non-loopback address with no certificate refuses the start, naming the bootstrap keys.
   - The socket's mode is `0600`, and a call on it reaches `Authenticate` marked local.
 - **Tests:** on real listeners (rule 8): TLS on `0.0.0.0` and `:8080`, plain on `127.0.0.1`,
   `localhost`, `::1` and `::ffff:127.0.0.1`, and a non-loopback address with no certificate refused
-  (R55); the socket's mode read back and a call through it marked local (R56); 65 calls held by a
+  (R55); the metrics listener on a non-loopback address held to the same rule, and a start with a
+  client CA refused; the socket's mode read back and a call through it marked local (R56); 65 calls held by a
   handler blocked on a channel, the 65th `503` with `Retry-After`, and a health probe still answered
-  (R23, D8); `Ready` returning `starting`, a call `503` `starting` with `Retry-After` (R31); a store
-  read faulted through `FaultKV`, `503` `unavailable` (R31).
+  (R23, D8); `Ready` returning `starting`, a call `503` `starting` with `Retry-After`, and
+  `/api/version` and `/api/v1/health` still answered (R31, D16); an error's `RetryAfter` of 6.5 s
+  answered `Retry-After: 7` (D19); a store read faulted through `FaultKV`, `503` `unavailable`
+  with `Retry-After: 1` (R31).
 
 ### T4.4 The write path
 
@@ -511,8 +547,12 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   R62, R63, R64, R68.
 - **Deliverables:** `write.go`: the order of checks — the body decoded, then in `Write` the recorded
   key (`422` on another digest, a replay answered whole), then `428` and the preconditions, then
-  `Check` and the handler; `If-Match` and `If-None-Match: *` to `expect`; a status field refused;
-  the operation written when the row carries an `OpKind`; the answer serialized inside `fn` (D9);
+  `Check` and the handler; `If-Match` and `If-None-Match: *` to `expect`, an `If-Match` of `*` or of
+  a list refused `400`, as is a request carrying both headers, with a `decision:` that `If-Match`
+  names exactly one tag; a status field refused; `Deps.Node`, the node the audit records name,
+  added to T4.2's `Deps`; the operation written when the row carries an `OpKind`, answering `202`
+  (R24) and `409` `operation_running` (R27) once E2's operation records are in (#4527), in a pull
+  request after the rest of this subtask's; the answer serialized inside `fn` (D9);
   after a commit raising the principals or settings generation, `Deps.Applied` under D22's bound
   and its `decision:`;
   `prepare.go`: the pre-write step (D17); `audit.go`: the audit record and a refusal's own `Write`
@@ -531,7 +571,9 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 - **Tests:** through the production table, its first write routes the shares of T4.7 once they
   land and, until then, the operation's `:cancel` (T4.6): the all-or-nothing commit on Badger on
   disk with the commit faulted (R11, R52; rule 8, one test, the store's own pinned by E2); `428`, a
-  stale tag `412` with the current one, `If-None-Match: *` on an existing record `412` (R15, R16);
+  stale tag `412` with the current one, `If-None-Match: *` on an existing record `412`, an
+  `If-Match` of `*` or of a list `400` (R15, R16); a role refused on a write audited once, by `run`
+  (D12);
   two writes with one tag interleaved by a `FaultKV` delay, one commits (R17); a recorded key with
   another digest and no `If-Match` answering `422`, not `428` (R20); a replay's status, `Location`,
   `ETag` and body equal to the first answer's (R20, R24); a key too long, a corrected retry accepted
@@ -557,8 +599,11 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 - **Covers:** R1, R2, R4, R5, R6, R7, R8, R23.
 - **Deliverables:** `read.go`: the envelope, the list adapter paging by cursor with `?limit=` (100,
   at most 1,000) and `next`, the indexed filters each row names, `applied` from one read of the node
-  statuses per page; `longpoll.go`: the parking set of 256 (D7), `503` past it. Consumed by every
-  resource subtask.
+  statuses per page; `longpoll.go`: the parking set of 256 (D7), `503` past it, the park run in
+  the route's `handle`, where T4.3 releases the call slot, so R23's "a parked poll holds no call
+  slot" is T4.3's, the park step T4.5's; `?wait=` as a duration or a word the row defines (D7).
+  R8's `applied` lands once the stack sits on E2's node statuses (#4527): the list adapter
+  already hands each row a per-page argument. Consumed by every resource subtask.
 - **Acceptance criteria:**
   - A listing with inserts behind the cursor neither skips nor repeats a record there when it
     started.
@@ -567,7 +612,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   of 0, 1,001 and absent (R5); a filter on an unindexed field refused (R6); a page's node-status
   reads counted by `kv.Counting` around the harness's KV (R8); a name filter answering zero or one
   (R1); a secret-bearing field read as reference and version (R7); a parked poll answered on the
-  clock's advance, never slept, and the 257th `503` (R23); a second node over one store reading a
+  clock's advance, never slept, and the 257th `503` (R23); a parked poll past the server's write
+  timeout still answered, its own write deadline moved (D7); a second node over one store reading a
   write the first made (R4).
 
 ### T4.6 Operations, nodes and the audit read
@@ -579,8 +625,9 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 - **Deliverables:** `GET /operations` (by state) and `/operations/{id}` with `?wait=` (at most 60 s),
   `:cancel` answering `409` `not_cancellable`, a zero `Account` rendered as the schedule's (R69),
   its `Progress` filled by
-  `Deps.Progress(kind, next)`, the per-kind `func(next []byte) Progress` E3's runner registers with
-  each step, from the operation's recorded `Step`; `GET /nodes` and `/nodes/{id}` with the binary
+  `Deps.Progress(ctx, op)`, the per-kind `step.Progress` E3's runner registers with each step
+  (E3's D7), which reads the operation's recorded `Step` or, for a share's deletion, the removal's
+  own records; `GET /nodes` and `/nodes/{id}` with the binary
   version; `GET /api/v1/health` (`viewer`, answering before ready): the word from `Deps.Ready()`
   and every condition `Deps.Health` holds, node and installation, each with its cause, as
   `apiv1.Health`; `GET /api/v1/audit` (`admin`) by time range, actor and target; the operations collector
@@ -603,14 +650,22 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
 
 **Subtask T4.7 estimate: 3.5 man-days.**
 
-- **Track:** B. **Depends on:** T4.4, T4.6.
-- **Covers:** R3, R18, R32, R33, R34, R35, R36, R37, R38.
-- **Deliverables:** `res_shares.go`: create (R32, RFC 23 §3.2's `decision:` at it), whose refusal
-  of a namespace naming no remote store is `PutShare`'s tracked read of `Namespace(id)`, `PATCH` of name
-  and path, a namespace in a `PATCH` refused, `:quiesce` and `:resume`, `DELETE` as an operation with
-  the snapshot disposition, `?wait=serving`; `res_exportpolicy.go`: get, put and merge patch with the
-  policy's version as `ETag`, client rules naming netgroups by ID; their wire types. Consumed by
-  T4.8's tests and E6.
+- **Track:** B. **Depends on:** T4.4, T4.6; E3's T3.7, since `?wait=serving` reads the node
+  statuses it writes.
+- **Covers:** R1, R3, R6, R18, R32, R33, R34, R35, R36, R37, R38.
+- **Deliverables:** `res_shares.go`: `GET /shares` with the `name` and `namespace` filters (R1,
+  R6); create (R32, RFC 23 §3.2's `decision:` at it), whose refusal
+  of a namespace naming no remote store is `PutShare`'s tracked read of `Namespace(id)`, its
+  `case_sensitivity` bound at create; `PATCH` of name
+  and path, a share `being removed` or `retired` answered `ErrStale` before any other check (R37), a
+  namespace or another `case_sensitivity` in a `PATCH` refused `400`, `:quiesce` and `:resume`,
+  `DELETE` as an operation with
+  the snapshot disposition, `?wait=serving`; `res_export_policies.go`: get, put and merge patch with the
+  policy's version as `ETag`, client rules naming netgroups by ID; RFC 16's defaults for an empty
+  field, `squash` `root` and `min_proof` and `min_protection` `none`; `clients` stated by every
+  write, absent or `null` refused, an empty list admitting every client; their wire types; the
+  write adapter refusing `400`, naming it, a query parameter its row does not take, each row
+  listing the ones it takes (`DELETE /shares/{id}`'s `snapshots`). Consumed by T4.8's tests and E6.
 - **Acceptance criteria:**
   - A share created in a namespace naming no remote store is refused, and nothing is committed.
   - A created share has its export policy, no grant, and `ShareList` raised.
@@ -618,7 +673,12 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   (their routes fail closed until X3, D4): create refused with no remote and accepted with one,
   reading the records back (R32); quiesce twice and of a share being removed (R34); delete answered
   `202` with an operation, a second delete `409` `stale` (R35); a namespace in a `PATCH` refused
-  (R36); a grant on a share being removed `409` `stale` from the store (R37); an export policy's
+  (R36); a `PATCH` of a share being removed naming another namespace answered `409` `stale`, not
+  `400`, and a grant on a share being removed `409` `stale` from the store (R37); a listing by
+  `name` and by `namespace` (R1, R6); a `case_sensitivity` changed by a `PATCH` refused; a policy
+  put with `clients` absent refused and one with empty `squash` and minimums read back as `root`
+  and `none`; a write naming a query parameter its row does not take refused naming it; an export
+  policy's
   `ETag` and a stale `PUT` `412` (R38, R18); `?wait=serving` returning on the node status's change
   (R33).
 
@@ -632,15 +692,28 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   ```go
   func New(server string, opts ...Option) (*Client, error) // https URL, http on loopback, or the local socket's path
   func WithTLS(cfg *tls.Config) Option
-  type Resource[Spec, Status any] struct{ /* client, path */ }
+  type Resource[S, T any] struct{ /* client, path */ }
+  type Singleton[S any] struct{ /* client, the parent's path, its own */ } // a share's export policy: Get, Put and Patch only
+  type Tagged[S, T any] struct {                                         // a resource with the ETag its answer carried
+  	apiv1.Resource[S, T]
+  	ETag string
+  }
+  type Result[S, T any] struct { // an action's answer: the operation it started or the resource it changed
+  	Operation *apiv1.Operation
+  	Resource  *Tagged[S, T]
+  }
   func (r Resource[S, T]) List(ctx context.Context, filter url.Values) iter.Seq2[apiv1.Resource[S, T], error]
-  func (r Resource[S, T]) Get(ctx context.Context, id string) (apiv1.Resource[S, T], error)
-  func (r Resource[S, T]) Create(ctx context.Context, spec S) (apiv1.Resource[S, T], error)        // POST, with a key
-  func (r Resource[S, T]) Put(ctx context.Context, id string, spec S, etag string) (apiv1.Resource[S, T], error) // etag "*" creates
-  func (r Resource[S, T]) Delete(ctx context.Context, id, etag string) (*apiv1.Operation, error)
-  func (r Resource[S, T]) Action(ctx context.Context, id, verb string, body any, etag string, opts ...CallOption) (Result, error) // an operation or a resource
-  func (r Resource[S, T]) Create(...)'s and Action's opts take WithoutIdempotencyKey()
+  func (r Resource[S, T]) Get(ctx context.Context, id string) (Tagged[S, T], error)
+  func (r Resource[S, T]) Create(ctx context.Context, spec S, opts ...CallOption) (Tagged[S, T], error) // POST, with a key
+  func (r Resource[S, T]) Put(ctx context.Context, id string, spec S, etag string) (Tagged[S, T], error) // etag "*" creates
+  func (r Resource[S, T]) Patch(ctx context.Context, id string, patch any, etag string) (Tagged[S, T], error)
+  func (r Resource[S, T]) Delete(ctx context.Context, id, etag string, opts ...CallOption) (*apiv1.Operation, error)
+  func (r Resource[S, T]) Action(ctx context.Context, id, verb string, body any, etag string, opts ...CallOption) (Result[S, T], error)
+  func (r Singleton[S]) Get(ctx context.Context, id string) (Tagged[S, struct{}], error)
+  func (r Singleton[S]) Put(ctx context.Context, id string, spec S, etag string) (Tagged[S, struct{}], error)
+  func (r Singleton[S]) Patch(ctx context.Context, id string, patch any, etag string) (Tagged[S, struct{}], error)
   func WithoutIdempotencyKey() CallOption // join-domain, API-token creation, :set-password
+  func WithQuery(q url.Values) CallOption // a share deletion's ?snapshots=
 
   type TokenSource interface {
   	Token(ctx context.Context) (string, error)
@@ -659,7 +732,11 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   `Refresh` and `ChangePassword` are sent with no `Idempotency-Key`, which RFC 23 refuses `400`, and
   `SignOut` with one, like any other `POST` outside §4.5's list. A `401` on any other call, `Wait`'s polls included,
   calls `Refresh` once and replays the request with its body and the same key, which is safe
-  because a `401` applied nothing.
+  because a `401` applied nothing. The credential calls are sent with refresh off: their `401` is a
+  wrong credential, returned as it is. Redirects are never followed: a `3xx` is returned as the
+  problem. Keep-alives are off, so each request has its own connection and `net/http` never resends
+  one by itself: only the client resends, within its own bound, a `ponytail:` at the transport
+  naming keep-alives as the upgrade once the handshakes show in a profile. The client comes
   with the version check at first contact, `*apiv1.Problem` returned as the error with its code a
   string (CP14), one idempotency key per call reused across its transport retries, and the accessors
   of the resources served so far, each later route adding its own. A method lands only with a test
@@ -673,7 +750,8 @@ Dockerfile                                        T4.3  HEALTHCHECK on https, un
   (kind 3), retried: one share and the same answer (R21, R59); `Put` with `*` creating and then `412`
   (R59); a `412` returned as the problem with no retry (R59); `Action` returning an operation and a
   resource, and one sent without a key (R59); a response with an unknown field decoded (R59); a
-  server with no `v1` refused (R59); `Wait` following an operation to its end (R59); with the
+  server with no `v1` refused (R59); `Wait` following an operation to its end (R59); a redirect
+  answered returned as the problem, with no request to its `Location` recorded (R59); with the
   harness's `Authenticate` refusing every token, a token source of the test's own whose `Refresh`
   fails (a fault, kind 3, since no `Refresh` route exists before E5): the `401`'s problem returned
   with no second replay (R67; refreshed once and replayed runs over the real `Refresh` route in

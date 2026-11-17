@@ -1021,7 +1021,10 @@ func (r *runner) drive(ctx context.Context, op entity.Operation, version uint64)
 	for {
 		res, err := run(ctx, op) // its Params and last durable Step: resumes from there
 		was, wasStep := op.State, op.Step
-		op.Step, op.State = res.Next, stateOf(res, err) // ErrStepFailed or a problem fails; other errors retry
+		op.State = stateOf(res, err) // ErrStepFailed or a problem fails; other errors retry
+		if err == nil {
+			op.Step = res.Next // a retryable error moves nothing, so its turn commits nothing
+		}
 		if op.State == was && bytes.Equal(op.Step, wasStep) {
 			r.backoff(ctx) // an unchanged turn commits nothing
 			continue
@@ -1071,13 +1074,13 @@ func (h *handlers) signIn(w http.ResponseWriter, r *http.Request) {
 	}
 	// the principal counted is the principal checked; the zero one does the dummy work and fails
 	err = h.signin.VerifyPassword(r.Context(), acct, req.Password) // APISignIn (X2)
-	if errors.Is(err, identity.ErrUnavailable) {
+	if errors.Is(err, vfserr.ErrUnavailable) {
 		// the store could not answer: 503, nothing settled or audited, the source's raise taken back
 		h.unraise(r.Context(), src, nonce)
 		h.problem(w, err)
 		return
 	}
-	if errors.Is(err, identity.ErrLogonFailure) {
+	if errors.Is(err, vfserr.ErrLogonFailure) {
 		// the refusal's audit, and no idempotency record (RFC 16 §3, RFC 23 §4.5); it settles the
 		// failure, moving the source's Failed and its XP row, the only write after creation that
 		// moves them, and doing nothing on a source count missing or holding another Nonce (§5.3)
@@ -1105,7 +1108,7 @@ func (h *handlers) authenticate(r *http.Request) (metadata.User, error) {
 		return metadata.User{}, err
 	}
 	u, err := h.signin.Account(r.Context(), claims.Principal) // per call (RFC 23 §5.3)
-	if errors.Is(err, identity.ErrUnavailable) {
+	if errors.Is(err, vfserr.ErrUnavailable) {
 		return metadata.User{}, err // 503, never 401: the store could not answer
 	}
 	if err != nil || claims.IssuedAt.Before(u.NotBefore) || h.revoked(r.Context(), claims.Session) {
@@ -1702,6 +1705,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | The self-signed certificate and key the repository's launchers generate for their installs (D13) | epic 4 refuses a non-loopback API address without them (RFC 23 §5.3), and the image binds one; the image ships none; the operator mounts one | the RFC 13 plan's epic 6 (#4059) | that epic lands |
 | RFC 13 §6's port rule, checked on every node a write reaches (O7) | a cross-component rule of the settings check, which is the RFC 13 plan's | the RFC 13 plan's epic 5 (#4059), its first cross-component rule | X3 |
 | The Kubernetes operator on the new wire shapes (O4, D9) | it mirrors v1's wire shapes; its envtest cell stays on | RFC 30's plan | that plan |
+| The bootstrap's key names for the API's TLS certificate and key and its local socket's path (RFC 23 §5.3, epic 4's T4.3) | epic 4 takes them as `api.Deps.TLS` and `Socket`, and `pkg/bootstrap` names no key for them | the RFC 13 plan (`pkg/bootstrap`) | `dfs start` serves the API |
 | `GET /nodes/{id}/connections`, the node-local connection listing (RFC 23 §4.2, epic 4) | its producer, each adapter's `Connections()`, is wired into the node by RFC 20's plan's epic 7 | RFC 20's plan, epic 7 | its producer is wired into the node |
 | An MCP server for the API, as an `mcp` subcommand of `dfsctl` (O8) | the user deferred it | unowned | the API's surface settles after epic 6 |
 | Client eviction, v1's `DELETE /api/v1/clients/{id}` (O9) | RFC 23 defines no eviction call | unowned | an RFC adds one |

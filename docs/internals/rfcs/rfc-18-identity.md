@@ -618,8 +618,12 @@ type Evidence struct {
 	SIDs      []SID              // from a verified PAC or a pass-through reply: user SID first; else empty
 	DenyOnly  []SID              // marked deny-only by the signer (§3.4)
 	Expires   time.Time          // the ticket's end time; zero for NTLM
-	digest    [32]byte
+	digest    EvidenceDigest
 }
+
+// EvidenceDigest is the evidence's part of the proof key (§7.1): a hash of the
+// fields sign-in established, derived from identifiers, so it is no key.
+type EvidenceDigest [32]byte
 
 // Keys is what the adapter's mechanism needs for the AP-REP and for signing
 // and encryption. It is never copied into an Identity. Session is the context
@@ -1657,7 +1661,7 @@ plain RFC 2307 directory, no domain controller and no KDC:
 
 | Path | Works? | Why |
 | --- | --- | --- |
-| NFS `AUTH_SYS` | yes, as a claim | a claimed uid maps by `uidNumber` to the directory principal (§4.3); its groups are the claimed gids, or, with `ManageGIDs`, its closure, which includes the directory's groups (§6.3); the caller is `Claimed`, never `authenticated` |
+| NFS `AUTH_SYS` | yes, as a claim | a claimed uid maps by `uidNumber` to the directory principal (§4.3); its groups are the claimed gids, or, with `ManageGIDs` (deferred, §3.2), its closure, which includes the directory's groups (§6.3); the caller is `Claimed`, never `authenticated` |
 | NFS or SMB Kerberos | only with a KDC | any KDC serving the same users will do; a ticket's name resolves through the directory by §4.2 step 3 |
 | SMB NTLMv2 | no, for a user only in the directory | NTLMv2 is challenge and response, so no password reaches the server to check against the directory; a local check needs an NT hash, which no directory user has (§3.5); pass-through needs a domain controller |
 | management-API sign-in | local users only | the API checks a stored password hash (§8.1); a directory user has none, and the API refuses to set one |
@@ -2393,7 +2397,7 @@ RFC 16's conformance suite's, not repeated here.
 | NetBIOS name while joined | 1 | On a joined installation, a settings change to `identity.netbios_name`: refused at validation, the name unchanged. | a CHALLENGE naming an account the installation does not hold |
 | NetBIOS name and domain | 1 | A settings change giving `identity.netbios_name` the directory record's NetBIOS domain, and a directory record whose NetBIOS domain is `identity.netbios_name`, in another case: each refused at validation, naming the other. | one domain routing to both sources |
 | keytab rollover | 1 | During a rollover, tickets under the old and the new key version are both accepted; past the retention, an old-version ticket is refused. | a rotation failing tickets, or a retired key accepted forever |
-| `ManageGIDs` | 2 | A user in 20 store groups calls over `AUTH_SYS`: a file whose ACL grants only the 20th group is granted. | groups capped at the credential's 16 |
+| `ManageGIDs` (deferred, §3.2) | 2 | A user in 20 store groups calls over `AUTH_SYS`: a file whose ACL grants only the 20th group is granted. Written with RFC 21's plan, which adds the field. | groups capped at the credential's 16 |
 | NTLM off | 2 | Make a cache hit on a local NTLM session and on a pass-through one, then turn `identity.ntlm` off with no principal change and apply it: both refused on their next call, a fresh NTLM sign-in refused, and once the deletion ends, no NT hash in the store. Hold a password set between `NewHashes` and its write across the change: its write refused, and no `Secret` of kind nt-hash stored. While the deletion runs, after it fails part way through a fault wrapper around the store, and after it is cancelled, turning `identity.ntlm` on is refused as RFC 23 §4.1 rules; once a deletion has completed, it is accepted. | an NTLM context outliving the setting; a stray hash; hashes a failed deletion never reached made valid again |
 | NTLM MIC | 1 | An AUTHENTICATE with a corrupted MIC, and one with the MIC zeroed in `Raw` while the `MsvAvFlags` in `NTResponse` marks it present: both `ErrLogonFailure`, locally and through pass-through. A pass-through reply whose `UserSessionKey` is all zero, or whose `LogonDomainID` is another domain's: `ErrLogonFailure`; with the directory's domain SID unread: `ErrUnavailable`. | the drop-the-MIC relay |
 | NTLM domain | 1 | A standalone installation's CHALLENGE advertises its own NetBIOS name; an AUTHENTICATE naming it in another case: verified locally. With pass-through configured, `alice@corp.example.com` with an empty domain, and `corp.example.com\alice`: both passed through. A domain matching nothing, and an installation name holding `K` sent with the Kelvin sign U+212A in its place: `ErrLogonFailure`, outcome `unknown_domain`. | every standalone login refused; UPN and DNS-domain sign-ins refused as a wrong password |
