@@ -13,9 +13,11 @@ import (
 	"github.com/cubbit/dittofs/internal/node/nodetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/sim"
 	"github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/google/uuid"
 )
@@ -227,8 +229,11 @@ func TestARemovalLeftAtItsMarkIsJoinedAtStart(t *testing.T) {
 	g := gateRunner(h)
 	defer g.release()
 	started(t, h)
-	if got := atFilesystem; got == nil || *got != entity.TagOffloaded {
-		t.Fatalf("the shard's removal once the filesystem started: got %v, want %v", got, entity.TagOffloaded)
+	if atFilesystem == nil {
+		t.Fatal("the shard's removal once the filesystem started: not read, the step not reached")
+	}
+	if *atFilesystem != entity.TagOffloaded {
+		t.Fatalf("the shard's removal once the filesystem started: got %v, want %v", *atFilesystem, entity.TagOffloaded)
 	}
 	if _, ok := h.Node().Bound(sh.ID); ok {
 		t.Error("the share being removed after the start: in the running set, want out")
@@ -347,6 +352,63 @@ func TestAPassDoesNotRunAShareUnboundAfterItsBind(t *testing.T) {
 	}
 	if _, ok := h.Node().Bound(sh.ID); ok {
 		t.Error("the share unbound while the pass that bound it ran: in the running set, want out")
+	}
+}
+
+// A refused share unbound while a pass that listed it before its mark is
+// held is not refused again by that pass once it ends.
+func TestAPassDoesNotRefuseAShareUnboundWhileItRan(t *testing.T) {
+	h, f := faulted(t)
+	refused := createShare(t, h, "refused", storeB)
+	turns := make(chan struct{}, 1)
+	h.Node().OnRunnerTurn(func() {
+		select {
+		case turns <- struct{}{}:
+		default:
+		}
+	})
+	started(t, h)
+	if !refusedShare(h.Node().Refused(), refused.ID) {
+		t.Fatal("the share on a store with no settings: not refused")
+	}
+	held := sim.NewTestClock(time.Unix(0, 0))
+	setFault(t, f, held, sim.Rule{Op: kvtest.OpScan, Key: nsScan, Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+	defer held.Advance(time.Hour)
+	createShare(t, h, "other", storeB)
+	heldUntil(t, h, held, "the namespaces' scan of a pass that listed the refused share")
+	deleteShare(t, h, refused)
+	// Each second waits for the runner's turn, so the clock stays inside
+	// the held scan's bound.
+	for range 10 {
+		if tagState(t, h, refused.ID) == entity.TagOffloaded {
+			break
+		}
+		select {
+		case <-turns:
+		default:
+		}
+		h.Clock().Advance(time.Second)
+		select {
+		case <-turns:
+		case <-time.After(10 * time.Second):
+			t.Fatal("no runner turn within 10 s")
+		}
+	}
+	if s := tagState(t, h, refused.ID); s != entity.TagOffloaded {
+		t.Fatalf("the refused share after ten runner turns: got %v, want %v", s, entity.TagOffloaded)
+	}
+	if refusedShare(h.Node().Refused(), refused.ID) {
+		t.Fatal("the refused share once unbound: among the refusals, want out")
+	}
+	moved := h.Node().Moved()
+	held.Advance(time.Hour)
+	select {
+	case <-moved:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the held pass did not end once its scan was released")
+	}
+	if refusedShare(h.Node().Refused(), refused.ID) {
+		t.Error("the refused share after the pass that listed it before its mark: among the refusals, want out")
 	}
 }
 
