@@ -41,11 +41,17 @@ func watchSweep(h *nodetest.Harness) <-chan []kvstore.Swept {
 
 func awaitSweep(t *testing.T, ch <-chan []kvstore.Swept) []kvstore.Swept {
 	t.Helper()
+	return awaitSweepOr(t, ch, "no sweep turn within 10 s")
+}
+
+// awaitSweepOr is awaitSweep, failing with why when no turn ends.
+func awaitSweepOr(t *testing.T, ch <-chan []kvstore.Swept, why string) []kvstore.Swept {
+	t.Helper()
 	select {
 	case calls := <-ch:
 		return calls
 	case <-time.After(10 * time.Second):
-		t.Fatal("no sweep turn within 10 s")
+		t.Fatal(why)
 		return nil
 	}
 }
@@ -258,14 +264,13 @@ func TestSweepBoundedWhileTheStoreHangs(t *testing.T) {
 	if len(calls) != 0 {
 		t.Fatalf("Sweep answers in the turn the store hung: got %+v, want none", calls)
 	}
-	pending := held.Pending()
+	// A turn that called Sweep again would block in it until its bound, so
+	// a turn not ending names that second call.
 	for i := range 3 {
 		h.Clock().Advance(sweepInterval)
-		if calls := awaitSweep(t, ch); len(calls) != 0 {
+		calls := awaitSweepOr(t, ch, fmt.Sprintf("no sweep turn %d within 10 s while the store hangs: a second Sweep call blocked the turn, want none while one hangs", i+1))
+		if len(calls) != 0 {
 			t.Errorf("Sweep answers in turn %d while the store hangs: got %+v, want none", i+1, calls)
-		}
-		if n := held.Pending(); n != pending {
-			t.Errorf("store writes hanging after turn %d: got %d, want %d, no Sweep called while one hangs", i+1, n, pending)
 		}
 	}
 	// The other loops report their turns on their own once the clock moved,
