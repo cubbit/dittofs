@@ -554,7 +554,10 @@ start cold.
 
 ### 2.7 Package layout
 
-The contract is `pkg/identity`, a leaf importing metadata types only: the value
+The contract is `pkg/identity`, a leaf: outside the standard library it imports
+only the store's value types (`entity`), the SID codec, `vfserr`, and
+`golang.org/x/crypto`'s `argon2` and `md4`, which `NewHashes` derives with. It
+holds the value
 types (`Identity`, `ProofKind`, `Protection`, `Claims`, `Evidence`, `Keys`,
 `SignInStep`, `SignInResult`, `Caller`, `Spelling`, `Scheme`, `SID`,
 `NTLMAuthenticate`), the interfaces of §3.1, §4.1, §6.1 and §8.1, and
@@ -761,7 +764,10 @@ and inside SMB's SPNEGO ([RFC 22 §4.1](rfc-22-smb.md#4.1%20Signing%20in)).
   lifetime after that, 10 hours plus the clock skew, then removed, a restart
   included: longer than RFC 13 §7 keeps another secret's previous version. So
   tickets under either key are accepted during the rollover, and a retired key
-  is not accepted forever.
+  is not accepted forever. "Every node" is every registered node, as RFC 23
+  §2.4 counts them: one that stopped reporting still counts, as not applied,
+  because it may still be serving on the old key, so it holds the rotation
+  until it reports again or is decommissioned.
 - **Checks.** `SignIn` **MUST** verify the ticket's encryption, its start and end
   times within a clock skew of 5 minutes, as Kerberos implementations use, the
   authenticator's freshness against a replay cache held in the node's memory,
@@ -1138,7 +1144,9 @@ no password only the controller knows, and a version a later rotation sets
 again is never set twice, which would raise the account's key version number
 past its tag. A rotation **MUST NOT** start until every node reports the previous one
 applied, because a domain controller accepts only the current and the previous
-password, and a second rotation would leave a lagging node with neither. A
+password, and a second rotation would leave a lagging node with neither. Both
+waits count every registered node, as the keytab's does (§3.3), so a node that
+stopped reporting holds them until it reports again or is decommissioned. A
 rotation that cannot start by its schedule is reported failed, so a lagging
 node shows as `machine_password_rotation_failed` before the password ages out. A
 rotation whose pinned controller could not be asked for an hour, to set or to
