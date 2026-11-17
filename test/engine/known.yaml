@@ -316,4 +316,4 @@
   fix: planned
   category: feature
   reason: 'the row''s write refused by the spare limit, for which the engine raises nothing (Engine.raiseFull in engine/repack.go): a write refused once the device has no room for a new segment raises journal_full and keeps it while writes into allocated segments are accepted. Init and Open work; with 1 MiB segments and every new create and allocation failing ENOSPC at the seam, the row gets past its writes to the refused roll and stops at its own check: the refused write answers retry-later capacity by its spare limit, not the device''s ErrNoSpace, with the fault fired and the pool''s device-full state set. A write reserves its spares through Pool.Hold (journal/internal/segment/pool.go), which refuses with the plain spare limit; only Stream.takeSpare turns that refusal into ENOSPC on a full device, and a reserved write never reaches it. So the cause is the journal''s reserved-write path, not this setup; it stays until the journal answers a Hold refused on a full device as itself (RFC 1 §6, RFC 8 §11.1).'
-  issue: '#4206'
+  issue: '#4611'
