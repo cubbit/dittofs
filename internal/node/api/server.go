@@ -4,16 +4,21 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
+	"github.com/cubbit/dittofs/internal/tlsconfig"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -30,8 +35,17 @@ type Deps struct {
 	// Live reports whether the node's watchdog holds.
 	Live func() bool
 	// Addr is the API listener's address, MetricsAddr the metrics
-	// listener's: each host:port, a port of 0 picking a free one.
+	// listener's: each host:port, a port of 0 picking a free one. Each is
+	// served over TLS unless it binds a loopback address.
 	Addr, MetricsAddr string
+	// TLS is the certificate and key, bootstrap facts of the host, that
+	// both listeners serve under on an address but loopback; with neither,
+	// a start on such an address is refused.
+	TLS tlsconfig.Config
+	// Socket is the local socket's path, a bootstrap fact of the host, where
+	// the API is also served without TLS, to the server's user only; empty,
+	// there is none.
+	Socket string
 	// Metrics is the registry the metrics listener serves.
 	Metrics *metrics.Registry
 	// Logger is where a listener that fails while serving is logged, and
@@ -86,6 +100,8 @@ type Server struct {
 	serving  sync.WaitGroup
 	stopped  atomic.Bool
 	parked   chan struct{}
+	// calls holds one token per API call running.
+	calls chan struct{}
 	// startRights is the right that may start each kind of operation, which
 	// a cancel of one asks.
 	startRights map[apiv1.OpKind]auth.Right
@@ -114,6 +130,7 @@ func newServer(d Deps, rows []route) *Server {
 	s := &Server{
 		d:           d,
 		parked:      make(chan struct{}, maxParked),
+		calls:       make(chan struct{}, maxCalls),
 		startRights: startRights(rows),
 		quit:        make(chan struct{}),
 		tracer:      d.Tracer,
@@ -135,7 +152,11 @@ func newServer(d Deps, rows []route) *Server {
 	if s.tracer == nil {
 		s.tracer = noop.NewTracerProvider().Tracer("")
 	}
-	d.Metrics.Registry().MustRegister(s.requests, s.seconds, s.unmapped, s.preconditions, s.replays, s.idempotencyWritten, s.audits, newOpsCollector(s))
+	inFlight := prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "dittofs_api_calls_in_flight",
+		Help: "API calls running now, parked polls and public calls apart."}, func() float64 { return float64(len(s.calls)) })
+	limit := prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "dittofs_api_calls_in_flight_limit",
+		Help: "How many API calls the node runs at once."}, func() float64 { return maxCalls })
+	d.Metrics.Registry().MustRegister(s.requests, s.seconds, s.unmapped, s.preconditions, s.replays, s.idempotencyWritten, s.audits, newOpsCollector(s), inFlight, limit)
 
 	api := http.NewServeMux()
 	api.HandleFunc("/", d.health)
@@ -159,30 +180,92 @@ func newServer(d Deps, rows []route) *Server {
 	// Overturned if those names are themselves sensitive in a deployment,
 	// and then by binding the address to a management network or by
 	// requiring a token.
-	s.api = &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
+	s.api = &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			if _, ok := c.(*net.UnixConn); ok {
+				return auth.WithLocal(ctx)
+			}
+			return ctx
+		}}
 	s.met = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	s.api.RegisterOnShutdown(sync.OnceFunc(func() { close(s.quit) }))
 	return s
 }
 
-// Start opens the API and the metrics listeners and serves both, returning
-// the addresses they bound. When either fails to open, neither is left open.
-// A server once stopped does not start again.
+// Start opens the API and the metrics listeners, and the local socket when
+// Deps names one, and serves them, returning the addresses the two
+// listeners bound. When any fails to open, none is left open. A server once
+// stopped does not start again.
 func (s *Server) Start() (addr, metricsAddr net.Addr, err error) {
 	if s.stopped.Load() {
 		return nil, nil, errors.New("api: server stopped")
 	}
-	al, err := net.Listen("tcp", s.d.Addr)
+	tc, err := tlsconfig.ServerConfig(s.d.TLS)
+	if err != nil {
+		return nil, nil, fmt.Errorf("api: the bootstrap's TLS: %w", err)
+	}
+	al, err := listen(s.d.Addr, tc)
 	if err != nil {
 		return nil, nil, err
 	}
-	ml, err := net.Listen("tcp", s.d.MetricsAddr)
+	ml, err := listen(s.d.MetricsAddr, tc)
 	if err != nil {
 		return nil, nil, errors.Join(err, al.Close())
+	}
+	var sl net.Listener
+	if s.d.Socket != "" {
+		if sl, err = listenSocket(s.d.Socket); err != nil {
+			return nil, nil, errors.Join(err, al.Close(), ml.Close())
+		}
+		s.serving.Go(func() { s.serve(s.api, sl) })
 	}
 	s.serving.Go(func() { s.serve(s.api, al) })
 	s.serving.Go(func() { s.serve(s.met, ml) })
 	return al.Addr(), ml.Addr(), nil
+}
+
+// listen opens the TCP address addr, served over tc unless it bound a
+// loopback address, 127.0.0.0/8 or ::1, an IPv4-mapped one read as its IPv4
+// address. With tc nil, an address but loopback is refused.
+func listen(addr string, tc *tls.Config) (net.Listener, error) {
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if l.Addr().(*net.TCPAddr).IP.IsLoopback() {
+		return l, nil
+	}
+	if tc == nil {
+		return nil, errors.Join(fmt.Errorf("api: %s is not a loopback address, so it is served over TLS, and the bootstrap names no cert_file and key_file", addr), l.Close())
+	}
+	return tls.NewListener(l, tc), nil
+}
+
+// listenSocket opens the local socket at path, readable and writable by the
+// server's user only, replacing a socket a node that did not stop left
+// there; any other file at path refuses it.
+//
+// decision: the socket is created and then made 0600, so a connection made
+// between the two, by another user able to reach the path's directory, is
+// accepted. Such a caller still authenticates as everyone does; what it
+// gains is the local mark, which spares it the sign-in throttle's per-source
+// count. Holding the socket in a directory only the server's user may enter
+// closes the window. Overturned if the local mark ever admits a call by
+// itself, and then by creating the socket under a umask of 0177.
+func listenSocket(path string) (net.Listener, error) {
+	if fi, err := os.Lstat(path); err == nil && fi.Mode().Type() == fs.ModeSocket {
+		if err := os.Remove(path); err != nil {
+			return nil, err
+		}
+	}
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return nil, errors.Join(err, l.Close())
+	}
+	return l, nil
 }
 
 func (s *Server) serve(srv *http.Server, l net.Listener) {
@@ -191,7 +274,7 @@ func (s *Server) serve(srv *http.Server, l net.Listener) {
 	}
 }
 
-// Stop closes both listeners, waiting for the requests in flight until ctx
+// Stop closes the listeners, waiting for the requests in flight until ctx
 // ends, a parked poll answering its last read at once, and then for both
 // servers to return.
 func (s *Server) Stop(ctx context.Context) error {

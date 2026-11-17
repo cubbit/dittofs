@@ -387,14 +387,15 @@ func TestImportRules(t *testing.T) {
 // and nodetest may import the module's package rel: none it allows is a
 // component's implementation, the entity and wire packages holding data
 // types only, the metadata store's and filesystem's packages of error values,
-// which the API answers by name, and KV, of which errorsOnly admits only the
-// error values; nodetest, which imports Badger, is not allowed. Everything
+// which the API answers by name, KV, of which errorsOnly admits only the
+// error values, and the TLS library the API's listeners load their
+// certificate with; nodetest, which imports Badger, is not allowed. Everything
 // else it reaches through an interface it declares or a value the node hands
 // it.
 func componentAllowed(rel string) bool {
 	switch rel {
 	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1",
-		"pkg/metadata/errors", "pkg/metadata/kv", "pkg/vfs/vfserr":
+		"pkg/metadata/errors", "pkg/metadata/kv", "pkg/vfs/vfserr", "internal/tlsconfig":
 		return true
 	}
 	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest")
@@ -935,7 +936,8 @@ func apiExports(dir, path string) ([]string, error) {
 
 // The api package exports New, Deps and Server, and Server's Start and Stop,
 // and its auth package Caller, CallerFrom, the With its authentication step
-// calls, and the role table's Right, its rights and Allowed, and nothing
+// calls, the local socket's mark, WithLocal and Local, and the role table's
+// Right, its rights and Allowed, and nothing
 // else; a planted extra method is caught.
 func TestAPIExports(t *testing.T) {
 	want := []string{"Deps", "New", "Server", "Server.Start", "Server.Stop"}
@@ -945,8 +947,8 @@ func TestAPIExports(t *testing.T) {
 	}{
 		{"api", "internal/node/api", want},
 		{"api/auth", "internal/node/api/auth", []string{
-			"Accounts", "Allowed", "Audit", "Caller", "CallerFrom", "Drain", "Installation", "Principals",
-			"Public", "QuotaEvents", "Right", "Self", "Shares", "Stores", "View", "With",
+			"Accounts", "Allowed", "Audit", "Caller", "CallerFrom", "Drain", "Installation", "Local", "Principals",
+			"Public", "QuotaEvents", "Right", "Self", "Shares", "Stores", "View", "With", "WithLocal",
 		}},
 		{"testdata/arch/api-exports", "internal/node/api", []string{"Deps", "New", "Server", "Server.Handler", "Server.Start", "Server.Stop"}},
 	} {

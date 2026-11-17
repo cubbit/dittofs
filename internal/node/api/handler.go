@@ -108,7 +108,7 @@ func requestID(ctx context.Context) string {
 }
 
 // handle answers r by the row of rows it names, none naming it when rows is
-// nil, and records the call: its series and its span, named by the row's op,
+// nil, once enter admits it, and records the call: its series and its span, named by the row's op,
 // and, for an error the problem table does not name, a log line carrying
 // the request's ID. The span carries the resource's pattern, the path's ID
 // once it parses and the outcome, never a body field.
@@ -121,13 +121,18 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 		op = rt.op()
 	}
 	ctx, span := s.tracer.Start(ctx, op)
-	a, err := s.run(ctx, r, rt, id)
+	var a answer
+	release, err := s.enter(rt)
+	if err == nil {
+		defer release()
+		a, err = s.run(ctx, r, rt, id)
+	}
 	if err == nil && a.park != nil {
-		// A parked poll holds no call slot: once calls are bounded, the
-		// slot this call holds is released here, before it parks. Its
-		// write deadline, the wall clock's whatever clock the wait is on,
-		// moves past its wait, so the write timeout that bounds every
-		// other call does not cut it off.
+		// A parked poll holds no call slot: it gives its slot back here,
+		// before it parks. Its write deadline, the wall clock's whatever
+		// clock the wait is on, moves past its wait, so the write timeout
+		// that bounds every other call does not cut it off.
+		release()
 		if err = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(a.wait + s.api.WriteTimeout)); err == nil {
 			a, err = a.park(ctx)
 		}
@@ -144,6 +149,14 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request, rows []route) {
 		}
 		a, _ = jsonAnswer(p.Status, p) // a Problem always encodes
 		a.header.Set("Content-Type", apiv1.MediaTypeProblem)
+		// ponytail: every 503 asks the client to wait one second, whatever
+		// refused it: the node starting, the call bound, a store
+		// unreachable. Upgrade to reading RetryAfter() time.Duration from
+		// the error once one carries a wait of its own, the sign-in
+		// throttle's 429 first.
+		if p.Status == http.StatusServiceUnavailable {
+			a.header.Set("Retry-After", "1")
+		}
 	}
 	span.SetAttributes(attribute.String("api.pattern", r.Pattern), attribute.String("api.outcome", outcome))
 	span.End()
