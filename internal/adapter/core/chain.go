@@ -176,6 +176,7 @@ func memberBytes(rec *resources.Buf, off, next int) int {
 // splits the chain (§4.7).
 func (c *chain) one(e *entry) {
 	p := c.p
+	c.cur = *e
 	related := e.h.Related()
 	if c.isolated && !related {
 		c.flush(splits, nil) // a refusal's record ends before the next unrelated member
@@ -183,6 +184,7 @@ func (c *chain) one(e *entry) {
 	if e.err != nil && e.st == stageDecodeHeader {
 		c.flush(splitDecode, e.tr)
 		c.clear, c.isolated = true, true
+		c.prevH = e.h
 		c.refusal(e, e.h)
 		return
 	}
@@ -243,7 +245,6 @@ func (c *chain) one(e *entry) {
 	if related {
 		prev = c.prevR
 	}
-	c.cur = *e
 	c.prevR = p.message(e.tr, c.rec, e.u, prev, e.release, c)
 }
 

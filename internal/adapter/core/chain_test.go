@@ -1407,3 +1407,99 @@ func TestAChainOfOverrunRepliesGoesOut(t *testing.T) {
 		t.Errorf("the chain is answered %+v, %v: want both replies in one record", rs, err)
 	}
 }
+
+// prevsOf is the stages' Security, recording the member before each Unwrap
+// is handed: a pass-through, where which header Unwrap gets is what is
+// checked.
+type prevsOf struct {
+	core.Security
+	mu    sync.Mutex
+	prevs []core.Header
+}
+
+func (r *prevsOf) Unwrap(h core.Header, rec *resources.Buf, prev core.Header) (core.Header, error) {
+	r.mu.Lock()
+	r.prevs = append(r.prevs, prev)
+	r.mu.Unlock()
+	return r.Security.Unwrap(h, rec, prev)
+}
+
+// refusesAt is the stages' HeaderCodec refusing the header at off, its next
+// kept: an input standing for a header whose fields do not decode while its
+// step does. It keeps the header it returned at off.
+type refusesAt struct {
+	core.HeaderCodec
+	off     int
+	mu      sync.Mutex
+	refused core.Header
+}
+
+func (c *refusesAt) Decode(rec *resources.Buf, off int) (core.Header, error) {
+	h, err := c.HeaderCodec.Decode(rec, off)
+	if err == nil && off == c.off {
+		c.mu.Lock()
+		c.refused = h
+		c.mu.Unlock()
+		return h, errors.New("a header refused, its next kept")
+	}
+	return h, err
+}
+
+// A related member after a member whose header Decode refused is unwrapped
+// under that member's header, not the one before it.
+func TestARelatedMemberAfterADecodeRefusalUnwrapsUnderIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		prevs, codec := &prevsOf{}, &refusesAt{off: -1}
+		s := newChained(t, 1<<20, adapter.Deps{}, func(st *core.Stages) {
+			prevs.Security = st.Security
+			st.Security = prevs
+			codec.HeaderCodec = st.Header
+			st.Header = codec
+		})
+		b, offs := chainOf(s.f, echoIn(1, 7), echoIn(2, 7), echoIn(3, inherited))
+		codec.off = offs[1]
+		s.serveBody(b)
+		for range 2 {
+			if _, err := s.client.Recv(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		prevs.mu.Lock()
+		defer prevs.mu.Unlock()
+		codec.mu.Lock()
+		defer codec.mu.Unlock()
+		if last := prevs.prevs[len(prevs.prevs)-1]; codec.refused == nil || last != codec.refused {
+			t.Errorf("the third member was unwrapped under %v, want the refused second's %v", last, codec.refused)
+		}
+	})
+}
+
+// A related member after a refused first member, its status with no room
+// while the refusal's is held, sends that refusal first, counted reply_pool
+// under its own request: the chain's member is the one it refuses.
+func TestARefusedMembersSplitCountsUnderIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const budget = 400_000
+		m := metrics.New("v", "c")
+		s := newChained(t, budget, adapter.Deps{Metrics: m})
+		rest, err := s.budgets.Reply.Reserve(context.Background(), peer, budget-s.reply.Charge(0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := chainOf(s.f, echoIn(80, 7), echoIn(81, inherited))
+		b[headerLen+1] ^= 1 // a byte of the first's payload
+		s.serveBody(b)
+		synctest.Wait()
+		rest.Release()
+		if r := s.recvOne(); r.ID != 80 || r.Status != testproto.StatusChecksum {
+			t.Errorf("the first record is %+v, want the first refused its checksum", r)
+		}
+		if r := s.recvOne(); r.ID != 81 || r.Status != testproto.StatusChecksum {
+			t.Errorf("the second record is %+v, want the related member answered the refusal's status", r)
+		}
+		got, _ := scrape(t, m)
+		if k := "adapter_chain_splits_total{protocol=" + testproto.Name + ",reason=reply_pool}"; got[k] != 1 {
+			t.Errorf("%s = %v, want 1", k, got[k])
+		}
+	})
+}
