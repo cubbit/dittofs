@@ -11,19 +11,20 @@ import (
 )
 
 // maxAuditPath bounds the path an audit record copies, in bytes, well past
-// any path a row names.
+// any path and query a row takes.
 const maxAuditPath = 512
 
 // auditOf is the audit record of r as it arrived, before its target and
 // outcome are known: the caller ctx carries, by principal, name and
 // credential, the node and the client's address, and the request's method,
-// path without its query, request ID and idempotency key, never its body.
-// The path is cut to maxAuditPath bytes and a key over maxKey, refused for
-// its length, is left out, so a caller cannot grow the audit by what it
-// sends.
+// path with its query, request ID and idempotency key, never its body. The
+// query is kept because a row's parameters can change what its write does,
+// as a DELETE's disposition does. The path and query are cut to
+// maxAuditPath bytes and a key over maxKey, refused for its length, is left
+// out, so a caller cannot grow the audit by what it sends.
 func (s *Server) auditOf(ctx context.Context, r *http.Request) entity.AuditRecord {
 	c, _ := auth.CallerFrom(ctx)
-	path, key := r.URL.Path, r.Header.Get("Idempotency-Key")
+	path, key := r.URL.RequestURI(), r.Header.Get("Idempotency-Key")
 	if len(path) > maxAuditPath {
 		path = path[:maxAuditPath]
 	}

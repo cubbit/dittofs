@@ -96,7 +96,7 @@ func outcomes(as []entity.AuditRecord) []string {
 // Badger on disk, neither the knob nor an applied audit record is there,
 // and the refusal has its own; with the fault gone, the same request
 // commits all three, and the audit record holds who, by name and credential,
-// where, what, its path without its query, and how.
+// where, what, its path with its query, and how.
 func TestWriteCommitsWholeOrNothing(t *testing.T) {
 	disk := newOnDisk(t)
 	caller, who := one(entity.RoleOperator)
@@ -155,7 +155,7 @@ func TestWriteCommitsWholeOrNothing(t *testing.T) {
 		{"node", a.Node, testNode},
 		{"source is 127.0.0.1", strings.HasPrefix(a.Source, "127.0.0.1:"), true},
 		{"request method", req.Method, http.MethodPut},
-		{"request path", req.Path, knobAt(id)},
+		{"request path", req.Path, knobAt(id) + "?trace=1"},
 		{"request has an ID", req.RequestID != "", true},
 		{"request key", req.IdempotencyKey, "k1"},
 		{"target kind", a.Target.Kind, entity.ResourceSetting},
