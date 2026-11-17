@@ -120,7 +120,7 @@ that needs it.
     the secure channel falls back to the previous password on any controller until the retention
     passes; the online join's administrator credential is never stored or logged;
   - identity's `State` carries the machine password's versions, with an `Apply` row;
-  - a local user or group name never holds `@`; domain routing folds as §4.6 does, and an
+  - a local user or group name never holds `@` or `\`; domain routing folds as §4.6 does, and an
     alternate UPN suffix is `unknown_domain` by a `decision:` note;
   - one resolution's directory queries stop at 20 seconds, below the request deadline;
   - `identity.netbios_name` is written upper-cased by a join and may not equal the directory's
@@ -355,7 +355,7 @@ What replaces what:
 | `test/integration/ad-dc`'s tests importing `pkg/identity/ldap` and `internal/auth/netlogon` | the directory's and domain controller's suites against real AD | rewritten in epics 6 and 7 |
 | `dfs netlogon test` | RFC 23's `test-directory` action and the secure channel's health in node status (§6 O5) | deleted with `cmd/dfs`'s v1 bodies by RFC 23's plan's epic 1 |
 | `dfsctl idmap` and `dfsctl identity-provider` | `Spell`, `Find` and grants by principal (RFC 18 §4.1); the `identity.directory` record | deleted with `cmd/dfsctl`'s v1 bodies by RFC 23's plan's epic 6 (T6.1); not rebuilt |
-| `feat/storage-v2`'s local user names holding `@` (`users.go` accepts `alice@corp`) | refused `ErrInvalid` (RFC 18 §4.6), so an NTLM name with `@` is never local | dropped in epic 2 |
+| `feat/storage-v2`'s local user names holding `@` or `\` (`users.go` accepts `alice@corp`) | refused `ErrInvalid` (RFC 18 §4.6), so an NTLM name with either is never local | dropped in epic 2 |
 | develop's join options `ou`, `spns`, `dns_host_name` | `ou` and `dns_host_name` as the online join's parameters (RFC 18 §3.5); RFC 18 §3.3's fixed `cifs/` and `host/` names | `spns` dropped: another name keeps an imported keytab (RFC 18 §3.3) |
 | develop's `kerberos.machine_account.account_name` and `dc_address` | `identity.netbios_name` (A2); the directory record's domain controller address (A3) | refused by the RFC 13 plan's bootstrap loader |
 | develop's LDAP `idmap: rid` mode, a uid derived from a RID and so stable across installations | uids and gids allocated from `identity.id_range` (RFC 18 §2.3) | dropped |
@@ -652,8 +652,8 @@ flowchart TD
   - #4059's S1 and S2, its `pkg/secrets` surface frozen and secrets sealed and versioned, unblock
     epic 2, which adds `Deps.Secrets` and is the first epic that seals;
   - #4059's epic 3, its write check with tracked reads, carries epic 6's NetBIOS cross-check and
-    its write-role test on `identity.directory`, and epic 2's T2.9, the `identity.id_range` check
-    that reads the ID counters;
+    its write-role test on `identity.directory`, and epic 2's `identity.id_range` check, which
+    reads the ID counters;
   - RFC 23's plan's epic 2 lands the principals generation and positions, which epic 2's `Minter`
     raises and epic 3's `State` reads;
   - RFC 23's plan's epic 3 lands the operation runner (RFC 23 §4.6), which epic 7's kinds and
@@ -682,7 +682,7 @@ flowchart TD
 | RFC 23's plan's epic 2 | partly E2, E3 | The `State`'s generation is the principals generation that epic writes, and E2's `Minter` raises it in each batch. E3 starts on squash, groups and grants before it lands, and E2 on everything but the `Minter`'s raise. |
 | RFC 23's plan's epic 3 | E7; partly E2 | The joins and the rotation are runner kinds (D8). E2's NT-hash deletion is one too; the rest of E2 does not wait. |
 | #4059's S1 and S2 | E2 | E2 adds `Deps.Secrets` and is the first epic that seals a `Secret`. |
-| #4059's epic 3 | partly E2, E6 | E2's T2.9, the refusal of an `identity.id_range` at or below the ID counters' marks, is a `CheckTx` that write check runs. E6's NetBIOS cross-check is a tracked read through its write check, and E6's write-role test runs that check on `identity.directory`; the rest of E2 and E6 does not wait. NTLM turned back on is refused at #4050's route, not by a validator (A13). |
+| #4059's epic 3 | partly E2, E6 | E2's refusal of an `identity.id_range` at or below the ID counters' marks, is a `CheckTx` that write check runs. E6's NetBIOS cross-check is a tracked read through its write check, and E6's write-role test runs that check on `identity.directory`; the rest of E2 and E6 does not wait. NTLM turned back on is refused at #4050's route, not by a validator (A13). |
 | E2 | E6; partly E3, E4, E5; RFC 23's plan's E5 | The directory mints through E2's `Minter`. E5 mints machine principals through E2's `Minter` and `Machine` kind, and starts on the keytab and AP-REQ before they land. E4 verifies against E2's NT hashes, and starts on its throttle and MIC before they land. E3 starts on squash, groups and grants before the well-known principals land; its `ntlm_off` refusal, and E4's routing, read the `identity.ntlm` and `identity.netbios_name` settings E2 declares. RFC 23's plan's epic 5 builds its accounts directly on `APISignIn` and `NewHashes`, after this external synchronisation point. |
 | E3 | E7, E8; partly E5, E6 | Pass-through maps by its verified user SID into a resolved caller. E5 binds a PAC to a record, and its deny-only SIDs reach E3's groups. E6's "mint burst" row resolves through E3's `Resolver`; the rest of E6 does not wait. |
 | E4 | E5; partly E7 | Kerberos joins the `SignIn` E4 builds. Pass-through is a route of E4's NTLM domain table. |
@@ -1249,7 +1249,7 @@ password and NT hash are derived, sealed and checked.
   A17, A18); this epic's deletion reports its completion as that state needs.
 - `identity.ntlm` and `identity.netbios_name` declared, the first epic that reads them: the deletion
   reads the one, the `qualified` spelling (RFC 18 §4.6) the other.
-- A local name holding `@` refused (RFC 18 §4.6).
+- A local name holding `@` or `\` refused (RFC 18 §4.6).
 
 ### Epic 3 — Resolution
 

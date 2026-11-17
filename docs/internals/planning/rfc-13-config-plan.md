@@ -811,7 +811,7 @@ var Settings = settings.Table{
 // per thing within the scope; SecretRef, a field holding a reference, with the kind it must name
 // (D10); CheckTx[T](func(entity.ControlPlaneTx, settings.Write, T) error), a check that reads store
 // state beyond settings, tracked, in the write's transaction, handed the write so it can return at
-// once for a key it does not guard (RFC 13 §6; RFC 18's plan's E2, its T2.9, refusing an
+// once for a key it does not guard (RFC 13 §6; RFC 18's plan's E2 refusing an
 // identity.id_range at or below the ID counters' marks). Of panics on a class, Required or SecretRef name that is not a field of T, so a typo fails
 // the table's first test instead of making a restart or bound key live.
 func Of[T interface{ Validate() error }](prefix string, scope, override entity.ScopeKind,
@@ -855,7 +855,7 @@ func (t Table) Check(tx entity.ControlPlaneTx, caller auth.Role, w Write, holds 
 	if err != nil {
 		return err // strict decode, keys matched exactly as declared, over the defaults and the wider row, required keys, then Validate
 	}
-	if err := sec.checkTx(tx, w, s); err != nil { // the section's CheckTx, if any: RFC 18's plan's E2, its T2.9
+	if err := sec.checkTx(tx, w, s); err != nil { // the section's CheckTx, if any: RFC 18's plan's E2 refuses an id_range here
 		return err
 	}
 	if sec.class(key) == Bound && sec.isChange(tx, w) { // a put rewriting the same value is no change (RFC 13 §5.1)
