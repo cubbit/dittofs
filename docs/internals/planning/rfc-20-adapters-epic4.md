@@ -65,13 +65,16 @@ deadlines, health and liveness, the TCP options and the connection series; and, 
 `server.go`, `accept.go`, `conn.go`, `reader.go`, `writer.go`, `reconfigure.go` and the TCP
 files in `internal/adapter/core`, with their tests; the bodies of `Server`'s methods, of
 `NewServer`, and of `Conn`'s `Settings`, `Established`, `Keep` and `Close`; `Framer.BodyLen`'s
-last-fragment flag and `Framer.MaxRecord`, as the RFC 20 amendment #4478 states them, in `core`,
+last-fragment flag and `Framer.MaxRecord`, as the RFC 20 amendment #4478 states them (beside its
+`Framer.Frame(dst []byte, body int) []byte`, which E5's T5.1a adds and this epic's writer calls), in `core`,
 `core.golden` and `testproto`'s framer; `pkg/adapter`'s port sentinel, `ErrPortChanged`, with `adapter.golden` (G9, T4.6); the connection series beside T5.9's in `metrics.go`; the
 three edits to epic 5's `pipeline.go` this document names, each by one subtask: the link's
 `idle` (T4.7a), the drain's call of `MoveTarget` (T4.5b) and the pipeline's own closes made
 tellable (T4.11); `internal/sidecar`; the end-to-end entry's `message` and then its removal in
 `test/adapter/known.yaml`. The edits §9 proposes to the program's implementation plan, the RFCs
-and other epic documents are made by other pull requests.
+and other epic documents are made by other pull requests, but for the ones this pull request
+makes: the plan's deferral ledger's TLS and `ConnInfo.Session` rows and its T4.6 line, and the
+epic 5 and epic 2 documents' lines §9 names.
 
 ### 1.2 Out of scope
 
@@ -237,7 +240,7 @@ cited by number and title, and how it applies here or why it does not.
 | R42 | `Reconfigure` refuses the other protocol's shape, any other type, and settings `Validate` refuses; a refusal leaves the adapter as it was | MUST | §3.4 (`Reconfigure`), §3.6 | T4.6 |
 | R43 | `Reconfigure` refuses a changed `port` with a sentinel error, comparing that field alone | MUST | §3.6 | T4.6 |
 | R44 | `Reconfigure` opens the listeners of an added address, all or none, before the snapshot changes, and closes a removed address's listeners and every connection accepted on them after; the other addresses serve on | MUST | §3.1 (`Reconfigure`), §3.6 | T4.6 |
-| R45 | The TLS certificate files are loaded by `Reconfigure` before the snapshot swap, so an unloadable one is refused there | MUST | §3.6 | T4.6 |
+| R45 | `Reconfigure` loads no TLS file: `Validate` refuses a TLS mode other than off until `StartTLS` (G7), and the loading is the ledger's NFS-over-TLS row's | MUST | §3.6, §5.5 | T4.6 |
 | R46 | `core`'s tests show on `testproto` over the in-memory service that an open connection keeps its settings, a new one gets the new ones, a removed address's connections close, and a bind that fails changes nothing | test row | §3.6 | T4.6 |
 
 **TCP**
@@ -303,15 +306,22 @@ allocator in `Deps`", the compiler, since `Deps` has no such field.
   the context once it has armed, either sees the ended context or has its new deadline
   overwritten by the stop, never the reverse; then it calls the pipeline's `close`, and returns; the reader, once out of
   its loop, calls `wait`, `OnClose`, stops the writer, releases the connection's charge and
-  unregisters it. So a close from a handler or from the reader never waits on itself, and no
+  unregisters it. A connection whose stages `withDefaults` refuses never starts its reader, so
+  `serveConn` itself releases its charge, unregisters it and closes it. So a close from a
+  handler or from the reader never waits on itself, and no
   third goroutine runs per closing connection (RFC 24 §6.1). Prior art: `net/http`'s
   `conn.serve`, the connection's reading goroutine, closes it in a deferred call (checked in
   Go 1.26's `src/net/http/server.go`). `decision:` at `Conn.Close`.
 - **D3, the timers this epic arms run on the server's clock.** The handshake and idle timers,
-  the accept backoff and its 60 s, the accept deadline and the drain deadline are armed through
-  the clock in `shared` (the epic 5 document's D24), which a loopback test advances once an
-  event it can wait on has happened. A socket's read and write deadlines are the socket's own:
-  tested with short real deadlines over loopback, or on a `net.Pipe` in a `synctest` bubble.
+  the accept backoff and its 60 s, the accept deadline, the drain deadline and the per-address
+  warning's minute (T4.2b) are armed through the clock in `shared` (the epic 5 document's D24),
+  which a loopback test advances once an event it can wait on has happened. The accept deadline
+  wakes `Accept` this way: its timer, firing on that clock, sets the listener's deadline in the
+  past, so `Accept` returns and the loop reports `Idle`; the listener carries no 10 s deadline
+  of its own. A socket's read and write deadlines are the socket's own, and so is a deadline on
+  a context, `Stop`'s among them, which runs on the runtime's time: each is tested with short
+  real deadlines over loopback, or on a `net.Pipe` in a `synctest` bubble, where both run on the
+  bubble's time.
   `decision:` at the server's use of the clock. Prior art: RFC 29 §4.11's first kind of double.
 - **D4, `testproto`'s record gains a fragment flag.** RFC 20's amended `Framer` lets a header
   say its body does not end the record. `testproto`'s length prefix keeps its 31 low bits as
@@ -479,15 +489,23 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   - A record in three fragments whose first is 1 KiB charges the class holding 1 MiB before the
     first body is read, keeps that one charge, and comes out whole; a fragment that takes the
     record past 1 MiB, and a fifth fragment, each return an error with the reservation released.
-  - With `read_timeout` 100 ms, a record whose body stops after half returns an error at the
-    deadline with its reservation released; a connection that sends nothing is not timed out.
+  - On a `net.Pipe` in a `synctest` bubble, with `read_timeout` 100 ms: a record whose body
+    stops after half returns an error at the deadline with its reservation released; a record
+    in two fragments whose second never comes returns an error 100 ms after the first
+    fragment's header; a connection that sends nothing for longer is not timed out, the
+    deadline disarmed between records; and a record whose header arrives while the receive
+    budget is held full past 100 ms is not timed out, and comes out whole when its body arrives
+    within 100 ms of the grant (RFC 20 §6.4 as #4533 settles G10).
 - **Tests:** in `reader_test.go`, through `hooks_test.go`, on a loopback pair the test opens,
   each ending with `CheckLeaks`. The sizes and the burst (catch a cut from the wrong offset, a
   part read lost when the rest is read, and a burst served as one record). The over-cap header
   (catches a reservation made before the cap check, R23). The full budget (catches a cut that
   refuses or reads on at the ceiling, R25). The fragments (catch a reservation grown per
   fragment, a count not kept, and a total past the cap accepted, R27, R29). The stalled body and
-  the silent connection (catch no frame deadline, and one armed between records, R28).
+  the silent connection, on the pipe (catch no frame deadline, and one armed between records,
+  R28). The stalled fragment (catches the deadline counted from the last fragment's header).
+  The full budget past the deadline (catches a deadline that runs through the receive wait, or
+  does not run in full again from the grant).
   `testproto`'s vectors (catch the flag read inverted, which would make every record a first
   fragment).
 - **Rules:** rule 2: `FuzzFrame`'s fragments; the fuzz of the connection is T4.10's; rule 7:
@@ -497,7 +515,8 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 
 **Subtask T4.4 estimate: 2.5 man-days.**
 
-- **Track:** B. **Depends on:** T5.1a. Its suite of `out` and `Framer.Frame`.
+- **Track:** B. **Depends on:** T5.1a. Its suite of `out` and `Framer.Frame`, which RFC 20 §4.7
+  declares as #4478 amends it.
 - **Waits for:** nothing: G4 (#4533) settles a protocol's own bound and a gathered write's deadline, and
   neither changes `testproto`'s case.
 - **Covers:** R18 (the writer's half), R30, R31, R32 (`out` and the bound), R33, R34, R35.
@@ -532,8 +551,8 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
 - **Deliverables:** in `server.go`, the receive and reply pools of each `Server` and
   `newShared` over the reply pool (R17), and the registry of open connections, which `Stop`
   now closes, each torn down before it returns. In `conn.go`, `Conn`'s fields and
-  `serveConn(nc, l)`: the snapshot loaded, `NewConn`, `withDefaults` (a refusal closes the
-  connection before it reads, logged at error), `newPipeline` with the connection's `link`
+  `serveConn(nc, l)`: the snapshot loaded, `NewConn`, `withDefaults` (a refusal releases the
+  connection's charge, unregisters it and closes it before it reads, logged at error, D2), `newPipeline` with the connection's `link`
   (its context, the remote address, the writer's `out`, `Conn.Close`), the writer and the
   reader started; `Conn.Settings`; `Conn.Close` and the teardown as D2 orders them, `OnClose`
   run under a context of its own that the close does not cancel and that ends 30 s from the
@@ -551,7 +570,9 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   - `testproto`'s `Negotiate` on a server whose snapshot caps the version at 1 picks 1, read
     through `Conn.Settings`.
   - Stages without `Errors`, from a protocol declared in the test, close the connection with
-    nothing read or written.
+    nothing read or written, every budget at zero and no registry entry left. The protocol
+    returns valid stages for a nil `Conn` and stages without `Errors` for a real one, so the
+    server still builds once T4.11's `NewServer` check (R59) lands.
   - A client close with an `Echo` waiting for its reply reservation (the reply budget held
     full): the `Echo`'s context is cancelled, no reply is sent, `OnClose` runs only after
     `wait` has returned, and every budget is at zero.
@@ -667,7 +688,9 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   - With `drain_timeout` at 200 ms and `Stop`'s context ending at 100 ms, the drain ends at
     100 ms; with an `OnClose` declared in the test that returns only when its context ends,
     `Stop` returns 30 s after the drain deadline.
-- **Tests:** loopback tests in `drain_test.go`, the clock advanced by the test. The answered
+- **Tests:** loopback tests in `drain_test.go`, the clock advanced by the test, but for the two
+  deadlines and the slow `OnClose`, pipe tests in a `synctest` bubble on the server's real
+  clock, so `Stop`'s context deadline and `drain_timeout` both run on the bubble's time (D3). The answered
   `Echo` (catches a drain that closes connections at once). The deadline (catches a drain with
   no deadline, under which `Stop` never returns, and an abandoned request answered, R39). The
   dial (catches a listener left accepting, R38). The two connections (catch `drain` told to one
@@ -828,7 +851,8 @@ cut over a connection's read buffer, `serveConn(nc net.Conn, l *bound)`, the reg
   counted, the address named at warning at most once a minute. Consumed by E7.
 - **Acceptance criteria:** with a limit of 8, one address holds two connections and its third
   is closed; a second address still connects; past 8 in all, every new one is closed; one
-  warning per minute names the address.
+  warning per minute names the address, the minute on the server's clock (D3), which the test
+  advances.
 - **Tests:** loopback tests in `accept_test.go`, clients on `127.0.0.1` and `127.0.0.2`
   (catch the quarter not applied, applied to the node rather than the address, and a closed
   connection counted under the wrong reason, R8, R9).
@@ -1042,7 +1066,8 @@ estimate line and §2 row, 14 subtasks and 27 man-days, and the program's total;
 description, which gains the connection (T4.10), the series (T4.11) and the splits, and loses
 the session cleanup wait; the ledger's row "close reasons for the pipeline's own closes" leaving
 once T4.11 lands, since what an epic builds is not a row (`CLAUDE.md`, Deferral ledgers); the
-ledger's TLS row reworded for G7 and a new row for G8 once each is settled; the `MoveTarget` row's trigger naming T4.5b.
+`MoveTarget` row's trigger naming T4.5b. The ledger's TLS row and its `ConnInfo.Session` row are
+made in this pull request, since #4533 settled G7 and G8.
 
 **Against the program's figure.** The program gave epic 4 9 subtasks and 20 man-days, leaving
 the seam work and the series unpriced. The cited ids keep their work, split by letter where
