@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/cubbit/dittofs/internal/node/api/auth"
@@ -256,36 +257,24 @@ func listen(addr string, tc *tls.Config) (net.Listener, error) {
 
 // listenSocket opens the local socket at path, readable and writable by the
 // server's user only, replacing a socket a node that did not stop left
-// there; a socket a node serves, or any other file at path, refuses it.
-//
-// decision: the socket is created and then made 0600, so a connection made
-// between the two, by another user able to reach the path's directory, is
-// accepted. Such a caller still authenticates as everyone does; what it
-// gains is the local mark, which spares it the sign-in throttle's per-source
-// count. And chmod follows a symlink, so another user who swaps the socket
-// for a link between the two has the server chmod the link's target.
-// Holding the socket in a directory only the server's user may enter closes
-// both. The mode is not set at creation under a umask, since the umask is
-// the process's and would change every file another goroutine creates
-// meanwhile. Overturned if the local mark ever admits a call by itself, or
-// the directory cannot be the server's user's alone.
+// there. Only a dial the path refuses marks the socket stale: a socket a node
+// serves, one whose dial fails any other way (a full accept backlog, a mode
+// the server's user may not connect through), or any other file at path
+// refuses the start.
 func listenSocket(path string) (net.Listener, error) {
 	if fi, err := os.Lstat(path); err == nil && fi.Mode().Type() == fs.ModeSocket {
-		if c, err := net.Dial("unix", path); err == nil {
+		c, err := net.Dial("unix", path)
+		switch {
+		case err == nil:
 			return nil, errors.Join(fmt.Errorf("api: a node is serving the local socket %s", path), c.Close())
+		case !errors.Is(err, syscall.ECONNREFUSED):
+			return nil, fmt.Errorf("api: the local socket %s is not stale: %w", path, err)
 		}
 		if err := os.Remove(path); err != nil {
 			return nil, err
 		}
 	}
-	l, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return nil, errors.Join(err, l.Close())
-	}
-	return l, nil
+	return listenPrivate(path)
 }
 
 func (s *Server) serve(srv *http.Server, l net.Listener) {
