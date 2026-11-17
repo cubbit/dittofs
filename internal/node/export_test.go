@@ -113,3 +113,7 @@ func (n *Node) Bound(id entity.ShareID) (entity.ShareState, bool) {
 	s, ok := n.rec.bound[id]
 	return s.State, ok
 }
+
+// OnSweep has the sweep call turned at the end of each turn with what each
+// of its Sweep calls that answered deleted. Call it before Start.
+func (n *Node) OnSweep(turned func([]kvstore.Swept)) { n.sweep.turned = turned }
