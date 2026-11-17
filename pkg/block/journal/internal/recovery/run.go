@@ -105,14 +105,13 @@ type State struct {
 	// reads Reappends for its lost-tail check.
 	Proof proof
 
-	// Spares is what the spares phase did with the segments it re-adopted:
-
 	// Marks is the marks raise phase's answer: the marks themselves, the
 	// predecessor verdicts the spares phase holds takes by, and the
 	// segments withheld from the spare test. The raise phase fills it.
 	Marks marksResults
 
-	// Spares is what the spares phase did with the segments it re-adopted:	// each adoption, with the id the allocator owns again, and each id the
+	// Spares is what the spares phase did with the segments it re-adopted:
+	// each adoption, with the id the allocator owns again, and each id the
 	// phase unlinked.
 	Spares Spares
 
@@ -142,9 +141,11 @@ func (p phase) String() string { return string(p.span) }
 // rebuild pass replaces the rebuilt index and counters before any later
 // phase reads them — the spares and assembly phases and every phase after.
 // The marks-raise phase is the exception its slot pays: it runs between
-// the rebuild and the proof, so when it gains its run it must re-derive
-// whatever it raised or withheld after the second pass a torn tail made,
-// or fold itself into that pass's replays.
+// the rebuild and the proof, so the second pass a torn tail made replays
+// its answers over the fresh state — the marks' presence map re-raised
+// over the fresh feed, their sequence numbers re-observed over the fresh
+// counters, and the decrements the proof settled replayed over the fresh
+// map.
 var phases = [...]phase{
 	{span: core.SpanOpenAttach, run: runAttach},
 	{span: core.SpanOpenRebuild, run: runRebuild},

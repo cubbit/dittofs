@@ -246,6 +246,50 @@ func TestMarksCountersAboveEveryMark(t *testing.T) {
 	}
 }
 
+// plantTornTail plants, under id, the record the proof reads as torn: A
+// synced and naming its own end, and B beside it with its payload rotted
+// everywhere — no live copy, no mark naming the segment — so the first read
+// of B fails below no Through at all and B is judged torn: the one shape
+// whose exclusion sends the open through the torn tail's second rebuild
+// pass, which replaces the rebuilt state wholesale.
+func plantTornTail(r *rig, id core.SegmentID) {
+	a, b, bAt := tailSeg()
+	full := buildSeg(id, a, b)
+	rotted := slices.Clone(full)
+	rotted[bAt+format.RecordHeaderSize+8+2] ^= 0xff // B's payload, rotted everywhere
+	r.plantSeg(id, rotted)
+}
+
+// TestMarksCountersAboveEveryMarkSurviveTheTornTailPass plants the torn
+// record beside the marks raise's own directory: the second rebuild pass the
+// torn tail costs replaces the counters whole, so the raise's own answer —
+// the next sequence number issued above every mark's Sequence — must be
+// re-derived over the fresh count, or the numbers the caller's metadata
+// still names come back into issue the moment a torn record shares the
+// directory with them.
+func TestMarksCountersAboveEveryMarkSurviveTheTornTailPass(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	plantTornTail(r, core.SegmentID(3))
+	marks := []core.SyncMark{
+		{Stream: 1, Segment: 42, Sequence: 500},
+		{Stream: 2, Segment: 800, Sequence: 900},
+	}
+
+	st := runWithMarks(t, r, marks)
+
+	next, err := st.Rebuilt.Counters.NextSeq()
+	if err != nil {
+		t.Fatalf("counters: the next sequence number was refused: %v", err)
+	}
+	if next <= 900 {
+		t.Errorf("counters: the next sequence number after the open is %d, want above 900, every mark's Sequence, whatever the torn tail's second pass rebuilt", next)
+	}
+	if got := st.Attached.MaxID; got < 800 {
+		t.Errorf("attach: the id seed after the open is %d, want at least 800, every mark's Segment: the next spare made takes a higher id", got)
+	}
+}
+
 // TestPredecessorVerdictReachesTheSparesPhase pins the verdict's wiring end
 // to end: P a predecessor whose header slot is torn and whose trailer names a
 // footer just past the rotted marker slot — the shape the classing reads
@@ -515,6 +559,34 @@ func TestLostTailWithACopyElsewhereIsNotLost(t *testing.T) {
 	}
 }
 
+// TestLostTailWithACopyElsewhereBesideATornTail plants the same lost tail and
+// the same answering copy, with a torn record beside them: the torn tail
+// costs the open its second rebuild pass, which replaces the marks' presence
+// map whole over a fresh rebuild, so the raise's answer must survive the
+// pass — the copy in the other segment must still answer the lost-tail
+// check, and the open must proceed over a record that verifies elsewhere
+// exactly as it does with no torn record in the directory.
+func TestLostTailWithACopyElsewhereBesideATornTail(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	id, other := core.SegmentID(2), core.SegmentID(4)
+	endA := endAfter(seqSyncedRec(199, 0x4100, 0))
+	r.plantSeg(id, buildSeg(id, seqSyncedRec(199, 0x4100, endA)))
+	endC := endA + int64(len(seqSyncedRec(200, 0x8100, endA).Bytes()))
+	cEnd := endAfter(seqSyncedRec(200, 0x8100, 0))
+	r.plantSeg(other, buildSeg(other, seqSyncedRec(200, 0x8100, cEnd)))
+	plantTornTail(r, core.SegmentID(6))
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endC))
+
+	if err != nil {
+		t.Fatalf("the copy in segment %d beside a torn tail answered err %v, want the open to proceed: the second pass must keep the marks' raise", other, err)
+	}
+	if got := st.Kinds.MarkedOnDisk[200]; got == 0 {
+		t.Errorf("the feed left the mark's sequence 200 unraised (%d copies seen) over the second pass, want the copy in segment %d still counting", got, other)
+	}
+}
+
 // TestLostTailOverAConfinedCopyRefuses holds the confined copy out of the
 // checks' one question: a copy the remainder pass confined — its kept run
 // failed the very read an open makes of a payload — verifies nowhere, so it
@@ -713,4 +785,71 @@ func TestMarklessSegmentIsRetired(t *testing.T) {
 			t.Errorf("the retired id 42 took the fate %v, want none: an absent segment is retired, never ended", f.Kind)
 		}
 	}
+}
+
+// TestASyncedCorruptCopyStaysUnraisedAcrossTheSecondPass plants the synced
+// record the device rotted below the mark's Through beside a torn record,
+// so the open runs the torn tail's second rebuild pass. The exclusion the
+// pass feeds covers torn placements alone, so the rotted record — judged
+// corruption the mark names, never torn — re-feeds over the fresh scan and
+// would re-raise the marks' presence map wholesale: a copy the proof's own
+// first read judged rotten holds nothing, and the decrement the proof made
+// must ride the pass to the fresh answer, or a record whose copies verify
+// nowhere comes back raised — and a mark whose only copy it was would read
+// as answered, failing the lost-tail check open.
+func TestASyncedCorruptCopyStaysUnraisedAcrossTheSecondPass(t *testing.T) {
+	// planted builds the shape over a fresh directory: the marked segment
+	// holding A durable and C rotted below the mark's Through — corruption
+	// its own header names, never a torn tail — a whole twin of C in another
+	// segment where twin asks for one, and a torn record beside them both to
+	// cost the open its second rebuild pass.
+	planted := func(t *testing.T, twin bool) (r *rig, id core.SegmentID, endC int64) {
+		t.Helper()
+		r = newRig(t)
+		r.writeFormat()
+		id = core.SegmentID(2)
+		endA := endAfter(seqSyncedRec(199, 0x4100, 0))
+		c := seqSyncedRec(200, 0x8100, endA)
+		endC = endA + int64(len(c.Bytes()))
+		full := buildSeg(id, seqSyncedRec(199, 0x4100, endA), c)
+		durable := slices.Clone(full)
+		durable[endA+format.RecordHeaderSize+8+2] ^= 0xff // C's payload, rotted everywhere
+		r.plantSeg(id, durable)
+		if twin {
+			endTwin := endAfter(seqSyncedRec(200, 0x8100, 0))
+			r.plantSeg(4, buildSeg(4, seqSyncedRec(200, 0x8100, endTwin)))
+		}
+		plantTornTail(r, core.SegmentID(6))
+		return r, id, endC
+	}
+
+	t.Run("a copy elsewhere keeps the count at the twin alone", func(t *testing.T) {
+		r, id, endC := planted(t, true)
+
+		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endC))
+
+		if err != nil {
+			t.Fatalf("the twin's copy beside a torn tail answered err %v, want the open to proceed over the corruption it reports", err)
+		}
+		if got, want := st.Kinds.MarkedOnDisk[200], 1; got != want {
+			t.Errorf("the marks' map holds %d copies of sequence 200, want %d, the twin's alone: the copy the proof judged rotten raises the map no more over the second pass", got, want)
+		}
+		if got := st.Tails.Corrupt; len(got) != 1 ||
+			got[0].Segment != id || got[0].Drop.Header.Seq != 200 || !got[0].Drop.Synced {
+			t.Errorf("Corrupt got %+v, want the one synced corrupt drop of sequence 200 in segment %d: the mark names the corruption the device returned", got, id)
+		}
+	})
+
+	t.Run("no copy anywhere still refuses over the re-fed record", func(t *testing.T) {
+		r, id, endC := planted(t, false)
+
+		st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endC))
+
+		if !errors.Is(err, core.ErrNotImplemented) {
+			t.Fatalf("the synced record the device rotted beside a torn tail answered err %v, want ErrNotImplemented refusing the open: a rotted copy re-fed by the second pass verifies nowhere", err)
+		}
+		if !reflect.DeepEqual(st, State{}) {
+			t.Errorf("the refused open returned state %+v, want the zero State: a refusal serves nothing", st)
+		}
+	})
 }

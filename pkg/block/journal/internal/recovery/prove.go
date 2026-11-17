@@ -279,7 +279,16 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 	// held by it. The exclusion is keyed by placement, not by numbers: two
 	// copies of one record share their numbers, and only the placement the
 	// verdict reached goes.
+	//
+	// The exclusion covers torn placements alone. A copy the first read
+	// judged bad below the mark's Through is corruption the mark names, never
+	// a tear, so its placement is excluded nowhere and re-feeds the second
+	// pass — re-raising the marks' presence map the proof's own decrement
+	// just lowered. One count per such sequence number joins below, which
+	// the second pass lowers the fresh map by again, so the raise's lowered
+	// answer survives the pass.
 	tornSoFar := make(map[index.RecordAt]bool)
+	takeBack := make(map[core.Seq]int, len(marks))
 
 	// The marks' per-segment sync points, the same last-wins value the
 	// raise's own set keeps: a first-read failure below one is never a
@@ -298,7 +307,7 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 			// corruption verdict on the directory's bytes.
 			return fmt.Errorf("recovery: segment %d holds a fate no scan answers", id)
 		}
-		if err := proveTail(ctx, rd, st, expect, sc, fateByID[id], markerSyncOf[id], throughOf[id], tornSoFar); err != nil {
+		if err := proveTail(ctx, rd, st, expect, sc, fateByID[id], markerSyncOf[id], throughOf[id], tornSoFar, takeBack); err != nil {
 			return err
 		}
 	}
@@ -308,7 +317,7 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 	// the index, counters and scans the pass builds replace the
 	// first rebuild's wholesale.
 	if len(tornSoFar) > 0 {
-		if err := rebuildExcludingTorn(ctx, deps, rd, st, expect, floor, tornSoFar); err != nil {
+		if err := rebuildExcludingTorn(ctx, deps, rd, st, expect, floor, tornSoFar, marks, takeBack); err != nil {
 			return err
 		}
 	}
@@ -336,24 +345,53 @@ func runTailProof(ctx context.Context, deps Deps, rd *reader, st *State, expect 
 // rebuild's by construction, exactly the one a rebuild never fed the torn
 // records would hold.
 //
+// The marks-raise phase runs between the rebuild and the proof, so its two
+// answers over the state the pass replaces are replayed over the fresh one
+// here: each mark's sequence number is re-observed on the fresh counters —
+// a drained directory still never reissues a number the caller's metadata
+// names — and the marks' presence map that the fresh feed raised is lowered
+// by takeBack, one count per copy the proof's first read judged bad below a
+// mark's Through, for its placement excludes nothing and the fresh feed
+// re-raises it. Everything else the raise owns — the withheld segments it
+// named, its corrupt folds and its verdicts — lives in st.Tails and st.Marks,
+// which the pass keeps.
+//
 // The scans the first pass kept carry no converted records — nilled by the
 // rebuild's own ponytail, kept so a journal of millions of records does not
 // hold its index twice — so the second pass re-reads the attached segments
-// from disk, the whole of what the torn tail costs an open. Only the
-// marks-raise phase runs between the rebuild and the proof, and it is not
-// built; the phases after the proof — the spares, the re-append and the
-// assembly — read the rebuilt state only below this pass, so nothing is
-// left holding the pre-proof index.
+// from disk, the whole of what the torn tail costs an open. The phases after
+// the proof — the spares, the re-append and the assembly — read the rebuilt
+// state only below this pass, so nothing is left holding the pre-proof
+// index.
 //
 // ponytail: a torn tail costs the open a second rebuild pass over the
 // attached segments, excluding the torn placements, so the repaired index
 // is a rebuild's by construction. Replace it with an incremental repair
 // when an open's profile shows this pass, and keep the rebuild as that
 // repair's test oracle.
-func rebuildExcludingTorn(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, torn map[index.RecordAt]bool) error {
-	out, kinds, _, err := rebuildOver(ctx, deps, rd, st.Attached, expect, floor, torn, &st.Tails, nil)
+func rebuildExcludingTorn(ctx context.Context, deps Deps, rd *reader, st *State, expect core.JournalID, floor core.Version, torn map[index.RecordAt]bool, marks []core.SyncMark, takeBack map[core.Seq]int) error {
+	out, kinds, _, err := rebuildOver(ctx, deps, rd, st.Attached, expect, floor, torn, &st.Tails, marks)
 	if err != nil {
 		return err
+	}
+	// The raise's counters half, replayed: the fresh counters observed only
+	// the records the fresh feed took, so the marks' own numbers — the one
+	// raise the pass drops — join them the same way the raise made them.
+	for _, m := range marks {
+		if err := out.Counters.Observe(index.Numbers{Seq: core.Seq(m.Sequence)}); err != nil {
+			return err
+		}
+	}
+	// The raise's presence-map half, lowered the way the proof lowered it:
+	// every copy the proof read and found bad below the mark's Through
+	// re-feeds here, so the raises the fresh feed re-made for them come
+	// off again — one unit per takeBack count, never below zero.
+	for seq, n := range takeBack {
+		for range n {
+			if m := kinds.MarkedOnDisk[seq]; m > 0 {
+				kinds.MarkedOnDisk[seq] = m - 1
+			}
+		}
 	}
 	st.Rebuilt = out
 	st.Kinds = kinds
@@ -380,7 +418,13 @@ func sortTails(tl *tails) {
 // and no cut the proof answers crosses below it. Nothing is appended: the
 // flow's only reaches into storage are its reads and, where the marker flow
 // made none, the one sync between the two of them.
-func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID, sc *segmentScan, fate *segmentFate, marker markerSync, through int64, tornSoFar map[index.RecordAt]bool) error {
+//
+// takeBack collects, one count per copy, the sequence numbers whose marks'
+// presence-map raises the proof lowers for a first-read failure below
+// through: the exclusion the second pass feeds covers torn placements
+// alone, so such a copy's verdict — corruption, never torn — excludes
+// nothing, and the pass replays the lowering over the fresh map itself.
+func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID, sc *segmentScan, fate *segmentFate, marker markerSync, through int64, tornSoFar map[index.RecordAt]bool, takeBack map[core.Seq]int) error {
 	if marker != markerSyncFailed && (sc.SyncedThrough >= sc.RecordsEnd || sc.RecordsEnd <= format.SegmentHeaderSize) {
 		// No record can end past the synced-through the segment's own records
 		// name when the point reaches the last record's end, and a segment
@@ -434,6 +478,14 @@ func proveTail(ctx context.Context, rd *reader, st *State, expect core.JournalID
 				// entry stands as the classing leaves a rotted payload's:
 				// the read that serves its extent catches the rot through
 				// the corrupt path. No copy verifies, so nothing re-appends.
+				//
+				// The placement excludes nothing in the second pass below —
+				// the exclusion covers torn placements alone — so the copy
+				// re-feeds there and raises the fresh marks' map again; the
+				// decrement above rides takeBack for the pass to replay.
+				if h.Kind <= format.KindUnmark {
+					takeBack[h.Seq]++
+				}
 				st.Tails.Corrupt = append(st.Tails.Corrupt, corruptRecord{
 					Segment: sc.ID,
 					Drop: droppedRecord{Header: h, Synced: true,
