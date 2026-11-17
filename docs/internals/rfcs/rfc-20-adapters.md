@@ -1500,7 +1500,11 @@ operation latency).
 
 A handler that panics **MUST** be answered with the protocol's server-fault
 status, logged at error with the operation and the stack, and **MUST NOT** take
-down the connection's other requests.
+down the connection's other requests. The line is a noisy subject's, written at
+most once a minute per operation
+([RFC 25 §5.2](rfc-25-observability.md#5.2%20Volume%20is%20bounded%20per%20incident%2C%20not%20per%20request)),
+so a client that can trigger a panic gets no stack line per request;
+`adapter_handler_panics_total` counts every one (§10.1).
 
 ### 4.3 A handler makes at most one mutating call
 
@@ -2482,7 +2486,11 @@ hit goes out in a record of its own, so nothing waits while holding the
 cache's copy. These splits count as `reply_pool`.
 The record cap keeps a joined record within what one `Frame` header can state:
 SMB's Direct TCP length is 3 bytes, and a quarter of a large node's reply pool
-can pass it ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)). A member `Unwrap`
+can pass it ([RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)). A
+single reply, or a compound's one reply, never passes the cap on its own: it is
+bounded by its class, and the cap is that class's capacity, 8 MiB and 4 KiB for
+SMB and 1 MiB and 4 KiB for an RPC record
+([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes)), so only a joined record can. A member `Unwrap`
 refuses splits the chain: the replies before it go out first, joined and
 wrapped once; its refusal goes out next in a record of its own, wrapped once
 under its own header as §5.5 says, with the replies of the related members
@@ -2641,9 +2649,13 @@ func (c *Conn) Settings() settings.Settings
 
 // Close ends the connection for a protocol violation the protocol finds: an
 // SMB message that fails decryption, a second NEGOTIATE (MS-SMB2 3.3.5.2.1.1,
-// 3.3.5.4), a moved continuously available share's trees (§3.3). The reader
-// stops, every hold and park ends as on a closed connection (§6.5: cancel
-// called, replies dropped), and OnClose runs. err is logged and counted.
+// 3.3.5.4), a moved continuously available share's trees (§3.3). The
+// connection's context is cancelled, then the reader stops (a read deadline
+// in the past), so a reader re-arming its deadline, which checks the context
+// once it has armed, sees the ended context or has its deadline overwritten
+// by the stop; every hold and park ends as on a closed connection (§6.5:
+// cancel called, replies dropped), and OnClose runs. err is logged and
+// counted.
 func (c *Conn) Close(err error)
 
 // HoldCodec is the stage a table that Holds needs (§4.6). The key doubles as
