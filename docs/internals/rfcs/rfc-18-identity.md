@@ -2030,7 +2030,7 @@ thing.
 | the share, `ExportPolicy.Version` and the share's grant-list version | squash, `Anonymous`, the grants and, once RFC 21's plan adds it, `ManageGIDs` (§3.2) are per share |
 | the identity `State` it was built under (§7.2) | a principal, membership or mapping change, a changed directory record and `identity.ntlm` all arrive as a new `State` |
 | the client address, where a client rule or netgroup decided | two hosts of one principal can be ruled differently |
-| the read-only cause admission handed `Resolve` (§6.1) | it is what admission's client rules decided; a cache of resolution alone keys on it, so it needs neither the netgroups' nor the share list's version, which RFC 17 §4.9 adds for a cache of steps 1 to 4 |
+| the read-only cause admission handed `Resolve` (§6.1) | it is what admission's client rules decided; admission caches resolution alone and runs its client rules on every call (RFC 17 §4.9), so the key needs neither the netgroups' nor the share list's version |
 
 *Example.* alice over Kerberos and an `AUTH_SYS` call sending alice's uid 1500
 have different keys: the proof kind differs, and only one has a name. They never
