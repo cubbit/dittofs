@@ -480,8 +480,9 @@ pkg/metadata/kvstore/
   step 4 calling `vfs.Deps.Identity.Resolve`, `vfs.New` refusing a `Deps` without it;
   `authz.Caller` rebuilt on `identity.Caller`, converted to `entity.Identity` for the
   chokepoint, carrying `Caller.Group` (zero for every caller this epic resolves, since `Claimed`
-  is refused, D7) and the narrowing cause, mapped one to one onto `entity`'s, D9's refusal and
-  marker at the conversion, and a caller whose `Access` is
+  is refused, D7) and the narrowing cause, folded onto `entity`'s three (`ReadOnlyGrant` to
+  `NotNarrowed`, the share and client causes one to one, §9), D9's refusal and marker at the
+  conversion, and a caller whose `Access` is
   `none` refused there too, since the chokepoint reads a zero `Access` as "read the grants"
   and would read the squashed principal's (the moved resolver's `decision:` keeps saying so); `clients.go` through `Resolve` (D5) and `opens.go`'s marker admission through
   `Resolve`; `vfs`'s tests that admit a claimed identity moved to proven ones (D7);
@@ -722,8 +723,9 @@ text in the sections cited here is the version this document was written against
 takes the six RFC 18 points above (§2.6's cache location, §7.1's "steps 1–3", §3.8's expiry
 refusal, the cache-metric names, §6.3's SID-group closure, §3.1's digest timing) and §6.1's
 `Current()` (D3), so E4 to E9 cite RFC text that matches this document. RFC 16 §3 needs no fold:
-#4455 already builds `SharePolicy` from `ShareIndex.Share` and declares `GrantVersion` on
-`Share`.
+on `develop` since #4455 it declares `GrantVersion` on `Share` (`S‖id‖gv`), builds `SharePolicy`
+from one `ShareIndex.Share` read with `SharePolicy.GrantVersion` a copy of `Share.GrantVersion`,
+and has no `Principals.SharePolicy`.
 
 - Two `ReadOnlyCause` types: `entity` declares one (`NotNarrowed`, `NarrowedByShare`,
   `NarrowedByClient`, a cause other than the grant), and `identity.ReadOnlyCause` has
