@@ -88,16 +88,16 @@ func TestOpen_FormatUnreadableRefusesByFlag(t *testing.T) {
 
 // TestOpen_SegmentHeaderRetryThenRefusal covers both halves of a header read
 // on a failing device at the public Open: a read that faults twice and
-// succeeds on the third attaches the segment, and one that faults on every
-// attempt refuses the open naming the segment's range — never judging it
-// zero, damaged or foreign, never taking it off disk. The refusing open ends
-// in the spares phase, the recovery's first writing one, at the three
-// attempts the bound made and before any candidate read; the recovering one
-// runs the phase past it — the rebuild's two reads of the record-less take
-// and the two slot reads of the spare it re-adopts bringing the count to
-// seven (a whole-cap take: a short one is unlinked, never re-adopted) — and
-// still answers ErrNotImplemented, the recovery after the spares phase
-// being unbuilt.
+// succeeds on the third attaches the segment and the journal opens, and one
+// that faults on every attempt refuses the open naming the segment's range —
+// never judging it zero, damaged or foreign, never taking it off disk. The
+// refusing open ends in the spares phase, the recovery's first writing one,
+// at the three attempts the bound made and before any candidate read; the
+// recovering one runs the phase past it — the rebuild's two reads of the
+// record-less take and the two slot reads of the spare it re-adopts bringing
+// the count to seven (a whole-cap take: a short one is unlinked, never
+// re-adopted) — and serves, the whole recovery through the cut-and-seal
+// answering no further read of the segment.
 func TestOpen_SegmentHeaderRetryThenRefusal(t *testing.T) {
 	plan := []struct {
 		name      string
@@ -105,7 +105,7 @@ func TestOpen_SegmentHeaderRetryThenRefusal(t *testing.T) {
 		want      error
 		wantCalls int
 	}{
-		{"recovers on the third attempt", 2, ErrNotImplemented, 7},
+		{"recovers on the third attempt", 2, nil, 7},
 		{"fails every attempt", 0, ErrUnreadable, 3},
 	}
 	for _, c := range plan {
@@ -124,9 +124,16 @@ func TestOpen_SegmentHeaderRetryThenRefusal(t *testing.T) {
 				t.Fatalf("schedule: %v", err)
 			}
 
-			_, err = Open(context.Background(), s.dir, Version{}, id, nil, openOptsDir(s, kit.NewStopwatchClock())...)
+			j, err := Open(context.Background(), s.dir, Version{}, id, nil, openOptsDir(s, kit.NewStopwatchClock())...)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("Open with a header read that %s got err %v, want one matching %v", c.name, err, c.want)
+			}
+			if j != nil {
+				t.Cleanup(func() {
+					if cerr := j.Close(); cerr != nil && !errors.Is(cerr, ErrClosed) {
+						t.Errorf("close the opened journal: %v", cerr)
+					}
+				})
 			}
 			if got := s.seam.CallsFor(kit.OpRead, seg); got != c.wantCalls {
 				t.Errorf("Open: header reads got %d, want %d, the readretry bound", got, c.wantCalls)
@@ -249,12 +256,12 @@ func TestOpen_IdentityRefusalLeavesTheDirectoryPinned(t *testing.T) {
 }
 
 // TestOpen_AttachPassLeavesDirectoryPinned pins what a completed attach pass
-// leaves in the directory at the public Open: every .spare.tmp unlinked, an
-// unrecognised name and a foreign segment's bytes untouched, and the open
-// answering ErrNotImplemented with the recovery after the spares phase
-// unbuilt — the file names the open changed are the spares' temporaries
-// alone (the spares phase adopts the cap-sized take, changing its bytes, and
-// unlinks nothing here).
+// leaves in the directory at the public Open, which now serves past it:
+// every .spare.tmp unlinked, an unrecognised name and a foreign segment's
+// bytes untouched — the file names the open changed are the spares'
+// temporaries alone (the spares phase adopts the cap-sized take, changing
+// its bytes, and unlinks nothing here) beside the fresh spares its own pool
+// makes above every id the directory held.
 func TestOpen_AttachPassLeavesDirectoryPinned(t *testing.T) {
 	s := newSeam(t)
 	id, err := s.init(t)
@@ -278,10 +285,15 @@ func TestOpen_AttachPassLeavesDirectoryPinned(t *testing.T) {
 		t.Fatalf("read the foreign segment: %v", err)
 	}
 
-	_, err = Open(context.Background(), s.dir, Version{}, id, nil, openOptsDir(s, kit.NewStopwatchClock())...)
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("Open over an attached directory got err %v, want ErrNotImplemented: the recovery after the attach pass is not built", err)
+	j, err := Open(context.Background(), s.dir, Version{}, id, nil, openOptsDir(s, kit.NewStopwatchClock())...)
+	if err != nil {
+		t.Fatalf("Open over an attached directory got err %v, want the open recovered and served", err)
 	}
+	t.Cleanup(func() {
+		if cerr := j.Close(); cerr != nil && !errors.Is(cerr, ErrClosed) {
+			t.Errorf("close the opened journal: %v", cerr)
+		}
+	})
 
 	got := s.listSeam(t)
 	if slices.Contains(got, format.SpareName(9)) {

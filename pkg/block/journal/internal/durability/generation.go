@@ -139,6 +139,17 @@ func (s *dirState) takePiece(dropped core.Seq, ext core.Extent) bool {
 	return s.take(piece{dropped, ext})
 }
 
+// release hands back a piece a take claimed: the loss record it names never
+// landed, and the next open owes that record — the failed list the same
+// failure appended holds the claim it retries under. Pieces of losses whose
+// record is on disk are never released: the take is what stops a second
+// record for them.
+func (s *dirState) release(k piece) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pieces, k)
+}
+
 // raise raises the generation by one and returns it.
 func (s *dirState) raise() uint64 {
 	s.mu.Lock()

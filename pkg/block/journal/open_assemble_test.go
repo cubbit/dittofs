@@ -808,18 +808,26 @@ func TestReopenAssembled_EqualityOfUsedBytes(t *testing.T) {
 	}
 }
 
-// plantSealed bytes writes one planted segment sealed, with a write's own
+// plantSealedBytes writes one planted segment sealed, with a write's own
 // records, one catalogue entry per record, the seal marker and the trailer,
-// as the journal's seal writer leaves them. It returns the segment's whole
-// length, the post-seal size the ledger accounts it at.
-func plantSealed(t *testing.T, seam *kit.Seam, id core.SegmentID, recs ...raw.Record) int64 {
+// as the journal's seal writer leaves them, under the identity the caller
+// names. It returns the offsets the records landed at, in the order the
+// records were given.
+func plantSealedAt(t *testing.T, seam *kit.Seam, identity core.JournalID, id core.SegmentID, recs ...raw.Record) []uint32 {
 	t.Helper()
-	b := raw.SegmentHeader{Identity: inspectIdentity, ID: uint64(id)}.Bytes()
-	var entries [][raw.CatalogEntrySize]byte
+	b := raw.SegmentHeader{Identity: identity, ID: uint64(id)}.Bytes()
+	offs := make([]uint32, len(recs))
 	for i := range recs {
-		recs[i].Identity = inspectIdentity
+		recs[i].Identity = identity
 		recs[i].Segment = uint64(id)
 		recs[i].RecordOffset = uint32(len(b))
+		offs[i] = recs[i].RecordOffset
+		b = append(b, recs[i].Bytes()...)
+	}
+	markerOff := len(b)
+	b = append(b, raw.SealMarker{Identity: identity, Segment: uint64(id), Offset: uint64(markerOff)}.Bytes()...)
+	entries := make([][raw.CatalogEntrySize]byte, 0, len(recs))
+	for i := range recs {
 		entries = append(entries, raw.Entry{
 			FileID:       recs[i].FileID,
 			Offset:       recs[i].Offset,
@@ -830,10 +838,7 @@ func plantSealed(t *testing.T, seam *kit.Seam, id core.SegmentID, recs ...raw.Re
 			Kind:         recs[i].Kind,
 			Tag:          recs[i].Tag,
 		}.Bytes())
-		b = append(b, recs[i].Bytes()...)
 	}
-	markerOff := len(b)
-	b = append(b, raw.SealMarker{Identity: inspectIdentity, Segment: uint64(id), Offset: uint64(markerOff)}.Bytes()...)
 	for _, e := range entries {
 		b = append(b, e[:]...)
 	}
@@ -854,6 +859,19 @@ func plantSealed(t *testing.T, seam *kit.Seam, id core.SegmentID, recs ...raw.Re
 	}
 	if err := seam.SyncDir(); err != nil {
 		t.Fatalf("sync the directory after %s: %v", name, err)
+	}
+	return offs
+}
+
+// plantSealed is plantSealedAt over the planted fixture's own identity; it
+// returns the segment's whole length, the post-seal size the ledger
+// accounts it at.
+func plantSealed(t *testing.T, seam *kit.Seam, id core.SegmentID, recs ...raw.Record) int64 {
+	t.Helper()
+	plantSealedAt(t, seam, inspectIdentity, id, recs...)
+	b, err := seam.Durable(format.SegmentName(id))
+	if err != nil {
+		t.Fatalf("read %s back: %v", format.SegmentName(id), err)
 	}
 	return int64(len(b))
 }

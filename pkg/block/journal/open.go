@@ -301,42 +301,102 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 	s := resolveDefaults(cfg.Settings)
 	if hasSegment {
 		// The recovery runs over the directory: the attach pass's bounded
-		// reads and .spare.tmp unlinks, the rebuild, and the spares phase's
-		// refusals, zeroings, unlinks and re-adoptions. A read the device
-		// never completed refuses the open on its ranges; the phases after
-		// the spares one answer ErrNotImplemented below.
+		// reads and .spare.tmp unlinks, the rebuild, the marks, the tail's
+		// proof, the spares phase's refusals, zeroings, unlinks and
+		// re-adoptions, the re-append, the assembly and the cut-and-seal.
+		// A read the device never completed refuses the open on its ranges.
 		failed, err := durability.FailedFor(dir, ff.Identity)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := recovery.Run(ctx, recovery.Deps{
-			FS:           cfg.Storage,
-			Clock:        cfg.Clock,
-			Tracer:       cfg.Tracer,
-			Log:          cfg.Logger,
-			Failed:       failed,
-			ExtentLimit:  s.ExtentLimit,
-			SegmentCap:   core.SegmentCapOf(s),
-			SpareTargets: buildTargets(s),
-		}, floor, expect, marks); err != nil {
+		st, err := recovery.Run(ctx, recovery.Deps{
+			FS:              cfg.Storage,
+			Clock:           cfg.Clock,
+			Tracer:          cfg.Tracer,
+			Log:             cfg.Logger,
+			Failed:          failed,
+			ExtentLimit:     s.ExtentLimit,
+			SegmentCap:      core.SegmentCapOf(s),
+			SpareTargets:    buildTargets(s),
+			HeadroomRecords: s.HeadroomRecords,
+		}, floor, expect, marks)
+		if err != nil {
 			return nil, err
 		}
-		// decision: a directory holding a segment is refused with
-		// ErrNotImplemented, not recovered: the attach pass, the rebuild
-		// and the spares phase above have run — refusing on unreadable
-		// ranges, zeroing the dirty slots of each re-adopted spare,
-		// unlinking the wrongly-sized ones, syncing the directory once
-		// before the re-adoptions are recorded with their classes — and
-		// the recovery after them — the marks, the tail's proof, the
-		// re-append, the assembly and the emptying — is not built, which
-		// is the refusal's reason, not the directory's shape: the spares
-		// phase may have moved the directory by its own rules, and every
-		// change it made is one a later open re-reads and re-decides, so
-		// the recovery that exists later takes the directory as it
-		// stands. Every reopen of a journal that has run meets this,
-		// because the spare pool leaves its finished spares as segment
-		// files, so no journal that has served can be opened again here.
-		return nil, fmt.Errorf("%w: %s holds segments; recovering them is not built", ErrNotImplemented, dir)
+		// decision: an open that ends a segment — a torn slot, a torn header
+		// or a failed marker window the classing gave an ending — is refused
+		// with ErrNotImplemented naming the lowest segment it ends, not yet
+		// recovered: the ended rows take no append and no seal, and the
+		// emptying that unlinks their files and copies out their survivors
+		// is the phase this checkpoint draws the line at. The phases before
+		// this refusal have all run, so the refusal's directory reads back
+		// each of their answers and re-decides them — a cut the emptying
+		// later takes as it stands, a seal as the marker it verifies — and
+		// one of them has already truncated the segment at its fate's cut:
+		// the ended-whole fate alone is refused with the directory exactly
+		// as the attach pass read it. Withdrawn by the emptying.
+		if ended := st.EndedSegments(); len(ended) > 0 {
+			return nil, fmt.Errorf("%w: %s: the open ends segment %d, and its emptying is not built", ErrNotImplemented, dir, ended[0])
+		}
+		deps, state := continueFrom(st, datapath.Deps{
+			FS:            cfg.Storage,
+			Clock:         cfg.Clock,
+			Tracer:        cfg.Tracer,
+			Log:           cfg.Logger,
+			Dir:           dir,
+			Identity:      ff.Identity,
+			Streams:       s.Streams,
+			SegmentCap:    core.SegmentCapOf(s),
+			ExtentLimit:   s.ExtentLimit,
+			Descriptors:   cfg.Budget,
+			Targets:       buildTargets(s),
+			MaxBytes:      s.MaxBytes,
+			IdleSealBytes: s.IdleSealBytes,
+		})
+		// The re-append's sealed target reaches the continuation as the
+		// active row its all-zero rebuild scan seeded it with, for no fate
+		// names it and the walk never read the records the copier wrote:
+		// the row is sealed here, at its cap — a full seal's footprint —
+		// so the set answers the segment what the file's own marker
+		// proves, and no later seal, recycle or stats read takes it for a
+		// segment that appends.
+		if t := st.Proof.ReappendTarget; t != 0 {
+			if err := state.Set.Seal(t, true); err != nil {
+				return nil, err
+			}
+		}
+		c, err := datapath.New(deps, state)
+		if err != nil {
+			// datapath.New takes its own cleanup when a layer below it fails, and
+			// nothing runs after it here, so no error from the open itself can
+			// leave the core it stopped. Any step added between the core and the
+			// journal it serves must close the core on its error before
+			// returning it.
+			return nil, err
+		}
+		// The open's own loss records: appended and synced before the open
+		// returns, so the loss records the crash left half-told are durable
+		// the moment the journal is served. Appends need a spare to land in,
+		// so the pass waits for the pool to settle first — only when
+		// something is owed, keeping every clean reopen off the pool's
+		// refill entirely. A failure here closes the core the open built,
+		// leaving the directory to the next open: every record the pass
+		// landed is durable, and every failure the answer costs is on the
+		// directory's failed list.
+		if recovery.OpenAppends(st) {
+			if err := c.WaitSpares(ctx); err != nil {
+				_ = c.Close()
+				return nil, err
+			}
+		}
+		if err := recovery.OpenLosses(ctx, st, c.Durability(), s.HeadroomRecords); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
+		if cfg.SparesReady != nil {
+			cfg.SparesReady(c)
+		}
+		return newJournal(c), nil
 	}
 
 	// The counter is raised before the core is built: a refused floor must
@@ -392,14 +452,13 @@ func Open(ctx context.Context, dir string, floor Version, expect JournalID, mark
 // the rebuilt index spells. It is the mapping the journal's open step calls
 // once it has run the recovery over a directory that holds segments.
 //
-// decision: at this stage only tests call it — the reopen seam's rows and the
-// inspector's planted fixture, each building the deps of its own journal. The
-// journal's own open, which today refuses a directory holding segments with
-// ErrNotImplemented rather than continuing the core, is the wiring that calls
-// it in production and is not built yet. A copy of the mapping there that
-// dropped LastSegment would leave its spares colliding with the rebuilt ids,
-// and no row would name it, so this function is the one mapping: withdrawn
-// here only by the open step replacing its two callers.
+// decision: this mapping is the production open's own now, and the tests'
+// before it — the reopen seam's rows and the inspector's planted fixture,
+// each building the deps of its own journal, were its only callers while
+// the open refused every directory holding segments. A copy of the mapping
+// anywhere else that dropped LastSegment would leave its spares colliding
+// with the rebuilt ids, and no row would name it, so this function stays
+// the one mapping.
 func continueFrom(st recovery.State, deps datapath.Deps) (datapath.Deps, datapath.State) {
 	deps.LastSegment = st.Attached.MaxID
 	return deps, datapath.State{

@@ -237,6 +237,14 @@ func (d *Durability) loseMoved(ctx context.Context, l Loss, moved []core.Segment
 	if recErr != nil {
 		if l.Reason != core.LossSuperseded {
 			d.dir.addFailed(l.Seq)
+			// decision: the piece a failure took is handed back with it: the
+			// registry's pieces name losses whose record is on disk, and the
+			// next open of the directory owes this one its record, retrying
+			// through the failed list the line above built. Overturned by a
+			// caller that appends the record itself instead of retrying the
+			// loss, which would make the taken piece the dedup that stops a
+			// second attempt.
+			d.dir.release(piece{l.Seq, l.Extent})
 		}
 		if refused || errors.Is(recErr, core.ErrNoSpace) || errors.Is(recErr, core.ErrClosed) ||
 			errors.Is(recErr, segment.ErrStreamStopped) || errors.Is(recErr, segment.ErrStreamClosed) {

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"slices"
 
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/capacity"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/block/journal/internal/durability"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
 	"github.com/cubbit/dittofs/pkg/block/journal/internal/segment"
 )
@@ -248,4 +250,143 @@ func sealAnswers(rd *reader, identity core.JournalID, id core.SegmentID, sc segm
 		}
 	}
 	return entries, marker, nil
+}
+
+// EndedSegments returns the ids of the segments the open this State came from
+// ends — each fate the classing answered with an ending: a torn slot or a torn
+// header the open truncates and the emptying unlinks, or a failed marker
+// window the tail's proof left standing whole. Ascending, like the fates, so
+// the first names the lowest. An open that ends no segment serves; one that
+// ends any is the emptying's to finish, which is not built yet.
+func (st State) EndedSegments() []core.SegmentID {
+	var out []core.SegmentID
+	for _, f := range st.Tails.Fates {
+		if f.Kind == fateEnded {
+			out = append(out, f.ID)
+		}
+	}
+	return out
+}
+
+// OpenAppends reports whether the open this State came from owes the built
+// journal any loss record it must append: a record a read-only journal
+// earlier in this process failed, or a corrupt drop the classing named. The
+// caller that finds true waits for the spare pool before running OpenLosses,
+// for the appends need a spare to land in; the caller that finds false — the
+// open of every clean directory — blocks on nothing.
+func OpenAppends(st State) bool {
+	return len(st.Kinds.ReadOnlyDrops) > 0 || len(st.Tails.Corrupt) > 0
+}
+
+// OpenLosses appends the open's own loss records through d, the layer the
+// journal the recovery continued into was built over, once that journal
+// exists and before the open returns: no phase of the recovery itself can
+// run it, for the layer is not built until the open's continuation is.
+//
+// The records it owes, in the order it appends them: first every record a
+// read-only journal failed earlier in this process and the rebuild found on
+// disk — its eviction from the index the rebuild already made — each handed
+// to Lose marked AtOpen and counted against the open reserve, never
+// deferred, with the sync the record never got; past the reserve the rest
+// append nothing, for the copy that empties each segment still holding one
+// leaves the failed records out, and no event, no marker and no record names
+// them. Then every corrupt drop no loss record on disk names — each one
+// whose (seq, extent) no earlier Lose or Place of this journal took —
+// handed to Lose marked AtOpen with the synced flag the classing proved,
+// while the open reserve lasts; past the reserve each loss is deferred
+// against the segment holding the dropped record, published marked deferred
+// and named in the registry the copy that retires the segment reads. The
+// reason of the deferred leg is the dedup's own: the piece of a corrupt
+// drop already named is not handed over again, and no extent of a dropped
+// record feeds twice.
+//
+// decision: R27's failed records take the reserve whole before any corrupt
+// drop's draws on it — the failed records' loss records are the
+// journal's own debt from the run that failed them, and past the reserve
+// they gain nothing by deferral, for no copy writes their record, while a
+// corrupt drop's deferral keeps its promise through the copy. The failed
+// leg appends as many as the reserve holds and leaves the rest to the
+// emptying (RFC 1 section 6); the corrupt leg defers everything past what
+// the reserve has left. Withdrawn when the emptying writes the failed
+// records' losses into its copies too.
+//
+// The found loss records themselves are placed first, into the layer's
+// ring as found at open, taking their pieces once for whichever instance
+// of the journal reads them: a loss record the disk already named is
+// never appended again — the corrupt leg below hands the drop it names to
+// no second Lose.
+//
+// Lose appends and syncs its record before it returns, so the open's caller
+// holds loss records durable the moment each leg lands; a Lose that fails
+// answers its error here, refusing the open — the piece it took stays
+// taken, its record is owed to nothing, and its number is on the
+// directory's failed list for the next open to answer. The generational
+// raise, the marker and the counters are Lose's own, whichever call they
+// came from: extension of the one rule, not a second one.
+func OpenLosses(ctx context.Context, st State, d *durability.Durability, headroomRecords int) error {
+	for _, lo := range st.Kinds.Losses {
+		d.Place(lo.Ev, lo.Dropped)
+	}
+
+	// The open reserve: the records this pass may append before the journal
+	// serves. The failed leg draws first and never defers; what it leaves,
+	// decision: the open keeps the last records of the headroom for
+	// itself, for the records an open must append before it serves are
+	// few, bounded (RFC 1 section 6): a journal whose headroom ran out
+	// before the crash still opens and still records what the crash
+	// corrupted. Withdrawn when the open draws these records through the
+	// capacity ledger instead of counting its own reserve.
+	reserve := capacity.OpenReserveRecords(headroomRecords)
+
+	for _, rd := range st.Kinds.ReadOnlyDrops {
+		if reserve <= 0 {
+			break // past the reserve nothing appends: the emptying takes the rest
+		}
+		reserve--
+		l := durability.Loss{
+			Share:   rd.Ev.Share,
+			File:    rd.Ev.File,
+			Extent:  rd.Ev.Extent,
+			Version: rd.Ev.Version,
+			Seq:     rd.Dropped,
+			Reason:  core.LossFailedWindow,
+			AtOpen:  true,
+		}
+		if _, err := d.Lose(ctx, l); err != nil {
+			return err
+		}
+	}
+	for _, c := range st.Tails.Corrupt {
+		l := durability.Loss{
+			Share:   c.Drop.Header.Tag,
+			File:    c.Drop.Header.File,
+			Extent:  c.Drop.Header.Extent,
+			Version: c.Drop.Header.Version,
+			Seq:     c.Drop.Header.Seq,
+			Reason:  core.LossCorrupt,
+			Synced:  c.Drop.Synced,
+			AtOpen:  true,
+		}
+		// decision: the drop's columns come from the header the catalogue
+		// claims where the record's own did not verify: a confined
+		// catalogue record carries the entry's word alone, and a loss
+		// record built on zero columns would name no file and no extent —
+		// the shape the next open refuses at the record it read back.
+		if c.Drop.Entry.RecordOffset != 0 {
+			h := headerFromEntry(c.Segment, c.Drop.Entry)
+			l.Share, l.File, l.Extent, l.Version, l.Seq = h.Tag, h.File, h.Extent, h.Version, h.Seq
+		}
+		if reserve <= 0 {
+			// Past the reserve the loss defers: no record now, the piece
+			// stays taken, and the copy that retires the segment owing the
+			// dropped record writes the record from the registry entry.
+			l.Deferred, l.Seg = true, c.Segment
+		} else {
+			reserve--
+		}
+		if _, err := d.Lose(ctx, l); err != nil {
+			return err
+		}
+	}
+	return nil
 }
