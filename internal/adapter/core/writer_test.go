@@ -433,8 +433,10 @@ func TestACloseThatStopsTheWriterReturns(t *testing.T) {
 			w.Stop()
 			stopped <- err
 		})
-		_ = peer.Close()
-		for _, body := range []string{"gone", "behind"} {
+		// The writer is held on the first message, which the peer does not
+		// read, while the second queues; then the peer closes and the write
+		// fails.
+		for _, body := range []string{"held", "behind"} {
 			b, err := pool.Get(context.Background(), netip.Addr{}, len(body))
 			if err != nil {
 				t.Fatal(err)
@@ -443,7 +445,9 @@ func TestACloseThatStopsTheWriterReturns(t *testing.T) {
 			if err := w.Out(b, 0, 0); err != nil {
 				t.Fatal(err)
 			}
+			synctest.Wait()
 		}
+		_ = peer.Close()
 		synctest.Wait()
 		select {
 		case err := <-stopped:
