@@ -11,7 +11,7 @@ fe 53 4d 42                 # [0,4)   ProtocolId 0xFE 'S' 'M' 'B'
 bb 00 00 c0                 # [8,12)  Status 0xC00000BB, STATUS_NOT_SUPPORTED
 0c 00                       # [12,14) Command 0x000C, CANCEL
 00 00                       # [14,16) CreditResponse 0
-03 00 00 00                 # [16,20) Flags 0x00000003, SERVER_TO_REDIR and ASYNC_COMMAND
+01 00 00 00                 # [16,20) Flags 0x00000001, SERVER_TO_REDIR: no request bit echoed
 00 00 00 00                 # [20,24) NextCommand 0
 31 32 33 34 35 36 37 38     # [24,32) MessageId, the request's
 41 42 43 44 45 46 47 48     # [32,40) AsyncId, the request's

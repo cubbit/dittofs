@@ -105,7 +105,16 @@ func (h *Header) Inherit(prev *Header) {
 }
 
 // DecodeHeader returns the SMB2 header at off in msg, as a view of msg's
-// bytes.
+// bytes. It runs after the message is sorted by what opens it: the caller
+// tells a server's own header, a transform header the reader unwraps (RFC 22
+// section 4.1) and an SMB1 NEGOTIATE it answers (RFC 22 section 3.1) apart
+// with the Protocol constants, and SMB2's header alone reaches this reader;
+// the RFC names no stage for that sort, so it belongs to the reader it
+// precedes, which the RFC 22 plan's sorting follows. A header is a view into
+// msg: it stays valid while msg does, and Inherit writes into it; its body
+// ends where its NextCommand steps to, or at the record's end for a last
+// member, so a body decoder stops at the next header rather than reading
+// past the member.
 //
 // A header no reply can be addressed to comes back nil with an error wrapping
 // ErrUnaddressable, and its connection closes unanswered (MS-SMB2 3.3.5.2.6,
@@ -140,15 +149,22 @@ func DecodeHeader(msg []byte, off int) (*Header, error) {
 }
 
 // AppendReply appends to out the header of the reply to req, with status and
-// a grant of credits, and returns it.
+// a grant of credits, and returns it. out must not alias req's bytes: the
+// copy would write the reply over the request, and a pooled buffer reused
+// under a held request changes the header being answered underneath the
+// reply.
 //
 // The reply is req's header with MS-SMB2 3.3.4.4's changes: the status
 // written, NextCommand 0 until Chain sets it, SERVER_TO_REDIR set, and the
 // grant written as handed, which MS-SMB2 3.3.4.4 has be 0 for a request with
-// an async ID. So it carries req's command, credit charge (MS-SMB2 3.3.4.1),
-// flags, message ID, async ID or Reserved and tree ID, and session. SIGNED
-// is cleared and the signature is zero: a reply is signed, when it is, after
-// it is encoded. Its StructureSize is 64, whatever req's.
+// an async ID. Of the request's flags it carries the bits a reply echoes -
+// RELATED_OPERATIONS, the priority mask, DFS_OPERATION and REPLAY_OPERATION -
+// and not ASYNC_COMMAND, whose reply form belongs to the stage that puts a
+// request off with the AsyncId it chose. So it carries req's command, credit
+// charge (MS-SMB2 3.3.4.1), bits of its flags, message ID, async ID or
+// Reserved and tree ID, and session. SIGNED is cleared and the signature is
+// zero: a reply is signed, when it is, after it is encoded. Its
+// StructureSize is 64, whatever req's.
 func AppendReply(out []byte, req *Header, status uint32, credits uint16) []byte {
 	at := len(out)
 	out = append(out, req[:]...)
@@ -156,7 +172,7 @@ func AppendReply(out []byte, req *Header, status uint32, credits uint16) []byte 
 	binary.LittleEndian.PutUint16(r[offStructureSize:], HeaderLen)
 	binary.LittleEndian.PutUint32(r[offStatus:], status)
 	binary.LittleEndian.PutUint16(r[offCredits:], credits)
-	binary.LittleEndian.PutUint32(r[offFlags:], FlagServerToRedir|req.Flags()&^FlagSigned)
+	binary.LittleEndian.PutUint32(r[offFlags:], FlagServerToRedir|req.Flags()&replyFlags)
 	binary.LittleEndian.PutUint32(r[offNextCommand:], 0)
 	clear(r[offSignature:])
 

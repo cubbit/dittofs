@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -290,7 +289,49 @@ func TestAppendReplyKeepsTheSyncForm(t *testing.T) {
 	}
 }
 
-func TestAppendReplyKeepsTheAsyncForm(t *testing.T) {
+// Of a request's flags a reply echoes only the bits it carries - the
+// RELATED, priority, DFS and REPLAY bits - and no others (MS-SMB2 2.2.1.1's
+// table, 3.3.4.4's echoes): not ASYNC_COMMAND, whose reply form is the hold
+// stage's with the AsyncId it chose, and not the bits no reply carries. The
+// 0xF0000003 request loops every such bit back; the CANCEL's reply rides
+// through with none of them and its 3.2.5.16 rule is why the pin is here.
+func TestAReplyEchoesOnlyTheBitsItCarries(t *testing.T) {
+	async, err := DecodeHeader(readGolden(t, "async_request"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if async.Flags()&FlagAsyncCommand == 0 {
+		t.Fatal("the async vector is not of the async form")
+	}
+	if r, err := DecodeHeader(AppendReply(nil, async, StatusNotSupported, 0), 0); err != nil {
+		t.Fatal(err)
+	} else if got := r.Flags(); got&FlagAsyncCommand != 0 || got&^FlagServerToRedir != 0 {
+		t.Errorf("the CANCEL's reply carries %#x, want SERVER_TO_REDIR alone", got)
+	}
+
+	sync, err := DecodeHeader(readGolden(t, "sync_request"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched := *sync
+	binary.LittleEndian.PutUint32(patched[offFlags:], 0xF0000003)
+	if _, err := DecodeHeader(append(patched[:], make([]byte, 64)...), 0); err != nil {
+		t.Fatal(err)
+	}
+	reply := AppendReply(nil, &patched, 0, 1)
+	if r, err := DecodeHeader(reply, 0); err != nil {
+		t.Fatal(err)
+	} else if got, want := r.Flags(), uint32(0x30000001); got != want {
+		t.Errorf("the 0xF0000003 request's reply carries %#x, want %#x (SERVER_TO_REDIR, DFS and REPLAY)", got, want)
+	}
+}
+
+// A reply takes no request flag but the ones it echoes: of the CANCEL's
+// ASYNC_COMMAND nothing is written, since a reply in the async form is the
+// hold stage's, with the AsyncId it chose (MS-SMB2 3.3.4.4) - and the
+// CANCEL is never answered anyway (3.3.5.16). The request's bytes at the
+// async ID's offset ride through as the copy's, not as the reply's ID.
+func TestAppendReplyTakesNoAsyncForm(t *testing.T) {
 	h, err := DecodeHeader(readGolden(t, "async_request"), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -435,9 +476,13 @@ func TestTheAcceptedPathAllocatesNothing(t *testing.T) {
 	}
 	msg := readGolden(t, "sync_request")
 	out := make([]byte, 0, 256)
+	body := make([]byte, 9) // error bodies suffice: 64 plus 9 rounds to a whole step
 	if n := testing.AllocsPerRun(100, func() {
 		h, _ := DecodeHeader(msg, 0)
-		_ = AppendFrame(AppendReply(out[:0], h, 0, 1), 64)[:0]
+		rec := AppendReply(out[:0], h, 0, 1)
+		rec = append(rec, body...)
+		rec, _ = Chain(rec, 0, false)
+		_ = AppendFrame(rec, len(rec))
 	}); n != 0 {
 		t.Errorf("decoding and replying allocated %v, want nothing", n)
 	}
@@ -460,15 +505,18 @@ func TestRefusalsOfAClaimedLengthAllocateNoBuffer(t *testing.T) {
 			return err
 		}},
 	} {
-		var before, after runtime.MemStats
-		runtime.ReadMemStats(&before)
 		err := c.refuse()
-		runtime.ReadMemStats(&after)
 		if err == nil {
 			t.Errorf("%s: accepted", c.name)
 		}
-		if n := after.TotalAlloc - before.TotalAlloc; n >= 4<<10 {
-			t.Errorf("%s: refusing it allocated %d bytes, want under 4 KiB", c.name, n)
+		if prof.RaceEnabled {
+			// Under -race the byte comparison below would fail on bytes the
+			// detector allocates itself (sync primitives); the unit cell runs
+			// this without the detector.
+			continue
+		}
+		if n := testing.AllocsPerRun(100, func() { _ = c.refuse() }); n != 0 {
+			t.Errorf("%s: refusing it allocated %v, want nothing (a buffer would be megabytes, or gigabytes, before its length was checked)", c.name, n)
 		}
 	}
 }

@@ -20,6 +20,12 @@ func FrameLen(hdr []byte) (int, error) {
 	if len(hdr) < FrameHeaderLen {
 		return 0, errFrameShort
 	}
+	// decision: a first byte of 0x85, a NetBIOS session keepalive MS-SMB2
+	// 2.1 allows on the same stream, is refused here like any other nonzero
+	// byte, and the connection closes. Answering it with a skip, as v1's
+	// reader did, is a change to the record contract, not this package's; it
+	// comes with the reader if ever a capture shows one. Withdraw this
+	// marker and skip it inside the record loop if that day comes.
 	if hdr[0] != 0 {
 		return 0, errFrameZero
 	}
