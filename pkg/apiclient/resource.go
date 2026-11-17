@@ -60,12 +60,6 @@ func (r Resource[S, T]) Create(ctx context.Context, spec S, opts ...CallOption) 
 	return tagged[S, T](r.c.write(ctx, http.MethodPost, r.path, map[string]any{"spec": spec}, "", opts))
 }
 
-// Put replaces the spec of the resource id names, whose tag is etag; an
-// etag of "*" creates it, and is refused if it exists.
-func (r Resource[S, T]) Put(ctx context.Context, id string, spec S, etag string) (Tagged[S, T], error) {
-	return tagged[S, T](r.c.write(ctx, http.MethodPut, r.at(id), map[string]any{"spec": spec}, etag, nil))
-}
-
 // Patch merges patch, a JSON merge patch of the resource's body, into the
 // resource id names, whose tag is etag.
 func (r Resource[S, T]) Patch(ctx context.Context, id string, patch any, etag string) (Tagged[S, T], error) {
