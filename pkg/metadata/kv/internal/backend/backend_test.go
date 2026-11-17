@@ -42,7 +42,7 @@ func (c *clock) now() time.Time { return c.t }
 // within its tick, still gives each a later Now.
 func TestNowAdvancesOnAStillClock(t *testing.T) {
 	c := &clock{time.Unix(1_800_000_000, 0)}
-	s := NewClock(c.now, time.Time{})
+	s := NewClock(c.now, time.Time{}, 0)
 	if err := s.Raise(func([]byte) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestNowAdvancesOnAStillClock(t *testing.T) {
 func TestNowHoldsWhenARaiseFails(t *testing.T) {
 	start := time.Unix(1_800_000_000, 0)
 	c := &clock{start}
-	s := NewClock(c.now, time.Time{})
+	s := NewClock(c.now, time.Time{}, 0)
 	if err := s.Raise(func([]byte) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -67,5 +67,28 @@ func TestNowHoldsWhenARaiseFails(t *testing.T) {
 	}
 	if now, ceiling := s.Now(), start.Add(CeilingAhead); now.After(ceiling) {
 		t.Fatalf("Now %v passed the durable ceiling %v after a failed raise", now, ceiling)
+	}
+}
+
+// A clock given a longer ahead lets Now follow the clock that far past the
+// last raise, where the default holds it CeilingAhead past.
+func TestNowFollowsTheClockUpToItsAhead(t *testing.T) {
+	start := time.Unix(1_800_000_000, 0)
+	for _, tc := range []struct {
+		ahead time.Duration
+		want  time.Duration // how far past start Now reaches with the clock an hour on
+	}{
+		{0, CeilingAhead},
+		{48 * time.Hour, time.Hour},
+	} {
+		c := &clock{start}
+		s := NewClock(c.now, time.Time{}, tc.ahead)
+		if err := s.Raise(func([]byte) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		c.t = start.Add(time.Hour)
+		if now := s.Now(); !now.Equal(start.Add(tc.want)) {
+			t.Errorf("ahead %v: Now an hour past the raise is %v, want %v", tc.ahead, now, start.Add(tc.want))
+		}
 	}
 }

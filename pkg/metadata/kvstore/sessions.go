@@ -23,16 +23,6 @@ import (
 // A sign-in count is SF‖tag‖tail. Its XP row, where it has one, repeats the
 // tail after its own tag, so the sweep finds the count from the row.
 
-// How long a sign-in count is kept after the time its expiry follows.
-//
-// decision: each is baked into the XP rows already written, so changing one
-// between releases strands the rows written under the old value where the
-// sweep looks for the new; a change needs a migration that moves them.
-const (
-	sourceCountLife = 15 * time.Minute
-	pairCountLife   = 24 * time.Hour
-)
-
 func sessionKey(id [16]byte) []byte { return keys.ID([]byte{keys.KindSS}, id[:]) }
 
 func sessionHashesPrefix(id [16]byte) []byte { return append(sessionKey(id), keys.SSh) }
@@ -97,9 +87,9 @@ func signInKey(tag byte, tail []byte) []byte { return keys.ID([]byte{keys.KindSF
 func signInExpiryKey(tag byte, tail []byte, f entity.SignInFailures) []byte {
 	switch tag {
 	case keys.SFSource:
-		return expiryKey(f.Failed.Add(sourceCountLife), keys.XPSource, tail)
+		return expiryKey(f.Failed.Add(entity.SourceSignInLife), keys.XPSource, tail)
 	case keys.SFPair:
-		return expiryKey(f.Last.Add(pairCountLife), keys.XPPair, tail)
+		return expiryKey(f.Last.Add(entity.PairSignInLife), keys.XPPair, tail)
 	}
 	return nil
 }

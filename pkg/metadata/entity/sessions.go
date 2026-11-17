@@ -33,14 +33,27 @@ type APIToken struct {
 	Expires time.Time
 }
 
+// How long a sign-in count is kept after the time its expiry follows: a
+// source's last settled failure, a pair's last counted attempt. The throttle
+// reads a count as gone at the same distance the store's sweep deletes it.
+//
+// decision: each is baked into the store's expiry rows already written, so
+// changing one between releases strands the rows written under the old value
+// where the sweep looks for the new; a change needs a migration that moves
+// them.
+const (
+	SourceSignInLife = 15 * time.Minute
+	PairSignInLife   = 24 * time.Hour
+)
+
 // SignInFailures is one of a sign-in's three counts: an account's, a source
 // address's, or the two together.
 type SignInFailures struct {
 	Count uint32    // attempts counted since the last success
-	Last  time.Time // store time of the last counted attempt; a pair's count expires 24 h after it
+	Last  time.Time // store time of the last counted attempt; a pair's count expires PairSignInLife after it
 	// Failed, a source's only, is the store time of its last settled
 	// failure, or of the attempt that created the count; the count expires
-	// 15 min after it.
+	// SourceSignInLife after it.
 	Failed time.Time
 	Nonce  uint64 // a source's only: drawn by the attempt that created the count
 }

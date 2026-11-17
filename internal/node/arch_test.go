@@ -814,8 +814,9 @@ func apiExports(dir, path string) ([]string, error) {
 
 // The api package exports New, Deps and Server, and Server's Start and Stop,
 // and its auth package Caller, CallerFrom, the With its authentication step
-// calls, and the role table's Right, its rights and Allowed, and nothing
-// else; a planted extra method is caught.
+// calls, the role table's Right, its rights and Allowed, and the
+// ResetAccount the break-glass reset calls, and nothing else; a planted
+// extra method is caught.
 func TestAPIExports(t *testing.T) {
 	want := []string{"Deps", "New", "Server", "Server.Start", "Server.Stop"}
 	for _, tc := range []struct {
@@ -825,7 +826,7 @@ func TestAPIExports(t *testing.T) {
 		{"api", "internal/node/api", want},
 		{"api/auth", "internal/node/api/auth", []string{
 			"Accounts", "Allowed", "Audit", "Caller", "CallerFrom", "Drain", "Installation", "Principals",
-			"Public", "QuotaEvents", "Right", "Self", "Shares", "Stores", "View", "With",
+			"Public", "QuotaEvents", "ResetAccount", "Right", "Self", "Shares", "Stores", "View", "With",
 		}},
 		{"testdata/arch/api-exports", "internal/node/api", []string{"Deps", "New", "Server", "Server.Handler", "Server.Start", "Server.Stop"}},
 	} {

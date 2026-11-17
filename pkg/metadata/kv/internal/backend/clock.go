@@ -21,6 +21,7 @@ const (
 // Now backward.
 type Clock struct {
 	clock func() time.Time
+	ahead time.Duration // how far past the clock each raise puts the ceiling
 
 	mu      sync.Mutex
 	last    time.Time // the latest Now handed out
@@ -28,12 +29,16 @@ type Clock struct {
 }
 
 // NewClock resumes store time from the stored ceiling, zero when there is
-// none. Now holds at it until the first Raise.
-func NewClock(clock func() time.Time, stored time.Time) *Clock {
+// none. Now holds at it until the first Raise. Each raise puts the ceiling
+// ahead past the clock; 0 is CeilingAhead.
+func NewClock(clock func() time.Time, stored time.Time, ahead time.Duration) *Clock {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Clock{clock: clock, last: stored, ceiling: stored}
+	if ahead == 0 {
+		ahead = CeilingAhead
+	}
+	return &Clock{clock: clock, ahead: ahead, last: stored, ceiling: stored}
 }
 
 // Now is the clock clamped strictly increasing: a nanosecond past the last
@@ -60,13 +65,13 @@ func (c *Clock) Now() time.Time {
 	return t
 }
 
-// Raise has write store the ceiling CeilingAhead past the clock, as the value
+// Raise has write store the ceiling its ahead past the clock, as the value
 // EncodeCeiling makes, and only once it is durable lets Now use it. The
 // caller writes it to a key of the node's own, so the raise conflicts with no
 // other transaction's writes.
 func (c *Clock) Raise(write func(value []byte) error) error {
 	c.mu.Lock()
-	next := c.clock().Add(CeilingAhead)
+	next := c.clock().Add(c.ahead)
 	if next.Before(c.ceiling) {
 		next = c.ceiling
 	}

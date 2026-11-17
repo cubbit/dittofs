@@ -354,7 +354,9 @@ func testSignInFailuresRace(t *testing.T, kvo Opener) {
 func testClearSourceSignIns(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)
 	cp := s.ControlPlane()
-	alice := entity.NewUser()
+	u := user("alice")
+	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+	alice := u.Principal
 	e := time.Unix(1_900_000_000, 0).UTC()
 	var sources []entity.SignInKey
 	for i := range 5 {
@@ -369,7 +371,10 @@ func testClearSourceSignIns(t *testing.T, kvo Opener) {
 		}
 		return nil
 	}))
-	for more := true; more; {
+	for calls, more := 0, true; more; calls++ {
+		if calls > len(sources) {
+			t.Fatalf("source counts left after %d clears of %d counts, want none", calls, len(sources))
+		}
 		var err error
 		more, err = cp.ClearSourceSignIns(ctx)
 		must(t, err)

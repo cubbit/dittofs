@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"sync"
@@ -25,6 +26,8 @@ func src(s string) netip.Prefix { return sourceOf(netip.MustParseAddr(s), false)
 // Past its free attempts a count makes each further attempt wait twice as
 // long as the last, from 1 s up to 5 min after its last counted attempt: a
 // pair's and a source's from their fifth, an account's from its hundredth.
+// A last attempt ahead of now, as store time is ahead of a node clock stepped
+// back, owes no more than the backoff itself.
 func TestDecideWaits(t *testing.T) {
 	alice := entity.NewUser()
 	for _, tc := range []struct {
@@ -50,12 +53,14 @@ func TestDecideWaits(t *testing.T) {
 		{"account at 99", accountCount, 99, 0, 0},
 		{"account at 100", accountCount, 100, 0, time.Second},
 		{"account at 101", accountCount, 101, 0, 2 * time.Second},
+		{"pair at 5, last 1 h ahead", pairCount, 5, -time.Hour, time.Second},
+		{"pair at 14, last 1 h ahead", pairCount, 14, -time.Hour, 5 * time.Minute},
 	} {
 		now := t0.Add(tc.since)
 		var c counts
 		c[tc.k] = entity.SignInFailures{Count: tc.count, Last: t0, Failed: t0, Nonce: 7}
 		a := attempt{account: alice, source: src("192.0.2.1")}
-		wait, raised := decide(a, c, now, 9)
+		wait, raised := decide(a, c, now)
 		if wait != tc.want {
 			t.Errorf("%s: wait %v, want %v", tc.name, wait, tc.want)
 		}
@@ -100,9 +105,12 @@ func TestSourceOf(t *testing.T) {
 		}
 	}
 	local := attempt{account: entity.NewUser(), source: sourceOf(netip.MustParseAddr("192.0.2.1"), true)}
-	for _, k := range []kind{sourceCount, pairCount} {
-		if _, ok := local.key(k); ok {
-			t.Errorf("a local-socket attempt has count %d, want none", k)
+	for _, k := range []struct {
+		k    kind
+		name string
+	}{{sourceCount, "source"}, {pairCount, "pair"}} {
+		if _, ok := local.key(k.k); ok {
+			t.Errorf("a local-socket attempt has a %s count, want none", k.name)
 		}
 	}
 	if _, ok := local.key(accountCount); !ok {
@@ -116,24 +124,22 @@ func TestSourceOf(t *testing.T) {
 // counted afresh.
 func TestCountTimes(t *testing.T) {
 	a := attempt{account: entity.NewUser(), source: src("192.0.2.1")}
-	_, c := decide(a, counts{}, t0, 7)
-	if want := (entity.SignInFailures{Count: 1, Last: t0, Failed: t0, Nonce: 7}); c[sourceCount] != want {
+	_, c := decide(a, counts{}, t0)
+	if want := (entity.SignInFailures{Count: 1, Last: t0, Failed: t0}); c[sourceCount] != want {
 		t.Errorf("source count created: got %+v, want %+v", c[sourceCount], want)
 	}
+	c[sourceCount].Nonce = 7 // as the write draws it
 	if c[pairCount].Failed != (time.Time{}) || c[pairCount].Nonce != 0 {
 		t.Errorf("pair count created: got %+v, want no Failed and no Nonce", c[pairCount])
 	}
 	t1 := t0.Add(time.Minute)
-	_, c = decide(a, c, t1, 8)
+	_, c = decide(a, c, t1)
 	if want := (entity.SignInFailures{Count: 2, Last: t1, Failed: t0, Nonce: 7}); c[sourceCount] != want {
 		t.Errorf("source count raised: got %+v, want %+v", c[sourceCount], want)
 	}
 	t2 := t1.Add(time.Minute)
 	if f, ok := settle(c[sourceCount], 7, t2); !ok || f.Failed != t2 || f.Last != t1 || f.Count != 2 {
 		t.Errorf("failure settled: got %+v, %v; want Failed %v, Last %v, Count 2", f, ok, t2, t1)
-	}
-	if f, ok := takeBack(c[sourceCount], 7, t2); !ok || f.Failed != t0 || f.Last != t1 || f.Count != 1 {
-		t.Errorf("success taken back: got %+v, %v; want Failed %v, Last %v, Count 1", f, ok, t0, t1)
 	}
 	for _, tc := range []struct {
 		name string
@@ -150,7 +156,7 @@ func TestCountTimes(t *testing.T) {
 	} {
 		var c counts
 		c[tc.k] = tc.f
-		_, raised := decide(a, c, tc.now, 8)
+		_, raised := decide(a, c, tc.now)
 		want := uint32(1)
 		if tc.live {
 			want = 10
@@ -167,8 +173,8 @@ func TestCountTimes(t *testing.T) {
 func TestOverlappingSuccesses(t *testing.T) {
 	failed := entity.SignInFailures{Count: 3, Last: t0, Failed: t0, Nonce: 7}
 	a := attempt{source: src("192.0.2.1")}
-	_, first := decide(a, counts{sourceCount: failed}, t0.Add(time.Second), 8)
-	_, second := decide(a, first, t0.Add(2*time.Second), 9)
+	_, first := decide(a, counts{sourceCount: failed}, t0.Add(time.Second))
+	_, second := decide(a, first, t0.Add(2*time.Second))
 	for _, order := range [][2]int{{3, 4}, {4, 3}} {
 		f := second[sourceCount]
 		for _, at := range order {
@@ -214,6 +220,7 @@ type fix struct {
 	cp    kvstore.ControlPlane
 	cnt   *kv.Counting
 	fault *kvtest.FaultKV
+	users int
 }
 
 // stores runs fn over the store on Badger in memory and under t.TempDir().
@@ -222,7 +229,9 @@ func stores(t *testing.T, fn func(t *testing.T, f *fix)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			clk := sim.NewTestClock(t0)
-			opts := badgerkv.Options{Clock: clk.Now}
+			// The ceiling reaches past every advance a test makes, so store
+			// time follows the clock at once.
+			opts := badgerkv.Options{Clock: clk.Now, CeilingAhead: 48 * time.Hour}
 			if name == "disk" {
 				opts.Dir = t.TempDir()
 			}
@@ -245,30 +254,18 @@ func stores(t *testing.T, fn func(t *testing.T, f *fix)) {
 	}
 }
 
-// advance moves the clock d on and waits for store time to follow it: the
-// store raises its time's ceiling once a second.
-func (f *fix) advance(d time.Duration) {
+// advance moves the clock, and with it store time, d on.
+func (f *fix) advance(d time.Duration) { f.clk.Advance(d) }
+
+// user stores a user and returns its principal, an account a count may name.
+func (f *fix) user() entity.Principal {
 	f.t.Helper()
-	f.clk.Advance(d)
-	want := f.clk.Now()
-	deadline := time.After(10 * time.Second)
-	for {
-		var now time.Time
-		if err := f.cp.Write(f.t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
-			now = tx.Now()
-			return nil
-		}); err != nil {
-			f.t.Fatal(err)
-		}
-		if !now.Before(want) {
-			return
-		}
-		select {
-		case <-deadline:
-			f.t.Fatalf("store time %v never reached the clock's %v", now, want)
-		case <-time.After(10 * time.Millisecond):
-		}
+	f.users++
+	u := entity.User{Principal: entity.NewUser(), Name: fmt.Sprintf("user%d", f.users)}
+	if _, err := f.cp.PutUser(f.t.Context(), u, 0, entity.Alloc{}); err != nil {
+		f.t.Fatal(err)
 	}
+	return u.Principal
 }
 
 func (f *fix) reserve(a attempt) (counted, error) { return reserve(f.t.Context(), f.cp, f.clk, a) }
@@ -370,7 +367,7 @@ func (b *barrier) At(op string, key []byte) (time.Duration, int, error) {
 // as the counts allow, and the rest wait.
 func TestConcurrentAttemptsPastTheBound(t *testing.T) {
 	stores(t, func(t *testing.T, f *fix) {
-		a := attempt{account: entity.NewUser(), source: src("192.0.2.1")}
+		a := attempt{account: f.user(), source: src("192.0.2.1")}
 		for range 5 {
 			f.fail(a)
 		}
@@ -389,7 +386,7 @@ func TestConcurrentAttemptsPastTheBound(t *testing.T) {
 // through before the account's own wait holds the rest.
 func TestAccountWaitAcrossSources(t *testing.T) {
 	stores(t, func(t *testing.T, f *fix) {
-		alice := entity.NewUser()
+		alice := f.user()
 		got := f.together(200, func(i int) attempt {
 			return attempt{account: alice, source: src(netip.AddrFrom4([4]byte{10, 0, byte(i >> 8), byte(i)}).String())}
 		})
@@ -406,20 +403,24 @@ func TestSourceWaitAcrossAccounts(t *testing.T) {
 	stores(t, func(t *testing.T, f *fix) {
 		s := src("192.0.2.1")
 		for range 3 {
-			f.fail(attempt{account: entity.NewUser(), source: s})
+			f.fail(attempt{account: f.user(), source: s})
 		}
 		f.advance(10 * time.Minute)
-		if got := f.together(50, func(int) attempt { return attempt{account: entity.NewUser(), source: s} }); got != 2 {
+		var accounts []entity.Principal
+		for range 50 {
+			accounts = append(accounts, f.user())
+		}
+		if got := f.together(50, func(i int) attempt { return attempt{account: accounts[i], source: s} }); got != 2 {
 			t.Errorf("attempts let through: got %d, want 2", got)
 		}
 	})
 }
 
 // 50 attempts within a pair's wait are each throttled with the wait left,
-// and none makes an Update, raises a count or checks anything in a write.
+// and none makes an Update or raises a count.
 func TestThrottledAttemptWritesNothing(t *testing.T) {
 	stores(t, func(t *testing.T, f *fix) {
-		a := attempt{account: entity.NewUser(), source: src("192.0.2.1")}
+		a := attempt{account: f.user(), source: src("192.0.2.1")}
 		for range 5 {
 			f.fail(a)
 		}
@@ -430,7 +431,6 @@ func TestThrottledAttemptWritesNothing(t *testing.T) {
 			before = append(before, c)
 		}
 		f.cnt.TakeUpdates()
-		f.cnt.Take()
 		for i := range 50 {
 			_, err := f.reserve(a)
 			var th *throttled
@@ -440,9 +440,6 @@ func TestThrottledAttemptWritesNothing(t *testing.T) {
 		}
 		if u := f.cnt.TakeUpdates(); u.Updates != 0 {
 			t.Errorf("Updates by throttled attempts: got %d, want 0", u.Updates)
-		}
-		if c := f.cnt.Take(); c.GuardOnly != 0 {
-			t.Errorf("guard-only Updates by throttled attempts: got %d, want 0", c.GuardOnly)
 		}
 		for i, k := range keys {
 			if c, _ := f.count(k); c != before[i] {
@@ -455,13 +452,13 @@ func TestThrottledAttemptWritesNothing(t *testing.T) {
 // A write that fails refuses the attempt, and raises nothing.
 func TestFailedWriteRefuses(t *testing.T) {
 	stores(t, func(t *testing.T, f *fix) {
+		a := attempt{account: f.user(), source: src("192.0.2.1")}
 		boom := errors.New("commit lost")
 		sched, err := sim.NewSchedule(1, nil, sim.Rule{Op: kvtest.OpUpdate, Key: "*", Action: sim.FaultAction{Err: boom}})
 		if err != nil {
 			t.Fatal(err)
 		}
 		f.fault.SetFault(sched)
-		a := attempt{account: entity.NewUser(), source: src("192.0.2.1")}
 		if _, err := f.reserve(a); !errors.Is(err, boom) {
 			t.Fatalf("attempt over a failing write: %v, want %v", err, boom)
 		}
@@ -491,10 +488,10 @@ func TestUnknownNameCountsOnItsSource(t *testing.T) {
 }
 
 // A success resets its account's count and its pair's and takes back its
-// raise of its source's; resetAccount resets the account's alone.
+// raise of its source's; ResetAccount resets the account's alone.
 func TestSuccessAndReset(t *testing.T) {
 	stores(t, func(t *testing.T, f *fix) {
-		alice := entity.NewUser()
+		alice := f.user()
 		a := attempt{account: alice, source: src("192.0.2.1")}
 		account, source, pair := entity.SignInKey{Account: alice}, entity.SignInKey{Source: a.source}, entity.SignInKey{Account: alice, Source: a.source}
 		for range 3 {
@@ -510,7 +507,7 @@ func TestSuccessAndReset(t *testing.T) {
 			t.Errorf("source's count after a success: got %d, want 3", c.Count)
 		}
 		f.fail(a)
-		f.write(func(tx entity.ControlPlaneTx) error { return resetAccount(tx, alice) })
+		f.write(func(tx entity.ControlPlaneTx) error { return ResetAccount(tx, alice) })
 		if c, ok := f.count(account); ok {
 			t.Errorf("account's count after its reset: %+v, want absent", c)
 		}
@@ -527,10 +524,10 @@ func TestSourceForgottenWhileSuccessesCome(t *testing.T) {
 	stores(t, func(t *testing.T, f *fix) {
 		s := src("192.0.2.1")
 		for range 3 {
-			f.fail(attempt{account: entity.NewUser(), source: s})
+			f.fail(attempt{account: f.user(), source: s})
 		}
 		third, _ := f.count(entity.SignInKey{Source: s})
-		bob := attempt{account: entity.NewUser(), source: s}
+		bob := attempt{account: f.user(), source: s}
 		f.advance(10 * time.Minute)
 		f.succeed(bob)
 		if c, _ := f.count(entity.SignInKey{Source: s}); c.Count != 3 || c.Failed != third.Failed || c.Nonce != third.Nonce {
@@ -552,7 +549,7 @@ func TestUnsettledAndPairCountsExpire(t *testing.T) {
 		if _, err := f.reserve(unsettled); err != nil {
 			t.Fatal(err)
 		}
-		a := attempt{account: entity.NewUser(), source: src("192.0.2.2")}
+		a := attempt{account: f.user(), source: src("192.0.2.2")}
 		for range 5 {
 			f.fail(a)
 		}
@@ -575,6 +572,53 @@ func TestUnsettledAndPairCountsExpire(t *testing.T) {
 		}
 		if c, _ := f.count(entity.SignInKey{Account: a.account, Source: a.source}); c.Count != 1 {
 			t.Errorf("pair's count 24 h after its last attempt: got %d, want counted afresh at 1", c.Count)
+		}
+	})
+}
+
+// A source's second failure 10 min after its first moves its last settled
+// failure, so 5 min past the first's 15 the count is still live.
+func TestSettledFailureKeepsSourceLive(t *testing.T) {
+	stores(t, func(t *testing.T, f *fix) {
+		a := attempt{source: src("192.0.2.1")}
+		f.fail(a)
+		f.advance(10 * time.Minute)
+		f.fail(a)
+		f.advance(5*time.Minute + time.Millisecond)
+		if _, err := f.reserve(a); err != nil {
+			t.Fatal(err)
+		}
+		if c, _ := f.count(entity.SignInKey{Source: a.source}); c.Count != 3 {
+			t.Errorf("source's count 15 min after its first failure, 5 min after its second: got %d, want 3", c.Count)
+		}
+	})
+}
+
+// An attempt the store could not answer takes back its raise of its source's
+// count and leaves its account's and its pair's as raised.
+func TestTakeBackRaiseLeavesOtherCounts(t *testing.T) {
+	stores(t, func(t *testing.T, f *fix) {
+		a := attempt{account: f.user(), source: src("192.0.2.1")}
+		for range 3 {
+			f.fail(a)
+		}
+		c, err := f.reserve(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.write(func(tx entity.ControlPlaneTx) error { return takeBackRaise(tx, c) })
+		for _, tc := range []struct {
+			name string
+			k    entity.SignInKey
+			want uint32
+		}{
+			{"source's", entity.SignInKey{Source: a.source}, 3},
+			{"account's", entity.SignInKey{Account: a.account}, 4},
+			{"pair's", entity.SignInKey{Account: a.account, Source: a.source}, 4},
+		} {
+			if got, _ := f.count(tc.k); got.Count != tc.want {
+				t.Errorf("%s count after a raise taken back: got %d, want %d", tc.name, got.Count, tc.want)
+			}
 		}
 	})
 }
